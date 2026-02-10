@@ -12,7 +12,6 @@ This document defines the step-by-step user journeys for the SAP door hardware m
 
 ### Global Layout
 
-```wireframe
 <!DOCTYPE html>
 <html>
 <head>
@@ -91,7 +90,6 @@ body { margin: 0; font-family: system-ui; }
 </div>
 </body>
 </html>
-```
 
 **Key Elements:**
 
@@ -132,7 +130,6 @@ body { margin: 0; font-family: system-ui; }
 - Success toast with project name
 - New project highlighted in project list
 
-```wireframe
 <!DOCTYPE html>
 <html>
 <head>
@@ -199,7 +196,6 @@ body { margin: 0; font-family: system-ui; padding: 24px; background: #fafafa; }
 </div>
 </body>
 </html>
-```
 
 ---
 
@@ -234,7 +230,6 @@ body { margin: 0; font-family: system-ui; padding: 24px; background: #fafafa; }
 - Warning badges for items in assembly or checked out
 - Confirmation dialog with impact summary
 
-```wireframe
 <!DOCTYPE html>
 <html>
 <head>
@@ -341,7 +336,6 @@ body { margin: 0; font-family: system-ui; background: #fafafa; }
 </div>
 </body>
 </html>
-```
 
 ---
 
@@ -372,7 +366,6 @@ body { margin: 0; font-family: system-ui; background: #fafafa; }
 - Toast notification to PM
 - Notification to Purchasing users
 
-```wireframe
 <!DOCTYPE html>
 <html>
 <head>
@@ -461,7 +454,6 @@ body { margin: 0; font-family: system-ui; padding: 24px; background: #fafafa; }
 </div>
 </body>
 </html>
-```
 
 ---
 
@@ -500,7 +492,6 @@ body { margin: 0; font-family: system-ui; padding: 24px; background: #fafafa; }
 - Draft POs can be edited before sending
 - Toast notification when POs are sent
 
-```wireframe
 <!DOCTYPE html>
 <html>
 <head>
@@ -625,7 +616,6 @@ body { margin: 0; font-family: system-ui; padding: 24px; background: #fafafa; }
 </div>
 </body>
 </html>
-```
 
 ---
 
@@ -660,7 +650,6 @@ body { margin: 0; font-family: system-ui; padding: 24px; background: #fafafa; }
 - Location autocomplete
 - Receipt summary with print option
 
-```wireframe
 <!DOCTYPE html>
 <html>
 <head>
@@ -747,7 +736,6 @@ body { margin: 0; font-family: system-ui; padding: 24px; background: #fafafa; }
 </div>
 </body>
 </html>
-```
 
 ---
 
@@ -779,7 +767,6 @@ body { margin: 0; font-family: system-ui; padding: 24px; background: #fafafa; }
 - Validation errors shown immediately
 - Color-coded allocation status badges
 
-```wireframe
 <!DOCTYPE html>
 <html>
 <head>
@@ -884,7 +871,6 @@ body { margin: 0; font-family: system-ui; padding: 24px; background: #fafafa; }
 </div>
 </body>
 </html>
-```
 
 ---
 
@@ -951,7 +937,6 @@ body { margin: 0; font-family: system-ui; padding: 24px; background: #fafafa; }
 - Support for partial pulls
 - Completion summary
 
-```wireframe
 <!DOCTYPE html>
 <html>
 <head>
@@ -1059,7 +1044,6 @@ body { margin: 0; font-family: system-ui; padding: 24px; background: #fafafa; }
 </div>
 </body>
 </html>
-```
 
 ---
 
@@ -1091,7 +1075,6 @@ body { margin: 0; font-family: system-ui; padding: 24px; background: #fafafa; }
 - Color-coded status (not started, in progress, complete)
 - Toast notification when opening completed
 
-```wireframe
 <!DOCTYPE html>
 <html>
 <head>
@@ -1227,7 +1210,6 @@ body { margin: 0; font-family: system-ui; padding: 24px; background: #fafafa; }
 </div>
 </body>
 </html>
-```
 
 ---
 
@@ -1267,7 +1249,6 @@ body { margin: 0; font-family: system-ui; padding: 24px; background: #fafafa; }
 - Multi-step progress indicator
 - Confirmation with detailed summary
 
-```wireframe
 <!DOCTYPE html>
 <html>
 <head>
@@ -1377,7 +1358,6 @@ body { margin: 0; font-family: system-ui; background: #fafafa; }
 </div>
 </body>
 </html>
-```
 
 ---
 
@@ -1443,7 +1423,6 @@ body { margin: 0; font-family: system-ui; background: #fafafa; }
 - Print/export options
 - Toast notification
 
-```wireframe
 <!DOCTYPE html>
 <html>
 <head>
@@ -1525,13 +1504,11 @@ body { margin: 0; font-family: system-ui; padding: 24px; background: #fafafa; }
 </div>
 </body>
 </html>
-```
 
 ---
 
 ## Dashboard View
 
-```wireframe
 <!DOCTYPE html>
 <html>
 <head>
@@ -1655,7 +1632,6 @@ body { margin: 0; font-family: system-ui; padding: 24px; background: #fafafa; }
 </div>
 </body>
 </html>
-```
 
 ---
 
