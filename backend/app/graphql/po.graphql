@@ -1,0 +1,59 @@
+# PO Module SDL Reference
+# Source of truth: Strawberry resolvers in app/schemas/
+
+type PurchaseOrder {
+  id: ID!
+  po_number: String!
+  project_id: ID!
+  status: POStatus!
+  vendor_name: String
+  vendor_contact: String
+  expected_delivery_date: Date
+  ordered_at: DateTime
+  created_at: DateTime!
+  updated_at: DateTime!
+  line_items: [POLineItem!]!
+  receive_records: [ReceiveRecord!]!
+}
+
+enum POStatus {
+  DRAFT
+  ORDERED
+  PARTIALLY_RECEIVED
+  CLOSED
+  CANCELLED
+}
+
+type POLineItem {
+  id: ID!
+  po_id: ID!
+  hardware_category: String!
+  product_code: String!
+  classification: Classification!
+  ordered_quantity: Int!
+  received_quantity: Int!
+  unit_cost: Float!
+  created_at: DateTime!
+  updated_at: DateTime!
+}
+
+type POStatistics {
+  total: Int!
+  draft: Int!
+  ordered: Int!
+  partially_received: Int!
+  closed: Int!
+  cancelled: Int!
+}
+
+type Query {
+  purchaseOrders(projectId: ID!, status: POStatus): [PurchaseOrder!]!
+  purchaseOrder(id: ID!): PurchaseOrder
+  poStatistics(projectId: ID!): POStatistics!
+}
+
+type Mutation {
+  updatePO(id: ID!, vendorName: String, vendorContact: String, expectedDeliveryDate: Date): PurchaseOrder!
+  markPOAsOrdered(id: ID!): PurchaseOrder!
+  cancelPO(id: ID!): PurchaseOrder!
+}

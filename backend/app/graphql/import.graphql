@@ -1,0 +1,155 @@
+# Import Module SDL Reference
+# Source of truth: Strawberry resolvers in app/schemas/
+
+input ProjectInput {
+  project_id: String!
+  description: String
+  job_site_name: String
+  address: String
+  city: String
+  state: String
+  zip: String
+  contractor: String
+  project_manager: String
+  application: String
+  submittal_job_no: String
+  submittal_assignment_count: Int
+  estimator_code: String
+  titan_user_id: String
+}
+
+input OpeningInput {
+  opening_number: String!
+  building: String
+  floor: String
+  location: String
+  location_to: String
+  location_from: String
+  hand: String
+  width: String
+  length: String
+  door_thickness: String
+  jamb_thickness: String
+  door_type: String
+  frame_type: String
+  interior_exterior: String
+  keying: String
+  heading_no: String
+  single_pair: String
+  assignment_multiplier: String
+}
+
+input HardwareItemInput {
+  opening_number: String!
+  product_code: String!
+  material_id: String!
+  hardware_category: String!
+  item_quantity: Int!
+  unit_cost: Float
+  unit_price: Float
+  list_price: Float
+  vendor_discount: Float
+  markup_pct: Float
+  vendor_no: String
+  phase_code: String
+  item_category_code: String
+  product_group_code: String
+  submittal_id: String
+}
+
+input HardwareItemRef {
+  opening_number: String!
+  product_code: String!
+  material_id: String!
+}
+
+input PODraftInput {
+  po_number: String!
+  vendor_name: String
+  vendor_contact: String
+  hardware_item_refs: [HardwareItemRef!]!
+}
+
+input ClassificationInput {
+  hardware_category: String!
+  product_code: String!
+  unit_cost: Float!
+  classification: Classification!
+}
+
+input ShippingOutPRDraftInput {
+  request_number: String!
+  requested_by: String!
+  items: [ShippingOutPRDraftItemInput!]!
+}
+
+input ShippingOutPRDraftItemInput {
+  item_type: PullRequestItemType!
+  opening_number: String!
+  opening_item_id: ID
+  hardware_category: String
+  product_code: String
+  requested_quantity: Int!
+}
+
+input SAROpeningInput {
+  opening_number: String!
+  items: [SAROpeningItemInput!]!
+}
+
+input SAROpeningItemInput {
+  hardware_category: String!
+  product_code: String!
+  quantity: Int!
+}
+
+input FinalizeImportSessionInput {
+  project: ProjectInput!
+  openings: [OpeningInput!]!
+  hardware_items: [HardwareItemInput!]
+  po_drafts: [PODraftInput!]
+  classifications: [ClassificationInput!]
+  shipping_out_pr_drafts: [ShippingOutPRDraftInput!]
+  include_shop_assembly_request: Boolean!
+  shop_assembly_request_number: String
+  shop_assembly_openings: [SAROpeningInput!]
+}
+
+input ReconciliationItemInput {
+  opening_number: String!
+  hardware_category: String!
+  product_code: String!
+  quantity_needed: Int!
+}
+
+type FinalizeImportResult {
+  project: Project!
+  purchase_orders: [PurchaseOrder!]!
+  shipping_out_pull_requests: [PullRequest!]!
+  shop_assembly_request: ShopAssemblyRequest
+}
+
+type ReconciliationResult {
+  opening_number: String!
+  hardware_category: String!
+  product_code: String!
+  quantity_needed: Int!
+  quantity_available: Int!
+  status: ReconciliationStatus!
+}
+
+enum ReconciliationStatus {
+  AVAILABLE
+  PARTIAL
+  NOT_AVAILABLE
+}
+
+type Query {
+  projects: [Project!]!
+  projectByScheduleId(projectId: String!): Project
+  reconcileSchedule(projectId: ID!, items: [ReconciliationItemInput!]!): [ReconciliationResult!]!
+}
+
+type Mutation {
+  finalizeImportSession(input: FinalizeImportSessionInput!): FinalizeImportResult!
+}

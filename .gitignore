@@ -1,6 +1,48 @@
-# Ignore everything
-*
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+.venv/
+venv/
+env/
 
-# Track these
-!.gitignore
-!*.py
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build output
+frontend/dist/
+frontend/build/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# IDE / Tools
+.vscode/
+.idea/
+.claude/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Alembic
+backend/alembic/versions/__pycache__/
+
+# Dev Planning (not tracked)
+Dev Planning/
+
+# Sample data
+*.xml

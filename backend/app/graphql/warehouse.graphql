@@ -1,0 +1,232 @@
+# Warehouse Module SDL Reference
+# Source of truth: Strawberry resolvers in app/schemas/
+
+type ReceiveRecord {
+  id: ID!
+  po_id: ID!
+  received_at: DateTime!
+  received_by: String!
+  created_at: DateTime!
+  line_items: [ReceiveLineItem!]!
+}
+
+type ReceiveLineItem {
+  id: ID!
+  receive_record_id: ID!
+  po_line_item_id: ID!
+  hardware_category: String!
+  product_code: String!
+  quantity_received: Int!
+  created_at: DateTime!
+}
+
+type InventoryLocation {
+  id: ID!
+  project_id: ID!
+  po_line_item_id: ID!
+  receive_line_item_id: ID!
+  hardware_category: String!
+  product_code: String!
+  quantity: Int!
+  shelf: String
+  column: String
+  row: String
+  received_at: DateTime!
+  created_at: DateTime!
+  updated_at: DateTime!
+}
+
+type InventoryHierarchyNode {
+  hardware_category: String!
+  product_codes: [ProductCodeNode!]!
+  total_quantity: Int!
+}
+
+type ProductCodeNode {
+  product_code: String!
+  items: [InventoryLocation!]!
+  total_quantity: Int!
+}
+
+type InventoryItemDetail {
+  inventory_location: InventoryLocation!
+  po_number: String!
+  classification: Classification!
+}
+
+type OpeningItem {
+  id: ID!
+  project_id: ID!
+  opening_id: ID!
+  opening_number: String!
+  building: String
+  floor: String
+  location: String
+  quantity: Int!
+  assembly_completed_at: DateTime!
+  state: OpeningItemState!
+  shelf: String
+  column: String
+  row: String
+  created_at: DateTime!
+  updated_at: DateTime!
+  installed_hardware: [OpeningItemHardware!]!
+}
+
+type OpeningItemHardware {
+  id: ID!
+  opening_item_id: ID!
+  product_code: String!
+  hardware_category: String!
+  quantity: Int!
+}
+
+type OpeningItemDetail {
+  opening_item: OpeningItem!
+  installed_hardware: [OpeningItemHardware!]!
+}
+
+type PullRequest {
+  id: ID!
+  request_number: String!
+  project_id: ID!
+  source: PullRequestSource!
+  status: PullRequestStatus!
+  requested_by: String!
+  assigned_to: String
+  created_at: DateTime!
+  updated_at: DateTime!
+  approved_at: DateTime
+  completed_at: DateTime
+  cancelled_at: DateTime
+  items: [PullRequestItem!]!
+}
+
+type PullRequestItem {
+  id: ID!
+  pull_request_id: ID!
+  item_type: PullRequestItemType!
+  opening_number: String!
+  opening_item_id: ID
+  hardware_category: String
+  product_code: String
+  requested_quantity: Int!
+}
+
+type ApproveResult {
+  pull_request: PullRequest!
+  outcome: ApproveOutcome!
+  notification: Notification
+}
+
+enum ApproveOutcome {
+  APPROVED
+  CANCELLED
+}
+
+type ShipReadyItems {
+  opening_items: [OpeningItem!]!
+  loose_items: [ShipReadyLooseItem!]!
+}
+
+type ShipReadyLooseItem {
+  opening_number: String!
+  hardware_category: String!
+  product_code: String!
+  available_quantity: Int!
+}
+
+type PackingSlip {
+  id: ID!
+  packing_slip_number: String!
+  project_id: ID!
+  shipped_by: String!
+  shipped_at: DateTime!
+  pdf_file_path: String!
+  created_at: DateTime!
+  items: [PackingSlipItem!]!
+}
+
+type PackingSlipItem {
+  id: ID!
+  packing_slip_id: ID!
+  item_type: PullRequestItemType!
+  opening_item_id: ID
+  opening_number: String
+  product_code: String!
+  hardware_category: String!
+  quantity: Int!
+}
+
+type Notification {
+  id: ID!
+  project_id: ID!
+  recipient_role: String!
+  type: NotificationType!
+  message: String!
+  is_read: Boolean!
+  created_at: DateTime!
+}
+
+input CreateReceiveInput {
+  po_id: ID!
+  received_by: String!
+  line_items: [ReceiveLineItemInput!]!
+}
+
+input ReceiveLineItemInput {
+  po_line_item_id: ID!
+  quantity_received: Int!
+  locations: [LocationInput!]!
+}
+
+input LocationInput {
+  shelf: String!
+  column: String!
+  row: String!
+  quantity: Int!
+}
+
+input ConfirmShipmentInput {
+  project_id: ID!
+  packing_slip_number: String!
+  shipped_by: String!
+  items: [ShipmentItemInput!]!
+}
+
+input ShipmentItemInput {
+  item_type: PullRequestItemType!
+  opening_item_id: ID
+  opening_number: String
+  product_code: String
+  hardware_category: String
+  quantity: Int!
+}
+
+type Query {
+  openPOs(projectId: ID!): [PurchaseOrder!]!
+  poReceivingDetails(poId: ID!): PurchaseOrder!
+  inventoryHierarchy(projectId: ID!): [InventoryHierarchyNode!]!
+  inventoryItems(projectId: ID!, category: String!, productCode: String!): [InventoryItemDetail!]!
+  openingItems(projectId: ID!): [OpeningItem!]!
+  openingItemDetails(id: ID!): OpeningItemDetail!
+  pullRequests(projectId: ID!, source: PullRequestSource, status: PullRequestStatus): [PullRequest!]!
+  pullRequestDetails(id: ID!): PullRequest!
+  shipReadyItems(projectId: ID!): ShipReadyItems!
+  notifications(projectId: ID!, recipientRole: String!, unreadOnly: Boolean, limit: Int = 5): [Notification!]!
+}
+
+type Mutation {
+  createReceive(input: CreateReceiveInput!): ReceiveRecord!
+  approvePullRequest(id: ID!, approvedBy: String!): ApproveResult!
+  completePullRequest(id: ID!): PullRequest!
+  confirmShipment(input: ConfirmShipmentInput!): PackingSlip!
+  adjustInventoryQuantity(inventoryLocationId: ID!, adjustment: Int!, reason: String!): InventoryLocation!
+  moveInventoryLocation(inventoryLocationId: ID!, newShelf: String!, newColumn: String!, newRow: String!): InventoryLocation!
+  markInventoryUnlocated(inventoryLocationId: ID!): InventoryLocation!
+  assignInventoryLocation(inventoryLocationId: ID!, shelf: String!, column: String!, row: String!): InventoryLocation!
+  moveOpeningItemLocation(openingItemId: ID!, shelf: String!, column: String!, row: String!): OpeningItem!
+  markOpeningItemUnlocated(openingItemId: ID!): OpeningItem!
+  assignOpeningItemLocation(openingItemId: ID!, shelf: String!, column: String!, row: String!): OpeningItem!
+  markNotificationAsRead(id: ID!): Notification!
+}

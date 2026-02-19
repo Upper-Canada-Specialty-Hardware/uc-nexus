@@ -1,0 +1,84 @@
+# Shop Assembly Module SDL Reference
+# Source of truth: Strawberry resolvers in app/schemas/
+
+type ShopAssemblyRequest {
+  id: ID!
+  request_number: String!
+  project_id: ID!
+  status: ShopAssemblyRequestStatus!
+  created_by: String!
+  approved_by: String
+  rejected_by: String
+  rejection_reason: String
+  created_at: DateTime!
+  approved_at: DateTime
+  rejected_at: DateTime
+  openings: [ShopAssemblyOpening!]!
+}
+
+enum ShopAssemblyRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+type ShopAssemblyOpening {
+  id: ID!
+  shop_assembly_request_id: ID!
+  opening_id: ID!
+  pull_status: PullStatus!
+  assigned_to: String
+  assembly_status: AssemblyStatus!
+  completed_at: DateTime
+  items: [ShopAssemblyOpeningItem!]!
+}
+
+enum PullStatus {
+  NOT_PULLED
+  PARTIAL
+  PULLED
+}
+
+enum AssemblyStatus {
+  PENDING
+  COMPLETED
+}
+
+type ShopAssemblyOpeningItem {
+  id: ID!
+  shop_assembly_opening_id: ID!
+  hardware_category: String!
+  product_code: String!
+  quantity: Int!
+}
+
+type ApproveShopAssemblyResult {
+  shop_assembly_request: ShopAssemblyRequest!
+  pull_request: PullRequest!
+}
+
+input AssignOpeningsInput {
+  opening_ids: [ID!]!
+  assigned_to: String!
+}
+
+input CompleteOpeningInput {
+  opening_id: ID!
+  shelf: String
+  column: String
+  row: String
+}
+
+type Query {
+  shopAssemblyRequests(projectId: ID!, status: ShopAssemblyRequestStatus): [ShopAssemblyRequest!]!
+  assembleList(projectId: ID!): [ShopAssemblyOpening!]!
+  myWork(assignedTo: String!): [ShopAssemblyOpening!]!
+}
+
+type Mutation {
+  approveShopAssemblyRequest(id: ID!): ApproveShopAssemblyResult!
+  rejectShopAssemblyRequest(id: ID!, reason: String!): ShopAssemblyRequest!
+  assignOpenings(input: AssignOpeningsInput!): [ShopAssemblyOpening!]!
+  removeOpeningFromUser(openingId: ID!): ShopAssemblyOpening!
+  completeOpening(input: CompleteOpeningInput!): OpeningItem!
+}
