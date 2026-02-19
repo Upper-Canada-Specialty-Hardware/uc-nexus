@@ -5,7 +5,7 @@ from datetime import date
 import strawberry
 
 from app.database import SessionLocal
-from app.repositories import po_repository, warehouse_repository
+from app.repositories import po_repository, warehouse_repository, shop_assembly_repository
 from .enums import POStatus
 from .inputs import (
     FinalizeImportSessionInput,
@@ -28,7 +28,14 @@ from .types import (
     ShopAssemblyRequest,
     ShopAssemblyOpening,
 )
-from .queries import _po_to_type, _inventory_location_to_type, _opening_item_to_type, _receive_record_to_type
+from .queries import (
+    _po_to_type,
+    _inventory_location_to_type,
+    _opening_item_to_type,
+    _receive_record_to_type,
+    _shop_assembly_request_to_type,
+    _pull_request_to_type,
+)
 
 
 @strawberry.type
@@ -245,13 +252,29 @@ class Mutation:
     def approve_shop_assembly_request(
         self, id: strawberry.ID
     ) -> ApproveShopAssemblyResult:
-        raise NotImplementedError("approveShopAssemblyRequest not yet implemented")
+        with SessionLocal() as session:
+            sar, pr = shop_assembly_repository.approve_shop_assembly_request(
+                session, uuid.UUID(str(id))
+            )
+            session.commit()
+            session.refresh(sar)
+            session.refresh(pr)
+            return ApproveShopAssemblyResult(
+                shop_assembly_request=_shop_assembly_request_to_type(sar),
+                pull_request=_pull_request_to_type(pr),
+            )
 
     @strawberry.mutation
     def reject_shop_assembly_request(
         self, id: strawberry.ID, reason: str
     ) -> ShopAssemblyRequest:
-        raise NotImplementedError("rejectShopAssemblyRequest not yet implemented")
+        with SessionLocal() as session:
+            sar = shop_assembly_repository.reject_shop_assembly_request(
+                session, uuid.UUID(str(id)), reason
+            )
+            session.commit()
+            session.refresh(sar)
+            return _shop_assembly_request_to_type(sar)
 
     @strawberry.mutation
     def assign_openings(

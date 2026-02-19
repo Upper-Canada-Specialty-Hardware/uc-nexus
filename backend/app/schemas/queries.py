@@ -7,7 +7,7 @@ from sqlalchemy import select
 from app.database import SessionLocal
 from app.models.project import Project as ProjectModel
 from app.models.enums import POStatus as DBPOStatus
-from app.repositories import po_repository, warehouse_repository
+from app.repositories import po_repository, warehouse_repository, shop_assembly_repository
 from .enums import (
     POStatus,
     Classification,
@@ -32,10 +32,12 @@ from .types import (
     OpeningItemDetail,
     OpeningItemHardware as OpeningItemHardwareType,
     PullRequest,
+    PullRequestItem,
     ShipReadyItems,
     Notification,
     ShopAssemblyRequest,
     ShopAssemblyOpening,
+    ShopAssemblyOpeningItem,
     ReconciliationResult,
 )
 
@@ -193,6 +195,77 @@ def _opening_item_to_type(oi) -> OpeningItem:
         created_at=oi.created_at,
         updated_at=oi.updated_at,
         installed_hardware=[_opening_item_hardware_to_type(h) for h in oi.installed_hardware],
+    )
+
+
+def _shop_assembly_opening_item_to_type(item) -> ShopAssemblyOpeningItem:
+    return ShopAssemblyOpeningItem(
+        id=strawberry.ID(str(item.id)),
+        shop_assembly_opening_id=strawberry.ID(str(item.shop_assembly_opening_id)),
+        hardware_category=item.hardware_category,
+        product_code=item.product_code,
+        quantity=item.quantity,
+    )
+
+
+def _shop_assembly_opening_to_type(opening) -> ShopAssemblyOpening:
+    return ShopAssemblyOpening(
+        id=strawberry.ID(str(opening.id)),
+        shop_assembly_request_id=strawberry.ID(str(opening.shop_assembly_request_id)),
+        opening_id=strawberry.ID(str(opening.opening_id)),
+        pull_status=opening.pull_status,
+        assigned_to=opening.assigned_to,
+        assembly_status=opening.assembly_status,
+        completed_at=opening.completed_at,
+        items=[_shop_assembly_opening_item_to_type(i) for i in opening.items],
+    )
+
+
+def _shop_assembly_request_to_type(sar) -> ShopAssemblyRequest:
+    return ShopAssemblyRequest(
+        id=strawberry.ID(str(sar.id)),
+        request_number=sar.request_number,
+        project_id=strawberry.ID(str(sar.project_id)),
+        status=sar.status,
+        created_by=sar.created_by,
+        approved_by=sar.approved_by,
+        rejected_by=sar.rejected_by,
+        rejection_reason=sar.rejection_reason,
+        created_at=sar.created_at,
+        approved_at=sar.approved_at,
+        rejected_at=sar.rejected_at,
+        openings=[_shop_assembly_opening_to_type(o) for o in sar.openings],
+    )
+
+
+def _pull_request_item_to_type(item) -> PullRequestItem:
+    return PullRequestItem(
+        id=strawberry.ID(str(item.id)),
+        pull_request_id=strawberry.ID(str(item.pull_request_id)),
+        item_type=item.item_type,
+        opening_number=item.opening_number,
+        opening_item_id=strawberry.ID(str(item.opening_item_id)) if item.opening_item_id else None,
+        hardware_category=item.hardware_category,
+        product_code=item.product_code,
+        requested_quantity=item.requested_quantity,
+    )
+
+
+def _pull_request_to_type(pr) -> PullRequest:
+    return PullRequest(
+        id=strawberry.ID(str(pr.id)),
+        request_number=pr.request_number,
+        project_id=strawberry.ID(str(pr.project_id)),
+        source=pr.source,
+        status=pr.status,
+        requested_by=pr.requested_by,
+        assigned_to=pr.assigned_to,
+        created_at=pr.created_at,
+        updated_at=pr.updated_at,
+        approved_at=pr.approved_at,
+        completed_at=pr.completed_at,
+        cancelled_at=pr.cancelled_at,
+        items=[_pull_request_item_to_type(i) for i in pr.items],
     )
 
 
@@ -382,13 +455,21 @@ class Query:
         project_id: strawberry.ID,
         status: Optional[ShopAssemblyRequestStatus] = None,
     ) -> list[ShopAssemblyRequest]:
-        raise NotImplementedError("shopAssemblyRequests not yet implemented")
+        with SessionLocal() as session:
+            sars = shop_assembly_repository.get_shop_assembly_requests(
+                session, uuid.UUID(str(project_id)), status
+            )
+            return [_shop_assembly_request_to_type(sar) for sar in sars]
 
     @strawberry.field
     def assemble_list(
         self, project_id: strawberry.ID
     ) -> list[ShopAssemblyOpening]:
-        raise NotImplementedError("assembleList not yet implemented")
+        with SessionLocal() as session:
+            openings = shop_assembly_repository.get_assemble_list(
+                session, uuid.UUID(str(project_id))
+            )
+            return [_shop_assembly_opening_to_type(o) for o in openings]
 
     @strawberry.field
     def my_work(self, assigned_to: str) -> list[ShopAssemblyOpening]:

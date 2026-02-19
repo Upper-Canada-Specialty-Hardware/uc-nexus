@@ -184,3 +184,33 @@ export const CREATE_RECEIVE = gql`
     }
   }
 `;
+
+export const APPROVE_SHOP_ASSEMBLY_REQUEST = gql`
+  mutation ApproveShopAssemblyRequest($id: ID!) {
+    approveShopAssemblyRequest(id: $id) {
+      shopAssemblyRequest {
+        id requestNumber projectId status createdBy approvedBy rejectedBy rejectionReason createdAt approvedAt rejectedAt
+        openings {
+          id shopAssemblyRequestId openingId pullStatus assignedTo assemblyStatus completedAt
+          items { id shopAssemblyOpeningId hardwareCategory productCode quantity }
+        }
+      }
+      pullRequest {
+        id requestNumber projectId source status requestedBy createdAt updatedAt
+        items { id pullRequestId itemType openingNumber hardwareCategory productCode requestedQuantity }
+      }
+    }
+  }
+`;
+
+export const REJECT_SHOP_ASSEMBLY_REQUEST = gql`
+  mutation RejectShopAssemblyRequest($id: ID!, $reason: String!) {
+    rejectShopAssemblyRequest(id: $id, reason: $reason) {
+      id requestNumber projectId status createdBy approvedBy rejectedBy rejectionReason createdAt approvedAt rejectedAt
+      openings {
+        id shopAssemblyRequestId openingId pullStatus assignedTo assemblyStatus completedAt
+        items { id shopAssemblyOpeningId hardwareCategory productCode quantity }
+      }
+    }
+  }
+`;
