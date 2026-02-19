@@ -6,7 +6,7 @@ import strawberry
 from sqlalchemy import select
 
 from app.database import SessionLocal
-from app.repositories import po_repository, warehouse_repository, shop_assembly_repository, shipping_repository
+from app.repositories import po_repository, warehouse_repository, shop_assembly_repository, shipping_repository, notification_repository
 from .enums import POStatus, ApproveOutcome
 from .inputs import (
     FinalizeImportSessionInput,
@@ -493,7 +493,13 @@ class Mutation:
     # Notifications
     @strawberry.mutation
     def mark_notification_as_read(self, id: strawberry.ID) -> Notification:
-        raise NotImplementedError("markNotificationAsRead not yet implemented")
+        with SessionLocal() as session:
+            notification = notification_repository.mark_as_read(
+                session, uuid.UUID(str(id))
+            )
+            session.commit()
+            session.refresh(notification)
+            return _notification_to_type(notification)
 
     # Shop Assembly
     @strawberry.mutation

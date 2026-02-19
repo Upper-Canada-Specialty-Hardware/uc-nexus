@@ -426,3 +426,17 @@ export const RECONCILE_SCHEDULE = gql`
     }
   }
 `;
+
+export const GET_NOTIFICATIONS = gql`
+  query GetNotifications($projectId: ID!, $recipientRole: String!, $unreadOnly: Boolean, $limit: Int) {
+    notifications(projectId: $projectId, recipientRole: $recipientRole, unreadOnly: $unreadOnly, limit: $limit) {
+      id
+      projectId
+      recipientRole
+      type
+      message
+      isRead
+      createdAt
+    }
+  }
+`;

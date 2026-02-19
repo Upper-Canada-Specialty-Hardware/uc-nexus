@@ -16,7 +16,6 @@ import {
   Link,
   type SelectChangeEvent,
 } from '@mui/material';
-import NotificationsIcon from '@mui/icons-material/Notifications';
 import ShoppingCartIcon from '@mui/icons-material/ShoppingCart';
 import SwapHorizIcon from '@mui/icons-material/SwapHoriz';
 import NavigateNextIcon from '@mui/icons-material/NavigateNext';
@@ -26,6 +25,7 @@ import { useRole } from '../contexts/RoleContext';
 import { useProject, type Project } from '../contexts/ProjectContext';
 import { useWizard } from '../contexts/WizardContext';
 import { useCart } from '../contexts/CartContext';
+import NotificationBell from './NotificationBell';
 import ConfirmDialog from './ConfirmDialog';
 
 export default function AppLayout() {
@@ -111,11 +111,7 @@ export default function AppLayout() {
             </IconButton>
           )}
 
-          <IconButton color="inherit" sx={{ mr: 1 }}>
-            <Badge badgeContent={0} color="error">
-              <NotificationsIcon />
-            </Badge>
-          </IconButton>
+          <NotificationBell />
 
           <Button
             color="inherit"

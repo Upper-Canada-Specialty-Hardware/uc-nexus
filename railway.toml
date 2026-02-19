@@ -1,0 +1,31 @@
+[build]
+# Railway uses Nixpacks by default; override with Dockerfile per service
+# Configure each service in Railway dashboard:
+#
+# Backend service:
+#   - Root directory: backend
+#   - Dockerfile path: backend/Dockerfile
+#   - Port: 8000
+#   - Environment variables:
+#     DATABASE_URL (from Railway PostgreSQL plugin)
+#     S3_BUCKET
+#     S3_ACCESS_KEY_ID
+#     S3_SECRET_ACCESS_KEY
+#     S3_ENDPOINT_URL
+#
+# Frontend service:
+#   - Root directory: frontend
+#   - Dockerfile path: frontend/Dockerfile
+#   - Port: 80
+#   - Build args:
+#     VITE_GRAPHQL_URL=https://<backend-service-url>/graphql
+#
+# PostgreSQL:
+#   - Add PostgreSQL plugin via Railway dashboard
+#   - DATABASE_URL auto-injected into backend service
+
+[deploy]
+healthcheckPath = "/health"
+healthcheckTimeout = 300
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3

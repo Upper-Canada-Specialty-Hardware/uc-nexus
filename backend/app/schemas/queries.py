@@ -7,7 +7,7 @@ from sqlalchemy import select
 from app.database import SessionLocal
 from app.models.project import Project as ProjectModel
 from app.models.enums import POStatus as DBPOStatus
-from app.repositories import po_repository, warehouse_repository, shop_assembly_repository, shipping_repository
+from app.repositories import po_repository, warehouse_repository, shop_assembly_repository, shipping_repository, notification_repository
 from .enums import (
     POStatus,
     Classification,
@@ -545,7 +545,15 @@ class Query:
         unread_only: Optional[bool] = None,
         limit: int = 5,
     ) -> list[Notification]:
-        raise NotImplementedError("notifications not yet implemented")
+        with SessionLocal() as session:
+            results = notification_repository.get_notifications(
+                session,
+                uuid.UUID(str(project_id)),
+                recipient_role,
+                unread_only,
+                limit,
+            )
+            return [_notification_to_type(n) for n in results]
 
     @strawberry.field
     def shop_assembly_requests(

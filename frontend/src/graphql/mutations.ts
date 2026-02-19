@@ -369,3 +369,12 @@ export const FINALIZE_IMPORT_SESSION = gql`
     }
   }
 `;
+
+export const MARK_NOTIFICATION_AS_READ = gql`
+  mutation MarkNotificationAsRead($id: ID!) {
+    markNotificationAsRead(id: $id) {
+      id
+      isRead
+    }
+  }
+`;
