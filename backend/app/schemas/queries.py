@@ -1,3 +1,4 @@
+import uuid
 from typing import Optional
 
 import strawberry
@@ -5,8 +6,11 @@ from sqlalchemy import select
 
 from app.database import SessionLocal
 from app.models.project import Project as ProjectModel
+from app.models.enums import POStatus as DBPOStatus
+from app.repositories import po_repository
 from .enums import (
     POStatus,
+    Classification,
     PullRequestSource,
     PullRequestStatus,
     ShopAssemblyRequestStatus,
@@ -31,6 +35,63 @@ from .types import (
     ShopAssemblyOpening,
     ReconciliationResult,
 )
+
+
+def _po_line_item_to_type(li) -> POLineItem:
+    return POLineItem(
+        id=strawberry.ID(str(li.id)),
+        po_id=strawberry.ID(str(li.po_id)),
+        hardware_category=li.hardware_category,
+        product_code=li.product_code,
+        classification=li.classification,
+        ordered_quantity=li.ordered_quantity,
+        received_quantity=li.received_quantity,
+        unit_cost=float(li.unit_cost),
+        created_at=li.created_at,
+        updated_at=li.updated_at,
+    )
+
+
+def _receive_line_item_to_type(rli) -> ReceiveLineItem:
+    return ReceiveLineItem(
+        id=strawberry.ID(str(rli.id)),
+        receive_record_id=strawberry.ID(str(rli.receive_record_id)),
+        po_line_item_id=strawberry.ID(str(rli.po_line_item_id)),
+        hardware_category=rli.hardware_category,
+        product_code=rli.product_code,
+        quantity_received=rli.quantity_received,
+        created_at=rli.created_at,
+    )
+
+
+def _receive_record_to_type(rr) -> ReceiveRecord:
+    return ReceiveRecord(
+        id=strawberry.ID(str(rr.id)),
+        po_id=strawberry.ID(str(rr.po_id)),
+        received_at=rr.received_at,
+        received_by=rr.received_by,
+        created_at=rr.created_at,
+        line_items=[_receive_line_item_to_type(rli) for rli in rr.line_items],
+    )
+
+
+def _po_to_type(po, receive_records=None) -> PurchaseOrder:
+    return PurchaseOrder(
+        id=strawberry.ID(str(po.id)),
+        po_number=po.po_number,
+        project_id=strawberry.ID(str(po.project_id)),
+        status=po.status,
+        vendor_name=po.vendor_name,
+        vendor_contact=po.vendor_contact,
+        expected_delivery_date=po.expected_delivery_date,
+        ordered_at=po.ordered_at,
+        created_at=po.created_at,
+        updated_at=po.updated_at,
+        line_items=[_po_line_item_to_type(li) for li in po.line_items],
+        receive_records=[
+            _receive_record_to_type(rr) for rr in (receive_records or [])
+        ],
+    )
 
 
 def _project_to_type(p: ProjectModel) -> Project:
@@ -113,19 +174,59 @@ class Query:
     def purchase_orders(
         self, project_id: strawberry.ID, status: Optional[POStatus] = None
     ) -> list[PurchaseOrder]:
-        raise NotImplementedError("purchaseOrders not yet implemented")
+        with SessionLocal() as session:
+            pos = po_repository.get_purchase_orders(
+                session, uuid.UUID(str(project_id)), status
+            )
+            return [_po_to_type(po) for po in pos]
 
     @strawberry.field
     def purchase_order(self, id: strawberry.ID) -> Optional[PurchaseOrder]:
-        raise NotImplementedError("purchaseOrder not yet implemented")
+        with SessionLocal() as session:
+            po = po_repository.get_purchase_order(session, uuid.UUID(str(id)))
+            if po is None:
+                return None
+            receive_records = po_repository.get_receive_records_for_po(
+                session, po.id
+            )
+            return _po_to_type(po, receive_records)
 
     @strawberry.field
     def po_statistics(self, project_id: strawberry.ID) -> POStatistics:
-        raise NotImplementedError("poStatistics not yet implemented")
+        with SessionLocal() as session:
+            stats = po_repository.get_po_statistics(
+                session, uuid.UUID(str(project_id))
+            )
+            return POStatistics(
+                total=stats["total"],
+                draft=stats["draft"],
+                ordered=stats["ordered"],
+                partially_received=stats["partially_received"],
+                closed=stats["closed"],
+                cancelled=stats["cancelled"],
+            )
 
     @strawberry.field
     def open_p_os(self, project_id: strawberry.ID) -> list[PurchaseOrder]:
-        raise NotImplementedError("openPOs not yet implemented")
+        from sqlalchemy.orm import selectinload
+        from app.models.purchase_order import PurchaseOrder as POModel
+
+        with SessionLocal() as session:
+            stmt = (
+                select(POModel)
+                .options(selectinload(POModel.line_items))
+                .where(
+                    POModel.project_id == uuid.UUID(str(project_id)),
+                    POModel.deleted_at.is_(None),
+                    POModel.status.in_([
+                        DBPOStatus.ORDERED,
+                        DBPOStatus.PARTIALLY_RECEIVED,
+                    ]),
+                )
+                .order_by(POModel.ordered_at.asc())
+            )
+            pos = session.scalars(stmt).unique().all()
+            return [_po_to_type(po) for po in pos]
 
     @strawberry.field
     def po_receiving_details(self, po_id: strawberry.ID) -> PurchaseOrder:

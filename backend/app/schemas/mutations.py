@@ -1,8 +1,11 @@
+import uuid
 from typing import Optional
 from datetime import date
 
 import strawberry
 
+from app.database import SessionLocal
+from app.repositories import po_repository
 from .enums import POStatus
 from .inputs import (
     FinalizeImportSessionInput,
@@ -25,6 +28,7 @@ from .types import (
     ShopAssemblyRequest,
     ShopAssemblyOpening,
 )
+from .queries import _po_to_type
 
 
 @strawberry.type
@@ -45,15 +49,35 @@ class Mutation:
         vendor_contact: Optional[str] = None,
         expected_delivery_date: Optional[date] = None,
     ) -> PurchaseOrder:
-        raise NotImplementedError("updatePO not yet implemented")
+        with SessionLocal() as session:
+            po = po_repository.update_po(
+                session,
+                uuid.UUID(str(id)),
+                vendor_name,
+                vendor_contact,
+                expected_delivery_date,
+            )
+            session.commit()
+            session.refresh(po)
+            return _po_to_type(po)
 
     @strawberry.mutation
     def mark_po_as_ordered(self, id: strawberry.ID) -> PurchaseOrder:
-        raise NotImplementedError("markPOAsOrdered not yet implemented")
+        with SessionLocal() as session:
+            po = po_repository.mark_po_as_ordered(
+                session, uuid.UUID(str(id))
+            )
+            session.commit()
+            session.refresh(po)
+            return _po_to_type(po)
 
     @strawberry.mutation
     def cancel_po(self, id: strawberry.ID) -> PurchaseOrder:
-        raise NotImplementedError("cancelPO not yet implemented")
+        with SessionLocal() as session:
+            po = po_repository.cancel_po(session, uuid.UUID(str(id)))
+            session.commit()
+            session.refresh(po)
+            return _po_to_type(po)
 
     # Warehouse - Receiving
     @strawberry.mutation
