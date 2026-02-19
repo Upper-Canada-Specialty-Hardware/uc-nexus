@@ -296,3 +296,61 @@ export const GET_ASSEMBLE_LIST = gql`
     }
   }
 `;
+
+export const GET_PULL_REQUESTS = gql`
+  query GetPullRequests($projectId: ID!, $source: PullRequestSource, $status: PullRequestStatus) {
+    pullRequests(projectId: $projectId, source: $source, status: $status) {
+      id
+      requestNumber
+      projectId
+      source
+      status
+      requestedBy
+      assignedTo
+      createdAt
+      updatedAt
+      approvedAt
+      completedAt
+      cancelledAt
+      items {
+        id
+        pullRequestId
+        itemType
+        openingNumber
+        openingItemId
+        hardwareCategory
+        productCode
+        requestedQuantity
+      }
+    }
+  }
+`;
+
+export const GET_PULL_REQUEST_DETAILS = gql`
+  query GetPullRequestDetails($id: ID!) {
+    pullRequestDetails(id: $id) {
+      id
+      requestNumber
+      projectId
+      source
+      status
+      requestedBy
+      assignedTo
+      createdAt
+      updatedAt
+      approvedAt
+      completedAt
+      cancelledAt
+      items {
+        id
+        pullRequestId
+        itemType
+        openingNumber
+        openingItemId
+        hardwareCategory
+        productCode
+        requestedQuantity
+      }
+    }
+  }
+`;

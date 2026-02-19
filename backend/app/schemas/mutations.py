@@ -3,10 +3,11 @@ from typing import Optional
 from datetime import date
 
 import strawberry
+from sqlalchemy import select
 
 from app.database import SessionLocal
 from app.repositories import po_repository, warehouse_repository, shop_assembly_repository
-from .enums import POStatus
+from .enums import POStatus, ApproveOutcome
 from .inputs import (
     FinalizeImportSessionInput,
     CreateReceiveInput,
@@ -35,6 +36,7 @@ from .queries import (
     _receive_record_to_type,
     _shop_assembly_request_to_type,
     _pull_request_to_type,
+    _notification_to_type,
 )
 
 
@@ -130,11 +132,38 @@ class Mutation:
     def approve_pull_request(
         self, id: strawberry.ID, approved_by: str
     ) -> ApproveResult:
-        raise NotImplementedError("approvePullRequest not yet implemented")
+        with SessionLocal() as session:
+            pr, outcome, notification = warehouse_repository.approve_pull_request(
+                session, uuid.UUID(str(id)), approved_by
+            )
+            session.commit()
+            session.refresh(pr)
+            # Re-load items since refresh might not load them
+            from sqlalchemy.orm import selectinload
+            from app.models.pull_request import PullRequest as PRModel
+            stmt = select(PRModel).options(selectinload(PRModel.items)).where(PRModel.id == pr.id)
+            pr = session.scalars(stmt).unique().first()
+
+            return ApproveResult(
+                pull_request=_pull_request_to_type(pr),
+                outcome=ApproveOutcome.APPROVED if outcome == "APPROVED" else ApproveOutcome.CANCELLED,
+                notification=_notification_to_type(notification) if notification else None,
+            )
 
     @strawberry.mutation
     def complete_pull_request(self, id: strawberry.ID) -> PullRequest:
-        raise NotImplementedError("completePullRequest not yet implemented")
+        with SessionLocal() as session:
+            pr = warehouse_repository.complete_pull_request(
+                session, uuid.UUID(str(id))
+            )
+            session.commit()
+            session.refresh(pr)
+            # Re-load items since refresh might not load them
+            from sqlalchemy.orm import selectinload
+            from app.models.pull_request import PullRequest as PRModel
+            stmt = select(PRModel).options(selectinload(PRModel.items)).where(PRModel.id == pr.id)
+            pr = session.scalars(stmt).unique().first()
+            return _pull_request_to_type(pr)
 
     # Warehouse - Shipping
     @strawberry.mutation

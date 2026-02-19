@@ -5,15 +5,24 @@ import uuid
 from collections import defaultdict
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, or_, and_
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.opening_item import OpeningItem as OpeningItemModel
 from app.models.purchase_order import PurchaseOrder as POModel, POLineItem as POLineItemModel
 from app.models.receiving import ReceiveRecord as ReceiveRecordModel, ReceiveLineItem as ReceiveLineItemModel
-from app.models.enums import POStatus
-from app.errors import NotFoundError, ValidationError, InvalidStateTransitionError
+from app.models.pull_request import PullRequest as PullRequestModel, PullRequestItem as PullRequestItemModel
+from app.models.shop_assembly import ShopAssemblyRequest as SARModel, ShopAssemblyOpening as SAOModel
+from app.models.notification import Notification as NotificationModel
+from app.models.enums import (
+    POStatus,
+    PullRequestStatus, PullRequestSource, PullRequestItemType,
+    PullStatus, OpeningItemState, NotificationType,
+)
+from app.services.locking import lock_rows
+from app.services import notification_service
+from app.errors import NotFoundError, ValidationError, InvalidStateTransitionError, ConflictError
 
 
 def get_inventory_hierarchy(session: Session, project_id: uuid.UUID) -> list[dict]:
@@ -458,3 +467,236 @@ def get_po_receiving_details(
     receive_records = list(session.scalars(rr_stmt).unique().all())
 
     return (po, receive_records)
+
+
+# ---------------------------------------------------------------------------
+# Pull Request functions
+# ---------------------------------------------------------------------------
+
+
+def get_pull_requests(
+    session: Session,
+    project_id: uuid.UUID,
+    source=None,
+    status=None,
+) -> list[PullRequestModel]:
+    """
+    Query PullRequest WHERE project_id AND deleted_at IS NULL.
+    Optional source filter, optional status filter.
+    Order by created_at ASC (FIFO — oldest first).
+    Eagerly load items (PullRequestItem).
+    """
+    stmt = (
+        select(PullRequestModel)
+        .options(selectinload(PullRequestModel.items))
+        .where(
+            PullRequestModel.project_id == project_id,
+            PullRequestModel.deleted_at.is_(None),
+        )
+    )
+    if source is not None:
+        stmt = stmt.where(PullRequestModel.source == source)
+    if status is not None:
+        stmt = stmt.where(PullRequestModel.status == status)
+    stmt = stmt.order_by(PullRequestModel.created_at.asc())
+    return list(session.scalars(stmt).unique().all())
+
+
+def get_pull_request_details(
+    session: Session, pr_id: uuid.UUID
+) -> PullRequestModel:
+    """
+    Single PullRequest by ID, deleted_at IS NULL.
+    Eagerly load items.
+    Raise NotFoundError if not found.
+    """
+    stmt = (
+        select(PullRequestModel)
+        .options(selectinload(PullRequestModel.items))
+        .where(
+            PullRequestModel.id == pr_id,
+            PullRequestModel.deleted_at.is_(None),
+        )
+    )
+    pr = session.scalars(stmt).unique().first()
+    if pr is None:
+        raise NotFoundError(f"Pull request {pr_id} not found")
+    return pr
+
+
+def approve_pull_request(
+    session: Session, pr_id: uuid.UUID, approved_by: str
+) -> tuple:
+    """
+    Approve a pull request with pessimistic locking and FIFO inventory deduction.
+
+    Returns tuple: (pr, outcome_string, notification_or_none)
+    where outcome_string is "APPROVED" or "CANCELLED".
+    """
+    # 1. Lock PR
+    locked_prs = lock_rows(session, PullRequestModel, [pr_id])
+    if not locked_prs:
+        raise NotFoundError(f"Pull request {pr_id} not found")
+    pr = locked_prs[0]
+
+    if pr.status != PullRequestStatus.PENDING:
+        raise InvalidStateTransitionError(
+            f"Pull request must be Pending to approve, got {pr.status.value}"
+        )
+
+    # 2. Gather inventory needs from Loose items
+    needed_combos: dict[tuple[str, str], int] = defaultdict(int)
+    opening_item_ids: list[uuid.UUID] = []
+
+    for item in pr.items:
+        if item.item_type == PullRequestItemType.LOOSE:
+            key = (item.hardware_category, item.product_code)
+            needed_combos[key] += item.requested_quantity
+        elif item.item_type == PullRequestItemType.OPENING_ITEM:
+            if item.opening_item_id is not None:
+                opening_item_ids.append(item.opening_item_id)
+
+    # 3. Lock inventory rows
+    now = datetime.utcnow()
+
+    if needed_combos:
+        conditions = [
+            and_(
+                InventoryLocationModel.hardware_category == cat,
+                InventoryLocationModel.product_code == code,
+            )
+            for (cat, code) in needed_combos.keys()
+        ]
+        stmt = (
+            select(InventoryLocationModel)
+            .where(
+                InventoryLocationModel.project_id == pr.project_id,
+                or_(*conditions),
+            )
+            .with_for_update()
+            .order_by(InventoryLocationModel.id)
+        )
+        locked_inventory = list(session.scalars(stmt).all())
+    else:
+        locked_inventory = []
+
+    # 4. Check sufficiency
+    insufficient = False
+    if needed_combos:
+        # Group locked inventory by (cat, code)
+        inv_by_combo: dict[tuple[str, str], list] = defaultdict(list)
+        for il in locked_inventory:
+            key = (il.hardware_category, il.product_code)
+            inv_by_combo[key].append(il)
+
+        for (cat, code), requested in needed_combos.items():
+            available = sum(il.quantity for il in inv_by_combo.get((cat, code), []))
+            if available < requested:
+                insufficient = True
+                break
+
+    # 5. If insufficient: cancel
+    if insufficient:
+        pr.status = PullRequestStatus.CANCELLED
+        pr.cancelled_at = now
+
+        notif = notification_service.create_notification(
+            session,
+            project_id=pr.project_id,
+            recipient_role=pr.requested_by,
+            notification_type=NotificationType.PULL_REQUEST_CANCELLED,
+            message=f"Pull Request {pr.request_number} was cancelled due to insufficient inventory.",
+        )
+        return (pr, "CANCELLED", notif)
+
+    # 6. If sufficient: approve and deduct FIFO
+    pr.status = PullRequestStatus.IN_PROGRESS
+    pr.assigned_to = approved_by
+    pr.approved_at = now
+
+    if needed_combos:
+        # Group locked inventory by (cat, code)
+        inv_by_combo: dict[tuple[str, str], list] = defaultdict(list)
+        for il in locked_inventory:
+            key = (il.hardware_category, il.product_code)
+            inv_by_combo[key].append(il)
+
+        for (cat, code), requested in needed_combos.items():
+            # Sort by received_at ASC (oldest first) for FIFO
+            rows = sorted(inv_by_combo.get((cat, code), []), key=lambda r: r.received_at)
+            remaining = requested
+            for row in rows:
+                if remaining <= 0:
+                    break
+                deduct = min(remaining, row.quantity)
+                row.quantity -= deduct
+                remaining -= deduct
+
+    # 7. Lock Opening_Item rows if any
+    if opening_item_ids:
+        lock_rows(session, OpeningItemModel, opening_item_ids)
+
+    return (pr, "APPROVED", None)
+
+
+def complete_pull_request(
+    session: Session, pr_id: uuid.UUID
+) -> PullRequestModel:
+    """
+    Complete a pull request:
+    1. Validate status == In_Progress
+    2. Set status=Completed, completed_at=now()
+    3. Create notification
+    4. If Shipping_Out source: set Opening_Item states to Ship_Ready
+    5. If Shop_Assembly source: update SAR openings pull_status to Pulled
+    """
+    stmt = (
+        select(PullRequestModel)
+        .options(selectinload(PullRequestModel.items))
+        .where(PullRequestModel.id == pr_id)
+    )
+    pr = session.scalars(stmt).unique().first()
+    if pr is None:
+        raise NotFoundError(f"Pull request {pr_id} not found")
+
+    if pr.status != PullRequestStatus.IN_PROGRESS:
+        raise InvalidStateTransitionError(
+            f"Pull request must be In_Progress to complete, got {pr.status.value}"
+        )
+
+    now = datetime.utcnow()
+    pr.status = PullRequestStatus.COMPLETED
+    pr.completed_at = now
+
+    # Create notification
+    notification_service.create_notification(
+        session,
+        project_id=pr.project_id,
+        recipient_role=pr.requested_by,
+        notification_type=NotificationType.PULL_REQUEST_COMPLETED,
+        message=f"Pull Request {pr.request_number} has been fulfilled.",
+    )
+
+    # Source-specific side effects
+    if pr.source == PullRequestSource.SHIPPING_OUT:
+        # For each Opening_Item item, set the OpeningItem state to Ship_Ready
+        for item in pr.items:
+            if item.item_type == PullRequestItemType.OPENING_ITEM and item.opening_item_id is not None:
+                oi = session.get(OpeningItemModel, item.opening_item_id)
+                if oi is not None:
+                    oi.state = OpeningItemState.SHIP_READY
+
+    elif pr.source == PullRequestSource.SHOP_ASSEMBLY:
+        # Extract SAR request_number from PR number (strip "PR-" prefix)
+        sar_request_number = pr.request_number.replace("PR-", "", 1)
+        sar_stmt = (
+            select(SARModel)
+            .options(selectinload(SARModel.openings))
+            .where(SARModel.request_number == sar_request_number)
+        )
+        sar = session.scalars(sar_stmt).unique().first()
+        if sar is not None:
+            for opening in sar.openings:
+                opening.pull_status = PullStatus.PULLED
+
+    return pr

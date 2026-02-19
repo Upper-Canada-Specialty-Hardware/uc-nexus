@@ -214,3 +214,29 @@ export const REJECT_SHOP_ASSEMBLY_REQUEST = gql`
     }
   }
 `;
+
+export const APPROVE_PULL_REQUEST = gql`
+  mutation ApprovePullRequest($id: ID!, $approvedBy: String!) {
+    approvePullRequest(id: $id, approvedBy: $approvedBy) {
+      pullRequest {
+        id requestNumber projectId source status requestedBy assignedTo
+        createdAt updatedAt approvedAt completedAt cancelledAt
+        items { id pullRequestId itemType openingNumber openingItemId hardwareCategory productCode requestedQuantity }
+      }
+      outcome
+      notification {
+        id projectId recipientRole type message isRead createdAt
+      }
+    }
+  }
+`;
+
+export const COMPLETE_PULL_REQUEST = gql`
+  mutation CompletePullRequest($id: ID!) {
+    completePullRequest(id: $id) {
+      id requestNumber projectId source status requestedBy assignedTo
+      createdAt updatedAt approvedAt completedAt cancelledAt
+      items { id pullRequestId itemType openingNumber openingItemId hardwareCategory productCode requestedQuantity }
+    }
+  }
+`;

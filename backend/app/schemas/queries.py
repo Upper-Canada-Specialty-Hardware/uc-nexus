@@ -269,6 +269,18 @@ def _pull_request_to_type(pr) -> PullRequest:
     )
 
 
+def _notification_to_type(n) -> Notification:
+    return Notification(
+        id=strawberry.ID(str(n.id)),
+        project_id=strawberry.ID(str(n.project_id)),
+        recipient_role=n.recipient_role,
+        type=n.type,
+        message=n.message,
+        is_read=n.is_read,
+        created_at=n.created_at,
+    )
+
+
 @strawberry.type
 class Query:
     @strawberry.field
@@ -429,11 +441,19 @@ class Query:
         source: Optional[PullRequestSource] = None,
         status: Optional[PullRequestStatus] = None,
     ) -> list[PullRequest]:
-        raise NotImplementedError("pullRequests not yet implemented")
+        with SessionLocal() as session:
+            prs = warehouse_repository.get_pull_requests(
+                session, uuid.UUID(str(project_id)), source, status
+            )
+            return [_pull_request_to_type(pr) for pr in prs]
 
     @strawberry.field
     def pull_request_details(self, id: strawberry.ID) -> PullRequest:
-        raise NotImplementedError("pullRequestDetails not yet implemented")
+        with SessionLocal() as session:
+            pr = warehouse_repository.get_pull_request_details(
+                session, uuid.UUID(str(id))
+            )
+            return _pull_request_to_type(pr)
 
     @strawberry.field
     def ship_ready_items(self, project_id: strawberry.ID) -> ShipReadyItems:
