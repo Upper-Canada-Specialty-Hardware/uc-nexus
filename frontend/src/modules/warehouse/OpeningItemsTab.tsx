@@ -12,11 +12,14 @@ import {
   TableHead,
   TableRow,
   Paper,
+  Button,
 } from '@mui/material';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useQuery, useLazyQuery } from '@apollo/client/react';
 import { GET_OPENING_ITEMS, GET_OPENING_ITEM_DETAILS } from '../../graphql/queries';
 import Modal from '../../components/Modal';
+import { useRole } from '../../contexts/RoleContext';
+import InventoryCorrectionModal from '../admin/InventoryCorrectionModal';
 
 interface InstalledHardware {
   id: string;
@@ -107,9 +110,15 @@ function OpeningItemDetailModal({
   onClose: () => void;
   itemId: string | null;
 }) {
+  const { role } = useRole();
+  const isAdmin = role === 'Admin/Manager';
+
   const [fetchDetails, { data, loading, error }] = useLazyQuery<{
     openingItemDetails: OpeningItemDetails;
   }>(GET_OPENING_ITEM_DETAILS);
+
+  // Correction modal state
+  const [correctionOpen, setCorrectionOpen] = useState(false);
 
   // Fetch details when itemId changes and modal is open
   useEffect(() => {
@@ -122,103 +131,133 @@ function OpeningItemDetailModal({
   const openingItem = details?.openingItem;
   const hardware = details?.installedHardware ?? [];
 
-  return (
-    <Modal title="Opening Item Details" open={open} onClose={onClose}>
-      {loading && (
-        <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
-          <CircularProgress />
-        </Box>
-      )}
-      {error && <Alert severity="error">Error loading details: {error.message}</Alert>}
-      {openingItem && !loading && (
-        <Box>
-          <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 2, mb: 3 }}>
-            <Box>
-              <Typography variant="subtitle2" color="text.secondary">
-                Opening Number
-              </Typography>
-              <Typography>{openingItem.openingNumber}</Typography>
-            </Box>
-            <Box>
-              <Typography variant="subtitle2" color="text.secondary">
-                State
-              </Typography>
-              <Chip
-                label={getStateDisplay(openingItem.state).label}
-                color={getStateDisplay(openingItem.state).color}
-                size="small"
-              />
-            </Box>
-            <Box>
-              <Typography variant="subtitle2" color="text.secondary">
-                Building
-              </Typography>
-              <Typography>{openingItem.building ?? '—'}</Typography>
-            </Box>
-            <Box>
-              <Typography variant="subtitle2" color="text.secondary">
-                Floor
-              </Typography>
-              <Typography>{openingItem.floor ?? '—'}</Typography>
-            </Box>
-            <Box>
-              <Typography variant="subtitle2" color="text.secondary">
-                Location
-              </Typography>
-              <Typography>{openingItem.location ?? '—'}</Typography>
-            </Box>
-            <Box>
-              <Typography variant="subtitle2" color="text.secondary">
-                Assembly Completion Date
-              </Typography>
-              <Typography>{formatDate(openingItem.assemblyCompletedAt)}</Typography>
-            </Box>
-            <Box>
-              <Typography variant="subtitle2" color="text.secondary">
-                Warehouse Location
-              </Typography>
-              <Typography>
-                {formatLocation(openingItem.shelf, openingItem.column, openingItem.row)}
-              </Typography>
-            </Box>
-            <Box>
-              <Typography variant="subtitle2" color="text.secondary">
-                Quantity
-              </Typography>
-              <Typography>{openingItem.quantity}</Typography>
-            </Box>
-          </Box>
+  const handleCorrectionSuccess = useCallback(() => {
+    if (itemId) {
+      fetchDetails({ variables: { id: itemId } });
+    }
+  }, [fetchDetails, itemId]);
 
-          <Typography variant="h6" sx={{ mb: 1 }}>
-            Installed Hardware
-          </Typography>
-          {hardware.length === 0 ? (
-            <Typography color="text.secondary">No installed hardware</Typography>
-          ) : (
-            <TableContainer component={Paper} variant="outlined">
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Product Code</TableCell>
-                    <TableCell>Hardware Category</TableCell>
-                    <TableCell align="right">Quantity</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {hardware.map((hw) => (
-                    <TableRow key={hw.id}>
-                      <TableCell>{hw.productCode}</TableCell>
-                      <TableCell>{hw.hardwareCategory}</TableCell>
-                      <TableCell align="right">{hw.quantity}</TableCell>
+  return (
+    <>
+      <Modal title="Opening Item Details" open={open} onClose={onClose}>
+        {loading && (
+          <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
+            <CircularProgress />
+          </Box>
+        )}
+        {error && <Alert severity="error">Error loading details: {error.message}</Alert>}
+        {openingItem && !loading && (
+          <Box>
+            <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 2, mb: 3 }}>
+              <Box>
+                <Typography variant="subtitle2" color="text.secondary">
+                  Opening Number
+                </Typography>
+                <Typography>{openingItem.openingNumber}</Typography>
+              </Box>
+              <Box>
+                <Typography variant="subtitle2" color="text.secondary">
+                  State
+                </Typography>
+                <Chip
+                  label={getStateDisplay(openingItem.state).label}
+                  color={getStateDisplay(openingItem.state).color}
+                  size="small"
+                />
+              </Box>
+              <Box>
+                <Typography variant="subtitle2" color="text.secondary">
+                  Building
+                </Typography>
+                <Typography>{openingItem.building ?? '—'}</Typography>
+              </Box>
+              <Box>
+                <Typography variant="subtitle2" color="text.secondary">
+                  Floor
+                </Typography>
+                <Typography>{openingItem.floor ?? '—'}</Typography>
+              </Box>
+              <Box>
+                <Typography variant="subtitle2" color="text.secondary">
+                  Location
+                </Typography>
+                <Typography>{openingItem.location ?? '—'}</Typography>
+              </Box>
+              <Box>
+                <Typography variant="subtitle2" color="text.secondary">
+                  Assembly Completion Date
+                </Typography>
+                <Typography>{formatDate(openingItem.assemblyCompletedAt)}</Typography>
+              </Box>
+              <Box>
+                <Typography variant="subtitle2" color="text.secondary">
+                  Warehouse Location
+                </Typography>
+                <Typography>
+                  {formatLocation(openingItem.shelf, openingItem.column, openingItem.row)}
+                </Typography>
+              </Box>
+              <Box>
+                <Typography variant="subtitle2" color="text.secondary">
+                  Quantity
+                </Typography>
+                <Typography>{openingItem.quantity}</Typography>
+              </Box>
+            </Box>
+
+            {isAdmin && (
+              <Box sx={{ mb: 3 }}>
+                <Button
+                  variant="outlined"
+                  size="small"
+                  onClick={() => setCorrectionOpen(true)}
+                >
+                  Correction
+                </Button>
+              </Box>
+            )}
+
+            <Typography variant="h6" sx={{ mb: 1 }}>
+              Installed Hardware
+            </Typography>
+            {hardware.length === 0 ? (
+              <Typography color="text.secondary">No installed hardware</Typography>
+            ) : (
+              <TableContainer component={Paper} variant="outlined">
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Product Code</TableCell>
+                      <TableCell>Hardware Category</TableCell>
+                      <TableCell align="right">Quantity</TableCell>
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </TableContainer>
-          )}
-        </Box>
+                  </TableHead>
+                  <TableBody>
+                    {hardware.map((hw) => (
+                      <TableRow key={hw.id}>
+                        <TableCell>{hw.productCode}</TableCell>
+                        <TableCell>{hw.hardwareCategory}</TableCell>
+                        <TableCell align="right">{hw.quantity}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            )}
+          </Box>
+        )}
+      </Modal>
+
+      {openingItem && (
+        <InventoryCorrectionModal
+          open={correctionOpen}
+          onClose={() => setCorrectionOpen(false)}
+          itemType="opening"
+          item={openingItem}
+          onSuccess={handleCorrectionSuccess}
+        />
       )}
-    </Modal>
+    </>
   );
 }
 

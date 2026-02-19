@@ -5,7 +5,7 @@ from datetime import date
 import strawberry
 
 from app.database import SessionLocal
-from app.repositories import po_repository
+from app.repositories import po_repository, warehouse_repository
 from .enums import POStatus
 from .inputs import (
     FinalizeImportSessionInput,
@@ -28,7 +28,7 @@ from .types import (
     ShopAssemblyRequest,
     ShopAssemblyOpening,
 )
-from .queries import _po_to_type
+from .queries import _po_to_type, _inventory_location_to_type, _opening_item_to_type, _receive_record_to_type
 
 
 @strawberry.type
@@ -82,7 +82,41 @@ class Mutation:
     # Warehouse - Receiving
     @strawberry.mutation
     def create_receive(self, input: CreateReceiveInput) -> ReceiveRecord:
-        raise NotImplementedError("createReceive not yet implemented")
+        po_id = uuid.UUID(str(input.po_id))
+        received_by = input.received_by
+        line_items_data = [
+            {
+                "po_line_item_id": uuid.UUID(str(li.po_line_item_id)),
+                "quantity_received": li.quantity_received,
+                "locations": [
+                    {
+                        "shelf": loc.shelf,
+                        "column": loc.column,
+                        "row": loc.row,
+                        "quantity": loc.quantity,
+                    }
+                    for loc in li.locations
+                ],
+            }
+            for li in input.line_items
+        ]
+        with SessionLocal() as session:
+            receive_record = warehouse_repository.create_receive(
+                session, po_id, received_by, line_items_data
+            )
+            session.commit()
+            session.refresh(receive_record)
+            # Eagerly load line_items for the response
+            from sqlalchemy.orm import selectinload
+            from sqlalchemy import select
+            from app.models.receiving import ReceiveRecord as ReceiveRecordModel
+            stmt = (
+                select(ReceiveRecordModel)
+                .options(selectinload(ReceiveRecordModel.line_items))
+                .where(ReceiveRecordModel.id == receive_record.id)
+            )
+            receive_record = session.scalars(stmt).unique().first()
+            return _receive_record_to_type(receive_record)
 
     # Warehouse - Pull Requests
     @strawberry.mutation
@@ -105,7 +139,13 @@ class Mutation:
     def adjust_inventory_quantity(
         self, inventory_location_id: strawberry.ID, adjustment: int, reason: str
     ) -> InventoryLocation:
-        raise NotImplementedError("adjustInventoryQuantity not yet implemented")
+        with SessionLocal() as session:
+            result = warehouse_repository.adjust_inventory_quantity(
+                session, uuid.UUID(str(inventory_location_id)), adjustment, reason
+            )
+            session.commit()
+            session.refresh(result)
+            return _inventory_location_to_type(result)
 
     @strawberry.mutation
     def move_inventory_location(
@@ -115,13 +155,25 @@ class Mutation:
         new_column: str,
         new_row: str,
     ) -> InventoryLocation:
-        raise NotImplementedError("moveInventoryLocation not yet implemented")
+        with SessionLocal() as session:
+            result = warehouse_repository.move_inventory_location(
+                session, uuid.UUID(str(inventory_location_id)), new_shelf, new_column, new_row
+            )
+            session.commit()
+            session.refresh(result)
+            return _inventory_location_to_type(result)
 
     @strawberry.mutation
     def mark_inventory_unlocated(
         self, inventory_location_id: strawberry.ID
     ) -> InventoryLocation:
-        raise NotImplementedError("markInventoryUnlocated not yet implemented")
+        with SessionLocal() as session:
+            result = warehouse_repository.mark_inventory_unlocated(
+                session, uuid.UUID(str(inventory_location_id))
+            )
+            session.commit()
+            session.refresh(result)
+            return _inventory_location_to_type(result)
 
     @strawberry.mutation
     def assign_inventory_location(
@@ -131,7 +183,13 @@ class Mutation:
         column: str,
         row: str,
     ) -> InventoryLocation:
-        raise NotImplementedError("assignInventoryLocation not yet implemented")
+        with SessionLocal() as session:
+            result = warehouse_repository.assign_inventory_location(
+                session, uuid.UUID(str(inventory_location_id)), shelf, column, row
+            )
+            session.commit()
+            session.refresh(result)
+            return _inventory_location_to_type(result)
 
     @strawberry.mutation
     def move_opening_item_location(
@@ -141,13 +199,25 @@ class Mutation:
         column: str,
         row: str,
     ) -> OpeningItem:
-        raise NotImplementedError("moveOpeningItemLocation not yet implemented")
+        with SessionLocal() as session:
+            result = warehouse_repository.move_opening_item_location(
+                session, uuid.UUID(str(opening_item_id)), shelf, column, row
+            )
+            session.commit()
+            session.refresh(result)
+            return _opening_item_to_type(result)
 
     @strawberry.mutation
     def mark_opening_item_unlocated(
         self, opening_item_id: strawberry.ID
     ) -> OpeningItem:
-        raise NotImplementedError("markOpeningItemUnlocated not yet implemented")
+        with SessionLocal() as session:
+            result = warehouse_repository.mark_opening_item_unlocated(
+                session, uuid.UUID(str(opening_item_id))
+            )
+            session.commit()
+            session.refresh(result)
+            return _opening_item_to_type(result)
 
     @strawberry.mutation
     def assign_opening_item_location(
@@ -157,7 +227,13 @@ class Mutation:
         column: str,
         row: str,
     ) -> OpeningItem:
-        raise NotImplementedError("assignOpeningItemLocation not yet implemented")
+        with SessionLocal() as session:
+            result = warehouse_repository.assign_opening_item_location(
+                session, uuid.UUID(str(opening_item_id)), shelf, column, row
+            )
+            session.commit()
+            session.refresh(result)
+            return _opening_item_to_type(result)
 
     # Notifications
     @strawberry.mutation

@@ -12,11 +12,14 @@ import {
   AccordionDetails,
   CircularProgress,
   Alert,
+  Button,
 } from '@mui/material';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useQuery, useLazyQuery } from '@apollo/client/react';
 import { GET_INVENTORY_HIERARCHY, GET_INVENTORY_ITEMS } from '../../graphql/queries';
+import { useRole } from '../../contexts/RoleContext';
+import InventoryCorrectionModal from '../admin/InventoryCorrectionModal';
 
 interface InventoryItem {
   id: string;
@@ -68,7 +71,7 @@ function formatDate(dateStr: string | null): string {
   return new Date(dateStr).toLocaleDateString();
 }
 
-const detailColumns: GridColDef[] = [
+const baseDetailColumns: GridColDef[] = [
   { field: 'productCode', headerName: 'Product Code', flex: 1 },
   { field: 'hardwareCategory', headerName: 'Hardware Category', flex: 1 },
   { field: 'quantity', headerName: 'Quantity', flex: 0.5, type: 'number' },
@@ -104,11 +107,18 @@ function ProductCodeDetail({
   productCode: string;
   totalQuantity: number;
 }) {
+  const { role } = useRole();
+  const isAdmin = role === 'Admin/Manager';
+
   const [expanded, setExpanded] = useState(false);
   const hasFetched = useRef(false);
   const [fetchItems, { data, loading, error }] = useLazyQuery<{
     inventoryItems: InventoryItemDetail[];
   }>(GET_INVENTORY_ITEMS);
+
+  // Correction modal state
+  const [correctionItem, setCorrectionItem] = useState<InventoryItem | null>(null);
+  const [correctionOpen, setCorrectionOpen] = useState(false);
 
   const handleExpand = useCallback(
     (_event: React.SyntheticEvent, isExpanded: boolean) => {
@@ -132,42 +142,90 @@ function ProductCodeDetail({
     [data],
   );
 
+  const detailColumns = useMemo(() => {
+    if (!isAdmin) return baseDetailColumns;
+    return [
+      ...baseDetailColumns,
+      {
+        field: 'actions',
+        headerName: 'Actions',
+        flex: 0.7,
+        sortable: false,
+        filterable: false,
+        renderCell: (params: { row: InventoryItemDetail }) => (
+          <Button
+            size="small"
+            variant="outlined"
+            onClick={(e) => {
+              e.stopPropagation();
+              setCorrectionItem(params.row.inventoryLocation);
+              setCorrectionOpen(true);
+            }}
+          >
+            Correction
+          </Button>
+        ),
+      } satisfies GridColDef,
+    ];
+  }, [isAdmin]);
+
+  const handleCorrectionSuccess = useCallback(() => {
+    fetchItems({
+      variables: { projectId, category, productCode },
+    });
+  }, [fetchItems, projectId, category, productCode]);
+
   return (
-    <Accordion expanded={expanded} onChange={handleExpand} sx={{ ml: 2 }}>
-      <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-        <Typography sx={{ fontWeight: 500 }}>
-          {productCode}
-        </Typography>
-        <Typography sx={{ ml: 2, color: 'text.secondary' }}>
-          — Qty: {totalQuantity}
-        </Typography>
-      </AccordionSummary>
-      <AccordionDetails>
-        {loading && (
-          <Box sx={{ display: 'flex', justifyContent: 'center', py: 2 }}>
-            <CircularProgress size={24} />
-          </Box>
-        )}
-        {error && <Alert severity="error">Error loading items: {error.message}</Alert>}
-        {!loading && !error && rows.length === 0 && (
-          <Typography color="text.secondary">No items found</Typography>
-        )}
-        {!loading && rows.length > 0 && (
-          <Box sx={{ height: 300, width: '100%' }}>
-            <DataGrid
-              rows={rows}
-              columns={detailColumns}
-              pageSizeOptions={[5, 10, 25]}
-              initialState={{
-                pagination: { paginationModel: { pageSize: 5 } },
-              }}
-              disableRowSelectionOnClick
-              density="compact"
-            />
-          </Box>
-        )}
-      </AccordionDetails>
-    </Accordion>
+    <>
+      <Accordion expanded={expanded} onChange={handleExpand} sx={{ ml: 2 }}>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+          <Typography sx={{ fontWeight: 500 }}>
+            {productCode}
+          </Typography>
+          <Typography sx={{ ml: 2, color: 'text.secondary' }}>
+            — Qty: {totalQuantity}
+          </Typography>
+        </AccordionSummary>
+        <AccordionDetails>
+          {loading && (
+            <Box sx={{ display: 'flex', justifyContent: 'center', py: 2 }}>
+              <CircularProgress size={24} />
+            </Box>
+          )}
+          {error && <Alert severity="error">Error loading items: {error.message}</Alert>}
+          {!loading && !error && rows.length === 0 && (
+            <Typography color="text.secondary">No items found</Typography>
+          )}
+          {!loading && rows.length > 0 && (
+            <Box sx={{ height: 300, width: '100%' }}>
+              <DataGrid
+                rows={rows}
+                columns={detailColumns}
+                pageSizeOptions={[5, 10, 25]}
+                initialState={{
+                  pagination: { paginationModel: { pageSize: 5 } },
+                }}
+                disableRowSelectionOnClick
+                density="compact"
+              />
+            </Box>
+          )}
+        </AccordionDetails>
+      </Accordion>
+
+      {correctionItem && (
+        <InventoryCorrectionModal
+          open={correctionOpen}
+          onClose={() => {
+            setCorrectionOpen(false);
+            setCorrectionItem(null);
+          }}
+          itemType="inventory"
+          item={correctionItem}
+          onSuccess={handleCorrectionSuccess}
+        />
+      )}
+    </>
   );
 }
 

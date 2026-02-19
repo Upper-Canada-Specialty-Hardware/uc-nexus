@@ -282,7 +282,11 @@ class Query:
 
     @strawberry.field
     def po_receiving_details(self, po_id: strawberry.ID) -> PurchaseOrder:
-        raise NotImplementedError("poReceivingDetails not yet implemented")
+        with SessionLocal() as session:
+            po, receive_records = warehouse_repository.get_po_receiving_details(
+                session, uuid.UUID(str(po_id))
+            )
+            return _po_to_type(po, receive_records)
 
     @strawberry.field
     def inventory_hierarchy(
