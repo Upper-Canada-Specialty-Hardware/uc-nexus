@@ -190,3 +190,54 @@ export const GET_OPENING_ITEM_DETAILS = gql`
     }
   }
 `;
+
+export const GET_OPEN_POS = gql`
+  query GetOpenPOs($projectId: ID!) {
+    openPOs(projectId: $projectId) {
+      id
+      poNumber
+      projectId
+      status
+      vendorName
+      orderedAt
+      lineItems {
+        id
+        hardwareCategory
+        productCode
+        orderedQuantity
+        receivedQuantity
+      }
+    }
+  }
+`;
+
+export const GET_PO_RECEIVING_DETAILS = gql`
+  query GetPOReceivingDetails($poId: ID!) {
+    poReceivingDetails(poId: $poId) {
+      id
+      poNumber
+      vendorName
+      status
+      lineItems {
+        id
+        poId
+        hardwareCategory
+        productCode
+        classification
+        orderedQuantity
+        receivedQuantity
+        unitCost
+      }
+      receiveRecords {
+        id
+        receivedAt
+        receivedBy
+        lineItems {
+          id
+          poLineItemId
+          quantityReceived
+        }
+      }
+    }
+  }
+`;

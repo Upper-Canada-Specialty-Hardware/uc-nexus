@@ -163,3 +163,24 @@ export const ASSIGN_OPENING_ITEM_LOCATION = gql`
     }
   }
 `;
+
+export const CREATE_RECEIVE = gql`
+  mutation CreateReceive($input: CreateReceiveInput!) {
+    createReceive(input: $input) {
+      id
+      poId
+      receivedAt
+      receivedBy
+      createdAt
+      lineItems {
+        id
+        receiveRecordId
+        poLineItemId
+        hardwareCategory
+        productCode
+        quantityReceived
+        createdAt
+      }
+    }
+  }
+`;
