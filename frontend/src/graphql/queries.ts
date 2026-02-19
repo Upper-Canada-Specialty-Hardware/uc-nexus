@@ -113,3 +113,80 @@ export const GET_PURCHASE_ORDER = gql`
     }
   }
 `;
+
+export const GET_INVENTORY_HIERARCHY = gql`
+  query GetInventoryHierarchy($projectId: ID!) {
+    inventoryHierarchy(projectId: $projectId) {
+      hardwareCategory
+      totalQuantity
+      productCodes {
+        productCode
+        totalQuantity
+        items {
+          id
+          projectId
+          poLineItemId
+          receiveLineItemId
+          hardwareCategory
+          productCode
+          quantity
+          shelf
+          column
+          row
+          receivedAt
+          createdAt
+          updatedAt
+        }
+      }
+    }
+  }
+`;
+
+export const GET_INVENTORY_ITEMS = gql`
+  query GetInventoryItems($projectId: ID!, $category: String!, $productCode: String!) {
+    inventoryItems(projectId: $projectId, category: $category, productCode: $productCode) {
+      inventoryLocation {
+        id projectId poLineItemId receiveLineItemId
+        hardwareCategory productCode quantity
+        shelf column row receivedAt createdAt updatedAt
+      }
+      poNumber
+      classification
+    }
+  }
+`;
+
+export const GET_OPENING_ITEMS = gql`
+  query GetOpeningItems($projectId: ID!) {
+    openingItems(projectId: $projectId) {
+      id projectId openingId openingNumber
+      building floor location quantity
+      assemblyCompletedAt state
+      shelf column row
+      createdAt updatedAt
+      installedHardware {
+        id openingItemId productCode hardwareCategory quantity
+      }
+    }
+  }
+`;
+
+export const GET_OPENING_ITEM_DETAILS = gql`
+  query GetOpeningItemDetails($id: ID!) {
+    openingItemDetails(id: $id) {
+      openingItem {
+        id projectId openingId openingNumber
+        building floor location quantity
+        assemblyCompletedAt state
+        shelf column row
+        createdAt updatedAt
+        installedHardware {
+          id openingItemId productCode hardwareCategory quantity
+        }
+      }
+      installedHardware {
+        id openingItemId productCode hardwareCategory quantity
+      }
+    }
+  }
+`;

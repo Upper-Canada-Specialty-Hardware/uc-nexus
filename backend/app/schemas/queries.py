@@ -7,7 +7,7 @@ from sqlalchemy import select
 from app.database import SessionLocal
 from app.models.project import Project as ProjectModel
 from app.models.enums import POStatus as DBPOStatus
-from app.repositories import po_repository
+from app.repositories import po_repository, warehouse_repository
 from .enums import (
     POStatus,
     Classification,
@@ -25,9 +25,12 @@ from .types import (
     ReceiveLineItem,
     POStatistics,
     InventoryHierarchyNode,
+    ProductCodeNode,
+    InventoryLocation as InventoryLocationType,
     InventoryItemDetail,
     OpeningItem,
     OpeningItemDetail,
+    OpeningItemHardware as OpeningItemHardwareType,
     PullRequest,
     ShipReadyItems,
     Notification,
@@ -144,6 +147,55 @@ def _project_to_type(p: ProjectModel) -> Project:
     )
 
 
+def _inventory_location_to_type(il) -> InventoryLocationType:
+    return InventoryLocationType(
+        id=strawberry.ID(str(il.id)),
+        project_id=strawberry.ID(str(il.project_id)),
+        po_line_item_id=strawberry.ID(str(il.po_line_item_id)),
+        receive_line_item_id=strawberry.ID(str(il.receive_line_item_id)),
+        hardware_category=il.hardware_category,
+        product_code=il.product_code,
+        quantity=il.quantity,
+        shelf=il.shelf,
+        column=il.column,
+        row=il.row,
+        received_at=il.received_at,
+        created_at=il.created_at,
+        updated_at=il.updated_at,
+    )
+
+
+def _opening_item_hardware_to_type(oih) -> OpeningItemHardwareType:
+    return OpeningItemHardwareType(
+        id=strawberry.ID(str(oih.id)),
+        opening_item_id=strawberry.ID(str(oih.opening_item_id)),
+        product_code=oih.product_code,
+        hardware_category=oih.hardware_category,
+        quantity=oih.quantity,
+    )
+
+
+def _opening_item_to_type(oi) -> OpeningItem:
+    return OpeningItem(
+        id=strawberry.ID(str(oi.id)),
+        project_id=strawberry.ID(str(oi.project_id)),
+        opening_id=strawberry.ID(str(oi.opening_id)),
+        opening_number=oi.opening_number,
+        building=oi.building,
+        floor=oi.floor,
+        location=oi.location,
+        quantity=oi.quantity,
+        assembly_completed_at=oi.assembly_completed_at,
+        state=oi.state,
+        shelf=oi.shelf,
+        column=oi.column,
+        row=oi.row,
+        created_at=oi.created_at,
+        updated_at=oi.updated_at,
+        installed_hardware=[_opening_item_hardware_to_type(h) for h in oi.installed_hardware],
+    )
+
+
 @strawberry.type
 class Query:
     @strawberry.field
@@ -236,21 +288,62 @@ class Query:
     def inventory_hierarchy(
         self, project_id: strawberry.ID
     ) -> list[InventoryHierarchyNode]:
-        raise NotImplementedError("inventoryHierarchy not yet implemented")
+        with SessionLocal() as session:
+            hierarchy = warehouse_repository.get_inventory_hierarchy(
+                session, uuid.UUID(str(project_id))
+            )
+            return [
+                InventoryHierarchyNode(
+                    hardware_category=cat_node["hardware_category"],
+                    product_codes=[
+                        ProductCodeNode(
+                            product_code=pc_node["product_code"],
+                            items=[_inventory_location_to_type(il) for il in pc_node["items"]],
+                            total_quantity=pc_node["total_quantity"],
+                        )
+                        for pc_node in cat_node["product_codes"]
+                    ],
+                    total_quantity=cat_node["total_quantity"],
+                )
+                for cat_node in hierarchy
+            ]
 
     @strawberry.field
     def inventory_items(
         self, project_id: strawberry.ID, category: str, product_code: str
     ) -> list[InventoryItemDetail]:
-        raise NotImplementedError("inventoryItems not yet implemented")
+        with SessionLocal() as session:
+            items = warehouse_repository.get_inventory_items(
+                session, uuid.UUID(str(project_id)), category, product_code
+            )
+            return [
+                InventoryItemDetail(
+                    inventory_location=_inventory_location_to_type(item["inventory_location"]),
+                    po_number=item["po_number"],
+                    classification=item["classification"],
+                )
+                for item in items
+            ]
 
     @strawberry.field
     def opening_items(self, project_id: strawberry.ID) -> list[OpeningItem]:
-        raise NotImplementedError("openingItems not yet implemented")
+        with SessionLocal() as session:
+            ois = warehouse_repository.get_opening_items(
+                session, uuid.UUID(str(project_id))
+            )
+            return [_opening_item_to_type(oi) for oi in ois]
 
     @strawberry.field
     def opening_item_details(self, id: strawberry.ID) -> OpeningItemDetail:
-        raise NotImplementedError("openingItemDetails not yet implemented")
+        with SessionLocal() as session:
+            oi = warehouse_repository.get_opening_item_details(
+                session, uuid.UUID(str(id))
+            )
+            opening_item = _opening_item_to_type(oi)
+            return OpeningItemDetail(
+                opening_item=opening_item,
+                installed_hardware=[_opening_item_hardware_to_type(h) for h in oi.installed_hardware],
+            )
 
     @strawberry.field
     def pull_requests(

@@ -1,0 +1,360 @@
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
+import {
+  Box,
+  TextField,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
+  Typography,
+  Accordion,
+  AccordionSummary,
+  AccordionDetails,
+  CircularProgress,
+  Alert,
+} from '@mui/material';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import { DataGrid, type GridColDef } from '@mui/x-data-grid';
+import { useQuery, useLazyQuery } from '@apollo/client/react';
+import { GET_INVENTORY_HIERARCHY, GET_INVENTORY_ITEMS } from '../../graphql/queries';
+
+interface InventoryItem {
+  id: string;
+  projectId: string;
+  poLineItemId: string;
+  receiveLineItemId: string;
+  hardwareCategory: string;
+  productCode: string;
+  quantity: number;
+  shelf: string | null;
+  column: string | null;
+  row: string | null;
+  receivedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface ProductCodeGroup {
+  productCode: string;
+  totalQuantity: number;
+  items: InventoryItem[];
+}
+
+interface CategoryGroup {
+  hardwareCategory: string;
+  totalQuantity: number;
+  productCodes: ProductCodeGroup[];
+}
+
+interface InventoryItemDetail {
+  inventoryLocation: InventoryItem;
+  poNumber: string;
+  classification: string;
+}
+
+interface HardwareItemsTabProps {
+  projectId: string;
+}
+
+function formatLocation(shelf: string | null, column: string | null, row: string | null): string {
+  if (shelf && column && row) {
+    return `${shelf}-${column}-${row}`;
+  }
+  return 'Unlocated';
+}
+
+function formatDate(dateStr: string | null): string {
+  if (!dateStr) return '—';
+  return new Date(dateStr).toLocaleDateString();
+}
+
+const detailColumns: GridColDef[] = [
+  { field: 'productCode', headerName: 'Product Code', flex: 1 },
+  { field: 'hardwareCategory', headerName: 'Hardware Category', flex: 1 },
+  { field: 'quantity', headerName: 'Quantity', flex: 0.5, type: 'number' },
+  {
+    field: 'location',
+    headerName: 'Location',
+    flex: 1,
+    valueGetter: (_value: unknown, row: InventoryItemDetail) =>
+      formatLocation(
+        row.inventoryLocation.shelf,
+        row.inventoryLocation.column,
+        row.inventoryLocation.row,
+      ),
+  },
+  { field: 'poNumber', headerName: 'PO Number', flex: 1 },
+  {
+    field: 'receivedAt',
+    headerName: 'Received Date',
+    flex: 1,
+    valueGetter: (_value: unknown, row: InventoryItemDetail) =>
+      formatDate(row.inventoryLocation.receivedAt),
+  },
+];
+
+function ProductCodeDetail({
+  projectId,
+  category,
+  productCode,
+  totalQuantity,
+}: {
+  projectId: string;
+  category: string;
+  productCode: string;
+  totalQuantity: number;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const hasFetched = useRef(false);
+  const [fetchItems, { data, loading, error }] = useLazyQuery<{
+    inventoryItems: InventoryItemDetail[];
+  }>(GET_INVENTORY_ITEMS);
+
+  const handleExpand = useCallback(
+    (_event: React.SyntheticEvent, isExpanded: boolean) => {
+      setExpanded(isExpanded);
+      if (isExpanded && !hasFetched.current) {
+        hasFetched.current = true;
+        fetchItems({
+          variables: { projectId, category, productCode },
+        });
+      }
+    },
+    [fetchItems, projectId, category, productCode],
+  );
+
+  const rows = useMemo(
+    () =>
+      (data?.inventoryItems ?? []).map((item) => ({
+        ...item,
+        id: item.inventoryLocation.id,
+      })),
+    [data],
+  );
+
+  return (
+    <Accordion expanded={expanded} onChange={handleExpand} sx={{ ml: 2 }}>
+      <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+        <Typography sx={{ fontWeight: 500 }}>
+          {productCode}
+        </Typography>
+        <Typography sx={{ ml: 2, color: 'text.secondary' }}>
+          — Qty: {totalQuantity}
+        </Typography>
+      </AccordionSummary>
+      <AccordionDetails>
+        {loading && (
+          <Box sx={{ display: 'flex', justifyContent: 'center', py: 2 }}>
+            <CircularProgress size={24} />
+          </Box>
+        )}
+        {error && <Alert severity="error">Error loading items: {error.message}</Alert>}
+        {!loading && !error && rows.length === 0 && (
+          <Typography color="text.secondary">No items found</Typography>
+        )}
+        {!loading && rows.length > 0 && (
+          <Box sx={{ height: 300, width: '100%' }}>
+            <DataGrid
+              rows={rows}
+              columns={detailColumns}
+              pageSizeOptions={[5, 10, 25]}
+              initialState={{
+                pagination: { paginationModel: { pageSize: 5 } },
+              }}
+              disableRowSelectionOnClick
+              density="compact"
+            />
+          </Box>
+        )}
+      </AccordionDetails>
+    </Accordion>
+  );
+}
+
+export default function HardwareItemsTab({ projectId }: HardwareItemsTabProps) {
+  const [searchTerm, setSearchTerm] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('');
+  const [shelfFilter, setShelfFilter] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+
+  const { data, loading, error } = useQuery<{
+    inventoryHierarchy: CategoryGroup[];
+  }>(GET_INVENTORY_HIERARCHY, {
+    variables: { projectId },
+    pollInterval: 10000,
+  });
+
+  // Debounce search input
+  const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleSearchChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    setSearchTerm(value);
+    if (debounceTimer.current) clearTimeout(debounceTimer.current);
+    debounceTimer.current = setTimeout(() => {
+      setDebouncedSearch(value);
+    }, 300);
+  }, []);
+
+  // Cleanup timer on unmount
+  useEffect(() => {
+    return () => {
+      if (debounceTimer.current) clearTimeout(debounceTimer.current);
+    };
+  }, []);
+
+  const hierarchy = data?.inventoryHierarchy ?? [];
+
+  // Extract distinct categories
+  const categories = useMemo(
+    () => [...new Set(hierarchy.map((c) => c.hardwareCategory))].sort(),
+    [hierarchy],
+  );
+
+  // Extract distinct shelf values from Level 3 items
+  const shelves = useMemo(() => {
+    const shelfSet = new Set<string>();
+    hierarchy.forEach((cat) =>
+      cat.productCodes.forEach((pc) =>
+        pc.items.forEach((item) => {
+          if (item.shelf) shelfSet.add(item.shelf);
+        }),
+      ),
+    );
+    return [...shelfSet].sort();
+  }, [hierarchy]);
+
+  // Filter hierarchy
+  const filteredHierarchy = useMemo(() => {
+    const search = debouncedSearch.toLowerCase();
+    return hierarchy
+      .filter((cat) => {
+        if (categoryFilter && cat.hardwareCategory !== categoryFilter) return false;
+        if (search) {
+          const categoryMatch = cat.hardwareCategory.toLowerCase().includes(search);
+          const productMatch = cat.productCodes.some((pc) =>
+            pc.productCode.toLowerCase().includes(search),
+          );
+          if (!categoryMatch && !productMatch) return false;
+        }
+        return true;
+      })
+      .map((cat) => {
+        // If searching, also filter product codes within the category
+        if (search) {
+          const categoryMatch = cat.hardwareCategory.toLowerCase().includes(search);
+          if (categoryMatch) return cat; // show all product codes if category matched
+          return {
+            ...cat,
+            productCodes: cat.productCodes.filter((pc) =>
+              pc.productCode.toLowerCase().includes(search),
+            ),
+          };
+        }
+        // If shelf filter is active, filter product codes that have items with matching shelf
+        if (shelfFilter) {
+          return {
+            ...cat,
+            productCodes: cat.productCodes.filter((pc) =>
+              pc.items.some((item) => item.shelf === shelfFilter),
+            ),
+          };
+        }
+        return cat;
+      })
+      .filter((cat) => cat.productCodes.length > 0);
+  }, [hierarchy, debouncedSearch, categoryFilter, shelfFilter]);
+
+  if (loading) {
+    return (
+      <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
+        <CircularProgress />
+      </Box>
+    );
+  }
+
+  if (error) {
+    return <Alert severity="error">Error loading inventory: {error.message}</Alert>;
+  }
+
+  if (hierarchy.length === 0) {
+    return (
+      <Alert severity="info">No inventory items for this project</Alert>
+    );
+  }
+
+  return (
+    <Box>
+      {/* Search and filter controls */}
+      <Box sx={{ display: 'flex', gap: 2, mb: 2, flexWrap: 'wrap' }}>
+        <TextField
+          label="Search"
+          placeholder="Search by product code or category..."
+          size="small"
+          value={searchTerm}
+          onChange={handleSearchChange}
+          sx={{ minWidth: 250 }}
+        />
+        <FormControl size="small" sx={{ minWidth: 180 }}>
+          <InputLabel>Category</InputLabel>
+          <Select
+            value={categoryFilter}
+            label="Category"
+            onChange={(e) => setCategoryFilter(e.target.value)}
+          >
+            <MenuItem value="">All Categories</MenuItem>
+            {categories.map((cat) => (
+              <MenuItem key={cat} value={cat}>
+                {cat}
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+        <FormControl size="small" sx={{ minWidth: 150 }}>
+          <InputLabel>Shelf</InputLabel>
+          <Select
+            value={shelfFilter}
+            label="Shelf"
+            onChange={(e) => setShelfFilter(e.target.value)}
+          >
+            <MenuItem value="">All Shelves</MenuItem>
+            {shelves.map((shelf) => (
+              <MenuItem key={shelf} value={shelf}>
+                {shelf}
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+      </Box>
+
+      {/* Filtered empty state */}
+      {filteredHierarchy.length === 0 && (
+        <Alert severity="info">No matching inventory items</Alert>
+      )}
+
+      {/* Accordion hierarchy */}
+      {filteredHierarchy.map((cat) => (
+        <Accordion key={cat.hardwareCategory}>
+          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+            <Typography sx={{ fontWeight: 600 }}>
+              {cat.hardwareCategory}
+            </Typography>
+            <Typography sx={{ ml: 2, color: 'text.secondary' }}>
+              — Total: {cat.totalQuantity}
+            </Typography>
+          </AccordionSummary>
+          <AccordionDetails>
+            {cat.productCodes.map((pc) => (
+              <ProductCodeDetail
+                key={pc.productCode}
+                projectId={projectId}
+                category={cat.hardwareCategory}
+                productCode={pc.productCode}
+                totalQuantity={pc.totalQuantity}
+              />
+            ))}
+          </AccordionDetails>
+        </Accordion>
+      ))}
+    </Box>
+  );
+}
