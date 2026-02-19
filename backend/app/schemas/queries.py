@@ -7,7 +7,7 @@ from sqlalchemy import select
 from app.database import SessionLocal
 from app.models.project import Project as ProjectModel
 from app.models.enums import POStatus as DBPOStatus
-from app.repositories import po_repository, warehouse_repository, shop_assembly_repository
+from app.repositories import po_repository, warehouse_repository, shop_assembly_repository, shipping_repository
 from .enums import (
     POStatus,
     Classification,
@@ -34,12 +34,16 @@ from .types import (
     PullRequest,
     PullRequestItem,
     ShipReadyItems,
+    ShipReadyLooseItem,
+    PackingSlip as PackingSlipType,
+    PackingSlipItem as PackingSlipItemType,
     Notification,
     ShopAssemblyRequest,
     ShopAssemblyOpening,
     ShopAssemblyOpeningItem,
     ReconciliationResult,
 )
+from app.services import file_storage_service
 
 
 def _po_line_item_to_type(li) -> POLineItem:
@@ -208,7 +212,7 @@ def _shop_assembly_opening_item_to_type(item) -> ShopAssemblyOpeningItem:
     )
 
 
-def _shop_assembly_opening_to_type(opening) -> ShopAssemblyOpening:
+def _shop_assembly_opening_to_type(opening, opening_model=None) -> ShopAssemblyOpening:
     return ShopAssemblyOpening(
         id=strawberry.ID(str(opening.id)),
         shop_assembly_request_id=strawberry.ID(str(opening.shop_assembly_request_id)),
@@ -218,6 +222,9 @@ def _shop_assembly_opening_to_type(opening) -> ShopAssemblyOpening:
         assembly_status=opening.assembly_status,
         completed_at=opening.completed_at,
         items=[_shop_assembly_opening_item_to_type(i) for i in opening.items],
+        opening_number=opening_model.opening_number if opening_model else None,
+        building=opening_model.building if opening_model else None,
+        floor=opening_model.floor if opening_model else None,
     )
 
 
@@ -281,6 +288,32 @@ def _notification_to_type(n) -> Notification:
     )
 
 
+def _packing_slip_item_to_type(psi) -> PackingSlipItemType:
+    return PackingSlipItemType(
+        id=strawberry.ID(str(psi.id)),
+        packing_slip_id=strawberry.ID(str(psi.packing_slip_id)),
+        item_type=psi.item_type,
+        opening_item_id=strawberry.ID(str(psi.opening_item_id)) if psi.opening_item_id else None,
+        opening_number=psi.opening_number,
+        product_code=psi.product_code,
+        hardware_category=psi.hardware_category,
+        quantity=psi.quantity,
+    )
+
+
+def _packing_slip_to_type(ps) -> PackingSlipType:
+    return PackingSlipType(
+        id=strawberry.ID(str(ps.id)),
+        packing_slip_number=ps.packing_slip_number,
+        project_id=strawberry.ID(str(ps.project_id)),
+        shipped_by=ps.shipped_by,
+        shipped_at=ps.shipped_at,
+        pdf_file_path=ps.pdf_file_path,
+        created_at=ps.created_at,
+        items=[_packing_slip_item_to_type(i) for i in ps.items],
+    )
+
+
 @strawberry.type
 class Query:
     @strawberry.field
@@ -305,7 +338,33 @@ class Query:
     def reconcile_schedule(
         self, project_id: strawberry.ID, items: list[ReconciliationItemInput]
     ) -> list[ReconciliationResult]:
-        raise NotImplementedError("reconcileSchedule not yet implemented")
+        from app.repositories import import_repository
+        from .enums import ReconciliationStatus
+
+        items_data = [
+            {
+                "opening_number": item.opening_number,
+                "hardware_category": item.hardware_category,
+                "product_code": item.product_code,
+                "quantity_needed": item.quantity_needed,
+            }
+            for item in items
+        ]
+        with SessionLocal() as session:
+            results = import_repository.reconcile_schedule(
+                session, uuid.UUID(str(project_id)), items_data
+            )
+            return [
+                ReconciliationResult(
+                    opening_number=r["opening_number"],
+                    hardware_category=r["hardware_category"],
+                    product_code=r["product_code"],
+                    quantity_needed=r["quantity_needed"],
+                    quantity_available=r["quantity_available"],
+                    status=ReconciliationStatus[r["status"]],
+                )
+                for r in results
+            ]
 
     @strawberry.field
     def purchase_orders(
@@ -457,7 +516,26 @@ class Query:
 
     @strawberry.field
     def ship_ready_items(self, project_id: strawberry.ID) -> ShipReadyItems:
-        raise NotImplementedError("shipReadyItems not yet implemented")
+        with SessionLocal() as session:
+            data = shipping_repository.get_ship_ready_items(
+                session, uuid.UUID(str(project_id))
+            )
+            return ShipReadyItems(
+                opening_items=[_opening_item_to_type(oi) for oi in data["opening_items"]],
+                loose_items=[
+                    ShipReadyLooseItem(
+                        opening_number=li["opening_number"],
+                        hardware_category=li["hardware_category"],
+                        product_code=li["product_code"],
+                        available_quantity=li["available_quantity"],
+                    )
+                    for li in data["loose_items"]
+                ],
+            )
+
+    @strawberry.field
+    def packing_slip_pdf_url(self, file_path: str) -> str:
+        return file_storage_service.generate_signed_url(file_path)
 
     @strawberry.field
     def notifications(
@@ -486,11 +564,19 @@ class Query:
         self, project_id: strawberry.ID
     ) -> list[ShopAssemblyOpening]:
         with SessionLocal() as session:
-            openings = shop_assembly_repository.get_assemble_list(
+            rows = shop_assembly_repository.get_assemble_list(
                 session, uuid.UUID(str(project_id))
             )
-            return [_shop_assembly_opening_to_type(o) for o in openings]
+            return [
+                _shop_assembly_opening_to_type(sao, opening_model=opening)
+                for sao, opening in rows
+            ]
 
     @strawberry.field
     def my_work(self, assigned_to: str) -> list[ShopAssemblyOpening]:
-        raise NotImplementedError("myWork not yet implemented")
+        with SessionLocal() as session:
+            rows = shop_assembly_repository.get_my_work(session, assigned_to)
+            return [
+                _shop_assembly_opening_to_type(sao, opening_model=opening)
+                for sao, opening in rows
+            ]

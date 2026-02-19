@@ -16,14 +16,18 @@ from app.models.pull_request import (
     PullRequestItem as PullRequestItemModel,
 )
 from app.models.project import Opening as OpeningModel
+from app.models.opening_item import OpeningItem as OpeningItemModel, OpeningItemHardware as OIHModel
 from app.models.enums import (
     ShopAssemblyRequestStatus,
     PullStatus,
+    AssemblyStatus,
     PullRequestSource,
     PullRequestStatus,
     PullRequestItemType,
     NotificationType,
+    OpeningItemState,
 )
+from app.services.locking import lock_rows
 from app.services import notification_service
 from app.errors import NotFoundError, ValidationError, InvalidStateTransitionError, ConflictError
 
@@ -52,21 +56,46 @@ def get_shop_assembly_requests(
 def get_assemble_list(
     session: Session,
     project_id: uuid.UUID,
-) -> list[ShopAssemblyOpening]:
-    """Query ShopAssemblyOpenings from Approved SARs for the project."""
+) -> list[tuple[ShopAssemblyOpening, OpeningModel]]:
+    """Query ShopAssemblyOpenings from Approved SARs for the project, with Opening data."""
     stmt = (
-        select(ShopAssemblyOpening)
+        select(ShopAssemblyOpening, OpeningModel)
         .join(
             ShopAssemblyRequest,
             ShopAssemblyOpening.shop_assembly_request_id == ShopAssemblyRequest.id,
         )
+        .join(OpeningModel, ShopAssemblyOpening.opening_id == OpeningModel.id)
         .options(selectinload(ShopAssemblyOpening.items))
         .where(
             ShopAssemblyRequest.project_id == project_id,
             ShopAssemblyRequest.status == ShopAssemblyRequestStatus.APPROVED,
         )
     )
-    return list(session.scalars(stmt).unique().all())
+    return list(session.execute(stmt).unique().all())
+
+
+def get_my_work(
+    session: Session,
+    assigned_to: str,
+) -> list[tuple[ShopAssemblyOpening, OpeningModel]]:
+    """Query ShopAssemblyOpenings assigned to a user with Pending assembly_status.
+    Returns list of (ShopAssemblyOpening, Opening) tuples for resolving opening fields."""
+    stmt = (
+        select(ShopAssemblyOpening, OpeningModel)
+        .join(
+            ShopAssemblyRequest,
+            ShopAssemblyOpening.shop_assembly_request_id == ShopAssemblyRequest.id,
+        )
+        .join(OpeningModel, ShopAssemblyOpening.opening_id == OpeningModel.id)
+        .options(selectinload(ShopAssemblyOpening.items))
+        .where(
+            ShopAssemblyOpening.assigned_to == assigned_to,
+            ShopAssemblyOpening.assembly_status == AssemblyStatus.PENDING,
+            ShopAssemblyRequest.status == ShopAssemblyRequestStatus.APPROVED,
+        )
+        .order_by(OpeningModel.opening_number.asc())
+    )
+    return list(session.execute(stmt).unique().all())
 
 
 def approve_shop_assembly_request(
@@ -204,3 +233,163 @@ def reject_shop_assembly_request(
     )
 
     return sar
+
+
+def assign_openings(
+    session: Session,
+    opening_ids: list[uuid.UUID],
+    assigned_to: str,
+) -> list[ShopAssemblyOpening]:
+    """Assign ShopAssemblyOpenings to a user with pessimistic locking."""
+    if not opening_ids:
+        raise ValidationError("opening_ids must not be empty", field="opening_ids")
+    if not assigned_to:
+        raise ValidationError("assigned_to must not be empty", field="assigned_to")
+
+    locked = lock_rows(session, ShopAssemblyOpening, opening_ids)
+    if len(locked) != len(opening_ids):
+        found_ids = {o.id for o in locked}
+        missing = [str(oid) for oid in opening_ids if oid not in found_ids]
+        raise NotFoundError(f"ShopAssemblyOpenings not found: {missing}")
+
+    for opening in locked:
+        if opening.pull_status != PullStatus.PULLED:
+            raise InvalidStateTransitionError(
+                "Opening is not ready for assignment - hardware has not been pulled"
+            )
+        if opening.assembly_status != AssemblyStatus.PENDING:
+            raise InvalidStateTransitionError(
+                "Opening assembly is already completed"
+            )
+        if opening.assigned_to is not None:
+            raise ConflictError(
+                f"Opening already assigned to {opening.assigned_to}"
+            )
+        opening.assigned_to = assigned_to
+
+    return locked
+
+
+def remove_opening_from_user(
+    session: Session,
+    opening_id: uuid.UUID,
+) -> ShopAssemblyOpening:
+    """Unassign a ShopAssemblyOpening."""
+    stmt = (
+        select(ShopAssemblyOpening)
+        .options(selectinload(ShopAssemblyOpening.items))
+        .where(ShopAssemblyOpening.id == opening_id)
+    )
+    opening = session.scalars(stmt).unique().first()
+    if opening is None:
+        raise NotFoundError(f"ShopAssemblyOpening {opening_id} not found")
+
+    if opening.assembly_status != AssemblyStatus.PENDING:
+        raise InvalidStateTransitionError(
+            "Cannot unassign a completed opening"
+        )
+    if opening.assigned_to is None:
+        raise ValidationError("Opening is not assigned to anyone", field="assigned_to")
+
+    opening.assigned_to = None
+    return opening
+
+
+def complete_opening(
+    session: Session,
+    opening_id: uuid.UUID,
+    shelf: str | None,
+    column: str | None,
+    row: str | None,
+) -> OpeningItemModel:
+    """Mark an opening's assembly as complete. Creates OpeningItem + OpeningItemHardware records."""
+    # 1. Load and validate ShopAssemblyOpening (with pessimistic lock)
+    locked = lock_rows(session, ShopAssemblyOpening, [opening_id])
+    if not locked:
+        raise NotFoundError(f"ShopAssemblyOpening {opening_id} not found")
+    sa_opening = locked[0]
+    # Eager-load items
+    stmt = (
+        select(ShopAssemblyOpening)
+        .options(selectinload(ShopAssemblyOpening.items))
+        .where(ShopAssemblyOpening.id == opening_id)
+    )
+    sa_opening = session.scalars(stmt).unique().first()
+
+    if sa_opening.assembly_status != AssemblyStatus.PENDING:
+        raise InvalidStateTransitionError(
+            "Opening assembly is already completed"
+        )
+    if sa_opening.assigned_to is None:
+        raise ValidationError(
+            "Opening must be assigned before it can be completed",
+            field="assigned_to",
+        )
+
+    # 2. Load the Opening for opening_number, building, floor, location
+    opening = session.get(OpeningModel, sa_opening.opening_id)
+    if opening is None:
+        raise NotFoundError(f"Opening {sa_opening.opening_id} not found")
+
+    # 3. Load the SAR for project_id and request_number
+    sar = session.get(ShopAssemblyRequest, sa_opening.shop_assembly_request_id)
+    if sar is None:
+        raise NotFoundError(f"ShopAssemblyRequest {sa_opening.shop_assembly_request_id} not found")
+
+    # 4. Derive the auto-generated PR number and find the completed PR
+    pr_number = f"PR-{sar.request_number}"
+    pr_stmt = (
+        select(PullRequestModel)
+        .options(selectinload(PullRequestModel.items))
+        .where(
+            PullRequestModel.request_number == pr_number,
+            PullRequestModel.source == PullRequestSource.SHOP_ASSEMBLY,
+            PullRequestModel.status == PullRequestStatus.COMPLETED,
+        )
+    )
+    pr = session.scalars(pr_stmt).unique().first()
+    if pr is None:
+        raise NotFoundError(f"Completed PullRequest {pr_number} not found")
+
+    # 5. Filter PR items for this opening's opening_number
+    opening_pr_items = [
+        item for item in pr.items
+        if item.opening_number == opening.opening_number
+    ]
+
+    # 6. Create OpeningItem
+    now = datetime.utcnow()
+    opening_item = OpeningItemModel(
+        id=uuid.uuid4(),
+        project_id=sar.project_id,
+        opening_id=sa_opening.opening_id,
+        opening_number=opening.opening_number,
+        building=opening.building,
+        floor=opening.floor,
+        location=opening.location,
+        quantity=1,
+        assembly_completed_at=now,
+        state=OpeningItemState.IN_INVENTORY,
+        shelf=shelf,
+        column=column,
+        row=row,
+    )
+    session.add(opening_item)
+    session.flush()  # Get opening_item.id for OpeningItemHardware FK
+
+    # 7. Create OpeningItemHardware for each PR item
+    for pr_item in opening_pr_items:
+        oih = OIHModel(
+            id=uuid.uuid4(),
+            opening_item_id=opening_item.id,
+            product_code=pr_item.product_code,
+            hardware_category=pr_item.hardware_category,
+            quantity=pr_item.requested_quantity,
+        )
+        session.add(oih)
+
+    # 8. Mark ShopAssemblyOpening as Completed
+    sa_opening.assembly_status = AssemblyStatus.COMPLETED
+    sa_opening.completed_at = now
+
+    return opening_item

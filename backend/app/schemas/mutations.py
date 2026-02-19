@@ -6,7 +6,7 @@ import strawberry
 from sqlalchemy import select
 
 from app.database import SessionLocal
-from app.repositories import po_repository, warehouse_repository, shop_assembly_repository
+from app.repositories import po_repository, warehouse_repository, shop_assembly_repository, shipping_repository
 from .enums import POStatus, ApproveOutcome
 from .inputs import (
     FinalizeImportSessionInput,
@@ -21,7 +21,7 @@ from .types import (
     ReceiveRecord,
     ApproveResult,
     PullRequest,
-    PackingSlip,
+    PackingSlip as PackingSlipType,
     InventoryLocation,
     OpeningItem,
     Notification,
@@ -30,13 +30,16 @@ from .types import (
     ShopAssemblyOpening,
 )
 from .queries import (
+    _project_to_type,
     _po_to_type,
     _inventory_location_to_type,
     _opening_item_to_type,
     _receive_record_to_type,
     _shop_assembly_request_to_type,
+    _shop_assembly_opening_to_type,
     _pull_request_to_type,
     _notification_to_type,
+    _packing_slip_to_type,
 )
 
 
@@ -47,7 +50,187 @@ class Mutation:
     def finalize_import_session(
         self, input: FinalizeImportSessionInput
     ) -> FinalizeImportResult:
-        raise NotImplementedError("finalizeImportSession not yet implemented")
+        from app.repositories import import_repository
+        from sqlalchemy.orm import selectinload
+        from app.models.project import Project as ProjectModel
+        from app.models.purchase_order import PurchaseOrder as POModel
+        from app.models.pull_request import PullRequest as PRModel
+        from app.models.shop_assembly import (
+            ShopAssemblyRequest as SARModel,
+            ShopAssemblyOpening as SAOModel_,
+        )
+
+        # Convert Strawberry input to dict
+        input_data = {
+            "project": {
+                "project_id": input.project.project_id,
+                "description": input.project.description,
+                "job_site_name": input.project.job_site_name,
+                "address": input.project.address,
+                "city": input.project.city,
+                "state": input.project.state,
+                "zip": input.project.zip,
+                "contractor": input.project.contractor,
+                "project_manager": input.project.project_manager,
+                "application": input.project.application,
+                "submittal_job_no": input.project.submittal_job_no,
+                "submittal_assignment_count": input.project.submittal_assignment_count,
+                "estimator_code": input.project.estimator_code,
+                "titan_user_id": input.project.titan_user_id,
+            },
+            "openings": [
+                {
+                    "opening_number": o.opening_number,
+                    "building": o.building,
+                    "floor": o.floor,
+                    "location": o.location,
+                    "location_to": o.location_to,
+                    "location_from": o.location_from,
+                    "hand": o.hand,
+                    "width": o.width,
+                    "length": o.length,
+                    "door_thickness": o.door_thickness,
+                    "jamb_thickness": o.jamb_thickness,
+                    "door_type": o.door_type,
+                    "frame_type": o.frame_type,
+                    "interior_exterior": o.interior_exterior,
+                    "keying": o.keying,
+                    "heading_no": o.heading_no,
+                    "single_pair": o.single_pair,
+                    "assignment_multiplier": o.assignment_multiplier,
+                }
+                for o in input.openings
+            ],
+            "hardware_items": [
+                {
+                    "opening_number": hi.opening_number,
+                    "product_code": hi.product_code,
+                    "material_id": hi.material_id,
+                    "hardware_category": hi.hardware_category,
+                    "item_quantity": hi.item_quantity,
+                    "unit_cost": hi.unit_cost,
+                    "unit_price": hi.unit_price,
+                    "list_price": hi.list_price,
+                    "vendor_discount": hi.vendor_discount,
+                    "markup_pct": hi.markup_pct,
+                    "vendor_no": hi.vendor_no,
+                    "phase_code": hi.phase_code,
+                    "item_category_code": hi.item_category_code,
+                    "product_group_code": hi.product_group_code,
+                    "submittal_id": hi.submittal_id,
+                }
+                for hi in (input.hardware_items or [])
+            ] if input.hardware_items else None,
+            "po_drafts": [
+                {
+                    "po_number": po.po_number,
+                    "vendor_name": po.vendor_name,
+                    "vendor_contact": po.vendor_contact,
+                    "hardware_item_refs": [
+                        {
+                            "opening_number": ref.opening_number,
+                            "product_code": ref.product_code,
+                            "material_id": ref.material_id,
+                        }
+                        for ref in po.hardware_item_refs
+                    ],
+                }
+                for po in (input.po_drafts or [])
+            ] if input.po_drafts else None,
+            "classifications": [
+                {
+                    "hardware_category": c.hardware_category,
+                    "product_code": c.product_code,
+                    "unit_cost": c.unit_cost,
+                    "classification": c.classification.value,
+                }
+                for c in (input.classifications or [])
+            ] if input.classifications else None,
+            "shipping_out_pr_drafts": [
+                {
+                    "request_number": pr.request_number,
+                    "requested_by": pr.requested_by,
+                    "items": [
+                        {
+                            "item_type": item.item_type.value,
+                            "opening_number": item.opening_number,
+                            "opening_item_id": str(item.opening_item_id) if item.opening_item_id else None,
+                            "hardware_category": item.hardware_category,
+                            "product_code": item.product_code,
+                            "requested_quantity": item.requested_quantity,
+                        }
+                        for item in pr.items
+                    ],
+                }
+                for pr in (input.shipping_out_pr_drafts or [])
+            ] if input.shipping_out_pr_drafts else None,
+            "include_shop_assembly_request": input.include_shop_assembly_request,
+            "shop_assembly_request_number": input.shop_assembly_request_number,
+            "shop_assembly_openings": [
+                {
+                    "opening_number": sa.opening_number,
+                    "items": [
+                        {
+                            "hardware_category": item.hardware_category,
+                            "product_code": item.product_code,
+                            "quantity": item.quantity,
+                        }
+                        for item in sa.items
+                    ],
+                }
+                for sa in (input.shop_assembly_openings or [])
+            ] if input.shop_assembly_openings else None,
+        }
+
+        with SessionLocal() as session:
+            result = import_repository.finalize_import_session(session, input_data)
+            session.commit()
+
+            # Re-load project with openings
+            project = session.scalars(
+                select(ProjectModel)
+                .options(selectinload(ProjectModel.openings))
+                .where(ProjectModel.id == result["project"].id)
+            ).unique().first()
+
+            # Re-load POs with line_items
+            pos = []
+            for po_obj in result["purchase_orders"]:
+                refreshed_po = session.scalars(
+                    select(POModel)
+                    .options(selectinload(POModel.line_items))
+                    .where(POModel.id == po_obj.id)
+                ).unique().first()
+                pos.append(refreshed_po)
+
+            # Re-load PRs with items
+            prs = []
+            for pr_obj in result["shipping_out_pull_requests"]:
+                refreshed_pr = session.scalars(
+                    select(PRModel)
+                    .options(selectinload(PRModel.items))
+                    .where(PRModel.id == pr_obj.id)
+                ).unique().first()
+                prs.append(refreshed_pr)
+
+            # Re-load SAR with openings and items
+            sar_type = None
+            if result["shop_assembly_request"] is not None:
+                refreshed_sar = session.scalars(
+                    select(SARModel)
+                    .options(
+                        selectinload(SARModel.openings).selectinload(SAOModel_.items)
+                    )
+                    .where(SARModel.id == result["shop_assembly_request"].id)
+                ).unique().first()
+                sar_type = _shop_assembly_request_to_type(refreshed_sar)
+
+            return FinalizeImportResult(
+                project=_project_to_type(project),
+                purchase_orders=[_po_to_type(po) for po in pos],
+                shipping_out_pull_requests=[_pull_request_to_type(pr) for pr in prs],
+                shop_assembly_request=sar_type,
+            )
 
     # PO
     @strawberry.mutation
@@ -167,8 +350,44 @@ class Mutation:
 
     # Warehouse - Shipping
     @strawberry.mutation
-    def confirm_shipment(self, input: ConfirmShipmentInput) -> PackingSlip:
-        raise NotImplementedError("confirmShipment not yet implemented")
+    def confirm_shipment(self, input: ConfirmShipmentInput) -> PackingSlipType:
+        from app.models.enums import PullRequestItemType
+
+        project_id = uuid.UUID(str(input.project_id))
+        items_data = []
+        for item in input.items:
+            d = {
+                "item_type": PullRequestItemType(item.item_type.value),
+                "quantity": item.quantity,
+            }
+            if item.opening_item_id is not None:
+                d["opening_item_id"] = uuid.UUID(str(item.opening_item_id))
+            if item.opening_number is not None:
+                d["opening_number"] = item.opening_number
+            if item.product_code is not None:
+                d["product_code"] = item.product_code
+            if item.hardware_category is not None:
+                d["hardware_category"] = item.hardware_category
+            items_data.append(d)
+
+        with SessionLocal() as session:
+            ps = shipping_repository.confirm_shipment(
+                session,
+                project_id,
+                input.packing_slip_number,
+                input.shipped_by,
+                items_data,
+            )
+            session.commit()
+            session.refresh(ps)
+            # Re-load with items
+            from sqlalchemy.orm import selectinload
+            from app.models.shipping import PackingSlip as PSModel
+            stmt = select(PSModel).options(
+                selectinload(PSModel.items)
+            ).where(PSModel.id == ps.id)
+            refreshed = session.scalars(stmt).unique().first()
+            return _packing_slip_to_type(refreshed)
 
     # Warehouse - Admin Corrections
     @strawberry.mutation
@@ -286,8 +505,23 @@ class Mutation:
                 session, uuid.UUID(str(id))
             )
             session.commit()
-            session.refresh(sar)
-            session.refresh(pr)
+            # Re-load with eager loading for relationships
+            from sqlalchemy.orm import selectinload
+            from app.models.shop_assembly import (
+                ShopAssemblyRequest as SARModel,
+                ShopAssemblyOpening as SAOModel,
+            )
+            from app.models.pull_request import PullRequest as PRModel
+            sar = session.scalars(
+                select(SARModel)
+                .options(selectinload(SARModel.openings).selectinload(SAOModel.items))
+                .where(SARModel.id == sar.id)
+            ).unique().first()
+            pr = session.scalars(
+                select(PRModel)
+                .options(selectinload(PRModel.items))
+                .where(PRModel.id == pr.id)
+            ).unique().first()
             return ApproveShopAssemblyResult(
                 shop_assembly_request=_shop_assembly_request_to_type(sar),
                 pull_request=_pull_request_to_type(pr),
@@ -309,14 +543,66 @@ class Mutation:
     def assign_openings(
         self, input: AssignOpeningsInput
     ) -> list[ShopAssemblyOpening]:
-        raise NotImplementedError("assignOpenings not yet implemented")
+        opening_ids = [uuid.UUID(str(oid)) for oid in input.opening_ids]
+        with SessionLocal() as session:
+            result = shop_assembly_repository.assign_openings(
+                session, opening_ids, input.assigned_to
+            )
+            session.commit()
+            # Re-load with items + join Opening for opening_number/building/floor
+            from sqlalchemy.orm import selectinload
+            from app.models.shop_assembly import ShopAssemblyOpening as SAOModel
+            from app.models.project import Opening as OpeningModel
+            stmt = (
+                select(SAOModel, OpeningModel)
+                .join(OpeningModel, SAOModel.opening_id == OpeningModel.id)
+                .options(selectinload(SAOModel.items))
+                .where(SAOModel.id.in_([o.id for o in result]))
+            )
+            rows = list(session.execute(stmt).unique().all())
+            return [_shop_assembly_opening_to_type(sao, opening_model=opening) for sao, opening in rows]
 
     @strawberry.mutation
     def remove_opening_from_user(
         self, opening_id: strawberry.ID
     ) -> ShopAssemblyOpening:
-        raise NotImplementedError("removeOpeningFromUser not yet implemented")
+        with SessionLocal() as session:
+            result = shop_assembly_repository.remove_opening_from_user(
+                session, uuid.UUID(str(opening_id))
+            )
+            session.commit()
+            session.refresh(result)
+            # Re-load with items + join Opening for opening_number/building/floor
+            from sqlalchemy.orm import selectinload
+            from app.models.shop_assembly import ShopAssemblyOpening as SAOModel
+            from app.models.project import Opening as OpeningModel
+            stmt = (
+                select(SAOModel, OpeningModel)
+                .join(OpeningModel, SAOModel.opening_id == OpeningModel.id)
+                .options(selectinload(SAOModel.items))
+                .where(SAOModel.id == result.id)
+            )
+            row = session.execute(stmt).unique().first()
+            refreshed, opening = row
+            return _shop_assembly_opening_to_type(refreshed, opening_model=opening)
 
     @strawberry.mutation
     def complete_opening(self, input: CompleteOpeningInput) -> OpeningItem:
-        raise NotImplementedError("completeOpening not yet implemented")
+        with SessionLocal() as session:
+            result = shop_assembly_repository.complete_opening(
+                session,
+                uuid.UUID(str(input.opening_id)),
+                input.shelf,
+                input.column,
+                input.row,
+            )
+            session.commit()
+            session.refresh(result)
+            # Re-load with installed_hardware
+            from sqlalchemy.orm import selectinload
+            from app.models.opening_item import OpeningItem as OIModel
+            stmt = select(OIModel).options(
+                selectinload(OIModel.installed_hardware)
+            ).where(OIModel.id == result.id)
+            refreshed = session.scalars(stmt).unique().first()
+            return _opening_item_to_type(refreshed)

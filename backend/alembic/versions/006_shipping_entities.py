@@ -26,6 +26,7 @@ def upgrade() -> None:
         sa.Column('pdf_file_path', sa.String(), nullable=False),
         sa.Column('created_at', sa.DateTime(), nullable=False),
     )
+    op.create_index('ix_packing_slips_project', 'packing_slips', ['project_id'])
 
     op.create_table(
         'packing_slip_items',
@@ -40,9 +41,13 @@ def upgrade() -> None:
         sa.Column('product_code', sa.String(), nullable=False),
         sa.Column('hardware_category', sa.String(), nullable=False),
         sa.Column('quantity', sa.Integer(), nullable=False),
+        sa.CheckConstraint('quantity >= 1', name='ck_packing_slip_items_quantity_positive'),
     )
+    op.create_index('ix_packing_slip_items_packing_slip', 'packing_slip_items', ['packing_slip_id'])
 
 
 def downgrade() -> None:
+    op.drop_index('ix_packing_slip_items_packing_slip', table_name='packing_slip_items')
     op.drop_table('packing_slip_items')
+    op.drop_index('ix_packing_slips_project', table_name='packing_slips')
     op.drop_table('packing_slips')

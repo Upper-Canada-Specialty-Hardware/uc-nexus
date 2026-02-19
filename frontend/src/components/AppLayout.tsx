@@ -17,6 +17,7 @@ import {
   type SelectChangeEvent,
 } from '@mui/material';
 import NotificationsIcon from '@mui/icons-material/Notifications';
+import ShoppingCartIcon from '@mui/icons-material/ShoppingCart';
 import SwapHorizIcon from '@mui/icons-material/SwapHoriz';
 import NavigateNextIcon from '@mui/icons-material/NavigateNext';
 import { useQuery } from '@apollo/client/react';
@@ -101,6 +102,14 @@ export default function AppLayout() {
           <Typography variant="body2" sx={{ flexGrow: 1, opacity: 0.9 }}>
             {role}
           </Typography>
+
+          {location.pathname.includes('/shipping') && itemCount > 0 && (
+            <IconButton color="inherit" sx={{ mr: 1 }}>
+              <Badge badgeContent={itemCount} color="error">
+                <ShoppingCartIcon />
+              </Badge>
+            </IconButton>
+          )}
 
           <IconButton color="inherit" sx={{ mr: 1 }}>
             <Badge badgeContent={0} color="error">

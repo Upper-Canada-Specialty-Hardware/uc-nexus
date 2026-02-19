@@ -241,6 +241,10 @@ class ShopAssemblyOpening:
     assembly_status: AssemblyStatus
     completed_at: Optional[datetime]
     items: list[ShopAssemblyOpeningItem]
+    # Resolved from Opening table (populated by myWork and assembleList queries)
+    opening_number: Optional[str] = None
+    building: Optional[str] = None
+    floor: Optional[str] = None
 
 
 @strawberry.type

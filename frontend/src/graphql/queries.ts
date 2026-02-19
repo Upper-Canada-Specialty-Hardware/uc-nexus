@@ -286,6 +286,9 @@ export const GET_ASSEMBLE_LIST = gql`
       assignedTo
       assemblyStatus
       completedAt
+      openingNumber
+      building
+      floor
       items {
         id
         shopAssemblyOpeningId
@@ -351,6 +354,75 @@ export const GET_PULL_REQUEST_DETAILS = gql`
         productCode
         requestedQuantity
       }
+    }
+  }
+`;
+
+export const GET_MY_WORK = gql`
+  query GetMyWork($assignedTo: String!) {
+    myWork(assignedTo: $assignedTo) {
+      id
+      shopAssemblyRequestId
+      openingId
+      pullStatus
+      assignedTo
+      assemblyStatus
+      completedAt
+      openingNumber
+      building
+      floor
+      items {
+        id
+        shopAssemblyOpeningId
+        hardwareCategory
+        productCode
+        quantity
+      }
+    }
+  }
+`;
+
+export const GET_SHIP_READY_ITEMS = gql`
+  query GetShipReadyItems($projectId: ID!) {
+    shipReadyItems(projectId: $projectId) {
+      openingItems {
+        id projectId openingId openingNumber building floor location quantity
+        assemblyCompletedAt state shelf column row createdAt updatedAt
+        installedHardware { id openingItemId productCode hardwareCategory quantity }
+      }
+      looseItems {
+        openingNumber hardwareCategory productCode availableQuantity
+      }
+    }
+  }
+`;
+
+export const GET_PACKING_SLIP_PDF_URL = gql`
+  query GetPackingSlipPdfUrl($filePath: String!) {
+    packingSlipPdfUrl(filePath: $filePath)
+  }
+`;
+
+export const GET_PROJECT_BY_SCHEDULE_ID = gql`
+  query GetProjectByScheduleId($projectId: String!) {
+    projectByScheduleId(projectId: $projectId) {
+      id
+      projectId
+      description
+      jobSiteName
+    }
+  }
+`;
+
+export const RECONCILE_SCHEDULE = gql`
+  query ReconcileSchedule($projectId: ID!, $items: [ReconciliationItemInput!]!) {
+    reconcileSchedule(projectId: $projectId, items: $items) {
+      openingNumber
+      hardwareCategory
+      productCode
+      quantityNeeded
+      quantityAvailable
+      status
     }
   }
 `;

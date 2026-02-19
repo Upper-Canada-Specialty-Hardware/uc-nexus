@@ -240,3 +240,132 @@ export const COMPLETE_PULL_REQUEST = gql`
     }
   }
 `;
+
+export const ASSIGN_OPENINGS = gql`
+  mutation AssignOpenings($input: AssignOpeningsInput!) {
+    assignOpenings(input: $input) {
+      id
+      shopAssemblyRequestId
+      openingId
+      pullStatus
+      assignedTo
+      assemblyStatus
+      completedAt
+      openingNumber
+      building
+      floor
+      items {
+        id
+        shopAssemblyOpeningId
+        hardwareCategory
+        productCode
+        quantity
+      }
+    }
+  }
+`;
+
+export const REMOVE_OPENING_FROM_USER = gql`
+  mutation RemoveOpeningFromUser($openingId: ID!) {
+    removeOpeningFromUser(openingId: $openingId) {
+      id
+      shopAssemblyRequestId
+      openingId
+      pullStatus
+      assignedTo
+      assemblyStatus
+      completedAt
+      openingNumber
+      building
+      floor
+      items {
+        id
+        shopAssemblyOpeningId
+        hardwareCategory
+        productCode
+        quantity
+      }
+    }
+  }
+`;
+
+export const COMPLETE_OPENING = gql`
+  mutation CompleteOpening($input: CompleteOpeningInput!) {
+    completeOpening(input: $input) {
+      id
+      projectId
+      openingId
+      openingNumber
+      building
+      floor
+      location
+      quantity
+      assemblyCompletedAt
+      state
+      shelf
+      column
+      row
+      createdAt
+      updatedAt
+      installedHardware {
+        id
+        openingItemId
+        productCode
+        hardwareCategory
+        quantity
+      }
+    }
+  }
+`;
+
+export const CONFIRM_SHIPMENT = gql`
+  mutation ConfirmShipment($input: ConfirmShipmentInput!) {
+    confirmShipment(input: $input) {
+      id
+      packingSlipNumber
+      projectId
+      shippedBy
+      shippedAt
+      pdfFilePath
+      createdAt
+      items {
+        id
+        packingSlipId
+        itemType
+        openingItemId
+        openingNumber
+        productCode
+        hardwareCategory
+        quantity
+      }
+    }
+  }
+`;
+
+export const FINALIZE_IMPORT_SESSION = gql`
+  mutation FinalizeImportSession($input: FinalizeImportSessionInput!) {
+    finalizeImportSession(input: $input) {
+      project {
+        id
+        projectId
+        description
+        jobSiteName
+      }
+      purchaseOrders {
+        id
+        poNumber
+        status
+      }
+      shippingOutPullRequests {
+        id
+        requestNumber
+        status
+      }
+      shopAssemblyRequest {
+        id
+        requestNumber
+        status
+      }
+    }
+  }
+`;
