@@ -139,8 +139,8 @@ interface ImportWizardProps {
 }
 
 export default function ImportWizard({ open, onClose }: ImportWizardProps) {
-  const { project, setProject } = useProject();
-  const { role } = useRole();
+  const { project: _project, setProject } = useProject();
+  const { role: _role } = useRole();
   const { showToast } = useToast();
   const { setTotalSteps, reset: resetWizardContext } = useWizard();
   const navigate = useNavigate();
@@ -194,7 +194,14 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     reconcileSchedule: ReconciliationRow[];
   }>(RECONCILE_SCHEDULE);
 
-  const [finalizeImport] = useMutation(FINALIZE_IMPORT_SESSION);
+  const [finalizeImport] = useMutation<{
+    finalizeImportSession: {
+      project: { id: string; projectId: string; description: string | null; jobSiteName: string | null };
+      purchaseOrders: Array<{ id: string; poNumber: string; status: string }>;
+      shippingOutPullRequests: Array<{ id: string; requestNumber: string; status: string }>;
+      shopAssemblyRequest: { id: string; requestNumber: string; status: string } | null;
+    };
+  }>(FINALIZE_IMPORT_SESSION);
 
   // ---- Derived Data ----
 
@@ -488,9 +495,9 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     const filteredHardwareItems = parsed.hardwareItems.filter((hi) => selectedOpenings.has(hi.opening_number));
 
     return {
-      project: snakeToCamel(parsed.project),
-      openings: selectedOpeningsList.map(snakeToCamel),
-      hardwareItems: purposes.has('po') ? filteredHardwareItems.map(snakeToCamel) : null,
+      project: snakeToCamel(parsed.project as unknown as Record<string, unknown>),
+      openings: selectedOpeningsList.map((o) => snakeToCamel(o as unknown as Record<string, unknown>)),
+      hardwareItems: purposes.has('po') ? filteredHardwareItems.map((hi) => snakeToCamel(hi as unknown as Record<string, unknown>)) : null,
       poDrafts: purposes.has('po')
         ? poDrafts.map((po) => ({
             poNumber: po.poNumber,

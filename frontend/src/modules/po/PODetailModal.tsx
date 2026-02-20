@@ -12,6 +12,7 @@ import {
   ListItemText,
 } from '@mui/material';
 import { useMutation } from '@apollo/client/react';
+import { CombinedGraphQLErrors } from '@apollo/client/errors';
 import type { GridColDef } from '@mui/x-data-grid';
 import Modal from '../../components/Modal';
 import DataTable from '../../components/DataTable';
@@ -121,11 +122,15 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
       onRefetch();
     },
     onError: (error) => {
-      const code = error.graphQLErrors?.[0]?.extensions?.code;
-      if (code === 'VALIDATION_ERROR') {
-        const field = error.graphQLErrors?.[0]?.extensions?.field;
-        if (field === 'vendor_name') {
-          setVendorNameError('Vendor name is required');
+      if (CombinedGraphQLErrors.is(error)) {
+        const code = error.errors?.[0]?.extensions?.code;
+        if (code === 'VALIDATION_ERROR') {
+          const field = error.errors?.[0]?.extensions?.field;
+          if (field === 'vendor_name') {
+            setVendorNameError('Vendor name is required');
+          } else {
+            showToast(error.message, 'error');
+          }
         } else {
           showToast(error.message, 'error');
         }
@@ -143,11 +148,15 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
     },
     onError: (error) => {
       setConfirmOrderOpen(false);
-      const code = error.graphQLErrors?.[0]?.extensions?.code;
-      if (code === 'VALIDATION_ERROR') {
-        const field = error.graphQLErrors?.[0]?.extensions?.field;
-        if (field === 'vendor_name') {
-          setVendorNameError('Vendor name is required before marking as ordered');
+      if (CombinedGraphQLErrors.is(error)) {
+        const code = error.errors?.[0]?.extensions?.code;
+        if (code === 'VALIDATION_ERROR') {
+          const field = error.errors?.[0]?.extensions?.field;
+          if (field === 'vendor_name') {
+            setVendorNameError('Vendor name is required before marking as ordered');
+          } else {
+            showToast(error.message, 'error');
+          }
         } else {
           showToast(error.message, 'error');
         }

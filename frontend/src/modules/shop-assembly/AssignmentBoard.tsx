@@ -160,7 +160,7 @@ export default function AssignmentBoard() {
 
   const [assignOpenings] = useMutation(ASSIGN_OPENINGS, {
     onCompleted: (data) => {
-      const count = data.assignOpenings.length;
+      const count = (data as { assignOpenings: unknown[] }).assignOpenings.length;
       showToast(`${count} opening(s) assigned`, 'success');
       refetch();
     },

@@ -72,7 +72,7 @@ export default function SARDetailModal({ open, sar, onClose, onRefetch }: SARDet
 
   const [approveSAR, { loading: approveLoading }] = useMutation(APPROVE_SHOP_ASSEMBLY_REQUEST, {
     onCompleted: (data) => {
-      const prNumber = data?.approveShopAssemblyRequest?.pullRequest?.requestNumber ?? '';
+      const prNumber = (data as { approveShopAssemblyRequest?: { pullRequest?: { requestNumber?: string } } })?.approveShopAssemblyRequest?.pullRequest?.requestNumber ?? '';
       showToast(
         `Shop Assembly Request approved. Pull Request ${prNumber} created.`,
         'success',

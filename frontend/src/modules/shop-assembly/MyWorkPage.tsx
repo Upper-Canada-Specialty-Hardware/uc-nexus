@@ -38,7 +38,7 @@ const columns: GridColDef[] = [
     field: 'itemCount',
     headerName: 'Hardware Items',
     flex: 1,
-    valueGetter: (value: unknown, row: MyWorkOpening) => row.items?.length ?? 0,
+    valueGetter: (_value: unknown, row: MyWorkOpening) => row.items?.length ?? 0,
   },
 ];
 

@@ -72,7 +72,7 @@ export default function PackingSlipDocument({
               {openingItems.map((item, i) => (
                 <View
                   key={i}
-                  style={[styles.tableRow, i % 2 === 1 && styles.tableRowEven]}
+                  style={[styles.tableRow, i % 2 === 1 ? styles.tableRowEven : {}]}
                 >
                   <Text style={[styles.td, { width: '25%' }]}>{item.openingNumber}</Text>
                   <Text style={[styles.td, { width: '25%' }]}>{item.building || '-'}</Text>
@@ -99,7 +99,7 @@ export default function PackingSlipDocument({
               {looseItems.map((item, i) => (
                 <View
                   key={i}
-                  style={[styles.tableRow, i % 2 === 1 && styles.tableRowEven]}
+                  style={[styles.tableRow, i % 2 === 1 ? styles.tableRowEven : {}]}
                 >
                   <Text style={[styles.td, { width: '25%' }]}>{item.openingNumber}</Text>
                   <Text style={[styles.td, { width: '25%' }]}>{item.productCode}</Text>

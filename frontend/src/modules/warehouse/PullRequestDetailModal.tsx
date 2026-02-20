@@ -152,7 +152,7 @@ export default function PullRequestDetailModal({
 
   const [approvePR, { loading: approveLoading }] = useMutation(APPROVE_PULL_REQUEST, {
     onCompleted: (data) => {
-      const outcome = data?.approvePullRequest?.outcome;
+      const outcome = (data as { approvePullRequest?: { outcome?: string } })?.approvePullRequest?.outcome;
       setConfirmApproveOpen(false);
       if (outcome === 'CANCELLED') {
         setCancelledDialogOpen(true);

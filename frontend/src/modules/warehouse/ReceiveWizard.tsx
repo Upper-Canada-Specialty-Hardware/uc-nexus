@@ -144,11 +144,6 @@ export default function ReceiveWizard({ open, onClose }: ReceiveWizardProps) {
   const openPOs = openPOsData?.openPOs ?? [];
   const poDetails = poDetailsData?.poReceivingDetails ?? null;
 
-  const selectedPO = useMemo(
-    () => openPOs.find((po) => po.id === selectedPOId) ?? null,
-    [openPOs, selectedPOId],
-  );
-
   // Line items with pending > 0 and receive now > 0
   const lineItemsToReceive = useMemo(() => {
     if (!poDetails) return [];
@@ -501,7 +496,7 @@ export default function ReceiveWizard({ open, onClose }: ReceiveWizardProps) {
                     initialState={{
                       pagination: { paginationModel: { pageSize: 10 } },
                     }}
-                    rowSelectionModel={selectedPOId ? [selectedPOId] : []}
+                    rowSelectionModel={{ type: 'include' as const, ids: new Set(selectedPOId ? [selectedPOId] : []) }}
                     onRowClick={(params) => setSelectedPOId(params.id as string)}
                     density="compact"
                   />
