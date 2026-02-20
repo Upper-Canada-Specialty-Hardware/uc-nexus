@@ -21,7 +21,6 @@ class PackingSlip(Base):
     )
     shipped_by: Mapped[str] = mapped_column(String, nullable=False)
     shipped_at: Mapped[datetime] = mapped_column(nullable=False)
-    pdf_file_path: Mapped[str] = mapped_column(String, nullable=False)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
 
     items: Mapped[list["PackingSlipItem"]] = relationship(

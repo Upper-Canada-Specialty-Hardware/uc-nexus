@@ -23,7 +23,6 @@ def upgrade() -> None:
         sa.Column('project_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('projects.id'), nullable=False),
         sa.Column('shipped_by', sa.String(), nullable=False),
         sa.Column('shipped_at', sa.DateTime(), nullable=False),
-        sa.Column('pdf_file_path', sa.String(), nullable=False),
         sa.Column('created_at', sa.DateTime(), nullable=False),
     )
     op.create_index('ix_packing_slips_project', 'packing_slips', ['project_id'])

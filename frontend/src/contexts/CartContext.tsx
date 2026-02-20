@@ -8,6 +8,9 @@ export interface CartItem {
   hardwareCategory?: string;
   productCode?: string;
   quantity: number;
+  building?: string;
+  floor?: string;
+  location?: string;
 }
 
 interface CartContextType {

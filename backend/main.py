@@ -1,13 +1,8 @@
-import uuid
 from typing import Any, Callable
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
 
-from app.database import SessionLocal
-from app.models.shipping import PackingSlip
-from app.services import file_storage_service
 import strawberry
 from strawberry.fastapi import GraphQLRouter
 from strawberry.extensions import SchemaExtension
@@ -61,15 +56,3 @@ app.include_router(graphql_app, prefix="/graphql")
 @app.get("/health")
 def health():
     return {"status": "ok"}
-
-
-@app.get("/packing-slips/{packing_slip_id}/pdf")
-def download_packing_slip_pdf(packing_slip_id: str):
-    """Generate a signed S3 URL for a packing slip PDF and redirect to it."""
-    with SessionLocal() as session:
-        ps = session.get(PackingSlip, uuid.UUID(packing_slip_id))
-        if ps is None or not ps.pdf_file_path:
-            from fastapi import HTTPException
-            raise HTTPException(status_code=404, detail="Packing slip not found")
-        signed_url = file_storage_service.generate_signed_url(ps.pdf_file_path)
-        return RedirectResponse(url=signed_url)

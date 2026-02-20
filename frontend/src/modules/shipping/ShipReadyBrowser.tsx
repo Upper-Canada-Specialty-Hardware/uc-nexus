@@ -1,10 +1,10 @@
 import { useState, useMemo, useCallback } from 'react';
-import { Box, Typography, Tab, Tabs, Button, TextField, Chip } from '@mui/material';
+import { Box, Tab, Tabs, Button, TextField, Chip, Alert } from '@mui/material';
 import AddShoppingCartIcon from '@mui/icons-material/AddShoppingCart';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useQuery } from '@apollo/client/react';
 import { useProject } from '../../contexts/ProjectContext';
-import { useCart, type CartItem } from '../../contexts/CartContext';
+import { useCart } from '../../contexts/CartContext';
 import { useToast } from '../../components/Toast';
 import { GET_SHIP_READY_ITEMS } from '../../graphql/queries';
 
@@ -57,7 +57,8 @@ export default function ShipReadyBrowser() {
   const [looseQuantities, setLooseQuantities] = useState<Record<string, number>>({});
 
   const { data, loading } = useQuery<ShipReadyData>(GET_SHIP_READY_ITEMS, {
-    variables: { projectId: project.id },
+    variables: { projectId: project?.id ?? '' },
+    skip: !project,
     pollInterval: 10000,
   });
 
@@ -77,6 +78,9 @@ export default function ShipReadyBrowser() {
         openingItemId: oi.id,
         openingNumber: oi.openingNumber,
         quantity: 1,
+        building: oi.building,
+        floor: oi.floor,
+        location: oi.location,
       });
       showToast(`Opening ${oi.openingNumber} added to cart`, 'success');
     },
@@ -203,6 +207,8 @@ export default function ShipReadyBrowser() {
     ],
     [handleAddLooseItem, looseQuantities],
   );
+
+  if (!project) return <Alert severity="info">Please select a project</Alert>;
 
   return (
     <Box>

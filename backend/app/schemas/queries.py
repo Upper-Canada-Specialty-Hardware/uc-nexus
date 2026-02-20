@@ -43,7 +43,6 @@ from .types import (
     ShopAssemblyOpeningItem,
     ReconciliationResult,
 )
-from app.services import file_storage_service
 
 
 def _po_line_item_to_type(li) -> POLineItem:
@@ -308,7 +307,6 @@ def _packing_slip_to_type(ps) -> PackingSlipType:
         project_id=strawberry.ID(str(ps.project_id)),
         shipped_by=ps.shipped_by,
         shipped_at=ps.shipped_at,
-        pdf_file_path=ps.pdf_file_path,
         created_at=ps.created_at,
         items=[_packing_slip_item_to_type(i) for i in ps.items],
     )
@@ -532,10 +530,6 @@ class Query:
                     for li in data["loose_items"]
                 ],
             )
-
-    @strawberry.field
-    def packing_slip_pdf_url(self, file_path: str) -> str:
-        return file_storage_service.generate_signed_url(file_path)
 
     @strawberry.field
     def notifications(

@@ -21,6 +21,7 @@
     "@mui/icons-material": "^7.3.8",
     "@mui/material": "^7.3.8",
     "@mui/x-data-grid": "^8.27.1",
+    "@react-pdf/renderer": "^4.3.2",
     "@tailwindcss/vite": "^4.2.0",
     "fast-xml-parser": "^5.3.6",
     "graphql": "^16.12.0",

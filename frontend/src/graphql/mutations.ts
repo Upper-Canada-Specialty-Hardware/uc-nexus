@@ -326,7 +326,6 @@ export const CONFIRM_SHIPMENT = gql`
       projectId
       shippedBy
       shippedAt
-      pdfFilePath
       createdAt
       items {
         id

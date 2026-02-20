@@ -1,16 +1,17 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import {
   Dialog, DialogTitle, DialogContent, DialogActions, Button, TextField,
   Typography, Box, CircularProgress, Alert, List, ListItem, ListItemText,
 } from '@mui/material';
-import { useMutation, useLazyQuery } from '@apollo/client/react';
+import { useMutation } from '@apollo/client/react';
+import { pdf } from '@react-pdf/renderer';
 import { useProject } from '../../contexts/ProjectContext';
 import { useRole } from '../../contexts/RoleContext';
-import { useCart } from '../../contexts/CartContext';
+import { useCart, type CartItem } from '../../contexts/CartContext';
 import { useToast } from '../../components/Toast';
 import { useNavigate } from 'react-router-dom';
 import { CONFIRM_SHIPMENT } from '../../graphql/mutations';
-import { GET_PACKING_SLIP_PDF_URL } from '../../graphql/queries';
+import PackingSlipDocument from './PackingSlipDocument';
 
 interface PackingSlipFormProps {
   open: boolean;
@@ -25,7 +26,6 @@ interface ShipmentResult {
     projectId: string;
     shippedBy: string;
     shippedAt: string;
-    pdfFilePath: string;
     createdAt: string;
     items: Array<{
       id: string;
@@ -53,23 +53,31 @@ export default function PackingSlipForm({ open, onClose, onShipped }: PackingSli
   const [packingSlipNumber, setPackingSlipNumber] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ShipmentResult['confirmShipment'] | null>(null);
+  const [generatingPdf, setGeneratingPdf] = useState(false);
+
+  // Snapshot cart items at confirm time so they survive clearCart
+  const cartSnapshotRef = useRef<CartItem[]>([]);
 
   const openingItemCount = items.filter((i) => i.itemType === 'Opening_Item').length;
   const looseItemCount = items.filter((i) => i.itemType === 'Loose').length;
 
   const [confirmShipment, { loading: confirming }] = useMutation<ShipmentResult>(CONFIRM_SHIPMENT);
 
-  const [fetchPdfUrl, { loading: fetchingPdf }] = useLazyQuery<{
-    packingSlipPdfUrl: string;
-  }>(GET_PACKING_SLIP_PDF_URL);
-
   const handleConfirm = useCallback(async () => {
     setError(null);
+
+    if (!project) {
+      setError('No project selected.');
+      return;
+    }
 
     if (!SLIP_NUMBER_PATTERN.test(packingSlipNumber)) {
       setError('Packing slip number must be 1-50 characters (alphanumeric, hyphens, underscores).');
       return;
     }
+
+    // Snapshot the cart items before mutation (cart gets cleared later)
+    cartSnapshotRef.current = [...items];
 
     const shipmentItems = items.map((item) => {
       if (item.itemType === 'Opening_Item') {
@@ -108,22 +116,50 @@ export default function PackingSlipForm({ open, onClose, onShipped }: PackingSli
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to confirm shipment');
     }
-  }, [confirmShipment, items, packingSlipNumber, project.id, role, showToast]);
+  }, [confirmShipment, items, packingSlipNumber, project, role, showToast]);
 
   const handleViewPdf = useCallback(async () => {
-    if (!result?.pdfFilePath) return;
+    if (!result) return;
 
+    setGeneratingPdf(true);
     try {
-      const { data } = await fetchPdfUrl({
-        variables: { filePath: result.pdfFilePath },
-      });
-      if (data?.packingSlipPdfUrl) {
-        window.open(data.packingSlipPdfUrl, '_blank');
-      }
-    } catch (err) {
-      showToast('Failed to fetch PDF URL', 'error');
+      const cartItems = cartSnapshotRef.current;
+      const openingItems = cartItems
+        .filter((i) => i.itemType === 'Opening_Item')
+        .map((i) => ({
+          openingNumber: i.openingNumber ?? '',
+          building: i.building,
+          floor: i.floor,
+          location: i.location,
+        }));
+      const looseItems = cartItems
+        .filter((i) => i.itemType === 'Loose')
+        .map((i) => ({
+          openingNumber: i.openingNumber ?? '',
+          productCode: i.productCode ?? '',
+          hardwareCategory: i.hardwareCategory ?? '',
+          quantity: i.quantity,
+        }));
+
+      const blob = await pdf(
+        <PackingSlipDocument
+          packingSlipNumber={result.packingSlipNumber}
+          projectName={project?.description ?? 'Unknown Project'}
+          shippedBy={result.shippedBy}
+          shippedAt={new Date(result.shippedAt).toLocaleString()}
+          openingItems={openingItems}
+          looseItems={looseItems}
+        />
+      ).toBlob();
+
+      const url = URL.createObjectURL(blob);
+      window.open(url, '_blank');
+    } catch {
+      showToast('Failed to generate PDF', 'error');
+    } finally {
+      setGeneratingPdf(false);
     }
-  }, [fetchPdfUrl, result, showToast]);
+  }, [result, project, showToast]);
 
   const handleShipMore = useCallback(() => {
     clearCart();
@@ -224,8 +260,8 @@ export default function PackingSlipForm({ open, onClose, onShipped }: PackingSli
             </Typography>
           </DialogContent>
           <DialogActions>
-            <Button onClick={handleViewPdf} disabled={fetchingPdf}>
-              {fetchingPdf ? 'Loading...' : 'View Packing Slip'}
+            <Button onClick={handleViewPdf} disabled={generatingPdf}>
+              {generatingPdf ? 'Generating...' : 'View Packing Slip'}
             </Button>
             <Button onClick={handleShipMore}>Ship More Items</Button>
             <Button variant="contained" onClick={handleReturnHome}>

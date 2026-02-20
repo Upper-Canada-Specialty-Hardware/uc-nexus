@@ -69,51 +69,6 @@ export const GET_PURCHASE_ORDERS = gql`
   }
 `;
 
-export const GET_PURCHASE_ORDER = gql`
-  query GetPurchaseOrder($id: ID!) {
-    purchaseOrder(id: $id) {
-      id
-      poNumber
-      projectId
-      status
-      vendorName
-      vendorContact
-      expectedDeliveryDate
-      orderedAt
-      createdAt
-      updatedAt
-      lineItems {
-        id
-        poId
-        hardwareCategory
-        productCode
-        classification
-        orderedQuantity
-        receivedQuantity
-        unitCost
-        createdAt
-        updatedAt
-      }
-      receiveRecords {
-        id
-        poId
-        receivedAt
-        receivedBy
-        createdAt
-        lineItems {
-          id
-          receiveRecordId
-          poLineItemId
-          hardwareCategory
-          productCode
-          quantityReceived
-          createdAt
-        }
-      }
-    }
-  }
-`;
-
 export const GET_INVENTORY_HIERARCHY = gql`
   query GetInventoryHierarchy($projectId: ID!) {
     inventoryHierarchy(projectId: $projectId) {
@@ -329,35 +284,6 @@ export const GET_PULL_REQUESTS = gql`
   }
 `;
 
-export const GET_PULL_REQUEST_DETAILS = gql`
-  query GetPullRequestDetails($id: ID!) {
-    pullRequestDetails(id: $id) {
-      id
-      requestNumber
-      projectId
-      source
-      status
-      requestedBy
-      assignedTo
-      createdAt
-      updatedAt
-      approvedAt
-      completedAt
-      cancelledAt
-      items {
-        id
-        pullRequestId
-        itemType
-        openingNumber
-        openingItemId
-        hardwareCategory
-        productCode
-        requestedQuantity
-      }
-    }
-  }
-`;
-
 export const GET_MY_WORK = gql`
   query GetMyWork($assignedTo: String!) {
     myWork(assignedTo: $assignedTo) {
@@ -394,12 +320,6 @@ export const GET_SHIP_READY_ITEMS = gql`
         openingNumber hardwareCategory productCode availableQuantity
       }
     }
-  }
-`;
-
-export const GET_PACKING_SLIP_PDF_URL = gql`
-  query GetPackingSlipPdfUrl($filePath: String!) {
-    packingSlipPdfUrl(filePath: $filePath)
   }
 `;
 

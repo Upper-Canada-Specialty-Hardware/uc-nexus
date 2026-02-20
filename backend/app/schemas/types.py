@@ -282,7 +282,6 @@ class PackingSlip:
     project_id: strawberry.ID
     shipped_by: str
     shipped_at: datetime
-    pdf_file_path: str
     created_at: datetime
     items: list[PackingSlipItem]
 

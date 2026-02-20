@@ -13,7 +13,6 @@ from app.models.pull_request import (
     PullRequestItem as PullRequestItemModel,
 )
 from app.models.shipping import PackingSlip, PackingSlipItem
-from app.models.project import Project as ProjectModel
 from app.models.enums import (
     OpeningItemState,
     PullRequestSource,
@@ -23,7 +22,6 @@ from app.models.enums import (
 )
 from app.services.locking import lock_rows
 from app.services import notification_service
-from app.services import pdf_service, file_storage_service
 from app.errors import NotFoundError, ValidationError, ConflictError, InvalidStateTransitionError
 
 
@@ -127,7 +125,7 @@ def confirm_shipment(
 ) -> PackingSlip:
     """
     Confirm a shipment: create PackingSlip + PackingSlipItems, transition
-    OpeningItem states to Shipped_Out, generate PDF, upload to S3.
+    OpeningItem states to Shipped_Out.
 
     Args:
         session: SQLAlchemy session
@@ -217,15 +215,11 @@ def confirm_shipment(
         project_id=project_id,
         shipped_by=shipped_by,
         shipped_at=now,
-        pdf_file_path="",  # Will be updated after PDF generation
     )
     session.add(packing_slip)
     session.flush()
 
-    # 6. Create PackingSlipItems and collect PDF data
-    pdf_opening_items = []
-    pdf_loose_items = []
-
+    # 6. Create PackingSlipItems
     for item in opening_item_cart:
         oi = session.get(OpeningItemModel, item["opening_item_id"])
         psi = PackingSlipItem(
@@ -239,13 +233,6 @@ def confirm_shipment(
             quantity=1,
         )
         session.add(psi)
-        if oi:
-            pdf_opening_items.append({
-                "opening_number": oi.opening_number,
-                "building": oi.building,
-                "floor": oi.floor,
-                "location": oi.location,
-            })
 
     for item in loose_cart:
         psi = PackingSlipItem(
@@ -258,40 +245,13 @@ def confirm_shipment(
             quantity=item["quantity"],
         )
         session.add(psi)
-        pdf_loose_items.append({
-            "opening_number": item["opening_number"],
-            "product_code": item["product_code"],
-            "hardware_category": item["hardware_category"],
-            "quantity": item["quantity"],
-        })
 
     # 7. Update OpeningItem states to Shipped_Out
     if oi_ids:
         for oi in locked_ois:
             oi.state = OpeningItemState.SHIPPED_OUT
 
-    # 8. Look up project name for PDF
-    project = session.get(ProjectModel, project_id)
-    project_name = project.description if project else "Unknown Project"
-
-    # 9. Generate PDF
-    pdf_bytes = pdf_service.generate_packing_slip_pdf(
-        packing_slip_number=packing_slip_number,
-        project_name=project_name,
-        shipped_by=shipped_by,
-        shipped_at=now,
-        opening_items=pdf_opening_items,
-        loose_items=pdf_loose_items,
-    )
-
-    # 10. Upload to S3
-    s3_key = f"packing-slips/{project_id}/{packing_slip_number}.pdf"
-    file_storage_service.upload_pdf(s3_key, pdf_bytes)
-
-    # 11. Update PackingSlip with PDF path
-    packing_slip.pdf_file_path = s3_key
-
-    # 12. Create notification
+    # 8. Create notification
     item_count = len(opening_item_cart) + sum(i["quantity"] for i in loose_cart)
     notification_service.create_notification(
         session,

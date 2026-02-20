@@ -142,7 +142,6 @@ type PackingSlip {
   project_id: ID!
   shipped_by: String!
   shipped_at: DateTime!
-  pdf_file_path: String!
   created_at: DateTime!
   items: [PackingSlipItem!]!
 }
