@@ -23,11 +23,11 @@ def upgrade() -> None:
     op.create_check_constraint('ck_opening_item_hardware_quantity_positive', 'opening_item_hardware', 'quantity >= 1')
     op.create_check_constraint('ck_pull_request_items_requested_quantity_positive', 'pull_request_items', 'requested_quantity >= 1')
     op.create_check_constraint('ck_shop_assembly_opening_items_quantity_positive', 'shop_assembly_opening_items', 'quantity >= 1')
-    op.create_check_constraint('ck_packing_slip_items_quantity_positive', 'packing_slip_items', 'quantity >= 1')
+    # ck_packing_slip_items_quantity_positive already created inline in 006_shipping_entities
 
 
 def downgrade() -> None:
-    op.drop_constraint('ck_packing_slip_items_quantity_positive', 'packing_slip_items', type_='check')
+    # ck_packing_slip_items_quantity_positive dropped by 006_shipping_entities downgrade
     op.drop_constraint('ck_shop_assembly_opening_items_quantity_positive', 'shop_assembly_opening_items', type_='check')
     op.drop_constraint('ck_pull_request_items_requested_quantity_positive', 'pull_request_items', type_='check')
     op.drop_constraint('ck_opening_item_hardware_quantity_positive', 'opening_item_hardware', type_='check')

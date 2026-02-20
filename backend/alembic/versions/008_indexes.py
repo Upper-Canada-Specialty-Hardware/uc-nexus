@@ -39,15 +39,15 @@ def upgrade() -> None:
     op.create_index('ix_shop_assembly_openings_request', 'shop_assembly_openings', ['shop_assembly_request_id'])
     op.create_index('ix_shop_assembly_openings_opening_pull', 'shop_assembly_openings', ['opening_id', 'pull_status'])
     op.create_index('ix_shop_assembly_opening_items_opening', 'shop_assembly_opening_items', ['shop_assembly_opening_id'])
-    op.create_index('ix_packing_slips_project', 'packing_slips', ['project_id'])
-    op.create_index('ix_packing_slip_items_packing_slip', 'packing_slip_items', ['packing_slip_id'])
+    # ix_packing_slips_project and ix_packing_slip_items_packing_slip
+    # already created in 006_shipping_entities
     op.create_index('ix_notifications_project_role_read', 'notifications', ['project_id', 'recipient_role', 'is_read'])
 
 
 def downgrade() -> None:
     op.drop_index('ix_notifications_project_role_read', 'notifications')
-    op.drop_index('ix_packing_slip_items_packing_slip', 'packing_slip_items')
-    op.drop_index('ix_packing_slips_project', 'packing_slips')
+    # ix_packing_slip_items_packing_slip and ix_packing_slips_project
+    # are dropped by 006_shipping_entities downgrade
     op.drop_index('ix_shop_assembly_opening_items_opening', 'shop_assembly_opening_items')
     op.drop_index('ix_shop_assembly_openings_opening_pull', 'shop_assembly_openings')
     op.drop_index('ix_shop_assembly_openings_request', 'shop_assembly_openings')
