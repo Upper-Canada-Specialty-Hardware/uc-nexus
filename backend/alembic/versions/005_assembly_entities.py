@@ -16,31 +16,6 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # Create enum types
-    opening_item_state_enum = sa.Enum(
-        'In_Inventory', 'Ship_Ready', 'Shipped_Out',
-        name='opening_item_state',
-    )
-    opening_item_state_enum.create(op.get_bind(), checkfirst=True)
-
-    shop_assembly_request_status_enum = sa.Enum(
-        'Pending', 'Approved', 'Rejected',
-        name='shop_assembly_request_status',
-    )
-    shop_assembly_request_status_enum.create(op.get_bind(), checkfirst=True)
-
-    pull_status_enum = sa.Enum(
-        'Not_Pulled', 'Partial', 'Pulled',
-        name='pull_status',
-    )
-    pull_status_enum.create(op.get_bind(), checkfirst=True)
-
-    assembly_status_enum = sa.Enum(
-        'Pending', 'Completed',
-        name='assembly_status',
-    )
-    assembly_status_enum.create(op.get_bind(), checkfirst=True)
-
     # opening_items table
     op.create_table(
         'opening_items',
@@ -55,7 +30,7 @@ def upgrade() -> None:
         sa.Column('assembly_completed_at', sa.DateTime(), nullable=False),
         sa.Column('state', sa.Enum(
             'In_Inventory', 'Ship_Ready', 'Shipped_Out',
-            name='opening_item_state', create_type=False,
+            name='opening_item_state',
         ), nullable=False),
         sa.Column('shelf', sa.String(), nullable=True),
         sa.Column('column', sa.String(), nullable=True),
@@ -82,7 +57,7 @@ def upgrade() -> None:
         sa.Column('project_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('projects.id'), nullable=False),
         sa.Column('status', sa.Enum(
             'Pending', 'Approved', 'Rejected',
-            name='shop_assembly_request_status', create_type=False,
+            name='shop_assembly_request_status',
         ), nullable=False),
         sa.Column('created_by', sa.String(), nullable=False),
         sa.Column('approved_by', sa.String(), nullable=True),
@@ -101,12 +76,12 @@ def upgrade() -> None:
         sa.Column('opening_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('openings.id'), nullable=False),
         sa.Column('pull_status', sa.Enum(
             'Not_Pulled', 'Partial', 'Pulled',
-            name='pull_status', create_type=False,
+            name='pull_status',
         ), nullable=False),
         sa.Column('assigned_to', sa.String(), nullable=True),
         sa.Column('assembly_status', sa.Enum(
             'Pending', 'Completed',
-            name='assembly_status', create_type=False,
+            name='assembly_status',
         ), nullable=False),
         sa.Column('completed_at', sa.DateTime(), nullable=True),
     )

@@ -33,7 +33,7 @@ def upgrade() -> None:
         sa.Column('packing_slip_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('packing_slips.id'), nullable=False),
         sa.Column('item_type', sa.Enum(
             'Loose', 'Opening_Item',
-            name='pull_request_item_type', create_type=False,
+            name='pull_request_item_type',
         ), nullable=False),
         sa.Column('opening_item_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('opening_items.id'), nullable=True),
         sa.Column('opening_number', sa.String(), nullable=True),

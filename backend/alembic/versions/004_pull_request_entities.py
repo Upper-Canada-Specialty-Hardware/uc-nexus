@@ -16,25 +16,6 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # Create enum types
-    pull_request_source_enum = sa.Enum(
-        'Shop_Assembly', 'Shipping_Out',
-        name='pull_request_source',
-    )
-    pull_request_source_enum.create(op.get_bind(), checkfirst=True)
-
-    pull_request_status_enum = sa.Enum(
-        'Pending', 'In_Progress', 'Completed', 'Cancelled',
-        name='pull_request_status',
-    )
-    pull_request_status_enum.create(op.get_bind(), checkfirst=True)
-
-    pull_request_item_type_enum = sa.Enum(
-        'Loose', 'Opening_Item',
-        name='pull_request_item_type',
-    )
-    pull_request_item_type_enum.create(op.get_bind(), checkfirst=True)
-
     # pull_requests table
     op.create_table(
         'pull_requests',
@@ -43,11 +24,11 @@ def upgrade() -> None:
         sa.Column('project_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('projects.id'), nullable=False),
         sa.Column('source', sa.Enum(
             'Shop_Assembly', 'Shipping_Out',
-            name='pull_request_source', create_type=False,
+            name='pull_request_source',
         ), nullable=False),
         sa.Column('status', sa.Enum(
             'Pending', 'In_Progress', 'Completed', 'Cancelled',
-            name='pull_request_status', create_type=False,
+            name='pull_request_status',
         ), nullable=False),
         sa.Column('requested_by', sa.String(), nullable=False),
         sa.Column('assigned_to', sa.String(), nullable=True),
@@ -67,7 +48,7 @@ def upgrade() -> None:
         sa.Column('pull_request_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('pull_requests.id'), nullable=False),
         sa.Column('item_type', sa.Enum(
             'Loose', 'Opening_Item',
-            name='pull_request_item_type', create_type=False,
+            name='pull_request_item_type',
         ), nullable=False),
         sa.Column('opening_number', sa.String(), nullable=False),
         sa.Column('opening_item_id', postgresql.UUID(as_uuid=True), nullable=True),

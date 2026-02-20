@@ -16,12 +16,6 @@ depends_on = None
 
 
 def upgrade() -> None:
-    po_status_enum = sa.Enum(
-        'Draft', 'Ordered', 'Partially_Received', 'Closed', 'Cancelled',
-        name='po_status',
-    )
-    po_status_enum.create(op.get_bind(), checkfirst=True)
-
     op.create_table(
         'purchase_orders',
         sa.Column('id', postgresql.UUID(as_uuid=True), primary_key=True),
@@ -29,7 +23,7 @@ def upgrade() -> None:
         sa.Column('project_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('projects.id'), nullable=False),
         sa.Column('status', sa.Enum(
             'Draft', 'Ordered', 'Partially_Received', 'Closed', 'Cancelled',
-            name='po_status', create_type=False,
+            name='po_status',
         ), nullable=False),
         sa.Column('vendor_name', sa.String(), nullable=True),
         sa.Column('vendor_contact', sa.String(), nullable=True),
@@ -48,7 +42,7 @@ def upgrade() -> None:
         sa.Column('product_code', sa.String(), nullable=False),
         sa.Column('classification', sa.Enum(
             'Site_Hardware', 'Shop_Hardware',
-            name='classification', create_type=False,
+            name='classification',
         ), nullable=False),
         sa.Column('ordered_quantity', sa.Integer(), nullable=False),
         sa.Column('received_quantity', sa.Integer(), nullable=False, server_default='0'),

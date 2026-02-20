@@ -16,18 +16,6 @@ depends_on = None
 
 
 def upgrade() -> None:
-    classification_enum = sa.Enum(
-        'Site_Hardware', 'Shop_Hardware',
-        name='classification',
-    )
-    classification_enum.create(op.get_bind(), checkfirst=True)
-
-    hardware_item_state_enum = sa.Enum(
-        'In_PO',
-        name='hardware_item_state',
-    )
-    hardware_item_state_enum.create(op.get_bind(), checkfirst=True)
-
     op.create_table(
         'projects',
         sa.Column('id', postgresql.UUID(as_uuid=True), primary_key=True),
@@ -96,11 +84,11 @@ def upgrade() -> None:
         sa.Column('submittal_id', sa.String(), nullable=True),
         sa.Column('classification', sa.Enum(
             'Site_Hardware', 'Shop_Hardware',
-            name='classification', create_type=False,
+            name='classification',
         ), nullable=True),
         sa.Column('state', sa.Enum(
             'In_PO',
-            name='hardware_item_state', create_type=False,
+            name='hardware_item_state',
         ), nullable=False),
         sa.Column('po_line_item_id', postgresql.UUID(as_uuid=True), nullable=True),
         sa.Column('created_at', sa.DateTime(), nullable=False),
