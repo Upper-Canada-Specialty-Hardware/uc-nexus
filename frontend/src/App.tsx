@@ -40,7 +40,7 @@ const MODULE_LINKS = [
   { path: '/app/warehouse', label: 'Warehouse', icon: <WarehouseIcon sx={{ fontSize: 40 }} />, description: 'Inventory and receiving' },
   { path: '/app/shop-assembly', label: 'Shop Assembly', icon: <BuildIcon sx={{ fontSize: 40 }} />, description: 'Assembly requests and tracking' },
   { path: '/app/shipping', label: 'Shipping', icon: <LocalShippingIcon sx={{ fontSize: 40 }} />, description: 'Shipping out management' },
-  { path: '/app/admin', label: 'Admin', icon: <AdminPanelSettingsIcon sx={{ fontSize: 40 }} />, description: 'Administration and settings' },
+  { path: '/app/admin', label: 'Admin', icon: <AdminPanelSettingsIcon sx={{ fontSize: 40 }} />, description: 'Inventory corrections' },
 ];
 
 function ModuleSelector() {

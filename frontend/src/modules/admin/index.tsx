@@ -1,3 +1,5 @@
+import { Navigate } from 'react-router-dom';
+
 export default function AdminModule() {
-  return <div>Admin Module</div>;
+  return <Navigate to="/app/warehouse/inventory" replace />;
 }

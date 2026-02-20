@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useRef } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   Dialog,
   AppBar,
@@ -44,6 +44,7 @@ import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useLazyQuery, useMutation } from '@apollo/client/react';
 import { useProject } from '../../contexts/ProjectContext';
 import { useRole } from '../../contexts/RoleContext';
+import { useWizard } from '../../contexts/WizardContext';
 import { useToast } from '../../components/Toast';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import ProgressBar from '../../components/ProgressBar';
@@ -141,8 +142,18 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
   const { project, setProject } = useProject();
   const { role } = useRole();
   const { showToast } = useToast();
+  const { setTotalSteps, reset: resetWizardContext } = useWizard();
   const navigate = useNavigate();
   const parser = useHardwareScheduleParser();
+
+  // Signal WizardContext when import wizard is open (for unsaved-state detection in AppLayout)
+  useEffect(() => {
+    if (open) {
+      setTotalSteps(6);
+    } else {
+      resetWizardContext();
+    }
+  }, [open, setTotalSteps, resetWizardContext]);
 
   // Step tracking
   const [activeStep, setActiveStep] = useState(0);
