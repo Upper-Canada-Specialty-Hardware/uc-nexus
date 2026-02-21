@@ -23,10 +23,6 @@ import {
   AccordionDetails,
   Tabs,
   Tab,
-  Radio,
-  RadioGroup,
-  FormControl,
-  FormLabel,
   Divider,
   List,
   ListItem,
@@ -57,6 +53,7 @@ import {
 } from '../../graphql/queries';
 import { FINALIZE_IMPORT_SESSION } from '../../graphql/mutations';
 import type { ParsedOpening, ParsedHardwareItem } from '../../types/hardwareSchedule';
+import ClassificationGrid, { type ClassificationRow } from './ClassificationGrid';
 
 // ---- Local Types ----
 
@@ -224,14 +221,29 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     [hardwareItems, selectedOpenings],
   );
 
-  // Unique classification keys for items that need classifying
-  const uniqueClassificationKeys = useMemo(() => {
-    const keys = new Set<string>();
+  // Classification rows for DataGrid (one row per unique category|productCode|unitCost)
+  const classificationRows = useMemo<ClassificationRow[]>(() => {
+    const map = new Map<string, { cat: string; code: string; cost: number; count: number; qty: number }>();
     for (const hi of selectedHardwareItems) {
-      keys.add(classificationKey(hi));
+      const key = classificationKey(hi);
+      const existing = map.get(key);
+      if (existing) {
+        existing.count += 1;
+        existing.qty += hi.item_quantity;
+      } else {
+        map.set(key, { cat: hi.hardware_category, code: hi.product_code, cost: hi.unit_cost ?? 0, count: 1, qty: hi.item_quantity });
+      }
     }
-    return Array.from(keys).sort();
-  }, [selectedHardwareItems]);
+    return Array.from(map.entries()).map(([key, v]) => ({
+      id: key,
+      hardwareCategory: v.cat,
+      productCode: v.code,
+      unitCost: v.cost,
+      itemCount: v.count,
+      totalQuantity: v.qty,
+      classification: classifications.get(key) ?? '',
+    }));
+  }, [selectedHardwareItems, classifications]);
 
   // Reconciliation rows for DataGrid
   const reconciliationRows = useMemo<ReconciliationRow[]>(() => {
@@ -420,11 +432,11 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     );
   }, []);
 
-  // Step 5a: Classification
-  const setClassification = useCallback((key: string, value: string) => {
+  // Step 5a: Classification (batch-capable)
+  const classifyBatch = useCallback((keys: string[], value: string) => {
     setClassifications((prev) => {
       const next = new Map(prev);
-      next.set(key, value);
+      for (const key of keys) next.set(key, value);
       return next;
     });
   }, []);
@@ -636,6 +648,8 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     if (purposes.has('po')) {
       const valid = poDrafts.some((d) => d.poNumber.trim() !== '' && d.itemRefs.size > 0);
       if (!valid) return false;
+      // All items must be classified
+      if (!classificationRows.every((r) => r.classification !== '')) return false;
     }
     // Assembly: need request number
     if (purposes.has('assembly') && sarRequestNumber.trim() === '') return false;
@@ -647,7 +661,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
       if (!valid) return false;
     }
     return true;
-  }, [purposes, poDrafts, sarRequestNumber, shippingPRDrafts]);
+  }, [purposes, poDrafts, sarRequestNumber, shippingPRDrafts, classificationRows]);
 
   // ---- Reconciliation DataGrid columns ----
 
@@ -1017,35 +1031,23 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
                     <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 600 }}>
                       Item Classification
                     </Typography>
-                    <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                      Classify each unique item as Site Hardware or Shop Hardware.
+                    <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                      Classify each unique item group as Site Hardware or Shop Hardware.
+                      Use the category header buttons for bulk classification, or select rows for batch actions.
                     </Typography>
-                    {uniqueClassificationKeys.map((ck) => {
-                      const [cat, code, cost] = ck.split('|');
-                      return (
-                        <FormControl key={ck} sx={{ display: 'block', mb: 1 }}>
-                          <FormLabel sx={{ fontSize: '0.875rem' }}>
-                            {cat} / {code} (${cost})
-                          </FormLabel>
-                          <RadioGroup
-                            row
-                            value={classifications.get(ck) ?? ''}
-                            onChange={(e) => setClassification(ck, e.target.value)}
-                          >
-                            <FormControlLabel
-                              value="SITE_HARDWARE"
-                              control={<Radio size="small" />}
-                              label="Site Hardware"
-                            />
-                            <FormControlLabel
-                              value="SHOP_HARDWARE"
-                              control={<Radio size="small" />}
-                              label="Shop Hardware"
-                            />
-                          </RadioGroup>
-                        </FormControl>
-                      );
-                    })}
+                    <Typography
+                      variant="body2"
+                      sx={{ mb: 2 }}
+                      color={
+                        classificationRows.every((r) => r.classification !== '')
+                          ? 'success.main'
+                          : 'text.secondary'
+                      }
+                    >
+                      {classificationRows.filter((r) => r.classification !== '').length} of{' '}
+                      {classificationRows.length} item groups classified
+                    </Typography>
+                    <ClassificationGrid rows={classificationRows} onClassify={classifyBatch} />
                   </Paper>
 
                   {/* PO Drafts */}
