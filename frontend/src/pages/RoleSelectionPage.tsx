@@ -61,10 +61,10 @@ export default function RoleSelectionPage() {
   return (
     <Container maxWidth="lg" sx={{ py: 6 }}>
       <Typography variant="h4" align="center" gutterBottom>
-        Hardware Management System
+        Role Selection
       </Typography>
       <Typography variant="subtitle1" align="center" color="text.secondary" sx={{ mb: 4 }}>
-        Select your role to get started
+        Once Authentication is implemented, it will replace Role Selection (Potential Auth Logins: Microsoft, Google, etc..)
       </Typography>
       <Grid container spacing={3}>
         {ROLES.map((role) => {
