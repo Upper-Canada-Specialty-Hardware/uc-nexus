@@ -35,8 +35,8 @@ def upgrade() -> None:
         sa.Column(
             "item_type",
             sa.Enum(
-                "Loose",
-                "Opening_Item",
+                "LOOSE",
+                "OPENING_ITEM",
                 name="pull_request_item_type",
             ),
             nullable=False,

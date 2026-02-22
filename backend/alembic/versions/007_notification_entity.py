@@ -26,10 +26,10 @@ def upgrade() -> None:
         sa.Column(
             "type",
             sa.Enum(
-                "pull_request_cancelled",
-                "pull_request_completed",
-                "shop_assembly_request_rejected",
-                "shipment_completed",
+                "PULL_REQUEST_CANCELLED",
+                "PULL_REQUEST_COMPLETED",
+                "SHOP_ASSEMBLY_REQUEST_REJECTED",
+                "SHIPMENT_COMPLETED",
                 name="notification_type",
             ),
             nullable=False,

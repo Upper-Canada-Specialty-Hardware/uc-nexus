@@ -86,8 +86,8 @@ def upgrade() -> None:
         sa.Column(
             "classification",
             sa.Enum(
-                "Site_Hardware",
-                "Shop_Hardware",
+                "SITE_HARDWARE",
+                "SHOP_HARDWARE",
                 name="classification",
             ),
             nullable=True,
@@ -95,7 +95,7 @@ def upgrade() -> None:
         sa.Column(
             "state",
             sa.Enum(
-                "In_PO",
+                "IN_PO",
                 name="hardware_item_state",
             ),
             nullable=False,

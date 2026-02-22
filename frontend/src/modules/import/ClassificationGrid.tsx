@@ -81,6 +81,8 @@ function CategoryGrid({ groupLabel, rows, columns, onClassify, readOnly }: Categ
 
   const selectedCount = selectionModel.ids.size;
   const classifiedCount = rows.filter((r) => r.classification !== '').length;
+  const uniqueClassifications = new Set(rows.filter((r) => r.classification !== '').map((r) => r.classification));
+  const allSameClassification = classifiedCount === rows.length && uniqueClassifications.size === 1;
 
   const handleBulkClassify = useCallback(
     (value: 'SITE_HARDWARE' | 'SHOP_HARDWARE') => {
@@ -109,8 +111,16 @@ function CategoryGrid({ groupLabel, rows, columns, onClassify, readOnly }: Categ
           <Typography sx={{ fontWeight: 700 }}>{groupLabel}</Typography>
           <Chip
             size="small"
-            label={`${classifiedCount}/${rows.length} classified`}
-            color={classifiedCount === rows.length ? 'success' : 'default'}
+            label={
+              allSameClassification
+                ? `All ${[...uniqueClassifications][0] === 'SITE_HARDWARE' ? 'Site' : 'Shop'}`
+                : `${classifiedCount}/${rows.length} classified`
+            }
+            color={
+              allSameClassification
+                ? ([...uniqueClassifications][0] === 'SITE_HARDWARE' ? 'success' : 'info')
+                : classifiedCount === rows.length ? 'success' : 'default'
+            }
           />
           <Typography variant="body2" color="text.secondary">
             ({rows.length} items)
@@ -120,6 +130,7 @@ function CategoryGrid({ groupLabel, rows, columns, onClassify, readOnly }: Categ
               <Button
                 size="small"
                 variant="outlined"
+                color="success"
                 onClick={(e) => handleGroupAll('SITE_HARDWARE', e)}
               >
                 Site All
@@ -127,6 +138,7 @@ function CategoryGrid({ groupLabel, rows, columns, onClassify, readOnly }: Categ
               <Button
                 size="small"
                 variant="outlined"
+                color="info"
                 onClick={(e) => handleGroupAll('SHOP_HARDWARE', e)}
               >
                 Shop All
@@ -151,10 +163,10 @@ function CategoryGrid({ groupLabel, rows, columns, onClassify, readOnly }: Categ
               ? () => (
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 1, py: 0.5 }}>
                     <Typography variant="body2">{selectedCount} selected</Typography>
-                    <Button size="small" onClick={() => handleBulkClassify('SITE_HARDWARE')}>
+                    <Button size="small" color="success" onClick={() => handleBulkClassify('SITE_HARDWARE')}>
                       Classify as Site
                     </Button>
-                    <Button size="small" onClick={() => handleBulkClassify('SHOP_HARDWARE')}>
+                    <Button size="small" color="info" onClick={() => handleBulkClassify('SHOP_HARDWARE')}>
                       Classify as Shop
                     </Button>
                   </Box>
@@ -264,10 +276,30 @@ export default function ClassificationGrid({ rows, onClassify, readOnly }: Class
               }}
               sx={{ height: 28 }}
             >
-              <ToggleButton value="SITE_HARDWARE" sx={{ px: 1, fontSize: '0.75rem' }}>
+              <ToggleButton
+                value="SITE_HARDWARE"
+                sx={{
+                  px: 1, fontSize: '0.75rem',
+                  '&.Mui-selected': {
+                    backgroundColor: 'success.main',
+                    color: 'success.contrastText',
+                    '&:hover': { backgroundColor: 'success.dark' },
+                  },
+                }}
+              >
                 Site
               </ToggleButton>
-              <ToggleButton value="SHOP_HARDWARE" sx={{ px: 1, fontSize: '0.75rem' }}>
+              <ToggleButton
+                value="SHOP_HARDWARE"
+                sx={{
+                  px: 1, fontSize: '0.75rem',
+                  '&.Mui-selected': {
+                    backgroundColor: 'info.main',
+                    color: 'info.contrastText',
+                    '&:hover': { backgroundColor: 'info.dark' },
+                  },
+                }}
+              >
                 Shop
               </ToggleButton>
             </ToggleButtonGroup>

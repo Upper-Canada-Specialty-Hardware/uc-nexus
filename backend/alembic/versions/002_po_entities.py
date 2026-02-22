@@ -25,11 +25,11 @@ def upgrade() -> None:
         sa.Column(
             "status",
             sa.Enum(
-                "Draft",
-                "Ordered",
-                "Partially_Received",
-                "Closed",
-                "Cancelled",
+                "DRAFT",
+                "ORDERED",
+                "PARTIALLY_RECEIVED",
+                "CLOSED",
+                "CANCELLED",
                 name="po_status",
             ),
             nullable=False,
@@ -52,8 +52,8 @@ def upgrade() -> None:
         sa.Column(
             "classification",
             sa.Enum(
-                "Site_Hardware",
-                "Shop_Hardware",
+                "SITE_HARDWARE",
+                "SHOP_HARDWARE",
                 name="classification",
             ),
             nullable=False,

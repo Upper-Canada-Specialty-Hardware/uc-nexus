@@ -32,9 +32,9 @@ def upgrade() -> None:
         sa.Column(
             "state",
             sa.Enum(
-                "In_Inventory",
-                "Ship_Ready",
-                "Shipped_Out",
+                "IN_INVENTORY",
+                "SHIP_READY",
+                "SHIPPED_OUT",
                 name="opening_item_state",
             ),
             nullable=False,
@@ -65,9 +65,9 @@ def upgrade() -> None:
         sa.Column(
             "status",
             sa.Enum(
-                "Pending",
-                "Approved",
-                "Rejected",
+                "PENDING",
+                "APPROVED",
+                "REJECTED",
                 name="shop_assembly_request_status",
             ),
             nullable=False,
@@ -95,9 +95,9 @@ def upgrade() -> None:
         sa.Column(
             "pull_status",
             sa.Enum(
-                "Not_Pulled",
-                "Partial",
-                "Pulled",
+                "NOT_PULLED",
+                "PARTIAL",
+                "PULLED",
                 name="pull_status",
             ),
             nullable=False,
@@ -106,8 +106,8 @@ def upgrade() -> None:
         sa.Column(
             "assembly_status",
             sa.Enum(
-                "Pending",
-                "Completed",
+                "PENDING",
+                "COMPLETED",
                 name="assembly_status",
             ),
             nullable=False,

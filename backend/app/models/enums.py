@@ -2,64 +2,64 @@ import enum
 
 
 class Classification(str, enum.Enum):
-    SITE_HARDWARE = "Site_Hardware"
-    SHOP_HARDWARE = "Shop_Hardware"
+    SITE_HARDWARE = "SITE_HARDWARE"
+    SHOP_HARDWARE = "SHOP_HARDWARE"
 
 
 class HardwareItemState(str, enum.Enum):
-    IN_PO = "In_PO"
+    IN_PO = "IN_PO"
 
 
 class POStatus(str, enum.Enum):
-    DRAFT = "Draft"
-    ORDERED = "Ordered"
-    PARTIALLY_RECEIVED = "Partially_Received"
-    CLOSED = "Closed"
-    CANCELLED = "Cancelled"
+    DRAFT = "DRAFT"
+    ORDERED = "ORDERED"
+    PARTIALLY_RECEIVED = "PARTIALLY_RECEIVED"
+    CLOSED = "CLOSED"
+    CANCELLED = "CANCELLED"
 
 
 class PullRequestSource(str, enum.Enum):
-    SHOP_ASSEMBLY = "Shop_Assembly"
-    SHIPPING_OUT = "Shipping_Out"
+    SHOP_ASSEMBLY = "SHOP_ASSEMBLY"
+    SHIPPING_OUT = "SHIPPING_OUT"
 
 
 class PullRequestStatus(str, enum.Enum):
-    PENDING = "Pending"
-    IN_PROGRESS = "In_Progress"
-    COMPLETED = "Completed"
-    CANCELLED = "Cancelled"
+    PENDING = "PENDING"
+    IN_PROGRESS = "IN_PROGRESS"
+    COMPLETED = "COMPLETED"
+    CANCELLED = "CANCELLED"
 
 
 class PullRequestItemType(str, enum.Enum):
-    LOOSE = "Loose"
-    OPENING_ITEM = "Opening_Item"
+    LOOSE = "LOOSE"
+    OPENING_ITEM = "OPENING_ITEM"
 
 
 class OpeningItemState(str, enum.Enum):
-    IN_INVENTORY = "In_Inventory"
-    SHIP_READY = "Ship_Ready"
-    SHIPPED_OUT = "Shipped_Out"
+    IN_INVENTORY = "IN_INVENTORY"
+    SHIP_READY = "SHIP_READY"
+    SHIPPED_OUT = "SHIPPED_OUT"
 
 
 class ShopAssemblyRequestStatus(str, enum.Enum):
-    PENDING = "Pending"
-    APPROVED = "Approved"
-    REJECTED = "Rejected"
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
 
 
 class PullStatus(str, enum.Enum):
-    NOT_PULLED = "Not_Pulled"
-    PARTIAL = "Partial"
-    PULLED = "Pulled"
+    NOT_PULLED = "NOT_PULLED"
+    PARTIAL = "PARTIAL"
+    PULLED = "PULLED"
 
 
 class AssemblyStatus(str, enum.Enum):
-    PENDING = "Pending"
-    COMPLETED = "Completed"
+    PENDING = "PENDING"
+    COMPLETED = "COMPLETED"
 
 
 class NotificationType(str, enum.Enum):
-    PULL_REQUEST_CANCELLED = "pull_request_cancelled"
-    PULL_REQUEST_COMPLETED = "pull_request_completed"
-    SHOP_ASSEMBLY_REQUEST_REJECTED = "shop_assembly_request_rejected"
-    SHIPMENT_COMPLETED = "shipment_completed"
+    PULL_REQUEST_CANCELLED = "PULL_REQUEST_CANCELLED"
+    PULL_REQUEST_COMPLETED = "PULL_REQUEST_COMPLETED"
+    SHOP_ASSEMBLY_REQUEST_REJECTED = "SHOP_ASSEMBLY_REQUEST_REJECTED"
+    SHIPMENT_COMPLETED = "SHIPMENT_COMPLETED"

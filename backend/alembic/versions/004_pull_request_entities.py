@@ -26,8 +26,8 @@ def upgrade() -> None:
         sa.Column(
             "source",
             sa.Enum(
-                "Shop_Assembly",
-                "Shipping_Out",
+                "SHOP_ASSEMBLY",
+                "SHIPPING_OUT",
                 name="pull_request_source",
             ),
             nullable=False,
@@ -35,10 +35,10 @@ def upgrade() -> None:
         sa.Column(
             "status",
             sa.Enum(
-                "Pending",
-                "In_Progress",
-                "Completed",
-                "Cancelled",
+                "PENDING",
+                "IN_PROGRESS",
+                "COMPLETED",
+                "CANCELLED",
                 name="pull_request_status",
             ),
             nullable=False,
@@ -62,8 +62,8 @@ def upgrade() -> None:
         sa.Column(
             "item_type",
             sa.Enum(
-                "Loose",
-                "Opening_Item",
+                "LOOSE",
+                "OPENING_ITEM",
                 name="pull_request_item_type",
             ),
             nullable=False,
