@@ -34,6 +34,7 @@ import ValidationSummaryDisplay from '../../components/ValidationSummaryDisplay'
 import { useHardwareScheduleParser } from '../../hooks/useHardwareScheduleParser';
 import { useNavigate } from 'react-router-dom';
 import {
+  GET_PROJECTS,
   GET_PROJECT_BY_SCHEDULE_ID,
   RECONCILE_SCHEDULE,
 } from '../../graphql/queries';
@@ -182,7 +183,9 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
       shippingOutPullRequests: Array<{ id: string; requestNumber: string; status: string }>;
       shopAssemblyRequest: { id: string; requestNumber: string; status: string } | null;
     };
-  }>(FINALIZE_IMPORT_SESSION);
+  }>(FINALIZE_IMPORT_SESSION, {
+    refetchQueries: [{ query: GET_PROJECTS }],
+  });
 
   // ---- Derived Data ----
 
