@@ -59,11 +59,27 @@ _RENAMES = [
 ]
 
 
+def _rename_if_exists(type_name: str, old: str, new: str) -> str:
+    """Generate idempotent PL/pgSQL to rename an enum value only if the old label exists."""
+    return f"""
+    DO $$
+    BEGIN
+        IF EXISTS (
+            SELECT 1 FROM pg_enum
+            WHERE enumlabel = '{old}'
+              AND enumtypid = '{type_name}'::regtype
+        ) THEN
+            ALTER TYPE {type_name} RENAME VALUE '{old}' TO '{new}';
+        END IF;
+    END $$;
+    """
+
+
 def upgrade() -> None:
     for type_name, old, new in _RENAMES:
-        op.execute(f"ALTER TYPE {type_name} RENAME VALUE '{old}' TO '{new}'")
+        op.execute(_rename_if_exists(type_name, old, new))
 
 
 def downgrade() -> None:
     for type_name, old, new in _RENAMES:
-        op.execute(f"ALTER TYPE {type_name} RENAME VALUE '{new}' TO '{old}'")
+        op.execute(_rename_if_exists(type_name, new, old))
