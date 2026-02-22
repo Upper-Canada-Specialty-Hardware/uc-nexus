@@ -1,0 +1,195 @@
+import { useMemo } from 'react';
+import { Box, Button, Paper, TextField, Typography } from '@mui/material';
+import type { ParsedHardwareItem } from '../../types/hardwareSchedule';
+
+// ---- Aggregation Types ----
+
+interface AggregatedLineItem {
+  productCode: string;
+  hardwareCategory: string;
+  totalQuantity: number;
+  unitCost: number;
+  totalCost: number;
+}
+
+// ---- Props ----
+
+interface PurchaseOrdersStepProps {
+  vendorGroups: Map<string, ParsedHardwareItem[]>;
+  vendorPOInfo: Map<string, { poNumber: string; vendorContact: string }>;
+  onUpdateVendorPO: (vendorNo: string, field: 'poNumber' | 'vendorContact', value: string) => void;
+  onNext: () => void;
+  onBack: () => void;
+}
+
+// ---- Helpers ----
+
+function aggregateLineItems(items: ParsedHardwareItem[]): AggregatedLineItem[] {
+  const groups = new Map<string, AggregatedLineItem>();
+
+  for (const item of items) {
+    const key = `${item.product_code}|${item.hardware_category}`;
+    const existing = groups.get(key);
+    if (existing) {
+      existing.totalQuantity += item.item_quantity;
+      existing.totalCost += (item.unit_cost ?? 0) * item.item_quantity;
+    } else {
+      groups.set(key, {
+        productCode: item.product_code,
+        hardwareCategory: item.hardware_category,
+        totalQuantity: item.item_quantity,
+        unitCost: item.unit_cost ?? 0,
+        totalCost: (item.unit_cost ?? 0) * item.item_quantity,
+      });
+    }
+  }
+
+  return Array.from(groups.values()).sort((a, b) => {
+    const catCmp = a.hardwareCategory.localeCompare(b.hardwareCategory);
+    if (catCmp !== 0) return catCmp;
+    return a.productCode.localeCompare(b.productCode);
+  });
+}
+
+// ---- Component ----
+
+export default function PurchaseOrdersStep({
+  vendorGroups,
+  vendorPOInfo,
+  onUpdateVendorPO,
+  onNext,
+  onBack,
+}: PurchaseOrdersStepProps) {
+  const canProceed = useMemo(() => {
+    for (const vendor of vendorGroups.keys()) {
+      const info = vendorPOInfo.get(vendor);
+      if (!info || info.poNumber.trim() === '') return false;
+    }
+    return true;
+  }, [vendorGroups, vendorPOInfo]);
+
+  const sortedVendors = useMemo(
+    () => Array.from(vendorGroups.entries()).sort(([a], [b]) => a.localeCompare(b)),
+    [vendorGroups],
+  );
+
+  return (
+    <Box>
+      <Typography variant="h6" sx={{ mb: 1 }}>
+        Purchase Orders
+      </Typography>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
+        {vendorGroups.size} vendor(s). Enter a PO number for each.
+      </Typography>
+
+      {sortedVendors.map(([vendor, items]) => {
+        const info = vendorPOInfo.get(vendor) ?? { poNumber: '', vendorContact: '' };
+        const aggregated = aggregateLineItems(items);
+        const poTotal = items.reduce(
+          (sum, hi) => sum + (hi.unit_cost ?? 0) * hi.item_quantity,
+          0,
+        );
+
+        return (
+          <Paper key={vendor} variant="outlined" sx={{ p: 2, mb: 2 }}>
+            {/* Header: vendor name + PO total */}
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+              <Typography variant="subtitle1" sx={{ fontWeight: 'bold' }}>
+                {vendor}
+              </Typography>
+              <Typography variant="subtitle1" color="primary">
+                PO Total: ${poTotal.toFixed(2)}
+              </Typography>
+            </Box>
+
+            {/* PO Number + Vendor Contact fields */}
+            <Box sx={{ display: 'flex', gap: 2, mb: 2 }}>
+              <TextField
+                label="PO Number"
+                size="small"
+                required
+                value={info.poNumber}
+                onChange={(e) => onUpdateVendorPO(vendor, 'poNumber', e.target.value)}
+                sx={{ flex: 1 }}
+              />
+              <TextField
+                label="Vendor Contact"
+                size="small"
+                value={info.vendorContact}
+                onChange={(e) => onUpdateVendorPO(vendor, 'vendorContact', e.target.value)}
+                sx={{ flex: 1 }}
+              />
+            </Box>
+
+            {/* Line Items subheading */}
+            <Typography variant="subtitle2" sx={{ mb: 1 }}>
+              Line Items ({aggregated.length})
+            </Typography>
+
+            {/* Aggregated line items grid */}
+            <Box sx={{ display: 'grid', gridTemplateColumns: '1.5fr 1.5fr 0.7fr 0.8fr 0.8fr' }}>
+              {/* Header row */}
+              <Box sx={{ bgcolor: 'grey.100', p: 0.75 }}>
+                <Typography variant="caption" sx={{ fontWeight: 'bold' }}>
+                  Product Code
+                </Typography>
+              </Box>
+              <Box sx={{ bgcolor: 'grey.100', p: 0.75 }}>
+                <Typography variant="caption" sx={{ fontWeight: 'bold' }}>
+                  Hardware Category
+                </Typography>
+              </Box>
+              <Box sx={{ bgcolor: 'grey.100', p: 0.75, textAlign: 'right' }}>
+                <Typography variant="caption" sx={{ fontWeight: 'bold' }}>
+                  Total Qty
+                </Typography>
+              </Box>
+              <Box sx={{ bgcolor: 'grey.100', p: 0.75, textAlign: 'right' }}>
+                <Typography variant="caption" sx={{ fontWeight: 'bold' }}>
+                  Unit Cost
+                </Typography>
+              </Box>
+              <Box sx={{ bgcolor: 'grey.100', p: 0.75, textAlign: 'right' }}>
+                <Typography variant="caption" sx={{ fontWeight: 'bold' }}>
+                  Total Cost
+                </Typography>
+              </Box>
+
+              {/* Data rows */}
+              {aggregated.map((line, idx) => {
+                const rowBg = idx % 2 === 0 ? 'background.paper' : 'grey.50';
+                return (
+                  <Box key={`${line.productCode}-${line.hardwareCategory}`} sx={{ display: 'contents' }}>
+                    <Box sx={{ bgcolor: rowBg, p: 0.75 }}>
+                      <Typography variant="body2">{line.productCode}</Typography>
+                    </Box>
+                    <Box sx={{ bgcolor: rowBg, p: 0.75 }}>
+                      <Typography variant="body2">{line.hardwareCategory}</Typography>
+                    </Box>
+                    <Box sx={{ bgcolor: rowBg, p: 0.75, textAlign: 'right' }}>
+                      <Typography variant="body2">{line.totalQuantity}</Typography>
+                    </Box>
+                    <Box sx={{ bgcolor: rowBg, p: 0.75, textAlign: 'right' }}>
+                      <Typography variant="body2">${line.unitCost.toFixed(2)}</Typography>
+                    </Box>
+                    <Box sx={{ bgcolor: rowBg, p: 0.75, textAlign: 'right' }}>
+                      <Typography variant="body2">${line.totalCost.toFixed(2)}</Typography>
+                    </Box>
+                  </Box>
+                );
+              })}
+            </Box>
+          </Paper>
+        );
+      })}
+
+      {/* Bottom navigation */}
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 3 }}>
+        <Button onClick={onBack}>Back</Button>
+        <Button variant="contained" disabled={!canProceed} onClick={onNext}>
+          Next
+        </Button>
+      </Box>
+    </Box>
+  );
+}

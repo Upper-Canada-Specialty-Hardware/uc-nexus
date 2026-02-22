@@ -18,24 +18,11 @@ import {
   FormControlLabel,
   FormGroup,
   Chip,
-  Accordion,
-  AccordionSummary,
-  AccordionDetails,
-  Tabs,
-  Tab,
   Divider,
-  List,
-  ListItem,
-  ListItemText,
-  ListItemIcon,
 } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
-import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import UploadFileIcon from '@mui/icons-material/UploadFile';
 import CloudUploadIcon from '@mui/icons-material/CloudUpload';
-import AddIcon from '@mui/icons-material/Add';
-import DeleteIcon from '@mui/icons-material/Delete';
-import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useLazyQuery, useMutation } from '@apollo/client/react';
 import { useProject } from '../../contexts/ProjectContext';
@@ -52,27 +39,17 @@ import {
   RECONCILE_SCHEDULE,
 } from '../../graphql/queries';
 import { FINALIZE_IMPORT_SESSION } from '../../graphql/mutations';
-import type { ParsedOpening, ParsedHardwareItem } from '../../types/hardwareSchedule';
-import ClassificationGrid, { type ClassificationRow } from './ClassificationGrid';
+import type { ParsedHardwareItem } from '../../types/hardwareSchedule';
+import type { ClassificationRow } from './ClassificationGrid';
+import type { ImportPurpose, ShippingPRDraft } from './types';
+import { classificationKey, hardwareItemKey } from './types';
+import SelectOpeningsStep from './SelectOpeningsStep';
+import ClassificationStep from './ClassificationStep';
+import PurchaseOrdersStep from './PurchaseOrdersStep';
+import ShopAssemblyStep from './ShopAssemblyStep';
+import ShippingPRsStep from './ShippingPRsStep';
 
 // ---- Local Types ----
-
-type ImportPurpose = 'po' | 'assembly' | 'shipping';
-
-interface ShippingPRItem {
-  itemType: 'OPENING_ITEM' | 'LOOSE';
-  openingNumber: string;
-  openingItemId?: string;
-  hardwareCategory?: string;
-  productCode?: string;
-  requestedQuantity: number;
-}
-
-interface ShippingPRDraft {
-  requestNumber: string;
-  requestedBy: string;
-  items: ShippingPRItem[];
-}
 
 interface ReconciliationRow {
   id: string;
@@ -84,28 +61,16 @@ interface ReconciliationRow {
   status: string;
 }
 
+type StepId = 'upload' | 'purpose' | 'openings' | 'reconciliation'
+  | 'classification' | 'purchase-orders' | 'shop-assembly'
+  | 'shipping-prs' | 'finalize';
+
+interface StepDescriptor {
+  id: StepId;
+  label: string;
+}
+
 // ---- Helpers ----
-
-function groupOpenings(openings: ParsedOpening[]) {
-  const groups = new Map<string, Map<string, ParsedOpening[]>>();
-  for (const o of openings) {
-    const building = o.building || '(No Building)';
-    const floor = o.floor || '(No Floor)';
-    if (!groups.has(building)) groups.set(building, new Map());
-    const floors = groups.get(building)!;
-    if (!floors.has(floor)) floors.set(floor, []);
-    floors.get(floor)!.push(o);
-  }
-  return groups;
-}
-
-function hardwareItemKey(hi: ParsedHardwareItem) {
-  return `${hi.opening_number}|${hi.product_code}|${hi.material_id}`;
-}
-
-function classificationKey(hi: ParsedHardwareItem) {
-  return `${hi.hardware_category}|${hi.product_code}|${hi.unit_cost ?? 0}`;
-}
 
 /** Convert a snake_case-keyed object to camelCase keys (one level deep). */
 function snakeToCamel<T extends Record<string, unknown>>(obj: T): Record<string, unknown> {
@@ -116,10 +81,6 @@ function snakeToCamel<T extends Record<string, unknown>>(obj: T): Record<string,
   }
   return result;
 }
-
-// ---- Constants ----
-
-const STEPS = ['Upload File', 'Purpose', 'Select Openings', 'Reconciliation', 'Actions', 'Finalize'];
 
 // ---- Component ----
 
@@ -136,17 +97,8 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
   const navigate = useNavigate();
   const parser = useHardwareScheduleParser();
 
-  // Signal WizardContext when import wizard is open (for unsaved-state detection in AppLayout)
-  useEffect(() => {
-    if (open) {
-      setTotalSteps(6);
-    } else {
-      resetWizardContext();
-    }
-  }, [open, setTotalSteps, resetWizardContext]);
-
   // Step tracking
-  const [activeStep, setActiveStep] = useState(0);
+  const [activeStepId, setActiveStepId] = useState<StepId>('upload');
 
   // Step 1 state
   const [isReimport, setIsReimport] = useState(false);
@@ -160,19 +112,56 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
   // Step 3 state
   const [selectedOpenings, setSelectedOpenings] = useState<Set<string>>(new Set());
 
-  // Step 5 state
+  // Action step state
   const [vendorPOInfo, setVendorPOInfo] = useState<Map<string, { poNumber: string; vendorContact: string }>>(new Map());
   const [classifications, setClassifications] = useState<Map<string, string>>(new Map());
   const [sarRequestNumber, setSarRequestNumber] = useState('');
   const [shippingPRDrafts, setShippingPRDrafts] = useState<ShippingPRDraft[]>([]);
-  const [actionsTab, setActionsTab] = useState(0);
 
-  // Step 6 state
+  // Finalize state
   const [finalizeLoading, setFinalizeLoading] = useState(false);
   const [finalizeResult, setFinalizeResult] = useState<FinalizeResultData | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [postSuccessOpen, setPostSuccessOpen] = useState(false);
   const [mutationError, setMutationError] = useState<string | null>(null);
+
+  // ---- Dynamic Steps ----
+
+  const steps = useMemo<StepDescriptor[]>(() => {
+    const base: StepDescriptor[] = [
+      { id: 'upload', label: 'Upload File' },
+      { id: 'purpose', label: 'Purpose' },
+      { id: 'openings', label: 'Select Openings' },
+      { id: 'reconciliation', label: 'Reconciliation' },
+      { id: 'classification', label: 'Classification' },
+    ];
+    if (purposes.has('po')) base.push({ id: 'purchase-orders', label: 'Purchase Orders' });
+    if (purposes.has('assembly')) base.push({ id: 'shop-assembly', label: 'Shop Assembly' });
+    if (purposes.has('shipping')) base.push({ id: 'shipping-prs', label: 'Shipping PRs' });
+    base.push({ id: 'finalize', label: 'Finalize' });
+    return base;
+  }, [purposes]);
+
+  const activeStepIndex = useMemo(
+    () => steps.findIndex((s) => s.id === activeStepId),
+    [steps, activeStepId],
+  );
+
+  // Guard against orphaned step (e.g. user unchecks a purpose while on that step)
+  useEffect(() => {
+    if (activeStepId !== 'upload' && !steps.find((s) => s.id === activeStepId)) {
+      setActiveStepId('classification');
+    }
+  }, [steps, activeStepId]);
+
+  // Signal WizardContext when import wizard is open (for unsaved-state detection in AppLayout)
+  useEffect(() => {
+    if (open) {
+      setTotalSteps(steps.length);
+    } else {
+      resetWizardContext();
+    }
+  }, [open, steps.length, setTotalSteps, resetWizardContext]);
 
   // ---- Apollo ----
 
@@ -198,8 +187,6 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
   const parsed = parser.parseResult;
   const openings = parsed?.openings ?? [];
   const hardwareItems = parsed?.hardwareItems ?? [];
-
-  const openingGroups = useMemo(() => groupOpenings(openings), [openings]);
 
   const hardwareCountByOpening = useMemo(() => {
     const counts = new Map<string, number>();
@@ -294,8 +281,12 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
   );
 
   const handleNext = useCallback(async () => {
-    if (activeStep === 0 && parsed) {
-      // Check if project exists for re-import detection
+    const currentIndex = steps.findIndex((s) => s.id === activeStepId);
+    const nextStep = steps[currentIndex + 1];
+    if (!nextStep) return;
+
+    // Side effects per step
+    if (activeStepId === 'upload' && parsed) {
       try {
         const result = await checkProject({
           variables: { projectId: parsed.project.project_id },
@@ -311,68 +302,36 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
           setExistingProjectName(null);
         }
       } catch {
-        // If query fails, assume new project
         setIsReimport(false);
         setExistingProjectId(null);
         setExistingProjectName(null);
       }
-      setActiveStep(1);
-      return;
     }
 
-    if (activeStep === 1) {
-      // Initialize selected openings to all
-      const allOpeningNums = new Set(openings.map((o) => o.opening_number));
-      setSelectedOpenings(allOpeningNums);
-      setActiveStep(2);
-      return;
+    if (activeStepId === 'openings' && isReimport && existingProjectId) {
+      const items = selectedHardwareItems.map((hi) => ({
+        openingNumber: hi.opening_number,
+        hardwareCategory: hi.hardware_category,
+        productCode: hi.product_code,
+        quantityNeeded: hi.item_quantity,
+      }));
+      reconcileSchedule({
+        variables: { projectId: existingProjectId, items },
+      });
     }
 
-    if (activeStep === 2) {
-      if (isReimport && existingProjectId) {
-        // Trigger reconciliation
-        const items = selectedHardwareItems.map((hi) => ({
-          openingNumber: hi.opening_number,
-          hardwareCategory: hi.hardware_category,
-          productCode: hi.product_code,
-          quantityNeeded: hi.item_quantity,
-        }));
-        reconcileSchedule({
-          variables: { projectId: existingProjectId, items },
-        });
-      }
-      setActiveStep(3);
-      return;
-    }
-
-    if (activeStep === 3) {
-      setActiveStep(4);
-      return;
-    }
-
-    if (activeStep === 4) {
-      setActiveStep(5);
-      return;
-    }
-  }, [
-    activeStep,
-    parsed,
-    checkProject,
-    openings,
-    isReimport,
-    existingProjectId,
-    selectedHardwareItems,
-    reconcileSchedule,
-    purposes,
-  ]);
+    setActiveStepId(nextStep.id);
+  }, [activeStepId, steps, parsed, checkProject, isReimport, existingProjectId, selectedHardwareItems, reconcileSchedule]);
 
   const handleBack = useCallback(() => {
-    setActiveStep((prev) => prev - 1);
-  }, []);
+    const currentIndex = steps.findIndex((s) => s.id === activeStepId);
+    const prevStep = steps[currentIndex - 1];
+    if (prevStep) setActiveStepId(prevStep.id);
+  }, [activeStepId, steps]);
 
   // ---- Step-specific handlers ----
 
-  // Step 2: Purpose toggles
+  // Purpose toggles
   const togglePurpose = useCallback((p: ImportPurpose) => {
     setPurposes((prev) => {
       const next = new Set(prev);
@@ -382,7 +341,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     });
   }, []);
 
-  // Step 3: Opening selection
+  // Opening selection
   const toggleOpening = useCallback((openingNumber: string) => {
     setSelectedOpenings((prev) => {
       const next = new Set(prev);
@@ -400,7 +359,20 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     setSelectedOpenings(new Set());
   }, []);
 
-  // Step 5a: Vendor PO info
+  const toggleOpeningGroup = useCallback((openingNumbers: string[]) => {
+    setSelectedOpenings((prev) => {
+      const next = new Set(prev);
+      const allSelected = openingNumbers.every((n) => next.has(n));
+      if (allSelected) {
+        for (const n of openingNumbers) next.delete(n);
+      } else {
+        for (const n of openingNumbers) next.add(n);
+      }
+      return next;
+    });
+  }, []);
+
+  // Vendor PO info
   const updateVendorPO = useCallback((vendorNo: string, field: 'poNumber' | 'vendorContact', value: string) => {
     setVendorPOInfo((prev) => {
       const next = new Map(prev);
@@ -410,7 +382,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     });
   }, []);
 
-  // Step 5a: Classification (batch-capable)
+  // Classification (batch-capable)
   const classifyBatch = useCallback((keys: string[], value: string) => {
     setClassifications((prev) => {
       const next = new Map(prev);
@@ -419,7 +391,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     });
   }, []);
 
-  // Step 5c: Shipping PR management
+  // Shipping PR management
   const addShippingPR = useCallback(() => {
     setShippingPRDrafts((prev) => [...prev, { requestNumber: '', requestedBy: '', items: [] }]);
   }, []);
@@ -599,7 +571,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
   );
 
   const handleClose = useCallback(() => {
-    setActiveStep(0);
+    setActiveStepId('upload');
     setIsReimport(false);
     setExistingProjectId(null);
     setExistingProjectName(null);
@@ -609,7 +581,6 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     setClassifications(new Map());
     setSarRequestNumber('');
     setShippingPRDrafts([]);
-    setActionsTab(0);
     setFinalizeLoading(false);
     setFinalizeResult(null);
     setConfirmOpen(false);
@@ -625,27 +596,6 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
   const canProceedStep1 = purposes.size > 0;
   const canProceedStep2 = selectedOpenings.size > 0;
   const canProceedStep3 = true; // Reconciliation is informational
-  const canProceedStep4 = useMemo(() => {
-    if (purposes.has('po')) {
-      // Every vendor must have a PO number
-      const allVendorsHavePO = Array.from(vendorGroups.keys()).every(
-        (v) => (vendorPOInfo.get(v)?.poNumber ?? '').trim() !== '',
-      );
-      if (!allVendorsHavePO) return false;
-      // All items must be classified
-      if (!classificationRows.every((r) => r.classification !== '')) return false;
-    }
-    // Assembly: need request number
-    if (purposes.has('assembly') && sarRequestNumber.trim() === '') return false;
-    // Shipping: need at least one PR with number and items
-    if (purposes.has('shipping')) {
-      const valid = shippingPRDrafts.some(
-        (d) => d.requestNumber.trim() !== '' && d.items.length > 0,
-      );
-      if (!valid) return false;
-    }
-    return true;
-  }, [purposes, vendorGroups, vendorPOInfo, sarRequestNumber, shippingPRDrafts, classificationRows]);
 
   // ---- Reconciliation DataGrid columns ----
 
@@ -670,18 +620,6 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     [],
   );
 
-  // ---- Determine visible tabs for Step 5 ----
-
-  const actionTabs = useMemo(() => {
-    const tabs: Array<{ key: ImportPurpose; label: string }> = [];
-    if (purposes.has('po')) tabs.push({ key: 'po', label: 'Purchase Orders' });
-    if (purposes.has('assembly')) tabs.push({ key: 'assembly', label: 'Shop Assembly' });
-    if (purposes.has('shipping')) tabs.push({ key: 'shipping', label: 'Shipping PRs' });
-    return tabs;
-  }, [purposes]);
-
-  const currentActionKey = actionTabs[actionsTab]?.key;
-
   // ---- Render ----
 
   return (
@@ -699,16 +637,16 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
         </AppBar>
 
         <Box sx={{ p: 3 }}>
-          <Stepper activeStep={activeStep} sx={{ mb: 4 }}>
-            {STEPS.map((label) => (
-              <Step key={label}>
-                <StepLabel>{label}</StepLabel>
+          <Stepper activeStep={activeStepIndex} sx={{ mb: 4 }}>
+            {steps.map((step) => (
+              <Step key={step.id}>
+                <StepLabel>{step.label}</StepLabel>
               </Step>
             ))}
           </Stepper>
 
-          {/* ============ Step 0: Upload File ============ */}
-          {activeStep === 0 && (
+          {/* ============ Step: Upload File ============ */}
+          {activeStepId === 'upload' && (
             <Box>
               <Typography variant="h6" sx={{ mb: 2 }}>
                 Upload TITAN XML File
@@ -803,8 +741,8 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
             </Box>
           )}
 
-          {/* ============ Step 1: Select Purpose(s) ============ */}
-          {activeStep === 1 && (
+          {/* ============ Step: Select Purpose(s) ============ */}
+          {activeStepId === 'purpose' && (
             <Box>
               <Typography variant="h6" sx={{ mb: 2 }}>
                 Select Import Purposes
@@ -842,8 +780,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
 
               {isReimport && (
                 <Alert severity="info" sx={{ mt: 2 }}>
-                  This is a re-import. Reconciliation will be shown in Step 4 to compare against
-                  existing inventory.
+                  This is a re-import. Reconciliation will be performed to compare against existing inventory.
                 </Alert>
               )}
 
@@ -856,84 +793,24 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
             </Box>
           )}
 
-          {/* ============ Step 2: Select Openings ============ */}
-          {activeStep === 2 && (
-            <Box>
-              <Typography variant="h6" sx={{ mb: 1 }}>
-                Select Openings
-              </Typography>
-              <Box sx={{ display: 'flex', gap: 2, mb: 2, alignItems: 'center' }}>
-                <Button size="small" variant="outlined" onClick={selectAllOpenings}>
-                  Select All
-                </Button>
-                <Button size="small" variant="outlined" onClick={deselectAllOpenings}>
-                  Deselect All
-                </Button>
-                <Typography variant="body2" color="text.secondary">
-                  {selectedOpenings.size} of {openings.length} selected
-                </Typography>
-              </Box>
-
-              <Box sx={{ maxHeight: 500, overflowY: 'auto' }}>
-                {Array.from(openingGroups.entries()).map(([building, floors]) => (
-                  <Accordion key={building} defaultExpanded>
-                    <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                      <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
-                        {building}
-                      </Typography>
-                    </AccordionSummary>
-                    <AccordionDetails>
-                      {Array.from(floors.entries()).map(([floor, floorOpenings]) => (
-                        <Accordion key={floor} defaultExpanded={floorOpenings.length <= 20}>
-                          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                            <Typography variant="subtitle2">{floor}</Typography>
-                          </AccordionSummary>
-                          <AccordionDetails>
-                            {floorOpenings.map((o) => (
-                              <FormControlLabel
-                                key={o.opening_number}
-                                control={
-                                  <Checkbox
-                                    checked={selectedOpenings.has(o.opening_number)}
-                                    onChange={() => toggleOpening(o.opening_number)}
-                                    size="small"
-                                  />
-                                }
-                                label={
-                                  <Typography variant="body2">
-                                    {o.opening_number}
-                                    <Typography
-                                      component="span"
-                                      variant="caption"
-                                      color="text.secondary"
-                                      sx={{ ml: 1 }}
-                                    >
-                                      ({hardwareCountByOpening.get(o.opening_number) ?? 0} items)
-                                    </Typography>
-                                  </Typography>
-                                }
-                                sx={{ display: 'block' }}
-                              />
-                            ))}
-                          </AccordionDetails>
-                        </Accordion>
-                      ))}
-                    </AccordionDetails>
-                  </Accordion>
-                ))}
-              </Box>
-
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 3 }}>
-                <Button onClick={handleBack}>Back</Button>
-                <Button variant="contained" disabled={!canProceedStep2} onClick={handleNext}>
-                  Next
-                </Button>
-              </Box>
-            </Box>
+          {/* ============ Step: Select Openings ============ */}
+          {activeStepId === 'openings' && (
+            <SelectOpeningsStep
+              openings={openings}
+              selectedOpenings={selectedOpenings}
+              hardwareCountByOpening={hardwareCountByOpening}
+              onToggleOpening={toggleOpening}
+              onSelectAll={selectAllOpenings}
+              onDeselectAll={deselectAllOpenings}
+              onToggleGroup={toggleOpeningGroup}
+              canProceed={canProceedStep2}
+              onNext={handleNext}
+              onBack={handleBack}
+            />
           )}
 
-          {/* ============ Step 3: Reconciliation ============ */}
-          {activeStep === 3 && (
+          {/* ============ Step: Reconciliation ============ */}
+          {activeStepId === 'reconciliation' && (
             <Box>
               <Typography variant="h6" sx={{ mb: 2 }}>
                 Reconciliation
@@ -980,250 +857,62 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
             </Box>
           )}
 
-          {/* ============ Step 4: Actions ============ */}
-          {activeStep === 4 && (
-            <Box>
-              <Typography variant="h6" sx={{ mb: 2 }}>
-                Configure Actions
-              </Typography>
-
-              {actionTabs.length > 1 && (
-                <Tabs value={actionsTab} onChange={(_, v: number) => setActionsTab(v)} sx={{ mb: 3 }}>
-                  {actionTabs.map((tab) => (
-                    <Tab key={tab.key} label={tab.label} />
-                  ))}
-                </Tabs>
-              )}
-
-              {actionTabs.length === 1 && (
-                <Typography variant="subtitle1" sx={{ mb: 2, fontWeight: 600 }}>
-                  {actionTabs[0].label}
-                </Typography>
-              )}
-
-              {/* ---- PO Tab ---- */}
-              {currentActionKey === 'po' && (
-                <Box>
-                  <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                    {isReimport
-                      ? `${itemsNeedingOrder.length} items need ordering (not available or partial in inventory).`
-                      : `${selectedHardwareItems.length} hardware items across ${selectedOpenings.size} openings.`}
-                  </Typography>
-
-                  {/* Classification section */}
-                  <Paper variant="outlined" sx={{ p: 2, mb: 3 }}>
-                    <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 600 }}>
-                      Item Classification
-                    </Typography>
-                    <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-                      Classify each unique item group as Site Hardware or Shop Hardware.
-                      Use the category header buttons for bulk classification, or select rows for batch actions.
-                    </Typography>
-                    <Typography
-                      variant="body2"
-                      sx={{ mb: 2 }}
-                      color={
-                        classificationRows.every((r) => r.classification !== '')
-                          ? 'success.main'
-                          : 'text.secondary'
-                      }
-                    >
-                      {classificationRows.filter((r) => r.classification !== '').length} of{' '}
-                      {classificationRows.length} items classified
-                    </Typography>
-                    <ClassificationGrid rows={classificationRows} onClassify={classifyBatch} />
-                  </Paper>
-
-                  {/* Auto-segregated Purchase Orders */}
-                  <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 600 }}>
-                    Purchase Orders ({vendorGroups.size} vendors)
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                    One PO per vendor. Enter a PO number for each.
-                  </Typography>
-
-                  {Array.from(vendorGroups.entries()).map(([vendor, items]) => {
-                    const info = vendorPOInfo.get(vendor) ?? { poNumber: '', vendorContact: '' };
-                    const totalCost = items.reduce((sum, hi) => sum + (hi.unit_cost ?? 0) * hi.item_quantity, 0);
-                    return (
-                      <Paper key={vendor} variant="outlined" sx={{ p: 2, mb: 2 }}>
-                        <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
-                          <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-                            {vendor}
-                          </Typography>
-                          <Typography variant="body2" color="text.secondary">
-                            {items.length} items | ${totalCost.toFixed(2)}
-                          </Typography>
-                        </Box>
-                        <Box sx={{ display: 'flex', gap: 2 }}>
-                          <TextField
-                            label="PO Number"
-                            size="small"
-                            required
-                            value={info.poNumber}
-                            onChange={(e) => updateVendorPO(vendor, 'poNumber', e.target.value)}
-                            sx={{ flex: 1 }}
-                          />
-                          <TextField
-                            label="Vendor Contact"
-                            size="small"
-                            value={info.vendorContact}
-                            onChange={(e) => updateVendorPO(vendor, 'vendorContact', e.target.value)}
-                            sx={{ flex: 1 }}
-                          />
-                        </Box>
-                      </Paper>
-                    );
-                  })}
-                </Box>
-              )}
-
-              {/* ---- Assembly Tab ---- */}
-              {currentActionKey === 'assembly' && (
-                <Box>
-                  <TextField
-                    label="SAR Request Number"
-                    size="small"
-                    required
-                    value={sarRequestNumber}
-                    onChange={(e) => setSarRequestNumber(e.target.value)}
-                    sx={{ mb: 3, width: 300 }}
-                  />
-
-                  <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 600 }}>
-                    Shop Assembly Preview
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                    Openings with items classified as Shop Hardware will be included. Classify items
-                    in the PO tab first.
-                  </Typography>
-
-                  {!purposes.has('po') && (
-                    <Alert severity="info" sx={{ mb: 2 }}>
-                      Enable "Create Purchase Orders" in Step 2 to classify items as Shop Hardware.
-                    </Alert>
-                  )}
-
-                  <List dense>
-                    {openings
-                      .filter((o) => selectedOpenings.has(o.opening_number))
-                      .map((o) => {
-                        const shopItems = selectedHardwareItems.filter((hi) => {
-                          if (hi.opening_number !== o.opening_number) return false;
-                          const ck = classificationKey(hi);
-                          return classifications.get(ck) === 'SHOP_HARDWARE';
-                        });
-                        if (shopItems.length === 0) return null;
-                        return (
-                          <ListItem key={o.opening_number}>
-                            <ListItemIcon>
-                              <CheckCircleIcon color="success" fontSize="small" />
-                            </ListItemIcon>
-                            <ListItemText
-                              primary={o.opening_number}
-                              secondary={`${shopItems.length} shop hardware items`}
-                            />
-                          </ListItem>
-                        );
-                      })
-                      .filter(Boolean)}
-                  </List>
-                </Box>
-              )}
-
-              {/* ---- Shipping Tab ---- */}
-              {currentActionKey === 'shipping' && (
-                <Box>
-                  {shippingPRDrafts.length === 0 && (
-                    <Alert severity="info" sx={{ mb: 2 }}>
-                      No shipping pull requests yet. Add one below.
-                    </Alert>
-                  )}
-
-                  {shippingPRDrafts.map((draft, prIdx) => (
-                    <Paper key={prIdx} variant="outlined" sx={{ p: 2, mb: 2 }}>
-                      <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
-                        <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-                          Shipping PR #{prIdx + 1}
-                        </Typography>
-                        <IconButton
-                          size="small"
-                          color="error"
-                          onClick={() => removeShippingPR(prIdx)}
-                        >
-                          <DeleteIcon fontSize="small" />
-                        </IconButton>
-                      </Box>
-                      <Box sx={{ display: 'flex', gap: 2, mb: 2 }}>
-                        <TextField
-                          label="PR Number"
-                          size="small"
-                          required
-                          value={draft.requestNumber}
-                          onChange={(e) => updateShippingPR(prIdx, 'requestNumber', e.target.value)}
-                          sx={{ flex: 1 }}
-                        />
-                        <TextField
-                          label="Requested By"
-                          size="small"
-                          value={draft.requestedBy}
-                          onChange={(e) => updateShippingPR(prIdx, 'requestedBy', e.target.value)}
-                          sx={{ flex: 1 }}
-                        />
-                      </Box>
-
-                      <Typography variant="body2" sx={{ mb: 1 }}>
-                        Select items ({draft.items.length} selected):
-                      </Typography>
-                      <Box sx={{ maxHeight: 200, overflowY: 'auto' }}>
-                        {selectedHardwareItems.map((hi) => {
-                          const isSelected = draft.items.some(
-                            (item) =>
-                              item.openingNumber === hi.opening_number &&
-                              item.productCode === hi.product_code &&
-                              item.hardwareCategory === hi.hardware_category,
-                          );
-                          return (
-                            <FormControlLabel
-                              key={hardwareItemKey(hi)}
-                              control={
-                                <Checkbox
-                                  size="small"
-                                  checked={isSelected}
-                                  onChange={() => toggleShippingPRItem(prIdx, hi)}
-                                />
-                              }
-                              label={
-                                <Typography variant="body2">
-                                  {hi.opening_number} | {hi.product_code} | {hi.hardware_category} |
-                                  Qty: {hi.item_quantity}
-                                </Typography>
-                              }
-                              sx={{ display: 'block' }}
-                            />
-                          );
-                        })}
-                      </Box>
-                    </Paper>
-                  ))}
-
-                  <Button startIcon={<AddIcon />} onClick={addShippingPR}>
-                    Add Shipping PR
-                  </Button>
-                </Box>
-              )}
-
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 3 }}>
-                <Button onClick={handleBack}>Back</Button>
-                <Button variant="contained" disabled={!canProceedStep4} onClick={handleNext}>
-                  Next
-                </Button>
-              </Box>
-            </Box>
+          {/* ============ Step: Classification ============ */}
+          {activeStepId === 'classification' && (
+            <ClassificationStep
+              classificationRows={classificationRows}
+              onClassify={classifyBatch}
+              purposes={purposes}
+              itemCount={isReimport ? itemsNeedingOrder.length : selectedHardwareItems.length}
+              openingCount={selectedOpenings.size}
+              isReimport={isReimport}
+              onNext={handleNext}
+              onBack={handleBack}
+            />
           )}
 
-          {/* ============ Step 5: Finalize ============ */}
-          {activeStep === 5 && (
+          {/* ============ Step: Purchase Orders ============ */}
+          {activeStepId === 'purchase-orders' && (
+            <PurchaseOrdersStep
+              vendorGroups={vendorGroups}
+              vendorPOInfo={vendorPOInfo}
+              onUpdateVendorPO={updateVendorPO}
+              onNext={handleNext}
+              onBack={handleBack}
+            />
+          )}
+
+          {/* ============ Step: Shop Assembly ============ */}
+          {activeStepId === 'shop-assembly' && (
+            <ShopAssemblyStep
+              sarRequestNumber={sarRequestNumber}
+              onSarNumberChange={setSarRequestNumber}
+              openings={openings}
+              selectedOpenings={selectedOpenings}
+              selectedHardwareItems={selectedHardwareItems}
+              classifications={classifications}
+              purposes={purposes}
+              onNext={handleNext}
+              onBack={handleBack}
+            />
+          )}
+
+          {/* ============ Step: Shipping PRs ============ */}
+          {activeStepId === 'shipping-prs' && (
+            <ShippingPRsStep
+              shippingPRDrafts={shippingPRDrafts}
+              selectedHardwareItems={selectedHardwareItems}
+              onAddPR={addShippingPR}
+              onRemovePR={removeShippingPR}
+              onUpdatePR={updateShippingPR}
+              onTogglePRItem={toggleShippingPRItem}
+              onNext={handleNext}
+              onBack={handleBack}
+            />
+          )}
+
+          {/* ============ Step: Finalize ============ */}
+          {activeStepId === 'finalize' && (
             <Box>
               <Typography variant="h6" sx={{ mb: 2 }}>
                 Review & Finalize

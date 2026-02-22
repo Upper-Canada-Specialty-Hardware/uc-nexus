@@ -51,6 +51,7 @@ const GROUP_BY_OPTIONS: { value: GroupByField; label: string }[] = [
 interface ClassificationGridProps {
   rows: ClassificationRow[];
   onClassify: (classificationKeys: string[], value: 'SITE_HARDWARE' | 'SHOP_HARDWARE') => void;
+  readOnly?: boolean;
 }
 
 interface CategoryGridProps {
@@ -58,6 +59,7 @@ interface CategoryGridProps {
   rows: ClassificationRow[];
   columns: GridColDef[];
   onClassify: ClassificationGridProps['onClassify'];
+  readOnly?: boolean;
 }
 
 function formatGroupKey(field: GroupByField, value: unknown): string {
@@ -71,7 +73,7 @@ function uniqueClassificationKeys(rows: ClassificationRow[]): string[] {
   return Array.from(new Set(rows.map((r) => r.classificationKey)));
 }
 
-function CategoryGrid({ groupLabel, rows, columns, onClassify }: CategoryGridProps) {
+function CategoryGrid({ groupLabel, rows, columns, onClassify, readOnly }: CategoryGridProps) {
   const [selectionModel, setSelectionModel] = useState<GridRowSelectionModel>({
     type: 'include',
     ids: new Set(),
@@ -113,29 +115,31 @@ function CategoryGrid({ groupLabel, rows, columns, onClassify }: CategoryGridPro
           <Typography variant="body2" color="text.secondary">
             ({rows.length} items)
           </Typography>
-          <Box sx={{ ml: 'auto', display: 'flex', gap: 0.5 }}>
-            <Button
-              size="small"
-              variant="outlined"
-              onClick={(e) => handleGroupAll('SITE_HARDWARE', e)}
-            >
-              Site All
-            </Button>
-            <Button
-              size="small"
-              variant="outlined"
-              onClick={(e) => handleGroupAll('SHOP_HARDWARE', e)}
-            >
-              Shop All
-            </Button>
-          </Box>
+          {!readOnly && (
+            <Box sx={{ ml: 'auto', display: 'flex', gap: 0.5 }}>
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={(e) => handleGroupAll('SITE_HARDWARE', e)}
+              >
+                Site All
+              </Button>
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={(e) => handleGroupAll('SHOP_HARDWARE', e)}
+              >
+                Shop All
+              </Button>
+            </Box>
+          )}
         </Box>
       </AccordionSummary>
       <AccordionDetails>
         <DataGrid
           rows={rows}
           columns={columns}
-          checkboxSelection
+          checkboxSelection={!readOnly}
           density="compact"
           rowHeight={42}
           hideFooter
@@ -143,7 +147,7 @@ function CategoryGrid({ groupLabel, rows, columns, onClassify }: CategoryGridPro
           rowSelectionModel={selectionModel}
           onRowSelectionModelChange={setSelectionModel}
           slots={{
-            toolbar: selectedCount > 0
+            toolbar: !readOnly && selectedCount > 0
               ? () => (
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 1, py: 0.5 }}>
                     <Typography variant="body2">{selectedCount} selected</Typography>
@@ -204,7 +208,7 @@ const GROUP_FIELD_MAP: Record<GroupByField, string> = {
   itemQuantity: 'itemQuantity',
 };
 
-export default function ClassificationGrid({ rows, onClassify }: ClassificationGridProps) {
+export default function ClassificationGrid({ rows, onClassify, readOnly }: ClassificationGridProps) {
   const [groupByField, setGroupByField] = useState<GroupByField>('hardwareCategory');
 
   const grouped = useMemo(() => {
@@ -236,29 +240,42 @@ export default function ClassificationGrid({ rows, onClassify }: ClassificationG
         flex: 1,
         minWidth: 160,
         sortable: false,
-        renderCell: (params: GridRenderCellParams) => (
-          <ToggleButtonGroup
-            size="small"
-            exclusive
-            value={params.row.classification || null}
-            onChange={(_, newValue) => {
-              if (newValue !== null) {
-                onClassify([params.row.classificationKey], newValue);
-              }
-            }}
-            sx={{ height: 28 }}
-          >
-            <ToggleButton value="SITE_HARDWARE" sx={{ px: 1, fontSize: '0.75rem' }}>
-              Site
-            </ToggleButton>
-            <ToggleButton value="SHOP_HARDWARE" sx={{ px: 1, fontSize: '0.75rem' }}>
-              Shop
-            </ToggleButton>
-          </ToggleButtonGroup>
-        ),
+        renderCell: (params: GridRenderCellParams) => {
+          const value = params.row.classification;
+          if (readOnly) {
+            if (!value) return <Chip size="small" label="—" />;
+            return (
+              <Chip
+                size="small"
+                label={value === 'SITE_HARDWARE' ? 'Site' : 'Shop'}
+                color={value === 'SITE_HARDWARE' ? 'success' : 'info'}
+              />
+            );
+          }
+          return (
+            <ToggleButtonGroup
+              size="small"
+              exclusive
+              value={value || null}
+              onChange={(_, newValue) => {
+                if (newValue !== null) {
+                  onClassify([params.row.classificationKey], newValue);
+                }
+              }}
+              sx={{ height: 28 }}
+            >
+              <ToggleButton value="SITE_HARDWARE" sx={{ px: 1, fontSize: '0.75rem' }}>
+                Site
+              </ToggleButton>
+              <ToggleButton value="SHOP_HARDWARE" sx={{ px: 1, fontSize: '0.75rem' }}>
+                Shop
+              </ToggleButton>
+            </ToggleButtonGroup>
+          );
+        },
       },
     ];
-  }, [groupByField, onClassify]);
+  }, [groupByField, onClassify, readOnly]);
 
   return (
     <Box>
@@ -283,6 +300,7 @@ export default function ClassificationGrid({ rows, onClassify }: ClassificationG
           rows={groupRows}
           columns={columns}
           onClassify={onClassify}
+          readOnly={readOnly}
         />
       ))}
     </Box>
