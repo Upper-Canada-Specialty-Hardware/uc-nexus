@@ -59,13 +59,6 @@ import ClassificationGrid, { type ClassificationRow } from './ClassificationGrid
 
 type ImportPurpose = 'po' | 'assembly' | 'shipping';
 
-interface PODraft {
-  poNumber: string;
-  vendorName: string;
-  vendorContact: string;
-  itemRefs: Set<string>; // keys: "opening_number|product_code|material_id"
-}
-
 interface ShippingPRItem {
   itemType: 'OPENING_ITEM' | 'LOOSE';
   openingNumber: string;
@@ -168,7 +161,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
   const [selectedOpenings, setSelectedOpenings] = useState<Set<string>>(new Set());
 
   // Step 5 state
-  const [poDrafts, setPoDrafts] = useState<PODraft[]>([]);
+  const [vendorPOInfo, setVendorPOInfo] = useState<Map<string, { poNumber: string; vendorContact: string }>>(new Map());
   const [classifications, setClassifications] = useState<Map<string, string>>(new Map());
   const [sarRequestNumber, setSarRequestNumber] = useState('');
   const [shippingPRDrafts, setShippingPRDrafts] = useState<ShippingPRDraft[]>([]);
@@ -221,30 +214,6 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     [hardwareItems, selectedOpenings],
   );
 
-  // Classification rows for DataGrid (one row per unique category|productCode|unitCost)
-  const classificationRows = useMemo<ClassificationRow[]>(() => {
-    const map = new Map<string, { cat: string; code: string; cost: number; count: number; qty: number }>();
-    for (const hi of selectedHardwareItems) {
-      const key = classificationKey(hi);
-      const existing = map.get(key);
-      if (existing) {
-        existing.count += 1;
-        existing.qty += hi.item_quantity;
-      } else {
-        map.set(key, { cat: hi.hardware_category, code: hi.product_code, cost: hi.unit_cost ?? 0, count: 1, qty: hi.item_quantity });
-      }
-    }
-    return Array.from(map.entries()).map(([key, v]) => ({
-      id: key,
-      hardwareCategory: v.cat,
-      productCode: v.code,
-      unitCost: v.cost,
-      itemCount: v.count,
-      totalQuantity: v.qty,
-      classification: classifications.get(key) ?? '',
-    }));
-  }, [selectedHardwareItems, classifications]);
-
   // Reconciliation rows for DataGrid
   const reconciliationRows = useMemo<ReconciliationRow[]>(() => {
     const raw = reconcileData?.reconcileSchedule ?? [];
@@ -264,6 +233,37 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
       reconSet.has(`${hi.opening_number}|${hi.product_code}`),
     );
   }, [isReimport, selectedHardwareItems, reconciliationRows]);
+
+  // Classification rows for DataGrid (one row per individual hardware item)
+  const classificationRows = useMemo<ClassificationRow[]>(() => {
+    return itemsNeedingOrder.map((hi) => {
+      const ck = classificationKey(hi);
+      return {
+        id: hardwareItemKey(hi),
+        openingNumber: hi.opening_number,
+        productCode: hi.product_code,
+        hardwareCategory: hi.hardware_category,
+        vendorNo: hi.vendor_no ?? '(No Vendor)',
+        listPrice: hi.list_price,
+        vendorDiscount: hi.vendor_discount,
+        unitCost: hi.unit_cost ?? 0,
+        itemQuantity: hi.item_quantity,
+        classificationKey: ck,
+        classification: classifications.get(ck) ?? '',
+      };
+    });
+  }, [itemsNeedingOrder, classifications]);
+
+  // Items grouped by vendor for auto PO segregation
+  const vendorGroups = useMemo(() => {
+    const map = new Map<string, ParsedHardwareItem[]>();
+    for (const hi of itemsNeedingOrder) {
+      const vendor = hi.vendor_no ?? '(No Vendor)';
+      if (!map.has(vendor)) map.set(vendor, []);
+      map.get(vendor)!.push(hi);
+    }
+    return new Map(Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b)));
+  }, [itemsNeedingOrder]);
 
   // ---- Step Navigation ----
 
@@ -346,10 +346,6 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     }
 
     if (activeStep === 3) {
-      // Initialize PO drafts if empty and 'po' selected
-      if (purposes.has('po') && poDrafts.length === 0) {
-        setPoDrafts([{ poNumber: '', vendorName: '', vendorContact: '', itemRefs: new Set() }]);
-      }
       setActiveStep(4);
       return;
     }
@@ -368,7 +364,6 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     selectedHardwareItems,
     reconcileSchedule,
     purposes,
-    poDrafts.length,
   ]);
 
   const handleBack = useCallback(() => {
@@ -405,31 +400,14 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     setSelectedOpenings(new Set());
   }, []);
 
-  // Step 5a: PO draft management
-  const addPODraft = useCallback(() => {
-    setPoDrafts((prev) => [...prev, { poNumber: '', vendorName: '', vendorContact: '', itemRefs: new Set() }]);
-  }, []);
-
-  const removePODraft = useCallback((index: number) => {
-    setPoDrafts((prev) => prev.filter((_, i) => i !== index));
-  }, []);
-
-  const updatePODraft = useCallback((index: number, field: keyof Omit<PODraft, 'itemRefs'>, value: string) => {
-    setPoDrafts((prev) =>
-      prev.map((draft, i) => (i === index ? { ...draft, [field]: value } : draft)),
-    );
-  }, []);
-
-  const togglePOItem = useCallback((poIndex: number, itemKey: string) => {
-    setPoDrafts((prev) =>
-      prev.map((draft, i) => {
-        if (i !== poIndex) return draft;
-        const next = new Set(draft.itemRefs);
-        if (next.has(itemKey)) next.delete(itemKey);
-        else next.add(itemKey);
-        return { ...draft, itemRefs: next };
-      }),
-    );
+  // Step 5a: Vendor PO info
+  const updateVendorPO = useCallback((vendorNo: string, field: 'poNumber' | 'vendorContact', value: string) => {
+    setVendorPOInfo((prev) => {
+      const next = new Map(prev);
+      const existing = next.get(vendorNo) ?? { poNumber: '', vendorContact: '' };
+      next.set(vendorNo, { ...existing, [field]: value });
+      return next;
+    });
   }, []);
 
   // Step 5a: Classification (batch-capable)
@@ -511,15 +489,19 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
       openings: selectedOpeningsList.map((o) => snakeToCamel(o as unknown as Record<string, unknown>)),
       hardwareItems: purposes.has('po') ? filteredHardwareItems.map((hi) => snakeToCamel(hi as unknown as Record<string, unknown>)) : null,
       poDrafts: purposes.has('po')
-        ? poDrafts.map((po) => ({
-            poNumber: po.poNumber,
-            vendorName: po.vendorName || null,
-            vendorContact: po.vendorContact || null,
-            hardwareItemRefs: Array.from(po.itemRefs).map((key) => {
-              const [openingNumber, productCode, materialId] = key.split('|');
-              return { openingNumber, productCode, materialId };
-            }),
-          }))
+        ? Array.from(vendorGroups.entries()).map(([vendor, items]) => {
+            const info = vendorPOInfo.get(vendor) ?? { poNumber: '', vendorContact: '' };
+            return {
+              poNumber: info.poNumber,
+              vendorName: vendor !== '(No Vendor)' ? vendor : null,
+              vendorContact: info.vendorContact || null,
+              hardwareItemRefs: items.map((hi) => ({
+                openingNumber: hi.opening_number,
+                productCode: hi.product_code,
+                materialId: hi.material_id,
+              })),
+            };
+          })
         : null,
       classifications: purposes.has('po')
         ? Array.from(classifications.entries()).map(([key, cls]) => {
@@ -564,7 +546,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
             .filter(Boolean)
         : null,
     };
-  }, [parsed, selectedOpenings, purposes, poDrafts, classifications, shippingPRDrafts, sarRequestNumber]);
+  }, [parsed, selectedOpenings, purposes, vendorGroups, vendorPOInfo, classifications, shippingPRDrafts, sarRequestNumber]);
 
   const handleFinalize = useCallback(async () => {
     setConfirmOpen(false);
@@ -623,7 +605,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     setExistingProjectName(null);
     setPurposes(new Set());
     setSelectedOpenings(new Set());
-    setPoDrafts([]);
+    setVendorPOInfo(new Map());
     setClassifications(new Map());
     setSarRequestNumber('');
     setShippingPRDrafts([]);
@@ -644,10 +626,12 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
   const canProceedStep2 = selectedOpenings.size > 0;
   const canProceedStep3 = true; // Reconciliation is informational
   const canProceedStep4 = useMemo(() => {
-    // PO: at least one draft with PO number and at least one item if purpose selected
     if (purposes.has('po')) {
-      const valid = poDrafts.some((d) => d.poNumber.trim() !== '' && d.itemRefs.size > 0);
-      if (!valid) return false;
+      // Every vendor must have a PO number
+      const allVendorsHavePO = Array.from(vendorGroups.keys()).every(
+        (v) => (vendorPOInfo.get(v)?.poNumber ?? '').trim() !== '',
+      );
+      if (!allVendorsHavePO) return false;
       // All items must be classified
       if (!classificationRows.every((r) => r.classification !== '')) return false;
     }
@@ -661,7 +645,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
       if (!valid) return false;
     }
     return true;
-  }, [purposes, poDrafts, sarRequestNumber, shippingPRDrafts, classificationRows]);
+  }, [purposes, vendorGroups, vendorPOInfo, sarRequestNumber, shippingPRDrafts, classificationRows]);
 
   // ---- Reconciliation DataGrid columns ----
 
@@ -1045,83 +1029,52 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
                       }
                     >
                       {classificationRows.filter((r) => r.classification !== '').length} of{' '}
-                      {classificationRows.length} item groups classified
+                      {classificationRows.length} items classified
                     </Typography>
                     <ClassificationGrid rows={classificationRows} onClassify={classifyBatch} />
                   </Paper>
 
-                  {/* PO Drafts */}
-                  {poDrafts.map((draft, poIdx) => (
-                    <Paper key={poIdx} variant="outlined" sx={{ p: 2, mb: 2 }}>
-                      <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
-                        <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-                          PO #{poIdx + 1}
-                        </Typography>
-                        {poDrafts.length > 1 && (
-                          <IconButton size="small" color="error" onClick={() => removePODraft(poIdx)}>
-                            <DeleteIcon fontSize="small" />
-                          </IconButton>
-                        )}
-                      </Box>
-                      <Box sx={{ display: 'flex', gap: 2, mb: 2 }}>
-                        <TextField
-                          label="PO Number"
-                          size="small"
-                          required
-                          value={draft.poNumber}
-                          onChange={(e) => updatePODraft(poIdx, 'poNumber', e.target.value)}
-                          sx={{ flex: 1 }}
-                        />
-                        <TextField
-                          label="Vendor Name"
-                          size="small"
-                          value={draft.vendorName}
-                          onChange={(e) => updatePODraft(poIdx, 'vendorName', e.target.value)}
-                          sx={{ flex: 1 }}
-                        />
-                        <TextField
-                          label="Vendor Contact"
-                          size="small"
-                          value={draft.vendorContact}
-                          onChange={(e) => updatePODraft(poIdx, 'vendorContact', e.target.value)}
-                          sx={{ flex: 1 }}
-                        />
-                      </Box>
+                  {/* Auto-segregated Purchase Orders */}
+                  <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 600 }}>
+                    Purchase Orders ({vendorGroups.size} vendors)
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                    One PO per vendor. Enter a PO number for each.
+                  </Typography>
 
-                      <Typography variant="body2" sx={{ mb: 1 }}>
-                        Select items for this PO ({draft.itemRefs.size} selected):
-                      </Typography>
-                      <Box sx={{ maxHeight: 200, overflowY: 'auto' }}>
-                        {itemsNeedingOrder.map((hi) => {
-                          const key = hardwareItemKey(hi);
-                          return (
-                            <FormControlLabel
-                              key={key}
-                              control={
-                                <Checkbox
-                                  size="small"
-                                  checked={draft.itemRefs.has(key)}
-                                  onChange={() => togglePOItem(poIdx, key)}
-                                />
-                              }
-                              label={
-                                <Typography variant="body2">
-                                  {hi.opening_number} | {hi.product_code} | {hi.hardware_category} |
-                                  Qty: {hi.item_quantity}
-                                  {hi.unit_cost != null ? ` | $${hi.unit_cost}` : ''}
-                                </Typography>
-                              }
-                              sx={{ display: 'block' }}
-                            />
-                          );
-                        })}
-                      </Box>
-                    </Paper>
-                  ))}
-
-                  <Button startIcon={<AddIcon />} onClick={addPODraft} sx={{ mb: 2 }}>
-                    Add Another PO
-                  </Button>
+                  {Array.from(vendorGroups.entries()).map(([vendor, items]) => {
+                    const info = vendorPOInfo.get(vendor) ?? { poNumber: '', vendorContact: '' };
+                    const totalCost = items.reduce((sum, hi) => sum + (hi.unit_cost ?? 0) * hi.item_quantity, 0);
+                    return (
+                      <Paper key={vendor} variant="outlined" sx={{ p: 2, mb: 2 }}>
+                        <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
+                          <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+                            {vendor}
+                          </Typography>
+                          <Typography variant="body2" color="text.secondary">
+                            {items.length} items | ${totalCost.toFixed(2)}
+                          </Typography>
+                        </Box>
+                        <Box sx={{ display: 'flex', gap: 2 }}>
+                          <TextField
+                            label="PO Number"
+                            size="small"
+                            required
+                            value={info.poNumber}
+                            onChange={(e) => updateVendorPO(vendor, 'poNumber', e.target.value)}
+                            sx={{ flex: 1 }}
+                          />
+                          <TextField
+                            label="Vendor Contact"
+                            size="small"
+                            value={info.vendorContact}
+                            onChange={(e) => updateVendorPO(vendor, 'vendorContact', e.target.value)}
+                            sx={{ flex: 1 }}
+                          />
+                        </Box>
+                      </Paper>
+                    );
+                  })}
                 </Box>
               )}
 
@@ -1293,9 +1246,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
                 {purposes.has('po') && (
                   <Box sx={{ mb: 1 }}>
                     <Typography variant="body1">
-                      {poDrafts.filter((d) => d.poNumber.trim() !== '').length} Purchase Order(s)
-                      with{' '}
-                      {poDrafts.reduce((sum, d) => sum + d.itemRefs.size, 0)} line items
+                      {vendorGroups.size} Purchase Order(s) across {vendorGroups.size} vendor(s)
                     </Typography>
                   </Box>
                 )}
