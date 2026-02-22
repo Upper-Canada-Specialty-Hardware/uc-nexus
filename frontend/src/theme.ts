@@ -1,29 +1,35 @@
-import { createTheme, type ThemeOptions } from '@mui/material/styles';
+import { createTheme } from '@mui/material/styles';
 import type {} from '@mui/x-data-grid/themeAugmentation';
 
-// UC Covet brand palette
-const PRIMARY = '#212121';    // dark charcoal -- structural
-const SECONDARY = '#ffca28';  // amber/gold -- CTAs, accents
-const BG_DEFAULT = '#f5f5f5'; // off-white page background
-const BG_PAPER = '#ffffff';   // white cards/dialogs
+// Enable CSS variables type support
+declare module '@mui/material/styles' {
+  interface CssThemeVariables {
+    enabled: true;
+  }
+}
 
-// Contrast text
-const ON_PRIMARY = '#ffffff';
-const ON_SECONDARY = '#212121';
+// Shared brand tokens
+const SECONDARY_LIGHT = '#ffca28';
+const SECONDARY_DARK = '#ffd54f';
 
-const themeOptions: ThemeOptions = {
-  palette: {
-    primary: {
-      main: PRIMARY,
-      contrastText: ON_PRIMARY,
+const theme = createTheme({
+  cssVariables: {
+    colorSchemeSelector: 'data',
+  },
+  colorSchemes: {
+    light: {
+      palette: {
+        primary: { main: '#212121', contrastText: '#ffffff' },
+        secondary: { main: SECONDARY_LIGHT, contrastText: '#212121' },
+        background: { default: '#f5f5f5', paper: '#ffffff' },
+      },
     },
-    secondary: {
-      main: SECONDARY,
-      contrastText: ON_SECONDARY,
-    },
-    background: {
-      default: BG_DEFAULT,
-      paper: BG_PAPER,
+    dark: {
+      palette: {
+        primary: { main: '#e0e0e0', contrastText: '#121212' },
+        secondary: { main: SECONDARY_DARK, contrastText: '#1a1a1a' },
+        background: { default: '#121212', paper: '#1e1e1e' },
+      },
     },
   },
 
@@ -45,14 +51,6 @@ const themeOptions: ThemeOptions = {
   },
 
   components: {
-    MuiCssBaseline: {
-      styleOverrides: {
-        body: {
-          backgroundColor: BG_DEFAULT,
-        },
-      },
-    },
-
     MuiButton: {
       defaultProps: {
         disableElevation: true,
@@ -62,24 +60,42 @@ const themeOptions: ThemeOptions = {
           borderRadius: 8,
           padding: '6px 20px',
         },
-        contained: {
-          backgroundColor: SECONDARY,
-          color: ON_SECONDARY,
+        contained: ({ theme }) => ({
+          backgroundColor: SECONDARY_LIGHT,
+          color: '#212121',
           '&:hover': {
             backgroundColor: '#ffb300',
           },
-        },
-        containedPrimary: {
-          backgroundColor: PRIMARY,
-          color: ON_PRIMARY,
+          ...theme.applyStyles('dark', {
+            backgroundColor: SECONDARY_DARK,
+            color: '#1a1a1a',
+            '&:hover': {
+              backgroundColor: '#ffca28',
+            },
+          }),
+        }),
+        containedPrimary: ({ theme }) => ({
+          backgroundColor: '#212121',
+          color: '#ffffff',
           '&:hover': {
             backgroundColor: '#424242',
           },
-        },
-        outlined: {
-          borderColor: PRIMARY,
-          color: PRIMARY,
-        },
+          ...theme.applyStyles('dark', {
+            backgroundColor: '#e0e0e0',
+            color: '#121212',
+            '&:hover': {
+              backgroundColor: '#bdbdbd',
+            },
+          }),
+        }),
+        outlined: ({ theme }) => ({
+          borderColor: '#212121',
+          color: '#212121',
+          ...theme.applyStyles('dark', {
+            borderColor: '#e0e0e0',
+            color: '#e0e0e0',
+          }),
+        }),
       },
     },
 
@@ -88,10 +104,13 @@ const themeOptions: ThemeOptions = {
         elevation: 0,
       },
       styleOverrides: {
-        colorPrimary: {
-          backgroundColor: PRIMARY,
-          color: ON_PRIMARY,
-        },
+        colorPrimary: ({ theme }) => ({
+          backgroundColor: '#212121',
+          color: '#ffffff',
+          ...theme.applyStyles('dark', {
+            backgroundColor: '#1e1e1e',
+          }),
+        }),
       },
     },
 
@@ -100,7 +119,7 @@ const themeOptions: ThemeOptions = {
         elevation: 0,
       },
       styleOverrides: {
-        root: {
+        root: ({ theme }) => ({
           border: '1px solid',
           borderColor: 'rgba(0, 0, 0, 0.08)',
           transition: 'box-shadow 0.2s ease-in-out, border-color 0.2s ease-in-out',
@@ -108,7 +127,14 @@ const themeOptions: ThemeOptions = {
             borderColor: 'rgba(0, 0, 0, 0.16)',
             boxShadow: '0 4px 12px rgba(0, 0, 0, 0.08)',
           },
-        },
+          ...theme.applyStyles('dark', {
+            borderColor: 'rgba(255, 255, 255, 0.12)',
+            '&:hover': {
+              borderColor: 'rgba(255, 255, 255, 0.24)',
+              boxShadow: '0 4px 12px rgba(0, 0, 0, 0.4)',
+            },
+          }),
+        }),
       },
     },
 
@@ -118,10 +144,13 @@ const themeOptions: ThemeOptions = {
           border: 'none',
           borderRadius: 8,
         },
-        columnHeaders: {
+        columnHeaders: ({ theme }) => ({
           backgroundColor: '#eeeeee',
           fontWeight: 600,
-        },
+          ...theme.applyStyles('dark', {
+            backgroundColor: '#2a2a2a',
+          }),
+        }),
         columnHeaderTitle: {
           fontWeight: 600,
         },
@@ -130,14 +159,22 @@ const themeOptions: ThemeOptions = {
 
     MuiStepIcon: {
       styleOverrides: {
-        root: {
+        root: ({ theme }) => ({
           '&.Mui-active': {
-            color: SECONDARY,
+            color: SECONDARY_LIGHT,
           },
           '&.Mui-completed': {
-            color: SECONDARY,
+            color: SECONDARY_LIGHT,
           },
-        },
+          ...theme.applyStyles('dark', {
+            '&.Mui-active': {
+              color: SECONDARY_DARK,
+            },
+            '&.Mui-completed': {
+              color: SECONDARY_DARK,
+            },
+          }),
+        }),
       },
     },
 
@@ -156,14 +193,22 @@ const themeOptions: ThemeOptions = {
         root: {
           fontWeight: 500,
         },
-        colorPrimary: {
-          backgroundColor: PRIMARY,
-          color: ON_PRIMARY,
-        },
-        colorSecondary: {
-          backgroundColor: SECONDARY,
-          color: ON_SECONDARY,
-        },
+        colorPrimary: ({ theme }) => ({
+          backgroundColor: '#212121',
+          color: '#ffffff',
+          ...theme.applyStyles('dark', {
+            backgroundColor: '#e0e0e0',
+            color: '#121212',
+          }),
+        }),
+        colorSecondary: ({ theme }) => ({
+          backgroundColor: SECONDARY_LIGHT,
+          color: '#212121',
+          ...theme.applyStyles('dark', {
+            backgroundColor: SECONDARY_DARK,
+            color: '#1a1a1a',
+          }),
+        }),
       },
     },
 
@@ -188,21 +233,31 @@ const themeOptions: ThemeOptions = {
         elevation: 0,
       },
       styleOverrides: {
-        outlined: {
+        outlined: ({ theme }) => ({
           borderColor: 'rgba(0, 0, 0, 0.12)',
-        },
+          ...theme.applyStyles('dark', {
+            borderColor: 'rgba(255, 255, 255, 0.12)',
+          }),
+        }),
       },
     },
 
     MuiFab: {
       styleOverrides: {
-        primary: {
-          backgroundColor: SECONDARY,
-          color: ON_SECONDARY,
+        primary: ({ theme }) => ({
+          backgroundColor: SECONDARY_LIGHT,
+          color: '#212121',
           '&:hover': {
             backgroundColor: '#ffb300',
           },
-        },
+          ...theme.applyStyles('dark', {
+            backgroundColor: SECONDARY_DARK,
+            color: '#1a1a1a',
+            '&:hover': {
+              backgroundColor: '#ffca28',
+            },
+          }),
+        }),
       },
     },
 
@@ -220,16 +275,25 @@ const themeOptions: ThemeOptions = {
 
     MuiToggleButton: {
       styleOverrides: {
-        root: {
-          textTransform: 'none',
+        root: ({ theme }) => ({
+          textTransform: 'none' as const,
           '&.Mui-selected': {
-            backgroundColor: SECONDARY,
-            color: ON_SECONDARY,
+            backgroundColor: SECONDARY_LIGHT,
+            color: '#212121',
             '&:hover': {
               backgroundColor: '#ffb300',
             },
           },
-        },
+          ...theme.applyStyles('dark', {
+            '&.Mui-selected': {
+              backgroundColor: SECONDARY_DARK,
+              color: '#1a1a1a',
+              '&:hover': {
+                backgroundColor: '#ffca28',
+              },
+            },
+          }),
+        }),
       },
     },
 
@@ -241,8 +305,6 @@ const themeOptions: ThemeOptions = {
       },
     },
   },
-};
-
-const theme = createTheme(themeOptions);
+});
 
 export default theme;

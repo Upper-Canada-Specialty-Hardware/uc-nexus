@@ -19,6 +19,9 @@ import {
 import ShoppingCartIcon from '@mui/icons-material/ShoppingCart';
 import SwapHorizIcon from '@mui/icons-material/SwapHoriz';
 import NavigateNextIcon from '@mui/icons-material/NavigateNext';
+import DarkModeIcon from '@mui/icons-material/DarkMode';
+import LightModeIcon from '@mui/icons-material/LightMode';
+import { useColorScheme } from '@mui/material/styles';
 import { useQuery } from '@apollo/client/react';
 import { GET_PROJECTS } from '../graphql/queries';
 import { useRole } from '../contexts/RoleContext';
@@ -29,6 +32,7 @@ import NotificationBell from './NotificationBell';
 import ConfirmDialog from './ConfirmDialog';
 
 export default function AppLayout() {
+  const { mode, setMode } = useColorScheme();
   const { role, clearRole } = useRole();
   const { project, setProject } = useProject();
   const { isActive: wizardActive, formData, reset: resetWizard } = useWizard();
@@ -112,6 +116,14 @@ export default function AppLayout() {
           )}
 
           <NotificationBell />
+
+          <IconButton
+            color="inherit"
+            onClick={() => setMode(mode === 'dark' ? 'light' : 'dark')}
+            sx={{ mr: 1 }}
+          >
+            {mode === 'dark' ? <LightModeIcon /> : <DarkModeIcon />}
+          </IconButton>
 
           <Button
             color="inherit"

@@ -276,7 +276,7 @@ export default function AssignmentBoard() {
               title={`Assigned to ${ASSIGNED_USER}`}
               openings={assigned}
               emptyText='Drop openings here to assign'
-              color='#f5f5ff'
+              color='action.hover'
             />
           </Grid>
         </Grid>
