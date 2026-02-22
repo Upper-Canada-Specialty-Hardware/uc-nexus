@@ -89,8 +89,8 @@ interface ImportWizardProps {
 }
 
 export default function ImportWizard({ open, onClose }: ImportWizardProps) {
-  const { project: _project, setProject } = useProject();
-  const { role: _role } = useRole();
+  const { setProject } = useProject();
+  useRole();
   const { showToast } = useToast();
   const { setTotalSteps, reset: resetWizardContext } = useWizard();
   const navigate = useNavigate();
@@ -141,17 +141,20 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     return base;
   }, [purposes]);
 
-  const activeStepIndex = useMemo(
-    () => steps.findIndex((s) => s.id === activeStepId),
+  // Guard against orphaned step (e.g. user unchecks a purpose while on that step).
+  // Derived via useMemo instead of a useEffect+setState to avoid cascading renders.
+  const effectiveStepId = useMemo<StepId>(
+    () =>
+      activeStepId !== 'upload' && !steps.find((s) => s.id === activeStepId)
+        ? 'classification'
+        : activeStepId,
     [steps, activeStepId],
   );
 
-  // Guard against orphaned step (e.g. user unchecks a purpose while on that step)
-  useEffect(() => {
-    if (activeStepId !== 'upload' && !steps.find((s) => s.id === activeStepId)) {
-      setActiveStepId('classification');
-    }
-  }, [steps, activeStepId]);
+  const activeStepIndex = useMemo(
+    () => steps.findIndex((s) => s.id === effectiveStepId),
+    [steps, effectiveStepId],
+  );
 
   // Signal WizardContext when import wizard is open (for unsaved-state detection in AppLayout)
   useEffect(() => {
@@ -280,12 +283,12 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
   );
 
   const handleNext = useCallback(async () => {
-    const currentIndex = steps.findIndex((s) => s.id === activeStepId);
+    const currentIndex = steps.findIndex((s) => s.id === effectiveStepId);
     const nextStep = steps[currentIndex + 1];
     if (!nextStep) return;
 
     // Side effects per step
-    if (activeStepId === 'upload' && parsed) {
+    if (effectiveStepId === 'upload' && parsed) {
       try {
         const result = await checkProject({
           variables: { projectId: parsed.project.project_id },
@@ -307,7 +310,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
       }
     }
 
-    if (activeStepId === 'openings' && isReimport && existingProjectId) {
+    if (effectiveStepId === 'openings' && isReimport && existingProjectId) {
       const items = selectedHardwareItems.map((hi) => ({
         openingNumber: hi.opening_number,
         hardwareCategory: hi.hardware_category,
@@ -320,13 +323,13 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     }
 
     setActiveStepId(nextStep.id);
-  }, [activeStepId, steps, parsed, checkProject, isReimport, existingProjectId, selectedHardwareItems, reconcileSchedule]);
+  }, [effectiveStepId, steps, parsed, checkProject, isReimport, existingProjectId, selectedHardwareItems, reconcileSchedule]);
 
   const handleBack = useCallback(() => {
-    const currentIndex = steps.findIndex((s) => s.id === activeStepId);
+    const currentIndex = steps.findIndex((s) => s.id === effectiveStepId);
     const prevStep = steps[currentIndex - 1];
     if (prevStep) setActiveStepId(prevStep.id);
-  }, [activeStepId, steps]);
+  }, [effectiveStepId, steps]);
 
   // ---- Step-specific handlers ----
 
@@ -645,7 +648,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
           </Stepper>
 
           {/* ============ Step: Upload File ============ */}
-          {activeStepId === 'upload' && (
+          {effectiveStepId === 'upload' && (
             <Box>
               <Typography variant="h6" sx={{ mb: 2 }}>
                 Upload TITAN XML File
@@ -741,7 +744,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
           )}
 
           {/* ============ Step: Select Purpose(s) ============ */}
-          {activeStepId === 'purpose' && (
+          {effectiveStepId === 'purpose' && (
             <Box>
               <Typography variant="h6" sx={{ mb: 2 }}>
                 Select Import Purposes
@@ -793,7 +796,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
           )}
 
           {/* ============ Step: Select Openings ============ */}
-          {activeStepId === 'openings' && (
+          {effectiveStepId === 'openings' && (
             <SelectOpeningsStep
               openings={openings}
               selectedOpenings={selectedOpenings}
@@ -809,7 +812,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
           )}
 
           {/* ============ Step: Reconciliation ============ */}
-          {activeStepId === 'reconciliation' && (
+          {effectiveStepId === 'reconciliation' && (
             <Box>
               <Typography variant="h6" sx={{ mb: 2 }}>
                 Reconciliation
@@ -857,7 +860,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
           )}
 
           {/* ============ Step: Classification ============ */}
-          {activeStepId === 'classification' && (
+          {effectiveStepId === 'classification' && (
             <ClassificationStep
               classificationRows={classificationRows}
               onClassify={classifyBatch}
@@ -871,7 +874,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
           )}
 
           {/* ============ Step: Purchase Orders ============ */}
-          {activeStepId === 'purchase-orders' && (
+          {effectiveStepId === 'purchase-orders' && (
             <PurchaseOrdersStep
               vendorGroups={vendorGroups}
               vendorPOInfo={vendorPOInfo}
@@ -882,7 +885,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
           )}
 
           {/* ============ Step: Shop Assembly ============ */}
-          {activeStepId === 'shop-assembly' && (
+          {effectiveStepId === 'shop-assembly' && (
             <ShopAssemblyStep
               sarRequestNumber={sarRequestNumber}
               onSarNumberChange={setSarRequestNumber}
@@ -897,7 +900,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
           )}
 
           {/* ============ Step: Shipping PRs ============ */}
-          {activeStepId === 'shipping-prs' && (
+          {effectiveStepId === 'shipping-prs' && (
             <ShippingPRsStep
               shippingPRDrafts={shippingPRDrafts}
               selectedHardwareItems={selectedHardwareItems}
@@ -911,7 +914,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
           )}
 
           {/* ============ Step: Finalize ============ */}
-          {activeStepId === 'finalize' && (
+          {effectiveStepId === 'finalize' && (
             <Box>
               <Typography variant="h6" sx={{ mb: 2 }}>
                 Review & Finalize

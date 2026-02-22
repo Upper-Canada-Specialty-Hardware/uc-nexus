@@ -8,6 +8,17 @@ import type {
 } from '../types/hardwareSchedule';
 
 // ---------------------------------------------------------------------------
+// Types for parsed XML nodes (from fast-xml-parser)
+// ---------------------------------------------------------------------------
+
+/**
+ * Recursive type for the loosely-typed tree returned by fast-xml-parser.
+ * Property values can be primitives, arrays of nodes, or nested nodes.
+ */
+type XmlNodeValue = XmlNode | XmlNode[] | string | number | boolean | null | undefined;
+interface XmlNode { [key: string]: XmlNodeValue; }
+
+// ---------------------------------------------------------------------------
 // fast-xml-parser configuration
 // ---------------------------------------------------------------------------
 const parserOptions = {
@@ -67,10 +78,10 @@ export function parseIntOrNull(value: unknown): {
 // extractProject
 // ---------------------------------------------------------------------------
 
-export function extractProject(contract: any): ParsedProject {
-  const fields = contract.Fields;
-  const jobSite = fields?.Job_Site;
-  const contractorEl = fields?.Contractor;
+export function extractProject(contract: XmlNode): ParsedProject {
+  const fields = contract.Fields as XmlNode | undefined;
+  const jobSite = fields?.Job_Site as XmlNode | undefined;
+  const contractorEl = fields?.Contractor as XmlNode | undefined;
 
   return {
     project_id: textOrNull(fields?.Project_ID) ?? '',
@@ -97,11 +108,12 @@ export function extractProject(contract: any): ParsedProject {
 // ---------------------------------------------------------------------------
 
 export function extractOpenings(
-  contract: any,
+  contract: XmlNode,
   onProgress?: (percent: number) => void,
 ): { openings: ParsedOpening[]; skippedRows: SkippedRow[]; warnings: string[] } {
-  const rawOpenings: any[] =
-    contract.Assignments?.Assignment_Level_3 ?? [];
+  const assignments = contract.Assignments as XmlNode | undefined;
+  const rawOpenings: XmlNode[] =
+    (assignments?.Assignment_Level_3 as XmlNode[] | undefined) ?? [];
   const openings: ParsedOpening[] = [];
   const skippedRows: SkippedRow[] = [];
   const warnings: string[] = [];
@@ -167,14 +179,15 @@ export function extractOpenings(
 // ---------------------------------------------------------------------------
 
 export function extractHardwareItems(
-  contract: any,
+  contract: XmlNode,
   onProgress?: (percent: number) => void,
 ): {
   hardwareItems: ParsedHardwareItem[];
   skippedRows: SkippedRow[];
   warnings: string[];
 } {
-  const materialLists: any[] = contract.Detail?.Material_List ?? [];
+  const detail = contract.Detail as XmlNode | undefined;
+  const materialLists: XmlNode[] = (detail?.Material_List as XmlNode[] | undefined) ?? [];
   const hardwareItems: ParsedHardwareItem[] = [];
   const skippedRows: SkippedRow[] = [];
   const warnings: string[] = [];
@@ -182,7 +195,8 @@ export function extractHardwareItems(
   // Count total assignments for progress reporting
   let totalAssignments = 0;
   for (const ml of materialLists) {
-    const assignments: any[] = ml.Assignments?.Assignment ?? [];
+    const mlAssignments = ml.Assignments as XmlNode | undefined;
+    const assignments: XmlNode[] = (mlAssignments?.Assignment as XmlNode[] | undefined) ?? [];
     totalAssignments += assignments.length;
   }
 
@@ -190,7 +204,8 @@ export function extractHardwareItems(
 
   for (const ml of materialLists) {
     const productCode = textOrNull(ml['@_Description']);
-    const assignments: any[] = ml.Assignments?.Assignment ?? [];
+    const mlNode = ml.Assignments as XmlNode | undefined;
+    const assignments: XmlNode[] = (mlNode?.Assignment as XmlNode[] | undefined) ?? [];
 
     if (!productCode) {
       for (let j = 0; j < assignments.length; j++) {
@@ -204,7 +219,7 @@ export function extractHardwareItems(
     }
 
     // Shared fields from Material_List_Fields
-    const mlf = ml.Material_List_Fields;
+    const mlf = ml.Material_List_Fields as XmlNode | undefined;
     const hardwareCategory = textOrNull(mlf?.Product_Description) ?? '';
     const unitCost = parseFloatOrNull(mlf?.Unit_Cost);
     const unitPrice = parseFloatOrNull(mlf?.Unit_Price);

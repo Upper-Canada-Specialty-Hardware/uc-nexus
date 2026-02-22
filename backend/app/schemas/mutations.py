@@ -1,45 +1,53 @@
 import uuid
-from typing import Optional
 from datetime import date
 
 import strawberry
 from sqlalchemy import select
 
 from app.database import SessionLocal
-from app.repositories import po_repository, warehouse_repository, shop_assembly_repository, shipping_repository, notification_repository
-from .enums import POStatus, ApproveOutcome
+from app.repositories import (
+    notification_repository,
+    po_repository,
+    shipping_repository,
+    shop_assembly_repository,
+    warehouse_repository,
+)
+
+from .enums import ApproveOutcome
 from .inputs import (
-    FinalizeImportSessionInput,
-    CreateReceiveInput,
-    ConfirmShipmentInput,
     AssignOpeningsInput,
     CompleteOpeningInput,
-)
-from .types import (
-    FinalizeImportResult,
-    PurchaseOrder,
-    ReceiveRecord,
-    ApproveResult,
-    PullRequest,
-    PackingSlip as PackingSlipType,
-    InventoryLocation,
-    OpeningItem,
-    Notification,
-    ApproveShopAssemblyResult,
-    ShopAssemblyRequest,
-    ShopAssemblyOpening,
+    ConfirmShipmentInput,
+    CreateReceiveInput,
+    FinalizeImportSessionInput,
 )
 from .queries import (
-    _project_to_type,
-    _po_to_type,
     _inventory_location_to_type,
-    _opening_item_to_type,
-    _receive_record_to_type,
-    _shop_assembly_request_to_type,
-    _shop_assembly_opening_to_type,
-    _pull_request_to_type,
     _notification_to_type,
+    _opening_item_to_type,
     _packing_slip_to_type,
+    _po_to_type,
+    _project_to_type,
+    _pull_request_to_type,
+    _receive_record_to_type,
+    _shop_assembly_opening_to_type,
+    _shop_assembly_request_to_type,
+)
+from .types import (
+    ApproveResult,
+    ApproveShopAssemblyResult,
+    FinalizeImportResult,
+    InventoryLocation,
+    Notification,
+    OpeningItem,
+    PullRequest,
+    PurchaseOrder,
+    ReceiveRecord,
+    ShopAssemblyOpening,
+    ShopAssemblyRequest,
+)
+from .types import (
+    PackingSlip as PackingSlipType,
 )
 
 
@@ -47,18 +55,19 @@ from .queries import (
 class Mutation:
     # Import
     @strawberry.mutation
-    def finalize_import_session(
-        self, input: FinalizeImportSessionInput
-    ) -> FinalizeImportResult:
-        from app.repositories import import_repository
+    def finalize_import_session(self, input: FinalizeImportSessionInput) -> FinalizeImportResult:
         from sqlalchemy.orm import selectinload
+
         from app.models.project import Project as ProjectModel
-        from app.models.purchase_order import PurchaseOrder as POModel
         from app.models.pull_request import PullRequest as PRModel
+        from app.models.purchase_order import PurchaseOrder as POModel
         from app.models.shop_assembly import (
-            ShopAssemblyRequest as SARModel,
             ShopAssemblyOpening as SAOModel_,
         )
+        from app.models.shop_assembly import (
+            ShopAssemblyRequest as SARModel,
+        )
+        from app.repositories import import_repository
 
         # Convert Strawberry input to dict
         input_data = {
@@ -120,7 +129,9 @@ class Mutation:
                     "submittal_id": hi.submittal_id,
                 }
                 for hi in (input.hardware_items or [])
-            ] if input.hardware_items else None,
+            ]
+            if input.hardware_items
+            else None,
             "po_drafts": [
                 {
                     "po_number": po.po_number,
@@ -136,7 +147,9 @@ class Mutation:
                     ],
                 }
                 for po in (input.po_drafts or [])
-            ] if input.po_drafts else None,
+            ]
+            if input.po_drafts
+            else None,
             "classifications": [
                 {
                     "hardware_category": c.hardware_category,
@@ -145,7 +158,9 @@ class Mutation:
                     "classification": c.classification.value,
                 }
                 for c in (input.classifications or [])
-            ] if input.classifications else None,
+            ]
+            if input.classifications
+            else None,
             "shipping_out_pr_drafts": [
                 {
                     "request_number": pr.request_number,
@@ -163,7 +178,9 @@ class Mutation:
                     ],
                 }
                 for pr in (input.shipping_out_pr_drafts or [])
-            ] if input.shipping_out_pr_drafts else None,
+            ]
+            if input.shipping_out_pr_drafts
+            else None,
             "include_shop_assembly_request": input.include_shop_assembly_request,
             "shop_assembly_request_number": input.shop_assembly_request_number,
             "shop_assembly_openings": [
@@ -179,7 +196,9 @@ class Mutation:
                     ],
                 }
                 for sa in (input.shop_assembly_openings or [])
-            ] if input.shop_assembly_openings else None,
+            ]
+            if input.shop_assembly_openings
+            else None,
         }
 
         with SessionLocal() as session:
@@ -187,42 +206,50 @@ class Mutation:
             session.commit()
 
             # Re-load project with openings
-            project = session.scalars(
-                select(ProjectModel)
-                .options(selectinload(ProjectModel.openings))
-                .where(ProjectModel.id == result["project"].id)
-            ).unique().first()
+            project = (
+                session.scalars(
+                    select(ProjectModel)
+                    .options(selectinload(ProjectModel.openings))
+                    .where(ProjectModel.id == result["project"].id)
+                )
+                .unique()
+                .first()
+            )
 
             # Re-load POs with line_items
             pos = []
             for po_obj in result["purchase_orders"]:
-                refreshed_po = session.scalars(
-                    select(POModel)
-                    .options(selectinload(POModel.line_items))
-                    .where(POModel.id == po_obj.id)
-                ).unique().first()
+                refreshed_po = (
+                    session.scalars(
+                        select(POModel).options(selectinload(POModel.line_items)).where(POModel.id == po_obj.id)
+                    )
+                    .unique()
+                    .first()
+                )
                 pos.append(refreshed_po)
 
             # Re-load PRs with items
             prs = []
             for pr_obj in result["shipping_out_pull_requests"]:
-                refreshed_pr = session.scalars(
-                    select(PRModel)
-                    .options(selectinload(PRModel.items))
-                    .where(PRModel.id == pr_obj.id)
-                ).unique().first()
+                refreshed_pr = (
+                    session.scalars(select(PRModel).options(selectinload(PRModel.items)).where(PRModel.id == pr_obj.id))
+                    .unique()
+                    .first()
+                )
                 prs.append(refreshed_pr)
 
             # Re-load SAR with openings and items
             sar_type = None
             if result["shop_assembly_request"] is not None:
-                refreshed_sar = session.scalars(
-                    select(SARModel)
-                    .options(
-                        selectinload(SARModel.openings).selectinload(SAOModel_.items)
+                refreshed_sar = (
+                    session.scalars(
+                        select(SARModel)
+                        .options(selectinload(SARModel.openings).selectinload(SAOModel_.items))
+                        .where(SARModel.id == result["shop_assembly_request"].id)
                     )
-                    .where(SARModel.id == result["shop_assembly_request"].id)
-                ).unique().first()
+                    .unique()
+                    .first()
+                )
                 sar_type = _shop_assembly_request_to_type(refreshed_sar)
 
             return FinalizeImportResult(
@@ -237,9 +264,9 @@ class Mutation:
     def update_po(
         self,
         id: strawberry.ID,
-        vendor_name: Optional[str] = None,
-        vendor_contact: Optional[str] = None,
-        expected_delivery_date: Optional[date] = None,
+        vendor_name: str | None = None,
+        vendor_contact: str | None = None,
+        expected_delivery_date: date | None = None,
     ) -> PurchaseOrder:
         with SessionLocal() as session:
             po = po_repository.update_po(
@@ -256,9 +283,7 @@ class Mutation:
     @strawberry.mutation
     def mark_po_as_ordered(self, id: strawberry.ID) -> PurchaseOrder:
         with SessionLocal() as session:
-            po = po_repository.mark_po_as_ordered(
-                session, uuid.UUID(str(id))
-            )
+            po = po_repository.mark_po_as_ordered(session, uuid.UUID(str(id)))
             session.commit()
             session.refresh(po)
             return _po_to_type(po)
@@ -293,15 +318,15 @@ class Mutation:
             for li in input.line_items
         ]
         with SessionLocal() as session:
-            receive_record = warehouse_repository.create_receive(
-                session, po_id, received_by, line_items_data
-            )
+            receive_record = warehouse_repository.create_receive(session, po_id, received_by, line_items_data)
             session.commit()
             session.refresh(receive_record)
             # Eagerly load line_items for the response
-            from sqlalchemy.orm import selectinload
             from sqlalchemy import select
+            from sqlalchemy.orm import selectinload
+
             from app.models.receiving import ReceiveRecord as ReceiveRecordModel
+
             stmt = (
                 select(ReceiveRecordModel)
                 .options(selectinload(ReceiveRecordModel.line_items))
@@ -312,9 +337,7 @@ class Mutation:
 
     # Warehouse - Pull Requests
     @strawberry.mutation
-    def approve_pull_request(
-        self, id: strawberry.ID, approved_by: str
-    ) -> ApproveResult:
+    def approve_pull_request(self, id: strawberry.ID, approved_by: str) -> ApproveResult:
         with SessionLocal() as session:
             pr, outcome, notification = warehouse_repository.approve_pull_request(
                 session, uuid.UUID(str(id)), approved_by
@@ -323,7 +346,9 @@ class Mutation:
             session.refresh(pr)
             # Re-load items since refresh might not load them
             from sqlalchemy.orm import selectinload
+
             from app.models.pull_request import PullRequest as PRModel
+
             stmt = select(PRModel).options(selectinload(PRModel.items)).where(PRModel.id == pr.id)
             pr = session.scalars(stmt).unique().first()
 
@@ -336,14 +361,14 @@ class Mutation:
     @strawberry.mutation
     def complete_pull_request(self, id: strawberry.ID) -> PullRequest:
         with SessionLocal() as session:
-            pr = warehouse_repository.complete_pull_request(
-                session, uuid.UUID(str(id))
-            )
+            pr = warehouse_repository.complete_pull_request(session, uuid.UUID(str(id)))
             session.commit()
             session.refresh(pr)
             # Re-load items since refresh might not load them
             from sqlalchemy.orm import selectinload
+
             from app.models.pull_request import PullRequest as PRModel
+
             stmt = select(PRModel).options(selectinload(PRModel.items)).where(PRModel.id == pr.id)
             pr = session.scalars(stmt).unique().first()
             return _pull_request_to_type(pr)
@@ -382,10 +407,10 @@ class Mutation:
             session.refresh(ps)
             # Re-load with items
             from sqlalchemy.orm import selectinload
+
             from app.models.shipping import PackingSlip as PSModel
-            stmt = select(PSModel).options(
-                selectinload(PSModel.items)
-            ).where(PSModel.id == ps.id)
+
+            stmt = select(PSModel).options(selectinload(PSModel.items)).where(PSModel.id == ps.id)
             refreshed = session.scalars(stmt).unique().first()
             return _packing_slip_to_type(refreshed)
 
@@ -419,13 +444,9 @@ class Mutation:
             return _inventory_location_to_type(result)
 
     @strawberry.mutation
-    def mark_inventory_unlocated(
-        self, inventory_location_id: strawberry.ID
-    ) -> InventoryLocation:
+    def mark_inventory_unlocated(self, inventory_location_id: strawberry.ID) -> InventoryLocation:
         with SessionLocal() as session:
-            result = warehouse_repository.mark_inventory_unlocated(
-                session, uuid.UUID(str(inventory_location_id))
-            )
+            result = warehouse_repository.mark_inventory_unlocated(session, uuid.UUID(str(inventory_location_id)))
             session.commit()
             session.refresh(result)
             return _inventory_location_to_type(result)
@@ -463,13 +484,9 @@ class Mutation:
             return _opening_item_to_type(result)
 
     @strawberry.mutation
-    def mark_opening_item_unlocated(
-        self, opening_item_id: strawberry.ID
-    ) -> OpeningItem:
+    def mark_opening_item_unlocated(self, opening_item_id: strawberry.ID) -> OpeningItem:
         with SessionLocal() as session:
-            result = warehouse_repository.mark_opening_item_unlocated(
-                session, uuid.UUID(str(opening_item_id))
-            )
+            result = warehouse_repository.mark_opening_item_unlocated(session, uuid.UUID(str(opening_item_id)))
             session.commit()
             session.refresh(result)
             return _opening_item_to_type(result)
@@ -494,71 +511,67 @@ class Mutation:
     @strawberry.mutation
     def mark_notification_as_read(self, id: strawberry.ID) -> Notification:
         with SessionLocal() as session:
-            notification = notification_repository.mark_as_read(
-                session, uuid.UUID(str(id))
-            )
+            notification = notification_repository.mark_as_read(session, uuid.UUID(str(id)))
             session.commit()
             session.refresh(notification)
             return _notification_to_type(notification)
 
     # Shop Assembly
     @strawberry.mutation
-    def approve_shop_assembly_request(
-        self, id: strawberry.ID
-    ) -> ApproveShopAssemblyResult:
+    def approve_shop_assembly_request(self, id: strawberry.ID) -> ApproveShopAssemblyResult:
         with SessionLocal() as session:
-            sar, pr = shop_assembly_repository.approve_shop_assembly_request(
-                session, uuid.UUID(str(id))
-            )
+            sar, pr = shop_assembly_repository.approve_shop_assembly_request(session, uuid.UUID(str(id)))
             session.commit()
             # Re-load with eager loading for relationships
             from sqlalchemy.orm import selectinload
+
+            from app.models.pull_request import PullRequest as PRModel
             from app.models.shop_assembly import (
-                ShopAssemblyRequest as SARModel,
                 ShopAssemblyOpening as SAOModel,
             )
-            from app.models.pull_request import PullRequest as PRModel
-            sar = session.scalars(
-                select(SARModel)
-                .options(selectinload(SARModel.openings).selectinload(SAOModel.items))
-                .where(SARModel.id == sar.id)
-            ).unique().first()
-            pr = session.scalars(
-                select(PRModel)
-                .options(selectinload(PRModel.items))
-                .where(PRModel.id == pr.id)
-            ).unique().first()
+            from app.models.shop_assembly import (
+                ShopAssemblyRequest as SARModel,
+            )
+
+            sar = (
+                session.scalars(
+                    select(SARModel)
+                    .options(selectinload(SARModel.openings).selectinload(SAOModel.items))
+                    .where(SARModel.id == sar.id)
+                )
+                .unique()
+                .first()
+            )
+            pr = (
+                session.scalars(select(PRModel).options(selectinload(PRModel.items)).where(PRModel.id == pr.id))
+                .unique()
+                .first()
+            )
             return ApproveShopAssemblyResult(
                 shop_assembly_request=_shop_assembly_request_to_type(sar),
                 pull_request=_pull_request_to_type(pr),
             )
 
     @strawberry.mutation
-    def reject_shop_assembly_request(
-        self, id: strawberry.ID, reason: str
-    ) -> ShopAssemblyRequest:
+    def reject_shop_assembly_request(self, id: strawberry.ID, reason: str) -> ShopAssemblyRequest:
         with SessionLocal() as session:
-            sar = shop_assembly_repository.reject_shop_assembly_request(
-                session, uuid.UUID(str(id)), reason
-            )
+            sar = shop_assembly_repository.reject_shop_assembly_request(session, uuid.UUID(str(id)), reason)
             session.commit()
             session.refresh(sar)
             return _shop_assembly_request_to_type(sar)
 
     @strawberry.mutation
-    def assign_openings(
-        self, input: AssignOpeningsInput
-    ) -> list[ShopAssemblyOpening]:
+    def assign_openings(self, input: AssignOpeningsInput) -> list[ShopAssemblyOpening]:
         opening_ids = [uuid.UUID(str(oid)) for oid in input.opening_ids]
         with SessionLocal() as session:
-            result = shop_assembly_repository.assign_openings(
-                session, opening_ids, input.assigned_to
-            )
+            result = shop_assembly_repository.assign_openings(session, opening_ids, input.assigned_to)
             session.commit()
             # Re-load with items + join Opening for opening_number/building/floor
             from sqlalchemy.orm import selectinload
-            from app.models.shop_assembly import ShopAssemblyOpening as SAOModel
+
             from app.models.project import Opening as OpeningModel
+            from app.models.shop_assembly import ShopAssemblyOpening as SAOModel
+
             stmt = (
                 select(SAOModel, OpeningModel)
                 .join(OpeningModel, SAOModel.opening_id == OpeningModel.id)
@@ -569,19 +582,17 @@ class Mutation:
             return [_shop_assembly_opening_to_type(sao, opening_model=opening) for sao, opening in rows]
 
     @strawberry.mutation
-    def remove_opening_from_user(
-        self, opening_id: strawberry.ID
-    ) -> ShopAssemblyOpening:
+    def remove_opening_from_user(self, opening_id: strawberry.ID) -> ShopAssemblyOpening:
         with SessionLocal() as session:
-            result = shop_assembly_repository.remove_opening_from_user(
-                session, uuid.UUID(str(opening_id))
-            )
+            result = shop_assembly_repository.remove_opening_from_user(session, uuid.UUID(str(opening_id)))
             session.commit()
             session.refresh(result)
             # Re-load with items + join Opening for opening_number/building/floor
             from sqlalchemy.orm import selectinload
-            from app.models.shop_assembly import ShopAssemblyOpening as SAOModel
+
             from app.models.project import Opening as OpeningModel
+            from app.models.shop_assembly import ShopAssemblyOpening as SAOModel
+
             stmt = (
                 select(SAOModel, OpeningModel)
                 .join(OpeningModel, SAOModel.opening_id == OpeningModel.id)
@@ -606,9 +617,9 @@ class Mutation:
             session.refresh(result)
             # Re-load with installed_hardware
             from sqlalchemy.orm import selectinload
+
             from app.models.opening_item import OpeningItem as OIModel
-            stmt = select(OIModel).options(
-                selectinload(OIModel.installed_hardware)
-            ).where(OIModel.id == result.id)
+
+            stmt = select(OIModel).options(selectinload(OIModel.installed_hardware)).where(OIModel.id == result.id)
             refreshed = session.scalars(stmt).unique().first()
             return _opening_item_to_type(refreshed)

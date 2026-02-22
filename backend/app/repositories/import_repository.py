@@ -4,31 +4,38 @@ import uuid
 from collections import defaultdict
 from decimal import Decimal
 
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.models.project import Project as ProjectModel, Opening as OpeningModel
-from app.models.hardware import HardwareItem as HardwareItemModel
-from app.models.purchase_order import PurchaseOrder as POModel, POLineItem as POLineItemModel
-from app.models.pull_request import PullRequest as PullRequestModel, PullRequestItem as PullRequestItemModel
-from app.models.inventory import InventoryLocation as InventoryLocationModel
-from app.models.shop_assembly import (
-    ShopAssemblyRequest as SARModel,
-    ShopAssemblyOpening as SAOModel,
-    ShopAssemblyOpeningItem as SAOItemModel,
-)
+from app.errors import ConflictError, NotFoundError
 from app.models.enums import (
+    AssemblyStatus,
+    Classification,
     HardwareItemState,
     POStatus,
-    Classification,
+    PullRequestItemType,
     PullRequestSource,
     PullRequestStatus,
-    PullRequestItemType,
-    ShopAssemblyRequestStatus,
     PullStatus,
-    AssemblyStatus,
+    ShopAssemblyRequestStatus,
 )
-from app.errors import NotFoundError, ConflictError
+from app.models.hardware import HardwareItem as HardwareItemModel
+from app.models.inventory import InventoryLocation as InventoryLocationModel
+from app.models.project import Opening as OpeningModel
+from app.models.project import Project as ProjectModel
+from app.models.pull_request import PullRequest as PullRequestModel
+from app.models.pull_request import PullRequestItem as PullRequestItemModel
+from app.models.purchase_order import POLineItem as POLineItemModel
+from app.models.purchase_order import PurchaseOrder as POModel
+from app.models.shop_assembly import (
+    ShopAssemblyOpening as SAOModel,
+)
+from app.models.shop_assembly import (
+    ShopAssemblyOpeningItem as SAOItemModel,
+)
+from app.models.shop_assembly import (
+    ShopAssemblyRequest as SARModel,
+)
 
 
 def reconcile_schedule(
@@ -78,14 +85,16 @@ def reconcile_schedule(
         if can_allocate > 0:
             available_map[key] = pool_available - can_allocate
 
-        results.append({
-            "opening_number": item["opening_number"],
-            "hardware_category": item["hardware_category"],
-            "product_code": item["product_code"],
-            "quantity_needed": needed,
-            "quantity_available": can_allocate,
-            "status": status,
-        })
+        results.append(
+            {
+                "opening_number": item["opening_number"],
+                "hardware_category": item["hardware_category"],
+                "product_code": item["product_code"],
+                "quantity_needed": needed,
+                "quantity_available": can_allocate,
+                "status": status,
+            }
+        )
 
     return results
 
@@ -162,16 +171,16 @@ def finalize_import_session(
         session.flush()
 
         # Re-load project with openings
-        project = session.scalars(
-            select(ProjectModel)
-            .options(selectinload(ProjectModel.openings))
-            .where(ProjectModel.id == project.id)
-        ).unique().first()
+        project = (
+            session.scalars(
+                select(ProjectModel).options(selectinload(ProjectModel.openings)).where(ProjectModel.id == project.id)
+            )
+            .unique()
+            .first()
+        )
 
     # Build opening_map: opening_number -> Opening.id
-    opening_map: dict[str, uuid.UUID] = {
-        o.opening_number: o.id for o in project.openings
-    }
+    opening_map: dict[str, uuid.UUID] = {o.opening_number: o.id for o in project.openings}
 
     # 2. Build classification map
     classification_map: dict[tuple[str, str, float], Classification] = {}
@@ -190,9 +199,7 @@ def finalize_import_session(
 
         for po_draft in po_drafts:
             # Validate PO number uniqueness
-            existing_po = session.scalars(
-                select(POModel).where(POModel.po_number == po_draft["po_number"])
-            ).first()
+            existing_po = session.scalars(select(POModel).where(POModel.po_number == po_draft["po_number"])).first()
             if existing_po is not None:
                 raise ConflictError(
                     f"Purchase order {po_draft['po_number']} already exists",
@@ -219,15 +226,11 @@ def finalize_import_session(
                 ref_key = (ref["opening_number"], ref["product_code"], ref["material_id"])
                 hi_data = hw_items_lookup.get(ref_key)
                 if hi_data is None:
-                    raise NotFoundError(
-                        f"Hardware item not found: {ref_key}"
-                    )
+                    raise NotFoundError(f"Hardware item not found: {ref_key}")
 
                 opening_id = opening_map.get(ref["opening_number"])
                 if opening_id is None:
-                    raise NotFoundError(
-                        f"Opening {ref['opening_number']} not found in project"
-                    )
+                    raise NotFoundError(f"Opening {ref['opening_number']} not found in project")
 
                 unit_cost = hi_data.get("unit_cost") or 0.0
                 class_key = (hi_data["hardware_category"], hi_data["product_code"], unit_cost)
@@ -245,7 +248,9 @@ def finalize_import_session(
                     unit_cost=Decimal(str(unit_cost)) if unit_cost else None,
                     unit_price=Decimal(str(hi_data["unit_price"])) if hi_data.get("unit_price") else None,
                     list_price=Decimal(str(hi_data["list_price"])) if hi_data.get("list_price") else None,
-                    vendor_discount=Decimal(str(hi_data["vendor_discount"])) if hi_data.get("vendor_discount") else None,
+                    vendor_discount=(
+                        Decimal(str(hi_data["vendor_discount"])) if hi_data.get("vendor_discount") else None
+                    ),
                     markup_pct=Decimal(str(hi_data["markup_pct"])) if hi_data.get("markup_pct") else None,
                     vendor_no=hi_data.get("vendor_no"),
                     phase_code=hi_data.get("phase_code"),
@@ -295,9 +300,7 @@ def finalize_import_session(
         for pr_draft in shipping_pr_drafts:
             # Validate uniqueness
             existing_pr = session.scalars(
-                select(PullRequestModel).where(
-                    PullRequestModel.request_number == pr_draft["request_number"]
-                )
+                select(PullRequestModel).where(PullRequestModel.request_number == pr_draft["request_number"])
             ).first()
             if existing_pr is not None:
                 raise ConflictError(
@@ -323,7 +326,9 @@ def finalize_import_session(
                     pull_request_id=pr.id,
                     item_type=item_type,
                     opening_number=item_input["opening_number"],
-                    opening_item_id=uuid.UUID(str(item_input["opening_item_id"])) if item_input.get("opening_item_id") else None,
+                    opening_item_id=(
+                        uuid.UUID(str(item_input["opening_item_id"])) if item_input.get("opening_item_id") else None
+                    ),
                     hardware_category=item_input.get("hardware_category"),
                     product_code=item_input.get("product_code"),
                     requested_quantity=item_input.get("requested_quantity", 1),
@@ -336,9 +341,7 @@ def finalize_import_session(
     sar = None
     if include_sar and sar_request_number:
         # Validate uniqueness
-        existing_sar = session.scalars(
-            select(SARModel).where(SARModel.request_number == sar_request_number)
-        ).first()
+        existing_sar = session.scalars(select(SARModel).where(SARModel.request_number == sar_request_number)).first()
         if existing_sar is not None:
             raise ConflictError(
                 f"Shop assembly request {sar_request_number} already exists",
@@ -358,9 +361,7 @@ def finalize_import_session(
         for sa_opening_input in sar_openings_input:
             opening_id = opening_map.get(sa_opening_input["opening_number"])
             if opening_id is None:
-                raise NotFoundError(
-                    f"Opening {sa_opening_input['opening_number']} not found in project"
-                )
+                raise NotFoundError(f"Opening {sa_opening_input['opening_number']} not found in project")
 
             sa_opening = SAOModel(
                 id=uuid.uuid4(),

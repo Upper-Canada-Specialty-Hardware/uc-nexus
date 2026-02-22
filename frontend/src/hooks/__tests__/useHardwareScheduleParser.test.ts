@@ -45,8 +45,9 @@ beforeEach(() => {
   vi.stubGlobal(
     'Worker',
     class extends OriginalMockWorker {
-      constructor(...args: unknown[]) {
+      constructor() {
         super();
+        // eslint-disable-next-line @typescript-eslint/no-this-alias
         latestMockWorker = this;
       }
     },
@@ -58,6 +59,7 @@ beforeEach(() => {
     class extends OriginalMockFileReader {
       constructor() {
         super();
+        // eslint-disable-next-line @typescript-eslint/no-this-alias
         latestMockFileReader = this;
       }
     },

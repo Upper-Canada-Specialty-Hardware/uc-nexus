@@ -1,22 +1,20 @@
-from typing import Any, Callable
-
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from collections.abc import Callable
+from typing import Any
 
 import strawberry
-from strawberry.fastapi import GraphQLRouter
-from strawberry.extensions import SchemaExtension
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from graphql import GraphQLError, GraphQLResolveInfo
+from strawberry.extensions import SchemaExtension
+from strawberry.fastapi import GraphQLRouter
 
-from app.schemas.queries import Query
-from app.schemas.mutations import Mutation
 from app.errors import AppError
+from app.schemas.mutations import Mutation
+from app.schemas.queries import Query
 
 
 class ErrorHandlerExtension(SchemaExtension):
-    def resolve(
-        self, _next: Callable, root: Any, info: GraphQLResolveInfo, *args, **kwargs
-    ):
+    def resolve(self, _next: Callable, root: Any, info: GraphQLResolveInfo, *args, **kwargs):
         try:
             result = _next(root, info, *args, **kwargs)
             return result

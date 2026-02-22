@@ -4,25 +4,27 @@ import uuid
 from collections import defaultdict
 from datetime import datetime
 
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
+from app.errors import ConflictError, InvalidStateTransitionError, NotFoundError, ValidationError
+from app.models.enums import (
+    NotificationType,
+    OpeningItemState,
+    PullRequestItemType,
+    PullRequestSource,
+    PullRequestStatus,
+)
 from app.models.opening_item import OpeningItem as OpeningItemModel
 from app.models.pull_request import (
     PullRequest as PullRequestModel,
+)
+from app.models.pull_request import (
     PullRequestItem as PullRequestItemModel,
 )
 from app.models.shipping import PackingSlip, PackingSlipItem
-from app.models.enums import (
-    OpeningItemState,
-    PullRequestSource,
-    PullRequestStatus,
-    PullRequestItemType,
-    NotificationType,
-)
-from app.services.locking import lock_rows
 from app.services import notification_service
-from app.errors import NotFoundError, ValidationError, ConflictError, InvalidStateTransitionError
+from app.services.locking import lock_rows
 
 
 def get_ship_ready_items(
@@ -100,12 +102,14 @@ def get_ship_ready_items(
         already_shipped = shipped_map.get(key, 0)
         available = total_fulfilled - already_shipped
         if available > 0:
-            loose_items.append({
-                "opening_number": key[0],
-                "hardware_category": key[1],
-                "product_code": key[2],
-                "available_quantity": available,
-            })
+            loose_items.append(
+                {
+                    "opening_number": key[0],
+                    "hardware_category": key[1],
+                    "product_code": key[2],
+                    "available_quantity": available,
+                }
+            )
 
     # Sort loose items by opening_number
     loose_items.sort(key=lambda x: x["opening_number"])
@@ -151,9 +155,7 @@ def confirm_shipment(
         raise ValidationError("items must not be empty", field="items")
 
     # Check uniqueness
-    existing_stmt = select(PackingSlip).where(
-        PackingSlip.packing_slip_number == packing_slip_number
-    )
+    existing_stmt = select(PackingSlip).where(PackingSlip.packing_slip_number == packing_slip_number)
     if session.scalars(existing_stmt).first() is not None:
         raise ConflictError(
             f"Packing slip {packing_slip_number} already exists",
@@ -179,9 +181,7 @@ def confirm_shipment(
             raise NotFoundError(f"Opening items not found: {missing}")
         for oi in locked_ois:
             if oi.state != OpeningItemState.SHIP_READY:
-                raise InvalidStateTransitionError(
-                    f"Opening item {oi.id} is not Ship_Ready (current: {oi.state.value})"
-                )
+                raise InvalidStateTransitionError(f"Opening item {oi.id} is not Ship_Ready (current: {oi.state.value})")
 
     # 4. Validate loose items availability
     if loose_cart:

@@ -1,20 +1,19 @@
 """Repository for notification data access."""
 
 import uuid
-from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.notification import Notification
 from app.errors import NotFoundError
+from app.models.notification import Notification
 
 
 def get_notifications(
     session: Session,
     project_id: uuid.UUID,
     recipient_role: str,
-    unread_only: Optional[bool] = None,
+    unread_only: bool | None = None,
     limit: int = 5,
 ) -> list[Notification]:
     stmt = select(Notification).where(

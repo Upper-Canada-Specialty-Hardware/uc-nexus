@@ -1,22 +1,19 @@
 """Repository for purchase order data access."""
 
 import uuid
-from typing import Optional
 from datetime import datetime
 
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.models.purchase_order import PurchaseOrder, POLineItem
-from app.models.receiving import ReceiveRecord, ReceiveLineItem
+from app.errors import InvalidStateTransitionError, NotFoundError, ValidationError
 from app.models.enums import POStatus
-from app.errors import NotFoundError, ValidationError, InvalidStateTransitionError
+from app.models.purchase_order import PurchaseOrder
+from app.models.receiving import ReceiveRecord
 
 
-def get_purchase_orders(
-    session: Session, project_id: uuid.UUID, status: Optional[POStatus] = None
-) -> list[PurchaseOrder]:
-    """Filter by project_id + optional status + deleted_at IS NULL, eagerly load line_items, order by created_at DESC."""
+def get_purchase_orders(session: Session, project_id: uuid.UUID, status: POStatus | None = None) -> list[PurchaseOrder]:
+    """Filter by project_id + optional status + deleted_at IS NULL, eagerly load line_items."""
     stmt = (
         select(PurchaseOrder)
         .options(selectinload(PurchaseOrder.line_items))
@@ -31,9 +28,7 @@ def get_purchase_orders(
     return list(session.scalars(stmt).unique().all())
 
 
-def get_purchase_order(
-    session: Session, po_id: uuid.UUID
-) -> Optional[PurchaseOrder]:
+def get_purchase_order(session: Session, po_id: uuid.UUID) -> PurchaseOrder | None:
     """Single PO by id + deleted_at IS NULL, eagerly load line_items."""
     stmt = (
         select(PurchaseOrder)
@@ -46,9 +41,7 @@ def get_purchase_order(
     return session.scalars(stmt).unique().first()
 
 
-def get_receive_records_for_po(
-    session: Session, po_id: uuid.UUID
-) -> list[ReceiveRecord]:
+def get_receive_records_for_po(session: Session, po_id: uuid.UUID) -> list[ReceiveRecord]:
     """Get all ReceiveRecords for a PO, eagerly load their line_items.
     NOTE: PurchaseOrder model has NO receive_records relationship -- must query ReceiveRecord.po_id directly."""
     stmt = (
@@ -100,8 +93,8 @@ def get_po_statistics(session: Session, project_id: uuid.UUID) -> dict:
 def update_po(
     session: Session,
     po_id: uuid.UUID,
-    vendor_name: Optional[str],
-    vendor_contact: Optional[str],
+    vendor_name: str | None,
+    vendor_contact: str | None,
     expected_delivery_date,
 ) -> PurchaseOrder:
     """
@@ -116,19 +109,13 @@ def update_po(
         raise NotFoundError(f"Purchase order {po_id} not found")
 
     if po.status not in (POStatus.DRAFT, POStatus.ORDERED):
-        raise InvalidStateTransitionError(
-            f"Cannot edit PO in {po.status.value} status"
-        )
+        raise InvalidStateTransitionError(f"Cannot edit PO in {po.status.value} status")
 
     # Check for existing receive records
-    receive_count_stmt = (
-        select(func.count()).select_from(ReceiveRecord).where(ReceiveRecord.po_id == po_id)
-    )
+    receive_count_stmt = select(func.count()).select_from(ReceiveRecord).where(ReceiveRecord.po_id == po_id)
     receive_count = session.scalar(receive_count_stmt)
     if receive_count and receive_count > 0:
-        raise InvalidStateTransitionError(
-            "Cannot edit PO after receiving has started"
-        )
+        raise InvalidStateTransitionError("Cannot edit PO after receiving has started")
 
     if vendor_name is not None:
         po.vendor_name = vendor_name
@@ -153,9 +140,7 @@ def mark_po_as_ordered(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
         raise NotFoundError(f"Purchase order {po_id} not found")
 
     if po.status != POStatus.DRAFT:
-        raise InvalidStateTransitionError(
-            f"Cannot mark PO as ordered from {po.status.value} status; must be Draft"
-        )
+        raise InvalidStateTransitionError(f"Cannot mark PO as ordered from {po.status.value} status; must be Draft")
 
     if po.vendor_name is None:
         raise ValidationError(
@@ -181,9 +166,7 @@ def cancel_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
         raise NotFoundError(f"Purchase order {po_id} not found")
 
     if po.status not in (POStatus.DRAFT, POStatus.ORDERED):
-        raise InvalidStateTransitionError(
-            f"Cannot cancel PO in {po.status.value} status"
-        )
+        raise InvalidStateTransitionError(f"Cannot cancel PO in {po.status.value} status")
 
     po.status = POStatus.CANCELLED
     po.deleted_at = datetime.utcnow()

@@ -1,5 +1,3 @@
-from typing import Optional
-
 import strawberry
 
 from .enums import Classification, PullRequestItemType
@@ -8,41 +6,41 @@ from .enums import Classification, PullRequestItemType
 @strawberry.input
 class ProjectInput:
     project_id: str
-    description: Optional[str] = None
-    job_site_name: Optional[str] = None
-    address: Optional[str] = None
-    city: Optional[str] = None
-    state: Optional[str] = None
-    zip: Optional[str] = None
-    contractor: Optional[str] = None
-    project_manager: Optional[str] = None
-    application: Optional[str] = None
-    submittal_job_no: Optional[str] = None
-    submittal_assignment_count: Optional[int] = None
-    estimator_code: Optional[str] = None
-    titan_user_id: Optional[str] = None
+    description: str | None = None
+    job_site_name: str | None = None
+    address: str | None = None
+    city: str | None = None
+    state: str | None = None
+    zip: str | None = None
+    contractor: str | None = None
+    project_manager: str | None = None
+    application: str | None = None
+    submittal_job_no: str | None = None
+    submittal_assignment_count: int | None = None
+    estimator_code: str | None = None
+    titan_user_id: str | None = None
 
 
 @strawberry.input
 class OpeningInput:
     opening_number: str
-    building: Optional[str] = None
-    floor: Optional[str] = None
-    location: Optional[str] = None
-    location_to: Optional[str] = None
-    location_from: Optional[str] = None
-    hand: Optional[str] = None
-    width: Optional[str] = None
-    length: Optional[str] = None
-    door_thickness: Optional[str] = None
-    jamb_thickness: Optional[str] = None
-    door_type: Optional[str] = None
-    frame_type: Optional[str] = None
-    interior_exterior: Optional[str] = None
-    keying: Optional[str] = None
-    heading_no: Optional[str] = None
-    single_pair: Optional[str] = None
-    assignment_multiplier: Optional[str] = None
+    building: str | None = None
+    floor: str | None = None
+    location: str | None = None
+    location_to: str | None = None
+    location_from: str | None = None
+    hand: str | None = None
+    width: str | None = None
+    length: str | None = None
+    door_thickness: str | None = None
+    jamb_thickness: str | None = None
+    door_type: str | None = None
+    frame_type: str | None = None
+    interior_exterior: str | None = None
+    keying: str | None = None
+    heading_no: str | None = None
+    single_pair: str | None = None
+    assignment_multiplier: str | None = None
 
 
 @strawberry.input
@@ -52,16 +50,16 @@ class HardwareItemInput:
     material_id: str
     hardware_category: str
     item_quantity: int
-    unit_cost: Optional[float] = None
-    unit_price: Optional[float] = None
-    list_price: Optional[float] = None
-    vendor_discount: Optional[float] = None
-    markup_pct: Optional[float] = None
-    vendor_no: Optional[str] = None
-    phase_code: Optional[str] = None
-    item_category_code: Optional[str] = None
-    product_group_code: Optional[str] = None
-    submittal_id: Optional[str] = None
+    unit_cost: float | None = None
+    unit_price: float | None = None
+    list_price: float | None = None
+    vendor_discount: float | None = None
+    markup_pct: float | None = None
+    vendor_no: str | None = None
+    phase_code: str | None = None
+    item_category_code: str | None = None
+    product_group_code: str | None = None
+    submittal_id: str | None = None
 
 
 @strawberry.input
@@ -74,8 +72,8 @@ class HardwareItemRef:
 @strawberry.input
 class PODraftInput:
     po_number: str
-    vendor_name: Optional[str] = None
-    vendor_contact: Optional[str] = None
+    vendor_name: str | None = None
+    vendor_contact: str | None = None
     hardware_item_refs: list[HardwareItemRef] = strawberry.field(default_factory=list)
 
 
@@ -91,9 +89,9 @@ class ClassificationInput:
 class ShippingOutPRDraftItemInput:
     item_type: PullRequestItemType
     opening_number: str
-    opening_item_id: Optional[strawberry.ID] = None
-    hardware_category: Optional[str] = None
-    product_code: Optional[str] = None
+    opening_item_id: strawberry.ID | None = None
+    hardware_category: str | None = None
+    product_code: str | None = None
     requested_quantity: int = 1
 
 
@@ -121,13 +119,13 @@ class SAROpeningInput:
 class FinalizeImportSessionInput:
     project: ProjectInput
     openings: list[OpeningInput] = strawberry.field(default_factory=list)
-    hardware_items: Optional[list[HardwareItemInput]] = None
-    po_drafts: Optional[list[PODraftInput]] = None
-    classifications: Optional[list[ClassificationInput]] = None
-    shipping_out_pr_drafts: Optional[list[ShippingOutPRDraftInput]] = None
+    hardware_items: list[HardwareItemInput] | None = None
+    po_drafts: list[PODraftInput] | None = None
+    classifications: list[ClassificationInput] | None = None
+    shipping_out_pr_drafts: list[ShippingOutPRDraftInput] | None = None
     include_shop_assembly_request: bool = False
-    shop_assembly_request_number: Optional[str] = None
-    shop_assembly_openings: Optional[list[SAROpeningInput]] = None
+    shop_assembly_request_number: str | None = None
+    shop_assembly_openings: list[SAROpeningInput] | None = None
 
 
 @strawberry.input
@@ -163,10 +161,10 @@ class CreateReceiveInput:
 @strawberry.input
 class ShipmentItemInput:
     item_type: PullRequestItemType
-    opening_item_id: Optional[strawberry.ID] = None
-    opening_number: Optional[str] = None
-    product_code: Optional[str] = None
-    hardware_category: Optional[str] = None
+    opening_item_id: strawberry.ID | None = None
+    opening_number: str | None = None
+    product_code: str | None = None
+    hardware_category: str | None = None
     quantity: int = 1
 
 
@@ -187,6 +185,6 @@ class AssignOpeningsInput:
 @strawberry.input
 class CompleteOpeningInput:
     opening_id: strawberry.ID
-    shelf: Optional[str] = None
-    column: Optional[str] = None
-    row: Optional[str] = None
+    shelf: str | None = None
+    column: str | None = None
+    row: str | None = None

@@ -3,17 +3,37 @@ import enum
 import strawberry
 
 from app.models.enums import (
-    Classification as ClassificationDB,
-    HardwareItemState as HardwareItemStateDB,
-    POStatus as POStatusDB,
-    PullRequestSource as PullRequestSourceDB,
-    PullRequestStatus as PullRequestStatusDB,
-    PullRequestItemType as PullRequestItemTypeDB,
-    OpeningItemState as OpeningItemStateDB,
-    ShopAssemblyRequestStatus as ShopAssemblyRequestStatusDB,
-    PullStatus as PullStatusDB,
     AssemblyStatus as AssemblyStatusDB,
+)
+from app.models.enums import (
+    Classification as ClassificationDB,
+)
+from app.models.enums import (
+    HardwareItemState as HardwareItemStateDB,
+)
+from app.models.enums import (
     NotificationType as NotificationTypeDB,
+)
+from app.models.enums import (
+    OpeningItemState as OpeningItemStateDB,
+)
+from app.models.enums import (
+    POStatus as POStatusDB,
+)
+from app.models.enums import (
+    PullRequestItemType as PullRequestItemTypeDB,
+)
+from app.models.enums import (
+    PullRequestSource as PullRequestSourceDB,
+)
+from app.models.enums import (
+    PullRequestStatus as PullRequestStatusDB,
+)
+from app.models.enums import (
+    PullStatus as PullStatusDB,
+)
+from app.models.enums import (
+    ShopAssemblyRequestStatus as ShopAssemblyRequestStatusDB,
 )
 
 # Wrap DB enums for Strawberry GraphQL

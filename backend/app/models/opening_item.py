@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import String, Integer, Index, ForeignKey, Enum, CheckConstraint
+from sqlalchemy import CheckConstraint, Enum, ForeignKey, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from . import Base
@@ -17,12 +17,8 @@ class OpeningItem(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("projects.id"), nullable=False
-    )
-    opening_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("openings.id"), nullable=False
-    )
+    project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
+    opening_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("openings.id"), nullable=False)
     opening_number: Mapped[str] = mapped_column(String, nullable=False)
     building: Mapped[str | None] = mapped_column(String, nullable=True)
     floor: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -37,13 +33,9 @@ class OpeningItem(Base):
     column: Mapped[str | None] = mapped_column(String, nullable=True)
     row: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(
-        nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
-    )
+    updated_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    installed_hardware: Mapped[list["OpeningItemHardware"]] = relationship(
-        back_populates="opening_item"
-    )
+    installed_hardware: Mapped[list["OpeningItemHardware"]] = relationship(back_populates="opening_item")
 
 
 class OpeningItemHardware(Base):
@@ -54,13 +46,9 @@ class OpeningItemHardware(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    opening_item_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("opening_items.id"), nullable=False
-    )
+    opening_item_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("opening_items.id"), nullable=False)
     product_code: Mapped[str] = mapped_column(String, nullable=False)
     hardware_category: Mapped[str] = mapped_column(String, nullable=False)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
 
-    opening_item: Mapped["OpeningItem"] = relationship(
-        back_populates="installed_hardware"
-    )
+    opening_item: Mapped["OpeningItem"] = relationship(back_populates="installed_hardware")

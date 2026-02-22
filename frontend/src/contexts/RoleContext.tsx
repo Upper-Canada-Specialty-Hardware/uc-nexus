@@ -36,6 +36,7 @@ export function RoleProvider({ children }: { children: ReactNode }) {
   );
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function useRole() {
   const context = useContext(RoleContext);
   if (!context) throw new Error('useRole must be used within RoleProvider');

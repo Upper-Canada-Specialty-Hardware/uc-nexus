@@ -1,5 +1,5 @@
 import uuid
-from typing import TypeVar, Type
+from typing import TypeVar
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -11,7 +11,7 @@ T = TypeVar("T", bound=Base)
 
 def lock_rows(
     session: Session,
-    model_class: Type[T],
+    model_class: type[T],
     ids: list[uuid.UUID],
 ) -> list[T]:
     """Acquire SELECT FOR UPDATE locks on rows sorted by ID to prevent deadlocks."""
@@ -19,11 +19,6 @@ def lock_rows(
         return []
 
     sorted_ids = sorted(ids)
-    stmt = (
-        select(model_class)
-        .where(model_class.id.in_(sorted_ids))
-        .with_for_update()
-        .order_by(model_class.id)
-    )
+    stmt = select(model_class).where(model_class.id.in_(sorted_ids)).with_for_update().order_by(model_class.id)
     result = session.execute(stmt)
     return list(result.scalars().all())

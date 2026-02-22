@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import String, Integer, Index, ForeignKey
+from sqlalchemy import ForeignKey, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from . import Base
@@ -26,23 +26,17 @@ class Project(Base):
     estimator_code: Mapped[str | None] = mapped_column(String, nullable=True)
     titan_user_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(
-        nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
-    )
+    updated_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     openings: Mapped[list["Opening"]] = relationship(back_populates="project")
 
 
 class Opening(Base):
     __tablename__ = "openings"
-    __table_args__ = (
-        Index("ix_openings_project_opening", "project_id", "opening_number"),
-    )
+    __table_args__ = (Index("ix_openings_project_opening", "project_id", "opening_number"),)
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("projects.id"), nullable=False
-    )
+    project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
     opening_number: Mapped[str] = mapped_column(String, nullable=False, index=True)
     building: Mapped[str | None] = mapped_column(String, nullable=True)
     floor: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -62,8 +56,6 @@ class Opening(Base):
     single_pair: Mapped[str | None] = mapped_column(String, nullable=True)
     assignment_multiplier: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(
-        nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
-    )
+    updated_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     project: Mapped["Project"] = relationship(back_populates="openings")

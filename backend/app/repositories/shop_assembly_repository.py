@@ -6,30 +6,32 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from app.models.shop_assembly import (
-    ShopAssemblyRequest,
-    ShopAssemblyOpening,
-    ShopAssemblyOpeningItem,
-)
-from app.models.pull_request import (
-    PullRequest as PullRequestModel,
-    PullRequestItem as PullRequestItemModel,
-)
-from app.models.project import Opening as OpeningModel
-from app.models.opening_item import OpeningItem as OpeningItemModel, OpeningItemHardware as OIHModel
+from app.errors import ConflictError, InvalidStateTransitionError, NotFoundError, ValidationError
 from app.models.enums import (
-    ShopAssemblyRequestStatus,
-    PullStatus,
     AssemblyStatus,
-    PullRequestSource,
-    PullRequestStatus,
-    PullRequestItemType,
     NotificationType,
     OpeningItemState,
+    PullRequestItemType,
+    PullRequestSource,
+    PullRequestStatus,
+    PullStatus,
+    ShopAssemblyRequestStatus,
 )
-from app.services.locking import lock_rows
+from app.models.opening_item import OpeningItem as OpeningItemModel
+from app.models.opening_item import OpeningItemHardware as OIHModel
+from app.models.project import Opening as OpeningModel
+from app.models.pull_request import (
+    PullRequest as PullRequestModel,
+)
+from app.models.pull_request import (
+    PullRequestItem as PullRequestItemModel,
+)
+from app.models.shop_assembly import (
+    ShopAssemblyOpening,
+    ShopAssemblyRequest,
+)
 from app.services import notification_service
-from app.errors import NotFoundError, ValidationError, InvalidStateTransitionError, ConflictError
+from app.services.locking import lock_rows
 
 
 def get_shop_assembly_requests(
@@ -40,11 +42,7 @@ def get_shop_assembly_requests(
     """Query ShopAssemblyRequests for a project, optionally filtered by status."""
     stmt = (
         select(ShopAssemblyRequest)
-        .options(
-            selectinload(ShopAssemblyRequest.openings).selectinload(
-                ShopAssemblyOpening.items
-            )
-        )
+        .options(selectinload(ShopAssemblyRequest.openings).selectinload(ShopAssemblyOpening.items))
         .where(ShopAssemblyRequest.project_id == project_id)
     )
     if status is not None:
@@ -106,11 +104,7 @@ def approve_shop_assembly_request(
     # Load SAR with openings -> items
     stmt = (
         select(ShopAssemblyRequest)
-        .options(
-            selectinload(ShopAssemblyRequest.openings).selectinload(
-                ShopAssemblyOpening.items
-            )
-        )
+        .options(selectinload(ShopAssemblyRequest.openings).selectinload(ShopAssemblyOpening.items))
         .where(ShopAssemblyRequest.id == sar_id)
     )
     sar = session.scalars(stmt).unique().first()
@@ -119,9 +113,7 @@ def approve_shop_assembly_request(
 
     # Validate status is Pending
     if sar.status != ShopAssemblyRequestStatus.PENDING:
-        raise InvalidStateTransitionError(
-            f"Cannot approve SAR in status {sar.status.value}; must be Pending"
-        )
+        raise InvalidStateTransitionError(f"Cannot approve SAR in status {sar.status.value}; must be Pending")
 
     # Update SAR
     sar.status = ShopAssemblyRequestStatus.APPROVED
@@ -136,14 +128,10 @@ def approve_shop_assembly_request(
     pr_number = f"PR-{sar.request_number}"
 
     # Check PR uniqueness
-    existing_pr_stmt = select(PullRequestModel).where(
-        PullRequestModel.request_number == pr_number
-    )
+    existing_pr_stmt = select(PullRequestModel).where(PullRequestModel.request_number == pr_number)
     existing_pr = session.scalars(existing_pr_stmt).first()
     if existing_pr is not None:
-        raise ConflictError(
-            f"PullRequest with request_number {pr_number} already exists"
-        )
+        raise ConflictError(f"PullRequest with request_number {pr_number} already exists")
 
     # Create PullRequest
     pr = PullRequestModel(
@@ -160,14 +148,10 @@ def approve_shop_assembly_request(
     # Create PullRequestItems for each opening's items
     for sa_opening in sar.openings:
         # Look up the Opening model to get opening_number
-        opening_stmt = select(OpeningModel).where(
-            OpeningModel.id == sa_opening.opening_id
-        )
+        opening_stmt = select(OpeningModel).where(OpeningModel.id == sa_opening.opening_id)
         opening = session.scalars(opening_stmt).first()
         if opening is None:
-            raise NotFoundError(
-                f"Opening {sa_opening.opening_id} not found"
-            )
+            raise NotFoundError(f"Opening {sa_opening.opening_id} not found")
 
         for item in sa_opening.items:
             pr_item = PullRequestItemModel(
@@ -193,11 +177,7 @@ def reject_shop_assembly_request(
     # Load SAR
     stmt = (
         select(ShopAssemblyRequest)
-        .options(
-            selectinload(ShopAssemblyRequest.openings).selectinload(
-                ShopAssemblyOpening.items
-            )
-        )
+        .options(selectinload(ShopAssemblyRequest.openings).selectinload(ShopAssemblyOpening.items))
         .where(ShopAssemblyRequest.id == sar_id)
     )
     sar = session.scalars(stmt).unique().first()
@@ -206,9 +186,7 @@ def reject_shop_assembly_request(
 
     # Validate status is Pending
     if sar.status != ShopAssemblyRequestStatus.PENDING:
-        raise InvalidStateTransitionError(
-            f"Cannot reject SAR in status {sar.status.value}; must be Pending"
-        )
+        raise InvalidStateTransitionError(f"Cannot reject SAR in status {sar.status.value}; must be Pending")
 
     # Validate reason length
     if not reason or len(reason) < 1 or len(reason) > 500:
@@ -254,17 +232,11 @@ def assign_openings(
 
     for opening in locked:
         if opening.pull_status != PullStatus.PULLED:
-            raise InvalidStateTransitionError(
-                "Opening is not ready for assignment - hardware has not been pulled"
-            )
+            raise InvalidStateTransitionError("Opening is not ready for assignment - hardware has not been pulled")
         if opening.assembly_status != AssemblyStatus.PENDING:
-            raise InvalidStateTransitionError(
-                "Opening assembly is already completed"
-            )
+            raise InvalidStateTransitionError("Opening assembly is already completed")
         if opening.assigned_to is not None:
-            raise ConflictError(
-                f"Opening already assigned to {opening.assigned_to}"
-            )
+            raise ConflictError(f"Opening already assigned to {opening.assigned_to}")
         opening.assigned_to = assigned_to
 
     return locked
@@ -285,9 +257,7 @@ def remove_opening_from_user(
         raise NotFoundError(f"ShopAssemblyOpening {opening_id} not found")
 
     if opening.assembly_status != AssemblyStatus.PENDING:
-        raise InvalidStateTransitionError(
-            "Cannot unassign a completed opening"
-        )
+        raise InvalidStateTransitionError("Cannot unassign a completed opening")
     if opening.assigned_to is None:
         raise ValidationError("Opening is not assigned to anyone", field="assigned_to")
 
@@ -317,9 +287,7 @@ def complete_opening(
     sa_opening = session.scalars(stmt).unique().first()
 
     if sa_opening.assembly_status != AssemblyStatus.PENDING:
-        raise InvalidStateTransitionError(
-            "Opening assembly is already completed"
-        )
+        raise InvalidStateTransitionError("Opening assembly is already completed")
     if sa_opening.assigned_to is None:
         raise ValidationError(
             "Opening must be assigned before it can be completed",
@@ -352,10 +320,7 @@ def complete_opening(
         raise NotFoundError(f"Completed PullRequest {pr_number} not found")
 
     # 5. Filter PR items for this opening's opening_number
-    opening_pr_items = [
-        item for item in pr.items
-        if item.opening_number == opening.opening_number
-    ]
+    opening_pr_items = [item for item in pr.items if item.opening_number == opening.opening_number]
 
     # 6. Create OpeningItem
     now = datetime.utcnow()

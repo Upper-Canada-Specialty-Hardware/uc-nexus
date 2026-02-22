@@ -3,8 +3,8 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 
-from app.models.notification import Notification
 from app.models.enums import NotificationType
+from app.models.notification import Notification
 
 
 def create_notification(

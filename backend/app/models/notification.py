@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import String, Boolean, Index, ForeignKey, Enum
+from sqlalchemy import Boolean, Enum, ForeignKey, Index, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from . import Base
@@ -20,9 +20,7 @@ class Notification(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("projects.id"), nullable=False
-    )
+    project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
     recipient_role: Mapped[str] = mapped_column(String, nullable=False)
     type: Mapped[NotificationType] = mapped_column(
         Enum(NotificationType, name="notification_type", create_constraint=True),

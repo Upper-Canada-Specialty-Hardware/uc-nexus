@@ -1,26 +1,20 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import String, Integer, Index, ForeignKey, Enum, CheckConstraint
+from sqlalchemy import CheckConstraint, Enum, ForeignKey, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from . import Base
-from .enums import ShopAssemblyRequestStatus, PullStatus, AssemblyStatus
+from .enums import AssemblyStatus, PullStatus, ShopAssemblyRequestStatus
 
 
 class ShopAssemblyRequest(Base):
     __tablename__ = "shop_assembly_requests"
-    __table_args__ = (
-        Index("ix_shop_assembly_requests_project_status", "project_id", "status"),
-    )
+    __table_args__ = (Index("ix_shop_assembly_requests_project_status", "project_id", "status"),)
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    request_number: Mapped[str] = mapped_column(
-        String(50), nullable=False, unique=True, index=True
-    )
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("projects.id"), nullable=False
-    )
+    request_number: Mapped[str] = mapped_column(String(50), nullable=False, unique=True, index=True)
+    project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
     status: Mapped[ShopAssemblyRequestStatus] = mapped_column(
         Enum(
             ShopAssemblyRequestStatus,
@@ -37,9 +31,7 @@ class ShopAssemblyRequest(Base):
     approved_at: Mapped[datetime | None] = mapped_column(nullable=True)
     rejected_at: Mapped[datetime | None] = mapped_column(nullable=True)
 
-    openings: Mapped[list["ShopAssemblyOpening"]] = relationship(
-        back_populates="shop_assembly_request"
-    )
+    openings: Mapped[list["ShopAssemblyOpening"]] = relationship(back_populates="shop_assembly_request")
 
 
 class ShopAssemblyOpening(Base):
@@ -57,12 +49,8 @@ class ShopAssemblyOpening(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    shop_assembly_request_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("shop_assembly_requests.id"), nullable=False
-    )
-    opening_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("openings.id"), nullable=False
-    )
+    shop_assembly_request_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("shop_assembly_requests.id"), nullable=False)
+    opening_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("openings.id"), nullable=False)
     pull_status: Mapped[PullStatus] = mapped_column(
         Enum(PullStatus, name="pull_status", create_constraint=True),
         nullable=False,
@@ -74,12 +62,8 @@ class ShopAssemblyOpening(Base):
     )
     completed_at: Mapped[datetime | None] = mapped_column(nullable=True)
 
-    shop_assembly_request: Mapped["ShopAssemblyRequest"] = relationship(
-        back_populates="openings"
-    )
-    items: Mapped[list["ShopAssemblyOpeningItem"]] = relationship(
-        back_populates="shop_assembly_opening"
-    )
+    shop_assembly_request: Mapped["ShopAssemblyRequest"] = relationship(back_populates="openings")
+    items: Mapped[list["ShopAssemblyOpeningItem"]] = relationship(back_populates="shop_assembly_opening")
 
 
 class ShopAssemblyOpeningItem(Base):
@@ -93,13 +77,9 @@ class ShopAssemblyOpeningItem(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    shop_assembly_opening_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("shop_assembly_openings.id"), nullable=False
-    )
+    shop_assembly_opening_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("shop_assembly_openings.id"), nullable=False)
     hardware_category: Mapped[str] = mapped_column(String, nullable=False)
     product_code: Mapped[str] = mapped_column(String, nullable=False)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
 
-    shop_assembly_opening: Mapped["ShopAssemblyOpening"] = relationship(
-        back_populates="items"
-    )
+    shop_assembly_opening: Mapped["ShopAssemblyOpening"] = relationship(back_populates="items")

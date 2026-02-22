@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import String, Integer, Index, ForeignKey, CheckConstraint
+from sqlalchemy import CheckConstraint, ForeignKey, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from . import Base
@@ -21,15 +21,9 @@ class InventoryLocation(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("projects.id"), nullable=False
-    )
-    po_line_item_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("po_line_items.id"), nullable=False
-    )
-    receive_line_item_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("receive_line_items.id"), nullable=False
-    )
+    project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
+    po_line_item_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("po_line_items.id"), nullable=False)
+    receive_line_item_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("receive_line_items.id"), nullable=False)
     hardware_category: Mapped[str] = mapped_column(String, nullable=False)
     product_code: Mapped[str] = mapped_column(String, nullable=False)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -38,6 +32,4 @@ class InventoryLocation(Base):
     row: Mapped[str | None] = mapped_column(String(20), nullable=True)
     received_at: Mapped[datetime] = mapped_column(nullable=False)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(
-        nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
-    )
+    updated_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)

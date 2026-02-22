@@ -5,24 +5,29 @@ import uuid
 from collections import defaultdict
 from datetime import datetime
 
-from sqlalchemy import select, or_, and_
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session, selectinload
 
+from app.errors import InvalidStateTransitionError, NotFoundError, ValidationError
+from app.models.enums import (
+    NotificationType,
+    OpeningItemState,
+    POStatus,
+    PullRequestItemType,
+    PullRequestSource,
+    PullRequestStatus,
+    PullStatus,
+)
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.opening_item import OpeningItem as OpeningItemModel
-from app.models.purchase_order import PurchaseOrder as POModel, POLineItem as POLineItemModel
-from app.models.receiving import ReceiveRecord as ReceiveRecordModel, ReceiveLineItem as ReceiveLineItemModel
-from app.models.pull_request import PullRequest as PullRequestModel, PullRequestItem as PullRequestItemModel
-from app.models.shop_assembly import ShopAssemblyRequest as SARModel, ShopAssemblyOpening as SAOModel
-from app.models.notification import Notification as NotificationModel
-from app.models.enums import (
-    POStatus,
-    PullRequestStatus, PullRequestSource, PullRequestItemType,
-    PullStatus, OpeningItemState, NotificationType,
-)
-from app.services.locking import lock_rows
+from app.models.pull_request import PullRequest as PullRequestModel
+from app.models.purchase_order import POLineItem as POLineItemModel
+from app.models.purchase_order import PurchaseOrder as POModel
+from app.models.receiving import ReceiveLineItem as ReceiveLineItemModel
+from app.models.receiving import ReceiveRecord as ReceiveRecordModel
+from app.models.shop_assembly import ShopAssemblyRequest as SARModel
 from app.services import notification_service
-from app.errors import NotFoundError, ValidationError, InvalidStateTransitionError, ConflictError
+from app.services.locking import lock_rows
 
 
 def get_inventory_hierarchy(session: Session, project_id: uuid.UUID) -> list[dict]:
@@ -71,17 +76,21 @@ def get_inventory_hierarchy(session: Session, project_id: uuid.UUID) -> list[dic
             items = product_codes_map[pc]
             pc_total = sum(item.quantity for item in items)
             category_total += pc_total
-            product_code_nodes.append({
-                "product_code": pc,
-                "items": items,
-                "total_quantity": pc_total,
-            })
+            product_code_nodes.append(
+                {
+                    "product_code": pc,
+                    "items": items,
+                    "total_quantity": pc_total,
+                }
+            )
 
-        result.append({
-            "hardware_category": category,
-            "product_codes": product_code_nodes,
-            "total_quantity": category_total,
-        })
+        result.append(
+            {
+                "hardware_category": category,
+                "product_codes": product_code_nodes,
+                "total_quantity": category_total,
+            }
+        )
 
     return result
 
@@ -180,15 +189,19 @@ def adjust_inventory_quantity(
 
     il.quantity = new_quantity
 
-    print(json.dumps({
-        "action": "inventory_adjustment",
-        "inventoryLocationId": str(inv_id),
-        "adjustment": adjustment,
-        "newQuantity": new_quantity,
-        "reason": reason,
-        "timestamp": datetime.utcnow().isoformat(),
-        "performedBy": "Admin/Manager",
-    }))
+    print(
+        json.dumps(
+            {
+                "action": "inventory_adjustment",
+                "inventoryLocationId": str(inv_id),
+                "adjustment": adjustment,
+                "newQuantity": new_quantity,
+                "reason": reason,
+                "timestamp": datetime.utcnow().isoformat(),
+                "performedBy": "Admin/Manager",
+            }
+        )
+    )
 
     return il
 
@@ -314,11 +327,7 @@ def create_receive(
         The created ReceiveRecord with line_items loaded.
     """
     # 1. Look up PO with line_items, validate exists + not soft-deleted
-    stmt = (
-        select(POModel)
-        .options(selectinload(POModel.line_items))
-        .where(POModel.id == po_id)
-    )
+    stmt = select(POModel).options(selectinload(POModel.line_items)).where(POModel.id == po_id)
     po = session.scalars(stmt).unique().first()
     if po is None or po.deleted_at is not None:
         raise NotFoundError(f"Purchase order {po_id} not found")
@@ -334,9 +343,7 @@ def create_receive(
         raise ValidationError("received_by must be 1-100 characters", field="received_by")
 
     # 3. Build dict of POLineItems keyed by ID
-    poli_dict: dict[uuid.UUID, POLineItemModel] = {
-        li.id: li for li in po.line_items
-    }
+    poli_dict: dict[uuid.UUID, POLineItemModel] = {li.id: li for li in po.line_items}
 
     # 4. Validate each line item input
     for li_input in line_items_input:
@@ -346,16 +353,12 @@ def create_receive(
 
         qty_received = li_input["quantity_received"]
         if qty_received < 1:
-            raise ValidationError(
-                "quantity_received must be >= 1", field="quantity_received"
-            )
+            raise ValidationError("quantity_received must be >= 1", field="quantity_received")
 
         poli = poli_dict[poli_id]
         pending = poli.ordered_quantity - poli.received_quantity
         if qty_received > pending:
-            raise ValidationError(
-                "Receive quantity exceeds pending quantity", field="quantity_received"
-            )
+            raise ValidationError("Receive quantity exceeds pending quantity", field="quantity_received")
 
         locations = li_input["locations"]
         if not locations:
@@ -370,9 +373,7 @@ def create_receive(
 
         for loc in locations:
             if loc["quantity"] < 1:
-                raise ValidationError(
-                    "Location quantity must be >= 1", field="quantity"
-                )
+                raise ValidationError("Location quantity must be >= 1", field="quantity")
             _validate_location_fields(loc["shelf"], loc["column"], loc["row"])
 
     # 5. Execute in single transaction
@@ -419,15 +420,10 @@ def create_receive(
 
     # Auto-transition PO status
     # Re-query all POLineItems for this PO to get fresh data
-    all_line_items_stmt = (
-        select(POLineItemModel)
-        .where(POLineItemModel.po_id == po.id)
-    )
+    all_line_items_stmt = select(POLineItemModel).where(POLineItemModel.po_id == po.id)
     all_line_items = list(session.scalars(all_line_items_stmt).all())
 
-    all_fully_received = all(
-        li.received_quantity == li.ordered_quantity for li in all_line_items
-    )
+    all_fully_received = all(li.received_quantity == li.ordered_quantity for li in all_line_items)
     any_received = any(li.received_quantity > 0 for li in all_line_items)
 
     if all_fully_received:
@@ -438,9 +434,7 @@ def create_receive(
     return receive_record
 
 
-def get_po_receiving_details(
-    session: Session, po_id: uuid.UUID
-) -> tuple[POModel, list[ReceiveRecordModel]]:
+def get_po_receiving_details(session: Session, po_id: uuid.UUID) -> tuple[POModel, list[ReceiveRecordModel]]:
     """
     Get PO with line_items and all ReceiveRecords for that PO.
 
@@ -448,11 +442,7 @@ def get_po_receiving_details(
         Tuple of (po, receive_records)
     """
     # Look up PO with line_items
-    stmt = (
-        select(POModel)
-        .options(selectinload(POModel.line_items))
-        .where(POModel.id == po_id)
-    )
+    stmt = select(POModel).options(selectinload(POModel.line_items)).where(POModel.id == po_id)
     po = session.scalars(stmt).unique().first()
     if po is None or po.deleted_at is not None:
         raise NotFoundError(f"Purchase order {po_id} not found")
@@ -502,9 +492,7 @@ def get_pull_requests(
     return list(session.scalars(stmt).unique().all())
 
 
-def get_pull_request_details(
-    session: Session, pr_id: uuid.UUID
-) -> PullRequestModel:
+def get_pull_request_details(session: Session, pr_id: uuid.UUID) -> PullRequestModel:
     """
     Single PullRequest by ID, deleted_at IS NULL.
     Eagerly load items.
@@ -524,9 +512,7 @@ def get_pull_request_details(
     return pr
 
 
-def approve_pull_request(
-    session: Session, pr_id: uuid.UUID, approved_by: str
-) -> tuple:
+def approve_pull_request(session: Session, pr_id: uuid.UUID, approved_by: str) -> tuple:
     """
     Approve a pull request with pessimistic locking and FIFO inventory deduction.
 
@@ -540,9 +526,7 @@ def approve_pull_request(
     pr = locked_prs[0]
 
     if pr.status != PullRequestStatus.PENDING:
-        raise InvalidStateTransitionError(
-            f"Pull request must be Pending to approve, got {pr.status.value}"
-        )
+        raise InvalidStateTransitionError(f"Pull request must be Pending to approve, got {pr.status.value}")
 
     # 2. Gather inventory needs from Loose items
     needed_combos: dict[tuple[str, str], int] = defaultdict(int)
@@ -639,9 +623,7 @@ def approve_pull_request(
     return (pr, "APPROVED", None)
 
 
-def complete_pull_request(
-    session: Session, pr_id: uuid.UUID
-) -> PullRequestModel:
+def complete_pull_request(session: Session, pr_id: uuid.UUID) -> PullRequestModel:
     """
     Complete a pull request:
     1. Validate status == In_Progress
@@ -650,19 +632,13 @@ def complete_pull_request(
     4. If Shipping_Out source: set Opening_Item states to Ship_Ready
     5. If Shop_Assembly source: update SAR openings pull_status to Pulled
     """
-    stmt = (
-        select(PullRequestModel)
-        .options(selectinload(PullRequestModel.items))
-        .where(PullRequestModel.id == pr_id)
-    )
+    stmt = select(PullRequestModel).options(selectinload(PullRequestModel.items)).where(PullRequestModel.id == pr_id)
     pr = session.scalars(stmt).unique().first()
     if pr is None:
         raise NotFoundError(f"Pull request {pr_id} not found")
 
     if pr.status != PullRequestStatus.IN_PROGRESS:
-        raise InvalidStateTransitionError(
-            f"Pull request must be In_Progress to complete, got {pr.status.value}"
-        )
+        raise InvalidStateTransitionError(f"Pull request must be In_Progress to complete, got {pr.status.value}")
 
     now = datetime.utcnow()
     pr.status = PullRequestStatus.COMPLETED

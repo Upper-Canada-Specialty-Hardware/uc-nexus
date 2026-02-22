@@ -1,23 +1,21 @@
-import uuid
-from datetime import datetime, date
-from typing import Optional
+from datetime import date, datetime
 
 import strawberry
 
 from .enums import (
+    ApproveOutcome,
+    AssemblyStatus,
     Classification,
     HardwareItemState,
+    NotificationType,
+    OpeningItemState,
     POStatus,
+    PullRequestItemType,
     PullRequestSource,
     PullRequestStatus,
-    PullRequestItemType,
-    OpeningItemState,
-    ShopAssemblyRequestStatus,
     PullStatus,
-    AssemblyStatus,
-    NotificationType,
     ReconciliationStatus,
-    ApproveOutcome,
+    ShopAssemblyRequestStatus,
 )
 
 
@@ -26,23 +24,23 @@ class Opening:
     id: strawberry.ID
     project_id: strawberry.ID
     opening_number: str
-    building: Optional[str]
-    floor: Optional[str]
-    location: Optional[str]
-    location_to: Optional[str]
-    location_from: Optional[str]
-    hand: Optional[str]
-    width: Optional[str]
-    length: Optional[str]
-    door_thickness: Optional[str]
-    jamb_thickness: Optional[str]
-    door_type: Optional[str]
-    frame_type: Optional[str]
-    interior_exterior: Optional[str]
-    keying: Optional[str]
-    heading_no: Optional[str]
-    single_pair: Optional[str]
-    assignment_multiplier: Optional[str]
+    building: str | None
+    floor: str | None
+    location: str | None
+    location_to: str | None
+    location_from: str | None
+    hand: str | None
+    width: str | None
+    length: str | None
+    door_thickness: str | None
+    jamb_thickness: str | None
+    door_type: str | None
+    frame_type: str | None
+    interior_exterior: str | None
+    keying: str | None
+    heading_no: str | None
+    single_pair: str | None
+    assignment_multiplier: str | None
     created_at: datetime
     updated_at: datetime
 
@@ -56,19 +54,19 @@ class HardwareItem:
     product_code: str
     material_id: str
     item_quantity: int
-    unit_cost: Optional[float]
-    unit_price: Optional[float]
-    list_price: Optional[float]
-    vendor_discount: Optional[float]
-    markup_pct: Optional[float]
-    vendor_no: Optional[str]
-    phase_code: Optional[str]
-    item_category_code: Optional[str]
-    product_group_code: Optional[str]
-    submittal_id: Optional[str]
-    classification: Optional[Classification]
+    unit_cost: float | None
+    unit_price: float | None
+    list_price: float | None
+    vendor_discount: float | None
+    markup_pct: float | None
+    vendor_no: str | None
+    phase_code: str | None
+    item_category_code: str | None
+    product_group_code: str | None
+    submittal_id: str | None
+    classification: Classification | None
     state: HardwareItemState
-    po_line_item_id: Optional[strawberry.ID]
+    po_line_item_id: strawberry.ID | None
     created_at: datetime
     updated_at: datetime
 
@@ -114,10 +112,10 @@ class PurchaseOrder:
     po_number: str
     project_id: strawberry.ID
     status: POStatus
-    vendor_name: Optional[str]
-    vendor_contact: Optional[str]
-    expected_delivery_date: Optional[date]
-    ordered_at: Optional[datetime]
+    vendor_name: str | None
+    vendor_contact: str | None
+    expected_delivery_date: date | None
+    ordered_at: datetime | None
     created_at: datetime
     updated_at: datetime
     line_items: list[POLineItem]
@@ -128,19 +126,19 @@ class PurchaseOrder:
 class Project:
     id: strawberry.ID
     project_id: str
-    description: Optional[str]
-    job_site_name: Optional[str]
-    address: Optional[str]
-    city: Optional[str]
-    state: Optional[str]
-    zip: Optional[str]
-    contractor: Optional[str]
-    project_manager: Optional[str]
-    application: Optional[str]
-    submittal_job_no: Optional[str]
-    submittal_assignment_count: Optional[int]
-    estimator_code: Optional[str]
-    titan_user_id: Optional[str]
+    description: str | None
+    job_site_name: str | None
+    address: str | None
+    city: str | None
+    state: str | None
+    zip: str | None
+    contractor: str | None
+    project_manager: str | None
+    application: str | None
+    submittal_job_no: str | None
+    submittal_assignment_count: int | None
+    estimator_code: str | None
+    titan_user_id: str | None
     created_at: datetime
     updated_at: datetime
     openings: list[Opening]
@@ -156,9 +154,9 @@ class InventoryLocation:
     hardware_category: str
     product_code: str
     quantity: int
-    shelf: Optional[str]
-    column: Optional[str]
-    row: Optional[str]
+    shelf: str | None
+    column: str | None
+    row: str | None
     received_at: datetime
     created_at: datetime
     updated_at: datetime
@@ -179,15 +177,15 @@ class OpeningItem:
     project_id: strawberry.ID
     opening_id: strawberry.ID
     opening_number: str
-    building: Optional[str]
-    floor: Optional[str]
-    location: Optional[str]
+    building: str | None
+    floor: str | None
+    location: str | None
     quantity: int
     assembly_completed_at: datetime
     state: OpeningItemState
-    shelf: Optional[str]
-    column: Optional[str]
-    row: Optional[str]
+    shelf: str | None
+    column: str | None
+    row: str | None
     created_at: datetime
     updated_at: datetime
     installed_hardware: list[OpeningItemHardware]
@@ -199,9 +197,9 @@ class PullRequestItem:
     pull_request_id: strawberry.ID
     item_type: PullRequestItemType
     opening_number: str
-    opening_item_id: Optional[strawberry.ID]
-    hardware_category: Optional[str]
-    product_code: Optional[str]
+    opening_item_id: strawberry.ID | None
+    hardware_category: str | None
+    product_code: str | None
     requested_quantity: int
 
 
@@ -213,12 +211,12 @@ class PullRequest:
     source: PullRequestSource
     status: PullRequestStatus
     requested_by: str
-    assigned_to: Optional[str]
+    assigned_to: str | None
     created_at: datetime
     updated_at: datetime
-    approved_at: Optional[datetime]
-    completed_at: Optional[datetime]
-    cancelled_at: Optional[datetime]
+    approved_at: datetime | None
+    completed_at: datetime | None
+    cancelled_at: datetime | None
     items: list[PullRequestItem]
 
 
@@ -237,14 +235,14 @@ class ShopAssemblyOpening:
     shop_assembly_request_id: strawberry.ID
     opening_id: strawberry.ID
     pull_status: PullStatus
-    assigned_to: Optional[str]
+    assigned_to: str | None
     assembly_status: AssemblyStatus
-    completed_at: Optional[datetime]
+    completed_at: datetime | None
     items: list[ShopAssemblyOpeningItem]
     # Resolved from Opening table (populated by myWork and assembleList queries)
-    opening_number: Optional[str] = None
-    building: Optional[str] = None
-    floor: Optional[str] = None
+    opening_number: str | None = None
+    building: str | None = None
+    floor: str | None = None
 
 
 @strawberry.type
@@ -254,12 +252,12 @@ class ShopAssemblyRequest:
     project_id: strawberry.ID
     status: ShopAssemblyRequestStatus
     created_by: str
-    approved_by: Optional[str]
-    rejected_by: Optional[str]
-    rejection_reason: Optional[str]
+    approved_by: str | None
+    rejected_by: str | None
+    rejection_reason: str | None
     created_at: datetime
-    approved_at: Optional[datetime]
-    rejected_at: Optional[datetime]
+    approved_at: datetime | None
+    rejected_at: datetime | None
     openings: list[ShopAssemblyOpening]
 
 
@@ -268,8 +266,8 @@ class PackingSlipItem:
     id: strawberry.ID
     packing_slip_id: strawberry.ID
     item_type: PullRequestItemType
-    opening_item_id: Optional[strawberry.ID]
-    opening_number: Optional[str]
+    opening_item_id: strawberry.ID | None
+    opening_number: str | None
     product_code: str
     hardware_category: str
     quantity: int
@@ -299,12 +297,13 @@ class Notification:
 
 # Composite output types
 
+
 @strawberry.type
 class FinalizeImportResult:
     project: Project
     purchase_orders: list[PurchaseOrder]
     shipping_out_pull_requests: list[PullRequest]
-    shop_assembly_request: Optional[ShopAssemblyRequest]
+    shop_assembly_request: ShopAssemblyRequest | None
 
 
 @strawberry.type
@@ -368,7 +367,7 @@ class OpeningItemDetail:
 class ApproveResult:
     pull_request: PullRequest
     outcome: ApproveOutcome
-    notification: Optional[Notification]
+    notification: Notification | None
 
 
 @strawberry.type
