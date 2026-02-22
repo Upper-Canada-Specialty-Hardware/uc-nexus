@@ -11,6 +11,8 @@ import { WizardProvider } from './contexts/WizardContext';
 import { CartProvider } from './contexts/CartContext';
 import { ToastProvider } from './components/Toast';
 import App from './App';
+// @ts-expect-error fontsource CSS-only import has no type declarations
+import '@fontsource-variable/source-sans-3';
 import './index.css';
 
 createRoot(document.getElementById('root')!).render(
