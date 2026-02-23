@@ -22,7 +22,7 @@ export default function ShopAssemblyModule() {
   return (
     <Box>
       <Typography variant="h5" sx={{ mb: 2 }}>Shop Assembly</Typography>
-      <Tabs value={tabIndex} onChange={(_, v) => navigate(SUB_ROUTES[v].path)} sx={{ mb: 2 }}>
+      <Tabs value={tabIndex} onChange={(_, v) => navigate(`/app/shop-assembly/${SUB_ROUTES[v].path}`)} sx={{ mb: 2 }}>
         {SUB_ROUTES.map((r) => <Tab key={r.path} label={r.label} />)}
       </Tabs>
       <Routes>
