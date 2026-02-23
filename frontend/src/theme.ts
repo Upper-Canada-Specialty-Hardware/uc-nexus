@@ -54,13 +54,14 @@ const theme = createTheme({
     MuiButton: {
       defaultProps: {
         disableElevation: true,
+        color: 'secondary' as const,
       },
       styleOverrides: {
         root: {
           borderRadius: 8,
           padding: '6px 20px',
         },
-        contained: ({ theme }) => ({
+        containedSecondary: ({ theme }) => ({
           backgroundColor: SECONDARY_LIGHT,
           color: '#212121',
           '&:hover': {
@@ -93,6 +94,20 @@ const theme = createTheme({
           color: '#212121',
           ...theme.applyStyles('dark', {
             borderColor: '#e0e0e0',
+            color: '#e0e0e0',
+          }),
+        }),
+        outlinedSecondary: ({ theme }) => ({
+          borderColor: '#212121',
+          color: '#212121',
+          ...theme.applyStyles('dark', {
+            borderColor: '#e0e0e0',
+            color: '#e0e0e0',
+          }),
+        }),
+        textSecondary: ({ theme }) => ({
+          color: '#212121',
+          ...theme.applyStyles('dark', {
             color: '#e0e0e0',
           }),
         }),
@@ -161,10 +176,10 @@ const theme = createTheme({
       styleOverrides: {
         root: ({ theme }) => ({
           '&.Mui-active': {
-            color: SECONDARY_LIGHT,
+            color: '#212121',
           },
           '&.Mui-completed': {
-            color: SECONDARY_LIGHT,
+            color: '#212121',
           },
           ...theme.applyStyles('dark', {
             '&.Mui-active': {
