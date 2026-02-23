@@ -22,7 +22,6 @@ from app.models.enums import (
     ShopAssemblyRequestStatus,
 )
 from app.models.hardware import HardwareItem as HardwareItemModel
-from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.opening_item import OpeningItem as OpeningItemModel
 from app.models.opening_item import OpeningItemHardware as OpeningItemHardwareModel
 from app.models.project import Opening as OpeningModel
