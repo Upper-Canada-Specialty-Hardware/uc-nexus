@@ -340,8 +340,7 @@ export const RECONCILE_SCHEDULE = gql`
       openingNumber
       hardwareCategory
       productCode
-      quantityNeeded
-      quantityAvailable
+      quantity
       status
     }
   }

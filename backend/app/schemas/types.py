@@ -375,6 +375,5 @@ class ReconciliationResult:
     opening_number: str
     hardware_category: str
     product_code: str
-    quantity_needed: int
-    quantity_available: int
+    quantity: int
     status: ReconciliationStatus

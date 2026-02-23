@@ -56,8 +56,7 @@ interface ReconciliationRow {
   openingNumber: string;
   hardwareCategory: string;
   productCode: string;
-  quantityNeeded: number;
-  quantityAvailable: number;
+  quantity: number;
   status: string;
 }
 
@@ -212,19 +211,8 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     return raw.map((r, i) => ({ ...r, id: `recon-${i}` }));
   }, [reconcileData]);
 
-  // Items needing ordering (for PO tab): all if new, or NOT_AVAILABLE/PARTIAL if reimport
-  const itemsNeedingOrder = useMemo(() => {
-    if (!isReimport) return selectedHardwareItems;
-    const reconSet = new Set<string>();
-    for (const r of reconciliationRows) {
-      if (r.status === 'NOT_AVAILABLE' || r.status === 'PARTIAL') {
-        reconSet.add(`${r.openingNumber}|${r.productCode}`);
-      }
-    }
-    return selectedHardwareItems.filter((hi) =>
-      reconSet.has(`${hi.opening_number}|${hi.product_code}`),
-    );
-  }, [isReimport, selectedHardwareItems, reconciliationRows]);
+  // Items needing ordering: reconciliation is informational only, all selected items flow through
+  const itemsNeedingOrder = selectedHardwareItems;
 
   // Classification rows for DataGrid (one row per individual hardware item)
   const classificationRows = useMemo<ClassificationRow[]>(() => {
@@ -314,14 +302,24 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     }
 
     if (effectiveStepId === 'openings' && isReimport && existingProjectId) {
-      const items = selectedHardwareItems.map((hi) => ({
-        openingNumber: hi.opening_number,
-        hardwareCategory: hi.hardware_category,
-        productCode: hi.product_code,
-        quantityNeeded: hi.item_quantity,
-      }));
+      // Aggregate by (opening, category, product) to avoid duplicate entries
+      const itemMap = new Map<string, { openingNumber: string; hardwareCategory: string; productCode: string; quantityNeeded: number }>();
+      for (const hi of selectedHardwareItems) {
+        const key = `${hi.opening_number}|${hi.hardware_category}|${hi.product_code}`;
+        const existing = itemMap.get(key);
+        if (existing) {
+          existing.quantityNeeded += hi.item_quantity;
+        } else {
+          itemMap.set(key, {
+            openingNumber: hi.opening_number,
+            hardwareCategory: hi.hardware_category,
+            productCode: hi.product_code,
+            quantityNeeded: hi.item_quantity,
+          });
+        }
+      }
       reconcileSchedule({
-        variables: { projectId: existingProjectId, items },
+        variables: { projectId: existingProjectId, items: Array.from(itemMap.values()) },
       });
     }
 
@@ -609,16 +607,32 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
       { field: 'openingNumber', headerName: 'Opening #', flex: 1 },
       { field: 'productCode', headerName: 'Product Code', flex: 1 },
       { field: 'hardwareCategory', headerName: 'Hardware Category', flex: 1 },
-      { field: 'quantityNeeded', headerName: 'Qty Needed', flex: 0.7, type: 'number' },
-      { field: 'quantityAvailable', headerName: 'Available', flex: 0.7, type: 'number' },
+      { field: 'quantity', headerName: 'Quantity', flex: 0.7, type: 'number' },
       {
         field: 'status',
         headerName: 'Status',
-        flex: 0.8,
+        flex: 1,
         renderCell: (params) => {
           const s = params.value as string;
-          const color = s === 'AVAILABLE' ? 'success' : s === 'PARTIAL' ? 'warning' : 'error';
-          return <Chip size="small" label={s} color={color} />;
+          const colorMap: Record<string, 'success' | 'warning' | 'error' | 'info' | 'default'> = {
+            PO_DRAFTED: 'info',
+            ORDERED: 'info',
+            RECEIVED: 'success',
+            ASSEMBLING: 'warning',
+            SHIPPING_OUT: 'warning',
+            SHIPPED_OUT: 'success',
+            NOT_COVERED: 'error',
+          };
+          const labelMap: Record<string, string> = {
+            PO_DRAFTED: 'PO Drafted',
+            ORDERED: 'Ordered',
+            RECEIVED: 'Received',
+            ASSEMBLING: 'Assembling',
+            SHIPPING_OUT: 'Shipping Out',
+            SHIPPED_OUT: 'Shipped Out',
+            NOT_COVERED: 'Not Covered',
+          };
+          return <Chip size="small" label={labelMap[s] ?? s} color={colorMap[s] ?? 'default'} />;
         },
       },
     ],
@@ -785,7 +799,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
 
               {isReimport && (
                 <Alert severity="info" sx={{ mt: 2 }}>
-                  This is a re-import. Reconciliation will be performed to compare against existing inventory.
+                  This is a re-import. Reconciliation will show existing PO and processing status for selected items.
                 </Alert>
               )}
 
@@ -823,7 +837,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
 
               {!isReimport && (
                 <Alert severity="info" sx={{ mb: 2 }}>
-                  New project -- all items will be ordered fresh. No existing inventory to reconcile
+                  New project -- all items will be ordered fresh. No existing records to reconcile
                   against.
                 </Alert>
               )}
@@ -842,6 +856,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
                     pageSizeOptions={[10, 25, 50]}
                     initialState={{
                       pagination: { paginationModel: { pageSize: 25 } },
+                      sorting: { sortModel: [{ field: 'status', sort: 'asc' }] },
                     }}
                     disableRowSelectionOnClick
                     density="compact"
@@ -850,7 +865,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
               )}
 
               {isReimport && !reconcileLoading && reconciliationRows.length === 0 && (
-                <Alert severity="info">No reconciliation data returned.</Alert>
+                <Alert severity="info">No existing records found for selected items.</Alert>
               )}
 
               <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 3 }}>
@@ -868,7 +883,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
               classificationRows={classificationRows}
               onClassify={classifyBatch}
               purposes={purposes}
-              itemCount={isReimport ? itemsNeedingOrder.length : selectedHardwareItems.length}
+              itemCount={selectedHardwareItems.length}
               openingCount={selectedOpenings.size}
               isReimport={isReimport}
               onNext={handleNext}

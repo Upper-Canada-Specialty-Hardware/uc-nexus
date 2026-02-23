@@ -3,6 +3,7 @@
 import uuid
 from collections import defaultdict
 from decimal import Decimal
+from math import floor
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
@@ -12,6 +13,7 @@ from app.models.enums import (
     AssemblyStatus,
     Classification,
     HardwareItemState,
+    OpeningItemState,
     POStatus,
     PullRequestItemType,
     PullRequestSource,
@@ -21,6 +23,8 @@ from app.models.enums import (
 )
 from app.models.hardware import HardwareItem as HardwareItemModel
 from app.models.inventory import InventoryLocation as InventoryLocationModel
+from app.models.opening_item import OpeningItem as OpeningItemModel
+from app.models.opening_item import OpeningItemHardware as OpeningItemHardwareModel
 from app.models.project import Opening as OpeningModel
 from app.models.project import Project as ProjectModel
 from app.models.pull_request import PullRequest as PullRequestModel
@@ -43,58 +47,141 @@ def reconcile_schedule(
     project_id: uuid.UUID,
     items: list[dict],
 ) -> list[dict]:
-    """Compare needed items against existing inventory pool."""
-    # Query pool availability
-    stmt = (
-        select(
-            InventoryLocationModel.hardware_category,
-            InventoryLocationModel.product_code,
-            func.sum(InventoryLocationModel.quantity).label("total_available"),
-        )
-        .where(InventoryLocationModel.project_id == project_id)
-        .group_by(
-            InventoryLocationModel.hardware_category,
-            InventoryLocationModel.product_code,
-        )
-    )
-    rows = session.execute(stmt).all()
-
-    # Build mutable availability map
-    available_map: dict[tuple[str, str], int] = {}
-    for row in rows:
-        key = (row.hardware_category, row.product_code)
-        available_map[key] = row.total_available
-
+    """Compare needed items against existing HardwareItem lifecycle state."""
     results = []
+
     for item in items:
-        key = (item["hardware_category"], item["product_code"])
-        pool_available = available_map.get(key, 0)
-        needed = item["quantity_needed"]
+        opening_number = item["opening_number"]
+        hardware_category = item["hardware_category"]
+        product_code = item["product_code"]
+        quantity_needed = item["quantity_needed"]
 
-        # Determine how much we can allocate from pool
-        can_allocate = min(pool_available, needed)
-
-        if can_allocate >= needed:
-            status = "AVAILABLE"
-        elif can_allocate > 0:
-            status = "PARTIAL"
-        else:
-            status = "NOT_AVAILABLE"
-
-        # Deduct from pool to prevent double-counting
-        if can_allocate > 0:
-            available_map[key] = pool_available - can_allocate
-
-        results.append(
-            {
-                "opening_number": item["opening_number"],
-                "hardware_category": item["hardware_category"],
-                "product_code": item["product_code"],
-                "quantity_needed": needed,
-                "quantity_available": can_allocate,
-                "status": status,
-            }
+        # Step 1: Query HardwareItems linked to non-cancelled, non-deleted POs
+        hi_stmt = (
+            select(
+                HardwareItemModel.item_quantity,
+                POModel.status.label("po_status"),
+                POLineItemModel.ordered_quantity,
+                POLineItemModel.received_quantity,
+            )
+            .join(OpeningModel, HardwareItemModel.opening_id == OpeningModel.id)
+            .join(POLineItemModel, HardwareItemModel.po_line_item_id == POLineItemModel.id)
+            .join(POModel, POLineItemModel.po_id == POModel.id)
+            .where(
+                HardwareItemModel.project_id == project_id,
+                OpeningModel.opening_number == opening_number,
+                HardwareItemModel.product_code == product_code,
+                POModel.status != POStatus.CANCELLED,
+                POModel.deleted_at.is_(None),
+            )
         )
+        hi_rows = session.execute(hi_stmt).all()
+
+        # Step 2: Bucket quantities by PO status
+        buckets: dict[str, int] = defaultdict(int)
+
+        for row in hi_rows:
+            hi_qty = row.item_quantity
+            po_status = row.po_status
+
+            if po_status == POStatus.DRAFT:
+                buckets["PO_DRAFTED"] += hi_qty
+            elif po_status == POStatus.ORDERED:
+                buckets["ORDERED"] += hi_qty
+            elif po_status == POStatus.PARTIALLY_RECEIVED:
+                if row.ordered_quantity > 0:
+                    ratio = row.received_quantity / row.ordered_quantity
+                else:
+                    ratio = 0
+                received_portion = floor(hi_qty * ratio)
+                ordered_portion = hi_qty - received_portion
+                if received_portion > 0:
+                    buckets["RECEIVED"] += received_portion
+                if ordered_portion > 0:
+                    buckets["ORDERED"] += ordered_portion
+            elif po_status == POStatus.CLOSED:
+                buckets["RECEIVED"] += hi_qty
+
+        # Step 3: For RECEIVED quantities, check PullRequestItems
+        received_qty = buckets.get("RECEIVED", 0)
+        if received_qty > 0:
+            pr_stmt = (
+                select(
+                    PullRequestModel.source,
+                    PullRequestModel.status,
+                    func.sum(PullRequestItemModel.requested_quantity).label("total_pulled"),
+                )
+                .join(PullRequestItemModel, PullRequestItemModel.pull_request_id == PullRequestModel.id)
+                .where(
+                    PullRequestModel.project_id == project_id,
+                    PullRequestItemModel.opening_number == opening_number,
+                    PullRequestItemModel.product_code == product_code,
+                    PullRequestModel.status != PullRequestStatus.CANCELLED,
+                )
+                .group_by(PullRequestModel.source, PullRequestModel.status)
+            )
+            pr_rows = session.execute(pr_stmt).all()
+
+            for pr_row in pr_rows:
+                pulled_qty = pr_row.total_pulled or 0
+                deduct = min(pulled_qty, received_qty)
+                if deduct <= 0:
+                    continue
+
+                if pr_row.source == PullRequestSource.SHOP_ASSEMBLY:
+                    if pr_row.status in (PullRequestStatus.PENDING, PullRequestStatus.IN_PROGRESS):
+                        buckets["ASSEMBLING"] += deduct
+                        received_qty -= deduct
+                elif pr_row.source == PullRequestSource.SHIPPING_OUT:
+                    if pr_row.status in (PullRequestStatus.PENDING, PullRequestStatus.IN_PROGRESS):
+                        buckets["SHIPPING_OUT"] += deduct
+                        received_qty -= deduct
+                    elif pr_row.status == PullRequestStatus.COMPLETED:
+                        buckets["SHIPPED_OUT"] += deduct
+                        received_qty -= deduct
+
+            # Update RECEIVED bucket after PR deductions
+            buckets["RECEIVED"] = max(0, received_qty)
+
+        # Step 4: Check OpeningItemHardware for SHIPPED_OUT openings
+        oi_stmt = (
+            select(func.sum(OpeningItemHardwareModel.quantity).label("shipped_qty"))
+            .join(OpeningItemModel, OpeningItemHardwareModel.opening_item_id == OpeningItemModel.id)
+            .where(
+                OpeningItemModel.project_id == project_id,
+                OpeningItemModel.opening_number == opening_number,
+                OpeningItemHardwareModel.product_code == product_code,
+                OpeningItemModel.state == OpeningItemState.SHIPPED_OUT,
+            )
+        )
+        oi_shipped = session.execute(oi_stmt).scalar() or 0
+
+        # Avoid double-counting with shipping PR COMPLETED
+        existing_shipped = buckets.get("SHIPPED_OUT", 0)
+        if oi_shipped > existing_shipped:
+            extra = oi_shipped - existing_shipped
+            from_received = min(extra, buckets.get("RECEIVED", 0))
+            buckets["RECEIVED"] = max(0, buckets.get("RECEIVED", 0) - from_received)
+            buckets["SHIPPED_OUT"] = existing_shipped + from_received
+
+        # Step 5: Calculate NOT_COVERED gap
+        total_committed = sum(buckets.values())
+        gap = max(0, quantity_needed - total_committed)
+        if gap > 0:
+            buckets["NOT_COVERED"] = gap
+
+        # Step 6: Generate result rows
+        for status_key, qty in buckets.items():
+            if qty > 0:
+                results.append(
+                    {
+                        "opening_number": opening_number,
+                        "hardware_category": hardware_category,
+                        "product_code": product_code,
+                        "quantity": qty,
+                        "status": status_key,
+                    }
+                )
 
     return results
 

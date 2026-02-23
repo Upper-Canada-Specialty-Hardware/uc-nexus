@@ -53,9 +53,13 @@ NotificationType = strawberry.enum(NotificationTypeDB)
 # GraphQL-only enums (not stored in database)
 @strawberry.enum
 class ReconciliationStatus(enum.Enum):
-    AVAILABLE = "available"
-    PARTIAL = "partial"
-    NOT_AVAILABLE = "not_available"
+    PO_DRAFTED = "po_drafted"
+    ORDERED = "ordered"
+    RECEIVED = "received"
+    ASSEMBLING = "assembling"
+    SHIPPING_OUT = "shipping_out"
+    SHIPPED_OUT = "shipped_out"
+    NOT_COVERED = "not_covered"
 
 
 @strawberry.enum

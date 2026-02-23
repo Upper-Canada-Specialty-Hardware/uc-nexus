@@ -133,15 +133,18 @@ type ReconciliationResult {
   opening_number: String!
   hardware_category: String!
   product_code: String!
-  quantity_needed: Int!
-  quantity_available: Int!
+  quantity: Int!
   status: ReconciliationStatus!
 }
 
 enum ReconciliationStatus {
-  AVAILABLE
-  PARTIAL
-  NOT_AVAILABLE
+  PO_DRAFTED
+  ORDERED
+  RECEIVED
+  ASSEMBLING
+  SHIPPING_OUT
+  SHIPPED_OUT
+  NOT_COVERED
 }
 
 type Query {

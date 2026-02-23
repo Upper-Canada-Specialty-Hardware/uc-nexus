@@ -365,8 +365,7 @@ class Query:
                     opening_number=r["opening_number"],
                     hardware_category=r["hardware_category"],
                     product_code=r["product_code"],
-                    quantity_needed=r["quantity_needed"],
-                    quantity_available=r["quantity_available"],
+                    quantity=r["quantity"],
                     status=ReconciliationStatus[r["status"]],
                 )
                 for r in results
