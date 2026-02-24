@@ -149,7 +149,6 @@ export default function SARListPage() {
   } = useQuery<{ shopAssemblyRequests: ShopAssemblyRequest[] }>(GET_SHOP_ASSEMBLY_REQUESTS, {
     variables: queryVariables,
     skip: !project?.id,
-    pollInterval: 10000,
   });
 
   const requests = data?.shopAssemblyRequests ?? [];

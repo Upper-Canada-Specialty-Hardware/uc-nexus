@@ -59,7 +59,6 @@ export default function ShipReadyBrowser() {
   const { data, loading } = useQuery<ShipReadyData>(GET_SHIP_READY_ITEMS, {
     variables: { projectId: project?.id ?? '' },
     skip: !project,
-    pollInterval: 10000,
   });
 
   const openingItems = data?.shipReadyItems?.openingItems ?? [];

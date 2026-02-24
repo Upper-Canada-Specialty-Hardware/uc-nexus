@@ -7,7 +7,6 @@ import {
   Chip,
   Stack,
   Grid,
-  CircularProgress,
 } from '@mui/material';
 import {
   DndContext,
@@ -149,12 +148,11 @@ export default function AssignmentBoard() {
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } })
   );
 
-  const { data, loading, refetch } = useQuery<{ assembleList: AssembleOpening[] }>(
+  const { data, refetch } = useQuery<{ assembleList: AssembleOpening[] }>(
     GET_ASSEMBLE_LIST,
     {
       variables: { projectId: project?.id },
       skip: !project?.id,
-      pollInterval: 10000,
     }
   );
 
@@ -253,8 +251,6 @@ export default function AssignmentBoard() {
       <Typography variant='h5' gutterBottom>
         Opening Assignment Board
       </Typography>
-
-      {loading && <CircularProgress size={24} sx={{ mb: 2 }} />}
 
       <DndContext
         sensors={sensors}

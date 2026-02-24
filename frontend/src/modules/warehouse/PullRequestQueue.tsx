@@ -122,7 +122,6 @@ function PullRequestTab({ projectId, source, onRowClick }: PullRequestTabProps) 
 
   const { data, loading } = useQuery<{ pullRequests: PullRequest[] }>(GET_PULL_REQUESTS, {
     variables: queryVariables,
-    pollInterval: 5000,
   });
 
   const requests = data?.pullRequests ?? [];

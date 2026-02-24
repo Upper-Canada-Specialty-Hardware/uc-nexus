@@ -52,7 +52,6 @@ export default function MyWorkPage() {
   const { data, loading, refetch } = useQuery<{ myWork: MyWorkOpening[] }>(GET_MY_WORK, {
     variables: { assignedTo },
     skip: !role,
-    pollInterval: 10000,
   });
 
   const rows = useMemo(() => data?.myWork ?? [], [data]);

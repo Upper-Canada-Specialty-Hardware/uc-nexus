@@ -187,16 +187,16 @@ function ProductCodeDetail({
           </Typography>
         </AccordionSummary>
         <AccordionDetails>
-          {loading && (
+          {loading && !data && (
             <Box sx={{ display: 'flex', justifyContent: 'center', py: 2 }}>
               <CircularProgress size={24} />
             </Box>
           )}
           {error && <Alert severity="error">Error loading items: {error.message}</Alert>}
-          {!loading && !error && rows.length === 0 && (
+          {!(loading && !data) && !error && rows.length === 0 && (
             <Typography color="text.secondary">No items found</Typography>
           )}
-          {!loading && rows.length > 0 && (
+          {!(loading && !data) && rows.length > 0 && (
             <Box sx={{ height: 300, width: '100%' }}>
               <DataGrid
                 rows={rows}
@@ -239,7 +239,6 @@ export default function HardwareItemsTab({ projectId }: HardwareItemsTabProps) {
     inventoryHierarchy: CategoryGroup[];
   }>(GET_INVENTORY_HIERARCHY, {
     variables: { projectId },
-    pollInterval: 10000,
   });
 
   // Debounce search input
@@ -322,7 +321,7 @@ export default function HardwareItemsTab({ projectId }: HardwareItemsTabProps) {
       .filter((cat) => cat.productCodes.length > 0);
   }, [hierarchy, debouncedSearch, categoryFilter, shelfFilter]);
 
-  if (loading) {
+  if (loading && !data) {
     return (
       <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
         <CircularProgress />

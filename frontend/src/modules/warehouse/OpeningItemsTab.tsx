@@ -269,7 +269,6 @@ export default function OpeningItemsTab({ projectId }: OpeningItemsTabProps) {
     openingItems: OpeningItem[];
   }>(GET_OPENING_ITEMS, {
     variables: { projectId },
-    pollInterval: 10000,
   });
 
   const rows = useMemo(() => data?.openingItems ?? [], [data]);
@@ -284,7 +283,7 @@ export default function OpeningItemsTab({ projectId }: OpeningItemsTabProps) {
     setSelectedItemId(null);
   }, []);
 
-  if (loading) {
+  if (loading && !data) {
     return (
       <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
         <CircularProgress />

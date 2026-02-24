@@ -66,7 +66,6 @@ export default function AssembleListPage() {
   } = useQuery<{ assembleList: AssembleOpening[] }>(GET_ASSEMBLE_LIST, {
     variables: { projectId: project?.id },
     skip: !project?.id,
-    pollInterval: 10000,
   });
 
   const openings = data?.assembleList ?? [];
@@ -110,13 +109,13 @@ export default function AssembleListPage() {
         Assemble List
       </Typography>
 
-      {loading && (
+      {loading && !data && (
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
           Loading...
         </Typography>
       )}
 
-      {!loading && openings.length === 0 && (
+      {!loading && data && openings.length === 0 && (
         <Alert severity="info" sx={{ mb: 2 }}>
           No approved shop assembly openings found for this project.
         </Alert>

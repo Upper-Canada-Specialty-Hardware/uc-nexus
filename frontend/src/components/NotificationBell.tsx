@@ -57,7 +57,7 @@ export default function NotificationBell() {
         limit: 5,
       },
       skip,
-      pollInterval: 10000,
+      pollInterval: 30000,
     },
   );
 
@@ -71,7 +71,7 @@ export default function NotificationBell() {
         limit: 99,
       },
       skip,
-      pollInterval: 10000,
+      pollInterval: 30000,
     },
   );
 

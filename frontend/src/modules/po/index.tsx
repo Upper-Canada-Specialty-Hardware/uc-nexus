@@ -188,7 +188,6 @@ export default function POModule() {
   } = useQuery<{ poStatistics: POStatistics }>(GET_PO_STATISTICS, {
     variables: { projectId: project?.id },
     skip: !project?.id,
-    pollInterval: 10000,
   });
 
   const {
@@ -201,7 +200,6 @@ export default function POModule() {
       status: activeFilter || undefined,
     },
     skip: !project?.id,
-    pollInterval: 10000,
   });
 
   const stats = statsData?.poStatistics;
