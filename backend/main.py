@@ -59,10 +59,10 @@ def health():
 @app.post("/admin/reset-data")
 def reset_data():
     """Drop and rebuild the entire public schema via alembic. Dev use only."""
-    from alembic import command
     from alembic.config import Config
     from sqlalchemy import text
 
+    from alembic import command
     from app.database import engine
 
     # Drop and recreate schema
