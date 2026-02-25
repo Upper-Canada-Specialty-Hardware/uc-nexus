@@ -264,6 +264,44 @@ def finalize_import_session(
             .unique()
             .first()
         )
+    else:
+        # Re-import — create any NEW openings that don't exist yet
+        existing_opening_numbers = {o.opening_number for o in project.openings}
+        new_openings = [o for o in openings_input if o["opening_number"] not in existing_opening_numbers]
+        if new_openings:
+            for opening_input in new_openings:
+                opening = OpeningModel(
+                    id=uuid.uuid4(),
+                    project_id=project.id,
+                    opening_number=opening_input["opening_number"],
+                    building=opening_input.get("building"),
+                    floor=opening_input.get("floor"),
+                    location=opening_input.get("location"),
+                    location_to=opening_input.get("location_to"),
+                    location_from=opening_input.get("location_from"),
+                    hand=opening_input.get("hand"),
+                    width=opening_input.get("width"),
+                    length=opening_input.get("length"),
+                    door_thickness=opening_input.get("door_thickness"),
+                    jamb_thickness=opening_input.get("jamb_thickness"),
+                    door_type=opening_input.get("door_type"),
+                    frame_type=opening_input.get("frame_type"),
+                    interior_exterior=opening_input.get("interior_exterior"),
+                    keying=opening_input.get("keying"),
+                    heading_no=opening_input.get("heading_no"),
+                    single_pair=opening_input.get("single_pair"),
+                    assignment_multiplier=opening_input.get("assignment_multiplier"),
+                )
+                session.add(opening)
+            session.flush()
+            # Re-load project with updated openings
+            project = (
+                session.scalars(
+                    select(ProjectModel).options(selectinload(ProjectModel.openings)).where(ProjectModel.id == project.id)
+                )
+                .unique()
+                .first()
+            )
 
     # Build opening_map: opening_number -> Opening.id
     opening_map: dict[str, uuid.UUID] = {o.opening_number: o.id for o in project.openings}
