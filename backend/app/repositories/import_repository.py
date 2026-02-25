@@ -267,9 +267,8 @@ def finalize_import_session(
     else:
         # Re-import — create any NEW openings that don't exist yet
         existing_opening_numbers = {o.opening_number for o in project.openings}
-        new_openings = [o for o in openings_input if o["opening_number"] not in existing_opening_numbers]
-        if new_openings:
-            for opening_input in new_openings:
+        for opening_input in openings_input:
+            if opening_input["opening_number"] not in existing_opening_numbers:
                 opening = OpeningModel(
                     id=uuid.uuid4(),
                     project_id=project.id,
@@ -293,17 +292,8 @@ def finalize_import_session(
                     assignment_multiplier=opening_input.get("assignment_multiplier"),
                 )
                 session.add(opening)
-            session.flush()
-            # Re-load project with updated openings
-            project = (
-                session.scalars(
-                    select(ProjectModel)
-                    .options(selectinload(ProjectModel.openings))
-                    .where(ProjectModel.id == project.id)
-                )
-                .unique()
-                .first()
-            )
+                project.openings.append(opening)
+        session.flush()
 
     # Build opening_map: opening_number -> Opening.id
     opening_map: dict[str, uuid.UUID] = {o.opening_number: o.id for o in project.openings}
