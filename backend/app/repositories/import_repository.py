@@ -297,7 +297,9 @@ def finalize_import_session(
             # Re-load project with updated openings
             project = (
                 session.scalars(
-                    select(ProjectModel).options(selectinload(ProjectModel.openings)).where(ProjectModel.id == project.id)
+                    select(ProjectModel)
+                    .options(selectinload(ProjectModel.openings))
+                    .where(ProjectModel.id == project.id)
                 )
                 .unique()
                 .first()
