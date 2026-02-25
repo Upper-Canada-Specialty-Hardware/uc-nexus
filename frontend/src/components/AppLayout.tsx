@@ -40,6 +40,8 @@ export default function AppLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
+  const [resetting, setResetting] = useState(false);
 
   const { data } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
   const projects = data?.projects ?? [];
@@ -61,6 +63,23 @@ export default function AppLayout() {
     clearCart();
     clearRole();
     navigate('/');
+  };
+
+  const handleResetSchema = async () => {
+    setResetConfirmOpen(false);
+    setResetting(true);
+    try {
+      const base = import.meta.env.VITE_GRAPHQL_URL
+        ? import.meta.env.VITE_GRAPHQL_URL.replace(/\/graphql$/, '')
+        : '';
+      const res = await fetch(`${base}/admin/reset-data`, { method: 'POST' });
+      const json = await res.json();
+      window.alert(res.ok ? json.message : `Error: ${JSON.stringify(json)}`);
+    } catch (err) {
+      window.alert(`Reset failed: ${err}`);
+    } finally {
+      setResetting(false);
+    }
   };
 
   const handleProjectChange = (e: SelectChangeEvent) => {
@@ -102,6 +121,17 @@ export default function AppLayout() {
               ))}
             </Select>
           </FormControl>
+
+          <Button
+            variant="outlined"
+            color="inherit"
+            size="small"
+            disabled={resetting}
+            onClick={() => setResetConfirmOpen(true)}
+            sx={{ mr: 2, textTransform: 'none' }}
+          >
+            {resetting ? 'Resetting…' : 'DevAction: drop and rebuild schema'}
+          </Button>
 
           <Typography variant="body2" sx={{ flexGrow: 1, opacity: 0.9 }}>
             {role}
@@ -185,6 +215,16 @@ export default function AppLayout() {
         cancelLabel="Stay"
         onConfirm={doSwitchRole}
         onCancel={() => setConfirmOpen(false)}
+      />
+
+      <ConfirmDialog
+        open={resetConfirmOpen}
+        title="Drop & Rebuild Schema?"
+        message="This will DROP the entire public schema and rebuild it from migrations. All data will be lost."
+        confirmLabel="Drop & Rebuild"
+        cancelLabel="Cancel"
+        onConfirm={handleResetSchema}
+        onCancel={() => setResetConfirmOpen(false)}
       />
     </Box>
   );

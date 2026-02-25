@@ -54,3 +54,25 @@ app.include_router(graphql_app, prefix="/graphql")
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.post("/admin/reset-data")
+def reset_data():
+    """Drop and rebuild the entire public schema via alembic. Dev use only."""
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import text
+
+    from app.database import engine
+
+    # Drop and recreate schema
+    with engine.connect() as conn:
+        conn.execute(text("DROP SCHEMA public CASCADE"))
+        conn.execute(text("CREATE SCHEMA public"))
+        conn.commit()
+
+    # Rebuild via alembic
+    alembic_cfg = Config("alembic.ini")
+    command.upgrade(alembic_cfg, "head")
+
+    return {"status": "ok", "message": "Schema dropped and rebuilt"}
