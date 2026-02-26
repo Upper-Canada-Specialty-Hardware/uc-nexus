@@ -13,9 +13,9 @@ import {
   Alert,
   CircularProgress,
   Paper,
-  Checkbox,
+  Radio,
+  RadioGroup,
   FormControlLabel,
-  FormGroup,
   Chip,
   Divider,
 } from '@mui/material';
@@ -106,7 +106,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Step 2 state
-  const [purposes, setPurposes] = useState<Set<ImportPurpose>>(new Set());
+  const [purpose, setPurpose] = useState<ImportPurpose | null>(null);
 
   // Step 3 state
   const [selectedOpenings, setSelectedOpenings] = useState<Set<string>>(new Set());
@@ -134,12 +134,12 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
       { id: 'reconciliation', label: 'Reconciliation' },
       { id: 'classification', label: 'Classification' },
     ];
-    if (purposes.has('po')) base.push({ id: 'purchase-orders', label: 'Purchase Orders' });
-    if (purposes.has('assembly')) base.push({ id: 'shop-assembly', label: 'Shop Assembly' });
-    if (purposes.has('shipping')) base.push({ id: 'shipping-prs', label: 'Shipping PRs' });
+    if (purpose === 'po') base.push({ id: 'purchase-orders', label: 'Purchase Orders' });
+    if (purpose === 'assembly') base.push({ id: 'shop-assembly', label: 'Shop Assembly' });
+    if (purpose === 'shipping') base.push({ id: 'shipping-prs', label: 'Shipping PRs' });
     base.push({ id: 'finalize', label: 'Finalize' });
     return base;
-  }, [purposes]);
+  }, [purpose]);
 
   // Guard against orphaned step (e.g. user unchecks a purpose while on that step).
   // Derived via useMemo instead of a useEffect+setState to avoid cascading renders.
@@ -334,16 +334,6 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
 
   // ---- Step-specific handlers ----
 
-  // Purpose toggles
-  const togglePurpose = useCallback((p: ImportPurpose) => {
-    setPurposes((prev) => {
-      const next = new Set(prev);
-      if (next.has(p)) next.delete(p);
-      else next.add(p);
-      return next;
-    });
-  }, []);
-
   // Opening selection
   const toggleOpening = useCallback((openingNumber: string) => {
     setSelectedOpenings((prev) => {
@@ -462,8 +452,8 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     return {
       project: snakeToCamel(parsed.project as unknown as Record<string, unknown>),
       openings: selectedOpeningsList.map((o) => snakeToCamel(o as unknown as Record<string, unknown>)),
-      hardwareItems: purposes.has('po') ? filteredHardwareItems.map((hi) => snakeToCamel(hi as unknown as Record<string, unknown>)) : null,
-      poDrafts: purposes.has('po')
+      hardwareItems: purpose === 'po' ? filteredHardwareItems.map((hi) => snakeToCamel(hi as unknown as Record<string, unknown>)) : null,
+      poDrafts: purpose === 'po'
         ? Array.from(vendorGroups.entries()).map(([vendor, items]) => {
             const info = vendorPOInfo.get(vendor) ?? { poNumber: '', vendorContact: '' };
             return {
@@ -478,13 +468,13 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
             };
           })
         : null,
-      classifications: purposes.has('po')
+      classifications: purpose === 'po'
         ? Array.from(classifications.entries()).map(([key, cls]) => {
             const [hardwareCategory, productCode, unitCost] = key.split('|');
             return { hardwareCategory, productCode, unitCost: parseFloat(unitCost), classification: cls };
           })
         : null,
-      shippingOutPrDrafts: purposes.has('shipping')
+      shippingOutPrDrafts: purpose === 'shipping'
         ? shippingPRDrafts.map((pr) => ({
             requestNumber: pr.requestNumber,
             requestedBy: pr.requestedBy,
@@ -498,9 +488,9 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
             })),
           }))
         : null,
-      includeShopAssemblyRequest: purposes.has('assembly'),
-      shopAssemblyRequestNumber: purposes.has('assembly') ? sarRequestNumber : null,
-      shopAssemblyOpenings: purposes.has('assembly')
+      includeShopAssemblyRequest: purpose === 'assembly',
+      shopAssemblyRequestNumber: purpose === 'assembly' ? sarRequestNumber : null,
+      shopAssemblyOpenings: purpose === 'assembly'
         ? selectedOpeningsList
             .map((opening) => {
               const shopItems = filteredHardwareItems.filter((hi) => {
@@ -521,7 +511,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
             .filter(Boolean)
         : null,
     };
-  }, [parsed, selectedOpenings, purposes, vendorGroups, vendorPOInfo, classifications, shippingPRDrafts, sarRequestNumber]);
+  }, [parsed, selectedOpenings, purpose, vendorGroups, vendorPOInfo, classifications, shippingPRDrafts, sarRequestNumber]);
 
   const handleFinalize = useCallback(async () => {
     setConfirmOpen(false);
@@ -578,7 +568,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     setIsReimport(false);
     setExistingProjectId(null);
     setExistingProjectName(null);
-    setPurposes(new Set());
+    setPurpose(null);
     setSelectedOpenings(new Set());
     setVendorPOInfo(new Map());
     setClassifications(new Map());
@@ -596,7 +586,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
   // ---- Step validations ----
 
   const canProceedStep0 = parser.state === 'done';
-  const canProceedStep1 = purposes.size > 0;
+  const canProceedStep1 = purpose !== null;
   const canProceedStep2 = selectedOpenings.size > 0;
   const canProceedStep3 = true; // Reconciliation is informational
 
@@ -760,42 +750,24 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
             </Box>
           )}
 
-          {/* ============ Step: Select Purpose(s) ============ */}
+          {/* ============ Step: Select Purpose ============ */}
           {effectiveStepId === 'purpose' && (
             <Box>
               <Typography variant="h6" sx={{ mb: 2 }}>
-                Select Import Purposes
+                Select Import Purpose
               </Typography>
               <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-                Choose what you want to create from this import. You must select at least one.
+                Choose what you want to create from this import.
               </Typography>
 
-              <FormGroup>
-                <FormControlLabel
-                  control={
-                    <Checkbox checked={purposes.has('po')} onChange={() => togglePurpose('po')} />
-                  }
-                  label="Create Purchase Orders"
-                />
-                <FormControlLabel
-                  control={
-                    <Checkbox
-                      checked={purposes.has('assembly')}
-                      onChange={() => togglePurpose('assembly')}
-                    />
-                  }
-                  label="Shop Assembly Request"
-                />
-                <FormControlLabel
-                  control={
-                    <Checkbox
-                      checked={purposes.has('shipping')}
-                      onChange={() => togglePurpose('shipping')}
-                    />
-                  }
-                  label="Shipping Out"
-                />
-              </FormGroup>
+              <RadioGroup
+                value={purpose ?? ''}
+                onChange={(e) => setPurpose(e.target.value as ImportPurpose)}
+              >
+                <FormControlLabel value="po" control={<Radio />} label="Create Purchase Orders" />
+                <FormControlLabel value="assembly" control={<Radio />} label="Shop Assembly Request" />
+                <FormControlLabel value="shipping" control={<Radio />} label="Shipping Out" />
+              </RadioGroup>
 
               {isReimport && (
                 <Alert severity="info" sx={{ mt: 2 }}>
@@ -882,7 +854,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
             <ClassificationStep
               classificationRows={classificationRows}
               onClassify={classifyBatch}
-              purposes={purposes}
+              purpose={purpose!}
               itemCount={selectedHardwareItems.length}
               openingCount={selectedOpenings.size}
               isReimport={isReimport}
@@ -911,7 +883,6 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
               selectedOpenings={selectedOpenings}
               selectedHardwareItems={selectedHardwareItems}
               classifications={classifications}
-              purposes={purposes}
               onNext={handleNext}
               onBack={handleBack}
             />
@@ -952,7 +923,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
 
                 <Divider sx={{ my: 2 }} />
 
-                {purposes.has('po') && (
+                {purpose === 'po' && (
                   <Box sx={{ mb: 1 }}>
                     <Typography variant="body1">
                       {vendorGroups.size} Purchase Order(s) across {vendorGroups.size} vendor(s)
@@ -960,7 +931,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
                   </Box>
                 )}
 
-                {purposes.has('shipping') && (
+                {purpose === 'shipping' && (
                   <Box sx={{ mb: 1 }}>
                     <Typography variant="body1">
                       {shippingPRDrafts.filter((d) => d.requestNumber.trim() !== '').length} Shipping
@@ -969,7 +940,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
                   </Box>
                 )}
 
-                {purposes.has('assembly') && (
+                {purpose === 'assembly' && (
                   <Box sx={{ mb: 1 }}>
                     <Typography variant="body1">
                       1 Shop Assembly Request (#{sarRequestNumber})

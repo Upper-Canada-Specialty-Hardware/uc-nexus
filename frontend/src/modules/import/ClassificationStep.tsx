@@ -6,7 +6,7 @@ import type { ImportPurpose } from './types';
 interface ClassificationStepProps {
   classificationRows: ClassificationRow[];
   onClassify: (keys: string[], value: 'SITE_HARDWARE' | 'SHOP_HARDWARE') => void;
-  purposes: Set<ImportPurpose>;
+  purpose: ImportPurpose;
   itemCount: number;
   openingCount: number;
   isReimport: boolean;
@@ -17,7 +17,7 @@ interface ClassificationStepProps {
 export default function ClassificationStep({
   classificationRows,
   onClassify,
-  purposes,
+  purpose,
   itemCount,
   openingCount,
   isReimport,
@@ -27,7 +27,7 @@ export default function ClassificationStep({
   const classifiedCount = classificationRows.filter((r) => r.classification !== '').length;
   const allClassified = classifiedCount === classificationRows.length;
 
-  const isReadOnly = !purposes.has('po') && !purposes.has('assembly');
+  const isReadOnly = purpose !== 'po' && purpose !== 'assembly';
 
   const canProceed = useMemo(() => {
     if (isReadOnly) return true;

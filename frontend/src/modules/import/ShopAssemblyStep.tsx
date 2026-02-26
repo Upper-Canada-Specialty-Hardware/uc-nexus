@@ -1,6 +1,5 @@
 import { useMemo } from 'react';
 import {
-  Alert,
   Box,
   Button,
   List,
@@ -12,7 +11,6 @@ import {
 } from '@mui/material';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import type { ParsedOpening, ParsedHardwareItem } from '../../types/hardwareSchedule';
-import type { ImportPurpose } from './types';
 import { classificationKey } from './types';
 
 interface ShopAssemblyStepProps {
@@ -22,7 +20,6 @@ interface ShopAssemblyStepProps {
   selectedOpenings: Set<string>;
   selectedHardwareItems: ParsedHardwareItem[];
   classifications: Map<string, string>;
-  purposes: Set<ImportPurpose>;
   onNext: () => void;
   onBack: () => void;
 }
@@ -34,7 +31,6 @@ export default function ShopAssemblyStep({
   selectedOpenings,
   selectedHardwareItems,
   classifications,
-  purposes,
   onNext,
   onBack,
 }: ShopAssemblyStepProps) {
@@ -79,13 +75,6 @@ export default function ShopAssemblyStep({
         Openings with items classified as Shop Hardware (in the Classification step) will be
         included.
       </Typography>
-
-      {!purposes.has('po') && purposes.has('assembly') && (
-        <Alert severity="info" sx={{ mb: 2 }}>
-          Enable &quot;Create Purchase Orders&quot; in the Purpose step to classify items as Shop
-          Hardware.
-        </Alert>
-      )}
 
       <List dense>
         {openingsWithShopItems.map(({ opening, shopItemCount }) => (
