@@ -29,6 +29,7 @@ frontend/build/
 .vscode/
 .idea/
 .claude/
+CLAUDE.md
 *.swp
 *.swo
 *~
