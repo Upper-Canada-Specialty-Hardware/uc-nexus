@@ -25,7 +25,7 @@ interface POLineItem {
   poId: string;
   hardwareCategory: string;
   productCode: string;
-  classification: string;
+  classification: string | null;
   orderedQuantity: number;
   receivedQuantity: number;
   unitCost: number;

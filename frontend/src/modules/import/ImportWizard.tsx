@@ -132,8 +132,10 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
       { id: 'purpose', label: 'Purpose' },
       { id: 'openings', label: 'Select Openings' },
       { id: 'reconciliation', label: 'Reconciliation' },
-      { id: 'classification', label: 'Classification' },
     ];
+    if (purpose !== 'po') {
+      base.push({ id: 'classification', label: 'Classification' });
+    }
     if (purpose === 'po') base.push({ id: 'purchase-orders', label: 'Purchase Orders' });
     if (purpose === 'assembly') base.push({ id: 'shop-assembly', label: 'Shop Assembly' });
     if (purpose === 'shipping') base.push({ id: 'shipping-prs', label: 'Shipping PRs' });
@@ -146,7 +148,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
   const effectiveStepId = useMemo<StepId>(
     () =>
       activeStepId !== 'upload' && !steps.find((s) => s.id === activeStepId)
-        ? 'classification'
+        ? 'reconciliation'
         : activeStepId,
     [steps, activeStepId],
   );
@@ -442,7 +444,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
             };
           })
         : null,
-      classifications: purpose === 'po'
+      classifications: purpose === 'assembly'
         ? Array.from(classifications.entries()).map(([key, cls]) => {
             const [hardwareCategory, productCode, unitCost] = key.split('|');
             return { hardwareCategory, productCode, unitCost: parseFloat(unitCost), classification: cls };

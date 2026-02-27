@@ -53,7 +53,13 @@ function formatDateTime(dateStr: string | null | undefined): string {
 const lineItemColumns: GridColDef[] = [
   { field: 'productCode', headerName: 'Product Code', flex: 1, minWidth: 130 },
   { field: 'hardwareCategory', headerName: 'Hardware Category', flex: 1, minWidth: 150 },
-  { field: 'classification', headerName: 'Classification', flex: 1, minWidth: 130 },
+  {
+    field: 'classification',
+    headerName: 'Classification',
+    flex: 1,
+    minWidth: 130,
+    renderCell: (params) => params.value || '\u2014',
+  },
   {
     field: 'orderedQuantity',
     headerName: 'Ordered Qty',

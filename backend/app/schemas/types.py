@@ -77,7 +77,7 @@ class POLineItem:
     po_id: strawberry.ID
     hardware_category: str
     product_code: str
-    classification: Classification
+    classification: Classification | None
     ordered_quantity: int
     received_quantity: int
     unit_cost: float
@@ -354,7 +354,7 @@ class ShipReadyItems:
 class InventoryItemDetail:
     inventory_location: InventoryLocation
     po_number: str
-    classification: Classification
+    classification: Classification | None
 
 
 @strawberry.type

@@ -43,9 +43,9 @@ class POLineItem(Base):
     po_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("purchase_orders.id"), nullable=False)
     hardware_category: Mapped[str] = mapped_column(String, nullable=False)
     product_code: Mapped[str] = mapped_column(String, nullable=False)
-    classification: Mapped[Classification] = mapped_column(
+    classification: Mapped[Classification | None] = mapped_column(
         Enum(Classification, name="classification", create_constraint=True),
-        nullable=False,
+        nullable=True,
     )
     ordered_quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     received_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
