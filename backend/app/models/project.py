@@ -37,7 +37,7 @@ class Opening(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
-    opening_number: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    opening_number: Mapped[str] = mapped_column(String, nullable=False)
     building: Mapped[str | None] = mapped_column(String, nullable=True)
     floor: Mapped[str | None] = mapped_column(String, nullable=True)
     location: Mapped[str | None] = mapped_column(String, nullable=True)

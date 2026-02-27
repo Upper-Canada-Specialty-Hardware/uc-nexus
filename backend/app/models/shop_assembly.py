@@ -13,7 +13,7 @@ class ShopAssemblyRequest(Base):
     __table_args__ = (Index("ix_shop_assembly_requests_project_status", "project_id", "status"),)
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    request_number: Mapped[str] = mapped_column(String(50), nullable=False, unique=True, index=True)
+    request_number: Mapped[str] = mapped_column(String(50), nullable=False, unique=True)
     project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
     status: Mapped[ShopAssemblyRequestStatus] = mapped_column(
         Enum(
