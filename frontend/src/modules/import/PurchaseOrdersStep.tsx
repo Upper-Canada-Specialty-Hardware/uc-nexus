@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { Box, Button, Paper, TextField, Typography } from '@mui/material';
+import { Box, Button, Checkbox, FormControlLabel, Paper, TextField, Typography } from '@mui/material';
 import type { ParsedHardwareItem } from '../../types/hardwareSchedule';
 
 // ---- Aggregation Types ----
@@ -17,6 +17,8 @@ interface AggregatedLineItem {
 interface PurchaseOrdersStepProps {
   vendorGroups: Map<string, ParsedHardwareItem[]>;
   vendorPOInfo: Map<string, { poNumber: string; vendorContact: string }>;
+  selectedVendors: Set<string>;
+  onToggleVendor: (vendor: string) => void;
   onUpdateVendorPO: (vendorNo: string, field: 'poNumber' | 'vendorContact', value: string) => void;
   onNext: () => void;
   onBack: () => void;
@@ -56,17 +58,20 @@ function aggregateLineItems(items: ParsedHardwareItem[]): AggregatedLineItem[] {
 export default function PurchaseOrdersStep({
   vendorGroups,
   vendorPOInfo,
+  selectedVendors,
+  onToggleVendor,
   onUpdateVendorPO,
   onNext,
   onBack,
 }: PurchaseOrdersStepProps) {
   const canProceed = useMemo(() => {
-    for (const vendor of vendorGroups.keys()) {
+    if (selectedVendors.size === 0) return false;
+    for (const vendor of selectedVendors) {
       const info = vendorPOInfo.get(vendor);
       if (!info || info.poNumber.trim() === '') return false;
     }
     return true;
-  }, [vendorGroups, vendorPOInfo]);
+  }, [selectedVendors, vendorPOInfo]);
 
   const sortedVendors = useMemo(
     () => Array.from(vendorGroups.entries()).sort(([a], [b]) => a.localeCompare(b)),
@@ -79,7 +84,7 @@ export default function PurchaseOrdersStep({
         Purchase Orders
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-        {vendorGroups.size} vendor(s). Enter a PO number for each.
+        {vendorGroups.size} vendor(s). Select which vendors to create POs for, then enter a PO number for each.
       </Typography>
 
       {sortedVendors.map(([vendor, items]) => {
@@ -89,14 +94,25 @@ export default function PurchaseOrdersStep({
           (sum, hi) => sum + (hi.unit_cost ?? 0) * hi.item_quantity,
           0,
         );
+        const isSelected = selectedVendors.has(vendor);
 
         return (
-          <Paper key={vendor} variant="outlined" sx={{ p: 2, mb: 2 }}>
-            {/* Header: vendor name + PO total */}
+          <Paper key={vendor} variant="outlined" sx={{ p: 2, mb: 2, opacity: isSelected ? 1 : 0.5 }}>
+            {/* Header: checkbox + vendor name + PO total */}
             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-              <Typography variant="subtitle1" sx={{ fontWeight: 'bold' }}>
-                {vendor}
-              </Typography>
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    checked={isSelected}
+                    onChange={() => onToggleVendor(vendor)}
+                  />
+                }
+                label={
+                  <Typography variant="subtitle1" sx={{ fontWeight: 'bold' }}>
+                    {vendor}
+                  </Typography>
+                }
+              />
               <Typography variant="subtitle1" color="primary">
                 PO Total: ${poTotal.toFixed(2)}
               </Typography>
@@ -108,6 +124,7 @@ export default function PurchaseOrdersStep({
                 label="PO Number"
                 size="small"
                 required
+                disabled={!isSelected}
                 value={info.poNumber}
                 onChange={(e) => onUpdateVendorPO(vendor, 'poNumber', e.target.value)}
                 sx={{ flex: 1 }}
@@ -115,6 +132,7 @@ export default function PurchaseOrdersStep({
               <TextField
                 label="Vendor Contact"
                 size="small"
+                disabled={!isSelected}
                 value={info.vendorContact}
                 onChange={(e) => onUpdateVendorPO(vendor, 'vendorContact', e.target.value)}
                 sx={{ flex: 1 }}
