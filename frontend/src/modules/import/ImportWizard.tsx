@@ -112,6 +112,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
   const [selectedOpenings, setSelectedOpenings] = useState<Set<string>>(new Set());
 
   // Action step state
+  const [selectedVendors, setSelectedVendors] = useState<Set<string>>(new Set());
   const [vendorPOInfo, setVendorPOInfo] = useState<Map<string, { poNumber: string; vendorContact: string }>>(new Map());
   const [classifications, setClassifications] = useState<Map<string, string>>(new Map());
   const [sarRequestNumber, setSarRequestNumber] = useState('');
@@ -341,6 +342,19 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     setSelectedOpenings(selected);
   }, []);
 
+  // Vendor selection
+  const toggleVendor = useCallback((vendor: string) => {
+    setSelectedVendors((prev) => {
+      const next = new Set(prev);
+      if (next.has(vendor)) {
+        next.delete(vendor);
+      } else {
+        next.add(vendor);
+      }
+      return next;
+    });
+  }, []);
+
   // Vendor PO info
   const updateVendorPO = useCallback((vendorNo: string, field: 'poNumber' | 'vendorContact', value: string) => {
     setVendorPOInfo((prev) => {
@@ -428,21 +442,27 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     return {
       project: snakeToCamel(parsed.project as unknown as Record<string, unknown>),
       openings: selectedOpeningsList.map((o) => snakeToCamel(o as unknown as Record<string, unknown>)),
-      hardwareItems: purpose === 'po' ? filteredHardwareItems.map((hi) => snakeToCamel(hi as unknown as Record<string, unknown>)) : null,
+      hardwareItems: purpose === 'po'
+        ? filteredHardwareItems
+            .filter((hi) => selectedVendors.has(hi.vendor_no ?? '(No Vendor)'))
+            .map((hi) => snakeToCamel(hi as unknown as Record<string, unknown>))
+        : null,
       poDrafts: purpose === 'po'
-        ? Array.from(vendorGroups.entries()).map(([vendor, items]) => {
-            const info = vendorPOInfo.get(vendor) ?? { poNumber: '', vendorContact: '' };
-            return {
-              poNumber: info.poNumber,
-              vendorName: vendor !== '(No Vendor)' ? vendor : null,
-              vendorContact: info.vendorContact || null,
-              hardwareItemRefs: items.map((hi) => ({
-                openingNumber: hi.opening_number,
-                productCode: hi.product_code,
-                materialId: hi.material_id,
-              })),
-            };
-          })
+        ? Array.from(vendorGroups.entries())
+            .filter(([vendor]) => selectedVendors.has(vendor))
+            .map(([vendor, items]) => {
+              const info = vendorPOInfo.get(vendor) ?? { poNumber: '', vendorContact: '' };
+              return {
+                poNumber: info.poNumber,
+                vendorName: vendor !== '(No Vendor)' ? vendor : null,
+                vendorContact: info.vendorContact || null,
+                hardwareItemRefs: items.map((hi) => ({
+                  openingNumber: hi.opening_number,
+                  productCode: hi.product_code,
+                  materialId: hi.material_id,
+                })),
+              };
+            })
         : null,
       classifications: purpose === 'assembly'
         ? Array.from(classifications.entries()).map(([key, cls]) => {
@@ -487,7 +507,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
             .filter(Boolean)
         : null,
     };
-  }, [parsed, selectedOpenings, purpose, vendorGroups, vendorPOInfo, classifications, shippingPRDrafts, sarRequestNumber]);
+  }, [parsed, selectedOpenings, purpose, vendorGroups, vendorPOInfo, selectedVendors, classifications, shippingPRDrafts, sarRequestNumber]);
 
   const handleFinalize = useCallback(async () => {
     setConfirmOpen(false);
@@ -546,6 +566,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     setExistingProjectName(null);
     setPurpose(null);
     setSelectedOpenings(new Set());
+    setSelectedVendors(new Set());
     setVendorPOInfo(new Map());
     setClassifications(new Map());
     setSarRequestNumber('');
@@ -841,6 +862,8 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
             <PurchaseOrdersStep
               vendorGroups={vendorGroups}
               vendorPOInfo={vendorPOInfo}
+              selectedVendors={selectedVendors}
+              onToggleVendor={toggleVendor}
               onUpdateVendorPO={updateVendorPO}
               onNext={handleNext}
               onBack={handleBack}
@@ -899,7 +922,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
                 {purpose === 'po' && (
                   <Box sx={{ mb: 1 }}>
                     <Typography variant="body1">
-                      {vendorGroups.size} Purchase Order(s) across {vendorGroups.size} vendor(s)
+                      {selectedVendors.size} Purchase Order(s) across {selectedVendors.size} vendor(s)
                     </Typography>
                   </Box>
                 )}
