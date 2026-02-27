@@ -1,16 +1,6 @@
-import {
-  Accordion,
-  AccordionSummary,
-  AccordionDetails,
-  Box,
-  Button,
-  Checkbox,
-  Chip,
-  Grid,
-  Paper,
-  Typography,
-} from '@mui/material';
-import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import { useMemo, useCallback } from 'react';
+import { Box, Button, Typography } from '@mui/material';
+import { DataGrid, type GridColDef, type GridRowSelectionModel } from '@mui/x-data-grid';
 import type { ParsedOpening } from '../../types/hardwareSchedule';
 
 // ---- Props ----
@@ -19,170 +9,42 @@ interface SelectOpeningsStepProps {
   openings: ParsedOpening[];
   selectedOpenings: Set<string>;
   hardwareCountByOpening: Map<string, number>;
-  onToggleOpening: (openingNumber: string) => void;
-  onSelectAll: () => void;
-  onDeselectAll: () => void;
-  onToggleGroup: (openingNumbers: string[]) => void;
+  onSelectionChange: (selected: Set<string>) => void;
   canProceed: boolean;
   onNext: () => void;
   onBack: () => void;
 }
 
-// ---- Grouping Types & Helpers ----
+// ---- Row type ----
 
-type OpeningGroups = Map<string, Map<string, Map<string, ParsedOpening[]>>>;
-
-function groupOpenings(openings: ParsedOpening[]): OpeningGroups {
-  const groups: OpeningGroups = new Map();
-  for (const o of openings) {
-    const building = o.building || '(No Building)';
-    const floor = o.floor || '(No Floor)';
-    const location = o.location || '(No Location)';
-
-    if (!groups.has(building)) groups.set(building, new Map());
-    const floors = groups.get(building)!;
-    if (!floors.has(floor)) floors.set(floor, new Map());
-    const locations = floors.get(floor)!;
-    if (!locations.has(location)) locations.set(location, []);
-    locations.get(location)!.push(o);
-  }
-  return groups;
-}
-
-function collectOpeningNumbers(openings: ParsedOpening[]): string[] {
-  return openings.map((o) => o.opening_number);
-}
-
-function collectFloorOpenings(locations: Map<string, ParsedOpening[]>): string[] {
-  const numbers: string[] = [];
-  for (const openings of locations.values()) {
-    for (const o of openings) {
-      numbers.push(o.opening_number);
-    }
-  }
-  return numbers;
-}
-
-function collectBuildingOpenings(floors: Map<string, Map<string, ParsedOpening[]>>): string[] {
-  const numbers: string[] = [];
-  for (const locations of floors.values()) {
-    for (const openings of locations.values()) {
-      for (const o of openings) {
-        numbers.push(o.opening_number);
-      }
-    }
-  }
-  return numbers;
-}
-
-// ---- GroupCheckbox ----
-
-function GroupCheckbox({
-  openingNumbers,
-  selectedOpenings,
-  onToggleGroup,
-}: {
-  openingNumbers: string[];
-  selectedOpenings: Set<string>;
-  onToggleGroup: (numbers: string[]) => void;
-}) {
-  const selectedCount = openingNumbers.filter((n) => selectedOpenings.has(n)).length;
-  const checked = selectedCount === openingNumbers.length && openingNumbers.length > 0;
-  const indeterminate = selectedCount > 0 && selectedCount < openingNumbers.length;
-
-  return (
-    <Checkbox
-      checked={checked}
-      indeterminate={indeterminate}
-      onClick={(e) => e.stopPropagation()}
-      onChange={() => onToggleGroup(openingNumbers)}
-      size="small"
-    />
-  );
-}
-
-// ---- OpeningCard ----
-
-interface OpeningCardProps {
-  opening: ParsedOpening;
-  isSelected: boolean;
+interface OpeningRow extends ParsedOpening {
+  id: string;
   hardwareCount: number;
-  onToggle: () => void;
 }
 
-function OpeningCard({ opening, isSelected, hardwareCount, onToggle }: OpeningCardProps) {
-  const attributes: Array<{ label: string; value: string }> = [];
+// ---- Columns ----
 
-  if (opening.hand != null) {
-    attributes.push({ label: 'Hand', value: opening.hand });
-  }
-  if (opening.single_pair != null) {
-    attributes.push({ label: 'Single/Pair', value: opening.single_pair });
-  }
-  if (opening.width != null) {
-    attributes.push({ label: 'Width', value: opening.width });
-  }
-  if (opening.length != null) {
-    attributes.push({ label: 'Length', value: opening.length });
-  }
-  if (opening.door_thickness != null) {
-    attributes.push({ label: 'Door Thk', value: opening.door_thickness });
-  }
-  if (opening.jamb_thickness != null) {
-    attributes.push({ label: 'Jamb Thk', value: opening.jamb_thickness });
-  }
-  if (opening.frame_type != null) {
-    attributes.push({ label: 'Frame', value: opening.frame_type });
-  }
-  if (opening.door_type != null) {
-    attributes.push({ label: 'Door', value: opening.door_type });
-  }
-
-  return (
-    <Paper
-      variant="outlined"
-      onClick={onToggle}
-      sx={{
-        p: 1.5,
-        cursor: 'pointer',
-        border: isSelected ? '2px solid' : '1px solid',
-        borderColor: isSelected ? 'primary.main' : 'divider',
-        bgcolor: isSelected ? 'action.selected' : 'background.paper',
-        '&:hover': { bgcolor: isSelected ? 'action.selected' : 'action.hover' },
-      }}
-    >
-      <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 0.5 }}>
-        <Checkbox
-          checked={isSelected}
-          onClick={(e) => e.stopPropagation()}
-          onChange={onToggle}
-          size="small"
-          sx={{ p: 0 }}
-        />
-        <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
-            {opening.opening_number}
-          </Typography>
-          <Typography variant="caption" color="text.secondary">
-            {hardwareCount} hardware item{hardwareCount !== 1 ? 's' : ''}
-          </Typography>
-        </Box>
-      </Box>
-      {attributes.length > 0 && (
-        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mt: 1 }}>
-          {attributes.map((attr) => (
-            <Chip
-              key={attr.label}
-              size="small"
-              variant="outlined"
-              label={`${attr.label}: ${attr.value}`}
-            />
-          ))}
-        </Box>
-      )}
-    </Paper>
-  );
-}
+const columns: GridColDef<OpeningRow>[] = [
+  { field: 'opening_number', headerName: 'Opening #', width: 110 },
+  { field: 'building', headerName: 'Building', width: 120 },
+  { field: 'floor', headerName: 'Floor', width: 90 },
+  { field: 'location', headerName: 'Location', width: 120 },
+  { field: 'location_to', headerName: 'Location To', width: 120 },
+  { field: 'location_from', headerName: 'Location From', width: 120 },
+  { field: 'hand', headerName: 'Hand', width: 80 },
+  { field: 'single_pair', headerName: 'Single/Pair', width: 100 },
+  { field: 'width', headerName: 'Width', width: 80 },
+  { field: 'length', headerName: 'Length', width: 80 },
+  { field: 'door_thickness', headerName: 'Door Thickness', width: 120 },
+  { field: 'jamb_thickness', headerName: 'Jamb Thickness', width: 120 },
+  { field: 'door_type', headerName: 'Door Type', width: 110 },
+  { field: 'frame_type', headerName: 'Frame Type', width: 110 },
+  { field: 'interior_exterior', headerName: 'Int/Ext', width: 80 },
+  { field: 'keying', headerName: 'Keying', width: 100 },
+  { field: 'heading_no', headerName: 'Heading #', width: 100 },
+  { field: 'assignment_multiplier', headerName: 'Multiplier', width: 90 },
+  { field: 'hardwareCount', headerName: 'Hardware Items', width: 120, type: 'number' },
+];
 
 // ---- Main Component ----
 
@@ -190,15 +52,40 @@ export default function SelectOpeningsStep({
   openings,
   selectedOpenings,
   hardwareCountByOpening,
-  onToggleOpening,
-  onSelectAll,
-  onDeselectAll,
-  onToggleGroup,
+  onSelectionChange,
   canProceed,
   onNext,
   onBack,
 }: SelectOpeningsStepProps) {
-  const groups = groupOpenings(openings);
+  const rows = useMemo<OpeningRow[]>(
+    () =>
+      openings.map((o) => ({
+        ...o,
+        id: o.opening_number,
+        hardwareCount: hardwareCountByOpening.get(o.opening_number) ?? 0,
+      })),
+    [openings, hardwareCountByOpening],
+  );
+
+  const rowSelectionModel = useMemo<GridRowSelectionModel>(
+    () => ({ type: 'include' as const, ids: new Set<string>(selectedOpenings) }),
+    [selectedOpenings],
+  );
+
+  const handleSelectionChange = useCallback(
+    (model: GridRowSelectionModel) => {
+      onSelectionChange(new Set(model.ids as Set<string>));
+    },
+    [onSelectionChange],
+  );
+
+  const handleSelectAll = useCallback(() => {
+    onSelectionChange(new Set(openings.map((o) => o.opening_number)));
+  }, [openings, onSelectionChange]);
+
+  const handleDeselectAll = useCallback(() => {
+    onSelectionChange(new Set());
+  }, [onSelectionChange]);
 
   return (
     <Box>
@@ -208,10 +95,10 @@ export default function SelectOpeningsStep({
 
       {/* Top Controls */}
       <Box sx={{ display: 'flex', gap: 2, mb: 2, alignItems: 'center' }}>
-        <Button size="small" variant="outlined" onClick={onSelectAll}>
+        <Button size="small" variant="outlined" onClick={handleSelectAll}>
           Select All
         </Button>
-        <Button size="small" variant="outlined" onClick={onDeselectAll}>
+        <Button size="small" variant="outlined" onClick={handleDeselectAll}>
           Deselect All
         </Button>
         <Typography variant="body2" color="text.secondary">
@@ -219,89 +106,22 @@ export default function SelectOpeningsStep({
         </Typography>
       </Box>
 
-      {/* 3-Level Accordion: Building > Floor > Location */}
-      <Box sx={{ maxHeight: 600, overflowY: 'auto' }}>
-        {Array.from(groups.entries()).map(([building, floors]) => {
-          const buildingNumbers = collectBuildingOpenings(floors);
-          return (
-            <Accordion key={building}>
-              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                <GroupCheckbox
-                  openingNumbers={buildingNumbers}
-                  selectedOpenings={selectedOpenings}
-                  onToggleGroup={onToggleGroup}
-                />
-                <Typography variant="subtitle1" sx={{ fontWeight: 600, ml: 1, alignSelf: 'center' }}>
-                  {building}
-                </Typography>
-                <Typography variant="body2" color="text.secondary" sx={{ ml: 1, alignSelf: 'center' }}>
-                  ({buildingNumbers.length} openings)
-                </Typography>
-              </AccordionSummary>
-              <AccordionDetails sx={{ pl: 3 }}>
-                {Array.from(floors.entries()).map(([floor, locations]) => {
-                  const floorNumbers = collectFloorOpenings(locations);
-                  return (
-                    <Accordion key={floor}>
-                      <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                        <GroupCheckbox
-                          openingNumbers={floorNumbers}
-                          selectedOpenings={selectedOpenings}
-                          onToggleGroup={onToggleGroup}
-                        />
-                        <Typography variant="subtitle2" sx={{ fontWeight: 600, ml: 1, alignSelf: 'center' }}>
-                          {floor}
-                        </Typography>
-                        <Typography variant="body2" color="text.secondary" sx={{ ml: 1, alignSelf: 'center' }}>
-                          ({floorNumbers.length} openings)
-                        </Typography>
-                      </AccordionSummary>
-                      <AccordionDetails sx={{ pl: 3 }}>
-                        {Array.from(locations.entries()).map(([location, locationOpenings]) => {
-                          const locationNumbers = collectOpeningNumbers(locationOpenings);
-                          return (
-                            <Accordion
-                              key={location}
-                              TransitionProps={{ unmountOnExit: true }}
-                            >
-                              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                                <GroupCheckbox
-                                  openingNumbers={locationNumbers}
-                                  selectedOpenings={selectedOpenings}
-                                  onToggleGroup={onToggleGroup}
-                                />
-                                <Typography variant="body1" sx={{ fontWeight: 500, ml: 1, alignSelf: 'center' }}>
-                                  {location}
-                                </Typography>
-                                <Typography variant="body2" color="text.secondary" sx={{ ml: 1, alignSelf: 'center' }}>
-                                  ({locationNumbers.length} openings)
-                                </Typography>
-                              </AccordionSummary>
-                              <AccordionDetails>
-                                <Grid container spacing={1.5}>
-                                  {locationOpenings.map((o) => (
-                                    <Grid key={o.opening_number} size={{ xs: 12, sm: 6, md: 4, lg: 3 }}>
-                                      <OpeningCard
-                                        opening={o}
-                                        isSelected={selectedOpenings.has(o.opening_number)}
-                                        hardwareCount={hardwareCountByOpening.get(o.opening_number) ?? 0}
-                                        onToggle={() => onToggleOpening(o.opening_number)}
-                                      />
-                                    </Grid>
-                                  ))}
-                                </Grid>
-                              </AccordionDetails>
-                            </Accordion>
-                          );
-                        })}
-                      </AccordionDetails>
-                    </Accordion>
-                  );
-                })}
-              </AccordionDetails>
-            </Accordion>
-          );
-        })}
+      {/* DataGrid */}
+      <Box sx={{ height: 600, width: '100%' }}>
+        <DataGrid
+          rows={rows}
+          columns={columns}
+          checkboxSelection
+          rowSelectionModel={rowSelectionModel}
+          onRowSelectionModelChange={handleSelectionChange}
+          keepNonExistentRowsSelected
+          density="compact"
+          pageSizeOptions={[25, 50, 100]}
+          initialState={{
+            pagination: { paginationModel: { pageSize: 50 } },
+          }}
+          disableRowSelectionOnClick
+        />
       </Box>
 
       {/* Bottom Navigation */}

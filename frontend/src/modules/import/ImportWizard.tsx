@@ -335,34 +335,8 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
   // ---- Step-specific handlers ----
 
   // Opening selection
-  const toggleOpening = useCallback((openingNumber: string) => {
-    setSelectedOpenings((prev) => {
-      const next = new Set(prev);
-      if (next.has(openingNumber)) next.delete(openingNumber);
-      else next.add(openingNumber);
-      return next;
-    });
-  }, []);
-
-  const selectAllOpenings = useCallback(() => {
-    setSelectedOpenings(new Set(openings.map((o) => o.opening_number)));
-  }, [openings]);
-
-  const deselectAllOpenings = useCallback(() => {
-    setSelectedOpenings(new Set());
-  }, []);
-
-  const toggleOpeningGroup = useCallback((openingNumbers: string[]) => {
-    setSelectedOpenings((prev) => {
-      const next = new Set(prev);
-      const allSelected = openingNumbers.every((n) => next.has(n));
-      if (allSelected) {
-        for (const n of openingNumbers) next.delete(n);
-      } else {
-        for (const n of openingNumbers) next.add(n);
-      }
-      return next;
-    });
+  const handleOpeningSelectionChange = useCallback((selected: Set<string>) => {
+    setSelectedOpenings(selected);
   }, []);
 
   // Vendor PO info
@@ -790,10 +764,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
               openings={openings}
               selectedOpenings={selectedOpenings}
               hardwareCountByOpening={hardwareCountByOpening}
-              onToggleOpening={toggleOpening}
-              onSelectAll={selectAllOpenings}
-              onDeselectAll={deselectAllOpenings}
-              onToggleGroup={toggleOpeningGroup}
+              onSelectionChange={handleOpeningSelectionChange}
               canProceed={canProceedStep2}
               onNext={handleNext}
               onBack={handleBack}
