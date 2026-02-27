@@ -13,7 +13,7 @@ class PackingSlip(Base):
     __table_args__ = (Index("ix_packing_slips_project", "project_id"),)
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    packing_slip_number: Mapped[str] = mapped_column(String(50), nullable=False, unique=True, index=True)
+    packing_slip_number: Mapped[str] = mapped_column(String(50), nullable=False, unique=True)
     project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
     shipped_by: Mapped[str] = mapped_column(String, nullable=False)
     shipped_at: Mapped[datetime] = mapped_column(nullable=False)

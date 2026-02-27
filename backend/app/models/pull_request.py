@@ -22,7 +22,7 @@ class PullRequest(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    request_number: Mapped[str] = mapped_column(String(50), nullable=False, unique=True, index=True)
+    request_number: Mapped[str] = mapped_column(String(50), nullable=False, unique=True)
     project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
     source: Mapped[PullRequestSource] = mapped_column(
         Enum(PullRequestSource, name="pull_request_source", create_constraint=True),

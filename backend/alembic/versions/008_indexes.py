@@ -22,7 +22,7 @@ def upgrade() -> None:
     op.create_index("ix_hardware_items_state", "hardware_items", ["state"])
     op.create_index("ix_hardware_items_po_line_item", "hardware_items", ["po_line_item_id"])
     op.create_index("ix_purchase_orders_project_status", "purchase_orders", ["project_id", "status"])
-    op.create_index("ix_purchase_orders_po_number", "purchase_orders", ["po_number"])
+    op.create_index("ix_purchase_orders_po_number", "purchase_orders", ["po_number"], unique=True)
     op.create_index("ix_po_line_items_po_id", "po_line_items", ["po_id"])
     op.create_index("ix_receive_records_po_id", "receive_records", ["po_id"])
     op.create_index("ix_receive_line_items_receive_record", "receive_line_items", ["receive_record_id"])
