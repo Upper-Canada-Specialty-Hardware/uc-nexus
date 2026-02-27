@@ -350,7 +350,7 @@ def finalize_import_session(
 
                 unit_cost = hi_data.get("unit_cost") or 0.0
                 class_key = (hi_data["hardware_category"], hi_data["product_code"], unit_cost)
-                classification = classification_map.get(class_key, Classification.SITE_HARDWARE)
+                classification = classification_map.get(class_key)
 
                 # Create HardwareItem
                 hw_item = HardwareItemModel(
