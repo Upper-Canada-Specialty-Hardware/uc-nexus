@@ -114,8 +114,8 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
   // Action step state
   const [selectedVendors, setSelectedVendors] = useState<Set<string>>(new Set());
   const [vendorPOInfo, setVendorPOInfo] = useState<Map<string, { poNumber: string; vendorContact: string }>>(new Map());
-  const [classifications, setClassifications] = useState<Map<string, string>>(new Map());
   const [unitCostOverrides, setUnitCostOverrides] = useState<Map<string, number>>(new Map());
+  const [classifications, setClassifications] = useState<Map<string, string>>(new Map());
   const [sarRequestNumber, setSarRequestNumber] = useState('');
   const [shippingPRDrafts, setShippingPRDrafts] = useState<ShippingPRDraft[]>([]);
 
@@ -457,9 +457,11 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
             .filter((hi) => selectedVendors.has(hi.vendor_no ?? '(No Vendor)'))
             .map((hi) => {
               const vendor = hi.vendor_no ?? '(No Vendor)';
-              const key = `${vendor}|${hi.product_code}|${hi.hardware_category}`;
-              const override = unitCostOverrides.get(key);
-              const item = override !== undefined ? { ...hi, unit_cost: override } : hi;
+              const overrideKey = `${vendor}|${hi.product_code}|${hi.hardware_category}`;
+              const overriddenCost = unitCostOverrides.get(overrideKey);
+              const item = overriddenCost !== undefined
+                ? { ...hi, unit_cost: overriddenCost }
+                : hi;
               return snakeToCamel(item as unknown as Record<string, unknown>);
             })
         : null,

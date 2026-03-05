@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { Box, Button, Checkbox, FormControlLabel, Paper, TextField, Typography } from '@mui/material';
+import { Box, Button, Checkbox, FormControlLabel, InputAdornment, Paper, TextField, Typography } from '@mui/material';
 import type { ParsedHardwareItem } from '../../types/hardwareSchedule';
 
 // ---- Aggregation Types ----
@@ -21,7 +21,7 @@ interface PurchaseOrdersStepProps {
   unitCostOverrides: Map<string, number>;
   onToggleVendor: (vendor: string) => void;
   onUpdateVendorPO: (vendorNo: string, field: 'poNumber' | 'vendorContact', value: string) => void;
-  onUpdateUnitCost: (vendor: string, productCode: string, hardwareCategory: string, value: number) => void;
+  onUpdateUnitCost: (vendor: string, productCode: string, hardwareCategory: string, newCost: number) => void;
   onNext: () => void;
   onBack: () => void;
 }
@@ -38,18 +38,18 @@ function aggregateLineItems(
   for (const item of items) {
     const key = `${item.product_code}|${item.hardware_category}`;
     const overrideKey = `${vendor}|${item.product_code}|${item.hardware_category}`;
-    const unitCost = overrides.get(overrideKey) ?? item.unit_cost ?? 0;
+    const cost = overrides.get(overrideKey) ?? item.unit_cost ?? 0;
     const existing = groups.get(key);
     if (existing) {
       existing.totalQuantity += item.item_quantity;
-      existing.totalCost += unitCost * item.item_quantity;
+      existing.totalCost = existing.unitCost * existing.totalQuantity;
     } else {
       groups.set(key, {
         productCode: item.product_code,
         hardwareCategory: item.hardware_category,
         totalQuantity: item.item_quantity,
-        unitCost,
-        totalCost: unitCost * item.item_quantity,
+        unitCost: cost,
+        totalCost: cost * item.item_quantity,
       });
     }
   }
@@ -100,10 +100,7 @@ export default function PurchaseOrdersStep({
       {sortedVendors.map(([vendor, items]) => {
         const info = vendorPOInfo.get(vendor) ?? { poNumber: '', vendorContact: '' };
         const aggregated = aggregateLineItems(items, vendor, unitCostOverrides);
-        const poTotal = aggregated.reduce(
-          (sum, line) => sum + line.unitCost * line.totalQuantity,
-          0,
-        );
+        const poTotal = aggregated.reduce((sum, line) => sum + line.totalCost, 0);
         const isSelected = selectedVendors.has(vendor);
 
         return (
@@ -199,14 +196,23 @@ export default function PurchaseOrdersStep({
                     </Box>
                     <Box sx={{ bgcolor: rowBg, p: 0.75, textAlign: 'right' }}>
                       <TextField
-                        variant="standard"
                         size="small"
                         type="number"
                         disabled={!isSelected}
                         value={line.unitCost}
-                        onChange={(e) => onUpdateUnitCost(vendor, line.productCode, line.hardwareCategory, parseFloat(e.target.value) || 0)}
-                        inputProps={{ min: 0, step: 0.01, style: { textAlign: 'right' } }}
-                        sx={{ width: 90 }}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          if (!isNaN(val) && val >= 0) {
+                            onUpdateUnitCost(vendor, line.productCode, line.hardwareCategory, val);
+                          }
+                        }}
+                        slotProps={{
+                          input: {
+                            startAdornment: <InputAdornment position="start">$</InputAdornment>,
+                          },
+                          htmlInput: { min: 0, step: 0.01 },
+                        }}
+                        sx={{ width: 120 }}
                       />
                     </Box>
                     <Box sx={{ bgcolor: rowBg, p: 0.75, textAlign: 'right' }}>
