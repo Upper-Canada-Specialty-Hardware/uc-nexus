@@ -356,23 +356,21 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     });
   }, []);
 
-  // Unit cost overrides
-  const handleUpdateUnitCost = useCallback(
-    (vendor: string, productCode: string, hardwareCategory: string, newCost: number) => {
-      setUnitCostOverrides(prev => {
-        const next = new Map(prev);
-        next.set(`${vendor}|${productCode}|${hardwareCategory}`, newCost);
-        return next;
-      });
-    }, []
-  );
-
   // Vendor PO info
   const updateVendorPO = useCallback((vendorNo: string, field: 'poNumber' | 'vendorContact', value: string) => {
     setVendorPOInfo((prev) => {
       const next = new Map(prev);
       const existing = next.get(vendorNo) ?? { poNumber: '', vendorContact: '' };
       next.set(vendorNo, { ...existing, [field]: value });
+      return next;
+    });
+  }, []);
+
+  // Unit cost overrides
+  const updateUnitCost = useCallback((vendor: string, productCode: string, hardwareCategory: string, value: number) => {
+    setUnitCostOverrides((prev) => {
+      const next = new Map(prev);
+      next.set(`${vendor}|${productCode}|${hardwareCategory}`, value);
       return next;
     });
   }, []);
@@ -887,7 +885,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
               unitCostOverrides={unitCostOverrides}
               onToggleVendor={toggleVendor}
               onUpdateVendorPO={updateVendorPO}
-              onUpdateUnitCost={handleUpdateUnitCost}
+              onUpdateUnitCost={updateUnitCost}
               onNext={handleNext}
               onBack={handleBack}
             />
