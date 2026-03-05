@@ -42,7 +42,7 @@ function aggregateLineItems(
     const existing = groups.get(key);
     if (existing) {
       existing.totalQuantity += item.item_quantity;
-      existing.totalCost = existing.unitCost * (existing.totalQuantity);
+      existing.totalCost = existing.unitCost * existing.totalQuantity;
     } else {
       groups.set(key, {
         productCode: item.product_code,
@@ -198,6 +198,7 @@ export default function PurchaseOrdersStep({
                       <TextField
                         size="small"
                         type="number"
+                        disabled={!isSelected}
                         value={line.unitCost}
                         onChange={(e) => {
                           const val = parseFloat(e.target.value);
