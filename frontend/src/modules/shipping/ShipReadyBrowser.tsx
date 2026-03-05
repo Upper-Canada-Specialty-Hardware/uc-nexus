@@ -27,9 +27,9 @@ interface OpeningItem {
   quantity: number;
   assemblyCompletedAt: string | null;
   state: string;
-  shelf: string | null;
-  column: string | null;
-  row: string | null;
+  aisle: string | null;
+  bay: string | null;
+  bin: string | null;
   createdAt: string;
   updatedAt: string;
   installedHardware: InstalledHardware[];

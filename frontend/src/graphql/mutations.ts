@@ -106,9 +106,9 @@ export const ADJUST_INVENTORY_QUANTITY = gql`
       hardwareCategory
       productCode
       quantity
-      shelf
-      column
-      row
+      aisle
+      bay
+      bin
       receivedAt
       createdAt
       updatedAt
@@ -117,9 +117,9 @@ export const ADJUST_INVENTORY_QUANTITY = gql`
 `;
 
 export const MOVE_INVENTORY_LOCATION = gql`
-  mutation MoveInventoryLocation($inventoryLocationId: ID!, $newShelf: String!, $newColumn: String!, $newRow: String!) {
-    moveInventoryLocation(inventoryLocationId: $inventoryLocationId, newShelf: $newShelf, newColumn: $newColumn, newRow: $newRow) {
-      id projectId poLineItemId receiveLineItemId hardwareCategory productCode quantity shelf column row receivedAt createdAt updatedAt
+  mutation MoveInventoryLocation($inventoryLocationId: ID!, $newAisle: String!, $newBay: String!, $newBin: String!) {
+    moveInventoryLocation(inventoryLocationId: $inventoryLocationId, newAisle: $newAisle, newBay: $newBay, newBin: $newBin) {
+      id projectId poLineItemId receiveLineItemId hardwareCategory productCode quantity aisle bay bin receivedAt createdAt updatedAt
     }
   }
 `;
@@ -127,23 +127,23 @@ export const MOVE_INVENTORY_LOCATION = gql`
 export const MARK_INVENTORY_UNLOCATED = gql`
   mutation MarkInventoryUnlocated($inventoryLocationId: ID!) {
     markInventoryUnlocated(inventoryLocationId: $inventoryLocationId) {
-      id projectId poLineItemId receiveLineItemId hardwareCategory productCode quantity shelf column row receivedAt createdAt updatedAt
+      id projectId poLineItemId receiveLineItemId hardwareCategory productCode quantity aisle bay bin receivedAt createdAt updatedAt
     }
   }
 `;
 
 export const ASSIGN_INVENTORY_LOCATION = gql`
-  mutation AssignInventoryLocation($inventoryLocationId: ID!, $shelf: String!, $column: String!, $row: String!) {
-    assignInventoryLocation(inventoryLocationId: $inventoryLocationId, shelf: $shelf, column: $column, row: $row) {
-      id projectId poLineItemId receiveLineItemId hardwareCategory productCode quantity shelf column row receivedAt createdAt updatedAt
+  mutation AssignInventoryLocation($inventoryLocationId: ID!, $aisle: String!, $bay: String!, $bin: String!) {
+    assignInventoryLocation(inventoryLocationId: $inventoryLocationId, aisle: $aisle, bay: $bay, bin: $bin) {
+      id projectId poLineItemId receiveLineItemId hardwareCategory productCode quantity aisle bay bin receivedAt createdAt updatedAt
     }
   }
 `;
 
 export const MOVE_OPENING_ITEM_LOCATION = gql`
-  mutation MoveOpeningItemLocation($openingItemId: ID!, $shelf: String!, $column: String!, $row: String!) {
-    moveOpeningItemLocation(openingItemId: $openingItemId, shelf: $shelf, column: $column, row: $row) {
-      id projectId openingId openingNumber building floor location quantity assemblyCompletedAt state shelf column row createdAt updatedAt
+  mutation MoveOpeningItemLocation($openingItemId: ID!, $aisle: String!, $bay: String!, $bin: String!) {
+    moveOpeningItemLocation(openingItemId: $openingItemId, aisle: $aisle, bay: $bay, bin: $bin) {
+      id projectId openingId openingNumber building floor location quantity assemblyCompletedAt state aisle bay bin createdAt updatedAt
       installedHardware { id openingItemId productCode hardwareCategory quantity }
     }
   }
@@ -152,16 +152,16 @@ export const MOVE_OPENING_ITEM_LOCATION = gql`
 export const MARK_OPENING_ITEM_UNLOCATED = gql`
   mutation MarkOpeningItemUnlocated($openingItemId: ID!) {
     markOpeningItemUnlocated(openingItemId: $openingItemId) {
-      id projectId openingId openingNumber building floor location quantity assemblyCompletedAt state shelf column row createdAt updatedAt
+      id projectId openingId openingNumber building floor location quantity assemblyCompletedAt state aisle bay bin createdAt updatedAt
       installedHardware { id openingItemId productCode hardwareCategory quantity }
     }
   }
 `;
 
 export const ASSIGN_OPENING_ITEM_LOCATION = gql`
-  mutation AssignOpeningItemLocation($openingItemId: ID!, $shelf: String!, $column: String!, $row: String!) {
-    assignOpeningItemLocation(openingItemId: $openingItemId, shelf: $shelf, column: $column, row: $row) {
-      id projectId openingId openingNumber building floor location quantity assemblyCompletedAt state shelf column row createdAt updatedAt
+  mutation AssignOpeningItemLocation($openingItemId: ID!, $aisle: String!, $bay: String!, $bin: String!) {
+    assignOpeningItemLocation(openingItemId: $openingItemId, aisle: $aisle, bay: $bay, bin: $bin) {
+      id projectId openingId openingNumber building floor location quantity assemblyCompletedAt state aisle bay bin createdAt updatedAt
       installedHardware { id openingItemId productCode hardwareCategory quantity }
     }
   }
@@ -305,9 +305,9 @@ export const COMPLETE_OPENING = gql`
       quantity
       assemblyCompletedAt
       state
-      shelf
-      column
-      row
+      aisle
+      bay
+      bin
       createdAt
       updatedAt
       installedHardware {

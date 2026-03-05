@@ -114,6 +114,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
   // Action step state
   const [selectedVendors, setSelectedVendors] = useState<Set<string>>(new Set());
   const [vendorPOInfo, setVendorPOInfo] = useState<Map<string, { poNumber: string; vendorContact: string }>>(new Map());
+  const [unitCostOverrides, setUnitCostOverrides] = useState<Map<string, number>>(new Map());
   const [classifications, setClassifications] = useState<Map<string, string>>(new Map());
   const [vendorAliases, setVendorAliases] = useState<Map<string, string>>(new Map());
   const [sarRequestNumber, setSarRequestNumber] = useState('');
@@ -366,6 +367,15 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     });
   }, []);
 
+  // Unit cost overrides
+  const updateUnitCost = useCallback((vendor: string, productCode: string, hardwareCategory: string, value: number) => {
+    setUnitCostOverrides((prev) => {
+      const next = new Map(prev);
+      next.set(`${vendor}|${productCode}|${hardwareCategory}`, value);
+      return next;
+    });
+  }, []);
+
   // Classification (batch-capable)
   const classifyBatch = useCallback((keys: string[], value: string) => {
     setClassifications((prev) => {
@@ -459,7 +469,15 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
       hardwareItems: purpose === 'po'
         ? filteredHardwareItems
             .filter((hi) => selectedVendors.has(hi.vendor_no ?? '(No Vendor)'))
-            .map((hi) => snakeToCamel(hi as unknown as Record<string, unknown>))
+            .map((hi) => {
+              const vendor = hi.vendor_no ?? '(No Vendor)';
+              const overrideKey = `${vendor}|${hi.product_code}|${hi.hardware_category}`;
+              const overriddenCost = unitCostOverrides.get(overrideKey);
+              const item = overriddenCost !== undefined
+                ? { ...hi, unit_cost: overriddenCost }
+                : hi;
+              return snakeToCamel(item as unknown as Record<string, unknown>);
+            })
         : null,
       poDrafts: purpose === 'po'
         ? Array.from(vendorGroups.entries())
@@ -539,7 +557,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
             .filter(Boolean)
         : null,
     };
-  }, [parsed, selectedOpenings, purpose, vendorGroups, vendorPOInfo, selectedVendors, vendorAliases, classifications, shippingPRDrafts, sarRequestNumber]);
+  }, [parsed, selectedOpenings, purpose, vendorGroups, vendorPOInfo, selectedVendors, unitCostOverrides, vendorAliases, classifications, shippingPRDrafts, sarRequestNumber]);
 
   const handleFinalize = useCallback(async () => {
     setConfirmOpen(false);
@@ -600,6 +618,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     setSelectedOpenings(new Set());
     setSelectedVendors(new Set());
     setVendorPOInfo(new Map());
+    setUnitCostOverrides(new Map());
     setVendorAliases(new Map());
     setClassifications(new Map());
     setSarRequestNumber('');
@@ -896,9 +915,11 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
               vendorGroups={vendorGroups}
               vendorPOInfo={vendorPOInfo}
               selectedVendors={selectedVendors}
+              unitCostOverrides={unitCostOverrides}
               vendorAliases={vendorAliases}
               onToggleVendor={toggleVendor}
               onUpdateVendorPO={updateVendorPO}
+              onUpdateUnitCost={updateUnitCost}
               onUpdateVendorAlias={updateVendorAlias}
               onNext={handleNext}
               onBack={handleBack}

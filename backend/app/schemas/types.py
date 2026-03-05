@@ -155,9 +155,9 @@ class InventoryLocation:
     hardware_category: str
     product_code: str
     quantity: int
-    shelf: str | None
-    column: str | None
-    row: str | None
+    aisle: str | None
+    bay: str | None
+    bin: str | None
     received_at: datetime
     created_at: datetime
     updated_at: datetime
@@ -184,9 +184,9 @@ class OpeningItem:
     quantity: int
     assembly_completed_at: datetime
     state: OpeningItemState
-    shelf: str | None
-    column: str | None
-    row: str | None
+    aisle: str | None
+    bay: str | None
+    bin: str | None
     created_at: datetime
     updated_at: datetime
     installed_hardware: list[OpeningItemHardware]

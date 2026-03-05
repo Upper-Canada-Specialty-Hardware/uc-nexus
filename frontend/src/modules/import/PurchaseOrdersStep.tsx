@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { Box, Button, Checkbox, FormControlLabel, Paper, TextField, Typography } from '@mui/material';
+import { Box, Button, Checkbox, FormControlLabel, InputAdornment, Paper, TextField, Typography } from '@mui/material';
 import type { ParsedHardwareItem } from '../../types/hardwareSchedule';
 
 // ---- Aggregation Types ----
@@ -18,9 +18,11 @@ interface PurchaseOrdersStepProps {
   vendorGroups: Map<string, ParsedHardwareItem[]>;
   vendorPOInfo: Map<string, { poNumber: string; vendorContact: string }>;
   selectedVendors: Set<string>;
+  unitCostOverrides: Map<string, number>;
   vendorAliases: Map<string, string>;
   onToggleVendor: (vendor: string) => void;
   onUpdateVendorPO: (vendorNo: string, field: 'poNumber' | 'vendorContact', value: string) => void;
+  onUpdateUnitCost: (vendor: string, productCode: string, hardwareCategory: string, newCost: number) => void;
   onUpdateVendorAlias: (key: string, alias: string) => void;
   onNext: () => void;
   onBack: () => void;
@@ -28,22 +30,28 @@ interface PurchaseOrdersStepProps {
 
 // ---- Helpers ----
 
-function aggregateLineItems(items: ParsedHardwareItem[]): AggregatedLineItem[] {
+function aggregateLineItems(
+  items: ParsedHardwareItem[],
+  vendor: string,
+  overrides: Map<string, number>,
+): AggregatedLineItem[] {
   const groups = new Map<string, AggregatedLineItem>();
 
   for (const item of items) {
     const key = `${item.product_code}|${item.hardware_category}`;
+    const overrideKey = `${vendor}|${item.product_code}|${item.hardware_category}`;
+    const cost = overrides.get(overrideKey) ?? item.unit_cost ?? 0;
     const existing = groups.get(key);
     if (existing) {
       existing.totalQuantity += item.item_quantity;
-      existing.totalCost += (item.unit_cost ?? 0) * item.item_quantity;
+      existing.totalCost = existing.unitCost * existing.totalQuantity;
     } else {
       groups.set(key, {
         productCode: item.product_code,
         hardwareCategory: item.hardware_category,
         totalQuantity: item.item_quantity,
-        unitCost: item.unit_cost ?? 0,
-        totalCost: (item.unit_cost ?? 0) * item.item_quantity,
+        unitCost: cost,
+        totalCost: cost * item.item_quantity,
       });
     }
   }
@@ -61,9 +69,11 @@ export default function PurchaseOrdersStep({
   vendorGroups,
   vendorPOInfo,
   selectedVendors,
+  unitCostOverrides,
   vendorAliases,
   onToggleVendor,
   onUpdateVendorPO,
+  onUpdateUnitCost,
   onUpdateVendorAlias,
   onNext,
   onBack,
@@ -93,11 +103,8 @@ export default function PurchaseOrdersStep({
 
       {sortedVendors.map(([vendor, items]) => {
         const info = vendorPOInfo.get(vendor) ?? { poNumber: '', vendorContact: '' };
-        const aggregated = aggregateLineItems(items);
-        const poTotal = items.reduce(
-          (sum, hi) => sum + (hi.unit_cost ?? 0) * hi.item_quantity,
-          0,
-        );
+        const aggregated = aggregateLineItems(items, vendor, unitCostOverrides);
+        const poTotal = aggregated.reduce((sum, line) => sum + line.totalCost, 0);
         const isSelected = selectedVendors.has(vendor);
 
         return (
@@ -198,7 +205,25 @@ export default function PurchaseOrdersStep({
                       <Typography variant="body2">{line.totalQuantity}</Typography>
                     </Box>
                     <Box sx={{ bgcolor: rowBg, p: 0.75, textAlign: 'right' }}>
-                      <Typography variant="body2">${line.unitCost.toFixed(2)}</Typography>
+                      <TextField
+                        size="small"
+                        type="number"
+                        disabled={!isSelected}
+                        value={line.unitCost}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          if (!isNaN(val) && val >= 0) {
+                            onUpdateUnitCost(vendor, line.productCode, line.hardwareCategory, val);
+                          }
+                        }}
+                        slotProps={{
+                          input: {
+                            startAdornment: <InputAdornment position="start">$</InputAdornment>,
+                          },
+                          htmlInput: { min: 0, step: 0.01 },
+                        }}
+                        sx={{ width: 120 }}
+                      />
                     </Box>
                     <Box sx={{ bgcolor: rowBg, p: 0.75, textAlign: 'right' }}>
                       <Typography variant="body2">${line.totalCost.toFixed(2)}</Typography>

@@ -86,9 +86,9 @@ export const GET_INVENTORY_HIERARCHY = gql`
           hardwareCategory
           productCode
           quantity
-          shelf
-          column
-          row
+          aisle
+          bay
+          bin
           receivedAt
           createdAt
           updatedAt
@@ -104,7 +104,7 @@ export const GET_INVENTORY_ITEMS = gql`
       inventoryLocation {
         id projectId poLineItemId receiveLineItemId
         hardwareCategory productCode quantity
-        shelf column row receivedAt createdAt updatedAt
+        aisle bay bin receivedAt createdAt updatedAt
       }
       poNumber
       classification
@@ -118,7 +118,7 @@ export const GET_OPENING_ITEMS = gql`
       id projectId openingId openingNumber
       building floor location quantity
       assemblyCompletedAt state
-      shelf column row
+      aisle bay bin
       createdAt updatedAt
       installedHardware {
         id openingItemId productCode hardwareCategory quantity
@@ -134,7 +134,7 @@ export const GET_OPENING_ITEM_DETAILS = gql`
         id projectId openingId openingNumber
         building floor location quantity
         assemblyCompletedAt state
-        shelf column row
+        aisle bay bin
         createdAt updatedAt
         installedHardware {
           id openingItemId productCode hardwareCategory quantity
@@ -316,7 +316,7 @@ export const GET_SHIP_READY_ITEMS = gql`
     shipReadyItems(projectId: $projectId) {
       openingItems {
         id projectId openingId openingNumber building floor location quantity
-        assemblyCompletedAt state shelf column row createdAt updatedAt
+        assemblyCompletedAt state aisle bay bin createdAt updatedAt
         installedHardware { id openingItemId productCode hardwareCategory quantity }
       }
       looseItems {

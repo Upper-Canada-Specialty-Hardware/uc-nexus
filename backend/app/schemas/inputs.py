@@ -153,9 +153,9 @@ class ReceiveLineItemInput:
 
 @strawberry.input
 class LocationInput:
-    shelf: str
-    column: str
-    row: str
+    aisle: str
+    bay: str
+    bin: str
     quantity: int
 
 
@@ -193,6 +193,6 @@ class AssignOpeningsInput:
 @strawberry.input
 class CompleteOpeningInput:
     opening_id: strawberry.ID
-    shelf: str | None = None
-    column: str | None = None
-    row: str | None = None
+    aisle: str | None = None
+    bay: str | None = None
+    bin: str | None = None

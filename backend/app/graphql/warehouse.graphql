@@ -28,9 +28,9 @@ type InventoryLocation {
   hardware_category: String!
   product_code: String!
   quantity: Int!
-  shelf: String
-  column: String
-  row: String
+  aisle: String
+  bay: String
+  bin: String
   received_at: DateTime!
   created_at: DateTime!
   updated_at: DateTime!
@@ -65,9 +65,9 @@ type OpeningItem {
   quantity: Int!
   assembly_completed_at: DateTime!
   state: OpeningItemState!
-  shelf: String
-  column: String
-  row: String
+  aisle: String
+  bay: String
+  bin: String
   created_at: DateTime!
   updated_at: DateTime!
   installed_hardware: [OpeningItemHardware!]!
@@ -180,9 +180,9 @@ input ReceiveLineItemInput {
 }
 
 input LocationInput {
-  shelf: String!
-  column: String!
-  row: String!
+  aisle: String!
+  bay: String!
+  bin: String!
   quantity: Int!
 }
 
@@ -221,11 +221,11 @@ type Mutation {
   completePullRequest(id: ID!): PullRequest!
   confirmShipment(input: ConfirmShipmentInput!): PackingSlip!
   adjustInventoryQuantity(inventoryLocationId: ID!, adjustment: Int!, reason: String!): InventoryLocation!
-  moveInventoryLocation(inventoryLocationId: ID!, newShelf: String!, newColumn: String!, newRow: String!): InventoryLocation!
+  moveInventoryLocation(inventoryLocationId: ID!, newAisle: String!, newBay: String!, newBin: String!): InventoryLocation!
   markInventoryUnlocated(inventoryLocationId: ID!): InventoryLocation!
-  assignInventoryLocation(inventoryLocationId: ID!, shelf: String!, column: String!, row: String!): InventoryLocation!
-  moveOpeningItemLocation(openingItemId: ID!, shelf: String!, column: String!, row: String!): OpeningItem!
+  assignInventoryLocation(inventoryLocationId: ID!, aisle: String!, bay: String!, bin: String!): InventoryLocation!
+  moveOpeningItemLocation(openingItemId: ID!, aisle: String!, bay: String!, bin: String!): OpeningItem!
   markOpeningItemUnlocated(openingItemId: ID!): OpeningItem!
-  assignOpeningItemLocation(openingItemId: ID!, shelf: String!, column: String!, row: String!): OpeningItem!
+  assignOpeningItemLocation(openingItemId: ID!, aisle: String!, bay: String!, bin: String!): OpeningItem!
   markNotificationAsRead(id: ID!): Notification!
 }
