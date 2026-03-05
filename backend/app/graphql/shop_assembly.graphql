@@ -64,9 +64,9 @@ input AssignOpeningsInput {
 
 input CompleteOpeningInput {
   opening_id: ID!
-  shelf: String
-  column: String
-  row: String
+  aisle: String
+  bay: String
+  bin: String
 }
 
 type Query {

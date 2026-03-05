@@ -165,9 +165,9 @@ def get_opening_item_details(session: Session, oi_id: uuid.UUID) -> OpeningItemM
 # ---------------------------------------------------------------------------
 
 
-def _validate_location_fields(shelf: str, column: str, row: str) -> None:
-    """Validate shelf, column, row are each 1-20 characters."""
-    for field_name, value in [("shelf", shelf), ("column", column), ("row", row)]:
+def _validate_location_fields(aisle: str, bay: str, bin: str) -> None:
+    """Validate aisle, bay, bin are each 1-20 characters."""
+    for field_name, value in [("aisle", aisle), ("bay", bay), ("bin", bin)]:
         if not value or len(value) < 1 or len(value) > 20:
             raise ValidationError(f"{field_name} must be 1-20 characters", field=field_name)
 
@@ -207,95 +207,93 @@ def adjust_inventory_quantity(
 
 
 def move_inventory_location(
-    session: Session, inv_id: uuid.UUID, new_shelf: str, new_column: str, new_row: str
+    session: Session, inv_id: uuid.UUID, new_aisle: str, new_bay: str, new_bin: str
 ) -> InventoryLocationModel:
-    """Move an InventoryLocation to a new shelf/column/row."""
+    """Move an InventoryLocation to a new aisle/bay/bin."""
     il = session.get(InventoryLocationModel, inv_id)
     if il is None:
         raise NotFoundError(f"Inventory location {inv_id} not found")
 
-    _validate_location_fields(new_shelf, new_column, new_row)
+    _validate_location_fields(new_aisle, new_bay, new_bin)
 
-    il.shelf = new_shelf
-    il.column = new_column
-    il.row = new_row
+    il.aisle = new_aisle
+    il.bay = new_bay
+    il.bin = new_bin
 
     return il
 
 
 def mark_inventory_unlocated(session: Session, inv_id: uuid.UUID) -> InventoryLocationModel:
-    """Clear the shelf/column/row on an InventoryLocation."""
+    """Clear the aisle/bay/bin on an InventoryLocation."""
     il = session.get(InventoryLocationModel, inv_id)
     if il is None:
         raise NotFoundError(f"Inventory location {inv_id} not found")
 
-    il.shelf = None
-    il.column = None
-    il.row = None
+    il.aisle = None
+    il.bay = None
+    il.bin = None
 
     return il
 
 
 def assign_inventory_location(
-    session: Session, inv_id: uuid.UUID, shelf: str, column: str, row: str
+    session: Session, inv_id: uuid.UUID, aisle: str, bay: str, bin: str
 ) -> InventoryLocationModel:
-    """Assign shelf/column/row to an InventoryLocation."""
+    """Assign aisle/bay/bin to an InventoryLocation."""
     il = session.get(InventoryLocationModel, inv_id)
     if il is None:
         raise NotFoundError(f"Inventory location {inv_id} not found")
 
-    _validate_location_fields(shelf, column, row)
+    _validate_location_fields(aisle, bay, bin)
 
-    il.shelf = shelf
-    il.column = column
-    il.row = row
+    il.aisle = aisle
+    il.bay = bay
+    il.bin = bin
 
     return il
 
 
-def move_opening_item_location(
-    session: Session, oi_id: uuid.UUID, shelf: str, column: str, row: str
-) -> OpeningItemModel:
-    """Move an OpeningItem to a new shelf/column/row."""
+def move_opening_item_location(session: Session, oi_id: uuid.UUID, aisle: str, bay: str, bin: str) -> OpeningItemModel:
+    """Move an OpeningItem to a new aisle/bay/bin."""
     oi = session.get(OpeningItemModel, oi_id)
     if oi is None:
         raise NotFoundError(f"Opening item {oi_id} not found")
 
-    _validate_location_fields(shelf, column, row)
+    _validate_location_fields(aisle, bay, bin)
 
-    oi.shelf = shelf
-    oi.column = column
-    oi.row = row
+    oi.aisle = aisle
+    oi.bay = bay
+    oi.bin = bin
 
     return oi
 
 
 def mark_opening_item_unlocated(session: Session, oi_id: uuid.UUID) -> OpeningItemModel:
-    """Clear the shelf/column/row on an OpeningItem."""
+    """Clear the aisle/bay/bin on an OpeningItem."""
     oi = session.get(OpeningItemModel, oi_id)
     if oi is None:
         raise NotFoundError(f"Opening item {oi_id} not found")
 
-    oi.shelf = None
-    oi.column = None
-    oi.row = None
+    oi.aisle = None
+    oi.bay = None
+    oi.bin = None
 
     return oi
 
 
 def assign_opening_item_location(
-    session: Session, oi_id: uuid.UUID, shelf: str, column: str, row: str
+    session: Session, oi_id: uuid.UUID, aisle: str, bay: str, bin: str
 ) -> OpeningItemModel:
-    """Assign shelf/column/row to an OpeningItem."""
+    """Assign aisle/bay/bin to an OpeningItem."""
     oi = session.get(OpeningItemModel, oi_id)
     if oi is None:
         raise NotFoundError(f"Opening item {oi_id} not found")
 
-    _validate_location_fields(shelf, column, row)
+    _validate_location_fields(aisle, bay, bin)
 
-    oi.shelf = shelf
-    oi.column = column
-    oi.row = row
+    oi.aisle = aisle
+    oi.bay = bay
+    oi.bin = bin
 
     return oi
 
@@ -322,7 +320,7 @@ def create_receive(
         line_items_input: list of dicts, each with:
             - po_line_item_id: uuid.UUID
             - quantity_received: int
-            - locations: list[dict] each with shelf, column, row, quantity
+            - locations: list[dict] each with aisle, bay, bin, quantity
     Returns:
         The created ReceiveRecord with line_items loaded.
     """
@@ -374,7 +372,7 @@ def create_receive(
         for loc in locations:
             if loc["quantity"] < 1:
                 raise ValidationError("Location quantity must be >= 1", field="quantity")
-            _validate_location_fields(loc["shelf"], loc["column"], loc["row"])
+            _validate_location_fields(loc["aisle"], loc["bay"], loc["bin"])
 
     # 5. Execute in single transaction
     now = datetime.utcnow()
@@ -408,9 +406,9 @@ def create_receive(
                 hardware_category=poli.hardware_category,
                 product_code=poli.product_code,
                 quantity=loc["quantity"],
-                shelf=loc["shelf"],
-                column=loc["column"],
-                row=loc["row"],
+                aisle=loc["aisle"],
+                bay=loc["bay"],
+                bin=loc["bin"],
                 received_at=receive_record.received_at,
             )
             session.add(inv_loc)

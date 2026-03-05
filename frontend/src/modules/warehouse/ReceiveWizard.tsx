@@ -83,9 +83,9 @@ interface PODetails {
 }
 
 interface LocationRow {
-  shelf: string;
-  column: string;
-  row: string;
+  aisle: string;
+  bay: string;
+  bin: string;
   quantity: number;
 }
 
@@ -284,9 +284,9 @@ export default function ReceiveWizard({ open, onClose }: ReceiveWizardProps) {
       if (!assignment || assignment.locations.length === 0) return false;
       const allFieldsFilled = assignment.locations.every(
         (loc) =>
-          loc.shelf.trim() !== '' &&
-          loc.column.trim() !== '' &&
-          loc.row.trim() !== '' &&
+          loc.aisle.trim() !== '' &&
+          loc.bay.trim() !== '' &&
+          loc.bin.trim() !== '' &&
           loc.quantity >= 1,
       );
       if (!allFieldsFilled) return false;
@@ -306,7 +306,7 @@ export default function ReceiveWizard({ open, onClose }: ReceiveWizardProps) {
       // Initialize location assignments for items being received
       const newAssignments: LocationAssignment[] = lineItemsToReceive.map((li) => ({
         lineItemId: li.id,
-        locations: [{ shelf: '', column: '', row: '', quantity: receiveQuantities[li.id] ?? 0 }],
+        locations: [{ aisle: '', bay: '', bin: '', quantity: receiveQuantities[li.id] ?? 0 }],
       }));
       setLocationAssignments(newAssignments);
       setActiveStep(2);
@@ -341,7 +341,7 @@ export default function ReceiveWizard({ open, onClose }: ReceiveWizardProps) {
         if (a.lineItemId !== lineItemId) return a;
         return {
           ...a,
-          locations: [...a.locations, { shelf: '', column: '', row: '', quantity: 0 }],
+          locations: [...a.locations, { aisle: '', bay: '', bin: '', quantity: 0 }],
         };
       }),
     );
@@ -371,9 +371,9 @@ export default function ReceiveWizard({ open, onClose }: ReceiveWizardProps) {
           poLineItemId: li.id,
           quantityReceived: receiveQuantities[li.id] ?? 0,
           locations: (assignment?.locations ?? []).map((loc) => ({
-            shelf: loc.shelf,
-            column: loc.column,
-            row: loc.row,
+            aisle: loc.aisle,
+            bay: loc.bay,
+            bin: loc.bin,
             quantity: loc.quantity,
           })),
         };
@@ -605,29 +605,29 @@ export default function ReceiveWizard({ open, onClose }: ReceiveWizardProps) {
                         sx={{ display: 'flex', gap: 1, mb: 1, alignItems: 'center' }}
                       >
                         <TextField
-                          label="Shelf"
+                          label="Aisle"
                           size="small"
-                          value={loc.shelf}
+                          value={loc.aisle}
                           onChange={(e) =>
-                            handleLocationChange(li.id, locIndex, 'shelf', e.target.value)
+                            handleLocationChange(li.id, locIndex, 'aisle', e.target.value)
                           }
                           sx={{ flex: 1 }}
                         />
                         <TextField
-                          label="Column"
+                          label="Bay"
                           size="small"
-                          value={loc.column}
+                          value={loc.bay}
                           onChange={(e) =>
-                            handleLocationChange(li.id, locIndex, 'column', e.target.value)
+                            handleLocationChange(li.id, locIndex, 'bay', e.target.value)
                           }
                           sx={{ flex: 1 }}
                         />
                         <TextField
-                          label="Row"
+                          label="Bin"
                           size="small"
-                          value={loc.row}
+                          value={loc.bin}
                           onChange={(e) =>
-                            handleLocationChange(li.id, locIndex, 'row', e.target.value)
+                            handleLocationChange(li.id, locIndex, 'bin', e.target.value)
                           }
                           sx={{ flex: 1 }}
                         />

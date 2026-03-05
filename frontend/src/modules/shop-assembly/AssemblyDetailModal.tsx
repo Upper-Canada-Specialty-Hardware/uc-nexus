@@ -47,9 +47,9 @@ export default function AssemblyDetailModal({
   onCompleted,
 }: AssemblyDetailModalProps) {
   const { showToast } = useToast();
-  const [shelf, setShelf] = useState('');
-  const [column, setColumn] = useState('');
-  const [row, setRow] = useState('');
+  const [aisle, setAisle] = useState('');
+  const [bay, setBay] = useState('');
+  const [bin, setBin] = useState('');
   const [confirmOpen, setConfirmOpen] = useState(false);
 
   const [completeOpening, { loading }] = useMutation(COMPLETE_OPENING, {
@@ -71,7 +71,7 @@ export default function AssemblyDetailModal({
   };
 
   const isValid =
-    validateField(shelf) && validateField(column) && validateField(row);
+    validateField(aisle) && validateField(bay) && validateField(bin);
 
   const handleMarkComplete = useCallback(() => {
     setConfirmOpen(true);
@@ -83,13 +83,13 @@ export default function AssemblyDetailModal({
       variables: {
         input: {
           openingId: opening.id,
-          shelf: shelf || null,
-          column: column || null,
-          row: row || null,
+          aisle: aisle || null,
+          bay: bay || null,
+          bin: bin || null,
         },
       },
     });
-  }, [completeOpening, opening.id, shelf, column, row]);
+  }, [completeOpening, opening.id, aisle, bay, bin]);
   return (
     <>
       <Modal
@@ -161,30 +161,30 @@ export default function AssemblyDetailModal({
 
           <Stack direction='row' spacing={2}>
             <TextField
-              label='Shelf'
+              label='Aisle'
               size='small'
-              value={shelf}
-              onChange={(e) => setShelf(e.target.value)}
-              error={!validateField(shelf)}
-              helperText={!validateField(shelf) ? '1-20 characters' : ''}
+              value={aisle}
+              onChange={(e) => setAisle(e.target.value)}
+              error={!validateField(aisle)}
+              helperText={!validateField(aisle) ? '1-20 characters' : ''}
               inputProps={{ maxLength: 20 }}
             />
             <TextField
-              label='Column'
+              label='Bay'
               size='small'
-              value={column}
-              onChange={(e) => setColumn(e.target.value)}
-              error={!validateField(column)}
-              helperText={!validateField(column) ? '1-20 characters' : ''}
+              value={bay}
+              onChange={(e) => setBay(e.target.value)}
+              error={!validateField(bay)}
+              helperText={!validateField(bay) ? '1-20 characters' : ''}
               inputProps={{ maxLength: 20 }}
             />
             <TextField
-              label='Row'
+              label='Bin'
               size='small'
-              value={row}
-              onChange={(e) => setRow(e.target.value)}
-              error={!validateField(row)}
-              helperText={!validateField(row) ? '1-20 characters' : ''}
+              value={bin}
+              onChange={(e) => setBin(e.target.value)}
+              error={!validateField(bin)}
+              helperText={!validateField(bin) ? '1-20 characters' : ''}
               inputProps={{ maxLength: 20 }}
             />
           </Stack>
