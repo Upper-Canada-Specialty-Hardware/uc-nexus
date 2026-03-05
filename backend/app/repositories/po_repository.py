@@ -180,10 +180,7 @@ def update_line_item_alias(
     vendor_alias: str | None,
 ) -> POLineItem:
     """Update vendor_alias on a POLineItem. Parent PO must not be cancelled or closed."""
-    stmt = (
-        select(POLineItem)
-        .where(POLineItem.id == line_item_id)
-    )
+    stmt = select(POLineItem).where(POLineItem.id == line_item_id)
     poli = session.scalars(stmt).first()
     if poli is None:
         raise NotFoundError(f"PO line item {line_item_id} not found")

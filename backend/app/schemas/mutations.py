@@ -307,13 +307,9 @@ class Mutation:
             return _po_to_type(po)
 
     @strawberry.mutation
-    def update_po_line_item_alias(
-        self, id: strawberry.ID, vendor_alias: str | None = None
-    ) -> POLineItem:
+    def update_po_line_item_alias(self, id: strawberry.ID, vendor_alias: str | None = None) -> POLineItem:
         with SessionLocal() as session:
-            poli = po_repository.update_line_item_alias(
-                session, uuid.UUID(str(id)), vendor_alias
-            )
+            poli = po_repository.update_line_item_alias(session, uuid.UUID(str(id)), vendor_alias)
             session.commit()
             session.refresh(poli)
             return _po_line_item_to_type(poli)
