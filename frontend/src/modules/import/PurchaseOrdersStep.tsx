@@ -18,30 +18,38 @@ interface PurchaseOrdersStepProps {
   vendorGroups: Map<string, ParsedHardwareItem[]>;
   vendorPOInfo: Map<string, { poNumber: string; vendorContact: string }>;
   selectedVendors: Set<string>;
+  unitCostOverrides: Map<string, number>;
   onToggleVendor: (vendor: string) => void;
   onUpdateVendorPO: (vendorNo: string, field: 'poNumber' | 'vendorContact', value: string) => void;
+  onUpdateUnitCost: (vendor: string, productCode: string, hardwareCategory: string, value: number) => void;
   onNext: () => void;
   onBack: () => void;
 }
 
 // ---- Helpers ----
 
-function aggregateLineItems(items: ParsedHardwareItem[]): AggregatedLineItem[] {
+function aggregateLineItems(
+  items: ParsedHardwareItem[],
+  vendor: string,
+  overrides: Map<string, number>,
+): AggregatedLineItem[] {
   const groups = new Map<string, AggregatedLineItem>();
 
   for (const item of items) {
     const key = `${item.product_code}|${item.hardware_category}`;
+    const overrideKey = `${vendor}|${item.product_code}|${item.hardware_category}`;
+    const unitCost = overrides.get(overrideKey) ?? item.unit_cost ?? 0;
     const existing = groups.get(key);
     if (existing) {
       existing.totalQuantity += item.item_quantity;
-      existing.totalCost += (item.unit_cost ?? 0) * item.item_quantity;
+      existing.totalCost += unitCost * item.item_quantity;
     } else {
       groups.set(key, {
         productCode: item.product_code,
         hardwareCategory: item.hardware_category,
         totalQuantity: item.item_quantity,
-        unitCost: item.unit_cost ?? 0,
-        totalCost: (item.unit_cost ?? 0) * item.item_quantity,
+        unitCost,
+        totalCost: unitCost * item.item_quantity,
       });
     }
   }
@@ -59,8 +67,10 @@ export default function PurchaseOrdersStep({
   vendorGroups,
   vendorPOInfo,
   selectedVendors,
+  unitCostOverrides,
   onToggleVendor,
   onUpdateVendorPO,
+  onUpdateUnitCost,
   onNext,
   onBack,
 }: PurchaseOrdersStepProps) {
@@ -89,9 +99,9 @@ export default function PurchaseOrdersStep({
 
       {sortedVendors.map(([vendor, items]) => {
         const info = vendorPOInfo.get(vendor) ?? { poNumber: '', vendorContact: '' };
-        const aggregated = aggregateLineItems(items);
-        const poTotal = items.reduce(
-          (sum, hi) => sum + (hi.unit_cost ?? 0) * hi.item_quantity,
+        const aggregated = aggregateLineItems(items, vendor, unitCostOverrides);
+        const poTotal = aggregated.reduce(
+          (sum, line) => sum + line.unitCost * line.totalQuantity,
           0,
         );
         const isSelected = selectedVendors.has(vendor);
@@ -188,7 +198,16 @@ export default function PurchaseOrdersStep({
                       <Typography variant="body2">{line.totalQuantity}</Typography>
                     </Box>
                     <Box sx={{ bgcolor: rowBg, p: 0.75, textAlign: 'right' }}>
-                      <Typography variant="body2">${line.unitCost.toFixed(2)}</Typography>
+                      <TextField
+                        variant="standard"
+                        size="small"
+                        type="number"
+                        disabled={!isSelected}
+                        value={line.unitCost}
+                        onChange={(e) => onUpdateUnitCost(vendor, line.productCode, line.hardwareCategory, parseFloat(e.target.value) || 0)}
+                        inputProps={{ min: 0, step: 0.01, style: { textAlign: 'right' } }}
+                        sx={{ width: 90 }}
+                      />
                     </Box>
                     <Box sx={{ bgcolor: rowBg, p: 0.75, textAlign: 'right' }}>
                       <Typography variant="body2">${line.totalCost.toFixed(2)}</Typography>
