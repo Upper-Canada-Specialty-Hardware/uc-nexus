@@ -70,11 +70,19 @@ class HardwareItemRef:
 
 
 @strawberry.input
+class POLineItemAliasInput:
+    hardware_category: str
+    product_code: str
+    vendor_alias: str
+
+
+@strawberry.input
 class PODraftInput:
     po_number: str
     vendor_name: str | None = None
     vendor_contact: str | None = None
     hardware_item_refs: list[HardwareItemRef] = strawberry.field(default_factory=list)
+    line_item_aliases: list[POLineItemAliasInput] = strawberry.field(default_factory=list)
 
 
 @strawberry.input

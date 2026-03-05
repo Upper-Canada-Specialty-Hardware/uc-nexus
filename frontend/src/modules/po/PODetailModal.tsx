@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import {
   Box,
   Typography,
@@ -18,7 +18,7 @@ import Modal from '../../components/Modal';
 import DataTable from '../../components/DataTable';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import { useToast } from '../../components/Toast';
-import { UPDATE_PO, MARK_PO_AS_ORDERED, CANCEL_PO } from '../../graphql/mutations';
+import { UPDATE_PO, MARK_PO_AS_ORDERED, CANCEL_PO, UPDATE_PO_LINE_ITEM_ALIAS } from '../../graphql/mutations';
 import type { PurchaseOrder } from './index';
 
 // --- Status chip colors ---
@@ -53,6 +53,13 @@ function formatDateTime(dateStr: string | null | undefined): string {
 const lineItemColumns: GridColDef[] = [
   { field: 'productCode', headerName: 'Product Code', flex: 1, minWidth: 130 },
   { field: 'hardwareCategory', headerName: 'Hardware Category', flex: 1, minWidth: 150 },
+  {
+    field: 'vendorAlias',
+    headerName: 'Vendor Alias',
+    flex: 1,
+    minWidth: 130,
+    renderCell: (params) => params.value || '\u2014',
+  },
   {
     field: 'classification',
     headerName: 'Classification',
@@ -114,6 +121,7 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
   const [vendorContact, setVendorContact] = useState(po.vendorContact ?? '');
   const [expectedDeliveryDate, setExpectedDeliveryDate] = useState(po.expectedDeliveryDate ?? '');
   const [vendorNameError, setVendorNameError] = useState('');
+  const [aliasEdits, setAliasEdits] = useState<Record<string, string>>({});
 
   // Confirm dialog state
   const [confirmOrderOpen, setConfirmOrderOpen] = useState(false);
@@ -172,6 +180,8 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
     },
   });
 
+  const [updateAlias] = useMutation(UPDATE_PO_LINE_ITEM_ALIAS);
+
   const [cancelPo, { loading: cancelLoading }] = useMutation(CANCEL_PO, {
     onCompleted: () => {
       showToast('PO cancelled', 'success');
@@ -191,6 +201,11 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
     setVendorContact(po.vendorContact ?? '');
     setExpectedDeliveryDate(po.expectedDeliveryDate ?? '');
     setVendorNameError('');
+    const initialAliases: Record<string, string> = {};
+    for (const li of po.lineItems) {
+      initialAliases[li.id] = li.vendorAlias ?? '';
+    }
+    setAliasEdits(initialAliases);
     setEditing(true);
   };
 
@@ -199,8 +214,28 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
     setVendorNameError('');
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     setVendorNameError('');
+
+    // Save alias changes
+    const aliasPromises = po.lineItems
+      .filter((li) => (aliasEdits[li.id] ?? '') !== (li.vendorAlias ?? ''))
+      .map((li) =>
+        updateAlias({
+          variables: {
+            id: li.id,
+            vendorAlias: aliasEdits[li.id] || null,
+          },
+        }),
+      );
+    try {
+      await Promise.all(aliasPromises);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to update aliases';
+      showToast(message, 'error');
+      return;
+    }
+
     updatePo({
       variables: {
         id: po.id,
@@ -218,6 +253,32 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
   const handleCancelPO = () => {
     cancelPo({ variables: { id: po.id } });
   };
+
+  // --- Edit-mode line item columns (with editable vendor alias) ---
+
+  const editLineItemColumns = useMemo<GridColDef[]>(
+    () =>
+      lineItemColumns.map((col): GridColDef =>
+        col.field === 'vendorAlias'
+          ? {
+              ...col,
+              renderCell: (params) => (
+                <TextField
+                  size="small"
+                  variant="standard"
+                  value={aliasEdits[params.row.id as string] ?? (params.value as string) ?? ''}
+                  onChange={(e) =>
+                    setAliasEdits((prev) => ({ ...prev, [params.row.id as string]: e.target.value }))
+                  }
+                  fullWidth
+                  slotProps={{ input: { sx: { fontSize: '0.875rem' } } }}
+                />
+              ),
+            }
+          : col,
+      ),
+    [aliasEdits],
+  );
 
   // --- Visibility rules ---
 
@@ -352,7 +413,7 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
         </Typography>
         {po.lineItems.length > 0 ? (
           <DataTable
-            columns={lineItemColumns}
+            columns={editing ? editLineItemColumns : lineItemColumns}
             rows={po.lineItems}
             height={300}
             getRowId={(row) => row.id}

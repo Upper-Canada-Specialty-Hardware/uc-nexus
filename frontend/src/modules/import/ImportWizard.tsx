@@ -116,6 +116,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
   const [vendorPOInfo, setVendorPOInfo] = useState<Map<string, { poNumber: string; vendorContact: string }>>(new Map());
   const [unitCostOverrides, setUnitCostOverrides] = useState<Map<string, number>>(new Map());
   const [classifications, setClassifications] = useState<Map<string, string>>(new Map());
+  const [vendorAliases, setVendorAliases] = useState<Map<string, string>>(new Map());
   const [sarRequestNumber, setSarRequestNumber] = useState('');
   const [shippingPRDrafts, setShippingPRDrafts] = useState<ShippingPRDraft[]>([]);
 
@@ -384,6 +385,19 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     });
   }, []);
 
+  // Vendor alias
+  const updateVendorAlias = useCallback((key: string, alias: string) => {
+    setVendorAliases((prev) => {
+      const next = new Map(prev);
+      if (alias) {
+        next.set(key, alias);
+      } else {
+        next.delete(key);
+      }
+      return next;
+    });
+  }, []);
+
   // Shipping PR management
   const addShippingPR = useCallback(() => {
     setShippingPRDrafts((prev) => [...prev, { requestNumber: '', requestedBy: '', items: [] }]);
@@ -470,6 +484,23 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
             .filter(([vendor]) => selectedVendors.has(vendor))
             .map(([vendor, items]) => {
               const info = vendorPOInfo.get(vendor) ?? { poNumber: '', vendorContact: '' };
+              // Collect aliases for this vendor's aggregated line items
+              const seenKeys = new Set<string>();
+              const lineItemAliases: Array<{ hardwareCategory: string; productCode: string; vendorAlias: string }> = [];
+              for (const hi of items) {
+                const key = `${hi.product_code}|${hi.hardware_category}`;
+                if (!seenKeys.has(key)) {
+                  seenKeys.add(key);
+                  const alias = vendorAliases.get(key);
+                  if (alias) {
+                    lineItemAliases.push({
+                      hardwareCategory: hi.hardware_category,
+                      productCode: hi.product_code,
+                      vendorAlias: alias,
+                    });
+                  }
+                }
+              }
               return {
                 poNumber: info.poNumber,
                 vendorName: vendor !== '(No Vendor)' ? vendor : null,
@@ -479,6 +510,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
                   productCode: hi.product_code,
                   materialId: hi.material_id,
                 })),
+                lineItemAliases,
               };
             })
         : null,
@@ -525,7 +557,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
             .filter(Boolean)
         : null,
     };
-  }, [parsed, selectedOpenings, purpose, vendorGroups, vendorPOInfo, selectedVendors, unitCostOverrides, classifications, shippingPRDrafts, sarRequestNumber]);
+  }, [parsed, selectedOpenings, purpose, vendorGroups, vendorPOInfo, selectedVendors, unitCostOverrides, vendorAliases, classifications, shippingPRDrafts, sarRequestNumber]);
 
   const handleFinalize = useCallback(async () => {
     setConfirmOpen(false);
@@ -587,6 +619,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     setSelectedVendors(new Set());
     setVendorPOInfo(new Map());
     setUnitCostOverrides(new Map());
+    setVendorAliases(new Map());
     setClassifications(new Map());
     setSarRequestNumber('');
     setShippingPRDrafts([]);
@@ -883,9 +916,11 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
               vendorPOInfo={vendorPOInfo}
               selectedVendors={selectedVendors}
               unitCostOverrides={unitCostOverrides}
+              vendorAliases={vendorAliases}
               onToggleVendor={toggleVendor}
               onUpdateVendorPO={updateVendorPO}
               onUpdateUnitCost={updateUnitCost}
+              onUpdateVendorAlias={updateVendorAlias}
               onNext={handleNext}
               onBack={handleBack}
             />

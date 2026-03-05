@@ -33,6 +33,7 @@ type POLineItem {
   ordered_quantity: Int!
   received_quantity: Int!
   unit_cost: Float!
+  vendor_alias: String
   created_at: DateTime!
   updated_at: DateTime!
 }
@@ -56,4 +57,5 @@ type Mutation {
   updatePO(id: ID!, vendorName: String, vendorContact: String, expectedDeliveryDate: Date): PurchaseOrder!
   markPOAsOrdered(id: ID!): PurchaseOrder!
   cancelPO(id: ID!): PurchaseOrder!
+  updatePOLineItemAlias(id: ID!, vendorAlias: String): POLineItem!
 }

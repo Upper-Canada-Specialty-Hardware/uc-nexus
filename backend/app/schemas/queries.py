@@ -72,6 +72,7 @@ def _po_line_item_to_type(li) -> POLineItem:
         ordered_quantity=li.ordered_quantity,
         received_quantity=li.received_quantity,
         unit_cost=float(li.unit_cost),
+        vendor_alias=li.vendor_alias,
         created_at=li.created_at,
         updated_at=li.updated_at,
     )

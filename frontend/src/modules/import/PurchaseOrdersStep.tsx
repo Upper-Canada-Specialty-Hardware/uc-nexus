@@ -19,9 +19,11 @@ interface PurchaseOrdersStepProps {
   vendorPOInfo: Map<string, { poNumber: string; vendorContact: string }>;
   selectedVendors: Set<string>;
   unitCostOverrides: Map<string, number>;
+  vendorAliases: Map<string, string>;
   onToggleVendor: (vendor: string) => void;
   onUpdateVendorPO: (vendorNo: string, field: 'poNumber' | 'vendorContact', value: string) => void;
   onUpdateUnitCost: (vendor: string, productCode: string, hardwareCategory: string, newCost: number) => void;
+  onUpdateVendorAlias: (key: string, alias: string) => void;
   onNext: () => void;
   onBack: () => void;
 }
@@ -68,9 +70,11 @@ export default function PurchaseOrdersStep({
   vendorPOInfo,
   selectedVendors,
   unitCostOverrides,
+  vendorAliases,
   onToggleVendor,
   onUpdateVendorPO,
   onUpdateUnitCost,
+  onUpdateVendorAlias,
   onNext,
   onBack,
 }: PurchaseOrdersStepProps) {
@@ -152,7 +156,7 @@ export default function PurchaseOrdersStep({
             </Typography>
 
             {/* Aggregated line items grid */}
-            <Box sx={{ display: 'grid', gridTemplateColumns: '1.5fr 1.5fr 0.7fr 0.8fr 0.8fr' }}>
+            <Box sx={{ display: 'grid', gridTemplateColumns: '1.5fr 1.5fr 0.7fr 0.8fr 0.8fr 1.2fr' }}>
               {/* Header row */}
               <Box sx={{ bgcolor: 'grey.100', p: 0.75 }}>
                 <Typography variant="caption" sx={{ fontWeight: 'bold' }}>
@@ -179,10 +183,16 @@ export default function PurchaseOrdersStep({
                   Total Cost
                 </Typography>
               </Box>
+              <Box sx={{ bgcolor: 'grey.100', p: 0.75 }}>
+                <Typography variant="caption" sx={{ fontWeight: 'bold' }}>
+                  Vendor Alias
+                </Typography>
+              </Box>
 
               {/* Data rows */}
               {aggregated.map((line, idx) => {
                 const rowBg = idx % 2 === 0 ? 'background.paper' : 'grey.50';
+                const aliasKey = `${line.productCode}|${line.hardwareCategory}`;
                 return (
                   <Box key={`${line.productCode}-${line.hardwareCategory}`} sx={{ display: 'contents' }}>
                     <Box sx={{ bgcolor: rowBg, p: 0.75 }}>
@@ -217,6 +227,18 @@ export default function PurchaseOrdersStep({
                     </Box>
                     <Box sx={{ bgcolor: rowBg, p: 0.75, textAlign: 'right' }}>
                       <Typography variant="body2">${line.totalCost.toFixed(2)}</Typography>
+                    </Box>
+                    <Box sx={{ bgcolor: rowBg, p: 0.75, display: 'flex', alignItems: 'center' }}>
+                      <TextField
+                        size="small"
+                        placeholder="Vendor alias"
+                        disabled={!isSelected}
+                        value={vendorAliases.get(aliasKey) ?? ''}
+                        onChange={(e) => onUpdateVendorAlias(aliasKey, e.target.value)}
+                        variant="standard"
+                        fullWidth
+                        slotProps={{ input: { sx: { fontSize: '0.875rem' } } }}
+                      />
                     </Box>
                   </Box>
                 );

@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.errors import InvalidStateTransitionError, NotFoundError, ValidationError
 from app.models.enums import POStatus
-from app.models.purchase_order import PurchaseOrder
+from app.models.purchase_order import POLineItem, PurchaseOrder
 from app.models.receiving import ReceiveRecord
 
 
@@ -172,3 +172,25 @@ def cancel_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
     po.deleted_at = datetime.utcnow()
 
     return po
+
+
+def update_line_item_alias(
+    session: Session,
+    line_item_id: uuid.UUID,
+    vendor_alias: str | None,
+) -> POLineItem:
+    """Update vendor_alias on a POLineItem. Parent PO must not be cancelled or closed."""
+    stmt = select(POLineItem).where(POLineItem.id == line_item_id)
+    poli = session.scalars(stmt).first()
+    if poli is None:
+        raise NotFoundError(f"PO line item {line_item_id} not found")
+
+    po = get_purchase_order(session, poli.po_id)
+    if po is None:
+        raise NotFoundError("Parent purchase order not found")
+
+    if po.status in (POStatus.CANCELLED, POStatus.CLOSED):
+        raise InvalidStateTransitionError(f"Cannot update alias on PO in {po.status.value} status")
+
+    poli.vendor_alias = vendor_alias
+    return poli

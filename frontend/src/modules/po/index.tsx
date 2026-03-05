@@ -29,6 +29,7 @@ interface POLineItem {
   orderedQuantity: number;
   receivedQuantity: number;
   unitCost: number;
+  vendorAlias: string | null;
   createdAt: string;
   updatedAt: string;
 }
