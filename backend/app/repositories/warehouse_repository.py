@@ -253,9 +253,7 @@ def assign_inventory_location(
     return il
 
 
-def move_opening_item_location(
-    session: Session, oi_id: uuid.UUID, aisle: str, bay: str, bin: str
-) -> OpeningItemModel:
+def move_opening_item_location(session: Session, oi_id: uuid.UUID, aisle: str, bay: str, bin: str) -> OpeningItemModel:
     """Move an OpeningItem to a new aisle/bay/bin."""
     oi = session.get(OpeningItemModel, oi_id)
     if oi is None:
