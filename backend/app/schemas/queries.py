@@ -7,6 +7,7 @@ from app.database import SessionLocal
 from app.models.enums import POStatus as DBPOStatus
 from app.models.project import Project as ProjectModel
 from app.repositories import (
+    admin_repository,
     notification_repository,
     po_repository,
     shipping_repository,
@@ -22,10 +23,13 @@ from .enums import (
 )
 from .inputs import ReconciliationItemInput
 from .types import (
+    HardwareSummaryRow,
     InventoryHierarchyNode,
     InventoryItemDetail,
     Notification,
     Opening,
+    OpeningHardwareStatus,
+    OpeningHardwareStatusItem,
     OpeningItem,
     OpeningItemDetail,
     POLineItem,
@@ -555,3 +559,43 @@ class Query:
         with SessionLocal() as session:
             rows = shop_assembly_repository.get_my_work(session, assigned_to)
             return [_shop_assembly_opening_to_type(sao, opening_model=opening) for sao, opening in rows]
+
+    @strawberry.field
+    def hardware_summary(self, project_id: strawberry.ID) -> list[HardwareSummaryRow]:
+        with SessionLocal() as session:
+            rows = admin_repository.get_hardware_summary(session, uuid.UUID(str(project_id)))
+            return [
+                HardwareSummaryRow(
+                    hardware_category=r["hardware_category"],
+                    product_code=r["product_code"],
+                    po_drafted=r["po_drafted"],
+                    ordered=r["ordered"],
+                    received=r["received"],
+                    back_ordered=r["back_ordered"],
+                    shipped_out=r["shipped_out"],
+                )
+                for r in rows
+            ]
+
+    @strawberry.field
+    def opening_hardware_status(self, project_id: strawberry.ID) -> list[OpeningHardwareStatus]:
+        with SessionLocal() as session:
+            rows = admin_repository.get_opening_hardware_status(session, uuid.UUID(str(project_id)))
+            return [
+                OpeningHardwareStatus(
+                    opening_number=r["opening_number"],
+                    building=r["building"],
+                    floor=r["floor"],
+                    location=r["location"],
+                    items=[
+                        OpeningHardwareStatusItem(
+                            hardware_category=item["hardware_category"],
+                            product_code=item["product_code"],
+                            item_quantity=item["item_quantity"],
+                            status=item["status"],
+                        )
+                        for item in r["items"]
+                    ],
+                )
+                for r in rows
+            ]
