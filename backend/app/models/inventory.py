@@ -16,7 +16,7 @@ class InventoryLocation(Base):
             "hardware_category",
             "product_code",
         ),
-        Index("ix_inventory_locations_shelf", "shelf"),
+        Index("ix_inventory_locations_aisle", "aisle"),
         CheckConstraint("quantity >= 0", name="ck_inventory_locations_quantity_nonneg"),
     )
 
@@ -27,9 +27,9 @@ class InventoryLocation(Base):
     hardware_category: Mapped[str] = mapped_column(String, nullable=False)
     product_code: Mapped[str] = mapped_column(String, nullable=False)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
-    shelf: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    column: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    row: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    aisle: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    bay: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    bin: Mapped[str | None] = mapped_column(String(20), nullable=True)
     received_at: Mapped[datetime] = mapped_column(nullable=False)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)

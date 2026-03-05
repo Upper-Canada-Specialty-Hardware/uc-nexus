@@ -307,9 +307,9 @@ class Mutation:
                 "quantity_received": li.quantity_received,
                 "locations": [
                     {
-                        "shelf": loc.shelf,
-                        "column": loc.column,
-                        "row": loc.row,
+                        "aisle": loc.aisle,
+                        "bay": loc.bay,
+                        "bin": loc.bin,
                         "quantity": loc.quantity,
                     }
                     for loc in li.locations
@@ -431,13 +431,13 @@ class Mutation:
     def move_inventory_location(
         self,
         inventory_location_id: strawberry.ID,
-        new_shelf: str,
-        new_column: str,
-        new_row: str,
+        new_aisle: str,
+        new_bay: str,
+        new_bin: str,
     ) -> InventoryLocation:
         with SessionLocal() as session:
             result = warehouse_repository.move_inventory_location(
-                session, uuid.UUID(str(inventory_location_id)), new_shelf, new_column, new_row
+                session, uuid.UUID(str(inventory_location_id)), new_aisle, new_bay, new_bin
             )
             session.commit()
             session.refresh(result)
@@ -455,13 +455,13 @@ class Mutation:
     def assign_inventory_location(
         self,
         inventory_location_id: strawberry.ID,
-        shelf: str,
-        column: str,
-        row: str,
+        aisle: str,
+        bay: str,
+        bin: str,
     ) -> InventoryLocation:
         with SessionLocal() as session:
             result = warehouse_repository.assign_inventory_location(
-                session, uuid.UUID(str(inventory_location_id)), shelf, column, row
+                session, uuid.UUID(str(inventory_location_id)), aisle, bay, bin
             )
             session.commit()
             session.refresh(result)
@@ -471,13 +471,13 @@ class Mutation:
     def move_opening_item_location(
         self,
         opening_item_id: strawberry.ID,
-        shelf: str,
-        column: str,
-        row: str,
+        aisle: str,
+        bay: str,
+        bin: str,
     ) -> OpeningItem:
         with SessionLocal() as session:
             result = warehouse_repository.move_opening_item_location(
-                session, uuid.UUID(str(opening_item_id)), shelf, column, row
+                session, uuid.UUID(str(opening_item_id)), aisle, bay, bin
             )
             session.commit()
             session.refresh(result)
@@ -495,13 +495,13 @@ class Mutation:
     def assign_opening_item_location(
         self,
         opening_item_id: strawberry.ID,
-        shelf: str,
-        column: str,
-        row: str,
+        aisle: str,
+        bay: str,
+        bin: str,
     ) -> OpeningItem:
         with SessionLocal() as session:
             result = warehouse_repository.assign_opening_item_location(
-                session, uuid.UUID(str(opening_item_id)), shelf, column, row
+                session, uuid.UUID(str(opening_item_id)), aisle, bay, bin
             )
             session.commit()
             session.refresh(result)
@@ -609,9 +609,9 @@ class Mutation:
             result = shop_assembly_repository.complete_opening(
                 session,
                 uuid.UUID(str(input.opening_id)),
-                input.shelf,
-                input.column,
-                input.row,
+                input.aisle,
+                input.bay,
+                input.bin,
             )
             session.commit()
             session.refresh(result)

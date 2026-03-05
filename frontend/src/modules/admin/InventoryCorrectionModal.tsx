@@ -31,9 +31,9 @@ interface InventoryItem {
   hardwareCategory: string;
   productCode: string;
   quantity: number;
-  shelf: string | null;
-  column: string | null;
-  row: string | null;
+  aisle: string | null;
+  bay: string | null;
+  bin: string | null;
   receivedAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -58,9 +58,9 @@ interface OpeningItem {
   quantity: number;
   assemblyCompletedAt: string | null;
   state: string;
-  shelf: string | null;
-  column: string | null;
-  row: string | null;
+  aisle: string | null;
+  bay: string | null;
+  bin: string | null;
   createdAt: string;
   updatedAt: string;
   installedHardware: InstalledHardware[];
@@ -77,12 +77,12 @@ interface InventoryCorrectionModalProps {
 }
 
 function hasLocation(item: InventoryItem | OpeningItem): boolean {
-  return !!(item.shelf && item.column && item.row);
+  return !!(item.aisle && item.bay && item.bin);
 }
 
-function formatLocation(shelf: string | null, column: string | null, row: string | null): string {
-  if (shelf && column && row) {
-    return `${shelf}-${column}-${row}`;
+function formatLocation(aisle: string | null, bay: string | null, bin: string | null): string {
+  if (aisle && bay && bin) {
+    return `${aisle}-${bay}-${bin}`;
   }
   return 'Unlocated';
 }
@@ -109,9 +109,9 @@ export default function InventoryCorrectionModal({
   const [reason, setReason] = useState('');
 
   // Move / Assign Location state
-  const [shelf, setShelf] = useState(item.shelf ?? '');
-  const [column, setColumn] = useState(item.column ?? '');
-  const [row, setRow] = useState(item.row ?? '');
+  const [aisle, setAisle] = useState(item.aisle ?? '');
+  const [bay, setBay] = useState(item.bay ?? '');
+  const [bin, setBin] = useState(item.bin ?? '');
 
   // Available correction types for this item type
   const correctionOptions = useMemo(() => {
@@ -131,13 +131,13 @@ export default function InventoryCorrectionModal({
     setAdjustment('');
     setReason('');
     if (type === 'moveLocation') {
-      setShelf(item.shelf ?? '');
-      setColumn(item.column ?? '');
-      setRow(item.row ?? '');
+      setAisle(item.aisle ?? '');
+      setBay(item.bay ?? '');
+      setBin(item.bin ?? '');
     } else if (type === 'assignLocation') {
-      setShelf('');
-      setColumn('');
-      setRow('');
+      setAisle('');
+      setBay('');
+      setBin('');
     }
   };
 
@@ -159,9 +159,9 @@ export default function InventoryCorrectionModal({
       }
       case 'moveLocation':
       case 'assignLocation': {
-        if (!shelf.trim() || shelf.length > 20) return false;
-        if (!column.trim() || column.length > 20) return false;
-        if (!row.trim() || row.length > 20) return false;
+        if (!aisle.trim() || aisle.length > 20) return false;
+        if (!bay.trim() || bay.length > 20) return false;
+        if (!bin.trim() || bin.length > 20) return false;
         return true;
       }
       case 'markUnlocated':
@@ -169,7 +169,7 @@ export default function InventoryCorrectionModal({
       default:
         return false;
     }
-  }, [correctionType, adjustmentNum, newQuantity, reason, shelf, column, row]);
+  }, [correctionType, adjustmentNum, newQuantity, reason, aisle, bay, bin]);
 
   // --- Confirmation message ---
 
@@ -178,15 +178,15 @@ export default function InventoryCorrectionModal({
       case 'adjustQuantity':
         return `Adjust quantity by ${adjustmentNum > 0 ? '+' : ''}${adjustmentNum} (${item.quantity} -> ${newQuantity}). Reason: "${reason.trim()}"`;
       case 'moveLocation':
-        return `Move item from ${formatLocation(item.shelf, item.column, item.row)} to ${formatLocation(shelf, column, row)}`;
+        return `Move item from ${formatLocation(item.aisle, item.bay, item.bin)} to ${formatLocation(aisle, bay, bin)}`;
       case 'markUnlocated':
-        return `Mark item as unlocated (currently at ${formatLocation(item.shelf, item.column, item.row)})`;
+        return `Mark item as unlocated (currently at ${formatLocation(item.aisle, item.bay, item.bin)})`;
       case 'assignLocation':
-        return `Assign location ${formatLocation(shelf, column, row)} to this item`;
+        return `Assign location ${formatLocation(aisle, bay, bin)} to this item`;
       default:
         return '';
     }
-  }, [correctionType, adjustmentNum, newQuantity, item, reason, shelf, column, row]);
+  }, [correctionType, adjustmentNum, newQuantity, item, reason, aisle, bay, bin]);
 
   // --- Mutations ---
 
@@ -296,9 +296,9 @@ export default function InventoryCorrectionModal({
           moveInventoryLocation({
             variables: {
               inventoryLocationId: item.id,
-              newShelf: shelf.trim(),
-              newColumn: column.trim(),
-              newRow: row.trim(),
+              newAisle: aisle.trim(),
+              newBay: bay.trim(),
+              newBin: bin.trim(),
             },
           });
           break;
@@ -311,9 +311,9 @@ export default function InventoryCorrectionModal({
           assignInventoryLocation({
             variables: {
               inventoryLocationId: item.id,
-              shelf: shelf.trim(),
-              column: column.trim(),
-              row: row.trim(),
+              aisle: aisle.trim(),
+              bay: bay.trim(),
+              bin: bin.trim(),
             },
           });
           break;
@@ -324,9 +324,9 @@ export default function InventoryCorrectionModal({
           moveOpeningItemLocation({
             variables: {
               openingItemId: item.id,
-              shelf: shelf.trim(),
-              column: column.trim(),
-              row: row.trim(),
+              aisle: aisle.trim(),
+              bay: bay.trim(),
+              bin: bin.trim(),
             },
           });
           break;
@@ -339,9 +339,9 @@ export default function InventoryCorrectionModal({
           assignOpeningItemLocation({
             variables: {
               openingItemId: item.id,
-              shelf: shelf.trim(),
-              column: column.trim(),
-              row: row.trim(),
+              aisle: aisle.trim(),
+              bay: bay.trim(),
+              bin: bin.trim(),
             },
           });
           break;
@@ -370,7 +370,7 @@ export default function InventoryCorrectionModal({
           </Box>
           <Box>
             <Typography variant="caption" color="text.secondary">Location</Typography>
-            <Typography variant="body2">{formatLocation(inv.shelf, inv.column, inv.row)}</Typography>
+            <Typography variant="body2">{formatLocation(inv.aisle, inv.bay, inv.bin)}</Typography>
           </Box>
         </Box>
       );
@@ -400,7 +400,7 @@ export default function InventoryCorrectionModal({
           </Box>
           <Box>
             <Typography variant="caption" color="text.secondary">Warehouse Location</Typography>
-            <Typography variant="body2">{formatLocation(op.shelf, op.column, op.row)}</Typography>
+            <Typography variant="body2">{formatLocation(op.aisle, op.bay, op.bin)}</Typography>
           </Box>
         </Box>
       );
@@ -456,26 +456,26 @@ export default function InventoryCorrectionModal({
         return (
           <Stack spacing={2}>
             <Typography variant="body2" color="text.secondary">
-              Current location: {formatLocation(item.shelf, item.column, item.row)}
+              Current location: {formatLocation(item.aisle, item.bay, item.bin)}
             </Typography>
             <TextField
-              label="Shelf"
-              value={shelf}
-              onChange={(e) => setShelf(e.target.value.slice(0, 20))}
+              label="Aisle"
+              value={aisle}
+              onChange={(e) => setAisle(e.target.value.slice(0, 20))}
               size="small"
               fullWidth
             />
             <TextField
-              label="Column"
-              value={column}
-              onChange={(e) => setColumn(e.target.value.slice(0, 20))}
+              label="Bay"
+              value={bay}
+              onChange={(e) => setBay(e.target.value.slice(0, 20))}
               size="small"
               fullWidth
             />
             <TextField
-              label="Row"
-              value={row}
-              onChange={(e) => setRow(e.target.value.slice(0, 20))}
+              label="Bin"
+              value={bin}
+              onChange={(e) => setBin(e.target.value.slice(0, 20))}
               size="small"
               fullWidth
             />
@@ -486,7 +486,7 @@ export default function InventoryCorrectionModal({
         return (
           <Box sx={{ p: 2, bgcolor: 'warning.light', borderRadius: 1 }}>
             <Typography variant="body2">
-              This will remove the current location ({formatLocation(item.shelf, item.column, item.row)}) from this item.
+              This will remove the current location ({formatLocation(item.aisle, item.bay, item.bin)}) from this item.
               The item will need to be reassigned a location later.
             </Typography>
           </Box>
@@ -496,23 +496,23 @@ export default function InventoryCorrectionModal({
         return (
           <Stack spacing={2}>
             <TextField
-              label="Shelf"
-              value={shelf}
-              onChange={(e) => setShelf(e.target.value.slice(0, 20))}
+              label="Aisle"
+              value={aisle}
+              onChange={(e) => setAisle(e.target.value.slice(0, 20))}
               size="small"
               fullWidth
             />
             <TextField
-              label="Column"
-              value={column}
-              onChange={(e) => setColumn(e.target.value.slice(0, 20))}
+              label="Bay"
+              value={bay}
+              onChange={(e) => setBay(e.target.value.slice(0, 20))}
               size="small"
               fullWidth
             />
             <TextField
-              label="Row"
-              value={row}
-              onChange={(e) => setRow(e.target.value.slice(0, 20))}
+              label="Bin"
+              value={bin}
+              onChange={(e) => setBin(e.target.value.slice(0, 20))}
               size="small"
               fullWidth
             />

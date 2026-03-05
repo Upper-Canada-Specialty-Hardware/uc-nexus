@@ -29,9 +29,9 @@ interface InventoryItem {
   hardwareCategory: string;
   productCode: string;
   quantity: number;
-  shelf: string | null;
-  column: string | null;
-  row: string | null;
+  aisle: string | null;
+  bay: string | null;
+  bin: string | null;
   receivedAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -59,9 +59,9 @@ interface HardwareItemsTabProps {
   projectId: string;
 }
 
-function formatLocation(shelf: string | null, column: string | null, row: string | null): string {
-  if (shelf && column && row) {
-    return `${shelf}-${column}-${row}`;
+function formatLocation(aisle: string | null, bay: string | null, bin: string | null): string {
+  if (aisle && bay && bin) {
+    return `${aisle}-${bay}-${bin}`;
   }
   return 'Unlocated';
 }
@@ -81,9 +81,9 @@ const baseDetailColumns: GridColDef[] = [
     flex: 1,
     valueGetter: (_value: unknown, row: InventoryItemDetail) =>
       formatLocation(
-        row.inventoryLocation.shelf,
-        row.inventoryLocation.column,
-        row.inventoryLocation.row,
+        row.inventoryLocation.aisle,
+        row.inventoryLocation.bay,
+        row.inventoryLocation.bin,
       ),
   },
   { field: 'poNumber', headerName: 'PO Number', flex: 1 },
@@ -232,7 +232,7 @@ function ProductCodeDetail({
 export default function HardwareItemsTab({ projectId }: HardwareItemsTabProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
-  const [shelfFilter, setShelfFilter] = useState('');
+  const [aisleFilter, setAisleFilter] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
 
   const { data, loading, error } = useQuery<{
@@ -267,17 +267,17 @@ export default function HardwareItemsTab({ projectId }: HardwareItemsTabProps) {
     [hierarchy],
   );
 
-  // Extract distinct shelf values from Level 3 items
-  const shelves = useMemo(() => {
-    const shelfSet = new Set<string>();
+  // Extract distinct aisle values from Level 3 items
+  const aisles = useMemo(() => {
+    const aisleSet = new Set<string>();
     hierarchy.forEach((cat) =>
       cat.productCodes.forEach((pc) =>
         pc.items.forEach((item) => {
-          if (item.shelf) shelfSet.add(item.shelf);
+          if (item.aisle) aisleSet.add(item.aisle);
         }),
       ),
     );
-    return [...shelfSet].sort();
+    return [...aisleSet].sort();
   }, [hierarchy]);
 
   // Filter hierarchy
@@ -307,19 +307,19 @@ export default function HardwareItemsTab({ projectId }: HardwareItemsTabProps) {
             ),
           };
         }
-        // If shelf filter is active, filter product codes that have items with matching shelf
-        if (shelfFilter) {
+        // If aisle filter is active, filter product codes that have items with matching aisle
+        if (aisleFilter) {
           return {
             ...cat,
             productCodes: cat.productCodes.filter((pc) =>
-              pc.items.some((item) => item.shelf === shelfFilter),
+              pc.items.some((item) => item.aisle === aisleFilter),
             ),
           };
         }
         return cat;
       })
       .filter((cat) => cat.productCodes.length > 0);
-  }, [hierarchy, debouncedSearch, categoryFilter, shelfFilter]);
+  }, [hierarchy, debouncedSearch, categoryFilter, aisleFilter]);
 
   if (loading && !data) {
     return (
@@ -367,16 +367,16 @@ export default function HardwareItemsTab({ projectId }: HardwareItemsTabProps) {
           </Select>
         </FormControl>
         <FormControl size="small" sx={{ minWidth: 150 }}>
-          <InputLabel>Shelf</InputLabel>
+          <InputLabel>Aisle</InputLabel>
           <Select
-            value={shelfFilter}
-            label="Shelf"
-            onChange={(e) => setShelfFilter(e.target.value)}
+            value={aisleFilter}
+            label="Aisle"
+            onChange={(e) => setAisleFilter(e.target.value)}
           >
-            <MenuItem value="">All Shelves</MenuItem>
-            {shelves.map((shelf) => (
-              <MenuItem key={shelf} value={shelf}>
-                {shelf}
+            <MenuItem value="">All Aisles</MenuItem>
+            {aisles.map((aisle) => (
+              <MenuItem key={aisle} value={aisle}>
+                {aisle}
               </MenuItem>
             ))}
           </Select>

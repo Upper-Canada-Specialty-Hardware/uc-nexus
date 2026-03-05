@@ -268,9 +268,9 @@ def remove_opening_from_user(
 def complete_opening(
     session: Session,
     opening_id: uuid.UUID,
-    shelf: str | None,
-    column: str | None,
-    row: str | None,
+    aisle: str | None,
+    bay: str | None,
+    bin: str | None,
 ) -> OpeningItemModel:
     """Mark an opening's assembly as complete. Creates OpeningItem + OpeningItemHardware records."""
     # 1. Load and validate ShopAssemblyOpening (with pessimistic lock)
@@ -335,9 +335,9 @@ def complete_opening(
         quantity=1,
         assembly_completed_at=now,
         state=OpeningItemState.IN_INVENTORY,
-        shelf=shelf,
-        column=column,
-        row=row,
+        aisle=aisle,
+        bay=bay,
+        bin=bin,
     )
     session.add(opening_item)
     session.flush()  # Get opening_item.id for OpeningItemHardware FK
