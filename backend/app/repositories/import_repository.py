@@ -391,7 +391,8 @@ def finalize_import_session(
             # Build alias lookup from line_item_aliases
             alias_lookup: dict[tuple[str, str], str] = {}
             for alias_entry in po_draft.get("line_item_aliases", []):
-                alias_lookup[(alias_entry["hardware_category"], alias_entry["product_code"])] = alias_entry["vendor_alias"]
+                key = (alias_entry["hardware_category"], alias_entry["product_code"])
+                alias_lookup[key] = alias_entry["vendor_alias"]
 
             # Create POLineItems from aggregation
             for (cat, code, cost, cls), hw_items in line_item_agg.items():

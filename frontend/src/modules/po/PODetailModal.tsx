@@ -258,17 +258,17 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
 
   const editLineItemColumns = useMemo<GridColDef[]>(
     () =>
-      lineItemColumns.map((col) =>
+      lineItemColumns.map((col): GridColDef =>
         col.field === 'vendorAlias'
           ? {
               ...col,
-              renderCell: (params: { row: { id: string }; value: string | null }) => (
+              renderCell: (params) => (
                 <TextField
                   size="small"
                   variant="standard"
-                  value={aliasEdits[params.row.id] ?? params.value ?? ''}
+                  value={aliasEdits[params.row.id as string] ?? (params.value as string) ?? ''}
                   onChange={(e) =>
-                    setAliasEdits((prev) => ({ ...prev, [params.row.id]: e.target.value }))
+                    setAliasEdits((prev) => ({ ...prev, [params.row.id as string]: e.target.value }))
                   }
                   fullWidth
                   slotProps={{ input: { sx: { fontSize: '0.875rem' } } }}

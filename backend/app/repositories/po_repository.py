@@ -190,7 +190,7 @@ def update_line_item_alias(
 
     po = get_purchase_order(session, poli.po_id)
     if po is None:
-        raise NotFoundError(f"Parent purchase order not found")
+        raise NotFoundError("Parent purchase order not found")
 
     if po.status in (POStatus.CANCELLED, POStatus.CLOSED):
         raise InvalidStateTransitionError(f"Cannot update alias on PO in {po.status.value} status")

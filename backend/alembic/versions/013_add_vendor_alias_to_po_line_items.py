@@ -1,7 +1,7 @@
 """add vendor_alias to po_line_items
 
-Revision ID: 012
-Revises: 011
+Revision ID: 013
+Revises: 012
 Create Date: 2026-03-05
 """
 
@@ -10,8 +10,8 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "012"
-down_revision = "011"
+revision = "013"
+down_revision = "012"
 branch_labels = None
 depends_on = None
 
