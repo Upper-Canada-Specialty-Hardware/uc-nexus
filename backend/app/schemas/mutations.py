@@ -116,7 +116,6 @@ class Mutation:
                 {
                     "opening_number": hi.opening_number,
                     "product_code": hi.product_code,
-                    "material_id": hi.material_id,
                     "hardware_category": hi.hardware_category,
                     "item_quantity": hi.item_quantity,
                     "unit_cost": hi.unit_cost,
@@ -143,7 +142,7 @@ class Mutation:
                         {
                             "opening_number": ref.opening_number,
                             "product_code": ref.product_code,
-                            "material_id": ref.material_id,
+                            "hardware_category": ref.hardware_category,
                         }
                         for ref in po.hardware_item_refs
                     ],

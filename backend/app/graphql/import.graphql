@@ -42,7 +42,6 @@ input OpeningInput {
 input HardwareItemInput {
   opening_number: String!
   product_code: String!
-  material_id: String!
   hardware_category: String!
   item_quantity: Int!
   unit_cost: Float
@@ -60,7 +59,7 @@ input HardwareItemInput {
 input HardwareItemRef {
   opening_number: String!
   product_code: String!
-  material_id: String!
+  hardware_category: String!
 }
 
 input PODraftInput {

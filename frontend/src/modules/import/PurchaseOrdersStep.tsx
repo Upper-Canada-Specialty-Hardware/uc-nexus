@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { Box, Button, Checkbox, FormControlLabel, InputAdornment, Paper, TextField, Typography } from '@mui/material';
-import type { ParsedHardwareItem } from '../../types/hardwareSchedule';
+import type { AggregatedHardwareItem } from './types';
 
 // ---- Aggregation Types ----
 
@@ -15,7 +15,7 @@ interface AggregatedLineItem {
 // ---- Props ----
 
 interface PurchaseOrdersStepProps {
-  vendorGroups: Map<string, ParsedHardwareItem[]>;
+  vendorGroups: Map<string, AggregatedHardwareItem[]>;
   vendorPOInfo: Map<string, { poNumber: string; vendorContact: string }>;
   selectedVendors: Set<string>;
   unitCostOverrides: Map<string, number>;
@@ -31,7 +31,7 @@ interface PurchaseOrdersStepProps {
 // ---- Helpers ----
 
 function aggregateLineItems(
-  items: ParsedHardwareItem[],
+  items: AggregatedHardwareItem[],
   vendor: string,
   overrides: Map<string, number>,
 ): AggregatedLineItem[] {

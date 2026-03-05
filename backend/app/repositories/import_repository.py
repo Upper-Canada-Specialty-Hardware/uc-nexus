@@ -307,10 +307,10 @@ def finalize_import_session(
     # 3. PO creation
     created_pos: list[POModel] = []
     if po_drafts:
-        # Build hardware items lookup: (opening_number, product_code, material_id) -> hardware item data
+        # Build hardware items lookup: (opening_number, product_code, hardware_category) -> hardware item data
         hw_items_lookup: dict[tuple[str, str, str], dict] = {}
         for hi in hardware_items_input:
-            key = (hi["opening_number"], hi["product_code"], hi["material_id"])
+            key = (hi["opening_number"], hi["product_code"], hi["hardware_category"])
             hw_items_lookup[key] = hi
 
         for po_draft in po_drafts:
@@ -339,7 +339,7 @@ def finalize_import_session(
             line_item_agg: dict[tuple, list] = defaultdict(list)
 
             for ref in po_draft.get("hardware_item_refs", []):
-                ref_key = (ref["opening_number"], ref["product_code"], ref["material_id"])
+                ref_key = (ref["opening_number"], ref["product_code"], ref["hardware_category"])
                 hi_data = hw_items_lookup.get(ref_key)
                 if hi_data is None:
                     raise NotFoundError(f"Hardware item not found: {ref_key}")
@@ -359,7 +359,6 @@ def finalize_import_session(
                     opening_id=opening_id,
                     hardware_category=hi_data["hardware_category"],
                     product_code=hi_data["product_code"],
-                    material_id=hi_data["material_id"],
                     item_quantity=hi_data["item_quantity"],
                     unit_cost=Decimal(str(unit_cost)) if unit_cost else None,
                     unit_price=Decimal(str(hi_data["unit_price"])) if hi_data.get("unit_price") else None,

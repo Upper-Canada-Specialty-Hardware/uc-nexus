@@ -10,7 +10,8 @@ import {
   Typography,
 } from '@mui/material';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
-import type { ParsedOpening, ParsedHardwareItem } from '../../types/hardwareSchedule';
+import type { ParsedOpening } from '../../types/hardwareSchedule';
+import type { AggregatedHardwareItem } from './types';
 import { classificationKey } from './types';
 
 interface ShopAssemblyStepProps {
@@ -18,7 +19,7 @@ interface ShopAssemblyStepProps {
   onSarNumberChange: (value: string) => void;
   openings: ParsedOpening[];
   selectedOpenings: Set<string>;
-  selectedHardwareItems: ParsedHardwareItem[];
+  selectedHardwareItems: AggregatedHardwareItem[];
   classifications: Map<string, string>;
   onNext: () => void;
   onBack: () => void;

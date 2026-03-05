@@ -12,17 +12,16 @@ import {
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import DeleteIcon from '@mui/icons-material/Delete';
-import type { ParsedHardwareItem } from '../../types/hardwareSchedule';
-import type { ShippingPRDraft } from './types';
-import { hardwareItemKey } from './types';
+import type { AggregatedHardwareItem, ShippingPRDraft } from './types';
+import { aggregationKey } from './types';
 
 interface ShippingPRsStepProps {
   shippingPRDrafts: ShippingPRDraft[];
-  selectedHardwareItems: ParsedHardwareItem[];
+  selectedHardwareItems: AggregatedHardwareItem[];
   onAddPR: () => void;
   onRemovePR: (index: number) => void;
   onUpdatePR: (index: number, field: 'requestNumber' | 'requestedBy', value: string) => void;
-  onTogglePRItem: (prIndex: number, hi: ParsedHardwareItem) => void;
+  onTogglePRItem: (prIndex: number, hi: AggregatedHardwareItem) => void;
   onNext: () => void;
   onBack: () => void;
 }
@@ -99,7 +98,7 @@ export default function ShippingPRsStep({
               );
               return (
                 <FormControlLabel
-                  key={hardwareItemKey(hi)}
+                  key={aggregationKey(hi)}
                   control={
                     <Checkbox
                       size="small"

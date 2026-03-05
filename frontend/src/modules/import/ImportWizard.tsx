@@ -39,10 +39,9 @@ import {
   RECONCILE_SCHEDULE,
 } from '../../graphql/queries';
 import { FINALIZE_IMPORT_SESSION } from '../../graphql/mutations';
-import type { ParsedHardwareItem } from '../../types/hardwareSchedule';
 import type { ClassificationRow } from './ClassificationGrid';
-import type { ImportPurpose, ShippingPRDraft } from './types';
-import { classificationKey, hardwareItemKey } from './types';
+import type { AggregatedHardwareItem, ImportPurpose, ShippingPRDraft } from './types';
+import { aggregationKey, classificationKey } from './types';
 import SelectOpeningsStep from './SelectOpeningsStep';
 import ClassificationStep from './ClassificationStep';
 import PurchaseOrdersStep from './PurchaseOrdersStep';
@@ -210,21 +209,34 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     [hardwareItems, selectedOpenings],
   );
 
+  const aggregatedHardwareItems = useMemo<AggregatedHardwareItem[]>(() => {
+    const map = new Map<string, AggregatedHardwareItem>();
+    for (const hi of selectedHardwareItems) {
+      const key = aggregationKey(hi);
+      const existing = map.get(key);
+      if (existing) {
+        existing.item_quantity += hi.item_quantity;
+      } else {
+        const { material_id, ...rest } = hi;
+        void material_id;
+        map.set(key, { ...rest });
+      }
+    }
+    return Array.from(map.values());
+  }, [selectedHardwareItems]);
+
   // Reconciliation rows for DataGrid
   const reconciliationRows = useMemo<ReconciliationRow[]>(() => {
     const raw = reconcileData?.reconcileSchedule ?? [];
     return raw.map((r, i) => ({ ...r, id: `recon-${i}` }));
   }, [reconcileData]);
 
-  // Items needing ordering: reconciliation is informational only, all selected items flow through
-  const itemsNeedingOrder = selectedHardwareItems;
-
-  // Classification rows for DataGrid (one row per individual hardware item)
+  // Classification rows for DataGrid (one row per aggregated hardware item)
   const classificationRows = useMemo<ClassificationRow[]>(() => {
-    return itemsNeedingOrder.map((hi) => {
+    return aggregatedHardwareItems.map((hi) => {
       const ck = classificationKey(hi);
       return {
-        id: hardwareItemKey(hi),
+        id: aggregationKey(hi),
         openingNumber: hi.opening_number,
         productCode: hi.product_code,
         hardwareCategory: hi.hardware_category,
@@ -237,18 +249,18 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
         classification: classifications.get(ck) ?? '',
       };
     });
-  }, [itemsNeedingOrder, classifications]);
+  }, [aggregatedHardwareItems, classifications]);
 
   // Items grouped by vendor for auto PO segregation
   const vendorGroups = useMemo(() => {
-    const map = new Map<string, ParsedHardwareItem[]>();
-    for (const hi of itemsNeedingOrder) {
+    const map = new Map<string, AggregatedHardwareItem[]>();
+    for (const hi of aggregatedHardwareItems) {
       const vendor = hi.vendor_no ?? '(No Vendor)';
       if (!map.has(vendor)) map.set(vendor, []);
       map.get(vendor)!.push(hi);
     }
     return new Map(Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b)));
-  }, [itemsNeedingOrder]);
+  }, [aggregatedHardwareItems]);
 
   // ---- Step Navigation ----
 
@@ -417,7 +429,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
   );
 
   const toggleShippingPRItem = useCallback(
-    (prIndex: number, hi: ParsedHardwareItem) => {
+    (prIndex: number, hi: AggregatedHardwareItem) => {
       setShippingPRDrafts((prev) =>
         prev.map((draft, i) => {
           if (i !== prIndex) return draft;
@@ -467,7 +479,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
       project: snakeToCamel(parsed.project as unknown as Record<string, unknown>),
       openings: selectedOpeningsList.map((o) => snakeToCamel(o as unknown as Record<string, unknown>)),
       hardwareItems: purpose === 'po'
-        ? filteredHardwareItems
+        ? aggregatedHardwareItems
             .filter((hi) => selectedVendors.has(hi.vendor_no ?? '(No Vendor)'))
             .map((hi) => {
               const vendor = hi.vendor_no ?? '(No Vendor)';
@@ -508,7 +520,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
                 hardwareItemRefs: items.map((hi) => ({
                   openingNumber: hi.opening_number,
                   productCode: hi.product_code,
-                  materialId: hi.material_id,
+                  hardwareCategory: hi.hardware_category,
                 })),
                 lineItemAliases,
               };
@@ -545,19 +557,30 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
                 return classifications.get(ck) === 'SHOP_HARDWARE';
               });
               if (shopItems.length === 0) return null;
+              // Aggregate by (product_code, hardware_category) to avoid duplicates from multiple material_ids
+              const aggMap = new Map<string, { hardwareCategory: string; productCode: string; quantity: number }>();
+              for (const hi of shopItems) {
+                const key = `${hi.product_code}|${hi.hardware_category}`;
+                const existing = aggMap.get(key);
+                if (existing) {
+                  existing.quantity += hi.item_quantity;
+                } else {
+                  aggMap.set(key, {
+                    hardwareCategory: hi.hardware_category,
+                    productCode: hi.product_code,
+                    quantity: hi.item_quantity,
+                  });
+                }
+              }
               return {
                 openingNumber: opening.opening_number,
-                items: shopItems.map((hi) => ({
-                  hardwareCategory: hi.hardware_category,
-                  productCode: hi.product_code,
-                  quantity: hi.item_quantity,
-                })),
+                items: Array.from(aggMap.values()),
               };
             })
             .filter(Boolean)
         : null,
     };
-  }, [parsed, selectedOpenings, purpose, vendorGroups, vendorPOInfo, selectedVendors, unitCostOverrides, vendorAliases, classifications, shippingPRDrafts, sarRequestNumber]);
+  }, [parsed, selectedOpenings, purpose, aggregatedHardwareItems, vendorGroups, vendorPOInfo, selectedVendors, unitCostOverrides, vendorAliases, classifications, shippingPRDrafts, sarRequestNumber]);
 
   const handleFinalize = useCallback(async () => {
     setConfirmOpen(false);
@@ -901,7 +924,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
               classificationRows={classificationRows}
               onClassify={classifyBatch}
               purpose={purpose!}
-              itemCount={selectedHardwareItems.length}
+              itemCount={aggregatedHardwareItems.length}
               openingCount={selectedOpenings.size}
               isReimport={isReimport}
               onNext={handleNext}
@@ -933,7 +956,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
               onSarNumberChange={setSarRequestNumber}
               openings={openings}
               selectedOpenings={selectedOpenings}
-              selectedHardwareItems={selectedHardwareItems}
+              selectedHardwareItems={aggregatedHardwareItems}
               classifications={classifications}
               onNext={handleNext}
               onBack={handleBack}
@@ -944,7 +967,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
           {effectiveStepId === 'shipping-prs' && (
             <ShippingPRsStep
               shippingPRDrafts={shippingPRDrafts}
-              selectedHardwareItems={selectedHardwareItems}
+              selectedHardwareItems={aggregatedHardwareItems}
               onAddPR={addShippingPR}
               onRemovePR={removeShippingPR}
               onUpdatePR={updateShippingPR}

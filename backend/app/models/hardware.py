@@ -28,7 +28,7 @@ class HardwareItem(Base):
     opening_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("openings.id"), nullable=False)
     hardware_category: Mapped[str] = mapped_column(String, nullable=False)
     product_code: Mapped[str] = mapped_column(String, nullable=False)
-    material_id: Mapped[str] = mapped_column(String, nullable=False)
+    material_id: Mapped[str | None] = mapped_column(String, nullable=True)
     item_quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     unit_cost: Mapped[Decimal | None] = mapped_column(Numeric(10, 4), nullable=True)
     unit_price: Mapped[Decimal | None] = mapped_column(Numeric(10, 4), nullable=True)

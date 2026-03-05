@@ -1,5 +1,11 @@
 import type { ParsedHardwareItem } from '../../types/hardwareSchedule';
 
+export type AggregatedHardwareItem = Omit<ParsedHardwareItem, 'material_id'>;
+
+export function aggregationKey(hi: { opening_number: string; product_code: string; hardware_category: string }) {
+  return `${hi.opening_number}|${hi.product_code}|${hi.hardware_category}`;
+}
+
 export type ImportPurpose = 'po' | 'assembly' | 'shipping';
 
 export interface ShippingPRItem {

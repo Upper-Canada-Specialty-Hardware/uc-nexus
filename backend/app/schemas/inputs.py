@@ -47,7 +47,6 @@ class OpeningInput:
 class HardwareItemInput:
     opening_number: str
     product_code: str
-    material_id: str
     hardware_category: str
     item_quantity: int
     unit_cost: float | None = None
@@ -66,7 +65,7 @@ class HardwareItemInput:
 class HardwareItemRef:
     opening_number: str
     product_code: str
-    material_id: str
+    hardware_category: str
 
 
 @strawberry.input

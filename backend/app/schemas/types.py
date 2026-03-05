@@ -52,7 +52,7 @@ class HardwareItem:
     opening_id: strawberry.ID
     hardware_category: str
     product_code: str
-    material_id: str
+    material_id: str | None
     item_quantity: int
     unit_cost: float | None
     unit_price: float | None
