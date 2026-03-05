@@ -346,6 +346,37 @@ export const RECONCILE_SCHEDULE = gql`
   }
 `;
 
+export const GET_HARDWARE_SUMMARY = gql`
+  query GetHardwareSummary($projectId: ID!) {
+    hardwareSummary(projectId: $projectId) {
+      hardwareCategory
+      productCode
+      poDrafted
+      ordered
+      received
+      backOrdered
+      shippedOut
+    }
+  }
+`;
+
+export const GET_OPENING_HARDWARE_STATUS = gql`
+  query GetOpeningHardwareStatus($projectId: ID!) {
+    openingHardwareStatus(projectId: $projectId) {
+      openingNumber
+      building
+      floor
+      location
+      items {
+        hardwareCategory
+        productCode
+        itemQuantity
+        status
+      }
+    }
+  }
+`;
+
 export const GET_NOTIFICATIONS = gql`
   query GetNotifications($projectId: ID!, $recipientRole: String!, $unreadOnly: Boolean, $limit: Int) {
     notifications(projectId: $projectId, recipientRole: $recipientRole, unreadOnly: $unreadOnly, limit: $limit) {
