@@ -19,6 +19,7 @@ export const UPDATE_PO = gql`
         orderedQuantity
         receivedQuantity
         unitCost
+        vendorAlias
       }
       receiveRecords {
         id
@@ -50,6 +51,7 @@ export const MARK_PO_AS_ORDERED = gql`
         orderedQuantity
         receivedQuantity
         unitCost
+        vendorAlias
       }
       receiveRecords {
         id
@@ -79,6 +81,7 @@ export const CANCEL_PO = gql`
         orderedQuantity
         receivedQuantity
         unitCost
+        vendorAlias
       }
       receiveRecords {
         id
@@ -365,6 +368,23 @@ export const FINALIZE_IMPORT_SESSION = gql`
         requestNumber
         status
       }
+    }
+  }
+`;
+
+export const UPDATE_PO_LINE_ITEM_ALIAS = gql`
+  mutation UpdatePOLineItemAlias($id: ID!, $vendorAlias: String) {
+    updatePoLineItemAlias(id: $id, vendorAlias: $vendorAlias) {
+      id
+      hardwareCategory
+      productCode
+      classification
+      orderedQuantity
+      receivedQuantity
+      unitCost
+      vendorAlias
+      createdAt
+      updatedAt
     }
   }
 `;

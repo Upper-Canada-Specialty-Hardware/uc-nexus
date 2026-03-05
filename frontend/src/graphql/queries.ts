@@ -46,6 +46,7 @@ export const GET_PURCHASE_ORDERS = gql`
         orderedQuantity
         receivedQuantity
         unitCost
+        vendorAlias
         createdAt
         updatedAt
       }
@@ -161,6 +162,7 @@ export const GET_OPEN_POS = gql`
         productCode
         orderedQuantity
         receivedQuantity
+        vendorAlias
       }
     }
   }
@@ -182,6 +184,7 @@ export const GET_PO_RECEIVING_DETAILS = gql`
         orderedQuantity
         receivedQuantity
         unitCost
+        vendorAlias
       }
       receiveRecords {
         id

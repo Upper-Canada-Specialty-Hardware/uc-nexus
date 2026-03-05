@@ -81,6 +81,7 @@ class POLineItem:
     ordered_quantity: int
     received_quantity: int
     unit_cost: float
+    vendor_alias: str | None
     created_at: datetime
     updated_at: datetime
 

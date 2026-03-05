@@ -37,6 +37,7 @@ interface OpenPOLineItem {
   productCode: string;
   orderedQuantity: number;
   receivedQuantity: number;
+  vendorAlias: string | null;
 }
 
 interface OpenPO {
@@ -58,6 +59,7 @@ interface PODetailLineItem {
   orderedQuantity: number;
   receivedQuantity: number;
   unitCost: number;
+  vendorAlias: string | null;
 }
 
 interface ReceiveRecordLineItem {
@@ -202,6 +204,12 @@ export default function ReceiveWizard({ open, onClose }: ReceiveWizardProps) {
   const quantityColumns: GridColDef[] = useMemo(
     () => [
       { field: 'productCode', headerName: 'Product Code', flex: 1 },
+      {
+        field: 'vendorAlias',
+        headerName: 'Vendor Alias',
+        flex: 0.8,
+        renderCell: (params) => params.value || '\u2014',
+      },
       { field: 'hardwareCategory', headerName: 'Hardware Category', flex: 1 },
       { field: 'orderedQuantity', headerName: 'Ordered Qty', flex: 0.7, type: 'number' },
       { field: 'receivedQuantity', headerName: 'Already Received', flex: 0.7, type: 'number' },
@@ -252,6 +260,7 @@ export default function ReceiveWizard({ open, onClose }: ReceiveWizardProps) {
     return poDetails.lineItems.map((li) => ({
       id: li.id,
       productCode: li.productCode,
+      vendorAlias: li.vendorAlias,
       hardwareCategory: li.hardwareCategory,
       orderedQuantity: li.orderedQuantity,
       receivedQuantity: li.receivedQuantity,

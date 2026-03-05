@@ -26,6 +26,7 @@ from .queries import (
     _notification_to_type,
     _opening_item_to_type,
     _packing_slip_to_type,
+    _po_line_item_to_type,
     _po_to_type,
     _project_to_type,
     _pull_request_to_type,
@@ -40,6 +41,7 @@ from .types import (
     InventoryLocation,
     Notification,
     OpeningItem,
+    POLineItem,
     PullRequest,
     PurchaseOrder,
     ReceiveRecord,
@@ -144,6 +146,14 @@ class Mutation:
                             "material_id": ref.material_id,
                         }
                         for ref in po.hardware_item_refs
+                    ],
+                    "line_item_aliases": [
+                        {
+                            "hardware_category": alias.hardware_category,
+                            "product_code": alias.product_code,
+                            "vendor_alias": alias.vendor_alias,
+                        }
+                        for alias in po.line_item_aliases
                     ],
                 }
                 for po in (input.po_drafts or [])
@@ -295,6 +305,18 @@ class Mutation:
             session.commit()
             session.refresh(po)
             return _po_to_type(po)
+
+    @strawberry.mutation
+    def update_po_line_item_alias(
+        self, id: strawberry.ID, vendor_alias: str | None = None
+    ) -> POLineItem:
+        with SessionLocal() as session:
+            poli = po_repository.update_line_item_alias(
+                session, uuid.UUID(str(id)), vendor_alias
+            )
+            session.commit()
+            session.refresh(poli)
+            return _po_line_item_to_type(poli)
 
     # Warehouse - Receiving
     @strawberry.mutation
