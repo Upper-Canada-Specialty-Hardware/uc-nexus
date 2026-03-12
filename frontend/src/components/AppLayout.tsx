@@ -98,7 +98,7 @@ export default function AppLayout() {
       <AppBar position="static">
         <Toolbar>
           <Typography variant="h6" sx={{ mr: 3 }}>
-            UC Covet
+            UC Nexus
           </Typography>
 
           <FormControl size="small" sx={{ minWidth: 200, mr: 2 }}>
