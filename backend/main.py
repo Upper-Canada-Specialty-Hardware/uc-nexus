@@ -38,7 +38,7 @@ schema = strawberry.Schema(
 
 graphql_app = GraphQLRouter(schema)
 
-app = FastAPI(title="UC Covet - Hardware Management System")
+app = FastAPI(title="UC Nexus - Hardware Management System")
 
 app.add_middleware(
     CORSMiddleware,

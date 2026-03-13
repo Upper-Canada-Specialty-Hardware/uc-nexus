@@ -39,16 +39,16 @@ jobs:
         env:
           POSTGRES_USER: ci_user
           POSTGRES_PASSWORD: ci_password
-          POSTGRES_DB: uc_covet
+          POSTGRES_DB: uc_nexus
         ports:
           - 5432:5432
         options: >-
-          --health-cmd="pg_isready -U ci_user -d uc_covet"
+          --health-cmd="pg_isready -U ci_user -d uc_nexus"
           --health-interval=10s
           --health-timeout=5s
           --health-retries=5
     env:
-      DATABASE_URL: postgresql://ci_user:ci_password@localhost:5432/uc_covet
+      DATABASE_URL: postgresql://ci_user:ci_password@localhost:5432/uc_nexus
     steps:
       - uses: actions/checkout@v4
 
@@ -83,16 +83,16 @@ jobs:
         env:
           POSTGRES_USER: ci_user
           POSTGRES_PASSWORD: ci_password
-          POSTGRES_DB: uc_covet_migrations
+          POSTGRES_DB: uc_nexus_migrations
         ports:
           - 5432:5432
         options: >-
-          --health-cmd="pg_isready -U ci_user -d uc_covet_migrations"
+          --health-cmd="pg_isready -U ci_user -d uc_nexus_migrations"
           --health-interval=10s
           --health-timeout=5s
           --health-retries=5
     env:
-      DATABASE_URL: postgresql://ci_user:ci_password@localhost:5432/uc_covet_migrations
+      DATABASE_URL: postgresql://ci_user:ci_password@localhost:5432/uc_nexus_migrations
     steps:
       - uses: actions/checkout@v4
 

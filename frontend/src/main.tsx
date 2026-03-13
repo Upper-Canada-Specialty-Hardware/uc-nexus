@@ -18,7 +18,7 @@ import './index.css';
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ApolloProvider client={client}>
-      <ThemeProvider theme={theme} defaultMode="light" modeStorageKey="uc-covet-mode">
+      <ThemeProvider theme={theme} defaultMode="light" modeStorageKey="uc-nexus-mode">
         <CssBaseline />
         <BrowserRouter>
           <RoleProvider>
