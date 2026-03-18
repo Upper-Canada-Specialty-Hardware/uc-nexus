@@ -131,6 +131,9 @@ def reconcile_schedule(
                     if pr_row.status in (PullRequestStatus.PENDING, PullRequestStatus.IN_PROGRESS):
                         buckets["ASSEMBLING"] += deduct
                         received_qty -= deduct
+                    elif pr_row.status == PullRequestStatus.COMPLETED:
+                        buckets["ASSEMBLED"] += deduct
+                        received_qty -= deduct
                 elif pr_row.source == PullRequestSource.SHIPPING_OUT:
                     if pr_row.status in (PullRequestStatus.PENDING, PullRequestStatus.IN_PROGRESS):
                         buckets["SHIPPING_OUT"] += deduct
@@ -162,6 +165,26 @@ def reconcile_schedule(
             from_received = min(extra, buckets.get("RECEIVED", 0))
             buckets["RECEIVED"] = max(0, buckets.get("RECEIVED", 0) - from_received)
             buckets["SHIPPED_OUT"] = existing_shipped + from_received
+
+        # Step 4b: Check OpeningItemHardware for assembled opening items
+        oi_assembled_stmt = (
+            select(func.sum(OpeningItemHardwareModel.quantity).label("assembled_qty"))
+            .join(OpeningItemModel, OpeningItemHardwareModel.opening_item_id == OpeningItemModel.id)
+            .where(
+                OpeningItemModel.project_id == project_id,
+                OpeningItemModel.opening_number == opening_number,
+                OpeningItemHardwareModel.product_code == product_code,
+                OpeningItemModel.state.in_([OpeningItemState.IN_INVENTORY, OpeningItemState.SHIP_READY]),
+            )
+        )
+        oi_assembled = session.execute(oi_assembled_stmt).scalar() or 0
+
+        existing_assembled = buckets.get("ASSEMBLED", 0)
+        if oi_assembled > existing_assembled:
+            extra = oi_assembled - existing_assembled
+            from_received = min(extra, buckets.get("RECEIVED", 0))
+            buckets["RECEIVED"] = max(0, buckets.get("RECEIVED", 0) - from_received)
+            buckets["ASSEMBLED"] = existing_assembled + from_received
 
         # Step 5: Calculate NOT_COVERED gap
         total_committed = sum(buckets.values())

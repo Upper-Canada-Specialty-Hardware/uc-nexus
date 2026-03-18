@@ -127,7 +127,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
       { id: 'openings', label: 'Select Openings' },
       { id: 'reconciliation', label: 'Reconciliation' },
     ];
-    if (purpose !== 'po') {
+    if (purpose === 'assembly') {
       base.push({ id: 'classification', label: 'Classification' });
     }
     if (purpose === 'po') base.push({ id: 'purchase-orders', label: 'Purchase Orders' });
@@ -238,7 +238,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     const rows = previewReconcileData?.reconcileSchedule;
     if (!rows || rows.length === 0) return undefined;
 
-    const receivedStatuses = new Set(['RECEIVED', 'ASSEMBLING', 'SHIPPING_OUT', 'SHIPPED_OUT']);
+    const receivedStatuses = new Set(['RECEIVED', 'ASSEMBLING', 'ASSEMBLED', 'SHIPPING_OUT', 'SHIPPED_OUT']);
     const orderedStatuses = new Set(['ORDERED', 'PO_DRAFTED']);
 
     const map = new Map<string, OpeningProcurementStatus>();

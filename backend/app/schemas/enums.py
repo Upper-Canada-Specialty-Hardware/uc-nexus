@@ -57,6 +57,7 @@ class ReconciliationStatus(enum.Enum):
     ORDERED = "ordered"
     RECEIVED = "received"
     ASSEMBLING = "assembling"
+    ASSEMBLED = "assembled"
     SHIPPING_OUT = "shipping_out"
     SHIPPED_OUT = "shipped_out"
     NOT_COVERED = "not_covered"
