@@ -159,6 +159,7 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
       showToast('PO marked as ordered', 'success');
       setConfirmOrderOpen(false);
       onRefetch();
+      onClose();
     },
     onError: (error) => {
       setConfirmOrderOpen(false);
