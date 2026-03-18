@@ -186,6 +186,7 @@ export default function POModule() {
   const {
     data: statsData,
     loading: statsLoading,
+    refetch: refetchStats,
   } = useQuery<{ poStatistics: POStatistics }>(GET_PO_STATISTICS, {
     variables: { projectId: project?.id },
     skip: !project?.id,
@@ -201,6 +202,7 @@ export default function POModule() {
       status: activeFilter || undefined,
     },
     skip: !project?.id,
+    fetchPolicy: 'cache-and-network',
   });
 
   const stats = statsData?.poStatistics;
@@ -228,6 +230,7 @@ export default function POModule() {
 
   const handleRefetch = () => {
     refetchPOs();
+    refetchStats();
   };
 
   // --- No project selected ---

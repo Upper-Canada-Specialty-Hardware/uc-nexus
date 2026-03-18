@@ -186,6 +186,7 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
     onCompleted: () => {
       showToast('PO cancelled', 'success');
       setConfirmCancelOpen(false);
+      onRefetch();
       onClose();
     },
     onError: (error) => {
