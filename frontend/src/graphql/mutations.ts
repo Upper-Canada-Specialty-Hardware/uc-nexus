@@ -446,6 +446,23 @@ export const UPDATE_PO_LINE_ITEM_ALIAS = gql`
   }
 `;
 
+export const UPDATE_PO_LINE_ITEM_UNIT_COST = gql`
+  mutation UpdatePOLineItemUnitCost($id: ID!, $unitCost: Float!) {
+    updatePoLineItemUnitCost(id: $id, unitCost: $unitCost) {
+      id
+      hardwareCategory
+      productCode
+      classification
+      orderedQuantity
+      receivedQuantity
+      unitCost
+      vendorAlias
+      createdAt
+      updatedAt
+    }
+  }
+`;
+
 export const MARK_NOTIFICATION_AS_READ = gql`
   mutation MarkNotificationAsRead($id: ID!) {
     markNotificationAsRead(id: $id) {

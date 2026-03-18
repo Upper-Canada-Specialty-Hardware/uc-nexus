@@ -38,6 +38,7 @@ import {
   MARK_PO_AS_ORDERED,
   CANCEL_PO,
   UPDATE_PO_LINE_ITEM_ALIAS,
+  UPDATE_PO_LINE_ITEM_UNIT_COST,
   UPLOAD_PO_DOCUMENT,
   DELETE_PO_DOCUMENT,
 } from '../../graphql/mutations';
@@ -159,6 +160,7 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
   const [vendorNameError, setVendorNameError] = useState('');
   const [poNumberError, setPoNumberError] = useState('');
   const [aliasEdits, setAliasEdits] = useState<Record<string, string>>({});
+  const [unitCostEdits, setUnitCostEdits] = useState<Record<string, string>>({});
 
   // Confirm dialog state
   const [confirmOrderOpen, setConfirmOrderOpen] = useState(false);
@@ -216,6 +218,7 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
   });
 
   const [updateAlias] = useMutation(UPDATE_PO_LINE_ITEM_ALIAS);
+  const [updateUnitCost] = useMutation(UPDATE_PO_LINE_ITEM_UNIT_COST);
 
   const [cancelPo, { loading: cancelLoading }] = useMutation(CANCEL_PO, {
     onCompleted: () => {
@@ -264,10 +267,13 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
     setVendorNameError('');
     setPoNumberError('');
     const initialAliases: Record<string, string> = {};
+    const initialUnitCosts: Record<string, string> = {};
     for (const li of po.lineItems) {
       initialAliases[li.id] = li.vendorAlias ?? '';
+      initialUnitCosts[li.id] = li.unitCost != null ? String(li.unitCost) : '';
     }
     setAliasEdits(initialAliases);
+    setUnitCostEdits(initialUnitCosts);
     setEditing(true);
   };
 
@@ -281,7 +287,7 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
     setVendorNameError('');
     setPoNumberError('');
 
-    // Save alias changes
+    // Save line item changes (alias + unit cost)
     const aliasPromises = po.lineItems
       .filter((li) => (aliasEdits[li.id] ?? '') !== (li.vendorAlias ?? ''))
       .map((li) =>
@@ -292,10 +298,25 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
           },
         }),
       );
+    const unitCostPromises = po.lineItems
+      .filter((li) => {
+        const editVal = unitCostEdits[li.id];
+        if (editVal === undefined || editVal === '') return false;
+        const parsed = parseFloat(editVal);
+        return !isNaN(parsed) && parsed > 0 && parsed !== li.unitCost;
+      })
+      .map((li) =>
+        updateUnitCost({
+          variables: {
+            id: li.id,
+            unitCost: parseFloat(unitCostEdits[li.id]),
+          },
+        }),
+      );
     try {
-      await Promise.all(aliasPromises);
+      await Promise.all([...aliasPromises, ...unitCostPromises]);
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Failed to update aliases';
+      const message = err instanceof Error ? err.message : 'Failed to update line items';
       showToast(message, 'error');
       return;
     }
@@ -343,30 +364,56 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
     deleteDocument({ variables: { documentId } });
   };
 
-  // --- Edit-mode line item columns (with editable vendor alias) ---
+  // --- Edit-mode line item columns (with editable vendor alias + unit cost) ---
+
+  const canEditItems = po.status === 'DRAFT';
 
   const editLineItemColumns = useMemo<GridColDef[]>(
     () =>
-      lineItemColumns.map((col): GridColDef =>
-        col.field === 'vendorAlias'
-          ? {
-              ...col,
-              renderCell: (params) => (
+      lineItemColumns.map((col): GridColDef => {
+        if (col.field === 'vendorAlias' && canEditItems) {
+          return {
+            ...col,
+            renderCell: (params) => (
+              <TextField
+                size="small"
+                variant="standard"
+                value={aliasEdits[params.row.id as string] ?? (params.value as string) ?? ''}
+                onChange={(e) =>
+                  setAliasEdits((prev) => ({ ...prev, [params.row.id as string]: e.target.value }))
+                }
+                fullWidth
+                slotProps={{ input: { sx: { fontSize: '0.875rem' } } }}
+              />
+            ),
+          };
+        }
+        if (col.field === 'unitCost' && canEditItems) {
+          return {
+            ...col,
+            renderCell: (params) => {
+              const val = unitCostEdits[params.row.id as string] ?? String(params.value ?? '');
+              const parsed = parseFloat(val);
+              const isInvalid = val !== '' && (isNaN(parsed) || parsed <= 0);
+              return (
                 <TextField
                   size="small"
                   variant="standard"
-                  value={aliasEdits[params.row.id as string] ?? (params.value as string) ?? ''}
+                  value={val}
                   onChange={(e) =>
-                    setAliasEdits((prev) => ({ ...prev, [params.row.id as string]: e.target.value }))
+                    setUnitCostEdits((prev) => ({ ...prev, [params.row.id as string]: e.target.value }))
                   }
+                  error={isInvalid}
                   fullWidth
                   slotProps={{ input: { sx: { fontSize: '0.875rem' } } }}
                 />
-              ),
-            }
-          : col,
-      ),
-    [aliasEdits],
+              );
+            },
+          };
+        }
+        return col;
+      }),
+    [aliasEdits, unitCostEdits, canEditItems],
   );
 
   // --- Visibility rules ---

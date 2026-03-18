@@ -227,10 +227,35 @@ def update_line_item_alias(
     if po is None:
         raise NotFoundError("Parent purchase order not found")
 
-    if po.status in (POStatus.CANCELLED, POStatus.CLOSED):
+    if po.status != POStatus.DRAFT:
         raise InvalidStateTransitionError(f"Cannot update alias on PO in {po.status.value} status")
 
     poli.vendor_alias = vendor_alias
+    return poli
+
+
+def update_line_item_unit_cost(
+    session: Session,
+    line_item_id: uuid.UUID,
+    unit_cost: float,
+) -> POLineItem:
+    """Update unit_cost on a POLineItem. Parent PO must be DRAFT."""
+    if unit_cost <= 0:
+        raise ValidationError("Unit cost must be greater than zero", field="unit_cost")
+
+    stmt = select(POLineItem).where(POLineItem.id == line_item_id)
+    poli = session.scalars(stmt).first()
+    if poli is None:
+        raise NotFoundError(f"PO line item {line_item_id} not found")
+
+    po = get_purchase_order(session, poli.po_id)
+    if po is None:
+        raise NotFoundError("Parent purchase order not found")
+
+    if po.status != POStatus.DRAFT:
+        raise InvalidStateTransitionError(f"Cannot update unit cost on PO in {po.status.value} status")
+
+    poli.unit_cost = unit_cost
     return poli
 
 

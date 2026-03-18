@@ -321,6 +321,14 @@ class Mutation:
             session.refresh(poli)
             return _po_line_item_to_type(poli)
 
+    @strawberry.mutation
+    def update_po_line_item_unit_cost(self, id: strawberry.ID, unit_cost: float) -> POLineItem:
+        with SessionLocal() as session:
+            poli = po_repository.update_line_item_unit_cost(session, uuid.UUID(str(id)), unit_cost)
+            session.commit()
+            session.refresh(poli)
+            return _po_line_item_to_type(poli)
+
     # PO Documents
     @strawberry.mutation
     def upload_po_document(
