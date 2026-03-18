@@ -103,7 +103,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
 
   // Action step state
   const [selectedVendors, setSelectedVendors] = useState<Set<string>>(new Set());
-  const [vendorPOInfo, setVendorPOInfo] = useState<Map<string, { poNumber: string; vendorContact: string }>>(new Map());
+  const [vendorPOInfo, setVendorPOInfo] = useState<Map<string, { vendorContact: string }>>(new Map());
   const [unitCostOverrides, setUnitCostOverrides] = useState<Map<string, number>>(new Map());
   const [classifications, setClassifications] = useState<Map<string, string>>(new Map());
   const [vendorAliases, setVendorAliases] = useState<Map<string, string>>(new Map());
@@ -422,10 +422,10 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
   }, []);
 
   // Vendor PO info
-  const updateVendorPO = useCallback((vendorNo: string, field: 'poNumber' | 'vendorContact', value: string) => {
+  const updateVendorPO = useCallback((vendorNo: string, field: 'vendorContact', value: string) => {
     setVendorPOInfo((prev) => {
       const next = new Map(prev);
-      const existing = next.get(vendorNo) ?? { poNumber: '', vendorContact: '' };
+      const existing = next.get(vendorNo) ?? { vendorContact: '' };
       next.set(vendorNo, { ...existing, [field]: value });
       return next;
     });
@@ -547,7 +547,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
         ? Array.from(vendorGroups.entries())
             .filter(([vendor]) => selectedVendors.has(vendor))
             .map(([vendor, items]) => {
-              const info = vendorPOInfo.get(vendor) ?? { poNumber: '', vendorContact: '' };
+              const info = vendorPOInfo.get(vendor) ?? { vendorContact: '' };
               // Collect aliases for this vendor's aggregated line items
               const seenKeys = new Set<string>();
               const lineItemAliases: Array<{ hardwareCategory: string; productCode: string; vendorAlias: string }> = [];
@@ -566,7 +566,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
                 }
               }
               return {
-                poNumber: info.poNumber,
+                poNumber: null,
                 vendorName: vendor !== '(No Vendor)' ? vendor : null,
                 vendorContact: info.vendorContact || null,
                 hardwareItemRefs: items.map((hi) => ({

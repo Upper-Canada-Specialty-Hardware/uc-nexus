@@ -13,7 +13,7 @@ from app.repositories import (
     warehouse_repository,
 )
 
-from .enums import ApproveOutcome
+from .enums import ApproveOutcome, PODocumentType
 from .inputs import (
     AssignOpeningsInput,
     CompleteOpeningInput,
@@ -26,6 +26,7 @@ from .queries import (
     _notification_to_type,
     _opening_item_to_type,
     _packing_slip_to_type,
+    _po_document_to_type,
     _po_line_item_to_type,
     _po_to_type,
     _project_to_type,
@@ -41,6 +42,7 @@ from .types import (
     InventoryLocation,
     Notification,
     OpeningItem,
+    PODocumentInfo,
     POLineItem,
     PullRequest,
     PurchaseOrder,
@@ -225,12 +227,14 @@ class Mutation:
                 .first()
             )
 
-            # Re-load POs with line_items
+            # Re-load POs with line_items and documents
             pos = []
             for po_obj in result["purchase_orders"]:
                 refreshed_po = (
                     session.scalars(
-                        select(POModel).options(selectinload(POModel.line_items)).where(POModel.id == po_obj.id)
+                        select(POModel)
+                        .options(selectinload(POModel.line_items), selectinload(POModel.documents))
+                        .where(POModel.id == po_obj.id)
                     )
                     .unique()
                     .first()
@@ -276,6 +280,8 @@ class Mutation:
         vendor_name: str | None = None,
         vendor_contact: str | None = None,
         expected_delivery_date: date | None = None,
+        po_number: str | None = None,
+        vendor_quote_number: str | None = None,
     ) -> PurchaseOrder:
         with SessionLocal() as session:
             po = po_repository.update_po(
@@ -284,6 +290,8 @@ class Mutation:
                 vendor_name,
                 vendor_contact,
                 expected_delivery_date,
+                po_number=po_number,
+                vendor_quote_number=vendor_quote_number,
             )
             session.commit()
             session.refresh(po)
@@ -312,6 +320,38 @@ class Mutation:
             session.commit()
             session.refresh(poli)
             return _po_line_item_to_type(poli)
+
+    # PO Documents
+    @strawberry.mutation
+    def upload_po_document(
+        self,
+        po_id: strawberry.ID,
+        file_name: str,
+        content_type: str,
+        document_type: PODocumentType,
+        file_data_base64: str,
+    ) -> PODocumentInfo:
+        from app.models.enums import PODocumentType as PODocTypeDB
+
+        with SessionLocal() as session:
+            doc = po_repository.upload_po_document(
+                session,
+                uuid.UUID(str(po_id)),
+                file_name,
+                content_type,
+                PODocTypeDB(document_type.value),
+                file_data_base64,
+            )
+            session.commit()
+            session.refresh(doc)
+            return _po_document_to_type(doc)
+
+    @strawberry.mutation
+    def delete_po_document(self, document_id: strawberry.ID) -> bool:
+        with SessionLocal() as session:
+            po_repository.delete_po_document(session, uuid.UUID(str(document_id)))
+            session.commit()
+            return True
 
     # Warehouse - Receiving
     @strawberry.mutation

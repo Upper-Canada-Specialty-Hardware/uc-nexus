@@ -29,10 +29,12 @@ export const GET_PURCHASE_ORDERS = gql`
     purchaseOrders(projectId: $projectId, status: $status) {
       id
       poNumber
+      requestNumber
       projectId
       status
       vendorName
       vendorContact
+      vendorQuoteNumber
       expectedDeliveryDate
       orderedAt
       createdAt
@@ -65,6 +67,16 @@ export const GET_PURCHASE_ORDERS = gql`
           quantityReceived
           createdAt
         }
+      }
+      documents {
+        id
+        poId
+        fileName
+        contentType
+        fileSize
+        documentType
+        uploadedAt
+        downloadUrl
       }
     }
   }
@@ -173,6 +185,7 @@ export const GET_PO_RECEIVING_DETAILS = gql`
     poReceivingDetails(poId: $poId) {
       id
       poNumber
+      requestNumber
       vendorName
       status
       lineItems {

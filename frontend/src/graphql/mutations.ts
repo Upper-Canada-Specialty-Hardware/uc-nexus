@@ -1,13 +1,15 @@
 import { gql } from '@apollo/client/core';
 
 export const UPDATE_PO = gql`
-  mutation UpdatePO($id: ID!, $vendorName: String, $vendorContact: String, $expectedDeliveryDate: Date) {
-    updatePo(id: $id, vendorName: $vendorName, vendorContact: $vendorContact, expectedDeliveryDate: $expectedDeliveryDate) {
+  mutation UpdatePO($id: ID!, $vendorName: String, $vendorContact: String, $expectedDeliveryDate: Date, $poNumber: String, $vendorQuoteNumber: String) {
+    updatePo(id: $id, vendorName: $vendorName, vendorContact: $vendorContact, expectedDeliveryDate: $expectedDeliveryDate, poNumber: $poNumber, vendorQuoteNumber: $vendorQuoteNumber) {
       id
       poNumber
+      requestNumber
       status
       vendorName
       vendorContact
+      vendorQuoteNumber
       expectedDeliveryDate
       orderedAt
       updatedAt
@@ -30,6 +32,16 @@ export const UPDATE_PO = gql`
           quantityReceived
         }
       }
+      documents {
+        id
+        poId
+        fileName
+        contentType
+        fileSize
+        documentType
+        uploadedAt
+        downloadUrl
+      }
     }
   }
 `;
@@ -39,10 +51,12 @@ export const MARK_PO_AS_ORDERED = gql`
     markPoAsOrdered(id: $id) {
       id
       poNumber
+      requestNumber
       status
       orderedAt
       updatedAt
       vendorName
+      vendorQuoteNumber
       lineItems {
         id
         hardwareCategory
@@ -61,6 +75,16 @@ export const MARK_PO_AS_ORDERED = gql`
           id
           quantityReceived
         }
+      }
+      documents {
+        id
+        poId
+        fileName
+        contentType
+        fileSize
+        documentType
+        uploadedAt
+        downloadUrl
       }
     }
   }
@@ -71,6 +95,7 @@ export const CANCEL_PO = gql`
     cancelPo(id: $id) {
       id
       poNumber
+      requestNumber
       status
       updatedAt
       lineItems {
@@ -91,6 +116,16 @@ export const CANCEL_PO = gql`
           id
           quantityReceived
         }
+      }
+      documents {
+        id
+        poId
+        fileName
+        contentType
+        fileSize
+        documentType
+        uploadedAt
+        downloadUrl
       }
     }
   }
@@ -356,6 +391,7 @@ export const FINALIZE_IMPORT_SESSION = gql`
       purchaseOrders {
         id
         poNumber
+        requestNumber
         status
       }
       shippingOutPullRequests {
@@ -369,6 +405,27 @@ export const FINALIZE_IMPORT_SESSION = gql`
         status
       }
     }
+  }
+`;
+
+export const UPLOAD_PO_DOCUMENT = gql`
+  mutation UploadPODocument($poId: ID!, $fileName: String!, $contentType: String!, $documentType: PODocumentType!, $fileDataBase64: String!) {
+    uploadPoDocument(poId: $poId, fileName: $fileName, contentType: $contentType, documentType: $documentType, fileDataBase64: $fileDataBase64) {
+      id
+      poId
+      fileName
+      contentType
+      fileSize
+      documentType
+      uploadedAt
+      downloadUrl
+    }
+  }
+`;
+
+export const DELETE_PO_DOCUMENT = gql`
+  mutation DeletePODocument($documentId: ID!) {
+    deletePoDocument(documentId: $documentId)
   }
 `;
 

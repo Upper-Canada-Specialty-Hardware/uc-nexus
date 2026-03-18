@@ -51,7 +51,7 @@ interface CategoryGroup {
 
 interface InventoryItemDetail {
   inventoryLocation: InventoryItem;
-  poNumber: string;
+  poNumber: string | null;
   classification: string;
 }
 

@@ -53,19 +53,33 @@ interface ReceiveRecord {
   lineItems: ReceiveRecordLineItem[];
 }
 
+export interface PODocumentInfo {
+  id: string;
+  poId: string;
+  fileName: string;
+  contentType: string;
+  fileSize: number;
+  documentType: string;
+  uploadedAt: string;
+  downloadUrl: string;
+}
+
 export interface PurchaseOrder {
   id: string;
-  poNumber: string;
+  poNumber: string | null;
+  requestNumber: string;
   projectId: string;
   status: string;
   vendorName: string | null;
   vendorContact: string | null;
+  vendorQuoteNumber: string | null;
   expectedDeliveryDate: string | null;
   orderedAt: string | null;
   createdAt: string;
   updatedAt: string;
   lineItems: POLineItem[];
   receiveRecords: ReceiveRecord[];
+  documents: PODocumentInfo[];
 }
 
 interface POStatistics {
@@ -120,9 +134,19 @@ const STAT_CARDS: StatCard[] = [
 const columns: GridColDef[] = [
   {
     field: 'poNumber',
-    headerName: 'PO Number',
+    headerName: 'PO / Request #',
     flex: 1,
-    minWidth: 140,
+    minWidth: 180,
+    renderCell: (params) => {
+      const row = params.row as PurchaseOrder;
+      if (row.poNumber) return row.poNumber;
+      return (
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+          <Typography variant="body2" color="text.secondary">{row.requestNumber}</Typography>
+          <Chip label="Draft" size="small" variant="outlined" sx={{ height: 20, fontSize: '0.7rem' }} />
+        </Box>
+      );
+    },
   },
   {
     field: 'status',

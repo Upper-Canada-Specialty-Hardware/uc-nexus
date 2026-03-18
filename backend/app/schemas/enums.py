@@ -18,6 +18,9 @@ from app.models.enums import (
     OpeningItemState as OpeningItemStateDB,
 )
 from app.models.enums import (
+    PODocumentType as PODocumentTypeDB,
+)
+from app.models.enums import (
     POStatus as POStatusDB,
 )
 from app.models.enums import (
@@ -48,6 +51,7 @@ ShopAssemblyRequestStatus = strawberry.enum(ShopAssemblyRequestStatusDB)
 PullStatus = strawberry.enum(PullStatusDB)
 AssemblyStatus = strawberry.enum(AssemblyStatusDB)
 NotificationType = strawberry.enum(NotificationTypeDB)
+PODocumentType = strawberry.enum(PODocumentTypeDB)
 
 
 # GraphQL-only enums (not stored in database)

@@ -12,7 +12,7 @@ from .notification import Notification  # noqa: E402, F401
 from .opening_item import OpeningItem, OpeningItemHardware  # noqa: E402, F401
 from .project import Opening, Project  # noqa: E402, F401
 from .pull_request import PullRequest, PullRequestItem  # noqa: E402, F401
-from .purchase_order import POLineItem, PurchaseOrder  # noqa: E402, F401
+from .purchase_order import PODocument, POLineItem, PurchaseOrder  # noqa: E402, F401
 from .receiving import ReceiveLineItem, ReceiveRecord  # noqa: E402, F401
 from .shipping import PackingSlip, PackingSlipItem  # noqa: E402, F401
 from .shop_assembly import (  # noqa: E402, F401

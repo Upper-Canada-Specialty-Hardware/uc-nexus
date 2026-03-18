@@ -16,12 +16,12 @@ interface AggregatedLineItem {
 
 interface PurchaseOrdersStepProps {
   vendorGroups: Map<string, AggregatedHardwareItem[]>;
-  vendorPOInfo: Map<string, { poNumber: string; vendorContact: string }>;
+  vendorPOInfo: Map<string, { vendorContact: string }>;
   selectedVendors: Set<string>;
   unitCostOverrides: Map<string, number>;
   vendorAliases: Map<string, string>;
   onToggleVendor: (vendor: string) => void;
-  onUpdateVendorPO: (vendorNo: string, field: 'poNumber' | 'vendorContact', value: string) => void;
+  onUpdateVendorPO: (vendorNo: string, field: 'vendorContact', value: string) => void;
   onUpdateUnitCost: (vendor: string, productCode: string, hardwareCategory: string, newCost: number) => void;
   onUpdateVendorAlias: (key: string, alias: string) => void;
   onNext: () => void;
@@ -79,13 +79,8 @@ export default function PurchaseOrdersStep({
   onBack,
 }: PurchaseOrdersStepProps) {
   const canProceed = useMemo(() => {
-    if (selectedVendors.size === 0) return false;
-    for (const vendor of selectedVendors) {
-      const info = vendorPOInfo.get(vendor);
-      if (!info || info.poNumber.trim() === '') return false;
-    }
-    return true;
-  }, [selectedVendors, vendorPOInfo]);
+    return selectedVendors.size > 0;
+  }, [selectedVendors]);
 
   const sortedVendors = useMemo(
     () => Array.from(vendorGroups.entries()).sort(([a], [b]) => a.localeCompare(b)),
@@ -98,11 +93,11 @@ export default function PurchaseOrdersStep({
         Purchase Orders
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-        {vendorGroups.size} vendor(s). Select which vendors to create POs for, then enter a PO number for each.
+        {vendorGroups.size} vendor(s). Select which vendors to create purchase orders for. PO numbers can be assigned later from Microsoft GP.
       </Typography>
 
       {sortedVendors.map(([vendor, items]) => {
-        const info = vendorPOInfo.get(vendor) ?? { poNumber: '', vendorContact: '' };
+        const info = vendorPOInfo.get(vendor) ?? { vendorContact: '' };
         const aggregated = aggregateLineItems(items, vendor, unitCostOverrides);
         const poTotal = aggregated.reduce((sum, line) => sum + line.totalCost, 0);
         const isSelected = selectedVendors.has(vendor);
@@ -129,17 +124,8 @@ export default function PurchaseOrdersStep({
               </Typography>
             </Box>
 
-            {/* PO Number + Vendor Contact fields */}
+            {/* Vendor Contact field */}
             <Box sx={{ display: 'flex', gap: 2, mb: 2 }}>
-              <TextField
-                label="PO Number"
-                size="small"
-                required
-                disabled={!isSelected}
-                value={info.poNumber}
-                onChange={(e) => onUpdateVendorPO(vendor, 'poNumber', e.target.value)}
-                sx={{ flex: 1 }}
-              />
               <TextField
                 label="Vendor Contact"
                 size="small"

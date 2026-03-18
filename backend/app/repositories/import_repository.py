@@ -336,19 +336,44 @@ def finalize_import_session(
             key = (hi["opening_number"], hi["product_code"], hi["hardware_category"])
             hw_items_lookup[key] = hi
 
+        # Generate request_number sequence for new POs
+        max_req_stmt = select(func.max(POModel.request_number)).where(POModel.request_number.like("PO-REQ-%"))
+        max_req = session.scalar(max_req_stmt)
+        next_seq = 1
+        if max_req:
+            try:
+                next_seq = int(max_req.replace("PO-REQ-", "")) + 1
+            except ValueError:
+                pass
+
         for po_draft in po_drafts:
-            # Validate PO number uniqueness
-            existing_po = session.scalars(select(POModel).where(POModel.po_number == po_draft["po_number"])).first()
-            if existing_po is not None:
-                raise ConflictError(
-                    f"Purchase order {po_draft['po_number']} already exists",
-                    field="po_number",
-                )
+            # Validate PO number uniqueness within project if provided
+            po_number = po_draft.get("po_number")
+            if po_number and po_number.strip():
+                existing_po = session.scalars(
+                    select(POModel).where(
+                        POModel.project_id == project.id,
+                        POModel.po_number == po_number,
+                        POModel.deleted_at.is_(None),
+                    )
+                ).first()
+                if existing_po is not None:
+                    raise ConflictError(
+                        f"Purchase order {po_number} already exists in this project",
+                        field="po_number",
+                    )
+            else:
+                po_number = None
+
+            # Auto-generate request_number
+            request_number = f"PO-REQ-{next_seq:03d}"
+            next_seq += 1
 
             # Create PO
             po = POModel(
                 id=uuid.uuid4(),
-                po_number=po_draft["po_number"],
+                po_number=po_number,
+                request_number=request_number,
                 project_id=project.id,
                 status=POStatus.DRAFT,
                 vendor_name=po_draft.get("vendor_name"),

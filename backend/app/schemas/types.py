@@ -9,6 +9,7 @@ from .enums import (
     HardwareItemState,
     NotificationType,
     OpeningItemState,
+    PODocumentType,
     POStatus,
     PullRequestItemType,
     PullRequestSource,
@@ -108,19 +109,34 @@ class ReceiveRecord:
 
 
 @strawberry.type
+class PODocumentInfo:
+    id: strawberry.ID
+    po_id: strawberry.ID
+    file_name: str
+    content_type: str
+    file_size: int
+    document_type: PODocumentType
+    uploaded_at: datetime
+    download_url: str
+
+
+@strawberry.type
 class PurchaseOrder:
     id: strawberry.ID
-    po_number: str
+    po_number: str | None
+    request_number: str
     project_id: strawberry.ID
     status: POStatus
     vendor_name: str | None
     vendor_contact: str | None
+    vendor_quote_number: str | None
     expected_delivery_date: date | None
     ordered_at: datetime | None
     created_at: datetime
     updated_at: datetime
     line_items: list[POLineItem]
     receive_records: list[ReceiveRecord]
+    documents: list[PODocumentInfo]
 
 
 @strawberry.type
@@ -354,7 +370,7 @@ class ShipReadyItems:
 @strawberry.type
 class InventoryItemDetail:
     inventory_location: InventoryLocation
-    po_number: str
+    po_number: str | None
     classification: Classification | None
 
 

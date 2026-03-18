@@ -58,6 +58,12 @@ class AssemblyStatus(str, enum.Enum):
     COMPLETED = "COMPLETED"
 
 
+class PODocumentType(str, enum.Enum):
+    PO_DOCUMENT = "PO_DOCUMENT"
+    VENDOR_ACKNOWLEDGEMENT = "VENDOR_ACKNOWLEDGEMENT"
+    MISCELLANEOUS = "MISCELLANEOUS"
+
+
 class NotificationType(str, enum.Enum):
     PULL_REQUEST_CANCELLED = "PULL_REQUEST_CANCELLED"
     PULL_REQUEST_COMPLETED = "PULL_REQUEST_COMPLETED"

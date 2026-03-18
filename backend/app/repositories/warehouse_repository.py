@@ -439,8 +439,12 @@ def get_po_receiving_details(session: Session, po_id: uuid.UUID) -> tuple[POMode
     Returns:
         Tuple of (po, receive_records)
     """
-    # Look up PO with line_items
-    stmt = select(POModel).options(selectinload(POModel.line_items)).where(POModel.id == po_id)
+    # Look up PO with line_items and documents
+    stmt = (
+        select(POModel)
+        .options(selectinload(POModel.line_items), selectinload(POModel.documents))
+        .where(POModel.id == po_id)
+    )
     po = session.scalars(stmt).unique().first()
     if po is None or po.deleted_at is not None:
         raise NotFoundError(f"Purchase order {po_id} not found")

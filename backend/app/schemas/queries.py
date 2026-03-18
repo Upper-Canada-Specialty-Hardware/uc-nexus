@@ -32,6 +32,7 @@ from .types import (
     OpeningHardwareStatusItem,
     OpeningItem,
     OpeningItemDetail,
+    PODocumentInfo,
     POLineItem,
     POStatistics,
     ProductCodeNode,
@@ -101,20 +102,39 @@ def _receive_record_to_type(rr) -> ReceiveRecord:
     )
 
 
+def _po_document_to_type(doc) -> PODocumentInfo:
+    from app.services import storage
+
+    return PODocumentInfo(
+        id=strawberry.ID(str(doc.id)),
+        po_id=strawberry.ID(str(doc.po_id)),
+        file_name=doc.file_name,
+        content_type=doc.content_type,
+        file_size=doc.file_size,
+        document_type=doc.document_type,
+        uploaded_at=doc.uploaded_at,
+        download_url=storage.generate_presigned_url(doc.s3_key),
+    )
+
+
 def _po_to_type(po, receive_records=None) -> PurchaseOrder:
+    documents = getattr(po, "documents", None) or []
     return PurchaseOrder(
         id=strawberry.ID(str(po.id)),
         po_number=po.po_number,
+        request_number=po.request_number,
         project_id=strawberry.ID(str(po.project_id)),
         status=po.status,
         vendor_name=po.vendor_name,
         vendor_contact=po.vendor_contact,
+        vendor_quote_number=po.vendor_quote_number,
         expected_delivery_date=po.expected_delivery_date,
         ordered_at=po.ordered_at,
         created_at=po.created_at,
         updated_at=po.updated_at,
         line_items=[_po_line_item_to_type(li) for li in po.line_items],
         receive_records=[_receive_record_to_type(rr) for rr in (receive_records or [])],
+        documents=[_po_document_to_type(doc) for doc in documents],
     )
 
 
@@ -383,6 +403,14 @@ class Query:
             return [_po_to_type(po) for po in pos]
 
     @strawberry.field
+    def po_document_download_url(self, document_id: strawberry.ID) -> str:
+        from app.services import storage
+
+        with SessionLocal() as session:
+            doc = po_repository.get_po_document(session, uuid.UUID(str(document_id)))
+            return storage.generate_presigned_url(doc.s3_key)
+
+    @strawberry.field
     def purchase_order(self, id: strawberry.ID) -> PurchaseOrder | None:
         with SessionLocal() as session:
             po = po_repository.get_purchase_order(session, uuid.UUID(str(id)))
@@ -413,7 +441,7 @@ class Query:
         with SessionLocal() as session:
             stmt = (
                 select(POModel)
-                .options(selectinload(POModel.line_items))
+                .options(selectinload(POModel.line_items), selectinload(POModel.documents))
                 .where(
                     POModel.project_id == uuid.UUID(str(project_id)),
                     POModel.deleted_at.is_(None),

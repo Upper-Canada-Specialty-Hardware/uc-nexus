@@ -45,7 +45,7 @@ interface OpenPOLineItem {
 
 interface OpenPO {
   id: string;
-  poNumber: string;
+  poNumber: string | null;
   projectId: string;
   status: string;
   vendorName: string | null;
@@ -80,7 +80,7 @@ interface ReceiveRecordData {
 
 interface PODetails {
   id: string;
-  poNumber: string;
+  poNumber: string | null;
   vendorName: string | null;
   status: string;
   lineItems: PODetailLineItem[];
@@ -210,7 +210,7 @@ export default function ReceiveWizard({ open, onClose }: ReceiveWizardProps) {
     const q = searchQuery.toLowerCase();
     return poRows.filter(
       (row) =>
-        row.poNumber.toLowerCase().includes(q) || row.vendorName.toLowerCase().includes(q),
+        (row.poNumber ?? '').toLowerCase().includes(q) || row.vendorName.toLowerCase().includes(q),
     );
   }, [poRows, searchQuery]);
 
@@ -434,7 +434,7 @@ export default function ReceiveWizard({ open, onClose }: ReceiveWizardProps) {
         await createReceive({ variables: { input } });
       } catch (err: unknown) {
         const poDetails = poDetailsMap[poId];
-        const poLabel = poDetails ? poDetails.poNumber : poId;
+        const poLabel = poDetails ? (poDetails.poNumber ?? poId) : poId;
         const message = err instanceof Error ? err.message : 'An unknown error occurred';
         setMutationError(`Error receiving ${poLabel}: ${message}`);
         return; // Stop on first error
@@ -512,7 +512,7 @@ export default function ReceiveWizard({ open, onClose }: ReceiveWizardProps) {
     return (
       <Paper key={poId} variant="outlined" sx={{ p: 2, mb: 2 }}>
         <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
-          {details.poNumber}
+          {details.poNumber ?? 'Unknown PO'}
           {details.vendorName ? ` — ${details.vendorName}` : ''}
         </Typography>
         <Box sx={{ height: 300, width: '100%' }}>
@@ -549,7 +549,7 @@ export default function ReceiveWizard({ open, onClose }: ReceiveWizardProps) {
     return (
       <Paper key={poId} variant="outlined" sx={{ p: 2, mb: 2 }}>
         <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 2 }}>
-          {details.poNumber}
+          {details.poNumber ?? 'Unknown PO'}
           {details.vendorName ? ` — ${details.vendorName}` : ''}
         </Typography>
 
