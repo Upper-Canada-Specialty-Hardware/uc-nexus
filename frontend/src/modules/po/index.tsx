@@ -173,7 +173,7 @@ function formatStatus(status: string): string {
 export default function POModule() {
   const { project } = useProject();
   const [activeFilter, setActiveFilter] = useState<StatusFilter>('');
-  const [selectedPO, setSelectedPO] = useState<PurchaseOrder | null>(null);
+  const [selectedPOId, setSelectedPOId] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
 
   const tabIndex = useMemo(
@@ -207,6 +207,7 @@ export default function POModule() {
 
   const stats = statsData?.poStatistics;
   const purchaseOrders = posData?.purchaseOrders ?? [];
+  const selectedPO = purchaseOrders.find((po) => po.id === selectedPOId) ?? null;
 
   // --- Handlers ---
 
@@ -219,13 +220,13 @@ export default function POModule() {
   };
 
   const handleRowClick = (params: GridRowParams<PurchaseOrder>) => {
-    setSelectedPO(params.row);
+    setSelectedPOId(params.row.id);
     setModalOpen(true);
   };
 
   const handleCloseModal = () => {
     setModalOpen(false);
-    setSelectedPO(null);
+    setSelectedPOId(null);
   };
 
   const handleRefetch = () => {
