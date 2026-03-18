@@ -22,7 +22,6 @@ import {
 import CloseIcon from '@mui/icons-material/Close';
 import UploadFileIcon from '@mui/icons-material/UploadFile';
 import CloudUploadIcon from '@mui/icons-material/CloudUpload';
-import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useLazyQuery, useMutation } from '@apollo/client/react';
 import { useProject } from '../../contexts/ProjectContext';
 import { useRole } from '../../contexts/RoleContext';
@@ -40,24 +39,16 @@ import {
 } from '../../graphql/queries';
 import { FINALIZE_IMPORT_SESSION } from '../../graphql/mutations';
 import type { ClassificationRow } from './ClassificationGrid';
-import type { AggregatedHardwareItem, ImportPurpose, OpeningProcurementStatus, ShippingPRDraft } from './types';
+import type { AggregatedHardwareItem, ImportPurpose, OpeningProcurementStatus, ReconciliationRow, ShippingPRDraft } from './types';
 import { aggregationKey, classificationKey } from './types';
 import SelectOpeningsStep from './SelectOpeningsStep';
+import ReconciliationStep from './ReconciliationStep';
 import ClassificationStep from './ClassificationStep';
 import PurchaseOrdersStep from './PurchaseOrdersStep';
 import ShopAssemblyStep from './ShopAssemblyStep';
 import ShippingPRsStep from './ShippingPRsStep';
 
 // ---- Local Types ----
-
-interface ReconciliationRow {
-  id: string;
-  openingNumber: string;
-  hardwareCategory: string;
-  productCode: string;
-  quantity: number;
-  status: string;
-}
 
 type StepId = 'upload' | 'purpose' | 'openings' | 'reconciliation'
   | 'classification' | 'purchase-orders' | 'shop-assembly'
@@ -118,6 +109,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
   const [vendorAliases, setVendorAliases] = useState<Map<string, string>>(new Map());
   const [sarRequestNumber, setSarRequestNumber] = useState('');
   const [shippingPRDrafts, setShippingPRDrafts] = useState<ShippingPRDraft[]>([]);
+  const [selectedReconItems, setSelectedReconItems] = useState<Set<string>>(new Set());
 
   // Finalize state
   const [finalizeLoading, setFinalizeLoading] = useState(false);
@@ -213,9 +205,15 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     [hardwareItems, selectedOpenings],
   );
 
+  // For PO re-imports, only pass through items the user checked in reconciliation
+  const reconFilteredHardwareItems = useMemo(() => {
+    if (purpose !== 'po' || !isReimport) return selectedHardwareItems;
+    return selectedHardwareItems.filter((hi) => selectedReconItems.has(aggregationKey(hi)));
+  }, [selectedHardwareItems, selectedReconItems, purpose, isReimport]);
+
   const aggregatedHardwareItems = useMemo<AggregatedHardwareItem[]>(() => {
     const map = new Map<string, AggregatedHardwareItem>();
-    for (const hi of selectedHardwareItems) {
+    for (const hi of reconFilteredHardwareItems) {
       const key = aggregationKey(hi);
       const existing = map.get(key);
       if (existing) {
@@ -227,7 +225,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
       }
     }
     return Array.from(map.values());
-  }, [selectedHardwareItems]);
+  }, [reconFilteredHardwareItems]);
 
   // Reconciliation rows for DataGrid
   const reconciliationRows = useMemo<ReconciliationRow[]>(() => {
@@ -366,6 +364,10 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
       previewReconcile({
         variables: { projectId: existingProjectId, items: Array.from(itemMap.values()) },
       });
+    }
+
+    if (effectiveStepId === 'openings') {
+      setSelectedReconItems(new Set());
     }
 
     if (effectiveStepId === 'openings' && isReimport && existingProjectId) {
@@ -696,6 +698,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     setClassifications(new Map());
     setSarRequestNumber('');
     setShippingPRDrafts([]);
+    setSelectedReconItems(new Set());
     setFinalizeLoading(false);
     setFinalizeResult(null);
     setConfirmOpen(false);
@@ -710,46 +713,10 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
   const canProceedStep0 = parser.state === 'done';
   const canProceedStep1 = purpose !== null;
   const canProceedStep2 = selectedOpenings.size > 0;
-  const canProceedStep3 = true; // Reconciliation is informational
-
-  // ---- Reconciliation DataGrid columns ----
-
-  const reconColumns: GridColDef[] = useMemo(
-    () => [
-      { field: 'openingNumber', headerName: 'Opening #', flex: 1 },
-      { field: 'productCode', headerName: 'Product Code', flex: 1 },
-      { field: 'hardwareCategory', headerName: 'Hardware Category', flex: 1 },
-      { field: 'quantity', headerName: 'Quantity', flex: 0.7, type: 'number' },
-      {
-        field: 'status',
-        headerName: 'Status',
-        flex: 1,
-        renderCell: (params) => {
-          const s = params.value as string;
-          const colorMap: Record<string, 'success' | 'warning' | 'error' | 'info' | 'default'> = {
-            PO_DRAFTED: 'info',
-            ORDERED: 'info',
-            RECEIVED: 'success',
-            ASSEMBLING: 'warning',
-            SHIPPING_OUT: 'warning',
-            SHIPPED_OUT: 'success',
-            NOT_COVERED: 'error',
-          };
-          const labelMap: Record<string, string> = {
-            PO_DRAFTED: 'PO Drafted',
-            ORDERED: 'Ordered',
-            RECEIVED: 'Received',
-            ASSEMBLING: 'Assembling',
-            SHIPPING_OUT: 'Shipping Out',
-            SHIPPED_OUT: 'Shipped Out',
-            NOT_COVERED: 'Not Covered',
-          };
-          return <Chip size="small" label={labelMap[s] ?? s} color={colorMap[s] ?? 'default'} />;
-        },
-      },
-    ],
-    [],
-  );
+  const canProceedStep3 = useMemo(() => {
+    if (purpose === 'po' && isReimport) return selectedReconItems.size > 0;
+    return true;
+  }, [purpose, isReimport, selectedReconItems]);
 
   // ---- Render ----
 
@@ -923,51 +890,18 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
 
           {/* ============ Step: Reconciliation ============ */}
           {effectiveStepId === 'reconciliation' && (
-            <Box>
-              <Typography variant="h6" sx={{ mb: 2 }}>
-                Reconciliation
-              </Typography>
-
-              {!isReimport && (
-                <Alert severity="info" sx={{ mb: 2 }}>
-                  New project -- all items will be ordered fresh. No existing records to reconcile
-                  against.
-                </Alert>
-              )}
-
-              {isReimport && reconcileLoading && (
-                <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
-                  <CircularProgress />
-                </Box>
-              )}
-
-              {isReimport && !reconcileLoading && reconciliationRows.length > 0 && (
-                <Box sx={{ height: 500, width: '100%' }}>
-                  <DataGrid
-                    rows={reconciliationRows}
-                    columns={reconColumns}
-                    pageSizeOptions={[10, 25, 50]}
-                    initialState={{
-                      pagination: { paginationModel: { pageSize: 25 } },
-                      sorting: { sortModel: [{ field: 'status', sort: 'asc' }] },
-                    }}
-                    disableRowSelectionOnClick
-                    density="compact"
-                  />
-                </Box>
-              )}
-
-              {isReimport && !reconcileLoading && reconciliationRows.length === 0 && (
-                <Alert severity="info">No existing records found for selected items.</Alert>
-              )}
-
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 3 }}>
-                <Button onClick={handleBack}>Back</Button>
-                <Button variant="contained" disabled={!canProceedStep3} onClick={handleNext}>
-                  Next
-                </Button>
-              </Box>
-            </Box>
+            <ReconciliationStep
+              isReimport={isReimport}
+              isPoPurpose={purpose === 'po'}
+              reconcileLoading={reconcileLoading}
+              reconciliationRows={reconciliationRows}
+              selectedHardwareItems={selectedHardwareItems}
+              selectedReconItems={selectedReconItems}
+              onSelectionChange={setSelectedReconItems}
+              canProceed={canProceedStep3}
+              onNext={handleNext}
+              onBack={handleBack}
+            />
           )}
 
           {/* ============ Step: Classification ============ */}
