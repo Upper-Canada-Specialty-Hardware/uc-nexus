@@ -43,6 +43,7 @@ import type { AggregatedHardwareItem, ImportPurpose, OpeningProcurementStatus, R
 import { aggregationKey, classificationKey } from './types';
 import SelectOpeningsStep from './SelectOpeningsStep';
 import ReconciliationStep from './ReconciliationStep';
+import SelectHardwareItemsStep from './SelectHardwareItemsStep';
 import ClassificationStep from './ClassificationStep';
 import PurchaseOrdersStep from './PurchaseOrdersStep';
 import ShopAssemblyStep from './ShopAssemblyStep';
@@ -50,7 +51,7 @@ import ShippingPRsStep from './ShippingPRsStep';
 
 // ---- Local Types ----
 
-type StepId = 'upload' | 'purpose' | 'openings' | 'reconciliation'
+type StepId = 'upload' | 'purpose' | 'openings' | 'reconciliation' | 'select-items'
   | 'classification' | 'purchase-orders' | 'shop-assembly'
   | 'shipping-prs' | 'finalize';
 
@@ -110,6 +111,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
   const [sarRequestNumber, setSarRequestNumber] = useState('');
   const [shippingPRDrafts, setShippingPRDrafts] = useState<ShippingPRDraft[]>([]);
   const [selectedReconItems, setSelectedReconItems] = useState<Set<string>>(new Set());
+  const [selectedItemKeys, setSelectedItemKeys] = useState<Set<string>>(new Set());
 
   // Finalize state
   const [finalizeLoading, setFinalizeLoading] = useState(false);
@@ -126,6 +128,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
       { id: 'purpose', label: 'Purpose' },
       { id: 'openings', label: 'Select Openings' },
       { id: 'reconciliation', label: 'Reconciliation' },
+      { id: 'select-items', label: 'Select Items' },
     ];
     if (purpose === 'assembly') {
       base.push({ id: 'classification', label: 'Classification' });
@@ -211,7 +214,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     return selectedHardwareItems.filter((hi) => selectedReconItems.has(aggregationKey(hi)));
   }, [selectedHardwareItems, selectedReconItems, purpose, isReimport]);
 
-  const aggregatedHardwareItems = useMemo<AggregatedHardwareItem[]>(() => {
+  const allAggregatedItems = useMemo<AggregatedHardwareItem[]>(() => {
     const map = new Map<string, AggregatedHardwareItem>();
     for (const hi of reconFilteredHardwareItems) {
       const key = aggregationKey(hi);
@@ -226,6 +229,11 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     }
     return Array.from(map.values());
   }, [reconFilteredHardwareItems]);
+
+  const aggregatedHardwareItems = useMemo(
+    () => allAggregatedItems.filter((hi) => selectedItemKeys.has(aggregationKey(hi))),
+    [allAggregatedItems, selectedItemKeys],
+  );
 
   // Reconciliation rows for DataGrid
   const reconciliationRows = useMemo<ReconciliationRow[]>(() => {
@@ -368,6 +376,11 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
 
     if (effectiveStepId === 'openings') {
       setSelectedReconItems(new Set());
+      setSelectedItemKeys(new Set());
+    }
+
+    if (effectiveStepId === 'reconciliation') {
+      setSelectedItemKeys(new Set());
     }
 
     if (effectiveStepId === 'openings' && isReimport && existingProjectId) {
@@ -524,8 +537,13 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
 
   const buildFinalizeInput = useCallback(() => {
     if (!parsed) return null;
-    const selectedOpeningsList = parsed.openings.filter((o) => selectedOpenings.has(o.opening_number));
-    const filteredHardwareItems = parsed.hardwareItems.filter((hi) => selectedOpenings.has(hi.opening_number));
+    const openingNumbersFromItems = new Set(aggregatedHardwareItems.map((hi) => hi.opening_number));
+    const selectedOpeningsList = parsed.openings.filter(
+      (o) => selectedOpenings.has(o.opening_number) && openingNumbersFromItems.has(o.opening_number),
+    );
+    const filteredHardwareItems = parsed.hardwareItems.filter(
+      (hi) => selectedOpenings.has(hi.opening_number) && selectedItemKeys.has(aggregationKey(hi)),
+    );
 
     return {
       project: snakeToCamel(parsed.project as unknown as Record<string, unknown>),
@@ -632,7 +650,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
             .filter(Boolean)
         : null,
     };
-  }, [parsed, selectedOpenings, purpose, aggregatedHardwareItems, vendorGroups, vendorPOInfo, selectedVendors, unitCostOverrides, vendorAliases, classifications, shippingPRDrafts, sarRequestNumber]);
+  }, [parsed, selectedOpenings, selectedItemKeys, purpose, aggregatedHardwareItems, vendorGroups, vendorPOInfo, selectedVendors, unitCostOverrides, vendorAliases, classifications, shippingPRDrafts, sarRequestNumber]);
 
   const handleFinalize = useCallback(async () => {
     setConfirmOpen(false);
@@ -699,6 +717,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     setSarRequestNumber('');
     setShippingPRDrafts([]);
     setSelectedReconItems(new Set());
+    setSelectedItemKeys(new Set());
     setFinalizeLoading(false);
     setFinalizeResult(null);
     setConfirmOpen(false);
@@ -717,6 +736,8 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     if (purpose === 'po' && isReimport) return selectedReconItems.size > 0;
     return true;
   }, [purpose, isReimport, selectedReconItems]);
+
+  const canProceedSelectItems = selectedItemKeys.size > 0;
 
   // ---- Render ----
 
@@ -899,6 +920,18 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
               selectedReconItems={selectedReconItems}
               onSelectionChange={setSelectedReconItems}
               canProceed={canProceedStep3}
+              onNext={handleNext}
+              onBack={handleBack}
+            />
+          )}
+
+          {/* ============ Step: Select Items ============ */}
+          {effectiveStepId === 'select-items' && (
+            <SelectHardwareItemsStep
+              allAggregatedItems={allAggregatedItems}
+              selectedItemKeys={selectedItemKeys}
+              onSelectionChange={setSelectedItemKeys}
+              canProceed={canProceedSelectItems}
               onNext={handleNext}
               onBack={handleBack}
             />

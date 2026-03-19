@@ -46,3 +46,7 @@ export interface ReconciliationRow {
 export function classificationKey(hi: { hardware_category: string; product_code: string; unit_cost: number | null }) {
   return `${hi.hardware_category}|${hi.product_code}|${hi.unit_cost ?? 0}`;
 }
+
+export function itemGroupKey(hi: { hardware_category: string; product_code: string }) {
+  return `${hi.hardware_category}|${hi.product_code}`;
+}
