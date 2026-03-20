@@ -41,9 +41,8 @@ import { FINALIZE_IMPORT_SESSION } from '../../graphql/mutations';
 import type { ClassificationRow } from './ClassificationGrid';
 import type { AggregatedHardwareItem, ImportPurpose, OpeningProcurementStatus, ReconciliationRow, ShippingPRDraft } from './types';
 import { aggregationKey, classificationKey } from './types';
-import SelectOpeningsStep from './SelectOpeningsStep';
+import SelectOpeningsHardwareStep from './SelectOpeningsHardwareStep';
 import ReconciliationStep from './ReconciliationStep';
-import SelectHardwareItemsStep from './SelectHardwareItemsStep';
 import ClassificationStep from './ClassificationStep';
 import PurchaseOrdersStep from './PurchaseOrdersStep';
 import ShopAssemblyStep from './ShopAssemblyStep';
@@ -51,7 +50,7 @@ import ShippingPRsStep from './ShippingPRsStep';
 
 // ---- Local Types ----
 
-type StepId = 'upload' | 'purpose' | 'openings' | 'reconciliation' | 'select-items'
+type StepId = 'upload' | 'purpose' | 'openings' | 'reconciliation'
   | 'classification' | 'purchase-orders' | 'shop-assembly'
   | 'shipping-prs' | 'finalize';
 
@@ -126,9 +125,8 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     const base: StepDescriptor[] = [
       { id: 'upload', label: 'Upload File' },
       { id: 'purpose', label: 'Purpose' },
-      { id: 'openings', label: 'Select Openings' },
+      { id: 'openings', label: 'Select Openings/Hardware' },
       { id: 'reconciliation', label: 'Reconciliation' },
-      { id: 'select-items', label: 'Select Items' },
     ];
     if (purpose === 'assembly') {
       base.push({ id: 'classification', label: 'Classification' });
@@ -207,6 +205,23 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     () => hardwareItems.filter((hi) => selectedOpenings.has(hi.opening_number)),
     [hardwareItems, selectedOpenings],
   );
+
+  // Pre-reconciliation aggregated items (for display in combined openings/hardware step)
+  const preReconAggregatedItems = useMemo<AggregatedHardwareItem[]>(() => {
+    const map = new Map<string, AggregatedHardwareItem>();
+    for (const hi of selectedHardwareItems) {
+      const key = aggregationKey(hi);
+      const existing = map.get(key);
+      if (existing) {
+        existing.item_quantity += hi.item_quantity;
+      } else {
+        const { material_id, ...rest } = hi;
+        void material_id;
+        map.set(key, { ...rest });
+      }
+    }
+    return Array.from(map.values());
+  }, [selectedHardwareItems]);
 
   // For PO re-imports, only pass through items the user checked in reconciliation
   const reconFilteredHardwareItems = useMemo(() => {
@@ -376,11 +391,6 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
 
     if (effectiveStepId === 'openings') {
       setSelectedReconItems(new Set());
-      setSelectedItemKeys(new Set());
-    }
-
-    if (effectiveStepId === 'reconciliation') {
-      setSelectedItemKeys(new Set());
     }
 
     if (effectiveStepId === 'openings' && isReimport && existingProjectId) {
@@ -416,10 +426,24 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
 
   // ---- Step-specific handlers ----
 
-  // Opening selection
-  const handleOpeningSelectionChange = useCallback((selected: Set<string>) => {
-    setSelectedOpenings(selected);
-  }, []);
+  // Opening selection — auto-manage selectedItemKeys when openings change
+  const handleOpeningSelectionChange = useCallback((newSelected: Set<string>) => {
+    const added = new Set([...newSelected].filter((o) => !selectedOpenings.has(o)));
+    const removed = new Set([...selectedOpenings].filter((o) => !newSelected.has(o)));
+    setSelectedOpenings(newSelected);
+    setSelectedItemKeys((prev) => {
+      const next = new Set(prev);
+      // Remove items from unchecked openings
+      for (const key of prev) {
+        if (removed.has(key.split('|')[0])) next.delete(key);
+      }
+      // Auto-add items from newly checked openings
+      for (const hi of hardwareItems) {
+        if (added.has(hi.opening_number)) next.add(aggregationKey(hi));
+      }
+      return next;
+    });
+  }, [selectedOpenings, hardwareItems]);
 
   // Vendor selection
   const toggleVendor = useCallback((vendor: string) => {
@@ -731,13 +755,11 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
 
   const canProceedStep0 = parser.state === 'done';
   const canProceedStep1 = purpose !== null;
-  const canProceedStep2 = selectedOpenings.size > 0;
+  const canProceedStep2 = selectedOpenings.size > 0 && selectedItemKeys.size > 0;
   const canProceedStep3 = useMemo(() => {
     if (purpose === 'po' && isReimport) return selectedReconItems.size > 0;
     return true;
   }, [purpose, isReimport, selectedReconItems]);
-
-  const canProceedSelectItems = selectedItemKeys.size > 0;
 
   // ---- Render ----
 
@@ -894,13 +916,16 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
             </Box>
           )}
 
-          {/* ============ Step: Select Openings ============ */}
+          {/* ============ Step: Select Openings/Hardware ============ */}
           {effectiveStepId === 'openings' && (
-            <SelectOpeningsStep
+            <SelectOpeningsHardwareStep
               openings={openings}
               selectedOpenings={selectedOpenings}
+              preReconAggregatedItems={preReconAggregatedItems}
+              selectedItemKeys={selectedItemKeys}
               hardwareCountByOpening={hardwareCountByOpening}
-              onSelectionChange={handleOpeningSelectionChange}
+              onOpeningSelectionChange={handleOpeningSelectionChange}
+              onItemSelectionChange={setSelectedItemKeys}
               canProceed={canProceedStep2}
               onNext={handleNext}
               onBack={handleBack}
@@ -920,18 +945,6 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
               selectedReconItems={selectedReconItems}
               onSelectionChange={setSelectedReconItems}
               canProceed={canProceedStep3}
-              onNext={handleNext}
-              onBack={handleBack}
-            />
-          )}
-
-          {/* ============ Step: Select Items ============ */}
-          {effectiveStepId === 'select-items' && (
-            <SelectHardwareItemsStep
-              allAggregatedItems={allAggregatedItems}
-              selectedItemKeys={selectedItemKeys}
-              onSelectionChange={setSelectedItemKeys}
-              canProceed={canProceedSelectItems}
               onNext={handleNext}
               onBack={handleBack}
             />
