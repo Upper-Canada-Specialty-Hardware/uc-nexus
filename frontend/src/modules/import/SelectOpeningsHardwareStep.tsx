@@ -1,0 +1,413 @@
+import { useMemo, useCallback } from 'react';
+import {
+  Box,
+  Typography,
+  Button,
+  Accordion,
+  AccordionSummary,
+  AccordionDetails,
+  Checkbox,
+  Chip,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableRow,
+  Alert,
+} from '@mui/material';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import { DataGrid, type GridColDef, type GridRowSelectionModel } from '@mui/x-data-grid';
+import type { ParsedOpening } from '../../types/hardwareSchedule';
+import type { AggregatedHardwareItem, OpeningProcurementStatus } from './types';
+import { aggregationKey, itemGroupKey } from './types';
+
+// ---- Helpers ----
+
+function getProcurementSummary(status: OpeningProcurementStatus): string {
+  if (status.totalItems === 0) return '';
+  if (status.received === status.totalItems) return 'All Received';
+  if (status.notCovered === status.totalItems) return 'Not Ordered';
+  if (status.notCovered === 0) return 'In Progress';
+  return 'Partial';
+}
+
+type ChipColor = 'success' | 'info' | 'warning' | 'error' | 'default';
+
+function getSummaryChipColor(summary: string): ChipColor {
+  switch (summary) {
+    case 'All Received': return 'success';
+    case 'In Progress': return 'info';
+    case 'Partial': return 'warning';
+    case 'Not Ordered': return 'error';
+    default: return 'default';
+  }
+}
+
+// ---- Row type ----
+
+interface OpeningRow extends ParsedOpening {
+  id: string;
+  hardwareCount: number;
+  procurementReceived?: number;
+  procurementOrdered?: number;
+  procurementNotCovered?: number;
+  procurementSummary?: string;
+}
+
+// ---- Props ----
+
+interface SelectOpeningsHardwareStepProps {
+  openings: ParsedOpening[];
+  selectedOpenings: Set<string>;
+  preReconAggregatedItems: AggregatedHardwareItem[];
+  selectedItemKeys: Set<string>;
+  hardwareCountByOpening: Map<string, number>;
+  onOpeningSelectionChange: (selected: Set<string>) => void;
+  onItemSelectionChange: (selected: Set<string>) => void;
+  canProceed: boolean;
+  onNext: () => void;
+  onBack: () => void;
+  openingStatusMap?: Map<string, OpeningProcurementStatus>;
+  statusLoading?: boolean;
+}
+
+// ---- Main Component ----
+
+export default function SelectOpeningsHardwareStep({
+  openings,
+  selectedOpenings,
+  preReconAggregatedItems,
+  selectedItemKeys,
+  hardwareCountByOpening,
+  onOpeningSelectionChange,
+  onItemSelectionChange,
+  canProceed,
+  onNext,
+  onBack,
+  openingStatusMap,
+  statusLoading,
+}: SelectOpeningsHardwareStepProps) {
+  // ---- Left Panel: Openings DataGrid ----
+
+  const rows = useMemo<OpeningRow[]>(() => {
+    return openings.map((o) => {
+      const row: OpeningRow = {
+        ...o,
+        id: o.opening_number,
+        hardwareCount: hardwareCountByOpening.get(o.opening_number) ?? 0,
+      };
+      if (openingStatusMap) {
+        const status = openingStatusMap.get(o.opening_number);
+        if (status) {
+          row.procurementReceived = status.received;
+          row.procurementOrdered = status.ordered;
+          row.procurementNotCovered = status.notCovered;
+          row.procurementSummary = getProcurementSummary(status);
+        }
+      }
+      return row;
+    });
+  }, [openings, hardwareCountByOpening, openingStatusMap]);
+
+  const columns = useMemo<GridColDef<OpeningRow>[]>(() => {
+    const base: GridColDef<OpeningRow>[] = [
+      { field: 'opening_number', headerName: 'Opening #', width: 110 },
+      { field: 'building', headerName: 'Building', width: 100 },
+      { field: 'floor', headerName: 'Floor', width: 80 },
+      { field: 'location', headerName: 'Location', width: 110 },
+      { field: 'location_to', headerName: 'Location To', width: 120 },
+      { field: 'location_from', headerName: 'Location From', width: 120 },
+      { field: 'hand', headerName: 'Hand', width: 70 },
+      { field: 'single_pair', headerName: 'Single/Pair', width: 100 },
+      { field: 'width', headerName: 'Width', width: 70 },
+      { field: 'length', headerName: 'Length', width: 70 },
+      { field: 'door_thickness', headerName: 'Door Thickness', width: 120 },
+      { field: 'jamb_thickness', headerName: 'Jamb Thickness', width: 120 },
+      { field: 'door_type', headerName: 'Door Type', width: 100 },
+      { field: 'frame_type', headerName: 'Frame Type', width: 100 },
+      { field: 'interior_exterior', headerName: 'Int/Ext', width: 80 },
+      { field: 'keying', headerName: 'Keying', width: 100 },
+      { field: 'heading_no', headerName: 'Heading #', width: 100 },
+      { field: 'assignment_multiplier', headerName: 'Multiplier', width: 90 },
+      { field: 'hardwareCount', headerName: 'Hardware Items', width: 120, type: 'number' },
+    ];
+
+    if (openingStatusMap) {
+      base.push(
+        {
+          field: 'procurementSummary',
+          headerName: 'Procurement',
+          width: 140,
+          renderCell: (params) => {
+            const label = params.value as string | undefined;
+            if (!label) return null;
+            return <Chip size="small" label={label} color={getSummaryChipColor(label)} />;
+          },
+        },
+        { field: 'procurementReceived', headerName: 'Received', width: 90, type: 'number' },
+        { field: 'procurementOrdered', headerName: 'Ordered', width: 90, type: 'number' },
+        {
+          field: 'procurementNotCovered',
+          headerName: 'Not Covered',
+          width: 100,
+          type: 'number',
+          renderCell: (params) => {
+            const val = params.value as number | undefined;
+            if (val == null) return null;
+            if (val > 0) return <Chip size="small" label={val} color="error" />;
+            return val;
+          },
+        },
+      );
+    }
+
+    return base;
+  }, [openingStatusMap]);
+
+  const rowSelectionModel = useMemo<GridRowSelectionModel>(
+    () => ({ type: 'include' as const, ids: new Set<string>(selectedOpenings) }),
+    [selectedOpenings],
+  );
+
+  const handleGridSelectionChange = useCallback(
+    (model: GridRowSelectionModel) => {
+      onOpeningSelectionChange(new Set(model.ids as Set<string>));
+    },
+    [onOpeningSelectionChange],
+  );
+
+  const handleSelectAllOpenings = useCallback(() => {
+    onOpeningSelectionChange(new Set(openings.map((o) => o.opening_number)));
+  }, [openings, onOpeningSelectionChange]);
+
+  const handleDeselectAllOpenings = useCallback(() => {
+    onOpeningSelectionChange(new Set());
+  }, [onOpeningSelectionChange]);
+
+  // ---- Right Panel: Hardware Items Accordion ----
+
+  const groups = useMemo(() => {
+    const map = new Map<string, AggregatedHardwareItem[]>();
+    for (const item of preReconAggregatedItems) {
+      const key = itemGroupKey(item);
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(item);
+    }
+    return Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b));
+  }, [preReconAggregatedItems]);
+
+  const itemTotalCount = preReconAggregatedItems.length;
+  const itemSelectedCount = useMemo(
+    () => preReconAggregatedItems.filter((hi) => selectedItemKeys.has(aggregationKey(hi))).length,
+    [preReconAggregatedItems, selectedItemKeys],
+  );
+
+  const handleSelectAllItems = useCallback(() => {
+    const next = new Set(selectedItemKeys);
+    for (const hi of preReconAggregatedItems) {
+      next.add(aggregationKey(hi));
+    }
+    onItemSelectionChange(next);
+  }, [preReconAggregatedItems, selectedItemKeys, onItemSelectionChange]);
+
+  const handleDeselectAllItems = useCallback(() => {
+    const keysToRemove = new Set(preReconAggregatedItems.map((hi) => aggregationKey(hi)));
+    const next = new Set([...selectedItemKeys].filter((k) => !keysToRemove.has(k)));
+    onItemSelectionChange(next);
+  }, [preReconAggregatedItems, selectedItemKeys, onItemSelectionChange]);
+
+  const toggleItem = useCallback(
+    (key: string) => {
+      const next = new Set(selectedItemKeys);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      onItemSelectionChange(next);
+    },
+    [selectedItemKeys, onItemSelectionChange],
+  );
+
+  const toggleGroup = useCallback(
+    (groupItems: AggregatedHardwareItem[]) => {
+      const groupKeys = groupItems.map((hi) => aggregationKey(hi));
+      const allSelected = groupKeys.every((k) => selectedItemKeys.has(k));
+      const next = new Set(selectedItemKeys);
+      if (allSelected) {
+        for (const k of groupKeys) next.delete(k);
+      } else {
+        for (const k of groupKeys) next.add(k);
+      }
+      onItemSelectionChange(next);
+    },
+    [selectedItemKeys, onItemSelectionChange],
+  );
+
+  return (
+    <Box>
+      {statusLoading && (
+        <Alert severity="info" sx={{ mb: 1 }}>
+          Loading procurement status...
+        </Alert>
+      )}
+
+      <Box sx={{ display: 'flex', gap: 2, height: 'calc(100vh - 260px)', minHeight: 400 }}>
+        {/* ---- Left Panel: Openings ---- */}
+        <Box sx={{ flex: '1 1 55%', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+          <Typography variant="h6" sx={{ mb: 1 }}>
+            Openings
+          </Typography>
+          <Box sx={{ display: 'flex', gap: 1, mb: 1, alignItems: 'center' }}>
+            <Button size="small" variant="outlined" onClick={handleSelectAllOpenings}>
+              Select All
+            </Button>
+            <Button size="small" variant="outlined" onClick={handleDeselectAllOpenings}>
+              Deselect All
+            </Button>
+            <Typography variant="body2" color="text.secondary">
+              {selectedOpenings.size} of {openings.length} selected
+            </Typography>
+          </Box>
+          <Box sx={{ flex: 1, minHeight: 0 }}>
+            <DataGrid
+              rows={rows}
+              columns={columns}
+              checkboxSelection
+              rowSelectionModel={rowSelectionModel}
+              onRowSelectionModelChange={handleGridSelectionChange}
+              keepNonExistentRowsSelected
+              density="compact"
+              pageSizeOptions={[25, 50, 100]}
+              initialState={{
+                pagination: { paginationModel: { pageSize: 50 } },
+                columns: {
+                  columnVisibilityModel: {
+                    location_to: false,
+                    location_from: false,
+                    single_pair: false,
+                    width: false,
+                    length: false,
+                    door_thickness: false,
+                    jamb_thickness: false,
+                    interior_exterior: false,
+                    keying: false,
+                    heading_no: false,
+                    assignment_multiplier: false,
+                  },
+                },
+              }}
+              disableRowSelectionOnClick
+            />
+          </Box>
+        </Box>
+
+        {/* ---- Right Panel: Hardware Items ---- */}
+        <Box sx={{ flex: '1 1 45%', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
+            <Typography variant="h6">
+              Hardware Items
+              <Typography component="span" variant="body2" color="text.secondary" sx={{ ml: 1 }}>
+                ({itemSelectedCount} of {itemTotalCount} selected)
+              </Typography>
+            </Typography>
+            <Box sx={{ display: 'flex', gap: 1 }}>
+              <Button size="small" variant="outlined" onClick={handleSelectAllItems} disabled={itemTotalCount === 0}>
+                Select All
+              </Button>
+              <Button size="small" variant="outlined" onClick={handleDeselectAllItems} disabled={itemSelectedCount === 0}>
+                Deselect All
+              </Button>
+            </Box>
+          </Box>
+
+          <Box sx={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
+            {selectedOpenings.size === 0 ? (
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 2, textAlign: 'center' }}>
+                Select openings to see hardware items
+              </Typography>
+            ) : groups.length === 0 ? (
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 2, textAlign: 'center' }}>
+                No hardware items for selected openings
+              </Typography>
+            ) : (
+              groups.map(([groupKey, items]) => {
+                const [category, productCode] = groupKey.split('|');
+                const groupKeys = items.map((hi) => aggregationKey(hi));
+                const selectedInGroup = groupKeys.filter((k) => selectedItemKeys.has(k)).length;
+                const allSelected = selectedInGroup === items.length;
+                const someSelected = selectedInGroup > 0 && !allSelected;
+
+                return (
+                  <Accordion key={groupKey} defaultExpanded={false}>
+                    <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%' }}>
+                        <Checkbox
+                          checked={allSelected}
+                          indeterminate={someSelected}
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={() => toggleGroup(items)}
+                          size="small"
+                        />
+                        <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+                          {productCode}
+                        </Typography>
+                        <Chip label={category} size="small" variant="outlined" />
+                        <Typography variant="body2" color="text.secondary" sx={{ ml: 'auto', mr: 2 }}>
+                          {selectedInGroup}/{items.length}
+                        </Typography>
+                      </Box>
+                    </AccordionSummary>
+                    <AccordionDetails sx={{ p: 0 }}>
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow>
+                            <TableCell padding="checkbox" />
+                            <TableCell>Opening</TableCell>
+                            <TableCell align="right">Qty</TableCell>
+                            <TableCell>Vendor</TableCell>
+                            <TableCell align="right">Unit Cost</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {items.map((hi) => {
+                            const key = aggregationKey(hi);
+                            return (
+                              <TableRow key={key} hover>
+                                <TableCell padding="checkbox">
+                                  <Checkbox
+                                    checked={selectedItemKeys.has(key)}
+                                    onChange={() => toggleItem(key)}
+                                    size="small"
+                                  />
+                                </TableCell>
+                                <TableCell>{hi.opening_number}</TableCell>
+                                <TableCell align="right">{hi.item_quantity}</TableCell>
+                                <TableCell>{hi.vendor_no ?? '(No Vendor)'}</TableCell>
+                                <TableCell align="right">
+                                  {hi.unit_cost != null ? `$${hi.unit_cost.toFixed(2)}` : '\u2014'}
+                                </TableCell>
+                              </TableRow>
+                            );
+                          })}
+                        </TableBody>
+                      </Table>
+                    </AccordionDetails>
+                  </Accordion>
+                );
+              })
+            )}
+          </Box>
+        </Box>
+      </Box>
+
+      {/* Bottom Navigation */}
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 2 }}>
+        <Button onClick={onBack}>Back</Button>
+        <Button variant="contained" disabled={!canProceed} onClick={onNext}>
+          Next
+        </Button>
+      </Box>
+    </Box>
+  );
+}
