@@ -422,3 +422,13 @@ class OpeningHardwareStatus:
     floor: str | None
     location: str | None
     items: list[OpeningHardwareStatusItem]
+
+
+@strawberry.type
+class ClerkUser:
+    id: str
+    first_name: str
+    last_name: str
+    email: str
+    roles: list[str]
+    image_url: str

@@ -2,14 +2,13 @@ import React, { Suspense } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { Box, Typography, CircularProgress, Container, Grid, Card, CardContent, CardActionArea } from '@mui/material';
 import { useNavigate } from 'react-router-dom';
+import { SignedIn, SignedOut, SignIn, RedirectToSignIn } from '@clerk/clerk-react';
 import UploadFileIcon from '@mui/icons-material/UploadFile';
 import ReceiptLongIcon from '@mui/icons-material/ReceiptLong';
 import WarehouseIcon from '@mui/icons-material/Warehouse';
 import BuildIcon from '@mui/icons-material/Build';
 import LocalShippingIcon from '@mui/icons-material/LocalShipping';
 import AdminPanelSettingsIcon from '@mui/icons-material/AdminPanelSettings';
-import { useRole } from './contexts/RoleContext';
-import RoleSelectionPage from './pages/RoleSelectionPage';
 import AppLayout from './components/AppLayout';
 
 // Lazy-loaded module imports
@@ -21,9 +20,12 @@ const ShippingModule = React.lazy(() => import('./modules/shipping'));
 const AdminModule = React.lazy(() => import('./modules/admin'));
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  const { role } = useRole();
-  if (!role) return <Navigate to="/" replace />;
-  return <>{children}</>;
+  return (
+    <>
+      <SignedIn>{children}</SignedIn>
+      <SignedOut><RedirectToSignIn /></SignedOut>
+    </>
+  );
 }
 
 function SuspenseFallback() {
@@ -77,10 +79,23 @@ function ModuleSelector() {
   );
 }
 
+function SignInPage() {
+  return (
+    <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh' }}>
+      <SignIn routing="hash" />
+    </Box>
+  );
+}
+
 function App() {
   return (
     <Routes>
-      <Route path="/" element={<RoleSelectionPage />} />
+      <Route path="/" element={
+        <>
+          <SignedIn><Navigate to="/app" replace /></SignedIn>
+          <SignedOut><SignInPage /></SignedOut>
+        </>
+      } />
       <Route
         path="/app"
         element={
@@ -97,7 +112,7 @@ function App() {
         <Route path="shipping/*" element={<Suspense fallback={<SuspenseFallback />}><ShippingModule /></Suspense>} />
         <Route path="admin/*" element={<Suspense fallback={<SuspenseFallback />}><AdminModule /></Suspense>} />
       </Route>
-      <Route path="*" element={<Navigate to="/" replace />} />
+      <Route path="*" element={<Navigate to="/app" replace />} />
     </Routes>
   );
 }

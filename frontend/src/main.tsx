@@ -2,10 +2,10 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import { ApolloProvider } from '@apollo/client/react';
+import { ClerkProvider } from '@clerk/clerk-react';
 import { ThemeProvider, CssBaseline } from '@mui/material';
 import theme from './theme';
 import client from './apollo';
-import { RoleProvider } from './contexts/RoleContext';
 import { ProjectProvider } from './contexts/ProjectContext';
 import { WizardProvider } from './contexts/WizardContext';
 import { CartProvider } from './contexts/CartContext';
@@ -15,13 +15,19 @@ import App from './App';
 import '@fontsource-variable/source-sans-3';
 import './index.css';
 
+const CLERK_PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
+
+if (!CLERK_PUBLISHABLE_KEY) {
+  throw new Error('Missing VITE_CLERK_PUBLISHABLE_KEY environment variable');
+}
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <ApolloProvider client={client}>
-      <ThemeProvider theme={theme} defaultMode="light" modeStorageKey="uc-nexus-mode">
-        <CssBaseline />
-        <BrowserRouter>
-          <RoleProvider>
+    <ClerkProvider publishableKey={CLERK_PUBLISHABLE_KEY}>
+      <ApolloProvider client={client}>
+        <ThemeProvider theme={theme} defaultMode="light" modeStorageKey="uc-nexus-mode">
+          <CssBaseline />
+          <BrowserRouter>
             <ProjectProvider>
               <WizardProvider>
                 <CartProvider>
@@ -31,9 +37,9 @@ createRoot(document.getElementById('root')!).render(
                 </CartProvider>
               </WizardProvider>
             </ProjectProvider>
-          </RoleProvider>
-        </BrowserRouter>
-      </ThemeProvider>
-    </ApolloProvider>
+          </BrowserRouter>
+        </ThemeProvider>
+      </ApolloProvider>
+    </ClerkProvider>
   </StrictMode>,
 );

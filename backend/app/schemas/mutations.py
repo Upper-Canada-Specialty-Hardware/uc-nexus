@@ -10,6 +10,7 @@ from app.repositories import (
     po_repository,
     shipping_repository,
     shop_assembly_repository,
+    user_repository,
     warehouse_repository,
 )
 
@@ -38,6 +39,7 @@ from .queries import (
 from .types import (
     ApproveResult,
     ApproveShopAssemblyResult,
+    ClerkUser,
     FinalizeImportResult,
     InventoryLocation,
     Notification,
@@ -688,3 +690,15 @@ class Mutation:
             stmt = select(OIModel).options(selectinload(OIModel.installed_hardware)).where(OIModel.id == result.id)
             refreshed = session.scalars(stmt).unique().first()
             return _opening_item_to_type(refreshed)
+
+    @strawberry.mutation
+    def update_user_roles(self, user_id: str, roles: list[str]) -> ClerkUser:
+        result = user_repository.update_user_roles(user_id, roles)
+        return ClerkUser(
+            id=result["id"],
+            first_name=result["first_name"],
+            last_name=result["last_name"],
+            email=result["email"],
+            roles=result["roles"],
+            image_url=result["image_url"],
+        )

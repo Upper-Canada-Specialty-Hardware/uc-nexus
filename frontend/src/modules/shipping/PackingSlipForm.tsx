@@ -6,7 +6,7 @@ import {
 import { useMutation } from '@apollo/client/react';
 import { pdf } from '@react-pdf/renderer';
 import { useProject } from '../../contexts/ProjectContext';
-import { useRole } from '../../contexts/RoleContext';
+import { useIdentity } from '../../hooks/useIdentity';
 import { useCart, type CartItem } from '../../contexts/CartContext';
 import { useToast } from '../../components/Toast';
 import { useNavigate } from 'react-router-dom';
@@ -44,7 +44,7 @@ const SLIP_NUMBER_PATTERN = /^[a-zA-Z0-9_-]{1,50}$/;
 
 export default function PackingSlipForm({ open, onClose, onShipped }: PackingSlipFormProps) {
   const { project } = useProject();
-  const { role } = useRole();
+  const { displayName } = useIdentity();
   const { items, clearCart } = useCart();
   const { showToast } = useToast();
   const navigate = useNavigate();
@@ -102,7 +102,7 @@ export default function PackingSlipForm({ open, onClose, onShipped }: PackingSli
           input: {
             projectId: project.id,
             packingSlipNumber,
-            shippedBy: role,
+            shippedBy: displayName,
             items: shipmentItems,
           },
         },
@@ -116,7 +116,7 @@ export default function PackingSlipForm({ open, onClose, onShipped }: PackingSli
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to confirm shipment');
     }
-  }, [confirmShipment, items, packingSlipNumber, project, role, showToast]);
+  }, [confirmShipment, items, packingSlipNumber, project, displayName, showToast]);
 
   const handleViewPdf = useCallback(async () => {
     if (!result) return;

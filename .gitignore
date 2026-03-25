@@ -47,3 +47,6 @@ Dev Planning/
 
 # Sample data
 *.xml
+
+# Credentials
+clerk_credentials.txt

@@ -3,7 +3,7 @@ import { Box, Typography, Alert } from '@mui/material';
 import { useQuery } from '@apollo/client/react';
 import { GET_MY_WORK } from '../../graphql/queries';
 import { useProject } from '../../contexts/ProjectContext';
-import { useRole } from '../../contexts/RoleContext';
+import { useIdentity } from '../../hooks/useIdentity';
 import DataTable from '../../components/DataTable';
 import AssemblyDetailModal from './AssemblyDetailModal';
 import type { GridColDef } from '@mui/x-data-grid';
@@ -44,14 +44,11 @@ const columns: GridColDef[] = [
 
 export default function MyWorkPage() {
   const { project } = useProject();
-  const { role } = useRole();
+  const { displayName } = useIdentity();
   const [selectedOpening, setSelectedOpening] = useState<MyWorkOpening | null>(null);
 
-  const assignedTo = role || 'Shop Assembly User';
-
   const { data, loading, refetch } = useQuery<{ myWork: MyWorkOpening[] }>(GET_MY_WORK, {
-    variables: { assignedTo },
-    skip: !role,
+    variables: { assignedTo: displayName },
   });
 
   const rows = useMemo(() => data?.myWork ?? [], [data]);

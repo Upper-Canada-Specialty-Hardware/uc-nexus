@@ -406,3 +406,16 @@ export const GET_NOTIFICATIONS = gql`
     }
   }
 `;
+
+export const GET_USERS = gql`
+  query GetUsers {
+    users {
+      id
+      firstName
+      lastName
+      email
+      roles
+      imageUrl
+    }
+  }
+`;
