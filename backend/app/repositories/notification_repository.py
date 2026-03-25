@@ -18,8 +18,9 @@ def get_notifications(
 ) -> list[Notification]:
     stmt = select(Notification).where(
         Notification.project_id == project_id,
-        Notification.recipient_role == recipient_role,
     )
+    if recipient_role:
+        stmt = stmt.where(Notification.recipient_role == recipient_role)
     if unread_only:
         stmt = stmt.where(Notification.is_read == False)
     stmt = stmt.order_by(Notification.created_at.desc()).limit(limit)

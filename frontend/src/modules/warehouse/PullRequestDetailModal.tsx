@@ -18,7 +18,7 @@ import CancelIcon from '@mui/icons-material/Cancel';
 import { useMutation, useQuery } from '@apollo/client/react';
 import { APPROVE_PULL_REQUEST, COMPLETE_PULL_REQUEST } from '../../graphql/mutations';
 import { GET_INVENTORY_HIERARCHY } from '../../graphql/queries';
-import { useRole } from '../../contexts/RoleContext';
+import { useIdentity } from '../../hooks/useIdentity';
 import { useToast } from '../../components/Toast';
 import Modal from '../../components/Modal';
 import ConfirmDialog from '../../components/ConfirmDialog';
@@ -98,7 +98,7 @@ export default function PullRequestDetailModal({
   onClose,
   onRefetch,
 }: PullRequestDetailModalProps) {
-  const { role } = useRole();
+  const { displayName } = useIdentity();
   const { showToast } = useToast();
 
   // Confirm dialog state
@@ -182,7 +182,7 @@ export default function PullRequestDetailModal({
   // --- Handlers ---
 
   const handleApprove = () => {
-    approvePR({ variables: { id: pr.id, approvedBy: role ?? '' } });
+    approvePR({ variables: { id: pr.id, approvedBy: displayName } });
   };
 
   const handleComplete = () => {
@@ -202,8 +202,8 @@ export default function PullRequestDetailModal({
   const isCompleted = pr.status === 'COMPLETED';
   const isCancelled = pr.status === 'CANCELLED';
 
-  const isAssignedToCurrentUser = isInProgress && pr.assignedTo === role;
-  const isLockedToOtherUser = isInProgress && pr.assignedTo !== role;
+  const isAssignedToCurrentUser = isInProgress && pr.assignedTo === displayName;
+  const isLockedToOtherUser = isInProgress && pr.assignedTo !== displayName;
 
   // --- Action buttons ---
 

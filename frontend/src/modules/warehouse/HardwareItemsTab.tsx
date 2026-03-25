@@ -18,7 +18,7 @@ import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useQuery, useLazyQuery } from '@apollo/client/react';
 import { GET_INVENTORY_HIERARCHY, GET_INVENTORY_ITEMS } from '../../graphql/queries';
-import { useRole } from '../../contexts/RoleContext';
+import { useIdentity } from '../../hooks/useIdentity';
 import InventoryCorrectionModal from '../admin/InventoryCorrectionModal';
 
 interface InventoryItem {
@@ -107,8 +107,7 @@ function ProductCodeDetail({
   productCode: string;
   totalQuantity: number;
 }) {
-  const { role } = useRole();
-  const isAdmin = role === 'Admin/Manager';
+  const { isAdmin } = useIdentity();
 
   const [expanded, setExpanded] = useState(false);
   const hasFetched = useRef(false);

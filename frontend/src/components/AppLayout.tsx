@@ -17,53 +17,29 @@ import {
   type SelectChangeEvent,
 } from '@mui/material';
 import ShoppingCartIcon from '@mui/icons-material/ShoppingCart';
-import SwapHorizIcon from '@mui/icons-material/SwapHoriz';
 import NavigateNextIcon from '@mui/icons-material/NavigateNext';
 import DarkModeIcon from '@mui/icons-material/DarkMode';
 import LightModeIcon from '@mui/icons-material/LightMode';
 import { useColorScheme } from '@mui/material/styles';
+import { UserButton } from '@clerk/clerk-react';
 import { useQuery } from '@apollo/client/react';
 import { GET_PROJECTS } from '../graphql/queries';
-import { useRole } from '../contexts/RoleContext';
 import { useProject, type Project } from '../contexts/ProjectContext';
-import { useWizard } from '../contexts/WizardContext';
 import { useCart } from '../contexts/CartContext';
 import NotificationBell from './NotificationBell';
 import ConfirmDialog from './ConfirmDialog';
 
 export default function AppLayout() {
   const { mode, setMode } = useColorScheme();
-  const { role, clearRole } = useRole();
   const { project, setProject } = useProject();
-  const { isActive: wizardActive, formData, reset: resetWizard } = useWizard();
-  const { itemCount, clearCart } = useCart();
+  const { itemCount } = useCart();
   const navigate = useNavigate();
   const location = useLocation();
-  const [confirmOpen, setConfirmOpen] = useState(false);
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [resetting, setResetting] = useState(false);
 
   const { data } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
   const projects = data?.projects ?? [];
-
-  const hasDraftData = Object.keys(formData).length > 0;
-  const hasUnsavedState = wizardActive || itemCount > 0 || hasDraftData;
-
-  const handleSwitchRole = () => {
-    if (hasUnsavedState) {
-      setConfirmOpen(true);
-    } else {
-      doSwitchRole();
-    }
-  };
-
-  const doSwitchRole = () => {
-    setConfirmOpen(false);
-    resetWizard();
-    clearCart();
-    clearRole();
-    navigate('/');
-  };
 
   const handleResetSchema = async () => {
     setResetConfirmOpen(false);
@@ -97,7 +73,11 @@ export default function AppLayout() {
     <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
       <AppBar position="static">
         <Toolbar>
-          <Typography variant="h6" sx={{ mr: 3 }}>
+          <Typography
+            variant="h6"
+            sx={{ mr: 3, cursor: 'pointer' }}
+            onClick={() => navigate('/app')}
+          >
             UC Nexus
           </Typography>
 
@@ -130,12 +110,10 @@ export default function AppLayout() {
             onClick={() => setResetConfirmOpen(true)}
             sx={{ mr: 2, textTransform: 'none' }}
           >
-            {resetting ? 'Resetting…' : 'DevAction: drop and rebuild schema'}
+            {resetting ? 'Resetting\u2026' : 'DevAction: drop and rebuild schema'}
           </Button>
 
-          <Typography variant="body2" sx={{ flexGrow: 1, opacity: 0.9 }}>
-            {role}
-          </Typography>
+          <Box sx={{ flexGrow: 1 }} />
 
           {location.pathname.includes('/shipping') && itemCount > 0 && (
             <IconButton color="inherit" sx={{ mr: 1 }}>
@@ -155,13 +133,7 @@ export default function AppLayout() {
             {mode === 'dark' ? <LightModeIcon /> : <DarkModeIcon />}
           </IconButton>
 
-          <Button
-            color="inherit"
-            startIcon={<SwapHorizIcon />}
-            onClick={handleSwitchRole}
-          >
-            Switch Role
-          </Button>
+          <UserButton />
         </Toolbar>
       </AppBar>
 
@@ -206,16 +178,6 @@ export default function AppLayout() {
       <Box component="main" sx={{ flexGrow: 1, p: 3 }}>
         <Outlet />
       </Box>
-
-      <ConfirmDialog
-        open={confirmOpen}
-        title="Switch Role?"
-        message="You have unsaved changes. Switching roles will discard your current progress."
-        confirmLabel="Switch"
-        cancelLabel="Stay"
-        onConfirm={doSwitchRole}
-        onCancel={() => setConfirmOpen(false)}
-      />
 
       <ConfirmDialog
         open={resetConfirmOpen}

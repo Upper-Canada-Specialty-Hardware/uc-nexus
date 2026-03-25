@@ -12,6 +12,7 @@ from app.repositories import (
     po_repository,
     shipping_repository,
     shop_assembly_repository,
+    user_repository,
     warehouse_repository,
 )
 
@@ -23,6 +24,7 @@ from .enums import (
 )
 from .inputs import ReconciliationItemInput
 from .types import (
+    ClerkUser,
     HardwareSummaryRow,
     InventoryHierarchyNode,
     InventoryItemDetail,
@@ -627,3 +629,18 @@ class Query:
                 )
                 for r in rows
             ]
+
+    @strawberry.field
+    def users(self) -> list[ClerkUser]:
+        results = user_repository.list_users()
+        return [
+            ClerkUser(
+                id=u["id"],
+                first_name=u["first_name"],
+                last_name=u["last_name"],
+                email=u["email"],
+                roles=u["roles"],
+                image_url=u["image_url"],
+            )
+            for u in results
+        ]

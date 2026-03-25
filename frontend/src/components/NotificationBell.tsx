@@ -14,7 +14,6 @@ import NotificationsIcon from '@mui/icons-material/Notifications';
 import { useQuery, useMutation } from '@apollo/client/react';
 import { GET_NOTIFICATIONS } from '../graphql/queries';
 import { MARK_NOTIFICATION_AS_READ } from '../graphql/mutations';
-import { useRole } from '../contexts/RoleContext';
 import { useProject } from '../contexts/ProjectContext';
 
 interface Notification {
@@ -43,17 +42,16 @@ function formatTimeAgo(dateString: string): string {
 
 export default function NotificationBell() {
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
-  const { role } = useRole();
   const { project } = useProject();
 
-  const skip = !project?.id || !role;
+  const skip = !project?.id;
 
   const { data } = useQuery<{ notifications: Notification[] }>(
     GET_NOTIFICATIONS,
     {
       variables: {
         projectId: project?.id ?? '',
-        recipientRole: role ?? '',
+        recipientRole: '',
         limit: 5,
       },
       skip,
@@ -66,7 +64,7 @@ export default function NotificationBell() {
     {
       variables: {
         projectId: project?.id ?? '',
-        recipientRole: role ?? '',
+        recipientRole: '',
         unreadOnly: true,
         limit: 99,
       },
@@ -98,7 +96,7 @@ export default function NotificationBell() {
             query: GET_NOTIFICATIONS,
             variables: {
               projectId: project?.id ?? '',
-              recipientRole: role ?? '',
+              recipientRole: '',
               limit: 5,
             },
           },
@@ -106,7 +104,7 @@ export default function NotificationBell() {
             query: GET_NOTIFICATIONS,
             variables: {
               projectId: project?.id ?? '',
-              recipientRole: role ?? '',
+              recipientRole: '',
               unreadOnly: true,
               limit: 99,
             },

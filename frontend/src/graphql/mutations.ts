@@ -471,3 +471,16 @@ export const MARK_NOTIFICATION_AS_READ = gql`
     }
   }
 `;
+
+export const UPDATE_USER_ROLES = gql`
+  mutation UpdateUserRoles($userId: String!, $roles: [String!]!) {
+    updateUserRoles(userId: $userId, roles: $roles) {
+      id
+      firstName
+      lastName
+      email
+      roles
+      imageUrl
+    }
+  }
+`;

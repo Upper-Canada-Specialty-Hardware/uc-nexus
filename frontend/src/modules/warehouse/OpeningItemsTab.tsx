@@ -18,7 +18,7 @@ import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useQuery, useLazyQuery } from '@apollo/client/react';
 import { GET_OPENING_ITEMS, GET_OPENING_ITEM_DETAILS } from '../../graphql/queries';
 import Modal from '../../components/Modal';
-import { useRole } from '../../contexts/RoleContext';
+import { useIdentity } from '../../hooks/useIdentity';
 import InventoryCorrectionModal from '../admin/InventoryCorrectionModal';
 
 interface InstalledHardware {
@@ -110,8 +110,7 @@ function OpeningItemDetailModal({
   onClose: () => void;
   itemId: string | null;
 }) {
-  const { role } = useRole();
-  const isAdmin = role === 'Admin/Manager';
+  const { isAdmin } = useIdentity();
 
   const [fetchDetails, { data, loading, error }] = useLazyQuery<{
     openingItemDetails: OpeningItemDetails;

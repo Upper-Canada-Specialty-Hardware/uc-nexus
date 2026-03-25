@@ -25,7 +25,7 @@ import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useQuery, useMutation } from '@apollo/client/react';
 import { useApolloClient } from '@apollo/client/react';
 import { useProject } from '../../contexts/ProjectContext';
-import { useRole } from '../../contexts/RoleContext';
+import { useIdentity } from '../../hooks/useIdentity';
 import { useToast } from '../../components/Toast';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import { useNavigate } from 'react-router-dom';
@@ -110,7 +110,7 @@ const STEPS = ['Select POs', 'Enter Quantities', 'Assign Locations'];
 
 export default function ReceiveWizard({ open, onClose }: ReceiveWizardProps) {
   const { project } = useProject();
-  const { role } = useRole();
+  const { displayName } = useIdentity();
   const { showToast } = useToast();
   const navigate = useNavigate();
   const client = useApolloClient();
@@ -414,7 +414,7 @@ export default function ReceiveWizard({ open, onClose }: ReceiveWizardProps) {
 
       const input = {
         poId,
-        receivedBy: role ?? 'Unknown',
+        receivedBy: displayName,
         lineItems: poLineItems.map((li) => {
           const assignment = locationAssignments.find((a) => a.lineItemId === li.id);
           return {
@@ -448,7 +448,7 @@ export default function ReceiveWizard({ open, onClose }: ReceiveWizardProps) {
     setPostSuccessOpen(true);
   }, [
     selectedPOIds,
-    role,
+    displayName,
     lineItemsToReceive,
     locationAssignments,
     receiveQuantities,

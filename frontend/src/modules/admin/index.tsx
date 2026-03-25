@@ -2,10 +2,12 @@ import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-
 import { Box, Tabs, Tab, Typography } from '@mui/material';
 import HardwareSummaryTab from './HardwareSummaryTab';
 import OpeningStatusTab from './OpeningStatusTab';
+import UserManagementPage from './UserManagementPage';
 
 const SUB_ROUTES = [
   { label: 'Hardware Summary', path: 'hardware-summary' },
   { label: 'Opening Status', path: 'opening-status' },
+  { label: 'User Management', path: 'users' },
 ];
 
 export default function AdminModule() {
@@ -24,6 +26,7 @@ export default function AdminModule() {
       <Routes>
         <Route path="hardware-summary" element={<HardwareSummaryTab />} />
         <Route path="opening-status" element={<OpeningStatusTab />} />
+        <Route path="users" element={<UserManagementPage />} />
         <Route index element={<Navigate to="hardware-summary" replace />} />
       </Routes>
     </Box>

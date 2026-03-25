@@ -25,6 +25,7 @@ import { GET_ASSEMBLE_LIST } from '../../graphql/queries';
 import { ASSIGN_OPENINGS, REMOVE_OPENING_FROM_USER } from '../../graphql/mutations';
 import { useProject } from '../../contexts/ProjectContext';
 import { useToast } from '../../components/Toast';
+import { useIdentity } from '../../hooks/useIdentity';
 
 interface OpeningItem {
   id: string;
@@ -47,8 +48,6 @@ interface AssembleOpening {
   floor: string | null;
   items: OpeningItem[];
 }
-
-const ASSIGNED_USER = 'Shop Assembly User';
 
 function DraggableCard({ opening, isDragOverlay }: { opening: AssembleOpening; isDragOverlay?: boolean }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
@@ -142,6 +141,7 @@ function DroppablePanel({
 export default function AssignmentBoard() {
   const { project } = useProject();
   const { showToast } = useToast();
+  const { displayName } = useIdentity();
   const [activeOpening, setActiveOpening] = useState<AssembleOpening | null>(null);
 
   const sensors = useSensors(
@@ -225,7 +225,7 @@ export default function AssignmentBoard() {
           variables: {
             input: {
               openingIds: [opening.id],
-              assignedTo: ASSIGNED_USER,
+              assignedTo: displayName,
             },
           },
         });
@@ -235,7 +235,7 @@ export default function AssignmentBoard() {
         });
       }
     },
-    [assignOpenings, removeOpening]
+    [assignOpenings, removeOpening, displayName]
   );
 
   if (!project) {
@@ -269,7 +269,7 @@ export default function AssignmentBoard() {
           <Grid size={6}>
             <DroppablePanel
               id='assigned'
-              title={`Assigned to ${ASSIGNED_USER}`}
+              title={`Assigned to ${displayName}`}
               openings={assigned}
               emptyText='Drop openings here to assign'
               color='action.hover'

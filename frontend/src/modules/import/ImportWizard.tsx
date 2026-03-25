@@ -24,7 +24,6 @@ import UploadFileIcon from '@mui/icons-material/UploadFile';
 import CloudUploadIcon from '@mui/icons-material/CloudUpload';
 import { useLazyQuery, useMutation } from '@apollo/client/react';
 import { useProject } from '../../contexts/ProjectContext';
-import { useRole } from '../../contexts/RoleContext';
 import { useWizard } from '../../contexts/WizardContext';
 import { useToast } from '../../components/Toast';
 import ConfirmDialog from '../../components/ConfirmDialog';
@@ -80,7 +79,6 @@ interface ImportWizardProps {
 
 export default function ImportWizard({ open, onClose }: ImportWizardProps) {
   const { setProject } = useProject();
-  useRole();
   const { showToast } = useToast();
   const { setTotalSteps, reset: resetWizardContext } = useWizard();
   const navigate = useNavigate();
