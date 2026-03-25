@@ -1,8 +1,7 @@
 import { useState, useMemo, useCallback } from 'react';
-import { Box, Typography, Alert } from '@mui/material';
+import { Box, Typography } from '@mui/material';
 import { useQuery } from '@apollo/client/react';
 import { GET_MY_WORK } from '../../graphql/queries';
-import { useProject } from '../../contexts/ProjectContext';
 import { useIdentity } from '../../hooks/useIdentity';
 import DataTable from '../../components/DataTable';
 import AssemblyDetailModal from './AssemblyDetailModal';
@@ -43,7 +42,6 @@ const columns: GridColDef[] = [
 ];
 
 export default function MyWorkPage() {
-  const { project } = useProject();
   const { displayName } = useIdentity();
   const [selectedOpening, setSelectedOpening] = useState<MyWorkOpening | null>(null);
 
@@ -65,13 +63,6 @@ export default function MyWorkPage() {
     refetch();
   }, [refetch]);
 
-  if (!project) {
-    return (
-      <Box sx={{ p: 4 }}>
-        <Alert severity='info'>Please select a project to view your work.</Alert>
-      </Box>
-    );
-  }
 
   return (
     <Box>

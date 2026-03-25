@@ -8,13 +8,8 @@ import {
   Button,
   IconButton,
   Badge,
-  Select,
-  MenuItem,
-  FormControl,
-  InputLabel,
   Breadcrumbs,
   Link,
-  type SelectChangeEvent,
 } from '@mui/material';
 import ShoppingCartIcon from '@mui/icons-material/ShoppingCart';
 import NavigateNextIcon from '@mui/icons-material/NavigateNext';
@@ -22,24 +17,17 @@ import DarkModeIcon from '@mui/icons-material/DarkMode';
 import LightModeIcon from '@mui/icons-material/LightMode';
 import { useColorScheme } from '@mui/material/styles';
 import { UserButton } from '@clerk/clerk-react';
-import { useQuery } from '@apollo/client/react';
-import { GET_PROJECTS } from '../graphql/queries';
-import { useProject, type Project } from '../contexts/ProjectContext';
 import { useCart } from '../contexts/CartContext';
 import NotificationBell from './NotificationBell';
 import ConfirmDialog from './ConfirmDialog';
 
 export default function AppLayout() {
   const { mode, setMode } = useColorScheme();
-  const { project, setProject } = useProject();
   const { itemCount } = useCart();
   const navigate = useNavigate();
   const location = useLocation();
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [resetting, setResetting] = useState(false);
-
-  const { data } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
-  const projects = data?.projects ?? [];
 
   const handleResetSchema = async () => {
     setResetConfirmOpen(false);
@@ -56,11 +44,6 @@ export default function AppLayout() {
     } finally {
       setResetting(false);
     }
-  };
-
-  const handleProjectChange = (e: SelectChangeEvent) => {
-    const selected = projects.find((p) => p.id === e.target.value);
-    if (selected) setProject(selected);
   };
 
   // Build breadcrumb segments from current path
@@ -80,27 +63,6 @@ export default function AppLayout() {
           >
             UC Nexus
           </Typography>
-
-          <FormControl size="small" sx={{ minWidth: 200, mr: 2 }}>
-            <InputLabel sx={{ color: 'inherit' }}>Project</InputLabel>
-            <Select
-              value={project?.id ?? ''}
-              onChange={handleProjectChange}
-              label="Project"
-              sx={{
-                color: 'inherit',
-                '.MuiOutlinedInput-notchedOutline': { borderColor: 'rgba(255,255,255,0.5)' },
-                '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: 'white' },
-                '.MuiSvgIcon-root': { color: 'inherit' },
-              }}
-            >
-              {projects.map((p) => (
-                <MenuItem key={p.id} value={p.id}>
-                  {p.description || p.projectId}
-                </MenuItem>
-              ))}
-            </Select>
-          </FormControl>
 
           <Button
             variant="outlined"

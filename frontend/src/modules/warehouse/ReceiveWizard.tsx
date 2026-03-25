@@ -24,7 +24,6 @@ import SearchIcon from '@mui/icons-material/Search';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useQuery, useMutation } from '@apollo/client/react';
 import { useApolloClient } from '@apollo/client/react';
-import { useProject } from '../../contexts/ProjectContext';
 import { useIdentity } from '../../hooks/useIdentity';
 import { useToast } from '../../components/Toast';
 import ConfirmDialog from '../../components/ConfirmDialog';
@@ -109,7 +108,6 @@ interface ReceiveWizardProps {
 const STEPS = ['Select POs', 'Enter Quantities', 'Assign Locations'];
 
 export default function ReceiveWizard({ open, onClose }: ReceiveWizardProps) {
-  const { project } = useProject();
   const { displayName } = useIdentity();
   const { showToast } = useToast();
   const navigate = useNavigate();
@@ -134,8 +132,7 @@ export default function ReceiveWizard({ open, onClose }: ReceiveWizardProps) {
     error: openPOsError,
     refetch: refetchOpenPOs,
   } = useQuery<{ openPOs: OpenPO[] }>(GET_OPEN_POS, {
-    variables: { projectId: project?.id },
-    skip: !project || !open,
+    skip: !open,
   });
 
   // Mutation

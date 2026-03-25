@@ -18,7 +18,6 @@ import {
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import { useQuery } from '@apollo/client/react';
 import { GET_OPENING_HARDWARE_STATUS } from '../../graphql/queries';
-import { useProject } from '../../contexts/ProjectContext';
 
 interface OpeningHardwareStatusItem {
   hardwareCategory: string;
@@ -42,19 +41,9 @@ const STATUS_CHIP: Record<string, { label: string; color: 'default' | 'info' | '
 };
 
 export default function OpeningStatusTab() {
-  const { project } = useProject();
-
   const { data, loading, error } = useQuery<{ openingHardwareStatus: OpeningHardwareStatus[] }>(
     GET_OPENING_HARDWARE_STATUS,
-    {
-      variables: { projectId: project?.id },
-      skip: !project,
-    },
   );
-
-  if (!project) {
-    return <Alert severity="info">Select a project first</Alert>;
-  }
 
   if (loading) {
     return (

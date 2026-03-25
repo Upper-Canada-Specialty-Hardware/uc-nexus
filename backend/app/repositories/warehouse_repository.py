@@ -30,9 +30,9 @@ from app.services import notification_service
 from app.services.locking import lock_rows
 
 
-def get_inventory_hierarchy(session: Session, project_id: uuid.UUID) -> list[dict]:
+def get_inventory_hierarchy(session: Session, project_id: uuid.UUID | None = None) -> list[dict]:
     """
-    Query all InventoryLocation rows WHERE project_id.
+    Query all InventoryLocation rows, optionally filtered by project_id.
     Group by hardware_category, then product_code.
     At each level, sum quantities.
     Sort categories and product codes alphabetically.
@@ -51,13 +51,12 @@ def get_inventory_hierarchy(session: Session, project_id: uuid.UUID) -> list[dic
         "total_quantity": int
     }
     """
-    stmt = (
-        select(InventoryLocationModel)
-        .where(InventoryLocationModel.project_id == project_id)
-        .order_by(
-            InventoryLocationModel.hardware_category,
-            InventoryLocationModel.product_code,
-        )
+    stmt = select(InventoryLocationModel)
+    if project_id is not None:
+        stmt = stmt.where(InventoryLocationModel.project_id == project_id)
+    stmt = stmt.order_by(
+        InventoryLocationModel.hardware_category,
+        InventoryLocationModel.product_code,
     )
     rows = list(session.scalars(stmt).all())
 
@@ -97,12 +96,12 @@ def get_inventory_hierarchy(session: Session, project_id: uuid.UUID) -> list[dic
 
 def get_inventory_items(
     session: Session,
-    project_id: uuid.UUID,
+    project_id: uuid.UUID | None,
     category: str,
     product_code: str,
 ) -> list[dict]:
     """
-    Query InventoryLocation rows matching (project_id, category, product_code).
+    Query InventoryLocation rows matching (optional project_id, category, product_code).
     JOIN to POLineItem (via po_line_item_id) then PurchaseOrder (via po_id) to get po_number and classification.
 
     Return list of dicts with keys: inventory_location, po_number, classification
@@ -112,11 +111,12 @@ def get_inventory_items(
         .join(POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id)
         .join(POModel, POLineItemModel.po_id == POModel.id)
         .where(
-            InventoryLocationModel.project_id == project_id,
             InventoryLocationModel.hardware_category == category,
             InventoryLocationModel.product_code == product_code,
         )
     )
+    if project_id is not None:
+        stmt = stmt.where(InventoryLocationModel.project_id == project_id)
     rows = session.execute(stmt).all()
 
     return [
@@ -129,18 +129,19 @@ def get_inventory_items(
     ]
 
 
-def get_opening_items(session: Session, project_id: uuid.UUID) -> list[OpeningItemModel]:
+def get_opening_items(session: Session, project_id: uuid.UUID | None = None) -> list[OpeningItemModel]:
     """
-    Query all OpeningItem rows for project_id.
+    Query all OpeningItem rows, optionally filtered by project_id.
     Eagerly load installed_hardware relationship (OpeningItemHardware).
     Sort by opening_number ASC.
     """
     stmt = (
         select(OpeningItemModel)
         .options(selectinload(OpeningItemModel.installed_hardware))
-        .where(OpeningItemModel.project_id == project_id)
         .order_by(OpeningItemModel.opening_number.asc())
     )
+    if project_id is not None:
+        stmt = stmt.where(OpeningItemModel.project_id == project_id)
     return list(session.scalars(stmt).unique().all())
 
 
@@ -468,12 +469,12 @@ def get_po_receiving_details(session: Session, po_id: uuid.UUID) -> tuple[POMode
 
 def get_pull_requests(
     session: Session,
-    project_id: uuid.UUID,
+    project_id: uuid.UUID | None = None,
     source=None,
     status=None,
 ) -> list[PullRequestModel]:
     """
-    Query PullRequest WHERE project_id AND deleted_at IS NULL.
+    Query PullRequest WHERE deleted_at IS NULL, optionally filtered by project_id.
     Optional source filter, optional status filter.
     Order by created_at ASC (FIFO — oldest first).
     Eagerly load items (PullRequestItem).
@@ -481,11 +482,10 @@ def get_pull_requests(
     stmt = (
         select(PullRequestModel)
         .options(selectinload(PullRequestModel.items))
-        .where(
-            PullRequestModel.project_id == project_id,
-            PullRequestModel.deleted_at.is_(None),
-        )
+        .where(PullRequestModel.deleted_at.is_(None))
     )
+    if project_id is not None:
+        stmt = stmt.where(PullRequestModel.project_id == project_id)
     if source is not None:
         stmt = stmt.where(PullRequestModel.source == source)
     if status is not None:

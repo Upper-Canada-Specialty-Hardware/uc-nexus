@@ -5,7 +5,6 @@ import {
 } from '@mui/material';
 import { useMutation } from '@apollo/client/react';
 import { pdf } from '@react-pdf/renderer';
-import { useProject } from '../../contexts/ProjectContext';
 import { useIdentity } from '../../hooks/useIdentity';
 import { useCart, type CartItem } from '../../contexts/CartContext';
 import { useToast } from '../../components/Toast';
@@ -17,6 +16,8 @@ interface PackingSlipFormProps {
   open: boolean;
   onClose: () => void;
   onShipped: () => void;
+  projectId: string | undefined;
+  projectName: string;
 }
 
 interface ShipmentResult {
@@ -42,8 +43,7 @@ interface ShipmentResult {
 
 const SLIP_NUMBER_PATTERN = /^[a-zA-Z0-9_-]{1,50}$/;
 
-export default function PackingSlipForm({ open, onClose, onShipped }: PackingSlipFormProps) {
-  const { project } = useProject();
+export default function PackingSlipForm({ open, onClose, onShipped, projectId, projectName }: PackingSlipFormProps) {
   const { displayName } = useIdentity();
   const { items, clearCart } = useCart();
   const { showToast } = useToast();
@@ -65,11 +65,6 @@ export default function PackingSlipForm({ open, onClose, onShipped }: PackingSli
 
   const handleConfirm = useCallback(async () => {
     setError(null);
-
-    if (!project) {
-      setError('No project selected.');
-      return;
-    }
 
     if (!SLIP_NUMBER_PATTERN.test(packingSlipNumber)) {
       setError('Packing slip number must be 1-50 characters (alphanumeric, hyphens, underscores).');
@@ -100,7 +95,7 @@ export default function PackingSlipForm({ open, onClose, onShipped }: PackingSli
       const { data } = await confirmShipment({
         variables: {
           input: {
-            projectId: project.id,
+            projectId,
             packingSlipNumber,
             shippedBy: displayName,
             items: shipmentItems,
@@ -116,7 +111,7 @@ export default function PackingSlipForm({ open, onClose, onShipped }: PackingSli
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to confirm shipment');
     }
-  }, [confirmShipment, items, packingSlipNumber, project, displayName, showToast]);
+  }, [confirmShipment, items, packingSlipNumber, projectId, displayName, showToast]);
 
   const handleViewPdf = useCallback(async () => {
     if (!result) return;
@@ -144,7 +139,7 @@ export default function PackingSlipForm({ open, onClose, onShipped }: PackingSli
       const blob = await pdf(
         <PackingSlipDocument
           packingSlipNumber={result.packingSlipNumber}
-          projectName={project?.description ?? 'Unknown Project'}
+          projectName={projectName}
           shippedBy={result.shippedBy}
           shippedAt={new Date(result.shippedAt).toLocaleString()}
           openingItems={openingItems}
@@ -159,7 +154,7 @@ export default function PackingSlipForm({ open, onClose, onShipped }: PackingSli
     } finally {
       setGeneratingPdf(false);
     }
-  }, [result, project, showToast]);
+  }, [result, projectName, showToast]);
 
   const handleShipMore = useCallback(() => {
     clearCart();

@@ -1,14 +1,10 @@
 import { useState } from 'react';
-import { Box, Typography, Alert, Fab, Breadcrumbs, Link } from '@mui/material';
+import { Box, Typography, Fab, Breadcrumbs, Link } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
-import { useProject } from '../../contexts/ProjectContext';
 import ReceiveWizard from './ReceiveWizard';
 
 export default function ReceivingPage() {
-  const { project } = useProject();
   const [wizardOpen, setWizardOpen] = useState(false);
-
-  if (!project) return <Alert severity="info">Please select a project</Alert>;
 
   return (
     <Box sx={{ position: 'relative', minHeight: '60vh' }}>

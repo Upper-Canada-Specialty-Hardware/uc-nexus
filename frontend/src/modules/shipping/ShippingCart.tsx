@@ -11,9 +11,11 @@ import PackingSlipForm from './PackingSlipForm';
 interface ShippingCartProps {
   open: boolean;
   onClose: () => void;
+  projectId: string | undefined;
+  projectName: string;
 }
 
-export default function ShippingCart({ open, onClose }: ShippingCartProps) {
+export default function ShippingCart({ open, onClose, projectId, projectName }: ShippingCartProps) {
   const { items, removeItem, clearCart, itemCount } = useCart();
   const [packingSlipOpen, setPackingSlipOpen] = useState(false);
 
@@ -127,6 +129,8 @@ export default function ShippingCart({ open, onClose }: ShippingCartProps) {
         open={packingSlipOpen}
         onClose={() => setPackingSlipOpen(false)}
         onShipped={handleShipped}
+        projectId={projectId}
+        projectName={projectName}
       />
     </>
   );

@@ -56,7 +56,7 @@ interface InventoryItemDetail {
 }
 
 interface HardwareItemsTabProps {
-  projectId: string;
+  projectId?: string;
 }
 
 function formatLocation(aisle: string | null, bay: string | null, bin: string | null): string {
@@ -102,7 +102,7 @@ function ProductCodeDetail({
   productCode,
   totalQuantity,
 }: {
-  projectId: string;
+  projectId: string | undefined;
   category: string;
   productCode: string;
   totalQuantity: number;

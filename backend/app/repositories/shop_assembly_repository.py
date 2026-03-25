@@ -36,15 +36,15 @@ from app.services.locking import lock_rows
 
 def get_shop_assembly_requests(
     session: Session,
-    project_id: uuid.UUID,
+    project_id: uuid.UUID | None = None,
     status: ShopAssemblyRequestStatus | None = None,
 ) -> list[ShopAssemblyRequest]:
-    """Query ShopAssemblyRequests for a project, optionally filtered by status."""
-    stmt = (
-        select(ShopAssemblyRequest)
-        .options(selectinload(ShopAssemblyRequest.openings).selectinload(ShopAssemblyOpening.items))
-        .where(ShopAssemblyRequest.project_id == project_id)
+    """Query ShopAssemblyRequests, optionally filtered by project and/or status."""
+    stmt = select(ShopAssemblyRequest).options(
+        selectinload(ShopAssemblyRequest.openings).selectinload(ShopAssemblyOpening.items)
     )
+    if project_id is not None:
+        stmt = stmt.where(ShopAssemblyRequest.project_id == project_id)
     if status is not None:
         stmt = stmt.where(ShopAssemblyRequest.status == status)
     stmt = stmt.order_by(ShopAssemblyRequest.created_at.desc())
@@ -53,9 +53,9 @@ def get_shop_assembly_requests(
 
 def get_assemble_list(
     session: Session,
-    project_id: uuid.UUID,
+    project_id: uuid.UUID | None = None,
 ) -> list[tuple[ShopAssemblyOpening, OpeningModel]]:
-    """Query ShopAssemblyOpenings from Approved SARs for the project, with Opening data."""
+    """Query ShopAssemblyOpenings from Approved SARs, optionally filtered by project, with Opening data."""
     stmt = (
         select(ShopAssemblyOpening, OpeningModel)
         .join(
@@ -64,11 +64,10 @@ def get_assemble_list(
         )
         .join(OpeningModel, ShopAssemblyOpening.opening_id == OpeningModel.id)
         .options(selectinload(ShopAssemblyOpening.items))
-        .where(
-            ShopAssemblyRequest.project_id == project_id,
-            ShopAssemblyRequest.status == ShopAssemblyRequestStatus.APPROVED,
-        )
+        .where(ShopAssemblyRequest.status == ShopAssemblyRequestStatus.APPROVED)
     )
+    if project_id is not None:
+        stmt = stmt.where(ShopAssemblyRequest.project_id == project_id)
     return list(session.execute(stmt).unique().all())
 
 

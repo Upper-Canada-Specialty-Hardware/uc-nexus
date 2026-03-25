@@ -13,7 +13,7 @@ from app.models.shipping import PackingSlip as PackingSlipModel
 from app.models.shipping import PackingSlipItem as PackingSlipItemModel
 
 
-def get_hardware_summary(session: Session, project_id: uuid.UUID) -> list[dict]:
+def get_hardware_summary(session: Session, project_id: uuid.UUID | None = None) -> list[dict]:
     # Query 1: DRAFT POs — po_drafted quantities
     draft_stmt = (
         select(
@@ -23,12 +23,13 @@ def get_hardware_summary(session: Session, project_id: uuid.UUID) -> list[dict]:
         )
         .join(POModel, POLineItemModel.po_id == POModel.id)
         .where(
-            POModel.project_id == project_id,
             POModel.deleted_at.is_(None),
             POModel.status == POStatus.DRAFT,
         )
         .group_by(POLineItemModel.hardware_category, POLineItemModel.product_code)
     )
+    if project_id is not None:
+        draft_stmt = draft_stmt.where(POModel.project_id == project_id)
     draft_rows = session.execute(draft_stmt).all()
 
     # Query 2: Placed POs (ORDERED, PARTIALLY_RECEIVED, CLOSED) — ordered + received
@@ -50,12 +51,13 @@ def get_hardware_summary(session: Session, project_id: uuid.UUID) -> list[dict]:
         )
         .join(POModel, POLineItemModel.po_id == POModel.id)
         .where(
-            POModel.project_id == project_id,
             POModel.deleted_at.is_(None),
             POModel.status.in_([POStatus.ORDERED, POStatus.PARTIALLY_RECEIVED, POStatus.CLOSED]),
         )
         .group_by(POLineItemModel.hardware_category, POLineItemModel.product_code)
     )
+    if project_id is not None:
+        placed_stmt = placed_stmt.where(POModel.project_id == project_id)
     placed_rows = session.execute(placed_stmt).all()
 
     # Query 3: Shipped — packing slip quantities
@@ -66,9 +68,10 @@ def get_hardware_summary(session: Session, project_id: uuid.UUID) -> list[dict]:
             func.sum(PackingSlipItemModel.quantity).label("shipped_out"),
         )
         .join(PackingSlipModel, PackingSlipItemModel.packing_slip_id == PackingSlipModel.id)
-        .where(PackingSlipModel.project_id == project_id)
         .group_by(PackingSlipItemModel.hardware_category, PackingSlipItemModel.product_code)
     )
+    if project_id is not None:
+        shipped_stmt = shipped_stmt.where(PackingSlipModel.project_id == project_id)
     shipped_rows = session.execute(shipped_stmt).all()
 
     # Merge all by (hardware_category, product_code)
@@ -107,7 +110,7 @@ def get_hardware_summary(session: Session, project_id: uuid.UUID) -> list[dict]:
     return sorted(merged.values(), key=lambda r: (r["hardware_category"], r["product_code"]))
 
 
-def get_opening_hardware_status(session: Session, project_id: uuid.UUID) -> list[dict]:
+def get_opening_hardware_status(session: Session, project_id: uuid.UUID | None = None) -> list[dict]:
     stmt = (
         select(
             HardwareItemModel,
@@ -123,9 +126,10 @@ def get_opening_hardware_status(session: Session, project_id: uuid.UUID) -> list
             POModel,
             (POLineItemModel.po_id == POModel.id) & (POModel.deleted_at.is_(None)),
         )
-        .where(HardwareItemModel.project_id == project_id)
         .order_by(OpeningModel.opening_number)
     )
+    if project_id is not None:
+        stmt = stmt.where(HardwareItemModel.project_id == project_id)
     rows = session.execute(stmt).all()
 
     openings: dict[str, dict] = {}

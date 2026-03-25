@@ -54,7 +54,7 @@ interface OpeningItemDetails {
 }
 
 interface OpeningItemsTabProps {
-  projectId: string;
+  projectId?: string;
 }
 
 function formatDate(dateStr: string | null): string {

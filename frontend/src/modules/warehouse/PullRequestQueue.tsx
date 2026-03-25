@@ -1,9 +1,8 @@
-import { useState, useMemo } from 'react';
-import { Box, Typography, Chip, Alert } from '@mui/material';
+import { useState } from 'react';
+import { Box, Typography, Chip } from '@mui/material';
 import { useQuery } from '@apollo/client/react';
 import type { GridColDef, GridRowParams } from '@mui/x-data-grid';
 import { GET_PULL_REQUESTS } from '../../graphql/queries';
-import { useProject } from '../../contexts/ProjectContext';
 import DataTable from '../../components/DataTable';
 import Tabs from '../../components/Tabs';
 import PullRequestDetailModal from './PullRequestDetailModal';
@@ -106,22 +105,13 @@ const columns: GridColDef[] = [
 // --- Tab content component ---
 
 interface PullRequestTabProps {
-  projectId: string;
   source: string;
   onRowClick: (pr: PullRequest) => void;
 }
 
-function PullRequestTab({ projectId, source, onRowClick }: PullRequestTabProps) {
-  const queryVariables = useMemo(
-    () => ({
-      projectId,
-      source,
-    }),
-    [projectId, source],
-  );
-
+function PullRequestTab({ source, onRowClick }: PullRequestTabProps) {
   const { data, loading } = useQuery<{ pullRequests: PullRequest[] }>(GET_PULL_REQUESTS, {
-    variables: queryVariables,
+    variables: { source },
   });
 
   const requests = data?.pullRequests ?? [];
@@ -145,7 +135,6 @@ function PullRequestTab({ projectId, source, onRowClick }: PullRequestTabProps) 
 // --- Main component ---
 
 export default function PullRequestQueue() {
-  const { project } = useProject();
   const [selectedPR, setSelectedPR] = useState<PullRequest | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
 
@@ -160,28 +149,15 @@ export default function PullRequestQueue() {
   };
 
   const handleRefetch = () => {
-    // The polling on each tab will automatically pick up changes.
-    // Close modal and clear selection; the tabs re-poll every 5s.
     setModalOpen(false);
     setSelectedPR(null);
   };
-
-  if (!project) {
-    return (
-      <Box sx={{ p: 4 }}>
-        <Alert severity="info">
-          Please select a project from the navigation bar to view pull requests.
-        </Alert>
-      </Box>
-    );
-  }
 
   const tabs = [
     {
       label: 'Shop Assembly',
       content: (
         <PullRequestTab
-          projectId={project.id}
           source="SHOP_ASSEMBLY"
           onRowClick={handleRowClick}
         />
@@ -191,7 +167,6 @@ export default function PullRequestQueue() {
       label: 'Shipping Out',
       content: (
         <PullRequestTab
-          projectId={project.id}
           source="SHIPPING_OUT"
           onRowClick={handleRowClick}
         />

@@ -9,13 +9,15 @@ import {
   Chip,
   Tabs,
   Tab,
-  Alert,
+  Button,
 } from '@mui/material';
+import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import { useQuery } from '@apollo/client/react';
 import type { GridColDef, GridRowParams } from '@mui/x-data-grid';
 import { GET_PURCHASE_ORDERS, GET_PO_STATISTICS } from '../../graphql/queries';
-import { useProject } from '../../contexts/ProjectContext';
 import DataTable from '../../components/DataTable';
+import ProjectLandingPage from '../../components/ProjectLandingPage';
+import type { Project } from '../../types/project';
 import PODetailModal from './PODetailModal';
 
 // --- Types ---
@@ -195,10 +197,12 @@ function formatStatus(status: string): string {
 // --- Component ---
 
 export default function POModule() {
-  const { project } = useProject();
+  const [selectedProject, setSelectedProject] = useState<Project | 'all' | null>(null);
   const [activeFilter, setActiveFilter] = useState<StatusFilter>('');
   const [selectedPOId, setSelectedPOId] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
+
+  const projectId = selectedProject && selectedProject !== 'all' ? selectedProject.id : undefined;
 
   const tabIndex = useMemo(
     () => TAB_FILTERS.findIndex((t) => t.value === activeFilter),
@@ -212,8 +216,8 @@ export default function POModule() {
     loading: statsLoading,
     refetch: refetchStats,
   } = useQuery<{ poStatistics: POStatistics }>(GET_PO_STATISTICS, {
-    variables: { projectId: project?.id },
-    skip: !project?.id,
+    variables: { projectId },
+    skip: selectedProject === null,
   });
 
   const {
@@ -222,10 +226,10 @@ export default function POModule() {
     refetch: refetchPOs,
   } = useQuery<{ purchaseOrders: PurchaseOrder[] }>(GET_PURCHASE_ORDERS, {
     variables: {
-      projectId: project?.id,
+      projectId,
       status: activeFilter || undefined,
     },
-    skip: !project?.id,
+    skip: selectedProject === null,
     fetchPolicy: 'cache-and-network',
   });
 
@@ -258,25 +262,36 @@ export default function POModule() {
     refetchStats();
   };
 
-  // --- No project selected ---
+  // --- Landing page ---
 
-  if (!project) {
+  if (selectedProject === null) {
     return (
-      <Box sx={{ p: 4 }}>
-        <Alert severity="info">
-          Please select a project from the navigation bar to view purchase orders.
-        </Alert>
-      </Box>
+      <ProjectLandingPage
+        title="Purchase Orders"
+        onSelect={(p) => setSelectedProject(p === null ? 'all' : p)}
+      />
     );
   }
 
   // --- Render ---
 
+  const projectLabel =
+    selectedProject === 'all' ? 'All Projects' : (selectedProject.description || selectedProject.projectId);
+
   return (
     <Box>
-      <Typography variant="h5" gutterBottom>
-        Purchase Orders
-      </Typography>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+        <Button
+          size="small"
+          startIcon={<ArrowBackIcon />}
+          onClick={() => setSelectedProject(null)}
+        >
+          Projects
+        </Button>
+        <Typography variant="h5">
+          Purchase Orders — {projectLabel}
+        </Typography>
+      </Box>
 
       {/* Statistics Cards */}
       <Grid container spacing={2} sx={{ mb: 3 }}>

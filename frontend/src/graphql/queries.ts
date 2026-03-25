@@ -12,7 +12,7 @@ export const GET_PROJECTS = gql`
 `;
 
 export const GET_PO_STATISTICS = gql`
-  query GetPOStatistics($projectId: ID!) {
+  query GetPOStatistics($projectId: ID) {
     poStatistics(projectId: $projectId) {
       total
       draft
@@ -25,7 +25,7 @@ export const GET_PO_STATISTICS = gql`
 `;
 
 export const GET_PURCHASE_ORDERS = gql`
-  query GetPurchaseOrders($projectId: ID!, $status: POStatus) {
+  query GetPurchaseOrders($projectId: ID, $status: POStatus) {
     purchaseOrders(projectId: $projectId, status: $status) {
       id
       poNumber
@@ -83,7 +83,7 @@ export const GET_PURCHASE_ORDERS = gql`
 `;
 
 export const GET_INVENTORY_HIERARCHY = gql`
-  query GetInventoryHierarchy($projectId: ID!) {
+  query GetInventoryHierarchy($projectId: ID) {
     inventoryHierarchy(projectId: $projectId) {
       hardwareCategory
       totalQuantity
@@ -111,7 +111,7 @@ export const GET_INVENTORY_HIERARCHY = gql`
 `;
 
 export const GET_INVENTORY_ITEMS = gql`
-  query GetInventoryItems($projectId: ID!, $category: String!, $productCode: String!) {
+  query GetInventoryItems($projectId: ID, $category: String!, $productCode: String!) {
     inventoryItems(projectId: $projectId, category: $category, productCode: $productCode) {
       inventoryLocation {
         id projectId poLineItemId receiveLineItemId
@@ -125,7 +125,7 @@ export const GET_INVENTORY_ITEMS = gql`
 `;
 
 export const GET_OPENING_ITEMS = gql`
-  query GetOpeningItems($projectId: ID!) {
+  query GetOpeningItems($projectId: ID) {
     openingItems(projectId: $projectId) {
       id projectId openingId openingNumber
       building floor location quantity
@@ -160,7 +160,7 @@ export const GET_OPENING_ITEM_DETAILS = gql`
 `;
 
 export const GET_OPEN_POS = gql`
-  query GetOpenPOs($projectId: ID!) {
+  query GetOpenPOs($projectId: ID) {
     openPOs(projectId: $projectId) {
       id
       poNumber
@@ -214,7 +214,7 @@ export const GET_PO_RECEIVING_DETAILS = gql`
 `;
 
 export const GET_SHOP_ASSEMBLY_REQUESTS = gql`
-  query GetShopAssemblyRequests($projectId: ID!, $status: ShopAssemblyRequestStatus) {
+  query GetShopAssemblyRequests($projectId: ID, $status: ShopAssemblyRequestStatus) {
     shopAssemblyRequests(projectId: $projectId, status: $status) {
       id
       requestNumber
@@ -248,7 +248,7 @@ export const GET_SHOP_ASSEMBLY_REQUESTS = gql`
 `;
 
 export const GET_ASSEMBLE_LIST = gql`
-  query GetAssembleList($projectId: ID!) {
+  query GetAssembleList($projectId: ID) {
     assembleList(projectId: $projectId) {
       id
       shopAssemblyRequestId
@@ -272,7 +272,7 @@ export const GET_ASSEMBLE_LIST = gql`
 `;
 
 export const GET_PULL_REQUESTS = gql`
-  query GetPullRequests($projectId: ID!, $source: PullRequestSource, $status: PullRequestStatus) {
+  query GetPullRequests($projectId: ID, $source: PullRequestSource, $status: PullRequestStatus) {
     pullRequests(projectId: $projectId, source: $source, status: $status) {
       id
       requestNumber
@@ -325,7 +325,7 @@ export const GET_MY_WORK = gql`
 `;
 
 export const GET_SHIP_READY_ITEMS = gql`
-  query GetShipReadyItems($projectId: ID!) {
+  query GetShipReadyItems($projectId: ID) {
     shipReadyItems(projectId: $projectId) {
       openingItems {
         id projectId openingId openingNumber building floor location quantity
@@ -363,7 +363,7 @@ export const RECONCILE_SCHEDULE = gql`
 `;
 
 export const GET_HARDWARE_SUMMARY = gql`
-  query GetHardwareSummary($projectId: ID!) {
+  query GetHardwareSummary($projectId: ID) {
     hardwareSummary(projectId: $projectId) {
       hardwareCategory
       productCode
@@ -377,7 +377,7 @@ export const GET_HARDWARE_SUMMARY = gql`
 `;
 
 export const GET_OPENING_HARDWARE_STATUS = gql`
-  query GetOpeningHardwareStatus($projectId: ID!) {
+  query GetOpeningHardwareStatus($projectId: ID) {
     openingHardwareStatus(projectId: $projectId) {
       openingNumber
       building
@@ -394,7 +394,7 @@ export const GET_OPENING_HARDWARE_STATUS = gql`
 `;
 
 export const GET_NOTIFICATIONS = gql`
-  query GetNotifications($projectId: ID!, $recipientRole: String!, $unreadOnly: Boolean, $limit: Int) {
+  query GetNotifications($projectId: ID, $recipientRole: String, $unreadOnly: Boolean, $limit: Int) {
     notifications(projectId: $projectId, recipientRole: $recipientRole, unreadOnly: $unreadOnly, limit: $limit) {
       id
       projectId

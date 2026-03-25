@@ -11,14 +11,14 @@ from app.models.notification import Notification
 
 def get_notifications(
     session: Session,
-    project_id: uuid.UUID,
-    recipient_role: str,
+    project_id: uuid.UUID | None = None,
+    recipient_role: str = "",
     unread_only: bool | None = None,
     limit: int = 5,
 ) -> list[Notification]:
-    stmt = select(Notification).where(
-        Notification.project_id == project_id,
-    )
+    stmt = select(Notification)
+    if project_id is not None:
+        stmt = stmt.where(Notification.project_id == project_id)
     if recipient_role:
         stmt = stmt.where(Notification.recipient_role == recipient_role)
     if unread_only:
