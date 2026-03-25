@@ -1,4 +1,4 @@
-import { useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import {
   Box,
   Typography,
@@ -8,6 +8,7 @@ import {
   AccordionDetails,
   Checkbox,
   Chip,
+  TextField,
   Table,
   TableBody,
   TableCell,
@@ -87,7 +88,11 @@ export default function SelectOpeningsHardwareStep({
   openingStatusMap,
   statusLoading,
 }: SelectOpeningsHardwareStepProps) {
-  // ---- Left Panel: Openings DataGrid ----
+  // ---- Left Panel: Openings Filter & DataGrid ----
+
+  const [filterText, setFilterText] = useState('');
+  const [activeFilter, setActiveFilter] = useState<string[] | null>(null);
+  const [unmatchedNumbers, setUnmatchedNumbers] = useState<string[]>([]);
 
   const rows = useMemo<OpeningRow[]>(() => {
     return openings.map((o) => {
@@ -108,6 +113,51 @@ export default function SelectOpeningsHardwareStep({
       return row;
     });
   }, [openings, hardwareCountByOpening, openingStatusMap]);
+
+  const filteredRows = useMemo(() => {
+    if (activeFilter === null) return rows;
+    const filterSet = new Set(activeFilter);
+    return rows.filter((r) => filterSet.has(r.opening_number));
+  }, [rows, activeFilter]);
+
+  const handleApplyFilter = useCallback(() => {
+    const lines = filterText
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+
+    if (lines.length === 0) {
+      setActiveFilter(null);
+      setUnmatchedNumbers([]);
+      onOpeningSelectionChange(new Set());
+      return;
+    }
+
+    const allOpeningNumbers = new Set(openings.map((o) => o.opening_number));
+    const matched: string[] = [];
+    const unmatched: string[] = [];
+    const seen = new Set<string>();
+    for (const line of lines) {
+      if (seen.has(line)) continue;
+      seen.add(line);
+      if (allOpeningNumbers.has(line)) {
+        matched.push(line);
+      } else {
+        unmatched.push(line);
+      }
+    }
+
+    setActiveFilter(matched);
+    setUnmatchedNumbers(unmatched);
+    onOpeningSelectionChange(new Set(matched));
+  }, [filterText, openings, onOpeningSelectionChange]);
+
+  const handleClearFilter = useCallback(() => {
+    setFilterText('');
+    setActiveFilter(null);
+    setUnmatchedNumbers([]);
+    onOpeningSelectionChange(new Set());
+  }, [onOpeningSelectionChange]);
 
   const columns = useMemo<GridColDef<OpeningRow>[]>(() => {
     const base: GridColDef<OpeningRow>[] = [
@@ -177,8 +227,12 @@ export default function SelectOpeningsHardwareStep({
   );
 
   const handleSelectAllOpenings = useCallback(() => {
-    onOpeningSelectionChange(new Set(openings.map((o) => o.opening_number)));
-  }, [openings, onOpeningSelectionChange]);
+    if (activeFilter !== null) {
+      onOpeningSelectionChange(new Set(activeFilter));
+    } else {
+      onOpeningSelectionChange(new Set(openings.map((o) => o.opening_number)));
+    }
+  }, [openings, activeFilter, onOpeningSelectionChange]);
 
   const handleDeselectAllOpenings = useCallback(() => {
     onOpeningSelectionChange(new Set());
@@ -258,6 +312,42 @@ export default function SelectOpeningsHardwareStep({
           <Typography variant="h6" sx={{ mb: 1 }}>
             Openings
           </Typography>
+
+          {/* Filter by opening numbers */}
+          <Box sx={{ display: 'flex', gap: 1, mb: 1, alignItems: 'flex-start' }}>
+            <TextField
+              multiline
+              minRows={3}
+              maxRows={4}
+              size="small"
+              placeholder="Paste opening numbers, one per line..."
+              value={filterText}
+              onChange={(e) => setFilterText(e.target.value)}
+              sx={{ flex: 1 }}
+            />
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+              <Button size="small" variant="contained" onClick={handleApplyFilter}>
+                Filter
+              </Button>
+              {activeFilter !== null && (
+                <Button size="small" variant="outlined" onClick={handleClearFilter}>
+                  Clear
+                </Button>
+              )}
+            </Box>
+          </Box>
+
+          {unmatchedNumbers.length > 0 && (
+            <Alert severity="warning" sx={{ mb: 1, py: 0.5 }}>
+              <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                {unmatchedNumbers.length} opening number(s) not found:
+              </Typography>
+              <Typography variant="body2">
+                {unmatchedNumbers.join(', ')}
+              </Typography>
+            </Alert>
+          )}
+
           <Box sx={{ display: 'flex', gap: 1, mb: 1, alignItems: 'center' }}>
             <Button size="small" variant="outlined" onClick={handleSelectAllOpenings}>
               Select All
@@ -266,12 +356,13 @@ export default function SelectOpeningsHardwareStep({
               Deselect All
             </Button>
             <Typography variant="body2" color="text.secondary">
-              {selectedOpenings.size} of {openings.length} selected
+              {selectedOpenings.size} of {filteredRows.length} selected
+              {activeFilter !== null && ` (filtered from ${openings.length} total)`}
             </Typography>
           </Box>
           <Box sx={{ flex: 1, minHeight: 0 }}>
             <DataGrid
-              rows={rows}
+              rows={filteredRows}
               columns={columns}
               checkboxSelection
               rowSelectionModel={rowSelectionModel}
