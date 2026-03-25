@@ -3,7 +3,6 @@ import { Box, CircularProgress, Alert } from '@mui/material';
 import { useQuery } from '@apollo/client/react';
 import type { GridColDef } from '@mui/x-data-grid';
 import { GET_HARDWARE_SUMMARY } from '../../graphql/queries';
-import { useProject } from '../../contexts/ProjectContext';
 import DataTable from '../../components/DataTable';
 
 interface HardwareSummaryRow {
@@ -27,14 +26,8 @@ const columns: GridColDef[] = [
 ];
 
 export default function HardwareSummaryTab() {
-  const { project } = useProject();
-
   const { data, loading, error } = useQuery<{ hardwareSummary: HardwareSummaryRow[] }>(
     GET_HARDWARE_SUMMARY,
-    {
-      variables: { projectId: project?.id },
-      skip: !project,
-    },
   );
 
   const rows = useMemo(
@@ -45,10 +38,6 @@ export default function HardwareSummaryTab() {
       })),
     [data],
   );
-
-  if (!project) {
-    return <Alert severity="info">Select a project first</Alert>;
-  }
 
   if (loading) {
     return (
@@ -63,7 +52,7 @@ export default function HardwareSummaryTab() {
   }
 
   if (rows.length === 0) {
-    return <Alert severity="info">No hardware data for this project</Alert>;
+    return <Alert severity="info">No hardware data found</Alert>;
   }
 
   return (

@@ -14,7 +14,6 @@ import NotificationsIcon from '@mui/icons-material/Notifications';
 import { useQuery, useMutation } from '@apollo/client/react';
 import { GET_NOTIFICATIONS } from '../graphql/queries';
 import { MARK_NOTIFICATION_AS_READ } from '../graphql/mutations';
-import { useProject } from '../contexts/ProjectContext';
 
 interface Notification {
   id: string;
@@ -42,19 +41,11 @@ function formatTimeAgo(dateString: string): string {
 
 export default function NotificationBell() {
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
-  const { project } = useProject();
-
-  const skip = !project?.id;
 
   const { data } = useQuery<{ notifications: Notification[] }>(
     GET_NOTIFICATIONS,
     {
-      variables: {
-        projectId: project?.id ?? '',
-        recipientRole: '',
-        limit: 5,
-      },
-      skip,
+      variables: { limit: 5 },
       pollInterval: 30000,
     },
   );
@@ -62,13 +53,7 @@ export default function NotificationBell() {
   const { data: unreadData } = useQuery<{ notifications: Notification[] }>(
     GET_NOTIFICATIONS,
     {
-      variables: {
-        projectId: project?.id ?? '',
-        recipientRole: '',
-        unreadOnly: true,
-        limit: 99,
-      },
-      skip,
+      variables: { unreadOnly: true, limit: 99 },
       pollInterval: 30000,
     },
   );
@@ -94,20 +79,11 @@ export default function NotificationBell() {
         refetchQueries: [
           {
             query: GET_NOTIFICATIONS,
-            variables: {
-              projectId: project?.id ?? '',
-              recipientRole: '',
-              limit: 5,
-            },
+            variables: { limit: 5 },
           },
           {
             query: GET_NOTIFICATIONS,
-            variables: {
-              projectId: project?.id ?? '',
-              recipientRole: '',
-              unreadOnly: true,
-              limit: 99,
-            },
+            variables: { unreadOnly: true, limit: 99 },
           },
         ],
       });

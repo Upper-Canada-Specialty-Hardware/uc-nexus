@@ -23,7 +23,6 @@ import CloseIcon from '@mui/icons-material/Close';
 import UploadFileIcon from '@mui/icons-material/UploadFile';
 import CloudUploadIcon from '@mui/icons-material/CloudUpload';
 import { useLazyQuery, useMutation } from '@apollo/client/react';
-import { useProject } from '../../contexts/ProjectContext';
 import { useWizard } from '../../contexts/WizardContext';
 import { useToast } from '../../components/Toast';
 import ConfirmDialog from '../../components/ConfirmDialog';
@@ -78,7 +77,6 @@ interface ImportWizardProps {
 }
 
 export default function ImportWizard({ open, onClose }: ImportWizardProps) {
-  const { setProject } = useProject();
   const { showToast } = useToast();
   const { setTotalSteps, reset: resetWizardContext } = useWizard();
   const navigate = useNavigate();
@@ -688,16 +686,6 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
       setFinalizeResult(data);
       setFinalizeLoading(false);
 
-      // Update project context
-      if (data?.project) {
-        setProject({
-          id: data.project.id,
-          projectId: data.project.projectId,
-          description: data.project.description,
-          jobSiteName: data.project.jobSiteName,
-        });
-      }
-
       showToast('Import session finalized successfully!', 'success');
       setPostSuccessOpen(true);
     } catch (err: unknown) {
@@ -705,7 +693,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
       setMutationError(message);
       setFinalizeLoading(false);
     }
-  }, [buildFinalizeInput, finalizeImport, setProject, showToast]);
+  }, [buildFinalizeInput, finalizeImport, showToast]);
 
   const handlePostAction = useCallback(
     (action: 'po' | 'inventory' | 'home') => {

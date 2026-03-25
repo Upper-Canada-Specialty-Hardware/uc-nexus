@@ -399,9 +399,12 @@ class Query:
             ]
 
     @strawberry.field
-    def purchase_orders(self, project_id: strawberry.ID, status: POStatus | None = None) -> list[PurchaseOrder]:
+    def purchase_orders(
+        self, project_id: strawberry.ID | None = None, status: POStatus | None = None
+    ) -> list[PurchaseOrder]:
         with SessionLocal() as session:
-            pos = po_repository.get_purchase_orders(session, uuid.UUID(str(project_id)), status)
+            pid = uuid.UUID(str(project_id)) if project_id else None
+            pos = po_repository.get_purchase_orders(session, pid, status)
             return [_po_to_type(po) for po in pos]
 
     @strawberry.field
@@ -422,9 +425,9 @@ class Query:
             return _po_to_type(po, receive_records)
 
     @strawberry.field
-    def po_statistics(self, project_id: strawberry.ID) -> POStatistics:
+    def po_statistics(self, project_id: strawberry.ID | None = None) -> POStatistics:
         with SessionLocal() as session:
-            stats = po_repository.get_po_statistics(session, uuid.UUID(str(project_id)))
+            stats = po_repository.get_po_statistics(session, uuid.UUID(str(project_id)) if project_id else None)
             return POStatistics(
                 total=stats["total"],
                 draft=stats["draft"],
@@ -435,7 +438,7 @@ class Query:
             )
 
     @strawberry.field
-    def open_p_os(self, project_id: strawberry.ID) -> list[PurchaseOrder]:
+    def open_p_os(self, project_id: strawberry.ID | None = None) -> list[PurchaseOrder]:
         from sqlalchemy.orm import selectinload
 
         from app.models.purchase_order import PurchaseOrder as POModel
@@ -445,7 +448,6 @@ class Query:
                 select(POModel)
                 .options(selectinload(POModel.line_items), selectinload(POModel.documents))
                 .where(
-                    POModel.project_id == uuid.UUID(str(project_id)),
                     POModel.deleted_at.is_(None),
                     POModel.status.in_(
                         [
@@ -456,6 +458,8 @@ class Query:
                 )
                 .order_by(POModel.ordered_at.asc())
             )
+            if project_id:
+                stmt = stmt.where(POModel.project_id == uuid.UUID(str(project_id)))
             pos = session.scalars(stmt).unique().all()
             return [_po_to_type(po) for po in pos]
 
@@ -466,9 +470,11 @@ class Query:
             return _po_to_type(po, receive_records)
 
     @strawberry.field
-    def inventory_hierarchy(self, project_id: strawberry.ID) -> list[InventoryHierarchyNode]:
+    def inventory_hierarchy(self, project_id: strawberry.ID | None = None) -> list[InventoryHierarchyNode]:
         with SessionLocal() as session:
-            hierarchy = warehouse_repository.get_inventory_hierarchy(session, uuid.UUID(str(project_id)))
+            hierarchy = warehouse_repository.get_inventory_hierarchy(
+                session, uuid.UUID(str(project_id)) if project_id else None
+            )
             return [
                 InventoryHierarchyNode(
                     hardware_category=cat_node["hardware_category"],
@@ -486,10 +492,12 @@ class Query:
             ]
 
     @strawberry.field
-    def inventory_items(self, project_id: strawberry.ID, category: str, product_code: str) -> list[InventoryItemDetail]:
+    def inventory_items(
+        self, project_id: strawberry.ID | None = None, category: str = "", product_code: str = ""
+    ) -> list[InventoryItemDetail]:
         with SessionLocal() as session:
             items = warehouse_repository.get_inventory_items(
-                session, uuid.UUID(str(project_id)), category, product_code
+                session, uuid.UUID(str(project_id)) if project_id else None, category, product_code
             )
             return [
                 InventoryItemDetail(
@@ -501,9 +509,9 @@ class Query:
             ]
 
     @strawberry.field
-    def opening_items(self, project_id: strawberry.ID) -> list[OpeningItem]:
+    def opening_items(self, project_id: strawberry.ID | None = None) -> list[OpeningItem]:
         with SessionLocal() as session:
-            ois = warehouse_repository.get_opening_items(session, uuid.UUID(str(project_id)))
+            ois = warehouse_repository.get_opening_items(session, uuid.UUID(str(project_id)) if project_id else None)
             return [_opening_item_to_type(oi) for oi in ois]
 
     @strawberry.field
@@ -519,12 +527,14 @@ class Query:
     @strawberry.field
     def pull_requests(
         self,
-        project_id: strawberry.ID,
+        project_id: strawberry.ID | None = None,
         source: PullRequestSource | None = None,
         status: PullRequestStatus | None = None,
     ) -> list[PullRequest]:
         with SessionLocal() as session:
-            prs = warehouse_repository.get_pull_requests(session, uuid.UUID(str(project_id)), source, status)
+            prs = warehouse_repository.get_pull_requests(
+                session, uuid.UUID(str(project_id)) if project_id else None, source, status
+            )
             return [_pull_request_to_type(pr) for pr in prs]
 
     @strawberry.field
@@ -534,9 +544,9 @@ class Query:
             return _pull_request_to_type(pr)
 
     @strawberry.field
-    def ship_ready_items(self, project_id: strawberry.ID) -> ShipReadyItems:
+    def ship_ready_items(self, project_id: strawberry.ID | None = None) -> ShipReadyItems:
         with SessionLocal() as session:
-            data = shipping_repository.get_ship_ready_items(session, uuid.UUID(str(project_id)))
+            data = shipping_repository.get_ship_ready_items(session, uuid.UUID(str(project_id)) if project_id else None)
             return ShipReadyItems(
                 opening_items=[_opening_item_to_type(oi) for oi in data["opening_items"]],
                 loose_items=[
@@ -553,15 +563,15 @@ class Query:
     @strawberry.field
     def notifications(
         self,
-        project_id: strawberry.ID,
-        recipient_role: str,
+        project_id: strawberry.ID | None = None,
+        recipient_role: str = "",
         unread_only: bool | None = None,
         limit: int = 5,
     ) -> list[Notification]:
         with SessionLocal() as session:
             results = notification_repository.get_notifications(
                 session,
-                uuid.UUID(str(project_id)),
+                uuid.UUID(str(project_id)) if project_id else None,
                 recipient_role,
                 unread_only,
                 limit,
@@ -571,17 +581,21 @@ class Query:
     @strawberry.field
     def shop_assembly_requests(
         self,
-        project_id: strawberry.ID,
+        project_id: strawberry.ID | None = None,
         status: ShopAssemblyRequestStatus | None = None,
     ) -> list[ShopAssemblyRequest]:
         with SessionLocal() as session:
-            sars = shop_assembly_repository.get_shop_assembly_requests(session, uuid.UUID(str(project_id)), status)
+            sars = shop_assembly_repository.get_shop_assembly_requests(
+                session, uuid.UUID(str(project_id)) if project_id else None, status
+            )
             return [_shop_assembly_request_to_type(sar) for sar in sars]
 
     @strawberry.field
-    def assemble_list(self, project_id: strawberry.ID) -> list[ShopAssemblyOpening]:
+    def assemble_list(self, project_id: strawberry.ID | None = None) -> list[ShopAssemblyOpening]:
         with SessionLocal() as session:
-            rows = shop_assembly_repository.get_assemble_list(session, uuid.UUID(str(project_id)))
+            rows = shop_assembly_repository.get_assemble_list(
+                session, uuid.UUID(str(project_id)) if project_id else None
+            )
             return [_shop_assembly_opening_to_type(sao, opening_model=opening) for sao, opening in rows]
 
     @strawberry.field
@@ -591,9 +605,9 @@ class Query:
             return [_shop_assembly_opening_to_type(sao, opening_model=opening) for sao, opening in rows]
 
     @strawberry.field
-    def hardware_summary(self, project_id: strawberry.ID) -> list[HardwareSummaryRow]:
+    def hardware_summary(self, project_id: strawberry.ID | None = None) -> list[HardwareSummaryRow]:
         with SessionLocal() as session:
-            rows = admin_repository.get_hardware_summary(session, uuid.UUID(str(project_id)))
+            rows = admin_repository.get_hardware_summary(session, uuid.UUID(str(project_id)) if project_id else None)
             return [
                 HardwareSummaryRow(
                     hardware_category=r["hardware_category"],
@@ -608,9 +622,11 @@ class Query:
             ]
 
     @strawberry.field
-    def opening_hardware_status(self, project_id: strawberry.ID) -> list[OpeningHardwareStatus]:
+    def opening_hardware_status(self, project_id: strawberry.ID | None = None) -> list[OpeningHardwareStatus]:
         with SessionLocal() as session:
-            rows = admin_repository.get_opening_hardware_status(session, uuid.UUID(str(project_id)))
+            rows = admin_repository.get_opening_hardware_status(
+                session, uuid.UUID(str(project_id)) if project_id else None
+            )
             return [
                 OpeningHardwareStatus(
                     opening_number=r["opening_number"],

@@ -3,7 +3,6 @@ import {
   Box,
   Typography,
   Chip,
-  Alert,
   FormControl,
   InputLabel,
   Select,
@@ -12,7 +11,6 @@ import {
 import { useQuery } from '@apollo/client/react';
 import type { GridColDef, GridRowParams } from '@mui/x-data-grid';
 import { GET_SHOP_ASSEMBLY_REQUESTS } from '../../graphql/queries';
-import { useProject } from '../../contexts/ProjectContext';
 import DataTable from '../../components/DataTable';
 import SARDetailModal from './SARDetailModal';
 
@@ -129,17 +127,15 @@ const columns: GridColDef[] = [
 // --- Component ---
 
 export default function SARListPage() {
-  const { project } = useProject();
   const [activeFilter, setActiveFilter] = useState<StatusFilter>('PENDING');
   const [selectedSAR, setSelectedSAR] = useState<ShopAssemblyRequest | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
 
   const queryVariables = useMemo(
     () => ({
-      projectId: project?.id,
       status: activeFilter || undefined,
     }),
-    [project?.id, activeFilter],
+    [activeFilter],
   );
 
   const {
@@ -148,7 +144,6 @@ export default function SARListPage() {
     refetch,
   } = useQuery<{ shopAssemblyRequests: ShopAssemblyRequest[] }>(GET_SHOP_ASSEMBLY_REQUESTS, {
     variables: queryVariables,
-    skip: !project?.id,
   });
 
   const requests = data?.shopAssemblyRequests ?? [];
@@ -168,18 +163,6 @@ export default function SARListPage() {
   const handleRefetch = () => {
     refetch();
   };
-
-  // --- No project selected ---
-
-  if (!project) {
-    return (
-      <Box sx={{ p: 4 }}>
-        <Alert severity="info">
-          Please select a project from the navigation bar to view shop assembly requests.
-        </Alert>
-      </Box>
-    );
-  }
 
   // --- Render ---
 

@@ -29,19 +29,18 @@ from app.services.locking import lock_rows
 
 def get_ship_ready_items(
     session: Session,
-    project_id: uuid.UUID,
+    project_id: uuid.UUID | None = None,
 ) -> dict:
     """Query ship-ready opening items and compute available loose hardware."""
     # 1. Opening items with state = Ship_Ready
     oi_stmt = (
         select(OpeningItemModel)
         .options(selectinload(OpeningItemModel.installed_hardware))
-        .where(
-            OpeningItemModel.project_id == project_id,
-            OpeningItemModel.state == OpeningItemState.SHIP_READY,
-        )
+        .where(OpeningItemModel.state == OpeningItemState.SHIP_READY)
         .order_by(OpeningItemModel.opening_number.asc())
     )
+    if project_id is not None:
+        oi_stmt = oi_stmt.where(OpeningItemModel.project_id == project_id)
     opening_items = list(session.scalars(oi_stmt).unique().all())
 
     # 2. Loose items: sum requested_quantity from completed Shipping_Out PRs
@@ -54,7 +53,6 @@ def get_ship_ready_items(
         )
         .join(PullRequestModel, PullRequestItemModel.pull_request_id == PullRequestModel.id)
         .where(
-            PullRequestModel.project_id == project_id,
             PullRequestModel.source == PullRequestSource.SHIPPING_OUT,
             PullRequestModel.status == PullRequestStatus.COMPLETED,
             PullRequestItemModel.item_type == PullRequestItemType.LOOSE,
@@ -65,6 +63,8 @@ def get_ship_ready_items(
             PullRequestItemModel.product_code,
         )
     )
+    if project_id is not None:
+        fulfilled_stmt = fulfilled_stmt.where(PullRequestModel.project_id == project_id)
     fulfilled_rows = session.execute(fulfilled_stmt).all()
     fulfilled_map: dict[tuple, int] = {}
     for row in fulfilled_rows:
@@ -80,16 +80,15 @@ def get_ship_ready_items(
             func.sum(PackingSlipItem.quantity).label("total_shipped"),
         )
         .join(PackingSlip, PackingSlipItem.packing_slip_id == PackingSlip.id)
-        .where(
-            PackingSlip.project_id == project_id,
-            PackingSlipItem.item_type == PullRequestItemType.LOOSE,
-        )
+        .where(PackingSlipItem.item_type == PullRequestItemType.LOOSE)
         .group_by(
             PackingSlipItem.opening_number,
             PackingSlipItem.hardware_category,
             PackingSlipItem.product_code,
         )
     )
+    if project_id is not None:
+        shipped_stmt = shipped_stmt.where(PackingSlip.project_id == project_id)
     shipped_rows = session.execute(shipped_stmt).all()
     shipped_map: dict[tuple, int] = {}
     for row in shipped_rows:

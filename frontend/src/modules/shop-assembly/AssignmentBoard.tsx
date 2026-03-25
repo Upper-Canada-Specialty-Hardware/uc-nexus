@@ -3,7 +3,6 @@ import {
   Box,
   Typography,
   Paper,
-  Alert,
   Chip,
   Stack,
   Grid,
@@ -23,7 +22,6 @@ import { CSS } from '@dnd-kit/utilities';
 import { useQuery, useMutation } from '@apollo/client/react';
 import { GET_ASSEMBLE_LIST } from '../../graphql/queries';
 import { ASSIGN_OPENINGS, REMOVE_OPENING_FROM_USER } from '../../graphql/mutations';
-import { useProject } from '../../contexts/ProjectContext';
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
 
@@ -139,7 +137,6 @@ function DroppablePanel({
   );
 }
 export default function AssignmentBoard() {
-  const { project } = useProject();
   const { showToast } = useToast();
   const { displayName } = useIdentity();
   const [activeOpening, setActiveOpening] = useState<AssembleOpening | null>(null);
@@ -148,13 +145,7 @@ export default function AssignmentBoard() {
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } })
   );
 
-  const { data, refetch } = useQuery<{ assembleList: AssembleOpening[] }>(
-    GET_ASSEMBLE_LIST,
-    {
-      variables: { projectId: project?.id },
-      skip: !project?.id,
-    }
-  );
+  const { data, refetch } = useQuery<{ assembleList: AssembleOpening[] }>(GET_ASSEMBLE_LIST);
 
   const [assignOpenings] = useMutation(ASSIGN_OPENINGS, {
     onCompleted: (data) => {
@@ -237,14 +228,6 @@ export default function AssignmentBoard() {
     },
     [assignOpenings, removeOpening, displayName]
   );
-
-  if (!project) {
-    return (
-      <Box sx={{ p: 4 }}>
-        <Alert severity='info'>Please select a project to manage opening assignments.</Alert>
-      </Box>
-    );
-  }
 
   return (
     <Box>

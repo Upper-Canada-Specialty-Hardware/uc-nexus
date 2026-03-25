@@ -1,9 +1,8 @@
 import { useState, useMemo, useCallback } from 'react';
-import { Box, Tab, Tabs, Button, TextField, Chip, Alert } from '@mui/material';
+import { Box, Tab, Tabs, Button, TextField, Chip } from '@mui/material';
 import AddShoppingCartIcon from '@mui/icons-material/AddShoppingCart';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useQuery } from '@apollo/client/react';
-import { useProject } from '../../contexts/ProjectContext';
 import { useCart } from '../../contexts/CartContext';
 import { useToast } from '../../components/Toast';
 import { GET_SHIP_READY_ITEMS } from '../../graphql/queries';
@@ -49,16 +48,18 @@ interface ShipReadyData {
   };
 }
 
-export default function ShipReadyBrowser() {
-  const { project } = useProject();
+interface ShipReadyBrowserProps {
+  projectId: string | undefined;
+}
+
+export default function ShipReadyBrowser({ projectId }: ShipReadyBrowserProps) {
   const { items, addItem } = useCart();
   const { showToast } = useToast();
   const [tabIndex, setTabIndex] = useState(0);
   const [looseQuantities, setLooseQuantities] = useState<Record<string, number>>({});
 
   const { data, loading } = useQuery<ShipReadyData>(GET_SHIP_READY_ITEMS, {
-    variables: { projectId: project?.id ?? '' },
-    skip: !project,
+    variables: { projectId },
   });
 
   const openingItems = data?.shipReadyItems?.openingItems ?? [];
@@ -206,8 +207,6 @@ export default function ShipReadyBrowser() {
     ],
     [handleAddLooseItem, looseQuantities],
   );
-
-  if (!project) return <Alert severity="info">Please select a project</Alert>;
 
   return (
     <Box>

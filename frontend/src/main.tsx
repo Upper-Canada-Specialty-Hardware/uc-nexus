@@ -6,7 +6,6 @@ import { ClerkProvider } from '@clerk/clerk-react';
 import { ThemeProvider, CssBaseline } from '@mui/material';
 import theme from './theme';
 import client from './apollo';
-import { ProjectProvider } from './contexts/ProjectContext';
 import { WizardProvider } from './contexts/WizardContext';
 import { CartProvider } from './contexts/CartContext';
 import { ToastProvider } from './components/Toast';
@@ -28,15 +27,13 @@ createRoot(document.getElementById('root')!).render(
         <ThemeProvider theme={theme} defaultMode="light" modeStorageKey="uc-nexus-mode">
           <CssBaseline />
           <BrowserRouter>
-            <ProjectProvider>
-              <WizardProvider>
-                <CartProvider>
-                  <ToastProvider>
-                    <App />
-                  </ToastProvider>
-                </CartProvider>
-              </WizardProvider>
-            </ProjectProvider>
+            <WizardProvider>
+              <CartProvider>
+                <ToastProvider>
+                  <App />
+                </ToastProvider>
+              </CartProvider>
+            </WizardProvider>
           </BrowserRouter>
         </ThemeProvider>
       </ApolloProvider>

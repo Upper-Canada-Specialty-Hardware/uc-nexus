@@ -13,17 +13,18 @@ from app.models.purchase_order import PODocument, POLineItem, PurchaseOrder
 from app.models.receiving import ReceiveRecord
 
 
-def get_purchase_orders(session: Session, project_id: uuid.UUID, status: POStatus | None = None) -> list[PurchaseOrder]:
-    """Filter by project_id + optional status + deleted_at IS NULL, eagerly load line_items and documents."""
+def get_purchase_orders(
+    session: Session, project_id: uuid.UUID | None = None, status: POStatus | None = None
+) -> list[PurchaseOrder]:
+    """Filter by optional project_id + optional status + deleted_at IS NULL, eagerly load line_items and documents."""
     stmt = (
         select(PurchaseOrder)
         .options(selectinload(PurchaseOrder.line_items), selectinload(PurchaseOrder.documents))
-        .where(
-            PurchaseOrder.project_id == project_id,
-            PurchaseOrder.deleted_at.is_(None),
-        )
+        .where(PurchaseOrder.deleted_at.is_(None))
         .order_by(PurchaseOrder.created_at.desc())
     )
+    if project_id is not None:
+        stmt = stmt.where(PurchaseOrder.project_id == project_id)
     if status is not None:
         stmt = stmt.where(PurchaseOrder.status == status)
     return list(session.scalars(stmt).unique().all())
@@ -54,17 +55,16 @@ def get_receive_records_for_po(session: Session, po_id: uuid.UUID) -> list[Recei
     return list(session.scalars(stmt).unique().all())
 
 
-def get_po_statistics(session: Session, project_id: uuid.UUID) -> dict:
-    """COUNT grouped by status WHERE project_id AND deleted_at IS NULL.
+def get_po_statistics(session: Session, project_id: uuid.UUID | None = None) -> dict:
+    """COUNT grouped by status WHERE optional project_id AND deleted_at IS NULL.
     Return dict with keys: total, draft, ordered, partially_received, closed, cancelled."""
     stmt = (
         select(PurchaseOrder.status, func.count())
-        .where(
-            PurchaseOrder.project_id == project_id,
-            PurchaseOrder.deleted_at.is_(None),
-        )
+        .where(PurchaseOrder.deleted_at.is_(None))
         .group_by(PurchaseOrder.status)
     )
+    if project_id is not None:
+        stmt = stmt.where(PurchaseOrder.project_id == project_id)
     rows = session.execute(stmt).all()
 
     counts = {

@@ -17,7 +17,6 @@ import {
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import { useQuery } from '@apollo/client/react';
 import { GET_ASSEMBLE_LIST } from '../../graphql/queries';
-import { useProject } from '../../contexts/ProjectContext';
 
 // --- Types ---
 
@@ -58,15 +57,10 @@ const PULL_STATUS_SECTIONS: PullStatusSection[] = [
 // --- Component ---
 
 export default function AssembleListPage() {
-  const { project } = useProject();
-
   const {
     data,
     loading,
-  } = useQuery<{ assembleList: AssembleOpening[] }>(GET_ASSEMBLE_LIST, {
-    variables: { projectId: project?.id },
-    skip: !project?.id,
-  });
+  } = useQuery<{ assembleList: AssembleOpening[] }>(GET_ASSEMBLE_LIST);
 
   const openings = data?.assembleList ?? [];
 
@@ -88,18 +82,6 @@ export default function AssembleListPage() {
     }
     return groups;
   }, [openings]);
-
-  // --- No project selected ---
-
-  if (!project) {
-    return (
-      <Box sx={{ p: 4 }}>
-        <Alert severity="info">
-          Please select a project from the navigation bar to view the assemble list.
-        </Alert>
-      </Box>
-    );
-  }
 
   // --- Render ---
 
