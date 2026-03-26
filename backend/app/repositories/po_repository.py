@@ -75,7 +75,7 @@ def create_po(
             received_quantity=0,
             unit_cost=Decimal(str(li_data["unit_cost"])) if li_data.get("unit_cost") else Decimal("0"),
             classification=classification_val,
-            vendor_alias=li_data.get("vendor_alias"),
+            order_as=li_data.get("order_as"),
         )
         session.add(poli)
 
@@ -296,12 +296,12 @@ def cancel_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
     return po
 
 
-def update_line_item_alias(
+def update_line_item_order_as(
     session: Session,
     line_item_id: uuid.UUID,
-    vendor_alias: str | None,
+    order_as: str | None,
 ) -> POLineItem:
-    """Update vendor_alias on a POLineItem. Parent PO must not be cancelled or closed."""
+    """Update order_as on a POLineItem. Parent PO must not be cancelled or closed."""
     stmt = select(POLineItem).where(POLineItem.id == line_item_id)
     poli = session.scalars(stmt).first()
     if poli is None:
@@ -312,9 +312,9 @@ def update_line_item_alias(
         raise NotFoundError("Parent purchase order not found")
 
     if po.status != POStatus.DRAFT:
-        raise InvalidStateTransitionError(f"Cannot update alias on PO in {po.status.value} status")
+        raise InvalidStateTransitionError(f"Cannot update Order As on PO in {po.status.value} status")
 
-    poli.vendor_alias = vendor_alias
+    poli.order_as = order_as
     return poli
 
 

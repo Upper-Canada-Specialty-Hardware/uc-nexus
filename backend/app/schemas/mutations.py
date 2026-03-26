@@ -155,7 +155,7 @@ class Mutation:
                         {
                             "hardware_category": alias.hardware_category,
                             "product_code": alias.product_code,
-                            "vendor_alias": alias.vendor_alias,
+                            "order_as": alias.order_as,
                         }
                         for alias in po.line_item_aliases
                     ],
@@ -290,7 +290,7 @@ class Mutation:
                 "ordered_quantity": li.ordered_quantity,
                 "unit_cost": li.unit_cost,
                 "classification": li.classification.value if li.classification else None,
-                "vendor_alias": li.vendor_alias,
+                "order_as": li.order_as,
             }
             for li in input.line_items
         ]
@@ -363,9 +363,9 @@ class Mutation:
             return _po_to_type(po)
 
     @strawberry.mutation
-    def update_po_line_item_alias(self, id: strawberry.ID, vendor_alias: str | None = None) -> POLineItem:
+    def update_po_line_item_order_as(self, id: strawberry.ID, order_as: str | None = None) -> POLineItem:
         with SessionLocal() as session:
-            poli = po_repository.update_line_item_alias(session, uuid.UUID(str(id)), vendor_alias)
+            poli = po_repository.update_line_item_order_as(session, uuid.UUID(str(id)), order_as)
             session.commit()
             session.refresh(poli)
             return _po_line_item_to_type(poli)

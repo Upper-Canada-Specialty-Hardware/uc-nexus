@@ -26,7 +26,7 @@ interface LineItemRow {
   orderedQuantity: string;
   unitCost: string;
   classification: string;
-  vendorAlias: string;
+  orderAs: string;
 }
 
 const EMPTY_LINE_ITEM: Omit<LineItemRow, 'key'> = {
@@ -35,7 +35,7 @@ const EMPTY_LINE_ITEM: Omit<LineItemRow, 'key'> = {
   orderedQuantity: '1',
   unitCost: '0',
   classification: '',
-  vendorAlias: '',
+  orderAs: '',
 };
 
 const CLASSIFICATIONS = [
@@ -132,7 +132,7 @@ export default function CreatePODialog({ open, onClose, onCreated, defaultProjec
         orderedQuantity: parseInt(li.orderedQuantity, 10),
         unitCost: parseFloat(li.unitCost),
         classification: li.classification || null,
-        vendorAlias: li.vendorAlias.trim() || null,
+        orderAs: li.orderAs.trim() || null,
       })),
     };
 
@@ -233,7 +233,7 @@ export default function CreatePODialog({ open, onClose, onCreated, defaultProjec
         <Typography variant="caption" sx={{ fontWeight: 'bold' }}>Qty</Typography>
         <Typography variant="caption" sx={{ fontWeight: 'bold' }}>Unit Cost</Typography>
         <Typography variant="caption" sx={{ fontWeight: 'bold' }}>Classification</Typography>
-        <Typography variant="caption" sx={{ fontWeight: 'bold' }}>Vendor Alias</Typography>
+        <Typography variant="caption" sx={{ fontWeight: 'bold' }}>Order As</Typography>
         <Box />
       </Box>
 
@@ -297,8 +297,8 @@ export default function CreatePODialog({ open, onClose, onCreated, defaultProjec
           </TextField>
           <TextField
             size="small"
-            value={li.vendorAlias}
-            onChange={(e) => updateLineItem(li.key, 'vendorAlias', e.target.value)}
+            value={li.orderAs}
+            onChange={(e) => updateLineItem(li.key, 'orderAs', e.target.value)}
             placeholder="Optional"
           />
           <IconButton

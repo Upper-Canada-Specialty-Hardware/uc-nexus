@@ -39,7 +39,7 @@ interface OpenPOLineItem {
   productCode: string;
   orderedQuantity: number;
   receivedQuantity: number;
-  vendorAlias: string | null;
+  orderAs: string | null;
 }
 
 interface OpenPO {
@@ -61,7 +61,7 @@ interface PODetailLineItem {
   orderedQuantity: number;
   receivedQuantity: number;
   unitCost: number;
-  vendorAlias: string | null;
+  orderAs: string | null;
 }
 
 interface ReceiveRecordLineItem {
@@ -217,8 +217,8 @@ export default function ReceiveWizard({ open, onClose }: ReceiveWizardProps) {
     () => [
       { field: 'productCode', headerName: 'Product Code', flex: 1 },
       {
-        field: 'vendorAlias',
-        headerName: 'Vendor Alias',
+        field: 'orderAs',
+        headerName: 'Ordered As',
         flex: 0.8,
         renderCell: (params) => params.value || '\u2014',
       },
@@ -500,7 +500,7 @@ export default function ReceiveWizard({ open, onClose }: ReceiveWizardProps) {
     const rows = details.lineItems.map((li) => ({
       id: li.id,
       productCode: li.productCode,
-      vendorAlias: li.vendorAlias,
+      orderAs: li.orderAs,
       hardwareCategory: li.hardwareCategory,
       orderedQuantity: li.orderedQuantity,
       receivedQuantity: li.receivedQuantity,

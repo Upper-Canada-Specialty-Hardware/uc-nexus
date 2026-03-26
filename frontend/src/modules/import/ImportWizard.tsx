@@ -102,7 +102,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
   const [vendorPOInfo, setVendorPOInfo] = useState<Map<string, { vendorContact: string }>>(new Map());
   const [unitCostOverrides, setUnitCostOverrides] = useState<Map<string, number>>(new Map());
   const [classifications, setClassifications] = useState<Map<string, string>>(new Map());
-  const [vendorAliases, setVendorAliases] = useState<Map<string, string>>(new Map());
+  const [orderAsValues, setOrderAsValues] = useState<Map<string, string>>(new Map());
   const [sarRequestNumber, setSarRequestNumber] = useState('');
   const [shippingPRDrafts, setShippingPRDrafts] = useState<ShippingPRDraft[]>([]);
   const [selectedReconItems, setSelectedReconItems] = useState<Set<string>>(new Set());
@@ -482,9 +482,9 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     });
   }, []);
 
-  // Vendor alias
-  const updateVendorAlias = useCallback((key: string, alias: string) => {
-    setVendorAliases((prev) => {
+  // Order As
+  const updateOrderAs = useCallback((key: string, alias: string) => {
+    setOrderAsValues((prev) => {
       const next = new Map(prev);
       if (alias) {
         next.set(key, alias);
@@ -588,17 +588,17 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
               const info = vendorPOInfo.get(vendor) ?? { vendorContact: '' };
               // Collect aliases for this vendor's aggregated line items
               const seenKeys = new Set<string>();
-              const lineItemAliases: Array<{ hardwareCategory: string; productCode: string; vendorAlias: string }> = [];
+              const lineItemAliases: Array<{ hardwareCategory: string; productCode: string; orderAs: string }> = [];
               for (const hi of items) {
                 const key = `${hi.product_code}|${hi.hardware_category}`;
                 if (!seenKeys.has(key)) {
                   seenKeys.add(key);
-                  const alias = vendorAliases.get(key);
+                  const alias = orderAsValues.get(key);
                   if (alias) {
                     lineItemAliases.push({
                       hardwareCategory: hi.hardware_category,
                       productCode: hi.product_code,
-                      vendorAlias: alias,
+                      orderAs: alias,
                     });
                   }
                 }
@@ -670,7 +670,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
             .filter(Boolean)
         : null,
     };
-  }, [parsed, selectedOpenings, selectedItemKeys, purpose, aggregatedHardwareItems, vendorGroups, vendorPOInfo, selectedVendors, unitCostOverrides, vendorAliases, classifications, shippingPRDrafts, sarRequestNumber]);
+  }, [parsed, selectedOpenings, selectedItemKeys, purpose, aggregatedHardwareItems, vendorGroups, vendorPOInfo, selectedVendors, unitCostOverrides, orderAsValues, classifications, shippingPRDrafts, sarRequestNumber]);
 
   const handleFinalize = useCallback(async () => {
     setConfirmOpen(false);
@@ -722,7 +722,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     setSelectedVendors(new Set());
     setVendorPOInfo(new Map());
     setUnitCostOverrides(new Map());
-    setVendorAliases(new Map());
+    setOrderAsValues(new Map());
     setClassifications(new Map());
     setSarRequestNumber('');
     setShippingPRDrafts([]);
@@ -957,11 +957,11 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
               vendorPOInfo={vendorPOInfo}
               selectedVendors={selectedVendors}
               unitCostOverrides={unitCostOverrides}
-              vendorAliases={vendorAliases}
+              orderAsValues={orderAsValues}
               onToggleVendor={toggleVendor}
               onUpdateVendorPO={updateVendorPO}
               onUpdateUnitCost={updateUnitCost}
-              onUpdateVendorAlias={updateVendorAlias}
+              onUpdateOrderAs={updateOrderAs}
               onNext={handleNext}
               onBack={handleBack}
             />

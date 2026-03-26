@@ -435,7 +435,7 @@ def finalize_import_session(
             alias_lookup: dict[tuple[str, str], str] = {}
             for alias_entry in po_draft.get("line_item_aliases", []):
                 key = (alias_entry["hardware_category"], alias_entry["product_code"])
-                alias_lookup[key] = alias_entry["vendor_alias"]
+                alias_lookup[key] = alias_entry["order_as"]
 
             # Create POLineItems from aggregation
             for (cat, code, cost, cls), hw_items in line_item_agg.items():
@@ -449,7 +449,7 @@ def finalize_import_session(
                     ordered_quantity=total_qty,
                     received_quantity=0,
                     unit_cost=Decimal(str(cost)) if cost else Decimal("0"),
-                    vendor_alias=alias_lookup.get((cat, code)),
+                    order_as=alias_lookup.get((cat, code)),
                 )
                 session.add(poli)
                 session.flush()

@@ -19,11 +19,11 @@ interface PurchaseOrdersStepProps {
   vendorPOInfo: Map<string, { vendorContact: string }>;
   selectedVendors: Set<string>;
   unitCostOverrides: Map<string, number>;
-  vendorAliases: Map<string, string>;
+  orderAsValues: Map<string, string>;
   onToggleVendor: (vendor: string) => void;
   onUpdateVendorPO: (vendorNo: string, field: 'vendorContact', value: string) => void;
   onUpdateUnitCost: (vendor: string, productCode: string, hardwareCategory: string, newCost: number) => void;
-  onUpdateVendorAlias: (key: string, alias: string) => void;
+  onUpdateOrderAs: (key: string, value: string) => void;
   onNext: () => void;
   onBack: () => void;
 }
@@ -70,11 +70,11 @@ export default function PurchaseOrdersStep({
   vendorPOInfo,
   selectedVendors,
   unitCostOverrides,
-  vendorAliases,
+  orderAsValues,
   onToggleVendor,
   onUpdateVendorPO,
   onUpdateUnitCost,
-  onUpdateVendorAlias,
+  onUpdateOrderAs,
   onNext,
   onBack,
 }: PurchaseOrdersStepProps) {
@@ -171,7 +171,7 @@ export default function PurchaseOrdersStep({
               </Box>
               <Box sx={{ bgcolor: 'grey.100', p: 0.75 }}>
                 <Typography variant="caption" sx={{ fontWeight: 'bold' }}>
-                  Vendor Alias
+                  Order As
                 </Typography>
               </Box>
 
@@ -217,10 +217,10 @@ export default function PurchaseOrdersStep({
                     <Box sx={{ bgcolor: rowBg, p: 0.75, display: 'flex', alignItems: 'center' }}>
                       <TextField
                         size="small"
-                        placeholder="Vendor alias"
+                        placeholder="Order as"
                         disabled={!isSelected}
-                        value={vendorAliases.get(aliasKey) ?? ''}
-                        onChange={(e) => onUpdateVendorAlias(aliasKey, e.target.value)}
+                        value={orderAsValues.get(aliasKey) ?? ''}
+                        onChange={(e) => onUpdateOrderAs(aliasKey, e.target.value)}
                         variant="standard"
                         fullWidth
                         slotProps={{ input: { sx: { fontSize: '0.875rem' } } }}

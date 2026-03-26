@@ -21,7 +21,7 @@ export const UPDATE_PO = gql`
         orderedQuantity
         receivedQuantity
         unitCost
-        vendorAlias
+        orderAs
       }
       receiveRecords {
         id
@@ -65,7 +65,7 @@ export const MARK_PO_AS_ORDERED = gql`
         orderedQuantity
         receivedQuantity
         unitCost
-        vendorAlias
+        orderAs
       }
       receiveRecords {
         id
@@ -106,7 +106,7 @@ export const CANCEL_PO = gql`
         orderedQuantity
         receivedQuantity
         unitCost
-        vendorAlias
+        orderAs
       }
       receiveRecords {
         id
@@ -400,7 +400,7 @@ export const CREATE_PO = gql`
         orderedQuantity
         receivedQuantity
         unitCost
-        vendorAlias
+        orderAs
         createdAt
         updatedAt
       }
@@ -464,9 +464,9 @@ export const DELETE_PO_DOCUMENT = gql`
   }
 `;
 
-export const UPDATE_PO_LINE_ITEM_ALIAS = gql`
-  mutation UpdatePOLineItemAlias($id: ID!, $vendorAlias: String) {
-    updatePoLineItemAlias(id: $id, vendorAlias: $vendorAlias) {
+export const UPDATE_PO_LINE_ITEM_ORDER_AS = gql`
+  mutation UpdatePOLineItemOrderAs($id: ID!, $orderAs: String) {
+    updatePoLineItemOrderAs(id: $id, orderAs: $orderAs) {
       id
       hardwareCategory
       productCode
@@ -474,7 +474,7 @@ export const UPDATE_PO_LINE_ITEM_ALIAS = gql`
       orderedQuantity
       receivedQuantity
       unitCost
-      vendorAlias
+      orderAs
       createdAt
       updatedAt
     }
@@ -491,7 +491,7 @@ export const UPDATE_PO_LINE_ITEM_UNIT_COST = gql`
       orderedQuantity
       receivedQuantity
       unitCost
-      vendorAlias
+      orderAs
       createdAt
       updatedAt
     }

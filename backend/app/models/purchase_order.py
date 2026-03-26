@@ -66,7 +66,7 @@ class POLineItem(Base):
     ordered_quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     received_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     unit_cost: Mapped[Decimal] = mapped_column(Numeric(10, 4), nullable=False)
-    vendor_alias: Mapped[str | None] = mapped_column(String, nullable=True)
+    order_as: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 

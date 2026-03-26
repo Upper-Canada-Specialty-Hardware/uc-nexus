@@ -67,13 +67,13 @@ input PODraftInput {
   vendor_name: String
   vendor_contact: String
   hardware_item_refs: [HardwareItemRef!]!
-  line_item_aliases: [POLineItemAliasInput!]
+  line_item_aliases: [POLineItemOrderAsInput!]
 }
 
-input POLineItemAliasInput {
+input POLineItemOrderAsInput {
   hardware_category: String!
   product_code: String!
-  vendor_alias: String!
+  order_as: String!
 }
 
 input ClassificationInput {

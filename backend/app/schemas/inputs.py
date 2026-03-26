@@ -69,10 +69,10 @@ class HardwareItemRef:
 
 
 @strawberry.input
-class POLineItemAliasInput:
+class POLineItemOrderAsInput:
     hardware_category: str
     product_code: str
-    vendor_alias: str
+    order_as: str
 
 
 @strawberry.input
@@ -81,7 +81,7 @@ class PODraftInput:
     vendor_name: str | None = None
     vendor_contact: str | None = None
     hardware_item_refs: list[HardwareItemRef] = strawberry.field(default_factory=list)
-    line_item_aliases: list[POLineItemAliasInput] = strawberry.field(default_factory=list)
+    line_item_aliases: list[POLineItemOrderAsInput] = strawberry.field(default_factory=list)
 
 
 @strawberry.input
@@ -142,7 +142,7 @@ class CreatePOLineItemInput:
     ordered_quantity: int
     unit_cost: float
     classification: Classification | None = None
-    vendor_alias: str | None = None
+    order_as: str | None = None
 
 
 @strawberry.input

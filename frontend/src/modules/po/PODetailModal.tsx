@@ -37,7 +37,7 @@ import {
   UPDATE_PO,
   MARK_PO_AS_ORDERED,
   CANCEL_PO,
-  UPDATE_PO_LINE_ITEM_ALIAS,
+  UPDATE_PO_LINE_ITEM_ORDER_AS,
   UPDATE_PO_LINE_ITEM_UNIT_COST,
   UPLOAD_PO_DOCUMENT,
   DELETE_PO_DOCUMENT,
@@ -90,8 +90,8 @@ const lineItemColumns: GridColDef[] = [
   { field: 'productCode', headerName: 'Product Code', flex: 1, minWidth: 130 },
   { field: 'hardwareCategory', headerName: 'Hardware Category', flex: 1, minWidth: 150 },
   {
-    field: 'vendorAlias',
-    headerName: 'Vendor Alias',
+    field: 'orderAs',
+    headerName: 'Order As',
     flex: 1,
     minWidth: 130,
     renderCell: (params) => params.value || '\u2014',
@@ -218,7 +218,7 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
     },
   });
 
-  const [updateAlias] = useMutation(UPDATE_PO_LINE_ITEM_ALIAS);
+  const [updateAlias] = useMutation(UPDATE_PO_LINE_ITEM_ORDER_AS);
   const [updateUnitCost] = useMutation(UPDATE_PO_LINE_ITEM_UNIT_COST);
 
   const [cancelPo, { loading: cancelLoading }] = useMutation(CANCEL_PO, {
@@ -270,7 +270,7 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
     const initialAliases: Record<string, string> = {};
     const initialUnitCosts: Record<string, string> = {};
     for (const li of po.lineItems) {
-      initialAliases[li.id] = li.vendorAlias ?? '';
+      initialAliases[li.id] = li.orderAs ?? '';
       initialUnitCosts[li.id] = li.unitCost != null ? String(li.unitCost) : '';
     }
     setAliasEdits(initialAliases);
@@ -290,12 +290,12 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
 
     // Save line item changes (alias + unit cost)
     const aliasPromises = po.lineItems
-      .filter((li) => (aliasEdits[li.id] ?? '') !== (li.vendorAlias ?? ''))
+      .filter((li) => (aliasEdits[li.id] ?? '') !== (li.orderAs ?? ''))
       .map((li) =>
         updateAlias({
           variables: {
             id: li.id,
-            vendorAlias: aliasEdits[li.id] || null,
+            orderAs: aliasEdits[li.id] || null,
           },
         }),
       );
@@ -365,14 +365,14 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
     deleteDocument({ variables: { documentId } });
   };
 
-  // --- Edit-mode line item columns (with editable vendor alias + unit cost) ---
+  // --- Edit-mode line item columns (with editable Order As + unit cost) ---
 
   const canEditItems = po.status === 'DRAFT';
 
   const editLineItemColumns = useMemo<GridColDef[]>(
     () =>
       lineItemColumns.map((col): GridColDef => {
-        if (col.field === 'vendorAlias' && canEditItems) {
+        if (col.field === 'orderAs' && canEditItems) {
           return {
             ...col,
             renderCell: (params) => (
