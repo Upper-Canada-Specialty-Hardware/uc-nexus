@@ -444,6 +444,17 @@ export default function SelectOpeningsHardwareStep({
                           {productCode}
                         </Typography>
                         <Chip label={category} size="small" variant="outlined" />
+                        <Chip label={items[0].vendor_no ?? '(No Vendor)'} size="small" variant="outlined" />
+                        <Chip
+                          label={items[0].unit_cost != null ? `$${items[0].unit_cost.toFixed(2)}` : '\u2014'}
+                          size="small"
+                          variant="outlined"
+                        />
+                        <Chip
+                          label={`Total: $${items.reduce((sum, hi) => sum + (hi.unit_cost ?? 0) * hi.item_quantity, 0).toFixed(2)}`}
+                          size="small"
+                          variant="outlined"
+                        />
                         <Typography variant="body2" color="text.secondary" sx={{ ml: 'auto', mr: 2 }}>
                           {selectedInGroup}/{items.length}
                         </Typography>
@@ -456,8 +467,6 @@ export default function SelectOpeningsHardwareStep({
                             <TableCell padding="checkbox" />
                             <TableCell>Opening</TableCell>
                             <TableCell align="right">Qty</TableCell>
-                            <TableCell>Vendor</TableCell>
-                            <TableCell align="right">Unit Cost</TableCell>
                           </TableRow>
                         </TableHead>
                         <TableBody>
@@ -474,10 +483,6 @@ export default function SelectOpeningsHardwareStep({
                                 </TableCell>
                                 <TableCell>{hi.opening_number}</TableCell>
                                 <TableCell align="right">{hi.item_quantity}</TableCell>
-                                <TableCell>{hi.vendor_no ?? '(No Vendor)'}</TableCell>
-                                <TableCell align="right">
-                                  {hi.unit_cost != null ? `$${hi.unit_cost.toFixed(2)}` : '\u2014'}
-                                </TableCell>
                               </TableRow>
                             );
                           })}
