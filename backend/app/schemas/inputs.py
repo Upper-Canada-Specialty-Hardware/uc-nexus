@@ -136,6 +136,24 @@ class FinalizeImportSessionInput:
 
 
 @strawberry.input
+class CreatePOLineItemInput:
+    hardware_category: str
+    product_code: str
+    ordered_quantity: int
+    unit_cost: float
+    classification: Classification | None = None
+    vendor_alias: str | None = None
+
+
+@strawberry.input
+class CreatePOInput:
+    line_items: list[CreatePOLineItemInput]
+    project_id: strawberry.ID | None = None
+    vendor_name: str | None = None
+    vendor_contact: str | None = None
+
+
+@strawberry.input
 class ReconciliationItemInput:
     opening_number: str
     hardware_category: str

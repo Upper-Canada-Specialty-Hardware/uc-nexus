@@ -337,14 +337,10 @@ def finalize_import_session(
             hw_items_lookup[key] = hi
 
         # Generate request_number sequence for new POs
-        max_req_stmt = select(func.max(POModel.request_number)).where(POModel.request_number.like("PO-REQ-%"))
-        max_req = session.scalar(max_req_stmt)
-        next_seq = 1
-        if max_req:
-            try:
-                next_seq = int(max_req.replace("PO-REQ-", "")) + 1
-            except ValueError:
-                pass
+        from app.repositories.po_repository import generate_next_request_number
+
+        next_request_number = generate_next_request_number(session)
+        next_seq = int(next_request_number.replace("PO-REQ-", ""))
 
         for po_draft in po_drafts:
             # Validate PO number uniqueness within project if provided

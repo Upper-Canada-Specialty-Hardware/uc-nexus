@@ -18,7 +18,13 @@ class PurchaseOrder(Base):
             "project_id",
             "po_number",
             unique=True,
-            postgresql_where="po_number IS NOT NULL",
+            postgresql_where="project_id IS NOT NULL AND po_number IS NOT NULL",
+        ),
+        Index(
+            "ix_purchase_orders_no_project_po_number",
+            "po_number",
+            unique=True,
+            postgresql_where="project_id IS NULL AND po_number IS NOT NULL",
         ),
         Index("ix_purchase_orders_request_number", "request_number", unique=True),
     )
@@ -26,7 +32,7 @@ class PurchaseOrder(Base):
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     po_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
     request_number: Mapped[str] = mapped_column(String(50), nullable=False)
-    project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
+    project_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("projects.id"), nullable=True)
     status: Mapped[POStatus] = mapped_column(Enum(POStatus, name="po_status", create_constraint=True), nullable=False)
     vendor_name: Mapped[str | None] = mapped_column(String, nullable=True)
     vendor_contact: Mapped[str | None] = mapped_column(String, nullable=True)

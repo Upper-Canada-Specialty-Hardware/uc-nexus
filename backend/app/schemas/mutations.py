@@ -19,6 +19,7 @@ from .inputs import (
     AssignOpeningsInput,
     CompleteOpeningInput,
     ConfirmShipmentInput,
+    CreatePOInput,
     CreateReceiveInput,
     FinalizeImportSessionInput,
 )
@@ -276,6 +277,47 @@ class Mutation:
 
     # PO
     @strawberry.mutation
+    def create_po(self, input: CreatePOInput) -> PurchaseOrder:
+        from sqlalchemy.orm import selectinload
+
+        from app.models.purchase_order import PurchaseOrder as POModel
+
+        project_id = uuid.UUID(str(input.project_id)) if input.project_id else None
+        line_items_data = [
+            {
+                "hardware_category": li.hardware_category,
+                "product_code": li.product_code,
+                "ordered_quantity": li.ordered_quantity,
+                "unit_cost": li.unit_cost,
+                "classification": li.classification.value if li.classification else None,
+                "vendor_alias": li.vendor_alias,
+            }
+            for li in input.line_items
+        ]
+
+        with SessionLocal() as session:
+            po = po_repository.create_po(
+                session,
+                line_items=line_items_data,
+                project_id=project_id,
+                vendor_name=input.vendor_name,
+                vendor_contact=input.vendor_contact,
+            )
+            session.commit()
+
+            # Re-load with line_items and documents
+            refreshed_po = (
+                session.scalars(
+                    select(POModel)
+                    .options(selectinload(POModel.line_items), selectinload(POModel.documents))
+                    .where(POModel.id == po.id)
+                )
+                .unique()
+                .first()
+            )
+            return _po_to_type(refreshed_po)
+
+    @strawberry.mutation
     def update_po(
         self,
         id: strawberry.ID,
@@ -284,7 +326,11 @@ class Mutation:
         expected_delivery_date: date | None = None,
         po_number: str | None = None,
         vendor_quote_number: str | None = None,
+        project_id: strawberry.ID | None = None,
     ) -> PurchaseOrder:
+        from app.repositories.po_repository import _UNSET
+
+        pid = uuid.UUID(str(project_id)) if project_id else _UNSET
         with SessionLocal() as session:
             po = po_repository.update_po(
                 session,
@@ -294,6 +340,7 @@ class Mutation:
                 expected_delivery_date,
                 po_number=po_number,
                 vendor_quote_number=vendor_quote_number,
+                project_id=pid,
             )
             session.commit()
             session.refresh(po)

@@ -12,6 +12,7 @@ import {
   Button,
 } from '@mui/material';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
+import AddIcon from '@mui/icons-material/Add';
 import { useQuery } from '@apollo/client/react';
 import type { GridColDef, GridRowParams } from '@mui/x-data-grid';
 import { GET_PURCHASE_ORDERS, GET_PO_STATISTICS } from '../../graphql/queries';
@@ -19,6 +20,7 @@ import DataTable from '../../components/DataTable';
 import ProjectLandingPage from '../../components/ProjectLandingPage';
 import type { Project } from '../../types/project';
 import PODetailModal from './PODetailModal';
+import CreatePODialog from './CreatePODialog';
 
 // --- Types ---
 
@@ -70,7 +72,7 @@ export interface PurchaseOrder {
   id: string;
   poNumber: string | null;
   requestNumber: string;
-  projectId: string;
+  projectId: string | null;
   status: string;
   vendorName: string | null;
   vendorContact: string | null;
@@ -205,6 +207,7 @@ export default function POModule() {
   const [activeFilter, setActiveFilter] = useState<StatusFilter>('');
   const [selectedPOId, setSelectedPOId] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
 
   const projectId = selectedProject && selectedProject !== 'all' ? selectedProject.id : undefined;
 
@@ -292,9 +295,17 @@ export default function POModule() {
         >
           Projects
         </Button>
-        <Typography variant="h5">
+        <Typography variant="h5" sx={{ flex: 1 }}>
           Purchase Orders — {projectLabel}
         </Typography>
+        <Button
+          variant="contained"
+          size="small"
+          startIcon={<AddIcon />}
+          onClick={() => setCreateOpen(true)}
+        >
+          Create PO
+        </Button>
       </Box>
 
       {/* Statistics Cards */}
@@ -350,6 +361,17 @@ export default function POModule() {
           onRefetch={handleRefetch}
         />
       )}
+
+      {/* Create PO Dialog */}
+      <CreatePODialog
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        onCreated={() => {
+          setCreateOpen(false);
+          handleRefetch();
+        }}
+        defaultProjectId={projectId}
+      />
     </Box>
   );
 }

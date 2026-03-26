@@ -125,7 +125,7 @@ class PurchaseOrder:
     id: strawberry.ID
     po_number: str | None
     request_number: str
-    project_id: strawberry.ID
+    project_id: strawberry.ID | None
     status: POStatus
     vendor_name: str | None
     vendor_contact: str | None

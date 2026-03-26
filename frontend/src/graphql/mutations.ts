@@ -379,6 +379,41 @@ export const CONFIRM_SHIPMENT = gql`
   }
 `;
 
+export const CREATE_PO = gql`
+  mutation CreatePO($input: CreatePOInput!) {
+    createPo(input: $input) {
+      id
+      poNumber
+      requestNumber
+      projectId
+      status
+      vendorName
+      vendorContact
+      createdAt
+      updatedAt
+      lineItems {
+        id
+        poId
+        hardwareCategory
+        productCode
+        classification
+        orderedQuantity
+        receivedQuantity
+        unitCost
+        vendorAlias
+        createdAt
+        updatedAt
+      }
+      receiveRecords {
+        id
+      }
+      documents {
+        id
+      }
+    }
+  }
+`;
+
 export const FINALIZE_IMPORT_SESSION = gql`
   mutation FinalizeImportSession($input: FinalizeImportSessionInput!) {
     finalizeImportSession(input: $input) {

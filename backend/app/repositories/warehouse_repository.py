@@ -331,6 +331,10 @@ def create_receive(
     if po is None or po.deleted_at is not None:
         raise NotFoundError(f"Purchase order {po_id} not found")
 
+    # Validate PO has a project (required for inventory locations)
+    if po.project_id is None:
+        raise ValidationError("PO must be associated with a project before receiving", field="project_id")
+
     # Validate PO status
     if po.status not in (POStatus.ORDERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED):
         raise InvalidStateTransitionError(

@@ -586,6 +586,7 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
             <InfoRow label="Vendor Quote #" value={po.vendorQuoteNumber || '-'} />
             <InfoRow label="Expected Delivery Date" value={formatDate(po.expectedDeliveryDate)} />
             <InfoRow label="Order Date" value={formatDate(po.orderedAt)} />
+            {!po.projectId && <InfoRow label="Project" value="No Project" />}
             {vendorNameError && (
               <Typography color="error" variant="body2" sx={{ mt: 1 }}>
                 {vendorNameError}

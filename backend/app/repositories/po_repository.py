@@ -3,14 +3,84 @@
 import base64
 import uuid
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import InvalidStateTransitionError, NotFoundError, ValidationError
-from app.models.enums import PODocumentType, POStatus
+from app.models.enums import Classification, PODocumentType, POStatus
 from app.models.purchase_order import PODocument, POLineItem, PurchaseOrder
 from app.models.receiving import ReceiveRecord
+
+_UNSET = object()
+
+
+def generate_next_request_number(session: Session) -> str:
+    """Generate the next PO-REQ-XXX request number."""
+    max_req_stmt = select(func.max(PurchaseOrder.request_number)).where(PurchaseOrder.request_number.like("PO-REQ-%"))
+    max_req = session.scalar(max_req_stmt)
+    next_seq = 1
+    if max_req:
+        try:
+            next_seq = int(max_req.replace("PO-REQ-", "")) + 1
+        except ValueError:
+            pass
+    return f"PO-REQ-{next_seq:03d}"
+
+
+def create_po(
+    session: Session,
+    line_items: list[dict],
+    project_id: uuid.UUID | None = None,
+    vendor_name: str | None = None,
+    vendor_contact: str | None = None,
+) -> PurchaseOrder:
+    """Create a manual PO with line items. No hardware items are created."""
+    if not line_items:
+        raise ValidationError("At least one line item is required", field="line_items")
+
+    # Validate project exists if provided
+    if project_id is not None:
+        from app.models.project import Project as ProjectModel
+
+        project = session.get(ProjectModel, project_id)
+        if project is None:
+            raise NotFoundError(f"Project {project_id} not found")
+
+    request_number = generate_next_request_number(session)
+
+    po = PurchaseOrder(
+        id=uuid.uuid4(),
+        request_number=request_number,
+        project_id=project_id,
+        status=POStatus.DRAFT,
+        vendor_name=vendor_name,
+        vendor_contact=vendor_contact,
+    )
+    session.add(po)
+    session.flush()
+
+    for li_data in line_items:
+        classification_val = li_data.get("classification")
+        if isinstance(classification_val, str):
+            classification_val = Classification(classification_val)
+
+        poli = POLineItem(
+            id=uuid.uuid4(),
+            po_id=po.id,
+            hardware_category=li_data["hardware_category"],
+            product_code=li_data["product_code"],
+            ordered_quantity=li_data["ordered_quantity"],
+            received_quantity=0,
+            unit_cost=Decimal(str(li_data["unit_cost"])) if li_data.get("unit_cost") else Decimal("0"),
+            classification=classification_val,
+            vendor_alias=li_data.get("vendor_alias"),
+        )
+        session.add(poli)
+
+    session.flush()
+    return po
 
 
 def get_purchase_orders(
@@ -101,6 +171,7 @@ def update_po(
     expected_delivery_date,
     po_number: str | None = None,
     vendor_quote_number: str | None = None,
+    project_id=_UNSET,
 ) -> PurchaseOrder:
     """
     - Validate PO exists + not soft-deleted (NotFoundError)
@@ -123,19 +194,30 @@ def update_po(
     if receive_count and receive_count > 0:
         raise InvalidStateTransitionError("Cannot edit PO after receiving has started")
 
+    # Update project_id if provided (sentinel _UNSET means "not provided")
+    if project_id is not _UNSET and project_id is not None:
+        from app.models.project import Project as ProjectModel
+
+        project = session.get(ProjectModel, project_id)
+        if project is None:
+            raise NotFoundError(f"Project {project_id} not found")
+        po.project_id = project_id
+
     if po_number is not None:
-        # Validate uniqueness within project
+        # Validate uniqueness scoped to project (or globally for project-less POs)
         if po_number.strip():
-            existing = session.scalars(
-                select(PurchaseOrder).where(
-                    PurchaseOrder.project_id == po.project_id,
-                    PurchaseOrder.po_number == po_number,
-                    PurchaseOrder.id != po.id,
-                    PurchaseOrder.deleted_at.is_(None),
-                )
-            ).first()
+            uniqueness_stmt = select(PurchaseOrder).where(
+                PurchaseOrder.po_number == po_number,
+                PurchaseOrder.id != po.id,
+                PurchaseOrder.deleted_at.is_(None),
+            )
+            if po.project_id is not None:
+                uniqueness_stmt = uniqueness_stmt.where(PurchaseOrder.project_id == po.project_id)
+            else:
+                uniqueness_stmt = uniqueness_stmt.where(PurchaseOrder.project_id.is_(None))
+            existing = session.scalars(uniqueness_stmt).first()
             if existing is not None:
-                raise ValidationError(f"PO number '{po_number}' already exists in this project", field="po_number")
+                raise ValidationError(f"PO number '{po_number}' already exists", field="po_number")
             po.po_number = po_number
         else:
             po.po_number = None
