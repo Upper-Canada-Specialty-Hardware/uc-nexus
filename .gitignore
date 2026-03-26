@@ -45,6 +45,9 @@ backend/alembic/versions/__pycache__/
 # Dev Planning (not tracked)
 Dev Planning/
 
+# Simulated user testing guide (local only)
+testing/
+
 # Sample data
 *.xml
 

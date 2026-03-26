@@ -7,7 +7,7 @@ import ProjectLandingPage from '../../components/ProjectLandingPage';
 import type { Project } from '../../types/project';
 
 export default function InventoryView() {
-  const [selectedProject, setSelectedProject] = useState<Project | 'all' | null>(null);
+  const [selectedProject, setSelectedProject] = useState<Project | 'all' | null>('all');
   const [activeTab, setActiveTab] = useState(0);
 
   if (selectedProject === null) {
