@@ -71,6 +71,7 @@ def get_po_statistics(session: Session, project_id: uuid.UUID | None = None) -> 
         "total": 0,
         "draft": 0,
         "ordered": 0,
+        "vendor_confirmed": 0,
         "partially_received": 0,
         "closed": 0,
         "cancelled": 0,
@@ -78,6 +79,7 @@ def get_po_statistics(session: Session, project_id: uuid.UUID | None = None) -> 
     status_key_map = {
         POStatus.DRAFT: "draft",
         POStatus.ORDERED: "ordered",
+        POStatus.VENDOR_CONFIRMED: "vendor_confirmed",
         POStatus.PARTIALLY_RECEIVED: "partially_received",
         POStatus.CLOSED: "closed",
         POStatus.CANCELLED: "cancelled",
@@ -112,7 +114,7 @@ def update_po(
     if po is None:
         raise NotFoundError(f"Purchase order {po_id} not found")
 
-    if po.status not in (POStatus.DRAFT, POStatus.ORDERED):
+    if po.status not in (POStatus.DRAFT, POStatus.ORDERED, POStatus.VENDOR_CONFIRMED):
         raise InvalidStateTransitionError(f"Cannot edit PO in {po.status.value} status")
 
     # Check for existing receive records
@@ -147,6 +149,17 @@ def update_po(
     if vendor_quote_number is not None:
         po.vendor_quote_number = vendor_quote_number if vendor_quote_number.strip() else None
 
+    # Auto-transition: ORDERED → VENDOR_CONFIRMED when both vendor_quote_number and vendor_ack doc exist
+    if po.status == POStatus.ORDERED:
+        has_vendor_ack = any(doc.document_type == PODocumentType.VENDOR_ACKNOWLEDGEMENT for doc in (po.documents or []))
+        if po.vendor_quote_number is not None and has_vendor_ack:
+            po.status = POStatus.VENDOR_CONFIRMED
+    # Auto-revert: VENDOR_CONFIRMED → ORDERED when conditions no longer met
+    elif po.status == POStatus.VENDOR_CONFIRMED:
+        has_vendor_ack = any(doc.document_type == PODocumentType.VENDOR_ACKNOWLEDGEMENT for doc in (po.documents or []))
+        if po.vendor_quote_number is None or not has_vendor_ack:
+            po.status = POStatus.ORDERED
+
     return po
 
 
@@ -156,8 +169,6 @@ def mark_po_as_ordered(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
     - Validate status == Draft (InvalidStateTransitionError)
     - Validate po_number is not None (ValidationError)
     - Validate vendor_name is not None (ValidationError)
-    - Validate vendor_quote_number is not None (ValidationError)
-    - Validate at least one VENDOR_ACKNOWLEDGEMENT document exists (ValidationError)
     - Set status=Ordered, ordered_at=datetime.utcnow()
     - Return updated PO
     """
@@ -177,15 +188,6 @@ def mark_po_as_ordered(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
             field="vendor_name",
         )
 
-    if po.vendor_quote_number is None:
-        raise ValidationError("Vendor quote number is required before marking as ordered", field="vendor_quote_number")
-
-    has_vendor_ack = any(doc.document_type == PODocumentType.VENDOR_ACKNOWLEDGEMENT for doc in (po.documents or []))
-    if not has_vendor_ack:
-        raise ValidationError(
-            "Vendor acknowledgement document is required before marking as ordered", field="vendor_acknowledgement"
-        )
-
     po.status = POStatus.ORDERED
     po.ordered_at = datetime.utcnow()
 
@@ -203,7 +205,7 @@ def cancel_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
     if po is None:
         raise NotFoundError(f"Purchase order {po_id} not found")
 
-    if po.status not in (POStatus.DRAFT, POStatus.ORDERED):
+    if po.status not in (POStatus.DRAFT, POStatus.ORDERED, POStatus.VENDOR_CONFIRMED):
         raise InvalidStateTransitionError(f"Cannot cancel PO in {po.status.value} status")
 
     po.status = POStatus.CANCELLED
@@ -295,6 +297,15 @@ def upload_po_document(
         s3_key=s3_key,
     )
     session.add(doc)
+
+    # Auto-transition: ORDERED → VENDOR_CONFIRMED when uploading vendor ack and quote number exists
+    if (
+        document_type == PODocumentType.VENDOR_ACKNOWLEDGEMENT
+        and po.status == POStatus.ORDERED
+        and po.vendor_quote_number is not None
+    ):
+        po.status = POStatus.VENDOR_CONFIRMED
+
     return doc
 
 
@@ -314,8 +325,24 @@ def delete_po_document(session: Session, document_id: uuid.UUID) -> None:
     if po.status in (POStatus.CANCELLED, POStatus.CLOSED):
         raise InvalidStateTransitionError(f"Cannot delete documents from PO in {po.status.value} status")
 
+    deleted_doc_id = doc.id
+    deleted_doc_po_id = doc.po_id
+    deleted_doc_type = doc.document_type
+
     storage.delete_file(doc.s3_key)
     session.delete(doc)
+
+    # Auto-revert: VENDOR_CONFIRMED → ORDERED when last vendor ack doc is deleted
+    if deleted_doc_type == PODocumentType.VENDOR_ACKNOWLEDGEMENT and po.status == POStatus.VENDOR_CONFIRMED:
+        remaining_ack = session.scalars(
+            select(PODocument).where(
+                PODocument.po_id == deleted_doc_po_id,
+                PODocument.document_type == PODocumentType.VENDOR_ACKNOWLEDGEMENT,
+                PODocument.id != deleted_doc_id,
+            )
+        ).first()
+        if remaining_ack is None:
+            po.status = POStatus.ORDERED
 
 
 def get_po_document(session: Session, document_id: uuid.UUID) -> PODocument:

@@ -13,6 +13,7 @@ class HardwareItemState(str, enum.Enum):
 class POStatus(str, enum.Enum):
     DRAFT = "DRAFT"
     ORDERED = "ORDERED"
+    VENDOR_CONFIRMED = "VENDOR_CONFIRMED"
     PARTIALLY_RECEIVED = "PARTIALLY_RECEIVED"
     CLOSED = "CLOSED"
     CANCELLED = "CANCELLED"

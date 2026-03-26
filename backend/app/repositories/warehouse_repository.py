@@ -332,9 +332,9 @@ def create_receive(
         raise NotFoundError(f"Purchase order {po_id} not found")
 
     # Validate PO status
-    if po.status not in (POStatus.ORDERED, POStatus.PARTIALLY_RECEIVED):
+    if po.status not in (POStatus.ORDERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED):
         raise InvalidStateTransitionError(
-            f"PO status must be Ordered or Partially_Received to receive, got {po.status.value}"
+            f"PO status must be Ordered, Vendor_Confirmed, or Partially_Received to receive, got {po.status.value}"
         )
 
     # 2. Validate received_by

@@ -334,6 +334,7 @@ class POStatistics:
     total: int
     draft: int
     ordered: int
+    vendor_confirmed: int
     partially_received: int
     closed: int
     cancelled: int

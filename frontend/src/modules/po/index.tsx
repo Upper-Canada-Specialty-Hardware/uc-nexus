@@ -88,6 +88,7 @@ interface POStatistics {
   total: number;
   draft: number;
   ordered: number;
+  vendorConfirmed: number;
   partiallyReceived: number;
   closed: number;
   cancelled: number;
@@ -95,11 +96,12 @@ interface POStatistics {
 
 // --- Status config ---
 
-type StatusFilter = '' | 'DRAFT' | 'ORDERED' | 'PARTIALLY_RECEIVED' | 'CLOSED' | 'CANCELLED';
+type StatusFilter = '' | 'DRAFT' | 'ORDERED' | 'VENDOR_CONFIRMED' | 'PARTIALLY_RECEIVED' | 'CLOSED' | 'CANCELLED';
 
-const STATUS_CHIP_COLOR: Record<string, 'default' | 'primary' | 'warning' | 'success' | 'error'> = {
+const STATUS_CHIP_COLOR: Record<string, 'default' | 'primary' | 'info' | 'warning' | 'success' | 'error'> = {
   DRAFT: 'default',
   ORDERED: 'primary',
+  VENDOR_CONFIRMED: 'info',
   PARTIALLY_RECEIVED: 'warning',
   CLOSED: 'success',
   CANCELLED: 'error',
@@ -109,6 +111,7 @@ const TAB_FILTERS: { label: string; value: StatusFilter }[] = [
   { label: 'All', value: '' },
   { label: 'Draft', value: 'DRAFT' },
   { label: 'Ordered', value: 'ORDERED' },
+  { label: 'Vendor Confirmed', value: 'VENDOR_CONFIRMED' },
   { label: 'Partially Received', value: 'PARTIALLY_RECEIVED' },
   { label: 'Closed', value: 'CLOSED' },
   { label: 'Cancelled', value: 'CANCELLED' },
@@ -126,6 +129,7 @@ const STAT_CARDS: StatCard[] = [
   { label: 'Total', filter: '', key: 'total' },
   { label: 'Draft', filter: 'DRAFT', key: 'draft' },
   { label: 'Ordered', filter: 'ORDERED', key: 'ordered' },
+  { label: 'Vendor Confirmed', filter: 'VENDOR_CONFIRMED', key: 'vendorConfirmed' },
   { label: 'Partially Received', filter: 'PARTIALLY_RECEIVED', key: 'partiallyReceived' },
   { label: 'Closed', filter: 'CLOSED', key: 'closed' },
   { label: 'Cancelled', filter: 'CANCELLED', key: 'cancelled' },

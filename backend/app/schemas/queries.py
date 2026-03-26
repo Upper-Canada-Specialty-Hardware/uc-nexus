@@ -432,6 +432,7 @@ class Query:
                 total=stats["total"],
                 draft=stats["draft"],
                 ordered=stats["ordered"],
+                vendor_confirmed=stats["vendor_confirmed"],
                 partially_received=stats["partially_received"],
                 closed=stats["closed"],
                 cancelled=stats["cancelled"],
@@ -452,6 +453,7 @@ class Query:
                     POModel.status.in_(
                         [
                             DBPOStatus.ORDERED,
+                            DBPOStatus.VENDOR_CONFIRMED,
                             DBPOStatus.PARTIALLY_RECEIVED,
                         ]
                     ),

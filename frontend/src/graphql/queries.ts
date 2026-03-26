@@ -17,6 +17,7 @@ export const GET_PO_STATISTICS = gql`
       total
       draft
       ordered
+      vendorConfirmed
       partiallyReceived
       closed
       cancelled

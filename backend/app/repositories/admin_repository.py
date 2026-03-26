@@ -42,7 +42,7 @@ def get_hardware_summary(session: Session, project_id: uuid.UUID | None = None) 
             func.sum(
                 case(
                     (
-                        POModel.status.in_([POStatus.ORDERED, POStatus.PARTIALLY_RECEIVED]),
+                        POModel.status.in_([POStatus.ORDERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED]),
                         POLineItemModel.ordered_quantity - POLineItemModel.received_quantity,
                     ),
                     else_=0,
@@ -52,7 +52,9 @@ def get_hardware_summary(session: Session, project_id: uuid.UUID | None = None) 
         .join(POModel, POLineItemModel.po_id == POModel.id)
         .where(
             POModel.deleted_at.is_(None),
-            POModel.status.in_([POStatus.ORDERED, POStatus.PARTIALLY_RECEIVED, POStatus.CLOSED]),
+            POModel.status.in_(
+                [POStatus.ORDERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED, POStatus.CLOSED]
+            ),
         )
         .group_by(POLineItemModel.hardware_category, POLineItemModel.product_code)
     )
@@ -143,7 +145,7 @@ def get_opening_hardware_status(session: Session, project_id: uuid.UUID | None =
 
         if po_status == POStatus.DRAFT:
             status = "PO_DRAFTED"
-        elif po_status in (POStatus.ORDERED, POStatus.PARTIALLY_RECEIVED):
+        elif po_status in (POStatus.ORDERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED):
             status = "ORDERED"
         elif po_status == POStatus.CLOSED:
             status = "RECEIVED"

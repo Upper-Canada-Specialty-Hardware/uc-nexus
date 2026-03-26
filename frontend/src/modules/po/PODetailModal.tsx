@@ -46,9 +46,10 @@ import type { PurchaseOrder } from './index';
 
 // --- Status chip colors ---
 
-const STATUS_CHIP_COLOR: Record<string, 'default' | 'primary' | 'warning' | 'success' | 'error'> = {
+const STATUS_CHIP_COLOR: Record<string, 'default' | 'primary' | 'info' | 'warning' | 'success' | 'error'> = {
   DRAFT: 'default',
   ORDERED: 'primary',
+  VENDOR_CONFIRMED: 'info',
   PARTIALLY_RECEIVED: 'warning',
   CLOSED: 'success',
   CANCELLED: 'error',
@@ -420,11 +421,10 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
 
   const canEdit =
     po.status === 'DRAFT' ||
-    (po.status === 'ORDERED' && po.receiveRecords.length === 0);
+    (po.status === 'ORDERED' && po.receiveRecords.length === 0) ||
+    (po.status === 'VENDOR_CONFIRMED' && po.receiveRecords.length === 0);
 
   const canUploadDocs = po.status !== 'CANCELLED' && po.status !== 'CLOSED';
-
-  const hasVendorAck = po.documents.some((d) => d.documentType === 'VENDOR_ACKNOWLEDGEMENT');
 
   const canMarkAsOrdered = po.status === 'DRAFT';
 
@@ -433,14 +433,12 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
     const missing: string[] = [];
     if (!po.poNumber) missing.push('PO Number');
     if (!po.vendorName) missing.push('Vendor Name');
-    if (!po.vendorQuoteNumber) missing.push('Vendor Quote Number');
-    if (!hasVendorAck) missing.push('Vendor Acknowledgement document');
     return missing;
-  }, [po.poNumber, po.vendorName, po.vendorQuoteNumber, hasVendorAck]);
+  }, [po.poNumber, po.vendorName]);
 
   const markAsOrderedEnabled = canMarkAsOrdered && missingRequirements.length === 0;
 
-  const canCancel = po.status === 'DRAFT' || po.status === 'ORDERED';
+  const canCancel = po.status === 'DRAFT' || po.status === 'ORDERED' || po.status === 'VENDOR_CONFIRMED';
 
   const displayTitle = po.poNumber ? `PO: ${po.poNumber}` : `Request: ${po.requestNumber}`;
 
