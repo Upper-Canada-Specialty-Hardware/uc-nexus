@@ -345,6 +345,7 @@ class ProductCodeNode:
     product_code: str
     items: list[InventoryLocation]
     total_quantity: int
+    total_value: float
 
 
 @strawberry.type
@@ -352,6 +353,7 @@ class InventoryHierarchyNode:
     hardware_category: str
     product_codes: list[ProductCodeNode]
     total_quantity: int
+    total_value: float
 
 
 @strawberry.type
@@ -373,6 +375,7 @@ class InventoryItemDetail:
     inventory_location: InventoryLocation
     po_number: str | None
     classification: Classification | None
+    unit_cost: float | None
 
 
 @strawberry.type
