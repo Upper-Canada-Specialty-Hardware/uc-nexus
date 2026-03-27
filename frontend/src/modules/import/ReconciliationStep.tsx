@@ -1,7 +1,8 @@
-import { useMemo, useCallback } from 'react';
-import { Alert, Box, Button, Chip, CircularProgress, Typography } from '@mui/material';
+import { useMemo, useCallback, useEffect, useRef } from 'react';
+import { Alert, Box, Button, Chip, CircularProgress, Tooltip, Typography } from '@mui/material';
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import { DataGrid, type GridColDef, type GridRowSelectionModel } from '@mui/x-data-grid';
-import type { ReconciliationRow } from './types';
+import type { ImportPurpose, ReconciliationRow } from './types';
 import { aggregationKey } from './types';
 import type { ParsedHardwareItem } from '../../types/hardwareSchedule';
 
@@ -9,7 +10,7 @@ import type { ParsedHardwareItem } from '../../types/hardwareSchedule';
 
 interface ReconciliationStepProps {
   isReimport: boolean;
-  isPoPurpose: boolean;
+  purpose: ImportPurpose;
   reconcileLoading: boolean;
   reconciliationRows: ReconciliationRow[];
   selectedHardwareItems: ParsedHardwareItem[];
@@ -28,6 +29,7 @@ interface AggregatedReconRow {
   productCode: string;
   hardwareCategory: string;
   quantityNeeded: number;
+  qtyAvailable: number;
   statusBreakdown: Map<string, number>;
 }
 
@@ -55,11 +57,29 @@ const STATUS_LABEL_MAP: Record<string, string> = {
   NOT_COVERED: 'Not Covered',
 };
 
+const HEADER_TOOLTIPS: Record<ImportPurpose, string> = {
+  po: 'Reconciliation compares the hardware schedule against existing purchase orders. Items already drafted, ordered, or received are shown so you can decide which remaining items to create new POs for.',
+  assembly:
+    'Reconciliation shows the lifecycle state of each item. Only items that have been received into the warehouse can be pulled for shop assembly. Items still on order or already assembled are not eligible.',
+  shipping:
+    'Reconciliation shows the lifecycle state of each item. Only items that are received or assembled can be included in shipping pull requests. Items still on order or being assembled are not eligible.',
+};
+
+function computeAvailableQty(purpose: ImportPurpose, breakdown: Map<string, number>): number {
+  if (purpose === 'assembly') {
+    return breakdown.get('RECEIVED') ?? 0;
+  }
+  if (purpose === 'shipping') {
+    return (breakdown.get('RECEIVED') ?? 0) + (breakdown.get('ASSEMBLED') ?? 0);
+  }
+  return 0;
+}
+
 // ---- Component ----
 
 export default function ReconciliationStep({
   isReimport,
-  isPoPurpose,
+  purpose,
   reconcileLoading,
   reconciliationRows,
   selectedHardwareItems,
@@ -69,6 +89,8 @@ export default function ReconciliationStep({
   onNext,
   onBack,
 }: ReconciliationStepProps) {
+  const hasAutoSelected = useRef(false);
+
   // Compute quantity needed from selected hardware items, keyed by aggregation key
   const qtyNeededMap = useMemo(() => {
     const map = new Map<string, number>();
@@ -99,46 +121,105 @@ export default function ReconciliationStep({
           productCode: row.productCode,
           hardwareCategory: row.hardwareCategory,
           quantityNeeded: qtyNeededMap.get(key) ?? 0,
+          qtyAvailable: 0, // computed below
           statusBreakdown: breakdown,
         });
       }
     }
-    return Array.from(map.values());
-  }, [reconciliationRows, qtyNeededMap]);
+    // Compute qtyAvailable for each row after all statuses are aggregated
+    const rows = Array.from(map.values());
+    for (const row of rows) {
+      row.qtyAvailable = computeAvailableQty(purpose, row.statusBreakdown);
+    }
+    return rows;
+  }, [reconciliationRows, qtyNeededMap, purpose]);
 
-  // Columns for aggregated view (PO re-imports with checkboxes, or non-PO read-only)
-  const columns = useMemo<GridColDef[]>(
-    () => [
+  // Determine which rows have eligible quantity for SAR/SOR
+  const eligibleRowIds = useMemo<Set<string>>(() => {
+    if (purpose === 'po') return new Set(aggregatedRows.map((r) => r.id));
+    return new Set(aggregatedRows.filter((r) => r.qtyAvailable > 0).map((r) => r.id));
+  }, [aggregatedRows, purpose]);
+
+  const hasEligibleItems = eligibleRowIds.size > 0;
+
+  // Auto-select for PO: default-select rows with NOT_COVERED status
+  useEffect(() => {
+    if (!isReimport || aggregatedRows.length === 0 || hasAutoSelected.current) return;
+
+    if (purpose === 'po') {
+      const notCoveredIds = new Set(
+        aggregatedRows
+          .filter((r) => (r.statusBreakdown.get('NOT_COVERED') ?? 0) > 0)
+          .map((r) => r.id),
+      );
+      onSelectionChange(notCoveredIds);
+      hasAutoSelected.current = true;
+    }
+  }, [aggregatedRows, purpose, isReimport, onSelectionChange]);
+
+  // Reset auto-select ref when reconciliation data changes
+  useEffect(() => {
+    hasAutoSelected.current = false;
+  }, [reconciliationRows]);
+
+  // Columns
+  const showCheckboxes = isReimport && purpose === 'po';
+  const showQtyAvailable = purpose === 'assembly' || purpose === 'shipping';
+
+  const columns = useMemo<GridColDef[]>(() => {
+    const cols: GridColDef[] = [
       { field: 'openingNumber', headerName: 'Opening #', flex: 1 },
       { field: 'productCode', headerName: 'Product Code', flex: 1 },
       { field: 'hardwareCategory', headerName: 'Hardware Category', flex: 1 },
       { field: 'quantityNeeded', headerName: 'Qty Needed', flex: 0.7, type: 'number' },
-      {
-        field: 'statusBreakdown',
-        headerName: 'Status',
-        flex: 1.5,
-        sortable: false,
+    ];
+
+    if (showQtyAvailable) {
+      cols.push({
+        field: 'qtyAvailable',
+        headerName: 'Qty Available',
+        flex: 0.7,
+        type: 'number',
         renderCell: (params) => {
-          const breakdown = params.value as Map<string, number>;
+          const available = params.value as number;
+          const needed = params.row.quantityNeeded as number;
+          const isPartial = available > 0 && available < needed;
           return (
-            <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap', alignItems: 'center', py: 0.5 }}>
-              {Array.from(breakdown.entries()).map(([status, qty]) => (
-                <Chip
-                  key={status}
-                  size="small"
-                  label={`${STATUS_LABEL_MAP[status] ?? status}: ${qty}`}
-                  color={STATUS_COLOR_MAP[status] ?? 'default'}
-                />
-              ))}
-            </Box>
+            <Chip
+              size="small"
+              label={available}
+              color={available === 0 ? 'default' : isPartial ? 'warning' : 'success'}
+              variant={available === 0 ? 'outlined' : 'filled'}
+            />
           );
         },
-      },
-    ],
-    [],
-  );
+      });
+    }
 
-  const showCheckboxes = isReimport && isPoPurpose;
+    cols.push({
+      field: 'statusBreakdown',
+      headerName: 'Status',
+      flex: 1.5,
+      sortable: false,
+      renderCell: (params) => {
+        const breakdown = params.value as Map<string, number>;
+        return (
+          <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap', alignItems: 'center', py: 0.5 }}>
+            {Array.from(breakdown.entries()).map(([status, qty]) => (
+              <Chip
+                key={status}
+                size="small"
+                label={`${STATUS_LABEL_MAP[status] ?? status}: ${qty}`}
+                color={STATUS_COLOR_MAP[status] ?? 'default'}
+              />
+            ))}
+          </Box>
+        );
+      },
+    });
+
+    return cols;
+  }, [showQtyAvailable]);
 
   const rowSelectionModel = useMemo<GridRowSelectionModel>(
     () => ({ type: 'include' as const, ids: new Set<string>(selectedReconItems) }),
@@ -162,13 +243,18 @@ export default function ReconciliationStep({
 
   return (
     <Box>
-      <Typography variant="h6" sx={{ mb: 2 }}>
-        Reconciliation
-      </Typography>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+        <Typography variant="h6">Reconciliation</Typography>
+        {isReimport && (
+          <Tooltip arrow title={HEADER_TOOLTIPS[purpose]}>
+            <InfoOutlinedIcon fontSize="small" color="action" />
+          </Tooltip>
+        )}
+      </Box>
 
       {!isReimport && (
         <Alert severity="info" sx={{ mb: 2 }}>
-          New project -- all items will be ordered fresh. No existing records to reconcile against.
+          New project — all items will be ordered fresh. No existing records to reconcile against.
         </Alert>
       )}
 
@@ -180,6 +266,7 @@ export default function ReconciliationStep({
 
       {isReimport && !reconcileLoading && aggregatedRows.length > 0 && (
         <>
+          {/* PO: checkbox controls */}
           {showCheckboxes && (
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 2 }}>
               <Button size="small" variant="outlined" onClick={handleSelectAll}>
@@ -194,10 +281,27 @@ export default function ReconciliationStep({
             </Box>
           )}
 
-          {showCheckboxes && (
+          {/* Purpose-specific alerts */}
+          {purpose === 'po' && (
             <Alert severity="warning" sx={{ mb: 2 }}>
               Select the items you want to carry forward to Purchase Order creation.
-              Only checked items will be included.
+              Items with Not Covered status are pre-selected. Only checked items will be included.
+            </Alert>
+          )}
+
+          {purpose === 'assembly' && (
+            <Alert severity={hasEligibleItems ? 'info' : 'error'} sx={{ mb: 2 }}>
+              {hasEligibleItems
+                ? 'Items with Received status are available for shop assembly. Items with zero availability are excluded. You may proceed with partial quantities if needed.'
+                : 'No items have Received status. There is nothing available to assemble.'}
+            </Alert>
+          )}
+
+          {purpose === 'shipping' && (
+            <Alert severity={hasEligibleItems ? 'info' : 'error'} sx={{ mb: 2 }}>
+              {hasEligibleItems
+                ? 'Items that are Received or Assembled can be included in shipping pull requests. Items with zero availability are excluded. You may proceed with partial quantities if needed.'
+                : 'No items are in a shippable state. There is nothing available to ship.'}
             </Alert>
           )}
 
@@ -215,8 +319,14 @@ export default function ReconciliationStep({
               disableRowSelectionOnClick
               density="compact"
               getRowHeight={() => 'auto'}
+              getRowClassName={(params) =>
+                showQtyAvailable && !eligibleRowIds.has(params.row.id as string)
+                  ? 'ineligible-row'
+                  : ''
+              }
               sx={{
                 '& .MuiDataGrid-cell': { py: 0.5 },
+                '& .ineligible-row': { opacity: 0.5, bgcolor: 'action.hover' },
               }}
             />
           </Box>

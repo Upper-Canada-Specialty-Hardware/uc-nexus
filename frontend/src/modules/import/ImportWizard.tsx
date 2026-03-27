@@ -18,10 +18,12 @@ import {
   FormControlLabel,
   Chip,
   Divider,
+  Tooltip,
 } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
 import UploadFileIcon from '@mui/icons-material/UploadFile';
 import CloudUploadIcon from '@mui/icons-material/CloudUpload';
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import { useLazyQuery, useMutation } from '@apollo/client/react';
 import { useWizard } from '../../contexts/WizardContext';
 import { useToast } from '../../components/Toast';
@@ -219,11 +221,44 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     return Array.from(map.values());
   }, [selectedHardwareItems]);
 
-  // For PO re-imports, only pass through items the user checked in reconciliation
+  // Reconciliation rows for DataGrid (must be above reconFilteredHardwareItems since SAR/SOR filtering depends on it)
+  const reconciliationRows = useMemo<ReconciliationRow[]>(() => {
+    const raw = reconcileData?.reconcileSchedule ?? [];
+    return raw.map((r, i) => ({ ...r, id: `recon-${i}` }));
+  }, [reconcileData]);
+
+  // Filter items based on reconciliation data per purpose
   const reconFilteredHardwareItems = useMemo(() => {
-    if (purpose !== 'po' || !isReimport) return selectedHardwareItems;
-    return selectedHardwareItems.filter((hi) => selectedReconItems.has(aggregationKey(hi)));
-  }, [selectedHardwareItems, selectedReconItems, purpose, isReimport]);
+    if (!isReimport) return selectedHardwareItems;
+
+    if (purpose === 'po') {
+      return selectedHardwareItems.filter((hi) => selectedReconItems.has(aggregationKey(hi)));
+    }
+
+    if (purpose === 'assembly') {
+      // SAR: only items that have RECEIVED quantity in reconciliation
+      const eligibleKeys = new Set<string>();
+      for (const row of reconciliationRows) {
+        if (row.status === 'RECEIVED' && row.quantity > 0) {
+          eligibleKeys.add(`${row.openingNumber}|${row.productCode}|${row.hardwareCategory}`);
+        }
+      }
+      return selectedHardwareItems.filter((hi) => eligibleKeys.has(aggregationKey(hi)));
+    }
+
+    if (purpose === 'shipping') {
+      // SOR: only items that have RECEIVED or ASSEMBLED quantity
+      const eligibleKeys = new Set<string>();
+      for (const row of reconciliationRows) {
+        if ((row.status === 'RECEIVED' || row.status === 'ASSEMBLED') && row.quantity > 0) {
+          eligibleKeys.add(`${row.openingNumber}|${row.productCode}|${row.hardwareCategory}`);
+        }
+      }
+      return selectedHardwareItems.filter((hi) => eligibleKeys.has(aggregationKey(hi)));
+    }
+
+    return selectedHardwareItems;
+  }, [selectedHardwareItems, selectedReconItems, purpose, isReimport, reconciliationRows]);
 
   const allAggregatedItems = useMemo<AggregatedHardwareItem[]>(() => {
     const map = new Map<string, AggregatedHardwareItem>();
@@ -245,12 +280,6 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     () => allAggregatedItems.filter((hi) => selectedItemKeys.has(aggregationKey(hi))),
     [allAggregatedItems, selectedItemKeys],
   );
-
-  // Reconciliation rows for DataGrid
-  const reconciliationRows = useMemo<ReconciliationRow[]>(() => {
-    const raw = reconcileData?.reconcileSchedule ?? [];
-    return raw.map((r, i) => ({ ...r, id: `recon-${i}` }));
-  }, [reconcileData]);
 
   // Aggregate preview reconcile data into per-opening procurement status
   const openingStatusMap = useMemo<Map<string, OpeningProcurementStatus> | undefined>(() => {
@@ -743,9 +772,18 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
   const canProceedStep1 = purpose !== null;
   const canProceedStep2 = selectedOpenings.size > 0 && selectedItemKeys.size > 0;
   const canProceedStep3 = useMemo(() => {
-    if (purpose === 'po' && isReimport) return selectedReconItems.size > 0;
+    if (!isReimport) return true;
+    if (purpose === 'po') return selectedReconItems.size > 0;
+    if (purpose === 'assembly') {
+      return reconciliationRows.some((r) => r.status === 'RECEIVED' && r.quantity > 0);
+    }
+    if (purpose === 'shipping') {
+      return reconciliationRows.some(
+        (r) => (r.status === 'RECEIVED' || r.status === 'ASSEMBLED') && r.quantity > 0,
+      );
+    }
     return true;
-  }, [purpose, isReimport, selectedReconItems]);
+  }, [purpose, isReimport, selectedReconItems, reconciliationRows]);
 
   // ---- Render ----
 
@@ -882,10 +920,51 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
                 value={purpose ?? ''}
                 onChange={(e) => setPurpose(e.target.value as ImportPurpose)}
               >
-                <FormControlLabel value="po" control={<Radio />} label="Create Purchase Orders" />
-                <FormControlLabel value="assembly" control={<Radio />} label="Shop Assembly Request" />
-                <FormControlLabel value="shipping" control={<Radio />} label="Shipping Out" />
+                <FormControlLabel
+                  value="po"
+                  control={<Radio />}
+                  label={
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                      Create Purchase Orders
+                      <Tooltip arrow title="What do I still need to order? Shows what's already committed (drafted, ordered, received) vs. what's not yet covered. Select which items to create POs for.">
+                        <InfoOutlinedIcon fontSize="small" color="action" />
+                      </Tooltip>
+                    </Box>
+                  }
+                />
+                <FormControlLabel
+                  value="assembly"
+                  control={<Radio />}
+                  disabled={!isReimport}
+                  label={
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                      Shop Assembly Request
+                      <Tooltip arrow title="What can I pull from warehouse to assemble? Only items with Received status can be included in the assembly request.">
+                        <InfoOutlinedIcon fontSize="small" color="action" />
+                      </Tooltip>
+                    </Box>
+                  }
+                />
+                <FormControlLabel
+                  value="shipping"
+                  control={<Radio />}
+                  disabled={!isReimport}
+                  label={
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                      Shipping Out
+                      <Tooltip arrow title="What can I ship out? Only items that are Received or Assembled can be included in shipping pull requests.">
+                        <InfoOutlinedIcon fontSize="small" color="action" />
+                      </Tooltip>
+                    </Box>
+                  }
+                />
               </RadioGroup>
+
+              {!isReimport && (
+                <Typography variant="caption" color="text.secondary" sx={{ mt: 1, ml: 4, display: 'block' }}>
+                  Shop Assembly and Shipping Out require an existing project with received inventory.
+                </Typography>
+              )}
 
               {isReimport && (
                 <Alert severity="info" sx={{ mt: 2 }}>
@@ -924,7 +1003,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
           {effectiveStepId === 'reconciliation' && (
             <ReconciliationStep
               isReimport={isReimport}
-              isPoPurpose={purpose === 'po'}
+              purpose={purpose!}
               reconcileLoading={reconcileLoading}
               reconciliationRows={reconciliationRows}
               selectedHardwareItems={selectedHardwareItems}
