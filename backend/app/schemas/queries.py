@@ -485,10 +485,12 @@ class Query:
                             product_code=pc_node["product_code"],
                             items=[_inventory_location_to_type(il) for il in pc_node["items"]],
                             total_quantity=pc_node["total_quantity"],
+                            total_value=pc_node["total_value"],
                         )
                         for pc_node in cat_node["product_codes"]
                     ],
                     total_quantity=cat_node["total_quantity"],
+                    total_value=cat_node["total_value"],
                 )
                 for cat_node in hierarchy
             ]
@@ -506,6 +508,7 @@ class Query:
                     inventory_location=_inventory_location_to_type(item["inventory_location"]),
                     po_number=item["po_number"],
                     classification=item["classification"],
+                    unit_cost=item["unit_cost"],
                 )
                 for item in items
             ]

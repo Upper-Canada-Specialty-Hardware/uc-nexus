@@ -88,9 +88,11 @@ export const GET_INVENTORY_HIERARCHY = gql`
     inventoryHierarchy(projectId: $projectId) {
       hardwareCategory
       totalQuantity
+      totalValue
       productCodes {
         productCode
         totalQuantity
+        totalValue
         items {
           id
           projectId
@@ -121,6 +123,7 @@ export const GET_INVENTORY_ITEMS = gql`
       }
       poNumber
       classification
+      unitCost
     }
   }
 `;

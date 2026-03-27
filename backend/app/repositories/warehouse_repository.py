@@ -32,9 +32,10 @@ from app.services.locking import lock_rows
 
 def get_inventory_hierarchy(session: Session, project_id: uuid.UUID | None = None) -> list[dict]:
     """
-    Query all InventoryLocation rows, optionally filtered by project_id.
+    Query all InventoryLocation rows joined with POLineItem for unit_cost,
+    optionally filtered by project_id.
     Group by hardware_category, then product_code.
-    At each level, sum quantities.
+    At each level, sum quantities and compute total_value (unit_cost * quantity).
     Sort categories and product codes alphabetically.
 
     Return structure: list of dicts, each with:
@@ -44,42 +45,50 @@ def get_inventory_hierarchy(session: Session, project_id: uuid.UUID | None = Non
             {
                 "product_code": str,
                 "items": [InventoryLocationModel, ...],
-                "total_quantity": int
+                "total_quantity": int,
+                "total_value": float
             },
             ...
         ],
-        "total_quantity": int
+        "total_quantity": int,
+        "total_value": float
     }
     """
-    stmt = select(InventoryLocationModel)
+    stmt = select(InventoryLocationModel, POLineItemModel.unit_cost).join(
+        POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id
+    )
     if project_id is not None:
         stmt = stmt.where(InventoryLocationModel.project_id == project_id)
     stmt = stmt.order_by(
         InventoryLocationModel.hardware_category,
         InventoryLocationModel.product_code,
     )
-    rows = list(session.scalars(stmt).all())
+    rows = list(session.execute(stmt).all())
 
-    # Group by hardware_category -> product_code
+    # Group by hardware_category -> product_code, storing (il, unit_cost) pairs
     cat_map: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
-    for il in rows:
-        cat_map[il.hardware_category][il.product_code].append(il)
+    for il, unit_cost in rows:
+        cat_map[il.hardware_category][il.product_code].append((il, unit_cost))
 
     result = []
     for category in sorted(cat_map.keys()):
         product_codes_map = cat_map[category]
         product_code_nodes = []
         category_total = 0
+        category_total_value = 0.0
 
         for pc in sorted(product_codes_map.keys()):
-            items = product_codes_map[pc]
-            pc_total = sum(item.quantity for item in items)
+            items_with_cost = product_codes_map[pc]
+            pc_total = sum(il.quantity for il, _ in items_with_cost)
+            pc_total_value = sum(float(uc) * il.quantity for il, uc in items_with_cost)
             category_total += pc_total
+            category_total_value += pc_total_value
             product_code_nodes.append(
                 {
                     "product_code": pc,
-                    "items": items,
+                    "items": [il for il, _ in items_with_cost],
                     "total_quantity": pc_total,
+                    "total_value": pc_total_value,
                 }
             )
 
@@ -88,6 +97,7 @@ def get_inventory_hierarchy(session: Session, project_id: uuid.UUID | None = Non
                 "hardware_category": category,
                 "product_codes": product_code_nodes,
                 "total_quantity": category_total,
+                "total_value": category_total_value,
             }
         )
 
@@ -107,7 +117,7 @@ def get_inventory_items(
     Return list of dicts with keys: inventory_location, po_number, classification
     """
     stmt = (
-        select(InventoryLocationModel, POLineItemModel.classification, POModel.po_number)
+        select(InventoryLocationModel, POLineItemModel.classification, POModel.po_number, POLineItemModel.unit_cost)
         .join(POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id)
         .join(POModel, POLineItemModel.po_id == POModel.id)
         .where(
@@ -124,6 +134,7 @@ def get_inventory_items(
             "inventory_location": row[0],
             "classification": row[1],
             "po_number": row[2],
+            "unit_cost": float(row[3]),
         }
         for row in rows
     ]

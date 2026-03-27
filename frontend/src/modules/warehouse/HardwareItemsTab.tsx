@@ -40,12 +40,14 @@ interface InventoryItem {
 interface ProductCodeGroup {
   productCode: string;
   totalQuantity: number;
+  totalValue: number;
   items: InventoryItem[];
 }
 
 interface CategoryGroup {
   hardwareCategory: string;
   totalQuantity: number;
+  totalValue: number;
   productCodes: ProductCodeGroup[];
 }
 
@@ -53,6 +55,7 @@ interface InventoryItemDetail {
   inventoryLocation: InventoryItem;
   poNumber: string | null;
   classification: string;
+  unitCost: number | null;
 }
 
 interface HardwareItemsTabProps {
@@ -71,10 +74,32 @@ function formatDate(dateStr: string | null): string {
   return new Date(dateStr).toLocaleDateString();
 }
 
+function formatCurrency(value: number | null | undefined): string {
+  if (value == null) return '—';
+  return value.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+}
+
 const baseDetailColumns: GridColDef[] = [
   { field: 'productCode', headerName: 'Product Code', flex: 1 },
   { field: 'hardwareCategory', headerName: 'Hardware Category', flex: 1 },
   { field: 'quantity', headerName: 'Quantity', flex: 0.5, type: 'number' },
+  {
+    field: 'unitCost',
+    headerName: 'Unit Cost',
+    flex: 0.7,
+    type: 'number',
+    valueGetter: (_value: unknown, row: InventoryItemDetail) => row.unitCost,
+    valueFormatter: (value: number | null) => formatCurrency(value),
+  },
+  {
+    field: 'lineTotal',
+    headerName: 'Line Total',
+    flex: 0.7,
+    type: 'number',
+    valueGetter: (_value: unknown, row: InventoryItemDetail) =>
+      row.unitCost != null ? row.unitCost * row.inventoryLocation.quantity : null,
+    valueFormatter: (value: number | null) => formatCurrency(value),
+  },
   {
     field: 'location',
     headerName: 'Location',
@@ -101,11 +126,13 @@ function ProductCodeDetail({
   category,
   productCode,
   totalQuantity,
+  totalValue,
 }: {
   projectId: string | undefined;
   category: string;
   productCode: string;
   totalQuantity: number;
+  totalValue: number;
 }) {
   const { isAdmin } = useIdentity();
 
@@ -182,7 +209,7 @@ function ProductCodeDetail({
             {productCode}
           </Typography>
           <Typography sx={{ ml: 2, color: 'text.secondary' }}>
-            — Qty: {totalQuantity}
+            — Qty: {totalQuantity} | Value: {formatCurrency(totalValue)}
           </Typography>
         </AccordionSummary>
         <AccordionDetails>
@@ -320,6 +347,12 @@ export default function HardwareItemsTab({ projectId }: HardwareItemsTabProps) {
       .filter((cat) => cat.productCodes.length > 0);
   }, [hierarchy, debouncedSearch, categoryFilter, aisleFilter]);
 
+  const grandTotals = useMemo(() => {
+    const totalQty = filteredHierarchy.reduce((sum, cat) => sum + cat.totalQuantity, 0);
+    const totalVal = filteredHierarchy.reduce((sum, cat) => sum + cat.totalValue, 0);
+    return { totalQty, totalVal };
+  }, [filteredHierarchy]);
+
   if (loading && !data) {
     return (
       <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
@@ -382,6 +415,32 @@ export default function HardwareItemsTab({ projectId }: HardwareItemsTabProps) {
         </FormControl>
       </Box>
 
+      {/* Grand total summary */}
+      <Box
+        sx={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          p: 2,
+          mb: 2,
+          bgcolor: 'primary.main',
+          color: 'primary.contrastText',
+          borderRadius: 1,
+        }}
+      >
+        <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+          Inventory Summary
+        </Typography>
+        <Box sx={{ display: 'flex', gap: 4 }}>
+          <Typography variant="subtitle1">
+            Total Items: {grandTotals.totalQty.toLocaleString()}
+          </Typography>
+          <Typography variant="subtitle1">
+            Total Value: {formatCurrency(grandTotals.totalVal)}
+          </Typography>
+        </Box>
+      </Box>
+
       {/* Filtered empty state */}
       {filteredHierarchy.length === 0 && (
         <Alert severity="info">No matching inventory items</Alert>
@@ -395,7 +454,7 @@ export default function HardwareItemsTab({ projectId }: HardwareItemsTabProps) {
               {cat.hardwareCategory}
             </Typography>
             <Typography sx={{ ml: 2, color: 'text.secondary' }}>
-              — Total: {cat.totalQuantity}
+              — Total: {cat.totalQuantity} | Value: {formatCurrency(cat.totalValue)}
             </Typography>
           </AccordionSummary>
           <AccordionDetails>
@@ -406,6 +465,7 @@ export default function HardwareItemsTab({ projectId }: HardwareItemsTabProps) {
                 category={cat.hardwareCategory}
                 productCode={pc.productCode}
                 totalQuantity={pc.totalQuantity}
+                totalValue={pc.totalValue}
               />
             ))}
           </AccordionDetails>
