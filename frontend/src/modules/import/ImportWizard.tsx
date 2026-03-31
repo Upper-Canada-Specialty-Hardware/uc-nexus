@@ -331,16 +331,21 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     });
   }, [aggregatedHardwareItems, classifications]);
 
-  // Items grouped by vendor for auto PO segregation
+  // Items grouped by vendor for auto PO segregation (excludes BY_OTHERS items)
   const vendorGroups = useMemo(() => {
     const map = new Map<string, AggregatedHardwareItem[]>();
     for (const hi of aggregatedHardwareItems) {
+      // Skip items classified as BY_OTHERS for PO purpose
+      if (purpose === 'po') {
+        const ck = classificationKey(hi);
+        if (classifications.get(ck) === 'BY_OTHERS') continue;
+      }
       const vendor = hi.vendor_no ?? '(No Vendor)';
       if (!map.has(vendor)) map.set(vendor, []);
       map.get(vendor)!.push(hi);
     }
     return new Map(Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b)));
-  }, [aggregatedHardwareItems]);
+  }, [aggregatedHardwareItems, purpose, classifications]);
 
   // ---- Step Navigation ----
 
