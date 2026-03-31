@@ -47,6 +47,12 @@ class Opening:
 
 
 @strawberry.type
+class ProjectExcludedItem:
+    hardware_category: str
+    product_code: str
+
+
+@strawberry.type
 class HardwareItem:
     id: strawberry.ID
     project_id: strawberry.ID

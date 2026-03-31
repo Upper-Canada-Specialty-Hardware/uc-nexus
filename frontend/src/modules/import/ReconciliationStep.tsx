@@ -44,6 +44,7 @@ const STATUS_COLOR_MAP: Record<string, 'success' | 'warning' | 'error' | 'info' 
   SHIPPING_OUT: 'warning',
   SHIPPED_OUT: 'success',
   NOT_COVERED: 'error',
+  BY_OTHERS: 'default',
 };
 
 const STATUS_LABEL_MAP: Record<string, string> = {
@@ -55,6 +56,7 @@ const STATUS_LABEL_MAP: Record<string, string> = {
   SHIPPING_OUT: 'Shipping Out',
   SHIPPED_OUT: 'Shipped Out',
   NOT_COVERED: 'Not Covered',
+  BY_OTHERS: 'By Others',
 };
 
 const HEADER_TOOLTIPS: Record<ImportPurpose, string> = {

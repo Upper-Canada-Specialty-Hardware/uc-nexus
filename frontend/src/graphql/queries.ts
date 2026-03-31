@@ -354,6 +354,15 @@ export const GET_PROJECT_BY_SCHEDULE_ID = gql`
   }
 `;
 
+export const GET_PROJECT_EXCLUDED_ITEMS = gql`
+  query GetProjectExcludedItems($projectId: ID!) {
+    projectExcludedItems(projectId: $projectId) {
+      hardwareCategory
+      productCode
+    }
+  }
+`;
+
 export const RECONCILE_SCHEDULE = gql`
   query ReconcileSchedule($projectId: ID!, $items: [ReconciliationItemInput!]!) {
     reconcileSchedule(projectId: $projectId, items: $items) {

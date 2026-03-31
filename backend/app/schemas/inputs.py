@@ -123,12 +123,19 @@ class SAROpeningInput:
 
 
 @strawberry.input
+class ExcludedItemInput:
+    hardware_category: str
+    product_code: str
+
+
+@strawberry.input
 class FinalizeImportSessionInput:
     project: ProjectInput
     openings: list[OpeningInput] = strawberry.field(default_factory=list)
     hardware_items: list[HardwareItemInput] | None = None
     po_drafts: list[PODraftInput] | None = None
     classifications: list[ClassificationInput] | None = None
+    excluded_items: list[ExcludedItemInput] | None = None
     shipping_out_pr_drafts: list[ShippingOutPRDraftInput] | None = None
     include_shop_assembly_request: bool = False
     shop_assembly_request_number: str | None = None

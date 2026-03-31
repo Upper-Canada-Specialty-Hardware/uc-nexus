@@ -50,3 +50,19 @@ export function classificationKey(hi: { hardware_category: string; product_code:
 export function itemGroupKey(hi: { hardware_category: string; product_code: string }) {
   return `${hi.hardware_category}|${hi.product_code}`;
 }
+
+export interface ClassificationOption {
+  value: string;
+  label: string;
+  color: 'success' | 'info' | 'warning';
+}
+
+export const SCOPE_OPTIONS: ClassificationOption[] = [
+  { value: 'BY_UCSH', label: 'By UCSH', color: 'success' },
+  { value: 'BY_OTHERS', label: 'By Others', color: 'warning' },
+];
+
+export const ASSEMBLY_OPTIONS: ClassificationOption[] = [
+  { value: 'SITE_HARDWARE', label: 'Site', color: 'success' },
+  { value: 'SHOP_HARDWARE', label: 'Shop', color: 'info' },
+];

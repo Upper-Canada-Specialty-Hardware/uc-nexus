@@ -175,6 +175,15 @@ class Mutation:
             ]
             if input.classifications
             else None,
+            "excluded_items": [
+                {
+                    "hardware_category": ei.hardware_category,
+                    "product_code": ei.product_code,
+                }
+                for ei in (input.excluded_items or [])
+            ]
+            if input.excluded_items
+            else None,
             "shipping_out_pr_drafts": [
                 {
                     "request_number": pr.request_number,

@@ -22,6 +22,7 @@ import {
   type GridRowSelectionModel,
   type GridRenderCellParams,
 } from '@mui/x-data-grid';
+import type { ClassificationOption } from './types';
 
 export interface ClassificationRow {
   id: string;
@@ -53,7 +54,8 @@ const GROUP_BY_OPTIONS: { value: GroupByField; label: string }[] = [
 
 interface ClassificationGridProps {
   rows: ClassificationRow[];
-  onClassify: (classificationKeys: string[], value: 'SITE_HARDWARE' | 'SHOP_HARDWARE') => void;
+  options: ClassificationOption[];
+  onClassify: (classificationKeys: string[], value: string) => void;
   readOnly?: boolean;
 }
 
@@ -128,14 +130,25 @@ const ALL_COLUMNS: GridColDef[] = [
   { field: 'itemQuantity', headerName: 'Qty', flex: 0.4, type: 'number' },
 ];
 
+function buildOptionLookups(options: ClassificationOption[]) {
+  const labelMap: Record<string, string> = {};
+  const colorMap: Record<string, 'success' | 'info' | 'warning'> = {};
+  for (const opt of options) {
+    labelMap[opt.value] = opt.label;
+    colorMap[opt.value] = opt.color;
+  }
+  return { labelMap, colorMap };
+}
+
 interface LeafGridProps {
   rows: ClassificationRow[];
   columns: GridColDef[];
+  options: ClassificationOption[];
   onClassify: ClassificationGridProps['onClassify'];
   readOnly?: boolean;
 }
 
-function LeafGrid({ rows, columns, onClassify, readOnly }: LeafGridProps) {
+function LeafGrid({ rows, columns, options, onClassify, readOnly }: LeafGridProps) {
   const [selectionModel, setSelectionModel] = useState<GridRowSelectionModel>({
     type: 'include',
     ids: new Set(),
@@ -144,7 +157,7 @@ function LeafGrid({ rows, columns, onClassify, readOnly }: LeafGridProps) {
   const selectedCount = selectionModel.ids.size;
 
   const handleBulkClassify = useCallback(
-    (value: 'SITE_HARDWARE' | 'SHOP_HARDWARE') => {
+    (value: string) => {
       const selectedRows = rows.filter((r) => selectionModel.ids.has(r.id));
       onClassify(uniqueClassificationKeys(selectedRows), value);
       setSelectionModel({ type: 'include', ids: new Set() });
@@ -168,12 +181,11 @@ function LeafGrid({ rows, columns, onClassify, readOnly }: LeafGridProps) {
           ? () => (
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 1, py: 0.5 }}>
                 <Typography variant="body2">{selectedCount} selected</Typography>
-                <Button size="small" color="success" onClick={() => handleBulkClassify('SITE_HARDWARE')}>
-                  Classify as Site
-                </Button>
-                <Button size="small" color="info" onClick={() => handleBulkClassify('SHOP_HARDWARE')}>
-                  Classify as Shop
-                </Button>
+                {options.map((opt) => (
+                  <Button key={opt.value} size="small" color={opt.color} onClick={() => handleBulkClassify(opt.value)}>
+                    Classify as {opt.label}
+                  </Button>
+                ))}
               </Box>
             )
           : undefined,
@@ -185,23 +197,28 @@ function LeafGrid({ rows, columns, onClassify, readOnly }: LeafGridProps) {
 interface GroupAccordionProps {
   node: GroupNode;
   columns: GridColDef[];
+  options: ClassificationOption[];
   onClassify: ClassificationGridProps['onClassify'];
   readOnly?: boolean;
   depth: number;
 }
 
-function GroupAccordion({ node, columns, onClassify, readOnly, depth }: GroupAccordionProps) {
+function GroupAccordion({ node, columns, options, onClassify, readOnly, depth }: GroupAccordionProps) {
+  const { labelMap, colorMap } = useMemo(() => buildOptionLookups(options), [options]);
+
   const classifiedCount = node.rows.filter((r) => r.classification !== '').length;
   const uniqueClassifications = new Set(node.rows.filter((r) => r.classification !== '').map((r) => r.classification));
   const allSameClassification = classifiedCount === node.rows.length && uniqueClassifications.size === 1;
 
   const handleGroupAll = useCallback(
-    (value: 'SITE_HARDWARE' | 'SHOP_HARDWARE', e: React.MouseEvent) => {
+    (value: string, e: React.MouseEvent) => {
       e.stopPropagation();
       onClassify(uniqueClassificationKeys(node.rows), value);
     },
     [node.rows, onClassify],
   );
+
+  const singleValue = allSameClassification ? [...uniqueClassifications][0] : null;
 
   return (
     <Accordion
@@ -216,12 +233,12 @@ function GroupAccordion({ node, columns, onClassify, readOnly, depth }: GroupAcc
             size="small"
             label={
               allSameClassification
-                ? `All ${[...uniqueClassifications][0] === 'SITE_HARDWARE' ? 'Site' : 'Shop'}`
+                ? `All ${labelMap[singleValue!] ?? singleValue}`
                 : `${classifiedCount}/${node.rows.length} classified`
             }
             color={
               allSameClassification
-                ? ([...uniqueClassifications][0] === 'SITE_HARDWARE' ? 'success' : 'info')
+                ? (colorMap[singleValue!] ?? 'default')
                 : classifiedCount === node.rows.length ? 'success' : 'default'
             }
           />
@@ -230,22 +247,17 @@ function GroupAccordion({ node, columns, onClassify, readOnly, depth }: GroupAcc
           </Typography>
           {!readOnly && (
             <Box sx={{ ml: 'auto', display: 'flex', gap: 0.5 }}>
-              <Button
-                size="small"
-                variant="outlined"
-                color="success"
-                onClick={(e) => handleGroupAll('SITE_HARDWARE', e)}
-              >
-                Site All
-              </Button>
-              <Button
-                size="small"
-                variant="outlined"
-                color="info"
-                onClick={(e) => handleGroupAll('SHOP_HARDWARE', e)}
-              >
-                Shop All
-              </Button>
+              {options.map((opt) => (
+                <Button
+                  key={opt.value}
+                  size="small"
+                  variant="outlined"
+                  color={opt.color}
+                  onClick={(e) => handleGroupAll(opt.value, e)}
+                >
+                  {opt.label} All
+                </Button>
+              ))}
             </Box>
           )}
         </Box>
@@ -257,20 +269,23 @@ function GroupAccordion({ node, columns, onClassify, readOnly, depth }: GroupAcc
               key={child.label}
               node={child}
               columns={columns}
+              options={options}
               onClassify={onClassify}
               readOnly={readOnly}
               depth={depth + 1}
             />
           ))
         ) : (
-          <LeafGrid rows={node.rows} columns={columns} onClassify={onClassify} readOnly={readOnly} />
+          <LeafGrid rows={node.rows} columns={columns} options={options} onClassify={onClassify} readOnly={readOnly} />
         )}
       </AccordionDetails>
     </Accordion>
   );
 }
 
-export default function ClassificationGrid({ rows, onClassify, readOnly }: ClassificationGridProps) {
+export default function ClassificationGrid({ rows, options, onClassify, readOnly }: ClassificationGridProps) {
+  const { labelMap, colorMap } = useMemo(() => buildOptionLookups(options), [options]);
+
   const [groupByFields, setGroupByFields] = useState<GroupByField[]>([]);
 
   const usedFields = useMemo(() => new Set(groupByFields), [groupByFields]);
@@ -313,8 +328,8 @@ export default function ClassificationGrid({ rows, onClassify, readOnly }: Class
             return (
               <Chip
                 size="small"
-                label={value === 'SITE_HARDWARE' ? 'Site' : 'Shop'}
-                color={value === 'SITE_HARDWARE' ? 'success' : 'info'}
+                label={labelMap[value] ?? value}
+                color={colorMap[value] ?? 'default'}
               />
             );
           }
@@ -330,38 +345,28 @@ export default function ClassificationGrid({ rows, onClassify, readOnly }: Class
               }}
               sx={{ height: 28 }}
             >
-              <ToggleButton
-                value="SITE_HARDWARE"
-                sx={{
-                  px: 1, fontSize: '0.75rem',
-                  '&.Mui-selected': {
-                    backgroundColor: 'success.main',
-                    color: 'success.contrastText',
-                    '&:hover': { backgroundColor: 'success.dark' },
-                  },
-                }}
-              >
-                Site
-              </ToggleButton>
-              <ToggleButton
-                value="SHOP_HARDWARE"
-                sx={{
-                  px: 1, fontSize: '0.75rem',
-                  '&.Mui-selected': {
-                    backgroundColor: 'info.main',
-                    color: 'info.contrastText',
-                    '&:hover': { backgroundColor: 'info.dark' },
-                  },
-                }}
-              >
-                Shop
-              </ToggleButton>
+              {options.map((opt) => (
+                <ToggleButton
+                  key={opt.value}
+                  value={opt.value}
+                  sx={{
+                    px: 1, fontSize: '0.75rem',
+                    '&.Mui-selected': {
+                      backgroundColor: `${opt.color}.main`,
+                      color: `${opt.color}.contrastText`,
+                      '&:hover': { backgroundColor: `${opt.color}.dark` },
+                    },
+                  }}
+                >
+                  {opt.label}
+                </ToggleButton>
+              ))}
             </ToggleButtonGroup>
           );
         },
       },
     ];
-  }, [groupByFields, onClassify, readOnly]);
+  }, [groupByFields, onClassify, readOnly, options, labelMap, colorMap]);
 
   return (
     <Box>
@@ -407,13 +412,14 @@ export default function ClassificationGrid({ rows, onClassify, readOnly }: Class
             key={node.label}
             node={node}
             columns={columns}
+            options={options}
             onClassify={onClassify}
             readOnly={readOnly}
             depth={0}
           />
         ))
       ) : (
-        <LeafGrid rows={rows} columns={columns} onClassify={onClassify} readOnly={readOnly} />
+        <LeafGrid rows={rows} columns={columns} options={options} onClassify={onClassify} readOnly={readOnly} />
       )}
     </Box>
   );

@@ -39,6 +39,7 @@ from .types import (
     POStatistics,
     ProductCodeNode,
     Project,
+    ProjectExcludedItem,
     PullRequest,
     PullRequestItem,
     PurchaseOrder,
@@ -396,6 +397,20 @@ class Query:
                     status=ReconciliationStatus[r["status"]],
                 )
                 for r in results
+            ]
+
+    @strawberry.field
+    def project_excluded_items(self, project_id: strawberry.ID) -> list[ProjectExcludedItem]:
+        from app.models.project_excluded_item import ProjectExcludedItem as PEIModel
+
+        with SessionLocal() as session:
+            rows = session.scalars(select(PEIModel).where(PEIModel.project_id == uuid.UUID(str(project_id)))).all()
+            return [
+                ProjectExcludedItem(
+                    hardware_category=row.hardware_category,
+                    product_code=row.product_code,
+                )
+                for row in rows
             ]
 
     @strawberry.field

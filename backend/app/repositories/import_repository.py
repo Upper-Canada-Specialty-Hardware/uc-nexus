@@ -47,6 +47,12 @@ def reconcile_schedule(
     items: list[dict],
 ) -> list[dict]:
     """Compare needed items against existing HardwareItem lifecycle state."""
+    from app.models.project_excluded_item import ProjectExcludedItem as PEIModel
+
+    # Pre-load excluded items for this project
+    excluded_rows = session.scalars(select(PEIModel).where(PEIModel.project_id == project_id)).all()
+    excluded_set = {(r.hardware_category, r.product_code) for r in excluded_rows}
+
     results = []
 
     for item in items:
@@ -54,6 +60,19 @@ def reconcile_schedule(
         hardware_category = item["hardware_category"]
         product_code = item["product_code"]
         quantity_needed = item["quantity_needed"]
+
+        # Check exclusion table first — BY_OTHERS items skip all lifecycle checks
+        if (hardware_category, product_code) in excluded_set:
+            results.append(
+                {
+                    "opening_number": opening_number,
+                    "hardware_category": hardware_category,
+                    "product_code": product_code,
+                    "quantity": quantity_needed,
+                    "status": "BY_OTHERS",
+                }
+            )
+            continue
 
         # Step 1: Query HardwareItems linked to non-cancelled, non-deleted POs
         hi_stmt = (
@@ -218,6 +237,7 @@ def finalize_import_session(
     hardware_items_input = input_data.get("hardware_items") or []
     po_drafts = input_data.get("po_drafts") or []
     classifications_input = input_data.get("classifications") or []
+    excluded_items_input = input_data.get("excluded_items") or []
     shipping_pr_drafts = input_data.get("shipping_out_pr_drafts") or []
     include_sar = input_data.get("include_shop_assembly_request", False)
     sar_request_number = input_data.get("shop_assembly_request_number")
@@ -326,6 +346,35 @@ def finalize_import_session(
     for c in classifications_input:
         key = (c["hardware_category"], c["product_code"], c["unit_cost"])
         classification_map[key] = Classification(c["classification"])
+
+    # 2b. Manage project excluded items (By Others scope classification)
+    if excluded_items_input is not None:
+        from app.models.project_excluded_item import ProjectExcludedItem as PEIModel
+
+        new_excluded_set = {(ei["hardware_category"], ei["product_code"]) for ei in excluded_items_input}
+
+        # Load existing exclusions for this project
+        existing_exclusions = session.scalars(select(PEIModel).where(PEIModel.project_id == project.id)).all()
+        existing_set = {(e.hardware_category, e.product_code): e for e in existing_exclusions}
+
+        # Add new exclusions
+        for hw_cat, prod_code in new_excluded_set:
+            if (hw_cat, prod_code) not in existing_set:
+                session.add(
+                    PEIModel(
+                        id=uuid.uuid4(),
+                        project_id=project.id,
+                        hardware_category=hw_cat,
+                        product_code=prod_code,
+                    )
+                )
+
+        # Remove exclusions that are no longer By Others (user reclassified to By UCSH)
+        for key, entity in existing_set.items():
+            if key not in new_excluded_set:
+                session.delete(entity)
+
+        session.flush()
 
     # 3. PO creation
     created_pos: list[POModel] = []

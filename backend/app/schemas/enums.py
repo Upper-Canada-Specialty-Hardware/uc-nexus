@@ -65,6 +65,7 @@ class ReconciliationStatus(enum.Enum):
     SHIPPING_OUT = "shipping_out"
     SHIPPED_OUT = "shipped_out"
     NOT_COVERED = "not_covered"
+    BY_OTHERS = "by_others"
 
 
 @strawberry.enum

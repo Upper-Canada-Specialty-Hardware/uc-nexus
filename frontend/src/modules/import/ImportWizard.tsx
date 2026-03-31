@@ -35,6 +35,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   GET_PROJECTS,
   GET_PROJECT_BY_SCHEDULE_ID,
+  GET_PROJECT_EXCLUDED_ITEMS,
   RECONCILE_SCHEDULE,
 } from '../../graphql/queries';
 import { FINALIZE_IMPORT_SESSION } from '../../graphql/mutations';
@@ -126,7 +127,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
       { id: 'openings', label: 'Select Openings/Hardware' },
       { id: 'reconciliation', label: 'Reconciliation' },
     ];
-    if (purpose === 'assembly') {
+    if (purpose === 'po' || purpose === 'assembly') {
       base.push({ id: 'classification', label: 'Classification' });
     }
     if (purpose === 'po') base.push({ id: 'purchase-orders', label: 'Purchase Orders' });
@@ -173,6 +174,10 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
   const [previewReconcile, { data: previewReconcileData, loading: previewReconcileLoading }] = useLazyQuery<{
     reconcileSchedule: ReconciliationRow[];
   }>(RECONCILE_SCHEDULE);
+
+  const [fetchExcludedItems] = useLazyQuery<{
+    projectExcludedItems: Array<{ hardwareCategory: string; productCode: string }>;
+  }>(GET_PROJECT_EXCLUDED_ITEMS);
 
   const [finalizeImport] = useMutation<{
     finalizeImportSession: {
@@ -291,6 +296,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
 
     const map = new Map<string, OpeningProcurementStatus>();
     for (const row of rows) {
+      if (row.status === 'BY_OTHERS') continue;
       const existing = map.get(row.openingNumber) ?? { totalItems: 0, received: 0, ordered: 0, notCovered: 0 };
       existing.totalItems += row.quantity;
       if (receivedStatuses.has(row.status)) {
@@ -380,6 +386,25 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
           setIsReimport(true);
           setExistingProjectId(existing.id);
           setExistingProjectName(existing.description || existing.projectId);
+          // Pre-populate BY_OTHERS classifications from exclusion table
+          fetchExcludedItems({ variables: { projectId: existing.id } }).then((res) => {
+            const excluded = res.data?.projectExcludedItems;
+            if (excluded && excluded.length > 0) {
+              setClassifications((prev) => {
+                const next = new Map(prev);
+                for (const ei of excluded) {
+                  // Match against all classificationKeys that share this (hardwareCategory, productCode)
+                  for (const hi of hardwareItems) {
+                    if (hi.hardware_category === ei.hardwareCategory && hi.product_code === ei.productCode) {
+                      const ck = `${hi.hardware_category}|${hi.product_code}|${hi.unit_cost ?? 0}`;
+                      next.set(ck, 'BY_OTHERS');
+                    }
+                  }
+                }
+                return next;
+              });
+            }
+          });
         } else {
           setIsReimport(false);
           setExistingProjectId(null);
@@ -441,7 +466,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     }
 
     setActiveStepId(nextStep.id);
-  }, [effectiveStepId, steps, parsed, checkProject, isReimport, existingProjectId, selectedHardwareItems, reconcileSchedule, purpose, hardwareItems, previewReconcile]);
+  }, [effectiveStepId, steps, parsed, checkProject, isReimport, existingProjectId, selectedHardwareItems, reconcileSchedule, purpose, hardwareItems, previewReconcile, fetchExcludedItems]);
 
   const handleBack = useCallback(() => {
     const currentIndex = steps.findIndex((s) => s.id === effectiveStepId);
@@ -594,12 +619,36 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
       (hi) => selectedOpenings.has(hi.opening_number) && selectedItemKeys.has(aggregationKey(hi)),
     );
 
+    // Build set of BY_OTHERS classificationKeys for PO filtering
+    const byOthersKeys = new Set<string>();
+    if (purpose === 'po') {
+      for (const [key, cls] of classifications.entries()) {
+        if (cls === 'BY_OTHERS') byOthersKeys.add(key);
+      }
+    }
+
+    // Helper: is this item classified as BY_OTHERS (for PO scope filtering)?
+    const isByOthers = (hi: AggregatedHardwareItem) =>
+      byOthersKeys.has(classificationKey(hi));
+
+    // Compute excluded items for persistence
+    const excludedItems = purpose === 'po'
+      ? Array.from(new Map(
+          Array.from(classifications.entries())
+            .filter(([, cls]) => cls === 'BY_OTHERS')
+            .map(([key]) => {
+              const [hardwareCategory, productCode] = key.split('|');
+              return [`${hardwareCategory}|${productCode}`, { hardwareCategory, productCode }] as const;
+            })
+        ).values())
+      : null;
+
     return {
       project: snakeToCamel(parsed.project as unknown as Record<string, unknown>),
       openings: selectedOpeningsList.map((o) => snakeToCamel(o as unknown as Record<string, unknown>)),
       hardwareItems: purpose === 'po'
         ? aggregatedHardwareItems
-            .filter((hi) => selectedVendors.has(hi.vendor_no ?? '(No Vendor)'))
+            .filter((hi) => selectedVendors.has(hi.vendor_no ?? '(No Vendor)') && !isByOthers(hi))
             .map((hi) => {
               const vendor = hi.vendor_no ?? '(No Vendor)';
               const overrideKey = `${vendor}|${hi.product_code}|${hi.hardware_category}`;
@@ -614,11 +663,14 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
         ? Array.from(vendorGroups.entries())
             .filter(([vendor]) => selectedVendors.has(vendor))
             .map(([vendor, items]) => {
+              // Filter out BY_OTHERS items from this vendor's PO draft
+              const inScopeItems = items.filter((hi) => !isByOthers(hi));
+              if (inScopeItems.length === 0) return null;
               const info = vendorPOInfo.get(vendor) ?? { vendorContact: '' };
               // Collect aliases for this vendor's aggregated line items
               const seenKeys = new Set<string>();
               const lineItemAliases: Array<{ hardwareCategory: string; productCode: string; orderAs: string }> = [];
-              for (const hi of items) {
+              for (const hi of inScopeItems) {
                 const key = `${hi.product_code}|${hi.hardware_category}`;
                 if (!seenKeys.has(key)) {
                   seenKeys.add(key);
@@ -636,7 +688,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
                 poNumber: null,
                 vendorName: vendor !== '(No Vendor)' ? vendor : null,
                 vendorContact: info.vendorContact || null,
-                hardwareItemRefs: items.map((hi) => ({
+                hardwareItemRefs: inScopeItems.map((hi) => ({
                   openingNumber: hi.opening_number,
                   productCode: hi.product_code,
                   hardwareCategory: hi.hardware_category,
@@ -644,7 +696,9 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
                 lineItemAliases,
               };
             })
+            .filter(Boolean)
         : null,
+      excludedItems,
       classifications: purpose === 'assembly'
         ? Array.from(classifications.entries()).map(([key, cls]) => {
             const [hardwareCategory, productCode, unitCost] = key.split('|');
