@@ -1,8 +1,8 @@
 import { gql } from '@apollo/client/core';
 
 export const UPDATE_PO = gql`
-  mutation UpdatePO($id: ID!, $vendorName: String, $vendorContact: String, $expectedDeliveryDate: Date, $poNumber: String, $vendorQuoteNumber: String) {
-    updatePo(id: $id, vendorName: $vendorName, vendorContact: $vendorContact, expectedDeliveryDate: $expectedDeliveryDate, poNumber: $poNumber, vendorQuoteNumber: $vendorQuoteNumber) {
+  mutation UpdatePO($id: ID!, $vendorName: String, $vendorContact: String, $expectedDeliveryDate: Date, $poNumber: String, $vendorQuoteNumber: String, $notes: String) {
+    updatePo(id: $id, vendorName: $vendorName, vendorContact: $vendorContact, expectedDeliveryDate: $expectedDeliveryDate, poNumber: $poNumber, vendorQuoteNumber: $vendorQuoteNumber, notes: $notes) {
       id
       poNumber
       requestNumber
@@ -10,6 +10,7 @@ export const UPDATE_PO = gql`
       vendorName
       vendorContact
       vendorQuoteNumber
+      notes
       expectedDeliveryDate
       orderedAt
       updatedAt
@@ -57,6 +58,7 @@ export const MARK_PO_AS_ORDERED = gql`
       updatedAt
       vendorName
       vendorQuoteNumber
+      notes
       lineItems {
         id
         hardwareCategory
@@ -97,6 +99,7 @@ export const CANCEL_PO = gql`
       poNumber
       requestNumber
       status
+      notes
       updatedAt
       lineItems {
         id
@@ -389,6 +392,7 @@ export const CREATE_PO = gql`
       status
       vendorName
       vendorContact
+      notes
       createdAt
       updatedAt
       lineItems {
@@ -428,6 +432,7 @@ export const FINALIZE_IMPORT_SESSION = gql`
         poNumber
         requestNumber
         status
+        notes
       }
       shippingOutPullRequests {
         id

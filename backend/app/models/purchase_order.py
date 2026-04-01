@@ -2,7 +2,7 @@ import uuid
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import CheckConstraint, Date, DateTime, Enum, ForeignKey, Index, Integer, Numeric, String
+from sqlalchemy import CheckConstraint, Date, DateTime, Enum, ForeignKey, Index, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from . import Base
@@ -42,6 +42,7 @@ class PurchaseOrder(Base):
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     deleted_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     line_items: Mapped[list["POLineItem"]] = relationship(back_populates="purchase_order")
     documents: Mapped[list["PODocument"]] = relationship(back_populates="purchase_order")

@@ -158,6 +158,7 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
   const [vendorContact, setVendorContact] = useState(po.vendorContact ?? '');
   const [vendorQuoteNumber, setVendorQuoteNumber] = useState(po.vendorQuoteNumber ?? '');
   const [expectedDeliveryDate, setExpectedDeliveryDate] = useState(po.expectedDeliveryDate ?? '');
+  const [notes, setNotes] = useState(po.notes ?? '');
   const [vendorNameError, setVendorNameError] = useState('');
   const [poNumberError, setPoNumberError] = useState('');
   const [aliasEdits, setAliasEdits] = useState<Record<string, string>>({});
@@ -265,6 +266,7 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
     setVendorContact(po.vendorContact ?? '');
     setVendorQuoteNumber(po.vendorQuoteNumber ?? '');
     setExpectedDeliveryDate(po.expectedDeliveryDate ?? '');
+    setNotes(po.notes ?? '');
     setVendorNameError('');
     setPoNumberError('');
     const initialAliases: Record<string, string> = {};
@@ -330,6 +332,7 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
         expectedDeliveryDate: expectedDeliveryDate || null,
         poNumber: poNumber || null,
         vendorQuoteNumber: vendorQuoteNumber || null,
+        notes: notes || null,
       },
     });
   };
@@ -577,6 +580,16 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
               size="small"
               slotProps={{ inputLabel: { shrink: true } }}
             />
+            <TextField
+              label="Notes"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              fullWidth
+              size="small"
+              multiline
+              minRows={2}
+              maxRows={6}
+            />
           </Stack>
         ) : (
           <Box sx={{ mb: 3 }}>
@@ -586,6 +599,14 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
             <InfoRow label="Vendor Quote #" value={po.vendorQuoteNumber || '-'} />
             <InfoRow label="Expected Delivery Date" value={formatDate(po.expectedDeliveryDate)} />
             <InfoRow label="Order Date" value={formatDate(po.orderedAt)} />
+            {po.notes && (
+              <Box sx={{ display: 'flex', py: 0.5 }}>
+                <Typography variant="body2" color="text.secondary" sx={{ width: 200, flexShrink: 0 }}>
+                  Notes:
+                </Typography>
+                <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>{po.notes}</Typography>
+              </Box>
+            )}
             {!po.projectId && <InfoRow label="Project" value="No Project" />}
             {vendorNameError && (
               <Typography color="error" variant="body2" sx={{ mt: 1 }}>

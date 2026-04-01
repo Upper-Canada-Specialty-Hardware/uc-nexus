@@ -131,6 +131,7 @@ def _po_to_type(po, receive_records=None) -> PurchaseOrder:
         vendor_name=po.vendor_name,
         vendor_contact=po.vendor_contact,
         vendor_quote_number=po.vendor_quote_number,
+        notes=po.notes,
         expected_delivery_date=po.expected_delivery_date,
         ordered_at=po.ordered_at,
         created_at=po.created_at,

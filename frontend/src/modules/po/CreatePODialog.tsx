@@ -64,6 +64,7 @@ export default function CreatePODialog({ open, onClose, onCreated, defaultProjec
   const [projectId, setProjectId] = useState(defaultProjectId ?? '');
   const [vendorName, setVendorName] = useState('');
   const [vendorContact, setVendorContact] = useState('');
+  const [notes, setNotes] = useState('');
   const [nextKey, setNextKey] = useState(2);
   const [lineItems, setLineItems] = useState<LineItemRow[]>([
     { key: 1, ...EMPTY_LINE_ITEM },
@@ -114,6 +115,7 @@ export default function CreatePODialog({ open, onClose, onCreated, defaultProjec
     setProjectId(defaultProjectId ?? '');
     setVendorName('');
     setVendorContact('');
+    setNotes('');
     setLineItems([{ key: 1, ...EMPTY_LINE_ITEM }]);
     setNextKey(2);
     setErrors({});
@@ -126,6 +128,7 @@ export default function CreatePODialog({ open, onClose, onCreated, defaultProjec
       projectId: projectId || null,
       vendorName: vendorName.trim() || null,
       vendorContact: vendorContact.trim() || null,
+      notes: notes.trim() || null,
       lineItems: lineItems.map((li) => ({
         hardwareCategory: li.hardwareCategory.trim(),
         productCode: li.productCode.trim(),
@@ -145,7 +148,7 @@ export default function CreatePODialog({ open, onClose, onCreated, defaultProjec
       const message = err instanceof Error ? err.message : 'Failed to create PO';
       showToast(message, 'error');
     }
-  }, [validate, projectId, vendorName, vendorContact, lineItems, createPO, showToast, onCreated, handleReset]);
+  }, [validate, projectId, vendorName, vendorContact, notes, lineItems, createPO, showToast, onCreated, handleReset]);
 
   const handleClose = useCallback(() => {
     handleReset();
@@ -201,6 +204,17 @@ export default function CreatePODialog({ open, onClose, onCreated, defaultProjec
             fullWidth
           />
         </Stack>
+        <TextField
+          label="Notes"
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          size="small"
+          fullWidth
+          multiline
+          minRows={2}
+          maxRows={4}
+          placeholder="Optional notes for this purchase order"
+        />
       </Stack>
 
       {/* Line Items */}

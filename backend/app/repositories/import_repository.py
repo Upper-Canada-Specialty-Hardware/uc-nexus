@@ -423,6 +423,7 @@ def finalize_import_session(
                 status=POStatus.DRAFT,
                 vendor_name=po_draft.get("vendor_name"),
                 vendor_contact=po_draft.get("vendor_contact"),
+                notes=po_draft.get("notes"),
             )
             session.add(po)
             session.flush()

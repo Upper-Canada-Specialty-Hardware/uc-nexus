@@ -77,6 +77,7 @@ export interface PurchaseOrder {
   vendorName: string | null;
   vendorContact: string | null;
   vendorQuoteNumber: string | null;
+  notes: string | null;
   expectedDeliveryDate: string | null;
   orderedAt: string | null;
   createdAt: string;

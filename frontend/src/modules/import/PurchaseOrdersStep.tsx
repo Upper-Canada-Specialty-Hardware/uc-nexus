@@ -16,12 +16,12 @@ interface AggregatedLineItem {
 
 interface PurchaseOrdersStepProps {
   vendorGroups: Map<string, AggregatedHardwareItem[]>;
-  vendorPOInfo: Map<string, { vendorContact: string }>;
+  vendorPOInfo: Map<string, { vendorContact: string; notes: string }>;
   selectedVendors: Set<string>;
   unitCostOverrides: Map<string, number>;
   orderAsValues: Map<string, string>;
   onToggleVendor: (vendor: string) => void;
-  onUpdateVendorPO: (vendorNo: string, field: 'vendorContact', value: string) => void;
+  onUpdateVendorPO: (vendorNo: string, field: 'vendorContact' | 'notes', value: string) => void;
   onUpdateUnitCost: (vendor: string, productCode: string, hardwareCategory: string, newCost: number) => void;
   onUpdateOrderAs: (key: string, value: string) => void;
   onNext: () => void;
@@ -97,7 +97,7 @@ export default function PurchaseOrdersStep({
       </Typography>
 
       {sortedVendors.map(([vendor, items]) => {
-        const info = vendorPOInfo.get(vendor) ?? { vendorContact: '' };
+        const info = vendorPOInfo.get(vendor) ?? { vendorContact: '', notes: '' };
         const aggregated = aggregateLineItems(items, vendor, unitCostOverrides);
         const poTotal = aggregated.reduce((sum, line) => sum + line.totalCost, 0);
         const isSelected = selectedVendors.has(vendor);
@@ -124,7 +124,7 @@ export default function PurchaseOrdersStep({
               </Typography>
             </Box>
 
-            {/* Vendor Contact field */}
+            {/* Vendor Contact + Notes fields */}
             <Box sx={{ display: 'flex', gap: 2, mb: 2 }}>
               <TextField
                 label="Vendor Contact"
@@ -133,6 +133,18 @@ export default function PurchaseOrdersStep({
                 value={info.vendorContact}
                 onChange={(e) => onUpdateVendorPO(vendor, 'vendorContact', e.target.value)}
                 sx={{ flex: 1 }}
+              />
+              <TextField
+                label="Notes"
+                size="small"
+                multiline
+                minRows={1}
+                maxRows={3}
+                disabled={!isSelected}
+                value={info.notes}
+                onChange={(e) => onUpdateVendorPO(vendor, 'notes', e.target.value)}
+                sx={{ flex: 1 }}
+                placeholder="Optional notes for this PO"
               />
             </Box>
 

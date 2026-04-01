@@ -35,6 +35,7 @@ def create_po(
     project_id: uuid.UUID | None = None,
     vendor_name: str | None = None,
     vendor_contact: str | None = None,
+    notes: str | None = None,
 ) -> PurchaseOrder:
     """Create a manual PO with line items. No hardware items are created."""
     if not line_items:
@@ -57,6 +58,7 @@ def create_po(
         status=POStatus.DRAFT,
         vendor_name=vendor_name,
         vendor_contact=vendor_contact,
+        notes=notes,
     )
     session.add(po)
     session.flush()
@@ -172,6 +174,7 @@ def update_po(
     po_number: str | None = None,
     vendor_quote_number: str | None = None,
     project_id=_UNSET,
+    notes: str | None = None,
 ) -> PurchaseOrder:
     """
     - Validate PO exists + not soft-deleted (NotFoundError)
@@ -230,6 +233,8 @@ def update_po(
         po.expected_delivery_date = expected_delivery_date
     if vendor_quote_number is not None:
         po.vendor_quote_number = vendor_quote_number if vendor_quote_number.strip() else None
+    if notes is not None:
+        po.notes = notes if notes.strip() else None
 
     # Auto-transition: ORDERED → VENDOR_CONFIRMED when both vendor_quote_number and vendor_ack doc exist
     if po.status == POStatus.ORDERED:

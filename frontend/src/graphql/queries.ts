@@ -36,6 +36,7 @@ export const GET_PURCHASE_ORDERS = gql`
       vendorName
       vendorContact
       vendorQuoteNumber
+      notes
       expectedDeliveryDate
       orderedAt
       createdAt
@@ -171,6 +172,7 @@ export const GET_OPEN_POS = gql`
       projectId
       status
       vendorName
+      notes
       orderedAt
       lineItems {
         id
@@ -191,6 +193,7 @@ export const GET_PO_RECEIVING_DETAILS = gql`
       poNumber
       requestNumber
       vendorName
+      notes
       status
       lineItems {
         id

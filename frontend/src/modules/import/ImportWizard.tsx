@@ -102,7 +102,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
 
   // Action step state
   const [selectedVendors, setSelectedVendors] = useState<Set<string>>(new Set());
-  const [vendorPOInfo, setVendorPOInfo] = useState<Map<string, { vendorContact: string }>>(new Map());
+  const [vendorPOInfo, setVendorPOInfo] = useState<Map<string, { vendorContact: string; notes: string }>>(new Map());
   const [unitCostOverrides, setUnitCostOverrides] = useState<Map<string, number>>(new Map());
   const [classifications, setClassifications] = useState<Map<string, string>>(new Map());
   const [orderAsValues, setOrderAsValues] = useState<Map<string, string>>(new Map());
@@ -514,10 +514,10 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
   }, []);
 
   // Vendor PO info
-  const updateVendorPO = useCallback((vendorNo: string, field: 'vendorContact', value: string) => {
+  const updateVendorPO = useCallback((vendorNo: string, field: 'vendorContact' | 'notes', value: string) => {
     setVendorPOInfo((prev) => {
       const next = new Map(prev);
-      const existing = next.get(vendorNo) ?? { vendorContact: '' };
+      const existing = next.get(vendorNo) ?? { vendorContact: '', notes: '' };
       next.set(vendorNo, { ...existing, [field]: value });
       return next;
     });
@@ -671,7 +671,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
               // Filter out BY_OTHERS items from this vendor's PO draft
               const inScopeItems = items.filter((hi) => !isByOthers(hi));
               if (inScopeItems.length === 0) return null;
-              const info = vendorPOInfo.get(vendor) ?? { vendorContact: '' };
+              const info = vendorPOInfo.get(vendor) ?? { vendorContact: '', notes: '' };
               // Collect aliases for this vendor's aggregated line items
               const seenKeys = new Set<string>();
               const lineItemAliases: Array<{ hardwareCategory: string; productCode: string; orderAs: string }> = [];
@@ -693,6 +693,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
                 poNumber: null,
                 vendorName: vendor !== '(No Vendor)' ? vendor : null,
                 vendorContact: info.vendorContact || null,
+                notes: info.notes || null,
                 hardwareItemRefs: inScopeItems.map((hi) => ({
                   openingNumber: hi.opening_number,
                   productCode: hi.product_code,

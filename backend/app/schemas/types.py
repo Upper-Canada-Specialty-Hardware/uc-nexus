@@ -136,6 +136,7 @@ class PurchaseOrder:
     vendor_name: str | None
     vendor_contact: str | None
     vendor_quote_number: str | None
+    notes: str | None
     expected_delivery_date: date | None
     ordered_at: datetime | None
     created_at: datetime

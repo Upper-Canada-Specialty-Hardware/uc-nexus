@@ -143,6 +143,7 @@ class Mutation:
                     "po_number": po.po_number,
                     "vendor_name": po.vendor_name,
                     "vendor_contact": po.vendor_contact,
+                    "notes": po.notes,
                     "hardware_item_refs": [
                         {
                             "opening_number": ref.opening_number,
@@ -311,6 +312,7 @@ class Mutation:
                 project_id=project_id,
                 vendor_name=input.vendor_name,
                 vendor_contact=input.vendor_contact,
+                notes=input.notes,
             )
             session.commit()
 
@@ -336,6 +338,7 @@ class Mutation:
         po_number: str | None = None,
         vendor_quote_number: str | None = None,
         project_id: strawberry.ID | None = None,
+        notes: str | None = None,
     ) -> PurchaseOrder:
         from app.repositories.po_repository import _UNSET
 
@@ -350,6 +353,7 @@ class Mutation:
                 po_number=po_number,
                 vendor_quote_number=vendor_quote_number,
                 project_id=pid,
+                notes=notes,
             )
             session.commit()
             session.refresh(po)

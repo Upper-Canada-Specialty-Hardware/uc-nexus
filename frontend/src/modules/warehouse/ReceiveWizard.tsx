@@ -48,6 +48,7 @@ interface OpenPO {
   projectId: string;
   status: string;
   vendorName: string | null;
+  notes: string | null;
   orderedAt: string | null;
   lineItems: OpenPOLineItem[];
 }
@@ -81,6 +82,7 @@ interface PODetails {
   id: string;
   poNumber: string | null;
   vendorName: string | null;
+  notes: string | null;
   status: string;
   lineItems: PODetailLineItem[];
   receiveRecords: ReceiveRecordData[];
@@ -508,10 +510,15 @@ export default function ReceiveWizard({ open, onClose }: ReceiveWizardProps) {
     }));
     return (
       <Paper key={poId} variant="outlined" sx={{ p: 2, mb: 2 }}>
-        <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
+        <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: details.notes ? 0.5 : 1 }}>
           {details.poNumber ?? 'Unknown PO'}
           {details.vendorName ? ` — ${details.vendorName}` : ''}
         </Typography>
+        {details.notes && (
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 1, whiteSpace: 'pre-wrap' }}>
+            Notes: {details.notes}
+          </Typography>
+        )}
         <Box sx={{ height: 300, width: '100%' }}>
           <DataGrid
             rows={rows}
@@ -545,10 +552,15 @@ export default function ReceiveWizard({ open, onClose }: ReceiveWizardProps) {
 
     return (
       <Paper key={poId} variant="outlined" sx={{ p: 2, mb: 2 }}>
-        <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 2 }}>
+        <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: details.notes ? 0.5 : 2 }}>
           {details.poNumber ?? 'Unknown PO'}
           {details.vendorName ? ` — ${details.vendorName}` : ''}
         </Typography>
+        {details.notes && (
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2, whiteSpace: 'pre-wrap' }}>
+            Notes: {details.notes}
+          </Typography>
+        )}
 
         {poLineItems.map((li) => {
           const assignment = locationAssignments.find((a) => a.lineItemId === li.id);
