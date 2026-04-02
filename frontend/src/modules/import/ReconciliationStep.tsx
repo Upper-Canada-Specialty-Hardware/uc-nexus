@@ -35,6 +35,18 @@ interface AggregatedReconRow {
 
 // ---- Helpers ----
 
+const STATUS_PRIORITY: Record<string, number> = {
+  RECEIVED: 0,
+  ASSEMBLED: 1,
+  SHIPPED_OUT: 2,
+  SHIPPING_OUT: 3,
+  ASSEMBLING: 4,
+  ORDERED: 5,
+  PO_DRAFTED: 6,
+  NOT_COVERED: 7,
+  BY_OTHERS: 8,
+};
+
 const STATUS_COLOR_MAP: Record<string, 'success' | 'warning' | 'error' | 'info' | 'default'> = {
   PO_DRAFTED: 'info',
   ORDERED: 'info',
@@ -133,6 +145,12 @@ export default function ReconciliationStep({
     for (const row of rows) {
       row.qtyAvailable = computeAvailableQty(purpose, row.statusBreakdown);
     }
+    // Sort by best (most available) status present in each row
+    rows.sort((a, b) => {
+      const bestA = Math.min(...Array.from(a.statusBreakdown.keys()).map((s) => STATUS_PRIORITY[s] ?? 99));
+      const bestB = Math.min(...Array.from(b.statusBreakdown.keys()).map((s) => STATUS_PRIORITY[s] ?? 99));
+      return bestA - bestB;
+    });
     return rows;
   }, [reconciliationRows, qtyNeededMap, purpose]);
 
@@ -207,7 +225,9 @@ export default function ReconciliationStep({
         const breakdown = params.value as Map<string, number>;
         return (
           <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap', alignItems: 'center', py: 0.5 }}>
-            {Array.from(breakdown.entries()).map(([status, qty]) => (
+            {Array.from(breakdown.entries())
+              .sort(([a], [b]) => (STATUS_PRIORITY[a] ?? 99) - (STATUS_PRIORITY[b] ?? 99))
+              .map(([status, qty]) => (
               <Chip
                 key={status}
                 size="small"
