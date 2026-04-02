@@ -3,10 +3,12 @@ import { Box, Tabs, Tab, Typography } from '@mui/material';
 import InventoryView from './InventoryView';
 import ReceivingPage from './ReceivingPage';
 import PullRequestQueue from './PullRequestQueue';
+import PutAwayTab from './PutAwayTab';
 
 const SUB_ROUTES = [
   { label: 'Inventory', path: 'inventory' },
   { label: 'Receiving', path: 'receiving' },
+  { label: 'Put Away', path: 'put-away' },
   { label: 'Pull Requests', path: 'pull-requests' },
 ];
 
@@ -26,6 +28,7 @@ export default function WarehouseModule() {
       <Routes>
         <Route path="inventory" element={<InventoryView />} />
         <Route path="receiving" element={<ReceivingPage />} />
+        <Route path="put-away" element={<PutAwayTab />} />
         <Route path="pull-requests" element={<PullRequestQueue />} />
         <Route index element={<Navigate to="inventory" replace />} />
       </Routes>

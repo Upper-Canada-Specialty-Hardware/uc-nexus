@@ -202,11 +202,19 @@ input ShipmentItemInput {
   quantity: Int!
 }
 
+type RecentReceiveRecord {
+  receive_record: ReceiveRecord!
+  po_number: String
+  total_items_received: Int!
+}
+
 type Query {
-  openPOs(projectId: ID!): [PurchaseOrder!]!
+  openPOs(projectId: ID): [PurchaseOrder!]!
   poReceivingDetails(poId: ID!): PurchaseOrder!
   inventoryHierarchy(projectId: ID!): [InventoryHierarchyNode!]!
   inventoryItems(projectId: ID!, category: String!, productCode: String!): [InventoryItemDetail!]!
+  unlocatedInventory(projectId: ID): [InventoryItemDetail!]!
+  recentReceiveRecords(limit: Int = 10): [RecentReceiveRecord!]!
   openingItems(projectId: ID!): [OpeningItem!]!
   openingItemDetails(id: ID!): OpeningItemDetail!
   pullRequests(projectId: ID!, source: PullRequestSource, status: PullRequestStatus): [PullRequest!]!

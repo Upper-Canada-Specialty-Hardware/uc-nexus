@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import {
   Dialog,
   AppBar,
@@ -13,13 +13,10 @@ import {
   TextField,
   Alert,
   CircularProgress,
-  Divider,
   Paper,
   InputAdornment,
 } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
-import DeleteIcon from '@mui/icons-material/Delete';
-import AddIcon from '@mui/icons-material/Add';
 import SearchIcon from '@mui/icons-material/Search';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useQuery, useMutation } from '@apollo/client/react';
@@ -88,28 +85,17 @@ interface PODetails {
   receiveRecords: ReceiveRecordData[];
 }
 
-interface LocationRow {
-  aisle: string;
-  bay: string;
-  bin: string;
-  quantity: number;
-}
-
-interface LocationAssignment {
-  lineItemId: string;
-  locations: LocationRow[];
-}
-
 // ---- Props ----
 
 interface ReceiveWizardProps {
   open: boolean;
   onClose: () => void;
+  preSelectedPOId?: string;
 }
 
-const STEPS = ['Select POs', 'Enter Quantities', 'Assign Locations'];
+const STEPS = ['Select POs', 'Enter Quantities'];
 
-export default function ReceiveWizard({ open, onClose }: ReceiveWizardProps) {
+export default function ReceiveWizard({ open, onClose, preSelectedPOId }: ReceiveWizardProps) {
   const { displayName } = useIdentity();
   const { showToast } = useToast();
   const navigate = useNavigate();
@@ -119,7 +105,6 @@ export default function ReceiveWizard({ open, onClose }: ReceiveWizardProps) {
   const [selectedPOIds, setSelectedPOIds] = useState<string[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [receiveQuantities, setReceiveQuantities] = useState<Record<string, number>>({});
-  const [locationAssignments, setLocationAssignments] = useState<LocationAssignment[]>([]);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [postSuccessOpen, setPostSuccessOpen] = useState(false);
   const [mutationError, setMutationError] = useState<string | null>(null);
@@ -140,11 +125,54 @@ export default function ReceiveWizard({ open, onClose }: ReceiveWizardProps) {
   // Mutation
   const [createReceive, { loading: submitLoading }] = useMutation(CREATE_RECEIVE);
 
+  // ---- Pre-selected PO auto-advance ----
+
+  const fetchAllPODetails = useCallback(
+    async (poIds: string[]) => {
+      setPoDetailsLoading(true);
+      setPoDetailsError(null);
+      try {
+        const results = await Promise.all(
+          poIds.map((poId) =>
+            client.query<{ poReceivingDetails: PODetails }>({
+              query: GET_PO_RECEIVING_DETAILS,
+              variables: { poId },
+              fetchPolicy: 'network-only',
+            }),
+          ),
+        );
+        const map: Record<string, PODetails> = {};
+        for (const result of results) {
+          const details = result.data?.poReceivingDetails;
+          if (details) map[details.id] = details;
+        }
+        setPoDetailsMap(map);
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : 'Failed to load PO details';
+        setPoDetailsError(message);
+      } finally {
+        setPoDetailsLoading(false);
+      }
+    },
+    [client],
+  );
+
+  useEffect(() => {
+    if (open && preSelectedPOId && openPOsData?.openPOs) {
+      const poExists = openPOsData.openPOs.some((po) => po.id === preSelectedPOId);
+      if (poExists) {
+        setSelectedPOIds([preSelectedPOId]);
+        fetchAllPODetails([preSelectedPOId]);
+        setReceiveQuantities({});
+        setActiveStep(1);
+      }
+    }
+  }, [open, preSelectedPOId, openPOsData, fetchAllPODetails]);
+
   // ---- Derived Data ----
 
   const openPOs = openPOsData?.openPOs ?? [];
 
-  // All line items across all selected POs that have pending > 0 and receive now > 0
   const lineItemsToReceive = useMemo(() => {
     const items: PODetailLineItem[] = [];
     for (const poId of selectedPOIds) {
@@ -289,124 +317,26 @@ export default function ReceiveWizard({ open, onClose }: ReceiveWizardProps) {
     [receiveQuantities],
   );
 
-  // ---- Step 3: Location Validation ----
-
-  const allLocationsValid = useMemo(() => {
-    if (lineItemsToReceive.length === 0) return false;
-    return lineItemsToReceive.every((li) => {
-      const assignment = locationAssignments.find((a) => a.lineItemId === li.id);
-      if (!assignment || assignment.locations.length === 0) return false;
-      const allFieldsFilled = assignment.locations.every(
-        (loc) =>
-          loc.aisle.trim() !== '' &&
-          loc.bay.trim() !== '' &&
-          loc.bin.trim() !== '' &&
-          loc.quantity >= 1,
-      );
-      if (!allFieldsFilled) return false;
-      const totalAssigned = assignment.locations.reduce((sum, loc) => sum + loc.quantity, 0);
-      return totalAssigned === (receiveQuantities[li.id] ?? 0);
-    });
-  }, [lineItemsToReceive, locationAssignments, receiveQuantities]);
-
   // ---- Handlers ----
-
-  const fetchAllPODetails = useCallback(
-    async (poIds: string[]) => {
-      setPoDetailsLoading(true);
-      setPoDetailsError(null);
-      try {
-        const results = await Promise.all(
-          poIds.map((poId) =>
-            client.query<{ poReceivingDetails: PODetails }>({
-              query: GET_PO_RECEIVING_DETAILS,
-              variables: { poId },
-              fetchPolicy: 'network-only',
-            }),
-          ),
-        );
-        const map: Record<string, PODetails> = {};
-        for (const result of results) {
-          const details = result.data?.poReceivingDetails;
-          if (details) map[details.id] = details;
-        }
-        setPoDetailsMap(map);
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : 'Failed to load PO details';
-        setPoDetailsError(message);
-      } finally {
-        setPoDetailsLoading(false);
-      }
-    },
-    [client],
-  );
 
   const handleNext = useCallback(() => {
     if (activeStep === 0 && selectedPOIds.length > 0) {
       fetchAllPODetails(selectedPOIds);
       setReceiveQuantities({});
       setActiveStep(1);
-    } else if (activeStep === 1) {
-      // Initialize location assignments for items being received
-      const newAssignments: LocationAssignment[] = lineItemsToReceive.map((li) => ({
-        lineItemId: li.id,
-        locations: [{ aisle: '', bay: '', bin: '', quantity: receiveQuantities[li.id] ?? 0 }],
-      }));
-      setLocationAssignments(newAssignments);
-      setActiveStep(2);
     }
-  }, [activeStep, selectedPOIds, fetchAllPODetails, lineItemsToReceive, receiveQuantities]);
+  }, [activeStep, selectedPOIds, fetchAllPODetails]);
 
   const handleBack = useCallback(() => {
     if (activeStep === 1) {
       setActiveStep(0);
-    } else if (activeStep === 2) {
-      setActiveStep(1);
     }
   }, [activeStep]);
-
-  const handleLocationChange = useCallback(
-    (lineItemId: string, locIndex: number, field: keyof LocationRow, value: string | number) => {
-      setLocationAssignments((prev) =>
-        prev.map((a) => {
-          if (a.lineItemId !== lineItemId) return a;
-          const newLocations = [...a.locations];
-          newLocations[locIndex] = { ...newLocations[locIndex], [field]: value };
-          return { ...a, locations: newLocations };
-        }),
-      );
-    },
-    [],
-  );
-
-  const handleAddLocation = useCallback((lineItemId: string) => {
-    setLocationAssignments((prev) =>
-      prev.map((a) => {
-        if (a.lineItemId !== lineItemId) return a;
-        return {
-          ...a,
-          locations: [...a.locations, { aisle: '', bay: '', bin: '', quantity: 0 }],
-        };
-      }),
-    );
-  }, []);
-
-  const handleRemoveLocation = useCallback((lineItemId: string, locIndex: number) => {
-    setLocationAssignments((prev) =>
-      prev.map((a) => {
-        if (a.lineItemId !== lineItemId) return a;
-        if (a.locations.length <= 1) return a;
-        const newLocations = a.locations.filter((_, i) => i !== locIndex);
-        return { ...a, locations: newLocations };
-      }),
-    );
-  }, []);
 
   const handleSubmit = useCallback(async () => {
     setConfirmOpen(false);
     setMutationError(null);
 
-    // Submit one createReceive per PO, sequentially
     for (const poId of selectedPOIds) {
       const poLineItems = lineItemsToReceive.filter((li) => li.poId === poId);
       if (poLineItems.length === 0) continue;
@@ -414,19 +344,11 @@ export default function ReceiveWizard({ open, onClose }: ReceiveWizardProps) {
       const input = {
         poId,
         receivedBy: displayName,
-        lineItems: poLineItems.map((li) => {
-          const assignment = locationAssignments.find((a) => a.lineItemId === li.id);
-          return {
-            poLineItemId: li.id,
-            quantityReceived: receiveQuantities[li.id] ?? 0,
-            locations: (assignment?.locations ?? []).map((loc) => ({
-              aisle: loc.aisle,
-              bay: loc.bay,
-              bin: loc.bin,
-              quantity: loc.quantity,
-            })),
-          };
-        }),
+        lineItems: poLineItems.map((li) => ({
+          poLineItemId: li.id,
+          quantityReceived: receiveQuantities[li.id] ?? 0,
+          locations: [],
+        })),
       };
 
       try {
@@ -436,7 +358,7 @@ export default function ReceiveWizard({ open, onClose }: ReceiveWizardProps) {
         const poLabel = poDetails ? (poDetails.poNumber ?? poId) : poId;
         const message = err instanceof Error ? err.message : 'An unknown error occurred';
         setMutationError(`Error receiving ${poLabel}: ${message}`);
-        return; // Stop on first error
+        return;
       }
     }
 
@@ -449,7 +371,6 @@ export default function ReceiveWizard({ open, onClose }: ReceiveWizardProps) {
     selectedPOIds,
     displayName,
     lineItemsToReceive,
-    locationAssignments,
     receiveQuantities,
     createReceive,
     showToast,
@@ -458,7 +379,7 @@ export default function ReceiveWizard({ open, onClose }: ReceiveWizardProps) {
   ]);
 
   const handlePostAction = useCallback(
-    (action: 'another-po' | 'inventory' | 'home') => {
+    (action: 'another-po' | 'put-away' | 'inventory' | 'home') => {
       setPostSuccessOpen(false);
       setMutationError(null);
 
@@ -466,10 +387,12 @@ export default function ReceiveWizard({ open, onClose }: ReceiveWizardProps) {
         setSelectedPOIds([]);
         setSearchQuery('');
         setReceiveQuantities({});
-        setLocationAssignments([]);
         setPoDetailsMap({});
         refetchOpenPOs();
         setActiveStep(0);
+      } else if (action === 'put-away') {
+        onClose();
+        navigate('/app/warehouse/put-away');
       } else if (action === 'inventory') {
         onClose();
         navigate('/app/warehouse/inventory');
@@ -485,7 +408,6 @@ export default function ReceiveWizard({ open, onClose }: ReceiveWizardProps) {
     setSelectedPOIds([]);
     setSearchQuery('');
     setReceiveQuantities({});
-    setLocationAssignments([]);
     setPoDetailsMap({});
     setPoDetailsError(null);
     setMutationError(null);
@@ -540,120 +462,6 @@ export default function ReceiveWizard({ open, onClose }: ReceiveWizardProps) {
             }}
           />
         </Box>
-      </Paper>
-    );
-  };
-
-  const renderLocationSection = (poId: string) => {
-    const details = poDetailsMap[poId];
-    if (!details) return null;
-    const poLineItems = lineItemsToReceive.filter((li) => li.poId === poId);
-    if (poLineItems.length === 0) return null;
-
-    return (
-      <Paper key={poId} variant="outlined" sx={{ p: 2, mb: 2 }}>
-        <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: details.notes ? 0.5 : 2 }}>
-          {details.poNumber ?? 'Unknown PO'}
-          {details.vendorName ? ` — ${details.vendorName}` : ''}
-        </Typography>
-        {details.notes && (
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 2, whiteSpace: 'pre-wrap' }}>
-            Notes: {details.notes}
-          </Typography>
-        )}
-
-        {poLineItems.map((li) => {
-          const assignment = locationAssignments.find((a) => a.lineItemId === li.id);
-          const locations = assignment?.locations ?? [];
-          const receiveNow = receiveQuantities[li.id] ?? 0;
-          const totalAssigned = locations.reduce((sum, loc) => sum + (loc.quantity || 0), 0);
-          const isComplete = totalAssigned === receiveNow;
-
-          return (
-            <Box key={li.id} sx={{ mb: 2 }}>
-              <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>
-                {li.productCode} - {li.hardwareCategory} (Receive Now: {receiveNow})
-              </Typography>
-              <Typography
-                variant="body2"
-                color={isComplete ? 'success.main' : 'error.main'}
-                sx={{ mb: 1 }}
-              >
-                {totalAssigned} of {receiveNow} assigned
-              </Typography>
-
-              {locations.map((loc, locIndex) => (
-                <Box
-                  key={locIndex}
-                  sx={{ display: 'flex', gap: 1, mb: 1, alignItems: 'center' }}
-                >
-                  <TextField
-                    label="Aisle"
-                    size="small"
-                    value={loc.aisle}
-                    onChange={(e) =>
-                      handleLocationChange(li.id, locIndex, 'aisle', e.target.value)
-                    }
-                    sx={{ flex: 1 }}
-                  />
-                  <TextField
-                    label="Bay"
-                    size="small"
-                    value={loc.bay}
-                    onChange={(e) =>
-                      handleLocationChange(li.id, locIndex, 'bay', e.target.value)
-                    }
-                    sx={{ flex: 1 }}
-                  />
-                  <TextField
-                    label="Bin"
-                    size="small"
-                    value={loc.bin}
-                    onChange={(e) =>
-                      handleLocationChange(li.id, locIndex, 'bin', e.target.value)
-                    }
-                    sx={{ flex: 1 }}
-                  />
-                  <TextField
-                    label="Quantity"
-                    size="small"
-                    type="number"
-                    value={loc.quantity}
-                    onChange={(e) => {
-                      const val = parseInt(e.target.value, 10);
-                      handleLocationChange(
-                        li.id,
-                        locIndex,
-                        'quantity',
-                        isNaN(val) ? 0 : val,
-                      );
-                    }}
-                    slotProps={{ htmlInput: { min: 1 } }}
-                    sx={{ flex: 0.7 }}
-                  />
-                  {locations.length > 1 && (
-                    <IconButton
-                      size="small"
-                      color="error"
-                      onClick={() => handleRemoveLocation(li.id, locIndex)}
-                    >
-                      <DeleteIcon fontSize="small" />
-                    </IconButton>
-                  )}
-                </Box>
-              ))}
-
-              <Button
-                size="small"
-                startIcon={<AddIcon />}
-                onClick={() => handleAddLocation(li.id)}
-              >
-                Add Location
-              </Button>
-              <Divider sx={{ mt: 1 }} />
-            </Box>
-          );
-        })}
       </Paper>
     );
   };
@@ -717,7 +525,7 @@ export default function ReceiveWizard({ open, onClose }: ReceiveWizardProps) {
                 </Alert>
               )}
               {!openPOsLoading && !openPOsError && poRows.length === 0 && (
-                <Alert severity="info">No open purchase orders found for this project.</Alert>
+                <Alert severity="info">No open purchase orders found.</Alert>
               )}
               {!openPOsLoading && !openPOsError && poRows.length > 0 && (
                 <Box sx={{ height: 400, width: '100%' }}>
@@ -766,27 +574,6 @@ export default function ReceiveWizard({ open, onClose }: ReceiveWizardProps) {
                 </Alert>
               )}
               {!poDetailsLoading && !poDetailsError && selectedPOIds.map(renderQuantitySection)}
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 2 }}>
-                <Button onClick={handleBack}>Back</Button>
-                <Button
-                  variant="contained"
-                  disabled={!hasAnyReceiveQuantity || hasQuantityErrors}
-                  onClick={handleNext}
-                >
-                  Next
-                </Button>
-              </Box>
-            </Box>
-          )}
-
-          {/* Step 3: Assign Locations */}
-          {activeStep === 2 && (
-            <Box>
-              <Typography variant="h6" sx={{ mb: 2 }}>
-                Assign Warehouse Locations
-              </Typography>
-
-              {selectedPOIds.map(renderLocationSection)}
 
               {mutationError && (
                 <Alert severity="error" sx={{ mb: 2 }}>
@@ -798,7 +585,7 @@ export default function ReceiveWizard({ open, onClose }: ReceiveWizardProps) {
                 <Button onClick={handleBack}>Back</Button>
                 <Button
                   variant="contained"
-                  disabled={!allLocationsValid || submitLoading}
+                  disabled={!hasAnyReceiveQuantity || hasQuantityErrors || submitLoading}
                   onClick={() => setConfirmOpen(true)}
                 >
                   {submitLoading ? <CircularProgress size={24} /> : 'Complete Receive'}
@@ -831,6 +618,9 @@ export default function ReceiveWizard({ open, onClose }: ReceiveWizardProps) {
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
             <Button variant="outlined" onClick={() => handlePostAction('another-po')}>
               Receive from Another PO
+            </Button>
+            <Button variant="outlined" onClick={() => handlePostAction('put-away')}>
+              Put Away Items
             </Button>
             <Button variant="outlined" onClick={() => handlePostAction('inventory')}>
               View Inventory

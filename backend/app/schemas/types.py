@@ -115,6 +115,13 @@ class ReceiveRecord:
 
 
 @strawberry.type
+class RecentReceiveRecord:
+    receive_record: ReceiveRecord
+    po_number: str | None
+    total_items_received: int
+
+
+@strawberry.type
 class PODocumentInfo:
     id: strawberry.ID
     po_id: strawberry.ID

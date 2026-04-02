@@ -174,6 +174,7 @@ export const GET_OPEN_POS = gql`
       vendorName
       notes
       orderedAt
+      expectedDeliveryDate
       lineItems {
         id
         hardwareCategory
@@ -182,6 +183,46 @@ export const GET_OPEN_POS = gql`
         receivedQuantity
         orderAs
       }
+    }
+  }
+`;
+
+export const GET_UNLOCATED_INVENTORY = gql`
+  query GetUnlocatedInventory($projectId: ID) {
+    unlocatedInventory(projectId: $projectId) {
+      inventoryLocation {
+        id projectId poLineItemId receiveLineItemId
+        hardwareCategory productCode quantity
+        aisle bay bin receivedAt createdAt updatedAt
+      }
+      poNumber
+      classification
+      unitCost
+    }
+  }
+`;
+
+export const GET_RECENT_RECEIVE_RECORDS = gql`
+  query GetRecentReceiveRecords($limit: Int) {
+    recentReceiveRecords(limit: $limit) {
+      receiveRecord {
+        id
+        poId
+        receivedAt
+        receivedBy
+        createdAt
+        lineItems {
+          id
+          receiveRecordId
+          poLineItemId
+          hardwareCategory
+          productCode
+          quantityReceived
+          createdAt
+        }
+      }
+      poNumber
+      totalItemsReceived
     }
   }
 `;

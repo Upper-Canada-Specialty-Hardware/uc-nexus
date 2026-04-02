@@ -45,6 +45,7 @@ from .types import (
     PurchaseOrder,
     ReceiveLineItem,
     ReceiveRecord,
+    RecentReceiveRecord,
     ReconciliationResult,
     ShipReadyItems,
     ShipReadyLooseItem,
@@ -527,6 +528,35 @@ class Query:
                     unit_cost=item["unit_cost"],
                 )
                 for item in items
+            ]
+
+    @strawberry.field
+    def unlocated_inventory(self, project_id: strawberry.ID | None = None) -> list[InventoryItemDetail]:
+        with SessionLocal() as session:
+            items = warehouse_repository.get_unlocated_inventory(
+                session, uuid.UUID(str(project_id)) if project_id else None
+            )
+            return [
+                InventoryItemDetail(
+                    inventory_location=_inventory_location_to_type(item["inventory_location"]),
+                    po_number=item["po_number"],
+                    classification=item["classification"],
+                    unit_cost=item["unit_cost"],
+                )
+                for item in items
+            ]
+
+    @strawberry.field
+    def recent_receive_records(self, limit: int = 10) -> list[RecentReceiveRecord]:
+        with SessionLocal() as session:
+            rows = warehouse_repository.get_recent_receive_records(session, limit)
+            return [
+                RecentReceiveRecord(
+                    receive_record=_receive_record_to_type(rr),
+                    po_number=po.po_number,
+                    total_items_received=sum(rli.quantity_received for rli in rr.line_items),
+                )
+                for rr, po in rows
             ]
 
     @strawberry.field

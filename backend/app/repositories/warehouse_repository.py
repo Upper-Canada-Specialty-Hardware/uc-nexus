@@ -375,20 +375,18 @@ def create_receive(
             raise ValidationError("Receive quantity exceeds pending quantity", field="quantity_received")
 
         locations = li_input["locations"]
-        if not locations:
-            raise ValidationError("locations must be non-empty", field="locations")
+        if locations:
+            loc_sum = sum(loc["quantity"] for loc in locations)
+            if loc_sum != qty_received:
+                raise ValidationError(
+                    "Location quantities must sum to received quantity",
+                    field="locations",
+                )
 
-        loc_sum = sum(loc["quantity"] for loc in locations)
-        if loc_sum != qty_received:
-            raise ValidationError(
-                "Location quantities must sum to received quantity",
-                field="locations",
-            )
-
-        for loc in locations:
-            if loc["quantity"] < 1:
-                raise ValidationError("Location quantity must be >= 1", field="quantity")
-            _validate_location_fields(loc["aisle"], loc["bay"], loc["bin"])
+            for loc in locations:
+                if loc["quantity"] < 1:
+                    raise ValidationError("Location quantity must be >= 1", field="quantity")
+                _validate_location_fields(loc["aisle"], loc["bay"], loc["bin"])
 
     # 5. Execute in single transaction
     now = datetime.utcnow()
@@ -414,17 +412,33 @@ def create_receive(
         session.add(receive_line_item)
         session.flush()
 
-        for loc in li_input["locations"]:
+        locations = li_input["locations"]
+        if locations:
+            for loc in locations:
+                inv_loc = InventoryLocationModel(
+                    project_id=po.project_id,
+                    po_line_item_id=poli.id,
+                    receive_line_item_id=receive_line_item.id,
+                    hardware_category=poli.hardware_category,
+                    product_code=poli.product_code,
+                    quantity=loc["quantity"],
+                    aisle=loc["aisle"],
+                    bay=loc["bay"],
+                    bin=loc["bin"],
+                    received_at=receive_record.received_at,
+                )
+                session.add(inv_loc)
+        else:
             inv_loc = InventoryLocationModel(
                 project_id=po.project_id,
                 po_line_item_id=poli.id,
                 receive_line_item_id=receive_line_item.id,
                 hardware_category=poli.hardware_category,
                 product_code=poli.product_code,
-                quantity=loc["quantity"],
-                aisle=loc["aisle"],
-                bay=loc["bay"],
-                bin=loc["bin"],
+                quantity=li_input["quantity_received"],
+                aisle=None,
+                bay=None,
+                bin=None,
                 received_at=receive_record.received_at,
             )
             session.add(inv_loc)
@@ -693,3 +707,59 @@ def complete_pull_request(session: Session, pr_id: uuid.UUID) -> PullRequestMode
                 opening.pull_status = PullStatus.PULLED
 
     return pr
+
+
+# ---------------------------------------------------------------------------
+# Unlocated Inventory & Recent Receives
+# ---------------------------------------------------------------------------
+
+
+def get_unlocated_inventory(session: Session, project_id: uuid.UUID | None = None) -> list[dict]:
+    """
+    Query InventoryLocation rows where aisle, bay, and bin are all NULL and quantity > 0.
+    Joins to POLineItem for unit_cost/classification and PurchaseOrder for po_number.
+    """
+    stmt = (
+        select(InventoryLocationModel, POLineItemModel.classification, POModel.po_number, POLineItemModel.unit_cost)
+        .join(POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id)
+        .join(POModel, POLineItemModel.po_id == POModel.id)
+        .where(
+            InventoryLocationModel.aisle.is_(None),
+            InventoryLocationModel.bay.is_(None),
+            InventoryLocationModel.bin.is_(None),
+            InventoryLocationModel.quantity > 0,
+        )
+    )
+    if project_id is not None:
+        stmt = stmt.where(InventoryLocationModel.project_id == project_id)
+    stmt = stmt.order_by(
+        InventoryLocationModel.hardware_category,
+        InventoryLocationModel.product_code,
+        InventoryLocationModel.received_at.desc(),
+    )
+    rows = session.execute(stmt).all()
+
+    return [
+        {
+            "inventory_location": row[0],
+            "classification": row[1],
+            "po_number": row[2],
+            "unit_cost": float(row[3]),
+        }
+        for row in rows
+    ]
+
+
+def get_recent_receive_records(session: Session, limit: int = 10) -> list[tuple]:
+    """
+    Get the most recent receive records across all POs.
+    Returns list of (ReceiveRecord, PurchaseOrder) tuples.
+    """
+    stmt = (
+        select(ReceiveRecordModel, POModel)
+        .join(POModel, ReceiveRecordModel.po_id == POModel.id)
+        .options(selectinload(ReceiveRecordModel.line_items))
+        .order_by(ReceiveRecordModel.received_at.desc())
+        .limit(limit)
+    )
+    return list(session.execute(stmt).unique().all())
