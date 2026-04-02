@@ -19,40 +19,14 @@ import {
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import { DataGrid, type GridColDef, type GridRowSelectionModel } from '@mui/x-data-grid';
 import type { ParsedOpening } from '../../types/hardwareSchedule';
-import type { AggregatedHardwareItem, OpeningProcurementStatus } from './types';
+import type { AggregatedHardwareItem } from './types';
 import { aggregationKey, itemGroupKey } from './types';
-
-// ---- Helpers ----
-
-function getProcurementSummary(status: OpeningProcurementStatus): string {
-  if (status.totalItems === 0) return '';
-  if (status.received === status.totalItems) return 'All Received';
-  if (status.notCovered === status.totalItems) return 'Not Ordered';
-  if (status.notCovered === 0) return 'In Progress';
-  return 'Partial';
-}
-
-type ChipColor = 'success' | 'info' | 'warning' | 'error' | 'default';
-
-function getSummaryChipColor(summary: string): ChipColor {
-  switch (summary) {
-    case 'All Received': return 'success';
-    case 'In Progress': return 'info';
-    case 'Partial': return 'warning';
-    case 'Not Ordered': return 'error';
-    default: return 'default';
-  }
-}
 
 // ---- Row type ----
 
 interface OpeningRow extends ParsedOpening {
   id: string;
   hardwareCount: number;
-  procurementReceived?: number;
-  procurementOrdered?: number;
-  procurementNotCovered?: number;
-  procurementSummary?: string;
 }
 
 // ---- Props ----
@@ -68,8 +42,6 @@ interface SelectOpeningsHardwareStepProps {
   canProceed: boolean;
   onNext: () => void;
   onBack: () => void;
-  openingStatusMap?: Map<string, OpeningProcurementStatus>;
-  statusLoading?: boolean;
 }
 
 // ---- Main Component ----
@@ -85,8 +57,6 @@ export default function SelectOpeningsHardwareStep({
   canProceed,
   onNext,
   onBack,
-  openingStatusMap,
-  statusLoading,
 }: SelectOpeningsHardwareStepProps) {
   // ---- Left Panel: Openings Filter & DataGrid ----
 
@@ -95,24 +65,12 @@ export default function SelectOpeningsHardwareStep({
   const [unmatchedNumbers, setUnmatchedNumbers] = useState<string[]>([]);
 
   const rows = useMemo<OpeningRow[]>(() => {
-    return openings.map((o) => {
-      const row: OpeningRow = {
-        ...o,
-        id: o.opening_number,
-        hardwareCount: hardwareCountByOpening.get(o.opening_number) ?? 0,
-      };
-      if (openingStatusMap) {
-        const status = openingStatusMap.get(o.opening_number);
-        if (status) {
-          row.procurementReceived = status.received;
-          row.procurementOrdered = status.ordered;
-          row.procurementNotCovered = status.notCovered;
-          row.procurementSummary = getProcurementSummary(status);
-        }
-      }
-      return row;
-    });
-  }, [openings, hardwareCountByOpening, openingStatusMap]);
+    return openings.map((o) => ({
+      ...o,
+      id: o.opening_number,
+      hardwareCount: hardwareCountByOpening.get(o.opening_number) ?? 0,
+    }));
+  }, [openings, hardwareCountByOpening]);
 
   const filteredRows = useMemo(() => {
     if (activeFilter === null) return rows;
@@ -182,37 +140,8 @@ export default function SelectOpeningsHardwareStep({
       { field: 'hardwareCount', headerName: 'Hardware Items', width: 120, type: 'number' },
     ];
 
-    if (openingStatusMap) {
-      base.push(
-        {
-          field: 'procurementSummary',
-          headerName: 'Procurement',
-          width: 140,
-          renderCell: (params) => {
-            const label = params.value as string | undefined;
-            if (!label) return null;
-            return <Chip size="small" label={label} color={getSummaryChipColor(label)} />;
-          },
-        },
-        { field: 'procurementReceived', headerName: 'Received', width: 90, type: 'number' },
-        { field: 'procurementOrdered', headerName: 'Ordered', width: 90, type: 'number' },
-        {
-          field: 'procurementNotCovered',
-          headerName: 'Not Covered',
-          width: 100,
-          type: 'number',
-          renderCell: (params) => {
-            const val = params.value as number | undefined;
-            if (val == null) return null;
-            if (val > 0) return <Chip size="small" label={val} color="error" />;
-            return val;
-          },
-        },
-      );
-    }
-
     return base;
-  }, [openingStatusMap]);
+  }, []);
 
   const rowSelectionModel = useMemo<GridRowSelectionModel>(
     () => ({ type: 'include' as const, ids: new Set<string>(selectedOpenings) }),
@@ -300,12 +229,6 @@ export default function SelectOpeningsHardwareStep({
 
   return (
     <Box>
-      {statusLoading && (
-        <Alert severity="info" sx={{ mb: 1 }}>
-          Loading procurement status...
-        </Alert>
-      )}
-
       <Box sx={{ display: 'flex', gap: 2, height: 'calc(100vh - 260px)', minHeight: 400 }}>
         {/* ---- Left Panel: Openings ---- */}
         <Box sx={{ flex: '1 1 55%', display: 'flex', flexDirection: 'column', minWidth: 0 }}>

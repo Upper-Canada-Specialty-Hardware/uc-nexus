@@ -5,7 +5,7 @@ from collections import defaultdict
 from decimal import Decimal
 from math import floor
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import ConflictError, NotFoundError
@@ -55,50 +55,119 @@ def reconcile_schedule(
 
     results = []
 
+    # Separate excluded (BY_OTHERS) items from items needing lifecycle queries
+    lifecycle_items = []
     for item in items:
+        if (item["hardware_category"], item["product_code"]) in excluded_set:
+            results.append(
+                {
+                    "opening_number": item["opening_number"],
+                    "hardware_category": item["hardware_category"],
+                    "product_code": item["product_code"],
+                    "quantity": item["quantity_needed"],
+                    "status": "BY_OTHERS",
+                }
+            )
+        else:
+            lifecycle_items.append(item)
+
+    if not lifecycle_items:
+        return results
+
+    pairs = list({(item["opening_number"], item["product_code"]) for item in lifecycle_items})
+
+    # ---- Bulk Query 1: HardwareItems linked to non-cancelled, non-deleted POs ----
+    hi_stmt = (
+        select(
+            OpeningModel.opening_number,
+            HardwareItemModel.product_code,
+            HardwareItemModel.item_quantity,
+            POModel.status.label("po_status"),
+            POLineItemModel.ordered_quantity,
+            POLineItemModel.received_quantity,
+        )
+        .join(OpeningModel, HardwareItemModel.opening_id == OpeningModel.id)
+        .join(POLineItemModel, HardwareItemModel.po_line_item_id == POLineItemModel.id)
+        .join(POModel, POLineItemModel.po_id == POModel.id)
+        .where(
+            HardwareItemModel.project_id == project_id,
+            POModel.status != POStatus.CANCELLED,
+            POModel.deleted_at.is_(None),
+            tuple_(OpeningModel.opening_number, HardwareItemModel.product_code).in_(pairs),
+        )
+    )
+    hi_by_pair: dict[tuple[str, str], list] = defaultdict(list)
+    for row in session.execute(hi_stmt).all():
+        hi_by_pair[(row.opening_number, row.product_code)].append(row)
+
+    # ---- Bulk Query 2: PullRequest aggregates ----
+    pr_stmt = (
+        select(
+            PullRequestItemModel.opening_number,
+            PullRequestItemModel.product_code,
+            PullRequestModel.source,
+            PullRequestModel.status,
+            func.sum(PullRequestItemModel.requested_quantity).label("total_pulled"),
+        )
+        .join(PullRequestItemModel, PullRequestItemModel.pull_request_id == PullRequestModel.id)
+        .where(
+            PullRequestModel.project_id == project_id,
+            PullRequestModel.status != PullRequestStatus.CANCELLED,
+            tuple_(PullRequestItemModel.opening_number, PullRequestItemModel.product_code).in_(pairs),
+        )
+        .group_by(
+            PullRequestItemModel.opening_number,
+            PullRequestItemModel.product_code,
+            PullRequestModel.source,
+            PullRequestModel.status,
+        )
+    )
+    pr_by_pair: dict[tuple[str, str], list] = defaultdict(list)
+    for row in session.execute(pr_stmt).all():
+        pr_by_pair[(row.opening_number, row.product_code)].append(row)
+
+    # ---- Bulk Query 3: OpeningItemHardware shipped + assembled sums ----
+    oi_stmt = (
+        select(
+            OpeningItemModel.opening_number,
+            OpeningItemHardwareModel.product_code,
+            OpeningItemModel.state,
+            func.sum(OpeningItemHardwareModel.quantity).label("qty"),
+        )
+        .join(OpeningItemModel, OpeningItemHardwareModel.opening_item_id == OpeningItemModel.id)
+        .where(
+            OpeningItemModel.project_id == project_id,
+            OpeningItemModel.state.in_(
+                [OpeningItemState.SHIPPED_OUT, OpeningItemState.IN_INVENTORY, OpeningItemState.SHIP_READY]
+            ),
+            tuple_(OpeningItemModel.opening_number, OpeningItemHardwareModel.product_code).in_(pairs),
+        )
+        .group_by(
+            OpeningItemModel.opening_number,
+            OpeningItemHardwareModel.product_code,
+            OpeningItemModel.state,
+        )
+    )
+    shipped_by_pair: dict[tuple[str, str], int] = defaultdict(int)
+    assembled_by_pair: dict[tuple[str, str], int] = defaultdict(int)
+    for row in session.execute(oi_stmt).all():
+        key = (row.opening_number, row.product_code)
+        if row.state == OpeningItemState.SHIPPED_OUT:
+            shipped_by_pair[key] += row.qty or 0
+        else:
+            assembled_by_pair[key] += row.qty or 0
+
+    # ---- Process each item using pre-loaded data ----
+    for item in lifecycle_items:
         opening_number = item["opening_number"]
         hardware_category = item["hardware_category"]
         product_code = item["product_code"]
         quantity_needed = item["quantity_needed"]
-
-        # Check exclusion table first — BY_OTHERS items skip all lifecycle checks
-        if (hardware_category, product_code) in excluded_set:
-            results.append(
-                {
-                    "opening_number": opening_number,
-                    "hardware_category": hardware_category,
-                    "product_code": product_code,
-                    "quantity": quantity_needed,
-                    "status": "BY_OTHERS",
-                }
-            )
-            continue
-
-        # Step 1: Query HardwareItems linked to non-cancelled, non-deleted POs
-        hi_stmt = (
-            select(
-                HardwareItemModel.item_quantity,
-                POModel.status.label("po_status"),
-                POLineItemModel.ordered_quantity,
-                POLineItemModel.received_quantity,
-            )
-            .join(OpeningModel, HardwareItemModel.opening_id == OpeningModel.id)
-            .join(POLineItemModel, HardwareItemModel.po_line_item_id == POLineItemModel.id)
-            .join(POModel, POLineItemModel.po_id == POModel.id)
-            .where(
-                HardwareItemModel.project_id == project_id,
-                OpeningModel.opening_number == opening_number,
-                HardwareItemModel.product_code == product_code,
-                POModel.status != POStatus.CANCELLED,
-                POModel.deleted_at.is_(None),
-            )
-        )
-        hi_rows = session.execute(hi_stmt).all()
+        pair_key = (opening_number, product_code)
 
         # Step 2: Bucket quantities by PO status
         buckets: dict[str, int] = defaultdict(int)
-
-        for row in hi_rows:
+        for row in hi_by_pair.get(pair_key, []):
             hi_qty = row.item_quantity
             po_status = row.po_status
 
@@ -120,27 +189,10 @@ def reconcile_schedule(
             elif po_status == POStatus.CLOSED:
                 buckets["RECEIVED"] += hi_qty
 
-        # Step 3: For RECEIVED quantities, check PullRequestItems
+        # Step 3: PR deductions
         received_qty = buckets.get("RECEIVED", 0)
         if received_qty > 0:
-            pr_stmt = (
-                select(
-                    PullRequestModel.source,
-                    PullRequestModel.status,
-                    func.sum(PullRequestItemModel.requested_quantity).label("total_pulled"),
-                )
-                .join(PullRequestItemModel, PullRequestItemModel.pull_request_id == PullRequestModel.id)
-                .where(
-                    PullRequestModel.project_id == project_id,
-                    PullRequestItemModel.opening_number == opening_number,
-                    PullRequestItemModel.product_code == product_code,
-                    PullRequestModel.status != PullRequestStatus.CANCELLED,
-                )
-                .group_by(PullRequestModel.source, PullRequestModel.status)
-            )
-            pr_rows = session.execute(pr_stmt).all()
-
-            for pr_row in pr_rows:
+            for pr_row in pr_by_pair.get(pair_key, []):
                 pulled_qty = pr_row.total_pulled or 0
                 deduct = min(pulled_qty, received_qty)
                 if deduct <= 0:
@@ -161,23 +213,10 @@ def reconcile_schedule(
                         buckets["SHIPPED_OUT"] += deduct
                         received_qty -= deduct
 
-            # Update RECEIVED bucket after PR deductions
             buckets["RECEIVED"] = max(0, received_qty)
 
-        # Step 4: Check OpeningItemHardware for SHIPPED_OUT openings
-        oi_stmt = (
-            select(func.sum(OpeningItemHardwareModel.quantity).label("shipped_qty"))
-            .join(OpeningItemModel, OpeningItemHardwareModel.opening_item_id == OpeningItemModel.id)
-            .where(
-                OpeningItemModel.project_id == project_id,
-                OpeningItemModel.opening_number == opening_number,
-                OpeningItemHardwareModel.product_code == product_code,
-                OpeningItemModel.state == OpeningItemState.SHIPPED_OUT,
-            )
-        )
-        oi_shipped = session.execute(oi_stmt).scalar() or 0
-
-        # Avoid double-counting with shipping PR COMPLETED
+        # Step 4: Shipped cross-check
+        oi_shipped = shipped_by_pair.get(pair_key, 0)
         existing_shipped = buckets.get("SHIPPED_OUT", 0)
         if oi_shipped > existing_shipped:
             extra = oi_shipped - existing_shipped
@@ -185,19 +224,8 @@ def reconcile_schedule(
             buckets["RECEIVED"] = max(0, buckets.get("RECEIVED", 0) - from_received)
             buckets["SHIPPED_OUT"] = existing_shipped + from_received
 
-        # Step 4b: Check OpeningItemHardware for assembled opening items
-        oi_assembled_stmt = (
-            select(func.sum(OpeningItemHardwareModel.quantity).label("assembled_qty"))
-            .join(OpeningItemModel, OpeningItemHardwareModel.opening_item_id == OpeningItemModel.id)
-            .where(
-                OpeningItemModel.project_id == project_id,
-                OpeningItemModel.opening_number == opening_number,
-                OpeningItemHardwareModel.product_code == product_code,
-                OpeningItemModel.state.in_([OpeningItemState.IN_INVENTORY, OpeningItemState.SHIP_READY]),
-            )
-        )
-        oi_assembled = session.execute(oi_assembled_stmt).scalar() or 0
-
+        # Step 4b: Assembled cross-check
+        oi_assembled = assembled_by_pair.get(pair_key, 0)
         existing_assembled = buckets.get("ASSEMBLED", 0)
         if oi_assembled > existing_assembled:
             extra = oi_assembled - existing_assembled

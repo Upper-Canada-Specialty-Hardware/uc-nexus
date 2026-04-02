@@ -8,13 +8,6 @@ export function aggregationKey(hi: { opening_number: string; product_code: strin
 
 export type ImportPurpose = 'po' | 'assembly' | 'shipping';
 
-export interface OpeningProcurementStatus {
-  totalItems: number;
-  received: number;   // RECEIVED + ASSEMBLING + SHIPPING_OUT + SHIPPED_OUT
-  ordered: number;    // ORDERED + PO_DRAFTED
-  notCovered: number; // NOT_COVERED
-}
-
 export interface ShippingPRItem {
   itemType: 'OPENING_ITEM' | 'LOOSE';
   openingNumber: string;

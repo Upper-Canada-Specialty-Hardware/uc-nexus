@@ -40,7 +40,7 @@ import {
 } from '../../graphql/queries';
 import { FINALIZE_IMPORT_SESSION } from '../../graphql/mutations';
 import type { ClassificationRow } from './ClassificationGrid';
-import type { AggregatedHardwareItem, ImportPurpose, OpeningProcurementStatus, ReconciliationRow, ShippingPRDraft } from './types';
+import type { AggregatedHardwareItem, ImportPurpose, ReconciliationRow, ShippingPRDraft } from './types';
 import { aggregationKey, classificationKey } from './types';
 import SelectOpeningsHardwareStep from './SelectOpeningsHardwareStep';
 import ReconciliationStep from './ReconciliationStep';
@@ -171,10 +171,6 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     reconcileSchedule: ReconciliationRow[];
   }>(RECONCILE_SCHEDULE);
 
-  const [previewReconcile, { data: previewReconcileData, loading: previewReconcileLoading }] = useLazyQuery<{
-    reconcileSchedule: ReconciliationRow[];
-  }>(RECONCILE_SCHEDULE);
-
   const [fetchExcludedItems] = useLazyQuery<{
     projectExcludedItems: Array<{ hardwareCategory: string; productCode: string }>;
   }>(GET_PROJECT_EXCLUDED_ITEMS);
@@ -285,31 +281,6 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     () => allAggregatedItems.filter((hi) => selectedItemKeys.has(aggregationKey(hi))),
     [allAggregatedItems, selectedItemKeys],
   );
-
-  // Aggregate preview reconcile data into per-opening procurement status
-  const openingStatusMap = useMemo<Map<string, OpeningProcurementStatus> | undefined>(() => {
-    const rows = previewReconcileData?.reconcileSchedule;
-    if (!rows || rows.length === 0) return undefined;
-
-    const receivedStatuses = new Set(['RECEIVED', 'ASSEMBLING', 'ASSEMBLED', 'SHIPPING_OUT', 'SHIPPED_OUT']);
-    const orderedStatuses = new Set(['ORDERED', 'PO_DRAFTED']);
-
-    const map = new Map<string, OpeningProcurementStatus>();
-    for (const row of rows) {
-      if (row.status === 'BY_OTHERS') continue;
-      const existing = map.get(row.openingNumber) ?? { totalItems: 0, received: 0, ordered: 0, notCovered: 0 };
-      existing.totalItems += row.quantity;
-      if (receivedStatuses.has(row.status)) {
-        existing.received += row.quantity;
-      } else if (orderedStatuses.has(row.status)) {
-        existing.ordered += row.quantity;
-      } else if (row.status === 'NOT_COVERED') {
-        existing.notCovered += row.quantity;
-      }
-      map.set(row.openingNumber, existing);
-    }
-    return map;
-  }, [previewReconcileData]);
 
   // Classification rows for DataGrid (one row per aggregated hardware item)
   const classificationRows = useMemo<ClassificationRow[]>(() => {
@@ -422,28 +393,6 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
       }
     }
 
-    // Fire preview reconcile when leaving purpose step heading to openings (SAR re-import only)
-    if (effectiveStepId === 'purpose' && purpose === 'assembly' && isReimport && existingProjectId) {
-      const itemMap = new Map<string, { openingNumber: string; hardwareCategory: string; productCode: string; quantityNeeded: number }>();
-      for (const hi of hardwareItems) {
-        const key = `${hi.opening_number}|${hi.hardware_category}|${hi.product_code}`;
-        const existing = itemMap.get(key);
-        if (existing) {
-          existing.quantityNeeded += hi.item_quantity;
-        } else {
-          itemMap.set(key, {
-            openingNumber: hi.opening_number,
-            hardwareCategory: hi.hardware_category,
-            productCode: hi.product_code,
-            quantityNeeded: hi.item_quantity,
-          });
-        }
-      }
-      previewReconcile({
-        variables: { projectId: existingProjectId, items: Array.from(itemMap.values()) },
-      });
-    }
-
     if (effectiveStepId === 'openings') {
       setSelectedReconItems(new Set());
     }
@@ -471,7 +420,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     }
 
     setActiveStepId(nextStep.id);
-  }, [effectiveStepId, steps, parsed, checkProject, isReimport, existingProjectId, selectedHardwareItems, reconcileSchedule, purpose, hardwareItems, previewReconcile, fetchExcludedItems]);
+  }, [effectiveStepId, steps, parsed, checkProject, isReimport, existingProjectId, selectedHardwareItems, reconcileSchedule, purpose, hardwareItems, fetchExcludedItems]);
 
   const handleBack = useCallback(() => {
     const currentIndex = steps.findIndex((s) => s.id === effectiveStepId);
@@ -1054,8 +1003,6 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
               canProceed={canProceedStep2}
               onNext={handleNext}
               onBack={handleBack}
-              openingStatusMap={openingStatusMap}
-              statusLoading={previewReconcileLoading}
             />
           )}
 
