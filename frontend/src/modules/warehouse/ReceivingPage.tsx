@@ -2,9 +2,9 @@ import { useState, useMemo, useCallback } from 'react';
 import {
   Box,
   Typography,
-  Fab,
   Paper,
   Chip,
+  Button,
   CircularProgress,
   Alert,
   Table,
@@ -14,11 +14,10 @@ import {
   TableHead,
   TableRow,
 } from '@mui/material';
-import AddIcon from '@mui/icons-material/Add';
 import { useQuery } from '@apollo/client/react';
 import type { GridColDef, GridRowParams } from '@mui/x-data-grid';
 import DataTable from '../../components/DataTable';
-import ReceiveWizard from './ReceiveWizard';
+import ReceiveModal from './ReceiveModal';
 import {
   GET_OPEN_POS,
   GET_PROJECTS,
@@ -80,8 +79,9 @@ function isOverdue(expectedDeliveryDate: string | null): boolean {
 // ---- Component ----
 
 export default function ReceivingPage() {
-  const [wizardOpen, setWizardOpen] = useState(false);
-  const [preSelectedPOId, setPreSelectedPOId] = useState<string | undefined>();
+  const [modalOpen, setModalOpen] = useState(false);
+  const [modalPOIds, setModalPOIds] = useState<string[]>([]);
+  const [selectedPOIds, setSelectedPOIds] = useState<string[]>([]);
 
   // Queries
   const {
@@ -190,26 +190,34 @@ export default function ReceivingPage() {
 
   // Handlers
   const handlePORowClick = useCallback((params: GridRowParams) => {
-    setPreSelectedPOId(params.row.id as string);
-    setWizardOpen(true);
+    setModalPOIds([params.row.id as string]);
+    setModalOpen(true);
   }, []);
 
-  const handleOpenWizard = useCallback(() => {
-    setPreSelectedPOId(undefined);
-    setWizardOpen(true);
-  }, []);
+  const handleReceiveSelected = useCallback(() => {
+    setModalPOIds([...selectedPOIds]);
+    setModalOpen(true);
+  }, [selectedPOIds]);
 
-  const handleCloseWizard = useCallback(() => {
-    setWizardOpen(false);
-    setPreSelectedPOId(undefined);
+  const handleCloseModal = useCallback(() => {
+    setModalOpen(false);
+    setModalPOIds([]);
+    setSelectedPOIds([]);
   }, []);
 
   return (
     <Box sx={{ position: 'relative', minHeight: '60vh' }}>
       {/* Pending POs Section */}
-      <Typography variant="h6" sx={{ mb: 2 }}>
-        POs Awaiting Receipt
-      </Typography>
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+        <Typography variant="h6">
+          POs Awaiting Receipt
+        </Typography>
+        {selectedPOIds.length > 0 && (
+          <Button variant="contained" onClick={handleReceiveSelected}>
+            Receive {selectedPOIds.length} Selected
+          </Button>
+        )}
+      </Box>
 
       {openPOsLoading && (
         <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
@@ -231,6 +239,11 @@ export default function ReceivingPage() {
           <DataTable
             columns={poColumns}
             rows={poRows}
+            checkboxSelection
+            rowSelectionModel={{ type: 'include' as const, ids: new Set(selectedPOIds) }}
+            onRowSelectionModelChange={(newModel) =>
+              setSelectedPOIds(Array.from(newModel.ids) as string[])
+            }
             onRowClick={handlePORowClick}
             sx={{ cursor: 'pointer' }}
             getRowId={(row) => row.id}
@@ -281,20 +294,10 @@ export default function ReceivingPage() {
         </TableContainer>
       )}
 
-      {/* FAB */}
-      <Fab
-        color="primary"
-        aria-label="Receive Items"
-        sx={{ position: 'fixed', bottom: 32, right: 32 }}
-        onClick={handleOpenWizard}
-      >
-        <AddIcon />
-      </Fab>
-
-      <ReceiveWizard
-        open={wizardOpen}
-        onClose={handleCloseWizard}
-        preSelectedPOId={preSelectedPOId}
+      <ReceiveModal
+        open={modalOpen}
+        onClose={handleCloseModal}
+        poIds={modalPOIds}
       />
     </Box>
   );
