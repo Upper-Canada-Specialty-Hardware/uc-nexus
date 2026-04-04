@@ -7,7 +7,38 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.errors import NotFoundError, ValidationError
 from app.models.inventory import InventoryLocation as InventoryLocationModel
+from app.models.opening_item import OpeningItem as OpeningItemModel
 from app.models.warehouse_layout import WarehouseAisle, WarehouseBay, WarehouseBin, WarehouseRow
+
+
+def _check_location_occupied(
+    session: Session,
+    aisle_name: str,
+    row_name: str | None = None,
+    bay_name: str | None = None,
+    bin_name: str | None = None,
+) -> int:
+    """Count inventory items at a location. Returns total quantity."""
+    inv_stmt = select(func.coalesce(func.sum(InventoryLocationModel.quantity), 0)).where(
+        InventoryLocationModel.aisle == aisle_name,
+        InventoryLocationModel.quantity > 0,
+    )
+    oi_stmt = select(func.count()).select_from(OpeningItemModel).where(OpeningItemModel.aisle == aisle_name)
+
+    if row_name is not None:
+        inv_stmt = inv_stmt.where(InventoryLocationModel.row == row_name)
+        oi_stmt = oi_stmt.where(OpeningItemModel.row == row_name)
+    if bay_name is not None:
+        inv_stmt = inv_stmt.where(InventoryLocationModel.bay == bay_name)
+        oi_stmt = oi_stmt.where(OpeningItemModel.bay == bay_name)
+    if bin_name is not None:
+        inv_stmt = inv_stmt.where(InventoryLocationModel.bin == bin_name)
+        oi_stmt = oi_stmt.where(OpeningItemModel.bin == bin_name)
+
+    inv_count = session.scalar(inv_stmt) or 0
+    oi_count = session.scalar(oi_stmt) or 0
+    return int(inv_count) + int(oi_count)
+
 
 # ---------------------------------------------------------------------------
 # Aisle CRUD
@@ -83,6 +114,13 @@ def update_aisle(
     if h is not None:
         aisle.height = h
     if is_active is not None:
+        if is_active is False and aisle.is_active is True:
+            occupied = _check_location_occupied(session, aisle.name)
+            if occupied > 0:
+                raise ValidationError(
+                    f"Cannot remove: {occupied} items are stored in Aisle {aisle.name}. Move or unlocate them first.",
+                    field="is_active",
+                )
         aisle.is_active = is_active
     return aisle
 
@@ -125,6 +163,15 @@ def update_row(
     if level is not None:
         row.level = level
     if is_active is not None:
+        if is_active is False and row.is_active is True:
+            aisle = session.get(WarehouseAisle, row.aisle_id)
+            aisle_name = aisle.name if aisle else ""
+            occupied = _check_location_occupied(session, aisle_name, row_name=row.name)
+            if occupied > 0:
+                raise ValidationError(
+                    f"Cannot remove: {occupied} items are stored in Row {row.name}. Move or unlocate them first.",
+                    field="is_active",
+                )
         row.is_active = is_active
     return row
 
@@ -171,6 +218,15 @@ def update_bay(
     if col_pos is not None:
         bay.col_position = col_pos
     if is_active is not None:
+        if is_active is False and bay.is_active is True:
+            aisle = session.get(WarehouseAisle, bay.aisle_id)
+            aisle_name = aisle.name if aisle else ""
+            occupied = _check_location_occupied(session, aisle_name, bay_name=bay.name)
+            if occupied > 0:
+                raise ValidationError(
+                    f"Cannot remove: {occupied} items are stored in Bay {bay.name}. Move or unlocate them first.",
+                    field="is_active",
+                )
         bay.is_active = is_active
     return bay
 
@@ -236,6 +292,17 @@ def update_bin(
     if capacity is not None:
         wbin.capacity = capacity
     if is_active is not None:
+        if is_active is False and wbin.is_active is True:
+            bay = session.get(WarehouseBay, wbin.bay_id)
+            aisle = session.get(WarehouseAisle, bay.aisle_id) if bay else None
+            aisle_name = aisle.name if aisle else ""
+            bay_name = bay.name if bay else ""
+            occupied = _check_location_occupied(session, aisle_name, bay_name=bay_name, bin_name=wbin.name)
+            if occupied > 0:
+                raise ValidationError(
+                    f"Cannot remove: {occupied} items are stored in Bin {wbin.name}. Move or unlocate them first.",
+                    field="is_active",
+                )
         wbin.is_active = is_active
     return wbin
 

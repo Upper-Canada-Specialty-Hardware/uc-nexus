@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useEffect } from 'react';
+import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import {
   Box, Typography, Button, Fab, Breadcrumbs, Link, Dialog, DialogTitle,
   DialogContent, DialogActions, TextField, Stack, Alert, CircularProgress,
@@ -8,6 +8,7 @@ import {
 import AddIcon from '@mui/icons-material/Add';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import CloseIcon from '@mui/icons-material/Close';
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import {
   DndContext, useDraggable, DragOverlay,
   type DragEndEvent, type DragStartEvent,
@@ -16,8 +17,12 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { useQuery, useMutation, useLazyQuery } from '@apollo/client/react';
 import { GET_WAREHOUSE_OVERVIEW, GET_LOCATION_CONTENTS } from '../../graphql/queries';
-import { CREATE_AISLE, UPDATE_AISLE, CREATE_ROW, CREATE_BAY, CREATE_BIN } from '../../graphql/mutations';
+import {
+  CREATE_AISLE, UPDATE_AISLE, CREATE_ROW, UPDATE_ROW,
+  CREATE_BAY, UPDATE_BAY, CREATE_BIN, UPDATE_BIN,
+} from '../../graphql/mutations';
 import { useToast } from '../../components/Toast';
+import ConfirmDialog from '../../components/ConfirmDialog';
 
 // --- Types ---
 
@@ -32,6 +37,13 @@ interface AisleData {
 }
 
 type ViewLevel = 'floor' | 'aisle' | 'bay';
+
+// --- Constants ---
+
+const MIN_AISLE_W = 80;
+const MIN_AISLE_H = 60;
+const CANVAS_W = 3000;
+const CANVAS_H = 2000;
 
 // --- Utilization color ---
 
@@ -48,24 +60,29 @@ function utilizationColor(qty: number, cap: number | null): string {
 // --- Draggable Aisle on Floor ---
 
 function DraggableAisle({
-  aisle, onClick, isDragOverlay,
+  aisle, posOverride, sizeOverride, onClick, onDelete, onResizeStart, isDragOverlay,
 }: {
-  aisle: AisleData; onClick?: () => void; isDragOverlay?: boolean;
+  aisle: AisleData;
+  posOverride?: { x: number; y: number };
+  sizeOverride?: { w: number; h: number };
+  onClick?: () => void;
+  onDelete?: () => void;
+  onResizeStart?: (e: React.PointerEvent) => void;
+  isDragOverlay?: boolean;
 }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: aisle.id, data: { aisle },
   });
 
-  const isHoriz = aisle.orientation === 'HORIZONTAL';
-  const bays = aisle.bays.filter((b) => b.isActive).length || 1;
-  const rows = aisle.rows.filter((r) => r.isActive).length || 1;
-  const w = (isHoriz ? Math.max(bays, 2) : 1) * 80;
-  const h = (isHoriz ? 1 : Math.max(bays, 2)) * 60;
+  const w = sizeOverride?.w ?? Math.max(aisle.width, MIN_AISLE_W);
+  const h = sizeOverride?.h ?? Math.max(aisle.height, MIN_AISLE_H);
+  const x = posOverride?.x ?? aisle.xPosition;
+  const y = posOverride?.y ?? aisle.yPosition;
 
   const style: React.CSSProperties = {
     position: isDragOverlay ? 'relative' : 'absolute',
-    left: isDragOverlay ? 0 : aisle.xPosition,
-    top: isDragOverlay ? 0 : aisle.yPosition,
+    left: isDragOverlay ? 0 : x,
+    top: isDragOverlay ? 0 : y,
     width: w, height: h,
     transform: transform ? CSS.Translate.toString(transform) : undefined,
     opacity: isDragging ? 0.3 : 1,
@@ -73,6 +90,8 @@ function DraggableAisle({
   };
 
   const bg = utilizationColor(aisle.totalQuantity ?? 0, aisle.totalCapacity ?? null);
+  const baysCount = aisle.bays.filter((b) => b.isActive).length;
+  const rowsCount = aisle.rows.filter((r) => r.isActive).length;
 
   return (
     <Box
@@ -88,10 +107,38 @@ function DraggableAisle({
         userSelect: 'none',
       }}
     >
+      {/* Delete button */}
+      {!isDragOverlay && onDelete && (
+        <IconButton
+          size="small"
+          sx={{ position: 'absolute', top: 2, right: 2, opacity: 0.6, '&:hover': { opacity: 1 } }}
+          onClick={(e) => { e.stopPropagation(); onDelete(); }}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <DeleteOutlineIcon fontSize="small" />
+        </IconButton>
+      )}
+
       <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>Aisle {aisle.name}</Typography>
       {aisle.label && <Typography variant="caption" color="text.secondary">{aisle.label}</Typography>}
-      <Typography variant="caption">{rows}R × {bays}B</Typography>
+      <Typography variant="caption">{rowsCount}R × {baysCount}B</Typography>
       <Typography variant="caption">{aisle.totalQuantity ?? 0} items</Typography>
+
+      {/* Resize handle (bottom-right corner) */}
+      {!isDragOverlay && onResizeStart && (
+        <Box
+          onPointerDown={(e) => { e.stopPropagation(); onResizeStart(e); }}
+          sx={{
+            position: 'absolute', bottom: 0, right: 0, width: 14, height: 14,
+            cursor: 'nwse-resize', bgcolor: 'transparent',
+            '&::after': {
+              content: '""', position: 'absolute', bottom: 2, right: 2,
+              width: 8, height: 8, borderRight: '2px solid', borderBottom: '2px solid',
+              borderColor: 'text.secondary', opacity: 0.5,
+            },
+          }}
+        />
+      )}
     </Box>
   );
 }
@@ -183,7 +230,14 @@ export default function WarehouseMap() {
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
   const [activeAisle, setActiveAisle] = useState<AisleData | null>(null);
 
-  // Navigation state — store IDs, derive objects from data
+  // Optimistic position + size overrides (Fix 1 + Fix 2)
+  const [posOverrides, setPosOverrides] = useState<Record<string, { x: number; y: number }>>({});
+  const [sizeOverrides, setSizeOverrides] = useState<Record<string, { w: number; h: number }>>({});
+
+  // Resize tracking
+  const resizeRef = useRef<{ id: string; startX: number; startY: number; startW: number; startH: number } | null>(null);
+
+  // Navigation state
   const [level, setLevel] = useState<ViewLevel>('floor');
   const [selectedAisleId, setSelectedAisleId] = useState<string | null>(null);
   const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
@@ -194,6 +248,9 @@ export default function WarehouseMap() {
   const [addDialogType, setAddDialogType] = useState<'row' | 'bay' | 'bin' | null>(null);
   const [addName, setAddName] = useState('');
   const [addCapacity, setAddCapacity] = useState('');
+
+  // Delete confirm
+  const [deleteConfirm, setDeleteConfirm] = useState<{ type: string; id: string; label: string } | null>(null);
 
   // Drawer
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -208,12 +265,19 @@ export default function WarehouseMap() {
   const onDone = useCallback(() => { refetch(); showToast('Saved', 'success'); }, [refetch, showToast]);
   const onErr = useCallback((e: { message: string }) => showToast(e.message, 'error'), [showToast]);
   const [createAisle, { loading: caLoading }] = useMutation(CREATE_AISLE, { onCompleted: onDone, onError: onErr });
-  const [updateAisle] = useMutation(UPDATE_AISLE, { onCompleted: () => refetch(), onError: onErr });
+  const clearOverrides = useCallback(() => { setPosOverrides({}); setSizeOverrides({}); }, []);
+  const [updateAisle] = useMutation(UPDATE_AISLE, {
+    onCompleted: () => { clearOverrides(); refetch(); },
+    onError: (e) => { clearOverrides(); onErr(e); },
+  });
   const [createRow, { loading: crLoading }] = useMutation(CREATE_ROW, { onCompleted: onDone, onError: onErr });
+  const [updateRow] = useMutation(UPDATE_ROW, { onCompleted: () => refetch(), onError: onErr });
   const [createBay, { loading: cbLoading }] = useMutation(CREATE_BAY, { onCompleted: onDone, onError: onErr });
+  const [updateBay] = useMutation(UPDATE_BAY, { onCompleted: () => refetch(), onError: onErr });
   const [createBin, { loading: cbnLoading }] = useMutation(CREATE_BIN, { onCompleted: onDone, onError: onErr });
+  const [updateBin] = useMutation(UPDATE_BIN, { onCompleted: () => refetch(), onError: onErr });
 
-  // Drag handlers
+  // --- Drag handlers (Fix 1: optimistic position) ---
   const handleDragStart = useCallback((e: DragStartEvent) => {
     setActiveAisle(e.active.data.current?.aisle as AisleData ?? null);
   }, []);
@@ -222,12 +286,44 @@ export default function WarehouseMap() {
     setActiveAisle(null);
     const aisle = e.active.data.current?.aisle as AisleData | undefined;
     if (!aisle || !e.delta) return;
-    const newX = Math.max(0, aisle.xPosition + Math.round(e.delta.x));
-    const newY = Math.max(0, aisle.yPosition + Math.round(e.delta.y));
+    const curX = posOverrides[aisle.id]?.x ?? aisle.xPosition;
+    const curY = posOverrides[aisle.id]?.y ?? aisle.yPosition;
+    const newX = Math.max(0, curX + Math.round(e.delta.x));
+    const newY = Math.max(0, curY + Math.round(e.delta.y));
+    // Optimistic: update local position immediately
+    setPosOverrides((prev) => ({ ...prev, [aisle.id]: { x: newX, y: newY } }));
     updateAisle({ variables: { id: aisle.id, xPosition: newX, yPosition: newY } });
-  }, [updateAisle]);
+  }, [updateAisle, posOverrides]);
 
-  // Navigation
+  // --- Resize handlers (Fix 2) ---
+  const handleResizeStart = useCallback((aisleId: string, e: React.PointerEvent) => {
+    const aisle = aisles.find((a) => a.id === aisleId);
+    if (!aisle) return;
+    const startW = sizeOverrides[aisleId]?.w ?? Math.max(aisle.width, MIN_AISLE_W);
+    const startH = sizeOverrides[aisleId]?.h ?? Math.max(aisle.height, MIN_AISLE_H);
+    resizeRef.current = { id: aisleId, startX: e.clientX, startY: e.clientY, startW, startH };
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+  }, [aisles, sizeOverrides]);
+
+  const handleResizeMove = useCallback((e: React.PointerEvent) => {
+    if (!resizeRef.current) return;
+    const { id, startX, startY, startW, startH } = resizeRef.current;
+    const newW = Math.max(MIN_AISLE_W, startW + (e.clientX - startX));
+    const newH = Math.max(MIN_AISLE_H, startH + (e.clientY - startY));
+    setSizeOverrides((prev) => ({ ...prev, [id]: { w: Math.round(newW), h: Math.round(newH) } }));
+  }, []);
+
+  const handleResizeEnd = useCallback(() => {
+    if (!resizeRef.current) return;
+    const { id } = resizeRef.current;
+    const size = sizeOverrides[id];
+    resizeRef.current = null;
+    if (size) {
+      updateAisle({ variables: { id, width: size.w, height: size.h } });
+    }
+  }, [sizeOverrides, updateAisle]);
+
+  // --- Navigation ---
   const drillIntoAisle = useCallback((a: AisleData) => { setSelectedAisleId(a.id); setLevel('aisle'); }, []);
   const drillIntoBay = useCallback((r: Row | null, b: Bay) => { setSelectedRowId(r?.id ?? null); setSelectedBayId(b.id); setLevel('bay'); }, []);
   const goBack = useCallback(() => {
@@ -235,9 +331,9 @@ export default function WarehouseMap() {
     else if (level === 'aisle') { setLevel('floor'); setSelectedAisleId(null); }
   }, [level]);
 
-  // Add handlers
+  // --- Add handlers ---
   const handleAddAisle = useCallback((v: { name: string; label: string; orientation: string }) => {
-    createAisle({ variables: { name: v.name, label: v.label || null, orientation: v.orientation, xPosition: 50, yPosition: 50 } });
+    createAisle({ variables: { name: v.name, label: v.label || null, orientation: v.orientation, xPosition: 50, yPosition: 50, width: 120, height: 80 } });
     setAddAisleOpen(false);
   }, [createAisle]);
 
@@ -256,6 +352,17 @@ export default function WarehouseMap() {
     setAddName('');
     setAddCapacity('');
   }, [addDialogType, addName, addCapacity, selectedAisle, selectedBay, selectedRow, createRow, createBay, createBin]);
+
+  // --- Delete handler (Fix 4) ---
+  const handleDelete = useCallback(() => {
+    if (!deleteConfirm) return;
+    const { type, id } = deleteConfirm;
+    if (type === 'aisle') updateAisle({ variables: { id, isActive: false } });
+    else if (type === 'row') updateRow({ variables: { id, isActive: false } });
+    else if (type === 'bay') updateBay({ variables: { id, isActive: false } });
+    else if (type === 'bin') updateBin({ variables: { id, isActive: false } });
+    setDeleteConfirm(null);
+  }, [deleteConfirm, updateAisle, updateRow, updateBay, updateBin]);
 
   // Active rows/bays for aisle view
   const activeRows = useMemo(() => (selectedAisle?.rows ?? []).filter((r) => r.isActive).sort((a, b) => b.level - a.level), [selectedAisle]);
@@ -303,21 +410,39 @@ export default function WarehouseMap() {
         ))}
       </Box>
 
-      {/* === FLOOR VIEW === */}
+      {/* === FLOOR VIEW (Fix 3: scrollable canvas) === */}
       {level === 'floor' && (
         <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
           <Box sx={{
-            position: 'relative', minHeight: 500, bgcolor: 'grey.50',
-            border: '1px dashed', borderColor: 'divider', borderRadius: 1, overflow: 'hidden',
+            overflow: 'auto', height: 600, border: '1px dashed', borderColor: 'divider', borderRadius: 1,
           }}>
-            {aisles.length === 0 && (
-              <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: 500 }}>
-                <Typography color="text.secondary">Click + to add your first aisle</Typography>
-              </Box>
-            )}
-            {aisles.map((a) => (
-              <DraggableAisle key={a.id} aisle={a} onClick={() => drillIntoAisle(a)} />
-            ))}
+            <Box
+              onPointerMove={handleResizeMove}
+              onPointerUp={handleResizeEnd}
+              sx={{
+                position: 'relative', width: CANVAS_W, height: CANVAS_H,
+                bgcolor: 'grey.50', minWidth: '100%',
+                backgroundImage: 'radial-gradient(circle, #ccc 1px, transparent 1px)',
+                backgroundSize: '20px 20px',
+              }}
+            >
+              {aisles.length === 0 && (
+                <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: 500 }}>
+                  <Typography color="text.secondary">Click + to add your first aisle</Typography>
+                </Box>
+              )}
+              {aisles.map((a) => (
+                <DraggableAisle
+                  key={a.id}
+                  aisle={a}
+                  posOverride={posOverrides[a.id]}
+                  sizeOverride={sizeOverrides[a.id]}
+                  onClick={() => drillIntoAisle(a)}
+                  onDelete={() => setDeleteConfirm({ type: 'aisle', id: a.id, label: `Aisle ${a.name}` })}
+                  onResizeStart={(e) => handleResizeStart(a.id, e)}
+                />
+              ))}
+            </Box>
           </Box>
           <DragOverlay>
             {activeAisle ? <DraggableAisle aisle={activeAisle} isDragOverlay /> : null}
@@ -348,25 +473,35 @@ export default function WarehouseMap() {
           {(activeRows.length > 0 || activeBays.length > 0) && (
             <Box sx={{
               display: 'grid',
-              gridTemplateColumns: `80px repeat(${Math.max(activeBays.length, 1)}, 1fr)`,
+              gridTemplateColumns: `100px repeat(${Math.max(activeBays.length, 1)}, 1fr)`,
               gap: 0.5,
             }}>
-              {/* Header row: bay names */}
+              {/* Header row: bay names with delete */}
               <Box /> {/* empty corner */}
               {activeBays.map((bay) => (
-                <Box key={bay.id} sx={{ textAlign: 'center', py: 0.5 }}>
+                <Box key={bay.id} sx={{ textAlign: 'center', py: 0.5, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0.5 }}>
                   <Typography variant="caption" sx={{ fontWeight: 600 }}>Bay {bay.name}</Typography>
+                  <IconButton
+                    size="small" sx={{ p: 0.25 }}
+                    onClick={() => setDeleteConfirm({ type: 'bay', id: bay.id, label: `Bay ${bay.name}` })}
+                  >
+                    <DeleteOutlineIcon sx={{ fontSize: 14 }} />
+                  </IconButton>
                 </Box>
               ))}
 
-              {/* Grid rows (shelf levels, top to bottom = highest level first) */}
+              {/* Grid rows */}
               {activeRows.map((row) => (
                 <Box key={row.id} sx={{ display: 'contents' }}>
-                  {/* Row label */}
-                  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0.5 }}>
                     <Typography variant="caption" sx={{ fontWeight: 600 }}>Row {row.name}</Typography>
+                    <IconButton
+                      size="small" sx={{ p: 0.25 }}
+                      onClick={() => setDeleteConfirm({ type: 'row', id: row.id, label: `Row ${row.name}` })}
+                    >
+                      <DeleteOutlineIcon sx={{ fontSize: 14 }} />
+                    </IconButton>
                   </Box>
-                  {/* Bay cells for this row */}
                   {activeBays.map((bay) => {
                     const cellBins = bay.bins.filter((b) => b.isActive && b.rowId === row.id);
                     return (
@@ -405,16 +540,27 @@ export default function WarehouseMap() {
             {activeBins.map((bin) => (
               <Box
                 key={bin.id}
-                onClick={() => { setDrawerLoc({ aisle: selectedAisle.name, row: selectedRow?.name ?? null, bay: selectedBay.name, bin: bin.name }); setDrawerOpen(true); }}
                 sx={{
                   bgcolor: '#e3f2fd', borderRadius: 1, p: 1.5, minWidth: 100, minHeight: 70,
-                  border: '1px solid', borderColor: 'divider', cursor: 'pointer',
+                  border: '1px solid', borderColor: 'divider', position: 'relative',
                   display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
                   '&:hover': { boxShadow: 2 },
                 }}
               >
-                <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>Bin {bin.name}</Typography>
-                {bin.capacity && <Typography variant="caption" color="text.secondary">Cap: {bin.capacity}</Typography>}
+                <IconButton
+                  size="small"
+                  sx={{ position: 'absolute', top: 2, right: 2, p: 0.25 }}
+                  onClick={() => setDeleteConfirm({ type: 'bin', id: bin.id, label: `Bin ${bin.name}` })}
+                >
+                  <DeleteOutlineIcon sx={{ fontSize: 14 }} />
+                </IconButton>
+                <Box
+                  onClick={() => { setDrawerLoc({ aisle: selectedAisle.name, row: selectedRow?.name ?? null, bay: selectedBay.name, bin: bin.name }); setDrawerOpen(true); }}
+                  sx={{ cursor: 'pointer', textAlign: 'center' }}
+                >
+                  <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>Bin {bin.name}</Typography>
+                  {bin.capacity && <Typography variant="caption" color="text.secondary">Cap: {bin.capacity}</Typography>}
+                </Box>
               </Box>
             ))}
           </Box>
@@ -437,6 +583,17 @@ export default function WarehouseMap() {
           <Button variant="contained" disabled={!addName.trim() || crLoading || cbLoading || cbnLoading} onClick={handleAddItem}>Create</Button>
         </DialogActions>
       </Dialog>
+
+      {/* Delete confirm dialog (Fix 4) */}
+      <ConfirmDialog
+        open={deleteConfirm !== null}
+        title={`Remove ${deleteConfirm?.label ?? ''}?`}
+        message={`This will deactivate ${deleteConfirm?.label ?? ''}. If inventory is stored here, the removal will be blocked.`}
+        confirmLabel="Remove"
+        cancelLabel="Cancel"
+        onConfirm={handleDelete}
+        onCancel={() => setDeleteConfirm(null)}
+      />
 
       {/* Contents drawer */}
       <ContentsDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} aisle={drawerLoc.aisle} row={drawerLoc.row} bay={drawerLoc.bay} bin={drawerLoc.bin} />
