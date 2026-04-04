@@ -946,3 +946,23 @@ class Mutation:
             session.commit()
             session.refresh(wbin)
             return _bin_to_type(wbin)
+
+    @strawberry.mutation
+    def clone_aisle(
+        self,
+        aisle_id: strawberry.ID,
+        new_name: str,
+        x_position: int = 0,
+        y_position: int = 0,
+    ) -> WarehouseAisleType:
+        with SessionLocal() as session:
+            aisle = warehouse_layout_repository.clone_aisle(
+                session,
+                uuid.UUID(str(aisle_id)),
+                new_name,
+                x_position,
+                y_position,
+            )
+            session.commit()
+            session.refresh(aisle)
+            return _aisle_to_type(aisle)
