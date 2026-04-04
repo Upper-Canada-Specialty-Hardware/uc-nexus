@@ -30,6 +30,7 @@ class OpeningItem(Base):
         nullable=False,
     )
     aisle: Mapped[str | None] = mapped_column(String, nullable=True)
+    row: Mapped[str | None] = mapped_column(String, nullable=True)
     bay: Mapped[str | None] = mapped_column(String, nullable=True)
     bin: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)

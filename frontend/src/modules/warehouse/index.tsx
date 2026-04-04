@@ -3,12 +3,11 @@ import { Box, Tabs, Tab, Typography } from '@mui/material';
 import DashboardCards from './DashboardCards';
 import DeliveriesView from './DeliveriesView';
 import InventoryView from './InventoryView';
-import LayoutEditor from './LayoutEditor';
 import LocationsTab from './LocationsTab';
 import ReceivingPage from './ReceivingPage';
 import PullRequestQueue from './PullRequestQueue';
 import PutAwayTab from './PutAwayTab';
-import WarehouseViewer from './WarehouseViewer';
+import WarehouseMap from './WarehouseMap';
 
 const SUB_ROUTES = [
   { label: 'Inventory', path: 'inventory' },
@@ -18,7 +17,6 @@ const SUB_ROUTES = [
   { label: 'Receiving', path: 'receiving' },
   { label: 'Put Away', path: 'put-away' },
   { label: 'Pull Requests', path: 'pull-requests' },
-  { label: 'Layout', path: 'layout' },
 ];
 
 export default function WarehouseModule() {
@@ -38,12 +36,11 @@ export default function WarehouseModule() {
       <Routes>
         <Route path="inventory" element={<InventoryView />} />
         <Route path="locations" element={<LocationsTab />} />
-        <Route path="map" element={<WarehouseViewer />} />
+        <Route path="map" element={<WarehouseMap />} />
         <Route path="deliveries" element={<DeliveriesView />} />
         <Route path="receiving" element={<ReceivingPage />} />
         <Route path="put-away" element={<PutAwayTab />} />
         <Route path="pull-requests" element={<PullRequestQueue />} />
-        <Route path="layout" element={<LayoutEditor />} />
         <Route index element={<Navigate to="inventory" replace />} />
       </Routes>
     </Box>

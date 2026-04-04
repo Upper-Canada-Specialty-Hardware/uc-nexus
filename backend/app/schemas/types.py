@@ -188,6 +188,7 @@ class InventoryLocation:
     product_code: str
     quantity: int
     aisle: str | None
+    row: str | None
     bay: str | None
     bin: str | None
     received_at: datetime
@@ -217,6 +218,7 @@ class OpeningItem:
     assembly_completed_at: datetime
     state: OpeningItemState
     aisle: str | None
+    row: str | None
     bay: str | None
     bin: str | None
     created_at: datetime
@@ -455,6 +457,7 @@ class VendorInventoryNode:
 @strawberry.type
 class LocationUtilizationEntry:
     aisle: str
+    row: str | None
     bay: str | None
     bin: str | None
     item_count: int
@@ -495,10 +498,20 @@ class WarehouseDashboard:
 class WarehouseBinType:
     id: strawberry.ID
     bay_id: strawberry.ID
+    row_id: strawberry.ID | None
     name: str
     row_position: int
     col_position: int
     capacity: int | None
+    is_active: bool
+
+
+@strawberry.type
+class WarehouseRowType:
+    id: strawberry.ID
+    aisle_id: strawberry.ID
+    name: str
+    level: int
     is_active: bool
 
 
@@ -518,12 +531,14 @@ class WarehouseAisleType:
     id: strawberry.ID
     name: str
     label: str | None
+    orientation: str
     x_position: int
     y_position: int
     width: int
     height: int
     is_active: bool
     bays: list[WarehouseBayType]
+    rows: list[WarehouseRowType]
     total_quantity: int | None = None
     item_count: int | None = None
     total_capacity: int | None = None
@@ -532,6 +547,7 @@ class WarehouseAisleType:
 @strawberry.type
 class PutAwaySuggestion:
     aisle: str
+    row: str
     bay: str
     bin: str
     reason: str

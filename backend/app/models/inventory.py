@@ -30,6 +30,7 @@ class InventoryLocation(Base):
     aisle: Mapped[str | None] = mapped_column(String(20), nullable=True)
     bay: Mapped[str | None] = mapped_column(String(20), nullable=True)
     bin: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    row: Mapped[str | None] = mapped_column(String(20), nullable=True)
     received_at: Mapped[datetime] = mapped_column(nullable=False)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)

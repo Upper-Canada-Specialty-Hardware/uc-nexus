@@ -120,7 +120,7 @@ export const GET_INVENTORY_ITEMS = gql`
       inventoryLocation {
         id projectId poLineItemId receiveLineItemId
         hardwareCategory productCode quantity
-        aisle bay bin receivedAt createdAt updatedAt
+        aisle row bay bin receivedAt createdAt updatedAt
       }
       poNumber
       classification
@@ -135,7 +135,7 @@ export const GET_OPENING_ITEMS = gql`
       id projectId openingId openingNumber
       building floor location quantity
       assemblyCompletedAt state
-      aisle bay bin
+      aisle row bay bin
       createdAt updatedAt
       installedHardware {
         id openingItemId productCode hardwareCategory quantity
@@ -151,7 +151,7 @@ export const GET_OPENING_ITEM_DETAILS = gql`
         id projectId openingId openingNumber
         building floor location quantity
         assemblyCompletedAt state
-        aisle bay bin
+        aisle row bay bin
         createdAt updatedAt
         installedHardware {
           id openingItemId productCode hardwareCategory quantity
@@ -193,7 +193,7 @@ export const GET_UNLOCATED_INVENTORY = gql`
       inventoryLocation {
         id projectId poLineItemId receiveLineItemId
         hardwareCategory productCode quantity
-        aisle bay bin receivedAt createdAt updatedAt
+        aisle row bay bin receivedAt createdAt updatedAt
       }
       poNumber
       classification
@@ -377,7 +377,7 @@ export const GET_SHIP_READY_ITEMS = gql`
     shipReadyItems(projectId: $projectId) {
       openingItems {
         id projectId openingId openingNumber building floor location quantity
-        assemblyCompletedAt state aisle bay bin createdAt updatedAt
+        assemblyCompletedAt state aisle row bay bin createdAt updatedAt
         installedHardware { id openingItemId productCode hardwareCategory quantity }
       }
       looseItems {
@@ -490,7 +490,7 @@ export const GET_INVENTORY_BY_VENDOR = gql`
         items {
           id projectId poLineItemId receiveLineItemId
           hardwareCategory productCode quantity
-          aisle bay bin receivedAt createdAt updatedAt
+          aisle row bay bin receivedAt createdAt updatedAt
         }
       }
     }
@@ -501,6 +501,7 @@ export const GET_LOCATION_UTILIZATION = gql`
   query GetLocationUtilization {
     locationUtilization {
       aisle
+      row
       bay
       bin
       itemCount
@@ -516,7 +517,7 @@ export const GET_LOCATION_CONTENTS = gql`
         inventoryLocation {
           id projectId poLineItemId receiveLineItemId
           hardwareCategory productCode quantity
-          aisle bay bin receivedAt createdAt updatedAt
+          aisle row bay bin receivedAt createdAt updatedAt
         }
         poNumber
         unitCost
@@ -524,7 +525,7 @@ export const GET_LOCATION_CONTENTS = gql`
       openingItems {
         id projectId openingId openingNumber
         building floor location quantity
-        assemblyCompletedAt state aisle bay bin
+        assemblyCompletedAt state aisle row bay bin
         createdAt updatedAt
         installedHardware { id openingItemId productCode hardwareCategory quantity }
       }
@@ -587,7 +588,8 @@ export const GET_WAREHOUSE_DASHBOARD = gql`
 export const GET_WAREHOUSE_AISLES = gql`
   query GetWarehouseAisles($activeOnly: Boolean) {
     warehouseAisles(activeOnly: $activeOnly) {
-      id name label xPosition yPosition width height isActive
+      id name label orientation xPosition yPosition width height isActive
+      rows { id aisleId name level isActive }
       bays {
         id aisleId name rowPosition colPosition isActive
         bins {
@@ -601,7 +603,8 @@ export const GET_WAREHOUSE_AISLES = gql`
 export const GET_WAREHOUSE_OVERVIEW = gql`
   query GetWarehouseOverview {
     warehouseOverview {
-      id name label xPosition yPosition width height isActive
+      id name label orientation xPosition yPosition width height isActive
+      rows { id aisleId name level isActive }
       totalQuantity itemCount totalCapacity
       bays {
         id aisleId name rowPosition colPosition isActive
@@ -616,7 +619,7 @@ export const GET_WAREHOUSE_OVERVIEW = gql`
 export const GET_SUGGEST_PUT_AWAY = gql`
   query GetSuggestPutAway($productCode: String!, $hardwareCategory: String!, $quantity: Int) {
     suggestPutAway(productCode: $productCode, hardwareCategory: $hardwareCategory, quantity: $quantity) {
-      aisle bay bin reason currentQuantity capacity
+      aisle row bay bin reason currentQuantity capacity
     }
   }
 `;

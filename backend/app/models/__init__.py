@@ -22,4 +22,4 @@ from .shop_assembly import (  # noqa: E402, F401
     ShopAssemblyOpeningItem,
     ShopAssemblyRequest,
 )
-from .warehouse_layout import WarehouseAisle, WarehouseBay, WarehouseBin  # noqa: E402, F401
+from .warehouse_layout import WarehouseAisle, WarehouseBay, WarehouseBin, WarehouseRow  # noqa: E402, F401
