@@ -38,6 +38,7 @@ from .queries import (
     _project_to_type,
     _pull_request_to_type,
     _receive_record_to_type,
+    _row_to_type,
     _shop_assembly_opening_to_type,
     _shop_assembly_request_to_type,
 )
@@ -59,6 +60,7 @@ from .types import (
     WarehouseAisleType,
     WarehouseBayType,
     WarehouseBinType,
+    WarehouseRowType,
 )
 from .types import (
     PackingSlip as PackingSlipType,
@@ -777,6 +779,7 @@ class Mutation:
         self,
         name: str,
         label: str | None = None,
+        orientation: str = "VERTICAL",
         x_position: int = 0,
         y_position: int = 0,
         width: int = 1,
@@ -787,6 +790,7 @@ class Mutation:
                 session,
                 name,
                 label,
+                orientation,
                 x_position,
                 y_position,
                 width,
@@ -802,6 +806,7 @@ class Mutation:
         id: strawberry.ID,
         name: str | None = None,
         label: str | None = None,
+        orientation: str | None = None,
         x_position: int | None = None,
         y_position: int | None = None,
         width: int | None = None,
@@ -814,6 +819,7 @@ class Mutation:
                 uuid.UUID(str(id)),
                 name,
                 label,
+                orientation,
                 x_position,
                 y_position,
                 width,
@@ -867,10 +873,38 @@ class Mutation:
             return _bay_to_type(bay)
 
     @strawberry.mutation
+    def create_row(
+        self,
+        aisle_id: strawberry.ID,
+        name: str,
+        level: int = 0,
+    ) -> WarehouseRowType:
+        with SessionLocal() as session:
+            row = warehouse_layout_repository.create_row(session, uuid.UUID(str(aisle_id)), name, level)
+            session.commit()
+            session.refresh(row)
+            return _row_to_type(row)
+
+    @strawberry.mutation
+    def update_row(
+        self,
+        id: strawberry.ID,
+        name: str | None = None,
+        level: int | None = None,
+        is_active: bool | None = None,
+    ) -> WarehouseRowType:
+        with SessionLocal() as session:
+            row = warehouse_layout_repository.update_row(session, uuid.UUID(str(id)), name, level, is_active)
+            session.commit()
+            session.refresh(row)
+            return _row_to_type(row)
+
+    @strawberry.mutation
     def create_bin(
         self,
         bay_id: strawberry.ID,
         name: str,
+        row_id: strawberry.ID | None = None,
         row_position: int = 0,
         col_position: int = 0,
         capacity: int | None = None,
@@ -879,6 +913,7 @@ class Mutation:
             wbin = warehouse_layout_repository.create_bin(
                 session,
                 uuid.UUID(str(bay_id)),
+                uuid.UUID(str(row_id)) if row_id else None,
                 name,
                 row_position,
                 col_position,

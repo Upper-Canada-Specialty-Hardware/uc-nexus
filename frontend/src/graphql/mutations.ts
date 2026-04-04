@@ -528,17 +528,37 @@ export const UPDATE_USER_ROLES = gql`
 // --- Warehouse Layout mutations ---
 
 export const CREATE_AISLE = gql`
-  mutation CreateAisle($name: String!, $label: String, $xPosition: Int, $yPosition: Int, $width: Int, $height: Int) {
-    createAisle(name: $name, label: $label, xPosition: $xPosition, yPosition: $yPosition, width: $width, height: $height) {
-      id name label xPosition yPosition width height isActive bays { id name bins { id name } }
+  mutation CreateAisle($name: String!, $label: String, $orientation: String, $xPosition: Int, $yPosition: Int, $width: Int, $height: Int) {
+    createAisle(name: $name, label: $label, orientation: $orientation, xPosition: $xPosition, yPosition: $yPosition, width: $width, height: $height) {
+      id name label orientation xPosition yPosition width height isActive
+      rows { id aisleId name level isActive }
+      bays { id name bins { id name } }
     }
   }
 `;
 
 export const UPDATE_AISLE = gql`
-  mutation UpdateAisle($id: ID!, $name: String, $label: String, $xPosition: Int, $yPosition: Int, $width: Int, $height: Int, $isActive: Boolean) {
-    updateAisle(id: $id, name: $name, label: $label, xPosition: $xPosition, yPosition: $yPosition, width: $width, height: $height, isActive: $isActive) {
-      id name label xPosition yPosition width height isActive bays { id name bins { id name } }
+  mutation UpdateAisle($id: ID!, $name: String, $label: String, $orientation: String, $xPosition: Int, $yPosition: Int, $width: Int, $height: Int, $isActive: Boolean) {
+    updateAisle(id: $id, name: $name, label: $label, orientation: $orientation, xPosition: $xPosition, yPosition: $yPosition, width: $width, height: $height, isActive: $isActive) {
+      id name label orientation xPosition yPosition width height isActive
+      rows { id aisleId name level isActive }
+      bays { id name bins { id name } }
+    }
+  }
+`;
+
+export const CREATE_ROW = gql`
+  mutation CreateRow($aisleId: ID!, $name: String!, $level: Int) {
+    createRow(aisleId: $aisleId, name: $name, level: $level) {
+      id aisleId name level isActive
+    }
+  }
+`;
+
+export const UPDATE_ROW = gql`
+  mutation UpdateRow($id: ID!, $name: String, $level: Int, $isActive: Boolean) {
+    updateRow(id: $id, name: $name, level: $level, isActive: $isActive) {
+      id aisleId name level isActive
     }
   }
 `;
@@ -560,9 +580,9 @@ export const UPDATE_BAY = gql`
 `;
 
 export const CREATE_BIN = gql`
-  mutation CreateBin($bayId: ID!, $name: String!, $rowPosition: Int, $colPosition: Int, $capacity: Int) {
-    createBin(bayId: $bayId, name: $name, rowPosition: $rowPosition, colPosition: $colPosition, capacity: $capacity) {
-      id bayId name rowPosition colPosition capacity isActive
+  mutation CreateBin($bayId: ID!, $name: String!, $rowId: ID, $rowPosition: Int, $colPosition: Int, $capacity: Int) {
+    createBin(bayId: $bayId, name: $name, rowId: $rowId, rowPosition: $rowPosition, colPosition: $colPosition, capacity: $capacity) {
+      id bayId rowId name rowPosition colPosition capacity isActive
     }
   }
 `;
@@ -570,7 +590,7 @@ export const CREATE_BIN = gql`
 export const UPDATE_BIN = gql`
   mutation UpdateBin($id: ID!, $name: String, $rowPosition: Int, $colPosition: Int, $capacity: Int, $isActive: Boolean) {
     updateBin(id: $id, name: $name, rowPosition: $rowPosition, colPosition: $colPosition, capacity: $capacity, isActive: $isActive) {
-      id bayId name rowPosition colPosition capacity isActive
+      id bayId rowId name rowPosition colPosition capacity isActive
     }
   }
 `;

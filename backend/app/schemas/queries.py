@@ -64,6 +64,7 @@ from .types import (
     WarehouseBayType,
     WarehouseBinType,
     WarehouseDashboard,
+    WarehouseRowType,
 )
 from .types import (
     InventoryLocation as InventoryLocationType,
@@ -215,6 +216,7 @@ def _inventory_location_to_type(il) -> InventoryLocationType:
         product_code=il.product_code,
         quantity=il.quantity,
         aisle=il.aisle,
+        row=il.row,
         bay=il.bay,
         bin=il.bin,
         received_at=il.received_at,
@@ -246,6 +248,7 @@ def _opening_item_to_type(oi) -> OpeningItem:
         assembly_completed_at=oi.assembly_completed_at,
         state=oi.state,
         aisle=oi.aisle,
+        row=oi.row,
         bay=oi.bay,
         bin=oi.bin,
         created_at=oi.created_at,
@@ -369,11 +372,22 @@ def _bin_to_type(wbin) -> WarehouseBinType:
     return WarehouseBinType(
         id=strawberry.ID(str(wbin.id)),
         bay_id=strawberry.ID(str(wbin.bay_id)),
+        row_id=strawberry.ID(str(wbin.row_id)) if wbin.row_id else None,
         name=wbin.name,
         row_position=wbin.row_position,
         col_position=wbin.col_position,
         capacity=wbin.capacity,
         is_active=wbin.is_active,
+    )
+
+
+def _row_to_type(row) -> WarehouseRowType:
+    return WarehouseRowType(
+        id=strawberry.ID(str(row.id)),
+        aisle_id=strawberry.ID(str(row.aisle_id)),
+        name=row.name,
+        level=row.level,
+        is_active=row.is_active,
     )
 
 
@@ -394,12 +408,14 @@ def _aisle_to_type(aisle, **kwargs) -> WarehouseAisleType:
         id=strawberry.ID(str(aisle.id)),
         name=aisle.name,
         label=aisle.label,
+        orientation=aisle.orientation,
         x_position=aisle.x_position,
         y_position=aisle.y_position,
         width=aisle.width,
         height=aisle.height,
         is_active=aisle.is_active,
         bays=[_bay_to_type(b) for b in getattr(aisle, "bays", [])],
+        rows=[_row_to_type(r) for r in getattr(aisle, "rows", [])],
         **kwargs,
     )
 
@@ -854,6 +870,7 @@ class Query:
             return [
                 LocationUtilizationEntry(
                     aisle=r["aisle"],
+                    row=r.get("row"),
                     bay=r["bay"],
                     bin=r["bin"],
                     item_count=r["item_count"],
@@ -907,9 +924,19 @@ class Query:
             return [_bay_to_type(b) for b in bays]
 
     @strawberry.field
-    def warehouse_bins(self, bay_id: strawberry.ID) -> list[WarehouseBinType]:
+    def warehouse_rows(self, aisle_id: strawberry.ID) -> list[WarehouseRowType]:
         with SessionLocal() as session:
-            bins = warehouse_layout_repository.get_bins(session, uuid.UUID(str(bay_id)))
+            rows = warehouse_layout_repository.get_rows(session, uuid.UUID(str(aisle_id)))
+            return [_row_to_type(r) for r in rows]
+
+    @strawberry.field
+    def warehouse_bins(self, bay_id: strawberry.ID, row_id: strawberry.ID | None = None) -> list[WarehouseBinType]:
+        with SessionLocal() as session:
+            bins = warehouse_layout_repository.get_bins(
+                session,
+                uuid.UUID(str(bay_id)),
+                uuid.UUID(str(row_id)) if row_id else None,
+            )
             return [_bin_to_type(b) for b in bins]
 
     @strawberry.field
