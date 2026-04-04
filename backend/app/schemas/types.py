@@ -5,6 +5,8 @@ import strawberry
 from .enums import (
     ApproveOutcome,
     AssemblyStatus,
+    AuditAction,
+    AuditEntityType,
     Classification,
     HardwareItemState,
     NotificationType,
@@ -440,6 +442,113 @@ class OpeningHardwareStatus:
     floor: str | None
     location: str | None
     items: list[OpeningHardwareStatusItem]
+
+
+@strawberry.type
+class VendorInventoryNode:
+    vendor_name: str
+    product_codes: list[ProductCodeNode]
+    total_quantity: int
+    total_value: float
+
+
+@strawberry.type
+class LocationUtilizationEntry:
+    aisle: str
+    bay: str | None
+    bin: str | None
+    item_count: int
+    total_quantity: int
+
+
+@strawberry.type
+class LocationContents:
+    inventory_items: list[InventoryItemDetail]
+    opening_items: list[OpeningItem]
+
+
+@strawberry.type
+class BackOrderedItem:
+    hardware_category: str
+    product_code: str
+    ordered_quantity: int
+    received_quantity: int
+    outstanding_quantity: int
+    unit_cost: float
+    po_number: str | None
+    vendor_name: str | None
+    expected_delivery_date: date | None
+
+
+@strawberry.type
+class WarehouseDashboard:
+    total_item_count: int
+    total_value: float
+    unlocated_count: int
+    pending_pull_shop: int
+    pending_pull_shipping: int
+    received_last_7_days: int
+    back_ordered_count: int
+
+
+@strawberry.type
+class WarehouseBinType:
+    id: strawberry.ID
+    bay_id: strawberry.ID
+    name: str
+    row_position: int
+    col_position: int
+    capacity: int | None
+    is_active: bool
+
+
+@strawberry.type
+class WarehouseBayType:
+    id: strawberry.ID
+    aisle_id: strawberry.ID
+    name: str
+    row_position: int
+    col_position: int
+    is_active: bool
+    bins: list[WarehouseBinType]
+
+
+@strawberry.type
+class WarehouseAisleType:
+    id: strawberry.ID
+    name: str
+    label: str | None
+    x_position: int
+    y_position: int
+    width: int
+    height: int
+    is_active: bool
+    bays: list[WarehouseBayType]
+    total_quantity: int | None = None
+    item_count: int | None = None
+    total_capacity: int | None = None
+
+
+@strawberry.type
+class PutAwaySuggestion:
+    aisle: str
+    bay: str
+    bin: str
+    reason: str
+    current_quantity: int
+    capacity: int | None
+
+
+@strawberry.type
+class AuditLogEntry:
+    id: strawberry.ID
+    project_id: strawberry.ID | None
+    entity_type: AuditEntityType
+    entity_id: strawberry.ID
+    action: AuditAction
+    detail: strawberry.scalars.JSON | None
+    performed_by: str
+    created_at: datetime
 
 
 @strawberry.type

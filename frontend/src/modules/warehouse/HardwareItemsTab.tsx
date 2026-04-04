@@ -13,13 +13,17 @@ import {
   CircularProgress,
   Alert,
   Button,
+  ToggleButton,
+  ToggleButtonGroup,
 } from '@mui/material';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useQuery, useLazyQuery } from '@apollo/client/react';
-import { GET_INVENTORY_HIERARCHY, GET_INVENTORY_ITEMS } from '../../graphql/queries';
+import { GET_INVENTORY_HIERARCHY, GET_INVENTORY_ITEMS, GET_INVENTORY_BY_VENDOR } from '../../graphql/queries';
 import { useIdentity } from '../../hooks/useIdentity';
 import InventoryCorrectionModal from '../admin/InventoryCorrectionModal';
+import AuditHistoryDrawer from './AuditHistoryDrawer';
+import SpotCheckModal from './SpotCheckModal';
 
 interface InventoryItem {
   id: string;
@@ -57,6 +61,15 @@ interface InventoryItemDetail {
   classification: string;
   unitCost: number | null;
 }
+
+interface VendorGroup {
+  vendorName: string;
+  totalQuantity: number;
+  totalValue: number;
+  productCodes: ProductCodeGroup[];
+}
+
+type GroupBy = 'category' | 'vendor';
 
 interface HardwareItemsTabProps {
   projectId?: string;
@@ -146,6 +159,15 @@ function ProductCodeDetail({
   const [correctionItem, setCorrectionItem] = useState<InventoryItem | null>(null);
   const [correctionOpen, setCorrectionOpen] = useState(false);
 
+  // Audit history drawer state
+  const [auditItemId, setAuditItemId] = useState<string | null>(null);
+  const [auditLabel, setAuditLabel] = useState<string>('');
+  const [auditOpen, setAuditOpen] = useState(false);
+
+  // Spot check modal state
+  const [spotCheckItem, setSpotCheckItem] = useState<InventoryItem | null>(null);
+  const [spotCheckOpen, setSpotCheckOpen] = useState(false);
+
   const handleExpand = useCallback(
     (_event: React.SyntheticEvent, isExpanded: boolean) => {
       setExpanded(isExpanded);
@@ -169,7 +191,47 @@ function ProductCodeDetail({
   );
 
   const detailColumns = useMemo(() => {
-    if (!isAdmin) return baseDetailColumns;
+    const historyCol: GridColDef = {
+      field: 'history',
+      headerName: '',
+      width: 80,
+      sortable: false,
+      filterable: false,
+      renderCell: (params: { row: InventoryItemDetail }) => (
+        <Button
+          size="small"
+          onClick={(e) => {
+            e.stopPropagation();
+            setAuditItemId(params.row.inventoryLocation.id);
+            setAuditLabel(`${params.row.inventoryLocation.productCode} — ${params.row.inventoryLocation.hardwareCategory}`);
+            setAuditOpen(true);
+          }}
+        >
+          History
+        </Button>
+      ),
+    };
+    const spotCheckCol: GridColDef = {
+      field: 'spotCheck',
+      headerName: '',
+      width: 100,
+      sortable: false,
+      filterable: false,
+      renderCell: (params: { row: InventoryItemDetail }) => (
+        <Button
+          size="small"
+          color="warning"
+          onClick={(e) => {
+            e.stopPropagation();
+            setSpotCheckItem(params.row.inventoryLocation);
+            setSpotCheckOpen(true);
+          }}
+        >
+          Spot Check
+        </Button>
+      ),
+    };
+    if (!isAdmin) return [...baseDetailColumns, spotCheckCol, historyCol];
     return [
       ...baseDetailColumns,
       {
@@ -192,6 +254,8 @@ function ProductCodeDetail({
           </Button>
         ),
       } satisfies GridColDef,
+      spotCheckCol,
+      historyCol,
     ];
   }, [isAdmin]);
 
@@ -251,6 +315,31 @@ function ProductCodeDetail({
           onSuccess={handleCorrectionSuccess}
         />
       )}
+
+      {auditItemId && (
+        <AuditHistoryDrawer
+          open={auditOpen}
+          onClose={() => {
+            setAuditOpen(false);
+            setAuditItemId(null);
+          }}
+          entityId={auditItemId}
+          entityType="INVENTORY_LOCATION"
+          label={auditLabel}
+        />
+      )}
+
+      {spotCheckItem && (
+        <SpotCheckModal
+          open={spotCheckOpen}
+          onClose={() => {
+            setSpotCheckOpen(false);
+            setSpotCheckItem(null);
+          }}
+          item={spotCheckItem}
+          onSuccess={handleCorrectionSuccess}
+        />
+      )}
     </>
   );
 }
@@ -260,11 +349,20 @@ export default function HardwareItemsTab({ projectId }: HardwareItemsTabProps) {
   const [categoryFilter, setCategoryFilter] = useState('');
   const [aisleFilter, setAisleFilter] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [groupBy, setGroupBy] = useState<GroupBy>('category');
 
   const { data, loading, error } = useQuery<{
     inventoryHierarchy: CategoryGroup[];
   }>(GET_INVENTORY_HIERARCHY, {
     variables: { projectId },
+    skip: groupBy !== 'category',
+  });
+
+  const { data: vendorData, loading: vendorLoading, error: vendorError } = useQuery<{
+    inventoryByVendor: VendorGroup[];
+  }>(GET_INVENTORY_BY_VENDOR, {
+    variables: { projectId },
+    skip: groupBy !== 'vendor',
   });
 
   // Debounce search input
@@ -286,8 +384,17 @@ export default function HardwareItemsTab({ projectId }: HardwareItemsTabProps) {
   }, []);
 
   const hierarchy = data?.inventoryHierarchy ?? [];
+  const vendorHierarchy = vendorData?.inventoryByVendor ?? [];
 
-  // Extract distinct categories
+  // Use whichever data source is active
+  const activeGroups: { label: string; totalQuantity: number; totalValue: number; productCodes: ProductCodeGroup[] }[] = useMemo(() => {
+    if (groupBy === 'vendor') {
+      return vendorHierarchy.map((v) => ({ label: v.vendorName, ...v }));
+    }
+    return hierarchy.map((c) => ({ label: c.hardwareCategory, ...c }));
+  }, [groupBy, hierarchy, vendorHierarchy]);
+
+  // Extract distinct categories (for category filter, only in category mode)
   const categories = useMemo(
     () => [...new Set(hierarchy.map((c) => c.hardwareCategory))].sort(),
     [hierarchy],
@@ -296,64 +403,66 @@ export default function HardwareItemsTab({ projectId }: HardwareItemsTabProps) {
   // Extract distinct aisle values from Level 3 items
   const aisles = useMemo(() => {
     const aisleSet = new Set<string>();
-    hierarchy.forEach((cat) =>
-      cat.productCodes.forEach((pc) =>
+    const groups = groupBy === 'vendor' ? vendorHierarchy : hierarchy;
+    groups.forEach((g) =>
+      g.productCodes.forEach((pc) =>
         pc.items.forEach((item) => {
           if (item.aisle) aisleSet.add(item.aisle);
         }),
       ),
     );
     return [...aisleSet].sort();
-  }, [hierarchy]);
+  }, [groupBy, hierarchy, vendorHierarchy]);
 
   // Filter hierarchy
-  const filteredHierarchy = useMemo(() => {
+  const filteredGroups = useMemo(() => {
     const search = debouncedSearch.toLowerCase();
-    return hierarchy
-      .filter((cat) => {
-        if (categoryFilter && cat.hardwareCategory !== categoryFilter) return false;
+    return activeGroups
+      .filter((group) => {
+        if (groupBy === 'category' && categoryFilter && group.label !== categoryFilter) return false;
         if (search) {
-          const categoryMatch = cat.hardwareCategory.toLowerCase().includes(search);
-          const productMatch = cat.productCodes.some((pc) =>
+          const labelMatch = group.label.toLowerCase().includes(search);
+          const productMatch = group.productCodes.some((pc) =>
             pc.productCode.toLowerCase().includes(search),
           );
-          if (!categoryMatch && !productMatch) return false;
+          if (!labelMatch && !productMatch) return false;
         }
         return true;
       })
-      .map((cat) => {
-        // If searching, also filter product codes within the category
+      .map((group) => {
         if (search) {
-          const categoryMatch = cat.hardwareCategory.toLowerCase().includes(search);
-          if (categoryMatch) return cat; // show all product codes if category matched
+          const labelMatch = group.label.toLowerCase().includes(search);
+          if (labelMatch) return group;
           return {
-            ...cat,
-            productCodes: cat.productCodes.filter((pc) =>
+            ...group,
+            productCodes: group.productCodes.filter((pc) =>
               pc.productCode.toLowerCase().includes(search),
             ),
           };
         }
-        // If aisle filter is active, filter product codes that have items with matching aisle
         if (aisleFilter) {
           return {
-            ...cat,
-            productCodes: cat.productCodes.filter((pc) =>
+            ...group,
+            productCodes: group.productCodes.filter((pc) =>
               pc.items.some((item) => item.aisle === aisleFilter),
             ),
           };
         }
-        return cat;
+        return group;
       })
-      .filter((cat) => cat.productCodes.length > 0);
-  }, [hierarchy, debouncedSearch, categoryFilter, aisleFilter]);
+      .filter((group) => group.productCodes.length > 0);
+  }, [activeGroups, debouncedSearch, categoryFilter, aisleFilter, groupBy]);
 
   const grandTotals = useMemo(() => {
-    const totalQty = filteredHierarchy.reduce((sum, cat) => sum + cat.totalQuantity, 0);
-    const totalVal = filteredHierarchy.reduce((sum, cat) => sum + cat.totalValue, 0);
+    const totalQty = filteredGroups.reduce((sum, g) => sum + g.totalQuantity, 0);
+    const totalVal = filteredGroups.reduce((sum, g) => sum + g.totalValue, 0);
     return { totalQty, totalVal };
-  }, [filteredHierarchy]);
+  }, [filteredGroups]);
 
-  if (loading && !data) {
+  const isLoading = groupBy === 'category' ? loading && !data : vendorLoading && !vendorData;
+  const activeError = groupBy === 'category' ? error : vendorError;
+
+  if (isLoading) {
     return (
       <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
         <CircularProgress />
@@ -361,11 +470,11 @@ export default function HardwareItemsTab({ projectId }: HardwareItemsTabProps) {
     );
   }
 
-  if (error) {
-    return <Alert severity="error">Error loading inventory: {error.message}</Alert>;
+  if (activeError) {
+    return <Alert severity="error">Error loading inventory: {activeError.message}</Alert>;
   }
 
-  if (hierarchy.length === 0) {
+  if (activeGroups.length === 0) {
     return (
       <Alert severity="info">No inventory items for this project</Alert>
     );
@@ -374,7 +483,16 @@ export default function HardwareItemsTab({ projectId }: HardwareItemsTabProps) {
   return (
     <Box>
       {/* Search and filter controls */}
-      <Box sx={{ display: 'flex', gap: 2, mb: 2, flexWrap: 'wrap' }}>
+      <Box sx={{ display: 'flex', gap: 2, mb: 2, flexWrap: 'wrap', alignItems: 'center' }}>
+        <ToggleButtonGroup
+          value={groupBy}
+          exclusive
+          onChange={(_, v) => { if (v) setGroupBy(v); }}
+          size="small"
+        >
+          <ToggleButton value="category">By Category</ToggleButton>
+          <ToggleButton value="vendor">By Vendor</ToggleButton>
+        </ToggleButtonGroup>
         <TextField
           label="Search"
           placeholder="Search by product code or category..."
@@ -383,21 +501,23 @@ export default function HardwareItemsTab({ projectId }: HardwareItemsTabProps) {
           onChange={handleSearchChange}
           sx={{ minWidth: 250 }}
         />
-        <FormControl size="small" sx={{ minWidth: 180 }}>
-          <InputLabel>Category</InputLabel>
-          <Select
-            value={categoryFilter}
-            label="Category"
-            onChange={(e) => setCategoryFilter(e.target.value)}
-          >
-            <MenuItem value="">All Categories</MenuItem>
-            {categories.map((cat) => (
-              <MenuItem key={cat} value={cat}>
-                {cat}
-              </MenuItem>
-            ))}
-          </Select>
-        </FormControl>
+        {groupBy === 'category' && (
+          <FormControl size="small" sx={{ minWidth: 180 }}>
+            <InputLabel>Category</InputLabel>
+            <Select
+              value={categoryFilter}
+              label="Category"
+              onChange={(e) => setCategoryFilter(e.target.value)}
+            >
+              <MenuItem value="">All Categories</MenuItem>
+              {categories.map((cat) => (
+                <MenuItem key={cat} value={cat}>
+                  {cat}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+        )}
         <FormControl size="small" sx={{ minWidth: 150 }}>
           <InputLabel>Aisle</InputLabel>
           <Select
@@ -442,27 +562,27 @@ export default function HardwareItemsTab({ projectId }: HardwareItemsTabProps) {
       </Box>
 
       {/* Filtered empty state */}
-      {filteredHierarchy.length === 0 && (
+      {filteredGroups.length === 0 && (
         <Alert severity="info">No matching inventory items</Alert>
       )}
 
       {/* Accordion hierarchy */}
-      {filteredHierarchy.map((cat) => (
-        <Accordion key={cat.hardwareCategory}>
+      {filteredGroups.map((group) => (
+        <Accordion key={group.label}>
           <AccordionSummary expandIcon={<ExpandMoreIcon />}>
             <Typography sx={{ fontWeight: 600 }}>
-              {cat.hardwareCategory}
+              {group.label}
             </Typography>
             <Typography sx={{ ml: 2, color: 'text.secondary' }}>
-              — Total: {cat.totalQuantity} | Value: {formatCurrency(cat.totalValue)}
+              — Total: {group.totalQuantity} | Value: {formatCurrency(group.totalValue)}
             </Typography>
           </AccordionSummary>
           <AccordionDetails>
-            {cat.productCodes.map((pc) => (
+            {group.productCodes.map((pc) => (
               <ProductCodeDetail
                 key={pc.productCode}
                 projectId={projectId}
-                category={cat.hardwareCategory}
+                category={pc.items[0]?.hardwareCategory ?? ''}
                 productCode={pc.productCode}
                 totalQuantity={pc.totalQuantity}
                 totalValue={pc.totalValue}

@@ -13,10 +13,12 @@ from app.repositories import (
     shipping_repository,
     shop_assembly_repository,
     user_repository,
+    warehouse_layout_repository,
     warehouse_repository,
 )
 
 from .enums import (
+    AuditEntityType,
     POStatus,
     PullRequestSource,
     PullRequestStatus,
@@ -24,10 +26,14 @@ from .enums import (
 )
 from .inputs import ReconciliationItemInput
 from .types import (
+    AuditLogEntry,
+    BackOrderedItem,
     ClerkUser,
     HardwareSummaryRow,
     InventoryHierarchyNode,
     InventoryItemDetail,
+    LocationContents,
+    LocationUtilizationEntry,
     Notification,
     Opening,
     OpeningHardwareStatus,
@@ -43,6 +49,7 @@ from .types import (
     PullRequest,
     PullRequestItem,
     PurchaseOrder,
+    PutAwaySuggestion,
     ReceiveLineItem,
     ReceiveRecord,
     RecentReceiveRecord,
@@ -52,6 +59,11 @@ from .types import (
     ShopAssemblyOpening,
     ShopAssemblyOpeningItem,
     ShopAssemblyRequest,
+    VendorInventoryNode,
+    WarehouseAisleType,
+    WarehouseBayType,
+    WarehouseBinType,
+    WarehouseDashboard,
 )
 from .types import (
     InventoryLocation as InventoryLocationType,
@@ -350,6 +362,45 @@ def _packing_slip_to_type(ps) -> PackingSlipType:
         shipped_at=ps.shipped_at,
         created_at=ps.created_at,
         items=[_packing_slip_item_to_type(i) for i in ps.items],
+    )
+
+
+def _bin_to_type(wbin) -> WarehouseBinType:
+    return WarehouseBinType(
+        id=strawberry.ID(str(wbin.id)),
+        bay_id=strawberry.ID(str(wbin.bay_id)),
+        name=wbin.name,
+        row_position=wbin.row_position,
+        col_position=wbin.col_position,
+        capacity=wbin.capacity,
+        is_active=wbin.is_active,
+    )
+
+
+def _bay_to_type(bay) -> WarehouseBayType:
+    return WarehouseBayType(
+        id=strawberry.ID(str(bay.id)),
+        aisle_id=strawberry.ID(str(bay.aisle_id)),
+        name=bay.name,
+        row_position=bay.row_position,
+        col_position=bay.col_position,
+        is_active=bay.is_active,
+        bins=[_bin_to_type(b) for b in getattr(bay, "bins", [])],
+    )
+
+
+def _aisle_to_type(aisle, **kwargs) -> WarehouseAisleType:
+    return WarehouseAisleType(
+        id=strawberry.ID(str(aisle.id)),
+        name=aisle.name,
+        label=aisle.label,
+        x_position=aisle.x_position,
+        y_position=aisle.y_position,
+        width=aisle.width,
+        height=aisle.height,
+        is_active=aisle.is_active,
+        bays=[_bay_to_type(b) for b in getattr(aisle, "bays", [])],
+        **kwargs,
     )
 
 
@@ -711,3 +762,192 @@ class Query:
             )
             for u in results
         ]
+
+    @strawberry.field
+    def expected_deliveries(self, project_id: strawberry.ID | None = None) -> list[PurchaseOrder]:
+        with SessionLocal() as session:
+            pos = warehouse_repository.get_expected_deliveries(
+                session, uuid.UUID(str(project_id)) if project_id else None
+            )
+            return [_po_to_type(po) for po in pos]
+
+    @strawberry.field
+    def back_ordered_items(self, project_id: strawberry.ID | None = None) -> list[BackOrderedItem]:
+        with SessionLocal() as session:
+            items = warehouse_repository.get_back_ordered_items(
+                session, uuid.UUID(str(project_id)) if project_id else None
+            )
+            return [
+                BackOrderedItem(
+                    hardware_category=item["po_line_item"].hardware_category,
+                    product_code=item["po_line_item"].product_code,
+                    ordered_quantity=item["po_line_item"].ordered_quantity,
+                    received_quantity=item["po_line_item"].received_quantity,
+                    outstanding_quantity=item["outstanding_quantity"],
+                    unit_cost=float(item["po_line_item"].unit_cost),
+                    po_number=item["po_number"],
+                    vendor_name=item["vendor_name"],
+                    expected_delivery_date=item["expected_delivery_date"],
+                )
+                for item in items
+            ]
+
+    @strawberry.field
+    def warehouse_dashboard(self) -> WarehouseDashboard:
+        with SessionLocal() as session:
+            d = warehouse_repository.get_warehouse_dashboard(session)
+            return WarehouseDashboard(
+                total_item_count=d["total_item_count"],
+                total_value=d["total_value"],
+                unlocated_count=d["unlocated_count"],
+                pending_pull_shop=d["pending_pull_shop"],
+                pending_pull_shipping=d["pending_pull_shipping"],
+                received_last_7_days=d["received_last_7_days"],
+                back_ordered_count=d["back_ordered_count"],
+            )
+
+    @strawberry.field
+    def inventory_by_vendor(self, project_id: strawberry.ID | None = None) -> list[VendorInventoryNode]:
+        with SessionLocal() as session:
+            nodes = warehouse_repository.get_inventory_by_vendor(
+                session, uuid.UUID(str(project_id)) if project_id else None
+            )
+            return [
+                VendorInventoryNode(
+                    vendor_name=node["vendor_name"],
+                    product_codes=[
+                        ProductCodeNode(
+                            product_code=pc["product_code"],
+                            items=[_inventory_location_to_type(il) for il in pc["items"]],
+                            total_quantity=pc["total_quantity"],
+                            total_value=pc["total_value"],
+                        )
+                        for pc in node["product_codes"]
+                    ],
+                    total_quantity=node["total_quantity"],
+                    total_value=node["total_value"],
+                )
+                for node in nodes
+            ]
+
+    @strawberry.field
+    def location_contents(self, aisle: str, bay: str | None = None, bin: str | None = None) -> LocationContents:
+        with SessionLocal() as session:
+            data = warehouse_repository.get_location_contents(session, aisle, bay, bin)
+            return LocationContents(
+                inventory_items=[
+                    InventoryItemDetail(
+                        inventory_location=_inventory_location_to_type(item["inventory_location"]),
+                        po_number=item["po_number"],
+                        classification=None,
+                        unit_cost=item["unit_cost"],
+                    )
+                    for item in data["inventory_items"]
+                ],
+                opening_items=[_opening_item_to_type(oi) for oi in data["opening_items"]],
+            )
+
+    @strawberry.field
+    def location_utilization(self) -> list[LocationUtilizationEntry]:
+        with SessionLocal() as session:
+            rows = warehouse_repository.get_location_utilization(session)
+            return [
+                LocationUtilizationEntry(
+                    aisle=r["aisle"],
+                    bay=r["bay"],
+                    bin=r["bin"],
+                    item_count=r["item_count"],
+                    total_quantity=r["total_quantity"],
+                )
+                for r in rows
+            ]
+
+    @strawberry.field
+    def audit_log(
+        self,
+        entity_id: strawberry.ID | None = None,
+        entity_type: AuditEntityType | None = None,
+        project_id: strawberry.ID | None = None,
+        limit: int = 50,
+    ) -> list[AuditLogEntry]:
+        with SessionLocal() as session:
+            entries = warehouse_repository.get_audit_log(
+                session,
+                entity_id=uuid.UUID(str(entity_id)) if entity_id else None,
+                entity_type=entity_type.value if entity_type else None,
+                project_id=uuid.UUID(str(project_id)) if project_id else None,
+                limit=limit,
+            )
+            return [
+                AuditLogEntry(
+                    id=strawberry.ID(str(e.id)),
+                    project_id=strawberry.ID(str(e.project_id)) if e.project_id else None,
+                    entity_type=e.entity_type,
+                    entity_id=strawberry.ID(str(e.entity_id)),
+                    action=e.action,
+                    detail=e.detail,
+                    performed_by=e.performed_by,
+                    created_at=e.created_at,
+                )
+                for e in entries
+            ]
+
+    # --- Warehouse Layout queries ---
+
+    @strawberry.field
+    def warehouse_aisles(self, active_only: bool = True) -> list[WarehouseAisleType]:
+        with SessionLocal() as session:
+            aisles = warehouse_layout_repository.get_aisles(session, active_only)
+            return [_aisle_to_type(a) for a in aisles]
+
+    @strawberry.field
+    def warehouse_bays(self, aisle_id: strawberry.ID) -> list[WarehouseBayType]:
+        with SessionLocal() as session:
+            bays = warehouse_layout_repository.get_bays(session, uuid.UUID(str(aisle_id)))
+            return [_bay_to_type(b) for b in bays]
+
+    @strawberry.field
+    def warehouse_bins(self, bay_id: strawberry.ID) -> list[WarehouseBinType]:
+        with SessionLocal() as session:
+            bins = warehouse_layout_repository.get_bins(session, uuid.UUID(str(bay_id)))
+            return [_bin_to_type(b) for b in bins]
+
+    @strawberry.field
+    def warehouse_overview(self) -> list[WarehouseAisleType]:
+        with SessionLocal() as session:
+            rows = warehouse_layout_repository.get_aisle_utilization(session)
+            return [
+                _aisle_to_type(
+                    r["aisle"],
+                    total_quantity=r["total_quantity"],
+                    item_count=r["item_count"],
+                    total_capacity=r["total_capacity"],
+                )
+                for r in rows
+            ]
+
+    @strawberry.field
+    def suggest_put_away(
+        self,
+        product_code: str,
+        hardware_category: str,
+        quantity: int = 1,
+    ) -> list[PutAwaySuggestion]:
+        with SessionLocal() as session:
+            suggestions = warehouse_layout_repository.suggest_put_away(
+                session,
+                product_code,
+                hardware_category,
+                quantity,
+            )
+            return [
+                PutAwaySuggestion(
+                    aisle=s["aisle"],
+                    bay=s["bay"],
+                    bin=s["bin"],
+                    reason=s["reason"],
+                    current_quantity=s["current_quantity"],
+                    capacity=s["capacity"],
+                )
+                for s in suggestions
+            ]

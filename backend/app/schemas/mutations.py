@@ -11,6 +11,7 @@ from app.repositories import (
     shipping_repository,
     shop_assembly_repository,
     user_repository,
+    warehouse_layout_repository,
     warehouse_repository,
 )
 
@@ -24,6 +25,9 @@ from .inputs import (
     FinalizeImportSessionInput,
 )
 from .queries import (
+    _aisle_to_type,
+    _bay_to_type,
+    _bin_to_type,
     _inventory_location_to_type,
     _notification_to_type,
     _opening_item_to_type,
@@ -52,6 +56,9 @@ from .types import (
     ReceiveRecord,
     ShopAssemblyOpening,
     ShopAssemblyRequest,
+    WarehouseAisleType,
+    WarehouseBayType,
+    WarehouseBinType,
 )
 from .types import (
     PackingSlip as PackingSlipType,
@@ -762,3 +769,145 @@ class Mutation:
             roles=result["roles"],
             image_url=result["image_url"],
         )
+
+    # --- Warehouse Layout mutations ---
+
+    @strawberry.mutation
+    def create_aisle(
+        self,
+        name: str,
+        label: str | None = None,
+        x_position: int = 0,
+        y_position: int = 0,
+        width: int = 1,
+        height: int = 1,
+    ) -> WarehouseAisleType:
+        with SessionLocal() as session:
+            aisle = warehouse_layout_repository.create_aisle(
+                session,
+                name,
+                label,
+                x_position,
+                y_position,
+                width,
+                height,
+            )
+            session.commit()
+            session.refresh(aisle)
+            return _aisle_to_type(aisle)
+
+    @strawberry.mutation
+    def update_aisle(
+        self,
+        id: strawberry.ID,
+        name: str | None = None,
+        label: str | None = None,
+        x_position: int | None = None,
+        y_position: int | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        is_active: bool | None = None,
+    ) -> WarehouseAisleType:
+        with SessionLocal() as session:
+            aisle = warehouse_layout_repository.update_aisle(
+                session,
+                uuid.UUID(str(id)),
+                name,
+                label,
+                x_position,
+                y_position,
+                width,
+                height,
+                is_active,
+            )
+            session.commit()
+            session.refresh(aisle)
+            return _aisle_to_type(aisle)
+
+    @strawberry.mutation
+    def create_bay(
+        self,
+        aisle_id: strawberry.ID,
+        name: str,
+        row_position: int = 0,
+        col_position: int = 0,
+    ) -> WarehouseBayType:
+        with SessionLocal() as session:
+            bay = warehouse_layout_repository.create_bay(
+                session,
+                uuid.UUID(str(aisle_id)),
+                name,
+                row_position,
+                col_position,
+            )
+            session.commit()
+            session.refresh(bay)
+            return _bay_to_type(bay)
+
+    @strawberry.mutation
+    def update_bay(
+        self,
+        id: strawberry.ID,
+        name: str | None = None,
+        row_position: int | None = None,
+        col_position: int | None = None,
+        is_active: bool | None = None,
+    ) -> WarehouseBayType:
+        with SessionLocal() as session:
+            bay = warehouse_layout_repository.update_bay(
+                session,
+                uuid.UUID(str(id)),
+                name,
+                row_position,
+                col_position,
+                is_active,
+            )
+            session.commit()
+            session.refresh(bay)
+            return _bay_to_type(bay)
+
+    @strawberry.mutation
+    def create_bin(
+        self,
+        bay_id: strawberry.ID,
+        name: str,
+        row_position: int = 0,
+        col_position: int = 0,
+        capacity: int | None = None,
+    ) -> WarehouseBinType:
+        with SessionLocal() as session:
+            wbin = warehouse_layout_repository.create_bin(
+                session,
+                uuid.UUID(str(bay_id)),
+                name,
+                row_position,
+                col_position,
+                capacity,
+            )
+            session.commit()
+            session.refresh(wbin)
+            return _bin_to_type(wbin)
+
+    @strawberry.mutation
+    def update_bin(
+        self,
+        id: strawberry.ID,
+        name: str | None = None,
+        row_position: int | None = None,
+        col_position: int | None = None,
+        capacity: int | None = None,
+        is_active: bool | None = None,
+    ) -> WarehouseBinType:
+        with SessionLocal() as session:
+            wbin = warehouse_layout_repository.update_bin(
+                session,
+                uuid.UUID(str(id)),
+                name,
+                row_position,
+                col_position,
+                capacity,
+                is_active,
+            )
+            session.commit()
+            session.refresh(wbin)
+            return _bin_to_type(wbin)

@@ -6,6 +6,12 @@ from app.models.enums import (
     AssemblyStatus as AssemblyStatusDB,
 )
 from app.models.enums import (
+    AuditAction as AuditActionDB,
+)
+from app.models.enums import (
+    AuditEntityType as AuditEntityTypeDB,
+)
+from app.models.enums import (
     Classification as ClassificationDB,
 )
 from app.models.enums import (
@@ -40,6 +46,8 @@ from app.models.enums import (
 )
 
 # Wrap DB enums for Strawberry GraphQL
+AuditAction = strawberry.enum(AuditActionDB)
+AuditEntityType = strawberry.enum(AuditEntityTypeDB)
 Classification = strawberry.enum(ClassificationDB)
 HardwareItemState = strawberry.enum(HardwareItemStateDB)
 POStatus = strawberry.enum(POStatusDB)
