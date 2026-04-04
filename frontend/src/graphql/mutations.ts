@@ -594,3 +594,13 @@ export const UPDATE_BIN = gql`
     }
   }
 `;
+
+export const CLONE_AISLE = gql`
+  mutation CloneAisle($aisleId: ID!, $newName: String!, $xPosition: Int, $yPosition: Int) {
+    cloneAisle(aisleId: $aisleId, newName: $newName, xPosition: $xPosition, yPosition: $yPosition) {
+      id name label orientation xPosition yPosition width height isActive
+      rows { id aisleId name level isActive }
+      bays { id name bins { id name } }
+    }
+  }
+`;

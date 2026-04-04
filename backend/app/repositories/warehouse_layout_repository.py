@@ -339,6 +339,88 @@ def get_aisle_utilization(session: Session) -> list[dict]:
     return result
 
 
+def clone_aisle(
+    session: Session,
+    aisle_id: uuid.UUID,
+    new_name: str,
+    x: int,
+    y: int,
+) -> WarehouseAisle:
+    """Clone an aisle with all its rows, bays, and bins."""
+    if not new_name or len(new_name) > 20:
+        raise ValidationError("Aisle name must be 1-20 characters", field="name")
+
+    # Load source with all children
+    stmt = (
+        select(WarehouseAisle)
+        .options(
+            selectinload(WarehouseAisle.rows),
+            selectinload(WarehouseAisle.bays).selectinload(WarehouseBay.bins),
+        )
+        .where(WarehouseAisle.id == aisle_id)
+    )
+    source = session.scalars(stmt).unique().first()
+    if source is None:
+        raise NotFoundError(f"Aisle {aisle_id} not found")
+
+    # Create new aisle
+    new_aisle = WarehouseAisle(
+        name=new_name,
+        label=source.label,
+        orientation=source.orientation,
+        x_position=x,
+        y_position=y,
+        width=source.width,
+        height=source.height,
+    )
+    session.add(new_aisle)
+    session.flush()
+
+    # Copy rows, track old->new ID mapping
+    row_id_map: dict[uuid.UUID, uuid.UUID] = {}
+    for src_row in source.rows:
+        if not src_row.is_active:
+            continue
+        new_row = WarehouseRow(
+            aisle_id=new_aisle.id,
+            name=src_row.name,
+            level=src_row.level,
+        )
+        session.add(new_row)
+        session.flush()
+        row_id_map[src_row.id] = new_row.id
+
+    # Copy bays and their bins
+    for src_bay in source.bays:
+        if not src_bay.is_active:
+            continue
+        new_bay = WarehouseBay(
+            aisle_id=new_aisle.id,
+            name=src_bay.name,
+            row_position=src_bay.row_position,
+            col_position=src_bay.col_position,
+        )
+        session.add(new_bay)
+        session.flush()
+
+        for src_bin in src_bay.bins:
+            if not src_bin.is_active:
+                continue
+            new_row_id = row_id_map.get(src_bin.row_id) if src_bin.row_id else None
+            new_bin = WarehouseBin(
+                bay_id=new_bay.id,
+                row_id=new_row_id,
+                name=src_bin.name,
+                row_position=src_bin.row_position,
+                col_position=src_bin.col_position,
+                capacity=src_bin.capacity,
+            )
+            session.add(new_bin)
+
+    session.flush()
+    return new_aisle
+
+
 def suggest_put_away(
     session: Session,
     product_code: str,
