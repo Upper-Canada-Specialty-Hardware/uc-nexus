@@ -236,6 +236,7 @@ export default function WarehouseMap() {
 
   // Resize tracking
   const resizeRef = useRef<{ id: string; startX: number; startY: number; startW: number; startH: number } | null>(null);
+  const justResizedRef = useRef(false);
 
   // Navigation state
   const [level, setLevel] = useState<ViewLevel>('floor');
@@ -302,6 +303,7 @@ export default function WarehouseMap() {
     const startW = sizeOverrides[aisleId]?.w ?? Math.max(aisle.width, MIN_AISLE_W);
     const startH = sizeOverrides[aisleId]?.h ?? Math.max(aisle.height, MIN_AISLE_H);
     resizeRef.current = { id: aisleId, startX: e.clientX, startY: e.clientY, startW, startH };
+    justResizedRef.current = true;
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
   }, [aisles, sizeOverrides]);
 
@@ -321,10 +323,15 @@ export default function WarehouseMap() {
     if (size) {
       updateAisle({ variables: { id, width: size.w, height: size.h } });
     }
+    // Keep flag set briefly so the click event that follows pointer-up is suppressed
+    setTimeout(() => { justResizedRef.current = false; }, 100);
   }, [sizeOverrides, updateAisle]);
 
   // --- Navigation ---
-  const drillIntoAisle = useCallback((a: AisleData) => { setSelectedAisleId(a.id); setLevel('aisle'); }, []);
+  const drillIntoAisle = useCallback((a: AisleData) => {
+    if (justResizedRef.current) return; // suppress click after resize
+    setSelectedAisleId(a.id); setLevel('aisle');
+  }, []);
   const drillIntoBay = useCallback((r: Row | null, b: Bay) => { setSelectedRowId(r?.id ?? null); setSelectedBayId(b.id); setLevel('bay'); }, []);
   const goBack = useCallback(() => {
     if (level === 'bay') { setLevel('aisle'); setSelectedBayId(null); setSelectedRowId(null); }
