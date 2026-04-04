@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import {
   Box, Typography, CircularProgress, Alert, Breadcrumbs, Link, Button,
   Drawer, IconButton, List, ListItemButton, ListItemText, Divider, Chip,
@@ -74,11 +74,11 @@ function ContentsDrawer({
   }
   const [fetchContents, { data, loading }] = useLazyQuery<ContentsData>(GET_LOCATION_CONTENTS);
 
-  const prevOpen = useState(false);
-  if (open && !prevOpen[0]) {
-    fetchContents({ variables: { aisle, bay, bin } });
-  }
-  prevOpen[0] = open;
+  useEffect(() => {
+    if (open) {
+      fetchContents({ variables: { aisle, bay, bin } });
+    }
+  }, [open, aisle, bay, bin, fetchContents]);
 
   const loc = [aisle, bay, bin].filter(Boolean).join('-');
   const invItems = data?.locationContents?.inventoryItems ?? [];

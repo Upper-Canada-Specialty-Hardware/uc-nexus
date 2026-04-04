@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import {
   Box,
   Typography,
@@ -99,12 +99,11 @@ function LocationContentsDrawer({
 }) {
   const [fetchContents, { data, loading, error }] = useLazyQuery<LocationContentsData>(GET_LOCATION_CONTENTS);
 
-  // Fetch on open
-  const prevOpen = useState(false);
-  if (open && !prevOpen[0]) {
-    fetchContents({ variables: { aisle, bay, bin } });
-  }
-  prevOpen[0] = open;
+  useEffect(() => {
+    if (open) {
+      fetchContents({ variables: { aisle, bay, bin } });
+    }
+  }, [open, aisle, bay, bin, fetchContents]);
 
   const invItems = data?.locationContents?.inventoryItems ?? [];
   const oiItems = data?.locationContents?.openingItems ?? [];
