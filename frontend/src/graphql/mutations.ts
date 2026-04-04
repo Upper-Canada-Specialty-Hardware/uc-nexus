@@ -524,3 +524,53 @@ export const UPDATE_USER_ROLES = gql`
     }
   }
 `;
+
+// --- Warehouse Layout mutations ---
+
+export const CREATE_AISLE = gql`
+  mutation CreateAisle($name: String!, $label: String, $xPosition: Int, $yPosition: Int, $width: Int, $height: Int) {
+    createAisle(name: $name, label: $label, xPosition: $xPosition, yPosition: $yPosition, width: $width, height: $height) {
+      id name label xPosition yPosition width height isActive bays { id name bins { id name } }
+    }
+  }
+`;
+
+export const UPDATE_AISLE = gql`
+  mutation UpdateAisle($id: ID!, $name: String, $label: String, $xPosition: Int, $yPosition: Int, $width: Int, $height: Int, $isActive: Boolean) {
+    updateAisle(id: $id, name: $name, label: $label, xPosition: $xPosition, yPosition: $yPosition, width: $width, height: $height, isActive: $isActive) {
+      id name label xPosition yPosition width height isActive bays { id name bins { id name } }
+    }
+  }
+`;
+
+export const CREATE_BAY = gql`
+  mutation CreateBay($aisleId: ID!, $name: String!, $rowPosition: Int, $colPosition: Int) {
+    createBay(aisleId: $aisleId, name: $name, rowPosition: $rowPosition, colPosition: $colPosition) {
+      id aisleId name rowPosition colPosition isActive bins { id name }
+    }
+  }
+`;
+
+export const UPDATE_BAY = gql`
+  mutation UpdateBay($id: ID!, $name: String, $rowPosition: Int, $colPosition: Int, $isActive: Boolean) {
+    updateBay(id: $id, name: $name, rowPosition: $rowPosition, colPosition: $colPosition, isActive: $isActive) {
+      id aisleId name rowPosition colPosition isActive bins { id name }
+    }
+  }
+`;
+
+export const CREATE_BIN = gql`
+  mutation CreateBin($bayId: ID!, $name: String!, $rowPosition: Int, $colPosition: Int, $capacity: Int) {
+    createBin(bayId: $bayId, name: $name, rowPosition: $rowPosition, colPosition: $colPosition, capacity: $capacity) {
+      id bayId name rowPosition colPosition capacity isActive
+    }
+  }
+`;
+
+export const UPDATE_BIN = gql`
+  mutation UpdateBin($id: ID!, $name: String, $rowPosition: Int, $colPosition: Int, $capacity: Int, $isActive: Boolean) {
+    updateBin(id: $id, name: $name, rowPosition: $rowPosition, colPosition: $colPosition, capacity: $capacity, isActive: $isActive) {
+      id bayId name rowPosition colPosition capacity isActive
+    }
+  }
+`;

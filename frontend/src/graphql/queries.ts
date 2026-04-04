@@ -476,3 +476,162 @@ export const GET_USERS = gql`
     }
   }
 `;
+
+export const GET_INVENTORY_BY_VENDOR = gql`
+  query GetInventoryByVendor($projectId: ID) {
+    inventoryByVendor(projectId: $projectId) {
+      vendorName
+      totalQuantity
+      totalValue
+      productCodes {
+        productCode
+        totalQuantity
+        totalValue
+        items {
+          id projectId poLineItemId receiveLineItemId
+          hardwareCategory productCode quantity
+          aisle bay bin receivedAt createdAt updatedAt
+        }
+      }
+    }
+  }
+`;
+
+export const GET_LOCATION_UTILIZATION = gql`
+  query GetLocationUtilization {
+    locationUtilization {
+      aisle
+      bay
+      bin
+      itemCount
+      totalQuantity
+    }
+  }
+`;
+
+export const GET_LOCATION_CONTENTS = gql`
+  query GetLocationContents($aisle: String!, $bay: String, $bin: String) {
+    locationContents(aisle: $aisle, bay: $bay, bin: $bin) {
+      inventoryItems {
+        inventoryLocation {
+          id projectId poLineItemId receiveLineItemId
+          hardwareCategory productCode quantity
+          aisle bay bin receivedAt createdAt updatedAt
+        }
+        poNumber
+        unitCost
+      }
+      openingItems {
+        id projectId openingId openingNumber
+        building floor location quantity
+        assemblyCompletedAt state aisle bay bin
+        createdAt updatedAt
+        installedHardware { id openingItemId productCode hardwareCategory quantity }
+      }
+    }
+  }
+`;
+
+export const GET_EXPECTED_DELIVERIES = gql`
+  query GetExpectedDeliveries($projectId: ID) {
+    expectedDeliveries(projectId: $projectId) {
+      id
+      poNumber
+      requestNumber
+      vendorName
+      expectedDeliveryDate
+      orderedAt
+      status
+      lineItems {
+        id
+        hardwareCategory
+        productCode
+        orderedQuantity
+        receivedQuantity
+        unitCost
+      }
+    }
+  }
+`;
+
+export const GET_BACK_ORDERED_ITEMS = gql`
+  query GetBackOrderedItems($projectId: ID) {
+    backOrderedItems(projectId: $projectId) {
+      hardwareCategory
+      productCode
+      orderedQuantity
+      receivedQuantity
+      outstandingQuantity
+      unitCost
+      poNumber
+      vendorName
+      expectedDeliveryDate
+    }
+  }
+`;
+
+export const GET_WAREHOUSE_DASHBOARD = gql`
+  query GetWarehouseDashboard {
+    warehouseDashboard {
+      totalItemCount
+      totalValue
+      unlocatedCount
+      pendingPullShop
+      pendingPullShipping
+      receivedLast7Days
+      backOrderedCount
+    }
+  }
+`;
+
+export const GET_WAREHOUSE_AISLES = gql`
+  query GetWarehouseAisles($activeOnly: Boolean) {
+    warehouseAisles(activeOnly: $activeOnly) {
+      id name label xPosition yPosition width height isActive
+      bays {
+        id aisleId name rowPosition colPosition isActive
+        bins {
+          id bayId name rowPosition colPosition capacity isActive
+        }
+      }
+    }
+  }
+`;
+
+export const GET_WAREHOUSE_OVERVIEW = gql`
+  query GetWarehouseOverview {
+    warehouseOverview {
+      id name label xPosition yPosition width height isActive
+      totalQuantity itemCount totalCapacity
+      bays {
+        id aisleId name rowPosition colPosition isActive
+        bins {
+          id bayId name rowPosition colPosition capacity isActive
+        }
+      }
+    }
+  }
+`;
+
+export const GET_SUGGEST_PUT_AWAY = gql`
+  query GetSuggestPutAway($productCode: String!, $hardwareCategory: String!, $quantity: Int) {
+    suggestPutAway(productCode: $productCode, hardwareCategory: $hardwareCategory, quantity: $quantity) {
+      aisle bay bin reason currentQuantity capacity
+    }
+  }
+`;
+
+export const GET_AUDIT_LOG = gql`
+  query GetAuditLog($entityId: ID, $entityType: AuditEntityType, $projectId: ID, $limit: Int) {
+    auditLog(entityId: $entityId, entityType: $entityType, projectId: $projectId, limit: $limit) {
+      id
+      projectId
+      entityType
+      entityId
+      action
+      detail
+      performedBy
+      createdAt
+    }
+  }
+`;

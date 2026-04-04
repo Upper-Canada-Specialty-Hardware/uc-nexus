@@ -1,15 +1,17 @@
 """Repository for warehouse inventory and opening item data access."""
 
-import json
 import uuid
 from collections import defaultdict
 from datetime import datetime
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import InvalidStateTransitionError, NotFoundError, ValidationError
+from app.models.audit_log import InventoryAuditLog
 from app.models.enums import (
+    AuditAction,
+    AuditEntityType,
     NotificationType,
     OpeningItemState,
     POStatus,
@@ -28,6 +30,292 @@ from app.models.receiving import ReceiveRecord as ReceiveRecordModel
 from app.models.shop_assembly import ShopAssemblyRequest as SARModel
 from app.services import notification_service
 from app.services.locking import lock_rows
+
+
+def _log_audit_event(
+    session: Session,
+    *,
+    project_id: uuid.UUID | None,
+    entity_type: AuditEntityType,
+    entity_id: uuid.UUID,
+    action: AuditAction,
+    performed_by: str,
+    detail: dict | None = None,
+) -> None:
+    """Insert a row into inventory_audit_log."""
+    session.add(
+        InventoryAuditLog(
+            project_id=project_id,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            action=action,
+            detail=detail,
+            performed_by=performed_by,
+        )
+    )
+
+
+def get_audit_log(
+    session: Session,
+    entity_id: uuid.UUID | None = None,
+    entity_type: str | None = None,
+    project_id: uuid.UUID | None = None,
+    limit: int = 50,
+) -> list[InventoryAuditLog]:
+    """Query audit log entries, optionally filtered by entity, type, or project."""
+    stmt = select(InventoryAuditLog).order_by(InventoryAuditLog.created_at.desc())
+    if entity_id is not None:
+        stmt = stmt.where(InventoryAuditLog.entity_id == entity_id)
+    if entity_type is not None:
+        stmt = stmt.where(InventoryAuditLog.entity_type == entity_type)
+    if project_id is not None:
+        stmt = stmt.where(InventoryAuditLog.project_id == project_id)
+    stmt = stmt.limit(limit)
+    return list(session.scalars(stmt).all())
+
+
+def get_warehouse_dashboard(session: Session) -> dict:
+    """Compute cross-project warehouse dashboard statistics."""
+    from datetime import timedelta
+
+    now = datetime.utcnow()
+    seven_days_ago = now - timedelta(days=7)
+
+    # Total inventory value and item count
+    inv_stats = session.execute(
+        select(
+            func.coalesce(func.sum(InventoryLocationModel.quantity), 0),
+            func.coalesce(func.sum(InventoryLocationModel.quantity * POLineItemModel.unit_cost), 0),
+        ).join(POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id)
+    ).one()
+
+    # Unlocated count
+    unlocated_count = (
+        session.scalar(
+            select(func.count())
+            .select_from(InventoryLocationModel)
+            .where(
+                InventoryLocationModel.aisle.is_(None),
+                InventoryLocationModel.quantity > 0,
+            )
+        )
+        or 0
+    )
+
+    # Pending pull requests by source
+    pending_shop = (
+        session.scalar(
+            select(func.count())
+            .select_from(PullRequestModel)
+            .where(
+                PullRequestModel.status == PullRequestStatus.PENDING,
+                PullRequestModel.source == PullRequestSource.SHOP_ASSEMBLY,
+                PullRequestModel.deleted_at.is_(None),
+            )
+        )
+        or 0
+    )
+    pending_shipping = (
+        session.scalar(
+            select(func.count())
+            .select_from(PullRequestModel)
+            .where(
+                PullRequestModel.status == PullRequestStatus.PENDING,
+                PullRequestModel.source == PullRequestSource.SHIPPING_OUT,
+                PullRequestModel.deleted_at.is_(None),
+            )
+        )
+        or 0
+    )
+
+    # Items received in last 7 days
+    received_recent = (
+        session.scalar(
+            select(func.coalesce(func.sum(ReceiveLineItemModel.quantity_received), 0)).where(
+                ReceiveLineItemModel.created_at >= seven_days_ago,
+            )
+        )
+        or 0
+    )
+
+    # Back-ordered: PO line items where received < ordered on active POs
+    back_ordered = (
+        session.scalar(
+            select(func.coalesce(func.sum(POLineItemModel.ordered_quantity - POLineItemModel.received_quantity), 0))
+            .join(POModel, POLineItemModel.po_id == POModel.id)
+            .where(
+                POModel.status.in_([POStatus.ORDERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED]),
+                POModel.deleted_at.is_(None),
+                POLineItemModel.ordered_quantity > POLineItemModel.received_quantity,
+            )
+        )
+        or 0
+    )
+
+    return {
+        "total_item_count": int(inv_stats[0]),
+        "total_value": float(inv_stats[1]),
+        "unlocated_count": int(unlocated_count),
+        "pending_pull_shop": int(pending_shop),
+        "pending_pull_shipping": int(pending_shipping),
+        "received_last_7_days": int(received_recent),
+        "back_ordered_count": int(back_ordered),
+    }
+
+
+def get_expected_deliveries(session: Session, project_id: uuid.UUID | None = None) -> list:
+    """Active POs with outstanding line items, ordered by expected_delivery_date."""
+    stmt = (
+        select(POModel)
+        .options(selectinload(POModel.line_items))
+        .where(
+            POModel.status.in_([POStatus.ORDERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED]),
+            POModel.deleted_at.is_(None),
+        )
+        .order_by(POModel.expected_delivery_date.asc().nulls_last(), POModel.ordered_at.asc())
+    )
+    if project_id is not None:
+        stmt = stmt.where(POModel.project_id == project_id)
+    return list(session.scalars(stmt).unique().all())
+
+
+def get_back_ordered_items(session: Session, project_id: uuid.UUID | None = None) -> list[dict]:
+    """PO line items where received < ordered on active POs."""
+    stmt = (
+        select(POLineItemModel, POModel.po_number, POModel.vendor_name, POModel.expected_delivery_date)
+        .join(POModel, POLineItemModel.po_id == POModel.id)
+        .where(
+            POModel.status.in_([POStatus.ORDERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED]),
+            POModel.deleted_at.is_(None),
+            POLineItemModel.ordered_quantity > POLineItemModel.received_quantity,
+        )
+        .order_by(POModel.expected_delivery_date.asc().nulls_last(), POLineItemModel.hardware_category)
+    )
+    if project_id is not None:
+        stmt = stmt.where(POModel.project_id == project_id)
+    rows = session.execute(stmt).all()
+    return [
+        {
+            "po_line_item": row[0],
+            "po_number": row[1],
+            "vendor_name": row[2],
+            "expected_delivery_date": row[3],
+            "outstanding_quantity": row[0].ordered_quantity - row[0].received_quantity,
+        }
+        for row in rows
+    ]
+
+
+def get_inventory_by_vendor(session: Session, project_id: uuid.UUID | None = None) -> list[dict]:
+    """Group inventory by vendor_name, then product_code."""
+    stmt = (
+        select(InventoryLocationModel, POLineItemModel.unit_cost, POModel.vendor_name)
+        .join(POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id)
+        .join(POModel, POLineItemModel.po_id == POModel.id)
+    )
+    if project_id is not None:
+        stmt = stmt.where(InventoryLocationModel.project_id == project_id)
+    stmt = stmt.order_by(POModel.vendor_name, InventoryLocationModel.product_code)
+    rows = list(session.execute(stmt).all())
+
+    vendor_map: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
+    for il, unit_cost, vendor_name in rows:
+        vname = vendor_name or "No Vendor"
+        vendor_map[vname][il.product_code].append((il, unit_cost))
+
+    result = []
+    for vendor in sorted(vendor_map.keys()):
+        pc_map = vendor_map[vendor]
+        pc_nodes = []
+        vendor_total = 0
+        vendor_value = 0.0
+        for pc in sorted(pc_map.keys()):
+            items_with_cost = pc_map[pc]
+            pc_total = sum(il.quantity for il, _ in items_with_cost)
+            pc_value = sum(float(uc) * il.quantity for il, uc in items_with_cost)
+            vendor_total += pc_total
+            vendor_value += pc_value
+            pc_nodes.append(
+                {
+                    "product_code": pc,
+                    "items": [il for il, _ in items_with_cost],
+                    "total_quantity": pc_total,
+                    "total_value": pc_value,
+                }
+            )
+        result.append(
+            {
+                "vendor_name": vendor,
+                "product_codes": pc_nodes,
+                "total_quantity": vendor_total,
+                "total_value": vendor_value,
+            }
+        )
+    return result
+
+
+def get_location_contents(session: Session, aisle: str, bay: str | None = None, bin_name: str | None = None) -> dict:
+    """Get all inventory items and opening items at a given location."""
+    # Inventory locations
+    inv_stmt = (
+        select(InventoryLocationModel, POLineItemModel.unit_cost, POModel.po_number)
+        .join(POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id)
+        .join(POModel, POLineItemModel.po_id == POModel.id)
+        .where(InventoryLocationModel.aisle == aisle, InventoryLocationModel.quantity > 0)
+    )
+    if bay is not None:
+        inv_stmt = inv_stmt.where(InventoryLocationModel.bay == bay)
+    if bin_name is not None:
+        inv_stmt = inv_stmt.where(InventoryLocationModel.bin == bin_name)
+    inv_rows = session.execute(inv_stmt).all()
+
+    # Opening items
+    oi_stmt = (
+        select(OpeningItemModel)
+        .options(selectinload(OpeningItemModel.installed_hardware))
+        .where(OpeningItemModel.aisle == aisle)
+    )
+    if bay is not None:
+        oi_stmt = oi_stmt.where(OpeningItemModel.bay == bay)
+    if bin_name is not None:
+        oi_stmt = oi_stmt.where(OpeningItemModel.bin == bin_name)
+    opening_items = list(session.scalars(oi_stmt).unique().all())
+
+    return {
+        "inventory_items": [
+            {"inventory_location": row[0], "unit_cost": float(row[1]), "po_number": row[2]} for row in inv_rows
+        ],
+        "opening_items": opening_items,
+    }
+
+
+def get_location_utilization(session: Session) -> list[dict]:
+    """Get distinct aisle/bay/bin combos with item counts and total quantities."""
+    # Inventory locations
+    inv_stmt = (
+        select(
+            InventoryLocationModel.aisle,
+            InventoryLocationModel.bay,
+            InventoryLocationModel.bin,
+            func.count().label("item_count"),
+            func.sum(InventoryLocationModel.quantity).label("total_quantity"),
+        )
+        .where(InventoryLocationModel.aisle.is_not(None), InventoryLocationModel.quantity > 0)
+        .group_by(InventoryLocationModel.aisle, InventoryLocationModel.bay, InventoryLocationModel.bin)
+        .order_by(InventoryLocationModel.aisle, InventoryLocationModel.bay, InventoryLocationModel.bin)
+    )
+    rows = session.execute(inv_stmt).all()
+
+    return [
+        {
+            "aisle": row[0],
+            "bay": row[1],
+            "bin": row[2],
+            "item_count": row[3],
+            "total_quantity": row[4],
+        }
+        for row in rows
+    ]
 
 
 def get_inventory_hierarchy(session: Session, project_id: uuid.UUID | None = None) -> list[dict]:
@@ -199,20 +487,22 @@ def adjust_inventory_quantity(
     if new_quantity < 0:
         raise ValidationError("Adjustment would result in negative quantity", field="adjustment")
 
+    old_quantity = il.quantity
     il.quantity = new_quantity
 
-    print(
-        json.dumps(
-            {
-                "action": "inventory_adjustment",
-                "inventoryLocationId": str(inv_id),
-                "adjustment": adjustment,
-                "newQuantity": new_quantity,
-                "reason": reason,
-                "timestamp": datetime.utcnow().isoformat(),
-                "performedBy": "Admin/Manager",
-            }
-        )
+    _log_audit_event(
+        session,
+        project_id=il.project_id,
+        entity_type=AuditEntityType.INVENTORY_LOCATION,
+        entity_id=il.id,
+        action=AuditAction.ADJUSTMENT,
+        performed_by="Admin/Manager",
+        detail={
+            "oldQuantity": old_quantity,
+            "newQuantity": new_quantity,
+            "adjustment": adjustment,
+            "reason": reason,
+        },
     )
 
     return il
@@ -228,9 +518,23 @@ def move_inventory_location(
 
     _validate_location_fields(new_aisle, new_bay, new_bin)
 
+    old_aisle, old_bay, old_bin = il.aisle, il.bay, il.bin
     il.aisle = new_aisle
     il.bay = new_bay
     il.bin = new_bin
+
+    _log_audit_event(
+        session,
+        project_id=il.project_id,
+        entity_type=AuditEntityType.INVENTORY_LOCATION,
+        entity_id=il.id,
+        action=AuditAction.MOVE,
+        performed_by="Admin/Manager",
+        detail={
+            "fromLocation": {"aisle": old_aisle, "bay": old_bay, "bin": old_bin},
+            "toLocation": {"aisle": new_aisle, "bay": new_bay, "bin": new_bin},
+        },
+    )
 
     return il
 
@@ -241,9 +545,20 @@ def mark_inventory_unlocated(session: Session, inv_id: uuid.UUID) -> InventoryLo
     if il is None:
         raise NotFoundError(f"Inventory location {inv_id} not found")
 
+    old_aisle, old_bay, old_bin = il.aisle, il.bay, il.bin
     il.aisle = None
     il.bay = None
     il.bin = None
+
+    _log_audit_event(
+        session,
+        project_id=il.project_id,
+        entity_type=AuditEntityType.INVENTORY_LOCATION,
+        entity_id=il.id,
+        action=AuditAction.UNLOCATE,
+        performed_by="Admin/Manager",
+        detail={"fromLocation": {"aisle": old_aisle, "bay": old_bay, "bin": old_bin}},
+    )
 
     return il
 
@@ -262,6 +577,16 @@ def assign_inventory_location(
     il.bay = bay
     il.bin = bin
 
+    _log_audit_event(
+        session,
+        project_id=il.project_id,
+        entity_type=AuditEntityType.INVENTORY_LOCATION,
+        entity_id=il.id,
+        action=AuditAction.PUT_AWAY,
+        performed_by="Admin/Manager",
+        detail={"toLocation": {"aisle": aisle, "bay": bay, "bin": bin}},
+    )
+
     return il
 
 
@@ -273,9 +598,23 @@ def move_opening_item_location(session: Session, oi_id: uuid.UUID, aisle: str, b
 
     _validate_location_fields(aisle, bay, bin)
 
+    old_aisle, old_bay, old_bin = oi.aisle, oi.bay, oi.bin
     oi.aisle = aisle
     oi.bay = bay
     oi.bin = bin
+
+    _log_audit_event(
+        session,
+        project_id=oi.project_id,
+        entity_type=AuditEntityType.OPENING_ITEM,
+        entity_id=oi.id,
+        action=AuditAction.MOVE,
+        performed_by="Admin/Manager",
+        detail={
+            "fromLocation": {"aisle": old_aisle, "bay": old_bay, "bin": old_bin},
+            "toLocation": {"aisle": aisle, "bay": bay, "bin": bin},
+        },
+    )
 
     return oi
 
@@ -286,9 +625,20 @@ def mark_opening_item_unlocated(session: Session, oi_id: uuid.UUID) -> OpeningIt
     if oi is None:
         raise NotFoundError(f"Opening item {oi_id} not found")
 
+    old_aisle, old_bay, old_bin = oi.aisle, oi.bay, oi.bin
     oi.aisle = None
     oi.bay = None
     oi.bin = None
+
+    _log_audit_event(
+        session,
+        project_id=oi.project_id,
+        entity_type=AuditEntityType.OPENING_ITEM,
+        entity_id=oi.id,
+        action=AuditAction.UNLOCATE,
+        performed_by="Admin/Manager",
+        detail={"fromLocation": {"aisle": old_aisle, "bay": old_bay, "bin": old_bin}},
+    )
 
     return oi
 
@@ -306,6 +656,16 @@ def assign_opening_item_location(
     oi.aisle = aisle
     oi.bay = bay
     oi.bin = bin
+
+    _log_audit_event(
+        session,
+        project_id=oi.project_id,
+        entity_type=AuditEntityType.OPENING_ITEM,
+        entity_id=oi.id,
+        action=AuditAction.PUT_AWAY,
+        performed_by="Admin/Manager",
+        detail={"toLocation": {"aisle": aisle, "bay": bay, "bin": bin}},
+    )
 
     return oi
 
@@ -413,6 +773,7 @@ def create_receive(
         session.flush()
 
         locations = li_input["locations"]
+        created_inv_locs: list[InventoryLocationModel] = []
         if locations:
             for loc in locations:
                 inv_loc = InventoryLocationModel(
@@ -428,6 +789,7 @@ def create_receive(
                     received_at=receive_record.received_at,
                 )
                 session.add(inv_loc)
+                created_inv_locs.append(inv_loc)
         else:
             inv_loc = InventoryLocationModel(
                 project_id=po.project_id,
@@ -442,6 +804,25 @@ def create_receive(
                 received_at=receive_record.received_at,
             )
             session.add(inv_loc)
+            created_inv_locs.append(inv_loc)
+
+        session.flush()
+        for inv_loc in created_inv_locs:
+            _log_audit_event(
+                session,
+                project_id=po.project_id,
+                entity_type=AuditEntityType.INVENTORY_LOCATION,
+                entity_id=inv_loc.id,
+                action=AuditAction.RECEIVE,
+                performed_by=received_by,
+                detail={
+                    "quantity": inv_loc.quantity,
+                    "hardwareCategory": inv_loc.hardware_category,
+                    "productCode": inv_loc.product_code,
+                    "poNumber": po.po_number,
+                    "location": {"aisle": inv_loc.aisle, "bay": inv_loc.bay, "bin": inv_loc.bin},
+                },
+            )
 
         # Update received_quantity on the POLineItem
         poli.received_quantity += li_input["quantity_received"]
@@ -644,8 +1025,25 @@ def approve_pull_request(session: Session, pr_id: uuid.UUID, approved_by: str) -
                 if remaining <= 0:
                     break
                 deduct = min(remaining, row.quantity)
+                old_qty = row.quantity
                 row.quantity -= deduct
                 remaining -= deduct
+                _log_audit_event(
+                    session,
+                    project_id=pr.project_id,
+                    entity_type=AuditEntityType.INVENTORY_LOCATION,
+                    entity_id=row.id,
+                    action=AuditAction.PULL_DEDUCTION,
+                    performed_by=approved_by,
+                    detail={
+                        "oldQuantity": old_qty,
+                        "newQuantity": row.quantity,
+                        "deducted": deduct,
+                        "pullRequestNumber": pr.request_number,
+                        "hardwareCategory": cat,
+                        "productCode": code,
+                    },
+                )
 
     # 7. Lock Opening_Item rows if any
     if opening_item_ids:

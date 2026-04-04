@@ -6,6 +6,7 @@ class Base(DeclarativeBase):
 
 
 # Import all models so Alembic can detect them
+from .audit_log import InventoryAuditLog  # noqa: E402, F401
 from .hardware import HardwareItem  # noqa: E402, F401
 from .inventory import InventoryLocation  # noqa: E402, F401
 from .notification import Notification  # noqa: E402, F401
@@ -21,3 +22,4 @@ from .shop_assembly import (  # noqa: E402, F401
     ShopAssemblyOpeningItem,
     ShopAssemblyRequest,
 )
+from .warehouse_layout import WarehouseAisle, WarehouseBay, WarehouseBin  # noqa: E402, F401
