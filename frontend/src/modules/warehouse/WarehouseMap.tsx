@@ -223,9 +223,11 @@ function ContentsDrawer({ open, onClose, aisle, row: rowName, bay, bin }: {
 // MAIN COMPONENT
 // ============================================================================
 
-export default function WarehouseMap() {
+export default function WarehouseMap({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { showToast } = useToast();
-  const { data, loading, error, refetch } = useQuery<{ warehouseOverview: AisleData[] }>(GET_WAREHOUSE_OVERVIEW);
+  const { data, loading, error, refetch } = useQuery<{ warehouseOverview: AisleData[] }>(GET_WAREHOUSE_OVERVIEW, {
+    skip: !open,
+  });
 
   // Mode
   const aisles = useMemo(() => data?.warehouseOverview ?? [], [data]);
@@ -435,18 +437,16 @@ export default function WarehouseMap() {
   const activeBays = useMemo(() => (selectedAisle?.bays ?? []).filter((b) => b.isActive), [selectedAisle]);
   const activeBins = useMemo(() => (selectedBay?.bins ?? []).filter((b) => b.isActive), [selectedBay]);
 
-  if (loading && !data) return <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}><CircularProgress /></Box>;
-  if (error) return <Alert severity="error">Error: {error.message}</Alert>;
-
   return (
-    <Box>
-      {/* Toolbar */}
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1, flexWrap: 'wrap' }}>
+    <Dialog fullScreen open={open} onClose={onClose}>
+      <Box sx={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
+      {/* Top bar with close */}
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 2, py: 1, borderBottom: 1, borderColor: 'divider', bgcolor: 'background.paper', flexShrink: 0 }}>
         {level !== 'floor' && <Button size="small" startIcon={<ArrowBackIcon />} onClick={goBack}>Back</Button>}
         <Breadcrumbs sx={{ mr: 'auto' }}>
           <Link underline="hover" sx={{ cursor: 'pointer' }} color={level === 'floor' ? 'text.primary' : 'inherit'}
             onClick={() => { setLevel('floor'); setSelectedAisleId(null); setSelectedBayId(null); }}>
-            Warehouse
+            Warehouse Map
           </Link>
           {selectedAisle && (
             <Link underline="hover" sx={{ cursor: 'pointer' }} color={level === 'aisle' ? 'text.primary' : 'inherit'}
@@ -468,10 +468,11 @@ export default function WarehouseMap() {
             )}
           </>
         )}
+        <Tooltip title="Close map"><IconButton onClick={onClose}><CloseIcon /></IconButton></Tooltip>
       </Box>
 
       {/* Legend */}
-      <Box sx={{ display: 'flex', gap: 1, mb: 1, flexWrap: 'wrap' }}>
+      <Box sx={{ display: 'flex', gap: 1, px: 2, py: 0.5, flexWrap: 'wrap', flexShrink: 0 }}>
         {[
           { color: '#e0e0e0', label: 'Empty' }, { color: '#a5d6a7', label: '<50%' },
           { color: '#fff176', label: '50-80%' }, { color: '#ffab91', label: '80-100%' },
@@ -488,8 +489,14 @@ export default function WarehouseMap() {
       </Box>
 
       {/* === FLOOR VIEW (React Flow) === */}
-      {level === 'floor' && (
-        <Box sx={{ height: 'calc(100vh - 260px)', minHeight: 400, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
+      {level === 'floor' && loading && !data && (
+        <Box sx={{ flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center' }}><CircularProgress /></Box>
+      )}
+      {level === 'floor' && error && (
+        <Box sx={{ flex: 1, p: 2 }}><Alert severity="error">Error: {error.message}</Alert></Box>
+      )}
+      {level === 'floor' && !loading && !error && (
+        <Box sx={{ flex: 1, minHeight: 0 }}>
           <ReactFlow
             nodes={nodes}
             nodeTypes={nodeTypes}
@@ -522,7 +529,7 @@ export default function WarehouseMap() {
 
       {/* === AISLE INTERIOR === */}
       {level === 'aisle' && selectedAisle && (
-        <Box>
+        <Box sx={{ flex: 1, overflow: 'auto', p: 2 }}>
           <Box sx={{ display: 'flex', gap: 1, mb: 2 }}>
             <Button variant="outlined" size="small" onClick={() => { setAddDialogType('row'); setAddName(''); }}>+ Row</Button>
             <Button variant="outlined" size="small" onClick={() => { setAddDialogType('bay'); setAddName(''); }}>+ Bay</Button>
@@ -563,7 +570,7 @@ export default function WarehouseMap() {
 
       {/* === BAY/BIN DETAIL === */}
       {level === 'bay' && selectedAisle && selectedBay && (
-        <Box>
+        <Box sx={{ flex: 1, overflow: 'auto', p: 2 }}>
           <Button variant="outlined" size="small" sx={{ mb: 2 }} onClick={() => { setAddDialogType('bin'); setAddName(''); setAddCapacity(''); }}>+ Bin</Button>
           {activeBins.length === 0 && <Alert severity="info">No bins. Add bins to store inventory.</Alert>}
           <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1.5 }}>
@@ -611,6 +618,7 @@ export default function WarehouseMap() {
       </Menu>
 
       <ContentsDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} aisle={drawerLoc.aisle} row={drawerLoc.row} bay={drawerLoc.bay} bin={drawerLoc.bin} />
-    </Box>
+      </Box>
+    </Dialog>
   );
 }
