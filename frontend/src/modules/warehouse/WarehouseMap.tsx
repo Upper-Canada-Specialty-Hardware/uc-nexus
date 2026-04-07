@@ -1,10 +1,10 @@
-import { useState, useCallback, useMemo, useEffect, memo } from 'react';
+import { useState, useCallback, useMemo, useEffect, useRef, memo } from 'react';
 import {
   Box, Typography, Button, Fab, Breadcrumbs, Link, Dialog, DialogTitle,
   DialogContent, DialogActions, TextField, Stack, Alert, CircularProgress,
   IconButton, Drawer, List, ListItemButton, ListItemText, Chip, Divider,
   ToggleButton, ToggleButtonGroup, Menu, MenuItem as MuiMenuItem, ListItemIcon,
-  Tooltip,
+  Tooltip, Collapse,
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
@@ -13,10 +13,12 @@ import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import EditIcon from '@mui/icons-material/Edit';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import RotateRightIcon from '@mui/icons-material/RotateRight';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import {
   ReactFlow, MiniMap, Controls, Background, BackgroundVariant, NodeResizer,
   useNodesState,
-  type Node, type NodeProps,
+  type Node, type NodeProps, type ReactFlowInstance,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { useQuery, useMutation, useLazyQuery } from '@apollo/client/react';
@@ -175,17 +177,22 @@ function CloneDialog({ open, onClose, onSave, loading }: {
 }
 
 // --- Contents Drawer ---
+interface InstalledHw { id: string; productCode: string; hardwareCategory: string; quantity: number }
+interface CDOpeningItem { id: string; openingNumber: string; state: string; installedHardware: InstalledHw[] }
+interface CD { locationContents: { inventoryItems: { inventoryLocation: { id: string; productCode: string; hardwareCategory: string; quantity: number }; poNumber: string | null }[]; openingItems: CDOpeningItem[] } }
+
 function ContentsDrawer({ open, onClose, aisle, row: rowName, bay, bin }: {
   open: boolean; onClose: () => void; aisle: string; row: string | null; bay: string | null; bin: string | null;
 }) {
-  interface CD { locationContents: { inventoryItems: { inventoryLocation: { id: string; productCode: string; hardwareCategory: string; quantity: number }; poNumber: string | null }[]; openingItems: { id: string; openingNumber: string; state: string }[] } }
   const [fetch, { data, loading }] = useLazyQuery<CD>(GET_LOCATION_CONTENTS);
+  const [expandedOIs, setExpandedOIs] = useState<Set<string>>(new Set());
   useEffect(() => { if (open) fetch({ variables: { aisle, row: rowName, bay, bin } }); }, [open, aisle, rowName, bay, bin, fetch]);
   const inv = data?.locationContents?.inventoryItems ?? [];
   const ois = data?.locationContents?.openingItems ?? [];
   const loc = [aisle, rowName, bay, bin].filter(Boolean).join('-');
+  const toggleOI = (id: string) => setExpandedOIs((prev) => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; });
   return (
-    <Drawer anchor="right" open={open} onClose={onClose} PaperProps={{ sx: { width: 400, maxWidth: '90vw' } }}>
+    <Drawer anchor="right" open={open} onClose={onClose} sx={{ zIndex: 1400 }} PaperProps={{ sx: { width: 400, maxWidth: '90vw' } }}>
       <Box sx={{ p: 2 }}>
         <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 2 }}>
           <Typography variant="h6">{loc}</Typography>
@@ -207,10 +214,28 @@ function ContentsDrawer({ open, onClose, aisle, row: rowName, bay, bin }: {
           <Typography variant="subtitle2" sx={{ mb: 1 }}>Opening Items ({ois.length})</Typography>
           <List dense disablePadding>
             {ois.map((o) => (
-              <ListItemButton key={o.id} sx={{ borderRadius: 1, mb: 0.5 }}>
-                <ListItemText primary={o.openingNumber} />
-                <Chip label={o.state.replace('_', ' ')} size="small" variant="outlined" />
-              </ListItemButton>
+              <Box key={o.id}>
+                <ListItemButton onClick={() => toggleOI(o.id)} sx={{ borderRadius: 1, mb: 0.5 }}>
+                  <ListItemText primary={o.openingNumber} />
+                  <Chip label={o.state.replace('_', ' ')} size="small" variant="outlined" sx={{ mr: 0.5 }} />
+                  {expandedOIs.has(o.id) ? <ExpandLessIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
+                </ListItemButton>
+                <Collapse in={expandedOIs.has(o.id)}>
+                  <List dense disablePadding sx={{ pl: 3, pb: 1 }}>
+                    {o.installedHardware.length === 0 && <Typography variant="caption" color="text.secondary">No installed hardware</Typography>}
+                    {o.installedHardware.map((hw) => (
+                      <ListItemButton key={hw.id} sx={{ borderRadius: 1, py: 0.25 }} disableRipple>
+                        <ListItemText
+                          primary={`${hw.productCode} — ${hw.hardwareCategory}`}
+                          secondary={`Qty: ${hw.quantity}`}
+                          primaryTypographyProps={{ variant: 'body2' }}
+                          secondaryTypographyProps={{ variant: 'caption' }}
+                        />
+                      </ListItemButton>
+                    ))}
+                  </List>
+                </Collapse>
+              </Box>
             ))}
           </List>
         </>)}
@@ -235,6 +260,8 @@ export default function WarehouseMap({ open, onClose }: { open: boolean; onClose
 
   // React Flow nodes
   const [nodes, setNodes, onNodesChange] = useNodesState([] as Node[]);
+  const rfInstanceRef = useRef<ReactFlowInstance | null>(null);
+  const initialFitDone = useRef(false);
 
   // Sync server data → React Flow nodes
   useEffect(() => {
@@ -247,7 +274,21 @@ export default function WarehouseMap({ open, onClose }: { open: boolean; onClose
       draggable: mode === 'edit',
       selectable: mode === 'edit',
     })));
+    // Fit view once on initial data load
+    if (!initialFitDone.current && aisles.length > 0 && rfInstanceRef.current) {
+      setTimeout(() => rfInstanceRef.current?.fitView(), 50);
+      initialFitDone.current = true;
+    }
   }, [aisles, mode, setNodes]);
+
+  // Reset fit flag when dialog closes
+  useEffect(() => { if (!open) initialFitDone.current = false; }, [open]);
+
+  const handleInit = useCallback((instance: ReactFlowInstance) => {
+    rfInstanceRef.current = instance;
+    if (aisles.length > 0) instance.fitView();
+    initialFitDone.current = true;
+  }, [aisles.length]);
 
   // Navigation state
   const [level, setLevel] = useState<ViewLevel>('floor');
@@ -285,7 +326,12 @@ export default function WarehouseMap({ open, onClose }: { open: boolean; onClose
   const onDone = useCallback(() => { refetch(); showToast('Saved', 'success'); }, [refetch, showToast]);
   const onErr = useCallback((e: { message: string }) => showToast(e.message, 'error'), [showToast]);
   const [createAisle, { loading: caLoading }] = useMutation(CREATE_AISLE, { onCompleted: onDone, onError: onErr });
-  const [updateAisle] = useMutation(UPDATE_AISLE, { onCompleted: () => refetch(), onError: onErr });
+  const [updateAisle] = useMutation(UPDATE_AISLE, { onError: onErr });
+  // Wrapper that refetches after property edits (not drag/resize)
+  const updateAisleAndRefetch = useCallback(
+    (variables: Record<string, unknown>) => updateAisle({ variables }).then(() => { refetch(); }),
+    [updateAisle, refetch],
+  );
   const [cloneAisleMut, { loading: cloneLoading }] = useMutation(CLONE_AISLE, { onCompleted: onDone, onError: onErr });
   const [createRow, { loading: crLoading }] = useMutation(CREATE_ROW, { onCompleted: onDone, onError: onErr });
   const [updateRow] = useMutation(UPDATE_ROW, { onCompleted: () => refetch(), onError: onErr });
@@ -321,14 +367,18 @@ export default function WarehouseMap({ open, onClose }: { open: boolean; onClose
     if (aisle) setCtxMenu({ x: event.clientX, y: event.clientY, aisle });
   }, [mode, aisles]);
 
-  const handleNodeResize = useCallback((id: string, dimensions: { width: number; height: number }) => {
+  const handleNodeResize = useCallback((id: string, dimensions: { width: number; height: number }, position?: { x: number; y: number }) => {
     const aisle = aisles.find((a) => a.id === id);
     if (!aisle) return;
     const w = Math.max(MIN_W, Math.round(dimensions.width));
     const h = Math.max(MIN_H, Math.round(dimensions.height));
-    if (w !== aisle.width || h !== aisle.height) {
-      pushUndo({ type: 'resize', id, prev: { width: aisle.width, height: aisle.height } });
-      updateAisle({ variables: { id, width: w, height: h } });
+    const newX = position ? Math.max(0, Math.round(position.x / GRID) * GRID) : undefined;
+    const newY = position ? Math.max(0, Math.round(position.y / GRID) * GRID) : undefined;
+    const sizeChanged = w !== aisle.width || h !== aisle.height;
+    const posChanged = newX !== undefined && newY !== undefined && (newX !== aisle.xPosition || newY !== aisle.yPosition);
+    if (sizeChanged || posChanged) {
+      pushUndo({ type: 'resize', id, prev: { width: aisle.width, height: aisle.height, xPosition: aisle.xPosition, yPosition: aisle.yPosition } });
+      updateAisle({ variables: { id, width: w, height: h, ...(posChanged ? { xPosition: newX, yPosition: newY } : {}) } });
     }
   }, [aisles, updateAisle, pushUndo]);
 
@@ -337,10 +387,17 @@ export default function WarehouseMap({ open, onClose }: { open: boolean; onClose
     onNodesChange(changes);
     for (const change of changes) {
       if (change.type === 'dimensions' && change.dimensions && change.resizing === false) {
-        handleNodeResize(change.id, change.dimensions);
+        const dims = change.dimensions;
+        const changeId = change.id;
+        // Read the node's current position after onNodesChange applied all changes
+        setNodes((currentNodes) => {
+          const node = currentNodes.find((n) => n.id === changeId);
+          if (node) handleNodeResize(changeId, dims, node.position);
+          return currentNodes;
+        });
       }
     }
-  }, [onNodesChange, handleNodeResize]);
+  }, [onNodesChange, handleNodeResize, setNodes]);
 
   // --- Navigation ---
   const drillIntoBay = useCallback((r: Row | null, b: Bay) => { setSelectedRowId(r?.id ?? null); setSelectedBayId(b.id); setLevel('bay'); }, []);
@@ -370,9 +427,9 @@ export default function WarehouseMap({ open, onClose }: { open: boolean; onClose
   // --- Edit/clone/delete ---
   const handleEditAisle = useCallback((v: { name: string; label: string; orientation: string }) => {
     if (!editAisleTarget) return;
-    updateAisle({ variables: { id: editAisleTarget.id, name: v.name, label: v.label || null, orientation: v.orientation } });
+    updateAisleAndRefetch({ id: editAisleTarget.id, name: v.name, label: v.label || null, orientation: v.orientation });
     setEditAisleTarget(null);
-  }, [editAisleTarget, updateAisle]);
+  }, [editAisleTarget, updateAisleAndRefetch]);
 
   const handleClone = useCallback((name: string) => {
     if (!cloneTarget) return;
@@ -381,28 +438,41 @@ export default function WarehouseMap({ open, onClose }: { open: boolean; onClose
   }, [cloneTarget, cloneAisleMut]);
 
   const handleRotate = useCallback((a: AisleData) => {
-    updateAisle({ variables: { id: a.id, orientation: a.orientation === 'VERTICAL' ? 'HORIZONTAL' : 'VERTICAL', width: a.height, height: a.width } });
-  }, [updateAisle]);
+    updateAisleAndRefetch({ id: a.id, orientation: a.orientation === 'VERTICAL' ? 'HORIZONTAL' : 'VERTICAL', width: a.height, height: a.width });
+  }, [updateAisleAndRefetch]);
 
   const handleDelete = useCallback(() => {
     if (!deleteConfirm) return;
     const { type, id } = deleteConfirm;
-    if (type === 'aisle') { pushUndo({ type: 'delete', id, prev: { isActive: true } }); updateAisle({ variables: { id, isActive: false } }); }
+    if (type === 'aisle') { pushUndo({ type: 'delete', id, prev: { isActive: true } }); updateAisleAndRefetch({ id, isActive: false }); }
     else if (type === 'row') updateRow({ variables: { id, isActive: false } });
     else if (type === 'bay') updateBay({ variables: { id, isActive: false } });
     else if (type === 'bin') updateBin({ variables: { id, isActive: false } });
     setDeleteConfirm(null);
-  }, [deleteConfirm, updateAisle, updateRow, updateBay, updateBin, pushUndo]);
+  }, [deleteConfirm, updateAisleAndRefetch, updateRow, updateBay, updateBin, pushUndo]);
 
   // --- Undo ---
   const handleUndo = useCallback(() => {
     if (undoStack.length === 0) return;
     const entry = undoStack[undoStack.length - 1];
     setUndoStack((prev) => prev.slice(0, -1));
-    if (entry.type === 'move') updateAisle({ variables: { id: entry.id, ...entry.prev } });
-    else if (entry.type === 'resize') updateAisle({ variables: { id: entry.id, ...entry.prev } });
-    else if (entry.type === 'delete') updateAisle({ variables: { id: entry.id, isActive: true } });
-  }, [undoStack, updateAisle]);
+    if (entry.type === 'move' || entry.type === 'resize') {
+      updateAisle({ variables: { id: entry.id, ...entry.prev } });
+      // Also update local nodes to reflect the undo immediately
+      setNodes((prev) => prev.map((n) => {
+        if (n.id !== entry.id) return n;
+        const updates: Partial<Node> = {};
+        if ('xPosition' in entry.prev || 'yPosition' in entry.prev) {
+          updates.position = { x: (entry.prev.xPosition as number) ?? n.position.x, y: (entry.prev.yPosition as number) ?? n.position.y };
+        }
+        if ('width' in entry.prev || 'height' in entry.prev) {
+          updates.style = { ...n.style, width: (entry.prev.width as number) ?? undefined, height: (entry.prev.height as number) ?? undefined };
+        }
+        return { ...n, ...updates };
+      }));
+    }
+    else if (entry.type === 'delete') updateAisleAndRefetch({ id: entry.id, isActive: true });
+  }, [undoStack, updateAisle, updateAisleAndRefetch, setNodes]);
 
   // --- Keyboard shortcuts ---
   useEffect(() => {
@@ -509,7 +579,7 @@ export default function WarehouseMap({ open, onClose }: { open: boolean; onClose
             elementsSelectable={mode === 'edit'}
             snapToGrid={mode === 'edit'}
             snapGrid={[GRID, GRID]}
-            fitView={aisles.length > 0}
+            onInit={handleInit}
             minZoom={0.1}
             maxZoom={3}
             proOptions={{ hideAttribution: true }}

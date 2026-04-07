@@ -593,7 +593,7 @@ export const GET_WAREHOUSE_AISLES = gql`
       bays {
         id aisleId name rowPosition colPosition isActive
         bins {
-          id bayId name rowPosition colPosition capacity isActive
+          id bayId rowId name rowPosition colPosition capacity isActive
         }
       }
     }
@@ -609,7 +609,7 @@ export const GET_WAREHOUSE_OVERVIEW = gql`
       bays {
         id aisleId name rowPosition colPosition isActive
         bins {
-          id bayId name rowPosition colPosition capacity isActive
+          id bayId rowId name rowPosition colPosition capacity isActive
         }
       }
     }
