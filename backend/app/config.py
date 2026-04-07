@@ -14,3 +14,4 @@ BUCKET_NAME = os.getenv("BUCKET_NAME", "")
 
 # Clerk authentication config
 CLERK_SECRET_KEY = os.getenv("CLERK_SECRET_KEY", "")
+TESTING_ENABLED = os.getenv("TESTING_ENABLED", "").lower() in ("true", "1", "yes")

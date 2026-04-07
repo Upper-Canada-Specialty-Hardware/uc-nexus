@@ -76,3 +76,22 @@ def reset_data():
     command.upgrade(alembic_cfg, "head")
 
     return {"status": "ok", "message": "Schema dropped and rebuilt"}
+
+
+@app.get("/testing/clerk-token")
+def get_clerk_testing_token():
+    """Fetch a Clerk testing token for E2E testing. Only available when TESTING_ENABLED=true."""
+    import httpx
+    from fastapi.responses import JSONResponse
+
+    from app.config import CLERK_SECRET_KEY, TESTING_ENABLED
+
+    if not TESTING_ENABLED:
+        return JSONResponse(status_code=403, content={"error": "Testing is not enabled"})
+
+    resp = httpx.post(
+        "https://api.clerk.com/v1/testing_tokens",
+        headers={"Authorization": f"Bearer {CLERK_SECRET_KEY}"},
+    )
+    resp.raise_for_status()
+    return {"token": resp.json()["token"]}
