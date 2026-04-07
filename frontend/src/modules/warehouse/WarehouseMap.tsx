@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
+import { useState, useCallback, useMemo, useEffect, memo } from 'react';
 import {
   Box, Typography, Button, Fab, Breadcrumbs, Link, Dialog, DialogTitle,
   DialogContent, DialogActions, TextField, Stack, Alert, CircularProgress,
@@ -13,14 +13,12 @@ import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import EditIcon from '@mui/icons-material/Edit';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import RotateRightIcon from '@mui/icons-material/RotateRight';
-import ZoomInIcon from '@mui/icons-material/ZoomIn';
-import ZoomOutIcon from '@mui/icons-material/ZoomOut';
 import {
-  DndContext, useDraggable, DragOverlay,
-  type DragEndEvent, type DragStartEvent,
-  PointerSensor, useSensor, useSensors,
-} from '@dnd-kit/core';
-import { CSS } from '@dnd-kit/utilities';
+  ReactFlow, MiniMap, Controls, Background, BackgroundVariant, NodeResizer,
+  useNodesState,
+  type Node, type NodeProps,
+} from '@xyflow/react';
+import '@xyflow/react/dist/style.css';
 import { useQuery, useMutation, useLazyQuery } from '@apollo/client/react';
 import { GET_WAREHOUSE_OVERVIEW, GET_LOCATION_CONTENTS } from '../../graphql/queries';
 import {
@@ -45,17 +43,10 @@ type MapMode = 'view' | 'edit';
 interface UndoEntry { type: string; id: string; prev: Record<string, unknown>; }
 
 // --- Constants ---
+const GRID = 20;
 const MIN_W = 80;
 const MIN_H = 60;
-const GRID = 20;
-const CANVAS_W = 4000;
-const CANVAS_H = 3000;
-const ZOOM_MIN = 0.25;
-const ZOOM_MAX = 2;
-const ZOOM_STEP = 0.1;
 const UNDO_MAX = 20;
-
-const snap = (v: number) => Math.round(v / GRID) * GRID;
 
 function utilizationColor(qty: number, cap: number | null): string {
   if (!cap || cap === 0) return qty > 0 ? '#90caf9' : '#e0e0e0';
@@ -67,74 +58,42 @@ function utilizationColor(qty: number, cap: number | null): string {
   return '#ef5350';
 }
 
-// --- Draggable Aisle ---
-function AisleRect({
-  aisle, mode, isSelected, posOverride, sizeOverride,
-  onClick, onContextMenu, onResizeStart, isDragOverlay,
-}: {
-  aisle: AisleData; mode: MapMode; isSelected: boolean;
-  posOverride?: { x: number; y: number }; sizeOverride?: { w: number; h: number };
-  onClick?: (e: React.MouseEvent) => void; onContextMenu?: (e: React.MouseEvent) => void;
-  onResizeStart?: (e: React.PointerEvent) => void; isDragOverlay?: boolean;
-}) {
-  const disabled = mode === 'view';
-  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
-    id: aisle.id, data: { aisle }, disabled,
-  });
-  const w = sizeOverride?.w ?? Math.max(aisle.width, MIN_W);
-  const h = sizeOverride?.h ?? Math.max(aisle.height, MIN_H);
-  const x = posOverride?.x ?? aisle.xPosition;
-  const y = posOverride?.y ?? aisle.yPosition;
-  const style: React.CSSProperties = {
-    position: isDragOverlay ? 'relative' : 'absolute',
-    left: isDragOverlay ? 0 : x, top: isDragOverlay ? 0 : y,
-    width: w, height: h,
-    transform: transform ? CSS.Translate.toString(transform) : undefined,
-    opacity: isDragging ? 0.3 : 1,
-    cursor: mode === 'edit' ? 'move' : 'pointer',
-    zIndex: isSelected ? 10 : 1,
-  };
+// --- Custom Aisle Node for React Flow ---
+interface AisleNodeData extends Record<string, unknown> {
+  aisle: AisleData;
+  mode: MapMode;
+}
+
+const AisleNode = memo(({ data, selected }: NodeProps<Node<AisleNodeData>>) => {
+  const { aisle, mode } = data;
   const bg = utilizationColor(aisle.totalQuantity ?? 0, aisle.totalCapacity ?? null);
   const baysN = aisle.bays.filter((b) => b.isActive).length;
   const rowsN = aisle.rows.filter((r) => r.isActive).length;
 
   return (
-    <Box
-      ref={isDragOverlay ? undefined : setNodeRef}
-      {...(isDragOverlay ? {} : (mode === 'edit' ? { ...listeners, ...attributes } : {}))}
-      onClick={onClick} onContextMenu={onContextMenu}
-      sx={{
-        ...style, bgcolor: bg, borderRadius: 1,
-        border: isSelected ? '2px solid' : '2px solid',
-        borderColor: isSelected ? 'primary.main' : 'divider',
-        boxShadow: isSelected ? 4 : undefined,
+    <>
+      <NodeResizer
+        isVisible={selected === true && mode === 'edit'}
+        minWidth={MIN_W} minHeight={MIN_H}
+        lineStyle={{ borderColor: '#1976d2' }}
+        handleStyle={{ backgroundColor: '#1976d2', width: 8, height: 8 }}
+      />
+      <Box sx={{
+        width: '100%', height: '100%', bgcolor: bg, borderRadius: 1,
+        border: '2px solid', borderColor: selected ? 'primary.main' : 'divider',
         display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center',
-        transition: isDragOverlay ? 'none' : 'box-shadow 0.15s',
-        '&:hover': { boxShadow: 3 }, userSelect: 'none',
-      }}
-    >
-      <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>Aisle {aisle.name}</Typography>
-      {aisle.label && <Typography variant="caption" color="text.secondary">{aisle.label}</Typography>}
-      <Typography variant="caption">{rowsN}R × {baysN}B</Typography>
-      <Typography variant="caption">{aisle.totalQuantity ?? 0} items</Typography>
-      {/* Resize handle (edit mode + selected only) */}
-      {!isDragOverlay && mode === 'edit' && isSelected && onResizeStart && (
-        <Box
-          onPointerDown={(e) => { e.stopPropagation(); onResizeStart(e); }}
-          sx={{
-            position: 'absolute', bottom: 0, right: 0, width: 16, height: 16,
-            cursor: 'nwse-resize',
-            '&::after': {
-              content: '""', position: 'absolute', bottom: 2, right: 2,
-              width: 10, height: 10, borderRight: '2px solid', borderBottom: '2px solid',
-              borderColor: 'primary.main', opacity: 0.7,
-            },
-          }}
-        />
-      )}
-    </Box>
+        userSelect: 'none', boxSizing: 'border-box',
+      }}>
+        <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>Aisle {aisle.name}</Typography>
+        {aisle.label && <Typography variant="caption" color="text.secondary">{aisle.label}</Typography>}
+        <Typography variant="caption">{rowsN}R × {baysN}B</Typography>
+        <Typography variant="caption">{aisle.totalQuantity ?? 0} items</Typography>
+      </Box>
+    </>
   );
-}
+});
+
+const nodeTypes = { aisle: AisleNode };
 
 // --- Add Aisle Dialog ---
 function AddAisleDialog({ open, onClose, onSave, loading }: {
@@ -260,49 +219,6 @@ function ContentsDrawer({ open, onClose, aisle, row: rowName, bay, bin }: {
   );
 }
 
-// --- Minimap ---
-function Minimap({ aisles, vpInfo, onNavigate }: {
-  aisles: AisleData[];
-  vpInfo: { vpW: number; vpH: number; vpX: number; vpY: number };
-  onNavigate: (x: number, y: number) => void;
-}) {
-  const SCALE = 0.04;
-  const mw = CANVAS_W * SCALE;
-  const mh = CANVAS_H * SCALE;
-
-  const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const mx = (e.clientX - rect.left) / SCALE;
-    const my = (e.clientY - rect.top) / SCALE;
-    onNavigate(mx, my);
-  };
-
-  return (
-    <Box
-      onClick={handleClick}
-      sx={{
-        position: 'absolute', bottom: 8, left: 8, width: mw, height: mh,
-        bgcolor: 'rgba(255,255,255,0.9)', border: '1px solid', borderColor: 'divider',
-        borderRadius: 0.5, overflow: 'hidden', cursor: 'pointer', zIndex: 20,
-      }}
-    >
-      {aisles.map((a) => (
-        <Box key={a.id} sx={{
-          position: 'absolute',
-          left: a.xPosition * SCALE, top: a.yPosition * SCALE,
-          width: Math.max(a.width, MIN_W) * SCALE, height: Math.max(a.height, MIN_H) * SCALE,
-          bgcolor: 'primary.main', borderRadius: '1px', opacity: 0.7,
-        }} />
-      ))}
-      <Box sx={{
-        position: 'absolute', left: vpInfo.vpX * SCALE, top: vpInfo.vpY * SCALE,
-        width: vpInfo.vpW * SCALE, height: vpInfo.vpH * SCALE,
-        border: '1px solid', borderColor: 'error.main', bgcolor: 'rgba(255,0,0,0.08)',
-      }} />
-    </Box>
-  );
-}
-
 // ============================================================================
 // MAIN COMPONENT
 // ============================================================================
@@ -311,39 +227,27 @@ export default function WarehouseMap() {
   const { showToast } = useToast();
   const { data, loading, error, refetch } = useQuery<{ warehouseOverview: AisleData[] }>(GET_WAREHOUSE_OVERVIEW);
 
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
-  const [activeAisle, setActiveAisle] = useState<AisleData | null>(null);
-
   // Mode
   const aisles = useMemo(() => data?.warehouseOverview ?? [], [data]);
   const [mode, setMode] = useState<MapMode>('view');
 
-  // Zoom & viewport
-  const [zoom, setZoom] = useState(1);
-  const viewportRef = useRef<HTMLDivElement | null>(null);
-  const [vpInfo, setVpInfo] = useState({ vpW: 0, vpH: 0, vpX: 0, vpY: 0 });
-  const updateVpInfo = useCallback(() => {
-    const vp = viewportRef.current;
-    if (vp) setVpInfo({ vpW: vp.clientWidth / zoom, vpH: vp.clientHeight / zoom, vpX: vp.scrollLeft / zoom, vpY: vp.scrollTop / zoom });
-  }, [zoom]);
-  const handleNavigate = useCallback((x: number, y: number) => {
-    const vp = viewportRef.current;
-    if (vp) { vp.scrollLeft = (x - vp.clientWidth / zoom / 2) * zoom; vp.scrollTop = (y - vp.clientHeight / zoom / 2) * zoom; updateVpInfo(); }
-  }, [zoom, updateVpInfo]);
+  // React Flow nodes
+  const [nodes, setNodes, onNodesChange] = useNodesState([] as Node[]);
 
-  // Optimistic overrides
-  const [posOverrides, setPosOverrides] = useState<Record<string, { x: number; y: number }>>({});
-  const [sizeOverrides, setSizeOverrides] = useState<Record<string, { w: number; h: number }>>({});
-  const resizeRef = useRef<{ id: string; startX: number; startY: number; startW: number; startH: number } | null>(null);
-  const justResizedRef = useRef(false);
+  // Sync server data → React Flow nodes
+  useEffect(() => {
+    setNodes(aisles.map((a) => ({
+      id: a.id,
+      type: 'aisle' as const,
+      position: { x: a.xPosition, y: a.yPosition },
+      data: { aisle: a, mode },
+      style: { width: Math.max(a.width, MIN_W), height: Math.max(a.height, MIN_H) },
+      draggable: mode === 'edit',
+      selectable: mode === 'edit',
+    })));
+  }, [aisles, mode, setNodes]);
 
-  // Pan tracking
-  const panRef = useRef<{ startX: number; startY: number; scrollX: number; scrollY: number } | null>(null);
-
-  // Selection
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-
-  // Navigation
+  // Navigation state
   const [level, setLevel] = useState<ViewLevel>('floor');
   const [selectedAisleId, setSelectedAisleId] = useState<string | null>(null);
   const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
@@ -378,9 +282,8 @@ export default function WarehouseMap() {
   // Mutations
   const onDone = useCallback(() => { refetch(); showToast('Saved', 'success'); }, [refetch, showToast]);
   const onErr = useCallback((e: { message: string }) => showToast(e.message, 'error'), [showToast]);
-  const clearOverrides = useCallback(() => { setPosOverrides({}); setSizeOverrides({}); }, []);
   const [createAisle, { loading: caLoading }] = useMutation(CREATE_AISLE, { onCompleted: onDone, onError: onErr });
-  const [updateAisle] = useMutation(UPDATE_AISLE, { onCompleted: () => { clearOverrides(); refetch(); }, onError: (e) => { clearOverrides(); onErr(e); } });
+  const [updateAisle] = useMutation(UPDATE_AISLE, { onCompleted: () => refetch(), onError: onErr });
   const [cloneAisleMut, { loading: cloneLoading }] = useMutation(CLONE_AISLE, { onCompleted: onDone, onError: onErr });
   const [createRow, { loading: crLoading }] = useMutation(CREATE_ROW, { onCompleted: onDone, onError: onErr });
   const [updateRow] = useMutation(UPDATE_ROW, { onCompleted: () => refetch(), onError: onErr });
@@ -389,126 +292,53 @@ export default function WarehouseMap() {
   const [createBin, { loading: cbnLoading }] = useMutation(CREATE_BIN, { onCompleted: onDone, onError: onErr });
   const [updateBin] = useMutation(UPDATE_BIN, { onCompleted: () => refetch(), onError: onErr });
 
-  // --- Zoom handler ---
-  const handleWheel = useCallback((e: React.WheelEvent) => {
-    if (e.ctrlKey || e.metaKey) return; // let browser handle pinch zoom
-    e.preventDefault();
-    setZoom((z) => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z + (e.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP))));
-  }, []);
-
-  // --- Pan handlers (drag empty space to scroll) ---
-  const handleCanvasPointerDown = useCallback((e: React.PointerEvent) => {
-    // Only pan on direct canvas click (not on aisles)
-    if (e.target !== e.currentTarget) return;
-    if (mode === 'edit') {
-      // In edit mode: click empty space deselects
-      setSelectedIds(new Set());
-    }
-    const vp = viewportRef.current;
-    if (!vp) return;
-    panRef.current = { startX: e.clientX, startY: e.clientY, scrollX: vp.scrollLeft, scrollY: vp.scrollTop };
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
-  }, [mode]);
-
-  const handleCanvasPointerMove = useCallback((e: React.PointerEvent) => {
-    // Resize takes priority
-    if (resizeRef.current) {
-      const { id, startX, startY, startW, startH } = resizeRef.current;
-      const newW = Math.max(MIN_W, startW + (e.clientX - startX) / zoom);
-      const newH = Math.max(MIN_H, startH + (e.clientY - startY) / zoom);
-      setSizeOverrides((prev) => ({ ...prev, [id]: { w: snap(Math.round(newW)), h: snap(Math.round(newH)) } }));
-      return;
-    }
-    // Pan
-    if (!panRef.current) return;
-    const vp = viewportRef.current;
-    if (!vp) return;
-    vp.scrollLeft = panRef.current.scrollX - (e.clientX - panRef.current.startX);
-    vp.scrollTop = panRef.current.scrollY - (e.clientY - panRef.current.startY);
-  }, [zoom]);
-
-  const handleCanvasPointerUp = useCallback(() => {
-    if (resizeRef.current) {
-      const { id } = resizeRef.current;
-      const size = sizeOverrides[id];
-      resizeRef.current = null;
-      if (size) {
-        const aisle = aisles.find((a) => a.id === id);
-        if (aisle) pushUndo({ type: 'resize', id, prev: { width: aisle.width, height: aisle.height } });
-        updateAisle({ variables: { id, width: size.w, height: size.h } });
-      }
-      setTimeout(() => { justResizedRef.current = false; }, 100);
-      return;
-    }
-    panRef.current = null;
-  }, [sizeOverrides, aisles, updateAisle, pushUndo]);
-
-  // --- Drag handlers ---
-  const handleDragStart = useCallback((e: DragStartEvent) => {
-    setActiveAisle(e.active.data.current?.aisle as AisleData ?? null);
-  }, []);
-
-  const handleDragEnd = useCallback((e: DragEndEvent) => {
-    setActiveAisle(null);
-    const aisle = e.active.data.current?.aisle as AisleData | undefined;
-    if (!aisle || !e.delta) return;
-    const curX = posOverrides[aisle.id]?.x ?? aisle.xPosition;
-    const curY = posOverrides[aisle.id]?.y ?? aisle.yPosition;
-    const newX = snap(Math.max(0, curX + Math.round(e.delta.x / zoom)));
-    const newY = snap(Math.max(0, curY + Math.round(e.delta.y / zoom)));
-
-    pushUndo({ type: 'move', id: aisle.id, prev: { xPosition: aisle.xPosition, yPosition: aisle.yPosition } });
-
-    // Multi-select: move all selected aisles by same delta
-    if (selectedIds.has(aisle.id) && selectedIds.size > 1) {
-      const dx = newX - curX;
-      const dy = newY - curY;
-      selectedIds.forEach((sid) => {
-        const sa = aisles.find((a) => a.id === sid);
-        if (!sa) return;
-        const sx = snap(Math.max(0, sa.xPosition + dx));
-        const sy = snap(Math.max(0, sa.yPosition + dy));
-        setPosOverrides((prev) => ({ ...prev, [sid]: { x: sx, y: sy } }));
-        updateAisle({ variables: { id: sid, xPosition: sx, yPosition: sy } });
-      });
-    } else {
-      setPosOverrides((prev) => ({ ...prev, [aisle.id]: { x: newX, y: newY } }));
-      updateAisle({ variables: { id: aisle.id, xPosition: newX, yPosition: newY } });
-    }
-  }, [updateAisle, posOverrides, zoom, selectedIds, aisles, pushUndo]);
-
-  // --- Resize start ---
-  const handleResizeStart = useCallback((aisleId: string, e: React.PointerEvent) => {
-    const aisle = aisles.find((a) => a.id === aisleId);
+  // --- React Flow event handlers ---
+  const handleNodeDragStop = useCallback((_event: React.MouseEvent, node: Node) => {
+    const aisle = aisles.find((a) => a.id === node.id);
     if (!aisle) return;
-    const startW = sizeOverrides[aisleId]?.w ?? Math.max(aisle.width, MIN_W);
-    const startH = sizeOverrides[aisleId]?.h ?? Math.max(aisle.height, MIN_H);
-    resizeRef.current = { id: aisleId, startX: e.clientX, startY: e.clientY, startW, startH };
-    justResizedRef.current = true;
-  }, [aisles, sizeOverrides]);
+    const newX = Math.round(node.position.x / GRID) * GRID;
+    const newY = Math.round(node.position.y / GRID) * GRID;
+    if (newX !== aisle.xPosition || newY !== aisle.yPosition) {
+      pushUndo({ type: 'move', id: aisle.id, prev: { xPosition: aisle.xPosition, yPosition: aisle.yPosition } });
+      updateAisle({ variables: { id: aisle.id, xPosition: Math.max(0, newX), yPosition: Math.max(0, newY) } });
+    }
+  }, [aisles, updateAisle, pushUndo]);
 
-  // --- Click handlers ---
-  const handleAisleClick = useCallback((a: AisleData, e: React.MouseEvent) => {
-    if (justResizedRef.current) return;
-    e.stopPropagation();
+  const handleNodeClick = useCallback((_event: React.MouseEvent, node: Node) => {
     if (mode === 'view') {
-      setSelectedAisleId(a.id); setLevel('aisle');
-    } else {
-      // Edit mode: select
-      if (e.shiftKey) {
-        setSelectedIds((prev) => { const next = new Set(prev); if (next.has(a.id)) next.delete(a.id); else next.add(a.id); return next; });
-      } else {
-        setSelectedIds(new Set([a.id]));
+      setSelectedAisleId(node.id);
+      setLevel('aisle');
+    }
+    // Edit mode: selection handled by React Flow automatically
+  }, [mode]);
+
+  const handleNodeContextMenu = useCallback((event: React.MouseEvent, node: Node) => {
+    if (mode !== 'edit') return;
+    event.preventDefault();
+    const aisle = aisles.find((a) => a.id === node.id);
+    if (aisle) setCtxMenu({ x: event.clientX, y: event.clientY, aisle });
+  }, [mode, aisles]);
+
+  const handleNodeResize = useCallback((id: string, dimensions: { width: number; height: number }) => {
+    const aisle = aisles.find((a) => a.id === id);
+    if (!aisle) return;
+    const w = Math.max(MIN_W, Math.round(dimensions.width));
+    const h = Math.max(MIN_H, Math.round(dimensions.height));
+    if (w !== aisle.width || h !== aisle.height) {
+      pushUndo({ type: 'resize', id, prev: { width: aisle.width, height: aisle.height } });
+      updateAisle({ variables: { id, width: w, height: h } });
+    }
+  }, [aisles, updateAisle, pushUndo]);
+
+  // Attach resize handler via onNodesChange
+  const handleNodesChange = useCallback((changes: Parameters<typeof onNodesChange>[0]) => {
+    onNodesChange(changes);
+    for (const change of changes) {
+      if (change.type === 'dimensions' && change.dimensions && change.resizing === false) {
+        handleNodeResize(change.id, change.dimensions);
       }
     }
-  }, [mode]);
-
-  const handleAisleContextMenu = useCallback((a: AisleData, e: React.MouseEvent) => {
-    if (mode !== 'edit') return;
-    e.preventDefault(); e.stopPropagation();
-    setCtxMenu({ x: e.clientX, y: e.clientY, aisle: a });
-    setSelectedIds(new Set([a.id]));
-  }, [mode]);
+  }, [onNodesChange, handleNodeResize]);
 
   // --- Navigation ---
   const drillIntoBay = useCallback((r: Row | null, b: Bay) => { setSelectedRowId(r?.id ?? null); setSelectedBayId(b.id); setLevel('bay'); }, []);
@@ -519,12 +349,9 @@ export default function WarehouseMap() {
 
   // --- Add handlers ---
   const handleAddAisle = useCallback((v: { name: string; label: string; orientation: string }) => {
-    const vp = viewportRef.current;
-    const cx = vp ? snap(vp.scrollLeft / zoom + vp.clientWidth / zoom / 2 - 60) : 50;
-    const cy = vp ? snap(vp.scrollTop / zoom + vp.clientHeight / zoom / 2 - 40) : 50;
-    createAisle({ variables: { name: v.name, label: v.label || null, orientation: v.orientation, xPosition: cx, yPosition: cy, width: 120, height: 80 } });
+    createAisle({ variables: { name: v.name, label: v.label || null, orientation: v.orientation, xPosition: 100, yPosition: 100, width: 120, height: 80 } });
     setAddAisleOpen(false);
-  }, [createAisle, zoom]);
+  }, [createAisle]);
 
   const handleAddItem = useCallback(() => {
     if (!addName.trim()) return;
@@ -552,8 +379,7 @@ export default function WarehouseMap() {
   }, [cloneTarget, cloneAisleMut]);
 
   const handleRotate = useCallback((a: AisleData) => {
-    const newOr = a.orientation === 'VERTICAL' ? 'HORIZONTAL' : 'VERTICAL';
-    updateAisle({ variables: { id: a.id, orientation: newOr, width: a.height, height: a.width } });
+    updateAisle({ variables: { id: a.id, orientation: a.orientation === 'VERTICAL' ? 'HORIZONTAL' : 'VERTICAL', width: a.height, height: a.width } });
   }, [updateAisle]);
 
   const handleDelete = useCallback(() => {
@@ -581,49 +407,28 @@ export default function WarehouseMap() {
     const handler = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement).tagName === 'INPUT' || (e.target as HTMLElement).tagName === 'TEXTAREA') return;
       if (e.key === 'e' || e.key === 'E') { setMode('edit'); e.preventDefault(); }
-      else if (e.key === 'v' || e.key === 'V') { setMode('view'); setSelectedIds(new Set()); e.preventDefault(); }
-      else if (e.key === 'Escape') { setSelectedIds(new Set()); setCtxMenu(null); }
-      else if ((e.key === 'Delete' || e.key === 'Backspace') && mode === 'edit' && selectedIds.size === 1) {
-        const id = [...selectedIds][0];
-        const a = aisles.find((x) => x.id === id);
-        if (a) setDeleteConfirm({ type: 'aisle', id, label: `Aisle ${a.name}` });
+      else if (e.key === 'v' || e.key === 'V') { setMode('view'); e.preventDefault(); }
+      else if (e.key === 'Escape') setCtxMenu(null);
+      else if ((e.key === 'Delete' || e.key === 'Backspace') && mode === 'edit') {
+        const sel = nodes.filter((n) => n.selected);
+        if (sel.length === 1) {
+          const a = aisles.find((x) => x.id === sel[0].id);
+          if (a) setDeleteConfirm({ type: 'aisle', id: a.id, label: `Aisle ${a.name}` });
+        }
       }
-      else if (e.key === 'd' && (e.ctrlKey || e.metaKey) && mode === 'edit' && selectedIds.size === 1) {
+      else if (e.key === 'd' && (e.ctrlKey || e.metaKey) && mode === 'edit') {
         e.preventDefault();
-        const a = aisles.find((x) => x.id === [...selectedIds][0]);
-        if (a) setCloneTarget(a);
+        const sel = nodes.filter((n) => n.selected);
+        if (sel.length === 1) {
+          const a = aisles.find((x) => x.id === sel[0].id);
+          if (a) setCloneTarget(a);
+        }
       }
       else if (e.key === 'z' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); handleUndo(); }
-      else if ((e.key === '+' || e.key === '=') && !e.ctrlKey) setZoom((z) => Math.min(ZOOM_MAX, z + ZOOM_STEP));
-      else if (e.key === '-' && !e.ctrlKey) setZoom((z) => Math.max(ZOOM_MIN, z - ZOOM_STEP));
-      else if (e.key === 'ArrowLeft' && mode === 'edit' && selectedIds.size > 0) {
-        selectedIds.forEach((id) => {
-          const a = aisles.find((x) => x.id === id);
-          if (a) updateAisle({ variables: { id, xPosition: Math.max(0, a.xPosition - GRID) } });
-        });
-      }
-      else if (e.key === 'ArrowRight' && mode === 'edit' && selectedIds.size > 0) {
-        selectedIds.forEach((id) => {
-          const a = aisles.find((x) => x.id === id);
-          if (a) updateAisle({ variables: { id, xPosition: a.xPosition + GRID } });
-        });
-      }
-      else if (e.key === 'ArrowUp' && mode === 'edit' && selectedIds.size > 0) {
-        selectedIds.forEach((id) => {
-          const a = aisles.find((x) => x.id === id);
-          if (a) updateAisle({ variables: { id, yPosition: Math.max(0, a.yPosition - GRID) } });
-        });
-      }
-      else if (e.key === 'ArrowDown' && mode === 'edit' && selectedIds.size > 0) {
-        selectedIds.forEach((id) => {
-          const a = aisles.find((x) => x.id === id);
-          if (a) updateAisle({ variables: { id, yPosition: a.yPosition + GRID } });
-        });
-      }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [mode, selectedIds, aisles, handleUndo, updateAisle]);
+  }, [mode, nodes, aisles, handleUndo]);
 
   // Derived
   const activeRows = useMemo(() => (selectedAisle?.rows ?? []).filter((r) => r.isActive).sort((a, b) => b.level - a.level), [selectedAisle]);
@@ -654,13 +459,10 @@ export default function WarehouseMap() {
 
         {level === 'floor' && (
           <>
-            <ToggleButtonGroup value={mode} exclusive onChange={(_, v) => { if (v) { setMode(v); if (v === 'view') setSelectedIds(new Set()); } }} size="small">
+            <ToggleButtonGroup value={mode} exclusive onChange={(_, v) => { if (v) setMode(v); }} size="small">
               <ToggleButton value="view">View</ToggleButton>
               <ToggleButton value="edit">Edit</ToggleButton>
             </ToggleButtonGroup>
-            <Tooltip title="Zoom out (-)"><IconButton size="small" onClick={() => setZoom((z) => Math.max(ZOOM_MIN, z - ZOOM_STEP))}><ZoomOutIcon fontSize="small" /></IconButton></Tooltip>
-            <Typography variant="caption" sx={{ minWidth: 36, textAlign: 'center' }}>{Math.round(zoom * 100)}%</Typography>
-            <Tooltip title="Zoom in (+)"><IconButton size="small" onClick={() => setZoom((z) => Math.min(ZOOM_MAX, z + ZOOM_STEP))}><ZoomInIcon fontSize="small" /></IconButton></Tooltip>
             {mode === 'edit' && undoStack.length > 0 && (
               <Tooltip title="Undo (Ctrl+Z)"><Button size="small" onClick={handleUndo}>Undo</Button></Tooltip>
             )}
@@ -680,56 +482,42 @@ export default function WarehouseMap() {
             <Typography variant="caption">{l.label}</Typography>
           </Box>
         ))}
-        {level === 'floor' && <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>Scroll to zoom · Drag space to pan{mode === 'edit' ? ' · E/V toggle mode · Right-click for menu' : ''}</Typography>}
+        {level === 'floor' && <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+          Scroll to zoom · Drag to pan{mode === 'edit' ? ' · E/V mode · Right-click menu' : ''}
+        </Typography>}
       </Box>
 
-      {/* === FLOOR VIEW === */}
+      {/* === FLOOR VIEW (React Flow) === */}
       {level === 'floor' && (
-        <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
-          <Box ref={viewportRef} onWheel={handleWheel} onScroll={updateVpInfo} sx={{
-            overflow: 'auto', height: 'calc(100vh - 280px)', minHeight: 400,
-            border: '1px solid', borderColor: 'divider', borderRadius: 1, position: 'relative',
-            cursor: mode === 'view' ? 'grab' : 'crosshair',
-          }}>
-            <Box
-              onPointerDown={handleCanvasPointerDown}
-              onPointerMove={handleCanvasPointerMove}
-              onPointerUp={handleCanvasPointerUp}
-              sx={{
-                position: 'relative',
-                width: CANVAS_W * zoom, height: CANVAS_H * zoom,
-                transformOrigin: '0 0', transform: `scale(${zoom})`,
-                bgcolor: 'grey.50',
-                backgroundImage: mode === 'edit'
-                  ? `linear-gradient(rgba(0,0,0,0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(0,0,0,0.05) 1px, transparent 1px)`
-                  : 'radial-gradient(circle, #ccc 1px, transparent 1px)',
-                backgroundSize: mode === 'edit' ? `${GRID}px ${GRID}px` : '20px 20px',
-              }}
-            >
-              {aisles.length === 0 && (
-                <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: 500 }}>
-                  <Typography color="text.secondary">Click + to add your first aisle</Typography>
-                </Box>
-              )}
-              {aisles.map((a) => (
-                <AisleRect
-                  key={a.id} aisle={a} mode={mode}
-                  isSelected={selectedIds.has(a.id)}
-                  posOverride={posOverrides[a.id]}
-                  sizeOverride={sizeOverrides[a.id]}
-                  onClick={(e) => handleAisleClick(a, e)}
-                  onContextMenu={(e) => handleAisleContextMenu(a, e)}
-                  onResizeStart={(e) => handleResizeStart(a.id, e)}
-                />
-              ))}
-            </Box>
-            <Minimap aisles={aisles} vpInfo={vpInfo} onNavigate={handleNavigate} />
-          </Box>
-          <DragOverlay>{activeAisle ? <AisleRect aisle={activeAisle} mode={mode} isSelected={false} isDragOverlay /> : null}</DragOverlay>
+        <Box sx={{ height: 'calc(100vh - 260px)', minHeight: 400, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
+          <ReactFlow
+            nodes={nodes}
+            nodeTypes={nodeTypes}
+            onNodesChange={handleNodesChange}
+            onNodeDragStop={handleNodeDragStop}
+            onNodeClick={handleNodeClick}
+            onNodeContextMenu={handleNodeContextMenu}
+            nodesDraggable={mode === 'edit'}
+            nodesConnectable={false}
+            elementsSelectable={mode === 'edit'}
+            snapToGrid={mode === 'edit'}
+            snapGrid={[GRID, GRID]}
+            fitView={aisles.length > 0}
+            minZoom={0.1}
+            maxZoom={3}
+            proOptions={{ hideAttribution: true }}
+          >
+            <Background variant={mode === 'edit' ? BackgroundVariant.Lines : BackgroundVariant.Dots} gap={GRID} />
+            <Controls showInteractive={false} />
+            <MiniMap pannable zoomable nodeColor={(n) => {
+              const d = n.data as unknown as AisleNodeData | undefined;
+              return d?.aisle ? utilizationColor(d.aisle.totalQuantity ?? 0, d.aisle.totalCapacity ?? null) : '#e0e0e0';
+            }} />
+          </ReactFlow>
           {mode === 'edit' && (
-            <Fab color="primary" sx={{ position: 'fixed', bottom: 32, right: 32 }} onClick={() => setAddAisleOpen(true)}><AddIcon /></Fab>
+            <Fab color="primary" sx={{ position: 'fixed', bottom: 32, right: 32, zIndex: 10 }} onClick={() => setAddAisleOpen(true)}><AddIcon /></Fab>
           )}
-        </DndContext>
+        </Box>
       )}
 
       {/* === AISLE INTERIOR === */}
