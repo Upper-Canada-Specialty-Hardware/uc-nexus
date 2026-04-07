@@ -78,9 +78,9 @@ def reset_data():
     return {"status": "ok", "message": "Schema dropped and rebuilt"}
 
 
-@app.get("/testing/clerk-token")
-def get_clerk_testing_token():
-    """Fetch a Clerk testing token for E2E testing. Only available when TESTING_ENABLED=true."""
+@app.get("/testing/clerk-sign-in")
+def get_clerk_sign_in_token(email: str = "jayp@ucsh.com"):
+    """Create a Clerk sign-in token for E2E testing. Only available when TESTING_ENABLED=true."""
     import httpx
     from fastapi.responses import JSONResponse
 
@@ -89,9 +89,27 @@ def get_clerk_testing_token():
     if not TESTING_ENABLED:
         return JSONResponse(status_code=403, content={"error": "Testing is not enabled"})
 
-    resp = httpx.post(
-        "https://api.clerk.com/v1/testing_tokens",
-        headers={"Authorization": f"Bearer {CLERK_SECRET_KEY}"},
+    headers = {"Authorization": f"Bearer {CLERK_SECRET_KEY}"}
+
+    # Find user by email
+    users_resp = httpx.get(
+        "https://api.clerk.com/v1/users",
+        headers=headers,
+        params={"email_address": email},
     )
-    resp.raise_for_status()
-    return {"token": resp.json()["token"]}
+    users_resp.raise_for_status()
+    users = users_resp.json()
+    if not users:
+        return JSONResponse(status_code=404, content={"error": f"No user found with email {email}"})
+
+    user_id = users[0]["id"]
+
+    # Create sign-in token
+    token_resp = httpx.post(
+        "https://api.clerk.com/v1/sign_in_tokens",
+        headers=headers,
+        json={"user_id": user_id},
+    )
+    token_resp.raise_for_status()
+    data = token_resp.json()
+    return {"token": data["token"], "url": data.get("url", ""), "user_id": user_id}
