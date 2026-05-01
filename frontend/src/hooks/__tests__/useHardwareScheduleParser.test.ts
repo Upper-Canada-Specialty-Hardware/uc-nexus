@@ -163,6 +163,9 @@ describe('useHardwareScheduleParser', () => {
     expect(result.current.error).toBeNull();
     expect(result.current.isLoading).toBe(false);
     expect(typeof result.current.parseFile).toBe('function');
+    expect(typeof result.current.hydrate).toBe('function');
+    expect(typeof result.current.setLoading).toBe('function');
+    expect(typeof result.current.setError).toBe('function');
     expect(typeof result.current.reset).toBe('function');
   });
 
@@ -459,5 +462,74 @@ describe('useHardwareScheduleParser', () => {
     });
     expect(result.current.state).toBe('parsing');
     expect(latestMockWorker.postMessage).toHaveBeenCalledTimes(1);
+  });
+
+  // -----------------------------------------------------------------------
+  // 12. hydrate() jumps directly to the done state with the supplied result
+  // -----------------------------------------------------------------------
+  it('hydrate transitions directly to done with the supplied parse result', () => {
+    const { result } = renderHook(() => useHardwareScheduleParser());
+
+    act(() => {
+      result.current.hydrate(mockParseResult);
+    });
+
+    expect(result.current.state).toBe('done');
+    expect(result.current.parseResult).toEqual(mockParseResult);
+    expect(result.current.progress).toEqual({ percent: 100, phase: 'Complete' });
+    expect(result.current.error).toBeNull();
+    expect(result.current.isLoading).toBe(false);
+  });
+
+  // -----------------------------------------------------------------------
+  // 13. setLoading transitions idle -> reading with the supplied phase
+  // -----------------------------------------------------------------------
+  it('setLoading transitions to reading with the supplied phase', () => {
+    const { result } = renderHook(() => useHardwareScheduleParser());
+
+    act(() => {
+      result.current.setLoading('Loading schedule from project history');
+    });
+
+    expect(result.current.state).toBe('reading');
+    expect(result.current.isLoading).toBe(true);
+    expect(result.current.progress).toEqual({
+      percent: 0,
+      phase: 'Loading schedule from project history',
+    });
+    expect(result.current.error).toBeNull();
+  });
+
+  // -----------------------------------------------------------------------
+  // 14. setError transitions to error state with the supplied message
+  // -----------------------------------------------------------------------
+  it('setError transitions to error state with the supplied message', () => {
+    const { result } = renderHook(() => useHardwareScheduleParser());
+
+    act(() => {
+      result.current.setError('Network failure');
+    });
+
+    expect(result.current.state).toBe('error');
+    expect(result.current.error).toBe('Network failure');
+  });
+
+  // -----------------------------------------------------------------------
+  // 15. reset() clears state after hydrate
+  // -----------------------------------------------------------------------
+  it('reset clears state after hydrate', () => {
+    const { result } = renderHook(() => useHardwareScheduleParser());
+
+    act(() => {
+      result.current.hydrate(mockParseResult);
+    });
+    expect(result.current.state).toBe('done');
+
+    act(() => {
+      result.current.reset();
+    });
+
+    expect(result.current.state).toBe('idle');
+    expect(result.current.parseResult).toBeNull();
   });
 });

@@ -41,6 +41,51 @@ from app.models.shop_assembly import (
 )
 
 
+def get_project_hardware_schedule(
+    session: Session,
+    project_id: uuid.UUID,
+) -> dict | None:
+    """Load a project's persisted hardware schedule (openings + items) for wizard hydration."""
+    project = (
+        session.scalars(
+            select(ProjectModel).where(ProjectModel.id == project_id).options(selectinload(ProjectModel.openings))
+        )
+        .unique()
+        .first()
+    )
+    if project is None:
+        return None
+
+    opening_number_by_id = {o.id: o.opening_number for o in project.openings}
+
+    hardware_items = session.scalars(select(HardwareItemModel).where(HardwareItemModel.project_id == project_id)).all()
+
+    return {
+        "project": project,
+        "openings": list(project.openings),
+        "hardware_items": [
+            {
+                "opening_number": opening_number_by_id.get(hi.opening_id, ""),
+                "product_code": hi.product_code,
+                "material_id": hi.material_id or str(hi.id),
+                "hardware_category": hi.hardware_category,
+                "item_quantity": hi.item_quantity,
+                "unit_cost": float(hi.unit_cost) if hi.unit_cost is not None else None,
+                "unit_price": float(hi.unit_price) if hi.unit_price is not None else None,
+                "list_price": float(hi.list_price) if hi.list_price is not None else None,
+                "vendor_discount": float(hi.vendor_discount) if hi.vendor_discount is not None else None,
+                "markup_pct": float(hi.markup_pct) if hi.markup_pct is not None else None,
+                "vendor_no": hi.vendor_no,
+                "phase_code": hi.phase_code,
+                "item_category_code": hi.item_category_code,
+                "product_group_code": hi.product_group_code,
+                "submittal_id": hi.submittal_id,
+            }
+            for hi in hardware_items
+        ],
+    }
+
+
 def reconcile_schedule(
     session: Session,
     project_id: uuid.UUID,

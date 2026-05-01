@@ -35,6 +35,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   GET_PROJECTS,
   GET_PROJECT_EXCLUDED_ITEMS,
+  GET_PROJECT_HARDWARE_SCHEDULE,
   RECONCILE_SCHEDULE,
 } from '../../graphql/queries';
 import { FINALIZE_IMPORT_SESSION } from '../../graphql/mutations';
@@ -42,6 +43,8 @@ import type { ClassificationRow } from './ClassificationGrid';
 import type { AggregatedHardwareItem, ImportPurpose, ReconciliationRow, ShippingPRDraft } from './types';
 import { aggregationKey, classificationKey } from './types';
 import type { Project } from '../../types/project';
+import type { ProjectHardwareScheduleResponse } from './hydrateSchedule';
+import { mapScheduleResponseToParseResult } from './hydrateSchedule';
 import SelectOpeningsHardwareStep from './SelectOpeningsHardwareStep';
 import ReconciliationStep from './ReconciliationStep';
 import ClassificationStep from './ClassificationStep';
@@ -171,6 +174,22 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
   const [fetchExcludedItems] = useLazyQuery<{
     projectExcludedItems: Array<{ hardwareCategory: string; productCode: string }>;
   }>(GET_PROJECT_EXCLUDED_ITEMS);
+
+  const [fetchProjectSchedule, { data: scheduleData, loading: scheduleLoading }] = useLazyQuery<{
+    projectHardwareSchedule: ProjectHardwareScheduleResponse | null;
+  }>(GET_PROJECT_HARDWARE_SCHEDULE, { fetchPolicy: 'network-only' });
+
+  // Eagerly fetch the persisted schedule on wizard open for re-import projects so the
+  // upload step can show the "Start from latest" picker (gated on hardware-item presence).
+  useEffect(() => {
+    if (!open || !isReimport) return;
+    fetchProjectSchedule({ variables: { projectId: project.id } });
+  }, [open, isReimport, project.id, fetchProjectSchedule]);
+
+  const persistedHardwareItemCount = scheduleData?.projectHardwareSchedule?.hardwareItems.length ?? 0;
+  const persistedOpeningCount = scheduleData?.projectHardwareSchedule?.openings.length ?? 0;
+  const canStartFromLatest = isReimport && persistedHardwareItemCount > 0;
+  const [hydratedFromPersisted, setHydratedFromPersisted] = useState(false);
 
   const [finalizeImport] = useMutation<{
     finalizeImportSession: {
@@ -365,6 +384,39 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
     },
     [handleFileSelect],
   );
+
+  const handleLoadFromLatest = useCallback(() => {
+    const persisted = scheduleData?.projectHardwareSchedule;
+    if (!persisted) {
+      parser.setError('No persisted hardware schedule was found for this project.');
+      return;
+    }
+    parser.setLoading('Loading schedule from project history');
+    parser.hydrate(mapScheduleResponseToParseResult(persisted));
+    setHydratedFromPersisted(true);
+  }, [parser, scheduleData]);
+
+  const resetDownstreamWizardState = useCallback(() => {
+    setPurpose(null);
+    setSelectedOpenings(new Set());
+    setSelectedVendors(new Set());
+    setVendorPOInfo(new Map());
+    setUnitCostOverrides(new Map());
+    setOrderAsValues(new Map());
+    setClassifications(new Map());
+    setSarRequestNumber('');
+    setShippingPRDrafts([]);
+    setSelectedReconItems(new Set());
+    setSelectedItemKeys(new Set());
+    setMutationError(null);
+    setFinalizeResult(null);
+  }, []);
+
+  const handleResetSource = useCallback(() => {
+    parser.reset();
+    resetDownstreamWizardState();
+    setHydratedFromPersisted(false);
+  }, [parser, resetDownstreamWizardState]);
 
   const handleNext = useCallback(async () => {
     const currentIndex = steps.findIndex((s) => s.id === effectiveStepId);
@@ -736,25 +788,14 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
 
   const handleClose = useCallback(() => {
     setActiveStepId('upload');
-    setPurpose(null);
-    setSelectedOpenings(new Set());
-    setSelectedVendors(new Set());
-    setVendorPOInfo(new Map());
-    setUnitCostOverrides(new Map());
-    setOrderAsValues(new Map());
-    setClassifications(new Map());
-    setSarRequestNumber('');
-    setShippingPRDrafts([]);
-    setSelectedReconItems(new Set());
-    setSelectedItemKeys(new Set());
+    resetDownstreamWizardState();
     setFinalizeLoading(false);
-    setFinalizeResult(null);
     setConfirmOpen(false);
     setPostSuccessOpen(false);
-    setMutationError(null);
+    setHydratedFromPersisted(false);
     parser.reset();
     onClose();
-  }, [onClose, parser]);
+  }, [onClose, parser, resetDownstreamWizardState]);
 
   // ---- Step validations ----
 
@@ -804,10 +845,80 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
           {effectiveStepId === 'upload' && (
             <Box>
               <Typography variant="h6" sx={{ mb: 2 }}>
-                Upload TITAN XML File
+                Hardware Schedule
               </Typography>
 
-              {parser.state === 'idle' && (
+              {parser.state === 'idle' && isReimport && scheduleLoading && (
+                <Box sx={{ mt: 3, display: 'flex', justifyContent: 'center', py: 4 }}>
+                  <CircularProgress />
+                </Box>
+              )}
+
+              {parser.state === 'idle' && canStartFromLatest && !scheduleLoading && (
+                <Box sx={{ display: 'flex', gap: 2, alignItems: 'stretch', flexWrap: 'wrap' }}>
+                  <Paper
+                    variant="outlined"
+                    sx={{
+                      flex: '1 1 320px',
+                      p: 4,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      textAlign: 'center',
+                      gap: 1.5,
+                    }}
+                  >
+                    <Typography variant="h6">Start from latest hardware schedule</Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      Resume from this project's last persisted schedule.
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                      {persistedOpeningCount} openings, {persistedHardwareItemCount} hardware items.
+                    </Typography>
+                    <Button variant="contained" onClick={handleLoadFromLatest} sx={{ mt: 'auto' }}>
+                      Use latest schedule
+                    </Button>
+                  </Paper>
+
+                  <Paper
+                    variant="outlined"
+                    sx={{
+                      flex: '1 1 320px',
+                      p: 4,
+                      textAlign: 'center',
+                      border: '2px dashed',
+                      borderColor: 'divider',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 1,
+                      '&:hover': { borderColor: 'primary.main', bgcolor: 'action.hover' },
+                    }}
+                    onDrop={handleFileDrop}
+                    onDragOver={(e) => e.preventDefault()}
+                    onClick={() => fileInputRef.current?.click()}
+                  >
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept=".xml"
+                      hidden
+                      onChange={handleFileInput}
+                    />
+                    <CloudUploadIcon sx={{ fontSize: 56, color: 'action.disabled' }} />
+                    <Typography variant="h6" color="text.secondary">
+                      Upload new TITAN XML
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      Drag and drop an XML file here, or click to browse.
+                    </Typography>
+                  </Paper>
+                </Box>
+              )}
+
+              {parser.state === 'idle' && !canStartFromLatest && !scheduleLoading && (
                 <Paper
                   variant="outlined"
                   sx={{
@@ -848,8 +959,8 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
               {parser.state === 'error' && (
                 <Alert severity="error" sx={{ mt: 2 }}>
                   {parser.error}
-                  <Button size="small" onClick={() => parser.reset()} sx={{ ml: 2 }}>
-                    Try Again
+                  <Button size="small" onClick={handleResetSource} sx={{ ml: 2 }}>
+                    {hydratedFromPersisted || canStartFromLatest ? 'Choose Different Source' : 'Try Again'}
                   </Button>
                 </Alert>
               )}
@@ -857,7 +968,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
               {parser.state === 'done' && parsed && (
                 <Box sx={{ mt: 2 }}>
                   <Alert severity="success" sx={{ mb: 2 }}>
-                    File parsed successfully!
+                    {hydratedFromPersisted ? 'Loaded latest hardware schedule.' : 'File parsed successfully!'}
                   </Alert>
 
                   <Box sx={{ mb: 2, display: 'flex', gap: 1, alignItems: 'center' }}>
@@ -875,10 +986,10 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
 
                   <Button
                     size="small"
-                    onClick={() => parser.reset()}
+                    onClick={handleResetSource}
                     sx={{ mt: 2 }}
                   >
-                    Upload Different File
+                    {hydratedFromPersisted ? 'Choose Different Source' : 'Upload Different File'}
                   </Button>
                 </Box>
               )}

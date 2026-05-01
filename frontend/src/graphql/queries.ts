@@ -403,6 +403,66 @@ export const GET_SHIP_READY_ITEMS = gql`
   }
 `;
 
+export const GET_PROJECT_HARDWARE_SCHEDULE = gql`
+  query GetProjectHardwareSchedule($projectId: ID!) {
+    projectHardwareSchedule(projectId: $projectId) {
+      project {
+        projectId
+        description
+        jobSiteName
+        address
+        city
+        state
+        zip
+        contractor
+        projectManager
+        application
+        submittalJobNo
+        submittalAssignmentCount
+        estimatorCode
+        titanUserId
+      }
+      openings {
+        openingNumber
+        building
+        floor
+        location
+        locationTo
+        locationFrom
+        hand
+        width
+        length
+        doorThickness
+        jambThickness
+        doorType
+        frameType
+        interiorExterior
+        keying
+        headingNo
+        singlePair
+        assignmentMultiplier
+      }
+      hardwareItems {
+        openingNumber
+        productCode
+        materialId
+        hardwareCategory
+        itemQuantity
+        unitCost
+        unitPrice
+        listPrice
+        vendorDiscount
+        markupPct
+        vendorNo
+        phaseCode
+        itemCategoryCode
+        productGroupCode
+        submittalId
+      }
+    }
+  }
+`;
+
 export const GET_PROJECT_BY_SCHEDULE_ID = gql`
   query GetProjectByScheduleId($projectId: String!) {
     projectByScheduleId(projectId: $projectId) {

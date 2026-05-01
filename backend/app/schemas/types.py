@@ -191,6 +191,32 @@ class Project:
 
 
 @strawberry.type
+class ProjectScheduleHardwareItem:
+    opening_number: str
+    product_code: str
+    material_id: str
+    hardware_category: str
+    item_quantity: int
+    unit_cost: float | None
+    unit_price: float | None
+    list_price: float | None
+    vendor_discount: float | None
+    markup_pct: float | None
+    vendor_no: str | None
+    phase_code: str | None
+    item_category_code: str | None
+    product_group_code: str | None
+    submittal_id: str | None
+
+
+@strawberry.type
+class ProjectHardwareSchedule:
+    project: Project
+    openings: list[Opening]
+    hardware_items: list[ProjectScheduleHardwareItem]
+
+
+@strawberry.type
 class InventoryLocation:
     id: strawberry.ID
     project_id: strawberry.ID

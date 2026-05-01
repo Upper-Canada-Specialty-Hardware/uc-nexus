@@ -47,6 +47,8 @@ from .types import (
     ProductCodeNode,
     Project,
     ProjectExcludedItem,
+    ProjectHardwareSchedule,
+    ProjectScheduleHardwareItem,
     PullRequest,
     PullRequestItem,
     PurchaseOrder,
@@ -219,6 +221,35 @@ def _project_to_type(p: ProjectModel) -> Project:
             for o in p.openings
         ],
         purchase_orders=[],  # Loaded on demand in later tickets
+    )
+
+
+def _project_schedule_hardware_item_to_type(hi: dict) -> ProjectScheduleHardwareItem:
+    return ProjectScheduleHardwareItem(
+        opening_number=hi["opening_number"],
+        product_code=hi["product_code"],
+        material_id=hi["material_id"],
+        hardware_category=hi["hardware_category"],
+        item_quantity=hi["item_quantity"],
+        unit_cost=hi["unit_cost"],
+        unit_price=hi["unit_price"],
+        list_price=hi["list_price"],
+        vendor_discount=hi["vendor_discount"],
+        markup_pct=hi["markup_pct"],
+        vendor_no=hi["vendor_no"],
+        phase_code=hi["phase_code"],
+        item_category_code=hi["item_category_code"],
+        product_group_code=hi["product_group_code"],
+        submittal_id=hi["submittal_id"],
+    )
+
+
+def _project_hardware_schedule_to_type(data: dict) -> ProjectHardwareSchedule:
+    project_type = _project_to_type(data["project"])
+    return ProjectHardwareSchedule(
+        project=project_type,
+        openings=project_type.openings,
+        hardware_items=[_project_schedule_hardware_item_to_type(hi) for hi in data["hardware_items"]],
     )
 
 
@@ -453,6 +484,16 @@ class Query:
             if p is None:
                 return None
             return _project_to_type(p)
+
+    @strawberry.field
+    def project_hardware_schedule(self, project_id: strawberry.ID) -> ProjectHardwareSchedule | None:
+        from app.repositories import import_repository
+
+        with SessionLocal() as session:
+            data = import_repository.get_project_hardware_schedule(session, uuid.UUID(str(project_id)))
+            if data is None:
+                return None
+            return _project_hardware_schedule_to_type(data)
 
     @strawberry.field
     def reconcile_schedule(

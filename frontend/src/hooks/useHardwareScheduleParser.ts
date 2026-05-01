@@ -15,6 +15,9 @@ export interface UseHardwareScheduleParserReturn {
   error: string | null;
   isLoading: boolean;
   parseFile: (file: File) => void;
+  hydrate: (result: ParseResult) => void;
+  setLoading: (phase: string) => void;
+  setError: (message: string) => void;
   reset: () => void;
 }
 
@@ -22,7 +25,7 @@ export function useHardwareScheduleParser(): UseHardwareScheduleParserReturn {
   const [state, setState] = useState<ParserState>('idle');
   const [progress, setProgress] = useState<ParserProgress>({ percent: 0, phase: '' });
   const [result, setResult] = useState<ParseResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setErrorState] = useState<string | null>(null);
 
   const workerRef = useRef<Worker | null>(null);
 
@@ -34,7 +37,7 @@ export function useHardwareScheduleParser(): UseHardwareScheduleParserReturn {
     setState('reading');
     setProgress({ percent: 0, phase: 'Reading file' });
     setResult(null);
-    setError(null);
+    setErrorState(null);
 
     const reader = new FileReader();
     reader.readAsText(file);
@@ -64,14 +67,14 @@ export function useHardwareScheduleParser(): UseHardwareScheduleParserReturn {
             setProgress({ percent: 100, phase: 'Complete' });
             break;
           case 'error':
-            setError(message.error);
+            setErrorState(message.error);
             setState('error');
             break;
         }
       };
 
       worker.onerror = (event: ErrorEvent) => {
-        setError(event.message);
+        setErrorState(event.message);
         setState('error');
       };
 
@@ -83,10 +86,32 @@ export function useHardwareScheduleParser(): UseHardwareScheduleParserReturn {
     };
 
     reader.onerror = () => {
-      setError('Failed to read file');
+      setErrorState('Failed to read file');
       setState('error');
     };
   }, [state]);
+
+  const hydrate = useCallback((parseResult: ParseResult) => {
+    if (workerRef.current) {
+      workerRef.current.terminate();
+      workerRef.current = null;
+    }
+    setResult(parseResult);
+    setState('done');
+    setProgress({ percent: 100, phase: 'Complete' });
+    setErrorState(null);
+  }, []);
+
+  const setLoading = useCallback((phase: string) => {
+    setState('reading');
+    setProgress({ percent: 0, phase });
+    setErrorState(null);
+  }, []);
+
+  const setError = useCallback((message: string) => {
+    setState('error');
+    setErrorState(message);
+  }, []);
 
   const reset = useCallback(() => {
     if (workerRef.current) {
@@ -97,7 +122,7 @@ export function useHardwareScheduleParser(): UseHardwareScheduleParserReturn {
     setState('idle');
     setProgress({ percent: 0, phase: '' });
     setResult(null);
-    setError(null);
+    setErrorState(null);
   }, []);
 
   useEffect(() => {
@@ -117,6 +142,9 @@ export function useHardwareScheduleParser(): UseHardwareScheduleParserReturn {
     error,
     isLoading,
     parseFile,
+    hydrate,
+    setLoading,
+    setError,
     reset,
   };
 }
