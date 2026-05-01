@@ -81,6 +81,18 @@ class HardwareItem:
 
 
 @strawberry.type
+class Vendor:
+    id: strawberry.ID
+    name: str
+    contact_name: str | None
+    email: str | None
+    phone: str | None
+    notes: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+@strawberry.type
 class POLineItem:
     id: strawberry.ID
     po_id: strawberry.ID
@@ -142,8 +154,7 @@ class PurchaseOrder:
     request_number: str
     project_id: strawberry.ID | None
     status: POStatus
-    vendor_name: str | None
-    vendor_contact: str | None
+    vendor: Vendor | None
     vendor_quote_number: str | None
     notes: str | None
     expected_delivery_date: date | None

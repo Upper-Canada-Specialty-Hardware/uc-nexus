@@ -367,7 +367,7 @@ export default function SelectOpeningsHardwareStep({
                           {productCode}
                         </Typography>
                         <Chip label={category} size="small" variant="outlined" />
-                        <Chip label={items[0].vendor_no ?? '(No Vendor)'} size="small" variant="outlined" />
+                        <Chip label={items[0].vendor_no ?? '(No Manufacturer)'} size="small" variant="outlined" />
                         <Chip
                           label={items[0].unit_cost != null ? `$${items[0].unit_cost.toFixed(2)}` : '\u2014'}
                           size="small"

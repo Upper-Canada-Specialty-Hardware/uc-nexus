@@ -12,6 +12,7 @@ from app.repositories import (
     shipping_repository,
     shop_assembly_repository,
     user_repository,
+    vendor_repository,
     warehouse_layout_repository,
     warehouse_repository,
 )
@@ -24,7 +25,9 @@ from .inputs import (
     CreatePOInput,
     CreateProjectInput,
     CreateReceiveInput,
+    CreateVendorInput,
     FinalizeImportSessionInput,
+    UpdateVendorInput,
 )
 from .queries import (
     _aisle_to_type,
@@ -43,6 +46,7 @@ from .queries import (
     _row_to_type,
     _shop_assembly_opening_to_type,
     _shop_assembly_request_to_type,
+    _vendor_to_type,
 )
 from .types import (
     ApproveResult,
@@ -60,6 +64,7 @@ from .types import (
     ReceiveRecord,
     ShopAssemblyOpening,
     ShopAssemblyRequest,
+    Vendor,
     WarehouseAisleType,
     WarehouseBayType,
     WarehouseBinType,
@@ -152,8 +157,7 @@ class Mutation:
             "po_drafts": [
                 {
                     "po_number": po.po_number,
-                    "vendor_name": po.vendor_name,
-                    "vendor_contact": po.vendor_contact,
+                    "vendor_id": str(po.vendor_id) if po.vendor_id else None,
                     "notes": po.notes,
                     "hardware_item_refs": [
                         {
@@ -251,13 +255,17 @@ class Mutation:
                 .first()
             )
 
-            # Re-load POs with line_items and documents
+            # Re-load POs with line_items, documents, and vendor
             pos = []
             for po_obj in result["purchase_orders"]:
                 refreshed_po = (
                     session.scalars(
                         select(POModel)
-                        .options(selectinload(POModel.line_items), selectinload(POModel.documents))
+                        .options(
+                            selectinload(POModel.line_items),
+                            selectinload(POModel.documents),
+                            selectinload(POModel.vendor),
+                        )
                         .where(POModel.id == po_obj.id)
                     )
                     .unique()
@@ -304,6 +312,7 @@ class Mutation:
         from app.models.purchase_order import PurchaseOrder as POModel
 
         project_id = uuid.UUID(str(input.project_id)) if input.project_id else None
+        vendor_id = uuid.UUID(str(input.vendor_id)) if input.vendor_id else None
         line_items_data = [
             {
                 "hardware_category": li.hardware_category,
@@ -321,17 +330,20 @@ class Mutation:
                 session,
                 line_items=line_items_data,
                 project_id=project_id,
-                vendor_name=input.vendor_name,
-                vendor_contact=input.vendor_contact,
+                vendor_id=vendor_id,
                 notes=input.notes,
             )
             session.commit()
 
-            # Re-load with line_items and documents
+            # Re-load with line_items, documents, and vendor
             refreshed_po = (
                 session.scalars(
                     select(POModel)
-                    .options(selectinload(POModel.line_items), selectinload(POModel.documents))
+                    .options(
+                        selectinload(POModel.line_items),
+                        selectinload(POModel.documents),
+                        selectinload(POModel.vendor),
+                    )
                     .where(POModel.id == po.id)
                 )
                 .unique()
@@ -343,32 +355,46 @@ class Mutation:
     def update_po(
         self,
         id: strawberry.ID,
-        vendor_name: str | None = None,
-        vendor_contact: str | None = None,
+        vendor_id: strawberry.ID | None = None,
         expected_delivery_date: date | None = None,
         po_number: str | None = None,
         vendor_quote_number: str | None = None,
         project_id: strawberry.ID | None = None,
         notes: str | None = None,
     ) -> PurchaseOrder:
+        from sqlalchemy.orm import selectinload
+
+        from app.models.purchase_order import PurchaseOrder as POModel
         from app.repositories.po_repository import _UNSET
 
         pid = uuid.UUID(str(project_id)) if project_id else _UNSET
+        vid = uuid.UUID(str(vendor_id)) if vendor_id else _UNSET
         with SessionLocal() as session:
             po = po_repository.update_po(
                 session,
                 uuid.UUID(str(id)),
-                vendor_name,
-                vendor_contact,
-                expected_delivery_date,
+                vendor_id=vid,
+                expected_delivery_date=expected_delivery_date,
                 po_number=po_number,
                 vendor_quote_number=vendor_quote_number,
                 project_id=pid,
                 notes=notes,
             )
             session.commit()
-            session.refresh(po)
-            return _po_to_type(po)
+            refreshed_po = (
+                session.scalars(
+                    select(POModel)
+                    .options(
+                        selectinload(POModel.line_items),
+                        selectinload(POModel.documents),
+                        selectinload(POModel.vendor),
+                    )
+                    .where(POModel.id == po.id)
+                )
+                .unique()
+                .first()
+            )
+            return _po_to_type(refreshed_po)
 
     @strawberry.mutation
     def mark_po_as_ordered(self, id: strawberry.ID) -> PurchaseOrder:
@@ -761,6 +787,45 @@ class Mutation:
             stmt = select(OIModel).options(selectinload(OIModel.installed_hardware)).where(OIModel.id == result.id)
             refreshed = session.scalars(stmt).unique().first()
             return _opening_item_to_type(refreshed)
+
+    # Vendors
+    @strawberry.mutation
+    def create_vendor(self, input: CreateVendorInput) -> Vendor:
+        with SessionLocal() as session:
+            vendor = vendor_repository.create_vendor(
+                session,
+                name=input.name,
+                contact_name=input.contact_name,
+                email=input.email,
+                phone=input.phone,
+                notes=input.notes,
+            )
+            session.commit()
+            session.refresh(vendor)
+            return _vendor_to_type(vendor)
+
+    @strawberry.mutation
+    def update_vendor(self, id: strawberry.ID, input: UpdateVendorInput) -> Vendor:
+        with SessionLocal() as session:
+            vendor = vendor_repository.update_vendor(
+                session,
+                uuid.UUID(str(id)),
+                name=input.name,
+                contact_name=input.contact_name,
+                email=input.email,
+                phone=input.phone,
+                notes=input.notes,
+            )
+            session.commit()
+            session.refresh(vendor)
+            return _vendor_to_type(vendor)
+
+    @strawberry.mutation
+    def delete_vendor(self, id: strawberry.ID) -> bool:
+        with SessionLocal() as session:
+            vendor_repository.delete_vendor(session, uuid.UUID(str(id)))
+            session.commit()
+            return True
 
     @strawberry.mutation
     def update_user_roles(self, user_id: str, roles: list[str]) -> ClerkUser:

@@ -12,6 +12,7 @@ import DeleteIcon from '@mui/icons-material/Delete';
 import AddIcon from '@mui/icons-material/Add';
 import { useMutation, useQuery } from '@apollo/client/react';
 import Modal from '../../components/Modal';
+import VendorSelect from '../../components/VendorSelect';
 import { useToast } from '../../components/Toast';
 import { CREATE_PO } from '../../graphql/mutations';
 import { GET_PROJECTS } from '../../graphql/queries';
@@ -62,8 +63,7 @@ export default function CreatePODialog({ open, onClose, onCreated, defaultProjec
 
   // Form state
   const [projectId, setProjectId] = useState(defaultProjectId ?? '');
-  const [vendorName, setVendorName] = useState('');
-  const [vendorContact, setVendorContact] = useState('');
+  const [vendorId, setVendorId] = useState<string | null>(null);
   const [notes, setNotes] = useState('');
   const [nextKey, setNextKey] = useState(2);
   const [lineItems, setLineItems] = useState<LineItemRow[]>([
@@ -113,8 +113,7 @@ export default function CreatePODialog({ open, onClose, onCreated, defaultProjec
 
   const handleReset = useCallback(() => {
     setProjectId(defaultProjectId ?? '');
-    setVendorName('');
-    setVendorContact('');
+    setVendorId(null);
     setNotes('');
     setLineItems([{ key: 1, ...EMPTY_LINE_ITEM }]);
     setNextKey(2);
@@ -126,8 +125,7 @@ export default function CreatePODialog({ open, onClose, onCreated, defaultProjec
 
     const input = {
       projectId: projectId || null,
-      vendorName: vendorName.trim() || null,
-      vendorContact: vendorContact.trim() || null,
+      vendorId: vendorId || null,
       notes: notes.trim() || null,
       lineItems: lineItems.map((li) => ({
         hardwareCategory: li.hardwareCategory.trim(),
@@ -148,7 +146,7 @@ export default function CreatePODialog({ open, onClose, onCreated, defaultProjec
       const message = err instanceof Error ? err.message : 'Failed to create PO';
       showToast(message, 'error');
     }
-  }, [validate, projectId, vendorName, vendorContact, notes, lineItems, createPO, showToast, onCreated, handleReset]);
+  }, [validate, projectId, vendorId, notes, lineItems, createPO, showToast, onCreated, handleReset]);
 
   const handleClose = useCallback(() => {
     handleReset();
@@ -188,22 +186,7 @@ export default function CreatePODialog({ open, onClose, onCreated, defaultProjec
           ))}
         </TextField>
 
-        <Stack direction="row" spacing={2}>
-          <TextField
-            label="Vendor Name"
-            value={vendorName}
-            onChange={(e) => setVendorName(e.target.value)}
-            size="small"
-            fullWidth
-          />
-          <TextField
-            label="Vendor Contact"
-            value={vendorContact}
-            onChange={(e) => setVendorContact(e.target.value)}
-            size="small"
-            fullWidth
-          />
-        </Stack>
+        <VendorSelect value={vendorId} onChange={setVendorId} />
         <TextField
           label="Notes"
           value={notes}

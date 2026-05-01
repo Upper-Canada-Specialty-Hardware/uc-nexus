@@ -32,6 +32,7 @@ import type { GridColDef } from '@mui/x-data-grid';
 import Modal from '../../components/Modal';
 import DataTable from '../../components/DataTable';
 import ConfirmDialog from '../../components/ConfirmDialog';
+import VendorSelect from '../../components/VendorSelect';
 import { useToast } from '../../components/Toast';
 import {
   UPDATE_PO,
@@ -154,12 +155,11 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
   // Edit mode state
   const [editing, setEditing] = useState(false);
   const [poNumber, setPoNumber] = useState(po.poNumber ?? '');
-  const [vendorName, setVendorName] = useState(po.vendorName ?? '');
-  const [vendorContact, setVendorContact] = useState(po.vendorContact ?? '');
+  const [vendorId, setVendorId] = useState<string | null>(po.vendor?.id ?? null);
   const [vendorQuoteNumber, setVendorQuoteNumber] = useState(po.vendorQuoteNumber ?? '');
   const [expectedDeliveryDate, setExpectedDeliveryDate] = useState(po.expectedDeliveryDate ?? '');
   const [notes, setNotes] = useState(po.notes ?? '');
-  const [vendorNameError, setVendorNameError] = useState('');
+  const [vendorIdError, setVendorIdError] = useState('');
   const [poNumberError, setPoNumberError] = useState('');
   const [aliasEdits, setAliasEdits] = useState<Record<string, string>>({});
   const [unitCostEdits, setUnitCostEdits] = useState<Record<string, string>>({});
@@ -186,8 +186,8 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
         const code = error.errors?.[0]?.extensions?.code;
         if (code === 'VALIDATION_ERROR') {
           const field = error.errors?.[0]?.extensions?.field;
-          if (field === 'vendor_name') {
-            setVendorNameError('Vendor name is required');
+          if (field === 'vendor_id') {
+            setVendorIdError('Vendor is required');
           } else if (field === 'po_number') {
             setPoNumberError(error.errors?.[0]?.message ?? 'Invalid PO number');
           } else {
@@ -262,12 +262,11 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
 
   const handleStartEdit = () => {
     setPoNumber(po.poNumber ?? '');
-    setVendorName(po.vendorName ?? '');
-    setVendorContact(po.vendorContact ?? '');
+    setVendorId(po.vendor?.id ?? null);
     setVendorQuoteNumber(po.vendorQuoteNumber ?? '');
     setExpectedDeliveryDate(po.expectedDeliveryDate ?? '');
     setNotes(po.notes ?? '');
-    setVendorNameError('');
+    setVendorIdError('');
     setPoNumberError('');
     const initialAliases: Record<string, string> = {};
     const initialUnitCosts: Record<string, string> = {};
@@ -282,12 +281,12 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
 
   const handleCancelEdit = () => {
     setEditing(false);
-    setVendorNameError('');
+    setVendorIdError('');
     setPoNumberError('');
   };
 
   const handleSave = async () => {
-    setVendorNameError('');
+    setVendorIdError('');
     setPoNumberError('');
 
     // Save line item changes (alias + unit cost)
@@ -327,8 +326,7 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
     updatePo({
       variables: {
         id: po.id,
-        vendorName: vendorName || null,
-        vendorContact: vendorContact || null,
+        vendorId: vendorId || null,
         expectedDeliveryDate: expectedDeliveryDate || null,
         poNumber: poNumber || null,
         vendorQuoteNumber: vendorQuoteNumber || null,
@@ -435,9 +433,9 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
   const missingRequirements = useMemo(() => {
     const missing: string[] = [];
     if (!po.poNumber) missing.push('PO Number');
-    if (!po.vendorName) missing.push('Vendor Name');
+    if (!po.vendor?.id) missing.push('Vendor');
     return missing;
-  }, [po.poNumber, po.vendorName]);
+  }, [po.poNumber, po.vendor?.id]);
 
   const markAsOrderedEnabled = canMarkAsOrdered && missingRequirements.length === 0;
 
@@ -545,24 +543,14 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
               fullWidth
               size="small"
             />
-            <TextField
-              label="Vendor Name"
-              value={vendorName}
-              onChange={(e) => {
-                setVendorName(e.target.value);
-                if (vendorNameError) setVendorNameError('');
+            <VendorSelect
+              value={vendorId}
+              onChange={(id) => {
+                setVendorId(id);
+                if (vendorIdError) setVendorIdError('');
               }}
-              error={!!vendorNameError}
-              helperText={vendorNameError}
-              fullWidth
-              size="small"
-            />
-            <TextField
-              label="Vendor Contact"
-              value={vendorContact}
-              onChange={(e) => setVendorContact(e.target.value)}
-              fullWidth
-              size="small"
+              error={!!vendorIdError}
+              helperText={vendorIdError}
             />
             <TextField
               label="Vendor Quote Number"
@@ -594,8 +582,8 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
         ) : (
           <Box sx={{ mb: 3 }}>
             <InfoRow label="PO Number" value={po.poNumber || '(Not assigned)'} />
-            <InfoRow label="Vendor Name" value={po.vendorName || '-'} />
-            <InfoRow label="Vendor Contact" value={po.vendorContact || '-'} />
+            <InfoRow label="Vendor" value={po.vendor?.name || '-'} />
+            <InfoRow label="Vendor Contact" value={po.vendor?.contactName || '-'} />
             <InfoRow label="Vendor Quote #" value={po.vendorQuoteNumber || '-'} />
             <InfoRow label="Expected Delivery Date" value={formatDate(po.expectedDeliveryDate)} />
             <InfoRow label="Order Date" value={formatDate(po.orderedAt)} />
@@ -608,9 +596,9 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
               </Box>
             )}
             {!po.projectId && <InfoRow label="Project" value="No Project" />}
-            {vendorNameError && (
+            {vendorIdError && (
               <Typography color="error" variant="body2" sx={{ mt: 1 }}>
-                {vendorNameError}
+                {vendorIdError}
               </Typography>
             )}
           </Box>

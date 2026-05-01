@@ -36,7 +36,7 @@ interface PODetailLineItem {
 interface PODetails {
   id: string;
   poNumber: string | null;
-  vendorName: string | null;
+  vendor: { id: string; name: string; contactName: string | null } | null;
   notes: string | null;
   status: string;
   lineItems: PODetailLineItem[];
@@ -297,7 +297,7 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
         {showHeader && (
           <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: details.notes ? 0.5 : 1 }}>
             {details.poNumber ?? 'Unknown PO'}
-            {details.vendorName ? ` \u2014 ${details.vendorName}` : ''}
+            {details.vendor ? ` \u2014 ${details.vendor.name}` : ''}
           </Typography>
         )}
         {details.notes && (

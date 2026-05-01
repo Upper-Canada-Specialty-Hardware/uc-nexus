@@ -28,6 +28,7 @@ from app.models.purchase_order import PurchaseOrder as POModel
 from app.models.receiving import ReceiveLineItem as ReceiveLineItemModel
 from app.models.receiving import ReceiveRecord as ReceiveRecordModel
 from app.models.shop_assembly import ShopAssemblyRequest as SARModel
+from app.models.vendor import Vendor as VendorModel
 from app.services import notification_service
 from app.services.locking import lock_rows
 
@@ -167,7 +168,7 @@ def get_expected_deliveries(session: Session, project_id: uuid.UUID | None = Non
     """Active POs with outstanding line items, ordered by expected_delivery_date."""
     stmt = (
         select(POModel)
-        .options(selectinload(POModel.line_items))
+        .options(selectinload(POModel.line_items), selectinload(POModel.vendor))
         .where(
             POModel.status.in_([POStatus.ORDERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED]),
             POModel.deleted_at.is_(None),
@@ -182,8 +183,9 @@ def get_expected_deliveries(session: Session, project_id: uuid.UUID | None = Non
 def get_back_ordered_items(session: Session, project_id: uuid.UUID | None = None) -> list[dict]:
     """PO line items where received < ordered on active POs."""
     stmt = (
-        select(POLineItemModel, POModel.po_number, POModel.vendor_name, POModel.expected_delivery_date)
+        select(POLineItemModel, POModel.po_number, VendorModel.name, POModel.expected_delivery_date)
         .join(POModel, POLineItemModel.po_id == POModel.id)
+        .outerjoin(VendorModel, POModel.vendor_id == VendorModel.id)
         .where(
             POModel.status.in_([POStatus.ORDERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED]),
             POModel.deleted_at.is_(None),
@@ -207,15 +209,16 @@ def get_back_ordered_items(session: Session, project_id: uuid.UUID | None = None
 
 
 def get_inventory_by_vendor(session: Session, project_id: uuid.UUID | None = None) -> list[dict]:
-    """Group inventory by vendor_name, then product_code."""
+    """Group inventory by vendor name (via PO.vendor_id → Vendor), then product_code."""
     stmt = (
-        select(InventoryLocationModel, POLineItemModel.unit_cost, POModel.vendor_name)
+        select(InventoryLocationModel, POLineItemModel.unit_cost, VendorModel.name)
         .join(POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id)
         .join(POModel, POLineItemModel.po_id == POModel.id)
+        .outerjoin(VendorModel, POModel.vendor_id == VendorModel.id)
     )
     if project_id is not None:
         stmt = stmt.where(InventoryLocationModel.project_id == project_id)
-    stmt = stmt.order_by(POModel.vendor_name, InventoryLocationModel.product_code)
+    stmt = stmt.order_by(VendorModel.name, InventoryLocationModel.product_code)
     rows = list(session.execute(stmt).all())
 
     vendor_map: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
@@ -850,10 +853,14 @@ def get_po_receiving_details(session: Session, po_id: uuid.UUID) -> tuple[POMode
     Returns:
         Tuple of (po, receive_records)
     """
-    # Look up PO with line_items and documents
+    # Look up PO with line_items, documents, and vendor
     stmt = (
         select(POModel)
-        .options(selectinload(POModel.line_items), selectinload(POModel.documents))
+        .options(
+            selectinload(POModel.line_items),
+            selectinload(POModel.documents),
+            selectinload(POModel.vendor),
+        )
         .where(POModel.id == po_id)
     )
     po = session.scalars(stmt).unique().first()

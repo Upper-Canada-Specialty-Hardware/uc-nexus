@@ -103,7 +103,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
 
   // Action step state
   const [selectedVendors, setSelectedVendors] = useState<Set<string>>(new Set());
-  const [vendorPOInfo, setVendorPOInfo] = useState<Map<string, { vendorContact: string; notes: string }>>(new Map());
+  const [vendorPOInfo, setVendorPOInfo] = useState<Map<string, { vendorId: string | null; notes: string }>>(new Map());
   const [unitCostOverrides, setUnitCostOverrides] = useState<Map<string, number>>(new Map());
   const [classifications, setClassifications] = useState<Map<string, string>>(new Map());
   const [orderAsValues, setOrderAsValues] = useState<Map<string, string>>(new Map());
@@ -311,7 +311,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
         openingNumber: hi.opening_number,
         productCode: hi.product_code,
         hardwareCategory: hi.hardware_category,
-        vendorNo: hi.vendor_no ?? '(No Vendor)',
+        vendorNo: hi.vendor_no ?? '(No Manufacturer)',
         listPrice: hi.list_price,
         vendorDiscount: hi.vendor_discount,
         unitCost: hi.unit_cost ?? 0,
@@ -331,7 +331,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
         const ck = classificationKey(hi);
         if (classifications.get(ck) === 'BY_OTHERS') continue;
       }
-      const vendor = hi.vendor_no ?? '(No Vendor)';
+      const vendor = hi.vendor_no ?? '(No Manufacturer)';
       if (!map.has(vendor)) map.set(vendor, []);
       map.get(vendor)!.push(hi);
     }
@@ -440,15 +440,22 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
     });
   }, []);
 
-  // Vendor PO info
-  const updateVendorPO = useCallback((vendorNo: string, field: 'vendorContact' | 'notes', value: string) => {
-    setVendorPOInfo((prev) => {
-      const next = new Map(prev);
-      const existing = next.get(vendorNo) ?? { vendorContact: '', notes: '' };
-      next.set(vendorNo, { ...existing, [field]: value });
-      return next;
-    });
-  }, []);
+  // Manufacturer-group PO info
+  const updateVendorPO = useCallback(
+    (manufacturerKey: string, field: 'vendorId' | 'notes', value: string | null) => {
+      setVendorPOInfo((prev) => {
+        const next = new Map(prev);
+        const existing = next.get(manufacturerKey) ?? { vendorId: null, notes: '' };
+        if (field === 'vendorId') {
+          next.set(manufacturerKey, { ...existing, vendorId: value });
+        } else {
+          next.set(manufacturerKey, { ...existing, notes: value ?? '' });
+        }
+        return next;
+      });
+    },
+    [],
+  );
 
   // Unit cost overrides
   const updateUnitCost = useCallback((vendor: string, productCode: string, hardwareCategory: string, value: number) => {
@@ -580,9 +587,9 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
       openings: selectedOpeningsList.map((o) => snakeToCamel(o as unknown as Record<string, unknown>)),
       hardwareItems: purpose === 'po'
         ? aggregatedHardwareItems
-            .filter((hi) => selectedVendors.has(hi.vendor_no ?? '(No Vendor)') && !isByOthers(hi))
+            .filter((hi) => selectedVendors.has(hi.vendor_no ?? '(No Manufacturer)') && !isByOthers(hi))
             .map((hi) => {
-              const vendor = hi.vendor_no ?? '(No Vendor)';
+              const vendor = hi.vendor_no ?? '(No Manufacturer)';
               const overrideKey = `${vendor}|${hi.product_code}|${hi.hardware_category}`;
               const overriddenCost = unitCostOverrides.get(overrideKey);
               const item = overriddenCost !== undefined
@@ -598,8 +605,8 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
               // Filter out BY_OTHERS items from this vendor's PO draft
               const inScopeItems = items.filter((hi) => !isByOthers(hi));
               if (inScopeItems.length === 0) return null;
-              const info = vendorPOInfo.get(vendor) ?? { vendorContact: '', notes: '' };
-              // Collect aliases for this vendor's aggregated line items
+              const info = vendorPOInfo.get(vendor) ?? { vendorId: null, notes: '' };
+              // Collect aliases for this manufacturer group's aggregated line items
               const seenKeys = new Set<string>();
               const lineItemAliases: Array<{ hardwareCategory: string; productCode: string; orderAs: string }> = [];
               for (const hi of inScopeItems) {
@@ -618,8 +625,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
               }
               return {
                 poNumber: null,
-                vendorName: vendor !== '(No Vendor)' ? vendor : null,
-                vendorContact: info.vendorContact || null,
+                vendorId: info.vendorId,
                 notes: info.notes || null,
                 hardwareItemRefs: inScopeItems.map((hi) => ({
                   openingNumber: hi.opening_number,
@@ -1075,7 +1081,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
                 {purpose === 'po' && (
                   <Box sx={{ mb: 1 }}>
                     <Typography variant="body1">
-                      {selectedVendors.size} Purchase Order(s) across {selectedVendors.size} vendor(s)
+                      {selectedVendors.size} Purchase Order(s) across {selectedVendors.size} manufacturer group(s)
                     </Typography>
                   </Box>
                 )}

@@ -13,6 +13,7 @@ from app.repositories import (
     shipping_repository,
     shop_assembly_repository,
     user_repository,
+    vendor_repository,
     warehouse_layout_repository,
     warehouse_repository,
 )
@@ -59,6 +60,7 @@ from .types import (
     ShopAssemblyOpening,
     ShopAssemblyOpeningItem,
     ShopAssemblyRequest,
+    Vendor,
     VendorInventoryNode,
     WarehouseAisleType,
     WarehouseBayType,
@@ -134,16 +136,29 @@ def _po_document_to_type(doc) -> PODocumentInfo:
     )
 
 
+def _vendor_to_type(v) -> Vendor:
+    return Vendor(
+        id=strawberry.ID(str(v.id)),
+        name=v.name,
+        contact_name=v.contact_name,
+        email=v.email,
+        phone=v.phone,
+        notes=v.notes,
+        created_at=v.created_at,
+        updated_at=v.updated_at,
+    )
+
+
 def _po_to_type(po, receive_records=None) -> PurchaseOrder:
     documents = getattr(po, "documents", None) or []
+    vendor = getattr(po, "vendor", None)
     return PurchaseOrder(
         id=strawberry.ID(str(po.id)),
         po_number=po.po_number,
         request_number=po.request_number,
         project_id=strawberry.ID(str(po.project_id)) if po.project_id else None,
         status=po.status,
-        vendor_name=po.vendor_name,
-        vendor_contact=po.vendor_contact,
+        vendor=_vendor_to_type(vendor) if vendor is not None else None,
         vendor_quote_number=po.vendor_quote_number,
         notes=po.notes,
         expected_delivery_date=po.expected_delivery_date,
@@ -532,7 +547,11 @@ class Query:
         with SessionLocal() as session:
             stmt = (
                 select(POModel)
-                .options(selectinload(POModel.line_items), selectinload(POModel.documents))
+                .options(
+                    selectinload(POModel.line_items),
+                    selectinload(POModel.documents),
+                    selectinload(POModel.vendor),
+                )
                 .where(
                     POModel.deleted_at.is_(None),
                     POModel.status.in_(
@@ -779,6 +798,19 @@ class Query:
             )
             for u in results
         ]
+
+    @strawberry.field
+    def vendors(self) -> list[Vendor]:
+        with SessionLocal() as session:
+            return [_vendor_to_type(v) for v in vendor_repository.list_vendors(session)]
+
+    @strawberry.field
+    def vendor(self, id: strawberry.ID) -> Vendor | None:
+        from app.models.vendor import Vendor as VendorModel
+
+        with SessionLocal() as session:
+            v = session.get(VendorModel, uuid.UUID(str(id)))
+            return _vendor_to_type(v) if v is not None else None
 
     @strawberry.field
     def expected_deliveries(self, project_id: strawberry.ID | None = None) -> list[PurchaseOrder]:

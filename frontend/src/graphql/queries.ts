@@ -37,8 +37,13 @@ export const GET_PURCHASE_ORDERS = gql`
       requestNumber
       projectId
       status
-      vendorName
-      vendorContact
+      vendor {
+        id
+        name
+        contactName
+        email
+        phone
+      }
       vendorQuoteNumber
       notes
       expectedDeliveryDate
@@ -175,7 +180,10 @@ export const GET_OPEN_POS = gql`
       poNumber
       projectId
       status
-      vendorName
+      vendor {
+        id
+        name
+      }
       notes
       orderedAt
       expectedDeliveryDate
@@ -237,7 +245,11 @@ export const GET_PO_RECEIVING_DETAILS = gql`
       id
       poNumber
       requestNumber
-      vendorName
+      vendor {
+        id
+        name
+        contactName
+      }
       notes
       status
       lineItems {
@@ -481,6 +493,21 @@ export const GET_USERS = gql`
   }
 `;
 
+export const GET_VENDORS = gql`
+  query GetVendors {
+    vendors {
+      id
+      name
+      contactName
+      email
+      phone
+      notes
+      createdAt
+      updatedAt
+    }
+  }
+`;
+
 export const GET_INVENTORY_BY_VENDOR = gql`
   query GetInventoryByVendor($projectId: ID) {
     inventoryByVendor(projectId: $projectId) {
@@ -543,7 +570,10 @@ export const GET_EXPECTED_DELIVERIES = gql`
       id
       poNumber
       requestNumber
-      vendorName
+      vendor {
+        id
+        name
+      }
       expectedDeliveryDate
       orderedAt
       status

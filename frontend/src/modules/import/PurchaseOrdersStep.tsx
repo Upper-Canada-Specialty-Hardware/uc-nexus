@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import { Box, Button, Checkbox, FormControlLabel, InputAdornment, Paper, TextField, Typography } from '@mui/material';
+import VendorSelect from '../../components/VendorSelect';
 import type { AggregatedHardwareItem } from './types';
 
 // ---- Aggregation Types ----
@@ -16,12 +17,12 @@ interface AggregatedLineItem {
 
 interface PurchaseOrdersStepProps {
   vendorGroups: Map<string, AggregatedHardwareItem[]>;
-  vendorPOInfo: Map<string, { vendorContact: string; notes: string }>;
+  vendorPOInfo: Map<string, { vendorId: string | null; notes: string }>;
   selectedVendors: Set<string>;
   unitCostOverrides: Map<string, number>;
   orderAsValues: Map<string, string>;
   onToggleVendor: (vendor: string) => void;
-  onUpdateVendorPO: (vendorNo: string, field: 'vendorContact' | 'notes', value: string) => void;
+  onUpdateVendorPO: (manufacturerKey: string, field: 'vendorId' | 'notes', value: string | null) => void;
   onUpdateUnitCost: (vendor: string, productCode: string, hardwareCategory: string, newCost: number) => void;
   onUpdateOrderAs: (key: string, value: string) => void;
   onNext: () => void;
@@ -93,18 +94,18 @@ export default function PurchaseOrdersStep({
         Purchase Orders
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-        {vendorGroups.size} vendor(s). Select which vendors to create purchase orders for. PO numbers can be assigned later from Microsoft GP.
+        {vendorGroups.size} manufacturer group(s). Select which to create purchase orders for, and pick a vendor (the company you buy from). PO numbers can be assigned later from Microsoft GP.
       </Typography>
 
       {sortedVendors.map(([vendor, items]) => {
-        const info = vendorPOInfo.get(vendor) ?? { vendorContact: '', notes: '' };
+        const info = vendorPOInfo.get(vendor) ?? { vendorId: null, notes: '' };
         const aggregated = aggregateLineItems(items, vendor, unitCostOverrides);
         const poTotal = aggregated.reduce((sum, line) => sum + line.totalCost, 0);
         const isSelected = selectedVendors.has(vendor);
 
         return (
           <Paper key={vendor} variant="outlined" sx={{ p: 2, mb: 2, opacity: isSelected ? 1 : 0.5 }}>
-            {/* Header: checkbox + vendor name + PO total */}
+            {/* Header: checkbox + manufacturer label + PO total */}
             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
               <FormControlLabel
                 control={
@@ -114,9 +115,14 @@ export default function PurchaseOrdersStep({
                   />
                 }
                 label={
-                  <Typography variant="subtitle1" sx={{ fontWeight: 'bold' }}>
-                    {vendor}
-                  </Typography>
+                  <Box>
+                    <Typography variant="caption" color="text.secondary">
+                      Manufacturer
+                    </Typography>
+                    <Typography variant="subtitle1" sx={{ fontWeight: 'bold' }}>
+                      {vendor}
+                    </Typography>
+                  </Box>
                 }
               />
               <Typography variant="subtitle1" color="primary">
@@ -124,16 +130,15 @@ export default function PurchaseOrdersStep({
               </Typography>
             </Box>
 
-            {/* Vendor Contact + Notes fields */}
+            {/* Vendor select + Notes fields */}
             <Box sx={{ display: 'flex', gap: 2, mb: 2 }}>
-              <TextField
-                label="Vendor Contact"
-                size="small"
-                disabled={!isSelected}
-                value={info.vendorContact}
-                onChange={(e) => onUpdateVendorPO(vendor, 'vendorContact', e.target.value)}
-                sx={{ flex: 1 }}
-              />
+              <Box sx={{ flex: 1 }}>
+                <VendorSelect
+                  value={info.vendorId}
+                  onChange={(id) => onUpdateVendorPO(vendor, 'vendorId', id)}
+                  disabled={!isSelected}
+                />
+              </Box>
               <TextField
                 label="Notes"
                 size="small"

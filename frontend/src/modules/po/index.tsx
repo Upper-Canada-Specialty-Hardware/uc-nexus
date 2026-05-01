@@ -68,14 +68,21 @@ export interface PODocumentInfo {
   downloadUrl: string;
 }
 
+export interface VendorRef {
+  id: string;
+  name: string;
+  contactName: string | null;
+  email: string | null;
+  phone: string | null;
+}
+
 export interface PurchaseOrder {
   id: string;
   poNumber: string | null;
   requestNumber: string;
   projectId: string | null;
   status: string;
-  vendorName: string | null;
-  vendorContact: string | null;
+  vendor: VendorRef | null;
   vendorQuoteNumber: string | null;
   notes: string | null;
   expectedDeliveryDate: string | null;
@@ -171,11 +178,11 @@ const columns: GridColDef[] = [
     ),
   },
   {
-    field: 'vendorName',
+    field: 'vendor',
     headerName: 'Vendor',
     flex: 1,
     minWidth: 160,
-    valueGetter: (_value: unknown, row: PurchaseOrder) => row.vendorName || '-',
+    valueGetter: (_value: unknown, row: PurchaseOrder) => row.vendor?.name || '-',
   },
   {
     field: 'orderedAt',

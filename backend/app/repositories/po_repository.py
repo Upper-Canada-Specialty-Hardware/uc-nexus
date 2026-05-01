@@ -33,8 +33,7 @@ def create_po(
     session: Session,
     line_items: list[dict],
     project_id: uuid.UUID | None = None,
-    vendor_name: str | None = None,
-    vendor_contact: str | None = None,
+    vendor_id: uuid.UUID | None = None,
     notes: str | None = None,
 ) -> PurchaseOrder:
     """Create a manual PO with line items. No hardware items are created."""
@@ -49,15 +48,21 @@ def create_po(
         if project is None:
             raise NotFoundError(f"Project {project_id} not found")
 
+    if vendor_id is not None:
+        from app.models.vendor import Vendor as VendorModel
+
+        vendor = session.get(VendorModel, vendor_id)
+        if vendor is None:
+            raise NotFoundError(f"Vendor {vendor_id} not found")
+
     request_number = generate_next_request_number(session)
 
     po = PurchaseOrder(
         id=uuid.uuid4(),
         request_number=request_number,
         project_id=project_id,
+        vendor_id=vendor_id,
         status=POStatus.DRAFT,
-        vendor_name=vendor_name,
-        vendor_contact=vendor_contact,
         notes=notes,
     )
     session.add(po)
@@ -88,10 +93,14 @@ def create_po(
 def get_purchase_orders(
     session: Session, project_id: uuid.UUID | None = None, status: POStatus | None = None
 ) -> list[PurchaseOrder]:
-    """Filter by optional project_id + optional status + deleted_at IS NULL, eagerly load line_items and documents."""
+    """Filter by optional project_id + status + deleted_at IS NULL; eagerly load line_items, documents, vendor."""
     stmt = (
         select(PurchaseOrder)
-        .options(selectinload(PurchaseOrder.line_items), selectinload(PurchaseOrder.documents))
+        .options(
+            selectinload(PurchaseOrder.line_items),
+            selectinload(PurchaseOrder.documents),
+            selectinload(PurchaseOrder.vendor),
+        )
         .where(PurchaseOrder.deleted_at.is_(None))
         .order_by(PurchaseOrder.created_at.desc())
     )
@@ -103,10 +112,14 @@ def get_purchase_orders(
 
 
 def get_purchase_order(session: Session, po_id: uuid.UUID) -> PurchaseOrder | None:
-    """Single PO by id + deleted_at IS NULL, eagerly load line_items and documents."""
+    """Single PO by id + deleted_at IS NULL, eagerly load line_items, documents, vendor."""
     stmt = (
         select(PurchaseOrder)
-        .options(selectinload(PurchaseOrder.line_items), selectinload(PurchaseOrder.documents))
+        .options(
+            selectinload(PurchaseOrder.line_items),
+            selectinload(PurchaseOrder.documents),
+            selectinload(PurchaseOrder.vendor),
+        )
         .where(
             PurchaseOrder.id == po_id,
             PurchaseOrder.deleted_at.is_(None),
@@ -168,9 +181,8 @@ def get_po_statistics(session: Session, project_id: uuid.UUID | None = None) -> 
 def update_po(
     session: Session,
     po_id: uuid.UUID,
-    vendor_name: str | None,
-    vendor_contact: str | None,
-    expected_delivery_date,
+    vendor_id=_UNSET,
+    expected_delivery_date=None,
     po_number: str | None = None,
     vendor_quote_number: str | None = None,
     project_id=_UNSET,
@@ -181,7 +193,7 @@ def update_po(
     - Validate status in (Draft, Ordered) (InvalidStateTransitionError)
     - Validate no ReceiveRecords exist (InvalidStateTransitionError)
     - Validate po_number uniqueness within project if provided
-    - Update only provided (non-None) fields
+    - Update only provided fields (vendor_id/project_id use _UNSET sentinel)
     - Return updated PO
     """
     po = get_purchase_order(session, po_id)
@@ -206,6 +218,18 @@ def update_po(
             raise NotFoundError(f"Project {project_id} not found")
         po.project_id = project_id
 
+    # Update vendor_id if provided (sentinel _UNSET means "not provided")
+    if vendor_id is not _UNSET:
+        if vendor_id is None:
+            po.vendor_id = None
+        else:
+            from app.models.vendor import Vendor as VendorModel
+
+            vendor = session.get(VendorModel, vendor_id)
+            if vendor is None:
+                raise NotFoundError(f"Vendor {vendor_id} not found")
+            po.vendor_id = vendor_id
+
     if po_number is not None:
         # Validate uniqueness scoped to project (or globally for project-less POs)
         if po_number.strip():
@@ -225,10 +249,6 @@ def update_po(
         else:
             po.po_number = None
 
-    if vendor_name is not None:
-        po.vendor_name = vendor_name
-    if vendor_contact is not None:
-        po.vendor_contact = vendor_contact
     if expected_delivery_date is not None:
         po.expected_delivery_date = expected_delivery_date
     if vendor_quote_number is not None:
@@ -255,7 +275,7 @@ def mark_po_as_ordered(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
     - Validate exists + not soft-deleted (NotFoundError)
     - Validate status == Draft (InvalidStateTransitionError)
     - Validate po_number is not None (ValidationError)
-    - Validate vendor_name is not None (ValidationError)
+    - Validate vendor_id is not None (ValidationError)
     - Set status=Ordered, ordered_at=datetime.utcnow()
     - Return updated PO
     """
@@ -269,10 +289,10 @@ def mark_po_as_ordered(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
     if po.po_number is None:
         raise ValidationError("PO number is required before marking as ordered", field="po_number")
 
-    if po.vendor_name is None:
+    if po.vendor_id is None:
         raise ValidationError(
-            "Vendor name is required before marking as ordered",
-            field="vendor_name",
+            "Vendor is required before marking as ordered",
+            field="vendor_id",
         )
 
     po.status = POStatus.ORDERED

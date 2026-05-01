@@ -386,6 +386,15 @@ def finalize_import_session(
             request_number = f"PO-REQ-{next_seq:03d}"
             next_seq += 1
 
+            # Resolve vendor_id (validate FK target exists if provided)
+            vendor_id_str = po_draft.get("vendor_id")
+            vendor_id = uuid.UUID(vendor_id_str) if vendor_id_str else None
+            if vendor_id is not None:
+                from app.models.vendor import Vendor as VendorModel
+
+                if session.get(VendorModel, vendor_id) is None:
+                    raise NotFoundError(f"Vendor {vendor_id} not found")
+
             # Create PO
             po = POModel(
                 id=uuid.uuid4(),
@@ -393,8 +402,7 @@ def finalize_import_session(
                 request_number=request_number,
                 project_id=project.id,
                 status=POStatus.DRAFT,
-                vendor_name=po_draft.get("vendor_name"),
-                vendor_contact=po_draft.get("vendor_contact"),
+                vendor_id=vendor_id,
                 notes=po_draft.get("notes"),
             )
             session.add(po)

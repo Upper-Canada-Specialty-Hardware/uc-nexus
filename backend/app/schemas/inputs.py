@@ -67,8 +67,7 @@ class POLineItemOrderAsInput:
 @strawberry.input
 class PODraftInput:
     po_number: str | None = None
-    vendor_name: str | None = None
-    vendor_contact: str | None = None
+    vendor_id: strawberry.ID | None = None
     notes: str | None = None
     hardware_item_refs: list[HardwareItemRef] = strawberry.field(default_factory=list)
     line_item_aliases: list[POLineItemOrderAsInput] = strawberry.field(default_factory=list)
@@ -146,8 +145,25 @@ class CreatePOLineItemInput:
 class CreatePOInput:
     line_items: list[CreatePOLineItemInput]
     project_id: strawberry.ID | None = None
-    vendor_name: str | None = None
-    vendor_contact: str | None = None
+    vendor_id: strawberry.ID | None = None
+    notes: str | None = None
+
+
+@strawberry.input
+class CreateVendorInput:
+    name: str
+    contact_name: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    notes: str | None = None
+
+
+@strawberry.input
+class UpdateVendorInput:
+    name: str | None = None
+    contact_name: str | None = None
+    email: str | None = None
+    phone: str | None = None
     notes: str | None = None
 
 

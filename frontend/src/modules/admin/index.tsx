@@ -3,10 +3,12 @@ import { Box, Tabs, Tab, Typography } from '@mui/material';
 import HardwareSummaryTab from './HardwareSummaryTab';
 import OpeningStatusTab from './OpeningStatusTab';
 import UserManagementPage from './UserManagementPage';
+import VendorsPage from './VendorsPage';
 
 const SUB_ROUTES = [
   { label: 'Hardware Summary', path: 'hardware-summary' },
   { label: 'Opening Status', path: 'opening-status' },
+  { label: 'Vendors', path: 'vendors' },
   { label: 'User Management', path: 'users' },
 ];
 
@@ -26,6 +28,7 @@ export default function AdminModule() {
       <Routes>
         <Route path="hardware-summary" element={<HardwareSummaryTab />} />
         <Route path="opening-status" element={<OpeningStatusTab />} />
+        <Route path="vendors" element={<VendorsPage />} />
         <Route path="users" element={<UserManagementPage />} />
         <Route index element={<Navigate to="hardware-summary" replace />} />
       </Routes>

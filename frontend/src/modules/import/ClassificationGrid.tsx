@@ -43,7 +43,7 @@ export type GroupByField = 'hardwareCategory' | 'vendorNo' | 'productCode' | 'op
 
 const GROUP_BY_OPTIONS: { value: GroupByField; label: string }[] = [
   { value: 'hardwareCategory', label: 'Hardware Category' },
-  { value: 'vendorNo', label: 'Vendor' },
+  { value: 'vendorNo', label: 'Manufacturer' },
   { value: 'productCode', label: 'Product Code' },
   { value: 'openingNumber', label: 'Opening Number' },
   { value: 'unitCost', label: 'Unit Cost' },
@@ -105,7 +105,7 @@ const ALL_COLUMNS: GridColDef[] = [
   { field: 'openingNumber', headerName: 'Opening #', flex: 0.7 },
   { field: 'productCode', headerName: 'Product Code', flex: 1 },
   { field: 'hardwareCategory', headerName: 'Hardware Category', flex: 1 },
-  { field: 'vendorNo', headerName: 'Vendor', flex: 0.8 },
+  { field: 'vendorNo', headerName: 'Manufacturer', flex: 0.8 },
   {
     field: 'listPrice',
     headerName: 'List Price',

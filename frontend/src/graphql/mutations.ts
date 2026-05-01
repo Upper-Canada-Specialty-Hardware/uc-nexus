@@ -1,14 +1,19 @@
 import { gql } from '@apollo/client/core';
 
 export const UPDATE_PO = gql`
-  mutation UpdatePO($id: ID!, $vendorName: String, $vendorContact: String, $expectedDeliveryDate: Date, $poNumber: String, $vendorQuoteNumber: String, $notes: String) {
-    updatePo(id: $id, vendorName: $vendorName, vendorContact: $vendorContact, expectedDeliveryDate: $expectedDeliveryDate, poNumber: $poNumber, vendorQuoteNumber: $vendorQuoteNumber, notes: $notes) {
+  mutation UpdatePO($id: ID!, $vendorId: ID, $expectedDeliveryDate: Date, $poNumber: String, $vendorQuoteNumber: String, $notes: String) {
+    updatePo(id: $id, vendorId: $vendorId, expectedDeliveryDate: $expectedDeliveryDate, poNumber: $poNumber, vendorQuoteNumber: $vendorQuoteNumber, notes: $notes) {
       id
       poNumber
       requestNumber
       status
-      vendorName
-      vendorContact
+      vendor {
+        id
+        name
+        contactName
+        email
+        phone
+      }
       vendorQuoteNumber
       notes
       expectedDeliveryDate
@@ -56,7 +61,11 @@ export const MARK_PO_AS_ORDERED = gql`
       status
       orderedAt
       updatedAt
-      vendorName
+      vendor {
+        id
+        name
+        contactName
+      }
       vendorQuoteNumber
       notes
       lineItems {
@@ -390,8 +399,13 @@ export const CREATE_PO = gql`
       requestNumber
       projectId
       status
-      vendorName
-      vendorContact
+      vendor {
+        id
+        name
+        contactName
+        email
+        phone
+      }
       notes
       createdAt
       updatedAt
@@ -535,6 +549,42 @@ export const UPDATE_USER_ROLES = gql`
       roles
       imageUrl
     }
+  }
+`;
+
+export const CREATE_VENDOR = gql`
+  mutation CreateVendor($input: CreateVendorInput!) {
+    createVendor(input: $input) {
+      id
+      name
+      contactName
+      email
+      phone
+      notes
+      createdAt
+      updatedAt
+    }
+  }
+`;
+
+export const UPDATE_VENDOR = gql`
+  mutation UpdateVendor($id: ID!, $input: UpdateVendorInput!) {
+    updateVendor(id: $id, input: $input) {
+      id
+      name
+      contactName
+      email
+      phone
+      notes
+      createdAt
+      updatedAt
+    }
+  }
+`;
+
+export const DELETE_VENDOR = gql`
+  mutation DeleteVendor($id: ID!) {
+    deleteVendor(id: $id)
   }
 `;
 

@@ -7,6 +7,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from . import Base
 from .enums import Classification, PODocumentType, POStatus
+from .vendor import Vendor
 
 
 class PurchaseOrder(Base):
@@ -33,9 +34,10 @@ class PurchaseOrder(Base):
     po_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
     request_number: Mapped[str] = mapped_column(String(50), nullable=False)
     project_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("projects.id"), nullable=True)
+    vendor_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("vendors.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
     status: Mapped[POStatus] = mapped_column(Enum(POStatus, name="po_status", create_constraint=True), nullable=False)
-    vendor_name: Mapped[str | None] = mapped_column(String, nullable=True)
-    vendor_contact: Mapped[str | None] = mapped_column(String, nullable=True)
     vendor_quote_number: Mapped[str | None] = mapped_column(String, nullable=True)
     expected_delivery_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     ordered_at: Mapped[datetime | None] = mapped_column(nullable=True)
@@ -44,6 +46,7 @@ class PurchaseOrder(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    vendor: Mapped[Vendor | None] = relationship()
     line_items: Mapped[list["POLineItem"]] = relationship(back_populates="purchase_order")
     documents: Mapped[list["PODocument"]] = relationship(back_populates="purchase_order")
 
