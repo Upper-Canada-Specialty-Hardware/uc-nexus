@@ -37,7 +37,7 @@ function SuspenseFallback() {
 }
 
 const MODULE_LINKS = [
-  { path: '/app/import', label: 'Import', icon: <UploadFileIcon sx={{ fontSize: 40 }} />, description: 'Import hardware schedules' },
+  { path: '/app/import', label: 'Start a task', icon: <UploadFileIcon sx={{ fontSize: 40 }} />, description: 'Create a POR, SAR, or shipping PR' },
   { path: '/app/po', label: 'Purchase Orders', icon: <ReceiptLongIcon sx={{ fontSize: 40 }} />, description: 'Manage purchase orders' },
   { path: '/app/warehouse', label: 'Warehouse', icon: <WarehouseIcon sx={{ fontSize: 40 }} />, description: 'Inventory and receiving' },
   { path: '/app/shop-assembly', label: 'Shop Assembly', icon: <BuildIcon sx={{ fontSize: 40 }} />, description: 'Assembly requests and tracking' },
