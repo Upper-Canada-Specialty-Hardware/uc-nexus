@@ -1,30 +1,53 @@
 import { useState } from 'react';
-import { Box, Typography, Button, Paper } from '@mui/material';
-import UploadFileIcon from '@mui/icons-material/UploadFile';
+import { Button } from '@mui/material';
+import AddIcon from '@mui/icons-material/Add';
+import ProjectLandingPage from '../../components/ProjectLandingPage';
+import CreateProjectDialog from './CreateProjectDialog';
 import ImportWizard from './ImportWizard';
+import type { Project } from '../../types/project';
 
 export default function ImportModule() {
+  const [createOpen, setCreateOpen] = useState(false);
+  const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [wizardOpen, setWizardOpen] = useState(false);
 
+  const handleSelect = (project: Project | null) => {
+    if (!project) return;
+    setSelectedProject(project);
+    setWizardOpen(true);
+  };
+
+  const handleWizardClose = () => {
+    setWizardOpen(false);
+    setSelectedProject(null);
+  };
+
   return (
-    <Box>
-      <Typography variant="h5" sx={{ mb: 3 }}>Hardware Schedule Import</Typography>
-      <Paper variant="outlined" sx={{ p: 4, textAlign: 'center' }}>
-        <UploadFileIcon sx={{ fontSize: 64, color: 'action.disabled', mb: 2 }} />
-        <Typography variant="h6" sx={{ mb: 1 }}>Import Hardware Schedule</Typography>
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-          Upload a TITAN XML file to create purchase orders, assembly requests, and shipping pull requests.
-        </Typography>
-        <Button
-          variant="contained"
-          size="large"
-          startIcon={<UploadFileIcon />}
-          onClick={() => setWizardOpen(true)}
-        >
-          Start Import
-        </Button>
-      </Paper>
-      <ImportWizard open={wizardOpen} onClose={() => setWizardOpen(false)} />
-    </Box>
+    <>
+      <ProjectLandingPage
+        title="Hardware Schedule Import"
+        showAllProjects={false}
+        emptyStateText="No projects yet. Click 'Create New Project' to get started."
+        createButton={
+          <Button
+            variant="contained"
+            size="large"
+            startIcon={<AddIcon />}
+            onClick={() => setCreateOpen(true)}
+          >
+            Create New Project
+          </Button>
+        }
+        onSelect={handleSelect}
+      />
+      <CreateProjectDialog open={createOpen} onClose={() => setCreateOpen(false)} />
+      {selectedProject && (
+        <ImportWizard
+          open={wizardOpen}
+          project={selectedProject}
+          onClose={handleWizardClose}
+        />
+      )}
+    </>
   );
 }

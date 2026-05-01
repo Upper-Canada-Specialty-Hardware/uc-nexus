@@ -4,21 +4,10 @@ from .enums import Classification, PullRequestItemType
 
 
 @strawberry.input
-class ProjectInput:
+class CreateProjectInput:
     project_id: str
-    description: str | None = None
-    job_site_name: str | None = None
-    address: str | None = None
-    city: str | None = None
-    state: str | None = None
-    zip: str | None = None
-    contractor: str | None = None
-    project_manager: str | None = None
-    application: str | None = None
-    submittal_job_no: str | None = None
-    submittal_assignment_count: int | None = None
-    estimator_code: str | None = None
-    titan_user_id: str | None = None
+    description: str
+    client: str
 
 
 @strawberry.input
@@ -131,7 +120,7 @@ class ExcludedItemInput:
 
 @strawberry.input
 class FinalizeImportSessionInput:
-    project: ProjectInput
+    project_id: strawberry.ID
     openings: list[OpeningInput] = strawberry.field(default_factory=list)
     hardware_items: list[HardwareItemInput] | None = None
     po_drafts: list[PODraftInput] | None = None

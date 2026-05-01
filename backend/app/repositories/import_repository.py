@@ -259,8 +259,8 @@ def finalize_import_session(
     session: Session,
     input_data: dict,
 ) -> dict:
-    """Finalize an import session: create project, POs, PRs, and SAR atomically."""
-    project_input = input_data["project"]
+    """Finalize an import session: attach openings/POs/PRs/SAR to an existing project atomically."""
+    project_id = uuid.UUID(input_data["project_id"])
     openings_input = input_data.get("openings", [])
     hardware_items_input = input_data.get("hardware_items") or []
     po_drafts = input_data.get("po_drafts") or []
@@ -271,37 +271,19 @@ def finalize_import_session(
     sar_request_number = input_data.get("shop_assembly_request_number")
     sar_openings_input = input_data.get("shop_assembly_openings") or []
 
-    # 1. Project lookup/create
+    # 1. Project lookup (must already exist)
     project_stmt = (
-        select(ProjectModel)
-        .options(selectinload(ProjectModel.openings))
-        .where(ProjectModel.project_id == project_input["project_id"])
+        select(ProjectModel).options(selectinload(ProjectModel.openings)).where(ProjectModel.id == project_id)
     )
     project = session.scalars(project_stmt).unique().first()
 
     if project is None:
-        # First import — create project + openings
-        project = ProjectModel(
-            id=uuid.uuid4(),
-            project_id=project_input["project_id"],
-            description=project_input.get("description"),
-            job_site_name=project_input.get("job_site_name"),
-            address=project_input.get("address"),
-            city=project_input.get("city"),
-            state=project_input.get("state"),
-            zip=project_input.get("zip"),
-            contractor=project_input.get("contractor"),
-            project_manager=project_input.get("project_manager"),
-            application=project_input.get("application"),
-            submittal_job_no=project_input.get("submittal_job_no"),
-            submittal_assignment_count=project_input.get("submittal_assignment_count"),
-            estimator_code=project_input.get("estimator_code"),
-            titan_user_id=project_input.get("titan_user_id"),
-        )
-        session.add(project)
-        session.flush()
+        raise NotFoundError(f"Project {project_id} not found")
 
-        for opening_input in openings_input:
+    # Create any NEW openings from this import (idempotent across re-imports)
+    existing_opening_numbers = {o.opening_number for o in project.openings}
+    for opening_input in openings_input:
+        if opening_input["opening_number"] not in existing_opening_numbers:
             opening = OpeningModel(
                 id=uuid.uuid4(),
                 project_id=project.id,
@@ -325,46 +307,8 @@ def finalize_import_session(
                 assignment_multiplier=opening_input.get("assignment_multiplier"),
             )
             session.add(opening)
-        session.flush()
-
-        # Re-load project with openings
-        project = (
-            session.scalars(
-                select(ProjectModel).options(selectinload(ProjectModel.openings)).where(ProjectModel.id == project.id)
-            )
-            .unique()
-            .first()
-        )
-    else:
-        # Re-import — create any NEW openings that don't exist yet
-        existing_opening_numbers = {o.opening_number for o in project.openings}
-        for opening_input in openings_input:
-            if opening_input["opening_number"] not in existing_opening_numbers:
-                opening = OpeningModel(
-                    id=uuid.uuid4(),
-                    project_id=project.id,
-                    opening_number=opening_input["opening_number"],
-                    building=opening_input.get("building"),
-                    floor=opening_input.get("floor"),
-                    location=opening_input.get("location"),
-                    location_to=opening_input.get("location_to"),
-                    location_from=opening_input.get("location_from"),
-                    hand=opening_input.get("hand"),
-                    width=opening_input.get("width"),
-                    length=opening_input.get("length"),
-                    door_thickness=opening_input.get("door_thickness"),
-                    jamb_thickness=opening_input.get("jamb_thickness"),
-                    door_type=opening_input.get("door_type"),
-                    frame_type=opening_input.get("frame_type"),
-                    interior_exterior=opening_input.get("interior_exterior"),
-                    keying=opening_input.get("keying"),
-                    heading_no=opening_input.get("heading_no"),
-                    single_pair=opening_input.get("single_pair"),
-                    assignment_multiplier=opening_input.get("assignment_multiplier"),
-                )
-                session.add(opening)
-                project.openings.append(opening)
-        session.flush()
+            project.openings.append(opening)
+    session.flush()
 
     # Build opening_map: opening_number -> Opening.id
     opening_map: dict[str, uuid.UUID] = {o.opening_number: o.id for o in project.openings}

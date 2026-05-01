@@ -160,6 +160,7 @@ class Project:
     id: strawberry.ID
     project_id: str
     description: str | None
+    client: str | None
     job_site_name: str | None
     address: str | None
     city: str | None

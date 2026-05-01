@@ -425,6 +425,7 @@ export const FINALIZE_IMPORT_SESSION = gql`
         id
         projectId
         description
+        client
         jobSiteName
       }
       purchaseOrders {
@@ -444,6 +445,18 @@ export const FINALIZE_IMPORT_SESSION = gql`
         requestNumber
         status
       }
+    }
+  }
+`;
+
+export const CREATE_PROJECT = gql`
+  mutation CreateProject($input: CreateProjectInput!) {
+    createProject(input: $input) {
+      id
+      projectId
+      description
+      client
+      jobSiteName
     }
   }
 `;

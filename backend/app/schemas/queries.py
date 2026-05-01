@@ -161,6 +161,7 @@ def _project_to_type(p: ProjectModel) -> Project:
         id=strawberry.ID(str(p.id)),
         project_id=p.project_id,
         description=p.description,
+        client=p.client,
         job_site_name=p.job_site_name,
         address=p.address,
         city=p.city,

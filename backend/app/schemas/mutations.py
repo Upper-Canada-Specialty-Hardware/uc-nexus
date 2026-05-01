@@ -8,6 +8,7 @@ from app.database import SessionLocal
 from app.repositories import (
     notification_repository,
     po_repository,
+    project_repository,
     shipping_repository,
     shop_assembly_repository,
     user_repository,
@@ -21,6 +22,7 @@ from .inputs import (
     CompleteOpeningInput,
     ConfirmShipmentInput,
     CreatePOInput,
+    CreateProjectInput,
     CreateReceiveInput,
     FinalizeImportSessionInput,
 )
@@ -52,6 +54,7 @@ from .types import (
     OpeningItem,
     PODocumentInfo,
     POLineItem,
+    Project,
     PullRequest,
     PurchaseOrder,
     ReceiveRecord,
@@ -69,6 +72,20 @@ from .types import (
 
 @strawberry.type
 class Mutation:
+    # Project
+    @strawberry.mutation
+    def create_project(self, input: CreateProjectInput) -> Project:
+        with SessionLocal() as session:
+            project = project_repository.create_project(
+                session,
+                project_id=input.project_id,
+                description=input.description,
+                client=input.client,
+            )
+            session.commit()
+            session.refresh(project)
+            return _project_to_type(project)
+
     # Import
     @strawberry.mutation
     def finalize_import_session(self, input: FinalizeImportSessionInput) -> FinalizeImportResult:
@@ -87,22 +104,7 @@ class Mutation:
 
         # Convert Strawberry input to dict
         input_data = {
-            "project": {
-                "project_id": input.project.project_id,
-                "description": input.project.description,
-                "job_site_name": input.project.job_site_name,
-                "address": input.project.address,
-                "city": input.project.city,
-                "state": input.project.state,
-                "zip": input.project.zip,
-                "contractor": input.project.contractor,
-                "project_manager": input.project.project_manager,
-                "application": input.project.application,
-                "submittal_job_no": input.project.submittal_job_no,
-                "submittal_assignment_count": input.project.submittal_assignment_count,
-                "estimator_code": input.project.estimator_code,
-                "titan_user_id": input.project.titan_user_id,
-            },
+            "project_id": str(input.project_id),
             "openings": [
                 {
                     "opening_number": o.opening_number,

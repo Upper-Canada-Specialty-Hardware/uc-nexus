@@ -6,7 +6,11 @@ export const GET_PROJECTS = gql`
       id
       projectId
       description
+      client
       jobSiteName
+      openings {
+        id
+      }
     }
   }
 `;

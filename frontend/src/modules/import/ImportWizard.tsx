@@ -34,7 +34,6 @@ import { useHardwareScheduleParser } from '../../hooks/useHardwareScheduleParser
 import { useNavigate } from 'react-router-dom';
 import {
   GET_PROJECTS,
-  GET_PROJECT_BY_SCHEDULE_ID,
   GET_PROJECT_EXCLUDED_ITEMS,
   RECONCILE_SCHEDULE,
 } from '../../graphql/queries';
@@ -42,6 +41,7 @@ import { FINALIZE_IMPORT_SESSION } from '../../graphql/mutations';
 import type { ClassificationRow } from './ClassificationGrid';
 import type { AggregatedHardwareItem, ImportPurpose, ReconciliationRow, ShippingPRDraft } from './types';
 import { aggregationKey, classificationKey } from './types';
+import type { Project } from '../../types/project';
 import SelectOpeningsHardwareStep from './SelectOpeningsHardwareStep';
 import ReconciliationStep from './ReconciliationStep';
 import ClassificationStep from './ClassificationStep';
@@ -76,10 +76,11 @@ function snakeToCamel<T extends Record<string, unknown>>(obj: T): Record<string,
 
 interface ImportWizardProps {
   open: boolean;
+  project: Project;
   onClose: () => void;
 }
 
-export default function ImportWizard({ open, onClose }: ImportWizardProps) {
+export default function ImportWizard({ open, project, onClose }: ImportWizardProps) {
   const { showToast } = useToast();
   const { setTotalSteps, reset: resetWizardContext } = useWizard();
   const navigate = useNavigate();
@@ -88,10 +89,10 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
   // Step tracking
   const [activeStepId, setActiveStepId] = useState<StepId>('upload');
 
-  // Step 1 state
-  const [isReimport, setIsReimport] = useState(false);
-  const [existingProjectId, setExistingProjectId] = useState<string | null>(null);
-  const [existingProjectName, setExistingProjectName] = useState<string | null>(null);
+  // Selected project context (from prop)
+  const existingProjectId = project.id;
+  const existingProjectName = project.description || project.projectId;
+  const isReimport = (project.openings?.length ?? 0) > 0;
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Step 2 state
@@ -163,10 +164,6 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
 
   // ---- Apollo ----
 
-  const [checkProject] = useLazyQuery<{
-    projectByScheduleId: { id: string; projectId: string; description: string | null; jobSiteName: string | null } | null;
-  }>(GET_PROJECT_BY_SCHEDULE_ID);
-
   const [reconcileSchedule, { data: reconcileData, loading: reconcileLoading }] = useLazyQuery<{
     reconcileSchedule: ReconciliationRow[];
   }>(RECONCILE_SCHEDULE);
@@ -185,6 +182,29 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
   }>(FINALIZE_IMPORT_SESSION, {
     refetchQueries: [{ query: GET_PROJECTS }],
   });
+
+  // Pre-populate BY_OTHERS classifications from this project's exclusion table once XML is parsed
+  const parsedHardwareItems = parser.parseResult?.hardwareItems;
+  useEffect(() => {
+    if (!isReimport || !parsedHardwareItems || parsedHardwareItems.length === 0) return;
+    fetchExcludedItems({ variables: { projectId: existingProjectId } }).then((res) => {
+      const excluded = res.data?.projectExcludedItems;
+      if (excluded && excluded.length > 0) {
+        setClassifications((prev) => {
+          const next = new Map(prev);
+          for (const ei of excluded) {
+            for (const hi of parsedHardwareItems) {
+              if (hi.hardware_category === ei.hardwareCategory && hi.product_code === ei.productCode) {
+                const ck = `${hi.hardware_category}|${hi.product_code}|${hi.unit_cost ?? 0}`;
+                next.set(ck, 'BY_OTHERS');
+              }
+            }
+          }
+          return next;
+        });
+      }
+    });
+  }, [isReimport, parsedHardwareItems, existingProjectId, fetchExcludedItems]);
 
   // ---- Derived Data ----
 
@@ -351,53 +371,11 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     const nextStep = steps[currentIndex + 1];
     if (!nextStep) return;
 
-    // Side effects per step
-    if (effectiveStepId === 'upload' && parsed) {
-      try {
-        const result = await checkProject({
-          variables: { projectId: parsed.project.project_id },
-        });
-        const existing = result.data?.projectByScheduleId;
-        if (existing) {
-          setIsReimport(true);
-          setExistingProjectId(existing.id);
-          setExistingProjectName(existing.description || existing.projectId);
-          // Pre-populate BY_OTHERS classifications from exclusion table
-          fetchExcludedItems({ variables: { projectId: existing.id } }).then((res) => {
-            const excluded = res.data?.projectExcludedItems;
-            if (excluded && excluded.length > 0) {
-              setClassifications((prev) => {
-                const next = new Map(prev);
-                for (const ei of excluded) {
-                  // Match against all classificationKeys that share this (hardwareCategory, productCode)
-                  for (const hi of hardwareItems) {
-                    if (hi.hardware_category === ei.hardwareCategory && hi.product_code === ei.productCode) {
-                      const ck = `${hi.hardware_category}|${hi.product_code}|${hi.unit_cost ?? 0}`;
-                      next.set(ck, 'BY_OTHERS');
-                    }
-                  }
-                }
-                return next;
-              });
-            }
-          });
-        } else {
-          setIsReimport(false);
-          setExistingProjectId(null);
-          setExistingProjectName(null);
-        }
-      } catch {
-        setIsReimport(false);
-        setExistingProjectId(null);
-        setExistingProjectName(null);
-      }
-    }
-
     if (effectiveStepId === 'openings') {
       setSelectedReconItems(new Set());
     }
 
-    if (effectiveStepId === 'openings' && isReimport && existingProjectId) {
+    if (effectiveStepId === 'openings' && isReimport) {
       // Aggregate by (opening, category, product) to avoid duplicate entries
       const itemMap = new Map<string, { openingNumber: string; hardwareCategory: string; productCode: string; quantityNeeded: number }>();
       for (const hi of selectedHardwareItems) {
@@ -420,7 +398,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
     }
 
     setActiveStepId(nextStep.id);
-  }, [effectiveStepId, steps, parsed, checkProject, isReimport, existingProjectId, selectedHardwareItems, reconcileSchedule, purpose, hardwareItems, fetchExcludedItems]);
+  }, [effectiveStepId, steps, isReimport, existingProjectId, selectedHardwareItems, reconcileSchedule]);
 
   const handleBack = useCallback(() => {
     const currentIndex = steps.findIndex((s) => s.id === effectiveStepId);
@@ -598,7 +576,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
       : null;
 
     return {
-      project: snakeToCamel(parsed.project as unknown as Record<string, unknown>),
+      projectId: project.id,
       openings: selectedOpeningsList.map((o) => snakeToCamel(o as unknown as Record<string, unknown>)),
       hardwareItems: purpose === 'po'
         ? aggregatedHardwareItems
@@ -708,7 +686,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
             .filter(Boolean)
         : null,
     };
-  }, [parsed, selectedOpenings, selectedItemKeys, purpose, aggregatedHardwareItems, vendorGroups, vendorPOInfo, selectedVendors, unitCostOverrides, orderAsValues, classifications, shippingPRDrafts, sarRequestNumber]);
+  }, [parsed, project.id, selectedOpenings, selectedItemKeys, purpose, aggregatedHardwareItems, vendorGroups, vendorPOInfo, selectedVendors, unitCostOverrides, orderAsValues, classifications, shippingPRDrafts, sarRequestNumber]);
 
   const handleFinalize = useCallback(async () => {
     setConfirmOpen(false);
@@ -752,9 +730,6 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
 
   const handleClose = useCallback(() => {
     setActiveStepId('upload');
-    setIsReimport(false);
-    setExistingProjectId(null);
-    setExistingProjectName(null);
     setPurpose(null);
     setSelectedOpenings(new Set());
     setSelectedVendors(new Set());
@@ -881,25 +856,20 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
 
                   <Box sx={{ mb: 2, display: 'flex', gap: 1, alignItems: 'center' }}>
                     <Typography variant="subtitle1">
-                      Project: {parsed.project.description || parsed.project.project_id}
+                      Project: {existingProjectName}
                     </Typography>
-                    {isReimport ? (
-                      <Chip label={`Re-import for: ${existingProjectName}`} color="info" size="small" />
-                    ) : existingProjectId === null && parser.state === 'done' ? (
-                      <Chip label="New Project" color="success" size="small" />
-                    ) : null}
+                    <Chip
+                      label={isReimport ? 'Existing schedule data' : 'First import'}
+                      color={isReimport ? 'info' : 'success'}
+                      size="small"
+                    />
                   </Box>
 
                   <ValidationSummaryDisplay summary={parsed.validationSummary} />
 
                   <Button
                     size="small"
-                    onClick={() => {
-                      parser.reset();
-                      setIsReimport(false);
-                      setExistingProjectId(null);
-                      setExistingProjectName(null);
-                    }}
+                    onClick={() => parser.reset()}
                     sx={{ mt: 2 }}
                   >
                     Upload Different File
@@ -1094,7 +1064,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
                 </Typography>
 
                 <Typography variant="body1" sx={{ mb: 1 }}>
-                  Project: {parsed?.project.description || parsed?.project.project_id}
+                  Project: {existingProjectName}
                 </Typography>
                 <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
                   {selectedOpenings.size} openings | {selectedHardwareItems.length} hardware items
