@@ -87,59 +87,6 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-// --- Line items columns ---
-
-const lineItemColumns: GridColDef[] = [
-  { field: 'productCode', headerName: 'Product Code', flex: 1, minWidth: 130 },
-  { field: 'hardwareCategory', headerName: 'Hardware Category', flex: 1, minWidth: 150 },
-  {
-    field: 'orderAs',
-    headerName: 'Order As',
-    flex: 1,
-    minWidth: 130,
-    renderCell: (params) => params.value || '\u2014',
-  },
-  {
-    field: 'classification',
-    headerName: 'Classification',
-    flex: 1,
-    minWidth: 130,
-    renderCell: (params) => params.value || '\u2014',
-  },
-  {
-    field: 'orderedQuantity',
-    headerName: 'Ordered Qty',
-    flex: 0.7,
-    minWidth: 110,
-    type: 'number',
-  },
-  {
-    field: 'receivedQuantity',
-    headerName: 'Received Qty',
-    flex: 0.7,
-    minWidth: 110,
-    type: 'number',
-  },
-  {
-    field: 'unitCost',
-    headerName: 'Unit Cost',
-    flex: 0.7,
-    minWidth: 100,
-    type: 'number',
-    valueFormatter: (value: number) => `$${(value ?? 0).toFixed(2)}`,
-  },
-  {
-    field: 'lineTotal',
-    headerName: 'Line Total',
-    flex: 0.7,
-    minWidth: 110,
-    type: 'number',
-    valueGetter: (_value: unknown, row: { orderedQuantity: number; unitCost: number }) =>
-      (row.orderedQuantity ?? 0) * (row.unitCost ?? 0),
-    valueFormatter: (value: number) => `$${(value ?? 0).toFixed(2)}`,
-  },
-];
-
 // --- Props ---
 
 interface PODetailModalProps {
@@ -368,6 +315,57 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
     deleteDocument({ variables: { documentId } });
   };
 
+  // --- Line item columns ---
+
+  const lineItemColumns = useMemo<GridColDef[]>(() => {
+    const allCols: GridColDef[] = [
+      { field: 'productCode', headerName: 'Product Code', flex: 1, minWidth: 130 },
+      { field: 'hardwareCategory', headerName: 'Hardware Category', flex: 1, minWidth: 150 },
+      {
+        field: 'orderAs',
+        headerName: 'Order As',
+        flex: 1,
+        minWidth: 130,
+        renderCell: (params) => params.value || '—',
+      },
+      {
+        field: 'orderedQuantity',
+        headerName: 'Ordered Qty',
+        flex: 0.7,
+        minWidth: 110,
+        type: 'number',
+      },
+      {
+        field: 'receivedQuantity',
+        headerName: 'Received Qty',
+        flex: 0.7,
+        minWidth: 110,
+        type: 'number',
+      },
+      {
+        field: 'unitCost',
+        headerName: 'Unit Cost',
+        flex: 0.7,
+        minWidth: 100,
+        type: 'number',
+        valueFormatter: (value: number) => `$${(value ?? 0).toFixed(2)}`,
+      },
+      {
+        field: 'lineTotal',
+        headerName: 'Line Total',
+        flex: 0.7,
+        minWidth: 110,
+        type: 'number',
+        valueGetter: (_value: unknown, row: { orderedQuantity: number; unitCost: number }) =>
+          (row.orderedQuantity ?? 0) * (row.unitCost ?? 0),
+        valueFormatter: (value: number) => `$${(value ?? 0).toFixed(2)}`,
+      },
+    ];
+    return po.receiveRecords.length > 0
+      ? allCols
+      : allCols.filter((c) => c.field !== 'receivedQuantity');
+  }, [po.receiveRecords.length]);
+
   // --- Edit-mode line item columns (with editable Order As + unit cost) ---
 
   const canEditItems = po.status === 'DRAFT';
@@ -435,7 +433,7 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
         }
         return col;
       }),
-    [aliasEdits, unitCostEdits, canEditItems, priorMap],
+    [aliasEdits, unitCostEdits, canEditItems, priorMap, lineItemColumns],
   );
 
   // --- Visibility rules ---
