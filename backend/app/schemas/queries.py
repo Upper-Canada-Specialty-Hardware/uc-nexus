@@ -44,6 +44,7 @@ from .types import (
     PODocumentInfo,
     POLineItem,
     POStatistics,
+    PriorOrderAsForProduct,
     ProductCodeNode,
     Project,
     ProjectExcludedItem,
@@ -564,6 +565,16 @@ class Query:
                 return None
             receive_records = po_repository.get_receive_records_for_po(session, po.id)
             return _po_to_type(po, receive_records)
+
+    @strawberry.field
+    def prior_order_as_values(
+        self,
+        vendor_id: strawberry.ID,
+        product_codes: list[str],
+    ) -> list[PriorOrderAsForProduct]:
+        with SessionLocal() as session:
+            result = po_repository.get_prior_order_as_values(session, uuid.UUID(str(vendor_id)), product_codes)
+            return [PriorOrderAsForProduct(product_code=pc, values=vals) for pc, vals in result.items()]
 
     @strawberry.field
     def po_statistics(self, project_id: strawberry.ID | None = None) -> POStatistics:

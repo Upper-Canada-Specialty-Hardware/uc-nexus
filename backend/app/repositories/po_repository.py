@@ -368,6 +368,46 @@ def update_line_item_unit_cost(
     return poli
 
 
+def get_prior_order_as_values(
+    session: Session,
+    vendor_id: uuid.UUID,
+    product_codes: list[str],
+) -> dict[str, list[str]]:
+    """
+    For a given vendor + set of product codes, return distinct non-empty
+    `order_as` values from po_line_items, grouped by product_code,
+    ranked by most recent line item updated_at.
+
+    Excludes CANCELLED POs and soft-deleted POs. Caps each list at 20.
+    """
+    if not product_codes:
+        return {}
+
+    last_used = func.max(POLineItem.updated_at).label("last_used")
+    stmt = (
+        select(POLineItem.product_code, POLineItem.order_as, last_used)
+        .join(PurchaseOrder, PurchaseOrder.id == POLineItem.po_id)
+        .where(
+            PurchaseOrder.vendor_id == vendor_id,
+            POLineItem.product_code.in_(product_codes),
+            POLineItem.order_as.isnot(None),
+            func.trim(POLineItem.order_as) != "",
+            PurchaseOrder.status != POStatus.CANCELLED,
+            PurchaseOrder.deleted_at.is_(None),
+        )
+        .group_by(POLineItem.product_code, POLineItem.order_as)
+        .order_by(POLineItem.product_code, last_used.desc())
+    )
+    rows = session.execute(stmt).all()
+
+    result: dict[str, list[str]] = {}
+    for product_code, order_as, _last_used in rows:
+        bucket = result.setdefault(product_code, [])
+        if len(bucket) < 20:
+            bucket.append(order_as)
+    return result
+
+
 def upload_po_document(
     session: Session,
     po_id: uuid.UUID,

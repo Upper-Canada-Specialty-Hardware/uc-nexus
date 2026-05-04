@@ -26,13 +26,14 @@ import DeleteIcon from '@mui/icons-material/Delete';
 import DownloadIcon from '@mui/icons-material/Download';
 import UploadFileIcon from '@mui/icons-material/UploadFile';
 import DescriptionIcon from '@mui/icons-material/Description';
-import { useMutation } from '@apollo/client/react';
+import { useMutation, useQuery } from '@apollo/client/react';
 import { CombinedGraphQLErrors } from '@apollo/client/errors';
 import type { GridColDef } from '@mui/x-data-grid';
 import Modal from '../../components/Modal';
 import DataTable from '../../components/DataTable';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import VendorSelect from '../../components/VendorSelect';
+import OrderAsAutocomplete from '../../components/OrderAsAutocomplete';
 import { useToast } from '../../components/Toast';
 import {
   UPDATE_PO,
@@ -43,6 +44,7 @@ import {
   UPLOAD_PO_DOCUMENT,
   DELETE_PO_DOCUMENT,
 } from '../../graphql/mutations';
+import { GET_PRIOR_ORDER_AS_VALUES } from '../../graphql/queries';
 import type { PurchaseOrder } from './index';
 
 // --- Status chip colors ---
@@ -370,6 +372,26 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
 
   const canEditItems = po.status === 'DRAFT';
 
+  const distinctProductCodes = useMemo(
+    () => Array.from(new Set(po.lineItems.map((li) => li.productCode))),
+    [po.lineItems],
+  );
+
+  const { data: priorData } = useQuery<{
+    priorOrderAsValues: { productCode: string; values: string[] }[];
+  }>(GET_PRIOR_ORDER_AS_VALUES, {
+    variables: { vendorId: po.vendor?.id ?? '', productCodes: distinctProductCodes },
+    skip: !canEditItems || !po.vendor?.id || distinctProductCodes.length === 0,
+  });
+
+  const priorMap = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const entry of priorData?.priorOrderAsValues ?? []) {
+      map.set(entry.productCode, entry.values);
+    }
+    return map;
+  }, [priorData]);
+
   const editLineItemColumns = useMemo<GridColDef[]>(
     () =>
       lineItemColumns.map((col): GridColDef => {
@@ -377,15 +399,13 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
           return {
             ...col,
             renderCell: (params) => (
-              <TextField
-                size="small"
-                variant="standard"
+              <OrderAsAutocomplete
                 value={aliasEdits[params.row.id as string] ?? (params.value as string) ?? ''}
-                onChange={(e) =>
-                  setAliasEdits((prev) => ({ ...prev, [params.row.id as string]: e.target.value }))
+                onChange={(next) =>
+                  setAliasEdits((prev) => ({ ...prev, [params.row.id as string]: next }))
                 }
-                fullWidth
-                slotProps={{ input: { sx: { fontSize: '0.875rem' } } }}
+                options={priorMap.get(params.row.productCode as string) ?? []}
+                placeholder="Order as"
               />
             ),
           };
@@ -415,7 +435,7 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
         }
         return col;
       }),
-    [aliasEdits, unitCostEdits, canEditItems],
+    [aliasEdits, unitCostEdits, canEditItems, priorMap],
   );
 
   // --- Visibility rules ---

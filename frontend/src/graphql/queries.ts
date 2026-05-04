@@ -29,6 +29,15 @@ export const GET_PO_STATISTICS = gql`
   }
 `;
 
+export const GET_PRIOR_ORDER_AS_VALUES = gql`
+  query GetPriorOrderAsValues($vendorId: ID!, $productCodes: [String!]!) {
+    priorOrderAsValues(vendorId: $vendorId, productCodes: $productCodes) {
+      productCode
+      values
+    }
+  }
+`;
+
 export const GET_PURCHASE_ORDERS = gql`
   query GetPurchaseOrders($projectId: ID, $status: POStatus) {
     purchaseOrders(projectId: $projectId, status: $status) {

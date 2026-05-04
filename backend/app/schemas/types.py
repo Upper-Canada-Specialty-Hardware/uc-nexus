@@ -108,6 +108,12 @@ class POLineItem:
 
 
 @strawberry.type
+class PriorOrderAsForProduct:
+    product_code: str
+    values: list[str]
+
+
+@strawberry.type
 class ReceiveLineItem:
     id: strawberry.ID
     receive_record_id: strawberry.ID
