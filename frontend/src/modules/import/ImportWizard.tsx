@@ -45,7 +45,7 @@ import { aggregationKey, classificationKey } from './types';
 import type { Project } from '../../types/project';
 import type { ProjectHardwareScheduleResponse } from './hydrateSchedule';
 import { mapScheduleResponseToParseResult } from './hydrateSchedule';
-import SelectOpeningsHardwareStep from './SelectOpeningsHardwareStep';
+import SelectOpeningsStep from './SelectOpeningsStep';
 import ReconciliationStep from './ReconciliationStep';
 import ClassificationStep from './ClassificationStep';
 import PurchaseOrdersStep from './PurchaseOrdersStep';
@@ -113,7 +113,6 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
   const [sarRequestNumber, setSarRequestNumber] = useState('');
   const [shippingPRDrafts, setShippingPRDrafts] = useState<ShippingPRDraft[]>([]);
   const [selectedReconItems, setSelectedReconItems] = useState<Set<string>>(new Set());
-  const [selectedItemKeys, setSelectedItemKeys] = useState<Set<string>>(new Set());
 
   // Finalize state
   const [finalizeLoading, setFinalizeLoading] = useState(false);
@@ -128,7 +127,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
     const base: StepDescriptor[] = [
       { id: 'upload', label: 'Upload File' },
       { id: 'purpose', label: 'Purpose' },
-      { id: 'openings', label: 'Select Openings/Hardware' },
+      { id: 'openings', label: 'Select Openings' },
       { id: 'reconciliation', label: 'Reconciliation' },
     ];
     if (purpose === 'po' || purpose === 'assembly') {
@@ -300,7 +299,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
     return selectedHardwareItems;
   }, [selectedHardwareItems, selectedReconItems, purpose, isReimport, reconciliationRows]);
 
-  const allAggregatedItems = useMemo<AggregatedHardwareItem[]>(() => {
+  const aggregatedHardwareItems = useMemo<AggregatedHardwareItem[]>(() => {
     const map = new Map<string, AggregatedHardwareItem>();
     for (const hi of reconFilteredHardwareItems) {
       const key = aggregationKey(hi);
@@ -315,11 +314,6 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
     }
     return Array.from(map.values());
   }, [reconFilteredHardwareItems]);
-
-  const aggregatedHardwareItems = useMemo(
-    () => allAggregatedItems.filter((hi) => selectedItemKeys.has(aggregationKey(hi))),
-    [allAggregatedItems, selectedItemKeys],
-  );
 
   // Classification rows for DataGrid (one row per aggregated hardware item)
   const classificationRows = useMemo<ClassificationRow[]>(() => {
@@ -407,7 +401,6 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
     setSarRequestNumber('');
     setShippingPRDrafts([]);
     setSelectedReconItems(new Set());
-    setSelectedItemKeys(new Set());
     setMutationError(null);
     setFinalizeResult(null);
   }, []);
@@ -460,24 +453,9 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
 
   // ---- Step-specific handlers ----
 
-  // Opening selection — auto-manage selectedItemKeys when openings change
   const handleOpeningSelectionChange = useCallback((newSelected: Set<string>) => {
-    const added = new Set([...newSelected].filter((o) => !selectedOpenings.has(o)));
-    const removed = new Set([...selectedOpenings].filter((o) => !newSelected.has(o)));
     setSelectedOpenings(newSelected);
-    setSelectedItemKeys((prev) => {
-      const next = new Set(prev);
-      // Remove items from unchecked openings
-      for (const key of prev) {
-        if (removed.has(key.split('|')[0])) next.delete(key);
-      }
-      // Auto-add items from newly checked openings
-      for (const hi of hardwareItems) {
-        if (added.has(hi.opening_number)) next.add(aggregationKey(hi));
-      }
-      return next;
-    });
-  }, [selectedOpenings, hardwareItems]);
+  }, []);
 
   // Vendor selection
   const toggleVendor = useCallback((vendor: string) => {
@@ -607,7 +585,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
       (o) => selectedOpenings.has(o.opening_number) && openingNumbersFromItems.has(o.opening_number),
     );
     const filteredHardwareItems = parsed.hardwareItems.filter(
-      (hi) => selectedOpenings.has(hi.opening_number) && selectedItemKeys.has(aggregationKey(hi)),
+      (hi) => selectedOpenings.has(hi.opening_number),
     );
 
     // Build set of BY_OTHERS classificationKeys for PO filtering
@@ -744,7 +722,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
             .filter(Boolean)
         : null,
     };
-  }, [parsed, project.id, selectedOpenings, selectedItemKeys, purpose, aggregatedHardwareItems, vendorGroups, vendorPOInfo, selectedVendors, unitCostOverrides, orderAsValues, classifications, shippingPRDrafts, sarRequestNumber]);
+  }, [parsed, project.id, selectedOpenings, purpose, aggregatedHardwareItems, vendorGroups, vendorPOInfo, selectedVendors, unitCostOverrides, orderAsValues, classifications, shippingPRDrafts, sarRequestNumber]);
 
   const handleFinalize = useCallback(async () => {
     setConfirmOpen(false);
@@ -801,7 +779,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
 
   const canProceedStep0 = parser.state === 'done';
   const canProceedStep1 = purpose !== null;
-  const canProceedStep2 = selectedOpenings.size > 0 && selectedItemKeys.size > 0;
+  const canProceedStep2 = selectedOpenings.size > 0;
   const canProceedStep3 = useMemo(() => {
     if (!isReimport) return true;
     if (purpose === 'po') return selectedReconItems.size > 0;
@@ -1077,16 +1055,14 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
             </Box>
           )}
 
-          {/* ============ Step: Select Openings/Hardware ============ */}
+          {/* ============ Step: Select Openings ============ */}
           {effectiveStepId === 'openings' && (
-            <SelectOpeningsHardwareStep
+            <SelectOpeningsStep
               openings={openings}
               selectedOpenings={selectedOpenings}
               preReconAggregatedItems={preReconAggregatedItems}
-              selectedItemKeys={selectedItemKeys}
               hardwareCountByOpening={hardwareCountByOpening}
               onOpeningSelectionChange={handleOpeningSelectionChange}
-              onItemSelectionChange={setSelectedItemKeys}
               canProceed={canProceedStep2}
               onNext={handleNext}
               onBack={handleBack}

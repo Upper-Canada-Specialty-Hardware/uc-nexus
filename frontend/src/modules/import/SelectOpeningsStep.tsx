@@ -6,7 +6,6 @@ import {
   Accordion,
   AccordionSummary,
   AccordionDetails,
-  Checkbox,
   Chip,
   TextField,
   Table,
@@ -31,14 +30,12 @@ interface OpeningRow extends ParsedOpening {
 
 // ---- Props ----
 
-interface SelectOpeningsHardwareStepProps {
+interface SelectOpeningsStepProps {
   openings: ParsedOpening[];
   selectedOpenings: Set<string>;
   preReconAggregatedItems: AggregatedHardwareItem[];
-  selectedItemKeys: Set<string>;
   hardwareCountByOpening: Map<string, number>;
   onOpeningSelectionChange: (selected: Set<string>) => void;
-  onItemSelectionChange: (selected: Set<string>) => void;
   canProceed: boolean;
   onNext: () => void;
   onBack: () => void;
@@ -46,18 +43,16 @@ interface SelectOpeningsHardwareStepProps {
 
 // ---- Main Component ----
 
-export default function SelectOpeningsHardwareStep({
+export default function SelectOpeningsStep({
   openings,
   selectedOpenings,
   preReconAggregatedItems,
-  selectedItemKeys,
   hardwareCountByOpening,
   onOpeningSelectionChange,
-  onItemSelectionChange,
   canProceed,
   onNext,
   onBack,
-}: SelectOpeningsHardwareStepProps) {
+}: SelectOpeningsStepProps) {
   // ---- Left Panel: Openings Filter & DataGrid ----
 
   const [filterText, setFilterText] = useState('');
@@ -167,7 +162,7 @@ export default function SelectOpeningsHardwareStep({
     onOpeningSelectionChange(new Set());
   }, [onOpeningSelectionChange]);
 
-  // ---- Right Panel: Hardware Items Accordion ----
+  // ---- Right Panel: Hardware Items Accordion (read-only preview) ----
 
   const groups = useMemo(() => {
     const map = new Map<string, AggregatedHardwareItem[]>();
@@ -180,52 +175,6 @@ export default function SelectOpeningsHardwareStep({
   }, [preReconAggregatedItems]);
 
   const itemTotalCount = preReconAggregatedItems.length;
-  const itemSelectedCount = useMemo(
-    () => preReconAggregatedItems.filter((hi) => selectedItemKeys.has(aggregationKey(hi))).length,
-    [preReconAggregatedItems, selectedItemKeys],
-  );
-
-  const handleSelectAllItems = useCallback(() => {
-    const next = new Set(selectedItemKeys);
-    for (const hi of preReconAggregatedItems) {
-      next.add(aggregationKey(hi));
-    }
-    onItemSelectionChange(next);
-  }, [preReconAggregatedItems, selectedItemKeys, onItemSelectionChange]);
-
-  const handleDeselectAllItems = useCallback(() => {
-    const keysToRemove = new Set(preReconAggregatedItems.map((hi) => aggregationKey(hi)));
-    const next = new Set([...selectedItemKeys].filter((k) => !keysToRemove.has(k)));
-    onItemSelectionChange(next);
-  }, [preReconAggregatedItems, selectedItemKeys, onItemSelectionChange]);
-
-  const toggleItem = useCallback(
-    (key: string) => {
-      const next = new Set(selectedItemKeys);
-      if (next.has(key)) {
-        next.delete(key);
-      } else {
-        next.add(key);
-      }
-      onItemSelectionChange(next);
-    },
-    [selectedItemKeys, onItemSelectionChange],
-  );
-
-  const toggleGroup = useCallback(
-    (groupItems: AggregatedHardwareItem[]) => {
-      const groupKeys = groupItems.map((hi) => aggregationKey(hi));
-      const allSelected = groupKeys.every((k) => selectedItemKeys.has(k));
-      const next = new Set(selectedItemKeys);
-      if (allSelected) {
-        for (const k of groupKeys) next.delete(k);
-      } else {
-        for (const k of groupKeys) next.add(k);
-      }
-      onItemSelectionChange(next);
-    },
-    [selectedItemKeys, onItemSelectionChange],
-  );
 
   return (
     <Box>
@@ -316,23 +265,15 @@ export default function SelectOpeningsHardwareStep({
           </Box>
         </Box>
 
-        {/* ---- Right Panel: Hardware Items ---- */}
+        {/* ---- Right Panel: Hardware Items (read-only preview) ---- */}
         <Box sx={{ flex: '1 1 45%', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
           <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
             <Typography variant="h6">
               Hardware Items
               <Typography component="span" variant="body2" color="text.secondary" sx={{ ml: 1 }}>
-                ({itemSelectedCount} of {itemTotalCount} selected)
+                ({itemTotalCount} items)
               </Typography>
             </Typography>
-            <Box sx={{ display: 'flex', gap: 1 }}>
-              <Button size="small" variant="outlined" onClick={handleSelectAllItems} disabled={itemTotalCount === 0}>
-                Select All
-              </Button>
-              <Button size="small" variant="outlined" onClick={handleDeselectAllItems} disabled={itemSelectedCount === 0}>
-                Deselect All
-              </Button>
-            </Box>
           </Box>
 
           <Box sx={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
@@ -347,29 +288,18 @@ export default function SelectOpeningsHardwareStep({
             ) : (
               groups.map(([groupKey, items]) => {
                 const [category, productCode] = groupKey.split('|');
-                const groupKeys = items.map((hi) => aggregationKey(hi));
-                const selectedInGroup = groupKeys.filter((k) => selectedItemKeys.has(k)).length;
-                const allSelected = selectedInGroup === items.length;
-                const someSelected = selectedInGroup > 0 && !allSelected;
 
                 return (
                   <Accordion key={groupKey} defaultExpanded={false}>
                     <AccordionSummary expandIcon={<ExpandMoreIcon />}>
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%' }}>
-                        <Checkbox
-                          checked={allSelected}
-                          indeterminate={someSelected}
-                          onClick={(e) => e.stopPropagation()}
-                          onChange={() => toggleGroup(items)}
-                          size="small"
-                        />
                         <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
                           {productCode}
                         </Typography>
                         <Chip label={category} size="small" variant="outlined" />
                         <Chip label={items[0].vendor_no ?? '(No Manufacturer)'} size="small" variant="outlined" />
                         <Chip
-                          label={items[0].unit_cost != null ? `$${items[0].unit_cost.toFixed(2)}` : '\u2014'}
+                          label={items[0].unit_cost != null ? `$${items[0].unit_cost.toFixed(2)}` : '—'}
                           size="small"
                           variant="outlined"
                         />
@@ -379,7 +309,7 @@ export default function SelectOpeningsHardwareStep({
                           variant="outlined"
                         />
                         <Typography variant="body2" color="text.secondary" sx={{ ml: 'auto', mr: 2 }}>
-                          {selectedInGroup}/{items.length}
+                          {items.length}
                         </Typography>
                       </Box>
                     </AccordionSummary>
@@ -387,28 +317,17 @@ export default function SelectOpeningsHardwareStep({
                       <Table size="small">
                         <TableHead>
                           <TableRow>
-                            <TableCell padding="checkbox" />
                             <TableCell>Opening</TableCell>
                             <TableCell align="right">Qty</TableCell>
                           </TableRow>
                         </TableHead>
                         <TableBody>
-                          {items.map((hi) => {
-                            const key = aggregationKey(hi);
-                            return (
-                              <TableRow key={key} hover>
-                                <TableCell padding="checkbox">
-                                  <Checkbox
-                                    checked={selectedItemKeys.has(key)}
-                                    onChange={() => toggleItem(key)}
-                                    size="small"
-                                  />
-                                </TableCell>
-                                <TableCell>{hi.opening_number}</TableCell>
-                                <TableCell align="right">{hi.item_quantity}</TableCell>
-                              </TableRow>
-                            );
-                          })}
+                          {items.map((hi) => (
+                            <TableRow key={aggregationKey(hi)} hover>
+                              <TableCell>{hi.opening_number}</TableCell>
+                              <TableCell align="right">{hi.item_quantity}</TableCell>
+                            </TableRow>
+                          ))}
                         </TableBody>
                       </Table>
                     </AccordionDetails>
