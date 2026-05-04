@@ -1,9 +1,10 @@
 import { useMemo, useCallback, useEffect, useRef } from 'react';
 import { Alert, Box, Button, Chip, CircularProgress, Tooltip, Typography } from '@mui/material';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
+import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import { DataGrid, type GridColDef, type GridRowSelectionModel } from '@mui/x-data-grid';
 import type { ImportPurpose, ReconciliationRow } from './types';
-import { aggregationKey } from './types';
+import { aggregationKey, itemGroupKey } from './types';
 import type { ParsedHardwareItem } from '../../types/hardwareSchedule';
 
 // ---- Props ----
@@ -21,16 +22,19 @@ interface ReconciliationStepProps {
   onBack: () => void;
 }
 
-// ---- Aggregated row type ----
+// ---- Aggregated row type (per-product across project) ----
 
-interface AggregatedReconRow {
-  id: string;
-  openingNumber: string;
-  productCode: string;
+interface ProductReconRow {
+  id: string; // itemGroupKey: `${hardwareCategory}|${productCode}`
   hardwareCategory: string;
-  quantityNeeded: number;
-  qtyAvailable: number;
-  statusBreakdown: Map<string, number>;
+  productCode: string;
+  quantityNeeded: number; // sum of HS qty across openings (project-wide)
+  qtyAvailable: number; // for assembly/shipping eligibility
+  statusBreakdown: Map<string, number>; // bucket totals across openings
+  underlyingOpeningKeys: string[]; // (opening, product, category) keys
+  existingCommitted: number; // sum of all non-NOT_COVERED, non-BY_OTHERS bucket qty
+  selectedNewPOQty: number; // HS qty for selected (opening, product, category) keys
+  overCommitAmount: number; // (existingCommitted + selectedNewPOQty) - quantityNeeded, clamped to 0
 }
 
 // ---- Helpers ----
@@ -62,14 +66,25 @@ const STATUS_COLOR_MAP: Record<string, 'success' | 'warning' | 'error' | 'info' 
 const STATUS_LABEL_MAP: Record<string, string> = {
   PO_DRAFTED: 'PO Drafted',
   ORDERED: 'Ordered',
-  RECEIVED: 'Received',
-  ASSEMBLING: 'Assembling',
-  ASSEMBLED: 'Assembled',
-  SHIPPING_OUT: 'Shipping Out',
+  RECEIVED: 'In Inventory',
+  ASSEMBLING: 'Pulled for Assembly',
+  ASSEMBLED: 'Built onto Opening',
+  SHIPPING_OUT: 'Pulled for Shipping',
   SHIPPED_OUT: 'Shipped Out',
-  NOT_COVERED: 'Not Covered',
+  NOT_COVERED: 'Gap Remaining',
   BY_OTHERS: 'By Others',
 };
+
+// Buckets that count as "already committed" toward the project need
+const COMMITTED_STATUSES = [
+  'PO_DRAFTED',
+  'ORDERED',
+  'RECEIVED',
+  'ASSEMBLING',
+  'ASSEMBLED',
+  'SHIPPING_OUT',
+  'SHIPPED_OUT',
+] as const;
 
 const HEADER_TOOLTIPS: Record<ImportPurpose, string> = {
   po: 'Reconciliation compares the hardware schedule against existing purchase orders. Items already drafted, ordered, or received are shown so you can decide which remaining items to create new POs for.',
@@ -105,8 +120,18 @@ export default function ReconciliationStep({
 }: ReconciliationStepProps) {
   const hasAutoSelected = useRef(false);
 
-  // Compute quantity needed from selected hardware items, keyed by aggregation key
-  const qtyNeededMap = useMemo(() => {
+  // qtyNeededByProduct: project-wide qty needed per (category, product)
+  const qtyNeededByProduct = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const hi of selectedHardwareItems) {
+      const key = itemGroupKey(hi);
+      map.set(key, (map.get(key) ?? 0) + hi.item_quantity);
+    }
+    return map;
+  }, [selectedHardwareItems]);
+
+  // hsQtyByOpeningKey: HS demand per (opening, product, category)
+  const hsQtyByOpeningKey = useMemo(() => {
     const map = new Map<string, number>();
     for (const hi of selectedHardwareItems) {
       const key = aggregationKey(hi);
@@ -115,72 +140,124 @@ export default function ReconciliationStep({
     return map;
   }, [selectedHardwareItems]);
 
-  // Aggregate per-status-bucket reconciliation rows into one row per (opening, product, category)
-  const aggregatedRows = useMemo<AggregatedReconRow[]>(() => {
-    const map = new Map<string, AggregatedReconRow>();
+  // Aggregate reconciliation rows per (category, product) across the project
+  const aggregatedProductRows = useMemo<ProductReconRow[]>(() => {
+    const map = new Map<string, ProductReconRow>();
     for (const row of reconciliationRows) {
-      const key = `${row.openingNumber}|${row.productCode}|${row.hardwareCategory}`;
-      const existing = map.get(key);
-      if (existing) {
-        existing.statusBreakdown.set(
-          row.status,
-          (existing.statusBreakdown.get(row.status) ?? 0) + row.quantity,
-        );
-      } else {
-        const breakdown = new Map<string, number>();
-        breakdown.set(row.status, row.quantity);
-        map.set(key, {
-          id: key,
-          openingNumber: row.openingNumber,
-          productCode: row.productCode,
+      const productKey = `${row.hardwareCategory}|${row.productCode}`;
+      const openingKey = `${row.openingNumber}|${row.productCode}|${row.hardwareCategory}`;
+      let entry = map.get(productKey);
+      if (!entry) {
+        entry = {
+          id: productKey,
           hardwareCategory: row.hardwareCategory,
-          quantityNeeded: qtyNeededMap.get(key) ?? 0,
-          qtyAvailable: 0, // computed below
-          statusBreakdown: breakdown,
-        });
+          productCode: row.productCode,
+          quantityNeeded: qtyNeededByProduct.get(productKey) ?? 0,
+          qtyAvailable: 0,
+          statusBreakdown: new Map(),
+          underlyingOpeningKeys: [],
+          existingCommitted: 0,
+          selectedNewPOQty: 0,
+          overCommitAmount: 0,
+        };
+        map.set(productKey, entry);
       }
+      if (!entry.underlyingOpeningKeys.includes(openingKey)) {
+        entry.underlyingOpeningKeys.push(openingKey);
+      }
+      entry.statusBreakdown.set(
+        row.status,
+        (entry.statusBreakdown.get(row.status) ?? 0) + row.quantity,
+      );
     }
-    // Compute qtyAvailable for each row after all statuses are aggregated
     const rows = Array.from(map.values());
     for (const row of rows) {
       row.qtyAvailable = computeAvailableQty(purpose, row.statusBreakdown);
+      row.existingCommitted = COMMITTED_STATUSES.reduce(
+        (sum, s) => sum + (row.statusBreakdown.get(s) ?? 0),
+        0,
+      );
+      row.selectedNewPOQty = row.underlyingOpeningKeys
+        .filter((k) => selectedReconItems.has(k))
+        .reduce((sum, k) => sum + (hsQtyByOpeningKey.get(k) ?? 0), 0);
+      const futureCommitted = row.existingCommitted + row.selectedNewPOQty;
+      row.overCommitAmount = Math.max(0, futureCommitted - row.quantityNeeded);
     }
-    // Sort by best (most available) status present in each row
     rows.sort((a, b) => {
       const bestA = Math.min(...Array.from(a.statusBreakdown.keys()).map((s) => STATUS_PRIORITY[s] ?? 99));
       const bestB = Math.min(...Array.from(b.statusBreakdown.keys()).map((s) => STATUS_PRIORITY[s] ?? 99));
       return bestA - bestB;
     });
     return rows;
-  }, [reconciliationRows, qtyNeededMap, purpose]);
+  }, [reconciliationRows, qtyNeededByProduct, hsQtyByOpeningKey, selectedReconItems, purpose]);
 
-  // Determine which rows have eligible quantity for SAR/SOR
+  // Determine which products have eligible quantity for SAR/SOR
   const eligibleRowIds = useMemo<Set<string>>(() => {
-    if (purpose === 'po') return new Set(aggregatedRows.map((r) => r.id));
-    return new Set(aggregatedRows.filter((r) => r.qtyAvailable > 0).map((r) => r.id));
-  }, [aggregatedRows, purpose]);
+    if (purpose === 'po') return new Set(aggregatedProductRows.map((r) => r.id));
+    return new Set(aggregatedProductRows.filter((r) => r.qtyAvailable > 0).map((r) => r.id));
+  }, [aggregatedProductRows, purpose]);
 
   const hasEligibleItems = eligibleRowIds.size > 0;
 
-  // Auto-select for PO: default-select rows with NOT_COVERED status
+  // Auto-select for PO: pick all (opening, product, category) keys with NOT_COVERED > 0
   useEffect(() => {
-    if (!isReimport || aggregatedRows.length === 0 || hasAutoSelected.current) return;
-
+    if (!isReimport || aggregatedProductRows.length === 0 || hasAutoSelected.current) return;
     if (purpose === 'po') {
-      const notCoveredIds = new Set(
-        aggregatedRows
-          .filter((r) => (r.statusBreakdown.get('NOT_COVERED') ?? 0) > 0)
-          .map((r) => r.id),
-      );
-      onSelectionChange(notCoveredIds);
+      const notCoveredKeys = new Set<string>();
+      for (const row of reconciliationRows) {
+        if (row.status === 'NOT_COVERED' && row.quantity > 0) {
+          notCoveredKeys.add(`${row.openingNumber}|${row.productCode}|${row.hardwareCategory}`);
+        }
+      }
+      onSelectionChange(notCoveredKeys);
       hasAutoSelected.current = true;
     }
-  }, [aggregatedRows, purpose, isReimport, onSelectionChange]);
+  }, [aggregatedProductRows, reconciliationRows, purpose, isReimport, onSelectionChange]);
 
   // Reset auto-select ref when reconciliation data changes
   useEffect(() => {
     hasAutoSelected.current = false;
   }, [reconciliationRows]);
+
+  // Product-level selection model derived from per-(opening, product, category) keys
+  const productLevelSelection = useMemo<Set<string>>(() => {
+    const selected = new Set<string>();
+    for (const product of aggregatedProductRows) {
+      if (product.underlyingOpeningKeys.some((k) => selectedReconItems.has(k))) {
+        selected.add(product.id);
+      }
+    }
+    return selected;
+  }, [aggregatedProductRows, selectedReconItems]);
+
+  // Translate product-level selection back to per-(opening, product, category) keys
+  const handleRowSelectionChange = useCallback(
+    (model: GridRowSelectionModel) => {
+      const selectedProductIds = new Set(model.ids as Set<string>);
+      const newOpeningSelection = new Set<string>();
+      for (const product of aggregatedProductRows) {
+        if (selectedProductIds.has(product.id)) {
+          for (const k of product.underlyingOpeningKeys) {
+            newOpeningSelection.add(k);
+          }
+        }
+      }
+      onSelectionChange(newOpeningSelection);
+    },
+    [aggregatedProductRows, onSelectionChange],
+  );
+
+  const handleSelectAll = useCallback(() => {
+    const all = new Set<string>();
+    for (const product of aggregatedProductRows) {
+      for (const k of product.underlyingOpeningKeys) all.add(k);
+    }
+    onSelectionChange(all);
+  }, [aggregatedProductRows, onSelectionChange]);
+
+  const handleDeselectAll = useCallback(() => {
+    onSelectionChange(new Set());
+  }, [onSelectionChange]);
 
   // Columns
   const showCheckboxes = isReimport && purpose === 'po';
@@ -188,10 +265,22 @@ export default function ReconciliationStep({
 
   const columns = useMemo<GridColDef[]>(() => {
     const cols: GridColDef[] = [
-      { field: 'openingNumber', headerName: 'Opening #', flex: 1 },
-      { field: 'productCode', headerName: 'Product Code', flex: 1 },
       { field: 'hardwareCategory', headerName: 'Hardware Category', flex: 1 },
-      { field: 'quantityNeeded', headerName: 'Qty Needed', flex: 0.7, type: 'number' },
+      { field: 'productCode', headerName: 'Product Code', flex: 1 },
+      {
+        field: 'quantityNeeded',
+        headerName: 'Qty Needed by Project',
+        flex: 0.9,
+        type: 'number',
+        renderCell: (params) => (
+          <Chip
+            size="small"
+            label={params.value as number}
+            color="primary"
+            variant="filled"
+          />
+        ),
+      },
     ];
 
     if (showQtyAvailable) {
@@ -218,23 +307,38 @@ export default function ReconciliationStep({
 
     cols.push({
       field: 'statusBreakdown',
-      headerName: 'Status',
-      flex: 1.5,
+      headerName: 'Lifecycle Breakdown',
+      flex: 2.2,
       sortable: false,
       renderCell: (params) => {
         const breakdown = params.value as Map<string, number>;
+        const row = params.row as ProductReconRow;
         return (
           <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap', alignItems: 'center', py: 0.5 }}>
             {Array.from(breakdown.entries())
               .sort(([a], [b]) => (STATUS_PRIORITY[a] ?? 99) - (STATUS_PRIORITY[b] ?? 99))
               .map(([status, qty]) => (
-              <Chip
-                key={status}
-                size="small"
-                label={`${STATUS_LABEL_MAP[status] ?? status}: ${qty}`}
-                color={STATUS_COLOR_MAP[status] ?? 'default'}
-              />
-            ))}
+                <Chip
+                  key={status}
+                  size="small"
+                  label={`${STATUS_LABEL_MAP[status] ?? status}: ${qty}`}
+                  color={STATUS_COLOR_MAP[status] ?? 'default'}
+                />
+              ))}
+            {row.overCommitAmount > 0 && (
+              <Tooltip
+                arrow
+                title={`Total committed (${row.existingCommitted + row.selectedNewPOQty}) exceeds project need (${row.quantityNeeded}) by ${row.overCommitAmount}. Reconciliation is advisory — you may proceed.`}
+              >
+                <Chip
+                  size="small"
+                  icon={<WarningAmberIcon />}
+                  label={`Over-committed by ${row.overCommitAmount}`}
+                  color="warning"
+                  variant="outlined"
+                />
+              </Tooltip>
+            )}
           </Box>
         );
       },
@@ -244,24 +348,9 @@ export default function ReconciliationStep({
   }, [showQtyAvailable]);
 
   const rowSelectionModel = useMemo<GridRowSelectionModel>(
-    () => ({ type: 'include' as const, ids: new Set<string>(selectedReconItems) }),
-    [selectedReconItems],
+    () => ({ type: 'include' as const, ids: new Set<string>(productLevelSelection) }),
+    [productLevelSelection],
   );
-
-  const handleRowSelectionChange = useCallback(
-    (model: GridRowSelectionModel) => {
-      onSelectionChange(new Set(model.ids as Set<string>));
-    },
-    [onSelectionChange],
-  );
-
-  const handleSelectAll = useCallback(() => {
-    onSelectionChange(new Set(aggregatedRows.map((r) => r.id)));
-  }, [aggregatedRows, onSelectionChange]);
-
-  const handleDeselectAll = useCallback(() => {
-    onSelectionChange(new Set());
-  }, [onSelectionChange]);
 
   return (
     <Box>
@@ -286,7 +375,7 @@ export default function ReconciliationStep({
         </Box>
       )}
 
-      {isReimport && !reconcileLoading && aggregatedRows.length > 0 && (
+      {isReimport && !reconcileLoading && aggregatedProductRows.length > 0 && (
         <>
           {/* PO: checkbox controls */}
           {showCheckboxes && (
@@ -298,7 +387,7 @@ export default function ReconciliationStep({
                 Deselect All
               </Button>
               <Typography variant="body2" color="text.secondary">
-                {selectedReconItems.size} of {aggregatedRows.length} item(s) selected
+                {productLevelSelection.size} of {aggregatedProductRows.length} product(s) selected
               </Typography>
             </Box>
           )}
@@ -306,30 +395,31 @@ export default function ReconciliationStep({
           {/* Purpose-specific alerts */}
           {purpose === 'po' && (
             <Alert severity="warning" sx={{ mb: 2 }}>
-              Select the items you want to carry forward to Purchase Order creation.
-              Items with Not Covered status are pre-selected. Only checked items will be included.
+              Select the products you want to carry forward to Purchase Order creation.
+              Products with a remaining gap are pre-selected. Only checked products will be included.
+              Reconciliation is advisory — over-committed products are flagged but never block you from proceeding.
             </Alert>
           )}
 
           {purpose === 'assembly' && (
             <Alert severity={hasEligibleItems ? 'info' : 'error'} sx={{ mb: 2 }}>
               {hasEligibleItems
-                ? 'Items with Received status are available for shop assembly. Items with zero availability are excluded. You may proceed with partial quantities if needed.'
-                : 'No items have Received status. There is nothing available to assemble.'}
+                ? 'Items with In Inventory status are available for shop assembly. Items with zero availability are excluded. You may proceed with partial quantities if needed.'
+                : 'No items have In Inventory status. There is nothing available to assemble.'}
             </Alert>
           )}
 
           {purpose === 'shipping' && (
             <Alert severity={hasEligibleItems ? 'info' : 'error'} sx={{ mb: 2 }}>
               {hasEligibleItems
-                ? 'Items that are Received or Assembled can be included in shipping pull requests. Items with zero availability are excluded. You may proceed with partial quantities if needed.'
+                ? 'Items that are In Inventory or Built onto Opening can be included in shipping pull requests. Items with zero availability are excluded. You may proceed with partial quantities if needed.'
                 : 'No items are in a shippable state. There is nothing available to ship.'}
             </Alert>
           )}
 
           <Box sx={{ height: 500, width: '100%' }}>
             <DataGrid
-              rows={aggregatedRows}
+              rows={aggregatedProductRows}
               columns={columns}
               pageSizeOptions={[10, 25, 50]}
               initialState={{
