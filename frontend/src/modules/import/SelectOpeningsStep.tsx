@@ -164,14 +164,28 @@ export default function SelectOpeningsStep({
 
   // ---- Right Panel: Hardware Items Accordion (read-only preview) ----
 
-  const groups = useMemo(() => {
-    const map = new Map<string, AggregatedHardwareItem[]>();
+  const NO_MANUFACTURER = '(No Manufacturer)';
+
+  const manufacturerGroups = useMemo(() => {
+    const outer = new Map<string, Map<string, AggregatedHardwareItem[]>>();
     for (const item of preReconAggregatedItems) {
-      const key = itemGroupKey(item);
-      if (!map.has(key)) map.set(key, []);
-      map.get(key)!.push(item);
+      const manufacturer = item.vendor_no ?? NO_MANUFACTURER;
+      const innerKey = itemGroupKey(item);
+      if (!outer.has(manufacturer)) outer.set(manufacturer, new Map());
+      const inner = outer.get(manufacturer)!;
+      if (!inner.has(innerKey)) inner.set(innerKey, []);
+      inner.get(innerKey)!.push(item);
     }
-    return Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b));
+    return Array.from(outer.entries())
+      .sort(([a], [b]) => {
+        if (a === NO_MANUFACTURER) return 1;
+        if (b === NO_MANUFACTURER) return -1;
+        return a.localeCompare(b);
+      })
+      .map(
+        ([manufacturer, inner]) =>
+          [manufacturer, Array.from(inner.entries()).sort(([a], [b]) => a.localeCompare(b))] as const,
+      );
   }, [preReconAggregatedItems]);
 
   const itemTotalCount = preReconAggregatedItems.length;
@@ -281,55 +295,90 @@ export default function SelectOpeningsStep({
               <Typography variant="body2" color="text.secondary" sx={{ mt: 2, textAlign: 'center' }}>
                 Select openings to see hardware items
               </Typography>
-            ) : groups.length === 0 ? (
+            ) : manufacturerGroups.length === 0 ? (
               <Typography variant="body2" color="text.secondary" sx={{ mt: 2, textAlign: 'center' }}>
                 No hardware items for selected openings
               </Typography>
             ) : (
-              groups.map(([groupKey, items]) => {
-                const [category, productCode] = groupKey.split('|');
+              manufacturerGroups.map(([manufacturer, productGroups]) => {
+                const productCount = productGroups.length;
+                const occurrenceCount = productGroups.reduce((sum, [, items]) => sum + items.length, 0);
+                const manufacturerTotalCost = productGroups.reduce(
+                  (sum, [, items]) =>
+                    sum + items.reduce((s, hi) => s + (hi.unit_cost ?? 0) * hi.item_quantity, 0),
+                  0,
+                );
 
                 return (
-                  <Accordion key={groupKey} defaultExpanded={false}>
+                  <Accordion key={manufacturer} defaultExpanded={false}>
                     <AccordionSummary expandIcon={<ExpandMoreIcon />}>
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%' }}>
-                        <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-                          {productCode}
+                        <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                          {manufacturer}
                         </Typography>
-                        <Chip label={category} size="small" variant="outlined" />
-                        <Chip label={items[0].vendor_no ?? '(No Manufacturer)'} size="small" variant="outlined" />
                         <Chip
-                          label={items[0].unit_cost != null ? `$${items[0].unit_cost.toFixed(2)}` : '—'}
+                          label={`${productCount} product${productCount === 1 ? '' : 's'}`}
                           size="small"
                           variant="outlined"
                         />
                         <Chip
-                          label={`Total: $${items.reduce((sum, hi) => sum + (hi.unit_cost ?? 0) * hi.item_quantity, 0).toFixed(2)}`}
+                          label={`Total: $${manufacturerTotalCost.toFixed(2)}`}
                           size="small"
                           variant="outlined"
                         />
                         <Typography variant="body2" color="text.secondary" sx={{ ml: 'auto', mr: 2 }}>
-                          {items.length}
+                          {occurrenceCount}
                         </Typography>
                       </Box>
                     </AccordionSummary>
-                    <AccordionDetails sx={{ p: 0 }}>
-                      <Table size="small">
-                        <TableHead>
-                          <TableRow>
-                            <TableCell>Opening</TableCell>
-                            <TableCell align="right">Qty</TableCell>
-                          </TableRow>
-                        </TableHead>
-                        <TableBody>
-                          {items.map((hi) => (
-                            <TableRow key={aggregationKey(hi)} hover>
-                              <TableCell>{hi.opening_number}</TableCell>
-                              <TableCell align="right">{hi.item_quantity}</TableCell>
-                            </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
+                    <AccordionDetails sx={{ p: 0, pl: 2 }}>
+                      {productGroups.map(([groupKey, items]) => {
+                        const [category, productCode] = groupKey.split('|');
+
+                        return (
+                          <Accordion key={groupKey} defaultExpanded={false} disableGutters>
+                            <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%' }}>
+                                <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+                                  {productCode}
+                                </Typography>
+                                <Chip label={category} size="small" variant="outlined" />
+                                <Chip
+                                  label={items[0].unit_cost != null ? `$${items[0].unit_cost.toFixed(2)}` : '—'}
+                                  size="small"
+                                  variant="outlined"
+                                />
+                                <Chip
+                                  label={`Total: $${items.reduce((sum, hi) => sum + (hi.unit_cost ?? 0) * hi.item_quantity, 0).toFixed(2)}`}
+                                  size="small"
+                                  variant="outlined"
+                                />
+                                <Typography variant="body2" color="text.secondary" sx={{ ml: 'auto', mr: 2 }}>
+                                  {items.length}
+                                </Typography>
+                              </Box>
+                            </AccordionSummary>
+                            <AccordionDetails sx={{ p: 0 }}>
+                              <Table size="small">
+                                <TableHead>
+                                  <TableRow>
+                                    <TableCell>Opening</TableCell>
+                                    <TableCell align="right">Qty</TableCell>
+                                  </TableRow>
+                                </TableHead>
+                                <TableBody>
+                                  {items.map((hi) => (
+                                    <TableRow key={aggregationKey(hi)} hover>
+                                      <TableCell>{hi.opening_number}</TableCell>
+                                      <TableCell align="right">{hi.item_quantity}</TableCell>
+                                    </TableRow>
+                                  ))}
+                                </TableBody>
+                              </Table>
+                            </AccordionDetails>
+                          </Accordion>
+                        );
+                      })}
                     </AccordionDetails>
                   </Accordion>
                 );
