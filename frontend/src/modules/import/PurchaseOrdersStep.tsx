@@ -159,8 +159,13 @@ export default function PurchaseOrdersStep({
             </Typography>
 
             {/* Aggregated line items grid */}
-            <Box sx={{ display: 'grid', gridTemplateColumns: '1.5fr 1.5fr 0.7fr 0.8fr 0.8fr 1.2fr' }}>
+            <Box sx={{ display: 'grid', gridTemplateColumns: '1.2fr 1.5fr 1.5fr 0.7fr 0.8fr 0.8fr' }}>
               {/* Header row */}
+              <Box sx={{ bgcolor: 'grey.100', p: 0.75 }}>
+                <Typography variant="caption" sx={{ fontWeight: 'bold' }}>
+                  Order As
+                </Typography>
+              </Box>
               <Box sx={{ bgcolor: 'grey.100', p: 0.75 }}>
                 <Typography variant="caption" sx={{ fontWeight: 'bold' }}>
                   Product Code
@@ -186,11 +191,6 @@ export default function PurchaseOrdersStep({
                   Total Cost
                 </Typography>
               </Box>
-              <Box sx={{ bgcolor: 'grey.100', p: 0.75 }}>
-                <Typography variant="caption" sx={{ fontWeight: 'bold' }}>
-                  Order As
-                </Typography>
-              </Box>
 
               {/* Data rows */}
               {aggregated.map((line, idx) => {
@@ -198,6 +198,18 @@ export default function PurchaseOrdersStep({
                 const aliasKey = `${line.productCode}|${line.hardwareCategory}`;
                 return (
                   <Box key={`${line.productCode}-${line.hardwareCategory}`} sx={{ display: 'contents' }}>
+                    <Box sx={{ bgcolor: rowBg, p: 0.75, display: 'flex', alignItems: 'center' }}>
+                      <TextField
+                        size="small"
+                        placeholder="Order as"
+                        disabled={!isSelected}
+                        value={orderAsValues.get(aliasKey) ?? ''}
+                        onChange={(e) => onUpdateOrderAs(aliasKey, e.target.value)}
+                        variant="standard"
+                        fullWidth
+                        slotProps={{ input: { sx: { fontSize: '0.875rem' } } }}
+                      />
+                    </Box>
                     <Box sx={{ bgcolor: rowBg, p: 0.75 }}>
                       <Typography variant="body2">{line.productCode}</Typography>
                     </Box>
@@ -230,18 +242,6 @@ export default function PurchaseOrdersStep({
                     </Box>
                     <Box sx={{ bgcolor: rowBg, p: 0.75, textAlign: 'right' }}>
                       <Typography variant="body2">${line.totalCost.toFixed(2)}</Typography>
-                    </Box>
-                    <Box sx={{ bgcolor: rowBg, p: 0.75, display: 'flex', alignItems: 'center' }}>
-                      <TextField
-                        size="small"
-                        placeholder="Order as"
-                        disabled={!isSelected}
-                        value={orderAsValues.get(aliasKey) ?? ''}
-                        onChange={(e) => onUpdateOrderAs(aliasKey, e.target.value)}
-                        variant="standard"
-                        fullWidth
-                        slotProps={{ input: { sx: { fontSize: '0.875rem' } } }}
-                      />
                     </Box>
                   </Box>
                 );
