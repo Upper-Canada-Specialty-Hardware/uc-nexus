@@ -103,8 +103,8 @@ function buildGroupTree(rows: ClassificationRow[], fields: GroupByField[]): Map<
 
 const ALL_COLUMNS: GridColDef[] = [
   { field: 'openingNumber', headerName: 'Opening #', flex: 0.7 },
-  { field: 'productCode', headerName: 'Product Code', flex: 1 },
-  { field: 'hardwareCategory', headerName: 'Hardware Category', flex: 1 },
+  { field: 'productCode', headerName: 'Product Code', flex: 1, cellClassName: 'wrap-cell' },
+  { field: 'hardwareCategory', headerName: 'Hardware Category', flex: 1, cellClassName: 'wrap-cell' },
   { field: 'vendorNo', headerName: 'Manufacturer', flex: 0.8 },
   {
     field: 'listPrice',
@@ -171,11 +171,19 @@ function LeafGrid({ rows, columns, options, onClassify, readOnly }: LeafGridProp
       columns={columns}
       checkboxSelection={!readOnly}
       density="compact"
-      rowHeight={42}
+      getRowHeight={() => 'auto'}
       hideFooter
       disableRowSelectionOnClick
       rowSelectionModel={selectionModel}
       onRowSelectionModelChange={setSelectionModel}
+      sx={{
+        '& .MuiDataGrid-cell.wrap-cell': {
+          whiteSpace: 'normal',
+          wordBreak: 'break-word',
+          lineHeight: 1.4,
+          py: 0.75,
+        },
+      }}
       slots={{
         toolbar: !readOnly && selectedCount > 0
           ? () => (
