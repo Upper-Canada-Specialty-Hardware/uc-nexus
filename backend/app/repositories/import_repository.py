@@ -5,7 +5,7 @@ from collections import defaultdict
 from decimal import Decimal
 from math import floor
 
-from sqlalchemy import func, select, tuple_
+from sqlalchemy import delete, func, select, tuple_
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import ConflictError, NotFoundError
@@ -300,6 +300,27 @@ def reconcile_schedule(
     return results
 
 
+def _apply_opening_fields(opening: OpeningModel, opening_input: dict) -> None:
+    """Copy mutable fields from input dict onto an Opening model."""
+    opening.building = opening_input.get("building")
+    opening.floor = opening_input.get("floor")
+    opening.location = opening_input.get("location")
+    opening.location_to = opening_input.get("location_to")
+    opening.location_from = opening_input.get("location_from")
+    opening.hand = opening_input.get("hand")
+    opening.width = opening_input.get("width")
+    opening.length = opening_input.get("length")
+    opening.door_thickness = opening_input.get("door_thickness")
+    opening.jamb_thickness = opening_input.get("jamb_thickness")
+    opening.door_type = opening_input.get("door_type")
+    opening.frame_type = opening_input.get("frame_type")
+    opening.interior_exterior = opening_input.get("interior_exterior")
+    opening.keying = opening_input.get("keying")
+    opening.heading_no = opening_input.get("heading_no")
+    opening.single_pair = opening_input.get("single_pair")
+    opening.assignment_multiplier = opening_input.get("assignment_multiplier")
+
+
 def finalize_import_session(
     session: Session,
     input_data: dict,
@@ -315,6 +336,7 @@ def finalize_import_session(
     include_sar = input_data.get("include_shop_assembly_request", False)
     sar_request_number = input_data.get("shop_assembly_request_number")
     sar_openings_input = input_data.get("shop_assembly_openings") or []
+    replace_schedule = bool(input_data.get("replace_schedule", False))
 
     # 1. Project lookup (must already exist)
     project_stmt = (
@@ -325,38 +347,61 @@ def finalize_import_session(
     if project is None:
         raise NotFoundError(f"Project {project_id} not found")
 
-    # Create any NEW openings from this import (idempotent across re-imports)
-    existing_opening_numbers = {o.opening_number for o in project.openings}
+    # 2. Wipe AVAILABLE hardware items for this project — they are pure XML-derived rows
+    # that will be regenerated from the current input. Existing IN_PO rows (attached to
+    # prior POs) are preserved unless replace_schedule=True.
+    session.execute(
+        delete(HardwareItemModel).where(
+            HardwareItemModel.project_id == project.id,
+            HardwareItemModel.state == HardwareItemState.AVAILABLE,
+        )
+    )
+    session.flush()
+
+    if replace_schedule:
+        # Full override: wipe every HardwareItem (including IN_PO) and drop openings
+        # not present in the new schedule. Downstream PO/receiving/SAR/inventory
+        # aggregates are preserved; only the per-opening source trail is lost.
+        session.execute(delete(HardwareItemModel).where(HardwareItemModel.project_id == project.id))
+        session.flush()
+
+        new_opening_numbers = {o["opening_number"] for o in openings_input}
+        # ORM-aware delete so identity map / project.openings stay consistent.
+        for opening in list(project.openings):
+            if opening.opening_number not in new_opening_numbers:
+                session.delete(opening)
+        session.flush()
+        session.refresh(project, attribute_names=["openings"])
+
+    # 3. Upsert openings from input: add new ones; for replace mode also refresh existing fields.
+    existing_openings_by_number = {o.opening_number: o for o in project.openings}
     for opening_input in openings_input:
-        if opening_input["opening_number"] not in existing_opening_numbers:
+        opening_number = opening_input["opening_number"]
+        existing = existing_openings_by_number.get(opening_number)
+        if existing is None:
             opening = OpeningModel(
                 id=uuid.uuid4(),
                 project_id=project.id,
-                opening_number=opening_input["opening_number"],
-                building=opening_input.get("building"),
-                floor=opening_input.get("floor"),
-                location=opening_input.get("location"),
-                location_to=opening_input.get("location_to"),
-                location_from=opening_input.get("location_from"),
-                hand=opening_input.get("hand"),
-                width=opening_input.get("width"),
-                length=opening_input.get("length"),
-                door_thickness=opening_input.get("door_thickness"),
-                jamb_thickness=opening_input.get("jamb_thickness"),
-                door_type=opening_input.get("door_type"),
-                frame_type=opening_input.get("frame_type"),
-                interior_exterior=opening_input.get("interior_exterior"),
-                keying=opening_input.get("keying"),
-                heading_no=opening_input.get("heading_no"),
-                single_pair=opening_input.get("single_pair"),
-                assignment_multiplier=opening_input.get("assignment_multiplier"),
+                opening_number=opening_number,
             )
+            _apply_opening_fields(opening, opening_input)
             session.add(opening)
             project.openings.append(opening)
+            existing_openings_by_number[opening_number] = opening
+        elif replace_schedule:
+            _apply_opening_fields(existing, opening_input)
     session.flush()
 
     # Build opening_map: opening_number -> Opening.id
     opening_map: dict[str, uuid.UUID] = {o.opening_number: o.id for o in project.openings}
+
+    # Track existing IN_PO HardwareItem keys so we don't re-create them as AVAILABLE.
+    # (After the AVAILABLE wipe above and the optional full wipe under replace_schedule,
+    # any remaining rows are IN_PO from prior sessions.)
+    existing_in_po_keys: set[tuple[uuid.UUID, str, str]] = {
+        (hi.opening_id, hi.product_code, hi.hardware_category)
+        for hi in session.scalars(select(HardwareItemModel).where(HardwareItemModel.project_id == project.id)).all()
+    }
 
     # 2. Build classification map
     classification_map: dict[tuple[str, str, float], Classification] = {}
@@ -393,7 +438,13 @@ def finalize_import_session(
 
         session.flush()
 
-    # 3. PO creation
+    # Collect PO ref keys so the AVAILABLE step below knows which items the PO block will claim.
+    po_ref_keys: set[tuple[str, str, str]] = set()
+    for po_draft in po_drafts:
+        for ref in po_draft.get("hardware_item_refs", []):
+            po_ref_keys.add((ref["opening_number"], ref["product_code"], ref["hardware_category"]))
+
+    # 4. PO creation
     created_pos: list[POModel] = []
     if po_drafts:
         # Build hardware items lookup: (opening_number, product_code, hardware_category) -> hardware item data
@@ -535,7 +586,52 @@ def finalize_import_session(
 
             created_pos.append(po)
 
-    # 4. Shipping Out PRs
+    # 5. Persist remaining hardware items as AVAILABLE (everything in input not claimed by a PO).
+    #    Skips items whose (opening_id, product, category) tuple already exists as IN_PO from
+    #    a prior session, to avoid duplicating rows.
+    available_keys_seen: set[tuple[uuid.UUID, str, str]] = set()
+    for hi in hardware_items_input:
+        ref_key = (hi["opening_number"], hi["product_code"], hi["hardware_category"])
+        if ref_key in po_ref_keys:
+            continue
+        opening_id = opening_map.get(hi["opening_number"])
+        if opening_id is None:
+            continue
+        key_with_id = (opening_id, hi["product_code"], hi["hardware_category"])
+        if key_with_id in existing_in_po_keys or key_with_id in available_keys_seen:
+            continue
+        available_keys_seen.add(key_with_id)
+
+        unit_cost_val = hi.get("unit_cost") or 0.0
+        class_key = (hi["hardware_category"], hi["product_code"], unit_cost_val)
+        classification = classification_map.get(class_key)
+
+        session.add(
+            HardwareItemModel(
+                id=uuid.uuid4(),
+                project_id=project.id,
+                opening_id=opening_id,
+                hardware_category=hi["hardware_category"],
+                product_code=hi["product_code"],
+                material_id=hi.get("material_id"),
+                item_quantity=hi["item_quantity"],
+                unit_cost=Decimal(str(unit_cost_val)) if unit_cost_val else None,
+                unit_price=Decimal(str(hi["unit_price"])) if hi.get("unit_price") else None,
+                list_price=Decimal(str(hi["list_price"])) if hi.get("list_price") else None,
+                vendor_discount=Decimal(str(hi["vendor_discount"])) if hi.get("vendor_discount") else None,
+                markup_pct=Decimal(str(hi["markup_pct"])) if hi.get("markup_pct") else None,
+                vendor_no=hi.get("vendor_no"),
+                phase_code=hi.get("phase_code"),
+                item_category_code=hi.get("item_category_code"),
+                product_group_code=hi.get("product_group_code"),
+                submittal_id=hi.get("submittal_id"),
+                classification=classification,
+                state=HardwareItemState.AVAILABLE,
+            )
+        )
+    session.flush()
+
+    # 6. Shipping Out PRs
     created_prs: list[PullRequestModel] = []
     if shipping_pr_drafts:
         for pr_draft in shipping_pr_drafts:
@@ -578,7 +674,7 @@ def finalize_import_session(
 
             created_prs.append(pr)
 
-    # 5. SAR creation
+    # 7. SAR creation
     sar = None
     if include_sar and sar_request_number:
         # Validate uniqueness
@@ -600,14 +696,20 @@ def finalize_import_session(
         session.flush()
 
         for sa_opening_input in sar_openings_input:
-            opening_id = opening_map.get(sa_opening_input["opening_number"])
+            opening_number = sa_opening_input["opening_number"]
+            opening_id = opening_map.get(opening_number)
             if opening_id is None:
-                raise NotFoundError(f"Opening {sa_opening_input['opening_number']} not found in project")
+                raise NotFoundError(f"Opening {opening_number} not found in project")
 
+            opening_row = existing_openings_by_number.get(opening_number)
             sa_opening = SAOModel(
                 id=uuid.uuid4(),
                 shop_assembly_request_id=sar.id,
                 opening_id=opening_id,
+                opening_number=opening_number,
+                building=opening_row.building if opening_row else None,
+                floor=opening_row.floor if opening_row else None,
+                location=opening_row.location if opening_row else None,
                 pull_status=PullStatus.NOT_PULLED,
                 assembly_status=AssemblyStatus.PENDING,
             )

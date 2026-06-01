@@ -238,6 +238,7 @@ class Mutation:
             ]
             if input.shop_assembly_openings
             else None,
+            "replace_schedule": input.replace_schedule,
         }
 
         with SessionLocal() as session:
@@ -730,20 +731,13 @@ class Mutation:
         with SessionLocal() as session:
             result = shop_assembly_repository.assign_openings(session, opening_ids, input.assigned_to)
             session.commit()
-            # Re-load with items + join Opening for opening_number/building/floor
             from sqlalchemy.orm import selectinload
 
-            from app.models.project import Opening as OpeningModel
             from app.models.shop_assembly import ShopAssemblyOpening as SAOModel
 
-            stmt = (
-                select(SAOModel, OpeningModel)
-                .join(OpeningModel, SAOModel.opening_id == OpeningModel.id)
-                .options(selectinload(SAOModel.items))
-                .where(SAOModel.id.in_([o.id for o in result]))
-            )
-            rows = list(session.execute(stmt).unique().all())
-            return [_shop_assembly_opening_to_type(sao, opening_model=opening) for sao, opening in rows]
+            stmt = select(SAOModel).options(selectinload(SAOModel.items)).where(SAOModel.id.in_([o.id for o in result]))
+            saos = list(session.scalars(stmt).unique().all())
+            return [_shop_assembly_opening_to_type(sao) for sao in saos]
 
     @strawberry.mutation
     def remove_opening_from_user(self, opening_id: strawberry.ID) -> ShopAssemblyOpening:
@@ -751,21 +745,13 @@ class Mutation:
             result = shop_assembly_repository.remove_opening_from_user(session, uuid.UUID(str(opening_id)))
             session.commit()
             session.refresh(result)
-            # Re-load with items + join Opening for opening_number/building/floor
             from sqlalchemy.orm import selectinload
 
-            from app.models.project import Opening as OpeningModel
             from app.models.shop_assembly import ShopAssemblyOpening as SAOModel
 
-            stmt = (
-                select(SAOModel, OpeningModel)
-                .join(OpeningModel, SAOModel.opening_id == OpeningModel.id)
-                .options(selectinload(SAOModel.items))
-                .where(SAOModel.id == result.id)
-            )
-            row = session.execute(stmt).unique().first()
-            refreshed, opening = row
-            return _shop_assembly_opening_to_type(refreshed, opening_model=opening)
+            stmt = select(SAOModel).options(selectinload(SAOModel.items)).where(SAOModel.id == result.id)
+            refreshed = session.scalars(stmt).unique().first()
+            return _shop_assembly_opening_to_type(refreshed)
 
     @strawberry.mutation
     def complete_opening(self, input: CompleteOpeningInput) -> OpeningItem:
