@@ -5,15 +5,20 @@ from botocore.config import Config as BotoConfig
 
 from app.config import BUCKET_ACCESS_KEY_ID, BUCKET_ENDPOINT, BUCKET_NAME, BUCKET_SECRET_ACCESS_KEY
 
+_client = None
+
 
 def _get_client():
-    return boto3.client(
-        "s3",
-        endpoint_url=BUCKET_ENDPOINT,
-        aws_access_key_id=BUCKET_ACCESS_KEY_ID,
-        aws_secret_access_key=BUCKET_SECRET_ACCESS_KEY,
-        config=BotoConfig(signature_version="s3v4"),
-    )
+    global _client
+    if _client is None:
+        _client = boto3.client(
+            "s3",
+            endpoint_url=BUCKET_ENDPOINT,
+            aws_access_key_id=BUCKET_ACCESS_KEY_ID,
+            aws_secret_access_key=BUCKET_SECRET_ACCESS_KEY,
+            config=BotoConfig(signature_version="s3v4"),
+        )
+    return _client
 
 
 def upload_file(key: str, data: bytes, content_type: str) -> str:

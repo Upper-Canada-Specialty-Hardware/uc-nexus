@@ -7,6 +7,8 @@ from app.errors import AppError
 
 CLERK_API_BASE = "https://api.clerk.com/v1"
 
+_client = httpx.Client(base_url=CLERK_API_BASE, timeout=30.0)
+
 
 def _headers() -> dict[str, str]:
     if not CLERK_SECRET_KEY:
@@ -24,8 +26,8 @@ def list_users() -> list[dict]:
     limit = 100
 
     while True:
-        resp = httpx.get(
-            f"{CLERK_API_BASE}/users",
+        resp = _client.get(
+            "/users",
             headers=_headers(),
             params={"limit": limit, "offset": offset, "order_by": "-created_at"},
         )
@@ -61,8 +63,8 @@ def list_users() -> list[dict]:
 
 def update_user_roles(user_id: str, roles: list[str]) -> dict:
     """Update a Clerk user's roles in publicMetadata."""
-    resp = httpx.patch(
-        f"{CLERK_API_BASE}/users/{user_id}",
+    resp = _client.patch(
+        f"/users/{user_id}",
         headers=_headers(),
         json={"public_metadata": {"roles": roles}},
     )
