@@ -315,7 +315,7 @@ def _shop_assembly_opening_item_to_type(item) -> ShopAssemblyOpeningItem:
     )
 
 
-def _shop_assembly_opening_to_type(opening, opening_model=None) -> ShopAssemblyOpening:
+def _shop_assembly_opening_to_type(opening) -> ShopAssemblyOpening:
     return ShopAssemblyOpening(
         id=strawberry.ID(str(opening.id)),
         shop_assembly_request_id=strawberry.ID(str(opening.shop_assembly_request_id)),
@@ -325,9 +325,9 @@ def _shop_assembly_opening_to_type(opening, opening_model=None) -> ShopAssemblyO
         assembly_status=opening.assembly_status,
         completed_at=opening.completed_at,
         items=[_shop_assembly_opening_item_to_type(i) for i in opening.items],
-        opening_number=opening_model.opening_number if opening_model else None,
-        building=opening_model.building if opening_model else None,
-        floor=opening_model.floor if opening_model else None,
+        opening_number=opening.opening_number,
+        building=opening.building,
+        floor=opening.floor,
     )
 
 
@@ -783,16 +783,16 @@ class Query:
     @strawberry.field
     def assemble_list(self, project_id: strawberry.ID | None = None) -> list[ShopAssemblyOpening]:
         with SessionLocal() as session:
-            rows = shop_assembly_repository.get_assemble_list(
+            saos = shop_assembly_repository.get_assemble_list(
                 session, uuid.UUID(str(project_id)) if project_id else None
             )
-            return [_shop_assembly_opening_to_type(sao, opening_model=opening) for sao, opening in rows]
+            return [_shop_assembly_opening_to_type(sao) for sao in saos]
 
     @strawberry.field
     def my_work(self, assigned_to: str) -> list[ShopAssemblyOpening]:
         with SessionLocal() as session:
-            rows = shop_assembly_repository.get_my_work(session, assigned_to)
-            return [_shop_assembly_opening_to_type(sao, opening_model=opening) for sao, opening in rows]
+            saos = shop_assembly_repository.get_my_work(session, assigned_to)
+            return [_shop_assembly_opening_to_type(sao) for sao in saos]
 
     @strawberry.field
     def hardware_summary(self, project_id: strawberry.ID | None = None) -> list[HardwareSummaryRow]:

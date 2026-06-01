@@ -7,6 +7,7 @@ class Classification(str, enum.Enum):
 
 
 class HardwareItemState(str, enum.Enum):
+    AVAILABLE = "AVAILABLE"
     IN_PO = "IN_PO"
 
 

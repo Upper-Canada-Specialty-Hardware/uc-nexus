@@ -129,6 +129,10 @@ class FinalizeImportSessionInput:
     include_shop_assembly_request: bool = False
     shop_assembly_request_number: str | None = None
     shop_assembly_openings: list[SAROpeningInput] | None = None
+    # When true, this finalize overrides the existing schedule: existing HardwareItem
+    # rows are wiped (including IN_PO ones) and openings absent from the new input
+    # are deleted. Downstream POs/receiving/SAR/inventory aggregates are preserved.
+    replace_schedule: bool = False
 
 
 @strawberry.input
