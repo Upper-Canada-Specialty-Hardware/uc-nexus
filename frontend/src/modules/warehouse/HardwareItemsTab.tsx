@@ -23,6 +23,7 @@ import { GET_INVENTORY_HIERARCHY, GET_INVENTORY_ITEMS, GET_INVENTORY_BY_VENDOR }
 import { useIdentity } from '../../hooks/useIdentity';
 import InventoryCorrectionModal from '../admin/InventoryCorrectionModal';
 import AuditHistoryDrawer from './AuditHistoryDrawer';
+import ProjectProgressDashboard from './ProjectProgressDashboard';
 import SpotCheckModal from './SpotCheckModal';
 
 interface InventoryItem {
@@ -560,6 +561,8 @@ export default function HardwareItemsTab({ projectId }: HardwareItemsTabProps) {
           </Typography>
         </Box>
       </Box>
+
+      <ProjectProgressDashboard projectId={projectId} />
 
       {/* Filtered empty state */}
       {filteredGroups.length === 0 && (
