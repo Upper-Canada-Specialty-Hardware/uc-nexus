@@ -689,7 +689,7 @@ export const GET_WAREHOUSE_DASHBOARD = gql`
 `;
 
 export const GET_PROJECT_PROGRESS_BY_PRODUCT = gql`
-  query GetProjectProgressByProduct($projectId: ID!) {
+  query GetProjectProgressByProduct($projectId: ID) {
     projectProgressByProduct(projectId: $projectId) {
       hardwareCategory
       productCode
