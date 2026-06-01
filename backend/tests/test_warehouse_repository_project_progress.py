@@ -276,3 +276,28 @@ def test_returns_empty_for_project_without_schedule(db_session):
     project = _make_project(db_session)
     rows = warehouse_repository.get_project_progress_by_product(db_session, project.id)
     assert rows == []
+
+
+def test_aggregates_across_projects_when_project_id_is_none(db_session):
+    """project_id=None sums required/ordered/received across all projects, grouped by (category, code)."""
+    p1 = _make_project(db_session)
+    p2 = _make_project(db_session)
+    o1 = _make_opening(db_session, p1.id, "A01")
+    o2 = _make_opening(db_session, p2.id, "B01")
+    vendor = _make_vendor(db_session)
+
+    _make_hardware_item(db_session, project_id=p1.id, opening_id=o1.id, product_code="HG-100", item_quantity=3)
+    _make_hardware_item(db_session, project_id=p2.id, opening_id=o2.id, product_code="HG-100", item_quantity=4)
+
+    po1 = _make_po(db_session, project_id=p1.id, vendor_id=vendor.id, status=POStatus.ORDERED)
+    _make_line_item(db_session, po_id=po1.id, product_code="HG-100", ordered_quantity=2, received_quantity=1)
+    po2 = _make_po(db_session, project_id=p2.id, vendor_id=vendor.id, status=POStatus.PARTIALLY_RECEIVED)
+    _make_line_item(db_session, po_id=po2.id, product_code="HG-100", ordered_quantity=5, received_quantity=4)
+    cancelled = _make_po(db_session, project_id=p2.id, vendor_id=vendor.id, status=POStatus.CANCELLED)
+    _make_line_item(db_session, po_id=cancelled.id, product_code="HG-100", ordered_quantity=99, received_quantity=0)
+
+    rows = warehouse_repository.get_project_progress_by_product(db_session, None)
+    by_code = {(r["hardware_category"], r["product_code"]): r for r in rows}
+    assert by_code[("HINGE", "HG-100")]["required_quantity"] == 7  # 3 + 4
+    assert by_code[("HINGE", "HG-100")]["ordered_quantity"] == 7  # 2 + 5 (cancelled excluded)
+    assert by_code[("HINGE", "HG-100")]["received_quantity"] == 5  # 1 + 4

@@ -909,9 +909,11 @@ class Query:
             )
 
     @strawberry.field
-    def project_progress_by_product(self, project_id: strawberry.ID) -> list[ProjectProgressByProduct]:
+    def project_progress_by_product(self, project_id: strawberry.ID | None = None) -> list[ProjectProgressByProduct]:
         with SessionLocal() as session:
-            rows = warehouse_repository.get_project_progress_by_product(session, uuid.UUID(str(project_id)))
+            rows = warehouse_repository.get_project_progress_by_product(
+                session, uuid.UUID(str(project_id)) if project_id else None
+            )
             return [
                 ProjectProgressByProduct(
                     hardware_category=row["hardware_category"],

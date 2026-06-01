@@ -228,7 +228,7 @@ type Query {
   pullRequests(projectId: ID!, source: PullRequestSource, status: PullRequestStatus): [PullRequest!]!
   pullRequestDetails(id: ID!): PullRequest!
   shipReadyItems(projectId: ID!): ShipReadyItems!
-  projectProgressByProduct(projectId: ID!): [ProjectProgressByProduct!]!
+  projectProgressByProduct(projectId: ID): [ProjectProgressByProduct!]!
   notifications(projectId: ID!, recipientRole: String!, unreadOnly: Boolean, limit: Int = 5): [Notification!]!
 }
 
