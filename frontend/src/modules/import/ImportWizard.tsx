@@ -1093,6 +1093,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
               reconcileLoading={reconcileLoading}
               reconciliationRows={reconciliationRows}
               selectedHardwareItems={selectedHardwareItems}
+              allHardwareItems={hardwareItems}
               selectedReconItems={selectedReconItems}
               onSelectionChange={setSelectedReconItems}
               canProceed={canProceedStep3}
