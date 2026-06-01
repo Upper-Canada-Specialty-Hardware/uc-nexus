@@ -15,6 +15,7 @@ interface ReconciliationStepProps {
   reconcileLoading: boolean;
   reconciliationRows: ReconciliationRow[];
   selectedHardwareItems: ParsedHardwareItem[];
+  allHardwareItems: ParsedHardwareItem[];
   selectedReconItems: Set<string>;
   onSelectionChange: (selected: Set<string>) => void;
   canProceed: boolean;
@@ -28,7 +29,8 @@ interface ProductReconRow {
   id: string; // itemGroupKey: `${hardwareCategory}|${productCode}`
   hardwareCategory: string;
   productCode: string;
-  quantityNeeded: number; // sum of HS qty across openings (project-wide)
+  quantityNeeded: number; // sum of HS qty across selected openings
+  quantityRequiredByProject: number; // sum of HS qty across ALL openings in schedule
   qtyAvailable: number; // for assembly/shipping eligibility
   statusBreakdown: Map<string, number>; // bucket totals across openings
   underlyingOpeningKeys: string[]; // (opening, product, category) keys
@@ -112,6 +114,7 @@ export default function ReconciliationStep({
   reconcileLoading,
   reconciliationRows,
   selectedHardwareItems,
+  allHardwareItems,
   selectedReconItems,
   onSelectionChange,
   canProceed,
@@ -120,7 +123,7 @@ export default function ReconciliationStep({
 }: ReconciliationStepProps) {
   const hasAutoSelected = useRef(false);
 
-  // qtyNeededByProduct: project-wide qty needed per (category, product)
+  // qtyNeededByProduct: qty needed per (category, product) across selected openings
   const qtyNeededByProduct = useMemo(() => {
     const map = new Map<string, number>();
     for (const hi of selectedHardwareItems) {
@@ -129,6 +132,16 @@ export default function ReconciliationStep({
     }
     return map;
   }, [selectedHardwareItems]);
+
+  // qtyRequiredByProjectByProduct: qty needed per (category, product) across ALL openings in schedule
+  const qtyRequiredByProjectByProduct = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const hi of allHardwareItems) {
+      const key = itemGroupKey(hi);
+      map.set(key, (map.get(key) ?? 0) + hi.item_quantity);
+    }
+    return map;
+  }, [allHardwareItems]);
 
   // hsQtyByOpeningKey: HS demand per (opening, product, category)
   const hsQtyByOpeningKey = useMemo(() => {
@@ -153,6 +166,7 @@ export default function ReconciliationStep({
           hardwareCategory: row.hardwareCategory,
           productCode: row.productCode,
           quantityNeeded: qtyNeededByProduct.get(productKey) ?? 0,
+          quantityRequiredByProject: qtyRequiredByProjectByProduct.get(productKey) ?? 0,
           qtyAvailable: 0,
           statusBreakdown: new Map(),
           underlyingOpeningKeys: [],
@@ -189,7 +203,7 @@ export default function ReconciliationStep({
       return bestA - bestB;
     });
     return rows;
-  }, [reconciliationRows, qtyNeededByProduct, hsQtyByOpeningKey, selectedReconItems, purpose]);
+  }, [reconciliationRows, qtyNeededByProduct, qtyRequiredByProjectByProduct, hsQtyByOpeningKey, selectedReconItems, purpose]);
 
   // Determine which products have eligible quantity for SAR/SOR
   const eligibleRowIds = useMemo<Set<string>>(() => {
@@ -269,7 +283,7 @@ export default function ReconciliationStep({
       { field: 'productCode', headerName: 'Product Code', flex: 1 },
       {
         field: 'quantityNeeded',
-        headerName: 'Qty Needed by Project',
+        headerName: 'Qty Needed (Selected Openings)',
         flex: 0.9,
         type: 'number',
         renderCell: (params) => (
@@ -282,6 +296,23 @@ export default function ReconciliationStep({
         ),
       },
     ];
+
+    if (purpose === 'po') {
+      cols.push({
+        field: 'quantityRequiredByProject',
+        headerName: 'Qty Needed by Project',
+        flex: 0.9,
+        type: 'number',
+        renderCell: (params) => (
+          <Chip
+            size="small"
+            label={params.value as number}
+            color="info"
+            variant="filled"
+          />
+        ),
+      });
+    }
 
     if (showQtyAvailable) {
       cols.push({
@@ -345,7 +376,7 @@ export default function ReconciliationStep({
     });
 
     return cols;
-  }, [showQtyAvailable]);
+  }, [showQtyAvailable, purpose]);
 
   const rowSelectionModel = useMemo<GridRowSelectionModel>(
     () => ({ type: 'include' as const, ids: new Set<string>(productLevelSelection) }),
