@@ -217,26 +217,29 @@ PLACED_PO_STATUSES = (
 )
 
 
-def get_project_progress_by_product(session: Session, project_id: uuid.UUID) -> list[dict]:
-    """Per-project, per-product-code rollup of required (from schedule), ordered, and received quantities.
+def get_project_progress_by_product(session: Session, project_id: uuid.UUID | None = None) -> list[dict]:
+    """Per-product-code rollup of required (from schedule), ordered, and received quantities.
 
-    - required_quantity: sum of hardware_items.item_quantity for the project, grouped by (category, code)
+    - When project_id is given, all aggregates are scoped to that project.
+    - When project_id is None, required sums across all projects' hardware items and
+      ordered/received sum across every placed PO.
+    - required_quantity: sum of hardware_items.item_quantity, grouped by (category, code)
     - ordered_quantity / received_quantity: sum of po_line_items.{ordered,received}_quantity for POs
       with status in PLACED_PO_STATUSES (excludes DRAFT and CANCELLED) and deleted_at IS NULL,
       grouped by (category, code).
     """
-    required_subq = (
-        select(
-            HardwareItemModel.hardware_category.label("hardware_category"),
-            HardwareItemModel.product_code.label("product_code"),
-            func.sum(HardwareItemModel.item_quantity).label("required_quantity"),
-        )
-        .where(HardwareItemModel.project_id == project_id)
-        .group_by(HardwareItemModel.hardware_category, HardwareItemModel.product_code)
-        .subquery()
+    required_stmt = select(
+        HardwareItemModel.hardware_category.label("hardware_category"),
+        HardwareItemModel.product_code.label("product_code"),
+        func.sum(HardwareItemModel.item_quantity).label("required_quantity"),
     )
+    if project_id is not None:
+        required_stmt = required_stmt.where(HardwareItemModel.project_id == project_id)
+    required_subq = required_stmt.group_by(
+        HardwareItemModel.hardware_category, HardwareItemModel.product_code
+    ).subquery()
 
-    po_agg_subq = (
+    po_agg_stmt = (
         select(
             POLineItemModel.hardware_category.label("hardware_category"),
             POLineItemModel.product_code.label("product_code"),
@@ -245,13 +248,13 @@ def get_project_progress_by_product(session: Session, project_id: uuid.UUID) -> 
         )
         .join(POModel, POLineItemModel.po_id == POModel.id)
         .where(
-            POModel.project_id == project_id,
             POModel.deleted_at.is_(None),
             POModel.status.in_(PLACED_PO_STATUSES),
         )
-        .group_by(POLineItemModel.hardware_category, POLineItemModel.product_code)
-        .subquery()
     )
+    if project_id is not None:
+        po_agg_stmt = po_agg_stmt.where(POModel.project_id == project_id)
+    po_agg_subq = po_agg_stmt.group_by(POLineItemModel.hardware_category, POLineItemModel.product_code).subquery()
 
     stmt = (
         select(
