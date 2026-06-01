@@ -688,6 +688,18 @@ export const GET_WAREHOUSE_DASHBOARD = gql`
   }
 `;
 
+export const GET_PROJECT_PROGRESS_BY_PRODUCT = gql`
+  query GetProjectProgressByProduct($projectId: ID!) {
+    projectProgressByProduct(projectId: $projectId) {
+      hardwareCategory
+      productCode
+      requiredQuantity
+      orderedQuantity
+      receivedQuantity
+    }
+  }
+`;
+
 export const GET_WAREHOUSE_AISLES = gql`
   query GetWarehouseAisles($activeOnly: Boolean) {
     warehouseAisles(activeOnly: $activeOnly) {
