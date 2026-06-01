@@ -49,6 +49,7 @@ from .types import (
     Project,
     ProjectExcludedItem,
     ProjectHardwareSchedule,
+    ProjectProgressByProduct,
     ProjectScheduleHardwareItem,
     PullRequest,
     PullRequestItem,
@@ -906,6 +907,21 @@ class Query:
                 received_last_7_days=d["received_last_7_days"],
                 back_ordered_count=d["back_ordered_count"],
             )
+
+    @strawberry.field
+    def project_progress_by_product(self, project_id: strawberry.ID) -> list[ProjectProgressByProduct]:
+        with SessionLocal() as session:
+            rows = warehouse_repository.get_project_progress_by_product(session, uuid.UUID(str(project_id)))
+            return [
+                ProjectProgressByProduct(
+                    hardware_category=row["hardware_category"],
+                    product_code=row["product_code"],
+                    required_quantity=row["required_quantity"],
+                    ordered_quantity=row["ordered_quantity"],
+                    received_quantity=row["received_quantity"],
+                )
+                for row in rows
+            ]
 
     @strawberry.field
     def inventory_by_vendor(self, project_id: strawberry.ID | None = None) -> list[VendorInventoryNode]:

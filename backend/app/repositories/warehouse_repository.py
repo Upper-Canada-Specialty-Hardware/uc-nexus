@@ -20,6 +20,7 @@ from app.models.enums import (
     PullRequestStatus,
     PullStatus,
 )
+from app.models.hardware import HardwareItem as HardwareItemModel
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.opening_item import OpeningItem as OpeningItemModel
 from app.models.pull_request import PullRequest as PullRequestModel
@@ -205,6 +206,81 @@ def get_back_ordered_items(session: Session, project_id: uuid.UUID | None = None
             "outstanding_quantity": row[0].ordered_quantity - row[0].received_quantity,
         }
         for row in rows
+    ]
+
+
+PLACED_PO_STATUSES = (
+    POStatus.ORDERED,
+    POStatus.VENDOR_CONFIRMED,
+    POStatus.PARTIALLY_RECEIVED,
+    POStatus.CLOSED,
+)
+
+
+def get_project_progress_by_product(session: Session, project_id: uuid.UUID) -> list[dict]:
+    """Per-project, per-product-code rollup of required (from schedule), ordered, and received quantities.
+
+    - required_quantity: sum of hardware_items.item_quantity for the project, grouped by (category, code)
+    - ordered_quantity / received_quantity: sum of po_line_items.{ordered,received}_quantity for POs
+      with status in PLACED_PO_STATUSES (excludes DRAFT and CANCELLED) and deleted_at IS NULL,
+      grouped by (category, code).
+    """
+    required_subq = (
+        select(
+            HardwareItemModel.hardware_category.label("hardware_category"),
+            HardwareItemModel.product_code.label("product_code"),
+            func.sum(HardwareItemModel.item_quantity).label("required_quantity"),
+        )
+        .where(HardwareItemModel.project_id == project_id)
+        .group_by(HardwareItemModel.hardware_category, HardwareItemModel.product_code)
+        .subquery()
+    )
+
+    po_agg_subq = (
+        select(
+            POLineItemModel.hardware_category.label("hardware_category"),
+            POLineItemModel.product_code.label("product_code"),
+            func.sum(POLineItemModel.ordered_quantity).label("ordered_quantity"),
+            func.sum(POLineItemModel.received_quantity).label("received_quantity"),
+        )
+        .join(POModel, POLineItemModel.po_id == POModel.id)
+        .where(
+            POModel.project_id == project_id,
+            POModel.deleted_at.is_(None),
+            POModel.status.in_(PLACED_PO_STATUSES),
+        )
+        .group_by(POLineItemModel.hardware_category, POLineItemModel.product_code)
+        .subquery()
+    )
+
+    stmt = (
+        select(
+            required_subq.c.hardware_category,
+            required_subq.c.product_code,
+            required_subq.c.required_quantity,
+            func.coalesce(po_agg_subq.c.ordered_quantity, 0).label("ordered_quantity"),
+            func.coalesce(po_agg_subq.c.received_quantity, 0).label("received_quantity"),
+        )
+        .select_from(required_subq)
+        .outerjoin(
+            po_agg_subq,
+            and_(
+                required_subq.c.hardware_category == po_agg_subq.c.hardware_category,
+                required_subq.c.product_code == po_agg_subq.c.product_code,
+            ),
+        )
+        .order_by(required_subq.c.hardware_category, required_subq.c.product_code)
+    )
+
+    return [
+        {
+            "hardware_category": row.hardware_category,
+            "product_code": row.product_code,
+            "required_quantity": int(row.required_quantity),
+            "ordered_quantity": int(row.ordered_quantity),
+            "received_quantity": int(row.received_quantity),
+        }
+        for row in session.execute(stmt).all()
     ]
 
 

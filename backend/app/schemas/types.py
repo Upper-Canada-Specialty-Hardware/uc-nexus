@@ -539,6 +539,15 @@ class WarehouseDashboard:
 
 
 @strawberry.type
+class ProjectProgressByProduct:
+    hardware_category: str
+    product_code: str
+    required_quantity: int
+    ordered_quantity: int
+    received_quantity: int
+
+
+@strawberry.type
 class WarehouseBinType:
     id: strawberry.ID
     bay_id: strawberry.ID
