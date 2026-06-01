@@ -6,6 +6,7 @@ import DashboardCards from './DashboardCards';
 import DeliveriesView from './DeliveriesView';
 import InventoryView from './InventoryView';
 import LocationsTab from './LocationsTab';
+import ProjectProgressDashboard from './ProjectProgressDashboard';
 import ReceivingPage from './ReceivingPage';
 import PullRequestQueue from './PullRequestQueue';
 import PutAwayTab from './PutAwayTab';
@@ -37,6 +38,7 @@ export default function WarehouseModule() {
         </Button>
       </Box>
       <DashboardCards />
+      <ProjectProgressDashboard />
       <Tabs value={tabIndex} onChange={(_, v) => navigate(`/app/warehouse/${SUB_ROUTES[v].path}`)} sx={{ mb: 2 }}>
         {SUB_ROUTES.map((r) => <Tab key={r.path} label={r.label} />)}
       </Tabs>
