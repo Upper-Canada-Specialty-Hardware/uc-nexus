@@ -50,7 +50,13 @@ class ShopAssemblyOpening(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     shop_assembly_request_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("shop_assembly_requests.id"), nullable=False)
-    opening_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("openings.id"), nullable=False)
+    # Historical UUID of the source opening at request time. Not FK-enforced; the source
+    # Opening row may be deleted in a later re-upload, but this stamp is preserved.
+    opening_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    opening_number: Mapped[str] = mapped_column(String, nullable=False)
+    building: Mapped[str | None] = mapped_column(String, nullable=True)
+    floor: Mapped[str | None] = mapped_column(String, nullable=True)
+    location: Mapped[str | None] = mapped_column(String, nullable=True)
     pull_status: Mapped[PullStatus] = mapped_column(
         Enum(PullStatus, name="pull_status", create_constraint=True),
         nullable=False,

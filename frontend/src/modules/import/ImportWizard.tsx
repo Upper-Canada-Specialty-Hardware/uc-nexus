@@ -580,10 +580,6 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
 
   const buildFinalizeInput = useCallback(() => {
     if (!parsed) return null;
-    const openingNumbersFromItems = new Set(aggregatedHardwareItems.map((hi) => hi.opening_number));
-    const selectedOpeningsList = parsed.openings.filter(
-      (o) => selectedOpenings.has(o.opening_number) && openingNumbersFromItems.has(o.opening_number),
-    );
     const filteredHardwareItems = parsed.hardwareItems.filter(
       (hi) => selectedOpenings.has(hi.opening_number),
     );
@@ -612,22 +608,37 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
         ).values())
       : null;
 
+    // Full-schedule hardware items: aggregate ALL parsed items by (opening, product, category).
+    // The backend persists every entry — items referenced by a PO draft become IN_PO; the rest
+    // become AVAILABLE so the persisted schedule is byte-equivalent to a fresh XML upload.
+    const fullScheduleAggMap = new Map<string, AggregatedHardwareItem>();
+    for (const hi of parsed.hardwareItems) {
+      const aggKey = `${hi.opening_number}|${hi.hardware_category}|${hi.product_code}`;
+      const existing = fullScheduleAggMap.get(aggKey);
+      if (existing) {
+        existing.item_quantity += hi.item_quantity;
+      } else {
+        const { material_id, ...rest } = hi;
+        void material_id;
+        fullScheduleAggMap.set(aggKey, { ...rest });
+      }
+    }
+    const fullScheduleHardwareItems = Array.from(fullScheduleAggMap.values()).map((hi) => {
+      // Apply any unit-cost overrides from the PO step so the persisted row matches what
+      // the user reviewed at finalize time.
+      const vendor = hi.vendor_no ?? '(No Manufacturer)';
+      const overrideKey = `${vendor}|${hi.product_code}|${hi.hardware_category}`;
+      const overriddenCost = unitCostOverrides.get(overrideKey);
+      const item = overriddenCost !== undefined
+        ? { ...hi, unit_cost: overriddenCost }
+        : hi;
+      return snakeToCamel(item as unknown as Record<string, unknown>);
+    });
+
     return {
       projectId: project.id,
-      openings: selectedOpeningsList.map((o) => snakeToCamel(o as unknown as Record<string, unknown>)),
-      hardwareItems: purpose === 'po'
-        ? aggregatedHardwareItems
-            .filter((hi) => selectedVendors.has(hi.vendor_no ?? '(No Manufacturer)') && !isByOthers(hi))
-            .map((hi) => {
-              const vendor = hi.vendor_no ?? '(No Manufacturer)';
-              const overrideKey = `${vendor}|${hi.product_code}|${hi.hardware_category}`;
-              const overriddenCost = unitCostOverrides.get(overrideKey);
-              const item = overriddenCost !== undefined
-                ? { ...hi, unit_cost: overriddenCost }
-                : hi;
-              return snakeToCamel(item as unknown as Record<string, unknown>);
-            })
-        : null,
+      openings: parsed.openings.map((o) => snakeToCamel(o as unknown as Record<string, unknown>)),
+      hardwareItems: fullScheduleHardwareItems,
       poDrafts: purpose === 'po'
         ? Array.from(vendorGroups.entries())
             .filter(([vendor]) => selectedVendors.has(vendor))
@@ -690,8 +701,13 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
         : null,
       includeShopAssemblyRequest: purpose === 'assembly',
       shopAssemblyRequestNumber: purpose === 'assembly' ? sarRequestNumber : null,
+      // True when the user uploaded a fresh XML on a project that already has a persisted
+      // schedule (i.e., they did not pick "Use latest schedule"). The backend wipes all
+      // existing HardwareItems and openings absent from the new input.
+      replaceSchedule: canStartFromLatest && !hydratedFromPersisted,
       shopAssemblyOpenings: purpose === 'assembly'
-        ? selectedOpeningsList
+        ? parsed.openings
+            .filter((o) => selectedOpenings.has(o.opening_number))
             .map((opening) => {
               const shopItems = filteredHardwareItems.filter((hi) => {
                 if (hi.opening_number !== opening.opening_number) return false;
@@ -722,7 +738,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
             .filter(Boolean)
         : null,
     };
-  }, [parsed, project.id, selectedOpenings, purpose, aggregatedHardwareItems, vendorGroups, vendorPOInfo, selectedVendors, unitCostOverrides, orderAsValues, classifications, shippingPRDrafts, sarRequestNumber]);
+  }, [parsed, project.id, selectedOpenings, purpose, vendorGroups, vendorPOInfo, selectedVendors, unitCostOverrides, orderAsValues, classifications, shippingPRDrafts, sarRequestNumber, canStartFromLatest, hydratedFromPersisted]);
 
   const handleFinalize = useCallback(async () => {
     setConfirmOpen(false);
@@ -1227,9 +1243,13 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
       {/* Confirm Dialog */}
       <ConfirmDialog
         open={confirmOpen}
-        title="Finalize Import"
-        message="This will create the selected purchase orders, assembly requests, and shipping pull requests. Continue?"
-        confirmLabel="Finalize"
+        title={canStartFromLatest && !hydratedFromPersisted ? 'Replace Hardware Schedule' : 'Finalize Import'}
+        message={
+          canStartFromLatest && !hydratedFromPersisted
+            ? "You're uploading a NEW hardware schedule that will REPLACE the previously stored one. Existing purchase orders, receiving records, shop assembly requests, and warehouse inventory will be preserved, but the per-opening source trail of prior POs will be lost. Openings absent from the new schedule will be removed. Continue?"
+            : 'This will create the selected purchase orders, assembly requests, and shipping pull requests. Continue?'
+        }
+        confirmLabel={canStartFromLatest && !hydratedFromPersisted ? 'Replace Schedule' : 'Finalize'}
         onConfirm={handleFinalize}
         onCancel={() => setConfirmOpen(false)}
       />
