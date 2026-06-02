@@ -192,6 +192,7 @@ class Project:
     titan_user_id: str | None
     created_at: datetime
     updated_at: datetime
+    opening_count: int
     openings: list[Opening]
     purchase_orders: list[PurchaseOrder]
 
