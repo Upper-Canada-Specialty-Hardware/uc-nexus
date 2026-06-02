@@ -106,6 +106,7 @@ export default function CreatePODialog({ open, onClose, onCreated, defaultProjec
       if (isNaN(qty) || qty < 1) errs[`li_${i}_qty`] = 'Must be >= 1';
       const cost = parseFloat(li.unitCost);
       if (isNaN(cost) || cost < 0) errs[`li_${i}_cost`] = 'Must be >= 0';
+      if (!li.orderAs.trim()) errs[`li_${i}_orderAs`] = 'Required';
     }
     setErrors(errs);
     return Object.keys(errs).length === 0;
@@ -133,7 +134,7 @@ export default function CreatePODialog({ open, onClose, onCreated, defaultProjec
         orderedQuantity: parseInt(li.orderedQuantity, 10),
         unitCost: parseFloat(li.unitCost),
         classification: li.classification || null,
-        orderAs: li.orderAs.trim() || null,
+        orderAs: li.orderAs.trim(),
       })),
     };
 
@@ -294,9 +295,12 @@ export default function CreatePODialog({ open, onClose, onCreated, defaultProjec
           </TextField>
           <TextField
             size="small"
+            required
             value={li.orderAs}
             onChange={(e) => updateLineItem(li.key, 'orderAs', e.target.value)}
-            placeholder="Optional"
+            error={!!errors[`li_${idx}_orderAs`]}
+            helperText={errors[`li_${idx}_orderAs`]}
+            placeholder="e.g. ML2010"
           />
           <IconButton
             size="small"
