@@ -4,11 +4,8 @@ import {
   Typography,
   Card,
   CardContent,
-  CardActionArea,
   Grid,
   Chip,
-  Tabs,
-  Tab,
   Button,
   Paper,
   Table,
@@ -17,9 +14,15 @@ import {
   TableRow,
   TableCell,
   TableContainer,
+  TableSortLabel,
   IconButton,
   Collapse,
   CircularProgress,
+  TextField,
+  Select,
+  MenuItem,
+  Checkbox,
+  ListItemText,
 } from '@mui/material';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import AddIcon from '@mui/icons-material/Add';
@@ -118,8 +121,6 @@ interface POStatistics {
 
 // --- Status config ---
 
-type StatusFilter = '' | 'DRAFT' | 'ORDERED' | 'VENDOR_CONFIRMED' | 'PARTIALLY_RECEIVED' | 'CLOSED' | 'CANCELLED';
-
 const STATUS_CHIP_COLOR: Record<string, 'default' | 'primary' | 'info' | 'warning' | 'success' | 'error'> = {
   DRAFT: 'default',
   ORDERED: 'primary',
@@ -129,33 +130,112 @@ const STATUS_CHIP_COLOR: Record<string, 'default' | 'primary' | 'info' | 'warnin
   CANCELLED: 'error',
 };
 
-const TAB_FILTERS: { label: string; value: StatusFilter }[] = [
-  { label: 'All', value: '' },
-  { label: 'Draft', value: 'DRAFT' },
-  { label: 'Ordered', value: 'ORDERED' },
-  { label: 'Vendor Confirmed', value: 'VENDOR_CONFIRMED' },
-  { label: 'Partially Received', value: 'PARTIALLY_RECEIVED' },
-  { label: 'Closed', value: 'CLOSED' },
-  { label: 'Cancelled', value: 'CANCELLED' },
+const STATUS_VALUES = Object.keys(STATUS_CHIP_COLOR);
+
+// --- Stat card config (display-only) ---
+
+const STAT_CARDS: { label: string; key: keyof POStatistics }[] = [
+  { label: 'Total', key: 'total' },
+  { label: 'Draft', key: 'draft' },
+  { label: 'Ordered', key: 'ordered' },
+  { label: 'Vendor Confirmed', key: 'vendorConfirmed' },
+  { label: 'Partially Received', key: 'partiallyReceived' },
+  { label: 'Closed', key: 'closed' },
+  { label: 'Cancelled', key: 'cancelled' },
 ];
 
-// --- Stat card config ---
+// --- Sort + filter state ---
 
-interface StatCard {
-  label: string;
-  filter: StatusFilter;
-  key: keyof POStatistics;
+type SortField = 'poNumber' | 'status' | 'vendor' | 'orderedAt' | 'itemsCount';
+
+interface SortState {
+  field: SortField | null;
+  direction: 'asc' | 'desc';
 }
 
-const STAT_CARDS: StatCard[] = [
-  { label: 'Total', filter: '', key: 'total' },
-  { label: 'Draft', filter: 'DRAFT', key: 'draft' },
-  { label: 'Ordered', filter: 'ORDERED', key: 'ordered' },
-  { label: 'Vendor Confirmed', filter: 'VENDOR_CONFIRMED', key: 'vendorConfirmed' },
-  { label: 'Partially Received', filter: 'PARTIALLY_RECEIVED', key: 'partiallyReceived' },
-  { label: 'Closed', filter: 'CLOSED', key: 'closed' },
-  { label: 'Cancelled', filter: 'CANCELLED', key: 'cancelled' },
-];
+interface FilterState {
+  poSearch: string;
+  statuses: Set<string>;
+  vendorSearch: string;
+  orderedFrom: string;
+  orderedTo: string;
+  itemsMin: string;
+}
+
+const EMPTY_FILTER_STATE: FilterState = {
+  poSearch: '',
+  statuses: new Set(),
+  vendorSearch: '',
+  orderedFrom: '',
+  orderedTo: '',
+  itemsMin: '',
+};
+
+function poDisplayId(po: PurchaseOrder): string {
+  return po.poNumber ?? po.requestNumber;
+}
+
+function matchesFilter(po: PurchaseOrder, f: FilterState): boolean {
+  if (f.poSearch) {
+    if (!poDisplayId(po).toLowerCase().includes(f.poSearch.toLowerCase())) return false;
+  }
+  if (f.statuses.size > 0 && !f.statuses.has(po.status)) return false;
+  if (f.vendorSearch) {
+    if (!(po.vendor?.name ?? '').toLowerCase().includes(f.vendorSearch.toLowerCase())) return false;
+  }
+  if (f.orderedFrom || f.orderedTo) {
+    if (!po.orderedAt) return false;
+    const d = po.orderedAt.substring(0, 10);
+    if (f.orderedFrom && d < f.orderedFrom) return false;
+    if (f.orderedTo && d > f.orderedTo) return false;
+  }
+  if (f.itemsMin) {
+    const min = parseInt(f.itemsMin, 10);
+    if (Number.isFinite(min) && (po.lineItems?.length ?? 0) < min) return false;
+  }
+  return true;
+}
+
+function comparePOs(a: PurchaseOrder, b: PurchaseOrder, sort: SortState): number {
+  if (!sort.field) return 0;
+  const dir = sort.direction === 'asc' ? 1 : -1;
+  let av: string | number = 0;
+  let bv: string | number = 0;
+  let aNull = false;
+  let bNull = false;
+  switch (sort.field) {
+    case 'poNumber':
+      av = poDisplayId(a).toLowerCase();
+      bv = poDisplayId(b).toLowerCase();
+      break;
+    case 'status':
+      av = a.status;
+      bv = b.status;
+      break;
+    case 'vendor':
+      av = (a.vendor?.name ?? '').toLowerCase();
+      bv = (b.vendor?.name ?? '').toLowerCase();
+      aNull = !a.vendor;
+      bNull = !b.vendor;
+      break;
+    case 'orderedAt':
+      av = a.orderedAt ?? '';
+      bv = b.orderedAt ?? '';
+      aNull = !a.orderedAt;
+      bNull = !b.orderedAt;
+      break;
+    case 'itemsCount':
+      av = a.lineItems?.length ?? 0;
+      bv = b.lineItems?.length ?? 0;
+      break;
+  }
+  if (aNull && bNull) return 0;
+  if (aNull) return 1;
+  if (bNull) return -1;
+  if (av < bv) return -1 * dir;
+  if (av > bv) return 1 * dir;
+  return 0;
+}
 
 // --- Helpers ---
 
@@ -210,6 +290,139 @@ function POLineItemsMiniTable({ lineItems, hasReceives }: POLineItemsMiniTablePr
         ))}
       </TableBody>
     </Table>
+  );
+}
+
+// --- Sortable column header ---
+
+interface SortHeaderProps {
+  field: SortField;
+  label: string;
+  align?: 'left' | 'right';
+  sortState: SortState;
+  onSort: (field: SortField) => void;
+}
+
+function SortHeader({ field, label, align = 'left', sortState, onSort }: SortHeaderProps) {
+  const active = sortState.field === field;
+  return (
+    <TableCell
+      align={align}
+      sortDirection={active ? sortState.direction : false}
+    >
+      <TableSortLabel
+        active={active}
+        direction={active ? sortState.direction : 'asc'}
+        onClick={() => onSort(field)}
+      >
+        {label}
+      </TableSortLabel>
+    </TableCell>
+  );
+}
+
+// --- Filter row ---
+
+interface FilterRowProps {
+  filterState: FilterState;
+  onChange: (updater: (prev: FilterState) => FilterState) => void;
+}
+
+function FilterRow({ filterState, onChange }: FilterRowProps) {
+  return (
+    <TableRow>
+      <TableCell sx={{ width: 48 }} />
+      <TableCell>
+        <TextField
+          size="small"
+          placeholder="Search…"
+          value={filterState.poSearch}
+          onChange={(e) => onChange((s) => ({ ...s, poSearch: e.target.value }))}
+          fullWidth
+        />
+      </TableCell>
+      <TableCell>
+        <Select
+          size="small"
+          multiple
+          displayEmpty
+          value={Array.from(filterState.statuses)}
+          onChange={(e) => {
+            const v = e.target.value as string[];
+            onChange((s) => ({ ...s, statuses: new Set(v) }));
+          }}
+          renderValue={(selected) => {
+            if ((selected as string[]).length === 0) {
+              return (
+                <Typography variant="body2" color="text.secondary">
+                  All
+                </Typography>
+              );
+            }
+            return (
+              <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.3 }}>
+                {(selected as string[]).map((s) => (
+                  <Chip
+                    key={s}
+                    label={formatStatus(s)}
+                    color={STATUS_CHIP_COLOR[s] ?? 'default'}
+                    size="small"
+                  />
+                ))}
+              </Box>
+            );
+          }}
+          fullWidth
+        >
+          {STATUS_VALUES.map((s) => (
+            <MenuItem key={s} value={s}>
+              <Checkbox checked={filterState.statuses.has(s)} size="small" />
+              <ListItemText primary={formatStatus(s)} />
+            </MenuItem>
+          ))}
+        </Select>
+      </TableCell>
+      <TableCell>
+        <TextField
+          size="small"
+          placeholder="Search…"
+          value={filterState.vendorSearch}
+          onChange={(e) => onChange((s) => ({ ...s, vendorSearch: e.target.value }))}
+          fullWidth
+        />
+      </TableCell>
+      <TableCell>
+        <Box sx={{ display: 'flex', gap: 0.5 }}>
+          <TextField
+            size="small"
+            type="date"
+            value={filterState.orderedFrom}
+            onChange={(e) => onChange((s) => ({ ...s, orderedFrom: e.target.value }))}
+            inputProps={{ 'aria-label': 'Ordered from' }}
+            sx={{ flex: 1 }}
+          />
+          <TextField
+            size="small"
+            type="date"
+            value={filterState.orderedTo}
+            onChange={(e) => onChange((s) => ({ ...s, orderedTo: e.target.value }))}
+            inputProps={{ 'aria-label': 'Ordered to' }}
+            sx={{ flex: 1 }}
+          />
+        </Box>
+      </TableCell>
+      <TableCell align="right">
+        <TextField
+          size="small"
+          type="number"
+          placeholder="≥"
+          value={filterState.itemsMin}
+          onChange={(e) => onChange((s) => ({ ...s, itemsMin: e.target.value }))}
+          inputProps={{ min: 0, 'aria-label': 'Minimum items' }}
+          sx={{ width: 90 }}
+        />
+      </TableCell>
+    </TableRow>
   );
 }
 
@@ -301,11 +514,12 @@ function POTableRow({ po, expanded, onToggle, onOpen }: POTableRowProps) {
 
 export default function POModule() {
   const [selectedProject, setSelectedProject] = useState<Project | 'all' | null>(null);
-  const [activeFilter, setActiveFilter] = useState<StatusFilter>('');
   const [selectedPOId, setSelectedPOId] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const [filterState, setFilterState] = useState<FilterState>(EMPTY_FILTER_STATE);
+  const [sortState, setSortState] = useState<SortState>({ field: null, direction: 'asc' });
 
   const toggleExpand = (id: string) => {
     setExpandedIds((prev) => {
@@ -317,11 +531,6 @@ export default function POModule() {
   };
 
   const projectId = selectedProject && selectedProject !== 'all' ? selectedProject.id : undefined;
-
-  const tabIndex = useMemo(
-    () => TAB_FILTERS.findIndex((t) => t.value === activeFilter),
-    [activeFilter],
-  );
 
   // --- Queries ---
 
@@ -339,10 +548,7 @@ export default function POModule() {
     loading: posLoading,
     refetch: refetchPOs,
   } = useQuery<{ purchaseOrders: PurchaseOrder[] }>(GET_PURCHASE_ORDERS, {
-    variables: {
-      projectId,
-      status: activeFilter || undefined,
-    },
+    variables: { projectId },
     skip: selectedProject === null,
     fetchPolicy: 'cache-and-network',
   });
@@ -354,15 +560,24 @@ export default function POModule() {
   );
   const selectedPO = purchaseOrders.find((po) => po.id === selectedPOId) ?? null;
 
+  // --- Filter + sort ---
+
+  const filteredAndSortedPOs = useMemo(() => {
+    const filtered = purchaseOrders.filter((po) => matchesFilter(po, filterState));
+    if (!sortState.field) return filtered;
+    return [...filtered].sort((a, b) => comparePOs(a, b, sortState));
+  }, [purchaseOrders, filterState, sortState]);
+
+  const handleSortClick = (field: SortField) => {
+    setSortState((prev) => {
+      if (prev.field === field) {
+        return { field, direction: prev.direction === 'asc' ? 'desc' : 'asc' };
+      }
+      return { field, direction: 'asc' };
+    });
+  };
+
   // --- Handlers ---
-
-  const handleCardClick = (filter: StatusFilter) => {
-    setActiveFilter(filter);
-  };
-
-  const handleTabChange = (_event: React.SyntheticEvent, newValue: number) => {
-    setActiveFilter(TAB_FILTERS[newValue].value);
-  };
 
   const handleOpenPO = (id: string) => {
     setSelectedPOId(id);
@@ -370,7 +585,7 @@ export default function POModule() {
   };
 
   const handleExpandAll = () => {
-    setExpandedIds(new Set(purchaseOrders.map((po) => po.id)));
+    setExpandedIds(new Set(filteredAndSortedPOs.map((po) => po.id)));
   };
 
   const handleCollapseAll = () => {
@@ -378,11 +593,11 @@ export default function POModule() {
   };
 
   const visibleExpandedCount = useMemo(
-    () => purchaseOrders.filter((po) => expandedIds.has(po.id)).length,
-    [purchaseOrders, expandedIds],
+    () => filteredAndSortedPOs.filter((po) => expandedIds.has(po.id)).length,
+    [filteredAndSortedPOs, expandedIds],
   );
   const allVisibleExpanded =
-    purchaseOrders.length > 0 && visibleExpandedCount === purchaseOrders.length;
+    filteredAndSortedPOs.length > 0 && visibleExpandedCount === filteredAndSortedPOs.length;
   const noneVisibleExpanded = visibleExpandedCount === 0;
 
   const handleCloseModal = () => {
@@ -434,39 +649,23 @@ export default function POModule() {
         </Button>
       </Box>
 
-      {/* Statistics Cards */}
+      {/* Statistics Cards (display-only) */}
       <Grid container spacing={2} sx={{ mb: 3 }}>
         {STAT_CARDS.map((card) => (
           <Grid key={card.key} size={{ xs: 6, sm: 4, md: 2 }}>
-            <Card
-              sx={{
-                transition: 'box-shadow 0.2s',
-                outline: activeFilter === card.filter ? '2px solid' : 'none',
-                outlineColor: 'primary.main',
-                '&:hover': { boxShadow: 4 },
-              }}
-            >
-              <CardActionArea onClick={() => handleCardClick(card.filter)}>
-                <CardContent sx={{ textAlign: 'center', py: 2 }}>
-                  <Typography variant="h4" color="primary">
-                    {statsLoading ? '-' : (stats?.[card.key] ?? 0)}
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    {card.label}
-                  </Typography>
-                </CardContent>
-              </CardActionArea>
+            <Card>
+              <CardContent sx={{ textAlign: 'center', py: 2 }}>
+                <Typography variant="h4" color="primary">
+                  {statsLoading ? '-' : (stats?.[card.key] ?? 0)}
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  {card.label}
+                </Typography>
+              </CardContent>
             </Card>
           </Grid>
         ))}
       </Grid>
-
-      {/* Filter Tabs */}
-      <Tabs value={tabIndex} onChange={handleTabChange} sx={{ mb: 2 }}>
-        {TAB_FILTERS.map((tab) => (
-          <Tab key={tab.value} label={tab.label} />
-        ))}
-      </Tabs>
 
       {/* Expand / Collapse controls */}
       <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1, mb: 1 }}>
@@ -494,12 +693,42 @@ export default function POModule() {
           <TableHead>
             <TableRow>
               <TableCell sx={{ width: 48 }} />
-              <TableCell>PO / Request #</TableCell>
-              <TableCell>Status</TableCell>
-              <TableCell>Vendor</TableCell>
-              <TableCell>Order Date</TableCell>
-              <TableCell align="right">Items</TableCell>
+              <SortHeader
+                field="poNumber"
+                label="PO / Request #"
+                sortState={sortState}
+                onSort={handleSortClick}
+              />
+              <SortHeader
+                field="status"
+                label="Status"
+                sortState={sortState}
+                onSort={handleSortClick}
+              />
+              <SortHeader
+                field="vendor"
+                label="Vendor"
+                sortState={sortState}
+                onSort={handleSortClick}
+              />
+              <SortHeader
+                field="orderedAt"
+                label="Order Date"
+                sortState={sortState}
+                onSort={handleSortClick}
+              />
+              <SortHeader
+                field="itemsCount"
+                label="Items"
+                align="right"
+                sortState={sortState}
+                onSort={handleSortClick}
+              />
             </TableRow>
+            <FilterRow
+              filterState={filterState}
+              onChange={setFilterState}
+            />
           </TableHead>
           <TableBody>
             {posLoading && (
@@ -509,17 +738,19 @@ export default function POModule() {
                 </TableCell>
               </TableRow>
             )}
-            {!posLoading && purchaseOrders.length === 0 && (
+            {!posLoading && filteredAndSortedPOs.length === 0 && (
               <TableRow>
                 <TableCell colSpan={PO_TABLE_COLUMN_COUNT} align="center" sx={{ py: 4 }}>
                   <Typography variant="body2" color="text.secondary">
-                    No purchase orders found.
+                    {purchaseOrders.length === 0
+                      ? 'No purchase orders found.'
+                      : 'No purchase orders match the current filters.'}
                   </Typography>
                 </TableCell>
               </TableRow>
             )}
             {!posLoading &&
-              purchaseOrders.map((po) => (
+              filteredAndSortedPOs.map((po) => (
                 <POTableRow
                   key={po.id}
                   po={po}
