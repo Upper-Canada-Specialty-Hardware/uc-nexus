@@ -15,11 +15,13 @@ import ShoppingCartIcon from '@mui/icons-material/ShoppingCart';
 import NavigateNextIcon from '@mui/icons-material/NavigateNext';
 import DarkModeIcon from '@mui/icons-material/DarkMode';
 import LightModeIcon from '@mui/icons-material/LightMode';
+import MenuIcon from '@mui/icons-material/Menu';
 import { useColorScheme } from '@mui/material/styles';
 import { UserButton } from '@clerk/clerk-react';
 import { useCart } from '../contexts/CartContext';
 import NotificationBell from './NotificationBell';
 import ConfirmDialog from './ConfirmDialog';
+import Sidebar from './Sidebar';
 
 export default function AppLayout() {
   const { mode, setMode } = useColorScheme();
@@ -28,6 +30,7 @@ export default function AppLayout() {
   const location = useLocation();
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
 
   const handleResetSchema = async () => {
     setResetConfirmOpen(false);
@@ -56,6 +59,15 @@ export default function AppLayout() {
     <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
       <AppBar position="static">
         <Toolbar>
+          <IconButton
+            color="inherit"
+            edge="start"
+            onClick={() => setDrawerOpen(true)}
+            sx={{ mr: 1 }}
+            aria-label="Open navigation"
+          >
+            <MenuIcon />
+          </IconButton>
           <Typography
             variant="h6"
             sx={{ mr: 3, cursor: 'pointer' }}
@@ -140,6 +152,8 @@ export default function AppLayout() {
       <Box component="main" sx={{ flexGrow: 1, p: 3 }}>
         <Outlet />
       </Box>
+
+      <Sidebar open={drawerOpen} onClose={() => setDrawerOpen(false)} />
 
       <ConfirmDialog
         open={resetConfirmOpen}

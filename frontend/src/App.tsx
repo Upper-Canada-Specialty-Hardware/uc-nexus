@@ -1,18 +1,12 @@
 import React from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
-import { Box, Typography, CircularProgress, Container, Grid, Card, CardContent, CardActionArea } from '@mui/material';
-import { useNavigate } from 'react-router-dom';
+import { Box, CircularProgress } from '@mui/material';
 import { SignedIn, SignedOut, SignIn, RedirectToSignIn } from '@clerk/clerk-react';
-import UploadFileIcon from '@mui/icons-material/UploadFile';
-import ReceiptLongIcon from '@mui/icons-material/ReceiptLong';
-import WarehouseIcon from '@mui/icons-material/Warehouse';
-import BuildIcon from '@mui/icons-material/Build';
-import LocalShippingIcon from '@mui/icons-material/LocalShipping';
-import AdminPanelSettingsIcon from '@mui/icons-material/AdminPanelSettings';
 import AppLayout from './components/AppLayout';
 import { LazyRoute } from './components/LazyBoundary';
 
 // Lazy-loaded module imports
+const HomeModule = React.lazy(() => import('./modules/home'));
 const ImportModule = React.lazy(() => import('./modules/import'));
 const POModule = React.lazy(() => import('./modules/po'));
 const WarehouseModule = React.lazy(() => import('./modules/warehouse'));
@@ -34,49 +28,6 @@ function SuspenseFallback() {
     <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', py: 8 }}>
       <CircularProgress />
     </Box>
-  );
-}
-
-const MODULE_LINKS = [
-  { path: '/app/import', label: 'Start a task', icon: <UploadFileIcon sx={{ fontSize: 40 }} />, description: 'Create a POR, SAR, or shipping PR' },
-  { path: '/app/po', label: 'Purchase Orders', icon: <ReceiptLongIcon sx={{ fontSize: 40 }} />, description: 'Manage purchase orders' },
-  { path: '/app/warehouse', label: 'Warehouse', icon: <WarehouseIcon sx={{ fontSize: 40 }} />, description: 'Inventory and receiving' },
-  { path: '/app/shop-assembly', label: 'Shop Assembly', icon: <BuildIcon sx={{ fontSize: 40 }} />, description: 'Assembly requests and tracking' },
-  { path: '/app/shipping', label: 'Shipping', icon: <LocalShippingIcon sx={{ fontSize: 40 }} />, description: 'Shipping out management' },
-  { path: '/app/admin', label: 'Admin', icon: <AdminPanelSettingsIcon sx={{ fontSize: 40 }} />, description: 'Inventory corrections' },
-];
-
-function ModuleSelector() {
-  const navigate = useNavigate();
-
-  return (
-    <Container maxWidth="lg">
-      <Typography variant="h5" gutterBottom>
-        Select a Module
-      </Typography>
-      <Typography variant="body1" color="text.secondary" sx={{ mb: 3 }}>
-        Choose a module from the options below or use the navigation bar.
-      </Typography>
-      <Grid container spacing={3}>
-        {MODULE_LINKS.map((mod) => (
-          <Grid key={mod.path} size={{ xs: 12, sm: 6, md: 4 }}>
-            <Card sx={{ height: '100%', transition: 'box-shadow 0.2s', '&:hover': { boxShadow: 6 } }}>
-              <CardActionArea onClick={() => navigate(mod.path)} sx={{ height: '100%', p: 2 }}>
-                <CardContent sx={{ textAlign: 'center' }}>
-                  <Box sx={{ color: 'primary.main', mb: 1 }}>{mod.icon}</Box>
-                  <Typography variant="h6" gutterBottom>
-                    {mod.label}
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    {mod.description}
-                  </Typography>
-                </CardContent>
-              </CardActionArea>
-            </Card>
-          </Grid>
-        ))}
-      </Grid>
-    </Container>
   );
 }
 
@@ -105,7 +56,7 @@ function App() {
           </ProtectedRoute>
         }
       >
-        <Route index element={<ModuleSelector />} />
+        <Route index element={<LazyRoute fallback={<SuspenseFallback />}><HomeModule /></LazyRoute>} />
         <Route path="import/*" element={<LazyRoute fallback={<SuspenseFallback />}><ImportModule /></LazyRoute>} />
         <Route path="po/*" element={<LazyRoute fallback={<SuspenseFallback />}><POModule /></LazyRoute>} />
         <Route path="warehouse/*" element={<LazyRoute fallback={<SuspenseFallback />}><WarehouseModule /></LazyRoute>} />

@@ -629,3 +629,26 @@ class ClerkUser:
     email: str
     roles: list[str]
     image_url: str
+
+
+@strawberry.type
+class HomeDashboardStats:
+    open_po_count: int
+    pending_pull_request_count: int
+    items_pending_receiving: int
+    project_count: int
+
+
+@strawberry.type
+class ShopAssemblyStats:
+    pending_sar_count: int
+    approved_sar_count: int
+    active_pull_request_count: int
+
+
+@strawberry.type
+class AdminStats:
+    vendor_count: int
+    user_count: int
+    hardware_item_count: int
+    opening_count: int
