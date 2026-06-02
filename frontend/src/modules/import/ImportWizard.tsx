@@ -95,7 +95,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
   // Selected project context (from prop)
   const existingProjectId = project.id;
   const existingProjectName = project.description || project.projectId;
-  const isReimport = (project.openings?.length ?? 0) > 0;
+  const isReimport = project.openingCount > 0;
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Step 2 state

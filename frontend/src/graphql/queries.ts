@@ -8,9 +8,7 @@ export const GET_PROJECTS = gql`
       description
       client
       jobSiteName
-      openings {
-        id
-      }
+      openingCount
     }
   }
 `;

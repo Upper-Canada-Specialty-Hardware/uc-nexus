@@ -1,10 +1,12 @@
 import uuid
 
 import strawberry
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.orm import selectinload
 
 from app.database import SessionLocal
 from app.models.enums import POStatus as DBPOStatus
+from app.models.project import Opening as OpeningModel
 from app.models.project import Project as ProjectModel
 from app.repositories import (
     admin_repository,
@@ -175,27 +177,16 @@ def _po_to_type(po, receive_records=None) -> PurchaseOrder:
     )
 
 
-def _project_to_type(p: ProjectModel) -> Project:
-    return Project(
-        id=strawberry.ID(str(p.id)),
-        project_id=p.project_id,
-        description=p.description,
-        client=p.client,
-        job_site_name=p.job_site_name,
-        address=p.address,
-        city=p.city,
-        state=p.state,
-        zip=p.zip,
-        contractor=p.contractor,
-        project_manager=p.project_manager,
-        application=p.application,
-        submittal_job_no=p.submittal_job_no,
-        submittal_assignment_count=p.submittal_assignment_count,
-        estimator_code=p.estimator_code,
-        titan_user_id=p.titan_user_id,
-        created_at=p.created_at,
-        updated_at=p.updated_at,
-        openings=[
+def _project_to_type(
+    p: ProjectModel,
+    *,
+    include_openings: bool = True,
+    opening_count: int | None = None,
+) -> Project:
+    # When include_openings=False, callers must supply opening_count to avoid
+    # triggering a lazy load of the openings relationship.
+    openings_list = (
+        [
             Opening(
                 id=strawberry.ID(str(o.id)),
                 project_id=strawberry.ID(str(o.project_id)),
@@ -221,7 +212,33 @@ def _project_to_type(p: ProjectModel) -> Project:
                 updated_at=o.updated_at,
             )
             for o in p.openings
-        ],
+        ]
+        if include_openings
+        else []
+    )
+    if opening_count is None:
+        opening_count = len(openings_list) if include_openings else 0
+    return Project(
+        id=strawberry.ID(str(p.id)),
+        project_id=p.project_id,
+        description=p.description,
+        client=p.client,
+        job_site_name=p.job_site_name,
+        address=p.address,
+        city=p.city,
+        state=p.state,
+        zip=p.zip,
+        contractor=p.contractor,
+        project_manager=p.project_manager,
+        application=p.application,
+        submittal_job_no=p.submittal_job_no,
+        submittal_assignment_count=p.submittal_assignment_count,
+        estimator_code=p.estimator_code,
+        titan_user_id=p.titan_user_id,
+        created_at=p.created_at,
+        updated_at=p.updated_at,
+        opening_count=opening_count,
+        openings=openings_list,
         purchase_orders=[],  # Loaded on demand in later tickets
     )
 
@@ -475,13 +492,21 @@ class Query:
     def projects(self) -> list[Project]:
         with SessionLocal() as session:
             stmt = select(ProjectModel).order_by(ProjectModel.created_at.desc())
-            results = session.scalars(stmt).unique().all()
-            return [_project_to_type(p) for p in results]
+            results = list(session.scalars(stmt).unique().all())
+            count_rows = session.execute(
+                select(OpeningModel.project_id, func.count()).group_by(OpeningModel.project_id)
+            ).all()
+            counts: dict[uuid.UUID, int] = {pid: c for pid, c in count_rows}
+            return [_project_to_type(p, include_openings=False, opening_count=counts.get(p.id, 0)) for p in results]
 
     @strawberry.field
     def project_by_schedule_id(self, project_id: str) -> Project | None:
         with SessionLocal() as session:
-            stmt = select(ProjectModel).where(ProjectModel.project_id == project_id)
+            stmt = (
+                select(ProjectModel)
+                .options(selectinload(ProjectModel.openings))
+                .where(ProjectModel.project_id == project_id)
+            )
             p = session.scalars(stmt).unique().first()
             if p is None:
                 return None
