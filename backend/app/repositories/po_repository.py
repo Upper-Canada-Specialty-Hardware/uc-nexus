@@ -73,6 +73,10 @@ def create_po(
         if isinstance(classification_val, str):
             classification_val = Classification(classification_val)
 
+        order_as_raw = li_data.get("order_as")
+        if not order_as_raw or not order_as_raw.strip():
+            raise ValidationError("Order as is required for every line item", field="order_as")
+
         poli = POLineItem(
             id=uuid.uuid4(),
             po_id=po.id,
@@ -82,7 +86,7 @@ def create_po(
             received_quantity=0,
             unit_cost=Decimal(str(li_data["unit_cost"])) if li_data.get("unit_cost") else Decimal("0"),
             classification=classification_val,
-            order_as=li_data.get("order_as"),
+            order_as=order_as_raw.strip(),
         )
         session.add(poli)
 
