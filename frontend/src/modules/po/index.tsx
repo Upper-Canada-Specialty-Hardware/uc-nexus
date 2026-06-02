@@ -10,13 +10,23 @@ import {
   Tabs,
   Tab,
   Button,
+  Paper,
+  Table,
+  TableHead,
+  TableBody,
+  TableRow,
+  TableCell,
+  TableContainer,
+  IconButton,
+  Collapse,
+  CircularProgress,
 } from '@mui/material';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import AddIcon from '@mui/icons-material/Add';
+import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
+import KeyboardArrowRightIcon from '@mui/icons-material/KeyboardArrowRight';
 import { useQuery } from '@apollo/client/react';
-import type { GridColDef, GridRowParams } from '@mui/x-data-grid';
 import { GET_PURCHASE_ORDERS, GET_PO_STATISTICS } from '../../graphql/queries';
-import DataTable from '../../components/DataTable';
 import ProjectLandingPage from '../../components/ProjectLandingPage';
 import type { Project } from '../../types/project';
 import PODetailModal from './PODetailModal';
@@ -145,67 +155,144 @@ const STAT_CARDS: StatCard[] = [
   { label: 'Cancelled', filter: 'CANCELLED', key: 'cancelled' },
 ];
 
-// --- Columns ---
-
-const columns: GridColDef[] = [
-  {
-    field: 'poNumber',
-    headerName: 'PO / Request #',
-    flex: 1,
-    minWidth: 180,
-    renderCell: (params) => {
-      const row = params.row as PurchaseOrder;
-      if (row.poNumber) return row.poNumber;
-      return (
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-          <Typography variant="body2" color="text.secondary">{row.requestNumber}</Typography>
-          <Chip label="Draft" size="small" variant="outlined" sx={{ height: 20, fontSize: '0.7rem' }} />
-        </Box>
-      );
-    },
-  },
-  {
-    field: 'status',
-    headerName: 'Status',
-    flex: 1,
-    minWidth: 160,
-    renderCell: (params) => (
-      <Chip
-        label={formatStatus(params.value as string)}
-        color={STATUS_CHIP_COLOR[params.value as string] ?? 'default'}
-        size="small"
-      />
-    ),
-  },
-  {
-    field: 'vendor',
-    headerName: 'Vendor',
-    flex: 1,
-    minWidth: 160,
-    valueGetter: (_value: unknown, row: PurchaseOrder) => row.vendor?.name || '-',
-  },
-  {
-    field: 'orderedAt',
-    headerName: 'Order Date',
-    flex: 1,
-    minWidth: 140,
-    valueGetter: (_value: unknown, row: PurchaseOrder) =>
-      row.orderedAt ? new Date(row.orderedAt).toLocaleDateString() : '-',
-  },
-  {
-    field: 'itemsCount',
-    headerName: 'Items Count',
-    flex: 0.7,
-    minWidth: 110,
-    valueGetter: (_value: unknown, row: PurchaseOrder) => row.lineItems?.length ?? 0,
-  },
-];
+// --- Helpers ---
 
 function formatStatus(status: string): string {
   return status
     .split('_')
     .map((w) => w.charAt(0) + w.slice(1).toLowerCase())
     .join(' ');
+}
+
+// --- Line items mini-table (rendered inside an expanded row) ---
+
+interface POLineItemsMiniTableProps {
+  lineItems: POLineItem[];
+  hasReceives: boolean;
+}
+
+function POLineItemsMiniTable({ lineItems, hasReceives }: POLineItemsMiniTableProps) {
+  if (lineItems.length === 0) {
+    return (
+      <Typography variant="body2" color="text.secondary">
+        No line items.
+      </Typography>
+    );
+  }
+  return (
+    <Table size="small" sx={{ bgcolor: 'background.paper' }}>
+      <TableHead>
+        <TableRow>
+          <TableCell>Product Code</TableCell>
+          <TableCell>Order As</TableCell>
+          <TableCell>Hardware Category</TableCell>
+          <TableCell align="right">Ordered Qty</TableCell>
+          {hasReceives && <TableCell align="right">Received Qty</TableCell>}
+          <TableCell align="right">Unit Cost</TableCell>
+          <TableCell align="right">Line Total</TableCell>
+        </TableRow>
+      </TableHead>
+      <TableBody>
+        {lineItems.map((li) => (
+          <TableRow key={li.id}>
+            <TableCell>{li.productCode}</TableCell>
+            <TableCell>{li.orderAs || '—'}</TableCell>
+            <TableCell>{li.hardwareCategory}</TableCell>
+            <TableCell align="right">{li.orderedQuantity}</TableCell>
+            {hasReceives && <TableCell align="right">{li.receivedQuantity}</TableCell>}
+            <TableCell align="right">${(li.unitCost ?? 0).toFixed(2)}</TableCell>
+            <TableCell align="right">
+              ${((li.orderedQuantity ?? 0) * (li.unitCost ?? 0)).toFixed(2)}
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
+
+// --- Single PO row + collapsible line-item panel ---
+
+const PO_TABLE_COLUMN_COUNT = 6;
+
+interface POTableRowProps {
+  po: PurchaseOrder;
+  expanded: boolean;
+  onToggle: () => void;
+  onOpen: () => void;
+}
+
+function POTableRow({ po, expanded, onToggle, onOpen }: POTableRowProps) {
+  const dataCellSx = { cursor: 'pointer' };
+  return (
+    <>
+      <TableRow hover sx={{ '& > *': { borderBottom: 'unset' } }}>
+        <TableCell sx={{ width: 48 }}>
+          <IconButton
+            size="small"
+            aria-label={expanded ? 'Collapse line items' : 'Expand line items'}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggle();
+            }}
+          >
+            {expanded ? <KeyboardArrowDownIcon /> : <KeyboardArrowRightIcon />}
+          </IconButton>
+        </TableCell>
+        <TableCell sx={dataCellSx} onClick={onOpen}>
+          {po.poNumber ? (
+            po.poNumber
+          ) : (
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+              <Typography variant="body2" color="text.secondary">
+                {po.requestNumber}
+              </Typography>
+              <Chip
+                label="Draft"
+                size="small"
+                variant="outlined"
+                sx={{ height: 20, fontSize: '0.7rem' }}
+              />
+            </Box>
+          )}
+        </TableCell>
+        <TableCell sx={dataCellSx} onClick={onOpen}>
+          <Chip
+            label={formatStatus(po.status)}
+            color={STATUS_CHIP_COLOR[po.status] ?? 'default'}
+            size="small"
+          />
+        </TableCell>
+        <TableCell sx={dataCellSx} onClick={onOpen}>
+          {po.vendor?.name || '-'}
+        </TableCell>
+        <TableCell sx={dataCellSx} onClick={onOpen}>
+          {po.orderedAt ? new Date(po.orderedAt).toLocaleDateString() : '-'}
+        </TableCell>
+        <TableCell sx={dataCellSx} align="right" onClick={onOpen}>
+          {po.lineItems?.length ?? 0}
+        </TableCell>
+      </TableRow>
+      <TableRow>
+        <TableCell
+          sx={{ p: 0, borderBottom: expanded ? undefined : 'none' }}
+          colSpan={PO_TABLE_COLUMN_COUNT}
+        >
+          <Collapse in={expanded} timeout="auto" unmountOnExit>
+            <Box sx={{ p: 2, bgcolor: 'action.hover' }}>
+              <Typography variant="subtitle2" sx={{ mb: 1 }}>
+                Line Items
+              </Typography>
+              <POLineItemsMiniTable
+                lineItems={po.lineItems}
+                hasReceives={po.receiveRecords.length > 0}
+              />
+            </Box>
+          </Collapse>
+        </TableCell>
+      </TableRow>
+    </>
+  );
 }
 
 // --- Component ---
@@ -216,6 +303,16 @@ export default function POModule() {
   const [selectedPOId, setSelectedPOId] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+
+  const toggleExpand = (id: string) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   const projectId = selectedProject && selectedProject !== 'all' ? selectedProject.id : undefined;
 
@@ -262,8 +359,8 @@ export default function POModule() {
     setActiveFilter(TAB_FILTERS[newValue].value);
   };
 
-  const handleRowClick = (params: GridRowParams<PurchaseOrder>) => {
-    setSelectedPOId(params.row.id);
+  const handleOpenPO = (id: string) => {
+    setSelectedPOId(id);
     setModalOpen(true);
   };
 
@@ -351,14 +448,48 @@ export default function POModule() {
       </Tabs>
 
       {/* PO Table */}
-      <DataTable
-        columns={columns}
-        rows={purchaseOrders}
-        loading={posLoading}
-        onRowClick={handleRowClick}
-        sx={{ cursor: 'pointer' }}
-        getRowId={(row) => row.id}
-      />
+      <TableContainer component={Paper}>
+        <Table size="small">
+          <TableHead>
+            <TableRow>
+              <TableCell sx={{ width: 48 }} />
+              <TableCell>PO / Request #</TableCell>
+              <TableCell>Status</TableCell>
+              <TableCell>Vendor</TableCell>
+              <TableCell>Order Date</TableCell>
+              <TableCell align="right">Items</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {posLoading && (
+              <TableRow>
+                <TableCell colSpan={PO_TABLE_COLUMN_COUNT} align="center" sx={{ py: 4 }}>
+                  <CircularProgress size={24} />
+                </TableCell>
+              </TableRow>
+            )}
+            {!posLoading && purchaseOrders.length === 0 && (
+              <TableRow>
+                <TableCell colSpan={PO_TABLE_COLUMN_COUNT} align="center" sx={{ py: 4 }}>
+                  <Typography variant="body2" color="text.secondary">
+                    No purchase orders found.
+                  </Typography>
+                </TableCell>
+              </TableRow>
+            )}
+            {!posLoading &&
+              purchaseOrders.map((po) => (
+                <POTableRow
+                  key={po.id}
+                  po={po}
+                  expanded={expandedIds.has(po.id)}
+                  onToggle={() => toggleExpand(po.id)}
+                  onOpen={() => handleOpenPO(po.id)}
+                />
+              ))}
+          </TableBody>
+        </Table>
+      </TableContainer>
 
       {/* Detail Modal */}
       {selectedPO && (
