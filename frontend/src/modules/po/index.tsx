@@ -25,6 +25,8 @@ import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import AddIcon from '@mui/icons-material/Add';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
 import KeyboardArrowRightIcon from '@mui/icons-material/KeyboardArrowRight';
+import UnfoldMoreIcon from '@mui/icons-material/UnfoldMore';
+import UnfoldLessIcon from '@mui/icons-material/UnfoldLess';
 import { useQuery } from '@apollo/client/react';
 import { GET_PURCHASE_ORDERS, GET_PO_STATISTICS } from '../../graphql/queries';
 import ProjectLandingPage from '../../components/ProjectLandingPage';
@@ -346,7 +348,10 @@ export default function POModule() {
   });
 
   const stats = statsData?.poStatistics;
-  const purchaseOrders = posData?.purchaseOrders ?? [];
+  const purchaseOrders = useMemo(
+    () => posData?.purchaseOrders ?? [],
+    [posData?.purchaseOrders],
+  );
   const selectedPO = purchaseOrders.find((po) => po.id === selectedPOId) ?? null;
 
   // --- Handlers ---
@@ -363,6 +368,22 @@ export default function POModule() {
     setSelectedPOId(id);
     setModalOpen(true);
   };
+
+  const handleExpandAll = () => {
+    setExpandedIds(new Set(purchaseOrders.map((po) => po.id)));
+  };
+
+  const handleCollapseAll = () => {
+    setExpandedIds(new Set());
+  };
+
+  const visibleExpandedCount = useMemo(
+    () => purchaseOrders.filter((po) => expandedIds.has(po.id)).length,
+    [purchaseOrders, expandedIds],
+  );
+  const allVisibleExpanded =
+    purchaseOrders.length > 0 && visibleExpandedCount === purchaseOrders.length;
+  const noneVisibleExpanded = visibleExpandedCount === 0;
 
   const handleCloseModal = () => {
     setModalOpen(false);
@@ -446,6 +467,26 @@ export default function POModule() {
           <Tab key={tab.value} label={tab.label} />
         ))}
       </Tabs>
+
+      {/* Expand / Collapse controls */}
+      <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1, mb: 1 }}>
+        <Button
+          size="small"
+          startIcon={<UnfoldMoreIcon />}
+          onClick={handleExpandAll}
+          disabled={posLoading || allVisibleExpanded}
+        >
+          Expand all
+        </Button>
+        <Button
+          size="small"
+          startIcon={<UnfoldLessIcon />}
+          onClick={handleCollapseAll}
+          disabled={posLoading || noneVisibleExpanded}
+        >
+          Collapse all
+        </Button>
+      </Box>
 
       {/* PO Table */}
       <TableContainer component={Paper}>
