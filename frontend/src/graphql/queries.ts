@@ -751,3 +751,35 @@ export const GET_AUDIT_LOG = gql`
     }
   }
 `;
+
+export const GET_HOME_DASHBOARD_STATS = gql`
+  query GetHomeDashboardStats {
+    homeDashboardStats {
+      openPoCount
+      pendingPullRequestCount
+      itemsPendingReceiving
+      projectCount
+    }
+  }
+`;
+
+export const GET_SHOP_ASSEMBLY_STATS = gql`
+  query GetShopAssemblyStats {
+    shopAssemblyStats {
+      pendingSarCount
+      approvedSarCount
+      activePullRequestCount
+    }
+  }
+`;
+
+export const GET_ADMIN_STATS = gql`
+  query GetAdminStats {
+    adminStats {
+      vendorCount
+      userCount
+      hardwareItemCount
+      openingCount
+    }
+  }
+`;

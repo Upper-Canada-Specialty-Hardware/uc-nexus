@@ -10,6 +10,7 @@ from app.models.project import Opening as OpeningModel
 from app.models.project import Project as ProjectModel
 from app.repositories import (
     admin_repository,
+    dashboard_repository,
     notification_repository,
     po_repository,
     shipping_repository,
@@ -29,10 +30,12 @@ from .enums import (
 )
 from .inputs import ReconciliationItemInput
 from .types import (
+    AdminStats,
     AuditLogEntry,
     BackOrderedItem,
     ClerkUser,
     HardwareSummaryRow,
+    HomeDashboardStats,
     InventoryHierarchyNode,
     InventoryItemDetail,
     LocationContents,
@@ -66,6 +69,7 @@ from .types import (
     ShopAssemblyOpening,
     ShopAssemblyOpeningItem,
     ShopAssemblyRequest,
+    ShopAssemblyStats,
     Vendor,
     VendorInventoryNode,
     WarehouseAisleType,
@@ -931,6 +935,39 @@ class Query:
                 pending_pull_shipping=d["pending_pull_shipping"],
                 received_last_7_days=d["received_last_7_days"],
                 back_ordered_count=d["back_ordered_count"],
+            )
+
+    @strawberry.field
+    def home_dashboard_stats(self) -> HomeDashboardStats:
+        with SessionLocal() as session:
+            d = dashboard_repository.get_home_dashboard_stats(session)
+            return HomeDashboardStats(
+                open_po_count=d["open_po_count"],
+                pending_pull_request_count=d["pending_pull_request_count"],
+                items_pending_receiving=d["items_pending_receiving"],
+                project_count=d["project_count"],
+            )
+
+    @strawberry.field
+    def shop_assembly_stats(self) -> ShopAssemblyStats:
+        with SessionLocal() as session:
+            d = dashboard_repository.get_shop_assembly_stats(session)
+            return ShopAssemblyStats(
+                pending_sar_count=d["pending_sar_count"],
+                approved_sar_count=d["approved_sar_count"],
+                active_pull_request_count=d["active_pull_request_count"],
+            )
+
+    @strawberry.field
+    def admin_stats(self) -> AdminStats:
+        users = user_repository.list_users()
+        with SessionLocal() as session:
+            d = dashboard_repository.get_admin_stats(session, user_count=len(users))
+            return AdminStats(
+                vendor_count=d["vendor_count"],
+                user_count=d["user_count"],
+                hardware_item_count=d["hardware_item_count"],
+                opening_count=d["opening_count"],
             )
 
     @strawberry.field
