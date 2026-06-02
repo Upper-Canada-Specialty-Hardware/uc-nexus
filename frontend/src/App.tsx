@@ -1,4 +1,4 @@
-import React, { Suspense } from 'react';
+import React from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { Box, Typography, CircularProgress, Container, Grid, Card, CardContent, CardActionArea } from '@mui/material';
 import { useNavigate } from 'react-router-dom';
@@ -10,6 +10,7 @@ import BuildIcon from '@mui/icons-material/Build';
 import LocalShippingIcon from '@mui/icons-material/LocalShipping';
 import AdminPanelSettingsIcon from '@mui/icons-material/AdminPanelSettings';
 import AppLayout from './components/AppLayout';
+import { LazyRoute } from './components/LazyBoundary';
 
 // Lazy-loaded module imports
 const ImportModule = React.lazy(() => import('./modules/import'));
@@ -105,12 +106,12 @@ function App() {
         }
       >
         <Route index element={<ModuleSelector />} />
-        <Route path="import/*" element={<Suspense fallback={<SuspenseFallback />}><ImportModule /></Suspense>} />
-        <Route path="po/*" element={<Suspense fallback={<SuspenseFallback />}><POModule /></Suspense>} />
-        <Route path="warehouse/*" element={<Suspense fallback={<SuspenseFallback />}><WarehouseModule /></Suspense>} />
-        <Route path="shop-assembly/*" element={<Suspense fallback={<SuspenseFallback />}><ShopAssemblyModule /></Suspense>} />
-        <Route path="shipping/*" element={<Suspense fallback={<SuspenseFallback />}><ShippingModule /></Suspense>} />
-        <Route path="admin/*" element={<Suspense fallback={<SuspenseFallback />}><AdminModule /></Suspense>} />
+        <Route path="import/*" element={<LazyRoute fallback={<SuspenseFallback />}><ImportModule /></LazyRoute>} />
+        <Route path="po/*" element={<LazyRoute fallback={<SuspenseFallback />}><POModule /></LazyRoute>} />
+        <Route path="warehouse/*" element={<LazyRoute fallback={<SuspenseFallback />}><WarehouseModule /></LazyRoute>} />
+        <Route path="shop-assembly/*" element={<LazyRoute fallback={<SuspenseFallback />}><ShopAssemblyModule /></LazyRoute>} />
+        <Route path="shipping/*" element={<LazyRoute fallback={<SuspenseFallback />}><ShippingModule /></LazyRoute>} />
+        <Route path="admin/*" element={<LazyRoute fallback={<SuspenseFallback />}><AdminModule /></LazyRoute>} />
       </Route>
       <Route path="*" element={<Navigate to="/app" replace />} />
     </Routes>
