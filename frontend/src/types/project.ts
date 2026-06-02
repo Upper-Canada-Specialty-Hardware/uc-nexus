@@ -4,5 +4,5 @@ export interface Project {
   description: string | null;
   client: string | null;
   jobSiteName: string | null;
-  openings?: Array<{ id: string }>;
+  openingCount: number;
 }
