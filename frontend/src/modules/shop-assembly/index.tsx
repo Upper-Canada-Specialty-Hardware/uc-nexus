@@ -1,37 +1,31 @@
-import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
-import { Box, Tabs, Tab, Typography } from '@mui/material';
+import type { ReactNode } from 'react';
+import { Routes, Route, Navigate } from 'react-router-dom';
+import { Box } from '@mui/material';
 import SARListPage from './SARListPage';
 import AssembleListPage from './AssembleListPage';
 import AssignmentBoard from './AssignmentBoard';
 import MyWorkPage from './MyWorkPage';
+import ShopAssemblyLanding from './ShopAssemblyLanding';
+import BackToModule from '../../components/BackToModule';
 
-const SUB_ROUTES = [
-  { label: 'Requests', path: 'requests' },
-  { label: 'Assemble List', path: 'assemble' },
-  { label: 'Assignments', path: 'assign' },
-  { label: 'My Work', path: 'my-work' },
-];
-
-export default function ShopAssemblyModule() {
-  const navigate = useNavigate();
-  const location = useLocation();
-
-  const currentSub = location.pathname.split('/').pop();
-  const tabIndex = Math.max(SUB_ROUTES.findIndex((r) => r.path === currentSub), 0);
-
+function ShopAssemblySubLayout({ children }: { children: ReactNode }) {
   return (
     <Box>
-      <Typography variant="h5" sx={{ mb: 2 }}>Shop Assembly</Typography>
-      <Tabs value={tabIndex} onChange={(_, v) => navigate(`/app/shop-assembly/${SUB_ROUTES[v].path}`)} sx={{ mb: 2 }}>
-        {SUB_ROUTES.map((r) => <Tab key={r.path} label={r.label} />)}
-      </Tabs>
-      <Routes>
-        <Route path='requests' element={<SARListPage />} />
-        <Route path='assemble' element={<AssembleListPage />} />
-        <Route path='assign' element={<AssignmentBoard />} />
-        <Route path='my-work' element={<MyWorkPage />} />
-        <Route index element={<Navigate to='requests' replace />} />
-      </Routes>
+      <BackToModule to="/app/shop-assembly" label="Shop Assembly" />
+      {children}
     </Box>
+  );
+}
+
+export default function ShopAssemblyModule() {
+  return (
+    <Routes>
+      <Route index element={<ShopAssemblyLanding />} />
+      <Route path="requests" element={<ShopAssemblySubLayout><SARListPage /></ShopAssemblySubLayout>} />
+      <Route path="assemble" element={<ShopAssemblySubLayout><AssembleListPage /></ShopAssemblySubLayout>} />
+      <Route path="assign" element={<ShopAssemblySubLayout><AssignmentBoard /></ShopAssemblySubLayout>} />
+      <Route path="my-work" element={<ShopAssemblySubLayout><MyWorkPage /></ShopAssemblySubLayout>} />
+      <Route path="*" element={<Navigate to="" replace />} />
+    </Routes>
   );
 }
