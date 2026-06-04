@@ -15,6 +15,15 @@ from app.models.enums import (
     Classification as ClassificationDB,
 )
 from app.models.enums import (
+    DeficiencyResolution as DeficiencyResolutionDB,
+)
+from app.models.enums import (
+    DeficientItemSource as DeficientItemSourceDB,
+)
+from app.models.enums import (
+    DestockSource as DestockSourceDB,
+)
+from app.models.enums import (
     HardwareItemState as HardwareItemStateDB,
 )
 from app.models.enums import (
@@ -60,6 +69,9 @@ PullStatus = strawberry.enum(PullStatusDB)
 AssemblyStatus = strawberry.enum(AssemblyStatusDB)
 NotificationType = strawberry.enum(NotificationTypeDB)
 PODocumentType = strawberry.enum(PODocumentTypeDB)
+DestockSource = strawberry.enum(DestockSourceDB)
+DeficiencyResolution = strawberry.enum(DeficiencyResolutionDB)
+DeficientItemSource = strawberry.enum(DeficientItemSourceDB)
 
 
 # GraphQL-only enums (not stored in database)

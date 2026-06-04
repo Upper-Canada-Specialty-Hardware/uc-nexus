@@ -83,12 +83,15 @@ def get_warehouse_dashboard(session: Session) -> dict:
     now = datetime.utcnow()
     seven_days_ago = now - timedelta(days=7)
 
-    # Total inventory value and item count
+    # Total inventory value and item count — LEFT JOIN since stock-allocated rows have no PO line
     inv_stats = session.execute(
         select(
             func.coalesce(func.sum(InventoryLocationModel.quantity), 0),
-            func.coalesce(func.sum(InventoryLocationModel.quantity * POLineItemModel.unit_cost), 0),
-        ).join(POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id)
+            func.coalesce(
+                func.sum(InventoryLocationModel.quantity * func.coalesce(POLineItemModel.unit_cost, 0)),
+                0,
+            ),
+        ).outerjoin(POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id)
     ).one()
 
     # Unlocated count
@@ -291,8 +294,8 @@ def get_inventory_by_vendor(session: Session, project_id: uuid.UUID | None = Non
     """Group inventory by vendor name (via PO.vendor_id → Vendor), then product_code."""
     stmt = (
         select(InventoryLocationModel, POLineItemModel.unit_cost, VendorModel.name)
-        .join(POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id)
-        .join(POModel, POLineItemModel.po_id == POModel.id)
+        .outerjoin(POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id)
+        .outerjoin(POModel, POLineItemModel.po_id == POModel.id)
         .outerjoin(VendorModel, POModel.vendor_id == VendorModel.id)
     )
     if project_id is not None:
@@ -341,8 +344,8 @@ def get_location_contents(session: Session, aisle: str, bay: str | None = None, 
     # Inventory locations
     inv_stmt = (
         select(InventoryLocationModel, POLineItemModel.unit_cost, POModel.po_number)
-        .join(POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id)
-        .join(POModel, POLineItemModel.po_id == POModel.id)
+        .outerjoin(POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id)
+        .outerjoin(POModel, POLineItemModel.po_id == POModel.id)
         .where(InventoryLocationModel.aisle == aisle, InventoryLocationModel.quantity > 0)
     )
     if bay is not None:
@@ -424,7 +427,7 @@ def get_inventory_hierarchy(session: Session, project_id: uuid.UUID | None = Non
         "total_value": float
     }
     """
-    stmt = select(InventoryLocationModel, POLineItemModel.unit_cost).join(
+    stmt = select(InventoryLocationModel, POLineItemModel.unit_cost).outerjoin(
         POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id
     )
     if project_id is not None:
@@ -438,7 +441,7 @@ def get_inventory_hierarchy(session: Session, project_id: uuid.UUID | None = Non
     # Group by hardware_category -> product_code, storing (il, unit_cost) pairs
     cat_map: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
     for il, unit_cost in rows:
-        cat_map[il.hardware_category][il.product_code].append((il, unit_cost))
+        cat_map[il.hardware_category][il.product_code].append((il, unit_cost or 0))
 
     result = []
     for category in sorted(cat_map.keys()):
@@ -488,8 +491,8 @@ def get_inventory_items(
     """
     stmt = (
         select(InventoryLocationModel, POLineItemModel.classification, POModel.po_number, POLineItemModel.unit_cost)
-        .join(POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id)
-        .join(POModel, POLineItemModel.po_id == POModel.id)
+        .outerjoin(POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id)
+        .outerjoin(POModel, POLineItemModel.po_id == POModel.id)
         .where(
             InventoryLocationModel.hardware_category == category,
             InventoryLocationModel.product_code == product_code,
@@ -504,7 +507,7 @@ def get_inventory_items(
             "inventory_location": row[0],
             "classification": row[1],
             "po_number": row[2],
-            "unit_cost": float(row[3]),
+            "unit_cost": float(row[3]) if row[3] is not None else 0.0,
         }
         for row in rows
     ]
@@ -784,9 +787,8 @@ def create_receive(
     if po is None or po.deleted_at is not None:
         raise NotFoundError(f"Purchase order {po_id} not found")
 
-    # Validate PO has a project (required for inventory locations)
-    if po.project_id is None:
-        raise ValidationError("PO must be associated with a project before receiving", field="project_id")
+    # Project-less PO is allowed: line items route to the stock pool instead of project inventory
+    is_stock_po = po.project_id is None
 
     # Validate PO status
     if po.status not in (POStatus.ORDERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED):
@@ -828,6 +830,12 @@ def create_receive(
             for loc in locations:
                 if loc["quantity"] < 1:
                     raise ValidationError("Location quantity must be >= 1", field="quantity")
+                deficient_q = loc.get("deficient_quantity", 0) or 0
+                if deficient_q < 0 or deficient_q > loc["quantity"]:
+                    raise ValidationError(
+                        "deficient_quantity must satisfy 0 <= deficient_quantity <= quantity",
+                        field="deficient_quantity",
+                    )
                 _validate_location_fields(loc["aisle"], loc["bay"], loc["bin"])
 
     # 5. Execute in single transaction
@@ -856,7 +864,40 @@ def create_receive(
 
         locations = li_input["locations"]
         created_inv_locs: list[InventoryLocationModel] = []
-        if locations:
+        if is_stock_po:
+            # Route into the stock pool. Each location becomes (or merges into) a stock_items row.
+            from app.repositories import stock_repository
+
+            if locations:
+                for loc in locations:
+                    stock_repository.receive_into_stock(
+                        session,
+                        hardware_category=poli.hardware_category,
+                        product_code=poli.product_code,
+                        quantity=loc["quantity"],
+                        deficient_quantity=loc.get("deficient_quantity", 0) or 0,
+                        aisle=loc["aisle"],
+                        bay=loc["bay"],
+                        bin=loc["bin"],
+                        received_at=receive_record.received_at,
+                        received_by=received_by,
+                        po_number=po.po_number,
+                    )
+            else:
+                stock_repository.receive_into_stock(
+                    session,
+                    hardware_category=poli.hardware_category,
+                    product_code=poli.product_code,
+                    quantity=li_input["quantity_received"],
+                    deficient_quantity=0,
+                    aisle=None,
+                    bay=None,
+                    bin=None,
+                    received_at=receive_record.received_at,
+                    received_by=received_by,
+                    po_number=po.po_number,
+                )
+        elif locations:
             for loc in locations:
                 inv_loc = InventoryLocationModel(
                     project_id=po.project_id,
@@ -865,6 +906,7 @@ def create_receive(
                     hardware_category=poli.hardware_category,
                     product_code=poli.product_code,
                     quantity=loc["quantity"],
+                    deficient_quantity=loc.get("deficient_quantity", 0) or 0,
                     aisle=loc["aisle"],
                     bay=loc["bay"],
                     bin=loc["bin"],
@@ -1062,7 +1104,7 @@ def approve_pull_request(session: Session, pr_id: uuid.UUID, approved_by: str) -
     else:
         locked_inventory = []
 
-    # 4. Check sufficiency
+    # 4. Check sufficiency — only non-deficient (available) units can satisfy a pull
     insufficient = False
     if needed_combos:
         # Group locked inventory by (cat, code)
@@ -1072,7 +1114,7 @@ def approve_pull_request(session: Session, pr_id: uuid.UUID, approved_by: str) -
             inv_by_combo[key].append(il)
 
         for (cat, code), requested in needed_combos.items():
-            available = sum(il.quantity for il in inv_by_combo.get((cat, code), []))
+            available = sum(il.quantity - (il.deficient_quantity or 0) for il in inv_by_combo.get((cat, code), []))
             if available < requested:
                 insufficient = True
                 break
@@ -1110,7 +1152,11 @@ def approve_pull_request(session: Session, pr_id: uuid.UUID, approved_by: str) -
             for row in rows:
                 if remaining <= 0:
                     break
-                deduct = min(remaining, row.quantity)
+                # Deficient units must stay on the row — only available units can be pulled
+                row_available = row.quantity - (row.deficient_quantity or 0)
+                if row_available <= 0:
+                    continue
+                deduct = min(remaining, row_available)
                 old_qty = row.quantity
                 row.quantity -= deduct
                 remaining -= deduct
@@ -1205,8 +1251,8 @@ def get_unlocated_inventory(session: Session, project_id: uuid.UUID | None = Non
     """
     stmt = (
         select(InventoryLocationModel, POLineItemModel.classification, POModel.po_number, POLineItemModel.unit_cost)
-        .join(POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id)
-        .join(POModel, POLineItemModel.po_id == POModel.id)
+        .outerjoin(POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id)
+        .outerjoin(POModel, POLineItemModel.po_id == POModel.id)
         .where(
             InventoryLocationModel.aisle.is_(None),
             InventoryLocationModel.bay.is_(None),
@@ -1228,7 +1274,7 @@ def get_unlocated_inventory(session: Session, project_id: uuid.UUID | None = Non
             "inventory_location": row[0],
             "classification": row[1],
             "po_number": row[2],
-            "unit_cost": float(row[3]),
+            "unit_cost": float(row[3]) if row[3] is not None else 0.0,
         }
         for row in rows
     ]

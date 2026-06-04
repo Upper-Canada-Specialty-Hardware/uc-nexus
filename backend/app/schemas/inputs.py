@@ -1,6 +1,6 @@
 import strawberry
 
-from .enums import Classification, PullRequestItemType
+from .enums import Classification, DeficiencyResolution, DestockSource, PullRequestItemType
 
 
 @strawberry.input
@@ -192,6 +192,7 @@ class LocationInput:
     bay: str
     bin: str
     quantity: int
+    deficient_quantity: int = 0
 
 
 @strawberry.input
@@ -231,3 +232,98 @@ class CompleteOpeningInput:
     aisle: str | None = None
     bay: str | None = None
     bin: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Stock pool + deficiency inputs
+# ---------------------------------------------------------------------------
+
+
+@strawberry.input
+class DestockInventoryInput:
+    inventory_location_id: strawberry.ID
+    quantity: int
+    source: DestockSource
+    reason_text: str | None = None
+    target_aisle: str | None = None
+    target_bay: str | None = None
+    target_bin: str | None = None
+    performed_by: str = ""
+
+
+@strawberry.input
+class AllocateStockToProjectInput:
+    stock_item_id: strawberry.ID
+    project_id: strawberry.ID
+    target_hardware_category: str
+    target_product_code: str
+    quantity: int
+    target_aisle: str | None = None
+    target_bay: str | None = None
+    target_bin: str | None = None
+    performed_by: str = ""
+
+
+@strawberry.input
+class AdjustStockQuantityInput:
+    stock_item_id: strawberry.ID
+    new_quantity: int
+    reason_text: str
+    performed_by: str = ""
+
+
+@strawberry.input
+class MoveStockLocationInput:
+    stock_item_id: strawberry.ID
+    new_aisle: str
+    new_bay: str
+    new_bin: str
+    performed_by: str = ""
+
+
+@strawberry.input
+class ReclassifyStockItemInput:
+    stock_item_id: strawberry.ID
+    new_hardware_category: str
+    new_product_code: str
+    quantity: int
+    reason_text: str | None = None
+    performed_by: str = ""
+
+
+@strawberry.input
+class ReportInventoryDeficiencyInput:
+    inventory_location_id: strawberry.ID
+    quantity: int
+    reason_text: str | None = None
+    performed_by: str = ""
+
+
+@strawberry.input
+class ReportStockDeficiencyInput:
+    stock_item_id: strawberry.ID
+    quantity: int
+    reason_text: str | None = None
+    performed_by: str = ""
+
+
+@strawberry.input
+class ReportDeficiencyAtAssemblyInput:
+    shop_assembly_opening_item_id: strawberry.ID
+    source_inventory_location_id: strawberry.ID
+    quantity: int
+    reason_text: str | None = None
+    performed_by: str = ""
+
+
+@strawberry.input
+class ResolveDeficiencyInput:
+    # exactly one of inventory_location_id / stock_item_id must be set
+    inventory_location_id: strawberry.ID | None = None
+    stock_item_id: strawberry.ID | None = None
+    resolution: DeficiencyResolution = DeficiencyResolution.LEAVE_AS_DEFICIENT
+    quantity: int = 1
+    reason_text: str | None = None
+    rma_reference: str | None = None
+    destock_source: DestockSource | None = None
+    reviewed_by: str = ""

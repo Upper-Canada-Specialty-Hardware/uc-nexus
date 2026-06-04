@@ -667,3 +667,92 @@ export const CLONE_AISLE = gql`
     }
   }
 `;
+
+// ---------------------------------------------------------------------------
+// Stock pool + deficiency mutations
+// ---------------------------------------------------------------------------
+
+export const DESTOCK_INVENTORY = gql`
+  mutation DestockInventory($input: DestockInventoryInput!) {
+    destockInventory(input: $input) {
+      id hardwareCategory productCode quantity deficientQuantity available
+      aisle bay bin receivedAt
+    }
+  }
+`;
+
+export const ALLOCATE_STOCK_TO_PROJECT = gql`
+  mutation AllocateStockToProject($input: AllocateStockToProjectInput!) {
+    allocateStockToProject(input: $input) {
+      id projectId hardwareCategory productCode quantity deficientQuantity available
+      aisle bay bin receivedAt
+    }
+  }
+`;
+
+export const ADJUST_STOCK_QUANTITY = gql`
+  mutation AdjustStockQuantity($input: AdjustStockQuantityInput!) {
+    adjustStockQuantity(input: $input) {
+      id hardwareCategory productCode quantity deficientQuantity available
+    }
+  }
+`;
+
+export const MOVE_STOCK_LOCATION = gql`
+  mutation MoveStockLocation($input: MoveStockLocationInput!) {
+    moveStockLocation(input: $input) {
+      id aisle bay bin
+    }
+  }
+`;
+
+export const RECLASSIFY_STOCK_ITEM = gql`
+  mutation ReclassifyStockItem($input: ReclassifyStockItemInput!) {
+    reclassifyStockItem(input: $input) {
+      reclassifiedStockItem {
+        id hardwareCategory productCode quantity deficientQuantity available
+        aisle bay bin
+      }
+      originalStockItem {
+        id hardwareCategory productCode quantity deficientQuantity available
+        aisle bay bin
+      }
+    }
+  }
+`;
+
+export const REPORT_INVENTORY_DEFICIENCY = gql`
+  mutation ReportInventoryDeficiency($input: ReportInventoryDeficiencyInput!) {
+    reportInventoryDeficiency(input: $input) {
+      id quantity deficientQuantity available
+    }
+  }
+`;
+
+export const REPORT_STOCK_DEFICIENCY = gql`
+  mutation ReportStockDeficiency($input: ReportStockDeficiencyInput!) {
+    reportStockDeficiency(input: $input) {
+      id quantity deficientQuantity available
+    }
+  }
+`;
+
+export const REPORT_DEFICIENCY_AT_ASSEMBLY = gql`
+  mutation ReportDeficiencyAtAssembly($input: ReportDeficiencyAtAssemblyInput!) {
+    reportDeficiencyAtAssembly(input: $input) {
+      inventoryLocation { id quantity deficientQuantity available }
+      replacementPullRequestItem {
+        id pullRequestId itemType openingNumber hardwareCategory productCode requestedQuantity
+      }
+    }
+  }
+`;
+
+export const RESOLVE_DEFICIENCY = gql`
+  mutation ResolveDeficiency($input: ResolveDeficiencyInput!) {
+    resolveDeficiency(input: $input) {
+      id inventoryLocationId stockItemId resolution quantity reasonText
+      rmaReference reviewedBy reviewedAt resultingStockItemId
+    }
+  }
+`;
