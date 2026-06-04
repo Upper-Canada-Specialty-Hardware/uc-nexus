@@ -15,6 +15,7 @@ from app.repositories import (
     po_repository,
     shipping_repository,
     shop_assembly_repository,
+    stock_repository,
     user_repository,
     vendor_repository,
     warehouse_layout_repository,
@@ -23,6 +24,7 @@ from app.repositories import (
 
 from .enums import (
     AuditEntityType,
+    DeficientItemSource,
     POStatus,
     PullRequestSource,
     PullRequestStatus,
@@ -34,6 +36,7 @@ from .types import (
     AuditLogEntry,
     BackOrderedItem,
     ClerkUser,
+    DeficientItemRow,
     HardwareSummaryRow,
     HomeDashboardStats,
     InventoryHierarchyNode,
@@ -79,6 +82,9 @@ from .types import (
     WarehouseRowType,
 )
 from .types import (
+    DeficiencyReview as DeficiencyReviewType,
+)
+from .types import (
     InventoryLocation as InventoryLocationType,
 )
 from .types import (
@@ -89,6 +95,9 @@ from .types import (
 )
 from .types import (
     PackingSlipItem as PackingSlipItemType,
+)
+from .types import (
+    StockItem as StockItemType,
 )
 
 
@@ -277,14 +286,19 @@ def _project_hardware_schedule_to_type(data: dict) -> ProjectHardwareSchedule:
 
 
 def _inventory_location_to_type(il) -> InventoryLocationType:
+    deficient_qty = getattr(il, "deficient_quantity", 0) or 0
+    stock_item_id = getattr(il, "stock_item_id", None)
     return InventoryLocationType(
         id=strawberry.ID(str(il.id)),
         project_id=strawberry.ID(str(il.project_id)),
-        po_line_item_id=strawberry.ID(str(il.po_line_item_id)),
-        receive_line_item_id=strawberry.ID(str(il.receive_line_item_id)),
+        po_line_item_id=strawberry.ID(str(il.po_line_item_id)) if il.po_line_item_id else None,
+        receive_line_item_id=(strawberry.ID(str(il.receive_line_item_id)) if il.receive_line_item_id else None),
+        stock_item_id=strawberry.ID(str(stock_item_id)) if stock_item_id else None,
         hardware_category=il.hardware_category,
         product_code=il.product_code,
         quantity=il.quantity,
+        deficient_quantity=deficient_qty,
+        available=il.quantity - deficient_qty,
         aisle=il.aisle,
         row=il.row,
         bay=il.bay,
@@ -470,6 +484,58 @@ def _bay_to_type(bay) -> WarehouseBayType:
         col_position=bay.col_position,
         is_active=bay.is_active,
         bins=[_bin_to_type(b) for b in getattr(bay, "bins", [])],
+    )
+
+
+def _stock_item_to_type(si) -> StockItemType:
+    deficient_qty = getattr(si, "deficient_quantity", 0) or 0
+    return StockItemType(
+        id=strawberry.ID(str(si.id)),
+        hardware_category=si.hardware_category,
+        product_code=si.product_code,
+        quantity=si.quantity,
+        deficient_quantity=deficient_qty,
+        available=si.quantity - deficient_qty,
+        aisle=si.aisle,
+        bay=si.bay,
+        bin=si.bin,
+        received_at=si.received_at,
+        created_at=si.created_at,
+        updated_at=si.updated_at,
+    )
+
+
+def _deficiency_review_to_type(dr) -> DeficiencyReviewType:
+    return DeficiencyReviewType(
+        id=strawberry.ID(str(dr.id)),
+        inventory_location_id=(strawberry.ID(str(dr.inventory_location_id)) if dr.inventory_location_id else None),
+        stock_item_id=strawberry.ID(str(dr.stock_item_id)) if dr.stock_item_id else None,
+        resolution=dr.resolution,
+        quantity=dr.quantity,
+        reason_text=dr.reason_text,
+        rma_reference=dr.rma_reference,
+        reviewed_by=dr.reviewed_by,
+        reviewed_at=dr.reviewed_at,
+        resulting_stock_item_id=(
+            strawberry.ID(str(dr.resulting_stock_item_id)) if dr.resulting_stock_item_id else None
+        ),
+    )
+
+
+def _deficient_item_row_to_type(row: dict) -> DeficientItemRow:
+    return DeficientItemRow(
+        source=row["source"],
+        inventory_location_id=(
+            strawberry.ID(str(row["inventory_location_id"])) if row["inventory_location_id"] else None
+        ),
+        stock_item_id=strawberry.ID(str(row["stock_item_id"])) if row["stock_item_id"] else None,
+        project_id=strawberry.ID(str(row["project_id"])) if row["project_id"] else None,
+        hardware_category=row["hardware_category"],
+        product_code=row["product_code"],
+        deficient_quantity=row["deficient_quantity"],
+        aisle=row["aisle"],
+        bay=row["bay"],
+        bin=row["bin"],
     )
 
 
@@ -1143,3 +1209,70 @@ class Query:
                 )
                 for s in suggestions
             ]
+
+    # ---------------------------------------------------------------------------
+    # Stock pool + deficiency queries
+    # ---------------------------------------------------------------------------
+
+    @strawberry.field
+    def stock_items(
+        self,
+        product_code_contains: str | None = None,
+        hardware_category: str | None = None,
+        aisle: str | None = None,
+        only_deficient: bool = False,
+    ) -> list[StockItemType]:
+        with SessionLocal() as session:
+            rows = stock_repository.get_stock_items(
+                session,
+                product_code_contains=product_code_contains,
+                hardware_category=hardware_category,
+                aisle=aisle,
+                only_deficient=only_deficient,
+            )
+            return [_stock_item_to_type(r) for r in rows]
+
+    @strawberry.field
+    def stock_item(self, id: strawberry.ID) -> StockItemType | None:
+        with SessionLocal() as session:
+            try:
+                row = stock_repository.get_stock_item(session, uuid.UUID(str(id)))
+            except Exception:
+                return None
+            return _stock_item_to_type(row)
+
+    @strawberry.field
+    def deficient_items(
+        self,
+        project_id: strawberry.ID | None = None,
+        source: DeficientItemSource | None = None,
+    ) -> list[DeficientItemRow]:
+        with SessionLocal() as session:
+            rows = stock_repository.get_deficient_items(
+                session,
+                project_id=uuid.UUID(str(project_id)) if project_id else None,
+                source=source,
+            )
+            return [_deficient_item_row_to_type(r) for r in rows]
+
+    @strawberry.field
+    def deficiency_reviews(
+        self,
+        inventory_location_id: strawberry.ID | None = None,
+        stock_item_id: strawberry.ID | None = None,
+        project_id: strawberry.ID | None = None,
+    ) -> list[DeficiencyReviewType]:
+        with SessionLocal() as session:
+            rows = stock_repository.get_deficiency_reviews(
+                session,
+                inventory_location_id=(uuid.UUID(str(inventory_location_id)) if inventory_location_id else None),
+                stock_item_id=uuid.UUID(str(stock_item_id)) if stock_item_id else None,
+                project_id=uuid.UUID(str(project_id)) if project_id else None,
+            )
+            return [_deficiency_review_to_type(r) for r in rows]
+
+    @strawberry.field
+    def stock_matches_for_opening(self, opening_item_id: strawberry.ID) -> list[StockItemType]:
+        with SessionLocal() as session:
+            rows = stock_repository.get_stock_matches_for_opening(session, uuid.UUID(str(opening_item_id)))
+            return [_stock_item_to_type(r) for r in rows]

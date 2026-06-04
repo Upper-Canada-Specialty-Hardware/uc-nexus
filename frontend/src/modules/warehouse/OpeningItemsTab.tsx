@@ -20,6 +20,7 @@ import { GET_OPENING_ITEMS, GET_OPENING_ITEM_DETAILS } from '../../graphql/queri
 import Modal from '../../components/Modal';
 import { useIdentity } from '../../hooks/useIdentity';
 import InventoryCorrectionModal from '../admin/InventoryCorrectionModal';
+import FindInStockButton from './stock/FindInStockButton';
 
 interface InstalledHardware {
   id: string;
@@ -204,8 +205,8 @@ function OpeningItemDetailModal({
               </Box>
             </Box>
 
-            {isAdmin && (
-              <Box sx={{ mb: 3 }}>
+            <Box sx={{ mb: 3, display: 'flex', gap: 1 }}>
+              {isAdmin && (
                 <Button
                   variant="outlined"
                   size="small"
@@ -213,8 +214,15 @@ function OpeningItemDetailModal({
                 >
                   Correction
                 </Button>
-              </Box>
-            )}
+              )}
+              <FindInStockButton
+                openingItemId={openingItem.id}
+                projectId={openingItem.projectId}
+                defaultCategory={hardware[0]?.hardwareCategory}
+                defaultProductCode={hardware[0]?.productCode}
+                onAllocated={handleCorrectionSuccess}
+              />
+            </Box>
 
             <Typography variant="h6" sx={{ mb: 1 }}>
               Installed Hardware

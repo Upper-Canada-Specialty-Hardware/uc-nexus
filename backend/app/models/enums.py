@@ -76,6 +76,7 @@ class NotificationType(str, enum.Enum):
 class AuditEntityType(str, enum.Enum):
     INVENTORY_LOCATION = "INVENTORY_LOCATION"
     OPENING_ITEM = "OPENING_ITEM"
+    STOCK_ITEM = "STOCK_ITEM"
 
 
 class AuditAction(str, enum.Enum):
@@ -86,3 +87,28 @@ class AuditAction(str, enum.Enum):
     PULL_DEDUCTION = "PULL_DEDUCTION"
     SPOT_CHECK = "SPOT_CHECK"
     PUT_AWAY = "PUT_AWAY"
+    DESTOCK = "DESTOCK"
+    ALLOCATE_FROM_STOCK = "ALLOCATE_FROM_STOCK"
+    RECLASSIFY = "RECLASSIFY"
+    REPORT_DEFICIENT = "REPORT_DEFICIENT"
+    RESOLVE_DEFICIENT = "RESOLVE_DEFICIENT"
+
+
+class DestockSource(str, enum.Enum):
+    CANCELLATION = "CANCELLATION"
+    DEFICIENT_SWAP = "DEFICIENT_SWAP"
+    OVERAGE = "OVERAGE"
+    OTHER = "OTHER"
+
+
+class DeficiencyResolution(str, enum.Enum):
+    SEND_TO_STOCK = "SEND_TO_STOCK"
+    SCRAP = "SCRAP"
+    REPAIR = "REPAIR"
+    RETURN_TO_VENDOR = "RETURN_TO_VENDOR"
+    LEAVE_AS_DEFICIENT = "LEAVE_AS_DEFICIENT"
+
+
+class DeficientItemSource(str, enum.Enum):
+    PROJECT_INVENTORY = "PROJECT_INVENTORY"
+    STOCK_POOL = "STOCK_POOL"

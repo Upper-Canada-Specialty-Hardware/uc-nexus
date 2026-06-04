@@ -8,6 +8,8 @@ from .enums import (
     AuditAction,
     AuditEntityType,
     Classification,
+    DeficiencyResolution,
+    DeficientItemSource,
     HardwareItemState,
     NotificationType,
     OpeningItemState,
@@ -227,11 +229,14 @@ class ProjectHardwareSchedule:
 class InventoryLocation:
     id: strawberry.ID
     project_id: strawberry.ID
-    po_line_item_id: strawberry.ID
-    receive_line_item_id: strawberry.ID
+    po_line_item_id: strawberry.ID | None
+    receive_line_item_id: strawberry.ID | None
+    stock_item_id: strawberry.ID | None
     hardware_category: str
     product_code: str
     quantity: int
+    deficient_quantity: int
+    available: int
     aisle: str | None
     row: str | None
     bay: str | None
@@ -619,6 +624,62 @@ class AuditLogEntry:
     detail: strawberry.scalars.JSON | None
     performed_by: str
     created_at: datetime
+
+
+@strawberry.type
+class StockItem:
+    id: strawberry.ID
+    hardware_category: str
+    product_code: str
+    quantity: int
+    deficient_quantity: int
+    available: int
+    aisle: str | None
+    bay: str | None
+    bin: str | None
+    received_at: datetime
+    created_at: datetime
+    updated_at: datetime
+
+
+@strawberry.type
+class DeficiencyReview:
+    id: strawberry.ID
+    inventory_location_id: strawberry.ID | None
+    stock_item_id: strawberry.ID | None
+    resolution: DeficiencyResolution
+    quantity: int
+    reason_text: str | None
+    rma_reference: str | None
+    reviewed_by: str
+    reviewed_at: datetime
+    resulting_stock_item_id: strawberry.ID | None
+
+
+@strawberry.type
+class DeficientItemRow:
+    source: DeficientItemSource
+    inventory_location_id: strawberry.ID | None
+    stock_item_id: strawberry.ID | None
+    project_id: strawberry.ID | None
+    hardware_category: str
+    product_code: str
+    deficient_quantity: int
+    aisle: str | None
+    bay: str | None
+    bin: str | None
+
+
+@strawberry.type
+class ReclassifyStockResult:
+    reclassified_stock_item: "StockItem"
+    original_stock_item: "StockItem | None"
+
+
+@strawberry.type
+class SAReplacementResult:
+    inventory_location: "InventoryLocation"
+    replacement_pull_request_item: "PullRequestItem"
 
 
 @strawberry.type

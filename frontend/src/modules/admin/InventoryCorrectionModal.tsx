@@ -26,11 +26,14 @@ import {
 interface InventoryItem {
   id: string;
   projectId: string;
-  poLineItemId: string;
-  receiveLineItemId: string;
+  poLineItemId: string | null;
+  receiveLineItemId: string | null;
+  stockItemId?: string | null;
   hardwareCategory: string;
   productCode: string;
   quantity: number;
+  deficientQuantity?: number;
+  available?: number;
   aisle: string | null;
   bay: string | null;
   bin: string | null;

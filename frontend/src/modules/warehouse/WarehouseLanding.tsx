@@ -7,6 +7,8 @@ import LocalShippingIcon from '@mui/icons-material/LocalShipping';
 import DownloadIcon from '@mui/icons-material/Download';
 import MoveToInboxIcon from '@mui/icons-material/MoveToInbox';
 import AssignmentIcon from '@mui/icons-material/Assignment';
+import WarehouseIcon from '@mui/icons-material/Warehouse';
+import ReportProblemIcon from '@mui/icons-material/ReportProblem';
 import { useNavigate } from 'react-router-dom';
 import DashboardCards from './DashboardCards';
 import WarehouseMap from './WarehouseMap';
@@ -37,6 +39,8 @@ const SUB_ROUTES = [
   { label: 'Receiving', path: '/app/warehouse/receiving', icon: <DownloadIcon fontSize="large" /> },
   { label: 'Put Away', path: '/app/warehouse/put-away', icon: <MoveToInboxIcon fontSize="large" /> },
   { label: 'Pull Requests', path: '/app/warehouse/pull-requests', icon: <AssignmentIcon fontSize="large" /> },
+  { label: 'Stock Pool', path: '/app/warehouse/stock-pool', icon: <WarehouseIcon fontSize="large" /> },
+  { label: 'Deficient Items', path: '/app/warehouse/deficient-items', icon: <ReportProblemIcon fontSize="large" /> },
 ];
 
 export default function WarehouseLanding() {

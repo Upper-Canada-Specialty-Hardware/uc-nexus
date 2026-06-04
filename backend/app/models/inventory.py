@@ -17,16 +17,33 @@ class InventoryLocation(Base):
             "product_code",
         ),
         Index("ix_inventory_locations_aisle", "aisle"),
+        Index("ix_inventory_locations_stock_item", "stock_item_id"),
         CheckConstraint("quantity >= 0", name="ck_inventory_locations_quantity_nonneg"),
+        CheckConstraint(
+            "deficient_quantity >= 0",
+            name="ck_inventory_locations_deficient_quantity_nonneg",
+        ),
+        CheckConstraint(
+            "deficient_quantity <= quantity",
+            name="ck_inventory_locations_deficient_within_quantity",
+        ),
+        CheckConstraint(
+            "(po_line_item_id IS NOT NULL AND receive_line_item_id IS NOT NULL) OR stock_item_id IS NOT NULL",
+            name="ck_inventory_locations_has_origin",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
-    po_line_item_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("po_line_items.id"), nullable=False)
-    receive_line_item_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("receive_line_items.id"), nullable=False)
+    po_line_item_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("po_line_items.id"), nullable=True)
+    receive_line_item_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("receive_line_items.id"), nullable=True)
+    stock_item_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("stock_items.id", ondelete="SET NULL"), nullable=True
+    )
     hardware_category: Mapped[str] = mapped_column(String, nullable=False)
     product_code: Mapped[str] = mapped_column(String, nullable=False)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    deficient_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     aisle: Mapped[str | None] = mapped_column(String(20), nullable=True)
     bay: Mapped[str | None] = mapped_column(String(20), nullable=True)
     bin: Mapped[str | None] = mapped_column(String(20), nullable=True)
