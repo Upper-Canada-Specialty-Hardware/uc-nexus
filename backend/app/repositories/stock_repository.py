@@ -61,11 +61,20 @@ def get_stock_items(
     aisle: str | None = None,
     only_deficient: bool = False,
 ) -> list[StockItem]:
-    """List stock_items optionally filtered by product code, category, aisle, or deficient-only."""
-    stmt = select(StockItem).order_by(
-        StockItem.hardware_category.asc(),
-        StockItem.product_code.asc(),
-        StockItem.received_at.asc(),
+    """List stock_items optionally filtered by product code, category, aisle, or deficient-only.
+
+    Hides fully-emptied rows (quantity = 0 AND deficient_quantity = 0). These rows are kept in the
+    DB so they can remain the origin of any inventory_locations row that was allocated out of them
+    (the FK SET NULL would otherwise blank out the only origin link).
+    """
+    stmt = (
+        select(StockItem)
+        .where(StockItem.quantity + StockItem.deficient_quantity > 0)
+        .order_by(
+            StockItem.hardware_category.asc(),
+            StockItem.product_code.asc(),
+            StockItem.received_at.asc(),
+        )
     )
     if product_code_contains:
         stmt = stmt.where(StockItem.product_code.ilike(f"%{product_code_contains}%"))
@@ -550,10 +559,10 @@ def allocate_stock_to_project(
         detail=detail,
     )
 
-    # If the stock row is now empty (and not deficient), delete it
-    if si.quantity == 0 and (si.deficient_quantity or 0) == 0:
-        session.delete(si)
-        session.flush()
+    # Keep empty stock rows so they can remain the origin of inventory_locations rows that were
+    # allocated out of them (the ON DELETE SET NULL on stock_item_id would otherwise blank out the
+    # only origin link and violate ck_inventory_locations_has_origin). get_stock_items filters
+    # rows where quantity + deficient_quantity == 0 so they don't clutter the browse view.
 
     return new_il
 
@@ -821,10 +830,7 @@ def resolve_deficiency(
         elif resolution == DeficiencyResolution.LEAVE_AS_DEFICIENT:
             pass
 
-        # If the row is now empty, delete it
-        if si.quantity == 0 and (si.deficient_quantity or 0) == 0:
-            session.delete(si)
-            session.flush()
+        # Keep empty stock rows for the same reason allocate does — see comment there.
 
     review = DeficiencyReview(
         inventory_location_id=inventory_location_id,
