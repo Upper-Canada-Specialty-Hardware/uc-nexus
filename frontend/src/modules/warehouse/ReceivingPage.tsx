@@ -35,7 +35,7 @@ interface OpenPOLineItem {
 interface OpenPO {
   id: string;
   poNumber: string | null;
-  projectId: string;
+  projectId: string | null;
   status: string;
   vendor: { id: string; name: string } | null;
   orderedAt: string | null;
@@ -176,7 +176,7 @@ export default function ReceivingPage() {
           id: po.id,
           poNumber: po.poNumber ?? '\u2014',
           vendorName: po.vendor?.name ?? '\u2014',
-          projectName: projectMap.get(po.projectId) ?? '\u2014',
+          projectName: po.projectId ? (projectMap.get(po.projectId) ?? '\u2014') : 'Stock PO',
           expectedDeliveryDate: po.expectedDeliveryDate,
           pendingLines,
           pendingQty,

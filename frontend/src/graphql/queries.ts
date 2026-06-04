@@ -134,8 +134,8 @@ export const GET_INVENTORY_ITEMS = gql`
   query GetInventoryItems($projectId: ID, $category: String!, $productCode: String!) {
     inventoryItems(projectId: $projectId, category: $category, productCode: $productCode) {
       inventoryLocation {
-        id projectId poLineItemId receiveLineItemId
-        hardwareCategory productCode quantity
+        id projectId poLineItemId receiveLineItemId stockItemId
+        hardwareCategory productCode quantity deficientQuantity available
         aisle row bay bin receivedAt createdAt updatedAt
       }
       poNumber
@@ -780,6 +780,112 @@ export const GET_ADMIN_STATS = gql`
       userCount
       hardwareItemCount
       openingCount
+    }
+  }
+`;
+
+// ---------------------------------------------------------------------------
+// Stock pool + deficiency
+// ---------------------------------------------------------------------------
+
+export const GET_STOCK_ITEMS = gql`
+  query GetStockItems(
+    $productCodeContains: String
+    $hardwareCategory: String
+    $aisle: String
+    $onlyDeficient: Boolean
+  ) {
+    stockItems(
+      productCodeContains: $productCodeContains
+      hardwareCategory: $hardwareCategory
+      aisle: $aisle
+      onlyDeficient: $onlyDeficient
+    ) {
+      id
+      hardwareCategory
+      productCode
+      quantity
+      deficientQuantity
+      available
+      aisle
+      bay
+      bin
+      receivedAt
+      createdAt
+      updatedAt
+    }
+  }
+`;
+
+export const GET_STOCK_ITEM = gql`
+  query GetStockItem($id: ID!) {
+    stockItem(id: $id) {
+      id
+      hardwareCategory
+      productCode
+      quantity
+      deficientQuantity
+      available
+      aisle
+      bay
+      bin
+      receivedAt
+      createdAt
+      updatedAt
+    }
+  }
+`;
+
+export const GET_DEFICIENT_ITEMS = gql`
+  query GetDeficientItems($projectId: ID, $source: DeficientItemSource) {
+    deficientItems(projectId: $projectId, source: $source) {
+      source
+      inventoryLocationId
+      stockItemId
+      projectId
+      hardwareCategory
+      productCode
+      deficientQuantity
+      aisle
+      bay
+      bin
+    }
+  }
+`;
+
+export const GET_DEFICIENCY_REVIEWS = gql`
+  query GetDeficiencyReviews($inventoryLocationId: ID, $stockItemId: ID, $projectId: ID) {
+    deficiencyReviews(
+      inventoryLocationId: $inventoryLocationId
+      stockItemId: $stockItemId
+      projectId: $projectId
+    ) {
+      id
+      inventoryLocationId
+      stockItemId
+      resolution
+      quantity
+      reasonText
+      rmaReference
+      reviewedBy
+      reviewedAt
+      resultingStockItemId
+    }
+  }
+`;
+
+export const GET_STOCK_MATCHES_FOR_OPENING = gql`
+  query GetStockMatchesForOpening($openingItemId: ID!) {
+    stockMatchesForOpening(openingItemId: $openingItemId) {
+      id
+      hardwareCategory
+      productCode
+      quantity
+      deficientQuantity
+      available
+      aisle
+      bay
+      bin
     }
   }
 `;

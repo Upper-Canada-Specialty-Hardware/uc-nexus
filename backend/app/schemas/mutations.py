@@ -11,6 +11,7 @@ from app.repositories import (
     project_repository,
     shipping_repository,
     shop_assembly_repository,
+    stock_repository,
     user_repository,
     vendor_repository,
     warehouse_layout_repository,
@@ -19,6 +20,8 @@ from app.repositories import (
 
 from .enums import ApproveOutcome, PODocumentType
 from .inputs import (
+    AdjustStockQuantityInput,
+    AllocateStockToProjectInput,
     AssignOpeningsInput,
     CompleteOpeningInput,
     ConfirmShipmentInput,
@@ -26,13 +29,21 @@ from .inputs import (
     CreateProjectInput,
     CreateReceiveInput,
     CreateVendorInput,
+    DestockInventoryInput,
     FinalizeImportSessionInput,
+    MoveStockLocationInput,
+    ReclassifyStockItemInput,
+    ReportDeficiencyAtAssemblyInput,
+    ReportInventoryDeficiencyInput,
+    ReportStockDeficiencyInput,
+    ResolveDeficiencyInput,
     UpdateVendorInput,
 )
 from .queries import (
     _aisle_to_type,
     _bay_to_type,
     _bin_to_type,
+    _deficiency_review_to_type,
     _inventory_location_to_type,
     _notification_to_type,
     _opening_item_to_type,
@@ -41,17 +52,20 @@ from .queries import (
     _po_line_item_to_type,
     _po_to_type,
     _project_to_type,
+    _pull_request_item_to_type,
     _pull_request_to_type,
     _receive_record_to_type,
     _row_to_type,
     _shop_assembly_opening_to_type,
     _shop_assembly_request_to_type,
+    _stock_item_to_type,
     _vendor_to_type,
 )
 from .types import (
     ApproveResult,
     ApproveShopAssemblyResult,
     ClerkUser,
+    DeficiencyReview,
     FinalizeImportResult,
     InventoryLocation,
     Notification,
@@ -62,8 +76,11 @@ from .types import (
     PullRequest,
     PurchaseOrder,
     ReceiveRecord,
+    ReclassifyStockResult,
+    SAReplacementResult,
     ShopAssemblyOpening,
     ShopAssemblyRequest,
+    StockItem,
     Vendor,
     WarehouseAisleType,
     WarehouseBayType,
@@ -476,6 +493,7 @@ class Mutation:
                         "bay": loc.bay,
                         "bin": loc.bin,
                         "quantity": loc.quantity,
+                        "deficient_quantity": loc.deficient_quantity,
                     }
                     for loc in li.locations
                 ],
@@ -1019,3 +1037,161 @@ class Mutation:
             session.commit()
             session.refresh(aisle)
             return _aisle_to_type(aisle)
+
+    # ---------------------------------------------------------------------------
+    # Stock pool + deficiency mutations
+    # ---------------------------------------------------------------------------
+
+    @strawberry.mutation
+    def destock_inventory(self, input: DestockInventoryInput) -> StockItem:
+        with SessionLocal() as session:
+            result = stock_repository.destock_inventory(
+                session,
+                inventory_location_id=uuid.UUID(str(input.inventory_location_id)),
+                quantity=input.quantity,
+                source=input.source,
+                reason_text=input.reason_text,
+                target_aisle=input.target_aisle,
+                target_bay=input.target_bay,
+                target_bin=input.target_bin,
+                performed_by=input.performed_by or "Admin/Manager",
+            )
+            session.commit()
+            session.refresh(result)
+            return _stock_item_to_type(result)
+
+    @strawberry.mutation
+    def allocate_stock_to_project(self, input: AllocateStockToProjectInput) -> InventoryLocation:
+        with SessionLocal() as session:
+            result = stock_repository.allocate_stock_to_project(
+                session,
+                stock_item_id=uuid.UUID(str(input.stock_item_id)),
+                project_id=uuid.UUID(str(input.project_id)),
+                target_hardware_category=input.target_hardware_category,
+                target_product_code=input.target_product_code,
+                quantity=input.quantity,
+                target_aisle=input.target_aisle,
+                target_bay=input.target_bay,
+                target_bin=input.target_bin,
+                performed_by=input.performed_by or "Admin/Manager",
+            )
+            session.commit()
+            session.refresh(result)
+            return _inventory_location_to_type(result)
+
+    @strawberry.mutation
+    def adjust_stock_quantity(self, input: AdjustStockQuantityInput) -> StockItem:
+        with SessionLocal() as session:
+            result = stock_repository.adjust_stock_quantity(
+                session,
+                stock_item_id=uuid.UUID(str(input.stock_item_id)),
+                new_quantity=input.new_quantity,
+                reason_text=input.reason_text,
+                performed_by=input.performed_by or "Admin/Manager",
+            )
+            session.commit()
+            session.refresh(result)
+            return _stock_item_to_type(result)
+
+    @strawberry.mutation
+    def move_stock_location(self, input: MoveStockLocationInput) -> StockItem:
+        with SessionLocal() as session:
+            result = stock_repository.move_stock_location(
+                session,
+                stock_item_id=uuid.UUID(str(input.stock_item_id)),
+                new_aisle=input.new_aisle,
+                new_bay=input.new_bay,
+                new_bin=input.new_bin,
+                performed_by=input.performed_by or "Admin/Manager",
+            )
+            session.commit()
+            session.refresh(result)
+            return _stock_item_to_type(result)
+
+    @strawberry.mutation
+    def reclassify_stock_item(self, input: ReclassifyStockItemInput) -> ReclassifyStockResult:
+        with SessionLocal() as session:
+            new_row, original = stock_repository.reclassify_stock_item(
+                session,
+                stock_item_id=uuid.UUID(str(input.stock_item_id)),
+                new_hardware_category=input.new_hardware_category,
+                new_product_code=input.new_product_code,
+                quantity=input.quantity,
+                reason_text=input.reason_text,
+                performed_by=input.performed_by or "Admin/Manager",
+            )
+            session.commit()
+            session.refresh(new_row)
+            if original is not None:
+                session.refresh(original)
+            return ReclassifyStockResult(
+                reclassified_stock_item=_stock_item_to_type(new_row),
+                original_stock_item=_stock_item_to_type(original) if original else None,
+            )
+
+    @strawberry.mutation
+    def report_inventory_deficiency(self, input: ReportInventoryDeficiencyInput) -> InventoryLocation:
+        with SessionLocal() as session:
+            il = stock_repository.report_inventory_deficiency(
+                session,
+                inventory_location_id=uuid.UUID(str(input.inventory_location_id)),
+                quantity=input.quantity,
+                reason_text=input.reason_text,
+                performed_by=input.performed_by or "Admin/Manager",
+            )
+            session.commit()
+            session.refresh(il)
+            return _inventory_location_to_type(il)
+
+    @strawberry.mutation
+    def report_stock_deficiency(self, input: ReportStockDeficiencyInput) -> StockItem:
+        with SessionLocal() as session:
+            si = stock_repository.report_stock_deficiency(
+                session,
+                stock_item_id=uuid.UUID(str(input.stock_item_id)),
+                quantity=input.quantity,
+                reason_text=input.reason_text,
+                performed_by=input.performed_by or "Admin/Manager",
+            )
+            session.commit()
+            session.refresh(si)
+            return _stock_item_to_type(si)
+
+    @strawberry.mutation
+    def report_deficiency_at_assembly(self, input: ReportDeficiencyAtAssemblyInput) -> SAReplacementResult:
+        with SessionLocal() as session:
+            il, pri = stock_repository.report_deficiency_at_assembly(
+                session,
+                sa_opening_item_id=uuid.UUID(str(input.shop_assembly_opening_item_id)),
+                source_inventory_location_id=uuid.UUID(str(input.source_inventory_location_id)),
+                quantity=input.quantity,
+                reason_text=input.reason_text,
+                performed_by=input.performed_by or "Admin/Manager",
+            )
+            session.commit()
+            session.refresh(il)
+            session.refresh(pri)
+            return SAReplacementResult(
+                inventory_location=_inventory_location_to_type(il),
+                replacement_pull_request_item=_pull_request_item_to_type(pri),
+            )
+
+    @strawberry.mutation
+    def resolve_deficiency(self, input: ResolveDeficiencyInput) -> DeficiencyReview:
+        with SessionLocal() as session:
+            review = stock_repository.resolve_deficiency(
+                session,
+                inventory_location_id=(
+                    uuid.UUID(str(input.inventory_location_id)) if input.inventory_location_id else None
+                ),
+                stock_item_id=(uuid.UUID(str(input.stock_item_id)) if input.stock_item_id else None),
+                resolution=input.resolution,
+                quantity=input.quantity,
+                reason_text=input.reason_text,
+                rma_reference=input.rma_reference,
+                destock_source=input.destock_source,
+                reviewed_by=input.reviewed_by or "Admin/Manager",
+            )
+            session.commit()
+            session.refresh(review)
+            return _deficiency_review_to_type(review)

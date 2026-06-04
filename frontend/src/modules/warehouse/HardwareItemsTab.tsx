@@ -13,27 +13,34 @@ import {
   CircularProgress,
   Alert,
   Button,
+  Chip,
   ToggleButton,
   ToggleButtonGroup,
 } from '@mui/material';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
-import { useQuery, useLazyQuery } from '@apollo/client/react';
+import { useQuery, useLazyQuery, useMutation } from '@apollo/client/react';
 import { GET_INVENTORY_HIERARCHY, GET_INVENTORY_ITEMS, GET_INVENTORY_BY_VENDOR } from '../../graphql/queries';
+import { REPORT_INVENTORY_DEFICIENCY } from '../../graphql/mutations';
 import { useIdentity } from '../../hooks/useIdentity';
+import { useToast } from '../../components/Toast';
 import InventoryCorrectionModal from '../admin/InventoryCorrectionModal';
 import AuditHistoryDrawer from './AuditHistoryDrawer';
 import ProjectProgressDashboard from './ProjectProgressDashboard';
 import SpotCheckModal from './SpotCheckModal';
+import DestockInventoryModal from './stock/DestockInventoryModal';
 
 interface InventoryItem {
   id: string;
   projectId: string;
-  poLineItemId: string;
-  receiveLineItemId: string;
+  poLineItemId: string | null;
+  receiveLineItemId: string | null;
+  stockItemId: string | null;
   hardwareCategory: string;
   productCode: string;
   quantity: number;
+  deficientQuantity: number;
+  available: number;
   aisle: string | null;
   bay: string | null;
   bin: string | null;
@@ -97,6 +104,18 @@ const baseDetailColumns: GridColDef[] = [
   { field: 'productCode', headerName: 'Product Code', flex: 1 },
   { field: 'hardwareCategory', headerName: 'Hardware Category', flex: 1 },
   { field: 'quantity', headerName: 'Quantity', flex: 0.5, type: 'number' },
+  {
+    field: 'deficient',
+    headerName: 'Deficient',
+    flex: 0.5,
+    type: 'number',
+    valueGetter: (_v: unknown, row: InventoryItemDetail) =>
+      row.inventoryLocation.deficientQuantity ?? 0,
+    renderCell: (params: { row: InventoryItemDetail }) => {
+      const dq = params.row.inventoryLocation.deficientQuantity ?? 0;
+      return dq > 0 ? <Chip label={dq} color="warning" size="small" /> : <span>0</span>;
+    },
+  },
   {
     field: 'unitCost',
     headerName: 'Unit Cost',
@@ -169,6 +188,19 @@ function ProductCodeDetail({
   const [spotCheckItem, setSpotCheckItem] = useState<InventoryItem | null>(null);
   const [spotCheckOpen, setSpotCheckOpen] = useState(false);
 
+  // Destock modal
+  const [destockItem, setDestockItem] = useState<InventoryItem | null>(null);
+
+  // Report deficient — uses prompt for the qty (lightweight; can be upgraded later)
+  const { showToast } = useToast();
+  const [reportDeficient] = useMutation(REPORT_INVENTORY_DEFICIENCY, {
+    onCompleted: () => {
+      showToast('Deficient quantity flagged on row', 'success');
+      fetchItems({ variables: { projectId, category, productCode } });
+    },
+    onError: (err) => showToast(err.message, 'error'),
+  });
+
   const handleExpand = useCallback(
     (_event: React.SyntheticEvent, isExpanded: boolean) => {
       setExpanded(isExpanded);
@@ -232,7 +264,71 @@ function ProductCodeDetail({
         </Button>
       ),
     };
-    if (!isAdmin) return [...baseDetailColumns, spotCheckCol, historyCol];
+    const destockCol: GridColDef = {
+      field: 'destock',
+      headerName: '',
+      width: 100,
+      sortable: false,
+      filterable: false,
+      renderCell: (params: { row: InventoryItemDetail }) => (
+        <Button
+          size="small"
+          onClick={(e) => {
+            e.stopPropagation();
+            setDestockItem(params.row.inventoryLocation);
+          }}
+          disabled={params.row.inventoryLocation.quantity <= 0}
+        >
+          Destock
+        </Button>
+      ),
+    };
+    const reportDefCol: GridColDef = {
+      field: 'reportDeficient',
+      headerName: '',
+      width: 110,
+      sortable: false,
+      filterable: false,
+      renderCell: (params: { row: InventoryItemDetail }) => (
+        <Button
+          size="small"
+          color="warning"
+          onClick={(e) => {
+            e.stopPropagation();
+            const il = params.row.inventoryLocation;
+            const avail = il.available ?? il.quantity - (il.deficientQuantity ?? 0);
+            if (avail <= 0) {
+              showToast('Nothing left to flag — all units already deficient', 'info');
+              return;
+            }
+            const input = window.prompt(`Flag how many of ${il.productCode} as deficient? (max ${avail})`, '1');
+            if (!input) return;
+            const q = Number(input);
+            if (!Number.isInteger(q) || q < 1 || q > avail) {
+              showToast('Invalid quantity', 'error');
+              return;
+            }
+            const reason = window.prompt('Reason (optional)', '') || null;
+            reportDeficient({
+              variables: {
+                input: {
+                  inventoryLocationId: il.id,
+                  quantity: q,
+                  reasonText: reason,
+                  performedBy: 'Warehouse',
+                },
+              },
+            });
+          }}
+          disabled={
+            (params.row.inventoryLocation.available ?? params.row.inventoryLocation.quantity) <= 0
+          }
+        >
+          Flag Deficient
+        </Button>
+      ),
+    };
+    if (!isAdmin) return [...baseDetailColumns, destockCol, reportDefCol, spotCheckCol, historyCol];
     return [
       ...baseDetailColumns,
       {
@@ -255,10 +351,12 @@ function ProductCodeDetail({
           </Button>
         ),
       } satisfies GridColDef,
+      destockCol,
+      reportDefCol,
       spotCheckCol,
       historyCol,
     ];
-  }, [isAdmin]);
+  }, [isAdmin, reportDeficient, showToast]);
 
   const handleCorrectionSuccess = useCallback(() => {
     fetchItems({
@@ -339,6 +437,17 @@ function ProductCodeDetail({
           }}
           item={spotCheckItem}
           onSuccess={handleCorrectionSuccess}
+        />
+      )}
+
+      {destockItem && (
+        <DestockInventoryModal
+          inventoryLocation={destockItem}
+          onClose={() => setDestockItem(null)}
+          onSuccess={() => {
+            setDestockItem(null);
+            handleCorrectionSuccess();
+          }}
         />
       )}
     </>
