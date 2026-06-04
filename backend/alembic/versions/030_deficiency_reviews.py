@@ -24,7 +24,6 @@ def upgrade() -> None:
         "LEAVE_AS_DEFICIENT",
         name="deficiency_resolution",
     )
-    deficiency_resolution.create(op.get_bind(), checkfirst=False)
 
     op.create_table(
         "deficiency_reviews",
@@ -41,11 +40,7 @@ def upgrade() -> None:
             sa.ForeignKey("stock_items.id"),
             nullable=True,
         ),
-        sa.Column(
-            "resolution",
-            sa.Enum(name="deficiency_resolution", create_type=False),
-            nullable=False,
-        ),
+        sa.Column("resolution", deficiency_resolution, nullable=False),
         sa.Column("quantity", sa.Integer(), nullable=False),
         sa.Column("reason_text", sa.Text(), nullable=True),
         sa.Column("rma_reference", sa.String(100), nullable=True),
