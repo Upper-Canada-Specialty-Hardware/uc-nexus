@@ -129,7 +129,7 @@ def _make_packing_slip_item(
     psi = PackingSlipItem(
         id=uuid.uuid4(),
         packing_slip_id=packing_slip_id,
-        item_type=PullRequestItemType.HARDWARE,
+        item_type=PullRequestItemType.LOOSE,
         product_code=product_code,
         hardware_category=hardware_category,
         quantity=quantity,
