@@ -25,7 +25,7 @@ export default function AdminModule() {
       <Route path="opening-status" element={<AdminSubLayout><OpeningStatusTab /></AdminSubLayout>} />
       <Route path="vendors" element={<AdminSubLayout><VendorsPage /></AdminSubLayout>} />
       <Route path="users" element={<AdminSubLayout><UserManagementPage /></AdminSubLayout>} />
-      <Route path="*" element={<Navigate to="" replace />} />
+      <Route path="*" element={<Navigate to="/app/admin" replace />} />
     </Routes>
   );
 }
