@@ -4,7 +4,7 @@ import uuid
 from collections import defaultdict
 from datetime import datetime
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import InvalidStateTransitionError, NotFoundError, ValidationError
@@ -28,6 +28,8 @@ from app.models.purchase_order import POLineItem as POLineItemModel
 from app.models.purchase_order import PurchaseOrder as POModel
 from app.models.receiving import ReceiveLineItem as ReceiveLineItemModel
 from app.models.receiving import ReceiveRecord as ReceiveRecordModel
+from app.models.shipping import PackingSlip as PackingSlipModel
+from app.models.shipping import PackingSlipItem as PackingSlipItemModel
 from app.models.shop_assembly import ShopAssemblyRequest as SARModel
 from app.models.vendor import Vendor as VendorModel
 from app.services import notification_service
@@ -220,59 +222,114 @@ PLACED_PO_STATUSES = (
 )
 
 
-def get_project_progress_by_product(session: Session, project_id: uuid.UUID | None = None) -> list[dict]:
-    """Per-product-code rollup of required (from schedule), ordered, and received quantities.
+def get_project_progress_by_product(session: Session, project_id: uuid.UUID) -> list[dict]:
+    """Per-product-code rollup of purchasing progress for a single project.
 
-    - When project_id is given, all aggregates are scoped to that project.
-    - When project_id is None, required sums across all projects' hardware items and
-      ordered/received sum across every placed PO.
-    - required_quantity: sum of hardware_items.item_quantity, grouped by (category, code)
-    - ordered_quantity / received_quantity: sum of po_line_items.{ordered,received}_quantity for POs
-      with status in PLACED_PO_STATUSES (excludes DRAFT and CANCELLED) and deleted_at IS NULL,
-      grouped by (category, code).
+    Columns produced per (hardware_category, product_code) drawn from the project's hardware schedule:
+    - required_quantity: sum of hardware_items.item_quantity
+    - po_drafted: sum of po_line_items.ordered_quantity on DRAFT POs
+    - ordered_quantity / received_quantity: sum of ordered/received on placed POs
+      (status in PLACED_PO_STATUSES, deleted_at IS NULL)
+    - back_ordered: sum of (ordered - received) on placed POs that are NOT yet CLOSED
+      (i.e. ORDERED, VENDOR_CONFIRMED, PARTIALLY_RECEIVED)
+    - shipped_out: sum of packing_slip_items.quantity for the project
     """
-    required_stmt = select(
-        HardwareItemModel.hardware_category.label("hardware_category"),
-        HardwareItemModel.product_code.label("product_code"),
-        func.sum(HardwareItemModel.item_quantity).label("required_quantity"),
+    required_subq = (
+        select(
+            HardwareItemModel.hardware_category.label("hardware_category"),
+            HardwareItemModel.product_code.label("product_code"),
+            func.sum(HardwareItemModel.item_quantity).label("required_quantity"),
+        )
+        .where(HardwareItemModel.project_id == project_id)
+        .group_by(HardwareItemModel.hardware_category, HardwareItemModel.product_code)
+        .subquery()
     )
-    if project_id is not None:
-        required_stmt = required_stmt.where(HardwareItemModel.project_id == project_id)
-    required_subq = required_stmt.group_by(
-        HardwareItemModel.hardware_category, HardwareItemModel.product_code
-    ).subquery()
 
-    po_agg_stmt = (
+    drafted_subq = (
+        select(
+            POLineItemModel.hardware_category.label("hardware_category"),
+            POLineItemModel.product_code.label("product_code"),
+            func.sum(POLineItemModel.ordered_quantity).label("po_drafted"),
+        )
+        .join(POModel, POLineItemModel.po_id == POModel.id)
+        .where(
+            POModel.deleted_at.is_(None),
+            POModel.status == POStatus.DRAFT,
+            POModel.project_id == project_id,
+        )
+        .group_by(POLineItemModel.hardware_category, POLineItemModel.product_code)
+        .subquery()
+    )
+
+    placed_subq = (
         select(
             POLineItemModel.hardware_category.label("hardware_category"),
             POLineItemModel.product_code.label("product_code"),
             func.sum(POLineItemModel.ordered_quantity).label("ordered_quantity"),
             func.sum(POLineItemModel.received_quantity).label("received_quantity"),
+            func.sum(
+                case(
+                    (
+                        POModel.status.in_([POStatus.ORDERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED]),
+                        POLineItemModel.ordered_quantity - POLineItemModel.received_quantity,
+                    ),
+                    else_=0,
+                )
+            ).label("back_ordered"),
         )
         .join(POModel, POLineItemModel.po_id == POModel.id)
         .where(
             POModel.deleted_at.is_(None),
             POModel.status.in_(PLACED_PO_STATUSES),
+            POModel.project_id == project_id,
         )
+        .group_by(POLineItemModel.hardware_category, POLineItemModel.product_code)
+        .subquery()
     )
-    if project_id is not None:
-        po_agg_stmt = po_agg_stmt.where(POModel.project_id == project_id)
-    po_agg_subq = po_agg_stmt.group_by(POLineItemModel.hardware_category, POLineItemModel.product_code).subquery()
+
+    shipped_subq = (
+        select(
+            PackingSlipItemModel.hardware_category.label("hardware_category"),
+            PackingSlipItemModel.product_code.label("product_code"),
+            func.sum(PackingSlipItemModel.quantity).label("shipped_out"),
+        )
+        .join(PackingSlipModel, PackingSlipItemModel.packing_slip_id == PackingSlipModel.id)
+        .where(PackingSlipModel.project_id == project_id)
+        .group_by(PackingSlipItemModel.hardware_category, PackingSlipItemModel.product_code)
+        .subquery()
+    )
 
     stmt = (
         select(
             required_subq.c.hardware_category,
             required_subq.c.product_code,
             required_subq.c.required_quantity,
-            func.coalesce(po_agg_subq.c.ordered_quantity, 0).label("ordered_quantity"),
-            func.coalesce(po_agg_subq.c.received_quantity, 0).label("received_quantity"),
+            func.coalesce(drafted_subq.c.po_drafted, 0).label("po_drafted"),
+            func.coalesce(placed_subq.c.ordered_quantity, 0).label("ordered_quantity"),
+            func.coalesce(placed_subq.c.received_quantity, 0).label("received_quantity"),
+            func.coalesce(placed_subq.c.back_ordered, 0).label("back_ordered"),
+            func.coalesce(shipped_subq.c.shipped_out, 0).label("shipped_out"),
         )
         .select_from(required_subq)
         .outerjoin(
-            po_agg_subq,
+            drafted_subq,
             and_(
-                required_subq.c.hardware_category == po_agg_subq.c.hardware_category,
-                required_subq.c.product_code == po_agg_subq.c.product_code,
+                required_subq.c.hardware_category == drafted_subq.c.hardware_category,
+                required_subq.c.product_code == drafted_subq.c.product_code,
+            ),
+        )
+        .outerjoin(
+            placed_subq,
+            and_(
+                required_subq.c.hardware_category == placed_subq.c.hardware_category,
+                required_subq.c.product_code == placed_subq.c.product_code,
+            ),
+        )
+        .outerjoin(
+            shipped_subq,
+            and_(
+                required_subq.c.hardware_category == shipped_subq.c.hardware_category,
+                required_subq.c.product_code == shipped_subq.c.product_code,
             ),
         )
         .order_by(required_subq.c.hardware_category, required_subq.c.product_code)
@@ -283,8 +340,11 @@ def get_project_progress_by_product(session: Session, project_id: uuid.UUID | No
             "hardware_category": row.hardware_category,
             "product_code": row.product_code,
             "required_quantity": int(row.required_quantity),
+            "po_drafted": int(row.po_drafted),
             "ordered_quantity": int(row.ordered_quantity),
             "received_quantity": int(row.received_quantity),
+            "back_ordered": int(row.back_ordered),
+            "shipped_out": int(row.shipped_out),
         }
         for row in session.execute(stmt).all()
     ]

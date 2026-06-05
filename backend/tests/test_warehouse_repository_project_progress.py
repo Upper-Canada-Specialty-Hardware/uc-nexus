@@ -4,10 +4,11 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from app.models.enums import HardwareItemState, POStatus
+from app.models.enums import HardwareItemState, POStatus, PullRequestItemType
 from app.models.hardware import HardwareItem
 from app.models.project import Opening, Project
 from app.models.purchase_order import POLineItem, PurchaseOrder
+from app.models.shipping import PackingSlip, PackingSlipItem
 from app.models.vendor import Vendor
 from app.repositories import warehouse_repository
 
@@ -104,7 +105,41 @@ def _make_line_item(
     return li
 
 
-def test_returns_required_only_when_no_pos(db_session):
+def _make_packing_slip(session, project_id: uuid.UUID) -> PackingSlip:
+    ps = PackingSlip(
+        id=uuid.uuid4(),
+        packing_slip_number=f"PS-{uuid.uuid4().hex[:8]}",
+        project_id=project_id,
+        shipped_by="tester",
+        shipped_at=datetime.utcnow(),
+    )
+    session.add(ps)
+    session.flush()
+    return ps
+
+
+def _make_packing_slip_item(
+    session,
+    *,
+    packing_slip_id: uuid.UUID,
+    product_code: str,
+    hardware_category: str = "HINGE",
+    quantity: int = 1,
+) -> PackingSlipItem:
+    psi = PackingSlipItem(
+        id=uuid.uuid4(),
+        packing_slip_id=packing_slip_id,
+        item_type=PullRequestItemType.HARDWARE,
+        product_code=product_code,
+        hardware_category=hardware_category,
+        quantity=quantity,
+    )
+    session.add(psi)
+    session.flush()
+    return psi
+
+
+def test_returns_zero_aggregates_when_no_pos_or_shipments(db_session):
     project = _make_project(db_session)
     opening = _make_opening(db_session, project.id)
     _make_hardware_item(
@@ -118,12 +153,14 @@ def test_returns_required_only_when_no_pos(db_session):
     by_code = {r["product_code"]: r for r in rows}
 
     assert set(by_code.keys()) == {"HG-100", "HG-200"}
-    assert by_code["HG-100"]["required_quantity"] == 3
-    assert by_code["HG-100"]["ordered_quantity"] == 0
-    assert by_code["HG-100"]["received_quantity"] == 0
-    assert by_code["HG-200"]["required_quantity"] == 2
-    assert by_code["HG-200"]["ordered_quantity"] == 0
-    assert by_code["HG-200"]["received_quantity"] == 0
+    for code, expected_required in [("HG-100", 3), ("HG-200", 2)]:
+        r = by_code[code]
+        assert r["required_quantity"] == expected_required
+        assert r["po_drafted"] == 0
+        assert r["ordered_quantity"] == 0
+        assert r["received_quantity"] == 0
+        assert r["back_ordered"] == 0
+        assert r["shipped_out"] == 0
 
 
 def test_aggregates_required_across_openings(db_session):
@@ -157,7 +194,7 @@ def test_counts_ordered_received_for_placed_pos(db_session):
     assert rows[0]["received_quantity"] == 4  # 1 * 4 placed statuses
 
 
-def test_excludes_draft_and_cancelled_pos(db_session):
+def test_excludes_draft_and_cancelled_pos_from_ordered_received(db_session):
     project = _make_project(db_session)
     opening = _make_opening(db_session, project.id)
     vendor = _make_vendor(db_session)
@@ -225,7 +262,7 @@ def test_omits_product_codes_not_in_schedule(db_session):
 
 
 def test_scoped_by_project(db_session):
-    """POs and hardware items from another project must not bleed in."""
+    """POs, shipments, and hardware items from another project must not bleed in."""
     p1 = _make_project(db_session)
     p2 = _make_project(db_session)
     o1 = _make_opening(db_session, p1.id, "A01")
@@ -237,12 +274,19 @@ def test_scoped_by_project(db_session):
 
     po_p2 = _make_po(db_session, project_id=p2.id, vendor_id=vendor.id, status=POStatus.ORDERED)
     _make_line_item(db_session, po_id=po_p2.id, product_code="HG-100", ordered_quantity=99, received_quantity=42)
+    draft_p2 = _make_po(db_session, project_id=p2.id, vendor_id=vendor.id, status=POStatus.DRAFT)
+    _make_line_item(db_session, po_id=draft_p2.id, product_code="HG-100", ordered_quantity=11)
+    ps_p2 = _make_packing_slip(db_session, p2.id)
+    _make_packing_slip_item(db_session, packing_slip_id=ps_p2.id, product_code="HG-100", quantity=7)
 
     rows = warehouse_repository.get_project_progress_by_product(db_session, p1.id)
     assert len(rows) == 1
     assert rows[0]["required_quantity"] == 5
+    assert rows[0]["po_drafted"] == 0
     assert rows[0]["ordered_quantity"] == 0
     assert rows[0]["received_quantity"] == 0
+    assert rows[0]["back_ordered"] == 0
+    assert rows[0]["shipped_out"] == 0
 
 
 def test_groups_by_category_and_product_code(db_session):
@@ -278,26 +322,68 @@ def test_returns_empty_for_project_without_schedule(db_session):
     assert rows == []
 
 
-def test_aggregates_across_projects_when_project_id_is_none(db_session):
-    """project_id=None sums required/ordered/received across all projects, grouped by (category, code)."""
-    p1 = _make_project(db_session)
-    p2 = _make_project(db_session)
-    o1 = _make_opening(db_session, p1.id, "A01")
-    o2 = _make_opening(db_session, p2.id, "B01")
+def test_counts_po_drafted_only_from_draft_pos(db_session):
+    """po_drafted comes from DRAFT POs and does NOT contribute to ordered/received."""
+    project = _make_project(db_session)
+    opening = _make_opening(db_session, project.id)
     vendor = _make_vendor(db_session)
+    _make_hardware_item(
+        db_session, project_id=project.id, opening_id=opening.id, product_code="HG-100", item_quantity=10
+    )
 
-    _make_hardware_item(db_session, project_id=p1.id, opening_id=o1.id, product_code="HG-100", item_quantity=3)
-    _make_hardware_item(db_session, project_id=p2.id, opening_id=o2.id, product_code="HG-100", item_quantity=4)
+    d1 = _make_po(db_session, project_id=project.id, vendor_id=vendor.id, status=POStatus.DRAFT)
+    _make_line_item(db_session, po_id=d1.id, product_code="HG-100", ordered_quantity=4)
+    d2 = _make_po(db_session, project_id=project.id, vendor_id=vendor.id, status=POStatus.DRAFT)
+    _make_line_item(db_session, po_id=d2.id, product_code="HG-100", ordered_quantity=3)
+    placed = _make_po(db_session, project_id=project.id, vendor_id=vendor.id, status=POStatus.ORDERED)
+    _make_line_item(db_session, po_id=placed.id, product_code="HG-100", ordered_quantity=5, received_quantity=2)
 
-    po1 = _make_po(db_session, project_id=p1.id, vendor_id=vendor.id, status=POStatus.ORDERED)
-    _make_line_item(db_session, po_id=po1.id, product_code="HG-100", ordered_quantity=2, received_quantity=1)
-    po2 = _make_po(db_session, project_id=p2.id, vendor_id=vendor.id, status=POStatus.PARTIALLY_RECEIVED)
-    _make_line_item(db_session, po_id=po2.id, product_code="HG-100", ordered_quantity=5, received_quantity=4)
-    cancelled = _make_po(db_session, project_id=p2.id, vendor_id=vendor.id, status=POStatus.CANCELLED)
-    _make_line_item(db_session, po_id=cancelled.id, product_code="HG-100", ordered_quantity=99, received_quantity=0)
+    rows = warehouse_repository.get_project_progress_by_product(db_session, project.id)
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["po_drafted"] == 7  # 4 + 3
+    assert r["ordered_quantity"] == 5
+    assert r["received_quantity"] == 2
 
-    rows = warehouse_repository.get_project_progress_by_product(db_session, None)
-    by_code = {(r["hardware_category"], r["product_code"]): r for r in rows}
-    assert by_code[("HINGE", "HG-100")]["required_quantity"] == 7  # 3 + 4
-    assert by_code[("HINGE", "HG-100")]["ordered_quantity"] == 7  # 2 + 5 (cancelled excluded)
-    assert by_code[("HINGE", "HG-100")]["received_quantity"] == 5  # 1 + 4
+
+def test_back_ordered_excludes_closed_pos(db_session):
+    """back_ordered = sum(ordered - received) for placed POs that are NOT CLOSED."""
+    project = _make_project(db_session)
+    opening = _make_opening(db_session, project.id)
+    vendor = _make_vendor(db_session)
+    _make_hardware_item(
+        db_session, project_id=project.id, opening_id=opening.id, product_code="HG-100", item_quantity=20
+    )
+
+    # ORDERED with partial receipt → contributes 4 (10 - 6)
+    p1 = _make_po(db_session, project_id=project.id, vendor_id=vendor.id, status=POStatus.ORDERED)
+    _make_line_item(db_session, po_id=p1.id, product_code="HG-100", ordered_quantity=10, received_quantity=6)
+    # PARTIALLY_RECEIVED → contributes 2 (5 - 3)
+    p2 = _make_po(db_session, project_id=project.id, vendor_id=vendor.id, status=POStatus.PARTIALLY_RECEIVED)
+    _make_line_item(db_session, po_id=p2.id, product_code="HG-100", ordered_quantity=5, received_quantity=3)
+    # CLOSED → contributes 0 even though ordered - received > 0
+    p3 = _make_po(db_session, project_id=project.id, vendor_id=vendor.id, status=POStatus.CLOSED)
+    _make_line_item(db_session, po_id=p3.id, product_code="HG-100", ordered_quantity=7, received_quantity=4)
+
+    rows = warehouse_repository.get_project_progress_by_product(db_session, project.id)
+    assert len(rows) == 1
+    assert rows[0]["back_ordered"] == 6  # 4 + 2, NOT counting CLOSED's 3
+
+
+def test_shipped_out_sums_packing_slip_items(db_session):
+    """shipped_out aggregates packing_slip_items.quantity scoped to the project."""
+    project = _make_project(db_session)
+    opening = _make_opening(db_session, project.id)
+    _make_hardware_item(
+        db_session, project_id=project.id, opening_id=opening.id, product_code="HG-100", item_quantity=10
+    )
+
+    ps1 = _make_packing_slip(db_session, project.id)
+    _make_packing_slip_item(db_session, packing_slip_id=ps1.id, product_code="HG-100", quantity=3)
+    _make_packing_slip_item(db_session, packing_slip_id=ps1.id, product_code="HG-100", quantity=2)
+    ps2 = _make_packing_slip(db_session, project.id)
+    _make_packing_slip_item(db_session, packing_slip_id=ps2.id, product_code="HG-100", quantity=4)
+
+    rows = warehouse_repository.get_project_progress_by_product(db_session, project.id)
+    assert len(rows) == 1
+    assert rows[0]["shipped_out"] == 9

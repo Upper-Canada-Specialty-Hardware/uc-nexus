@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { Box } from '@mui/material';
-import HardwareSummaryTab from './HardwareSummaryTab';
+import ProjectPurchasingProgressPage from './ProjectPurchasingProgressPage';
 import OpeningStatusTab from './OpeningStatusTab';
 import UserManagementPage from './UserManagementPage';
 import VendorsPage from './VendorsPage';
@@ -21,7 +21,7 @@ export default function AdminModule() {
   return (
     <Routes>
       <Route index element={<AdminLanding />} />
-      <Route path="hardware-summary" element={<AdminSubLayout><HardwareSummaryTab /></AdminSubLayout>} />
+      <Route path="project-purchasing-progress" element={<AdminSubLayout><ProjectPurchasingProgressPage /></AdminSubLayout>} />
       <Route path="opening-status" element={<AdminSubLayout><OpeningStatusTab /></AdminSubLayout>} />
       <Route path="vendors" element={<AdminSubLayout><VendorsPage /></AdminSubLayout>} />
       <Route path="users" element={<AdminSubLayout><UserManagementPage /></AdminSubLayout>} />
