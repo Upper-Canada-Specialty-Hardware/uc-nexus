@@ -502,20 +502,6 @@ export const RECONCILE_SCHEDULE = gql`
   }
 `;
 
-export const GET_HARDWARE_SUMMARY = gql`
-  query GetHardwareSummary($projectId: ID) {
-    hardwareSummary(projectId: $projectId) {
-      hardwareCategory
-      productCode
-      poDrafted
-      ordered
-      received
-      backOrdered
-      shippedOut
-    }
-  }
-`;
-
 export const GET_OPENING_HARDWARE_STATUS = gql`
   query GetOpeningHardwareStatus($projectId: ID) {
     openingHardwareStatus(projectId: $projectId) {
@@ -687,13 +673,16 @@ export const GET_WAREHOUSE_DASHBOARD = gql`
 `;
 
 export const GET_PROJECT_PROGRESS_BY_PRODUCT = gql`
-  query GetProjectProgressByProduct($projectId: ID) {
+  query GetProjectProgressByProduct($projectId: ID!) {
     projectProgressByProduct(projectId: $projectId) {
       hardwareCategory
       productCode
       requiredQuantity
+      poDrafted
       orderedQuantity
       receivedQuantity
+      backOrdered
+      shippedOut
     }
   }
 `;

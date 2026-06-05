@@ -42,7 +42,7 @@ function ShortcutCard({ label, icon, onClick }: ShortcutCardProps) {
 }
 
 const SUB_ROUTES = [
-  { label: 'Hardware Summary', path: '/app/admin/hardware-summary', icon: <SummarizeIcon fontSize="large" /> },
+  { label: 'Project Purchasing Progress', path: '/app/admin/project-purchasing-progress', icon: <SummarizeIcon fontSize="large" /> },
   { label: 'Opening Status', path: '/app/admin/opening-status', icon: <VisibilityIcon fontSize="large" /> },
   { label: 'Vendors', path: '/app/admin/vendors', icon: <StoreIcon fontSize="large" /> },
   { label: 'User Management', path: '/app/admin/users', icon: <GroupIcon fontSize="large" /> },

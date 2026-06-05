@@ -87,7 +87,7 @@ const SIDEBAR_ITEMS: SidebarItem[] = [
     icon: <AdminPanelSettingsIcon />,
     requiredRoles: ['Admin/Manager'],
     subItems: [
-      { label: 'Hardware Summary', path: '/app/admin/hardware-summary' },
+      { label: 'Project Purchasing Progress', path: '/app/admin/project-purchasing-progress' },
       { label: 'Opening Status', path: '/app/admin/opening-status' },
       { label: 'Vendors', path: '/app/admin/vendors' },
       { label: 'User Management', path: '/app/admin/users' },

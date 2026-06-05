@@ -26,7 +26,6 @@ import { useIdentity } from '../../hooks/useIdentity';
 import { useToast } from '../../components/Toast';
 import InventoryCorrectionModal from '../admin/InventoryCorrectionModal';
 import AuditHistoryDrawer from './AuditHistoryDrawer';
-import ProjectProgressDashboard from './ProjectProgressDashboard';
 import SpotCheckModal from './SpotCheckModal';
 import DestockInventoryModal from './stock/DestockInventoryModal';
 
@@ -670,8 +669,6 @@ export default function HardwareItemsTab({ projectId }: HardwareItemsTabProps) {
           </Typography>
         </Box>
       </Box>
-
-      <ProjectProgressDashboard projectId={projectId} />
 
       {/* Filtered empty state */}
       {filteredGroups.length === 0 && (
