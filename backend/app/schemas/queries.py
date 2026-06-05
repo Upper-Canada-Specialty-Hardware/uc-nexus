@@ -37,7 +37,6 @@ from .types import (
     BackOrderedItem,
     ClerkUser,
     DeficientItemRow,
-    HardwareSummaryRow,
     HomeDashboardStats,
     InventoryHierarchyNode,
     InventoryItemDetail,
@@ -891,23 +890,6 @@ class Query:
             return [_shop_assembly_opening_to_type(sao) for sao in saos]
 
     @strawberry.field
-    def hardware_summary(self, project_id: strawberry.ID | None = None) -> list[HardwareSummaryRow]:
-        with SessionLocal() as session:
-            rows = admin_repository.get_hardware_summary(session, uuid.UUID(str(project_id)) if project_id else None)
-            return [
-                HardwareSummaryRow(
-                    hardware_category=r["hardware_category"],
-                    product_code=r["product_code"],
-                    po_drafted=r["po_drafted"],
-                    ordered=r["ordered"],
-                    received=r["received"],
-                    back_ordered=r["back_ordered"],
-                    shipped_out=r["shipped_out"],
-                )
-                for r in rows
-            ]
-
-    @strawberry.field
     def opening_hardware_status(self, project_id: strawberry.ID | None = None) -> list[OpeningHardwareStatus]:
         with SessionLocal() as session:
             rows = admin_repository.get_opening_hardware_status(
@@ -1037,18 +1019,19 @@ class Query:
             )
 
     @strawberry.field
-    def project_progress_by_product(self, project_id: strawberry.ID | None = None) -> list[ProjectProgressByProduct]:
+    def project_progress_by_product(self, project_id: strawberry.ID) -> list[ProjectProgressByProduct]:
         with SessionLocal() as session:
-            rows = warehouse_repository.get_project_progress_by_product(
-                session, uuid.UUID(str(project_id)) if project_id else None
-            )
+            rows = warehouse_repository.get_project_progress_by_product(session, uuid.UUID(str(project_id)))
             return [
                 ProjectProgressByProduct(
                     hardware_category=row["hardware_category"],
                     product_code=row["product_code"],
                     required_quantity=row["required_quantity"],
+                    po_drafted=row["po_drafted"],
                     ordered_quantity=row["ordered_quantity"],
                     received_quantity=row["received_quantity"],
+                    back_ordered=row["back_ordered"],
+                    shipped_out=row["shipped_out"],
                 )
                 for row in rows
             ]

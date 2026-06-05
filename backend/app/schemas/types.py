@@ -469,17 +469,6 @@ class ReconciliationResult:
 
 
 @strawberry.type
-class HardwareSummaryRow:
-    hardware_category: str
-    product_code: str
-    po_drafted: int
-    ordered: int
-    received: int
-    back_ordered: int
-    shipped_out: int
-
-
-@strawberry.type
 class OpeningHardwareStatusItem:
     hardware_category: str
     product_code: str
@@ -549,8 +538,11 @@ class ProjectProgressByProduct:
     hardware_category: str
     product_code: str
     required_quantity: int
+    po_drafted: int
     ordered_quantity: int
     received_quantity: int
+    back_ordered: int
+    shipped_out: int
 
 
 @strawberry.type
