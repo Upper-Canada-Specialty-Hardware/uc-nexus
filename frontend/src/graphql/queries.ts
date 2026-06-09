@@ -599,7 +599,7 @@ export const GET_LOCATION_CONTENTS = gql`
     locationContents(aisle: $aisle, bay: $bay, bin: $bin) {
       inventoryItems {
         inventoryLocation {
-          id projectId poLineItemId receiveLineItemId
+          id projectId poLineItemId receiveLineItemId stockItemId
           hardwareCategory productCode quantity
           aisle row bay bin receivedAt createdAt updatedAt
         }
@@ -613,6 +613,39 @@ export const GET_LOCATION_CONTENTS = gql`
         createdAt updatedAt
         installedHardware { id openingItemId productCode hardwareCategory quantity }
       }
+      stockItems {
+        id hardwareCategory productCode quantity deficientQuantity available
+        aisle bay bin receivedAt createdAt updatedAt
+      }
+    }
+  }
+`;
+
+export const GET_LOCATION_AUDIT_HISTORY = gql`
+  query GetLocationAuditHistory($aisle: String!, $bay: String, $bin: String, $limit: Int) {
+    locationAuditHistory(aisle: $aisle, bay: $bay, bin: $bin, limit: $limit) {
+      id projectId entityType entityId action detail performedBy createdAt
+    }
+  }
+`;
+
+export const GET_LOCATION_DISTINCT_VALUES = gql`
+  query GetLocationDistinctValues {
+    locationDistinctValues {
+      aisles
+      bays
+      bins
+    }
+  }
+`;
+
+export const GET_LOCATION_DUPLICATES = gql`
+  query GetLocationDuplicates {
+    locationDuplicates {
+      canonicalAisle
+      canonicalBay
+      canonicalBin
+      variants { aisle bay bin }
     }
   }
 `;
@@ -683,45 +716,6 @@ export const GET_PROJECT_PROGRESS_BY_PRODUCT = gql`
       receivedQuantity
       backOrdered
       shippedOut
-    }
-  }
-`;
-
-export const GET_WAREHOUSE_AISLES = gql`
-  query GetWarehouseAisles($activeOnly: Boolean) {
-    warehouseAisles(activeOnly: $activeOnly) {
-      id name label orientation xPosition yPosition width height isActive
-      rows { id aisleId name level isActive }
-      bays {
-        id aisleId name rowPosition colPosition isActive
-        bins {
-          id bayId rowId name rowPosition colPosition capacity isActive
-        }
-      }
-    }
-  }
-`;
-
-export const GET_WAREHOUSE_OVERVIEW = gql`
-  query GetWarehouseOverview {
-    warehouseOverview {
-      id name label orientation xPosition yPosition width height isActive
-      rows { id aisleId name level isActive }
-      totalQuantity itemCount totalCapacity
-      bays {
-        id aisleId name rowPosition colPosition isActive
-        bins {
-          id bayId rowId name rowPosition colPosition capacity isActive
-        }
-      }
-    }
-  }
-`;
-
-export const GET_SUGGEST_PUT_AWAY = gql`
-  query GetSuggestPutAway($productCode: String!, $hardwareCategory: String!, $quantity: Int) {
-    suggestPutAway(productCode: $productCode, hardwareCategory: $hardwareCategory, quantity: $quantity) {
-      aisle row bay bin reason currentQuantity capacity
     }
   }
 `;

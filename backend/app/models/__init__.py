@@ -25,4 +25,3 @@ from .shop_assembly import (  # noqa: E402, F401
 )
 from .stock_item import StockItem  # noqa: E402, F401
 from .vendor import Vendor  # noqa: E402, F401
-from .warehouse_layout import WarehouseAisle, WarehouseBay, WarehouseBin, WarehouseRow  # noqa: E402, F401

@@ -5,6 +5,7 @@ import ProjectPurchasingProgressPage from './ProjectPurchasingProgressPage';
 import OpeningStatusTab from './OpeningStatusTab';
 import UserManagementPage from './UserManagementPage';
 import VendorsPage from './VendorsPage';
+import LocationCleanupPage from './LocationCleanupPage';
 import AdminLanding from './AdminLanding';
 import BackToModule from '../../components/BackToModule';
 
@@ -25,6 +26,7 @@ export default function AdminModule() {
       <Route path="opening-status" element={<AdminSubLayout><OpeningStatusTab /></AdminSubLayout>} />
       <Route path="vendors" element={<AdminSubLayout><VendorsPage /></AdminSubLayout>} />
       <Route path="users" element={<AdminSubLayout><UserManagementPage /></AdminSubLayout>} />
+      <Route path="location-cleanup" element={<AdminSubLayout><LocationCleanupPage /></AdminSubLayout>} />
       <Route path="*" element={<Navigate to="/app/admin" replace />} />
     </Routes>
   );

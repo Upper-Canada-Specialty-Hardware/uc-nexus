@@ -507,6 +507,36 @@ class LocationUtilizationEntry:
 class LocationContents:
     inventory_items: list[InventoryItemDetail]
     opening_items: list[OpeningItem]
+    stock_items: list["StockItem"]
+
+
+@strawberry.type
+class LocationVariant:
+    aisle: str | None
+    bay: str | None
+    bin: str | None
+
+
+@strawberry.type
+class LocationDuplicateGroup:
+    canonical_aisle: str | None
+    canonical_bay: str | None
+    canonical_bin: str | None
+    variants: list[LocationVariant]
+
+
+@strawberry.type
+class LocationDistinctValues:
+    aisles: list[str]
+    bays: list[str]
+    bins: list[str]
+
+
+@strawberry.type
+class LocationMergeResult:
+    inventory_locations: int
+    opening_items: int
+    stock_items: int
 
 
 @strawberry.type
@@ -543,67 +573,6 @@ class ProjectProgressByProduct:
     received_quantity: int
     back_ordered: int
     shipped_out: int
-
-
-@strawberry.type
-class WarehouseBinType:
-    id: strawberry.ID
-    bay_id: strawberry.ID
-    row_id: strawberry.ID | None
-    name: str
-    row_position: int
-    col_position: int
-    capacity: int | None
-    is_active: bool
-
-
-@strawberry.type
-class WarehouseRowType:
-    id: strawberry.ID
-    aisle_id: strawberry.ID
-    name: str
-    level: int
-    is_active: bool
-
-
-@strawberry.type
-class WarehouseBayType:
-    id: strawberry.ID
-    aisle_id: strawberry.ID
-    name: str
-    row_position: int
-    col_position: int
-    is_active: bool
-    bins: list[WarehouseBinType]
-
-
-@strawberry.type
-class WarehouseAisleType:
-    id: strawberry.ID
-    name: str
-    label: str | None
-    orientation: str
-    x_position: int
-    y_position: int
-    width: int
-    height: int
-    is_active: bool
-    bays: list[WarehouseBayType]
-    rows: list[WarehouseRowType]
-    total_quantity: int | None = None
-    item_count: int | None = None
-    total_capacity: int | None = None
-
-
-@strawberry.type
-class PutAwaySuggestion:
-    aisle: str
-    row: str
-    bay: str
-    bin: str
-    reason: str
-    current_quantity: int
-    capacity: int | None
 
 
 @strawberry.type
