@@ -588,86 +588,6 @@ export const DELETE_VENDOR = gql`
   }
 `;
 
-// --- Warehouse Layout mutations ---
-
-export const CREATE_AISLE = gql`
-  mutation CreateAisle($name: String!, $label: String, $orientation: String, $xPosition: Int, $yPosition: Int, $width: Int, $height: Int) {
-    createAisle(name: $name, label: $label, orientation: $orientation, xPosition: $xPosition, yPosition: $yPosition, width: $width, height: $height) {
-      id name label orientation xPosition yPosition width height isActive
-      rows { id aisleId name level isActive }
-      bays { id name bins { id name } }
-    }
-  }
-`;
-
-export const UPDATE_AISLE = gql`
-  mutation UpdateAisle($id: ID!, $name: String, $label: String, $orientation: String, $xPosition: Int, $yPosition: Int, $width: Int, $height: Int, $isActive: Boolean) {
-    updateAisle(id: $id, name: $name, label: $label, orientation: $orientation, xPosition: $xPosition, yPosition: $yPosition, width: $width, height: $height, isActive: $isActive) {
-      id name label orientation xPosition yPosition width height isActive
-      rows { id aisleId name level isActive }
-      bays { id name bins { id name } }
-    }
-  }
-`;
-
-export const CREATE_ROW = gql`
-  mutation CreateRow($aisleId: ID!, $name: String!, $level: Int) {
-    createRow(aisleId: $aisleId, name: $name, level: $level) {
-      id aisleId name level isActive
-    }
-  }
-`;
-
-export const UPDATE_ROW = gql`
-  mutation UpdateRow($id: ID!, $name: String, $level: Int, $isActive: Boolean) {
-    updateRow(id: $id, name: $name, level: $level, isActive: $isActive) {
-      id aisleId name level isActive
-    }
-  }
-`;
-
-export const CREATE_BAY = gql`
-  mutation CreateBay($aisleId: ID!, $name: String!, $rowPosition: Int, $colPosition: Int) {
-    createBay(aisleId: $aisleId, name: $name, rowPosition: $rowPosition, colPosition: $colPosition) {
-      id aisleId name rowPosition colPosition isActive bins { id name }
-    }
-  }
-`;
-
-export const UPDATE_BAY = gql`
-  mutation UpdateBay($id: ID!, $name: String, $rowPosition: Int, $colPosition: Int, $isActive: Boolean) {
-    updateBay(id: $id, name: $name, rowPosition: $rowPosition, colPosition: $colPosition, isActive: $isActive) {
-      id aisleId name rowPosition colPosition isActive bins { id name }
-    }
-  }
-`;
-
-export const CREATE_BIN = gql`
-  mutation CreateBin($bayId: ID!, $name: String!, $rowId: ID, $rowPosition: Int, $colPosition: Int, $capacity: Int) {
-    createBin(bayId: $bayId, name: $name, rowId: $rowId, rowPosition: $rowPosition, colPosition: $colPosition, capacity: $capacity) {
-      id bayId rowId name rowPosition colPosition capacity isActive
-    }
-  }
-`;
-
-export const UPDATE_BIN = gql`
-  mutation UpdateBin($id: ID!, $name: String, $rowPosition: Int, $colPosition: Int, $capacity: Int, $isActive: Boolean) {
-    updateBin(id: $id, name: $name, rowPosition: $rowPosition, colPosition: $colPosition, capacity: $capacity, isActive: $isActive) {
-      id bayId rowId name rowPosition colPosition capacity isActive
-    }
-  }
-`;
-
-export const CLONE_AISLE = gql`
-  mutation CloneAisle($aisleId: ID!, $newName: String!, $xPosition: Int, $yPosition: Int) {
-    cloneAisle(aisleId: $aisleId, newName: $newName, xPosition: $xPosition, yPosition: $yPosition) {
-      id name label orientation xPosition yPosition width height isActive
-      rows { id aisleId name level isActive }
-      bays { id name bins { id name } }
-    }
-  }
-`;
-
 // ---------------------------------------------------------------------------
 // Stock pool + deficiency mutations
 // ---------------------------------------------------------------------------
@@ -702,6 +622,38 @@ export const MOVE_STOCK_LOCATION = gql`
   mutation MoveStockLocation($input: MoveStockLocationInput!) {
     moveStockLocation(input: $input) {
       id aisle bay bin
+    }
+  }
+`;
+
+export const ASSIGN_STOCK_ITEM_LOCATION = gql`
+  mutation AssignStockItemLocation($stockItemId: ID!, $aisle: String!, $bay: String!, $bin: String!) {
+    assignStockItemLocation(stockItemId: $stockItemId, aisle: $aisle, bay: $bay, bin: $bin) {
+      id aisle bay bin
+    }
+  }
+`;
+
+export const MARK_STOCK_ITEM_UNLOCATED = gql`
+  mutation MarkStockItemUnlocated($stockItemId: ID!) {
+    markStockItemUnlocated(stockItemId: $stockItemId) {
+      id aisle bay bin
+    }
+  }
+`;
+
+export const MERGE_LOCATIONS = gql`
+  mutation MergeLocations(
+    $fromAisle: String!, $fromBay: String!, $fromBin: String!,
+    $toAisle: String!, $toBay: String!, $toBin: String!
+  ) {
+    mergeLocations(
+      fromAisle: $fromAisle, fromBay: $fromBay, fromBin: $fromBin,
+      toAisle: $toAisle, toBay: $toBay, toBin: $toBin
+    ) {
+      inventoryLocations
+      openingItems
+      stockItems
     }
   }
 `;

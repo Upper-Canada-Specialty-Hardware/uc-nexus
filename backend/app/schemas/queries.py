@@ -18,7 +18,6 @@ from app.repositories import (
     stock_repository,
     user_repository,
     vendor_repository,
-    warehouse_layout_repository,
     warehouse_repository,
 )
 
@@ -41,7 +40,10 @@ from .types import (
     InventoryHierarchyNode,
     InventoryItemDetail,
     LocationContents,
+    LocationDistinctValues,
+    LocationDuplicateGroup,
     LocationUtilizationEntry,
+    LocationVariant,
     Notification,
     Opening,
     OpeningHardwareStatus,
@@ -61,7 +63,6 @@ from .types import (
     PullRequest,
     PullRequestItem,
     PurchaseOrder,
-    PutAwaySuggestion,
     ReceiveLineItem,
     ReceiveRecord,
     RecentReceiveRecord,
@@ -74,11 +75,7 @@ from .types import (
     ShopAssemblyStats,
     Vendor,
     VendorInventoryNode,
-    WarehouseAisleType,
-    WarehouseBayType,
-    WarehouseBinType,
     WarehouseDashboard,
-    WarehouseRowType,
 )
 from .types import (
     DeficiencyReview as DeficiencyReviewType,
@@ -451,41 +448,6 @@ def _packing_slip_to_type(ps) -> PackingSlipType:
     )
 
 
-def _bin_to_type(wbin) -> WarehouseBinType:
-    return WarehouseBinType(
-        id=strawberry.ID(str(wbin.id)),
-        bay_id=strawberry.ID(str(wbin.bay_id)),
-        row_id=strawberry.ID(str(wbin.row_id)) if wbin.row_id else None,
-        name=wbin.name,
-        row_position=wbin.row_position,
-        col_position=wbin.col_position,
-        capacity=wbin.capacity,
-        is_active=wbin.is_active,
-    )
-
-
-def _row_to_type(row) -> WarehouseRowType:
-    return WarehouseRowType(
-        id=strawberry.ID(str(row.id)),
-        aisle_id=strawberry.ID(str(row.aisle_id)),
-        name=row.name,
-        level=row.level,
-        is_active=row.is_active,
-    )
-
-
-def _bay_to_type(bay) -> WarehouseBayType:
-    return WarehouseBayType(
-        id=strawberry.ID(str(bay.id)),
-        aisle_id=strawberry.ID(str(bay.aisle_id)),
-        name=bay.name,
-        row_position=bay.row_position,
-        col_position=bay.col_position,
-        is_active=bay.is_active,
-        bins=[_bin_to_type(b) for b in getattr(bay, "bins", [])],
-    )
-
-
 def _stock_item_to_type(si) -> StockItemType:
     deficient_qty = getattr(si, "deficient_quantity", 0) or 0
     return StockItemType(
@@ -535,23 +497,6 @@ def _deficient_item_row_to_type(row: dict) -> DeficientItemRow:
         aisle=row["aisle"],
         bay=row["bay"],
         bin=row["bin"],
-    )
-
-
-def _aisle_to_type(aisle, **kwargs) -> WarehouseAisleType:
-    return WarehouseAisleType(
-        id=strawberry.ID(str(aisle.id)),
-        name=aisle.name,
-        label=aisle.label,
-        orientation=aisle.orientation,
-        x_position=aisle.x_position,
-        y_position=aisle.y_position,
-        width=aisle.width,
-        height=aisle.height,
-        is_active=aisle.is_active,
-        bays=[_bay_to_type(b) for b in getattr(aisle, "bays", [])],
-        rows=[_row_to_type(r) for r in getattr(aisle, "rows", [])],
-        **kwargs,
     )
 
 
@@ -1075,7 +1020,56 @@ class Query:
                     for item in data["inventory_items"]
                 ],
                 opening_items=[_opening_item_to_type(oi) for oi in data["opening_items"]],
+                stock_items=[_stock_item_to_type(si) for si in data["stock_items"]],
             )
+
+    @strawberry.field
+    def location_audit_history(
+        self,
+        aisle: str,
+        bay: str | None = None,
+        bin: str | None = None,
+        limit: int = 10,
+    ) -> list[AuditLogEntry]:
+        with SessionLocal() as session:
+            entries = warehouse_repository.get_location_audit_history(session, aisle, bay, bin, limit=limit)
+            return [
+                AuditLogEntry(
+                    id=strawberry.ID(str(e.id)),
+                    project_id=strawberry.ID(str(e.project_id)) if e.project_id else None,
+                    entity_type=e.entity_type,
+                    entity_id=strawberry.ID(str(e.entity_id)),
+                    action=e.action,
+                    detail=e.detail,
+                    performed_by=e.performed_by,
+                    created_at=e.created_at,
+                )
+                for e in entries
+            ]
+
+    @strawberry.field
+    def location_distinct_values(self) -> LocationDistinctValues:
+        with SessionLocal() as session:
+            values = warehouse_repository.get_distinct_location_values(session)
+            return LocationDistinctValues(
+                aisles=values["aisles"],
+                bays=values["bays"],
+                bins=values["bins"],
+            )
+
+    @strawberry.field
+    def location_duplicates(self) -> list[LocationDuplicateGroup]:
+        with SessionLocal() as session:
+            groups = warehouse_repository.get_location_duplicates(session)
+            return [
+                LocationDuplicateGroup(
+                    canonical_aisle=g["canonical_aisle"],
+                    canonical_bay=g["canonical_bay"],
+                    canonical_bin=g["canonical_bin"],
+                    variants=[LocationVariant(aisle=v["aisle"], bay=v["bay"], bin=v["bin"]) for v in g["variants"]],
+                )
+                for g in groups
+            ]
 
     @strawberry.field
     def location_utilization(self) -> list[LocationUtilizationEntry]:
@@ -1121,76 +1115,6 @@ class Query:
                     created_at=e.created_at,
                 )
                 for e in entries
-            ]
-
-    # --- Warehouse Layout queries ---
-
-    @strawberry.field
-    def warehouse_aisles(self, active_only: bool = True) -> list[WarehouseAisleType]:
-        with SessionLocal() as session:
-            aisles = warehouse_layout_repository.get_aisles(session, active_only)
-            return [_aisle_to_type(a) for a in aisles]
-
-    @strawberry.field
-    def warehouse_bays(self, aisle_id: strawberry.ID) -> list[WarehouseBayType]:
-        with SessionLocal() as session:
-            bays = warehouse_layout_repository.get_bays(session, uuid.UUID(str(aisle_id)))
-            return [_bay_to_type(b) for b in bays]
-
-    @strawberry.field
-    def warehouse_rows(self, aisle_id: strawberry.ID) -> list[WarehouseRowType]:
-        with SessionLocal() as session:
-            rows = warehouse_layout_repository.get_rows(session, uuid.UUID(str(aisle_id)))
-            return [_row_to_type(r) for r in rows]
-
-    @strawberry.field
-    def warehouse_bins(self, bay_id: strawberry.ID, row_id: strawberry.ID | None = None) -> list[WarehouseBinType]:
-        with SessionLocal() as session:
-            bins = warehouse_layout_repository.get_bins(
-                session,
-                uuid.UUID(str(bay_id)),
-                uuid.UUID(str(row_id)) if row_id else None,
-            )
-            return [_bin_to_type(b) for b in bins]
-
-    @strawberry.field
-    def warehouse_overview(self) -> list[WarehouseAisleType]:
-        with SessionLocal() as session:
-            rows = warehouse_layout_repository.get_aisle_utilization(session)
-            return [
-                _aisle_to_type(
-                    r["aisle"],
-                    total_quantity=r["total_quantity"],
-                    item_count=r["item_count"],
-                    total_capacity=r["total_capacity"],
-                )
-                for r in rows
-            ]
-
-    @strawberry.field
-    def suggest_put_away(
-        self,
-        product_code: str,
-        hardware_category: str,
-        quantity: int = 1,
-    ) -> list[PutAwaySuggestion]:
-        with SessionLocal() as session:
-            suggestions = warehouse_layout_repository.suggest_put_away(
-                session,
-                product_code,
-                hardware_category,
-                quantity,
-            )
-            return [
-                PutAwaySuggestion(
-                    aisle=s["aisle"],
-                    bay=s["bay"],
-                    bin=s["bin"],
-                    reason=s["reason"],
-                    current_quantity=s["current_quantity"],
-                    capacity=s["capacity"],
-                )
-                for s in suggestions
             ]
 
     # ---------------------------------------------------------------------------

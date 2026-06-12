@@ -1,7 +1,6 @@
-import { useState, type ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import { Box, Typography, Card, CardContent, CardActionArea, Grid } from '@mui/material';
 import InventoryIcon from '@mui/icons-material/Inventory2';
-import MapIcon from '@mui/icons-material/Map';
 import LocationOnIcon from '@mui/icons-material/LocationOn';
 import LocalShippingIcon from '@mui/icons-material/LocalShipping';
 import DownloadIcon from '@mui/icons-material/Download';
@@ -11,7 +10,6 @@ import WarehouseIcon from '@mui/icons-material/Warehouse';
 import ReportProblemIcon from '@mui/icons-material/ReportProblem';
 import { useNavigate } from 'react-router-dom';
 import DashboardCards from './DashboardCards';
-import WarehouseMap from './WarehouseMap';
 
 interface ShortcutCardProps {
   label: string;
@@ -45,7 +43,6 @@ const SUB_ROUTES = [
 
 export default function WarehouseLanding() {
   const navigate = useNavigate();
-  const [mapOpen, setMapOpen] = useState(false);
 
   return (
     <Box>
@@ -58,15 +55,7 @@ export default function WarehouseLanding() {
             <ShortcutCard label={card.label} icon={card.icon} onClick={() => navigate(card.path)} />
           </Grid>
         ))}
-        <Grid size={{ xs: 12, sm: 6, md: 4, lg: 3 }}>
-          <ShortcutCard
-            label="Warehouse Map"
-            icon={<MapIcon fontSize="large" />}
-            onClick={() => setMapOpen(true)}
-          />
-        </Grid>
       </Grid>
-      <WarehouseMap open={mapOpen} onClose={() => setMapOpen(false)} />
     </Box>
   );
 }
