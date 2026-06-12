@@ -5,7 +5,6 @@ import {
   Accordion,
   AccordionSummary,
   AccordionDetails,
-  TextField,
   Button,
   Alert,
   CircularProgress,
@@ -24,7 +23,12 @@ import {
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import { useQuery, useMutation } from '@apollo/client/react';
 import { useToast } from '../../components/Toast';
-import { GET_UNLOCATED_INVENTORY, GET_PROJECTS } from '../../graphql/queries';
+import LocationAutocomplete from '../../components/LocationAutocomplete';
+import {
+  GET_UNLOCATED_INVENTORY,
+  GET_PROJECTS,
+  GET_LOCATION_DISTINCT_VALUES,
+} from '../../graphql/queries';
 import { ASSIGN_INVENTORY_LOCATION } from '../../graphql/mutations';
 
 // ---- Types ----
@@ -83,6 +87,9 @@ export default function PutAwayTab() {
 
   // Queries
   const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
+  const { data: distinctData } = useQuery<{
+    locationDistinctValues: { aisles: string[]; bays: string[]; bins: string[] };
+  }>(GET_LOCATION_DISTINCT_VALUES, { fetchPolicy: 'cache-and-network' });
 
   const {
     data: unlocatedData,
@@ -92,6 +99,10 @@ export default function PutAwayTab() {
   } = useQuery<{ unlocatedInventory: UnlocatedItem[] }>(GET_UNLOCATED_INVENTORY, {
     variables: { projectId: projectFilter || undefined },
   });
+
+  const aisleOptions = distinctData?.locationDistinctValues.aisles ?? [];
+  const bayOptions = distinctData?.locationDistinctValues.bays ?? [];
+  const binOptions = distinctData?.locationDistinctValues.bins ?? [];
 
   // Mutation
   const [assignLocation] = useMutation(ASSIGN_INVENTORY_LOCATION);
@@ -244,31 +255,28 @@ export default function PutAwayTab() {
                           <TableCell align="right">{item.inventoryLocation.quantity}</TableCell>
                           <TableCell>{item.poNumber ?? '\u2014'}</TableCell>
                           <TableCell>{formatDate(item.inventoryLocation.receivedAt)}</TableCell>
-                          <TableCell sx={{ minWidth: 100 }}>
-                            <TextField
-                              size="small"
+                          <TableCell sx={{ minWidth: 140 }}>
+                            <LocationAutocomplete
+                              label=""
                               value={loc.aisle}
-                              onChange={(e) => updateLocationInput(id, 'aisle', e.target.value)}
-                              slotProps={{ htmlInput: { maxLength: 20 } }}
-                              sx={{ width: '100%' }}
+                              onChange={(v) => updateLocationInput(id, 'aisle', v)}
+                              options={aisleOptions}
                             />
                           </TableCell>
-                          <TableCell sx={{ minWidth: 100 }}>
-                            <TextField
-                              size="small"
+                          <TableCell sx={{ minWidth: 140 }}>
+                            <LocationAutocomplete
+                              label=""
                               value={loc.bay}
-                              onChange={(e) => updateLocationInput(id, 'bay', e.target.value)}
-                              slotProps={{ htmlInput: { maxLength: 20 } }}
-                              sx={{ width: '100%' }}
+                              onChange={(v) => updateLocationInput(id, 'bay', v)}
+                              options={bayOptions}
                             />
                           </TableCell>
-                          <TableCell sx={{ minWidth: 100 }}>
-                            <TextField
-                              size="small"
+                          <TableCell sx={{ minWidth: 140 }}>
+                            <LocationAutocomplete
+                              label=""
                               value={loc.bin}
-                              onChange={(e) => updateLocationInput(id, 'bin', e.target.value)}
-                              slotProps={{ htmlInput: { maxLength: 20 } }}
-                              sx={{ width: '100%' }}
+                              onChange={(v) => updateLocationInput(id, 'bin', v)}
+                              options={binOptions}
                             />
                           </TableCell>
                           <TableCell>

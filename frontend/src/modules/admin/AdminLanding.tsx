@@ -4,6 +4,7 @@ import SummarizeIcon from '@mui/icons-material/Summarize';
 import VisibilityIcon from '@mui/icons-material/Visibility';
 import StoreIcon from '@mui/icons-material/Store';
 import GroupIcon from '@mui/icons-material/Group';
+import CleaningServicesIcon from '@mui/icons-material/CleaningServices';
 import PeopleIcon from '@mui/icons-material/People';
 import BusinessIcon from '@mui/icons-material/Business';
 import CategoryIcon from '@mui/icons-material/Category';
@@ -46,6 +47,7 @@ const SUB_ROUTES = [
   { label: 'Opening Status', path: '/app/admin/opening-status', icon: <VisibilityIcon fontSize="large" /> },
   { label: 'Vendors', path: '/app/admin/vendors', icon: <StoreIcon fontSize="large" /> },
   { label: 'User Management', path: '/app/admin/users', icon: <GroupIcon fontSize="large" /> },
+  { label: 'Location Cleanup', path: '/app/admin/location-cleanup', icon: <CleaningServicesIcon fontSize="large" /> },
 ];
 
 export default function AdminLanding() {
