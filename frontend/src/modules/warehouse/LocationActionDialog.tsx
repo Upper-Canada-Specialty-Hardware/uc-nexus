@@ -90,15 +90,21 @@ export default function LocationActionDialog({
     }
   }, [open, mode, single]);
 
-  // Mutations — one of each. We dispatch by kind/mode in handleConfirm.
-  const [moveInv] = useMutation(MOVE_INVENTORY_LOCATION);
-  const [moveOpen] = useMutation(MOVE_OPENING_ITEM_LOCATION);
-  const [moveStock] = useMutation(MOVE_STOCK_LOCATION);
-  const [unlocateInv] = useMutation(MARK_INVENTORY_UNLOCATED);
-  const [unlocateOpen] = useMutation(MARK_OPENING_ITEM_UNLOCATED);
-  const [unlocateStock] = useMutation(MARK_STOCK_ITEM_UNLOCATED);
-  const [adjustInv] = useMutation(ADJUST_INVENTORY_QUANTITY);
-  const [adjustStock] = useMutation(ADJUST_STOCK_QUANTITY);
+  // Mutations dispatch by kind/mode in handleConfirm. Each one syncs the queries the
+  // LocationsTab + side panel depend on so the UI reflects the new server state when
+  // the success toast appears (no stale render until full reload).
+  const syncQueries = {
+    refetchQueries: ['GetLocationUtilization', 'GetLocationContents', 'GetLocationAuditHistory'],
+    awaitRefetchQueries: true,
+  };
+  const [moveInv] = useMutation(MOVE_INVENTORY_LOCATION, syncQueries);
+  const [moveOpen] = useMutation(MOVE_OPENING_ITEM_LOCATION, syncQueries);
+  const [moveStock] = useMutation(MOVE_STOCK_LOCATION, syncQueries);
+  const [unlocateInv] = useMutation(MARK_INVENTORY_UNLOCATED, syncQueries);
+  const [unlocateOpen] = useMutation(MARK_OPENING_ITEM_UNLOCATED, syncQueries);
+  const [unlocateStock] = useMutation(MARK_STOCK_ITEM_UNLOCATED, syncQueries);
+  const [adjustInv] = useMutation(ADJUST_INVENTORY_QUANTITY, syncQueries);
+  const [adjustStock] = useMutation(ADJUST_STOCK_QUANTITY, syncQueries);
 
   const [submitting, setSubmitting] = useState(false);
 

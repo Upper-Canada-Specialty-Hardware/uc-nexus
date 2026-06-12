@@ -146,7 +146,6 @@ const utilColumns: GridColDef<LocationEntry & { id: string }>[] = [
 interface ContentsPanelProps {
   selected: LocationEntry;
   onClose: () => void;
-  onRefetch: () => void;
   aisleOptions: string[];
   bayOptions: string[];
   binOptions: string[];
@@ -204,18 +203,14 @@ function RowActionMenu({
 function ContentsPanel({
   selected,
   onClose,
-  onRefetch,
   aisleOptions,
   bayOptions,
   binOptions,
 }: ContentsPanelProps) {
-  const { data, loading, error, refetch: refetchContents } = useQuery<LocationContentsData>(
-    GET_LOCATION_CONTENTS,
-    {
-      variables: { aisle: selected.aisle, bay: selected.bay, bin: selected.bin },
-      fetchPolicy: 'cache-and-network',
-    },
-  );
+  const { data, loading, error } = useQuery<LocationContentsData>(GET_LOCATION_CONTENTS, {
+    variables: { aisle: selected.aisle, bay: selected.bay, bin: selected.bin },
+    fetchPolicy: 'cache-and-network',
+  });
 
   const invItems = data?.locationContents?.inventoryItems ?? [];
   const oiItems = data?.locationContents?.openingItems ?? [];
@@ -237,10 +232,10 @@ function ContentsPanel({
   }, []);
 
   const handleSuccess = useCallback(() => {
+    // Mutations declare refetchQueries with awaitRefetchQueries: true, so locationUtilization,
+    // locationContents, and locationAuditHistory are already fresh by the time this fires.
     setSelectedIds(new Set());
-    refetchContents();
-    onRefetch();
-  }, [refetchContents, onRefetch]);
+  }, []);
 
   const allTargetsById = useMemo(() => {
     const map = new Map<string, LocationActionTarget>();
@@ -507,7 +502,7 @@ export default function LocationsTab() {
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<LocationEntry | null>(null);
 
-  const { data: utilData, loading: utilLoading, error: utilError, refetch: refetchUtil } = useQuery<{
+  const { data: utilData, loading: utilLoading, error: utilError } = useQuery<{
     locationUtilization: LocationEntry[];
   }>(GET_LOCATION_UTILIZATION, { fetchPolicy: 'cache-and-network' });
 
@@ -609,7 +604,6 @@ export default function LocationsTab() {
             <ContentsPanel
               selected={selected}
               onClose={() => setSelected(null)}
-              onRefetch={refetchUtil}
               aisleOptions={aisles}
               bayOptions={bays}
               binOptions={bins}
