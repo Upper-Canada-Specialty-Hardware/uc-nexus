@@ -179,7 +179,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
   }>(GET_PROJECT_HARDWARE_SCHEDULE, { fetchPolicy: 'network-only' });
 
   // Eagerly fetch the persisted schedule on wizard open for re-import projects so the
-  // upload step can show the "Start from latest" picker (gated on hardware-item presence).
+  // upload step can show the "use last uploaded" picker (gated on hardware-item presence).
   useEffect(() => {
     if (!open || !isReimport) return;
     fetchProjectSchedule({ variables: { projectId: project.id } });
@@ -702,7 +702,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
       includeShopAssemblyRequest: purpose === 'assembly',
       shopAssemblyRequestNumber: purpose === 'assembly' ? sarRequestNumber : null,
       // True when the user uploaded a fresh XML on a project that already has a persisted
-      // schedule (i.e., they did not pick "Use latest schedule"). The backend wipes all
+      // schedule (i.e., they did not pick "Use last uploaded schedule"). The backend wipes all
       // existing HardwareItems and openings absent from the new input.
       replaceSchedule: canStartFromLatest && !hydratedFromPersisted,
       shopAssemblyOpenings: purpose === 'assembly'
@@ -862,15 +862,15 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
                       gap: 1.5,
                     }}
                   >
-                    <Typography variant="h6">Start from latest hardware schedule</Typography>
+                    <Typography variant="h6">Use last uploaded hardware schedule</Typography>
                     <Typography variant="body2" color="text.secondary">
-                      Resume from this project's last persisted schedule.
+                      Resume from this project's last uploaded schedule.
                     </Typography>
                     <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
                       {persistedOpeningCount} openings, {persistedHardwareItemCount} hardware items.
                     </Typography>
                     <Button variant="contained" onClick={handleLoadFromLatest} sx={{ mt: 'auto' }}>
-                      Use latest schedule
+                      Use last uploaded schedule
                     </Button>
                   </Paper>
 
@@ -962,7 +962,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
               {parser.state === 'done' && parsed && (
                 <Box sx={{ mt: 2 }}>
                   <Alert severity="success" sx={{ mb: 2 }}>
-                    {hydratedFromPersisted ? 'Loaded latest hardware schedule.' : 'File parsed successfully!'}
+                    {hydratedFromPersisted ? 'Loaded last uploaded hardware schedule.' : 'File parsed successfully!'}
                   </Alert>
 
                   <Box sx={{ mb: 2, display: 'flex', gap: 1, alignItems: 'center' }}>
