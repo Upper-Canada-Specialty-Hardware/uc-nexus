@@ -31,6 +31,7 @@ from .inputs import (
     DestockInventoryInput,
     FinalizeImportSessionInput,
     MoveStockLocationInput,
+    OverrideInventoryQuantityInput,
     ReclassifyStockItemInput,
     ReportDeficiencyAtAssemblyInput,
     ReportInventoryDeficiencyInput,
@@ -597,6 +598,23 @@ class Mutation:
         with SessionLocal() as session:
             result = warehouse_repository.adjust_inventory_quantity(
                 session, uuid.UUID(str(inventory_location_id)), adjustment, reason
+            )
+            session.commit()
+            session.refresh(result)
+            return _inventory_location_to_type(result)
+
+    @strawberry.mutation
+    def override_inventory_quantity(self, input: OverrideInventoryQuantityInput) -> InventoryLocation:
+        with SessionLocal() as session:
+            result = warehouse_repository.override_inventory_quantity(
+                session,
+                inv_id=uuid.UUID(str(input.inventory_location_id)),
+                new_quantity=input.new_quantity,
+                reason=input.reason_text,
+                destinations=[
+                    {"aisle": d.aisle, "bay": d.bay, "bin": d.bin, "quantity": d.quantity} for d in input.destinations
+                ],
+                performed_by=input.performed_by or "Warehouse",
             )
             session.commit()
             session.refresh(result)
