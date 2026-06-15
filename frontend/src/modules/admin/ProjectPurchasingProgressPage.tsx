@@ -6,7 +6,9 @@ import {
   CircularProgress,
   Autocomplete,
   TextField,
+  Tooltip,
 } from '@mui/material';
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useQuery } from '@apollo/client/react';
 import { GET_PROJECTS, GET_PROJECT_PROGRESS_BY_PRODUCT } from '../../graphql/queries';
@@ -23,6 +25,28 @@ interface ProgressRow {
   shippedOut: number;
 }
 
+// Each numeric column counts a different thing and they routinely disagree (e.g. Received
+// is PO receipts, NOT current inventory). Surface the exact rule on hover so the numbers
+// aren't misread cold. renderHeader keeps the column's right alignment via headerAlign.
+function infoHeader(label: string, tooltip: string): GridColDef['renderHeader'] {
+  return () => (
+    <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5 }}>
+      <Box component="span" sx={{ fontWeight: 500 }}>
+        {label}
+      </Box>
+      <Tooltip arrow enterTouchDelay={0} title={tooltip}>
+        <Box
+          component="span"
+          sx={{ display: 'inline-flex', alignItems: 'center', cursor: 'help' }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <InfoOutlinedIcon sx={{ fontSize: 16 }} color="action" />
+        </Box>
+      </Tooltip>
+    </Box>
+  );
+}
+
 const columns: GridColDef[] = [
   { field: 'productCode', headerName: 'Product Code', flex: 1, minWidth: 140 },
   { field: 'hardwareCategory', headerName: 'Hardware Category', flex: 1, minWidth: 160 },
@@ -33,6 +57,10 @@ const columns: GridColDef[] = [
     width: 110,
     headerAlign: 'right',
     align: 'right',
+    renderHeader: infoHeader(
+      'Required',
+      "Total required quantity from this project's hardware schedule, grouped by hardware category and product code.",
+    ),
   },
   {
     field: 'poDrafted',
@@ -41,6 +69,7 @@ const columns: GridColDef[] = [
     width: 120,
     headerAlign: 'right',
     align: 'right',
+    renderHeader: infoHeader('PO Drafted', 'Ordered quantity on DRAFT purchase orders for this project.'),
   },
   {
     field: 'orderedQuantity',
@@ -49,6 +78,10 @@ const columns: GridColDef[] = [
     width: 110,
     headerAlign: 'right',
     align: 'right',
+    renderHeader: infoHeader(
+      'Ordered',
+      'Ordered quantity on placed POs (Ordered, Vendor Confirmed, Partially Received, Closed). Excludes Draft and Cancelled.',
+    ),
   },
   {
     field: 'receivedQuantity',
@@ -57,6 +90,10 @@ const columns: GridColDef[] = [
     width: 110,
     headerAlign: 'right',
     align: 'right',
+    renderHeader: infoHeader(
+      'Received',
+      'Received quantity on placed POs - NOT current inventory. Stock-pool allocations and other non-PO inventory paths do not count here.',
+    ),
   },
   {
     field: 'backOrdered',
@@ -65,6 +102,10 @@ const columns: GridColDef[] = [
     width: 130,
     headerAlign: 'right',
     align: 'right',
+    renderHeader: infoHeader(
+      'Back-Ordered',
+      'Ordered minus received on placed POs not yet Closed (Ordered, Vendor Confirmed, Partially Received).',
+    ),
   },
   {
     field: 'shippedOut',
@@ -73,6 +114,7 @@ const columns: GridColDef[] = [
     width: 120,
     headerAlign: 'right',
     align: 'right',
+    renderHeader: infoHeader('Shipped Out', 'Total quantity shipped out for this project across all packing slips.'),
   },
 ];
 
