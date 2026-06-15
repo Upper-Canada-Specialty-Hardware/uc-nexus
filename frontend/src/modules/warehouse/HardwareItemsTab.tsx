@@ -22,6 +22,7 @@ import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useQuery, useLazyQuery, useMutation } from '@apollo/client/react';
 import { GET_INVENTORY_HIERARCHY, GET_INVENTORY_ITEMS, GET_INVENTORY_BY_VENDOR } from '../../graphql/queries';
 import { REPORT_INVENTORY_DEFICIENCY } from '../../graphql/mutations';
+import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
 import { useIdentity } from '../../hooks/useIdentity';
 import { useToast } from '../../components/Toast';
 import InventoryCorrectionModal from '../admin/InventoryCorrectionModal';
@@ -193,6 +194,8 @@ function ProductCodeDetail({
   // Report deficient — uses prompt for the qty (lightweight; can be upgraded later)
   const { showToast } = useToast();
   const [reportDeficient] = useMutation(REPORT_INVENTORY_DEFICIENCY, {
+    refetchQueries: WAREHOUSE_REFETCH_QUERIES,
+    awaitRefetchQueries: true,
     onCompleted: () => {
       showToast('Deficient quantity flagged on row', 'success');
       fetchItems({ variables: { projectId, category, productCode } });

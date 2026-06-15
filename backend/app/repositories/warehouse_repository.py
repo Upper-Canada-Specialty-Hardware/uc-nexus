@@ -370,6 +370,8 @@ def get_inventory_by_vendor(session: Session, project_id: uuid.UUID | None = Non
         .outerjoin(POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id)
         .outerjoin(POModel, POLineItemModel.po_id == POModel.id)
         .outerjoin(VendorModel, POModel.vendor_id == VendorModel.id)
+        # Hide rows fully emptied by destock/allocation (kept in DB for FK integrity).
+        .where(InventoryLocationModel.quantity > 0)
     )
     if project_id is not None:
         stmt = stmt.where(InventoryLocationModel.project_id == project_id)
@@ -759,6 +761,9 @@ def get_inventory_hierarchy(session: Session, project_id: uuid.UUID | None = Non
     stmt = select(InventoryLocationModel, POLineItemModel.unit_cost).outerjoin(
         POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id
     )
+    # Hide rows fully emptied by destock/allocation (quantity = 0). They are kept in the DB
+    # for FK integrity (origin of stock allocations) but should not clutter the inventory view.
+    stmt = stmt.where(InventoryLocationModel.quantity > 0)
     if project_id is not None:
         stmt = stmt.where(InventoryLocationModel.project_id == project_id)
     stmt = stmt.order_by(
@@ -825,6 +830,8 @@ def get_inventory_items(
         .where(
             InventoryLocationModel.hardware_category == category,
             InventoryLocationModel.product_code == product_code,
+            # Hide rows fully emptied by destock/allocation (kept in DB for FK integrity).
+            InventoryLocationModel.quantity > 0,
         )
     )
     if project_id is not None:

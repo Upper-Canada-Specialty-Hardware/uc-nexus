@@ -5,6 +5,7 @@ import Modal from '../../components/Modal';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import { useToast } from '../../components/Toast';
 import { ADJUST_INVENTORY_QUANTITY } from '../../graphql/mutations';
+import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
 
 interface SpotCheckItem {
   id: string;
@@ -43,6 +44,8 @@ export default function SpotCheckModal({ open, onClose, item, onSuccess }: SpotC
   }, [physicalNum]);
 
   const [adjustQuantity, { loading }] = useMutation(ADJUST_INVENTORY_QUANTITY, {
+    refetchQueries: WAREHOUSE_REFETCH_QUERIES,
+    awaitRefetchQueries: true,
     onCompleted: () => {
       showToast('Spot check adjustment applied', 'success');
       onSuccess();

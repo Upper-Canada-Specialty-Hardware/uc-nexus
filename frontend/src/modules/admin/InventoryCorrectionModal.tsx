@@ -20,6 +20,7 @@ import {
   MARK_OPENING_ITEM_UNLOCATED,
   ASSIGN_OPENING_ITEM_LOCATION,
 } from '../../graphql/mutations';
+import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
 
 // --- Item types ---
 
@@ -194,6 +195,8 @@ export default function InventoryCorrectionModal({
   // --- Mutations ---
 
   const [adjustInventoryQuantity, { loading: adjustLoading }] = useMutation(ADJUST_INVENTORY_QUANTITY, {
+    refetchQueries: WAREHOUSE_REFETCH_QUERIES,
+    awaitRefetchQueries: true,
     onCompleted: () => {
       showToast('Correction applied successfully', 'success');
       onSuccess();
@@ -205,6 +208,8 @@ export default function InventoryCorrectionModal({
   });
 
   const [moveInventoryLocation, { loading: moveInvLoading }] = useMutation(MOVE_INVENTORY_LOCATION, {
+    refetchQueries: WAREHOUSE_REFETCH_QUERIES,
+    awaitRefetchQueries: true,
     onCompleted: () => {
       showToast('Correction applied successfully', 'success');
       onSuccess();
@@ -216,6 +221,8 @@ export default function InventoryCorrectionModal({
   });
 
   const [markInventoryUnlocated, { loading: unlocateInvLoading }] = useMutation(MARK_INVENTORY_UNLOCATED, {
+    refetchQueries: WAREHOUSE_REFETCH_QUERIES,
+    awaitRefetchQueries: true,
     onCompleted: () => {
       showToast('Correction applied successfully', 'success');
       onSuccess();
@@ -227,6 +234,8 @@ export default function InventoryCorrectionModal({
   });
 
   const [assignInventoryLocation, { loading: assignInvLoading }] = useMutation(ASSIGN_INVENTORY_LOCATION, {
+    refetchQueries: WAREHOUSE_REFETCH_QUERIES,
+    awaitRefetchQueries: true,
     onCompleted: () => {
       showToast('Correction applied successfully', 'success');
       onSuccess();
@@ -238,6 +247,8 @@ export default function InventoryCorrectionModal({
   });
 
   const [moveOpeningItemLocation, { loading: moveOpenLoading }] = useMutation(MOVE_OPENING_ITEM_LOCATION, {
+    refetchQueries: WAREHOUSE_REFETCH_QUERIES,
+    awaitRefetchQueries: true,
     onCompleted: () => {
       showToast('Correction applied successfully', 'success');
       onSuccess();
@@ -249,6 +260,8 @@ export default function InventoryCorrectionModal({
   });
 
   const [markOpeningItemUnlocated, { loading: unlocateOpenLoading }] = useMutation(MARK_OPENING_ITEM_UNLOCATED, {
+    refetchQueries: WAREHOUSE_REFETCH_QUERIES,
+    awaitRefetchQueries: true,
     onCompleted: () => {
       showToast('Correction applied successfully', 'success');
       onSuccess();
@@ -260,6 +273,8 @@ export default function InventoryCorrectionModal({
   });
 
   const [assignOpeningItemLocation, { loading: assignOpenLoading }] = useMutation(ASSIGN_OPENING_ITEM_LOCATION, {
+    refetchQueries: WAREHOUSE_REFETCH_QUERIES,
+    awaitRefetchQueries: true,
     onCompleted: () => {
       showToast('Correction applied successfully', 'success');
       onSuccess();
