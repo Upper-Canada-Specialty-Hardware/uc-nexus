@@ -381,7 +381,9 @@ def get_inventory_by_vendor(session: Session, project_id: uuid.UUID | None = Non
     vendor_map: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
     for il, unit_cost, vendor_name in rows:
         vname = vendor_name or "No Vendor"
-        vendor_map[vname][il.product_code].append((il, unit_cost))
+        # Stock-allocated rows (stock_item origin) have no PO unit_cost; coerce to 0 like the
+        # category hierarchy does, otherwise the float() in the value sum below blows up.
+        vendor_map[vname][il.product_code].append((il, unit_cost or 0))
 
     result = []
     for vendor in sorted(vendor_map.keys()):
