@@ -300,6 +300,26 @@ class ReportInventoryDeficiencyInput:
 
 
 @strawberry.input
+class OverrideDestinationInput:
+    """A bin and how many of the added units land there (used by an inventory quantity override)."""
+
+    aisle: str
+    bay: str
+    bin: str
+    quantity: int
+
+
+@strawberry.input
+class OverrideInventoryQuantityInput:
+    inventory_location_id: strawberry.ID
+    new_quantity: int
+    reason_text: str
+    # required when new_quantity increases the row; ignored on a decrease. quantities must sum to the delta.
+    destinations: list[OverrideDestinationInput] = strawberry.field(default_factory=list)
+    performed_by: str = ""
+
+
+@strawberry.input
 class ReportStockDeficiencyInput:
     stock_item_id: strawberry.ID
     quantity: int

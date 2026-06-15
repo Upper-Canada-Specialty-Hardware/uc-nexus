@@ -163,6 +163,29 @@ export const ADJUST_INVENTORY_QUANTITY = gql`
   }
 `;
 
+export const OVERRIDE_INVENTORY_QUANTITY = gql`
+  mutation OverrideInventoryQuantity($input: OverrideInventoryQuantityInput!) {
+    overrideInventoryQuantity(input: $input) {
+      id
+      projectId
+      poLineItemId
+      receiveLineItemId
+      stockItemId
+      hardwareCategory
+      productCode
+      quantity
+      deficientQuantity
+      available
+      aisle
+      bay
+      bin
+      receivedAt
+      createdAt
+      updatedAt
+    }
+  }
+`;
+
 export const MOVE_INVENTORY_LOCATION = gql`
   mutation MoveInventoryLocation($inventoryLocationId: ID!, $newAisle: String!, $newBay: String!, $newBin: String!) {
     moveInventoryLocation(inventoryLocationId: $inventoryLocationId, newAisle: $newAisle, newBay: $newBay, newBin: $newBin) {

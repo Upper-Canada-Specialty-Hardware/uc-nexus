@@ -23,7 +23,6 @@ import { useQuery, useLazyQuery, useMutation } from '@apollo/client/react';
 import { GET_INVENTORY_HIERARCHY, GET_INVENTORY_ITEMS, GET_INVENTORY_BY_VENDOR } from '../../graphql/queries';
 import { REPORT_INVENTORY_DEFICIENCY } from '../../graphql/mutations';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
-import { useIdentity } from '../../hooks/useIdentity';
 import { useToast } from '../../components/Toast';
 import InventoryCorrectionModal from '../admin/InventoryCorrectionModal';
 import AuditHistoryDrawer from './AuditHistoryDrawer';
@@ -167,8 +166,6 @@ function ProductCodeDetail({
   totalQuantity: number;
   totalValue: number;
 }) {
-  const { isAdmin } = useIdentity();
-
   const [expanded, setExpanded] = useState(false);
   const hasFetched = useRef(false);
   const [fetchItems, { data, loading, error }] = useLazyQuery<{
@@ -330,35 +327,29 @@ function ProductCodeDetail({
         </Button>
       ),
     };
-    if (!isAdmin) return [...baseDetailColumns, destockCol, reportDefCol, spotCheckCol, historyCol];
-    return [
-      ...baseDetailColumns,
-      {
-        field: 'actions',
-        headerName: 'Actions',
-        flex: 0.7,
-        sortable: false,
-        filterable: false,
-        renderCell: (params: { row: InventoryItemDetail }) => (
-          <Button
-            size="small"
-            variant="outlined"
-            onClick={(e) => {
-              e.stopPropagation();
-              setCorrectionItem(params.row.inventoryLocation);
-              setCorrectionOpen(true);
-            }}
-          >
-            Correction
-          </Button>
-        ),
-      } satisfies GridColDef,
-      destockCol,
-      reportDefCol,
-      spotCheckCol,
-      historyCol,
-    ];
-  }, [isAdmin, reportDeficient, showToast]);
+    const correctionCol: GridColDef = {
+      field: 'actions',
+      headerName: 'Actions',
+      flex: 0.7,
+      sortable: false,
+      filterable: false,
+      renderCell: (params: { row: InventoryItemDetail }) => (
+        <Button
+          size="small"
+          variant="outlined"
+          onClick={(e) => {
+            e.stopPropagation();
+            setCorrectionItem(params.row.inventoryLocation);
+            setCorrectionOpen(true);
+          }}
+        >
+          Correction
+        </Button>
+      ),
+    };
+    // Correction (quantity override + location fixes) is available to all users, not just admins.
+    return [...baseDetailColumns, correctionCol, destockCol, reportDefCol, spotCheckCol, historyCol];
+  }, [reportDeficient, showToast]);
 
   const handleCorrectionSuccess = useCallback(() => {
     fetchItems({

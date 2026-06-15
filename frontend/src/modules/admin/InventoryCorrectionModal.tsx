@@ -6,13 +6,17 @@ import {
   Button,
   Chip,
   Stack,
+  IconButton,
 } from '@mui/material';
+import AddIcon from '@mui/icons-material/Add';
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import { useMutation } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import { useToast } from '../../components/Toast';
+import { useIdentity } from '../../hooks/useIdentity';
 import {
-  ADJUST_INVENTORY_QUANTITY,
+  OVERRIDE_INVENTORY_QUANTITY,
   MOVE_INVENTORY_LOCATION,
   MARK_INVENTORY_UNLOCATED,
   ASSIGN_INVENTORY_LOCATION,
@@ -70,7 +74,15 @@ interface OpeningItem {
   installedHardware: InstalledHardware[];
 }
 
-type CorrectionType = 'adjustQuantity' | 'moveLocation' | 'markUnlocated' | 'assignLocation';
+type CorrectionType = 'overrideQuantity' | 'moveLocation' | 'markUnlocated' | 'assignLocation';
+
+// A destination bin for the units ADDED by a quantity increase. Strings bind to text inputs.
+interface DestinationDraft {
+  aisle: string;
+  bay: string;
+  bin: string;
+  quantity: string;
+}
 
 interface InventoryCorrectionModalProps {
   open: boolean;
@@ -101,6 +113,7 @@ export default function InventoryCorrectionModal({
   onSuccess,
 }: InventoryCorrectionModalProps) {
   const { showToast } = useToast();
+  const { displayName } = useIdentity();
 
   // Determine smart default correction type
   const defaultCorrectionType: CorrectionType = hasLocation(item) ? 'moveLocation' : 'assignLocation';
@@ -108,9 +121,11 @@ export default function InventoryCorrectionModal({
   const [correctionType, setCorrectionType] = useState<CorrectionType>(defaultCorrectionType);
   const [confirmOpen, setConfirmOpen] = useState(false);
 
-  // Adjust Quantity state
-  const [adjustment, setAdjustment] = useState<string>('');
+  // Override Quantity state: an absolute new quantity for this row plus a required reason.
+  const [newQty, setNewQty] = useState<string>('');
   const [reason, setReason] = useState('');
+  // Where the ADDED units land when increasing. Empty falls back to one bin = this row's location.
+  const [destinations, setDestinations] = useState<DestinationDraft[]>([]);
 
   // Move / Assign Location state
   const [aisle, setAisle] = useState(item.aisle ?? '');
@@ -121,7 +136,7 @@ export default function InventoryCorrectionModal({
   const correctionOptions = useMemo(() => {
     const options: { key: CorrectionType; label: string }[] = [];
     if (itemType === 'inventory') {
-      options.push({ key: 'adjustQuantity', label: 'Adjust Quantity' });
+      options.push({ key: 'overrideQuantity', label: 'Override Quantity' });
     }
     options.push({ key: 'moveLocation', label: 'Move Location' });
     options.push({ key: 'markUnlocated', label: 'Mark Unlocated' });
@@ -132,8 +147,9 @@ export default function InventoryCorrectionModal({
   // Reset fields when correction type changes
   const handleCorrectionTypeChange = (type: CorrectionType) => {
     setCorrectionType(type);
-    setAdjustment('');
+    setNewQty('');
     setReason('');
+    setDestinations([]);
     if (type === 'moveLocation') {
       setAisle(item.aisle ?? '');
       setBay(item.bay ?? '');
@@ -147,19 +163,56 @@ export default function InventoryCorrectionModal({
 
   // --- Computed values ---
 
-  const adjustmentNum = parseInt(adjustment, 10);
-  const newQuantity = isNaN(adjustmentNum) ? item.quantity : item.quantity + adjustmentNum;
+  const newQtyNum = parseInt(newQty, 10);
+  const delta = Number.isNaN(newQtyNum) ? 0 : newQtyNum - item.quantity;
+  const itemDeficient = (item as InventoryItem).deficientQuantity ?? 0;
+
+  // Destination rows for the added units, defaulting to one bin = this row's current location with
+  // the whole delta. The default tracks delta until the user edits, then their edits stick.
+  const destRows = useMemo<DestinationDraft[]>(
+    () =>
+      destinations.length
+        ? destinations
+        : [
+            {
+              aisle: item.aisle ?? '',
+              bay: item.bay ?? '',
+              bin: item.bin ?? '',
+              quantity: delta > 0 ? String(delta) : '',
+            },
+          ],
+    [destinations, item.aisle, item.bay, item.bin, delta],
+  );
+
+  const placedTotal = destRows.reduce((s, d) => s + (Number(d.quantity) || 0), 0);
+
+  const updateDest = (idx: number, field: keyof DestinationDraft, value: string) => {
+    const v = field === 'quantity' ? value : value.slice(0, 20);
+    setDestinations(destRows.map((d, i) => (i === idx ? { ...d, [field]: v } : d)));
+  };
+  const addDest = () => setDestinations([...destRows, { aisle: '', bay: '', bin: '', quantity: '' }]);
+  const removeDest = (idx: number) => setDestinations(destRows.filter((_, i) => i !== idx));
 
   // --- Validation ---
 
   const isValid = useMemo(() => {
     switch (correctionType) {
-      case 'adjustQuantity': {
-        if (isNaN(adjustmentNum) || adjustmentNum === 0) return false;
-        if (newQuantity < 0) return false;
-        if (!reason.trim()) return false;
-        if (reason.length > REASON_MAX_LENGTH) return false;
-        return true;
+      case 'overrideQuantity': {
+        if (!reason.trim() || reason.length > REASON_MAX_LENGTH) return false;
+        if (Number.isNaN(newQtyNum) || newQtyNum < 0) return false;
+        if (delta === 0) return false;
+        if (delta < 0) return newQtyNum >= itemDeficient;
+        // increase: every added unit must be placed in a valid bin, summing to the delta
+        let sum = 0;
+        for (const d of destRows) {
+          const q = Number(d.quantity);
+          if (!d.aisle.trim() || d.aisle.length > 20) return false;
+          if (!d.bay.trim() || d.bay.length > 20) return false;
+          if (!d.bin.trim() || d.bin.length > 20) return false;
+          if (!Number.isInteger(q) || q < 1) return false;
+          sum += q;
+        }
+        return sum === delta;
       }
       case 'moveLocation':
       case 'assignLocation': {
@@ -173,14 +226,16 @@ export default function InventoryCorrectionModal({
       default:
         return false;
     }
-  }, [correctionType, adjustmentNum, newQuantity, reason, aisle, bay, bin]);
+  }, [correctionType, newQtyNum, delta, itemDeficient, destRows, reason, aisle, bay, bin]);
 
   // --- Confirmation message ---
 
   const confirmMessage = useMemo(() => {
     switch (correctionType) {
-      case 'adjustQuantity':
-        return `Adjust quantity by ${adjustmentNum > 0 ? '+' : ''}${adjustmentNum} (${item.quantity} -> ${newQuantity}). Reason: "${reason.trim()}"`;
+      case 'overrideQuantity':
+        return delta < 0
+          ? `Override quantity ${item.quantity} -> ${newQtyNum} (remove ${-delta}). Reason: "${reason.trim()}"`
+          : `Override quantity ${item.quantity} -> ${newQtyNum} (add ${delta} across ${destRows.length} location(s)). Reason: "${reason.trim()}"`;
       case 'moveLocation':
         return `Move item from ${formatLocation(item.aisle, item.bay, item.bin)} to ${formatLocation(aisle, bay, bin)}`;
       case 'markUnlocated':
@@ -190,15 +245,15 @@ export default function InventoryCorrectionModal({
       default:
         return '';
     }
-  }, [correctionType, adjustmentNum, newQuantity, item, reason, aisle, bay, bin]);
+  }, [correctionType, delta, newQtyNum, destRows, item, reason, aisle, bay, bin]);
 
   // --- Mutations ---
 
-  const [adjustInventoryQuantity, { loading: adjustLoading }] = useMutation(ADJUST_INVENTORY_QUANTITY, {
+  const [overrideInventoryQuantity, { loading: overrideLoading }] = useMutation(OVERRIDE_INVENTORY_QUANTITY, {
     refetchQueries: WAREHOUSE_REFETCH_QUERIES,
     awaitRefetchQueries: true,
     onCompleted: () => {
-      showToast('Correction applied successfully', 'success');
+      showToast('Quantity override applied', 'success');
       onSuccess();
       onClose();
     },
@@ -286,7 +341,7 @@ export default function InventoryCorrectionModal({
   });
 
   const mutationLoading =
-    adjustLoading ||
+    overrideLoading ||
     moveInvLoading ||
     unlocateInvLoading ||
     assignInvLoading ||
@@ -301,12 +356,24 @@ export default function InventoryCorrectionModal({
 
     if (itemType === 'inventory') {
       switch (correctionType) {
-        case 'adjustQuantity':
-          adjustInventoryQuantity({
+        case 'overrideQuantity':
+          overrideInventoryQuantity({
             variables: {
-              inventoryLocationId: item.id,
-              adjustment: adjustmentNum,
-              reason: reason.trim(),
+              input: {
+                inventoryLocationId: item.id,
+                newQuantity: newQtyNum,
+                reasonText: reason.trim(),
+                destinations:
+                  delta > 0
+                    ? destRows.map((d) => ({
+                        aisle: d.aisle.trim(),
+                        bay: d.bay.trim(),
+                        bin: d.bin.trim(),
+                        quantity: Number(d.quantity),
+                      }))
+                    : [],
+                performedBy: displayName,
+              },
             },
           });
           break;
@@ -429,28 +496,30 @@ export default function InventoryCorrectionModal({
 
   const renderForm = () => {
     switch (correctionType) {
-      case 'adjustQuantity':
+      case 'overrideQuantity': {
+        const remaining = delta - placedTotal;
         return (
           <Stack spacing={2}>
             <TextField
-              label="Adjustment (+/-)"
+              label="New quantity"
               type="number"
-              value={adjustment}
-              onChange={(e) => setAdjustment(e.target.value)}
+              value={newQty}
+              onChange={(e) => setNewQty(e.target.value)}
               size="small"
               fullWidth
+              error={!Number.isNaN(newQtyNum) && (newQtyNum < 0 || (delta < 0 && newQtyNum < itemDeficient))}
               helperText={
-                !isNaN(adjustmentNum)
-                  ? newQuantity < 0
-                    ? `New qty: ${newQuantity} — Cannot reduce below 0`
-                    : `New qty: ${newQuantity}`
-                  : 'Enter a positive or negative number'
+                Number.isNaN(newQtyNum)
+                  ? `Current quantity: ${item.quantity}`
+                  : delta === 0
+                    ? 'Enter a quantity different from the current one'
+                    : delta < 0
+                      ? newQtyNum < itemDeficient
+                        ? `Cannot go below ${itemDeficient} deficient unit(s) on this row`
+                        : `Removing ${-delta} (current ${item.quantity})`
+                      : `Adding ${delta} (current ${item.quantity}) - place the added units below`
               }
-              slotProps={{
-                formHelperText: {
-                  sx: { color: newQuantity < 0 ? 'error.main' : 'text.secondary' },
-                },
-              }}
+              slotProps={{ htmlInput: { min: 0 } }}
             />
             <TextField
               label="Reason"
@@ -467,8 +536,66 @@ export default function InventoryCorrectionModal({
               maxRows={4}
               helperText={`${reason.length}/${REASON_MAX_LENGTH}`}
             />
+            {delta > 0 && (
+              <Box>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', mb: 1, gap: 1 }}>
+                  <Typography variant="subtitle2">Where do the {delta} added unit(s) go?</Typography>
+                  <Typography variant="caption" color={remaining === 0 ? 'success.main' : 'error.main'}>
+                    {remaining === 0 ? 'all placed' : `${remaining} unplaced`}
+                  </Typography>
+                </Box>
+                <Stack spacing={1}>
+                  {destRows.map((d, idx) => (
+                    <Stack key={idx} direction="row" spacing={1} alignItems="center" sx={{ flexWrap: 'wrap' }}>
+                      <TextField
+                        label="Aisle"
+                        size="small"
+                        value={d.aisle}
+                        onChange={(e) => updateDest(idx, 'aisle', e.target.value)}
+                        sx={{ width: 90 }}
+                      />
+                      <TextField
+                        label="Bay"
+                        size="small"
+                        value={d.bay}
+                        onChange={(e) => updateDest(idx, 'bay', e.target.value)}
+                        sx={{ width: 90 }}
+                      />
+                      <TextField
+                        label="Bin"
+                        size="small"
+                        value={d.bin}
+                        onChange={(e) => updateDest(idx, 'bin', e.target.value)}
+                        sx={{ width: 90 }}
+                      />
+                      <TextField
+                        label="Qty"
+                        type="number"
+                        size="small"
+                        value={d.quantity}
+                        onChange={(e) => updateDest(idx, 'quantity', e.target.value)}
+                        slotProps={{ htmlInput: { min: 1 } }}
+                        sx={{ width: 80 }}
+                      />
+                      <IconButton
+                        size="small"
+                        aria-label="Remove location"
+                        disabled={destRows.length <= 1}
+                        onClick={() => removeDest(idx)}
+                      >
+                        <DeleteOutlineIcon fontSize="small" />
+                      </IconButton>
+                    </Stack>
+                  ))}
+                  <Button size="small" startIcon={<AddIcon />} onClick={addDest} sx={{ alignSelf: 'flex-start' }}>
+                    Add location
+                  </Button>
+                </Stack>
+              </Box>
+            )}
           </Stack>
         );
+      }
 
       case 'moveLocation':
         return (
