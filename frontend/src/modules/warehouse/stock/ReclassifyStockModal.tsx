@@ -4,6 +4,7 @@ import { useMutation } from '@apollo/client/react';
 import Modal from '../../../components/Modal';
 import { useToast } from '../../../components/Toast';
 import { RECLASSIFY_STOCK_ITEM } from '../../../graphql/mutations';
+import { WAREHOUSE_REFETCH_QUERIES } from '../../../graphql/refetch';
 import type { StockItem } from '../StockPoolView';
 
 interface Props {
@@ -20,6 +21,8 @@ export default function ReclassifyStockModal({ item, onClose, onSuccess }: Props
   const { showToast } = useToast();
 
   const [mutate, { loading, error }] = useMutation(RECLASSIFY_STOCK_ITEM, {
+    refetchQueries: WAREHOUSE_REFETCH_QUERIES,
+    awaitRefetchQueries: true,
     onCompleted: () => {
       showToast('Stock reclassified', 'success');
       onSuccess();

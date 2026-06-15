@@ -7,7 +7,13 @@ import {
   Alert,
   CircularProgress,
   Paper,
+  Switch,
+  FormControlLabel,
+  Stack,
+  IconButton,
 } from '@mui/material';
+import AddIcon from '@mui/icons-material/Add';
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useMutation } from '@apollo/client/react';
 import { useApolloClient } from '@apollo/client/react';
@@ -18,6 +24,7 @@ import ConfirmDialog from '../../components/ConfirmDialog';
 import { useNavigate } from 'react-router-dom';
 import { GET_PO_RECEIVING_DETAILS } from '../../graphql/queries';
 import { CREATE_RECEIVE } from '../../graphql/mutations';
+import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
 
 // ---- Types ----
 
@@ -42,12 +49,28 @@ interface PODetails {
   lineItems: PODetailLineItem[];
 }
 
+// One destination bin for a received line, plus how many of those units arrived deficient.
+// Fields are strings because they are bound to text inputs; parsed at validate/submit time.
+interface LocationDraft {
+  aisle: string;
+  bay: string;
+  bin: string;
+  quantity: string;
+  deficient: string;
+}
+
 // ---- Props ----
 
 interface ReceiveModalProps {
   open: boolean;
   onClose: () => void;
   poIds: string[];
+}
+
+const MAX_LOC_LEN = 20;
+
+function emptyDraft(quantity: number): LocationDraft {
+  return { aisle: '', bay: '', bin: '', quantity: String(quantity), deficient: '0' };
 }
 
 export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps) {
@@ -63,6 +86,10 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
   const [poDetailsMap, setPoDetailsMap] = useState<Record<string, PODetails>>({});
   const [poDetailsLoading, setPoDetailsLoading] = useState(false);
   const [poDetailsError, setPoDetailsError] = useState<string | null>(null);
+  // Optional put-away: when on, the user assigns destination bin(s) for each received line and
+  // may flag how many units arrived deficient. Off by default → receive as unlocated (locations: []).
+  const [putAwayMode, setPutAwayMode] = useState(false);
+  const [lineLocations, setLineLocations] = useState<Record<string, LocationDraft[]>>({});
 
   const [createReceive, { loading: submitLoading }] = useMutation(CREATE_RECEIVE);
 
@@ -104,6 +131,8 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
       setReceiveQuantities({});
       setMutationError(null);
       setSucceeded(false);
+      setPutAwayMode(false);
+      setLineLocations({});
       fetchPODetails(poIds);
     }
   }, [open, poIds, fetchPODetails]);
@@ -131,6 +160,48 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
     [lineItemsToReceive, receiveQuantities],
   );
 
+  // ---- Put-away helpers ----
+
+  // Drafts for a line, defaulting to a single bin holding the whole received quantity. The default
+  // is materialized on first edit, so an untouched line carries one row whose location is still blank
+  // (which keeps the line invalid until the user fills it in put-away mode).
+  const draftsFor = useCallback(
+    (lineId: string, receiveNow: number): LocationDraft[] => lineLocations[lineId] ?? [emptyDraft(receiveNow)],
+    [lineLocations],
+  );
+
+  const setDrafts = useCallback((lineId: string, drafts: LocationDraft[]) => {
+    setLineLocations((prev) => ({ ...prev, [lineId]: drafts }));
+  }, []);
+
+  const updateLocation = useCallback(
+    (lineId: string, receiveNow: number, idx: number, field: keyof LocationDraft, value: string) => {
+      const v = field === 'aisle' || field === 'bay' || field === 'bin' ? value.slice(0, MAX_LOC_LEN) : value;
+      setDrafts(
+        lineId,
+        draftsFor(lineId, receiveNow).map((d, i) => (i === idx ? { ...d, [field]: v } : d)),
+      );
+    },
+    [draftsFor, setDrafts],
+  );
+
+  const addLocation = useCallback(
+    (lineId: string, receiveNow: number) => {
+      setDrafts(lineId, [...draftsFor(lineId, receiveNow), emptyDraft(0)]);
+    },
+    [draftsFor, setDrafts],
+  );
+
+  const removeLocation = useCallback(
+    (lineId: string, receiveNow: number, idx: number) => {
+      setDrafts(
+        lineId,
+        draftsFor(lineId, receiveNow).filter((_, i) => i !== idx),
+      );
+    },
+    [draftsFor, setDrafts],
+  );
+
   // ---- Validation ----
 
   const hasQuantityErrors = useMemo(() => {
@@ -151,6 +222,26 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
     [receiveQuantities],
   );
 
+  // In put-away mode every received unit must land in a valid bin and each bin's deficient count must
+  // be within its quantity. Mirrors the backend contract in warehouse_repository.create_receive.
+  const putAwayValid = useMemo(() => {
+    if (!putAwayMode) return true;
+    for (const li of lineItemsToReceive) {
+      const receiveNow = receiveQuantities[li.id] ?? 0;
+      let placed = 0;
+      for (const d of draftsFor(li.id, receiveNow)) {
+        const q = Number(d.quantity);
+        const def = Number(d.deficient || '0');
+        if (!d.aisle.trim() || !d.bay.trim() || !d.bin.trim()) return false;
+        if (!Number.isInteger(q) || q < 1) return false;
+        if (!Number.isInteger(def) || def < 0 || def > q) return false;
+        placed += q;
+      }
+      if (placed !== receiveNow) return false;
+    }
+    return true;
+  }, [putAwayMode, lineItemsToReceive, receiveQuantities, draftsFor]);
+
   // ---- Columns ----
 
   const quantityColumns: GridColDef[] = useMemo(
@@ -160,7 +251,7 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
         field: 'orderAs',
         headerName: 'Ordered As',
         flex: 0.8,
-        renderCell: (params) => params.value || '\u2014',
+        renderCell: (params) => params.value || '—',
       },
       { field: 'hardwareCategory', headerName: 'Hardware Category', flex: 1 },
       { field: 'orderedQuantity', headerName: 'Ordered Qty', flex: 0.7, type: 'number' },
@@ -220,11 +311,21 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
       const input = {
         poId,
         receivedBy: displayName,
-        lineItems: poLineItems.map((li) => ({
-          poLineItemId: li.id,
-          quantityReceived: receiveQuantities[li.id] ?? 0,
-          locations: [],
-        })),
+        lineItems: poLineItems.map((li) => {
+          const receiveNow = receiveQuantities[li.id] ?? 0;
+          const drafts = putAwayMode ? draftsFor(li.id, receiveNow) : [];
+          return {
+            poLineItemId: li.id,
+            quantityReceived: receiveNow,
+            locations: drafts.map((d) => ({
+              aisle: d.aisle.trim(),
+              bay: d.bay.trim(),
+              bin: d.bin.trim(),
+              quantity: Number(d.quantity),
+              deficientQuantity: Number(d.deficient || '0'),
+            })),
+          };
+        }),
       };
 
       try {
@@ -238,6 +339,13 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
       }
     }
 
+    // Refresh inventory/stock/dashboard counts once after all POs are received.
+    try {
+      await client.refetchQueries({ include: WAREHOUSE_REFETCH_QUERIES });
+    } catch {
+      // a failed background refetch should not mask a successful receive
+    }
+
     showToast(
       `Receive completed successfully. ${totalItemsToReceive} items added to inventory.`,
       'success',
@@ -248,7 +356,10 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
     displayName,
     lineItemsToReceive,
     receiveQuantities,
+    putAwayMode,
+    draftsFor,
     createReceive,
+    client,
     showToast,
     totalItemsToReceive,
     poDetailsMap,
@@ -261,6 +372,8 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
     setMutationError(null);
     setSucceeded(false);
     setConfirmOpen(false);
+    setPutAwayMode(false);
+    setLineLocations({});
     onClose();
   }, [onClose]);
 
@@ -270,9 +383,9 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
     if (poIds.length === 1) {
       const details = poDetailsMap[poIds[0]];
       const label = details?.poNumber ?? 'Purchase Order';
-      return `Receive \u2014 ${label}`;
+      return `Receive — ${label}`;
     }
-    return `Receive \u2014 ${poIds.length} Purchase Orders`;
+    return `Receive — ${poIds.length} Purchase Orders`;
   }, [poIds, poDetailsMap]);
 
   // ---- Render PO sections ----
@@ -297,7 +410,7 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
         {showHeader && (
           <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: details.notes ? 0.5 : 1 }}>
             {details.poNumber ?? 'Unknown PO'}
-            {details.vendor ? ` \u2014 ${details.vendor.name}` : ''}
+            {details.vendor ? ` — ${details.vendor.name}` : ''}
           </Typography>
         )}
         {details.notes && (
@@ -330,6 +443,95 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
     );
   };
 
+  // ---- Render put-away editor ----
+
+  const renderLineLocations = (li: PODetailLineItem) => {
+    const receiveNow = receiveQuantities[li.id] ?? 0;
+    const drafts = draftsFor(li.id, receiveNow);
+    const placed = drafts.reduce((s, d) => s + (Number(d.quantity) || 0), 0);
+    const remaining = receiveNow - placed;
+    return (
+      <Paper key={li.id} variant="outlined" sx={{ p: 1.5 }}>
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', mb: 1, gap: 1 }}>
+          <Typography variant="body2" sx={{ fontWeight: 600 }}>
+            {li.productCode} · {li.hardwareCategory} (placing {receiveNow})
+          </Typography>
+          <Typography variant="caption" color={remaining === 0 ? 'success.main' : 'error.main'}>
+            {remaining === 0 ? 'all placed' : `${remaining} unplaced`}
+          </Typography>
+        </Box>
+        <Stack spacing={1}>
+          {drafts.map((d, idx) => {
+            const q = Number(d.quantity);
+            const def = Number(d.deficient || '0');
+            const defError = !Number.isInteger(def) || def < 0 || def > (Number.isInteger(q) ? q : 0);
+            return (
+              <Stack key={idx} direction="row" spacing={1} alignItems="flex-start" sx={{ flexWrap: 'wrap' }}>
+                <TextField
+                  label="Aisle"
+                  size="small"
+                  value={d.aisle}
+                  onChange={(e) => updateLocation(li.id, receiveNow, idx, 'aisle', e.target.value)}
+                  sx={{ width: 90 }}
+                />
+                <TextField
+                  label="Bay"
+                  size="small"
+                  value={d.bay}
+                  onChange={(e) => updateLocation(li.id, receiveNow, idx, 'bay', e.target.value)}
+                  sx={{ width: 90 }}
+                />
+                <TextField
+                  label="Bin"
+                  size="small"
+                  value={d.bin}
+                  onChange={(e) => updateLocation(li.id, receiveNow, idx, 'bin', e.target.value)}
+                  sx={{ width: 90 }}
+                />
+                <TextField
+                  label="Qty"
+                  type="number"
+                  size="small"
+                  value={d.quantity}
+                  onChange={(e) => updateLocation(li.id, receiveNow, idx, 'quantity', e.target.value)}
+                  slotProps={{ htmlInput: { min: 1 } }}
+                  sx={{ width: 80 }}
+                />
+                <TextField
+                  label="Deficient"
+                  type="number"
+                  size="small"
+                  value={d.deficient}
+                  error={defError}
+                  onChange={(e) => updateLocation(li.id, receiveNow, idx, 'deficient', e.target.value)}
+                  slotProps={{ htmlInput: { min: 0, max: Number.isInteger(q) ? q : undefined } }}
+                  sx={{ width: 100 }}
+                />
+                <IconButton
+                  size="small"
+                  aria-label="Remove location"
+                  disabled={drafts.length <= 1}
+                  onClick={() => removeLocation(li.id, receiveNow, idx)}
+                  sx={{ mt: 0.5 }}
+                >
+                  <DeleteOutlineIcon fontSize="small" />
+                </IconButton>
+              </Stack>
+            );
+          })}
+          <Button
+            size="small"
+            startIcon={<AddIcon />}
+            onClick={() => addLocation(li.id, receiveNow)}
+            sx={{ alignSelf: 'flex-start' }}
+          >
+            Add location
+          </Button>
+        </Stack>
+      </Paper>
+    );
+  };
+
   // ---- Render ----
 
   const actions = succeeded ? (
@@ -344,7 +546,7 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
       <Button onClick={handleClose}>Cancel</Button>
       <Button
         variant="contained"
-        disabled={!hasAnyReceiveQuantity || hasQuantityErrors || submitLoading}
+        disabled={!hasAnyReceiveQuantity || hasQuantityErrors || !putAwayValid || submitLoading}
         onClick={() => setConfirmOpen(true)}
       >
         {submitLoading ? <CircularProgress size={24} /> : 'Complete Receive'}
@@ -376,6 +578,20 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
           </Alert>
         )}
         {!poDetailsLoading && !poDetailsError && !succeeded && poIds.map(renderPOSection)}
+
+        {!poDetailsLoading && !poDetailsError && !succeeded && hasAnyReceiveQuantity && (
+          <Box sx={{ mt: 1 }}>
+            <FormControlLabel
+              control={<Switch checked={putAwayMode} onChange={(e) => setPutAwayMode(e.target.checked)} />}
+              label="Assign locations & flag deficient units now"
+            />
+            <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+              Leave off to receive as unlocated and put away later. When on, place every received unit
+              and optionally record how many of each arrived deficient.
+            </Typography>
+            {putAwayMode && <Stack spacing={2}>{lineItemsToReceive.map(renderLineLocations)}</Stack>}
+          </Box>
+        )}
       </Modal>
 
       <ConfirmDialog

@@ -4,6 +4,7 @@ import { useMutation } from '@apollo/client/react';
 import Modal from '../../../components/Modal';
 import { useToast } from '../../../components/Toast';
 import { ADJUST_STOCK_QUANTITY } from '../../../graphql/mutations';
+import { WAREHOUSE_REFETCH_QUERIES } from '../../../graphql/refetch';
 import type { StockItem } from '../StockPoolView';
 
 interface Props {
@@ -18,6 +19,8 @@ export default function AdjustStockModal({ item, onClose, onSuccess }: Props) {
   const { showToast } = useToast();
 
   const [mutate, { loading, error }] = useMutation(ADJUST_STOCK_QUANTITY, {
+    refetchQueries: WAREHOUSE_REFETCH_QUERIES,
+    awaitRefetchQueries: true,
     onCompleted: () => {
       showToast('Stock quantity adjusted', 'success');
       onSuccess();

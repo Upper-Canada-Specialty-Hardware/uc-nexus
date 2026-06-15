@@ -4,6 +4,7 @@ import { useMutation } from '@apollo/client/react';
 import Modal from '../../../components/Modal';
 import { useToast } from '../../../components/Toast';
 import { MOVE_STOCK_LOCATION } from '../../../graphql/mutations';
+import { WAREHOUSE_REFETCH_QUERIES } from '../../../graphql/refetch';
 import type { StockItem } from '../StockPoolView';
 
 interface Props {
@@ -19,6 +20,8 @@ export default function MoveStockLocationModal({ item, onClose, onSuccess }: Pro
   const { showToast } = useToast();
 
   const [mutate, { loading, error }] = useMutation(MOVE_STOCK_LOCATION, {
+    refetchQueries: WAREHOUSE_REFETCH_QUERIES,
+    awaitRefetchQueries: true,
     onCompleted: () => {
       showToast('Stock location updated', 'success');
       onSuccess();
