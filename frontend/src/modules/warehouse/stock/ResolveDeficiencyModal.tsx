@@ -14,6 +14,7 @@ import { useMutation } from '@apollo/client/react';
 import Modal from '../../../components/Modal';
 import { useToast } from '../../../components/Toast';
 import { RESOLVE_DEFICIENCY } from '../../../graphql/mutations';
+import { WAREHOUSE_REFETCH_QUERIES } from '../../../graphql/refetch';
 
 export interface DeficientRow {
   source: 'PROJECT_INVENTORY' | 'STOCK_POOL';
@@ -46,6 +47,8 @@ export default function ResolveDeficiencyModal({ row, onClose, onSuccess }: Prop
   const { showToast } = useToast();
 
   const [mutate, { loading, error }] = useMutation(RESOLVE_DEFICIENCY, {
+    refetchQueries: WAREHOUSE_REFETCH_QUERIES,
+    awaitRefetchQueries: true,
     onCompleted: () => {
       showToast('Deficiency resolved', 'success');
       onSuccess();

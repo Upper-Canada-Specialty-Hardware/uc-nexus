@@ -14,6 +14,7 @@ import { useMutation } from '@apollo/client/react';
 import Modal from '../../../components/Modal';
 import { useToast } from '../../../components/Toast';
 import { DESTOCK_INVENTORY } from '../../../graphql/mutations';
+import { WAREHOUSE_REFETCH_QUERIES } from '../../../graphql/refetch';
 
 export interface DestockSource {
   id: string;
@@ -50,6 +51,8 @@ export default function DestockInventoryModal({ inventoryLocation, onClose, onSu
   const { showToast } = useToast();
 
   const [mutate, { loading, error }] = useMutation(DESTOCK_INVENTORY, {
+    refetchQueries: WAREHOUSE_REFETCH_QUERIES,
+    awaitRefetchQueries: true,
     onCompleted: () => {
       showToast('Inventory destocked to the stock pool', 'success');
       onSuccess();

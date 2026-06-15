@@ -14,6 +14,7 @@ import { useMutation, useQuery } from '@apollo/client/react';
 import Modal from '../../../components/Modal';
 import { useToast } from '../../../components/Toast';
 import { ALLOCATE_STOCK_TO_PROJECT } from '../../../graphql/mutations';
+import { WAREHOUSE_REFETCH_QUERIES } from '../../../graphql/refetch';
 import { GET_PROJECTS } from '../../../graphql/queries';
 import type { StockItem } from '../StockPoolView';
 
@@ -51,6 +52,8 @@ export default function AllocateStockModal({
 
   const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
   const [mutate, { loading, error }] = useMutation(ALLOCATE_STOCK_TO_PROJECT, {
+    refetchQueries: WAREHOUSE_REFETCH_QUERIES,
+    awaitRefetchQueries: true,
     onCompleted: () => {
       showToast('Stock allocated to project inventory', 'success');
       onSuccess();
