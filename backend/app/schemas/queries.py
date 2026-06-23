@@ -707,10 +707,14 @@ class Query:
             return _po_to_type(po, receive_records)
 
     @strawberry.field
-    def inventory_hierarchy(self, project_id: strawberry.ID | None = None) -> list[InventoryHierarchyNode]:
+    def inventory_hierarchy(
+        self, project_id: strawberry.ID | None = None, warehouse_id: strawberry.ID | None = None
+    ) -> list[InventoryHierarchyNode]:
         with SessionLocal() as session:
             hierarchy = warehouse_repository.get_inventory_hierarchy(
-                session, uuid.UUID(str(project_id)) if project_id else None
+                session,
+                uuid.UUID(str(project_id)) if project_id else None,
+                uuid.UUID(str(warehouse_id)) if warehouse_id else None,
             )
             return [
                 InventoryHierarchyNode(
@@ -1059,9 +1063,17 @@ class Query:
             ]
 
     @strawberry.field
-    def location_contents(self, aisle: str, bay: str | None = None, bin: str | None = None) -> LocationContents:
+    def location_contents(
+        self,
+        aisle: str,
+        bay: str | None = None,
+        bin: str | None = None,
+        warehouse_id: strawberry.ID | None = None,
+    ) -> LocationContents:
         with SessionLocal() as session:
-            data = warehouse_repository.get_location_contents(session, aisle, bay, bin)
+            data = warehouse_repository.get_location_contents(
+                session, aisle, bay, bin, uuid.UUID(str(warehouse_id)) if warehouse_id else None
+            )
             return LocationContents(
                 inventory_items=[
                     InventoryItemDetail(
@@ -1125,11 +1137,14 @@ class Query:
             ]
 
     @strawberry.field
-    def location_utilization(self) -> list[LocationUtilizationEntry]:
+    def location_utilization(self, warehouse_id: strawberry.ID | None = None) -> list[LocationUtilizationEntry]:
         with SessionLocal() as session:
-            rows = warehouse_repository.get_location_utilization(session)
+            rows = warehouse_repository.get_location_utilization(
+                session, uuid.UUID(str(warehouse_id)) if warehouse_id else None
+            )
             return [
                 LocationUtilizationEntry(
+                    warehouse_id=strawberry.ID(str(r["warehouse_id"])) if r.get("warehouse_id") else None,
                     aisle=r["aisle"],
                     row=r.get("row"),
                     bay=r["bay"],

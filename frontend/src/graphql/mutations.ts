@@ -211,9 +211,9 @@ export const ASSIGN_INVENTORY_LOCATION = gql`
 `;
 
 export const MOVE_OPENING_ITEM_LOCATION = gql`
-  mutation MoveOpeningItemLocation($openingItemId: ID!, $aisle: String!, $bay: String!, $bin: String!) {
-    moveOpeningItemLocation(openingItemId: $openingItemId, aisle: $aisle, bay: $bay, bin: $bin) {
-      id projectId openingId openingNumber building floor location quantity assemblyCompletedAt state aisle bay bin createdAt updatedAt
+  mutation MoveOpeningItemLocation($openingItemId: ID!, $aisle: String!, $bay: String!, $bin: String!, $warehouseId: ID) {
+    moveOpeningItemLocation(openingItemId: $openingItemId, aisle: $aisle, bay: $bay, bin: $bin, warehouseId: $warehouseId) {
+      id projectId openingId warehouseId openingNumber building floor location quantity assemblyCompletedAt state aisle bay bin createdAt updatedAt
       installedHardware { id openingItemId productCode hardwareCategory quantity }
     }
   }

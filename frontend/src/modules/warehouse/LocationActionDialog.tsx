@@ -6,11 +6,16 @@ import {
   Button,
   Stack,
   Alert,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
 } from '@mui/material';
-import { useMutation } from '@apollo/client/react';
+import { useMutation, useQuery } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import LocationAutocomplete from '../../components/LocationAutocomplete';
 import { useToast } from '../../components/Toast';
+import { GET_WAREHOUSES } from '../../graphql/queries';
 import {
   ADJUST_INVENTORY_QUANTITY,
   MOVE_INVENTORY_LOCATION,
@@ -27,10 +32,17 @@ export type LocationActionTarget = {
   kind: 'inventory' | 'opening' | 'stock';
   productCode: string;
   quantity: number;
+  warehouseId?: string | null;
   aisle: string | null;
   bay: string | null;
   bin: string | null;
 };
+
+interface WarehouseOption {
+  id: string;
+  name: string;
+  code: string;
+}
 
 export type LocationActionMode = 'move' | 'adjust' | 'unlocate';
 
@@ -69,6 +81,16 @@ export default function LocationActionDialog({
   const [aisle, setAisle] = useState('');
   const [bay, setBay] = useState('');
   const [bin, setBin] = useState('');
+  const [warehouseId, setWarehouseId] = useState('');
+
+  // Opening-item kits can't be partial-transferred, so their move may also change warehouse.
+  // (inventory + stock change warehouse via the Transfer dialog instead.)
+  const allOpening = targets.length > 0 && targets.every((t) => t.kind === 'opening');
+  const { data: warehousesData } = useQuery<{ warehouses: WarehouseOption[] }>(GET_WAREHOUSES, {
+    variables: { includeInactive: false },
+    skip: !allOpening,
+  });
+  const warehouses = warehousesData?.warehouses ?? [];
 
   // Adjust state
   const [adjustment, setAdjustment] = useState('');
@@ -83,10 +105,12 @@ export default function LocationActionDialog({
       setAisle(single?.aisle ?? '');
       setBay(single?.bay ?? '');
       setBin(single?.bin ?? '');
+      setWarehouseId(single?.warehouseId ?? '');
     } else {
       setAisle('');
       setBay('');
       setBin('');
+      setWarehouseId('');
     }
   }, [open, mode, single]);
 
@@ -153,6 +177,7 @@ export default function LocationActionDialog({
                 aisle: aisle.trim(),
                 bay: bay.trim(),
                 bin: bin.trim(),
+                warehouseId: warehouseId || null,
               },
             });
           } else {
@@ -247,6 +272,23 @@ export default function LocationActionDialog({
 
       {mode === 'move' && (
         <Stack spacing={2}>
+          {allOpening && (
+            <FormControl size="small" fullWidth>
+              <InputLabel id="move-warehouse">Warehouse</InputLabel>
+              <Select
+                labelId="move-warehouse"
+                label="Warehouse"
+                value={warehouseId}
+                onChange={(e) => setWarehouseId(e.target.value)}
+              >
+                {warehouses.map((w) => (
+                  <MenuItem key={w.id} value={w.id}>
+                    {w.name} ({w.code})
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          )}
           <LocationAutocomplete
             label="Aisle"
             value={aisle}

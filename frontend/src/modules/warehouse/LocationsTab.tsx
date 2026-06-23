@@ -15,6 +15,9 @@ import {
   Tooltip,
   Stack,
   Paper,
+  FormControl,
+  InputLabel,
+  Select,
 } from '@mui/material';
 import MoreVertIcon from '@mui/icons-material/MoreVert';
 import LocationOnIcon from '@mui/icons-material/LocationOn';
@@ -24,6 +27,7 @@ import {
   GET_LOCATION_UTILIZATION,
   GET_LOCATION_CONTENTS,
   GET_LOCATION_DISTINCT_VALUES,
+  GET_WAREHOUSES,
 } from '../../graphql/queries';
 import LocationActionDialog, {
   type LocationActionMode,
@@ -33,11 +37,18 @@ import LocationAuditStrip from './LocationAuditStrip';
 import TransferDialog, { type TransferSource } from './TransferDialog';
 
 interface LocationEntry {
+  warehouseId: string | null;
   aisle: string;
   bay: string | null;
   bin: string | null;
   itemCount: number;
   totalQuantity: number;
+}
+
+interface WarehouseOption {
+  id: string;
+  name: string;
+  code: string;
 }
 
 interface InventoryLocationItem {
@@ -61,6 +72,7 @@ interface ContentsInventoryItem {
 
 interface ContentsOpeningItem {
   id: string;
+  warehouseId: string | null;
   openingNumber: string;
   building: string | null;
   floor: string | null;
@@ -112,43 +124,82 @@ function formatCurrency(value: number | null): string {
   return value.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
 }
 
-const utilColumns: GridColDef<LocationEntry & { id: string }>[] = [
-  {
-    field: 'location',
-    headerName: 'Location',
-    flex: 1,
-    minWidth: 140,
-    valueGetter: (_v, row) => formatLocation(row.aisle, row.bay, row.bin),
-    renderCell: (p) => (
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-        <LocationOnIcon fontSize="small" color="action" />
-        <Typography variant="body2">{p.value as string}</Typography>
-      </Box>
-    ),
-  },
-  { field: 'aisle', headerName: 'Aisle', flex: 0.5, minWidth: 80 },
-  {
-    field: 'bay',
-    headerName: 'Bay',
-    flex: 0.5,
-    minWidth: 80,
-    valueFormatter: (v: string | null) => v ?? '—',
-  },
-  {
-    field: 'bin',
-    headerName: 'Bin',
-    flex: 0.5,
-    minWidth: 80,
-    valueFormatter: (v: string | null) => v ?? '—',
-  },
-  { field: 'itemCount', headerName: 'Items', flex: 0.5, minWidth: 80, type: 'number' },
-  { field: 'totalQuantity', headerName: 'Total Qty', flex: 0.5, minWidth: 100, type: 'number' },
-];
+type UtilRow = LocationEntry & { id: string };
+
+function warehouseChip(id: string | null, warehouseCode: Map<string, string>) {
+  return id ? (
+    <Chip label={warehouseCode.get(id) ?? '—'} size="small" variant="outlined" />
+  ) : (
+    <span>—</span>
+  );
+}
+
+// Two column sets, space-efficiency law: the full table drops the redundant aisle/bay/bin
+// columns (Location already encodes them) and keeps one flexible column. When a location is
+// selected the list collapses to a single compact rail so the contents panel gets the width.
+function buildUtilColumns(
+  compact: boolean,
+  warehouseCode: Map<string, string>,
+  showWarehouse: boolean,
+): GridColDef<UtilRow>[] {
+  if (compact) {
+    return [
+      {
+        field: 'location',
+        headerName: 'Location',
+        flex: 1,
+        minWidth: 0,
+        valueGetter: (_v, row) => formatLocation(row.aisle, row.bay, row.bin),
+        renderCell: ({ row }) => (
+          <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0, width: '100%' }}>
+            <LocationOnIcon fontSize="small" color="action" />
+            <Typography variant="body2" noWrap sx={{ flex: 1, minWidth: 0 }}>
+              {formatLocation(row.aisle, row.bay, row.bin)}
+            </Typography>
+            {showWarehouse && warehouseChip(row.warehouseId, warehouseCode)}
+            <Typography variant="caption" color="text.secondary">
+              {row.totalQuantity}
+            </Typography>
+          </Stack>
+        ),
+      },
+    ];
+  }
+  return [
+    {
+      field: 'location',
+      headerName: 'Location',
+      flex: 1,
+      minWidth: 140,
+      valueGetter: (_v, row) => formatLocation(row.aisle, row.bay, row.bin),
+      renderCell: (p) => (
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <LocationOnIcon fontSize="small" color="action" />
+          <Typography variant="body2">{p.value as string}</Typography>
+        </Box>
+      ),
+    },
+    // Per-row warehouse is redundant (and wasted space) when the list is already filtered to one warehouse.
+    ...(showWarehouse
+      ? [
+          {
+            field: 'warehouseId',
+            headerName: 'Warehouse',
+            width: 130,
+            renderCell: ({ row }: { row: UtilRow }) => warehouseChip(row.warehouseId, warehouseCode),
+          } as GridColDef<UtilRow>,
+        ]
+      : []),
+    { field: 'itemCount', headerName: 'Items', width: 100, type: 'number' },
+    { field: 'totalQuantity', headerName: 'Total Qty', width: 120, type: 'number' },
+  ];
+}
 
 // ----- side panel -----
 
 interface ContentsPanelProps {
   selected: LocationEntry;
+  warehouseLabel?: string;
   onClose: () => void;
   aisleOptions: string[];
   bayOptions: string[];
@@ -220,13 +271,19 @@ function RowActionMenu({
 
 function ContentsPanel({
   selected,
+  warehouseLabel,
   onClose,
   aisleOptions,
   bayOptions,
   binOptions,
 }: ContentsPanelProps) {
   const { data, loading, error } = useQuery<LocationContentsData>(GET_LOCATION_CONTENTS, {
-    variables: { aisle: selected.aisle, bay: selected.bay, bin: selected.bin },
+    variables: {
+      aisle: selected.aisle,
+      bay: selected.bay,
+      bin: selected.bin,
+      warehouseId: selected.warehouseId,
+    },
     fetchPolicy: 'cache-and-network',
   });
 
@@ -264,6 +321,7 @@ function ContentsPanel({
         kind: 'inventory',
         productCode: i.inventoryLocation.productCode,
         quantity: i.inventoryLocation.quantity,
+        warehouseId: i.inventoryLocation.warehouseId,
         aisle: i.inventoryLocation.aisle,
         bay: i.inventoryLocation.bay,
         bin: i.inventoryLocation.bin,
@@ -275,6 +333,7 @@ function ContentsPanel({
         kind: 'opening',
         productCode: o.openingNumber,
         quantity: o.quantity,
+        warehouseId: o.warehouseId,
         aisle: o.aisle,
         bay: o.bay,
         bin: o.bin,
@@ -286,6 +345,7 @@ function ContentsPanel({
         kind: 'stock',
         productCode: s.productCode,
         quantity: s.quantity,
+        warehouseId: s.warehouseId,
         aisle: s.aisle,
         bay: s.bay,
         bin: s.bin,
@@ -311,11 +371,16 @@ function ContentsPanel({
   const totalCount = invItems.length + oiItems.length + stockItems.length;
 
   return (
-    <Paper variant="outlined" sx={{ p: 2, position: 'sticky', top: 16 }}>
-      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
-        <Typography variant="h6">
-          {formatLocation(selected.aisle, selected.bay, selected.bin)}
-        </Typography>
+    <Paper variant="outlined" sx={{ p: 2, position: 'sticky', top: 16, minWidth: 0 }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1, gap: 1 }}>
+        <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, minWidth: 0 }}>
+          <Typography variant="h6" noWrap>
+            {formatLocation(selected.aisle, selected.bay, selected.bin)}
+          </Typography>
+          {warehouseLabel && (
+            <Chip label={warehouseLabel} size="small" variant="outlined" />
+          )}
+        </Box>
         <Button size="small" onClick={onClose}>Close</Button>
       </Box>
 
@@ -553,10 +618,24 @@ function ContentsPanel({
 export default function LocationsTab() {
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<LocationEntry | null>(null);
+  const [warehouseFilter, setWarehouseFilter] = useState('');
+
+  const { data: warehousesData } = useQuery<{ warehouses: WarehouseOption[] }>(GET_WAREHOUSES, {
+    variables: { includeInactive: true },
+  });
+  const warehouses = useMemo(() => warehousesData?.warehouses ?? [], [warehousesData]);
+  const warehouseCode = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const w of warehouses) m.set(w.id, w.code);
+    return m;
+  }, [warehouses]);
 
   const { data: utilData, loading: utilLoading, error: utilError } = useQuery<{
     locationUtilization: LocationEntry[];
-  }>(GET_LOCATION_UTILIZATION, { fetchPolicy: 'cache-and-network' });
+  }>(GET_LOCATION_UTILIZATION, {
+    variables: { warehouseId: warehouseFilter || null },
+    fetchPolicy: 'cache-and-network',
+  });
 
   const { data: distinctData } = useQuery<DistinctValuesData>(GET_LOCATION_DISTINCT_VALUES, {
     fetchPolicy: 'cache-and-network',
@@ -587,13 +666,28 @@ export default function LocationsTab() {
         });
     return filtered.map((loc, i) => ({
       ...loc,
-      id: `${loc.aisle}-${loc.bay}-${loc.bin}-${i}`,
+      id: `${loc.warehouseId ?? 'none'}-${loc.aisle}-${loc.bay}-${loc.bin}-${i}`,
     }));
   }, [utilData, search]);
 
   const handleRowClick = useCallback((params: GridRowParams<LocationEntry & { id: string }>) => {
     setSelected(params.row);
   }, []);
+
+  const columns = useMemo(
+    () => buildUtilColumns(selected !== null, warehouseCode, !warehouseFilter),
+    [selected, warehouseCode, warehouseFilter],
+  );
+
+  const isSelectedRow = useCallback(
+    (row: LocationEntry) =>
+      selected !== null &&
+      row.warehouseId === selected.warehouseId &&
+      row.aisle === selected.aisle &&
+      row.bay === selected.bay &&
+      row.bin === selected.bin,
+    [selected],
+  );
 
   if (utilLoading && !utilData) {
     return (
@@ -617,10 +711,29 @@ export default function LocationsTab() {
           size="small"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          sx={{ minWidth: 320 }}
+          sx={{ minWidth: 280, flex: 1 }}
         />
+        <FormControl size="small" sx={{ minWidth: 180 }}>
+          <InputLabel id="loc-warehouse-filter">Warehouse</InputLabel>
+          <Select
+            labelId="loc-warehouse-filter"
+            label="Warehouse"
+            value={warehouseFilter}
+            onChange={(e) => {
+              setWarehouseFilter(e.target.value);
+              setSelected(null);
+            }}
+          >
+            <MenuItem value="">All warehouses</MenuItem>
+            {warehouses.map((w) => (
+              <MenuItem key={w.id} value={w.id}>
+                {w.name} ({w.code})
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
         <Typography variant="body2" color="text.secondary">
-          {totalLocations} locations — {totalQty.toLocaleString()} total items
+          {totalLocations} locations - {totalQty.toLocaleString()} total items
         </Typography>
       </Box>
 
@@ -635,31 +748,38 @@ export default function LocationsTab() {
         <Box
           sx={{
             display: 'grid',
-            gridTemplateColumns: { xs: '1fr', lg: selected ? '1fr 1fr' : '1fr' },
+            gridTemplateColumns: { xs: '1fr', lg: selected ? 'minmax(300px, 380px) 1fr' : '1fr' },
             gap: 2,
             alignItems: 'start',
           }}
         >
-          <Box sx={{ height: 600, width: '100%' }}>
+          <Box sx={{ height: 600, minWidth: 0 }}>
             <DataGrid
               rows={rows}
-              columns={utilColumns}
+              columns={columns}
               pageSizeOptions={[10, 25, 50]}
               initialState={{ pagination: { paginationModel: { pageSize: 25 } } }}
               disableRowSelectionOnClick
               onRowClick={handleRowClick}
               density="compact"
-              sx={{ '& .MuiDataGrid-row': { cursor: 'pointer' } }}
+              getRowClassName={(p) => (isSelectedRow(p.row) ? 'row-selected' : '')}
+              sx={{
+                '& .MuiDataGrid-row': { cursor: 'pointer' },
+                '& .row-selected': { bgcolor: 'action.selected' },
+              }}
             />
           </Box>
           {selected && (
-            <ContentsPanel
-              selected={selected}
-              onClose={() => setSelected(null)}
-              aisleOptions={aisles}
-              bayOptions={bays}
-              binOptions={bins}
-            />
+            <Box sx={{ minWidth: 0 }}>
+              <ContentsPanel
+                selected={selected}
+                warehouseLabel={selected.warehouseId ? warehouseCode.get(selected.warehouseId) : undefined}
+                onClose={() => setSelected(null)}
+                aisleOptions={aisles}
+                bayOptions={bays}
+                binOptions={bins}
+              />
+            </Box>
           )}
         </Box>
       )}

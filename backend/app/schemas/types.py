@@ -501,6 +501,7 @@ class VendorInventoryNode:
 
 @strawberry.type
 class LocationUtilizationEntry:
+    warehouse_id: strawberry.ID | None
     aisle: str
     row: str | None
     bay: str | None

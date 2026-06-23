@@ -416,8 +416,14 @@ def get_inventory_by_vendor(session: Session, project_id: uuid.UUID | None = Non
     return result
 
 
-def get_location_contents(session: Session, aisle: str, bay: str | None = None, bin_name: str | None = None) -> dict:
-    """Get all inventory, opening, and stock items at a given location."""
+def get_location_contents(
+    session: Session,
+    aisle: str,
+    bay: str | None = None,
+    bin_name: str | None = None,
+    warehouse_id: uuid.UUID | None = None,
+) -> dict:
+    """Get all inventory, opening, and stock items at a given location, optionally scoped to one warehouse."""
     # Inventory locations (project-bound)
     inv_stmt = (
         select(InventoryLocationModel, POLineItemModel.unit_cost, POModel.po_number)
@@ -429,6 +435,8 @@ def get_location_contents(session: Session, aisle: str, bay: str | None = None, 
         inv_stmt = inv_stmt.where(InventoryLocationModel.bay == bay)
     if bin_name is not None:
         inv_stmt = inv_stmt.where(InventoryLocationModel.bin == bin_name)
+    if warehouse_id is not None:
+        inv_stmt = inv_stmt.where(InventoryLocationModel.warehouse_id == warehouse_id)
     inv_rows = session.execute(inv_stmt).all()
 
     # Opening items (project-bound, post-assembly)
@@ -441,6 +449,8 @@ def get_location_contents(session: Session, aisle: str, bay: str | None = None, 
         oi_stmt = oi_stmt.where(OpeningItemModel.bay == bay)
     if bin_name is not None:
         oi_stmt = oi_stmt.where(OpeningItemModel.bin == bin_name)
+    if warehouse_id is not None:
+        oi_stmt = oi_stmt.where(OpeningItemModel.warehouse_id == warehouse_id)
     opening_items = list(session.scalars(oi_stmt).unique().all())
 
     # Stock items (company-owned pool, not project-bound)
@@ -452,6 +462,8 @@ def get_location_contents(session: Session, aisle: str, bay: str | None = None, 
         si_stmt = si_stmt.where(StockItemModel.bay == bay)
     if bin_name is not None:
         si_stmt = si_stmt.where(StockItemModel.bin == bin_name)
+    if warehouse_id is not None:
+        si_stmt = si_stmt.where(StockItemModel.warehouse_id == warehouse_id)
     stock_items = list(session.scalars(si_stmt).all())
 
     return {
@@ -468,22 +480,27 @@ def get_location_contents(session: Session, aisle: str, bay: str | None = None, 
     }
 
 
-def get_location_utilization(session: Session) -> list[dict]:
-    """Distinct aisle/bay/bin combos with item counts and total quantities across all three sources."""
-    aggregated: dict[tuple[str, str | None, str | None], dict] = {}
+def get_location_utilization(session: Session, warehouse_id: uuid.UUID | None = None) -> list[dict]:
+    """Distinct (warehouse, aisle, bay, bin) combos with item counts and total quantities across all three sources.
 
-    def _bump(aisle: str | None, bay: str | None, bin_name: str | None, count: int, qty: int) -> None:
+    A bin string is one physical place only within a warehouse, so rows are grouped by warehouse too.
+    """
+    aggregated: dict[tuple, dict] = {}
+
+    def _bump(wh, aisle: str | None, bay: str | None, bin_name: str | None, count: int, qty: int) -> None:
         if aisle is None:
             return
-        key = (aisle, bay, bin_name)
+        key = (wh, aisle, bay, bin_name)
         slot = aggregated.setdefault(
-            key, {"aisle": aisle, "bay": bay, "bin": bin_name, "item_count": 0, "total_quantity": 0}
+            key,
+            {"warehouse_id": wh, "aisle": aisle, "bay": bay, "bin": bin_name, "item_count": 0, "total_quantity": 0},
         )
         slot["item_count"] += int(count)
         slot["total_quantity"] += int(qty)
 
-    inv_rows = session.execute(
+    inv_stmt = (
         select(
+            InventoryLocationModel.warehouse_id,
             InventoryLocationModel.aisle,
             InventoryLocationModel.bay,
             InventoryLocationModel.bin,
@@ -491,13 +508,16 @@ def get_location_utilization(session: Session) -> list[dict]:
             func.sum(InventoryLocationModel.quantity).label("total_quantity"),
         )
         .where(InventoryLocationModel.aisle.is_not(None), InventoryLocationModel.quantity > 0)
-        .group_by(InventoryLocationModel.aisle, InventoryLocationModel.bay, InventoryLocationModel.bin)
-    ).all()
-    for r in inv_rows:
-        _bump(r[0], r[1], r[2], r[3], r[4])
-
-    oi_rows = session.execute(
+        .group_by(
+            InventoryLocationModel.warehouse_id,
+            InventoryLocationModel.aisle,
+            InventoryLocationModel.bay,
+            InventoryLocationModel.bin,
+        )
+    )
+    oi_stmt = (
         select(
+            OpeningItemModel.warehouse_id,
             OpeningItemModel.aisle,
             OpeningItemModel.bay,
             OpeningItemModel.bin,
@@ -505,13 +525,11 @@ def get_location_utilization(session: Session) -> list[dict]:
             func.sum(OpeningItemModel.quantity).label("total_quantity"),
         )
         .where(OpeningItemModel.aisle.is_not(None))
-        .group_by(OpeningItemModel.aisle, OpeningItemModel.bay, OpeningItemModel.bin)
-    ).all()
-    for r in oi_rows:
-        _bump(r[0], r[1], r[2], r[3], r[4])
-
-    si_rows = session.execute(
+        .group_by(OpeningItemModel.warehouse_id, OpeningItemModel.aisle, OpeningItemModel.bay, OpeningItemModel.bin)
+    )
+    si_stmt = (
         select(
+            StockItemModel.warehouse_id,
             StockItemModel.aisle,
             StockItemModel.bay,
             StockItemModel.bin,
@@ -522,12 +540,21 @@ def get_location_utilization(session: Session) -> list[dict]:
             StockItemModel.aisle.is_not(None),
             StockItemModel.quantity + StockItemModel.deficient_quantity > 0,
         )
-        .group_by(StockItemModel.aisle, StockItemModel.bay, StockItemModel.bin)
-    ).all()
-    for r in si_rows:
-        _bump(r[0], r[1], r[2], r[3], r[4])
+        .group_by(StockItemModel.warehouse_id, StockItemModel.aisle, StockItemModel.bay, StockItemModel.bin)
+    )
+    if warehouse_id is not None:
+        inv_stmt = inv_stmt.where(InventoryLocationModel.warehouse_id == warehouse_id)
+        oi_stmt = oi_stmt.where(OpeningItemModel.warehouse_id == warehouse_id)
+        si_stmt = si_stmt.where(StockItemModel.warehouse_id == warehouse_id)
 
-    return sorted(aggregated.values(), key=lambda row: (row["aisle"] or "", row["bay"] or "", row["bin"] or ""))
+    for stmt in (inv_stmt, oi_stmt, si_stmt):
+        for r in session.execute(stmt).all():
+            _bump(r[0], r[1], r[2], r[3], r[4], r[5])
+
+    return sorted(
+        aggregated.values(),
+        key=lambda row: (str(row["warehouse_id"]), row["aisle"] or "", row["bay"] or "", row["bin"] or ""),
+    )
 
 
 def get_location_audit_history(
@@ -736,7 +763,9 @@ def merge_locations(
     return counts
 
 
-def get_inventory_hierarchy(session: Session, project_id: uuid.UUID | None = None) -> list[dict]:
+def get_inventory_hierarchy(
+    session: Session, project_id: uuid.UUID | None = None, warehouse_id: uuid.UUID | None = None
+) -> list[dict]:
     """
     Query all InventoryLocation rows joined with POLineItem for unit_cost,
     optionally filtered by project_id.
@@ -768,6 +797,8 @@ def get_inventory_hierarchy(session: Session, project_id: uuid.UUID | None = Non
     stmt = stmt.where(InventoryLocationModel.quantity > 0)
     if project_id is not None:
         stmt = stmt.where(InventoryLocationModel.project_id == project_id)
+    if warehouse_id is not None:
+        stmt = stmt.where(InventoryLocationModel.warehouse_id == warehouse_id)
     stmt = stmt.order_by(
         InventoryLocationModel.hardware_category,
         InventoryLocationModel.product_code,
