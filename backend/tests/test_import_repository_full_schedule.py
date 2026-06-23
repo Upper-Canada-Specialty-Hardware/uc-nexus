@@ -20,7 +20,7 @@ from app.models.shop_assembly import (
     ShopAssemblyRequest,
 )
 from app.models.vendor import Vendor
-from app.repositories import import_repository, shop_assembly_repository
+from app.repositories import import_repository, shop_assembly_repository, warehouse_admin_repository
 
 
 def _make_project(session, project_id: str = "PROJ-001") -> Project:
@@ -277,6 +277,7 @@ def test_replace_schedule_preserves_inventory(db_session):
         id=uuid.uuid4(),
         project_id=project.id,
         opening_id=a01.id,
+        warehouse_id=warehouse_admin_repository.get_primary_warehouse_id(db_session),
         opening_number="A01",
         building="B1",
         floor="F2",

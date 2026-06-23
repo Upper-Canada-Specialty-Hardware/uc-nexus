@@ -13,6 +13,7 @@ class OpeningItem(Base):
     __table_args__ = (
         Index("ix_opening_items_project_state", "project_id", "state"),
         Index("ix_opening_items_opening_id", "opening_id"),
+        Index("ix_opening_items_warehouse", "warehouse_id", "aisle", "bay", "bin"),
         CheckConstraint("quantity >= 1", name="ck_opening_items_quantity_positive"),
     )
 
@@ -21,6 +22,7 @@ class OpeningItem(Base):
     # Historical UUID of the source opening at assembly time. Not FK-enforced; the source
     # Opening row may be deleted in a later re-upload, but this stamp is preserved.
     opening_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    warehouse_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("warehouses.id", ondelete="RESTRICT"), nullable=False)
     opening_number: Mapped[str] = mapped_column(String, nullable=False)
     building: Mapped[str | None] = mapped_column(String, nullable=True)
     floor: Mapped[str | None] = mapped_column(String, nullable=True)

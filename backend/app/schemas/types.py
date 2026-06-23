@@ -236,6 +236,7 @@ class InventoryLocation:
     po_line_item_id: strawberry.ID | None
     receive_line_item_id: strawberry.ID | None
     stock_item_id: strawberry.ID | None
+    warehouse_id: strawberry.ID | None
     hardware_category: str
     product_code: str
     quantity: int
@@ -264,6 +265,7 @@ class OpeningItem:
     id: strawberry.ID
     project_id: strawberry.ID
     opening_id: strawberry.ID
+    warehouse_id: strawberry.ID | None
     opening_number: str
     building: str | None
     floor: str | None
@@ -592,8 +594,24 @@ class AuditLogEntry:
 
 
 @strawberry.type
+class Warehouse:
+    id: strawberry.ID
+    name: str
+    code: str
+    address: str | None
+    city: str | None
+    province: str | None
+    postal_code: str | None
+    is_primary: bool
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+@strawberry.type
 class StockItem:
     id: strawberry.ID
+    warehouse_id: strawberry.ID | None
     hardware_category: str
     product_code: str
     quantity: int

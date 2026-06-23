@@ -15,6 +15,7 @@ from app.repositories import (
     stock_repository,
     user_repository,
     vendor_repository,
+    warehouse_admin_repository,
     warehouse_repository,
 )
 
@@ -29,6 +30,7 @@ from .inputs import (
     CreateProjectInput,
     CreateReceiveInput,
     CreateVendorInput,
+    CreateWarehouseInput,
     DestockInventoryInput,
     FinalizeImportSessionInput,
     MoveStockLocationInput,
@@ -40,6 +42,7 @@ from .inputs import (
     ResolveDeficiencyInput,
     UpdateProjectInput,
     UpdateVendorInput,
+    UpdateWarehouseInput,
 )
 from .queries import (
     _deficiency_review_to_type,
@@ -58,6 +61,7 @@ from .queries import (
     _shop_assembly_request_to_type,
     _stock_item_to_type,
     _vendor_to_type,
+    _warehouse_to_type,
 )
 from .types import (
     ApproveResult,
@@ -81,6 +85,7 @@ from .types import (
     ShopAssemblyRequest,
     StockItem,
     Vendor,
+    Warehouse,
 )
 from .types import (
     PackingSlip as PackingSlipType,
@@ -521,8 +526,11 @@ class Mutation:
             }
             for li in input.line_items
         ]
+        warehouse_id = uuid.UUID(str(input.warehouse_id)) if input.warehouse_id else None
         with SessionLocal() as session:
-            receive_record = warehouse_repository.create_receive(session, po_id, received_by, line_items_data)
+            receive_record = warehouse_repository.create_receive(
+                session, po_id, received_by, line_items_data, warehouse_id=warehouse_id
+            )
             session.commit()
             session.refresh(receive_record)
             # Eagerly load line_items for the response
@@ -866,6 +874,51 @@ class Mutation:
     def delete_vendor(self, id: strawberry.ID) -> bool:
         with SessionLocal() as session:
             vendor_repository.delete_vendor(session, uuid.UUID(str(id)))
+            session.commit()
+            return True
+
+    # Warehouses
+    @strawberry.mutation
+    def create_warehouse(self, input: CreateWarehouseInput) -> Warehouse:
+        with SessionLocal() as session:
+            wh = warehouse_admin_repository.create_warehouse(
+                session,
+                name=input.name,
+                code=input.code,
+                address=input.address,
+                city=input.city,
+                province=input.province,
+                postal_code=input.postal_code,
+                is_primary=input.is_primary,
+                is_active=input.is_active,
+            )
+            session.commit()
+            session.refresh(wh)
+            return _warehouse_to_type(wh)
+
+    @strawberry.mutation
+    def update_warehouse(self, id: strawberry.ID, input: UpdateWarehouseInput) -> Warehouse:
+        with SessionLocal() as session:
+            wh = warehouse_admin_repository.update_warehouse(
+                session,
+                uuid.UUID(str(id)),
+                name=input.name,
+                code=input.code,
+                address=input.address,
+                city=input.city,
+                province=input.province,
+                postal_code=input.postal_code,
+                is_primary=input.is_primary,
+                is_active=input.is_active,
+            )
+            session.commit()
+            session.refresh(wh)
+            return _warehouse_to_type(wh)
+
+    @strawberry.mutation
+    def delete_warehouse(self, id: strawberry.ID) -> bool:
+        with SessionLocal() as session:
+            warehouse_admin_repository.delete_warehouse(session, uuid.UUID(str(id)))
             session.commit()
             return True
 

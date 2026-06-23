@@ -18,6 +18,7 @@ class InventoryLocation(Base):
         ),
         Index("ix_inventory_locations_aisle", "aisle"),
         Index("ix_inventory_locations_stock_item", "stock_item_id"),
+        Index("ix_inventory_locations_warehouse", "warehouse_id", "aisle", "bay", "bin"),
         CheckConstraint("quantity >= 0", name="ck_inventory_locations_quantity_nonneg"),
         CheckConstraint(
             "deficient_quantity >= 0",
@@ -40,6 +41,7 @@ class InventoryLocation(Base):
     stock_item_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("stock_items.id", ondelete="SET NULL"), nullable=True
     )
+    warehouse_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("warehouses.id", ondelete="RESTRICT"), nullable=False)
     hardware_category: Mapped[str] = mapped_column(String, nullable=False)
     product_code: Mapped[str] = mapped_column(String, nullable=False)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)

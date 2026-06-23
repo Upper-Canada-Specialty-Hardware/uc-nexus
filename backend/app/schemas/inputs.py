@@ -190,6 +190,30 @@ class UpdateVendorInput:
 
 
 @strawberry.input
+class CreateWarehouseInput:
+    name: str
+    code: str
+    address: str | None = None
+    city: str | None = None
+    province: str | None = None
+    postal_code: str | None = None
+    is_primary: bool = False
+    is_active: bool = True
+
+
+@strawberry.input
+class UpdateWarehouseInput:
+    name: str | None = None
+    code: str | None = None
+    address: str | None = None
+    city: str | None = None
+    province: str | None = None
+    postal_code: str | None = None
+    is_primary: bool | None = None
+    is_active: bool | None = None
+
+
+@strawberry.input
 class ReconciliationItemInput:
     opening_number: str
     hardware_category: str
@@ -217,6 +241,7 @@ class LocationInput:
 class CreateReceiveInput:
     po_id: strawberry.ID
     received_by: str
+    warehouse_id: strawberry.ID | None = None
     line_items: list[ReceiveLineItemInput] = strawberry.field(default_factory=list)
 
 
