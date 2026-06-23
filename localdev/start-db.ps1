@@ -49,10 +49,11 @@ if (Test-PgRunning) {
   Write-Ok "server already running on port $PgPort"
 } else {
   Write-Step "starting server on 127.0.0.1:$PgPort"
-  # No -w: pg_ctl's wait can hang when the postmaster inherits a captured stdout pipe (e.g. under
-  # automation/CI). Redirect all streams so the postmaster doesn't hold our handle, then rely on the
-  # pg_isready loop below to confirm readiness.
-  & (Get-PgExe 'pg_ctl') -D $PgData -l $PgLog -o "-p $PgPort" start *> $null
+  # -W (no wait): pg_ctl's default is to wait, which hangs when the postmaster inherits a captured
+  # stdout pipe (automation/CI, or anything that captures this script's output) - the wait never
+  # sees EOF. Start without waiting and confirm readiness via the pg_isready loop below instead.
+  # Also redirect all streams so we don't keep a handle open either.
+  & (Get-PgExe 'pg_ctl') -D $PgData -l $PgLog -o "-p $PgPort" -W start *> $null
   if ($LASTEXITCODE -ne 0) { throw "pg_ctl start failed (exit $LASTEXITCODE) - see $PgLog" }
   Write-Ok "started (log: $PgLog)"
 }
