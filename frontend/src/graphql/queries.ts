@@ -131,8 +131,8 @@ export const GET_PURCHASE_ORDERS = gql`
 `;
 
 export const GET_INVENTORY_HIERARCHY = gql`
-  query GetInventoryHierarchy($projectId: ID) {
-    inventoryHierarchy(projectId: $projectId) {
+  query GetInventoryHierarchy($projectId: ID, $warehouseId: ID) {
+    inventoryHierarchy(projectId: $projectId, warehouseId: $warehouseId) {
       hardwareCategory
       totalQuantity
       totalValue
@@ -630,8 +630,9 @@ export const GET_INVENTORY_BY_VENDOR = gql`
 `;
 
 export const GET_LOCATION_UTILIZATION = gql`
-  query GetLocationUtilization {
-    locationUtilization {
+  query GetLocationUtilization($warehouseId: ID) {
+    locationUtilization(warehouseId: $warehouseId) {
+      warehouseId
       aisle
       row
       bay
@@ -643,8 +644,8 @@ export const GET_LOCATION_UTILIZATION = gql`
 `;
 
 export const GET_LOCATION_CONTENTS = gql`
-  query GetLocationContents($aisle: String!, $bay: String, $bin: String) {
-    locationContents(aisle: $aisle, bay: $bay, bin: $bin) {
+  query GetLocationContents($aisle: String!, $bay: String, $bin: String, $warehouseId: ID) {
+    locationContents(aisle: $aisle, bay: $bay, bin: $bin, warehouseId: $warehouseId) {
       inventoryItems {
         inventoryLocation {
           id projectId poLineItemId receiveLineItemId stockItemId warehouseId
@@ -655,7 +656,7 @@ export const GET_LOCATION_CONTENTS = gql`
         unitCost
       }
       openingItems {
-        id projectId openingId openingNumber
+        id projectId openingId warehouseId openingNumber
         building floor location quantity
         assemblyCompletedAt state aisle row bay bin
         createdAt updatedAt

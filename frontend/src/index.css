@@ -1,8 +1,15 @@
 @import "tailwindcss";
 
+/* UI law: no horizontal PAGE scroll, ever. The viewport never widens to reveal
+   primary content. This clips rather than scrolls, so layouts must fit (use
+   minWidth:0 on flex/grid children). Components may still scroll inside their
+   own bounded container. Safe with position:sticky because body is the scroll root. */
+html,
 body {
   margin: 0;
   min-height: 100vh;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 #root {

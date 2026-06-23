@@ -129,6 +129,7 @@ export default function WarehousesPage() {
           params.row.isPrimary ? null : (
             <IconButton
               size="small"
+              aria-label={`Delete warehouse ${params.row.name}`}
               onClick={(e) => {
                 e.stopPropagation();
                 setPendingDelete(params.row as Warehouse);

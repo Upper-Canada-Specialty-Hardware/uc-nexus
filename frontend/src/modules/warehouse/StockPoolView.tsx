@@ -241,7 +241,7 @@ export default function StockPoolView() {
         </Button>
       </Stack>
 
-      <Stack direction="row" spacing={2} sx={{ mb: 2 }}>
+      <Stack direction="row" spacing={2} useFlexGap flexWrap="wrap" sx={{ mb: 2 }}>
         <TextField
           label="Product code contains"
           size="small"
