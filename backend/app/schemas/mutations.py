@@ -40,6 +40,7 @@ from .inputs import (
     ReportInventoryDeficiencyInput,
     ReportStockDeficiencyInput,
     ResolveDeficiencyInput,
+    TransferInventoryInput,
     UpdateProjectInput,
     UpdateVendorInput,
     UpdateWarehouseInput,
@@ -84,6 +85,7 @@ from .types import (
     ShopAssemblyOpening,
     ShopAssemblyRequest,
     StockItem,
+    TransferResult,
     Vendor,
     Warehouse,
 )
@@ -703,10 +705,16 @@ class Mutation:
         aisle: str,
         bay: str,
         bin: str,
+        warehouse_id: strawberry.ID | None = None,
     ) -> OpeningItem:
         with SessionLocal() as session:
             result = warehouse_repository.move_opening_item_location(
-                session, uuid.UUID(str(opening_item_id)), aisle, bay, bin
+                session,
+                uuid.UUID(str(opening_item_id)),
+                aisle,
+                bay,
+                bin,
+                warehouse_id=uuid.UUID(str(warehouse_id)) if warehouse_id else None,
             )
             session.commit()
             session.refresh(result)
@@ -955,6 +963,27 @@ class Mutation:
             session.commit()
             session.refresh(result)
             return _stock_item_to_type(result)
+
+    @strawberry.mutation
+    def transfer_inventory(self, input: TransferInventoryInput) -> TransferResult:
+        with SessionLocal() as session:
+            result = stock_repository.transfer_inventory(
+                session,
+                source_type=input.source_type.value,
+                source_id=uuid.UUID(str(input.source_id)),
+                quantity=input.quantity,
+                dest_warehouse_id=uuid.UUID(str(input.dest_warehouse_id)),
+                dest_aisle=input.dest_aisle,
+                dest_bay=input.dest_bay,
+                dest_bin=input.dest_bin,
+                performed_by=input.performed_by or "Warehouse",
+            )
+            session.commit()
+            return TransferResult(
+                success=result["success"],
+                quantity=result["quantity"],
+                dest_warehouse_id=strawberry.ID(str(result["dest_warehouse_id"])),
+            )
 
     @strawberry.mutation
     def allocate_stock_to_project(self, input: AllocateStockToProjectInput) -> InventoryLocation:

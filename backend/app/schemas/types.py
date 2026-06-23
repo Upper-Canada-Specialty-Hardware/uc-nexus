@@ -594,6 +594,13 @@ class AuditLogEntry:
 
 
 @strawberry.type
+class TransferResult:
+    success: bool
+    quantity: int
+    dest_warehouse_id: strawberry.ID
+
+
+@strawberry.type
 class Warehouse:
     id: strawberry.ID
     name: str

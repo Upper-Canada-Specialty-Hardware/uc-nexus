@@ -1,0 +1,179 @@
+import { useState, useMemo } from 'react';
+import {
+  Button,
+  Stack,
+  TextField,
+  Alert,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
+  Typography,
+} from '@mui/material';
+import { useQuery, useMutation } from '@apollo/client/react';
+import Modal from '../../components/Modal';
+import { useToast } from '../../components/Toast';
+import { useIdentity } from '../../hooks/useIdentity';
+import { GET_WAREHOUSES } from '../../graphql/queries';
+import { TRANSFER_INVENTORY } from '../../graphql/mutations';
+import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
+
+export interface TransferSource {
+  type: 'INVENTORY_LOCATION' | 'STOCK_ITEM';
+  id: string;
+  productCode: string;
+  available: number;
+  warehouseId: string | null;
+  aisle?: string | null;
+  bay?: string | null;
+  bin?: string | null;
+}
+
+interface WarehouseOption {
+  id: string;
+  name: string;
+  code: string;
+}
+
+interface TransferDialogProps {
+  source: TransferSource;
+  onClose: () => void;
+  onSuccess?: () => void;
+}
+
+export default function TransferDialog({ source, onClose, onSuccess }: TransferDialogProps) {
+  const { showToast } = useToast();
+  const { displayName } = useIdentity();
+
+  const { data: warehousesData } = useQuery<{ warehouses: WarehouseOption[] }>(GET_WAREHOUSES, {
+    variables: { includeInactive: false },
+  });
+  const warehouses = useMemo(() => warehousesData?.warehouses ?? [], [warehousesData]);
+
+  const [destWarehouseId, setDestWarehouseId] = useState<string>(source.warehouseId ?? '');
+  const [aisle, setAisle] = useState('');
+  const [bay, setBay] = useState('');
+  const [bin, setBin] = useState('');
+  const [quantity, setQuantity] = useState<string>(String(source.available));
+
+  const [transfer, { loading, error }] = useMutation(TRANSFER_INVENTORY, {
+    refetchQueries: WAREHOUSE_REFETCH_QUERIES,
+    onCompleted: () => {
+      showToast(`Transferred ${quantity} ${source.productCode}`, 'success');
+      onSuccess?.();
+      onClose();
+    },
+    onError: (err) => showToast(err.message, 'error'),
+  });
+
+  const q = Number(quantity);
+  const sameBin =
+    destWarehouseId === source.warehouseId &&
+    (source.aisle ?? '') === aisle.trim() &&
+    (source.bay ?? '') === bay.trim() &&
+    (source.bin ?? '') === bin.trim();
+  const valid =
+    !!destWarehouseId &&
+    !!aisle.trim() &&
+    !!bay.trim() &&
+    !!bin.trim() &&
+    Number.isInteger(q) &&
+    q >= 1 &&
+    q <= source.available &&
+    !sameBin;
+
+  const handleSubmit = () => {
+    if (!valid) return;
+    transfer({
+      variables: {
+        input: {
+          sourceType: source.type,
+          sourceId: source.id,
+          quantity: q,
+          destWarehouseId,
+          destAisle: aisle.trim(),
+          destBay: bay.trim(),
+          destBin: bin.trim(),
+          performedBy: displayName,
+        },
+      },
+    });
+  };
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={`Transfer ${source.productCode}`}
+      actions={
+        <>
+          <Button onClick={onClose} disabled={loading}>
+            Cancel
+          </Button>
+          <Button variant="contained" onClick={handleSubmit} disabled={!valid || loading}>
+            {loading ? 'Transferring...' : 'Transfer'}
+          </Button>
+        </>
+      }
+    >
+      <Stack spacing={2} sx={{ pt: 1 }}>
+        {error && <Alert severity="error">{error.message}</Alert>}
+        <Typography variant="body2" color="text.secondary">
+          {source.available} available to transfer.
+        </Typography>
+        <FormControl size="small" fullWidth>
+          <InputLabel id="transfer-dest-warehouse">Destination warehouse</InputLabel>
+          <Select
+            labelId="transfer-dest-warehouse"
+            label="Destination warehouse"
+            value={destWarehouseId}
+            onChange={(e) => setDestWarehouseId(e.target.value)}
+          >
+            {warehouses.map((w) => (
+              <MenuItem key={w.id} value={w.id}>
+                {w.name} ({w.code})
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+        <Stack direction="row" spacing={2}>
+          <TextField
+            label="Aisle"
+            size="small"
+            value={aisle}
+            onChange={(e) => setAisle(e.target.value.slice(0, 20))}
+            required
+          />
+          <TextField
+            label="Bay"
+            size="small"
+            value={bay}
+            onChange={(e) => setBay(e.target.value.slice(0, 20))}
+            required
+          />
+          <TextField
+            label="Bin"
+            size="small"
+            value={bin}
+            onChange={(e) => setBin(e.target.value.slice(0, 20))}
+            required
+          />
+        </Stack>
+        <TextField
+          label="Quantity"
+          type="number"
+          size="small"
+          value={quantity}
+          onChange={(e) => setQuantity(e.target.value)}
+          error={q > source.available || q < 1}
+          helperText={q > source.available ? `Max ${source.available}` : undefined}
+          slotProps={{ htmlInput: { min: 1, max: source.available } }}
+          sx={{ width: 160 }}
+        />
+        {sameBin && (
+          <Alert severity="warning">Destination is the same as the source location.</Alert>
+        )}
+      </Stack>
+    </Modal>
+  );
+}

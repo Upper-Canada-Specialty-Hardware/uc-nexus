@@ -1111,3 +1111,171 @@ def receive_into_stock(
         },
     )
     return stock_row
+
+
+# ---------------------------------------------------------------------------
+# Transfer: move quantity between bins, same or across warehouses (issue #88)
+# ---------------------------------------------------------------------------
+
+
+def _find_matching_inventory_location(
+    session: Session,
+    src: InventoryLocationModel,
+    warehouse_id: uuid.UUID,
+    aisle: str | None,
+    bay: str | None,
+    bin: str | None,
+) -> InventoryLocationModel | None:
+    """An existing IL row sharing src's origin identity at the destination (warehouse, bin)."""
+    stmt = select(InventoryLocationModel).where(
+        InventoryLocationModel.id != src.id,
+        InventoryLocationModel.warehouse_id == warehouse_id,
+        InventoryLocationModel.project_id == src.project_id,
+        InventoryLocationModel.hardware_category == src.hardware_category,
+        InventoryLocationModel.product_code == src.product_code,
+        InventoryLocationModel.aisle == aisle,
+        InventoryLocationModel.bay == bay,
+        InventoryLocationModel.bin == bin,
+    )
+    for col, val in (
+        (InventoryLocationModel.po_line_item_id, src.po_line_item_id),
+        (InventoryLocationModel.receive_line_item_id, src.receive_line_item_id),
+        (InventoryLocationModel.stock_item_id, src.stock_item_id),
+    ):
+        stmt = stmt.where(col.is_(None)) if val is None else stmt.where(col == val)
+    return session.scalars(stmt).first()
+
+
+def transfer_inventory(
+    session: Session,
+    *,
+    source_type: str,
+    source_id: uuid.UUID,
+    quantity: int,
+    dest_warehouse_id: uuid.UUID,
+    dest_aisle: str,
+    dest_bay: str,
+    dest_bin: str,
+    performed_by: str,
+) -> dict:
+    """Move `quantity` available units from a source row to a destination bin/warehouse.
+
+    Partial + immediate. Source keeps the remainder (an InventoryLocation may sit at 0, a fully
+    drained stock row is hidden by the qty>0 list filter). The destination merges into a matching
+    row (same origin + bin) or a new row is created. Same- and cross-warehouse use one path.
+    """
+    from app.models.warehouse import Warehouse
+
+    if quantity < 1:
+        raise ValidationError("quantity must be >= 1", field="quantity")
+    if not performed_by:
+        raise ValidationError("performed_by is required", field="performed_by")
+    if (
+        not (dest_aisle and dest_aisle.strip())
+        or not (dest_bay and dest_bay.strip())
+        or not (dest_bin and dest_bin.strip())
+    ):
+        raise ValidationError("destination aisle, bay, and bin are all required", field="destination")
+
+    dest_aisle, dest_bay, dest_bin = _normalize_optional_location_fields(dest_aisle, dest_bay, dest_bin)
+
+    dest_wh = session.get(Warehouse, dest_warehouse_id)
+    if dest_wh is None:
+        raise NotFoundError(f"Warehouse {dest_warehouse_id} not found")
+
+    now = datetime.utcnow()
+
+    if source_type == "INVENTORY_LOCATION":
+        il = session.get(InventoryLocationModel, source_id)
+        if il is None:
+            raise NotFoundError(f"Inventory location {source_id} not found")
+        available = il.quantity - (il.deficient_quantity or 0)
+        if quantity > available:
+            raise ValidationError("Transfer quantity exceeds available (non-deficient) quantity", field="quantity")
+        if il.warehouse_id == dest_warehouse_id and (il.aisle, il.bay, il.bin) == (dest_aisle, dest_bay, dest_bin):
+            raise ValidationError("Destination is the same as the source location", field="destination")
+
+        from_wh, from_loc = il.warehouse_id, {"aisle": il.aisle, "bay": il.bay, "bin": il.bin}
+        il.quantity -= quantity
+        target = _find_matching_inventory_location(session, il, dest_warehouse_id, dest_aisle, dest_bay, dest_bin)
+        if target is not None:
+            target.quantity += quantity
+        else:
+            target = InventoryLocationModel(
+                project_id=il.project_id,
+                po_line_item_id=il.po_line_item_id,
+                receive_line_item_id=il.receive_line_item_id,
+                stock_item_id=il.stock_item_id,
+                warehouse_id=dest_warehouse_id,
+                hardware_category=il.hardware_category,
+                product_code=il.product_code,
+                quantity=quantity,
+                deficient_quantity=0,
+                aisle=dest_aisle,
+                bay=dest_bay,
+                bin=dest_bin,
+                received_at=now,
+            )
+            session.add(target)
+        session.flush()
+        _log_audit_event(
+            session,
+            project_id=il.project_id,
+            entity_type=AuditEntityType.INVENTORY_LOCATION,
+            entity_id=il.id,
+            action=AuditAction.TRANSFER,
+            performed_by=performed_by,
+            detail={
+                "fromWarehouseId": str(from_wh),
+                "fromLocation": from_loc,
+                "toWarehouseId": str(dest_warehouse_id),
+                "toLocation": {"aisle": dest_aisle, "bay": dest_bay, "bin": dest_bin},
+                "quantity": quantity,
+                "targetInventoryLocationId": str(target.id),
+            },
+        )
+        return {"success": True, "quantity": quantity, "dest_warehouse_id": dest_warehouse_id}
+
+    if source_type == "STOCK_ITEM":
+        si = session.get(StockItem, source_id)
+        if si is None:
+            raise NotFoundError(f"Stock item {source_id} not found")
+        available = si.quantity - (si.deficient_quantity or 0)
+        if quantity > available:
+            raise ValidationError("Transfer quantity exceeds available (non-deficient) quantity", field="quantity")
+        if si.warehouse_id == dest_warehouse_id and (si.aisle, si.bay, si.bin) == (dest_aisle, dest_bay, dest_bin):
+            raise ValidationError("Destination is the same as the source location", field="destination")
+
+        from_wh, from_loc = si.warehouse_id, {"aisle": si.aisle, "bay": si.bay, "bin": si.bin}
+        si.quantity -= quantity
+        target = _find_or_create_stock_row(
+            session,
+            warehouse_id=dest_warehouse_id,
+            hardware_category=si.hardware_category,
+            product_code=si.product_code,
+            aisle=dest_aisle,
+            bay=dest_bay,
+            bin=dest_bin,
+            received_at=now,
+        )
+        target.quantity += quantity
+        session.flush()
+        _log_audit_event(
+            session,
+            project_id=None,
+            entity_type=AuditEntityType.STOCK_ITEM,
+            entity_id=si.id,
+            action=AuditAction.TRANSFER,
+            performed_by=performed_by,
+            detail={
+                "fromWarehouseId": str(from_wh),
+                "fromLocation": from_loc,
+                "toWarehouseId": str(dest_warehouse_id),
+                "toLocation": {"aisle": dest_aisle, "bay": dest_bay, "bin": dest_bin},
+                "quantity": quantity,
+                "targetStockItemId": str(target.id),
+            },
+        )
+        return {"success": True, "quantity": quantity, "dest_warehouse_id": dest_warehouse_id}
+
+    raise ValidationError("source_type must be INVENTORY_LOCATION or STOCK_ITEM", field="source_type")

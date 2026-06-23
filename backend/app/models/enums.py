@@ -92,6 +92,7 @@ class AuditAction(str, enum.Enum):
     RECLASSIFY = "RECLASSIFY"
     REPORT_DEFICIENT = "REPORT_DEFICIENT"
     RESOLVE_DEFICIENT = "RESOLVE_DEFICIENT"
+    TRANSFER = "TRANSFER"
 
 
 class DestockSource(str, enum.Enum):

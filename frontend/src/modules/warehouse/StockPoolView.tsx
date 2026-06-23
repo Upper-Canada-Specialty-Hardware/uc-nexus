@@ -22,7 +22,9 @@ import EditIcon from '@mui/icons-material/Edit';
 import OpenInFullIcon from '@mui/icons-material/OpenInFull';
 import CallSplitIcon from '@mui/icons-material/CallSplit';
 import LocationOnIcon from '@mui/icons-material/LocationOn';
+import SwapHorizIcon from '@mui/icons-material/SwapHoriz';
 import ReportProblemIcon from '@mui/icons-material/ReportProblem';
+import TransferDialog from './TransferDialog';
 import { GET_STOCK_ITEMS, GET_WAREHOUSES } from '../../graphql/queries';
 import AdjustStockModal from './stock/AdjustStockModal';
 import MoveStockLocationModal from './stock/MoveStockLocationModal';
@@ -59,7 +61,7 @@ export default function StockPoolView() {
   const [warehouseFilter, setWarehouseFilter] = useState('');
   const [selected, setSelected] = useState<StockItem | null>(null);
   const [modal, setModal] = useState<
-    'adjust' | 'move' | 'reclassify' | 'allocate' | 'report-deficient' | null
+    'adjust' | 'move' | 'reclassify' | 'allocate' | 'report-deficient' | 'transfer' | null
   >(null);
 
   const { data, loading, error, refetch } = useQuery<{ stockItems: StockItem[] }>(
@@ -185,6 +187,18 @@ export default function StockPoolView() {
               <LocationOnIcon fontSize="small" />
             </IconButton>
           </Tooltip>
+          <Tooltip title="Transfer (same or other warehouse)">
+            <IconButton
+              size="small"
+              onClick={() => {
+                setSelected(row);
+                setModal('transfer');
+              }}
+              disabled={row.available <= 0}
+            >
+              <SwapHorizIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
           <Tooltip title="Reclassify (split-capable)">
             <IconButton
               size="small"
@@ -304,6 +318,22 @@ export default function StockPoolView() {
       )}
       {selected && modal === 'report-deficient' && (
         <ReportStockDeficiencyModal item={selected} onClose={closeModal} onSuccess={onSuccess} />
+      )}
+      {selected && modal === 'transfer' && (
+        <TransferDialog
+          source={{
+            type: 'STOCK_ITEM',
+            id: selected.id,
+            productCode: selected.productCode,
+            available: selected.available,
+            warehouseId: selected.warehouseId,
+            aisle: selected.aisle,
+            bay: selected.bay,
+            bin: selected.bin,
+          }}
+          onClose={closeModal}
+          onSuccess={onSuccess}
+        />
       )}
     </Box>
   );
