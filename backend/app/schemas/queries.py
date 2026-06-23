@@ -4,6 +4,7 @@ import strawberry
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
+from app.auth import require_admin
 from app.database import SessionLocal
 from app.models.enums import POStatus as DBPOStatus
 from app.models.project import Opening as OpeningModel
@@ -244,6 +245,10 @@ def _project_to_type(
         submittal_assignment_count=p.submittal_assignment_count,
         estimator_code=p.estimator_code,
         titan_user_id=p.titan_user_id,
+        off_site_storage_agreement=p.off_site_storage_agreement,
+        gc_contact_name=p.gc_contact_name,
+        gc_phone=p.gc_phone,
+        gc_email=p.gc_email,
         created_at=p.created_at,
         updated_at=p.updated_at,
         opening_count=opening_count,
@@ -504,6 +509,19 @@ def _deficient_item_row_to_type(row: dict) -> DeficientItemRow:
 class Query:
     @strawberry.field
     def projects(self) -> list[Project]:
+        with SessionLocal() as session:
+            stmt = select(ProjectModel).order_by(ProjectModel.created_at.desc())
+            results = list(session.scalars(stmt).unique().all())
+            count_rows = session.execute(
+                select(OpeningModel.project_id, func.count()).group_by(OpeningModel.project_id)
+            ).all()
+            counts: dict[uuid.UUID, int] = {pid: c for pid, c in count_rows}
+            return [_project_to_type(p, include_openings=False, opening_count=counts.get(p.id, 0)) for p in results]
+
+    @strawberry.field
+    def admin_projects(self, info: strawberry.Info) -> list[Project]:
+        """Admin/Manager-only project list with all editable fields for the admin Projects page."""
+        require_admin(info)
         with SessionLocal() as session:
             stmt = select(ProjectModel).order_by(ProjectModel.created_at.desc())
             results = list(session.scalars(stmt).unique().all())

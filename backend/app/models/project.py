@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, Index, Integer, String, UniqueConstraint
+from sqlalchemy import Boolean, ForeignKey, Index, Integer, String, UniqueConstraint, false
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from . import Base
@@ -27,6 +27,12 @@ class Project(Base):
     submittal_assignment_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     estimator_code: Mapped[str | None] = mapped_column(String, nullable=True)
     titan_user_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    off_site_storage_agreement: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
+    gc_contact_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    gc_phone: Mapped[str | None] = mapped_column(String, nullable=True)
+    gc_email: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 

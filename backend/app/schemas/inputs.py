@@ -11,6 +11,24 @@ class CreateProjectInput:
 
 
 @strawberry.input
+class UpdateProjectInput:
+    description: str | None = None
+    client: str | None = None
+    job_site_name: str | None = None
+    address: str | None = None
+    city: str | None = None
+    state: str | None = None
+    zip: str | None = None
+    contractor: str | None = None
+    project_manager: str | None = None
+    application: str | None = None
+    gc_contact_name: str | None = None
+    gc_phone: str | None = None
+    gc_email: str | None = None
+    off_site_storage_agreement: bool | None = None
+
+
+@strawberry.input
 class OpeningInput:
     opening_number: str
     building: str | None = None
