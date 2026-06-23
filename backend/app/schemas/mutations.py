@@ -29,6 +29,7 @@ from .inputs import (
     CreatePOInput,
     CreateProjectInput,
     CreateReceiveInput,
+    CreateShipmentReturnInput,
     CreateVendorInput,
     CreateWarehouseInput,
     DestockInventoryInput,
@@ -58,6 +59,7 @@ from .queries import (
     _pull_request_item_to_type,
     _pull_request_to_type,
     _receive_record_to_type,
+    _shipment_return_to_type,
     _shop_assembly_opening_to_type,
     _shop_assembly_request_to_type,
     _stock_item_to_type,
@@ -82,6 +84,7 @@ from .types import (
     ReceiveRecord,
     ReclassifyStockResult,
     SAReplacementResult,
+    ShipmentReturn,
     ShopAssemblyOpening,
     ShopAssemblyRequest,
     StockItem,
@@ -627,6 +630,40 @@ class Mutation:
             stmt = select(PSModel).options(selectinload(PSModel.items)).where(PSModel.id == ps.id)
             refreshed = session.scalars(stmt).unique().first()
             return _packing_slip_to_type(refreshed)
+
+    @strawberry.mutation
+    def create_shipment_return(self, input: CreateShipmentReturnInput) -> ShipmentReturn:
+        from app.models.enums import ReturnDisposition
+
+        items_data = [
+            {
+                "packing_slip_item_id": uuid.UUID(str(it.packing_slip_item_id)),
+                "quantity": it.quantity,
+                "disposition": ReturnDisposition(it.disposition.value),
+                "rma_reference": it.rma_reference,
+                "reason_text": it.reason_text,
+            }
+            for it in input.items
+        ]
+
+        with SessionLocal() as session:
+            sr = shipping_repository.create_shipment_return(
+                session,
+                packing_slip_id=uuid.UUID(str(input.packing_slip_id)),
+                warehouse_id=uuid.UUID(str(input.warehouse_id)),
+                returned_by=input.returned_by,
+                reference=input.reference,
+                items=items_data,
+            )
+            session.commit()
+            # Re-load with items
+            from sqlalchemy.orm import selectinload
+
+            from app.models.shipping import ShipmentReturn as SRModel
+
+            stmt = select(SRModel).options(selectinload(SRModel.items)).where(SRModel.id == sr.id)
+            refreshed = session.scalars(stmt).unique().first()
+            return _shipment_return_to_type(refreshed)
 
     # Warehouse - Admin Corrections
     @strawberry.mutation

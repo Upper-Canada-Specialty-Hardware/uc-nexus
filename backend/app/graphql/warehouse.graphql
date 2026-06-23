@@ -157,6 +157,49 @@ type PackingSlipItem {
   quantity: Int!
 }
 
+enum ReturnDisposition {
+  RETURN_TO_PROJECT
+  NON_STOCK
+  RMA_DEFECTIVE
+}
+
+type ReturnableLine {
+  packing_slip_item_id: ID!
+  opening_number: String
+  product_code: String!
+  hardware_category: String!
+  shipped_quantity: Int!
+  returned_quantity: Int!
+  returnable_quantity: Int!
+}
+
+type ShipmentReturnItem {
+  id: ID!
+  shipment_return_id: ID!
+  packing_slip_item_id: ID!
+  disposition: ReturnDisposition!
+  quantity: Int!
+  hardware_category: String!
+  product_code: String!
+  opening_number: String
+  rma_reference: String
+  reason_text: String
+  resulting_inventory_location_id: ID
+  resulting_stock_item_id: ID
+  created_at: DateTime!
+}
+
+type ShipmentReturn {
+  id: ID!
+  packing_slip_id: ID!
+  warehouse_id: ID!
+  returned_by: String!
+  returned_at: DateTime!
+  reference: String
+  created_at: DateTime!
+  items: [ShipmentReturnItem!]!
+}
+
 type Notification {
   id: ID!
   project_id: ID!
@@ -202,6 +245,22 @@ input ShipmentItemInput {
   quantity: Int!
 }
 
+input CreateShipmentReturnInput {
+  packing_slip_id: ID!
+  warehouse_id: ID!
+  returned_by: String!
+  reference: String
+  items: [ShipmentReturnItemInput!]!
+}
+
+input ShipmentReturnItemInput {
+  packing_slip_item_id: ID!
+  quantity: Int!
+  disposition: ReturnDisposition!
+  rma_reference: String
+  reason_text: String
+}
+
 type RecentReceiveRecord {
   receive_record: ReceiveRecord!
   po_number: String
@@ -232,6 +291,8 @@ type Query {
   pullRequestDetails(id: ID!): PullRequest!
   shipReadyItems(projectId: ID!): ShipReadyItems!
   projectProgressByProduct(projectId: ID!): [ProjectProgressByProduct!]!
+  packingSlips(projectId: ID): [PackingSlip!]!
+  returnableLines(packingSlipId: ID!): [ReturnableLine!]!
   notifications(projectId: ID!, recipientRole: String!, unreadOnly: Boolean, limit: Int = 5): [Notification!]!
 }
 
@@ -240,6 +301,7 @@ type Mutation {
   approvePullRequest(id: ID!, approvedBy: String!): ApproveResult!
   completePullRequest(id: ID!): PullRequest!
   confirmShipment(input: ConfirmShipmentInput!): PackingSlip!
+  createShipmentReturn(input: CreateShipmentReturnInput!): ShipmentReturn!
   adjustInventoryQuantity(inventoryLocationId: ID!, adjustment: Int!, reason: String!): InventoryLocation!
   moveInventoryLocation(inventoryLocationId: ID!, newAisle: String!, newBay: String!, newBin: String!): InventoryLocation!
   markInventoryUnlocated(inventoryLocationId: ID!): InventoryLocation!

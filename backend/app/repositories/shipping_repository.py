@@ -9,12 +9,16 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.errors import ConflictError, InvalidStateTransitionError, NotFoundError, ValidationError
 from app.models.enums import (
+    AuditAction,
+    AuditEntityType,
     NotificationType,
     OpeningItemState,
     PullRequestItemType,
     PullRequestSource,
     PullRequestStatus,
+    ReturnDisposition,
 )
+from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.opening_item import OpeningItem as OpeningItemModel
 from app.models.pull_request import (
     PullRequest as PullRequestModel,
@@ -22,7 +26,14 @@ from app.models.pull_request import (
 from app.models.pull_request import (
     PullRequestItem as PullRequestItemModel,
 )
-from app.models.shipping import PackingSlip, PackingSlipItem
+from app.models.shipping import (
+    PackingSlip,
+    PackingSlipItem,
+    ShipmentReturn,
+    ShipmentReturnItem,
+)
+from app.models.warehouse import Warehouse
+from app.repositories.stock_repository import _find_or_create_stock_row, _log_audit_event
 from app.services import notification_service
 from app.services.locking import lock_rows
 
@@ -261,3 +272,234 @@ def confirm_shipment(
     )
 
     return packing_slip
+
+
+# ---------------------------------------------------------------------------
+# Shipment returns (issue #89): a shipment comes back from site.
+# Only loose-hardware lines are returnable; opening items never re-enter.
+# ---------------------------------------------------------------------------
+
+
+def list_packing_slips(
+    session: Session,
+    project_id: uuid.UUID | None = None,
+) -> list[PackingSlip]:
+    """List confirmed packing slips (newest first), optionally scoped to one project."""
+    stmt = select(PackingSlip).options(selectinload(PackingSlip.items)).order_by(PackingSlip.shipped_at.desc())
+    if project_id is not None:
+        stmt = stmt.where(PackingSlip.project_id == project_id)
+    return list(session.scalars(stmt).unique().all())
+
+
+def _returned_quantities(session: Session, packing_slip_id: uuid.UUID) -> dict[uuid.UUID, int]:
+    """Sum of already-returned quantity per packing_slip_item_id for a slip."""
+    rows = session.execute(
+        select(
+            ShipmentReturnItem.packing_slip_item_id,
+            func.sum(ShipmentReturnItem.quantity).label("total_returned"),
+        )
+        .join(ShipmentReturn, ShipmentReturnItem.shipment_return_id == ShipmentReturn.id)
+        .where(ShipmentReturn.packing_slip_id == packing_slip_id)
+        .group_by(ShipmentReturnItem.packing_slip_item_id)
+    ).all()
+    return {row.packing_slip_item_id: row.total_returned for row in rows}
+
+
+def get_returnable_lines(session: Session, packing_slip_id: uuid.UUID) -> list[dict]:
+    """For a slip, list each LOOSE line with shipped / already-returned / still-returnable quantity."""
+    ps = session.scalars(
+        select(PackingSlip).options(selectinload(PackingSlip.items)).where(PackingSlip.id == packing_slip_id)
+    ).first()
+    if ps is None:
+        raise NotFoundError(f"Packing slip {packing_slip_id} not found")
+
+    already = _returned_quantities(session, packing_slip_id)
+    lines = []
+    for psi in ps.items:
+        if psi.item_type != PullRequestItemType.LOOSE:
+            continue
+        returned = already.get(psi.id, 0)
+        lines.append(
+            {
+                "packing_slip_item_id": psi.id,
+                "opening_number": psi.opening_number,
+                "product_code": psi.product_code,
+                "hardware_category": psi.hardware_category,
+                "shipped_quantity": psi.quantity,
+                "returned_quantity": returned,
+                "returnable_quantity": psi.quantity - returned,
+            }
+        )
+    return lines
+
+
+def create_shipment_return(
+    session: Session,
+    *,
+    packing_slip_id: uuid.UUID,
+    warehouse_id: uuid.UUID,
+    returned_by: str,
+    reference: str | None,
+    items: list[dict],
+) -> ShipmentReturn:
+    """Record a shipment return and route each loose line to its disposition.
+
+    Each item dict carries: packing_slip_item_id, quantity, disposition (ReturnDisposition),
+    and optional rma_reference / reason_text.
+
+    RETURN_TO_PROJECT re-creates a fresh, unlocated InventoryLocation for the slip's project
+    (drops into Put-Away). NON_STOCK / RMA_DEFECTIVE merge into the stock pool at the chosen
+    warehouse; RMA also flags the merged units deficient so they surface in Deficient Items review.
+    """
+    if not returned_by:
+        raise ValidationError("returned_by is required", field="returned_by")
+    if not items:
+        raise ValidationError("items must not be empty", field="items")
+    reference = (reference or "").strip() or None
+
+    # 1. Lock the slip, then load it with items
+    locked = lock_rows(session, PackingSlip, [packing_slip_id])
+    if not locked:
+        raise NotFoundError(f"Packing slip {packing_slip_id} not found")
+    ps = session.scalars(
+        select(PackingSlip).options(selectinload(PackingSlip.items)).where(PackingSlip.id == packing_slip_id)
+    ).first()
+
+    # 2. Validate destination warehouse
+    warehouse = session.get(Warehouse, warehouse_id)
+    if warehouse is None:
+        raise NotFoundError(f"Warehouse {warehouse_id} not found")
+    if not warehouse.is_active:
+        raise ValidationError("Destination warehouse is not active", field="warehouse_id")
+
+    psi_by_id = {psi.id: psi for psi in ps.items}
+    already = _returned_quantities(session, packing_slip_id)
+
+    # 3. Validate every line up front (cumulative within this call too)
+    requested_per_psi: dict[uuid.UUID, int] = defaultdict(int)
+    for item in items:
+        qty = item["quantity"]
+        if qty < 1:
+            raise ValidationError("quantity must be >= 1", field="quantity")
+        psi = psi_by_id.get(item["packing_slip_item_id"])
+        if psi is None:
+            raise ValidationError("Line is not part of this packing slip", field="packing_slip_item_id")
+        if psi.item_type != PullRequestItemType.LOOSE:
+            raise ValidationError("Only loose-hardware lines can be returned", field="packing_slip_item_id")
+        rma_ref = item.get("rma_reference")
+        if rma_ref is not None and len(rma_ref) > 100:
+            raise ValidationError("rma_reference must be 100 characters or fewer", field="rma_reference")
+        requested_per_psi[psi.id] += qty
+
+    for psi_id, requested in requested_per_psi.items():
+        psi = psi_by_id[psi_id]
+        returnable = psi.quantity - already.get(psi_id, 0)
+        if requested > returnable:
+            raise ValidationError(
+                f"Return quantity {requested} exceeds returnable {returnable} for {psi.product_code}",
+                field="quantity",
+            )
+
+    # 4. Create the return header
+    now = datetime.utcnow()
+    shipment_return = ShipmentReturn(
+        id=uuid.uuid4(),
+        packing_slip_id=ps.id,
+        warehouse_id=warehouse_id,
+        returned_by=returned_by,
+        returned_at=now,
+        reference=reference,
+    )
+    session.add(shipment_return)
+    session.flush()
+
+    # 5. Process each returned line
+    for item in items:
+        psi = psi_by_id[item["packing_slip_item_id"]]
+        qty = item["quantity"]
+        disposition = item["disposition"]
+        rma_reference = item.get("rma_reference")
+        reason_text = item.get("reason_text")
+
+        return_item = ShipmentReturnItem(
+            id=uuid.uuid4(),
+            shipment_return_id=shipment_return.id,
+            packing_slip_item_id=psi.id,
+            disposition=disposition,
+            quantity=qty,
+            hardware_category=psi.hardware_category,
+            product_code=psi.product_code,
+            opening_number=psi.opening_number,
+            rma_reference=rma_reference,
+            reason_text=reason_text,
+        )
+        session.add(return_item)
+        session.flush()
+
+        detail = {
+            "shipmentReturnId": str(shipment_return.id),
+            "packingSlipId": str(ps.id),
+            "packingSlipNumber": ps.packing_slip_number,
+            "disposition": disposition.value,
+            "quantity": qty,
+            "hardwareCategory": psi.hardware_category,
+            "productCode": psi.product_code,
+            "rmaReference": rma_reference,
+        }
+
+        if disposition == ReturnDisposition.RETURN_TO_PROJECT:
+            # Fresh, unlocated inventory for the origin project — re-enters Put-Away.
+            inv_loc = InventoryLocationModel(
+                id=uuid.uuid4(),
+                project_id=ps.project_id,
+                warehouse_id=warehouse_id,
+                hardware_category=psi.hardware_category,
+                product_code=psi.product_code,
+                quantity=qty,
+                deficient_quantity=0,
+                aisle=None,
+                bay=None,
+                bin=None,
+                shipment_return_item_id=return_item.id,
+                received_at=now,
+            )
+            session.add(inv_loc)
+            session.flush()
+            return_item.resulting_inventory_location_id = inv_loc.id
+            _log_audit_event(
+                session,
+                project_id=ps.project_id,
+                entity_type=AuditEntityType.INVENTORY_LOCATION,
+                entity_id=inv_loc.id,
+                action=AuditAction.RETURN,
+                performed_by=returned_by,
+                detail=detail,
+            )
+        else:
+            # NON_STOCK or RMA_DEFECTIVE — merge into the stock pool.
+            stock_row = _find_or_create_stock_row(
+                session,
+                warehouse_id=warehouse_id,
+                hardware_category=psi.hardware_category,
+                product_code=psi.product_code,
+                aisle=None,
+                bay=None,
+                bin=None,
+                received_at=now,
+            )
+            stock_row.quantity += qty
+            if disposition == ReturnDisposition.RMA_DEFECTIVE:
+                stock_row.deficient_quantity += qty
+            session.flush()
+            return_item.resulting_stock_item_id = stock_row.id
+            _log_audit_event(
+                session,
+                project_id=None,
+                entity_type=AuditEntityType.STOCK_ITEM,
+                entity_id=stock_row.id,
+                action=AuditAction.RETURN,
+                performed_by=returned_by,
+                detail=detail,
+            )
+
+    return shipment_return

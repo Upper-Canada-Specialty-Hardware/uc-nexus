@@ -51,6 +51,9 @@ from app.models.enums import (
     PullStatus as PullStatusDB,
 )
 from app.models.enums import (
+    ReturnDisposition as ReturnDispositionDB,
+)
+from app.models.enums import (
     ShopAssemblyRequestStatus as ShopAssemblyRequestStatusDB,
 )
 
@@ -72,6 +75,7 @@ PODocumentType = strawberry.enum(PODocumentTypeDB)
 DestockSource = strawberry.enum(DestockSourceDB)
 DeficiencyResolution = strawberry.enum(DeficiencyResolutionDB)
 DeficientItemSource = strawberry.enum(DeficientItemSourceDB)
+ReturnDisposition = strawberry.enum(ReturnDispositionDB)
 
 
 # GraphQL-only enums (not stored in database)

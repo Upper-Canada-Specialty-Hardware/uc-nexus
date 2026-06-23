@@ -1,10 +1,11 @@
 import { useState } from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
-import { Box, Typography, Badge, IconButton, Button } from '@mui/material';
+import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
+import { Box, Typography, Badge, IconButton, Button, ToggleButton, ToggleButtonGroup } from '@mui/material';
 import ShoppingCartIcon from '@mui/icons-material/ShoppingCart';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import { useCart } from '../../contexts/CartContext';
 import ShipReadyBrowser from './ShipReadyBrowser';
+import ShipmentsList from './ShipmentsList';
 import ShippingCart from './ShippingCart';
 import ProjectLandingPage from '../../components/ProjectLandingPage';
 import type { Project } from '../../types/project';
@@ -13,6 +14,9 @@ export default function ShippingModule() {
   const [selectedProject, setSelectedProject] = useState<Project | 'all' | null>(null);
   const [cartOpen, setCartOpen] = useState(false);
   const { itemCount } = useCart();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const view = location.pathname.endsWith('/returns') ? 'returns' : 'ship';
 
   if (selectedProject === null) {
     return (
@@ -40,14 +44,28 @@ export default function ShippingModule() {
           </Button>
           <Typography variant="h5">Shipping — {projectName}</Typography>
         </Box>
-        <IconButton onClick={() => setCartOpen(true)}>
-          <Badge badgeContent={itemCount} color="primary">
-            <ShoppingCartIcon />
-          </Badge>
-        </IconButton>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <ToggleButtonGroup
+            size="small"
+            exclusive
+            value={view}
+            onChange={(_, v) => {
+              if (v) navigate(v === 'returns' ? 'returns' : 'browse');
+            }}
+          >
+            <ToggleButton value="ship">Ship</ToggleButton>
+            <ToggleButton value="returns">Returns</ToggleButton>
+          </ToggleButtonGroup>
+          <IconButton onClick={() => setCartOpen(true)}>
+            <Badge badgeContent={itemCount} color="primary">
+              <ShoppingCartIcon />
+            </Badge>
+          </IconButton>
+        </Box>
       </Box>
       <Routes>
         <Route path="browse" element={<ShipReadyBrowser projectId={projectId} />} />
+        <Route path="returns" element={<ShipmentsList projectId={projectId} />} />
         <Route index element={<Navigate to="browse" replace />} />
       </Routes>
       <ShippingCart

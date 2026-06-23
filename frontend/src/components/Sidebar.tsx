@@ -61,6 +61,7 @@ const SIDEBAR_ITEMS: SidebarItem[] = [
       { label: 'Receiving', path: '/app/warehouse/receiving' },
       { label: 'Put Away', path: '/app/warehouse/put-away' },
       { label: 'Pull Requests', path: '/app/warehouse/pull-requests' },
+      { label: 'Shipments', path: '/app/warehouse/shipments' },
     ],
   },
   {

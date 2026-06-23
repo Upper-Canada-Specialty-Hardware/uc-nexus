@@ -414,6 +414,31 @@ export const CONFIRM_SHIPMENT = gql`
   }
 `;
 
+export const CREATE_SHIPMENT_RETURN = gql`
+  mutation CreateShipmentReturn($input: CreateShipmentReturnInput!) {
+    createShipmentReturn(input: $input) {
+      id
+      packingSlipId
+      warehouseId
+      returnedBy
+      returnedAt
+      reference
+      items {
+        id
+        packingSlipItemId
+        disposition
+        quantity
+        productCode
+        hardwareCategory
+        openingNumber
+        rmaReference
+        resultingInventoryLocationId
+        resultingStockItemId
+      }
+    }
+  }
+`;
+
 export const CREATE_PO = gql`
   mutation CreatePO($input: CreatePOInput!) {
     createPo(input: $input) {

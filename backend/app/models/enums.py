@@ -93,6 +93,15 @@ class AuditAction(str, enum.Enum):
     REPORT_DEFICIENT = "REPORT_DEFICIENT"
     RESOLVE_DEFICIENT = "RESOLVE_DEFICIENT"
     TRANSFER = "TRANSFER"
+    RETURN = "RETURN"
+
+
+class ReturnDisposition(str, enum.Enum):
+    """Where a returned loose-hardware line goes when a shipment comes back."""
+
+    RETURN_TO_PROJECT = "RETURN_TO_PROJECT"
+    NON_STOCK = "NON_STOCK"
+    RMA_DEFECTIVE = "RMA_DEFECTIVE"
 
 
 class DestockSource(str, enum.Enum):
