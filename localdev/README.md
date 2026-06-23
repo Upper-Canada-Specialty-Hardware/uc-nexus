@@ -56,7 +56,7 @@ ports
 - postgres defaults to 5432. if it's taken, set UC_PG_PORT first, e.g.  $env:UC_PG_PORT='5544'; .\localdev\start-all.ps1
 
 known limitation
-- document uploads need the railway S3 bucket. with BUCKET_* left blank in backend\.env those upload flows won't work locally - everything else does
+- PO/vendor document attachments need the railway S3 bucket. with BUCKET_* left blank in backend\.env, attaching/downloading those files won't work locally - everything else does, including the Import module's XML upload (it's client-side, never touches S3)
 
 what stays out of git
 - .localdev\ (binaries, cluster data, logs, the downloaded zip) is gitignored
