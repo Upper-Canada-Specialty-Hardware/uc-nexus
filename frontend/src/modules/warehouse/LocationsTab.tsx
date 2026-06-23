@@ -30,6 +30,7 @@ import LocationActionDialog, {
   type LocationActionTarget,
 } from './LocationActionDialog';
 import LocationAuditStrip from './LocationAuditStrip';
+import TransferDialog, { type TransferSource } from './TransferDialog';
 
 interface LocationEntry {
   aisle: string;
@@ -42,9 +43,11 @@ interface LocationEntry {
 interface InventoryLocationItem {
   id: string;
   projectId: string;
+  warehouseId: string | null;
   hardwareCategory: string;
   productCode: string;
   quantity: number;
+  available: number;
   aisle: string | null;
   bay: string | null;
   bin: string | null;
@@ -70,6 +73,7 @@ interface ContentsOpeningItem {
 
 interface ContentsStockItem {
   id: string;
+  warehouseId: string | null;
   hardwareCategory: string;
   productCode: string;
   quantity: number;
@@ -155,12 +159,16 @@ function RowActionMenu({
   onMove,
   onAdjust,
   onUnlocate,
+  onTransfer,
   showAdjust,
+  showTransfer,
 }: {
   onMove: () => void;
   onAdjust: () => void;
   onUnlocate: () => void;
+  onTransfer?: () => void;
   showAdjust: boolean;
+  showTransfer?: boolean;
 }) {
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
   return (
@@ -177,6 +185,16 @@ function RowActionMenu({
         >
           Move
         </MenuItem>
+        {showTransfer && onTransfer && (
+          <MenuItem
+            onClick={() => {
+              setAnchorEl(null);
+              onTransfer();
+            }}
+          >
+            Transfer
+          </MenuItem>
+        )}
         {showAdjust && (
           <MenuItem
             onClick={() => {
@@ -221,6 +239,7 @@ function ContentsPanel({
     mode: LocationActionMode;
     targets: LocationActionTarget[];
   } | null>(null);
+  const [transferSource, setTransferSource] = useState<TransferSource | null>(null);
 
   const toggleSelect = useCallback((id: string) => {
     setSelectedIds((prev) => {
@@ -371,9 +390,22 @@ function ContentsPanel({
                   </Box>
                   <RowActionMenu
                     showAdjust
+                    showTransfer
                     onMove={() => openSingle(target, 'move')}
                     onAdjust={() => openSingle(target, 'adjust')}
                     onUnlocate={() => openSingle(target, 'unlocate')}
+                    onTransfer={() =>
+                      setTransferSource({
+                        type: 'INVENTORY_LOCATION',
+                        id: il.id,
+                        productCode: il.productCode,
+                        available: il.available,
+                        warehouseId: il.warehouseId,
+                        aisle: il.aisle,
+                        bay: il.bay,
+                        bin: il.bin,
+                      })
+                    }
                   />
                 </Box>
               );
@@ -467,9 +499,22 @@ function ContentsPanel({
                   </Tooltip>
                   <RowActionMenu
                     showAdjust
+                    showTransfer
                     onMove={() => openSingle(target, 'move')}
                     onAdjust={() => openSingle(target, 'adjust')}
                     onUnlocate={() => openSingle(target, 'unlocate')}
+                    onTransfer={() =>
+                      setTransferSource({
+                        type: 'STOCK_ITEM',
+                        id: si.id,
+                        productCode: si.productCode,
+                        available: si.available,
+                        warehouseId: si.warehouseId,
+                        aisle: si.aisle,
+                        bay: si.bay,
+                        bin: si.bin,
+                      })
+                    }
                   />
                 </Box>
               );
@@ -490,6 +535,13 @@ function ContentsPanel({
           aisleOptions={aisleOptions}
           bayOptions={bayOptions}
           binOptions={binOptions}
+        />
+      )}
+      {transferSource && (
+        <TransferDialog
+          source={transferSource}
+          onClose={() => setTransferSource(null)}
+          onSuccess={handleSuccess}
         />
       )}
     </Paper>

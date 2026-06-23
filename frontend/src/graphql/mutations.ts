@@ -677,6 +677,16 @@ export const DELETE_WAREHOUSE = gql`
   }
 `;
 
+export const TRANSFER_INVENTORY = gql`
+  mutation TransferInventory($input: TransferInventoryInput!) {
+    transferInventory(input: $input) {
+      success
+      quantity
+      destWarehouseId
+    }
+  }
+`;
+
 // ---------------------------------------------------------------------------
 // Stock pool + deficiency mutations
 // ---------------------------------------------------------------------------
