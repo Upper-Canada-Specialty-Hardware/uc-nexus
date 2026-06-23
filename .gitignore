@@ -25,11 +25,15 @@ frontend/build/
 .env.local
 .env.*.local
 
+# Local dev runtime (portable postgres binaries, cluster data, logs, downloaded zip)
+.localdev/
+
 # IDE / Tools
 .vscode/
 .idea/
 .claude/
 CLAUDE.md
+!testing/CLAUDE.md
 *.swp
 *.swo
 *~
@@ -45,11 +49,9 @@ backend/alembic/versions/__pycache__/
 # Dev Planning (not tracked)
 Dev Planning/
 
-# Simulated user testing guide (local only)
-testing/
-
-# Sample data
+# Sample data XML dumps, except committed test fixtures
 *.xml
+!testing/fixtures/*.xml
 
 # Credentials
 clerk_credentials.txt
