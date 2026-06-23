@@ -49,15 +49,14 @@ if (Test-PgRunning) {
   Write-Ok "server already running on port $PgPort"
 } else {
   Write-Step "starting server on 127.0.0.1:$PgPort"
-  # Launch via Start-Process, not the call operator. When this script's stdout is captured
-  # (automation/CI/background task), a postmaster started by `& pg_ctl ... start` inherits the
-  # captured pipe, so the launching shell blocks forever - the server is up but the script never
-  # returns. Start-Process gives pg_ctl its own detached stdio, so the postmaster never holds our
-  # pipe. -W (no wait) returns immediately; the pg_isready loop below confirms readiness.
+  # Launch detached via Start-Process WITHOUT -Wait. Two separate traps bite under captured stdout
+  # (automation/CI/background tasks): `& pg_ctl ... start` makes the postmaster inherit this shell's
+  # output pipe so the shell blocks forever, AND `Start-Process -Wait` waits on the whole process
+  # tree including the detached postmaster, which also blocks forever. So fire-and-forget here and
+  # confirm readiness with the pg_isready loop below; if the start actually failed, that loop throws.
   $startArgs = "-D `"$PgData`" -l `"$PgLog`" -o `"-p $PgPort`" -W start"
-  $proc = Start-Process -FilePath (Get-PgExe 'pg_ctl') -ArgumentList $startArgs -WindowStyle Hidden -PassThru -Wait
-  if ($proc.ExitCode -ne 0) { throw "pg_ctl start failed (exit $($proc.ExitCode)) - see $PgLog" }
-  Write-Ok "started (log: $PgLog)"
+  Start-Process -FilePath (Get-PgExe 'pg_ctl') -ArgumentList $startArgs -WindowStyle Hidden
+  Write-Ok "start issued (confirming readiness below)"
 }
 
 # 4. Wait until it accepts connections.
