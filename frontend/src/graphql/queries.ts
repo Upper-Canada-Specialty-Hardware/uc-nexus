@@ -13,6 +13,36 @@ export const GET_PROJECTS = gql`
   }
 `;
 
+export const GET_ADMIN_PROJECTS = gql`
+  query GetAdminProjects {
+    adminProjects {
+      id
+      projectId
+      description
+      client
+      jobSiteName
+      address
+      city
+      state
+      zip
+      contractor
+      projectManager
+      application
+      gcContactName
+      gcPhone
+      gcEmail
+      offSiteStorageAgreement
+      submittalJobNo
+      submittalAssignmentCount
+      estimatorCode
+      titanUserId
+      openingCount
+      createdAt
+      updatedAt
+    }
+  }
+`;
+
 export const GET_PO_STATISTICS = gql`
   query GetPOStatistics($projectId: ID) {
     poStatistics(projectId: $projectId) {

@@ -61,6 +61,15 @@ def list_users() -> list[dict]:
     return users
 
 
+def get_user_roles(user_id: str) -> list[str]:
+    """Fetch a single Clerk user's roles from publicMetadata. Returns [] if none set."""
+    resp = _client.get(f"/users/{user_id}", headers=_headers())
+    resp.raise_for_status()
+    u = resp.json()
+    metadata = u.get("public_metadata") or {}
+    return metadata.get("roles") or []
+
+
 def update_user_roles(user_id: str, roles: list[str]) -> dict:
     """Update a Clerk user's roles in publicMetadata."""
     resp = _client.patch(
