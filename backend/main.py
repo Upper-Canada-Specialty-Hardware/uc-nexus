@@ -8,6 +8,7 @@ from graphql import GraphQLError, GraphQLResolveInfo
 from strawberry.extensions import SchemaExtension
 from strawberry.fastapi import GraphQLRouter
 
+from app.auth import get_context
 from app.errors import AppError
 from app.schemas.mutations import Mutation
 from app.schemas.queries import Query
@@ -36,7 +37,7 @@ schema = strawberry.Schema(
     extensions=[ErrorHandlerExtension],
 )
 
-graphql_app = GraphQLRouter(schema)
+graphql_app = GraphQLRouter(schema, context_getter=get_context)
 
 app = FastAPI(title="UC Nexus - Hardware Management System")
 

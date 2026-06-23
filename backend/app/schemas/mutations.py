@@ -4,6 +4,7 @@ from datetime import date
 import strawberry
 from sqlalchemy import select
 
+from app.auth import require_admin
 from app.database import SessionLocal
 from app.repositories import (
     notification_repository,
@@ -37,6 +38,7 @@ from .inputs import (
     ReportInventoryDeficiencyInput,
     ReportStockDeficiencyInput,
     ResolveDeficiencyInput,
+    UpdateProjectInput,
     UpdateVendorInput,
 )
 from .queries import (
@@ -96,6 +98,32 @@ class Mutation:
                 project_id=input.project_id,
                 description=input.description,
                 client=input.client,
+            )
+            session.commit()
+            session.refresh(project)
+            return _project_to_type(project)
+
+    @strawberry.mutation
+    def update_project(self, info: strawberry.Info, id: strawberry.ID, input: UpdateProjectInput) -> Project:
+        require_admin(info)
+        with SessionLocal() as session:
+            project = project_repository.update_project(
+                session,
+                uuid.UUID(str(id)),
+                description=input.description,
+                client=input.client,
+                job_site_name=input.job_site_name,
+                address=input.address,
+                city=input.city,
+                state=input.state,
+                zip=input.zip,
+                contractor=input.contractor,
+                project_manager=input.project_manager,
+                application=input.application,
+                gc_contact_name=input.gc_contact_name,
+                gc_phone=input.gc_phone,
+                gc_email=input.gc_email,
+                off_site_storage_agreement=input.off_site_storage_agreement,
             )
             session.commit()
             session.refresh(project)

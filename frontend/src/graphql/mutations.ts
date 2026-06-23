@@ -498,6 +498,36 @@ export const CREATE_PROJECT = gql`
   }
 `;
 
+export const UPDATE_PROJECT = gql`
+  mutation UpdateProject($id: ID!, $input: UpdateProjectInput!) {
+    updateProject(id: $id, input: $input) {
+      id
+      projectId
+      description
+      client
+      jobSiteName
+      address
+      city
+      state
+      zip
+      contractor
+      projectManager
+      application
+      gcContactName
+      gcPhone
+      gcEmail
+      offSiteStorageAgreement
+      submittalJobNo
+      submittalAssignmentCount
+      estimatorCode
+      titanUserId
+      openingCount
+      createdAt
+      updatedAt
+    }
+  }
+`;
+
 export const UPLOAD_PO_DOCUMENT = gql`
   mutation UploadPODocument($poId: ID!, $fileName: String!, $contentType: String!, $documentType: PODocumentType!, $fileDataBase64: String!) {
     uploadPoDocument(poId: $poId, fileName: $fileName, contentType: $contentType, documentType: $documentType, fileDataBase64: $fileDataBase64) {

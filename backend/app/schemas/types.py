@@ -192,6 +192,10 @@ class Project:
     submittal_assignment_count: int | None
     estimator_code: str | None
     titan_user_id: str | None
+    off_site_storage_agreement: bool
+    gc_contact_name: str | None
+    gc_phone: str | None
+    gc_email: str | None
     created_at: datetime
     updated_at: datetime
     opening_count: int
