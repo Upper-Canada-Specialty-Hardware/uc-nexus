@@ -12,9 +12,10 @@ import {
 } from '@mui/material';
 import { useQuery, useMutation } from '@apollo/client/react';
 import Modal from '../../components/Modal';
+import LocationAutocomplete from '../../components/LocationAutocomplete';
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
-import { GET_WAREHOUSES } from '../../graphql/queries';
+import { GET_WAREHOUSES, GET_LOCATION_DISTINCT_VALUES } from '../../graphql/queries';
 import { TRANSFER_INVENTORY } from '../../graphql/mutations';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
 
@@ -49,6 +50,13 @@ export default function TransferDialog({ source, onClose, onSuccess }: TransferD
     variables: { includeInactive: false },
   });
   const warehouses = useMemo(() => warehousesData?.warehouses ?? [], [warehousesData]);
+
+  const { data: distinctData } = useQuery<{
+    locationDistinctValues: { aisles: string[]; bays: string[]; bins: string[] };
+  }>(GET_LOCATION_DISTINCT_VALUES, { fetchPolicy: 'cache-and-network' });
+  const aisleOptions = distinctData?.locationDistinctValues.aisles ?? [];
+  const bayOptions = distinctData?.locationDistinctValues.bays ?? [];
+  const binOptions = distinctData?.locationDistinctValues.bins ?? [];
 
   const [destWarehouseId, setDestWarehouseId] = useState<string>(source.warehouseId ?? '');
   const [aisle, setAisle] = useState('');
@@ -137,27 +145,9 @@ export default function TransferDialog({ source, onClose, onSuccess }: TransferD
           </Select>
         </FormControl>
         <Stack direction="row" spacing={2}>
-          <TextField
-            label="Aisle"
-            size="small"
-            value={aisle}
-            onChange={(e) => setAisle(e.target.value.slice(0, 20))}
-            required
-          />
-          <TextField
-            label="Bay"
-            size="small"
-            value={bay}
-            onChange={(e) => setBay(e.target.value.slice(0, 20))}
-            required
-          />
-          <TextField
-            label="Bin"
-            size="small"
-            value={bin}
-            onChange={(e) => setBin(e.target.value.slice(0, 20))}
-            required
-          />
+          <LocationAutocomplete label="Aisle" value={aisle} onChange={setAisle} options={aisleOptions} />
+          <LocationAutocomplete label="Bay" value={bay} onChange={setBay} options={bayOptions} />
+          <LocationAutocomplete label="Bin" value={bin} onChange={setBin} options={binOptions} />
         </Stack>
         <TextField
           label="Quantity"
