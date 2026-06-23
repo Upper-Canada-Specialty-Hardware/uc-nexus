@@ -10,7 +10,7 @@ from app.errors import ValidationError
 from app.models.inventory import InventoryLocation
 from app.models.project import Project
 from app.models.stock_item import StockItem
-from app.repositories import warehouse_repository
+from app.repositories import warehouse_admin_repository, warehouse_repository
 
 
 def _make_project(session) -> Project:
@@ -23,6 +23,7 @@ def _make_project(session) -> Project:
 def _make_stock_item(session) -> StockItem:
     si = StockItem(
         id=uuid.uuid4(),
+        warehouse_id=warehouse_admin_repository.get_primary_warehouse_id(session),
         hardware_category="HINGE",
         product_code="HG-100",
         quantity=10,
@@ -39,6 +40,7 @@ def _make_il(session, project_id, stock_item_id, *, quantity, deficient=0, aisle
         id=uuid.uuid4(),
         project_id=project_id,
         stock_item_id=stock_item_id,
+        warehouse_id=warehouse_admin_repository.get_primary_warehouse_id(session),
         hardware_category="HINGE",
         product_code="HG-100",
         quantity=quantity,

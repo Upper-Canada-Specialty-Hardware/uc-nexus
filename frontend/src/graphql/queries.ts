@@ -591,6 +591,24 @@ export const GET_VENDORS = gql`
   }
 `;
 
+export const GET_WAREHOUSES = gql`
+  query GetWarehouses($includeInactive: Boolean) {
+    warehouses(includeInactive: $includeInactive) {
+      id
+      name
+      code
+      address
+      city
+      province
+      postalCode
+      isPrimary
+      isActive
+      createdAt
+      updatedAt
+    }
+  }
+`;
+
 export const GET_INVENTORY_BY_VENDOR = gql`
   query GetInventoryByVendor($projectId: ID) {
     inventoryByVendor(projectId: $projectId) {
@@ -807,14 +825,17 @@ export const GET_STOCK_ITEMS = gql`
     $hardwareCategory: String
     $aisle: String
     $onlyDeficient: Boolean
+    $warehouseId: ID
   ) {
     stockItems(
       productCodeContains: $productCodeContains
       hardwareCategory: $hardwareCategory
       aisle: $aisle
       onlyDeficient: $onlyDeficient
+      warehouseId: $warehouseId
     ) {
       id
+      warehouseId
       hardwareCategory
       productCode
       quantity

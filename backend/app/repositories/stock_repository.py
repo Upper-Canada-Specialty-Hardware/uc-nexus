@@ -72,6 +72,7 @@ def get_stock_items(
     hardware_category: str | None = None,
     aisle: str | None = None,
     only_deficient: bool = False,
+    warehouse_id: uuid.UUID | None = None,
 ) -> list[StockItem]:
     """List stock_items optionally filtered by product code, category, aisle, or deficient-only.
 
@@ -96,6 +97,8 @@ def get_stock_items(
         stmt = stmt.where(StockItem.aisle == aisle)
     if only_deficient:
         stmt = stmt.where(StockItem.deficient_quantity > 0)
+    if warehouse_id is not None:
+        stmt = stmt.where(StockItem.warehouse_id == warehouse_id)
     return list(session.scalars(stmt).all())
 
 
@@ -149,6 +152,7 @@ def get_stock_matches_for_opening(
 def _find_or_create_stock_row(
     session: Session,
     *,
+    warehouse_id: uuid.UUID,
     hardware_category: str,
     product_code: str,
     aisle: str | None,
@@ -156,7 +160,7 @@ def _find_or_create_stock_row(
     bin: str | None,
     received_at: datetime,
 ) -> StockItem:
-    """Find an existing stock row matching (category, code, aisle, bay, bin) or create one with qty=0.
+    """Find an existing stock row matching (warehouse, category, code, aisle, bay, bin) or create one with qty=0.
 
     Caller is responsible for incrementing quantity and writing audit events. Location fields are
     normalized here so writes from any entry path (destock, allocate, receive) match canonical form.
@@ -166,6 +170,7 @@ def _find_or_create_stock_row(
     bin = normalize_location_value(bin)
 
     stmt = select(StockItem).where(
+        StockItem.warehouse_id == warehouse_id,
         StockItem.hardware_category == hardware_category,
         StockItem.product_code == product_code,
     )
@@ -187,6 +192,7 @@ def _find_or_create_stock_row(
         return existing
 
     new_row = StockItem(
+        warehouse_id=warehouse_id,
         hardware_category=hardware_category,
         product_code=product_code,
         quantity=0,
@@ -248,6 +254,7 @@ def destock_inventory(
     now = datetime.utcnow()
     stock_row = _find_or_create_stock_row(
         session,
+        warehouse_id=il.warehouse_id,
         hardware_category=il.hardware_category,
         product_code=il.product_code,
         aisle=final_aisle,
@@ -590,6 +597,7 @@ def allocate_stock_to_project(
         po_line_item_id=None,
         receive_line_item_id=None,
         stock_item_id=stock_item_id,
+        warehouse_id=si.warehouse_id,
         hardware_category=target_hardware_category,
         product_code=target_product_code,
         quantity=quantity,
@@ -1047,6 +1055,7 @@ def get_deficiency_reviews(
 def receive_into_stock(
     session: Session,
     *,
+    warehouse_id: uuid.UUID | None = None,
     hardware_category: str,
     product_code: str,
     quantity: int,
@@ -1067,8 +1076,14 @@ def receive_into_stock(
             field="deficient_quantity",
         )
 
+    if warehouse_id is None:
+        from app.repositories import warehouse_admin_repository
+
+        warehouse_id = warehouse_admin_repository.get_primary_warehouse_id(session)
+
     stock_row = _find_or_create_stock_row(
         session,
+        warehouse_id=warehouse_id,
         hardware_category=hardware_category,
         product_code=product_code,
         aisle=aisle,

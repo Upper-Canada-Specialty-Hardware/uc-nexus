@@ -10,7 +10,7 @@ from datetime import datetime
 from app.models.inventory import InventoryLocation
 from app.models.project import Project
 from app.models.stock_item import StockItem
-from app.repositories import warehouse_repository
+from app.repositories import warehouse_admin_repository, warehouse_repository
 
 
 def _make_project(session) -> Project:
@@ -24,6 +24,7 @@ def _make_stock_item(session) -> StockItem:
     """A stock row used purely as a valid origin for InventoryLocation rows."""
     si = StockItem(
         id=uuid.uuid4(),
+        warehouse_id=warehouse_admin_repository.get_primary_warehouse_id(session),
         hardware_category="HINGE",
         product_code="HG-100",
         quantity=10,
@@ -40,6 +41,7 @@ def _make_il(session, project_id, stock_item_id, *, quantity, product_code="HG-1
         id=uuid.uuid4(),
         project_id=project_id,
         stock_item_id=stock_item_id,
+        warehouse_id=warehouse_admin_repository.get_primary_warehouse_id(session),
         hardware_category=hardware_category,
         product_code=product_code,
         quantity=quantity,
