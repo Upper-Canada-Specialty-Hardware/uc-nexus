@@ -8,9 +8,11 @@ if (-not (Test-PgInstalled)) {
   if (-not (Test-Path $LocalDev)) { New-Item -ItemType Directory -Path $LocalDev | Out-Null }
   $zip = Get-ChildItem -Path $LocalDev -Filter 'postgresql-*-windows-x64-binaries.zip' -ErrorAction SilentlyContinue | Select-Object -First 1
   if (-not $zip) {
-    Write-Note "Portable Postgres not found."
+    Write-Note "Portable Postgres not found (looked in $LocalDev)."
+    Write-Host "  First time on this machine? Run .\localdev\bootstrap-machine.ps1 - it migrates an" -ForegroundColor Yellow
+    Write-Host "  existing in-repo .localdev or sets up the shared home for you." -ForegroundColor Yellow
     Write-Host ""
-    Write-Host "  Download the Postgres 16 'binaries only' zip (NOT the installer) from:" -ForegroundColor Yellow
+    Write-Host "  Otherwise, download the Postgres 16 'binaries only' zip (NOT the installer) from:" -ForegroundColor Yellow
     Write-Host "    https://www.enterprisedb.com/download-postgresql-binaries" -ForegroundColor Yellow
     Write-Host "  pick: PostgreSQL 16.x  /  Windows x86-64  /  'zip archive'" -ForegroundColor Yellow
     Write-Host ""
