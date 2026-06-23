@@ -17,7 +17,12 @@ from .project_excluded_item import ProjectExcludedItem  # noqa: E402, F401
 from .pull_request import PullRequest, PullRequestItem  # noqa: E402, F401
 from .purchase_order import PODocument, POLineItem, PurchaseOrder  # noqa: E402, F401
 from .receiving import ReceiveLineItem, ReceiveRecord  # noqa: E402, F401
-from .shipping import PackingSlip, PackingSlipItem  # noqa: E402, F401
+from .shipping import (  # noqa: E402, F401
+    PackingSlip,
+    PackingSlipItem,
+    ShipmentReturn,
+    ShipmentReturnItem,
+)
 from .shop_assembly import (  # noqa: E402, F401
     ShopAssemblyOpening,
     ShopAssemblyOpeningItem,

@@ -609,6 +609,41 @@ export const GET_WAREHOUSES = gql`
   }
 `;
 
+export const GET_PACKING_SLIPS = gql`
+  query GetPackingSlips($projectId: ID) {
+    packingSlips(projectId: $projectId) {
+      id
+      packingSlipNumber
+      projectId
+      shippedBy
+      shippedAt
+      createdAt
+      items {
+        id
+        itemType
+        openingNumber
+        productCode
+        hardwareCategory
+        quantity
+      }
+    }
+  }
+`;
+
+export const GET_RETURNABLE_LINES = gql`
+  query GetReturnableLines($packingSlipId: ID!) {
+    returnableLines(packingSlipId: $packingSlipId) {
+      packingSlipItemId
+      openingNumber
+      productCode
+      hardwareCategory
+      shippedQuantity
+      returnedQuantity
+      returnableQuantity
+    }
+  }
+`;
+
 export const GET_INVENTORY_BY_VENDOR = gql`
   query GetInventoryByVendor($projectId: ID) {
     inventoryByVendor(projectId: $projectId) {

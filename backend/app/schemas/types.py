@@ -20,6 +20,7 @@ from .enums import (
     PullRequestStatus,
     PullStatus,
     ReconciliationStatus,
+    ReturnDisposition,
     ShopAssemblyRequestStatus,
 )
 
@@ -373,6 +374,48 @@ class PackingSlip:
     shipped_at: datetime
     created_at: datetime
     items: list[PackingSlipItem]
+
+
+@strawberry.type
+class ReturnableLine:
+    """A loose packing-slip line plus how much of it is still returnable."""
+
+    packing_slip_item_id: strawberry.ID
+    opening_number: str | None
+    product_code: str
+    hardware_category: str
+    shipped_quantity: int
+    returned_quantity: int
+    returnable_quantity: int
+
+
+@strawberry.type
+class ShipmentReturnItem:
+    id: strawberry.ID
+    shipment_return_id: strawberry.ID
+    packing_slip_item_id: strawberry.ID
+    disposition: ReturnDisposition
+    quantity: int
+    hardware_category: str
+    product_code: str
+    opening_number: str | None
+    rma_reference: str | None
+    reason_text: str | None
+    resulting_inventory_location_id: strawberry.ID | None
+    resulting_stock_item_id: strawberry.ID | None
+    created_at: datetime
+
+
+@strawberry.type
+class ShipmentReturn:
+    id: strawberry.ID
+    packing_slip_id: strawberry.ID
+    warehouse_id: strawberry.ID
+    returned_by: str
+    returned_at: datetime
+    reference: str | None
+    created_at: datetime
+    items: list[ShipmentReturnItem]
 
 
 @strawberry.type

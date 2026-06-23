@@ -1,6 +1,13 @@
 import strawberry
 
-from .enums import Classification, DeficiencyResolution, DestockSource, PullRequestItemType, TransferSourceType
+from .enums import (
+    Classification,
+    DeficiencyResolution,
+    DestockSource,
+    PullRequestItemType,
+    ReturnDisposition,
+    TransferSourceType,
+)
 
 
 @strawberry.input
@@ -273,6 +280,24 @@ class ConfirmShipmentInput:
     packing_slip_number: str
     shipped_by: str
     items: list[ShipmentItemInput] = strawberry.field(default_factory=list)
+
+
+@strawberry.input
+class ShipmentReturnItemInput:
+    packing_slip_item_id: strawberry.ID
+    quantity: int
+    disposition: ReturnDisposition
+    rma_reference: str | None = None
+    reason_text: str | None = None
+
+
+@strawberry.input
+class CreateShipmentReturnInput:
+    packing_slip_id: strawberry.ID
+    warehouse_id: strawberry.ID
+    returned_by: str
+    reference: str | None = None
+    items: list[ShipmentReturnItemInput] = strawberry.field(default_factory=list)
 
 
 @strawberry.input
