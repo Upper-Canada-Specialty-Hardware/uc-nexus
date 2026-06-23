@@ -9,20 +9,24 @@ import {
   Paper,
   Switch,
   FormControlLabel,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
   Stack,
   IconButton,
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
-import { useMutation } from '@apollo/client/react';
+import { useMutation, useQuery } from '@apollo/client/react';
 import { useApolloClient } from '@apollo/client/react';
 import { useIdentity } from '../../hooks/useIdentity';
 import { useToast } from '../../components/Toast';
 import Modal from '../../components/Modal';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import { useNavigate } from 'react-router-dom';
-import { GET_PO_RECEIVING_DETAILS } from '../../graphql/queries';
+import { GET_PO_RECEIVING_DETAILS, GET_WAREHOUSES } from '../../graphql/queries';
 import { CREATE_RECEIVE } from '../../graphql/mutations';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
 
@@ -67,6 +71,13 @@ interface ReceiveModalProps {
   poIds: string[];
 }
 
+interface WarehouseOption {
+  id: string;
+  name: string;
+  code: string;
+  isPrimary: boolean;
+}
+
 const MAX_LOC_LEN = 20;
 
 function emptyDraft(quantity: number): LocationDraft {
@@ -92,6 +103,20 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
   const [lineLocations, setLineLocations] = useState<Record<string, LocationDraft[]>>({});
 
   const [createReceive, { loading: submitLoading }] = useMutation(CREATE_RECEIVE);
+
+  // Warehouse the received goods land in (active warehouses only). Defaults to the primary.
+  const { data: warehousesData } = useQuery<{ warehouses: WarehouseOption[] }>(GET_WAREHOUSES, {
+    variables: { includeInactive: false },
+  });
+  const warehouses = useMemo(() => warehousesData?.warehouses ?? [], [warehousesData]);
+  const [warehouseId, setWarehouseId] = useState<string>('');
+
+  useEffect(() => {
+    if (!warehouseId && warehouses.length > 0) {
+      const primary = warehouses.find((w) => w.isPrimary) ?? warehouses[0];
+      setWarehouseId(primary.id);
+    }
+  }, [warehouses, warehouseId]);
 
   // ---- Fetch PO details on open ----
 
@@ -311,6 +336,7 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
       const input = {
         poId,
         receivedBy: displayName,
+        warehouseId: warehouseId || null,
         lineItems: poLineItems.map((li) => {
           const receiveNow = receiveQuantities[li.id] ?? 0;
           const drafts = putAwayMode ? draftsFor(li.id, receiveNow) : [];
@@ -354,6 +380,7 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
   }, [
     poIds,
     displayName,
+    warehouseId,
     lineItemsToReceive,
     receiveQuantities,
     putAwayMode,
@@ -576,6 +603,23 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
           <Alert severity="error" sx={{ mb: 2 }}>
             {mutationError}
           </Alert>
+        )}
+        {!poDetailsLoading && !poDetailsError && !succeeded && (
+          <FormControl size="small" sx={{ minWidth: 240, mb: 2 }}>
+            <InputLabel id="receive-warehouse-label">Receive into warehouse</InputLabel>
+            <Select
+              labelId="receive-warehouse-label"
+              label="Receive into warehouse"
+              value={warehouseId}
+              onChange={(e) => setWarehouseId(e.target.value)}
+            >
+              {warehouses.map((w) => (
+                <MenuItem key={w.id} value={w.id}>
+                  {w.name} ({w.code}){w.isPrimary ? ' · default' : ''}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
         )}
         {!poDetailsLoading && !poDetailsError && !succeeded && poIds.map(renderPOSection)}
 

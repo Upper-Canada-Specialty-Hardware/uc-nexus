@@ -19,6 +19,7 @@ from app.repositories import (
     stock_repository,
     user_repository,
     vendor_repository,
+    warehouse_admin_repository,
     warehouse_repository,
 )
 
@@ -76,6 +77,7 @@ from .types import (
     ShopAssemblyStats,
     Vendor,
     VendorInventoryNode,
+    Warehouse,
     WarehouseDashboard,
 )
 from .types import (
@@ -162,6 +164,22 @@ def _vendor_to_type(v) -> Vendor:
         notes=v.notes,
         created_at=v.created_at,
         updated_at=v.updated_at,
+    )
+
+
+def _warehouse_to_type(w) -> Warehouse:
+    return Warehouse(
+        id=strawberry.ID(str(w.id)),
+        name=w.name,
+        code=w.code,
+        address=w.address,
+        city=w.city,
+        province=w.province,
+        postal_code=w.postal_code,
+        is_primary=w.is_primary,
+        is_active=w.is_active,
+        created_at=w.created_at,
+        updated_at=w.updated_at,
     )
 
 
@@ -295,6 +313,7 @@ def _inventory_location_to_type(il) -> InventoryLocationType:
         po_line_item_id=strawberry.ID(str(il.po_line_item_id)) if il.po_line_item_id else None,
         receive_line_item_id=(strawberry.ID(str(il.receive_line_item_id)) if il.receive_line_item_id else None),
         stock_item_id=strawberry.ID(str(stock_item_id)) if stock_item_id else None,
+        warehouse_id=strawberry.ID(str(il.warehouse_id)) if getattr(il, "warehouse_id", None) else None,
         hardware_category=il.hardware_category,
         product_code=il.product_code,
         quantity=il.quantity,
@@ -325,6 +344,7 @@ def _opening_item_to_type(oi) -> OpeningItem:
         id=strawberry.ID(str(oi.id)),
         project_id=strawberry.ID(str(oi.project_id)),
         opening_id=strawberry.ID(str(oi.opening_id)),
+        warehouse_id=strawberry.ID(str(oi.warehouse_id)) if getattr(oi, "warehouse_id", None) else None,
         opening_number=oi.opening_number,
         building=oi.building,
         floor=oi.floor,
@@ -457,6 +477,7 @@ def _stock_item_to_type(si) -> StockItemType:
     deficient_qty = getattr(si, "deficient_quantity", 0) or 0
     return StockItemType(
         id=strawberry.ID(str(si.id)),
+        warehouse_id=strawberry.ID(str(si.warehouse_id)) if getattr(si, "warehouse_id", None) else None,
         hardware_category=si.hardware_category,
         product_code=si.product_code,
         quantity=si.quantity,
@@ -906,6 +927,20 @@ class Query:
             return _vendor_to_type(v) if v is not None else None
 
     @strawberry.field
+    def warehouses(self, include_inactive: bool = True) -> list[Warehouse]:
+        with SessionLocal() as session:
+            return [
+                _warehouse_to_type(w)
+                for w in warehouse_admin_repository.list_warehouses(session, include_inactive=include_inactive)
+            ]
+
+    @strawberry.field
+    def warehouse(self, id: strawberry.ID) -> Warehouse | None:
+        with SessionLocal() as session:
+            w = session.get(warehouse_admin_repository.Warehouse, uuid.UUID(str(id)))
+            return _warehouse_to_type(w) if w is not None else None
+
+    @strawberry.field
     def expected_deliveries(self, project_id: strawberry.ID | None = None) -> list[PurchaseOrder]:
         with SessionLocal() as session:
             pos = warehouse_repository.get_expected_deliveries(
@@ -1146,6 +1181,7 @@ class Query:
         hardware_category: str | None = None,
         aisle: str | None = None,
         only_deficient: bool = False,
+        warehouse_id: strawberry.ID | None = None,
     ) -> list[StockItemType]:
         with SessionLocal() as session:
             rows = stock_repository.get_stock_items(
@@ -1154,6 +1190,7 @@ class Query:
                 hardware_category=hardware_category,
                 aisle=aisle,
                 only_deficient=only_deficient,
+                warehouse_id=uuid.UUID(str(warehouse_id)) if warehouse_id else None,
             )
             return [_stock_item_to_type(r) for r in rows]
 

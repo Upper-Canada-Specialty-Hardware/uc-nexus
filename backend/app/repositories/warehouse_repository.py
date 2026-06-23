@@ -1007,6 +1007,7 @@ def override_inventory_quantity(
                     po_line_item_id=il.po_line_item_id,
                     receive_line_item_id=il.receive_line_item_id,
                     stock_item_id=il.stock_item_id,
+                    warehouse_id=il.warehouse_id,
                     hardware_category=il.hardware_category,
                     product_code=il.product_code,
                     quantity=dest["quantity"],
@@ -1228,6 +1229,7 @@ def create_receive(
     po_id: uuid.UUID,
     received_by: str,
     line_items_input: list[dict],
+    warehouse_id: uuid.UUID | None = None,
 ) -> ReceiveRecordModel:
     """
     Create a ReceiveRecord with ReceiveLineItems and InventoryLocations.
@@ -1252,6 +1254,11 @@ def create_receive(
 
     # Project-less PO is allowed: line items route to the stock pool instead of project inventory
     is_stock_po = po.project_id is None
+
+    if warehouse_id is None:
+        from app.repositories import warehouse_admin_repository
+
+        warehouse_id = warehouse_admin_repository.get_primary_warehouse_id(session)
 
     # Validate PO status
     if po.status not in (POStatus.ORDERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED):
@@ -1337,6 +1344,7 @@ def create_receive(
                 for loc in locations:
                     stock_repository.receive_into_stock(
                         session,
+                        warehouse_id=warehouse_id,
                         hardware_category=poli.hardware_category,
                         product_code=poli.product_code,
                         quantity=loc["quantity"],
@@ -1351,6 +1359,7 @@ def create_receive(
             else:
                 stock_repository.receive_into_stock(
                     session,
+                    warehouse_id=warehouse_id,
                     hardware_category=poli.hardware_category,
                     product_code=poli.product_code,
                     quantity=li_input["quantity_received"],
@@ -1368,6 +1377,7 @@ def create_receive(
                     project_id=po.project_id,
                     po_line_item_id=poli.id,
                     receive_line_item_id=receive_line_item.id,
+                    warehouse_id=warehouse_id,
                     hardware_category=poli.hardware_category,
                     product_code=poli.product_code,
                     quantity=loc["quantity"],
@@ -1384,6 +1394,7 @@ def create_receive(
                 project_id=po.project_id,
                 po_line_item_id=poli.id,
                 receive_line_item_id=receive_line_item.id,
+                warehouse_id=warehouse_id,
                 hardware_category=poli.hardware_category,
                 product_code=poli.product_code,
                 quantity=li_input["quantity_received"],

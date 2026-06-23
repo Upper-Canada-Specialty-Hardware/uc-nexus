@@ -308,10 +308,13 @@ def complete_opening(
 
     # 5. Create OpeningItem (snapshot opening identity from SAR row)
     now = datetime.utcnow()
+    from app.repositories import warehouse_admin_repository
+
     opening_item = OpeningItemModel(
         id=uuid.uuid4(),
         project_id=sar.project_id,
         opening_id=sa_opening.opening_id,
+        warehouse_id=warehouse_admin_repository.get_primary_warehouse_id(session),
         opening_number=sa_opening.opening_number,
         building=sa_opening.building,
         floor=sa_opening.floor,

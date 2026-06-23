@@ -641,6 +641,42 @@ export const DELETE_VENDOR = gql`
   }
 `;
 
+const WAREHOUSE_FIELDS = `
+  id
+  name
+  code
+  address
+  city
+  province
+  postalCode
+  isPrimary
+  isActive
+  createdAt
+  updatedAt
+`;
+
+export const CREATE_WAREHOUSE = gql`
+  mutation CreateWarehouse($input: CreateWarehouseInput!) {
+    createWarehouse(input: $input) {
+      ${WAREHOUSE_FIELDS}
+    }
+  }
+`;
+
+export const UPDATE_WAREHOUSE = gql`
+  mutation UpdateWarehouse($id: ID!, $input: UpdateWarehouseInput!) {
+    updateWarehouse(id: $id, input: $input) {
+      ${WAREHOUSE_FIELDS}
+    }
+  }
+`;
+
+export const DELETE_WAREHOUSE = gql`
+  mutation DeleteWarehouse($id: ID!) {
+    deleteWarehouse(id: $id)
+  }
+`;
+
 // ---------------------------------------------------------------------------
 // Stock pool + deficiency mutations
 // ---------------------------------------------------------------------------

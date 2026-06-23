@@ -11,6 +11,10 @@ import {
   Alert,
   Card,
   CardContent,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
 } from '@mui/material';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useQuery } from '@apollo/client/react';
@@ -19,15 +23,22 @@ import OpenInFullIcon from '@mui/icons-material/OpenInFull';
 import CallSplitIcon from '@mui/icons-material/CallSplit';
 import LocationOnIcon from '@mui/icons-material/LocationOn';
 import ReportProblemIcon from '@mui/icons-material/ReportProblem';
-import { GET_STOCK_ITEMS } from '../../graphql/queries';
+import { GET_STOCK_ITEMS, GET_WAREHOUSES } from '../../graphql/queries';
 import AdjustStockModal from './stock/AdjustStockModal';
 import MoveStockLocationModal from './stock/MoveStockLocationModal';
 import ReclassifyStockModal from './stock/ReclassifyStockModal';
 import AllocateStockModal from './stock/AllocateStockModal';
 import ReportStockDeficiencyModal from './stock/ReportStockDeficiencyModal';
 
+interface WarehouseOption {
+  id: string;
+  name: string;
+  code: string;
+}
+
 export interface StockItem {
   id: string;
+  warehouseId: string | null;
   hardwareCategory: string;
   productCode: string;
   quantity: number;
@@ -45,6 +56,7 @@ export default function StockPoolView() {
   const [productCodeFilter, setProductCodeFilter] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
   const [onlyDeficient, setOnlyDeficient] = useState(false);
+  const [warehouseFilter, setWarehouseFilter] = useState('');
   const [selected, setSelected] = useState<StockItem | null>(null);
   const [modal, setModal] = useState<
     'adjust' | 'move' | 'reclassify' | 'allocate' | 'report-deficient' | null
@@ -57,10 +69,21 @@ export default function StockPoolView() {
         productCodeContains: productCodeFilter || null,
         hardwareCategory: categoryFilter || null,
         onlyDeficient,
+        warehouseId: warehouseFilter || null,
       },
       fetchPolicy: 'cache-and-network',
     },
   );
+
+  const { data: warehousesData } = useQuery<{ warehouses: WarehouseOption[] }>(GET_WAREHOUSES, {
+    variables: { includeInactive: true },
+  });
+  const warehouses = useMemo(() => warehousesData?.warehouses ?? [], [warehousesData]);
+  const warehouseCode = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const w of warehouses) map.set(w.id, w.code);
+    return map;
+  }, [warehouses]);
 
   const rows = useMemo(() => data?.stockItems ?? [], [data]);
 
@@ -100,6 +123,17 @@ export default function StockPoolView() {
       headerName: 'Available',
       width: 100,
       type: 'number',
+    },
+    {
+      field: 'warehouseId',
+      headerName: 'Warehouse',
+      width: 120,
+      renderCell: ({ row }) =>
+        row.warehouseId ? (
+          <Chip label={warehouseCode.get(row.warehouseId) ?? '—'} size="small" variant="outlined" />
+        ) : (
+          <span>—</span>
+        ),
     },
     {
       field: 'location',
@@ -206,6 +240,22 @@ export default function StockPoolView() {
           value={categoryFilter}
           onChange={(e) => setCategoryFilter(e.target.value)}
         />
+        <FormControl size="small" sx={{ minWidth: 180 }}>
+          <InputLabel id="stock-warehouse-filter-label">Warehouse</InputLabel>
+          <Select
+            labelId="stock-warehouse-filter-label"
+            label="Warehouse"
+            value={warehouseFilter}
+            onChange={(e) => setWarehouseFilter(e.target.value)}
+          >
+            <MenuItem value="">All warehouses</MenuItem>
+            {warehouses.map((w) => (
+              <MenuItem key={w.id} value={w.id}>
+                {w.name} ({w.code})
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
       </Stack>
 
       {error && <Alert severity="error">{error.message}</Alert>}
