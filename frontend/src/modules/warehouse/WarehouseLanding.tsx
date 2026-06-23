@@ -8,6 +8,7 @@ import MoveToInboxIcon from '@mui/icons-material/MoveToInbox';
 import AssignmentIcon from '@mui/icons-material/Assignment';
 import WarehouseIcon from '@mui/icons-material/Warehouse';
 import ReportProblemIcon from '@mui/icons-material/ReportProblem';
+import AssignmentReturnIcon from '@mui/icons-material/AssignmentReturn';
 import { useNavigate } from 'react-router-dom';
 import DashboardCards from './DashboardCards';
 
@@ -39,6 +40,7 @@ const SUB_ROUTES = [
   { label: 'Pull Requests', path: '/app/warehouse/pull-requests', icon: <AssignmentIcon fontSize="large" /> },
   { label: 'Stock Pool', path: '/app/warehouse/stock-pool', icon: <WarehouseIcon fontSize="large" /> },
   { label: 'Deficient Items', path: '/app/warehouse/deficient-items', icon: <ReportProblemIcon fontSize="large" /> },
+  { label: 'Shipments', path: '/app/warehouse/shipments', icon: <AssignmentReturnIcon fontSize="large" /> },
 ];
 
 export default function WarehouseLanding() {

@@ -10,6 +10,7 @@ import PullRequestQueue from './PullRequestQueue';
 import PutAwayTab from './PutAwayTab';
 import StockPoolView from './StockPoolView';
 import DeficientItemsReview from './DeficientItemsReview';
+import ShipmentsPage from './ShipmentsPage';
 import BackToModule from '../../components/BackToModule';
 
 function WarehouseSubLayout({ children }: { children: ReactNode }) {
@@ -33,6 +34,7 @@ export default function WarehouseModule() {
       <Route path="pull-requests" element={<WarehouseSubLayout><PullRequestQueue /></WarehouseSubLayout>} />
       <Route path="stock-pool" element={<WarehouseSubLayout><StockPoolView /></WarehouseSubLayout>} />
       <Route path="deficient-items" element={<WarehouseSubLayout><DeficientItemsReview /></WarehouseSubLayout>} />
+      <Route path="shipments" element={<WarehouseSubLayout><ShipmentsPage /></WarehouseSubLayout>} />
       <Route path="*" element={<Navigate to="" replace />} />
     </Routes>
   );

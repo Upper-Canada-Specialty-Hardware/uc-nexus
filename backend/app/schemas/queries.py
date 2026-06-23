@@ -69,6 +69,9 @@ from .types import (
     ReceiveRecord,
     RecentReceiveRecord,
     ReconciliationResult,
+    ReturnableLine,
+    ShipmentReturn,
+    ShipmentReturnItem,
     ShipReadyItems,
     ShipReadyLooseItem,
     ShopAssemblyOpening,
@@ -473,6 +476,41 @@ def _packing_slip_to_type(ps) -> PackingSlipType:
     )
 
 
+def _shipment_return_item_to_type(sri) -> ShipmentReturnItem:
+    return ShipmentReturnItem(
+        id=strawberry.ID(str(sri.id)),
+        shipment_return_id=strawberry.ID(str(sri.shipment_return_id)),
+        packing_slip_item_id=strawberry.ID(str(sri.packing_slip_item_id)),
+        disposition=sri.disposition,
+        quantity=sri.quantity,
+        hardware_category=sri.hardware_category,
+        product_code=sri.product_code,
+        opening_number=sri.opening_number,
+        rma_reference=sri.rma_reference,
+        reason_text=sri.reason_text,
+        resulting_inventory_location_id=(
+            strawberry.ID(str(sri.resulting_inventory_location_id)) if sri.resulting_inventory_location_id else None
+        ),
+        resulting_stock_item_id=(
+            strawberry.ID(str(sri.resulting_stock_item_id)) if sri.resulting_stock_item_id else None
+        ),
+        created_at=sri.created_at,
+    )
+
+
+def _shipment_return_to_type(sr) -> ShipmentReturn:
+    return ShipmentReturn(
+        id=strawberry.ID(str(sr.id)),
+        packing_slip_id=strawberry.ID(str(sr.packing_slip_id)),
+        warehouse_id=strawberry.ID(str(sr.warehouse_id)),
+        returned_by=sr.returned_by,
+        returned_at=sr.returned_at,
+        reference=sr.reference,
+        created_at=sr.created_at,
+        items=[_shipment_return_item_to_type(i) for i in sr.items],
+    )
+
+
 def _stock_item_to_type(si) -> StockItemType:
     deficient_qty = getattr(si, "deficient_quantity", 0) or 0
     return StockItemType(
@@ -832,6 +870,29 @@ class Query:
                     for li in data["loose_items"]
                 ],
             )
+
+    @strawberry.field
+    def packing_slips(self, project_id: strawberry.ID | None = None) -> list[PackingSlipType]:
+        with SessionLocal() as session:
+            slips = shipping_repository.list_packing_slips(session, uuid.UUID(str(project_id)) if project_id else None)
+            return [_packing_slip_to_type(ps) for ps in slips]
+
+    @strawberry.field
+    def returnable_lines(self, packing_slip_id: strawberry.ID) -> list[ReturnableLine]:
+        with SessionLocal() as session:
+            lines = shipping_repository.get_returnable_lines(session, uuid.UUID(str(packing_slip_id)))
+            return [
+                ReturnableLine(
+                    packing_slip_item_id=strawberry.ID(str(line["packing_slip_item_id"])),
+                    opening_number=line["opening_number"],
+                    product_code=line["product_code"],
+                    hardware_category=line["hardware_category"],
+                    shipped_quantity=line["shipped_quantity"],
+                    returned_quantity=line["returned_quantity"],
+                    returnable_quantity=line["returnable_quantity"],
+                )
+                for line in lines
+            ]
 
     @strawberry.field
     def notifications(
