@@ -1139,18 +1139,31 @@ def assign_inventory_location(
     return il
 
 
-def move_opening_item_location(session: Session, oi_id: uuid.UUID, aisle: str, bay: str, bin: str) -> OpeningItemModel:
-    """Move an OpeningItem to a new aisle/bay/bin."""
+def move_opening_item_location(
+    session: Session,
+    oi_id: uuid.UUID,
+    aisle: str,
+    bay: str,
+    bin: str,
+    warehouse_id: uuid.UUID | None = None,
+) -> OpeningItemModel:
+    """Move an OpeningItem (whole kit) to a new aisle/bay/bin, optionally a different warehouse."""
     oi = session.get(OpeningItemModel, oi_id)
     if oi is None:
         raise NotFoundError(f"Opening item {oi_id} not found")
 
     aisle, bay, bin = _normalize_and_validate_location_fields(aisle, bay, bin)
 
-    old_aisle, old_bay, old_bin = oi.aisle, oi.bay, oi.bin
+    old_aisle, old_bay, old_bin, old_wh = oi.aisle, oi.bay, oi.bin, oi.warehouse_id
     oi.aisle = aisle
     oi.bay = bay
     oi.bin = bin
+    if warehouse_id is not None:
+        from app.models.warehouse import Warehouse
+
+        if session.get(Warehouse, warehouse_id) is None:
+            raise NotFoundError(f"Warehouse {warehouse_id} not found")
+        oi.warehouse_id = warehouse_id
 
     _log_audit_event(
         session,
@@ -1160,7 +1173,9 @@ def move_opening_item_location(session: Session, oi_id: uuid.UUID, aisle: str, b
         action=AuditAction.MOVE,
         performed_by="Admin/Manager",
         detail={
+            "fromWarehouseId": str(old_wh),
             "fromLocation": {"aisle": old_aisle, "bay": old_bay, "bin": old_bin},
+            "toWarehouseId": str(oi.warehouse_id),
             "toLocation": {"aisle": aisle, "bay": bay, "bin": bin},
         },
     )

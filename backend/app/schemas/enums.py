@@ -92,3 +92,9 @@ class ReconciliationStatus(enum.Enum):
 class ApproveOutcome(enum.Enum):
     APPROVED = "approved"
     CANCELLED = "cancelled"
+
+
+@strawberry.enum
+class TransferSourceType(enum.Enum):
+    INVENTORY_LOCATION = "INVENTORY_LOCATION"
+    STOCK_ITEM = "STOCK_ITEM"

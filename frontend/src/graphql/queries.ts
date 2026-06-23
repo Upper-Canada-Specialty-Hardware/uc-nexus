@@ -647,8 +647,8 @@ export const GET_LOCATION_CONTENTS = gql`
     locationContents(aisle: $aisle, bay: $bay, bin: $bin) {
       inventoryItems {
         inventoryLocation {
-          id projectId poLineItemId receiveLineItemId stockItemId
-          hardwareCategory productCode quantity
+          id projectId poLineItemId receiveLineItemId stockItemId warehouseId
+          hardwareCategory productCode quantity deficientQuantity available
           aisle row bay bin receivedAt createdAt updatedAt
         }
         poNumber
@@ -662,7 +662,7 @@ export const GET_LOCATION_CONTENTS = gql`
         installedHardware { id openingItemId productCode hardwareCategory quantity }
       }
       stockItems {
-        id hardwareCategory productCode quantity deficientQuantity available
+        id warehouseId hardwareCategory productCode quantity deficientQuantity available
         aisle bay bin receivedAt createdAt updatedAt
       }
     }

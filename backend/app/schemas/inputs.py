@@ -1,6 +1,6 @@
 import strawberry
 
-from .enums import Classification, DeficiencyResolution, DestockSource, PullRequestItemType
+from .enums import Classification, DeficiencyResolution, DestockSource, PullRequestItemType, TransferSourceType
 
 
 @strawberry.input
@@ -187,6 +187,18 @@ class UpdateVendorInput:
     email: str | None = None
     phone: str | None = None
     notes: str | None = None
+
+
+@strawberry.input
+class TransferInventoryInput:
+    source_type: TransferSourceType
+    source_id: strawberry.ID
+    quantity: int
+    dest_warehouse_id: strawberry.ID
+    dest_aisle: str
+    dest_bay: str
+    dest_bin: str
+    performed_by: str = ""
 
 
 @strawberry.input
