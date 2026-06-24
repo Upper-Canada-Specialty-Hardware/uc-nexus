@@ -75,7 +75,15 @@ Two runtimes. **Local is the default** for simulated user testing (no deploy wai
 /app                       -> Module Selector (6 module cards)
 /app/import                -> Hardware Schedule Import wizard
 /app/po                    -> Purchase Orders (project landing -> PO list)
-/app/warehouse             -> Warehouse (tabs: Inventory, Receiving, Pull Requests)
+/app/warehouse             -> Warehouse landing (stat cards + Go-to cards for sub-routes)
+/app/warehouse/inventory   -> Inventory (hardware/opening items by project)
+/app/warehouse/locations   -> Locations (master-detail bin browser)
+/app/warehouse/receiving   -> Receiving wizard
+/app/warehouse/put-away    -> Put Away (unlocated items queue)
+/app/warehouse/pull-requests -> Pull Requests
+/app/warehouse/stock-pool  -> Stock Pool (non-project stock items)
+/app/warehouse/deficient-items -> Deficient Items Review
+/app/warehouse/shipments   -> Shipments (global packing slip list + return dialog)
 /app/shop-assembly         -> Shop Assembly (manager vs user views)
 /app/shipping              -> Shipping Out (ship-ready items, packing slips)
 /app/admin                 -> Admin (reports, vendors, projects, users, cleanup)
@@ -142,7 +150,7 @@ DRAFT -> ORDERED -> VENDOR_CONFIRMED -> PARTIALLY_RECEIVED -> CLOSED
 
 ### Warehouse Module
 
-**Entry**: `/app/warehouse` -> Three tabs: Inventory, Receiving, Pull Requests
+**Entry**: `/app/warehouse` -> Warehouse landing page with stat cards and "Go to" card buttons for: Inventory, Locations, Deliveries, Receiving, Put Away, Pull Requests, Stock Pool, Deficient Items, Shipments. (No longer "three tabs" - this has evolved to a full landing page.)
 
 **Inventory tab default**: Navigating directly to `/app/warehouse/inventory` defaults to "All Projects" view — shows the "Projects" back button, "All Projects" heading, and Hardware Items / Opening Items sub-tabs immediately. The ProjectLandingPage is NOT shown on initial load. Clicking "Projects" brings up the ProjectLandingPage where you can filter to a specific project or click "All Projects" to return to the all-projects view.
 
@@ -165,6 +173,38 @@ DRAFT -> ORDERED -> VENDOR_CONFIRMED -> PARTIALLY_RECEIVED -> CLOSED
 Both entry points open a "Transfer <productCode>" MUI dialog with: an "X available to transfer." line, a "Destination warehouse" dropdown (defaults to the source item's warehouse), Aisle/Bay/Bin MUI Autocomplete fields (suggest existing bin values; are comboboxes with autocomplete="list", NOT plain text boxes), and a Quantity spinbutton defaulting to the available quantity (max=available). Transfer button stays disabled until all three location fields are filled. On success, the dialog closes, the grid refreshes automatically (source row qty drops, a new row appears at the destination bin if it didn't exist), and a success toast fires briefly. To open autocomplete suggestions: focus the input then dispatch a keydown ArrowDown event.
 
 **Receiving warehouse selector** (PR #158): When receiving a PO, the Receive modal includes a "Receive into warehouse" dropdown near the top, defaulting to "Warden (WRD) · default". Only visible when a PO is in ORDERED/VENDOR_CONFIRMED/PARTIALLY_RECEIVED state and you open the receive flow.
+
+**Put Away** (`/app/warehouse/put-away`): Lists unlocated project inventory items grouped by hardware category. Each row shows Product Code, Qty, PO#, Received date, and Aisle/Bay/Bin comboboxes + an "Assign" button (disabled until all three location fields filled). Has a "Filter by Project" dropdown. Items returned to project inventory via the Return dialog appear here immediately.
+
+**Shipments page** (`/app/warehouse/shipments`, issue #89):
+- Global list of all shipped packing slips (across projects). Reachable from: direct URL, Warehouse landing "Shipments" card, sidebar nav under Warehouse.
+- Grid columns: Packing slip #, Project, Shipped by, Shipped date, Loose units, Actions column with "Return" button.
+- Filter controls: "Search packing slip #" text input (filters by packing slip number), "Project" dropdown.
+- "Loose units" column shows total loose-line qty originally shipped (does NOT decrease as returns are recorded).
+- "Return" button opens the Return dialog for that packing slip.
+
+**Return dialog** (issue #89):
+- Title: "Return shipment <PS-NUMBER>"
+- Subtitle: "<Project name> · loose hardware only. Opening items are not returned."
+- "Destination warehouse" required select (defaults to "Warden (WRD)").
+- "Reference / note (optional)" text field.
+- "Cancel whole shipment" button (separate cancellation action, distinct from return).
+- One section per loose line, each showing: product code (heading), hardware category + opening reference (e.g. "HINGE · opening 101"), a "returnable N" chip showing remaining returnable quantity, Qty spinbutton (min=0, max=returnable remaining), Disposition select (options: "Return to project inventory", "Move to non-stock", "Defective / RMA"), Reason (optional) text field.
+- When "Defective / RMA" is selected as Disposition, a "PO / RMA reference (optional)" text field appears between the Disposition select and the Reason field.
+- "Cancel" and "Record return" buttons at the bottom.
+- On success: dialog closes, toast fires "Return recorded for <PS-NUMBER>".
+- Validation: if any Qty exceeds its returnable max, clicking "Record return" shows an inline error alert at the top of the dialog: "<PRODUCT-CODE>: cannot return more than N". Dialog stays open, nothing is submitted.
+- After a return is recorded, the returnable chip amounts decrease correctly on the next dialog open. The packing slip row remains in the grid.
+
+**Return disposition outcomes**:
+- "Return to project inventory": creates an `InventoryLocation` record for the project with no bin assigned (unlocated). Item appears in Put Away tab and in Inventory under the project. Does NOT appear in Stock Pool.
+- "Move to non-stock": creates a `StockItem` with quantity=N, deficientQuantity=0. Appears in Stock Pool.
+- "Defective / RMA": creates a `StockItem` with quantity=N, deficientQuantity=N (fully deficient, available=0). Appears in Stock Pool AND in Deficient Items Review page.
+
+**GraphQL queries for verifying returns**:
+- `{ stockItems(productCodeContains:"RET-") { productCode quantity deficientQuantity available } }` - checks stock pool entries
+- `{ deficientItems { source productCode hardwareCategory deficientQuantity } }` - checks deficient items (DeficientItemRow type, no quantity/available fields)
+- `{ unlocatedInventory(projectId:"<UUID>") { inventoryLocation { hardwareCategory productCode quantity aisle row bay bin } } }` - returns InventoryItemDetail (not InventoryLocation directly). Use nested `inventoryLocation` field for product/qty data.
 
 ### Shop Assembly Module
 
