@@ -1,0 +1,21 @@
+﻿<Window x:Class="PM_Project_Tracking.WhShipAdjustYesNo"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:PM_Project_Tracking"
+        mc:Ignorable="d"
+        Title="WhShipAdjustYesNo" Height="120" Width="310">
+    <Grid Background="#FF494949" >
+        <StackPanel Margin="10,0,10,10" HorizontalAlignment="Center" VerticalAlignment="Center" Orientation="Vertical">
+            <TextBlock HorizontalAlignment="Center" TextWrapping="WrapWithOverflow" Foreground="White" >
+                If you proceed, you will lose all current shipping work currently open. Do you wish to continue?
+            </TextBlock>
+            <StackPanel Margin="0,10,0,0" Orientation="Horizontal">
+                <Button Name="BTN_Yes" Content="YES" Width="130" Height="20" HorizontalAlignment="Left" Click="BTN_Yes_Click"  />
+                <Label Width="10" />
+                <Button Name="BTN_Cancel" Content="CANCEL" Width="130" Height="20" HorizontalAlignment="Left" Click="BTN_Cancel_Click"  />
+            </StackPanel>
+        </StackPanel>
+    </Grid>
+</Window>

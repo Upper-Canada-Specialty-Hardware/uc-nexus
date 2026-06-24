@@ -1,0 +1,22 @@
+﻿<Window x:Class="PM_Project_Tracking.ProjectManagementWindows.ChangeOrderQuoteAheadWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:PM_Project_Tracking.ProjectManagementWindows"
+        mc:Ignorable="d"
+        Title="ChangeOrderQuoteAheadWindow" Height="300" Width="500" Closed="Window_Closed">
+    <Grid Background="#FF494949">
+        <StackPanel Orientation="Vertical">
+            <TextBlock Margin="10,20,10,10" Foreground="White" TextWrapping="WrapWithOverflow">
+                If change orders already exist in a change index in Excel for this project, would you like to 
+                start the quote number at the next quote for the project? If yes, then please put the number 
+                (using only a number) to indicate which quote to start on. Ex: If the next quote for this
+                project is "Q016" then just use the number "16".
+            </TextBlock>
+            <TextBox Name="TB_QuoteInteger" Margin="0,10,0,10" Width="100" />
+            <Button Name="BTN_Accept" Margin="0,10,0,10" Content="ACCEPT" Width="100" Height="20" Click="BTN_Accept_Click" />
+            <Button Name="BTN_Cancel" Margin="0,10,0,10" Content="CANCEL" Width="100" Height="20" Click="BTN_Cancel_Click" />
+        </StackPanel>
+    </Grid>
+</Window>

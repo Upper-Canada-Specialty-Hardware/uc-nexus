@@ -1,0 +1,32 @@
+﻿<Window x:Class="PM_Project_Tracking.ProjectManagementWindows.NewProgressBillingWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:sys="clr-namespace:System;assembly=mscorlib"
+        Title="NewProgressBillingWindow" Height="240" Width="300">
+    <Grid Background="#FF494949">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="10" />
+                <RowDefinition />
+            </Grid.RowDefinitions>
+            <Grid Grid.Row="1">
+                <StackPanel Orientation="Vertical">
+                    <StackPanel Orientation="Vertical">
+                        <Label Content="BILLING DATE" Foreground="White"/>
+                        <DatePicker Name="DP_BillingDate" />
+                    </StackPanel>
+                    <StackPanel Orientation="Vertical">
+                        <Label Content="HST NUMBER" Foreground="White"/>
+                        <TextBox Name="TB_HstNumber" Text="{Binding Path=HstNumber,Mode=TwoWay}" Width="160" HorizontalAlignment="Left"/>
+                        <!--<TextBox Name="TB_HstNumber" Text="{Binding Path=HstNumber,Mode=TwoWay, TargetNullValue={x:Static sys:String.Empty}, NotifyOnSourceUpdated=True,  UpdateSourceTrigger=PropertyChanged}" Width="160" HorizontalAlignment="Left"/>-->
+                    </StackPanel>
+                    <StackPanel Orientation="Vertical">
+                        <Label Content="CONTRACT NUMBER" Foreground="White"/>
+                        <TextBox Name="TB_ContractNumber" Text="{Binding Path=ContractNumber,Mode=TwoWay}" Width="160" HorizontalAlignment="Left"/>
+                    </StackPanel>
+                    <Button Name="TB_Accept" Margin="0,20,0,0" Content="ACCEPT" Width="120" Click="TB_Accept_Click" />
+                </StackPanel>
+            </Grid>
+        </Grid>
+    </Grid>
+</Window>

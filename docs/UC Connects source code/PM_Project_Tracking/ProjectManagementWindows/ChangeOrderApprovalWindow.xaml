@@ -1,0 +1,15 @@
+﻿<Window x:Class="PM_Project_Tracking.ProjectManagementWindows.ChangeOrderApprovalWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="ChangeOrderApprovalWindow" Height="120" Width="240">
+    <Grid Background="#FF494949">
+        <StackPanel>
+            <Label Content="Approval Confirmation Number" Foreground="White" HorizontalAlignment="Center" />
+            <TextBox Name="TB_ApprovalNumber" Width="160" />
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                <Button Name="BTN_Accept" Content="ACCEPT" Margin="10,10,10,10" Width="70" Click="BTN_Accept_Click" />
+                <Button Name="BTN_Cancel" Content="CANCEL" Margin="10,10,10,10" Width="70" Click="BTN_Cancel_Click" />
+            </StackPanel>
+        </StackPanel>
+    </Grid>
+</Window>
