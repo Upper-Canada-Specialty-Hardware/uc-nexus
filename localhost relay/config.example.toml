@@ -1,0 +1,37 @@
+# Copy to config.toml and fill in. config.toml is gitignored (it holds the secret).
+
+[server]
+host = "127.0.0.1"
+port = 7321
+
+[auth]
+# generate with:  python -c "import secrets; print(secrets.token_urlsafe(32))"
+shared_secret = "REPLACE_ME_RANDOM_TOKEN"
+
+[cors]
+allowed_origins = [
+  "https://ucnexus-frontend-production.up.railway.app",
+  "http://localhost:5173",
+  "http://localhost:8000",
+]
+
+[sql]
+# 10.0.0.246,1435 is the verified-reachable named-instance endpoint (UCSHSQL2\MSSQL2014).
+# Off-domain the hostname will not resolve; the IP,port form always works on the corp network.
+server = "10.0.0.246,1435"
+# Driver 17 is installed on the dev box. Driver 18 also works if installed (just change this).
+driver = "ODBC Driver 17 for SQL Server"
+trusted_connection = true
+encrypt = "yes"
+trust_server_certificate = true
+connection_timeout = 10
+command_timeout = 30
+
+[gp]
+# HARD GUARDRAIL: sandboxes only. NEVER add UBC or UCSH (production) here.
+default_company = "TUBC"
+allowed_companies = ["TUBC", "TUCSH"]
+
+[logging]
+level = "INFO"
+file = "relay.log"
