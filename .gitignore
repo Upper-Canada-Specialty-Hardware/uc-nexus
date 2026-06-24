@@ -49,9 +49,12 @@ backend/alembic/versions/__pycache__/
 # Dev Planning (not tracked)
 Dev Planning/
 
-# Sample data XML dumps, except committed test fixtures
-*.xml
-!testing/fixtures/*.xml
+# xml is intentionally tracked - sample/test xml is a localized simulated-testing
+# dependency, and docs/ ships eConnect reference xml. do not re-add a blanket *.xml ignore.
+
+# docs/: vendored UC Connects source has its own .gitignore (bin/obj/.vs/.suo/.user);
+# also exclude its ClickOnce publish output (regenerable build artifact)
+docs/**/publish/
 
 # Credentials
 clerk_credentials.txt

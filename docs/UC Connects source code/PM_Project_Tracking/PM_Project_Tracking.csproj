@@ -1,0 +1,679 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{D4B6E7A4-7165-4E9F-80EC-D93F62B04A60}</ProjectGuid>
+    <OutputType>WinExe</OutputType>
+    <AppDesignerFolder>Properties</AppDesignerFolder>
+    <RootNamespace>PM_Project_Tracking</RootNamespace>
+    <AssemblyName>PM_Project_Tracking</AssemblyName>
+    <TargetFrameworkVersion>v4.7.2</TargetFrameworkVersion>
+    <FileAlignment>512</FileAlignment>
+    <ProjectTypeGuids>{60dc8134-eba5-43b8-bcc9-bb4bc16c2548};{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}</ProjectTypeGuids>
+    <WarningLevel>4</WarningLevel>
+    <TargetFrameworkProfile />
+    <IsWebBootstrapper>false</IsWebBootstrapper>
+    <PublishUrl>P:\Matt - Software Distribution\PM_Project_Tracking - BC Distribution Test\</PublishUrl>
+    <Install>true</Install>
+    <InstallFrom>Disk</InstallFrom>
+    <UpdateEnabled>true</UpdateEnabled>
+    <UpdateMode>Foreground</UpdateMode>
+    <UpdateInterval>7</UpdateInterval>
+    <UpdateIntervalUnits>Days</UpdateIntervalUnits>
+    <UpdatePeriodically>false</UpdatePeriodically>
+    <UpdateRequired>false</UpdateRequired>
+    <MapFileExtensions>true</MapFileExtensions>
+    <UpdateUrl>\\ucshdc19\Company\Matt - Software Distribution\PM_Project_Tracking - BC Distribution Test\</UpdateUrl>
+    <ApplicationRevision>404</ApplicationRevision>
+    <ApplicationVersion>1.0.0.%2a</ApplicationVersion>
+    <UseApplicationTrust>false</UseApplicationTrust>
+    <PublishWizardCompleted>true</PublishWizardCompleted>
+    <BootstrapperEnabled>true</BootstrapperEnabled>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <PropertyGroup>
+    <ManifestCertificateThumbprint>48F90F989FF6B7973AEB42648BA86387D8E0D39B</ManifestCertificateThumbprint>
+  </PropertyGroup>
+  <PropertyGroup>
+    <ManifestKeyFile>PM_Project_Tracking_1_TemporaryKey.pfx</ManifestKeyFile>
+  </PropertyGroup>
+  <PropertyGroup>
+    <GenerateManifests>true</GenerateManifests>
+  </PropertyGroup>
+  <PropertyGroup>
+    <SignManifests>false</SignManifests>
+  </PropertyGroup>
+  <PropertyGroup>
+    <ApplicationIcon>Icon 64x v7.ico</ApplicationIcon>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="Microsoft.Bcl.AsyncInterfaces, Version=8.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51, processorArchitecture=MSIL">
+      <HintPath>..\packages\Microsoft.Bcl.AsyncInterfaces.8.0.0\lib\net462\Microsoft.Bcl.AsyncInterfaces.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="Microsoft.Dynamics.GP.eConnect, Version=11.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35, processorArchitecture=AMD64">
+      <SpecificVersion>False</SpecificVersion>
+      <HintPath>..\..\..\..\..\..\..\Program Files (x86)\Microsoft Dynamics\eConnect 11.0\API\Microsoft.Dynamics.GP.eConnect.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="Microsoft.Dynamics.GP.eConnect.Serialization, Version=11.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35, processorArchitecture=AMD64">
+      <SpecificVersion>False</SpecificVersion>
+      <HintPath>..\..\..\..\..\..\..\Program Files (x86)\Microsoft Dynamics\eConnect 11.0\API\Microsoft.Dynamics.GP.eConnect.Serialization.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="Newtonsoft.Json, Version=13.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed, processorArchitecture=MSIL">
+      <HintPath>..\packages\Newtonsoft.Json.13.0.3\lib\net45\Newtonsoft.Json.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="Newtonsoft.Json.Bson, Version=1.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed, processorArchitecture=MSIL">
+      <HintPath>..\packages\Newtonsoft.Json.Bson.1.0.2\lib\net45\Newtonsoft.Json.Bson.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="System" />
+    <Reference Include="System.Buffers, Version=4.0.3.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51, processorArchitecture=MSIL">
+      <HintPath>..\packages\System.Buffers.4.5.1\lib\netstandard2.0\System.Buffers.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="System.Data" />
+    <Reference Include="System.Data.Linq" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Json, Version=2.0.8.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35, processorArchitecture=MSIL">
+      <HintPath>..\packages\System.Json.4.7.1\lib\net461\System.Json.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="System.Memory, Version=4.0.1.2, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51, processorArchitecture=MSIL">
+      <HintPath>..\packages\System.Memory.4.5.5\lib\netstandard2.0\System.Memory.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="System.Net.Http" />
+    <Reference Include="System.Net.Http.Formatting, Version=6.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35, processorArchitecture=MSIL">
+      <HintPath>..\packages\Microsoft.AspNet.WebApi.Client.6.0.0\lib\net45\System.Net.Http.Formatting.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="System.Net.Http.Json, Version=8.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51, processorArchitecture=MSIL">
+      <HintPath>..\packages\System.Net.Http.Json.8.0.0\lib\net462\System.Net.Http.Json.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="System.Numerics" />
+    <Reference Include="System.Numerics.Vectors, Version=4.1.4.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a, processorArchitecture=MSIL">
+      <HintPath>..\packages\System.Numerics.Vectors.4.5.0\lib\net46\System.Numerics.Vectors.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="System.Runtime.CompilerServices.Unsafe, Version=6.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a, processorArchitecture=MSIL">
+      <HintPath>..\packages\System.Runtime.CompilerServices.Unsafe.6.0.0\lib\net461\System.Runtime.CompilerServices.Unsafe.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="System.Text.Encodings.Web, Version=8.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51, processorArchitecture=MSIL">
+      <HintPath>..\packages\System.Text.Encodings.Web.8.0.0\lib\net462\System.Text.Encodings.Web.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="System.Text.Json, Version=8.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51, processorArchitecture=MSIL">
+      <HintPath>..\packages\System.Text.Json.8.0.0\lib\net462\System.Text.Json.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="System.Threading.Tasks.Extensions, Version=4.2.0.1, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51, processorArchitecture=MSIL">
+      <HintPath>..\packages\System.Threading.Tasks.Extensions.4.5.4\lib\portable-net45+win8+wp8+wpa81\System.Threading.Tasks.Extensions.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="System.ValueTuple, Version=4.0.3.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51, processorArchitecture=MSIL">
+      <HintPath>..\packages\System.ValueTuple.4.5.0\lib\net47\System.ValueTuple.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="System.Xml" />
+    <Reference Include="Microsoft.CSharp" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Xml.Linq" />
+    <Reference Include="System.Data.DataSetExtensions" />
+    <Reference Include="System.Xaml">
+      <RequiredTargetFramework>4.0</RequiredTargetFramework>
+    </Reference>
+    <Reference Include="WindowsBase" />
+    <Reference Include="PresentationCore" />
+    <Reference Include="PresentationFramework" />
+  </ItemGroup>
+  <ItemGroup>
+    <ApplicationDefinition Include="App.xaml">
+      <Generator>MSBuild:Compile</Generator>
+      <SubType>Designer</SubType>
+    </ApplicationDefinition>
+    <Compile Include="CreateNewProjectMenu.xaml.cs">
+      <DependentUpon>CreateNewProjectMenu.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="DataClasses\GpObjects\Jc00102.cs" />
+    <Compile Include="DataClasses\GpObjects\Jc00701.cs" />
+    <Compile Include="DataClasses\GpObjects\Jc00901.cs" />
+    <Compile Include="DataClasses\GpObjects\Jc20001.cs" />
+    <Compile Include="DataClasses\GpObjects\Pm00200.cs" />
+    <Compile Include="DataClasses\GpObjects\Pop10100.cs" />
+    <Compile Include="DataClasses\GpObjects\Pop10110.cs" />
+    <Compile Include="DataClasses\GpObjects\Pop10150.cs" />
+    <Compile Include="DataClasses\GpObjects\Pop30300.cs" />
+    <Compile Include="DataClasses\GpObjects\Pop10500.cs" />
+    <Compile Include="DataClasses\GpObjects\Pop10550.cs" />
+    <Compile Include="DataClasses\GpObjects\Rm00101.cs" />
+    <Compile Include="DataClasses\GpObjects\Rm00102.cs" />
+    <Compile Include="DataClasses\GpObjects\Sop10100.cs" />
+    <Compile Include="DataClasses\GpObjects\Sop10200.cs" />
+    <Compile Include="DataClasses\GpObjects\Sop10202.cs" />
+    <Compile Include="DataClasses\GpObjects\Sop30200.cs" />
+    <Compile Include="DataClasses\GpObjects\Sop30300.cs" />
+    <Compile Include="DataClasses\GpObjects\Sop30300x.cs" />
+    <Compile Include="DataClasses\GpObjects\Sop60100.cs" />
+    <Compile Include="DataClasses\GpObjects\Ws10101.cs" />
+    <Compile Include="DataClasses\Hardware.cs" />
+    <Compile Include="DataClasses\HollowMetal.cs" />
+    <Compile Include="DataClasses\Interfaces\IJobNumberHaver.cs" />
+    <Compile Include="DataClasses\Interfaces\IPoUcshComment.cs" />
+    <Compile Include="DataClasses\PathSchemas.cs" />
+    <Compile Include="DataClasses\PM_OfferToTenders.cs" />
+    <Compile Include="DataClasses\PoUcshHeaderComments.cs" />
+    <Compile Include="DataClasses\PoUcshLineComments.cs" />
+    <Compile Include="DataClasses\PurchaseOrderHeaders.cs" />
+    <Compile Include="DataClasses\PurchaseOrderLineItems.cs" />
+    <Compile Include="DataClasses\PM_Pursuits.cs" />
+    <Compile Include="DataClasses\PM_QuoteSummaries.cs" />
+    <Compile Include="DataClasses\SopLink.cs" />
+    <Compile Include="DataClasses\SopLinkV2.cs" />
+    <Compile Include="DataClasses\TitanObjects\Cost.cs" />
+    <Compile Include="DataClasses\TitanObjects\Costs.cs" />
+    <Compile Include="DataClasses\TitanObjects\Door.cs" />
+    <Compile Include="DataClasses\TitanObjects\DoorAttribute.cs" />
+    <Compile Include="DataClasses\TitanObjects\Doors.cs" />
+    <Compile Include="DataClasses\TitanObjects\Frame.cs" />
+    <Compile Include="DataClasses\TitanObjects\FrameAttribute.cs" />
+    <Compile Include="DataClasses\TitanObjects\Frames.cs" />
+    <Compile Include="DataClasses\TitanObjects\Hardware.cs" />
+    <Compile Include="DataClasses\TitanObjects\Hardwares.cs" />
+    <Compile Include="DataClasses\TitanObjects\HardwareSet.cs" />
+    <Compile Include="DataClasses\TitanObjects\HardwareSetHardware.cs" />
+    <Compile Include="DataClasses\TitanObjects\HardwareSetHardwares.cs" />
+    <Compile Include="DataClasses\TitanObjects\HardwareSets.cs" />
+    <Compile Include="DataClasses\TitanObjects\Opening.cs" />
+    <Compile Include="DataClasses\TitanObjects\OpeningDoor.cs" />
+    <Compile Include="DataClasses\TitanObjects\OpeningDoors.cs" />
+    <Compile Include="DataClasses\TitanObjects\Openings.cs" />
+    <Compile Include="DataClasses\TitanObjects\Project.cs" />
+    <Compile Include="DataClasses\TitanObjects\Projects.cs" />
+    <Compile Include="DataClasses\Users.cs" />
+    <Compile Include="DataClasses\UtilityClasses\CloneClass.cs" />
+    <Compile Include="DataClasses\UtilityClasses\DeferredPropertySetter.cs" />
+    <Compile Include="DataClasses\UtilityClasses\EnumTableFamily.cs" />
+    <Compile Include="DataClasses\UtilityClasses\OverDataContext.cs" />
+    <Compile Include="DataClasses\UtilityClasses\ReceiptLineRackQuantityTracker.cs" />
+    <Compile Include="DataClasses\UtilityMethods\CheckLinksJobFolders.cs" />
+    <Compile Include="DataClasses\UtilityMethods\CreatingNewProgressBilling.cs" />
+    <Compile Include="DataClasses\UtilityMethods\DatabaseSwitcher.cs" />
+    <Compile Include="DataClasses\UtilityMethods\EligiblePursuitRetrieval.cs" />
+    <Compile Include="DataClasses\UtilityMethods\GetClassDbTableName.cs" />
+    <Compile Include="DataClasses\UtilityMethods\PredicateExtenstions.cs" />
+    <Compile Include="DataClasses\UtilityMethods\RemoveNoQuantityPoReceipts.cs" />
+    <Compile Include="DataClasses\WhDeficiencies.cs" />
+    <Compile Include="DataClasses\WhShipHeaderSession.cs" />
+    <Compile Include="DataClasses\WhTaggingLines.cs" />
+    <Compile Include="DataClasses\WhShippingHeaders.cs" />
+    <Compile Include="DataClasses\WhShippingLines.cs" />
+    <Compile Include="DataClasses\UtilityMethods\EligibleProjectRetrieval.cs" />
+    <Compile Include="DataClasses\UtilityMethods\EligibleTenderRetrieval.cs" />
+    <Compile Include="DataClasses\UtilityMethods\TransferBidToAwContrMainProj.cs" />
+    <Compile Include="DataClasses\PROC_PoConfirmations.cs" />
+    <Compile Include="DataClasses\WhReceivingLines.cs" />
+    <Compile Include="DataClasses\EConnect\PopRcptLineInsert.cs" />
+    <Compile Include="DataClasses\EConnect\PopTransaction.cs" />
+    <Compile Include="DataClasses\EConnect\SupportProcedures\taPopRcptLandedCost.cs" />
+    <Compile Include="ExcelConverters\ExportAttributes.cs" />
+    <Compile Include="ExcelConverters\ExportCommissionSheets.cs" />
+    <Compile Include="GlobalVariables.cs" />
+    <Compile Include="HmGetOpeningHwInfo.xaml.cs">
+      <DependentUpon>HmGetOpeningHwInfo.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="HmGetShopDrawByJobPopUp.xaml.cs">
+      <DependentUpon>HmGetShopDrawByJobPopUp.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="HwGetHardwareSchedByJobPopUp.xaml.cs">
+      <DependentUpon>HwGetHardwareSchedByJobPopUp.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="ModObservableCollection.cs" />
+    <Compile Include="OrderingHwByJobSelect.xaml.cs">
+      <DependentUpon>OrderingHwByJobSelect.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="OrderingHwByJobSelectTitan.xaml.cs">
+      <DependentUpon>OrderingHwByJobSelectTitan.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="OrderingSelectJobFramesTitan.xaml.cs">
+      <DependentUpon>OrderingSelectJobFramesTitan.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="OutlookConverters\OutlookTestv1.cs" />
+    <Compile Include="PoAddNewUcshComment.xaml.cs">
+      <DependentUpon>PoAddNewUcshComment.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="ProjectManagementClasses\ChangeIndexes.cs" />
+    <Compile Include="ProjectManagementClasses\ChangeHeaders.cs" />
+    <Compile Include="ProjectManagementClasses\ChangeLineDrawDowns.cs" />
+    <Compile Include="ProjectManagementClasses\ChangeLines.cs" />
+    <Compile Include="ProjectManagementClasses\ChangeQuoteSessions.cs" />
+    <Compile Include="ProjectManagementClasses\DropDowns.cs" />
+    <Compile Include="ProjectManagementClasses\ProgressBillingHeaders.cs" />
+    <Compile Include="ProjectManagementClasses\ProgressBillingLines.cs" />
+    <Compile Include="ProjectManagementClasses\ProgressBillSessions.cs" />
+    <Compile Include="ProjectManagementClasses\ProjectManagementUtililtyClasses\CostCodeAggregateModel\ChangeQuoteAggregate.cs" />
+    <Compile Include="ProjectManagementClasses\ProjectManagementUtililtyClasses\CostCodeAggregateViewModel\CostVodeViewModel.cs" />
+    <Compile Include="ProjectManagementClasses\ProjectManagementUtililtyClasses\PmItemsChangeObservableCollection.cs" />
+    <Compile Include="ProjectManagementClasses\RequestForInfos.cs" />
+    <Compile Include="ProjectManagementClasses\SubmittalHeaders.cs" />
+    <Compile Include="ProjectManagementClasses\SubmittalLines.cs" />
+    <Compile Include="ProjectManagementClasses\TaskSchedulers.cs" />
+    <Compile Include="ProjectManagementWindows\ChangeOrderApprovalWindow.xaml.cs">
+      <DependentUpon>ChangeOrderApprovalWindow.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="ProjectManagementWindows\ChangeOrderDrawDownsWindow.xaml.cs">
+      <DependentUpon>ChangeOrderDrawDownsWindow.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="ProjectManagementWindows\ChangeOrderHardwareItemSelect.xaml.cs">
+      <DependentUpon>ChangeOrderHardwareItemSelect.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="ProjectManagementWindows\ChangeOrderQuoteAheadWindow.xaml.cs">
+      <DependentUpon>ChangeOrderQuoteAheadWindow.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="ProjectManagementWindows\ChangeOrderQuoteWindow.xaml.cs">
+      <DependentUpon>ChangeOrderQuoteWindow.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="ProjectManagementWindows\NewProgressBillingWindow.xaml.cs">
+      <DependentUpon>NewProgressBillingWindow.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="ProjectManagementWindows\ProgressBillingWindow.xaml.cs">
+      <DependentUpon>ProgressBillingWindow.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="ProjectManagementWindows\ProjectManagementMain.xaml.cs">
+      <DependentUpon>ProjectManagementMain.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="ProjectManagementWindows\SubmittalShipmentLineQtyPopupForm.xaml.cs">
+      <DependentUpon>SubmittalShipmentLineQtyPopupForm.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="QsNewJobQuote.xaml.cs">
+      <DependentUpon>QsNewJobQuote.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="QsSelectJob.xaml.cs">
+      <DependentUpon>QsSelectJob.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="TitanApi\GetDoors.cs" />
+    <Compile Include="TitanApi\GetFrames.cs" />
+    <Compile Include="TitanApi\GetHardwares.cs" />
+    <Compile Include="TitanApi\GetProject.cs" />
+    <Compile Include="TitanApi\GetProjects.cs" />
+    <Compile Include="TitanApi\TestAccess.cs" />
+    <Compile Include="TransferAddUserMenu.xaml.cs">
+      <DependentUpon>TransferAddUserMenu.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="TransferBidMenu.xaml.cs">
+      <DependentUpon>TransferBidMenu.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="TransferPursuitMenu.xaml.cs">
+      <DependentUpon>TransferPursuitMenu.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="TransferTenderMenu.xaml.cs">
+      <DependentUpon>TransferTenderMenu.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="TransferModifyUserMenu.xaml.cs">
+      <DependentUpon>TransferModifyUserMenu.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="UsersChangeSessions.xaml.cs">
+      <DependentUpon>UsersChangeSessions.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="WhDeficiencyListWindow.xaml.cs">
+      <DependentUpon>WhDeficiencyListWindow.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="WhRecLinesPopUpWindow.xaml.cs">
+      <DependentUpon>WhRecLinesPopUpWindow.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="WhRecsBlankLinesShippingMemo.xaml.cs">
+      <DependentUpon>WhRecsBlankLinesShippingMemo.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="WhRecSelectPo.xaml.cs">
+      <DependentUpon>WhRecSelectPo.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="WhRecSelectPoShowroom.xaml.cs">
+      <DependentUpon>WhRecSelectPoShowroom.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="WhRecSelectPoSop.xaml.cs">
+      <DependentUpon>WhRecSelectPoSop.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="WhRecSelectPoUnusual.xaml.cs">
+      <DependentUpon>WhRecSelectPoUnusual.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="WhShipAdjust.xaml.cs">
+      <DependentUpon>WhShipAdjust.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="WhShipAdjustYesNo.xaml.cs">
+      <DependentUpon>WhShipAdjustYesNo.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="WhShipLinesPopUpWindow.xaml.cs">
+      <DependentUpon>WhShipLinesPopUpWindow.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="WhShipSelCustomer.xaml.cs">
+      <DependentUpon>WhShipSelCustomer.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="WhShipGetPoReceiptLines.xaml.cs">
+      <DependentUpon>WhShipGetPoReceiptLines.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="WhShipGetRtlordLines.xaml.cs">
+      <DependentUpon>WhShipGetRtlordLines.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="WhShipSelProject.xaml.cs">
+      <DependentUpon>WhShipSelProject.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="WordConverters\ExportChangeOrder.cs" />
+    <Compile Include="WordConverters\ExportQuoteSummary.cs" />
+    <Compile Include="WordConverters\ExportReceiptsPoHeaderBlankLines.cs" />
+    <Compile Include="WordConverters\ExportShipmentHeaderAndLines.cs" />
+    <Compile Include="WordConverters\ExportSubmittal.cs" />
+    <Page Include="App_Resources.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="CreateNewProjectMenu.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="HmGetOpeningHwInfo.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="HmGetShopDrawByJobPopUp.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="HwGetHardwareSchedByJobPopUp.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="MainWindow.xaml">
+      <Generator>MSBuild:Compile</Generator>
+      <SubType>Designer</SubType>
+    </Page>
+    <Compile Include="App.xaml.cs">
+      <DependentUpon>App.xaml</DependentUpon>
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="DataClasses\PM_BidProjects.cs" />
+    <Compile Include="DataClasses\PM_AwardedContracts.cs" />
+    <Compile Include="DataClasses\PM_MainProjects.cs" />
+    <Compile Include="DropDowns.cs" />
+    <Compile Include="MainWindow.xaml.cs">
+      <DependentUpon>MainWindow.xaml</DependentUpon>
+      <SubType>Code</SubType>
+    </Compile>
+    <Page Include="OrderingHwByJobSelect.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="OrderingHwByJobSelectTitan.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="OrderingSelectJobFramesTitan.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="PoAddNewUcshComment.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="ProjectManagementWindows\ChangeOrderApprovalWindow.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="ProjectManagementWindows\ChangeOrderDrawDownsWindow.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="ProjectManagementWindows\ChangeOrderHardwareItemSelect.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="ProjectManagementWindows\ChangeOrderQuoteAheadWindow.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="ProjectManagementWindows\ChangeOrderQuoteWindow.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="ProjectManagementWindows\NewProgressBillingWindow.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="ProjectManagementWindows\ProgressBillingWindow.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="ProjectManagementWindows\ProjectManagementMain.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="ProjectManagementWindows\SubmittalShipmentLineQtyPopupForm.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="QsNewJobQuote.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="QsSelectJob.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="TransferAddUserMenu.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="TransferBidMenu.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="TransferPursuitMenu.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="TransferTenderMenu.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="TransferModifyUserMenu.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="UsersChangeSessions.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="WhDeficiencyListWindow.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="WhRecLinesPopUpWindow.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="WhRecsBlankLinesShippingMemo.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="WhRecSelectPo.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="WhRecSelectPoShowroom.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="WhRecSelectPoSop.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="WhRecSelectPoUnusual.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="WhShipAdjust.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="WhShipAdjustYesNo.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="WhShipLinesPopUpWindow.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="WhShipSelCustomer.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="WhShipGetPoReceiptLines.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="WhShipGetRtlordLines.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="WhShipSelProject.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="Properties\AssemblyInfo.cs">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="Properties\Resources.Designer.cs">
+      <AutoGen>True</AutoGen>
+      <DesignTime>True</DesignTime>
+      <DependentUpon>Resources.resx</DependentUpon>
+    </Compile>
+    <Compile Include="Properties\Settings.Designer.cs">
+      <AutoGen>True</AutoGen>
+      <DependentUpon>Settings.settings</DependentUpon>
+      <DesignTimeSharedInput>True</DesignTimeSharedInput>
+    </Compile>
+    <EmbeddedResource Include="Properties\Resources.resx">
+      <Generator>ResXFileCodeGenerator</Generator>
+      <LastGenOutput>Resources.Designer.cs</LastGenOutput>
+      <SubType>Designer</SubType>
+    </EmbeddedResource>
+    <None Include="packages.config" />
+    <None Include="PM_Project_Tracking_1_TemporaryKey.pfx" />
+    <None Include="PM_Project_Tracking_TemporaryKey.pfx" />
+    <None Include="Properties\Settings.settings">
+      <Generator>SettingsSingleFileGenerator</Generator>
+      <LastGenOutput>Settings.Designer.cs</LastGenOutput>
+    </None>
+    <AppDesigner Include="Properties\" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="App.config" />
+  </ItemGroup>
+  <ItemGroup>
+    <BootstrapperPackage Include="Microsoft.Net.Client.3.5">
+      <Visible>False</Visible>
+      <ProductName>.NET Framework 3.5 SP1 Client Profile</ProductName>
+      <Install>false</Install>
+    </BootstrapperPackage>
+    <BootstrapperPackage Include="Microsoft.Net.Framework.3.5.SP1">
+      <Visible>False</Visible>
+      <ProductName>.NET Framework 3.5 SP1</ProductName>
+      <Install>false</Install>
+    </BootstrapperPackage>
+  </ItemGroup>
+  <ItemGroup>
+    <Resource Include="32x32icotest.ico" />
+  </ItemGroup>
+  <ItemGroup>
+    <Resource Include="Icon 64x v7.ico" />
+  </ItemGroup>
+  <ItemGroup>
+    <COMReference Include="Microsoft.Office.Core">
+      <Guid>{2DF8D04C-5BFA-101B-BDE5-00AA0044DE52}</Guid>
+      <VersionMajor>2</VersionMajor>
+      <VersionMinor>8</VersionMinor>
+      <Lcid>0</Lcid>
+      <WrapperTool>primary</WrapperTool>
+      <Isolated>False</Isolated>
+      <EmbedInteropTypes>True</EmbedInteropTypes>
+    </COMReference>
+    <COMReference Include="Microsoft.Office.Interop.Excel">
+      <Guid>{00020813-0000-0000-C000-000000000046}</Guid>
+      <VersionMajor>1</VersionMajor>
+      <VersionMinor>9</VersionMinor>
+      <Lcid>0</Lcid>
+      <WrapperTool>primary</WrapperTool>
+      <Isolated>False</Isolated>
+      <EmbedInteropTypes>True</EmbedInteropTypes>
+    </COMReference>
+    <COMReference Include="Microsoft.Office.Interop.Outlook">
+      <Guid>{00062FFF-0000-0000-C000-000000000046}</Guid>
+      <VersionMajor>9</VersionMajor>
+      <VersionMinor>6</VersionMinor>
+      <Lcid>0</Lcid>
+      <WrapperTool>primary</WrapperTool>
+      <Isolated>False</Isolated>
+      <EmbedInteropTypes>True</EmbedInteropTypes>
+    </COMReference>
+    <COMReference Include="Microsoft.Office.Interop.Word">
+      <Guid>{00020905-0000-0000-C000-000000000046}</Guid>
+      <VersionMajor>8</VersionMajor>
+      <VersionMinor>7</VersionMinor>
+      <Lcid>0</Lcid>
+      <WrapperTool>primary</WrapperTool>
+      <Isolated>False</Isolated>
+      <EmbedInteropTypes>True</EmbedInteropTypes>
+    </COMReference>
+    <COMReference Include="stdole">
+      <Guid>{00020430-0000-0000-C000-000000000046}</Guid>
+      <VersionMajor>2</VersionMajor>
+      <VersionMinor>0</VersionMinor>
+      <Lcid>0</Lcid>
+      <WrapperTool>primary</WrapperTool>
+      <Isolated>False</Isolated>
+      <EmbedInteropTypes>True</EmbedInteropTypes>
+    </COMReference>
+  </ItemGroup>
+  <ItemGroup>
+    <WCFMetadata Include="Service References\" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Resources\400x400.jpg" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Resources\UCSH_Logo_400x400.bmp" />
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <!-- To modify your build process, add your task inside one of the targets below and uncomment it. 
+       Other similar extension points exist, see Microsoft.Common.targets.
+  <Target Name="BeforeBuild">
+  </Target>
+  <Target Name="AfterBuild">
+  </Target>
+  -->
+</Project>

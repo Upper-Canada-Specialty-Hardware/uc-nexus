@@ -1,0 +1,1559 @@
+﻿<Window x:Class="PM_Project_Tracking.ProjectManagementWindows.ProjectManagementMain"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:staticData="clr-namespace:PM_Project_Tracking.ProjectManagementWindows"
+        xmlns:staticClassData="clr-namespace:PM_Project_Tracking.ProjectManagementClasses"
+        xmlns:sys="clr-namespace:System;assembly=mscorlib"
+        xmlns:vms="clr-namespace:PM_Project_Tracking.ProjectManagementClasses.ProjectManagementUtililtyClasses.CostCodeAggregateViewModel" 
+        Title="ProjectManagementMain" Height="1080" Width="1750" Closed="Window_Closed" Loaded="Window_Loaded" Closing="Window_Closing">
+    <Window.Resources>
+        
+        <!--<vms:CostCodeViewModel x:Key="vmkey"/>-->
+        <staticData:StatusToColorPm x:Key="StatusToColorPm" />
+        <staticClassData:SubmittalItemType x:Key="PmItemType" />
+        <staticData:ChangeOrderIsCancelled x:Key="ChangeOrderIsCancelled" />
+        <staticData:ChangeOrderIsApproved x:Key="ChangeOrderIsApproved" />
+        <staticData:ChangeOrderIsTentativeApproved x:Key="ChangeOrderIsTentativeApproved" />
+        <staticData:ChangeOrderIsBilled x:Key="ChangeOrderIsBilled" />
+        <staticClassData:GetAllUserList x:Key="GetAllUserList" />
+        <staticClassData:UserTwoTest x:Key="UserTwoTest" />
+        <staticClassData:UserTwoObjects x:Key="UserTwoObjects" />
+        <staticData:PopLinePolnestaStatusConverter  x:Key="PopLinePolnestaStatusConverter" />
+        <Style TargetType="{x:Type TabItem}">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type TabItem}">
+                        <Grid>
+                            <Border Name="Border" Background="{StaticResource BackgroundBrush}">
+                                <ContentPresenter x:Name="ContentSite" VerticalAlignment="Center" HorizontalAlignment="Center" ContentSource="Header" Margin="12,2,12,2" RecognizesAccessKey="True"/>
+                            </Border>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Border" Property="Background" Value="{StaticResource SelectedBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Border" Property="Background" Value="{StaticResource BackgroundBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+    <Grid Name="Container" Background="#FF494949">
+        <Grid Name="MainNavigation" Margin="0, 40, 0, 0" Background="#FF494949">
+            <TabControl TabStripPlacement="Left" Background="#FF494949">
+                <TabItem Name="Tab_ProjectCharter" Header="PROJECT CHARTER" VerticalAlignment="Top" Width="185" Height="30" Background="#FF494949" Foreground="White">
+
+                </TabItem>
+                <TabItem Name="Tab_RiskRegister" Header="RISK REGISTER" VerticalAlignment="Top" Width="185" Height="30" Background="#FF494949" Foreground="White">
+
+                </TabItem>
+                <TabItem Name="Tab_TaskScheduler" Header="TASK SCHEDULER" VerticalAlignment="Top" Width="185" Height="30" Background="#FF494949" Foreground="White">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="200" />
+                            <RowDefinition />
+                        </Grid.RowDefinitions>
+                        <Grid Grid.Row="0" >
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition />
+                                <ColumnDefinition />
+                                <ColumnDefinition />
+                            </Grid.ColumnDefinitions>
+                            
+                            <StackPanel Grid.Column="0" Orientation="Horizontal">
+                                <Grid>
+                                    <StackPanel Orientation="Vertical">
+                                        <StackPanel Orientation="Vertical">
+                                            <Button Name="BTN_TaskScheduler_UpdateServer" Content="UPDATE SERVER" Margin="5,10,5,10" Height="20" Width="170" Click="BTN_TaskScheduler_UpdateServer_Click"/>
+                                            <Rectangle Margin="0,5,0,10" Height="2" Width="300" VerticalAlignment="Top" HorizontalAlignment="Center" Fill="LightGray" Opacity="0.3" />
+                                        </StackPanel>
+                                        <StackPanel Orientation="Vertical" >
+                                            <StackPanel Margin="5,5,5,5" Orientation="Horizontal" >
+                                                <Label Content="ASSIGNEE" Width="100" Foreground="White"/>
+                                                <ComboBox Name="CBox_TaskScheduler_SelectAssignee" Width="140" HorizontalAlignment="Center" HorizontalContentAlignment="Center"
+                                                            SelectedValue="{Binding UserTwo, UpdateSourceTrigger=PropertyChanged}"
+                                                            DisplayMemberPath="DomainUserName"
+                                                            Text="{Binding DomainUserName}" FontSize="11"  
+                                                          />
+                                            </StackPanel>
+                                            <StackPanel Margin="5,5,5,5" Orientation="Horizontal" >
+                                                <Label Content="TASK" Width="100" Foreground="White"/>
+                                                <ComboBox Name="CBox_TaskScheduler_SelectTask"  Width="300" HorizontalAlignment="Center" HorizontalContentAlignment="Center"
+                                                            SelectedValue="{Binding TaskEnum, UpdateSourceTrigger=PropertyChanged}"
+                                                            DisplayMemberPath="TaskName"
+                                                            Text="{Binding TaskName}" FontSize="11"  
+                                                          />
+                                            </StackPanel>
+                                            <StackPanel Margin="5,5,5,5" Orientation="Horizontal" >
+                                                <Label Content="AREA" Width="100" Foreground="White"/>
+                                                <ComboBox Name="CBox_TaskScheduler_SelectArea" Width="300" HorizontalAlignment="Center" HorizontalContentAlignment="Center"
+                                                            SelectedValue="{Binding ShopDrawingLine, UpdateSourceTrigger=PropertyChanged}"
+                                                            DisplayMemberPath="Area"
+                                                            Text="{Binding Area}" FontSize="11"  
+                                                          />
+                                            </StackPanel>
+                                            <Button Name="BTN_TaskScheduler_AddTask" Content="ADD TASK" Margin="5,5,5,5" Width="100" Click="BTN_TaskScheduler_AddTask_Click" />
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Grid>
+                            </StackPanel>
+                            <Grid Grid.Column="1" >
+                                <StackPanel Orientation="Horizontal">
+                                    <StackPanel Orientation="Vertical" Width="160">
+                                        <Label Content="ASSIGNED FROM" Foreground="White" />
+                                        <TextBox Name="TB_TaskScheduler_AssignedFromFilter" TextChanged="TB_TaskScheduler_AssignedFromFilter_TextChanged" />
+                                        <Label Content="ASSIGNED TO" Foreground="White"/>
+                                        <TextBox Name="TB_TaskScheduler_AssignedToFilter" TextChanged="TB_TaskScheduler_AssignedToFilter_TextChanged" />
+                                        <Label Content="TASK" Foreground="White" />
+                                        <TextBox Name="TB_TaskScheduler_TaskFilter" TextChanged="TB_TaskScheduler_TaskFilter_TextChanged" />
+                                        <Label Content="AREA" Foreground="White"/>
+                                        <TextBox Name="TB_TaskScheduler_AreaFilter" TextChanged="TB_TaskScheduler_AreaFilter_TextChanged" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </Grid>
+                        </Grid>
+                        <Grid Grid.Row="1" >
+                            <DataGrid Name="DG_TaskScheduler_Tasks"
+                                        AutoGenerateColumns="False"
+                                        CanUserAddRows="False"
+                                        CanUserDeleteRows="False"
+                                        RowHeaderWidth="0" 
+                                          
+                                        ColumnHeaderHeight="45"
+                                        VirtualizingStackPanel.IsVirtualizing="True" 
+                                        VirtualizingStackPanel.VirtualizationMode="Recycling"
+                                        SelectionMode="Single"
+                                      >
+                                <DataGrid.Columns>
+                                    <DataGridCheckBoxColumn Header="DEL" Width="25" Binding="{Binding Path=IsDeleted,  UpdateSourceTrigger=PropertyChanged, Mode=TwoWay}">
+
+                                    </DataGridCheckBoxColumn>
+                                    <DataGridTemplateColumn Header="UPDATE" Width="40">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <Button Name="BTN_TaskScheduler_UpdateTask" 
+                                                        Style="{StaticResource TaskUpdateButton}"
+                                                        Content="X" 
+                                                        Opacity="{Binding UiOpacity}"
+                                                        IsEnabled="{Binding IsModified}"
+                                                        Click="BTN_TaskScheduler_UpdateTask_Click" 
+                                                                    />
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <!--<DataGridTemplateColumn Header="UPDATE" Width="40">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <Button Name="BTN_TaskScheduler_UpdateTask2" 
+                                                        Style="{StaticResource TaskUpdateButton}"
+                                                        Content="X" 
+                                                        IsEnabled="{Binding IsModified,  UpdateSourceTrigger=PropertyChanged, Mode=TwoWay}"
+                                                        Click="BTN_TaskScheduler_UpdateTask_Click" 
+                                                                    />
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>-->
+                                    <DataGridCheckBoxColumn Header="COMPLETED" Width="40" Binding="{Binding Path=Completed, UpdateSourceTrigger=PropertyChanged}" IsReadOnly="False">
+
+                                        <DataGridCheckBoxColumn.CellStyle>
+                                            <Style TargetType="DataGridCell">
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding Completed}" Value="False">
+                                                        <!--<Setter Property="Background" Value="Gray"/>
+                                                        <Setter Property="BorderBrush" Value="Gray"/>
+                                                        <Setter Property="BorderThickness" Value="1"/>
+                                                        <Setter Property="SnapsToDevicePixels" Value="True"/>
+                                                        <Setter Property="Template" >
+                                                            <Setter.Value>
+                                                                
+                                                            </Setter.Value>
+                                                        </Setter>-->
+                                                        <Setter Property="Template">
+                                                            <Setter.Value>
+                                                                <ControlTemplate TargetType="{x:Type DataGridCell}">
+                                                                    <Border Name="Border" BorderThickness="1" BorderBrush="Gray" Background="{StaticResource SelectedBrush}"
+					                                                        SnapsToDevicePixels="True">
+                                                                        <ContentPresenter SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}" TextBlock.FontSize="9" />
+                                                                    </Border>
+                                                                </ControlTemplate>
+                                                            </Setter.Value>
+                                                        </Setter>
+                                                    </DataTrigger>
+
+                                                    <DataTrigger Binding="{Binding Completed}" Value="True">
+                                                        <Setter Property="Background" Value="LightGreen"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </DataGridCheckBoxColumn.CellStyle>
+
+                                    </DataGridCheckBoxColumn>
+                                    <DataGridTextColumn Header="ASSIGNED FROM" Width="100" Binding="{Binding AssignedByName}" IsReadOnly="True">
+                                        <DataGridTextColumn.ElementStyle>
+                                            <Style>
+                                                <Setter Property="TextBlock.TextWrapping" Value="Wrap" />
+                                                <Setter Property="TextBlock.TextAlignment" Value="Center"/>
+                                            </Style>
+                                        </DataGridTextColumn.ElementStyle>
+                                    </DataGridTextColumn>
+                                    <!--<DataGridTextColumn Header="ASSIGNED TO" Width="100" Binding="{Binding AssignedToName}" IsReadOnly="True">
+                                        <DataGridTextColumn.ElementStyle>
+                                            <Style>
+                                                <Setter Property="TextBlock.TextWrapping" Value="Wrap" />
+                                                <Setter Property="TextBlock.TextAlignment" Value="Center"/>
+                                            </Style>
+                                        </DataGridTextColumn.ElementStyle>
+                                    </DataGridTextColumn>-->
+                                    
+                                    
+                                    
+                                    
+                                    
+                                    <DataGridTemplateColumn Header="ASSIGNED TO" Width="130">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <ComboBox
+                                                        ItemsSource="{Binding Source={StaticResource UserTwoTest}}" 
+                                                        SelectedValue="{Binding AssignedToName, UpdateSourceTrigger=PropertyChanged, Mode=TwoWay}" Loaded="ComboBox_Loaded"
+                                                        
+                                                        >
+                                                </ComboBox>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+
+
+                                    <!--<DataGridTemplateColumn Header="ASSIGNED TO" Width="130">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <ComboBox
+                                                        ItemsSource="{Binding Source={StaticResource UserTwoObjects}}" 
+                                                        SelectedValue="{Binding AssignedToUser.DomainUserName, UpdateSourceTrigger=PropertyChanged, Mode=TwoWay}" 
+                                                        DisplayMemberPath="DomainUserName"
+                                                        Text="{Binding AssignedToUser.DomainUserName, Mode=TwoWay}" FontSize="10" 
+                                                        >
+                                                </ComboBox>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>-->
+
+
+
+
+                                    <!--<DataGridTemplateColumn Header="FACILITY TYPE" Width="130">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <ComboBox
+                                                        ItemsSource="{Binding Source={StaticResource PursuitFacilityType}}" 
+                                                        SelectedValue="{Binding FacilityType, UpdateSourceTrigger=PropertyChanged, Mode=TwoWay}"
+                                                        Text="{Binding FacilityType, Mode=TwoWay}"
+                                                        >
+                                                </ComboBox>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>-->
+                                    <DataGridTextColumn Header="TASK" Width="240" Binding="{Binding TaskTypeName}" IsReadOnly="True">
+
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Header="AREA" Width="240" Binding="{Binding Area, UpdateSourceTrigger=PropertyChanged}" >
+                                        <DataGridTextColumn.ElementStyle>
+                                            <Style>
+                                                <Setter Property="TextBlock.TextWrapping" Value="Wrap" />
+                                                <Setter Property="TextBlock.TextAlignment" Value="Center"/>
+                                            </Style>
+                                        </DataGridTextColumn.ElementStyle>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Header="DURATION" Width="60" Binding="{Binding Duration}" IsReadOnly="True">
+
+                                    </DataGridTextColumn>
+                                    <DataGridTemplateColumn Header="START" Width="80" SortMemberPath="StartDate">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding StartDate, UpdateSourceTrigger=PropertyChanged, StringFormat=\{0:dd \MMM \yyyy\}}" />
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                        <DataGridTemplateColumn.CellEditingTemplate>
+                                            <DataTemplate>
+                                                <DatePicker SelectedDate="{Binding StartDate, UpdateSourceTrigger=PropertyChanged}" />
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellEditingTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTemplateColumn Header="FINISH" Width="80" SortMemberPath="EndDate">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding EndDate, UpdateSourceTrigger=PropertyChanged, StringFormat=\{0:dd \MMM \yyyy\}}" />
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                        <DataGridTemplateColumn.CellEditingTemplate>
+                                            <DataTemplate>
+                                                <DatePicker SelectedDate="{Binding EndDate, UpdateSourceTrigger=PropertyChanged}" />
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellEditingTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTextColumn Header="REMAINING" Width="60" Binding="{Binding TimeRemaining}" IsReadOnly="True">
+
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Header="BASELINE START" Width="80" Binding="{Binding BaselineStartDate, StringFormat=\{0:dd \MMM \yyyy\}}" IsReadOnly="True">
+
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Header="BASELINE FINISH" Width="80" Binding="{Binding BaselineEndDate, StringFormat=\{0:dd \MMM \yyyy\}}" IsReadOnly="True">
+
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Header="VARIANCE DURATION" Width="60" Binding="{Binding VarianceDuration}" IsReadOnly="True">
+
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Header="TOTAL QTY" Width="40" Binding="{Binding TotalQuantity, UpdateSourceTrigger=PropertyChanged}" >
+
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Header="COMPL. QTY" Width="40" Binding="{Binding CompletedQuantity, UpdateSourceTrigger=PropertyChanged}" >
+
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Header="COMMENT" Width="200" Binding="{Binding Comment, UpdateSourceTrigger=PropertyChanged}">
+                                        <DataGridTextColumn.ElementStyle>
+                                            <Style>
+                                                <Setter Property="TextBlock.TextWrapping" Value="Wrap" />
+                                                <Setter Property="TextBlock.TextAlignment" Value="Center"/>
+                                            </Style>
+                                        </DataGridTextColumn.ElementStyle>
+                                    </DataGridTextColumn>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </Grid>
+                    </Grid>
+                </TabItem>
+                <TabItem Name="Tab_ProgressBilling" Header="PROGRESS BILLINGS" VerticalAlignment="Top" Width="185" Height="30" Background="#FF494949" Foreground="White">
+                    <Grid>
+                        <TabControl TabStripPlacement="Top" Background="#FF494949" Foreground="White" >
+                            <TabItem Header="COVER SHEET" Foreground="White">
+                                <Grid Name="Grid_ProgressBilling">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="300"/>
+                                        <ColumnDefinition Width="240"/>
+                                        <ColumnDefinition />
+                                    </Grid.ColumnDefinitions>
+                                    <Grid Grid.Column="0">
+                                        <Rectangle Margin="0,5,0,5"  Width="2" HorizontalAlignment="Right" Fill="LightGray" Opacity="0.3" />
+                                        <StackPanel Orientation="Vertical">
+                                            <StackPanel Height="100">
+                                                <Label Name="LBL_ProgressBillings_ProgressBillName" />
+                                            </StackPanel>
+                                            <StackPanel Orientation="Vertical">
+                                                <Label Name="LBL_ProgressBillings_JobNumber" />
+                                                <ComboBox Name="Cbox_ProgressBillings_SelectProgressBilling" Margin="10,0,10,0"
+                                                                 DisplayMemberPath="BillingName" SelectionChanged="Cbox_ProgressBillings_SelectProgressBilling_SelectionChanged"
+                                                />
+                                                <StackPanel Orientation="Vertical">
+                                                    <Button Name="BTN_ProgressBillings_OpenSelectedBillingWindow" Content="VIEW BILLING DETAILS" Margin="30,20,30,20" Width="200" Height="20" Click="BTN_ProgressBillings_OpenSelectedBillingWindow_Click" />
+                                                    <Rectangle Height="2" Width="170" VerticalAlignment="Top" HorizontalAlignment="Center" Fill="LightGray" Opacity="0.3" />
+                                                    <Button Name="BTN_ProgressBillings_CreateRevisionProgressBilling" Content="CREATE REVISION OF SELECTED" Margin="30,20,30,20" Width="200" Height="20" Click="BTN_ProgressBillings_CreateRevisionProgressBilling_Click" />
+                                                    <Rectangle Height="2" Width="170" VerticalAlignment="Top" HorizontalAlignment="Center" Fill="LightGray" Opacity="0.3" />
+                                                    <Button Name="BTN_ProgressBillings_NewProgressBilling" Content="CREATE NEW PROGRESS BILLING" Margin="30,20,30,20" Width="200" Height="20" Click="BTN_ProgressBillings_NewProgressBilling_Click"/>
+                                                </StackPanel>
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Grid>
+                                    <Grid Grid.Column="1">
+                                        <StackPanel Name="StckPan_ProgressBillings" Orientation="Vertical" Width="220" HorizontalAlignment="Center">
+                                            <StackPanel Orientation="Vertical">
+                                                <Label Content="ADDRESS" Margin="0,2,0,0" Width="160" Height="20" HorizontalContentAlignment="Left" Padding="0,2,2,0" Foreground="White" />
+                                                <TextBox Text="{Binding Address}" Margin="0,2,0,0" Height="20"  Width="220" FontSize="10"  HorizontalAlignment="Left" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                                            </StackPanel>
+                                            <StackPanel Orientation="Vertical">
+                                                <Label Content="TELEPHONE" Margin="0,2,0,0" Width="160" Height="20" HorizontalContentAlignment="Left" Padding="0,2,2,0" Foreground="White" />
+                                                <TextBox Text="{Binding TelephoneNumber}" Margin="0,2,0,0" Height="20"  Width="220" FontSize="10"  HorizontalAlignment="Left" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                                            </StackPanel>
+                                            <StackPanel Orientation="Vertical">
+                                                <Label Content="FAX" Margin="0,2,0,0" Width="160" Height="20" HorizontalContentAlignment="Left" Padding="0,2,2,0" Foreground="White" />
+                                                <TextBox Text="{Binding Address}" Margin="0,2,0,0" Height="20"  Width="220" FontSize="10"  HorizontalAlignment="Left" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                                            </StackPanel>
+                                            <StackPanel Orientation="Vertical">
+                                                <Label Content="HST No." Margin="0,2,0,0" Width="160" Height="20" HorizontalContentAlignment="Left" Padding="0,2,2,0" Foreground="White" />
+                                                <TextBox Text="{Binding Address}" Margin="0,2,0,0" Height="20"  Width="220" FontSize="10"  HorizontalAlignment="Left" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                                            </StackPanel>
+                                            <StackPanel Orientation="Vertical">
+                                                <Label Content="CONTACT" Margin="0,2,0,0" Width="160" Height="20" HorizontalContentAlignment="Left" Padding="0,2,2,0" Foreground="White" />
+                                                <TextBox Text="{Binding Manager}" Margin="0,2,0,0" Height="20"  Width="220" FontSize="10"  HorizontalAlignment="Left" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                                            </StackPanel>
+                                            <StackPanel Orientation="Vertical">
+                                                <Label Content="JOB NUMBER" Margin="0,2,0,0" Width="160" Height="20" HorizontalContentAlignment="Left" Padding="0,2,2,0" Foreground="White" />
+                                                <TextBox Text="{Binding JobNumber}" Margin="0,2,0,0" Height="20"  Width="220" FontSize="10"  HorizontalAlignment="Left" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                                            </StackPanel>
+                                            <StackPanel Orientation="Vertical">
+                                                <Label Content="INVOICE DATE" Margin="0,2,0,0" Width="160" Height="20" HorizontalContentAlignment="Left" Padding="0,2,2,0" Foreground="White" />
+                                                <TextBox Text="{Binding InvoiceDate}" Margin="0,2,0,0" Height="20"  Width="220" FontSize="10"  HorizontalAlignment="Left" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                                            </StackPanel>
+                                            <StackPanel Orientation="Vertical">
+                                                <Label Content="INVOICE NUMBER" Margin="0,2,0,0" Width="160" Height="20" HorizontalContentAlignment="Left" Padding="0,2,2,0" Foreground="White" />
+                                                <TextBox Text="{Binding InvoiceNumber}" Margin="0,2,0,0" Height="20"  Width="220" FontSize="10"  HorizontalAlignment="Left" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                                            </StackPanel>
+                                            <StackPanel Orientation="Vertical">
+                                                <Label Content="CONTRACT NUMBER" Margin="0,2,0,0" Width="160" Height="20" HorizontalContentAlignment="Left" Padding="0,2,2,0" Foreground="White" />
+                                                <TextBox Text="{Binding ContractNumber}" Margin="0,2,0,0" Height="20"  Width="220" FontSize="10"  HorizontalAlignment="Left" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                                            </StackPanel>
+                                            <StackPanel Orientation="Vertical">
+                                                <Label Content="JOB NAME" Margin="0,2,0,0" Width="160" Height="20" HorizontalContentAlignment="Left" Padding="0,2,2,0" Foreground="White" />
+                                                <TextBox Text="{Binding JobName}" Margin="0,2,0,0" Height="20"  Width="220" FontSize="10"  HorizontalAlignment="Left" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                                            </StackPanel>
+                                            <StackPanel Orientation="Vertical">
+                                                <Label Content="BILLING NO." Margin="0,2,0,0" Width="160" Height="20" HorizontalContentAlignment="Left" Padding="0,2,2,0" Foreground="White" />
+                                                <TextBox Text="{Binding Iteration}" Margin="0,2,0,0" Height="20"  Width="220" FontSize="10"  HorizontalAlignment="Left" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                                            </StackPanel>
+                                            <StackPanel Orientation="Vertical">
+                                                <Label Content="ORIG. CONTRACT AMOUNT" Margin="0,2,0,0" Width="160" Height="20" HorizontalContentAlignment="Left" Padding="0,2,2,0" Foreground="White" />
+                                                <TextBox Text="{Binding OriginalContractAmount}" Margin="0,2,0,0" Height="20"  Width="220" FontSize="10"  HorizontalAlignment="Left" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                                            </StackPanel>
+                                            <StackPanel Orientation="Vertical">
+                                                <Label Content="APPR. CHANGE ORDERS TO DATE" Margin="0,2,0,0" Width="180" Height="20" HorizontalContentAlignment="Left" Padding="0,2,2,0" Foreground="White" />
+                                                <TextBox Text="{Binding Iteration}" Margin="0,2,0,0" Height="20"  Width="220" FontSize="10"  HorizontalAlignment="Left" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                                            </StackPanel>
+                                            <StackPanel Orientation="Vertical">
+                                                <Label Content="TOTAL REVISED CONTRACT" Margin="0,2,0,0" Width="180" Height="20" HorizontalContentAlignment="Left" Padding="0,2,2,0" Foreground="White" />
+                                                <Label Content="" Margin="0,2,0,0" Height="20"  Width="220" FontSize="10"  HorizontalAlignment="Left" VerticalContentAlignment="Center" />
+                                            </StackPanel>
+                                            <StackPanel Orientation="Vertical">
+                                                <Label Content="EXTRAS TO BE APPROVED" Margin="0,2,0,0" Width="180" Height="20" HorizontalContentAlignment="Left" Padding="0,2,2,0" Foreground="White" />
+                                                <Label Content="" Margin="0,2,0,0" Height="20"  Width="220" FontSize="10"  HorizontalAlignment="Left" VerticalContentAlignment="Center" />
+                                            </StackPanel>
+                                            <StackPanel Orientation="Vertical">
+                                                <Label Content="TOTAL REVISED CONTRACT" Margin="0,2,0,0" Width="180" Height="20" HorizontalContentAlignment="Left" Padding="0,2,2,0" Foreground="White" />
+                                                <Label Content="" Margin="0,2,0,0" Height="20"  Width="220" FontSize="10"  HorizontalAlignment="Left" VerticalContentAlignment="Center" />
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Grid>
+                                    <Grid Grid.Column="2">
+                                        <Grid Name="Grid_ProgressBilling_HeaderSubs">
+                                            <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
+                                                <StackPanel Orientation="Horizontal">
+                                                    <Label Content="" Margin="0,2,0,0" Height="20"  Width="200" FontSize="10"  HorizontalAlignment="Left" VerticalContentAlignment="Center" Foreground="White" />
+                                                    <Label Content="CURRENT BILLING" Margin="0,2,0,0" Height="30"  Width="180" FontSize="10"  HorizontalAlignment="Center" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Foreground="White" />
+                                                    <Label Content="PREVIOUS BILLING" Margin="0,2,0,0" Height="30"  Width="180" FontSize="10"  HorizontalAlignment="Center" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Foreground="White" />
+                                                    <Label Content="TO-DATE BILLINGS" Margin="0,2,0,0" Height="30"  Width="180" FontSize="10"  HorizontalAlignment="Center" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Foreground="White" />
+                                                </StackPanel>
+                                                <StackPanel Orientation="Horizontal">
+                                                    <Label Content="GROSS INVOICE BASE CONTRACT" Margin="0,2,0,0" Height="30"  Width="200" FontSize="11"  HorizontalAlignment="Left" VerticalContentAlignment="Center" Foreground="White" />
+                                                    <TextBox Text="{Binding GrossInvoiceCurrent, StringFormat=N2}" Margin="10,5,10,5" Height="30"  Width="160" FontSize="14"  HorizontalAlignment="Center" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                                                    <TextBox Text="{Binding GrossInvoicePrevious, StringFormat=N2}"  Margin="10,5,10,5" Height="30"  Width="160" FontSize="14"  HorizontalAlignment="Center" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                                                    <TextBox Text="{Binding GrossInvoiceToDate, StringFormat=N2, Mode=OneWay}" Margin="10,5,10,5" Height="30"  Width="160" FontSize="14"  HorizontalAlignment="Center" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                                                </StackPanel>
+                                                <StackPanel Orientation="Horizontal">
+                                                    <Label Content="APPROVED CHANGE ORDERS" Margin="0,2,0,0" Height="30"  Width="200" FontSize="11"  HorizontalAlignment="Left" VerticalContentAlignment="Center" Foreground="White" />
+                                                    <TextBox Text="{Binding ApprovedChangeOrdersCurrent, StringFormat=N2}"  Margin="10,5,10,5" Height="30"  Width="160" FontSize="14"  HorizontalAlignment="Center" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                                                    <TextBox Text="{Binding ApprovedChangeOrdersPrevious, StringFormat=N2}"  Margin="10,5,10,5" Height="30"  Width="160" FontSize="14"  HorizontalAlignment="Center" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                                                    <TextBox Text="{Binding ApprovedChangeOrdersToDate, StringFormat=N2, Mode=OneWay}"  Margin="10,5,10,5" Height="30"  Width="160" FontSize="14"  HorizontalAlignment="Center" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                                                </StackPanel>
+                                                <StackPanel Orientation="Horizontal">
+                                                    <Label Content="SUBTOTAL GROSS INCOME" Margin="0,2,0,0" Height="30"  Width="200" FontSize="11"  HorizontalAlignment="Left" VerticalContentAlignment="Center" Foreground="White" />
+                                                    <TextBox Text="{Binding SubtotalGrossInvoiceCurrent, StringFormat=N2, Mode=OneWay}" Margin="10,5,10,5" Height="30"  Width="160" FontSize="14"  HorizontalAlignment="Center" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                                                    <TextBox Text="{Binding SubtotalGrossInvoicePrevious, StringFormat=N2, Mode=OneWay}"  Margin="10,5,10,5" Height="30"  Width="160" FontSize="14"  HorizontalAlignment="Center" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                                                    <TextBox Text="{Binding SubtotalGrossInvoiceToDate, StringFormat=N2, Mode=OneWay}"  Margin="10,5,10,5" Height="30"  Width="160" FontSize="14"  HorizontalAlignment="Center" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                                                </StackPanel>
+                                                <StackPanel Orientation="Horizontal">
+                                                    <Label Content="INVOICED 10% HOLDBACK" Margin="0,2,0,0" Height="30"  Width="200" FontSize="11"  HorizontalAlignment="Left" VerticalContentAlignment="Center" Foreground="White" />
+                                                    <TextBox Text="{Binding InvoicedHoldbackCurrent, StringFormat=N2}"  Margin="10,5,10,5" Height="30"  Width="160" FontSize="14"  HorizontalAlignment="Center" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                                                    <TextBox Text="{Binding InvoicedHoldbackPrevious, StringFormat=N2}"  Margin="10,5,10,5" Height="30"  Width="160" FontSize="14"  HorizontalAlignment="Center" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                                                    <TextBox Text="{Binding InvoicedHoldbackToDate, StringFormat=N2, Mode=OneWay}" Margin="10,5,10,5" Height="30"  Width="160" FontSize="14"  HorizontalAlignment="Center" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                                                </StackPanel>
+                                                <StackPanel Orientation="Horizontal">
+                                                    <Label Content="HOLDBACK RELEASED" Margin="0,2,0,0" Height="30"  Width="200" FontSize="11"  HorizontalAlignment="Left" VerticalContentAlignment="Center" Foreground="White" />
+                                                    <TextBox Text="{Binding HoldbackReleasedCurrent, StringFormat=N2}"  Margin="10,5,10,5" Height="30"  Width="160" FontSize="14"  HorizontalAlignment="Center" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                                                    <TextBox Text="{Binding HoldbackReleasedPrevious, StringFormat=N2}"  Margin="10,5,10,5" Height="30"  Width="160" FontSize="14"  HorizontalAlignment="Center" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                                                    <TextBox Text="{Binding HoldbackReleasedToDate, StringFormat=N2, Mode=OneWay}"  Margin="10,5,10,5" Height="30"  Width="160" FontSize="14"  HorizontalAlignment="Center" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                                                </StackPanel>
+                                                <StackPanel Orientation="Horizontal">
+                                                    <Label Content="NET INVOICE" Margin="0,2,0,0" Height="30"  Width="200" FontSize="11"  HorizontalAlignment="Left" VerticalContentAlignment="Center" Foreground="White" />
+                                                    <TextBox Text="{Binding NetInvoiceCurrent, StringFormat=N2}"  Margin="10,5,10,5" Height="30"  Width="160" FontSize="14"  HorizontalAlignment="Center" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                                                    <TextBox Text="{Binding NetInvoicePrevious, StringFormat=N2}"  Margin="10,5,10,5" Height="30"  Width="160" FontSize="14"  HorizontalAlignment="Center" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                                                    <TextBox Text="{Binding NetInvoiceToDate, StringFormat=N2}"  Margin="10,5,10,5" Height="30"  Width="160" FontSize="14"  HorizontalAlignment="Center" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                                                </StackPanel>
+                                                <StackPanel Orientation="Horizontal">
+                                                    <Label Content="ADD 13% HST" Margin="0,2,0,0" Height="30"  Width="200" FontSize="11"  HorizontalAlignment="Left" VerticalContentAlignment="Center" Foreground="White" />
+                                                    <TextBox Text="{Binding AddHstCurrent, StringFormat=N2}"  Margin="10,5,10,5" Height="30"  Width="160" FontSize="14"  HorizontalAlignment="Center" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                                                    <TextBox Text="{Binding AddHstPrevious, StringFormat=N2}"  Margin="10,5,10,5" Height="30"  Width="160" FontSize="14"  HorizontalAlignment="Center" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                                                    <TextBox Text="{Binding AddHstToDate, StringFormat=N2}"  Margin="10,5,10,5" Height="30"  Width="160" FontSize="14"  HorizontalAlignment="Center" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                                                </StackPanel>
+                                                <StackPanel Orientation="Horizontal">
+                                                    <Label Content="TOTAL" Margin="0,2,0,0" Height="30"  Width="200" FontSize="11"  HorizontalAlignment="Left" VerticalContentAlignment="Center" Foreground="White" />
+                                                    <TextBox Text="{Binding TotalCurrent, StringFormat=N2}"  Margin="10,5,10,5" Height="30"  Width="160" FontSize="14"  HorizontalAlignment="Center" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                                                    <TextBox Text="{Binding TotalPrevious, StringFormat=N2}"  Margin="10,5,10,5" Height="30"  Width="160" FontSize="14"  HorizontalAlignment="Center" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                                                    <TextBox Text="{Binding TotalToDate, StringFormat=N2}"  Margin="10,5,10,5" Height="30"  Width="160" FontSize="14"  HorizontalAlignment="Center" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                                                </StackPanel>
+                                            </StackPanel>
+                                        </Grid>
+                                    </Grid>
+                                </Grid>
+                            </TabItem>
+
+                        </TabControl>
+                    </Grid>
+                </TabItem>
+                <TabItem Name="Tab_ChangeOrder" Header="CHANGE ORDERS" VerticalAlignment="Top" Width="185" Height="30" Background="#FF494949" Foreground="White">
+                    <Grid>
+                        <TabControl TabStripPlacement="Top" Background="#FF494949" Foreground="White" >
+                            <TabItem Header="INDEX" Foreground="White" >
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="220" />
+                                        <ColumnDefinition />
+                                    </Grid.ColumnDefinitions>
+                                    <Grid Grid.Column="0" >
+                                        <Grid  VerticalAlignment="Top">
+                                            <StackPanel>
+
+
+                                                <StackPanel Orientation="Horizontal">
+                                                    <StackPanel Name="StckPan_ChangeOrders_ChangesSummary" Orientation="Vertical">
+                                                        <Label Content="COORDINATOR" Margin="0,2,0,0" Height="20" HorizontalContentAlignment="Left" Padding="0,2,2,0" Foreground="White" />
+                                                        <TextBox Text="{Binding ProjectManager}" Style="{StaticResource NonEditTextBox}" Margin="0,2,0,0" Height="20" />
+                                                        <Label Content="HARDWARE LEAD" Margin="0,2,0,0" Height="20" HorizontalContentAlignment="Left" Padding="0,2,2,0" Foreground="White" />
+                                                        <TextBox Text="{Binding HardwareLead}" Style="{StaticResource NonEditTextBox}" Margin="0,2,0,0" Height="20" />
+                                                        <Label Content="CONTRACT NO." Margin="0,2,0,0" Height="20" HorizontalContentAlignment="Left" Padding="0,2,2,0" Foreground="White" />
+                                                        <TextBox Text="{Binding ContractNumber}" Style="{StaticResource NonEditTextBox}" Margin="0,2,0,0" Height="20" />
+                                                        <Label Content="CONTACT" Margin="0,2,0,0" Height="20" HorizontalContentAlignment="Left" Padding="0,2,2,0" Foreground="White" />
+                                                        <TextBox Text="{Binding ContactName}" Style="{StaticResource NonEditTextBox}" Margin="0,2,0,0" Height="20" />
+                                                        <Label Content="CONTACT E-MAIL" Margin="0,2,0,0" Height="20" HorizontalContentAlignment="Left" Padding="0,2,2,0" Foreground="White" />
+                                                        <TextBox Text="{Binding ContactEmail}" Style="{StaticResource NonEditTextBox}" Margin="0,2,0,0" Height="20" />
+                                                        <Label Content="ORIG. CONTRACT VALUE" Margin="0,2,0,0" Height="20" HorizontalContentAlignment="Left" Padding="0,2,2,0" Foreground="White" />
+                                                        <TextBox Text="{Binding OriginalContractAmount, StringFormat=N2}" Style="{StaticResource NonEditTextBox}" Margin="0,2,0,0" Height="20" />
+                                                        <Label Content="CHANGES TO DATE" Margin="0,2,0,0" Height="20" HorizontalContentAlignment="Left" Padding="0,2,2,0" Foreground="White" />
+                                                        <TextBox Text="{Binding ChangesToDate, StringFormat=N2}" Style="{StaticResource NonEditTextBox}" Margin="0,2,0,0" Height="20" />
+                                                        <Label Content="REVISED CONTRACT VALUE" Margin="0,2,0,0" Height="20" HorizontalContentAlignment="Left" Padding="0,2,2,0" Foreground="White" />
+                                                        <TextBox Text="{Binding RevisedContractValue, StringFormat=N2}" Style="{StaticResource NonEditTextBox}" Margin="0,2,0,0" Height="20" />
+                                                    </StackPanel>
+                                                    <StackPanel Orientation="Vertical">
+                                                        <!--<TextBox Style="{StaticResource NonEditTextBox}" Margin="0,2,0,0" Height="20" />-->
+                                                        <!--<TextBox Style="{StaticResource NonEditTextBox}" Margin="0,2,0,0" Height="20" />-->
+                                                        <!--<TextBox Style="{StaticResource NonEditTextBox}" Margin="0,2,0,0" Height="20" />-->
+                                                        <!--<TextBox Style="{StaticResource NonEditTextBox}" Margin="0,2,0,0" Height="20" />-->
+                                                        <!--<TextBox Style="{StaticResource NonEditTextBox}" Margin="0,2,0,0" Height="20" />-->
+                                                        <!--<TextBox Style="{StaticResource NonEditTextBox}" Margin="0,2,0,0" Height="20" />-->
+                                                        <!--<TextBox Style="{StaticResource NonEditTextBox}" Margin="0,2,0,0" Height="20" />-->
+                                                        <!--<TextBox Style="{StaticResource NonEditTextBox}" Margin="0,2,0,0" Height="20" />-->
+                                                    </StackPanel>
+                                                </StackPanel>
+                                                <StackPanel Orientation="Vertical" Height="60">
+                                                    <StackPanel Orientation="Vertical">
+                                                        <Button Name="BTN_ChangeOrders_NewQuoteHeader" Content="NEW QUOTE" Margin="10,30,0,0" Height="20" Width="140" HorizontalAlignment="Left" Click="BTN_ChangeOrders_NewQuoteHeader_Click" />
+                                                    </StackPanel>
+                                                </StackPanel>
+                                                
+                                                
+                                                
+
+                                                <StackPanel Orientation="Vertical">
+                                                    
+                                                    <Label Content="QUOTE NUMBER" Margin="5,2,5,2" Foreground="White" />
+                                                    <TextBox Name="TB_ChangeOrders_QuoteNumber" TextChanged="TB_ChangeOrders_QuoteNumber_TextChanged" />
+                                                    <Label Content="CONTACT CHANGE ID" Margin="5,2,5,2" Foreground="White"/>
+                                                    <TextBox Name="TB_ChangeOrders_ContactChangeId" TextChanged="TB_ChangeOrders_ContactChangeId_TextChanged" />
+                                                    <Label Content="TOTAL VALUE" Margin="5,2,5,2" Foreground="White"/>
+                                                    <TextBox Name="TB_ChangeOrders_TotalValue" TextChanged="TB_ChangeOrders_TotalValue_TextChanged" />
+                                                    <Label Content="DESCRIPTION" Margin="5,2,5,2" Foreground="White"/>
+                                                    <TextBox Name="TB_ChangeOrders_Description" TextChanged="TB_ChangeOrders_Description_TextChanged" />
+                                                    <Label Content="MANAGER" Margin="5,2,5,2" Foreground="White"/>
+                                                    <TextBox Name="TB_ChangeOrders_Manager" TextChanged="TB_ChangeOrders_Manager_TextChanged" />
+                                                    <Label Content="DATE CREATED" Margin="5,2,5,2" Foreground="White" Visibility="Hidden" />
+                                                    <DatePicker Name="DP_ChangeOrders_DateCreated" CalendarClosed="DP_ChangeOrders_DateCreated_CalendarClosed" Visibility="Hidden"  />
+                                                    <Label Content="DATE SUBMITTED" Margin="5,2,5,2" Foreground="White" Visibility="Hidden" />
+                                                    <DatePicker Name="DP_ChangeOrders_DateSubmitted" CalendarClosed="DP_ChangeOrders_DateSubmitted_CalendarClosed" Visibility="Hidden"  />
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <CheckBox Name="ChkBox_ChangeOrders_Cancelled" VerticalAlignment="Center" Checked="ChkBox_ChangeOrders_Cancelled_Checked" Unchecked="ChkBox_ChangeOrders_Cancelled_Unchecked" />
+                                                        <Label Content="CANCELLED" Margin="5,2,5,2" Foreground="White"/>
+                                                    </StackPanel>
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <CheckBox Name="ChkBox_ChangeOrders_TentativeApproval" VerticalAlignment="Center" Checked="ChkBox_ChangeOrders_TentativeApproval_Checked" Unchecked="ChkBox_ChangeOrders_TentativeApproval_Unchecked" />
+                                                        <Label Content="TENTATIVE APPROVAL" Margin="5,2,5,2" Foreground="White"/>
+                                                    </StackPanel>
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <CheckBox Name="ChkBox_ChangeOrders_Approved" VerticalAlignment="Center" Checked="ChkBox_ChangeOrders_Approved_Checked" Unchecked="ChkBox_ChangeOrders_Approved_Unchecked"  />
+                                                        <Label Content="APPROVED" Margin="5,2,5,2" Foreground="White"/>
+                                                    </StackPanel>
+                                                    <Label Content="AUTHORIZATION NUMBER" Margin="5,2,5,2" Foreground="White"/>
+                                                    <TextBox Name="TB_ChangeOrders_ApprovalNumber"  TextChanged="TB_ChangeOrders_ApprovalNumber_TextChanged" />
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <CheckBox Name="ChkBox_ChangeOrders_Billed" VerticalAlignment="Center" Checked="ChkBox_ChangeOrders_Billed_Checked" Unchecked="ChkBox_ChangeOrders_Billed_Unchecked"  />
+                                                        <Label Content="APPROVED" Margin="5,2,5,2" Foreground="White"/>
+                                                    </StackPanel>
+                                                    
+                                                </StackPanel>
+                                                
+                                            </StackPanel>
+                                              
+                                        </Grid>
+                                        
+                                    </Grid>
+                                    <Grid Grid.Column="1" >
+                                        <DataGrid Name="DG_ChangeOrders_HeaderIndex" 
+                                          AutoGenerateColumns="False"
+                                          CanUserAddRows="False"
+                                          CanUserDeleteRows="False"
+                                          RowHeaderWidth="0" 
+                                          
+                                          ColumnHeaderHeight="45"
+                                          VirtualizingStackPanel.IsVirtualizing="True" 
+                                          VirtualizingStackPanel.VirtualizationMode="Recycling"
+                                          SelectionMode="Single" MouseDoubleClick="DG_ChangeOrders_HeaderIndex_MouseDoubleClick"
+                                                  >
+                                            <!--<DataGrid.CellStyle>
+                                                <Style TargetType="{x:Type DataGridCell}">
+                                                    <EventSetter Event="LostFocus" Handler="ChangeOrderCellLostFocus"/>
+                                                </Style>
+                                            </DataGrid.CellStyle>-->
+                                            <DataGrid.Columns>
+                                                <DataGridTextColumn Header="QUOTE NUMBER" Width="60" Binding="{Binding QuoteNumber}" IsReadOnly="True">
+
+                                                </DataGridTextColumn>
+                                                <DataGridTextColumn Header="CONTRACTOR CHANGE ID" Width="200" Binding="{Binding ContractorChangeId}" IsReadOnly="True">
+
+                                                </DataGridTextColumn>
+                                                <DataGridTextColumn Header="TOTAL VALUE" Width="100" Binding="{Binding TotalQuoteValue, StringFormat=N2}" IsReadOnly="True">
+
+                                                </DataGridTextColumn>
+                                                <DataGridTextColumn Header="DESCRIPTION" Width="*" FontSize="13" Binding="{Binding HeaderDescription}"  IsReadOnly="True">
+                                                    <DataGridTextColumn.ElementStyle>
+                                                        <Style>
+                                                            <Setter Property="TextBlock.TextWrapping" Value="Wrap" />
+                                                            <Setter Property="TextBlock.TextAlignment" Value="Center"/>
+                                                        </Style>
+                                                    </DataGridTextColumn.ElementStyle>
+                                                </DataGridTextColumn>
+                                                <DataGridTextColumn Header="MANAGER" Width="100" Binding="{Binding Manager}" IsReadOnly="True">
+
+                                                </DataGridTextColumn>
+                                                <DataGridTextColumn Header="DATE CREATED" Width="90" Binding="{Binding DateCreated, StringFormat=\{0:dd \MMM \yyyy\}}" IsReadOnly="True">
+
+                                                </DataGridTextColumn>
+                                                
+                                                <DataGridTemplateColumn Header="DATE SUBMITTED" Width="80" SortMemberPath="DateSubmitted">
+                                                    
+                                                    <DataGridTemplateColumn.CellTemplate>
+                                                        <DataTemplate>
+                                                            <TextBlock Text="{Binding DateSubmitted, UpdateSourceTrigger=PropertyChanged, StringFormat=\{0:dd \MMM \yyyy\}}" />
+                                                        </DataTemplate>
+                                                    </DataGridTemplateColumn.CellTemplate>
+                                                    <DataGridTemplateColumn.CellEditingTemplate>
+                                                        <DataTemplate>
+                                                            <DatePicker SelectedDate="{Binding DateSubmitted, UpdateSourceTrigger=PropertyChanged}" SelectedDateChanged="DatePickerDateChanged" />
+                                                        </DataTemplate>
+                                                    </DataGridTemplateColumn.CellEditingTemplate>
+                                                </DataGridTemplateColumn>
+                                                
+                                                <DataGridTemplateColumn Header="CANCELLED" Width="50" >
+                                                    <DataGridTemplateColumn.CellTemplate>
+                                                        <DataTemplate>
+                                                            <Rectangle Fill="{Binding Cancelled, Converter={StaticResource ChangeOrderIsCancelled}}" Width="16" Height="16" Margin="0,2,5,2" />
+                                                        </DataTemplate>
+                                                    </DataGridTemplateColumn.CellTemplate>
+                                                </DataGridTemplateColumn>
+                                                <DataGridTemplateColumn Header="TENT. APPROVED" Width="50" >
+                                                    <DataGridTemplateColumn.CellTemplate>
+                                                        <DataTemplate>
+                                                            <Rectangle Fill="{Binding TentativeApproval, Converter={StaticResource ChangeOrderIsTentativeApproved}}" Width="16" Height="16" Margin="0,2,5,2" />
+                                                        </DataTemplate>
+                                                    </DataGridTemplateColumn.CellTemplate>
+                                                </DataGridTemplateColumn>
+                                                <DataGridTemplateColumn Header="APPROVED" Width="50" >
+                                                    <DataGridTemplateColumn.CellTemplate>
+                                                        <DataTemplate>
+                                                            <Rectangle Fill="{Binding Approved, Converter={StaticResource ChangeOrderIsApproved}}" Width="16" Height="16" Margin="0,2,5,2" />
+                                                        </DataTemplate>
+                                                    </DataGridTemplateColumn.CellTemplate>
+                                                </DataGridTemplateColumn>
+                                                <DataGridTextColumn Header="APPROVAL NUMBER" Width="120" Binding="{Binding AuthorizationNumber}" IsReadOnly="True">
+
+                                                </DataGridTextColumn>
+                                                <DataGridTemplateColumn Header="BILLED" Width="50" >
+                                                    <DataGridTemplateColumn.CellTemplate>
+                                                        <DataTemplate>
+                                                            <Rectangle Fill="{Binding Billed, Converter={StaticResource ChangeOrderIsBilled}}" Width="16" Height="16" Margin="0,2,5,2" />
+                                                        </DataTemplate>
+                                                    </DataGridTemplateColumn.CellTemplate>
+                                                </DataGridTemplateColumn>
+                                                <DataGridTemplateColumn Header="REV." Width="40">
+                                                    <DataGridTemplateColumn.CellTemplate>
+                                                        <DataTemplate>
+                                                            <Button Name="BTN_ChangeOrders_CreateRevisionQuote" Content="X" Click="BTN_ChangeOrders_CreateRevisionQuote_Click" />
+                                                        </DataTemplate>
+                                                    </DataGridTemplateColumn.CellTemplate>
+                                                </DataGridTemplateColumn>
+                                                <DataGridTemplateColumn Header="CANCEL" Width="40">
+                                                    <DataGridTemplateColumn.CellTemplate>
+                                                        <DataTemplate>
+                                                            <Button Name="BTN_ChangeOrders_CancelQuote" Content="X" Click="BTN_ChangeOrders_CancelQuote_Click" />
+                                                        </DataTemplate>
+                                                    </DataGridTemplateColumn.CellTemplate>
+                                                </DataGridTemplateColumn>
+                                            </DataGrid.Columns>
+                                        </DataGrid>
+                                    </Grid>
+                                </Grid>
+                            </TabItem>
+                            <TabItem Header="BILLED AND COSTS" Foreground="White" >
+                                <Grid x:Name="LayoutRoot">
+                                    <ScrollViewer x:Name="PageScrollViewer" >
+
+                                        <StackPanel x:Name="ContentStackPanel">
+                                            <TextBlock x:Name="HeaderText" Text="Quote Overview"/>
+                                            <DataGrid AutoGenerateColumns="False" ItemsSource="{Binding SellQuoteList}">
+                                                <DataGrid.Columns>
+                                                    <DataGridTextColumn Binding="{Binding QuoteNumber}"  Header="Quote Number"/>
+
+                                                    <DataGridTemplateColumn Width="*">
+                                                        <DataGridTemplateColumn.HeaderStyle>
+                                                            <Style TargetType="DataGridColumnHeader">
+                                                                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                                                <Setter Property="VerticalContentAlignment"  Value="Stretch" />
+                                                                <Setter Property="Margin" Value="0" />
+                                                                <Setter Property="ContentTemplate">
+                                                                    <Setter.Value>
+                                                                        <DataTemplate>
+                                                                            <ItemsControl ItemsSource="{Binding DataContext.CostCodeColumnList, ElementName=LayoutRoot}">
+                                                                                <ItemsControl.ItemsPanel>
+                                                                                    <ItemsPanelTemplate>
+                                                                                        <StackPanel Orientation="Horizontal">
+                                                                                        </StackPanel>
+                                                                                    </ItemsPanelTemplate>
+                                                                                </ItemsControl.ItemsPanel>
+                                                                                <ItemsControl.ItemTemplate>
+                                                                                    <DataTemplate>
+                                                                                        <Border  Width="70" >
+                                                                                            <TextBlock Text="{Binding}" TextAlignment="Center"/>
+                                                                                        </Border>
+                                                                                    </DataTemplate>
+                                                                                </ItemsControl.ItemTemplate>
+                                                                            </ItemsControl>
+                                                                        </DataTemplate>
+                                                                    </Setter.Value>
+                                                                </Setter>
+                                                            </Style>
+                                                        </DataGridTemplateColumn.HeaderStyle>
+                                                        <DataGridTemplateColumn.CellTemplate>
+                                                            <DataTemplate>
+                                                                <ItemsControl  ItemsSource="{Binding SellSums}">
+                                                                    <ItemsControl.ItemsPanel>
+                                                                        <ItemsPanelTemplate>
+                                                                            <StackPanel Orientation="Horizontal"/>
+                                                                        </ItemsPanelTemplate>
+                                                                    </ItemsControl.ItemsPanel>
+                                                                    <ItemsControl.ItemTemplate>
+                                                                        <DataTemplate>
+                                                                            <Border Width="70">
+                                                                                <TextBlock Text="{Binding}" TextAlignment="Center"/>
+                                                                            </Border>
+                                                                        </DataTemplate>
+                                                                    </ItemsControl.ItemTemplate>
+                                                                </ItemsControl>
+                                                            </DataTemplate>
+                                                        </DataGridTemplateColumn.CellTemplate>
+                                                    </DataGridTemplateColumn>
+                                                </DataGrid.Columns>
+                                            </DataGrid>
+                                            <DataGrid AutoGenerateColumns="False" ItemsSource="{Binding CostQuoteList}">
+                                                <DataGrid.Columns>
+                                                    <DataGridTextColumn Binding="{Binding QuoteNumber}"  Header="Quote Number"/>
+
+                                                    <DataGridTemplateColumn Width="*">
+                                                        <DataGridTemplateColumn.HeaderStyle>
+                                                            <Style TargetType="DataGridColumnHeader">
+                                                                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                                                <Setter Property="VerticalContentAlignment"  Value="Stretch" />
+                                                                <Setter Property="Margin" Value="0" />
+                                                                <Setter Property="ContentTemplate">
+                                                                    <Setter.Value>
+                                                                        <DataTemplate>
+                                                                            <ItemsControl ItemsSource="{Binding DataContext.CostCodeColumnList, ElementName=LayoutRoot}">
+                                                                                <ItemsControl.ItemsPanel>
+                                                                                    <ItemsPanelTemplate>
+                                                                                        <StackPanel Orientation="Horizontal">
+                                                                                        </StackPanel>
+                                                                                    </ItemsPanelTemplate>
+                                                                                </ItemsControl.ItemsPanel>
+                                                                                <ItemsControl.ItemTemplate>
+                                                                                    <DataTemplate>
+                                                                                        <Border  Width="70" >
+                                                                                            <TextBlock Text="{Binding}" TextAlignment="Center"/>
+                                                                                        </Border>
+                                                                                    </DataTemplate>
+                                                                                </ItemsControl.ItemTemplate>
+                                                                            </ItemsControl>
+                                                                        </DataTemplate>
+                                                                    </Setter.Value>
+                                                                </Setter>
+                                                            </Style>
+                                                        </DataGridTemplateColumn.HeaderStyle>
+                                                        <DataGridTemplateColumn.CellTemplate>
+                                                            <DataTemplate>
+                                                                <ItemsControl  ItemsSource="{Binding SellSums}">
+                                                                    <ItemsControl.ItemsPanel>
+                                                                        <ItemsPanelTemplate>
+                                                                            <StackPanel Orientation="Horizontal"/>
+                                                                        </ItemsPanelTemplate>
+                                                                    </ItemsControl.ItemsPanel>
+                                                                    <ItemsControl.ItemTemplate>
+                                                                        <DataTemplate>
+                                                                            <Border Width="70">
+                                                                                <TextBlock Text="{Binding}" TextAlignment="Center"/>
+                                                                            </Border>
+                                                                        </DataTemplate>
+                                                                    </ItemsControl.ItemTemplate>
+                                                                </ItemsControl>
+                                                            </DataTemplate>
+                                                        </DataGridTemplateColumn.CellTemplate>
+                                                    </DataGridTemplateColumn>
+                                                </DataGrid.Columns>
+                                            </DataGrid>
+                                        </StackPanel>
+                                        
+                                    </ScrollViewer>
+                                </Grid>
+                            </TabItem>
+                        </TabControl>
+                    </Grid>
+                </TabItem>
+                <TabItem Name="Tab_Submittal"  Header="SUBMITTALS" VerticalAlignment="Top" Width="185" Height="30" Background="#FF494949" Foreground="White">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="200" />
+                            <RowDefinition />
+                        </Grid.RowDefinitions>
+                        <Grid Grid.Row="0" >
+                            <Rectangle Margin="5,5,0,30" Width="205" HorizontalAlignment="Left" Fill="{StaticResource SelectedBrush}" Opacity="0.3" Stroke="White" />
+                            <StackPanel Orientation="Horizontal">
+
+                                <StackPanel Orientation="Vertical">
+                                    <Button Name="BTN_Submittals_UpdateServer" Content="UPDATE SERVER" Margin="20,10,0,0" Height="20" Width="170" HorizontalAlignment="left" Click="BTN_Submittals_UpdateServer_Click" />
+                                    <Rectangle Margin="20,10,0,0" Height="2" Width="170" VerticalAlignment="Top" HorizontalAlignment="Left" Fill="LightGray" Opacity="0.3" />
+                                    <Button Name="BTN_Submittals_AddNewSubmittal" Content="CREATE NEW SUBMITTAL" Margin="20,10,0,0" Height="20" Width="170" HorizontalAlignment="left" Click="BTN_Submittals_AddNewSubmittal_Click" />
+                                    <Rectangle Margin="20,10,0,0" Height="2" Width="170" VerticalAlignment="Top" HorizontalAlignment="Left" Fill="LightGray" Opacity="0.3" />
+                                    <Button Name="BTN_Submittals_ExportToWord" Style="{StaticResource WordExportButton}"  Content="EXPORT SELECTED TO WORD" Margin="20,10,0,0" Height="20" Width="170" HorizontalAlignment="left" Click="BTN_Submittal_ExportToWord_Click" />
+                                    <Rectangle Margin="20,10,0,0" Height="2" Width="170" VerticalAlignment="Top" HorizontalAlignment="Left" Fill="LightGray" Opacity="0.3" />
+                                    <Button Name="BTN_SubmittalShipmentDocument_ExportToWord" Style="{StaticResource WordExportButton}"  Content="CREATE SAMPLE SHIPMENT" Margin="20,10,0,0" Height="20" Width="170" HorizontalAlignment="left" Click="BTN_SubmittalShipmentDocument_ExportToWord_Click"  />
+                                </StackPanel>
+                                <Grid >
+                                    <StackPanel Name="StckPan_SubmittalHeader" Margin="20,0,0,0" Orientation="Horizontal">
+                                        <StackPanel Orientation="Vertical">
+                                            <StackPanel Margin="0,2,0,2" Orientation="Horizontal">
+                                                <Label Content="PROJECT " Width="140" Foreground="White"/>
+                                                <TextBox Text="{Binding JobName}" Width="180" IsReadOnly="True"/>
+                                            </StackPanel>
+                                            <StackPanel Margin="0,2,0,2" Orientation="Horizontal">
+                                                <Label Content="PROJECT ADDRESS" Width="140" Foreground="White"/>
+                                                <TextBox Text="{Binding JobAddress}" Width="180" />
+                                            </StackPanel>
+                                            <StackPanel Margin="0,2,0,2" Orientation="Horizontal">
+                                                <Label Content="JOB NUMBER" Width="140" Foreground="White"/>
+                                                <TextBox Text="{Binding JobNumber}" Width="180" IsReadOnly="True"/>
+                                            </StackPanel>
+                                            <StackPanel Margin="0,2,0,2" Orientation="Horizontal" Visibility="Hidden">
+                                                <Label Content="DATE" Width="140" Foreground="White"/>
+                                                <TextBox Text="{Binding DateCreated}" Width="180" />
+                                            </StackPanel>
+                                            <StackPanel Margin="0,2,0,2" Orientation="Horizontal">
+                                                <Label Content="CONTRACTOR" Width="140" Foreground="White"/>
+                                                <TextBox Text="{Binding ContractorName}" Width="180" IsReadOnly="True"/>
+                                            </StackPanel>
+                                            <StackPanel Margin="0,2,0,2" Orientation="Horizontal">
+                                                <Label Content="CONTRACTOR ADDRESS" Width="140" Foreground="White"/>
+                                                <TextBox Text="{Binding ContractorAddress}" Width="180" IsReadOnly="True"/>
+                                            </StackPanel>
+                                        </StackPanel>
+                                        <StackPanel Margin="10,0,0,0" Orientation="Vertical">
+                                            <StackPanel Margin="0,2,0,2" Orientation="Horizontal">
+                                                <Label Content="CONTACT" Width="140" Foreground="White"/>
+                                                <TextBox Text="{Binding ContactName}" Width="180" />
+                                            </StackPanel>
+                                            <StackPanel Margin="0,2,0,2" Orientation="Horizontal">
+                                                <Label Content="TITLE" Width="140" Foreground="White"/>
+                                                <TextBox Text="{Binding ContactTitle}" Width="180" />
+                                            </StackPanel>
+                                            <StackPanel Margin="0,2,0,2" Orientation="Horizontal">
+                                                <Label Content="CONTACT NUMBER" Width="140" Foreground="White"/>
+                                                <TextBox Text="{Binding ContactPhoneNumber}" Width="180" />
+                                            </StackPanel>
+                                            <StackPanel Margin="0,2,0,2" Orientation="Horizontal" Visibility="Hidden">
+                                                <Label Content="DATE" Width="140" Foreground="White"/>
+                                                <TextBox Text="{Binding DateCreated}" Width="180" />
+                                            </StackPanel>
+                                            <StackPanel Margin="0,2,0,2" Orientation="Horizontal">
+                                                <Label Content="UCSH CONTACT" Width="140" Foreground="White"/>
+                                                <TextBox Text="{Binding UcshContactName}" Width="180" />
+                                            </StackPanel>
+                                            <StackPanel Margin="0,2,0,2" Orientation="Horizontal">
+                                                <Label Content="UCSH CONTACT TITLE" Width="140" Foreground="White"/>
+                                                <TextBox Text="{Binding UcshContactTitle}" Width="180" />
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Grid>
+                            </StackPanel>
+                        </Grid>
+                        <Grid Grid.Row="1" >
+                            <DataGrid Name="DG_Submittal_SubmittalList" 
+                                      AutoGenerateColumns="False"
+                                      
+                                      CanUserAddRows="False"
+                                      CanUserDeleteRows="False"
+                                      RowHeaderWidth="0"
+                                      ColumnHeaderHeight="45"
+                                      VirtualizingStackPanel.IsVirtualizing="True" 
+                                      VirtualizingStackPanel.VirtualizationMode="Recycling"
+                                      SelectionMode="Single"
+                                      >
+                                <DataGrid.Columns>
+                                    <DataGridCheckBoxColumn Header="EXPORT" Width="40" Binding="{Binding SelForExport}" >
+
+                                    </DataGridCheckBoxColumn>
+                                    <DataGridTemplateColumn Header="MOD" Width="30" >
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <Rectangle Fill="{Binding IsModified, Converter={StaticResource StatusToColorPm}}" Width="16" Height="16" Margin="0,2,5,2" />
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    
+                                    
+                                    <DataGridTextColumn Header="ITEM NO." Width="45" Binding="{Binding Id}" IsReadOnly="True">
+
+                                    </DataGridTextColumn>
+                                    <!--<DataGridTemplateColumn Header="EXPORT TO WORD" Width="60">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <Button Content="X" Name="BTN_Submittal_ExportToWord" Click="BTN_Submittal_ExportToWord_Click"
+                                                                    />
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>-->
+                                    <DataGridTextColumn Header="BLOCK NO." Width="100" Binding="{Binding BlockNumber}" >
+
+                                    </DataGridTextColumn>
+                                    <DataGridTemplateColumn Header="ITEM TYPE" Width="55" >
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <ComboBox Style="{StaticResource ColoredComboBox}" 
+                                                        ItemsSource="{Binding Source={StaticResource PmItemType}}" 
+                                                        SelectedValue="{Binding ItemType, UpdateSourceTrigger=PropertyChanged, Mode=TwoWay}"
+                                                        Text="{Binding ItemType, Mode=TwoWay}" FontSize="8" />
+
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTextColumn Header="REFERENCE" Width="300" Binding="{Binding Reference}" >
+
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Header="DATE CREATED" Width="80" Binding="{Binding DateCreated, Mode=TwoWay, StringFormat=\{0:dd \MMM \yyyy\}}" IsReadOnly="True">
+
+                                    </DataGridTextColumn>
+
+                                    <DataGridTemplateColumn Header="DATE SUBMITTED" Width="80" SortMemberPath="DateSubmitted">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding DateSubmitted, UpdateSourceTrigger=PropertyChanged, StringFormat=\{0:dd \MMM \yyyy\}}" />
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                        <DataGridTemplateColumn.CellEditingTemplate>
+                                            <DataTemplate>
+                                                <DatePicker SelectedDate="{Binding DateSubmitted, UpdateSourceTrigger=PropertyChanged}" />
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellEditingTemplate>
+                                    </DataGridTemplateColumn>
+
+                                    <DataGridTemplateColumn Header="DATE RETURNED FROM CONTRACTOR" Width="80" SortMemberPath="DateReturnedFromContractor">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding DateReturnedFromContractor, UpdateSourceTrigger=PropertyChanged, StringFormat=\{0:dd \MMM \yyyy\}}" />
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                        <DataGridTemplateColumn.CellEditingTemplate>
+                                            <DataTemplate>
+                                                <DatePicker SelectedDate="{Binding DateReturnedFromContractor, UpdateSourceTrigger=PropertyChanged}" />
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellEditingTemplate>
+                                    </DataGridTemplateColumn>
+
+                                    <!--<DataGridTextColumn Header="DATE RETURNED FROM CONTRACTOR" Width="80" Binding="{Binding DateReturnedFromContractor, UpdateSourceTrigger=PropertyChanged, Mode=TwoWay, StringFormat=\{0:dd \MMM \yyyy\}}" >
+
+                                    </DataGridTextColumn>-->
+                                    <DataGridTextColumn Header="QTY/PAGE" Width="40" Binding="{Binding QuantityPerPage}" >
+
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Header="SPEC. SECTION" Width="100" Binding="{Binding SpecSection}" >
+
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Header="COPIES" Width="40" Binding="{Binding Copies}" >
+
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Header="STATUS" Width="100" Binding="{Binding Status}" >
+
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Header="REMARKS" Width="*" Binding="{Binding Remarks}" >
+
+                                    </DataGridTextColumn>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </Grid>
+                    </Grid>
+                </TabItem>
+                <TabItem Name="Tab_RequestForInfo"  Header="RFIs" VerticalAlignment="Top" Width="185" Height="30" Background="#FF494949" Foreground="White">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="200" />
+                            <RowDefinition />
+                        </Grid.RowDefinitions>
+                        <Grid Grid.Row="0" >
+                            <Rectangle Margin="5,5,0,30" Width="205" HorizontalAlignment="Left" Fill="{StaticResource SelectedBrush}" Opacity="0.3" Stroke="White" />
+                            <StackPanel Orientation="Vertical">
+                                <Button Name="BTN_Rfis_UpdateServer" Content="UPDATE SERVER" Margin="20,10,0,0" Height="20" Width="170" HorizontalAlignment="left" Click="BTN_Rfis_UpdateServer_Click" />
+                                <Rectangle Margin="20,10,0,0" Height="2" Width="170" VerticalAlignment="Top" HorizontalAlignment="Left" Fill="LightGray" Opacity="0.3" />
+                                <Button Name="BTN_Rfis_AddNewRfi" Content="CREATE NEW SUBMITTAL" Margin="20,10,0,0" Height="20" Width="170" HorizontalAlignment="left" Click="BTN_Rfis_AddNewRfi_Click" />
+                            </StackPanel>
+                        </Grid>
+                        <Grid Grid.Row="1" >
+                            <DataGrid Name="DG_RequestForInfo_RfiList" 
+                                      AutoGenerateColumns="False"
+                                      CanUserAddRows="False"
+                                      CanUserDeleteRows="False"
+                                      RowHeaderWidth="0"
+                                      ColumnHeaderHeight="45"
+                                      VirtualizingStackPanel.IsVirtualizing="True" 
+                                      VirtualizingStackPanel.VirtualizationMode="Recycling"
+                                      SelectionMode="Single"
+                                      >
+                                <DataGrid.Columns>
+                                    <DataGridTemplateColumn Header="MOD" Width="25" >
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <Rectangle Fill="{Binding IsModified, Converter={StaticResource StatusToColorPm}}" Width="16" Height="16" Margin="0,2,5,2" />
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTextColumn Header="ITEM NO." Width="40" Binding="{Binding Id}" >
+
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Header="RFI / DRR NO." Width="140" Binding="{Binding RfiDriNumber}" >
+
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Header="CONTRACTOR NO." Width="140" Binding="{Binding ContractorNumber}" >
+
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Header="ZONE" Width="140" Binding="{Binding Zone}" >
+
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Header="REFERENCE" Width="300" Binding="{Binding Reference}" >
+
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Header="DATE SUBMITTED" Width="80" Binding="{Binding DateCreated, Mode=TwoWay, StringFormat=\{0:dd \MMM \yyyy\}}" IsReadOnly="True">
+
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Header="DATE RETURNED FROM CONTRACTOR" Width="80" Binding="{Binding DateReturnFromContractor, Mode=TwoWay, StringFormat=\{0:dd \MMM \yyyy\}}" >
+
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Header="STATUS" Width="100" Binding="{Binding Status}" >
+
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Header="REMARKS" Width="*" Binding="{Binding Remarks}" >
+
+                                    </DataGridTextColumn>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </Grid>
+                    </Grid>
+                </TabItem>
+                <TabItem Name="Tab_PurchaseOrders" Header="PURCHASE ORDERS" VerticalAlignment="Top" Width="185" Height="30" Background="#FF494949" Foreground="White" Visibility="Collapsed">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="30" />
+                            <RowDefinition Height="60" /> 
+                            <RowDefinition />
+                        </Grid.RowDefinitions>
+                        <Grid Grid.Row="0">
+                            <Button Grid.Row="0" Name="BTN_PO_PurchaseOrders_ExportToExcel" Content="EXPORT TO EXCEL" Margin="0,10,20,0" Width="100" Height="20" VerticalAlignment="top" HorizontalAlignment="Right" FontSize="8" Click="BTN_PO_PurchaseOrders_ExportToExcel_Click" />
+                            <StackPanel Orientation="Horizontal">
+                                <Button Name="BTN_PO_PurchaseOrders_GetAllPoLines" Content="RETRIEVE POs" Margin="10,0,0,0" Width="100" Height="20" Click="BTN_PO_PurchaseOrders_GetAllPoLines_Click" />
+                            </StackPanel>
+                        </Grid>
+                        <StackPanel Grid.Row="1" Orientation="Vertical">
+                            <StackPanel  Orientation="Horizontal" >
+                                <StackPanel  Orientation="Horizontal"  VerticalAlignment="Center">
+                                    <Label Content="PURCHASE ORDER FILTER" Margin="10,0,0,0" Foreground="White" FontSize="8" />
+                                    <TextBox Name="TB_PO_PurchaseOrders_PoNumberFilter" Width="80" FontSize="9" VerticalContentAlignment="Center" TextChanged="TB_PO_PurchaseOrders_PoNumberFilter_TextChanged" />
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                    <Label Content="AND" Height="30" FontSize="9" Foreground="Wheat"  VerticalAlignment="Center" VerticalContentAlignment="Center" />
+                                    <CheckBox Name="ChkBox_PO_PurchaseOrders_AndOr" Style="{DynamicResource CheckBoxSlider}" Height="30" Checked="ChkBox_PO_PurchaseOrders_AndOr_Checked" Unchecked="ChkBox_PO_PurchaseOrders_AndOr_Unchecked"  />
+                                    <Label Content="OR" Height="30" FontSize="9" Foreground="Wheat" VerticalAlignment="Center" VerticalContentAlignment="Center"  />
+                                    <!--<CheckBox Name="ChkBox_And" Margin="7,-4,0,0" Checked="ChkBox_And_Checked" />-->
+                                </StackPanel>
+                                <StackPanel  Orientation="Horizontal"  VerticalAlignment="Center">
+                                    <Label Content="JOB NUMBER FILTER" Margin="0,0,0,0" Foreground="White" FontSize="8" />
+                                    <TextBox Name="TB_PO_PurchaseOrders_JobNumberFilter" Width="60" FontSize="9" VerticalContentAlignment="Center" TextChanged="TB_PO_PurchaseOrders_JobNumberFilter_TextChanged"   />
+                                    <Label Content="JOB NAME FILTER" Margin="20,0,0,0" Foreground="White" FontSize="8" />
+                                    <TextBox Name="TB_PO_PurchaseOrders_JobNameFilter" Width="220" FontSize="9" VerticalContentAlignment="Center" TextChanged="TB_PO_PurchaseOrders_JobNameFilter_TextChanged"   />
+                                    <Label Content="SOP NUMBER FILTER" Margin="20,0,0,0" Foreground="White" FontSize="8" />
+                                    <TextBox Name="TB_PO_PurchaseOrders_SopNumberFilter" Width="220" FontSize="9" VerticalContentAlignment="Center" TextChanged="TB_PO_PurchaseOrders_SopNumberFilter_TextChanged" />
+                                </StackPanel>
+                            </StackPanel>
+
+                            <StackPanel Orientation="Horizontal">
+                                <Label Content="ITEM DESCRIPTION" Margin="20,0,0,0" Foreground="White" FontSize="8" />
+                                <TextBox Name="TB_PO_PurchaseOrders_ItemDescriptionFilter" Width="160" FontSize="9" VerticalAlignment="Center" TextChanged="TB_PO_PurchaseOrders_ItemDescriptionFilter_TextChanged"  />
+                                <Label Content="CHANGE ORDER" Margin="20,0,0,0" Foreground="White" FontSize="8" />
+                                <TextBox Name="TB_PO_PurchaseOrders_ChangeOrderFilter" Width="160" FontSize="9" VerticalAlignment="Center" TextChanged="TB_PO_PurchaseOrders_ChangeOrderFilter_TextChanged" />
+                                <Label Content="BUYER ID" Margin="20,0,0,0" Foreground="White" FontSize="8" />
+                                <TextBox Name="TB_PO_PurchaseOrders_BuyerIdFilter" Width="100" FontSize="9" VerticalAlignment="Center" TextChanged="TB_PO_PurchaseOrders_BuyerIdFilter_TextChanged"  />
+                                <Label Content="VENDOR NAME" Margin="20,0,0,0" Foreground="White" FontSize="8" />
+                                <TextBox Name="TB_PO_PurchaseOrders_VendorNameFilter" Width="100" FontSize="9" VerticalAlignment="Center" TextChanged="TB_PO_PurchaseOrders_VendorNameFilter_TextChanged"  />
+                                <Button Name="BTN_HW_PurchaseOrders_ClearFilters" Margin="40,0,0,0" Content="CLEAR FILTERS" Width="80"  FontSize="8" Click="BTN_PO_PurchaseOrders_ClearFilters_Click"  />
+                            </StackPanel>
+                        </StackPanel>
+                        <DataGrid Grid.Row="2"  
+                                  Name="PurchaseOrders_DG_HardwarePos" 
+                                                  FrozenColumnCount="1"                                  
+                                                  AutoGenerateColumns="False"
+                                                  CanUserAddRows="False"
+                                                  CanUserDeleteRows="False"
+                                                  RowHeaderWidth="0"
+                                                  ColumnHeaderHeight="45"
+                                                  VirtualizingStackPanel.IsVirtualizing="True" 
+                                                  VirtualizingStackPanel.VirtualizationMode="Recycling"
+                                                  SelectionMode="Single" 
+                                  >
+                            <DataGrid.Resources>
+                                <Style TargetType="{x:Type DataGridCell}" >
+                                    <Setter Property="Foreground" Value="White" />
+                                    <Setter Property="Template">
+                                        <Setter.Value>
+                                            <ControlTemplate TargetType="{x:Type DataGridCell}">
+                                                <Border Name="Border" BorderThickness="1" BorderBrush="Gray" Background="{StaticResource SelectedBrush}"
+					                                            SnapsToDevicePixels="True">
+                                                    <ContentPresenter SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}" />
+                                                </Border>
+                                            </ControlTemplate>
+                                        </Setter.Value>
+                                    </Setter>
+                                    <EventSetter Event="PreviewMouseLeftButtonDown" Handler="PurchaseOrders_DG_HardwarePos_PreviewMouseLeftButtonDown"></EventSetter>
+                                </Style>
+                            </DataGrid.Resources>
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="PO NUMBER" Width="100" Binding="{Binding PoNumber}" IsReadOnly="True">
+
+                                </DataGridTextColumn>
+                                <DataGridTemplateColumn Header="PROJECT FOLDER" Width="60">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <Button Content="X"
+
+                                                    />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                                <DataGridTextColumn Header="SOP NUMBER" Width="100" Binding="{Binding SopNumber}" IsReadOnly="True">
+
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Header="JOB NUMBER" Width="60" Binding="{Binding JobNumber}" IsReadOnly="True">
+
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Header="JOB NAME" Width="210" Binding="{Binding JobName}" FontSize="9" IsReadOnly="True">
+
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Header="CUSTOMER NAME" Width="180" Binding="{Binding CustomerName}" FontSize="9" IsReadOnly="True">
+
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Header="BUYER ID" Width="100" Binding="{Binding BuyerId}" IsReadOnly="True">
+
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Header="CHANGE ORDER NUM." Width="100" Binding="{Binding ChangeId}" IsReadOnly="True">
+
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Header="VENDOR ID" Width="120" Binding="{Binding VendorId}"  IsReadOnly="True">
+
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Header="VENDOR NAME" Width="180" Binding="{Binding VendorName}" FontSize="9" IsReadOnly="True">
+
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Header="ITEM NUMBER" Width="120" Binding="{Binding ItemNumber}" IsReadOnly="True">
+
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Header="ITEM DESCRIPTION" Width="300" Binding="{Binding ItemDescription}" FontSize="9" IsReadOnly="True">
+
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Header="ITEM STATUS" Width="100" Binding="{Binding Polnesta, Converter={StaticResource PopLinePolnestaStatusConverter}}" IsReadOnly="True">
+
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Header="QTY ORDERED" Width="60" Binding="{Binding QuantityOrdered}" IsReadOnly="True">
+
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Header="QTY RECEIVED" Width="60" Binding="{Binding QuantityReceived}" IsReadOnly="True">
+
+                                </DataGridTextColumn>
+                                <!--<DataGridTextColumn Header="QTY MATCHED" Width="50" Binding="{Binding QuantityMatched}" IsReadOnly="True">
+
+                                            </DataGridTextColumn>-->
+                                <DataGridTextColumn Header="BACKORDER" Width="60" Binding="{Binding BackOrder}" IsReadOnly="True">
+
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Header="QTY SHIPPED" Width="60" Binding="{Binding QuantityShipped}" IsReadOnly="True">
+
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Header="FIRST REC. DATE" Width="90" Binding="{Binding FirstReceiveDate, StringFormat=\{0:dd \MMM \yyyy\}}" IsReadOnly="True">
+
+                                </DataGridTextColumn>
+                                <!--<DataGridTextColumn Header="LAST REC. DATE" Width="100" Binding="{Binding LastReceiveDate, StringFormat=\{0:dd \MMM \yyyy\}}" IsReadOnly="True">
+
+                                            </DataGridTextColumn>-->
+                                <DataGridTextColumn Header="LOCATION" Width="100" Binding="{Binding LocationCode}" IsReadOnly="True">
+
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Header="COST CODE" Width="100" Binding="{Binding CostCode}" IsReadOnly="True">
+
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Header="REQUIRED DATE" Width="90" Binding="{Binding RequiredDate, StringFormat=\{0:dd \MMM \yyyy\}}" IsReadOnly="True">
+
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Header="PROM. SHIP DATE" Width="90" Binding="{Binding PromisedShipDate, StringFormat=\{0:dd \MMM \yyyy\}}" IsReadOnly="True">
+
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Header="GP HEADER COMMENTS" Width="400" Binding="{Binding HeaderCommentText}" IsReadOnly="True">
+
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Header="GP LINE COMMENTS" Width="400" Binding="{Binding LineCommentText}" IsReadOnly="True">
+
+                                </DataGridTextColumn>
+
+                                <DataGridTextColumn Header="UCSH HEADER COMMENTS" Width="400" Binding="{Binding UcHeaderComment}" IsReadOnly="True">
+
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Header="UCSH LINE COMMENTS" Width="400" Binding="{Binding UcLineComment}" IsReadOnly="True">
+
+                                </DataGridTextColumn>
+
+                                <!--<DataGridTextColumn Header="UCSH HEADER COMMENTS" Width="80" Binding="{Binding Path=UcHeaderHasComments}" IsReadOnly="False" FontSize="9">
+                                    <DataGridTextColumn.ElementStyle>
+                                        <Style TargetType="{x:Type TextBlock}">
+                                            <Style.Triggers>
+                                                <Trigger Property="Text" Value="True">
+                                                    <Setter Property="Background" Value="Gold"/>
+                                                    <Setter Property="Foreground" Value="Gold"/>
+                                                </Trigger>
+                                                <Trigger Property="Text" Value="False">
+                                                    <Setter Property="Background" Value="#FF575555"/>
+                                                    <Setter Property="Foreground" Value="#FF575555"/>
+                                                </Trigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </DataGridTextColumn.ElementStyle>
+                                </DataGridTextColumn>
+
+                                <DataGridTextColumn Header="UCSH LINE COMMENTS" Width="80" Binding="{Binding Path=UcLineHasComments}" IsReadOnly="False"  FontSize="9">
+                                    <DataGridTextColumn.ElementStyle>
+                                        <Style TargetType="{x:Type TextBlock}">
+                                            <Style.Triggers>
+                                                <Trigger Property="Text" Value="True">
+                                                    <Setter Property="Background" Value="Gold"/>
+                                                    <Setter Property="Foreground" Value="Gold"/>
+                                                </Trigger>
+                                                <Trigger Property="Text" Value="False">
+                                                    <Setter Property="Background" Value="#FF575555"/>
+                                                    <Setter Property="Foreground" Value="#FF575555"/>
+                                                </Trigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </DataGridTextColumn.ElementStyle>
+                                </DataGridTextColumn>-->
+
+                                <!--<DataGridTemplateColumn Header="DELETE" Width="60">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <Button Content="{Binding HeaderCommentText}" Background="Red"/>
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>-->
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </Grid>
+                </TabItem>
+                <TabItem Name="Tab_Hardware" Header="HARDWARE" VerticalAlignment="Top" Width="185" Height="30" Background="#FF494949" Foreground="White" Visibility="Collapsed">
+                    <Grid>
+                        <TabControl TabStripPlacement="Top" Background="#FF494949" Foreground="White">
+                            <TabItem Header="HARDWARE SCHEDULE" Foreground="White" >
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="20" />
+                                        <RowDefinition />
+                                    </Grid.RowDefinitions>
+                                    <DataGrid Grid.Row="1" Name="Hardware_DG_HardwareSchedule" 
+                                                                                    
+                                                  AutoGenerateColumns="False"
+                                                  CanUserAddRows="False"
+                                                  CanUserDeleteRows="False"
+                                                  RowHeaderWidth="0"
+                                                  ColumnHeaderHeight="45"
+                                                  VirtualizingStackPanel.IsVirtualizing="True" 
+                                                  VirtualizingStackPanel.VirtualizationMode="Recycling"
+                                                  SelectionMode="Single" >
+                                        <DataGrid.Columns>
+                                            <DataGridTextColumn Header="JOB NUMBER" Width="100" Binding="{Binding JobNumber}" IsReadOnly="True">
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="OPENING NUMBER" Width="100" Binding="{Binding OpeningNumber}" IsReadOnly="True">
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="PREP LIST" Width="100" Binding="{Binding PrepList}" IsReadOnly="True">
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="DESCRIPTION" Width="400" Binding="{Binding ProductHash}" IsReadOnly="True">
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="PRODUCT LINE" Width="100" Binding="{Binding ProductLine}" IsReadOnly="True">
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="COST" Width="100" Binding="{Binding OpeningCost}" IsReadOnly="True">
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="PRICE" Width="100" Binding="{Binding OpeningList}" IsReadOnly="True">
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="QUANTITY" Width="100" Binding="{Binding Quantity}" IsReadOnly="True">
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Width="*"  IsReadOnly="True">
+
+                                            </DataGridTextColumn>
+                                        </DataGrid.Columns>
+                                    </DataGrid>
+                                </Grid>
+                            </TabItem>
+                        </TabControl>
+                    </Grid>
+                </TabItem>
+                <TabItem Name="Tab_HollowMetal" Header="HOLLOW METAL" VerticalAlignment="Top" Width="185" Height="30" Background="#FF494949" Foreground="White" Visibility="Collapsed">
+                    <Grid>
+                        <TabControl TabStripPlacement="Top" Background="#FF494949" Foreground="White">
+                            <TabItem Name="Tab_HollowMetal_ShopDrawings" Header="SHOP DRAWINGS" Foreground="White" >
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="50"/>
+                                        <RowDefinition />
+                                    </Grid.RowDefinitions>
+                                    <DataGrid Grid.Row="1" Name="HollowMetal_DG_ShopDrawings" 
+                                      
+                                                  AutoGenerateColumns="False"
+                                                  CanUserAddRows="False"
+                                                  CanUserDeleteRows="False"
+                                                  RowHeaderWidth="0"
+                                                  ColumnHeaderHeight="45"
+                                                  VirtualizingStackPanel.IsVirtualizing="True" 
+                                                  VirtualizingStackPanel.VirtualizationMode="Recycling"
+                                                  SelectionMode="Single"
+                                                  >
+                                        <DataGrid.Columns >
+                                            <DataGridTextColumn Header="JOB NUMBER" Width="80" Binding="{Binding JobNumber}"  IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="AREA" Width="100" Binding="{Binding Area}" FontSize="8"  IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="OPENING NUMBER" Width="100" Binding="{Binding OpeningNumber}"   IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="OPEN FROM" Width="100" Binding="{Binding OpenFrom}" FontSize="8" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="SWING TO" Width="100" Binding="{Binding SwingTo}" FontSize="8" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="PARTITION TYPE" Width="100" Binding="{Binding PartitionType}" FontSize="8" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="CONSTRUCTION" Width="100" Binding="{Binding Construction}" FontSize="8" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="FRAME QUANTITY" Width="100" Binding="{Binding FrameQuantity}" FontSize="8" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="FRAME REORDER" Width="100" Binding="{Binding FrameReorder}" FontSize="8" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="DOOR QUANTITY" Width="100" Binding="{Binding DoorQuantity}" FontSize="8" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="DOOR REORDER" Width="100" Binding="{Binding DoorReorder}" FontSize="8" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="FRAME SHIP" Width="100" Binding="{Binding FrameShip}" FontSize="8" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="FRAME PO" Width="100" Binding="{Binding FramePo}" FontSize="8" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="FRAME PO DATE" Width="100" Binding="{Binding FramePoDate}" FontSize="8" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="FRAME COURIER" Width="100" Binding="{Binding FrameCourier}" FontSize="8" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="DOOR SHIP" Width="100" Binding="{Binding DoorShip}" FontSize="8" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="DOOR PO" Width="100" Binding="{Binding DoorPo}" FontSize="8" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="DOOR PO DATE" Width="100" Binding="{Binding DoorPoDate}" FontSize="8" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="DOOR COURIER" Width="100" Binding="{Binding DoorCourier}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="REWORKS" Width="100" Binding="{Binding Reworks}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="SHIP REMARKS" Width="100" Binding="{Binding ShipRemarks}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="FRAME SERIES" Width="100" Binding="{Binding FrameSeries}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="FRAME JAMB DEPTH" Width="100" Binding="{Binding FrameJambDepth}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="FRAME ELEVATION NUMBER" Width="100" Binding="{Binding FrameElevNum}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="FRAME ARCH NUMBER" Width="100" Binding="{Binding FrameArchElevNum}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="FRAME ELEVATION SHEET NUMBER" Width="100" Binding="{Binding FrameElevSheetNum}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="FRAME SECTION NUMBER" Width="100" Binding="{Binding FrameSectNum}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="FRAME SECTION SHEET NUMBER" Width="100" Binding="{Binding FrameSectSheetNum}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="FRAME WIDTH" Width="100" Binding="{Binding FrameWidth}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="FRAME HEIGHT" Width="100" Binding="{Binding FrameHeight}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="FRAME SWING" Width="100" Binding="{Binding FrameSwing}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="FRAME ANCHOR" Width="100" Binding="{Binding FrameAnchor}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="FRAME FIRE RATING" Width="100" Binding="{Binding FrameFireRating}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="HARDWARE HEADING" Width="100" Binding="{Binding HardwareHeading}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="HARDWARE HINGES" Width="100" Binding="{Binding HardwareHinges}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="HARDWARE LOCK NUMBER" Width="100" Binding="{Binding HardwareLockNum}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="HARDWARE STRIKE TYPE" Width="100" Binding="{Binding HardwareStrikeType}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="HARDWARE NON STD STRIKE" Width="100" Binding="{Binding HardwareNonStdStrike}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="HARDWARE CLOSER" Width="100" Binding="{Binding HardwareCloser}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="HARDWARE CLOSER TOP" Width="100" Binding="{Binding HardwareCloserTop}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="HARDWARE CLOSER BOT" Width="100" Binding="{Binding HardwareCloserBot}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="HARDWARE DOOR POSITION SWITCH" Width="100" Binding="{Binding HardwareDoorPosSwitch}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="HARDWARE CONCEALED OVERHEAD STOP" Width="100" Binding="{Binding HardwareConcOverStop}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="HARDWARE FRAME DOOR EDGE" Width="100" Binding="{Binding HardwareFrDrEdge}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="HARDWARE CONCEALED DOOR BOTTOM" Width="100" Binding="{Binding HardwareConcDoorBot}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="FRAME ELEVATION SHEET NUMBER" Width="100" Binding="{Binding FrameElevSheetNum}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="HARDWARE POWER TRANSFER" Width="100" Binding="{Binding HardwarePowerTrans}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="HARDWARE MISC" Width="100" Binding="{Binding HardwareMisc}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="DOOR SERIES" Width="100" Binding="{Binding DoorSeries}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="DOOR FINISH" Width="100" Binding="{Binding DoorFinish}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="DOOR SWING" Width="100" Binding="{Binding DoorSwing}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="DOOR PANEL TYPE" Width="100" Binding="{Binding DoorPanelType}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="DOOR PANEL SHEET NUMBER" Width="100" Binding="{Binding DoorPanelSheetNum}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="DOOR GLASS THICKNESS" Width="100" Binding="{Binding DoorGlassThick}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="DOOR LABEL" Width="100" Binding="{Binding DoorLabel}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="DOOR STEEL CAP" Width="100" Binding="{Binding DoorSteelCap}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="REMARKS" Width="100" Binding="{Binding Remarks}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="FLEX 01" Width="100" Binding="{Binding Flex01}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="FLEX 02" Width="100" Binding="{Binding Flex02}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="FLEX 03" Width="100" Binding="{Binding Flex03}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="FLEX 04" Width="100" Binding="{Binding Flex04}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="FLEX 05" Width="100" Binding="{Binding Flex05}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="FLEX 06" Width="100" Binding="{Binding Flex06}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="FLEX 07" Width="100" Binding="{Binding Flex07}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="FLEX 08" Width="100" Binding="{Binding Flex08}" IsReadOnly="True" >
+
+                                            </DataGridTextColumn>
+                                        </DataGrid.Columns>
+                                    </DataGrid>
+                                </Grid>
+                            </TabItem>
+                            <TabItem Name="Tab_HollowMetal_Orders" Header="PURCHASE ORDERS" Foreground="White" >
+
+                            </TabItem>
+                        </TabControl>
+                    </Grid>
+                </TabItem>
+            </TabControl>
+        </Grid>
+    </Grid>
+</Window>

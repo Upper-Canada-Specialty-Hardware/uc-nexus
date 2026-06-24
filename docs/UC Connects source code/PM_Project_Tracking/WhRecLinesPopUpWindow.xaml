@@ -1,0 +1,126 @@
+﻿<Window x:Class="PM_Project_Tracking.WhRecLinesPopUpWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="WhRecLinesPopUpWindow" Height="900" Width="720">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition />
+
+        </Grid.RowDefinitions>
+        <Grid Grid.Row="0" Background="#FF494949" >
+            <Grid Name="GD_RecLineProperties" DataContext="ReceivingLine">
+                <StackPanel Orientation="Horizontal">
+                    <StackPanel Orientation="Vertical" Width="160">
+                        <Label x:Name="LBL_WH_Rec_SopNumber" Content="PO NUMBER" Margin="0,2,0,0" Width="140" Height="20" HorizontalContentAlignment="Left" Padding="5,2,2,0" Foreground="White" />
+                        <Label x:Name="LBL_WH_Rec_RtlCustomerName" Content="LINE INDEX" Margin="0,2,0,0" Width="140" Height="20" HorizontalContentAlignment="Left" Padding="5,2,2,0" Foreground="White" />
+                        <Label x:Name="LBL_WH_Rec_Courier" Content="QUANTITY ORDERED" Margin="0,2,0,0" Width="140" Height="20" HorizontalContentAlignment="Left" Padding="5,2,2,0" Foreground="White" />
+                        <Label x:Name="LBL_WH_Rec_Shipper" Content="QUANTITY RECEIVED" Margin="0,2,0,0" Width="140" Height="20" HorizontalContentAlignment="Left" Padding="5,2,2,0" Foreground="White" />
+                        <Label x:Name="LBL_WH_Rec_ActualShipDate" Content="QUANTITY REMAINING" Margin="0,2,0,0" Width="140" Height="20" HorizontalContentAlignment="Left" Padding="5,2,2,0" Foreground="White" />
+                        <Label x:Name="LBL_WH_Rec_Waybill" Content="RECEIPT NUMBER" Margin="0,2,0,0" Width="140" Height="20" HorizontalContentAlignment="Left" Padding="5,2,2,0" Foreground="White" />
+                        <!--<Label x:Name="LBL_WH_ReschShipDate" Content="RESCHED SHIP DATE" Foreground="White" Width="120" />-->
+                        <Label x:Name="LBL_WH_Rec_ReqShipdate" Content="RECEIPT LINE NUMBER" Margin="0,2,0,0" Width="140" Height="20" HorizontalContentAlignment="Left" Padding="5,2,2,0" Foreground="White" />
+                        <Label x:Name="LBL_WH_Rec_ShipToName" Content="SOP NUMBER" Margin="0,2,0,0" Width="140" Height="20" HorizontalContentAlignment="Left" Padding="5,2,2,0" Foreground="White" />
+                        <Label x:Name="LBL_WH_Rec_Address1" Content="ITEM NUMBER" Margin="0,2,0,0" Width="140" Height="20" HorizontalContentAlignment="Left" Padding="5,2,2,0" Foreground="White" />
+                        <Label x:Name="LBL_WH_Rec_Address2" Content="ITEM DESCRIPTION" Margin="0,2,0,0" Width="140" Height="20" HorizontalContentAlignment="Left" Padding="5,2,2,0" Foreground="White" />
+                        <Label x:Name="LBL_WH_Rec_City" Content="VENDOR ID" Margin="0,2,0,0" Width="140" Height="20" HorizontalContentAlignment="Left" Padding="5,2,2,0" Foreground="White" />
+                        <Label x:Name="LBL_WH_Rec_Province" Content="VENDOR NAME" Margin="0,2,0,0" Width="140" Height="20" HorizontalContentAlignment="Left" Padding="5,2,2,0" Foreground="White" />
+                        <Label x:Name="LBL_WH_Rec_PostalCode" Content="JOB NUMBER" Margin="0,2,0,0" Width="140" Height="20" HorizontalContentAlignment="Left" Padding="5,2,2,0" Foreground="White" />
+                        <Label x:Name="LBL_WH_Rec_Country" Content="JOB NAME" Margin="0,2,0,0" Width="140" Height="20" HorizontalContentAlignment="Left" Padding="5,2,2,0" Foreground="White" />
+                        <Label x:Name="LBL_WH_Rec_Phone" Content="REVISION NUMBER" Margin="0,2,0,0" Width="140" Height="20" HorizontalContentAlignment="Left" Padding="5,2,2,0" Foreground="White" />
+                       
+                        <Label x:Name="LBL_DateReceived" Content="DATE RECEIVED" Margin="0,2,0,0" Width="140" Height="20" HorizontalContentAlignment="Left" Padding="5,2,2,0" Foreground="White" />
+                        <Label x:Name="LBL_TimeReceived" Content="TIME RECEIVED" Margin="0,2,0,0" Width="140" Height="20" HorizontalContentAlignment="Left" Padding="5,2,2,0" Foreground="White" />
+                        <Label x:Name="LBL_Receivinguser" Content="ENTERING USER" Margin="0,2,0,0" Width="140" Height="20" HorizontalContentAlignment="Left" Padding="5,2,2,0" Foreground="White" />
+                        <Label x:Name="LBL_WH_Rec_Fax" Content="LOCATION" Margin="0,2,0,0" Width="140" Height="20" HorizontalContentAlignment="Left" Padding="5,2,2,0" Foreground="White" />                        
+                        <Label x:Name="LBL_WH_Rec_Notes" Content="COMMENTS" Margin="0,2,0,0" Width="140" Height="20" HorizontalContentAlignment="Left" Padding="5,2,2,0" Foreground="White" />
+                    </StackPanel>
+                    <StackPanel Orientation="Vertical">
+                        <TextBox Name="TB_PoNumber" Text="{Binding PoNumber, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                             Width="80"
+                                                             Height="20" HorizontalAlignment="Left"
+                                                             Margin="{Binding ElementName=LBL_WH_Rec_SopNumber, Path=Margin}" IsReadOnly="True"/>
+                        <TextBox Name="TB_Polnenum" Text="{Binding Polnenum, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                             Width="80"
+                                                             Height="20" HorizontalAlignment="Left"
+                                                             Margin="{Binding ElementName=LBL_WH_Rec_RtlCustomerName, Path=Margin}" IsReadOnly="True"/>
+                        <TextBox Name="TB_QtyOrdFromGp" Text="{Binding QtyOrdFromGp, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                             Width="80"
+                                                             Height="20" HorizontalAlignment="Left"
+                                                             Margin="{Binding ElementName=LBL_WH_Rec_Courier, Path=Margin}" IsReadOnly="True"/>
+                        <TextBox Name="TB_QtyRecForGp" Text="{Binding QtyRecForGp, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                             Width="80"
+                                                             Height="20" HorizontalAlignment="Left"
+                                                             Margin="{Binding ElementName=LBL_WH_Rec_Shipper, Path=Margin}"  IsReadOnly="True"/>
+                        <TextBox Name="TB_QtyRemainingOnRec" Text="{Binding QtyRemainingOnRec, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                             Width="80"
+                                                             Height="20" HorizontalAlignment="Left"
+                                                             Margin="{Binding ElementName=LBL_WH_Rec_ActualShipDate, Path=Margin}" IsReadOnly="True"/>
+                        <TextBox Name="TB_PopRctNum" Text="{Binding PopRctNum, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                             Width="80"
+                                                             Height="20" HorizontalAlignment="Left"
+                                                             Margin="{Binding ElementName=LBL_WH_Rec_Waybill, Path=Margin}" IsReadOnly="True"/>
+                        <TextBox Name="TB_WH_Ship_ReqShipDateCust" Text="{Binding RcptLnNm, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                             Width="80"
+                                                             Height="20" HorizontalAlignment="Left"
+                                                             Margin="{Binding ElementName=LBL_WH_Rec_ReqShipdate, Path=Margin}" IsReadOnly="True"/>
+                        <TextBox Name="TB_WH_Ship_ShipToNameCust" Text="{Binding SopNumber, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                             Width="80"
+                                                             Height="20" HorizontalAlignment="Left"
+                                                             Margin="{Binding ElementName=LBL_WH_Rec_ShipToName, Path=Margin}" IsReadOnly="True"/>
+                        <TextBox Name="TB_WH_Ship_Address1Cust" Text="{Binding ItemNumber, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                             Width="120"
+                                                             Height="20" HorizontalAlignment="Left"
+                                                             Margin="{Binding ElementName=LBL_WH_Rec_Address1, Path=Margin}" IsReadOnly="True"/>
+                        <TextBox Name="TB_WH_Ship_Address2Cust" Text="{Binding ItemDescription, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                             Width="360"
+                                                             Height="20" HorizontalAlignment="Left"
+                                                             Margin="{Binding ElementName=LBL_WH_Rec_Address2, Path=Margin}" IsReadOnly="True"/>
+                        <TextBox Name="TB_WH_Ship_CityCust" Text="{Binding VendorId, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                             Width="120"
+                                                             Height="20" HorizontalAlignment="Left"
+                                                             Margin="{Binding ElementName=LBL_WH_Rec_City, Path=Margin}" IsReadOnly="True"/>
+                        <TextBox Name="TB_WH_Ship_ProvinceCust" Text="{Binding VendorName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                             Width="360"
+                                                             Height="20" HorizontalAlignment="Left"
+                                                             Margin="{Binding ElementName=LBL_WH_Rec_City, Path=Margin}" IsReadOnly="True"/>
+                        <TextBox Name="TB_WH_Ship_PostalCodeCust" Text="{Binding JobNumber, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                             Width="120"
+                                                             Height="20" HorizontalAlignment="Left"
+                                                             Margin="{Binding ElementName=LBL_WH_Rec_PostalCode, Path=Margin}" IsReadOnly="True"/>
+                        <TextBox Name="TB_WH_Ship_CountryCust" Text="{Binding JobName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                             Width="360"
+                                                             Height="20" HorizontalAlignment="Left"
+                                                             Margin="{Binding ElementName=LBL_WH_Rec_Country, Path=Margin}" IsReadOnly="True"/>
+                        <TextBox Name="TB_WH_Ship_PhoneCust" Text="{Binding RevisionNumber, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                             Width="120"
+                                                             Height="20" HorizontalAlignment="Left"
+                                                             Margin="{Binding ElementName=LBL_WH_Rec_Phone, Path=Margin}" IsReadOnly="True"/>
+
+                        <TextBox Name="TB_DateReceived" Text="{Binding DateReceived, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged, StringFormat=\{0:dd \MMM \yyyy\}}"
+                                                             Width="120"
+                                                             Height="20" HorizontalAlignment="Left"
+                                                             Margin="{Binding ElementName=LBL_DateReceived, Path=Margin}" IsReadOnly="True"/>
+                        <TextBox Name="TB_TimeReceived" Text="{Binding TimeReceived, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged, StringFormat=\{0:h:mm tt\}}"
+                                                             Width="120"
+                                                             Height="20" HorizontalAlignment="Left"
+                                                             Margin="{Binding ElementName=LBL_TimeReceived, Path=Margin}"  IsReadOnly="True"/>
+                        <TextBox Name="TB_EnteringUser" Text="{Binding UpdatingUser, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                             Width="120"
+                                                             Height="20" HorizontalAlignment="Left"
+                                                             Margin="{Binding ElementName=LBL_Receivinguser, Path=Margin}" IsReadOnly="True"/>
+                        <TextBox Name="TB_Location" Text="{Binding Location, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                             Width="120"
+                                                             Height="20" HorizontalAlignment="Left"
+                                                             Margin="{Binding ElementName=LBL_WH_Rec_Fax, Path=Margin}" />
+                        <TextBox Name="TB_Comments" Text="{Binding Comments, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                             Width="300"
+                                                             Height="120" HorizontalAlignment="Left"
+                                                             AcceptsReturn="True"
+                                                             Margin="{Binding ElementName=LBL_WH_Rec_Notes, Path=Margin}" />
+                        <Button Name="Btn_CommitEdit" Content="COMMIT EDIT" Margin="0,20,0,0" Width="120" Height="20" Click="Btn_CommitEdit_Click" />
+                    </StackPanel>
+                </StackPanel>
+            </Grid>
+        </Grid>
+    </Grid>
+</Window>
