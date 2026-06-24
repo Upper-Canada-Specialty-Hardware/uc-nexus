@@ -1,0 +1,71 @@
+﻿<Window x:Class="PM_Project_Tracking.UsersChangeSessions"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:PM_Project_Tracking"
+        mc:Ignorable="d"
+        xmlns:staticData="clr-namespace:PM_Project_Tracking"
+        Title="UsersChangeSessions" Height="360" Width="700">
+    <Window.Resources>
+        <staticData:PermissionTier x:Key="PermissionTier" />
+
+        <SolidColorBrush x:Key="SolidBorderBrush" Color="#888" />
+        <SolidColorBrush x:Key="BackgroundBrush" Color="#FF494949" />
+        <SolidColorBrush x:Key="SelectedBrush" Color="#FF575555" />
+        <SolidColorBrush x:Key="BillingGridBorderBrush" Color="#FF8DB258" />
+        <Style TargetType="{x:Type TabItem}">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type TabItem}">
+                        <Grid>
+                            <Border Name="Border" Background="{StaticResource BackgroundBrush}">
+                                <ContentPresenter x:Name="ContentSite" VerticalAlignment="Center" HorizontalAlignment="Center" ContentSource="Header" Margin="12,2,12,2" RecognizesAccessKey="True"/>
+                            </Border>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Border" Property="Background" Value="{StaticResource SelectedBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Border" Property="Background" Value="{StaticResource BackgroundBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+    <Grid Background="#FF494949">
+        <DataGrid Name="DG_ChangeSessions" HorizontalAlignment="Left" Width="520"
+                                              
+                                              AutoGenerateColumns="False"
+                                              CanUserAddRows="False"
+                                              CanUserDeleteRows="False"
+                                              RowHeaderWidth="0"
+                                              ColumnHeaderHeight="45"
+                                              VirtualizingStackPanel.IsVirtualizing="True" 
+                                              VirtualizingStackPanel.VirtualizationMode="Recycling"
+                                              SelectionMode="Single" MouseDoubleClick="DG_ChangeSessions_MouseDoubleClick" 
+                                              >
+            <DataGrid.Columns >
+
+                <DataGridTextColumn Header="SESSION ID" Width="*" Binding="{Binding SessionId}" IsReadOnly="True" >
+
+                </DataGridTextColumn>
+                <DataGridTextColumn Header="JOB NUMBER" Width="60" Binding="{Binding JobNumber}" IsReadOnly="True" >
+
+                </DataGridTextColumn>
+                <DataGridTextColumn Header="QUOTE NUMBER" Width="80" Binding="{Binding QuoteNumber}" IsReadOnly="True" >
+
+                </DataGridTextColumn>
+                <DataGridTextColumn Header="USER" Width="200" Binding="{Binding DomainUserName}" IsReadOnly="True" >
+
+                </DataGridTextColumn>
+                <DataGridTextColumn Header="SESSION DATE" Width="120" Binding="{Binding SessionDate}" IsReadOnly="True" >
+
+                </DataGridTextColumn>
+            </DataGrid.Columns>
+        </DataGrid>
+    </Grid>
+</Window>

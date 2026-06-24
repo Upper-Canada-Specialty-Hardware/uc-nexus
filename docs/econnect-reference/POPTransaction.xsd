@@ -1,0 +1,693 @@
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="eConnect" type="eConnectType" />
+  <xs:complexType name="eConnectType">
+    <xs:sequence>
+      <xs:element minOccurs="0" maxOccurs="unbounded" name="POPTransactionType" type="POPTransactionType" />
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="POPTransactionType">
+    <xs:sequence>
+      <xs:element minOccurs="0" maxOccurs="1" name="eConnectProcessInfo" nillable="true" type="eConnectProcessInfo" />
+      <xs:element minOccurs="0" maxOccurs="1" name="taRequesterTrxDisabler_Items" nillable="true" type="taRequesterTrxDisabler_Items" />
+      <xs:element minOccurs="0" maxOccurs="1" name="taUpdateCreateItemRcd" nillable="true" type="taUpdateCreateItemRcd" />
+      <xs:element minOccurs="0" maxOccurs="1" name="taUpdateCreateVendorRcd" nillable="true" type="taUpdateCreateVendorRcd" />
+      <xs:element minOccurs="0" maxOccurs="1" name="taCreateVendorAddress_Items" nillable="true" type="taCreateVendorAddress_Items" />
+      <xs:element minOccurs="0" maxOccurs="1" name="taUpdateCreateCustomerRcd" nillable="true" type="taUpdateCreateCustomerRcd" />
+      <xs:element minOccurs="0" maxOccurs="1" name="taCreateCustomerAddress_Items" nillable="true" type="taCreateCustomerAddress_Items" />
+      <xs:element minOccurs="0" maxOccurs="1" name="taPopIvcTaxInsert_Items" nillable="true" type="taPopIvcTaxInsert_Items" />
+      <xs:element minOccurs="0" maxOccurs="1" name="taPopDistribution_Items" nillable="true" type="taPopDistribution_Items" />
+      <xs:element minOccurs="0" maxOccurs="1" name="taAnalyticsDistribution_Items" nillable="true" type="taAnalyticsDistribution_Items" />
+      <xs:element minOccurs="0" maxOccurs="1" name="taPoLine_Items" nillable="true" type="taPoLine_Items" />
+      <xs:element minOccurs="1" maxOccurs="1" name="taPoHdr" nillable="true" type="taPoHdr" />
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="eConnectProcessInfo">
+    <xs:sequence>
+      <xs:element minOccurs="0" maxOccurs="1" name="ConnectionString" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" name="ProcTimeOut" type="xs:string" />
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="taRequesterTrxDisabler_Items">
+    <xs:sequence>
+      <xs:element minOccurs="0" maxOccurs="unbounded" name="taRequesterTrxDisabler" nillable="true">
+        <xs:complexType>
+          <xs:sequence>
+            <xs:element minOccurs="1" maxOccurs="1" name="DOCTYPE" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="INDEX1" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="INDEX2" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="INDEX3" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="INDEX4" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="INDEX5" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="INDEX6" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="INDEX7" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="INDEX8" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="INDEX9" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="INDEX10" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="INDEX11" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="INDEX12" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="INDEX13" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="INDEX14" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="INDEX15" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="0" name="Delete" type="xs:short" />
+          </xs:sequence>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="taUpdateCreateItemRcd">
+    <xs:sequence>
+      <xs:element minOccurs="1" maxOccurs="1" name="ITEMNMBR" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="ITEMDESC" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="ITMSHNAM" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="ITMGEDSC" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="ITMCLSCD" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" name="ITEMTYPE" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="VCTNMTHD" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="TAXOPTNS" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="ITMTSHID" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="UOMSCHDL" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" name="ITEMSHWT" type="xs:decimal" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="TCC" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="CNTRYORGN" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" name="DECPLQTY" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="DECPLCUR" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="Purchase_Tax_Options" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="Purchase_Item_Tax_Schedu" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" name="STNDCOST" type="xs:decimal" />
+      <xs:element minOccurs="0" maxOccurs="1" name="CURRCOST" type="xs:decimal" />
+      <xs:element minOccurs="0" maxOccurs="1" name="LISTPRCE" type="xs:decimal" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="NOTETEXT" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="ALTITEM1" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="ALTITEM2" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" name="ITMTRKOP" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="LOTTYPE" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" name="LOTEXPWARN" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="LOTEXPWARNDAYS" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="INCLUDEINDP" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="MINSHELF1" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="MINSHELF2" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="ALWBKORD" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="WRNTYDYS" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="ABCCODE" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="USCATVLS_1" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="USCATVLS_2" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="USCATVLS_3" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="USCATVLS_4" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="USCATVLS_5" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="USCATVLS_6" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" name="KPCALHST" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="KPERHIST" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="KPTRXHST" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="KPDSTHST" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="IVIVACTNUMST" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="IVIVOFACTNUMST" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="IVCOGSACTNUMST" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="IVSLSACTNUMST" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="IVSLDSACTNUMST" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="IVSLRNACTNUMST" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="IVINUSACTNUMST" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="IVINSVACTNUMST" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="IVDMGACTNUMST" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="IVVARACTNUMST" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="DPSHPACTNUMST" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PURPVACTNUMST" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="UPPVACTNUMST" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="IVRETACTNUMST" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="ASMVRACTNUMST" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" name="KTACCTSR" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PRCHSUOM" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" name="Revalue_Inventory" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="Tolerance_Percentage" type="xs:decimal" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="LOCNCODE" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" name="PRICMTHD" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PriceGroup" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" name="UseQtyOverageTolerance" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="UseQtyShortageTolerance" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="QtyOverTolerancePercent" type="xs:int" />
+      <xs:element minOccurs="0" maxOccurs="1" name="QtyShortTolerancePercent" type="xs:int" />
+      <xs:element minOccurs="0" maxOccurs="1" default="0" name="UseItemClass" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" default="1" name="UpdateIfExists" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" default="0" name="RequesterTrx" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND1" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND2" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND3" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND4" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND5" type="xs:string" />
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="taUpdateCreateVendorRcd">
+    <xs:sequence>
+      <xs:element minOccurs="1" maxOccurs="1" name="VENDORID" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="VENDNAME" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="VENDSHNM" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="VNDCHKNM" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" name="HOLD" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="VENDSTTS" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="VNDCLSID" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="VADDCDPR" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="VNDCNTCT" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="ADDRESS1" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="ADDRESS2" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="ADDRESS3" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="CITY" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="STATE" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="ZIPCODE" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="CCode" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="COUNTRY" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PHNUMBR1" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PHNUMBR2" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PHNUMBR3" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="FAXNUMBR" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="TAXSCHID" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="SHIPMTHD" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="UPSZONE" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="VADCDPAD" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="VADCDTRO" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="VADCDSFR" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="ACNMVNDR" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="COMMENT1" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="COMMENT2" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="NOTETEXT" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="CURNCYID" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="RATETPID" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PYMTRMID" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" name="DISGRPER" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="DUEGRPER" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PYMNTPRI" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" name="MINORDER" type="xs:decimal" />
+      <xs:element minOccurs="0" maxOccurs="1" name="TRDDISCT" type="xs:decimal" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="TXIDNMBR" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="TXRGNNUM" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="CHEKBKID" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="USERDEF1" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="USERDEF2" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" name="TEN99TYPE" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="TEN99BOXNUMBER" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="FREEONBOARD" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="USERLANG" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="MINPYTYP" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="MINPYDLR" type="xs:decimal" />
+      <xs:element minOccurs="0" maxOccurs="1" name="MINPYPCT" type="xs:decimal" />
+      <xs:element minOccurs="0" maxOccurs="1" name="MXIAFVND" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="MAXINDLR" type="xs:decimal" />
+      <xs:element minOccurs="0" maxOccurs="1" name="CREDTLMT" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="CRLMTDLR" type="xs:decimal" />
+      <xs:element minOccurs="0" maxOccurs="1" name="WRITEOFF" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="MXWOFAMT" type="xs:decimal" />
+      <xs:element minOccurs="0" maxOccurs="1" name="Revalue_Vendor" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="Post_Results_To" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="KPCALHST" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="KPERHIST" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="KPTRXHST" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="KGLDSTHS" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="PTCSHACF" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PMCSHACTNUMST" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PMAPACTNUMST" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PMDAVACTNUMST" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PMDTKACTNUMST" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PMFINACTNUMST" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PMPRCHACTNUMST" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PMTDSCACTNUMST" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PMMSCHACTNUMST" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PMFRTACTNUMST" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PMTAXACTNUMST" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PMWRTACTNUMST" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="ACPURACTNUMST" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PURPVACTNUMST" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="0" name="UseVendorClass" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" default="1" name="CreateAddress" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" default="1" name="UpdateIfExists" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" default="0" name="RequesterTrx" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND1" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND2" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND3" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND4" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND5" type="xs:string" />
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="taCreateVendorAddress_Items">
+    <xs:sequence>
+      <xs:element minOccurs="0" maxOccurs="unbounded" name="taCreateVendorAddress" nillable="true">
+        <xs:complexType>
+          <xs:sequence>
+            <xs:element minOccurs="1" maxOccurs="1" name="VENDORID" type="xs:string" />
+            <xs:element minOccurs="1" maxOccurs="1" name="ADRSCODE" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="UPSZONE" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="SHIPMTHD" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="TAXSCHID" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="VNDCNTCT" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="ADDRESS1" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="ADDRESS2" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="ADDRESS3" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="COUNTRY" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="CITY" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="STATE" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="ZIPCODE" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="PHNUMBR1" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="PHNUMBR2" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="PHNUMBR3" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="FAXNUMBR" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="1" name="UpdateIfExists" type="xs:short" />
+            <xs:element minOccurs="0" maxOccurs="1" default="0" name="RequesterTrx" type="xs:short" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="CCode" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND1" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND2" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND3" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND4" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND5" type="xs:string" />
+          </xs:sequence>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="taUpdateCreateCustomerRcd">
+    <xs:sequence>
+      <xs:element minOccurs="1" maxOccurs="1" name="CUSTNMBR" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" name="HOLD" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="INACTIVE" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="CUSTNAME" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="SHRTNAME" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="STMTNAME" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="CUSTCLAS" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" name="CUSTPRIORITY" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="ADRSCODE" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="CNTCPRSN" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="ADDRESS1" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="ADDRESS2" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="ADDRESS3" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="CITY" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="STATE" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="ZIPCODE" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="CCode" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="COUNTRY" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PHNUMBR1" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PHNUMBR2" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PHNUMBR3" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="FAX" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="UPSZONE" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="SHIPMTHD" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="TAXSCHID" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" name="SHIPCOMPLETE" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PRSTADCD" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PRBTADCD" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="STADDRCD" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="SLPRSNID" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="SALSTERR" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="USERDEF1" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="USERDEF2" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="COMMENT1" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="COMMENT2" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" name="CUSTDISC" type="xs:decimal" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PYMTRMID" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" name="DISGRPER" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="DUEGRPER" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PRCLEVEL" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="NOTETEXT" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" name="BALNCTYP" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="FNCHATYP" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="FNCHPCNT" type="xs:decimal" />
+      <xs:element minOccurs="0" maxOccurs="1" name="FINCHDLR" type="xs:decimal" />
+      <xs:element minOccurs="0" maxOccurs="1" name="MINPYTYP" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="MINPYPCT" type="xs:decimal" />
+      <xs:element minOccurs="0" maxOccurs="1" name="MINPYDLR" type="xs:decimal" />
+      <xs:element minOccurs="0" maxOccurs="1" name="CRLMTTYP" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="CRLMTAMT" type="xs:decimal" />
+      <xs:element minOccurs="0" maxOccurs="1" name="CRLMTPER" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="CRLMTPAM" type="xs:decimal" />
+      <xs:element minOccurs="0" maxOccurs="1" name="MXWOFTYP" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="MXWROFAM" type="xs:decimal" />
+      <xs:element minOccurs="0" maxOccurs="1" name="Revalue_Customer" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="Post_Results_To" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="ORDERFULFILLDEFAULT" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="INCLUDEINDP" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="CRCARDID" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="CRCRDNUM" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="CCRDXPDT" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="BANKNAME" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="BNKBRNCH" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" name="USERLANG" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="TAXEXMT1" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="TAXEXMT2" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="TXRGNNUM" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="CURNCYID" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="RATETPID" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" name="STMTCYCL" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="KPCALHST" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="KPERHIST" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="KPTRXHST" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="KPDSTHST" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="Send_Email_Statements" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="ToEmail_Recipient" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="CcEmail_Recipient" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="BccEmail_Recipient" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="CHEKBKID" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" name="DEFCACTY" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="RMCSHACTNUMST" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="RMARACTNUMST" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="RMSLSACTNUMST" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="RMCOSACTNUMST" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="RMIVACTNUMST" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="RMTAKACTNUMST" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="RMAVACTNUMST" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="RMFCGACTNUMST" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="RMWRACTNUMST" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="RMSORACTNUMST" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="RMOvrpymtWrtoffACTNUMST" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="GPSFOINTEGRATIONID" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="0" name="INTEGRATIONSOURCE" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="INTEGRATIONID" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="0" name="UseCustomerClass" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" default="1" name="CreateAddress" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" default="1" name="UpdateIfExists" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" default="0" name="RequesterTrx" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND1" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND2" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND3" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND4" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND5" type="xs:string" />
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="taCreateCustomerAddress_Items">
+    <xs:sequence>
+      <xs:element minOccurs="0" maxOccurs="unbounded" name="taCreateCustomerAddress" nillable="true">
+        <xs:complexType>
+          <xs:sequence>
+            <xs:element minOccurs="1" maxOccurs="1" name="CUSTNMBR" type="xs:string" />
+            <xs:element minOccurs="1" maxOccurs="1" name="ADRSCODE" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="SLPRSNID" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="UPSZONE" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="SHIPMTHD" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="TAXSCHID" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="CNTCPRSN" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="ADDRESS1" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="ADDRESS2" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="ADDRESS3" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="COUNTRY" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="CITY" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="STATE" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="ZIPCODE" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="PHNUMBR1" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="PHNUMBR2" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="PHNUMBR3" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="FAX" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="GPSFOINTEGRATIONID" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" name="INTEGRATIONSOURCE" type="xs:short" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="INTEGRATIONID" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="CCode" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="LOCNCODE" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="SALSTERR" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="ShipToName" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" name="Print_Phone_NumberGB" type="xs:short" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="USERDEF1" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="USERDEF2" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="1" name="UpdateIfExists" type="xs:short" />
+            <xs:element minOccurs="0" maxOccurs="1" default="0" name="RequesterTrx" type="xs:short" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND1" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND2" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND3" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND4" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND5" type="xs:string" />
+          </xs:sequence>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="taPopIvcTaxInsert_Items">
+    <xs:sequence>
+      <xs:element minOccurs="0" maxOccurs="unbounded" name="taPopIvcTaxInsert" nillable="true">
+        <xs:complexType>
+          <xs:sequence>
+            <xs:element minOccurs="1" maxOccurs="1" name="PONUMBER" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="0" name="TAXTYPE" type="xs:short" />
+            <xs:element minOccurs="0" maxOccurs="1" default="0" name="ORD" type="xs:int" />
+            <xs:element minOccurs="1" maxOccurs="1" name="TAXDTLID" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="0" name="BKOUTTAX" type="xs:short" />
+            <xs:element minOccurs="0" maxOccurs="1" default="0" name="TAXAMNT" type="xs:decimal" />
+            <xs:element minOccurs="0" maxOccurs="1" default="0" name="FRTTXAMT" type="xs:decimal" />
+            <xs:element minOccurs="0" maxOccurs="1" default="0" name="MSCTXAMT" type="xs:decimal" />
+            <xs:element minOccurs="0" maxOccurs="1" default="0" name="TAXPURCH" type="xs:decimal" />
+            <xs:element minOccurs="0" maxOccurs="1" default="0" name="TOTPURCH" type="xs:decimal" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="TRXSORCE" type="xs:string" />
+            <xs:element minOccurs="1" maxOccurs="1" name="VENDORID" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="0" name="RequesterTrx" type="xs:short" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND1" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND2" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND3" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND4" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND5" type="xs:string" />
+          </xs:sequence>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="taPopDistribution_Items">
+    <xs:sequence>
+      <xs:element minOccurs="0" maxOccurs="unbounded" name="taPopDistribution" nillable="true">
+        <xs:complexType>
+          <xs:sequence>
+            <xs:element minOccurs="1" maxOccurs="1" name="POPTYPE" type="xs:short" />
+            <xs:element minOccurs="1" maxOccurs="1" name="POPRCTNM" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="0" name="SEQNUMBR" type="xs:int" />
+            <xs:element minOccurs="0" maxOccurs="1" default="0" name="ACTINDX" type="xs:int" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="ACTNUMST" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="0" name="CRDTAMNT" type="xs:decimal" />
+            <xs:element minOccurs="0" maxOccurs="1" default="0" name="DEBITAMT" type="xs:decimal" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="DistRef" type="xs:string" />
+            <xs:element minOccurs="1" maxOccurs="1" name="DISTTYPE" type="xs:short" />
+            <xs:element minOccurs="1" maxOccurs="1" name="VENDORID" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="0" name="RequesterTrx" type="xs:short" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND1" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND2" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND3" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND4" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND5" type="xs:string" />
+          </xs:sequence>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="taAnalyticsDistribution_Items">
+    <xs:sequence>
+      <xs:element minOccurs="0" maxOccurs="unbounded" name="taAnalyticsDistribution" nillable="true">
+        <xs:complexType>
+          <xs:sequence>
+            <xs:element minOccurs="1" maxOccurs="1" name="DOCNMBR" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="0" name="DOCTYPE" type="xs:short" />
+            <xs:element minOccurs="0" maxOccurs="1" name="AMOUNT" type="xs:decimal" />
+            <xs:element minOccurs="0" maxOccurs="1" name="aaAssignedPercent" type="xs:decimal" />
+            <xs:element minOccurs="0" maxOccurs="1" name="DistSequence" type="xs:int" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="ACTNUMST" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" name="ACTINDX" type="xs:int" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="DistRef" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="NOTETEXT" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="aaTrxDim" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="aaTrxDimCode" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" name="aaTrxDimCodeNum" type="xs:decimal" />
+            <xs:element minOccurs="0" maxOccurs="1" name="aaTrxDimCodeBool" type="xs:short" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="aaTrxDimCodeDate" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" name="aaTrxDimID" type="xs:int" />
+            <xs:element minOccurs="0" maxOccurs="1" name="aaTrxCodeID" type="xs:int" />
+            <xs:element minOccurs="0" maxOccurs="1" name="aaSubLedgerHdrID" type="xs:int" />
+            <xs:element minOccurs="0" maxOccurs="1" name="aaSubLedgerDistID" type="xs:int" />
+            <xs:element minOccurs="0" maxOccurs="1" default="1" name="aaSubLedgerAssignID" type="xs:int" />
+            <xs:element minOccurs="0" maxOccurs="1" default="1" name="UpdateIfExists" type="xs:short" />
+            <xs:element minOccurs="0" maxOccurs="1" default="0" name="RequesterTrx" type="xs:short" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND1" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND2" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND3" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND4" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND5" type="xs:string" />
+          </xs:sequence>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="taPoLine_Items">
+    <xs:sequence>
+      <xs:element minOccurs="1" maxOccurs="unbounded" name="taPoLine">
+        <xs:complexType>
+          <xs:sequence>
+            <xs:element minOccurs="0" maxOccurs="1" name="POTYPE" type="xs:short" />
+            <xs:element minOccurs="1" maxOccurs="1" name="PONUMBER" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="DOCDATE" type="xs:string" />
+            <xs:element minOccurs="1" maxOccurs="1" name="VENDORID" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="LOCNCODE" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="VNDITNUM" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="ITEMNMBR" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" name="QUANTITY" type="xs:decimal" />
+            <xs:element minOccurs="0" maxOccurs="1" name="QTYCANCE" type="xs:decimal" />
+            <xs:element minOccurs="0" maxOccurs="1" name="FREEONBOARD" type="xs:short" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="REQSTDBY" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="COMMNTID" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="COMMENT_1" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="COMMENT_2" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="COMMENT_3" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="COMMENT_4" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="REQDATE" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="RELEASEBYDATE" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="PRMDATE" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="PRMSHPDTE" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="0" name="NONINVEN" type="xs:short" />
+            <xs:element minOccurs="0" maxOccurs="1" name="IVIVINDX" type="xs:int" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="InventoryAccount" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="ITEMDESC" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" name="UNITCOST" type="xs:decimal" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="VNDITDSC" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="UOFM" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" name="Purchase_IV_Item_Taxable" type="xs:short" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="Purchase_Item_Tax_Schedu" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="Purchase_Site_Tax_Schedu" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" name="BSIVCTTL" type="xs:short" />
+            <xs:element minOccurs="0" maxOccurs="1" name="TAXAMNT" type="xs:decimal" />
+            <xs:element minOccurs="0" maxOccurs="1" name="BCKTXAMT" type="xs:decimal" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="Landed_Cost_Group_ID" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" name="PLNNDSPPLID" type="xs:short" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="SHIPMTHD" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" name="BackoutTradeDiscTax" type="xs:decimal" />
+            <xs:element minOccurs="0" maxOccurs="1" name="POLNESTA" type="xs:short" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="CMMTTEXT" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" name="ORD" type="xs:int" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="CUSTNMBR" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="ADRSCODE" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="CMPNYNAM" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="CONTACT" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="ADDRESS1" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="ADDRESS2" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="ADDRESS3" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="CITY" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="STATE" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="ZIPCODE" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="CCode" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="COUNTRY" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="PHONE1" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="PHONE2" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="PHONE3" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="FAX" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" name="Print_Phone_NumberGB" type="xs:short" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="CURNCYID" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="ProjNum" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="CostCatID" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" name="LineNumber" type="xs:int" />
+            <xs:element minOccurs="0" maxOccurs="1" default="0" name="UpdateIfExists" type="xs:short" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="NOTETEXT" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="0" name="RequesterTrx" type="xs:short" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND1" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND2" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND3" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND4" type="xs:string" />
+            <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND5" type="xs:string" />
+          </xs:sequence>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="taPoHdr">
+    <xs:sequence>
+      <xs:element minOccurs="0" maxOccurs="1" name="POTYPE" type="xs:short" />
+      <xs:element minOccurs="1" maxOccurs="1" name="PONUMBER" type="xs:string" />
+      <xs:element minOccurs="1" maxOccurs="1" name="VENDORID" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="VENDNAME" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="DOCDATE" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="BUYERID" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" name="ALLOWSOCMTS" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="TRDISAMT" type="xs:decimal" />
+      <xs:element minOccurs="0" maxOccurs="1" name="FRTAMNT" type="xs:decimal" />
+      <xs:element minOccurs="0" maxOccurs="1" name="MSCCHAMT" type="xs:decimal" />
+      <xs:element minOccurs="0" maxOccurs="1" name="TAXAMNT" type="xs:decimal" />
+      <xs:element minOccurs="0" maxOccurs="1" name="SUBTOTAL" type="xs:decimal" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="CUSTNMBR" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PRSTADCD" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="CMPNYNAM" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="CONTACT" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="ADDRESS1" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="ADDRESS2" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="ADDRESS3" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="CITY" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="STATE" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="ZIPCODE" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="CCode" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="COUNTRY" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PHONE1" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PHONE2" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PHONE3" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="FAX" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" name="Print_Phone_NumberGB" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="VADCDPAD" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PURCHCMPNYNAM" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PURCHCONTACT" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PURCHADDRESS1" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PURCHADDRESS2" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PURCHADDRESS3" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PURCHCITY" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PURCHSTATE" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PURCHZIPCODE" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PURCHCCode" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PURCHCOUNTRY" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PURCHPHONE1" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PURCHPHONE2" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PURCHPHONE3" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PURCHFAX" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PRBTADCD" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="SHIPMTHD" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PYMTRMID" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" name="DSCPCTAM" type="xs:decimal" />
+      <xs:element minOccurs="0" maxOccurs="1" name="DSCDLRAM" type="xs:decimal" />
+      <xs:element minOccurs="0" maxOccurs="1" name="DISAMTAV" type="xs:decimal" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="DUEDATE" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="DISCDATE" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="TXRGNNUM" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="CONFIRM1" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="COMMNTID" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="COMMENT_1" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="COMMENT_2" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="COMMENT_3" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="COMMENT_4" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="0" name="HOLD" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="TAXSCHID" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" name="Purchase_Freight_Taxable" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="Purchase_Misc_Taxable" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="FRTSCHID" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="MSCSCHID" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" name="FRTTXAMT" type="xs:decimal" />
+      <xs:element minOccurs="0" maxOccurs="1" name="MSCTXAMT" type="xs:decimal" />
+      <xs:element minOccurs="0" maxOccurs="1" name="BCKTXAMT" type="xs:decimal" />
+      <xs:element minOccurs="0" maxOccurs="1" name="BackoutFreightTaxAmt" type="xs:decimal" />
+      <xs:element minOccurs="0" maxOccurs="1" name="BackoutMiscTaxAmt" type="xs:decimal" />
+      <xs:element minOccurs="0" maxOccurs="1" name="BackoutTradeDiscTax" type="xs:decimal" />
+      <xs:element minOccurs="0" maxOccurs="1" name="USINGHEADERLEVELTAXES" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="CURNCYID" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="-1" name="XCHGRATE" type="xs:decimal" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="RATETPID" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="EXPNDATE" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="EXCHDATE" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="EXGTBDSC" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="EXTBLSRC" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" name="RATEEXPR" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="DYSTINCR" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="RATEVARC" type="xs:decimal" />
+      <xs:element minOccurs="0" maxOccurs="1" name="TRXDTDEF" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="RTCLCMTD" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="PRVDSLMT" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" name="DATELMTS" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="TIME1" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="USERID" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" name="POSTATUS" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="CMMTTEXT" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PRMDATE" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="PRMSHPDTE" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="REQDATE" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="CONTENDDTE" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" name="CNTRLBLKTBY" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="REQTNDT" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="0" name="UpdateIfExists" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="NOTETEXT" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="0" name="RequesterTrx" type="xs:short" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND1" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND2" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND3" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND4" type="xs:string" />
+      <xs:element minOccurs="0" maxOccurs="1" default="" name="USRDEFND5" type="xs:string" />
+    </xs:sequence>
+  </xs:complexType>
+</xs:schema>

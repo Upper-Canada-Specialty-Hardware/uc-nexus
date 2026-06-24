@@ -1,0 +1,39 @@
+﻿<Window x:Class="PM_Project_Tracking.TransferPursuitMenu"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:PM_Project_Tracking"
+        mc:Ignorable="d"
+        Title="TransferPursuitMenu" Height="600" Width="300">
+    <Grid Background="#FF494949">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="80" />
+            <RowDefinition />
+        </Grid.RowDefinitions>
+        <Grid Grid.Row="0">
+            <Label Content="Only projects that have a status of 'BIDDING' are found in the &#10;'All Projects' menu will show up in the list below." Height="60" Foreground="White"/>
+        </Grid>
+        <Grid Grid.Row="1">
+            <DataGrid Name="DG_PursuitList"
+                AutoGenerateColumns="False"
+                CanUserSortColumns="False"
+                CanUserAddRows="False"
+                RowHeaderWidth="0"
+                ColumnHeaderHeight="45"
+                VirtualizingStackPanel.IsVirtualizing="True" 
+                VirtualizingStackPanel.VirtualizationMode="Recycling"
+                CanUserDeleteRows="True"
+                SelectionMode="Single" MouseDoubleClick="DG_PursuitList_MouseDoubleClick" >
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="ID" Width="50" Binding="{Binding Id}" IsReadOnly="True" >
+
+                    </DataGridTextColumn>
+                    <DataGridTextColumn Header="PROJECT NAME" Width="*" Binding="{Binding JobName}" IsReadOnly="True" >
+
+                    </DataGridTextColumn>
+                </DataGrid.Columns>
+            </DataGrid>
+        </Grid>
+    </Grid>
+</Window>

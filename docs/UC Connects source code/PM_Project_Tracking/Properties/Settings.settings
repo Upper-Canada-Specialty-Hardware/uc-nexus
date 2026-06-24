@@ -1,0 +1,33 @@
+﻿<?xml version='1.0' encoding='utf-8'?>
+<SettingsFile xmlns="http://schemas.microsoft.com/VisualStudio/2004/01/settings" CurrentProfile="(Default)" GeneratedClassNamespace="PM_Project_Tracking.Properties" GeneratedClassName="Settings">
+  <Profiles />
+  <Settings>
+    <Setting Name="UcshInitCatalog" Type="System.String" Scope="User">
+      <Value Profile="(Default)">PMUCSH</Value>
+    </Setting>
+    <Setting Name="AllProjTableName" Type="System.String" Scope="User">
+      <Value Profile="(Default)">UTPMALLPROJ101</Value>
+    </Setting>
+    <Setting Name="AwContrTableName" Type="System.String" Scope="User">
+      <Value Profile="(Default)">UTPMAWCONTRACTS101</Value>
+    </Setting>
+    <Setting Name="MainProjTableName" Type="System.String" Scope="User">
+      <Value Profile="(Default)">UTPMMAINAWPROJ101</Value>
+    </Setting>
+    <Setting Name="OfferToTenderTableName" Type="System.String" Scope="User">
+      <Value Profile="(Default)">UTPMOFFERTOTENDER101</Value>
+    </Setting>
+    <Setting Name="Server" Type="System.String" Scope="User">
+      <Value Profile="(Default)">UCSHSQL2\MSSQL2014</Value>
+    </Setting>
+    <Setting Name="DefaultExcelSaveFolder" Type="System.String" Scope="User">
+      <Value Profile="(Default)">C:\Project Reports</Value>
+    </Setting>
+    <Setting Name="GpInitCatalog" Type="System.String" Scope="User">
+      <Value Profile="(Default)">UCSH</Value>
+    </Setting>
+    <Setting Name="UCUsersInitCatalog" Type="System.String" Scope="User">
+      <Value Profile="(Default)">UCUsers</Value>
+    </Setting>
+  </Settings>
+</SettingsFile>

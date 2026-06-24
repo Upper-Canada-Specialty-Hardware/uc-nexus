@@ -1,0 +1,48 @@
+﻿<Window x:Class="PM_Project_Tracking.HwGetHardwareSchedByJobPopUp"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="HwGetHardwareSchedByJobPopUp" Height="600" Width="400">
+    <Grid Background="#FF494949">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="120" />
+            <RowDefinition />
+        </Grid.RowDefinitions>
+        <Grid Grid.Row="0">
+            <StackPanel Orientation="Vertical">
+                <Label Content="Only hardware schedules for projects that have been uploaded to SQL &#10;Server will show up in the list below. If you would like to see a &#10;hardware schedule that isn't here, please contact someone in the &#10;hardware department that updates hardware schedules in AVAWare" 
+                       Height="80" Foreground="White" VerticalAlignment="Top"/>
+                <StackPanel Orientation="Horizontal">
+                    <StackPanel Orientation="Vertical" Width="100">
+                        <Label Content="JOB NUMBER" Margin="0,0,0,0" Foreground="White" FontSize="8" HorizontalAlignment="Center" />
+                        <TextBox Name="TB_JobNumberFilter" Width="80" FontSize="9" VerticalContentAlignment="Center" TextChanged="TB_JobNumberFilter_TextChanged"  />
+                    </StackPanel>
+                    <StackPanel Orientation="Vertical" Margin="100,0,0,0" >
+                        <Label Content="JOB NAME" Foreground="White" FontSize="8" HorizontalAlignment="Center" />
+                        <TextBox Name="TB_JobNameFilter" Width="80" FontSize="9" VerticalContentAlignment="Center" TextChanged="TB_JobNameFilter_TextChanged"  />
+                    </StackPanel>
+                </StackPanel>
+            </StackPanel>
+        </Grid>
+        <Grid Grid.Row="1">
+            <DataGrid Name="DG_JobsList"
+                AutoGenerateColumns="False"
+                CanUserSortColumns="False"
+                CanUserAddRows="False"
+                RowHeaderWidth="0"
+                ColumnHeaderHeight="45"
+                VirtualizingStackPanel.IsVirtualizing="True" 
+                VirtualizingStackPanel.VirtualizationMode="Recycling"
+                CanUserDeleteRows="True"
+                SelectionMode="Single" MouseDoubleClick="DG_JobsList_MouseDoubleClick"  >
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="JOB NUMBER" Width="100" Binding="{Binding ProjectNumber}" IsReadOnly="True" >
+
+                    </DataGridTextColumn>
+                    <DataGridTextColumn Header="JOB NAME" Width="*" Binding="{Binding ProjectName}" IsReadOnly="True" >
+
+                    </DataGridTextColumn>
+                </DataGrid.Columns>
+            </DataGrid>
+        </Grid>
+    </Grid>
+</Window>
