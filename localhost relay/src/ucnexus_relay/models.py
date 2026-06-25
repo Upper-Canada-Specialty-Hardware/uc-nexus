@@ -37,7 +37,9 @@ class POLine(BaseModel):
 
 class POHeader(BaseModel):
     vendor_id: str = Field(..., max_length=15)
-    buyer_id: str = Field(..., max_length=15)
+    # optional: when omitted, the relay fills BUYERID from the workstation (see buyers.resolve_buyer).
+    # an explicit value here overrides the relay's device-based resolution.
+    buyer_id: str | None = Field(default=None, max_length=15)
     confirm_with: str = Field(..., max_length=20)
     doc_date: date
     currency_id: str = "CAD"
@@ -99,3 +101,17 @@ class ReceiptResponse(BaseModel):
     company: str
     lines_received: int
     custom_db_written: bool  # whether the WHRECLINE101 rows were written (false for sandboxes / unmapped companies)
+
+
+# --- vendor sync (feeds Vendor.gp_vendor_id in UC Nexus) ---
+
+class VendorOut(BaseModel):
+    vendor_id: str       # GP VENDORID (char 15)
+    vendor_name: str     # GP VENDNAME
+    vendor_class: str | None = None  # GP VNDCLSID
+    status: int          # GP VENDSTTS (1 = active)
+
+
+class VendorsResponse(BaseModel):
+    company: str
+    vendors: list[VendorOut]
