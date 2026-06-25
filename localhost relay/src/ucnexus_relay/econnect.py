@@ -355,6 +355,29 @@ def read_po_receipt_context(conn, po_number: str):
     return hdr.vendor, hdr.vendname, lines
 
 
+def list_vendors(conn, *, active_only: bool = True) -> list[dict]:
+    """Read-only: PM00200 vendor list for the vendor sync (feeds UC Nexus's Vendor.gp_vendor_id).
+    Returns VENDORID / VENDNAME / VNDCLSID (class) / VENDSTTS (status). VENDSTTS 1 = active; the
+    sync only wants vendors usable on a new PO, so active_only filters to those."""
+    sql = (
+        "SELECT RTRIM(VENDORID) AS vendor_id, RTRIM(VENDNAME) AS vendor_name, "
+        "RTRIM(VNDCLSID) AS vendor_class, VENDSTTS AS status FROM dbo.PM00200 "
+    )
+    if active_only:
+        sql += "WHERE VENDSTTS = 1 "
+    sql += "ORDER BY VENDNAME"
+    rows = conn.cursor().execute(sql).fetchall()
+    return [
+        {
+            "vendor_id": r.vendor_id,
+            "vendor_name": r.vendor_name,
+            "vendor_class": r.vendor_class or None,
+            "status": int(r.status),
+        }
+        for r in rows
+    ]
+
+
 def create_receipt_header(conn, *, receipt_number, po_number, vendor_id, receipt_date, batch_number, subtotal) -> None:
     sql = """
     DECLARE @err int = 0;

@@ -25,6 +25,19 @@ cp config.example.toml config.toml          # then set [auth] shared_secret
 poetry install
 ```
 
+enrollment (one-time, gets the relay's Bearer secret without hand-copying it)
+
+the relay's `[auth] shared_secret` can be set by hand, or provisioned from UC Nexus so nothing long-lived
+is pasted. in UC Nexus an admin runs "provision relay install" and gets a one-time enrollment token. then,
+on this workstation:
+```
+poetry run python -m ucnexus_relay.enroll --token <ENROLLMENT_TOKEN> --backend-url https://<backend-host>/graphql
+```
+the relay generates its own long-lived secret, registers it with the backend using that one-time token
+(the backend can't reach the relay, but the relay can reach the backend), and writes the secret into
+`config.toml`. restart the relay afterwards. the frontend then fetches the same secret at runtime via the
+`relayCredential` query - it's never baked into the build.
+
 run
 ```
 poetry run uvicorn ucnexus_relay.main:app --app-dir src --host 127.0.0.1 --port 7321
@@ -48,7 +61,10 @@ poetry run ruff check src tests
 
 endpoints
 - `GET /health` — liveness, no auth
-- `GET /info` — config + read-only SQL identity, bearer auth
+- `GET /info` — config + read-only SQL identity + the workstation `hostname` and the `resolved_buyer` that hostname maps to, bearer auth
+- `GET /vendors` — active PM00200 vendors (VENDORID / VENDNAME / class / status) for the vendor sync, bearer auth. takes `?company=` (defaults to `default_company`)
 - `POST /po/next-number` — reserve a PO number via `taGetPONextNumber`, bearer auth
-- `POST /po` — create a PO end-to-end via the 5-step orchestration, bearer auth
+- `POST /po` — create a PO end-to-end via the 5-step orchestration, bearer auth. `buyer_id` is optional in the request — when omitted the relay fills `BUYERID` from the workstation via `[gp.buyers]`, resolving `by_host` (explicit map) → `by_login` → `use_hostname` (the device's own traceable name) → `default`
 - `POST /receipt` — receive against a PO (taPopRcptLineInsert xN then taPopRcptHdrInsert, autocosted), and for a company mapped in `[gp.custom_db]` also writes the matching `WHRECLINE101` rows (the custom warehouse table the dashboards read) in the same transaction. needs a `rack_location` per line. bearer auth
+
+browser hop (the cloud frontend → `http://localhost:7321` call) is governed by Chrome Local Network Access from Chrome 142: the frontend fetch must set `targetAddressSpace: "loopback"` and the user grants a one-time loopback permission prompt (or IT pre-grants it via enterprise policy). that is a client-side gate — the relay needs no LNA server header. the relay does echo the legacy `Access-Control-Allow-Private-Network: true` on the preflight for stragglers on a pre-LNA Chrome, but it is not the mechanism.

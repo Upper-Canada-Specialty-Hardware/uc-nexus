@@ -48,6 +48,18 @@ def get_connection(company: str):
         conn.close()
 
 
+@contextmanager
+def get_read_connection(company: str):
+    """Read-only connection (autocommit) for plain SELECTs — no eConnect, no writes, no held
+    transaction. Used by /vendors and any other pure read."""
+    conn = pyodbc.connect(build_conn_string(company), autocommit=True)
+    conn.timeout = get_settings().sql.command_timeout
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
 def connection_info(company: str) -> dict:
     """Read-only identity probe for /info. Opens an autocommit connection, runs a
     metadata SELECT, returns who we are. No eConnect calls, no writes."""
