@@ -48,7 +48,8 @@ def provision_install(session: Session, label: str, company: str) -> tuple[Relay
 
 def enroll_install(session: Session, enrollment_token: str, hostname: str, secret: str) -> RelayInstall:
     """Called by the relay (authenticated by the enrollment token, not Clerk). Stores the relay's
-    self-generated secret encrypted and consumes the one-time token."""
+    self-generated secret encrypted; the token is single-use (a second attempt is rejected as
+    already-used via the enrolled_at guard)."""
     secret = (secret or "").strip()
     if not secret:
         raise ValidationError("secret is required", field="secret")
@@ -68,9 +69,9 @@ def enroll_install(session: Session, enrollment_token: str, hostname: str, secre
     install.secret_encrypted = encrypt_secret(secret)
     install.enrolled_at = now
     install.last_seen_at = now
-    # single use: consume the token
-    install.enrollment_token_hash = None
-    install.enrollment_token_expires_at = None
+    # single use is enforced by the enrolled_at guard above: a second attempt with the same token finds
+    # this now-enrolled row and is rejected as already-used. (Keeping the hash makes that a clear error
+    # rather than a generic "invalid token".)
     session.flush()
     return install
 
