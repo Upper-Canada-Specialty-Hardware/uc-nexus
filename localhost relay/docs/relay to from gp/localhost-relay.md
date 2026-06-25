@@ -1,6 +1,6 @@
 # Localhost Relay — POC Plan & Implementation Reference
 
-**Status: design finalized — pure Python relay calling eConnect-registered stored procedures directly via `pyodbc`.**
+**Status: BOTH workflows PROVEN against TUBC on 2026-06-24. Workflow 1 (PO create) incl. WennSoft job-cost commitment and custom (`ucnexus`) PO numbers; workflow 2 (receiving) receives against a created PO. Pure Python relay calling eConnect-registered stored procedures directly via `pyodbc`. See "what the live POC proved" below for corrections to the original plan.**
 
 The relay calls Microsoft-provided eConnect procs (`taGetPONextNumber`, `taPoHdr`, `taPoLine`) and WennSoft-provided eConnect-style procs (`wsiWSCreateUpdatePurchaseOrderIntegration`) via parameterized SQL EXEC, wrapped in a single transaction per PO. **No direct UPDATE/INSERT against GP tables** — only invocation of eConnect-registered procs, which is what enforces GP's business logic.
 
@@ -20,7 +20,31 @@ Earlier design iterations considered using Microsoft's `.NET` API (`eConnectMeth
 - [WennSoft Signature Nodes Reference (SmartConnect)](https://docs.wennsoft.com/1803b05/signature-nodes-reference) — lists "WS Purchase Orders" as the SmartConnect-friendly node name
 - [WennSoft Customer Portal](https://www.wennsoft.com/wsportal/home) — login required; deeper SmartConnect Integration Manager guides live behind it
 - Microsoft eConnect XSD + XML samples at `docs/econnect-reference/` — extracted locally; useful for confirming parameter sets per proc
-- WennSoft proc signatures saved at `docs/wennsoft-procs/` for offline reference
+- WennSoft proc signatures saved at `wennsoft-procs/` for offline reference
+
+## What the live POC proved (corrections to this plan)
+
+The PO-create path described in this doc had never actually been run when the doc was written (the deprecated app's PO-create path was a dead stub). It was run for real against TUBC on 2026-06-24, and workflow 1 now works end to end, including the WennSoft job-cost commitment. Four things in the original plan were wrong or missing. They are corrected inline below; summarized here:
+
+- `SET NOCOUNT ON` is required on the session before any eConnect proc call. Heavy procs (`taPoHdr`) do internal DML whose "(N rows affected)" messages otherwise push the trailing `SELECT @err` off pyodbc's first result set, failing with `No results. Previous SQL was not a query.`. `taGetPONextNumber` is simple enough to work without it; `taPoHdr` is not.
+- `taPoLine` has NO `Product_Indicator` parameter. The only way to set `Product_Indicator` (1 = non-inventoried, 2 = job cost) is the wsi proc, so it must run for EVERY line, not just job-cost lines. This matches macro-produced POs, which carry a `WS10101` row for every line (non-inv lines get `Product_Indicator=1`).
+- The trailing digit of a cost code is the `Cost_Element`, not `COSTTYPE`. `210-200-2` splits to `Cost_Code_Number_1='210'`, `Cost_Code_Number_2='200'`, `@I_vCost_Element=2`. `COSTTYPE` stays 0 (every `WS10101` row at this customer has `COSTTYPE=0`). Verified against `JC00701.Cost_Element`.
+- Lines must be created Released (`@I_vPOLNESTA=2` on `taPoLine`). If they default to `POLNESTA=1` (New), the wsi proc creates the `WS10101` tracking row but commits ZERO cost to `JC00701`/`JC00102`. `POLNESTA=2` makes `WS10101.UNITCOST`/`Committed_Cost` and the JC committed cost populate from the line. The header status (`POSTATUS=2`) does NOT promote the lines.
+
+Two more findings:
+
+- A rolled-back create does NOT leak a PO number on the pyodbc path. `taGetPONextNumber`'s increment of `POP40100.PONUMBER` rolls back with the surrounding transaction, contrary to the "gaps are normal" note elsewhere in this doc.
+- Custom PO numbers work. GP accepts any `PONUMBER` the caller supplies (the Excel macro already relied on this). The relay now takes an optional `po_number` on `POST /po`; when present it skips `taGetPONextNumber` and passes the value straight to `taPoHdr`/`taPoLine`. GP stores `PONUMBER` UPPERCASE (`ucnexus0000001` is stored as `UCNEXUS0000001`); it is `char(17)`, so a `ucnexus` prefix leaves 10 characters for the sequence.
+
+Receiving (workflow 2) is also proven - receive against a PO from workflow 1. Three things the plan and the legacy code did not make obvious for direct proc calls:
+
+- reserve a receipt number via `taGetPurchReceiptNextNumber` (Inc), then call `taPopRcptLineInsert` for each line BEFORE `taPopRcptHdrInsert`. eConnect processes receipt lines before the header; calling the header first makes the line a duplicate (error 8053 "duplicate document").
+- the header `@I_vSUBTOTAL` MUST equal the sum of the autocosted line totals (received qty x the PO line's unit cost), or the header errors 2006 "Subtotal does not match the line item totals." the legacy got away with `SUBTOTAL=0` only because eConnect's XML envelope recomputes it; a direct proc call does not.
+- lines pass `@I_vAUTOCOST=1` with `UNITCOST=0`/`EXTDCOST=0`; GP fills the cost from the PO line (verified: receipt lines came out 33.00 / 555.00 from PO0000044, job 80003 carried through). the receipt lands in `POP10300` (work header) / `POP10310` (work lines), with PO-line links + received qty in `POP10500`. it sits in a GP batch (`BACHNUMB`, legacy convention `EC-yyyy/MM/dd`) that a user posts inside GP to finalize - until then the PO line's `LSTRCPTDT`/received rollup doesn't update.
+
+receiving must ALSO write the custom warehouse table, or the dashboards go blind. the company's Excel "SearchDetails" and other dashboards read receipts from `PMUBC.dbo.WHRECLINE101` (paired `PMUCSH` for UCSH), NOT from GP's receipt tables. a GP-only receipt is invisible to them (and to the downstream shipping/tagging chain, which also keys off WHRECLINE101). so the legacy app, and now the relay, write BOTH per receive: the GP eConnect receipt, then a `WHRECLINE101` row per line. WHRECLINE101 stores what GP can't - the RACK `Location` (distinct from GP `LOCNCODE`), `RevisionNumber`, `Comments`, `QuantityRemainingOnRack` - plus the keys back to the GP receipt (`PONUMBER`+`POLNENUM`+`POPRCTNM`+`RCPTLNNM`). it's a pure data store (no procs/triggers), so a direct `INSERT` is the only mechanism and does NOT break the eConnect-only rule (which guards GP business-logic tables, not this custom store). the relay does the WHRECLINE101 insert in the SAME transaction as the GP receipt (cross-database on one SQL instance is atomic without MSDTC), so if it fails the GP receipt rolls back too - eliminating the legacy's "GP receipt made, custom row not" orphan hazard. it's gated by config `[gp.custom_db]` (`UBC`=`PMUBC`, `UCSH`=`PMUCSH`); a company with no mapping (the sandboxes) gets a GP-only receipt. the `/receipt` request therefore needs a `rack_location` per line (the legacy rejects a blank rack), plus optional `revision_number`/`comments` and a top-level `received_by`.
+
+The authoritative implementation is now the working relay code under `../src/ucnexus_relay/`. The code samples in this doc have been corrected to match.
 
 ## Contents
 
@@ -322,13 +346,13 @@ The relay performs a sequence of eConnect proc calls per PO, all wrapped in a si
 
 | Step | Proc | Purpose |
 |---|---|---|
-| 1 | `taGetPONextNumber` | Reserve next PO number |
+| 1 | `taGetPONextNumber` (or skip) | Reserve GP's next `PO` number. SKIPPED when UC Nexus supplies its own `po_number` (e.g. `ucnexus...`), which is passed straight through to steps 2-3 instead. |
 | 2 | `taPoHdr` | Create PO header (without SUBTOTAL on first call) |
-| 3 | `taPoLine` (× N) | Create each line item |
-| 4 | `wsiWSCreateUpdatePurchaseOrderIntegration` (× M) | For each job-cost line, populate the WennSoft job-cost fields on POP10110 + write to WS10101, JC00102, JC00701 |
+| 3 | `taPoLine` (× N) | Create each line item. MUST pass `@I_vPOLNESTA=2` (Released) or step 4 commits zero cost. |
+| 4 | `wsiWSCreateUpdatePurchaseOrderIntegration` (× N, EVERY line) | Sets `Product_Indicator` on the POP10110 line (taPoLine can't). For job-cost lines it also writes `JOBNUMBR` / the cost-code split / `Cost_Element` and commits cost to `WS10101` / `JC00102` / `JC00701`. Non-inv lines get `Product_Indicator=1` and a `WS10101` shell row. |
 | 5 | `taPoHdr` (with `UpdateIfExists=1`) | Re-call with computed SUBTOTAL to update the header total |
 
-All five steps happen inside one `BEGIN TRAN` / `COMMIT` (or `ROLLBACK` on any failure).
+All steps happen inside one `BEGIN TRAN` / `COMMIT` (or `ROLLBACK` on any failure). Two load-bearing details that the original plan missed: the session needs `SET NOCOUNT ON` (step 4 and the `taPoHdr` calls fail at the pyodbc layer otherwise), and step 3 must set `@I_vPOLNESTA=2` (else step 4 records the job-cost assignment but commits no cost). See "what the live POC proved" above.
 
 **Why two calls to `taPoHdr`?** eConnect's `taPoHdr` validates `@I_vSUBTOTAL` against the current sum of line totals in `POP10110`. On the first call, no lines exist yet, so we must pass `SUBTOTAL=0` (or omit it). After all lines are inserted (steps 3-4), we re-call `taPoHdr` with `UpdateIfExists=1` and the real subtotal. This is how the .NET `CreateEntity` ultimately handles it too — by sequencing the proc calls correctly internally.
 
@@ -340,12 +364,12 @@ from contextlib import contextmanager
 
 def build_conn_string(company: str) -> str:
     return (
-        "DRIVER={ODBC Driver 18 for SQL Server};"
-        "SERVER=UCSHSQL2\\MSSQL2014;"
-        f"DATABASE={company};"
-        "Trusted_Connection=yes;"      # Windows auth via SSPI
+        "DRIVER={ODBC Driver 17 for SQL Server};"   # 17 is installed on the dev box; 18 works too
+        "SERVER=10.0.0.246,1435;"                    # named-instance endpoint; the UCSHSQL2 hostname
+        f"DATABASE={company};"                        # only resolves on-domain, so use IP,port
+        "Trusted_Connection=yes;"                     # Windows auth via SSPI - no password stored
         "Encrypt=yes;"
-        "TrustServerCertificate=yes;"  # internal CA — fine for POC
+        "TrustServerCertificate=yes;"                 # internal CA - fine for POC
         "Connection Timeout=10;"
     )
 
@@ -353,6 +377,10 @@ def build_conn_string(company: str) -> str:
 def get_connection(company: str):
     conn = pyodbc.connect(build_conn_string(company), autocommit=False)
     conn.timeout = 30  # query timeout in seconds
+    # REQUIRED: suppress "(N rows affected)" tokens from the procs' internal DML. Without this the
+    # trailing `SELECT @err` after an EXEC lands on a non-query result and pyodbc raises
+    # "No results. Previous SQL was not a query." taPoHdr/taPoLine hit this; taGetPONextNumber doesn't.
+    conn.cursor().execute("SET NOCOUNT ON")
     try:
         yield conn
     finally:
@@ -462,12 +490,13 @@ def create_po_line(
     uofm: str = "Each",
     po_type: int = 1,
 ) -> None:
-    """Create one PO line via taPoLine.
+    """Create one PO line via taPoLine, Released (@I_vPOLNESTA=2).
 
-    Note: this creates a basic non-inventoried line. For job-cost lines,
-    follow up with apply_wennsoft_job_cost() to set JOBNUMBR/COSTCODE/Product_Indicator
-    via the wsi proc. Do NOT pass ProjNum/CostCatID — they fail silently at this
-    customer because PA42201 doesn't exist (Project Accounting module not configured)."""
+    POLNESTA=2 is load-bearing: lines left at the default POLNESTA=1 (New) make the wsi proc
+    in step 4 record the job-cost assignment but commit ZERO cost to JC. taPoLine has NO
+    Product_Indicator parameter, so PI=1/PI=2 is set by the wsi proc (step 4), called for
+    every line. Do NOT pass ProjNum/CostCatID - they fail silently at this customer because
+    PA42201 doesn't exist (Project Accounting module not configured)."""
     sql = """
     DECLARE @err int = 0;
     DECLARE @err_str varchar(255) = '';
@@ -477,6 +506,7 @@ def create_po_line(
         @I_vDOCDATE        = ?,
         @I_vVENDORID       = ?,
         @I_vNONINVEN       = 1,
+        @I_vPOLNESTA       = 2,
         @I_vUpdateIfExists = 1,
         @I_vLOCNCODE       = ?,
         @I_vITEMNMBR       = ?,
@@ -513,40 +543,44 @@ def create_po_line(
         )
 ```
 
-### Step 4: `wsiWSCreateUpdatePurchaseOrderIntegration` (× M, only for job-cost lines)
+### Step 4: `wsiWSCreateUpdatePurchaseOrderIntegration` (× N, EVERY line)
 
 Reference: [official docs page](https://docs.wennsoft.com/1803b05/wsiwscreateupdatepurchaseorderintegration). Affected tables (per docs): `WS10101, SV00300, JC00102, JC00701, PM00200, IV00101, POP10100, POP10110`.
 
-This proc sets `Product_Indicator=2`, `JOBNUMBR`, and `COSTCODE` on the POP10110 line, plus updates the WennSoft tables (WS10101 for integration tracking, JC00102/JC00701 for Job Cost commitments).
+Called for EVERY line, because `taPoLine` has no `Product_Indicator` parameter and this proc is the only way to set it (1 = non-inv, 2 = job cost). For job-cost lines it also writes `JOBNUMBR`, the cost-code split, and `Cost_Element`, and - provided the line is Released (`POLNESTA=2`, set in step 3) - commits the line cost into `WS10101` (`UNITCOST`/`Committed_Cost`) and `JC00701`/`JC00102`. Non-inv lines just get `Product_Indicator=1` and a `WS10101` shell row. `COSTTYPE` is always 0 here; the trailing cost-code digit is the `Cost_Element`, not the cost type.
 
 ```python
-def apply_wennsoft_job_cost(
+def apply_wennsoft_integration(
     conn,
     *,
     po_number: str,
-    line_ord: int,        # GP's line ordering value (16384 for line 1, 32768 for line 2, ...)
-    job_number: str,
-    cost_code: str,       # format: 'phase-step-type', e.g. '210-200-2'
+    line_ord: int,                 # GP's line ordering value (16384 for line 1, 32768 for line 2, ...)
+    product_indicator: int,        # 1 = non-inventoried, 2 = job cost
+    job_number: str | None = None,
+    cost_code: str | None = None,  # 'phase-step-element', e.g. '210-200-2'
 ) -> None:
-    """Apply WennSoft Job Cost fields to a PO line via the wsi eConnect-style proc.
+    """Run the wsi proc for ONE line. Called for every line: it is the only way to set
+    POP10110.Product_Indicator. For job-cost lines it also commits cost to WS10101/JC00102/
+    JC00701 - but only when the line is Released (POLNESTA=2, set in step 3).
 
-    Cost code parsing for this customer (verified against JC00701):
-      '210-200-2' splits into:
-        Cost_Code_Number_1 = '210' (Phase, 3 chars)
-        Cost_Code_Number_2 = '200' (Step, 3 chars)
-        Cost_Code_Number_3 = ''    (unused at this customer)
-        Cost_Code_Number_4 = ''    (unused at this customer)
-        COSTTYPE = 2               (the trailing digit — smallint)
+    Cost code 'phase-step-element' e.g. '210-200-2' (verified vs JC00701):
+      Cost_Code_Number_1='210', Cost_Code_Number_2='200', Cost_Element=2 (the TRAILING digit).
+      COSTTYPE stays 0. The doc previously called the trailing digit COSTTYPE - that was wrong.
     """
-    segments = cost_code.split("-") + ["", "", "", ""]
-    cc1, cc2, cc3, cc_type_str = segments[0], segments[1], segments[2], segments[2]
-    # The third hyphen-segment is COSTTYPE (smallint), not Cost_Code_Number_3
-    try:
-        cost_type = int(cc_type_str) if cc_type_str else 0
-    except ValueError:
-        cost_type = 0
-    cc3_val = ""  # this customer only uses 2 segments
-    cc4_val = ""
+    if product_indicator == 2:
+        segs = cost_code.split("-")
+        cc1 = segs[0] if len(segs) > 0 else ""
+        cc2 = segs[1] if len(segs) > 1 else ""
+        try:
+            cost_element = int(segs[2]) if len(segs) > 2 and segs[2] else 0
+        except ValueError:
+            cost_element = 0
+        job = job_number or ""
+    else:
+        cc1 = cc2 = ""
+        cost_element = 0
+        job = ""
+    cc3 = cc4 = ""
 
     sql = """
     DECLARE @err int = 0;
@@ -554,13 +588,14 @@ def apply_wennsoft_job_cost(
     EXEC dbo.wsiWSCreateUpdatePurchaseOrderIntegration
         @I_vPONUMBER           = ?,
         @I_vORD                = ?,
-        @I_vProduct_Indicator  = 2,
+        @I_vProduct_Indicator  = ?,
         @I_vJOBNUMBR           = ?,
-        @I_vCOSTTYPE           = ?,
+        @I_vCOSTTYPE           = 0,
         @I_vCost_Code_Number_1 = ?,
         @I_vCost_Code_Number_2 = ?,
         @I_vCost_Code_Number_3 = ?,
         @I_vCost_Code_Number_4 = ?,
+        @I_vCost_Element       = ?,
         @I_vWennSoftTablesOnly = 0,
         @I_vUpdateIfExists     = 1,
         @I_vOnlyValidate       = 0,
@@ -571,12 +606,12 @@ def apply_wennsoft_job_cost(
     """
     row = conn.cursor().execute(
         sql,
-        po_number, line_ord, job_number, cost_type,
-        cc1, cc2, cc3_val, cc4_val,
+        po_number, line_ord, product_indicator, job, cc1, cc2, cc3, cc4, cost_element,
     ).fetchone()
     if row.error_state != 0:
         raise EConnectError(
-            f"wsiWSCreateUpdatePurchaseOrderIntegration failed for line ORD={line_ord}: {row.err_string.strip()}",
+            f"wsiWSCreateUpdatePurchaseOrderIntegration failed for ORD={line_ord} (PI={product_indicator}): "
+            f"{row.err_string.strip()}",
             proc="wsiWSCreateUpdatePurchaseOrderIntegration",
             error_state=row.error_state,
         )
@@ -680,8 +715,12 @@ def create_po(
     try:
         with db.get_connection(request.company) as conn:
             try:
-                # Step 1: reserve PO number
-                po_number = econnect.get_next_po_number(conn)
+                # Step 1: PO number - use UC Nexus's own (e.g. 'ucnexus...') if supplied, else reserve GP's
+                if request.po_number:
+                    po_number = request.po_number
+                    econnect.assert_po_number_available(conn, po_number)
+                else:
+                    po_number = econnect.get_next_po_number(conn)
 
                 # Step 2: create header (no SUBTOTAL — see Step 5)
                 econnect.create_po_header(
@@ -711,16 +750,16 @@ def create_po(
                         uofm=line.uofm,
                     )
 
-                # Step 4: for each job-cost line, apply WennSoft Job Cost data
+                # Step 4: WennSoft integration for EVERY line - this is what sets Product_Indicator
                 for line_index, line in enumerate(request.lines, start=1):
-                    if line.product_indicator == 2:
-                        econnect.apply_wennsoft_job_cost(
-                            conn,
-                            po_number=po_number,
-                            line_ord=line_index * 16384,
-                            job_number=line.job_number,
-                            cost_code=line.cost_code,
-                        )
+                    econnect.apply_wennsoft_integration(
+                        conn,
+                        po_number=po_number,
+                        line_ord=line_index * 16384,
+                        product_indicator=line.product_indicator,
+                        job_number=line.job_number,
+                        cost_code=line.cost_code,
+                    )
 
                 # Step 5: re-call taPoHdr with the computed SUBTOTAL
                 subtotal = sum(line.quantity * line.unit_cost for line in request.lines)
@@ -788,7 +827,7 @@ class POLine(BaseModel):
     uofm: str = "Each"
     product_indicator: int = 1   # 1=Non-Inventoried, 2=Job Cost
     job_number: str | None = None
-    cost_code: str | None = None  # format: 'phase-step-type' e.g. '210-200-2'
+    cost_code: str | None = None  # format: 'phase-step-element' e.g. '210-200-2'
 
     @model_validator(mode="after")
     def check_job_cost_consistency(self):
@@ -815,6 +854,9 @@ class CreatePoRequest(BaseModel):
     company: str
     header: POHeader
     lines: list[POLine] = Field(..., min_length=1)
+    # UC Nexus's own PO number (e.g. 'ucnexus...'). char(17) max. If omitted, the relay
+    # reserves GP's next 'PO' number via taGetPONextNumber.
+    po_number: str | None = Field(default=None, max_length=17)
 
 class CreatePoResponse(BaseModel):
     po_number: str
@@ -933,9 +975,14 @@ No `lib/` folder — no .NET DLLs to ship.
    - `JC00102`/`JC00701`: committed cost updated for the job
 7. **Resolve the known unknowns** — see "Resolving the two known unknowns in Phase 3" below.
 
-### Resolving the two known unknowns in Phase 3
+### The two known unknowns - resolved (2026-06-24)
 
-The plan has two open questions that can only be answered by inspecting the database after the first successful Phase 3 create. Both are simple read-only checks. Do them right after your first authorized PO create, before declaring Phase 3 done.
+Both were resolved on the first live creates:
+
+- Unknown #1 (POPCONTNUM): the wsi proc does NOT set it - it came back blank on every test PO. No eConnect-registered proc exposes it. Leave blank unless the customer needs it, in which case it's a WennSoft-side follow-up, never a direct UPDATE.
+- Unknown #2 (SUBTOTAL / dropping step 5): not tested in isolation and superseded by the POLNESTA finding. With step 5 kept, SUBTOTAL/REMSUBTO come out correct. The load-bearing discovery in this area was that the wsi proc only commits job cost for Released lines (POLNESTA=2; see "what the live POC proved"). Step 5 is retained.
+
+The original investigation protocols are kept below for reference; the answers above stand.
 
 #### Unknown #1: Does the wsi proc populate `POPCONTNUM` automatically?
 
@@ -1011,17 +1058,15 @@ The user's experience: fill out a PO in UC Nexus → click Submit → done.
 
 ## Open questions / decisions before coding
 
-Two known unknowns are **load-bearing for the implementation** but answerable only by inspecting the database after a Phase 3 test:
-- Does the wsi proc set `POPCONTNUM` automatically?
-- Does the wsi proc set `POP10100.SUBTOTAL` automatically (which would make Step 5 unnecessary)?
-
-Both have their resolution protocols (specific queries + decision tables) in "Resolving the two known unknowns in Phase 3" above. The agent should run these checks immediately after the first authorized PO create and document the outcomes.
+The two unknowns that were load-bearing for the implementation are now RESOLVED (see "the two known unknowns - resolved" above):
+- Does the wsi proc set `POPCONTNUM`? NO - it stays blank.
+- Does the wsi proc set `POP10100.SUBTOTAL` (making Step 5 unnecessary)? Not isolated-tested; step 5 is retained and produces correct subtotals. The real find was that lines must be Released (POLNESTA=2) for the wsi proc to commit job cost at all.
 
 Beyond those, here are the design decisions that don't need investigation — defaults are in parentheses:
 
 1. **Sandbox company**: TUBC. (Confirmed accessible to your account; eConnect procs verified present; sequence runs independently from production UBC/UCSH.)
 2. **Auth pairing flow**: For POC, static shared secret in `config.toml`? (Recommended.)
-3. **Partial-failure handling**: If Step 4 (wsi) fails after Step 3 (taPoLine) succeeded, the `BEGIN TRAN`/`ROLLBACK` reverses POP10100/POP10110 inserts. The only thing that persists is the consumed PO number from `taGetPONextNumber` (which advances outside the transaction — gaps are normal in GP).
+3. **Partial-failure handling**: If Step 4 (wsi) fails after Step 3 (taPoLine) succeeded, the `BEGIN TRAN`/`ROLLBACK` reverses POP10100/POP10110 inserts. Verified live: the `taGetPONextNumber` increment rolls back too, so nothing persists and no PO-number gap is left (and when UC Nexus supplies its own `po_number`, taGetPONextNumber isn't called at all).
 4. **How does UC Nexus know whether the relay is installed?** Background `fetch('http://localhost:7321/health')` on the PO page, banner if missing. POC can skip.
 5. **Relay distribution**: For POC, `git clone + poetry install + python -m uvicorn ...` on one dev machine. PyInstaller `.exe` is Phase 4. Real installer (MSI) is post-POC.
 
@@ -1038,7 +1083,7 @@ Beyond those, here are the design decisions that don't need investigation — de
 | Two relays on the same machine collide on port 7321 | Detect at startup, fail with clear "port in use" message; let user override port via config |
 | eConnect proc returns `err=0` but row never inserts (silent failure — verified for `taPoLine` with `ProjNum`/`CostCatID` against missing `PA42201`) | Defensive read-back: after each `taPoLine`, query `POP10110` to confirm the row exists. The wrapper includes this check. |
 | `taPoHdr` rejects SUBTOTAL because it doesn't match lines | Split into two calls: initial taPoHdr without SUBTOTAL → lines → re-call taPoHdr with `UpdateIfExists=1` and correct SUBTOTAL (Step 5 in the orchestration) |
-| Partial failure: PO header created but job-cost wsi call fails | Wrapped in single `BEGIN TRAN`; `ROLLBACK` undoes the inserts. Only side effect is the consumed PO number from `taGetPONextNumber` (which is outside the transaction — leaves a gap, which is normal in GP). |
+| Partial failure: PO header created but job-cost wsi call fails | Wrapped in single `BEGIN TRAN`; `ROLLBACK` undoes the inserts. Verified live: the `taGetPONextNumber` increment rolls back too, so no PO-number gap is left. |
 | Decimal precision drift between Python and SQL | pyodbc auto-converts Python `Decimal` to SQL `decimal(19,5)` correctly. Use `Decimal(str(value))` rather than `Decimal(float)` when constructing values from JSON to avoid float intermediate precision loss. |
 
 ---
@@ -1272,7 +1317,7 @@ All values verified read-only against `TUBC` on 2026-05-07.
 | Shipping method (`SHIPMTHD`) | `LOCAL DELIVERY` | observed |
 | Confirm With (`CONFIRM1`) | free text — observed: `MARY`, `Greg Sutton` | observed |
 | Job number (`JOBNUMBR`) — for PI=2 | `80003` | observed in PI=2 rows |
-| Cost code — for PI=2 | `210-200-2` (parses to: cc1='210', cc2='200', cc3='', cc4='', COSTTYPE=2) | observed; verified split via `JC00701` |
+| Cost code — for PI=2 | `210-200-2` (parses to: cc1='210', cc2='200', cc3='', cc4='', Cost_Element=2) | observed; verified split via `JC00701.Cost_Element` |
 | Next PO number | as of 2026-05-07: `PO0000041` (advances on each `taGetPONextNumber` call) | `TUBC.dbo.POP40100` |
 
 ## Verified working test PO request
@@ -1400,13 +1445,13 @@ These were established read-only and remain valid:
 
 3. **WennSoft is actively used for Job/Project Cost** (the project-entity layer GP doesn't natively support). The `wsiWSCreateUpdatePurchaseOrderIntegration` proc is the eConnect-style entry point for setting Product_Indicator/JOBNUMBR/COSTCODE on PO lines, plus updating WS10101/JC00102/JC00701. We have EXECUTE permission. Body is encrypted (proprietary WennSoft IP) but parameter signature matches the public docs.
 
-4. **The PO sequence (POP40100.PONUMBER) increments outside the caller's transaction** — gaps from failed creates are normal and accepted in GP. The relay should not try to "undo" a consumed number on failure.
+4. **The PO sequence (POP40100.PONUMBER) increment ROLLS BACK with the transaction on the pyodbc path.** Verified live: a failed/rolled-back create left POP40100.PONUMBER unchanged - no gap. This contradicts the ".NET eConnect leaves a gap" lore; on the direct-pyodbc path the `taGetPONextNumber` increment participates in the caller's transaction. Moot anyway when UC Nexus supplies its own `po_number` (taGetPONextNumber is then skipped).
 
 5. **PI ↔ JOBNUMBR invariant in production data**: PI=2 lines (Job Cost) ALL have JOBNUMBR populated; PI=1 lines (Non-Inventoried) ALL have empty JOBNUMBR. Pydantic models enforce this before we even open a SQL connection.
 
 6. **The 2 macro-driven `.mac` files** correspond to: (a) `multiplePOGet.mac` reserves a PO number by tabbing through GP's UI then cancelling — the eConnect equivalent is `taGetPONextNumber`. (b) `GPPOmacro.mac` fills out the full PO including project linkage — the eConnect equivalent is `taPoHdr` + `taPoLine` + `wsiWSCreateUpdatePurchaseOrderIntegration` per job-cost line.
 
-7. **Cost code structure at this customer**: `'phase-step-type'` like `'210-200-2'`. Splits to wsi proc params as: `Cost_Code_Number_1='210'`, `Cost_Code_Number_2='200'`, `Cost_Code_Number_3=''`, `Cost_Code_Number_4=''`, `COSTTYPE=2`. Confirmed by reading `JC00701` directly for job 80003 — segments 3 and 4 are blank for every cost code at this customer.
+7. **Cost code structure at this customer**: `'phase-step-element'` like `'210-200-2'`. Splits to wsi proc params as: `Cost_Code_Number_1='210'`, `Cost_Code_Number_2='200'`, `Cost_Code_Number_3=''`, `Cost_Code_Number_4=''`, and `@I_vCost_Element=2` (the TRAILING digit). `COSTTYPE` stays 0. Confirmed against `JC00701.Cost_Element` for job 80003; segments 3 and 4 are blank for every cost code at this customer.
 
 ## Open follow-ups for the user (not the agent)
 
@@ -1414,4 +1459,4 @@ These were established read-only and remain valid:
 2. **Distribution mechanism** — PyInstaller `.exe` for early adopters; MSI installer or Group Policy for wider rollout. Includes ODBC Driver 18 as a prerequisite.
 3. **Auto-start** — should the relay launch on user logon? Recommended for usability.
 4. **WennSoft customer portal access** — request login at [www.wennsoft.com/wsportal/home](https://www.wennsoft.com/wsportal/home). Useful for deeper integration docs if questions come up during Phase 3.
-5. **If Unknown #1 (POPCONTNUM) resolves to "not set automatically"** — escalate to the customer: do they need POPCONTNUM populated for their downstream workflows? If yes, this requires further WennSoft-side investigation (no eConnect-registered proc directly exposes this field). The agent should NOT add direct UPDATE as a workaround.
+5. **POPCONTNUM is NOT set by the wsi proc (resolved live - it stays blank).** Open follow-up for the customer: do they need POPCONTNUM populated for downstream workflows? If yes, it needs WennSoft-side investigation (no eConnect-registered proc exposes this field). Never add a direct UPDATE as a workaround.
