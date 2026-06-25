@@ -10,7 +10,7 @@ shared_secret = "REPLACE_ME_RANDOM_TOKEN"
 
 [cors]
 allowed_origins = [
-  "https://ucnexus-frontend-production.up.railway.app",
+  "https://frontend-production-34fc.up.railway.app",
   "http://localhost:5173",
   "http://localhost:8000",
 ]
@@ -39,21 +39,17 @@ UBC = "PMUBC"
 UCSH = "PMUCSH"
 
 [gp.buyers]
-# GP BUYERID is free text in POP10100 (no buyer-master to validate against). the relay fills it from
-# the WORKSTATION when the /po request omits buyer_id - the machine that knows the device is the relay.
-# company device names are traceable to individuals via an internal system, so the device name itself
-# is a valid buyer handle. resolution order:
-#   by_host (explicit map) -> by_login (SSPI login) -> use_hostname (the device's own name) -> default.
-# matching is case-insensitive; the result is truncated to GP's char(15) BUYERID width.
-use_hostname = true   # use socket.gethostname() as the buyer on every workstation, no per-host config
-default = "mira"      # final fallback if use_hostname is off / the hostname is empty (TUBC test = "mira")
+# Normally the Create PO dropdown sends the buyer (picked from GET /buyers = GP's registered buyers in
+# POP00101). [gp.buyers] is only the FALLBACK when a /po omits buyer_id. The value MUST be a REGISTERED
+# GP buyer - eConnect taPoHdr rejects an unregistered BUYERID (error 269); a device hostname is NOT a
+# registered buyer. Resolution: by_host -> by_login -> default. Matching is case-insensitive.
+default = "mira"   # fallback registered buyer (TUBC registered buyers: donr, mira)
 
 [gp.buyers.by_host]
-# explicit override for a machine whose name should NOT be the buyer:
-# WORKSTATION-HOSTNAME = "Buyer Name"
+# WORKSTATION-HOSTNAME = "registered-buyer"   # device hostname -> a registered GP buyer
 
 [gp.buyers.by_login]
-# "DOMAIN\\login" = "Buyer Name"
+# "DOMAIN\\login" = "registered-buyer"
 
 [logging]
 level = "INFO"

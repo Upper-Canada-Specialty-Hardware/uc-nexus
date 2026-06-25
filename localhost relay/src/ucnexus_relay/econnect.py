@@ -378,6 +378,16 @@ def list_vendors(conn, *, active_only: bool = True) -> list[dict]:
     ]
 
 
+def list_buyers(conn) -> list[str]:
+    """Registered GP buyer IDs from the buyer master POP00101. eConnect taPoHdr validates BUYERID against
+    this and rejects an unregistered buyer (error 269), so /po pre-checks against this list and the
+    Create PO buyer dropdown is populated from it. (A device hostname is NOT a registered buyer.)"""
+    rows = conn.cursor().execute(
+        "SELECT RTRIM(BUYERID) AS b FROM dbo.POP00101 WHERE BUYERID <> '' ORDER BY BUYERID"
+    ).fetchall()
+    return [r.b for r in rows]
+
+
 def create_receipt_header(conn, *, receipt_number, po_number, vendor_id, receipt_date, batch_number, subtotal) -> None:
     sql = """
     DECLARE @err int = 0;
