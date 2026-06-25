@@ -13,3 +13,11 @@ def test_vendors_requires_token():
 
 def test_vendors_rejects_bad_token():
     assert client.get("/vendors", headers={"Authorization": "Bearer wrong"}).status_code == 401
+
+
+def test_buyers_requires_token():
+    assert client.get("/buyers").status_code == 401
+
+
+def test_buyers_rejects_bad_token():
+    assert client.get("/buyers", headers={"Authorization": "Bearer wrong"}).status_code == 401

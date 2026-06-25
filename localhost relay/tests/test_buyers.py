@@ -31,23 +31,3 @@ def test_none_when_nothing_matches_and_no_default():
 def test_truncates_to_char_15():
     cfg = BuyersCfg(by_host={"H": "ThisNameIsWayTooLong"})
     assert resolve_buyer(cfg, "H") == "ThisNameIsWayTo"  # GP BUYERID is char(15)
-
-
-def test_use_hostname_when_enabled_and_unmapped():
-    cfg = BuyersCfg(use_hostname=True)
-    assert resolve_buyer(cfg, "Tagging3W10") == "Tagging3W10"
-
-
-def test_use_hostname_off_falls_through_to_default():
-    cfg = BuyersCfg(use_hostname=False, default="fallback")
-    assert resolve_buyer(cfg, "Tagging3W10") == "fallback"
-
-
-def test_by_host_overrides_use_hostname():
-    cfg = BuyersCfg(use_hostname=True, by_host={"Tagging3W10": "Real Person"})
-    assert resolve_buyer(cfg, "Tagging3W10") == "Real Person"
-
-
-def test_use_hostname_truncated_to_char_15():
-    cfg = BuyersCfg(use_hostname=True)
-    assert resolve_buyer(cfg, "VeryLongHostnameABCDEF") == "VeryLongHostnam"  # 15 chars

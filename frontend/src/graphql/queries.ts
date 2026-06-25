@@ -581,12 +581,21 @@ export const GET_VENDORS = gql`
     vendors {
       id
       name
+      gpVendorId
       contactName
       email
       phone
       notes
       createdAt
       updatedAt
+    }
+  }
+`;
+
+export const GET_RELAY_CREDENTIAL = gql`
+  query GetRelayCredential {
+    relayCredential {
+      secret
     }
   }
 `;

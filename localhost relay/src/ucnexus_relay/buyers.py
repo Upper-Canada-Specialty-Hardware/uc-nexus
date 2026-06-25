@@ -1,15 +1,12 @@
-"""Resolve the GP BUYERID from the workstation identity.
+"""Fallback resolution of the GP BUYERID when a /po omits buyer_id.
 
-GP has no buyer-master at this customer — BUYERID is a free-text human name written straight to
-POP10100 (verified in the GP discovery: "Buyers are free-text human names ... No buyer-master
-enforcement"). So there is nothing to validate against; the relay just maps the device to a name.
+Normally the Create PO dropdown sends a buyer_id picked from GP's registered buyers (POP00101, via
+GET /buyers). This is just the fallback when the request omits it. The value MUST be a REGISTERED GP
+buyer: eConnect taPoHdr validates BUYERID against POP00101 and rejects an unregistered one (error
+269) - a device hostname is NOT a registered buyer, which is why there's no use_hostname option.
 
-The relay fills the buyer when the /po request omits it, because the machine that knows the device
-is the relay, not the cloud frontend. Company device names are traceable to individuals via an
-internal system, so the device name itself is a valid buyer handle. Resolution order:
-  by_host (explicit map) -> by_login (SSPI login) -> use_hostname (the device's own name) -> default.
-Matching is case-insensitive (Windows hostnames/logins are). The result is truncated to GP's
-char(15) BUYERID width.
+Resolution order: by_host (device hostname -> registered buyer) -> by_login (SSPI login -> registered
+buyer) -> default. Matching is case-insensitive. The result is truncated to GP's char(15) width.
 """
 
 from .config import BuyersCfg
@@ -24,8 +21,6 @@ def resolve_buyer(cfg: BuyersCfg, hostname: str, login: str | None = None) -> st
     if not buyer and login:
         by_login = {k.upper(): v for k, v in cfg.by_login.items()}
         buyer = by_login.get(login.upper())
-    if not buyer and cfg.use_hostname and hostname:
-        buyer = hostname  # the device name is itself a traceable buyer identity
     if not buyer:
         buyer = cfg.default
     if buyer:
