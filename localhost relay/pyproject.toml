@@ -1,0 +1,32 @@
+[tool.poetry]
+name = "ucnexus-relay"
+version = "0.1.0"
+description = "Localhost relay bridging UC Nexus (cloud) to Dynamics GP via eConnect stored procedures"
+authors = ["UC Nexus Team"]
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "^0.115"
+uvicorn = {extras = ["standard"], version = "^0.32"}
+pydantic = "^2.9"
+pydantic-settings = "^2.6"
+pyodbc = "^5.2"
+python-json-logger = "^2.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3"
+httpx = "^0.27"
+ruff = "^0.7"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
