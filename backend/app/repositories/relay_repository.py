@@ -79,9 +79,7 @@ def get_credential(session: Session) -> str:
     """Return the decrypted Bearer secret for the enrolled install. POC: the single (most recently)
     enrolled install. Production keys this per workstation/user assignment."""
     install = session.scalars(
-        select(RelayInstall)
-        .where(RelayInstall.secret_encrypted.is_not(None))
-        .order_by(RelayInstall.enrolled_at.desc())
+        select(RelayInstall).where(RelayInstall.secret_encrypted.is_not(None)).order_by(RelayInstall.enrolled_at.desc())
     ).first()
     if install is None:
         raise NotFoundError("no enrolled relay install found")
