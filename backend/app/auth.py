@@ -107,6 +107,21 @@ def _bearer_token(request) -> str | None:
     return value.strip()
 
 
+def require_user(info) -> dict:
+    """Enforce that the caller is an authenticated UC Nexus user (any role). Returns {user_id}.
+    No Clerk Backend API role lookup, so it's cheaper than require_admin."""
+    request = info.context["request"]
+    token = _bearer_token(request)
+    if not token:
+        raise AuthError("Authentication required")
+
+    claims = verify_clerk_token(token)
+    user_id = claims.get("sub")
+    if not user_id:
+        raise AuthError("Authentication token has no subject")
+    return {"user_id": user_id}
+
+
 def require_admin(info) -> dict:
     """Enforce that the caller holds the Admin/Manager role. Returns {user_id, roles}."""
     request = info.context["request"]

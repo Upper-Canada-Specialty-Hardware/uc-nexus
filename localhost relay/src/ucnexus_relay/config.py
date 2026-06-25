@@ -33,12 +33,25 @@ class SqlCfg(BaseModel):
     command_timeout: int = 30
 
 
+class BuyersCfg(BaseModel):
+    # GP BUYERID is free text written to POP10100 (no buyer-master to validate against). the relay
+    # fills it from the WORKSTATION when the /po request omits buyer_id, because the machine that knows
+    # the device is the relay. company device names are traceable to individuals via an internal system,
+    # so the device name itself is a valid buyer handle. resolution order:
+    #   by_host (explicit map) -> by_login (SSPI login) -> use_hostname (the device's own name) -> default.
+    default: str | None = None
+    use_hostname: bool = False     # use socket.gethostname() as the buyer when nothing else maps
+    by_host: dict[str, str] = {}   # device hostname -> buyer name (explicit override)
+    by_login: dict[str, str] = {}  # SQL/SSPI login -> buyer name
+
+
 class GpCfg(BaseModel):
     default_company: str = "TUBC"
     allowed_companies: list[str] = ["TUBC"]
     # company -> paired custom warehouse DB that holds WHRECLINE101 (the table the company dashboards
     # read). A company with no entry gets GP-only receipts (no WHRECLINE101 write). Sandboxes have none.
     custom_db: dict[str, str] = {}
+    buyers: BuyersCfg = BuyersCfg()
 
 
 class LoggingCfg(BaseModel):

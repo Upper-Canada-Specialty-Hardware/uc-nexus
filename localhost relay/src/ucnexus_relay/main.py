@@ -2,18 +2,21 @@
 
 Endpoints:
   GET  /health           — liveness, no auth
-  GET  /info             — config + read-only SQL identity probe, auth required
+  GET  /info             — config + read-only SQL identity probe (+ workstation hostname), auth required
+  GET  /vendors          — PM00200 vendor list for the vendor sync, auth required
   POST /po/next-number   — reserve a PO number (live taGetPONextNumber), auth required
   POST /po               — create a PO end-to-end (5-step orchestration), auth required
+  POST /receipt          — receive against a PO, auth required
 """
 
+import socket
 import time
 from datetime import date
 
 import pyodbc
 from fastapi import Depends, FastAPI, HTTPException
 
-from . import auth, db, econnect, errors, models
+from . import auth, buyers, db, econnect, errors, models
 from .config import get_settings
 from .cors import configure_cors
 from .logging_setup import configure_logging, get_logger
@@ -52,6 +55,18 @@ def create_app() -> FastAPI:
     app = FastAPI(title="UC Nexus Relay", version=VERSION)
     configure_cors(app)
 
+    @app.middleware("http")
+    async def add_pna_header(request, call_next):
+        # Legacy Private Network Access answer, for stragglers on a pre-LNA Chrome. The browser hop
+        # from the https Railway page to http://localhost is governed by Local Network Access (a
+        # client-side permission prompt + targetAddressSpace:"loopback" on the fetch) on current
+        # Chrome, NOT by this header. We echo it only when the browser asks (the PNA preflight sends
+        # Access-Control-Request-Private-Network: true); it is harmless and not the mechanism.
+        response = await call_next(request)
+        if request.method == "OPTIONS" and request.headers.get("access-control-request-private-network") == "true":
+            response.headers["Access-Control-Allow-Private-Network"] = "true"
+        return response
+
     if not db.driver_available():
         logger.warning(
             "configured ODBC driver not found", extra={"driver": settings.sql.driver, "available": pyodbc.drivers()}
@@ -80,6 +95,7 @@ def create_app() -> FastAPI:
     @app.get("/info")
     def info(_=Depends(auth.verify_token)):
         s = get_settings()
+        hostname = socket.gethostname()
         out = {
             "version": VERSION,
             "configured_companies": s.gp.allowed_companies,
@@ -87,12 +103,28 @@ def create_app() -> FastAPI:
             "sql_server": s.sql.server,
             "odbc_driver": s.sql.driver,
             "driver_installed": db.driver_available(),
+            "hostname": hostname,  # the device name the relay maps to a GP buyer
         }
         try:
             out.update(db.connection_info(s.gp.default_company))
         except pyodbc.Error as e:
             out["connection_error"] = str(e)
+        # which buyer this workstation resolves to (confirm hostname->BUYERID during deployment)
+        out["resolved_buyer"] = buyers.resolve_buyer(s.gp.buyers, hostname, out.get("connected_as"))
         return out
+
+    @app.get("/vendors", response_model=models.VendorsResponse)
+    def vendors(company: str | None = None, _=Depends(auth.verify_token)):
+        """Read PM00200 (active vendors) for the vendor sync. The frontend posts this list to UC
+        Nexus's syncGpVendors, which fills Vendor.gp_vendor_id by matching on name."""
+        company = company or get_settings().gp.default_company
+        _check_company(company)
+        try:
+            with db.get_read_connection(company) as conn:
+                rows = econnect.list_vendors(conn, active_only=True)
+        except pyodbc.Error as e:
+            raise HTTPException(status_code=502, detail={"error": "sql_error", "message": str(e)})
+        return models.VendorsResponse(company=company, vendors=[models.VendorOut(**r) for r in rows])
 
     @app.post("/po/next-number")
     def next_number(request: models.NextNumberRequest, _=Depends(auth.verify_token)):
@@ -119,6 +151,26 @@ def create_app() -> FastAPI:
         try:
             with db.get_connection(request.company) as conn:
                 try:
+                    # 0. buyer: the frontend doesn't send one — the relay fills BUYERID from the
+                    #    workstation (the machine that knows the device is the relay). by_host needs no
+                    #    DB; only read the SSPI login if a by_login map is configured.
+                    buyer_id = h.buyer_id
+                    if not buyer_id:
+                        bcfg = get_settings().gp.buyers
+                        login = None
+                        if bcfg.by_login:
+                            login = conn.cursor().execute("SELECT SUSER_NAME()").fetchone()[0]
+                        buyer_id = buyers.resolve_buyer(bcfg, socket.gethostname(), login)
+                        if not buyer_id:
+                            raise HTTPException(
+                                status_code=400,
+                                detail={
+                                    "error": "buyer_unresolved",
+                                    "message": "could not resolve a GP buyer for this workstation "
+                                               f"({socket.gethostname()}); set [gp.buyers] default or map this device",
+                                },
+                            )
+
                     # 1. PO number: use UC Nexus's own number (e.g. 'ucnexus...') if supplied,
                     #    else reserve GP's next 'PO' number via taGetPONextNumber.
                     if request.po_number:
@@ -133,7 +185,7 @@ def create_app() -> FastAPI:
                         po_number=po_number,
                         vendor_id=h.vendor_id,
                         doc_date=h.doc_date,
-                        buyer_id=h.buyer_id,
+                        buyer_id=buyer_id,
                         confirm_with=h.confirm_with,
                         currency_id=h.currency_id,
                         vendor_address_code=h.vendor_address_code,
@@ -174,7 +226,7 @@ def create_app() -> FastAPI:
                         po_number=po_number,
                         vendor_id=h.vendor_id,
                         doc_date=h.doc_date,
-                        buyer_id=h.buyer_id,
+                        buyer_id=buyer_id,
                         confirm_with=h.confirm_with,
                         currency_id=h.currency_id,
                         vendor_address_code=h.vendor_address_code,

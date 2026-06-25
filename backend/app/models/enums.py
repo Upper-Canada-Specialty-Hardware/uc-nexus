@@ -20,6 +20,16 @@ class POStatus(str, enum.Enum):
     CANCELLED = "CANCELLED"
 
 
+class GpSyncStatus(str, enum.Enum):
+    """Whether this PO has been pushed to Microsoft GP (the job-cost PO) via the localhost relay.
+    NOT_PUSHED: created in UC Nexus only. SYNCED: GP PO created, po_number recorded. FAILED: the
+    relay/GP push errored and is retryable."""
+
+    NOT_PUSHED = "NOT_PUSHED"
+    SYNCED = "SYNCED"
+    FAILED = "FAILED"
+
+
 class PullRequestSource(str, enum.Enum):
     SHOP_ASSEMBLY = "SHOP_ASSEMBLY"
     SHIPPING_OUT = "SHIPPING_OUT"

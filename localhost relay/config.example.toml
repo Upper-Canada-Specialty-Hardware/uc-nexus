@@ -38,6 +38,23 @@ allowed_companies = ["TUBC", "TUCSH"]
 UBC = "PMUBC"
 UCSH = "PMUCSH"
 
+[gp.buyers]
+# GP BUYERID is free text in POP10100 (no buyer-master to validate against). the relay fills it from
+# the WORKSTATION when the /po request omits buyer_id - the machine that knows the device is the relay.
+# company device names are traceable to individuals via an internal system, so the device name itself
+# is a valid buyer handle. resolution order:
+#   by_host (explicit map) -> by_login (SSPI login) -> use_hostname (the device's own name) -> default.
+# matching is case-insensitive; the result is truncated to GP's char(15) BUYERID width.
+use_hostname = true   # use socket.gethostname() as the buyer on every workstation, no per-host config
+default = "mira"      # final fallback if use_hostname is off / the hostname is empty (TUBC test = "mira")
+
+[gp.buyers.by_host]
+# explicit override for a machine whose name should NOT be the buyer:
+# WORKSTATION-HOSTNAME = "Buyer Name"
+
+[gp.buyers.by_login]
+# "DOMAIN\\login" = "Buyer Name"
+
 [logging]
 level = "INFO"
 file = "relay.log"

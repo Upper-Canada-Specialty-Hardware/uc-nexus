@@ -15,3 +15,7 @@ BUCKET_NAME = os.getenv("BUCKET_NAME", "")
 # Clerk authentication config
 CLERK_SECRET_KEY = os.getenv("CLERK_SECRET_KEY", "")
 TESTING_ENABLED = os.getenv("TESTING_ENABLED", "").lower() in ("true", "1", "yes")
+
+# Fernet key used to encrypt relay install secrets at rest (relay_installs.secret_encrypted).
+# Generate with:  python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+RELAY_SECRET_ENC_KEY = os.getenv("RELAY_SECRET_ENC_KEY", "")
