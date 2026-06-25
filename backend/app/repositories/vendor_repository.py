@@ -14,6 +14,31 @@ def list_vendors(session: Session) -> list[Vendor]:
     return list(session.scalars(select(Vendor).order_by(Vendor.name)).all())
 
 
+def sync_gp_vendors(session: Session, gp_vendors: list[dict]) -> dict:
+    """Match UC Nexus vendors to GP vendors by name (case-insensitive, trimmed) and set gp_vendor_id.
+
+    gp_vendors is the relay's PM00200 read: [{"gp_vendor_id": str, "vendor_name": str}, ...]. Vendors
+    that don't match an existing UC Nexus vendor are returned for a one-time manual mapping rather than
+    auto-created. Returns {matched: [names], unmatched_gp: [names]}."""
+    local = list(session.scalars(select(Vendor)).all())
+    by_name: dict[str, Vendor] = {v.name.strip().lower(): v for v in local}
+    matched: list[str] = []
+    unmatched_gp: list[str] = []
+    for gv in gp_vendors:
+        name = (gv.get("vendor_name") or "").strip()
+        gp_id = (gv.get("gp_vendor_id") or "").strip()
+        if not name or not gp_id:
+            continue
+        vendor = by_name.get(name.lower())
+        if vendor is None:
+            unmatched_gp.append(name)
+            continue
+        vendor.gp_vendor_id = gp_id
+        matched.append(vendor.name)
+    session.flush()
+    return {"matched": matched, "unmatched_gp": unmatched_gp}
+
+
 def get_vendor(session: Session, vendor_id: uuid.UUID) -> Vendor:
     vendor = session.get(Vendor, vendor_id)
     if vendor is None:

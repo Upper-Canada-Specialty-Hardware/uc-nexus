@@ -176,6 +176,26 @@ class CreatePOInput:
     project_id: strawberry.ID | None = None
     vendor_id: strawberry.ID | None = None
     notes: str | None = None
+    # GP cost code for a project-linked PO (the issue #121 dropdown, 'phase-step-element').
+    # Applied to every job-cost line when the PO is pushed to GP via the relay.
+    cost_code: str | None = None
+
+
+@strawberry.input
+class GpVendorInput:
+    """One vendor read from GP PM00200 by the relay, posted to syncGpVendors."""
+
+    gp_vendor_id: str
+    vendor_name: str
+
+
+@strawberry.input
+class EnrollRelayInstallInput:
+    """Posted by the relay during one-time setup (authenticated by the enrollment token, not Clerk)."""
+
+    enrollment_token: str
+    hostname: str
+    secret: str
 
 
 @strawberry.input
