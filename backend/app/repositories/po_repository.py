@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import InvalidStateTransitionError, NotFoundError, ValidationError
-from app.models.enums import Classification, PODocumentType, POStatus
+from app.models.enums import Classification, GpSyncStatus, PODocumentType, POStatus
 from app.models.purchase_order import PODocument, POLineItem, PurchaseOrder
 from app.models.receiving import ReceiveRecord
 
@@ -35,6 +35,7 @@ def create_po(
     project_id: uuid.UUID | None = None,
     vendor_id: uuid.UUID | None = None,
     notes: str | None = None,
+    cost_code: str | None = None,
 ) -> PurchaseOrder:
     """Create a manual PO with line items. No hardware items are created."""
     if not line_items:
@@ -57,6 +58,8 @@ def create_po(
 
     request_number = generate_next_request_number(session)
 
+    cleaned_cost_code = cost_code.strip() if cost_code and cost_code.strip() else None
+
     po = PurchaseOrder(
         id=uuid.uuid4(),
         request_number=request_number,
@@ -64,6 +67,7 @@ def create_po(
         vendor_id=vendor_id,
         status=POStatus.DRAFT,
         notes=notes,
+        cost_code=cleaned_cost_code,
     )
     session.add(po)
     session.flush()
@@ -90,6 +94,25 @@ def create_po(
         )
         session.add(poli)
 
+    session.flush()
+    return po
+
+
+def record_gp_sync_result(
+    session: Session,
+    po_id: uuid.UUID,
+    gp_sync_status: GpSyncStatus,
+    po_number: str | None = None,
+) -> PurchaseOrder:
+    """Record the outcome of a relay GP push: GP's returned PONUMBER (on success) and the sync status.
+    The PO status transition (DRAFT -> ORDERED) is driven by the existing PO status flow, not here, so
+    this stays a pure record of the GP-side result that the create-in-both orchestration calls."""
+    po = session.get(PurchaseOrder, po_id)
+    if po is None:
+        raise NotFoundError(f"Purchase order {po_id} not found")
+    po.gp_sync_status = gp_sync_status
+    if po_number is not None:
+        po.po_number = po_number.strip() or None
     session.flush()
     return po
 

@@ -13,6 +13,9 @@ class Vendor(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String, nullable=False)
+    # GP VENDORID (char 15), populated by the vendor sync from GP PM00200. Required before this vendor
+    # can be used on a GP job-cost PO; a vendor without it is blocked at PO push time.
+    gp_vendor_id: Mapped[str | None] = mapped_column(String(15), nullable=True)
     contact_name: Mapped[str | None] = mapped_column(String, nullable=True)
     email: Mapped[str | None] = mapped_column(String, nullable=True)
     phone: Mapped[str | None] = mapped_column(String, nullable=True)
