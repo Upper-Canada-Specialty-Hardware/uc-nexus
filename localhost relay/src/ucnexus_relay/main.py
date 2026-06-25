@@ -227,12 +227,22 @@ def create_app() -> FastAPI:
                                 detail={"error": "po_line_not_found",
                                         "message": f"PO {request.po_number} has no line ORD {rl.po_line_ord}"},
                             )
-                        ordered = po_lines[rl.po_line_ord]["qtyorder"]
-                        if rl.quantity > ordered:
+                        pl = po_lines[rl.po_line_ord]
+                        if pl["polnesta"] >= 4:
                             raise HTTPException(
                                 status_code=400,
-                                detail={"error": "qty_exceeds_ordered",
-                                        "message": f"line ORD {rl.po_line_ord}: qty {rl.quantity} exceeds ordered {ordered}"},
+                                detail={"error": "line_not_receivable",
+                                        "message": f"line ORD {rl.po_line_ord} is closed/cancelled (POLNESTA={pl['polnesta']})"},
+                            )
+                        # validate against REMAINING (ordered - already received), not just ordered, so
+                        # cumulative over-receipt across multiple receives is blocked.
+                        remaining = pl["qtyorder"] - pl["prev_received"]
+                        if rl.quantity > remaining:
+                            raise HTTPException(
+                                status_code=400,
+                                detail={"error": "qty_exceeds_remaining",
+                                        "message": f"line ORD {rl.po_line_ord}: qty {rl.quantity} exceeds remaining {remaining} "
+                                                   f"(ordered {pl['qtyorder']}, already received {pl['prev_received']})"},
                             )
 
                     receipt_number = econnect.get_next_receipt_number(conn)

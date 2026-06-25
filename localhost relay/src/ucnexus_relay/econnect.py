@@ -327,10 +327,14 @@ def read_po_receipt_context(conn, po_number: str):
     rows = conn.cursor().execute(
         "SELECT l.ORD, RTRIM(l.ITEMNMBR) AS item, RTRIM(l.ITEMDESC) AS itemdesc, RTRIM(l.VENDORID) AS vendor, "
         "RTRIM(l.JOBNUMBR) AS job, RTRIM(j.WS_Job_Name) AS jobname, RTRIM(l.LOCNCODE) AS locn, "
-        "l.NONINVEN, RTRIM(l.UOFM) AS uofm, RTRIM(l.VNDITNUM) AS vnditnum, l.QTYORDER, l.UNITCOST "
-        "FROM dbo.POP10110 l LEFT JOIN dbo.JC00102 j ON j.WS_Job_Number = l.JOBNUMBR "
+        "l.NONINVEN, RTRIM(l.UOFM) AS uofm, RTRIM(l.VNDITNUM) AS vnditnum, l.QTYORDER, l.UNITCOST, "
+        "l.POLNESTA, ISNULL(r.prev_received, 0) AS prev_received "
+        "FROM dbo.POP10110 l "
+        "LEFT JOIN dbo.JC00102 j ON j.WS_Job_Number = l.JOBNUMBR "
+        "LEFT JOIN (SELECT POLNENUM, SUM(QTYSHPPD) AS prev_received FROM dbo.POP10500 "
+        "           WHERE PONUMBER = ? GROUP BY POLNENUM) r ON r.POLNENUM = l.ORD "
         "WHERE l.PONUMBER = ? ORDER BY l.ORD",
-        po_number,
+        po_number, po_number,
     ).fetchall()
     for r in rows:
         lines[int(r.ORD)] = {
@@ -345,6 +349,8 @@ def read_po_receipt_context(conn, po_number: str):
             "vnditnum": r.vnditnum or r.item,  # legacy uses item number when VNDITNUM is blank
             "qtyorder": r.QTYORDER,
             "unitcost": r.UNITCOST,  # AUTOCOST pulls this onto the receipt line; header subtotal must match
+            "polnesta": int(r.POLNESTA),  # PO line status; the legacy only receives lines with < 4
+            "prev_received": r.prev_received,  # SUM(POP10500.QTYSHPPD) already received against this line
         }
     return hdr.vendor, hdr.vendname, lines
 
