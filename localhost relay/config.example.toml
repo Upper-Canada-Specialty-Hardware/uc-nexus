@@ -32,6 +32,12 @@ command_timeout = 30
 default_company = "TUBC"
 allowed_companies = ["TUBC", "TUCSH"]
 
+[gp.custom_db]
+# company -> paired custom warehouse DB holding WHRECLINE101 (read by the company dashboards).
+# only applied when the company is also allowed. sandboxes have no paired DB (GP-only receipts).
+UBC = "PMUBC"
+UCSH = "PMUCSH"
+
 [logging]
 level = "INFO"
 file = "relay.log"

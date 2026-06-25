@@ -51,4 +51,4 @@ endpoints
 - `GET /info` — config + read-only SQL identity, bearer auth
 - `POST /po/next-number` — reserve a PO number via `taGetPONextNumber`, bearer auth
 - `POST /po` — create a PO end-to-end via the 5-step orchestration, bearer auth
-- `POST /receipt` — receive against a PO (taPopRcptLineInsert xN then taPopRcptHdrInsert, autocosted), bearer auth
+- `POST /receipt` — receive against a PO (taPopRcptLineInsert xN then taPopRcptHdrInsert, autocosted), and for a company mapped in `[gp.custom_db]` also writes the matching `WHRECLINE101` rows (the custom warehouse table the dashboards read) in the same transaction. needs a `rack_location` per line. bearer auth

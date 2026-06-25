@@ -76,6 +76,11 @@ class CreatePoResponse(BaseModel):
 class ReceiptLine(BaseModel):
     po_line_ord: int  # = POP10110.ORD / POLNENUM of the PO line being received (16384, 32768, ...)
     quantity: Decimal = Field(..., gt=0)
+    # rack location the goods were physically shelved at (WHRECLINE101.Location). GP has no field for
+    # this; it's the whole reason WHRECLINE101 exists. required (the legacy app rejects a blank rack).
+    rack_location: str = Field(..., min_length=1, max_length=255)
+    revision_number: str | None = Field(default=None, max_length=255)
+    comments: str | None = None
 
 
 class ReceiptRequest(BaseModel):
@@ -84,6 +89,7 @@ class ReceiptRequest(BaseModel):
     lines: list[ReceiptLine] = Field(..., min_length=1)
     batch_prefix: str = "EC"          # BACHNUMB = f"{batch_prefix}-{yyyy/MM/dd}" (legacy convention)
     receipt_date: date | None = None  # defaults to today
+    received_by: str | None = Field(default=None, max_length=255)  # WHRECLINE101.UpdatingUser; default = SQL login
 
 
 class ReceiptResponse(BaseModel):
@@ -92,3 +98,4 @@ class ReceiptResponse(BaseModel):
     po_number: str
     company: str
     lines_received: int
+    custom_db_written: bool  # whether the WHRECLINE101 rows were written (false for sandboxes / unmapped companies)
