@@ -34,15 +34,13 @@ class SqlCfg(BaseModel):
 
 
 class BuyersCfg(BaseModel):
-    # GP BUYERID is free text written to POP10100 (no buyer-master to validate against). the relay
-    # fills it from the WORKSTATION when the /po request omits buyer_id, because the machine that knows
-    # the device is the relay. company device names are traceable to individuals via an internal system,
-    # so the device name itself is a valid buyer handle. resolution order:
-    #   by_host (explicit map) -> by_login (SSPI login) -> use_hostname (the device's own name) -> default.
+    # Fallback buyer when the Create PO request omits buyer_id (normally the UI sends one picked from
+    # GET /buyers). The value MUST be a REGISTERED GP buyer (POP00101) - eConnect taPoHdr rejects an
+    # unregistered BUYERID (error 269). A device hostname is NOT a registered buyer, so there's no
+    # use_hostname option. Resolution order: by_host -> by_login -> default.
     default: str | None = None
-    use_hostname: bool = False     # use socket.gethostname() as the buyer when nothing else maps
-    by_host: dict[str, str] = {}   # device hostname -> buyer name (explicit override)
-    by_login: dict[str, str] = {}  # SQL/SSPI login -> buyer name
+    by_host: dict[str, str] = {}   # device hostname -> registered buyer
+    by_login: dict[str, str] = {}  # SQL/SSPI login -> registered buyer
 
 
 class GpCfg(BaseModel):

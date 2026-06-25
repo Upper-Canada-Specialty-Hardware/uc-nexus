@@ -115,3 +115,8 @@ class VendorOut(BaseModel):
 class VendorsResponse(BaseModel):
     company: str
     vendors: list[VendorOut]
+
+
+class BuyersResponse(BaseModel):
+    company: str
+    buyers: list[str]  # registered GP buyer IDs (POP00101) for the Create PO buyer dropdown
