@@ -10,6 +10,7 @@ from .enums import (
     Classification,
     DeficiencyResolution,
     DeficientItemSource,
+    GpSyncStatus,
     HardwareItemState,
     NotificationType,
     OpeningItemState,
@@ -87,12 +88,54 @@ class HardwareItem:
 class Vendor:
     id: strawberry.ID
     name: str
+    gp_vendor_id: str | None
     contact_name: str | None
     email: str | None
     phone: str | None
     notes: str | None
     created_at: datetime
     updated_at: datetime
+
+
+@strawberry.type
+class SyncGpVendorsResult:
+    matched_count: int
+    matched_vendor_names: list[str]
+    unmatched_gp_vendor_names: list[str]
+
+
+@strawberry.type
+class RelayInstallProvision:
+    """Result of provisioning a relay install. enrollment_token is shown ONCE - it never comes back."""
+
+    install_id: strawberry.ID
+    label: str
+    company: str
+    enrollment_token: str
+    enrollment_token_expires_at: datetime
+
+
+@strawberry.type
+class RelayEnrollResult:
+    ok: bool
+    install_id: strawberry.ID
+
+
+@strawberry.type
+class RelayCredential:
+    secret: str
+
+
+@strawberry.type
+class RelayInstallInfo:
+    id: strawberry.ID
+    label: str
+    company: str
+    hostname: str | None
+    enrolled: bool
+    enrolled_at: datetime | None
+    last_seen_at: datetime | None
+    created_at: datetime
 
 
 @strawberry.type
@@ -163,6 +206,8 @@ class PurchaseOrder:
     request_number: str
     project_id: strawberry.ID | None
     status: POStatus
+    cost_code: str | None
+    gp_sync_status: GpSyncStatus
     vendor: Vendor | None
     vendor_quote_number: str | None
     notes: str | None

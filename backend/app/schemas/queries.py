@@ -4,7 +4,7 @@ import strawberry
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
-from app.auth import require_admin
+from app.auth import require_admin, require_user
 from app.database import SessionLocal
 from app.models.enums import POStatus as DBPOStatus
 from app.models.project import Opening as OpeningModel
@@ -14,6 +14,7 @@ from app.repositories import (
     dashboard_repository,
     notification_repository,
     po_repository,
+    relay_repository,
     shipping_repository,
     shop_assembly_repository,
     stock_repository,
@@ -69,6 +70,8 @@ from .types import (
     ReceiveRecord,
     RecentReceiveRecord,
     ReconciliationResult,
+    RelayCredential,
+    RelayInstallInfo,
     ReturnableLine,
     ShipmentReturn,
     ShipmentReturnItem,
@@ -161,12 +164,26 @@ def _vendor_to_type(v) -> Vendor:
     return Vendor(
         id=strawberry.ID(str(v.id)),
         name=v.name,
+        gp_vendor_id=v.gp_vendor_id,
         contact_name=v.contact_name,
         email=v.email,
         phone=v.phone,
         notes=v.notes,
         created_at=v.created_at,
         updated_at=v.updated_at,
+    )
+
+
+def _relay_install_to_type(ri) -> RelayInstallInfo:
+    return RelayInstallInfo(
+        id=strawberry.ID(str(ri.id)),
+        label=ri.label,
+        company=ri.company,
+        hostname=ri.hostname,
+        enrolled=ri.enrolled_at is not None,
+        enrolled_at=ri.enrolled_at,
+        last_seen_at=ri.last_seen_at,
+        created_at=ri.created_at,
     )
 
 
@@ -195,6 +212,8 @@ def _po_to_type(po, receive_records=None) -> PurchaseOrder:
         request_number=po.request_number,
         project_id=strawberry.ID(str(po.project_id)) if po.project_id else None,
         status=po.status,
+        cost_code=po.cost_code,
+        gp_sync_status=po.gp_sync_status,
         vendor=_vendor_to_type(vendor) if vendor is not None else None,
         vendor_quote_number=po.vendor_quote_number,
         notes=po.notes,
@@ -990,6 +1009,22 @@ class Query:
         with SessionLocal() as session:
             v = session.get(VendorModel, uuid.UUID(str(id)))
             return _vendor_to_type(v) if v is not None else None
+
+    @strawberry.field
+    def relay_credential(self, info: strawberry.Info) -> RelayCredential:
+        """Return the relay Bearer secret to the authenticated user (the frontend sends it to the
+        on-prem relay). POC: the single enrolled install's secret."""
+        require_user(info)
+        with SessionLocal() as session:
+            secret = relay_repository.get_credential(session)
+            session.commit()
+            return RelayCredential(secret=secret)
+
+    @strawberry.field
+    def relay_installs(self, info: strawberry.Info) -> list[RelayInstallInfo]:
+        require_admin(info)
+        with SessionLocal() as session:
+            return [_relay_install_to_type(ri) for ri in relay_repository.list_installs(session)]
 
     @strawberry.field
     def warehouses(self, include_inactive: bool = True) -> list[Warehouse]:

@@ -10,6 +10,7 @@ from app.repositories import (
     notification_repository,
     po_repository,
     project_repository,
+    relay_repository,
     shipping_repository,
     shop_assembly_repository,
     stock_repository,
@@ -19,7 +20,7 @@ from app.repositories import (
     warehouse_repository,
 )
 
-from .enums import ApproveOutcome, PODocumentType
+from .enums import ApproveOutcome, GpSyncStatus, PODocumentType
 from .inputs import (
     AdjustStockQuantityInput,
     AllocateStockToProjectInput,
@@ -33,7 +34,9 @@ from .inputs import (
     CreateVendorInput,
     CreateWarehouseInput,
     DestockInventoryInput,
+    EnrollRelayInstallInput,
     FinalizeImportSessionInput,
+    GpVendorInput,
     MoveStockLocationInput,
     OverrideInventoryQuantityInput,
     ReclassifyStockItemInput,
@@ -83,11 +86,14 @@ from .types import (
     PurchaseOrder,
     ReceiveRecord,
     ReclassifyStockResult,
+    RelayEnrollResult,
+    RelayInstallProvision,
     SAReplacementResult,
     ShipmentReturn,
     ShopAssemblyOpening,
     ShopAssemblyRequest,
     StockItem,
+    SyncGpVendorsResult,
     TransferResult,
     Vendor,
     Warehouse,
@@ -381,6 +387,7 @@ class Mutation:
                 project_id=project_id,
                 vendor_id=vendor_id,
                 notes=input.notes,
+                cost_code=input.cost_code,
             )
             session.commit()
 
@@ -394,6 +401,38 @@ class Mutation:
                         selectinload(POModel.vendor),
                     )
                     .where(POModel.id == po.id)
+                )
+                .unique()
+                .first()
+            )
+            return _po_to_type(refreshed_po)
+
+    @strawberry.mutation
+    def record_po_gp_sync(
+        self,
+        po_id: strawberry.ID,
+        gp_sync_status: GpSyncStatus,
+        po_number: str | None = None,
+    ) -> PurchaseOrder:
+        """Record the result of pushing this PO to GP via the relay (the create-in-both orchestration's
+        second step): store GP's returned PONUMBER on success and set gp_sync_status (SYNCED/FAILED)."""
+        from sqlalchemy.orm import selectinload
+
+        from app.models.purchase_order import PurchaseOrder as POModel
+
+        pid = uuid.UUID(str(po_id))
+        with SessionLocal() as session:
+            po_repository.record_gp_sync_result(session, pid, gp_sync_status, po_number=po_number)
+            session.commit()
+            refreshed_po = (
+                session.scalars(
+                    select(POModel)
+                    .options(
+                        selectinload(POModel.line_items),
+                        selectinload(POModel.documents),
+                        selectinload(POModel.vendor),
+                    )
+                    .where(POModel.id == pid)
                 )
                 .unique()
                 .first()
@@ -921,6 +960,54 @@ class Mutation:
             vendor_repository.delete_vendor(session, uuid.UUID(str(id)))
             session.commit()
             return True
+
+    @strawberry.mutation
+    def sync_gp_vendors(self, vendors: list[GpVendorInput]) -> SyncGpVendorsResult:
+        """Match UC Nexus vendors to the GP PM00200 list (by name) and set gp_vendor_id. The relay
+        reads PM00200 on the workstation and the frontend posts the list here. Unmatched GP vendors are
+        returned for a one-time manual mapping."""
+        with SessionLocal() as session:
+            result = vendor_repository.sync_gp_vendors(
+                session,
+                [{"gp_vendor_id": v.gp_vendor_id, "vendor_name": v.vendor_name} for v in vendors],
+            )
+            session.commit()
+            return SyncGpVendorsResult(
+                matched_count=len(result["matched"]),
+                matched_vendor_names=result["matched"],
+                unmatched_gp_vendor_names=result["unmatched_gp"],
+            )
+
+    # Relay installs (localhost relay <-> GP)
+    @strawberry.mutation
+    def provision_relay_install(self, info: strawberry.Info, label: str, company: str) -> RelayInstallProvision:
+        """Admin: create a relay install + a one-time enrollment token shown ONCE. The relay uses the
+        token during setup to register its self-generated Bearer secret (which never comes back here)."""
+        require_admin(info)
+        with SessionLocal() as session:
+            install, token = relay_repository.provision_install(session, label=label, company=company)
+            session.commit()
+            return RelayInstallProvision(
+                install_id=strawberry.ID(str(install.id)),
+                label=install.label,
+                company=install.company,
+                enrollment_token=token,
+                enrollment_token_expires_at=install.enrollment_token_expires_at,
+            )
+
+    @strawberry.mutation
+    def enroll_relay_install(self, input: EnrollRelayInstallInput) -> RelayEnrollResult:
+        """Called BY THE RELAY during one-time setup, authenticated by the enrollment token (not Clerk).
+        Stores the relay's self-generated secret encrypted and consumes the token."""
+        with SessionLocal() as session:
+            install = relay_repository.enroll_install(
+                session,
+                enrollment_token=input.enrollment_token,
+                hostname=input.hostname,
+                secret=input.secret,
+            )
+            session.commit()
+            return RelayEnrollResult(ok=True, install_id=strawberry.ID(str(install.id)))
 
     # Warehouses
     @strawberry.mutation
