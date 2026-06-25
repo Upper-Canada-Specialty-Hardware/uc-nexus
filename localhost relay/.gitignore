@@ -4,6 +4,9 @@ config.toml
 # logs
 *.log
 
+# office temp / lock files
+~$*
+
 # python
 __pycache__/
 *.py[cod]
