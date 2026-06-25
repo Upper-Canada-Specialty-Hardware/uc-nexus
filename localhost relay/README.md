@@ -63,8 +63,9 @@ endpoints
 - `GET /health` — liveness, no auth
 - `GET /info` — config + read-only SQL identity + the workstation `hostname` and the `resolved_buyer` that hostname maps to, bearer auth
 - `GET /vendors` — active PM00200 vendors (VENDORID / VENDNAME / class / status) for the vendor sync, bearer auth. takes `?company=` (defaults to `default_company`)
+- `GET /buyers` — registered GP buyers (`POP00101`) for the Create PO buyer dropdown, bearer auth. `?company=` like `/vendors`. eConnect validates `BUYERID` against this, so the UI must pick from it
 - `POST /po/next-number` — reserve a PO number via `taGetPONextNumber`, bearer auth
-- `POST /po` — create a PO end-to-end via the 5-step orchestration, bearer auth. `buyer_id` is optional in the request — when omitted the relay fills `BUYERID` from the workstation via `[gp.buyers]`, resolving `by_host` (explicit map) → `by_login` → `use_hostname` (the device's own traceable name) → `default`
+- `POST /po` — create a PO end-to-end via the 5-step orchestration, bearer auth. the request's `buyer_id` (picked from `/buyers`) is validated against `POP00101`; if omitted, falls back to `[gp.buyers]` (`by_host` → `by_login` → `default`). a device hostname is NOT a registered buyer, so it can't be used as one
 - `POST /receipt` — receive against a PO (taPopRcptLineInsert xN then taPopRcptHdrInsert, autocosted), and for a company mapped in `[gp.custom_db]` also writes the matching `WHRECLINE101` rows (the custom warehouse table the dashboards read) in the same transaction. needs a `rack_location` per line. bearer auth
 
 browser hop (the cloud frontend → `http://localhost:7321` call) is governed by Chrome Local Network Access from Chrome 142: the frontend fetch must set `targetAddressSpace: "loopback"` and the user grants a one-time loopback permission prompt (or IT pre-grants it via enterprise policy). that is a client-side gate — the relay needs no LNA server header. the relay does echo the legacy `Access-Control-Allow-Private-Network: true` on the preflight for stragglers on a pre-LNA Chrome, but it is not the mechanism.

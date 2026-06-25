@@ -832,3 +832,17 @@ export const RESOLVE_DEFICIENCY = gql`
     }
   }
 `;
+
+// ---------------------------------------------------------------------------
+// GP relay vendor sync
+// ---------------------------------------------------------------------------
+
+export const SYNC_GP_VENDORS = gql`
+  mutation SyncGpVendors($vendors: [GpVendorInput!]!) {
+    syncGpVendors(vendors: $vendors) {
+      matchedCount
+      matchedVendorNames
+      unmatchedGpVendorNames
+    }
+  }
+`;

@@ -3,6 +3,7 @@ import { Box, Typography, Card, CardContent, CardActionArea, Grid } from '@mui/m
 import SummarizeIcon from '@mui/icons-material/Summarize';
 import VisibilityIcon from '@mui/icons-material/Visibility';
 import StoreIcon from '@mui/icons-material/Store';
+import SyncIcon from '@mui/icons-material/Sync';
 import WarehouseIcon from '@mui/icons-material/Warehouse';
 import FolderIcon from '@mui/icons-material/Folder';
 import GroupIcon from '@mui/icons-material/Group';
@@ -48,6 +49,7 @@ const SUB_ROUTES = [
   { label: 'Project Purchasing Progress', path: '/app/admin/project-purchasing-progress', icon: <SummarizeIcon fontSize="large" /> },
   { label: 'Opening Status', path: '/app/admin/opening-status', icon: <VisibilityIcon fontSize="large" /> },
   { label: 'Vendors', path: '/app/admin/vendors', icon: <StoreIcon fontSize="large" /> },
+  { label: 'GP Vendor Sync', path: '/app/admin/gp-vendor-sync', icon: <SyncIcon fontSize="large" /> },
   { label: 'Warehouses', path: '/app/admin/warehouses', icon: <WarehouseIcon fontSize="large" /> },
   { label: 'Projects', path: '/app/admin/projects', icon: <FolderIcon fontSize="large" /> },
   { label: 'User Management', path: '/app/admin/users', icon: <GroupIcon fontSize="large" /> },

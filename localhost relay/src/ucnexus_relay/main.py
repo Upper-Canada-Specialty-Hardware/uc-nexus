@@ -126,6 +126,19 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=502, detail={"error": "sql_error", "message": str(e)})
         return models.VendorsResponse(company=company, vendors=[models.VendorOut(**r) for r in rows])
 
+    @app.get("/buyers", response_model=models.BuyersResponse)
+    def gp_buyers(company: str | None = None, _=Depends(auth.verify_token)):
+        """Registered GP buyers (POP00101) for the Create PO buyer dropdown. eConnect validates BUYERID
+        against this, so the UI must pick from it (a device hostname is not a registered buyer)."""
+        company = company or get_settings().gp.default_company
+        _check_company(company)
+        try:
+            with db.get_read_connection(company) as conn:
+                ids = econnect.list_buyers(conn)
+        except pyodbc.Error as e:
+            raise HTTPException(status_code=502, detail={"error": "sql_error", "message": str(e)})
+        return models.BuyersResponse(company=company, buyers=ids)
+
     @app.post("/po/next-number")
     def next_number(request: models.NextNumberRequest, _=Depends(auth.verify_token)):
         _check_company(request.company)
@@ -151,9 +164,9 @@ def create_app() -> FastAPI:
         try:
             with db.get_connection(request.company) as conn:
                 try:
-                    # 0. buyer: the frontend doesn't send one — the relay fills BUYERID from the
-                    #    workstation (the machine that knows the device is the relay). by_host needs no
-                    #    DB; only read the SSPI login if a by_login map is configured.
+                    # 0. buyer: the Create PO dropdown sends a buyer_id picked from GP's registered
+                    #    buyers (POP00101, see GET /buyers). If omitted, fall back to the [gp.buyers]
+                    #    config (by_host -> by_login -> default). The value MUST be a registered GP buyer.
                     buyer_id = h.buyer_id
                     if not buyer_id:
                         bcfg = get_settings().gp.buyers
@@ -166,10 +179,23 @@ def create_app() -> FastAPI:
                                 status_code=400,
                                 detail={
                                     "error": "buyer_unresolved",
-                                    "message": "could not resolve a GP buyer for this workstation "
-                                               f"({socket.gethostname()}); set [gp.buyers] default or map this device",
+                                    "message": "no buyer_id sent and none resolved from [gp.buyers]; "
+                                               "pick a buyer from GET /buyers",
                                 },
                             )
+
+                    # validate against GP's buyer master: eConnect taPoHdr rejects an unregistered BUYERID
+                    # with error 269, so give a clear error here instead.
+                    registered = econnect.list_buyers(conn)
+                    if buyer_id not in registered:
+                        raise HTTPException(
+                            status_code=400,
+                            detail={
+                                "error": "buyer_not_registered",
+                                "message": f"buyer '{buyer_id}' is not a registered GP buyer for "
+                                           f"{request.company} (registered: {registered})",
+                            },
+                        )
 
                     # 1. PO number: use UC Nexus's own number (e.g. 'ucnexus...') if supplied,
                     #    else reserve GP's next 'PO' number via taGetPONextNumber.
