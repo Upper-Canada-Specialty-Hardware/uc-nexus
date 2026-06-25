@@ -202,16 +202,18 @@ def create_app() -> FastAPI:
 
     @app.post("/receipt", response_model=models.ReceiptResponse, status_code=201)
     def create_receipt(request: models.ReceiptRequest, _=Depends(auth.verify_token)):
-        """Receive against a PO created in workflow 1. Reads the PO's lines from POP10110,
-        then runs taGetPurchReceiptNextNumber -> taPopRcptHdrInsert -> taPopRcptLineInsert x N
-        in one transaction. The receipt lands in a GP batch a user posts inside GP."""
+        """Receive against a PO. Reads the PO's lines from POP10110, then in ONE transaction:
+        taGetPurchReceiptNextNumber -> taPopRcptLineInsert x N -> taPopRcptHdrInsert, and (for companies
+        with a paired custom DB) inserts the matching WHRECLINE101 rows the dashboards read. The GP
+        receipt lands in a batch a user posts inside GP."""
         _check_company(request.company)
         rdate = request.receipt_date or date.today()
         batch = f"{request.batch_prefix}-{rdate:%Y/%m/%d}"
+        custom_db = get_settings().gp.custom_db.get(request.company)  # None for sandboxes / unmapped companies
         try:
             with db.get_connection(request.company) as conn:
                 try:
-                    vendor_id, po_lines = econnect.read_po_receipt_context(conn, request.po_number)
+                    vendor_id, vendor_name, po_lines = econnect.read_po_receipt_context(conn, request.po_number)
                     if vendor_id is None:
                         raise HTTPException(
                             status_code=404,
@@ -237,6 +239,7 @@ def create_app() -> FastAPI:
                     # eConnect processes receipt LINES before the header (the line proc creates the
                     # receipt document; calling the header insert first makes the line a duplicate).
                     rcpt_ln = 16384
+                    received = []  # (request line, PO line dict, RCPTLNNM) for the WHRECLINE101 write below
                     for rl in request.lines:
                         pl = po_lines[rl.po_line_ord]
                         econnect.create_receipt_line(
@@ -255,6 +258,7 @@ def create_app() -> FastAPI:
                             quantity=rl.quantity,
                             receipt_date=rdate,
                         )
+                        received.append((rl, pl, rcpt_ln))
                         rcpt_ln += 16384
 
                     # header SUBTOTAL must equal the sum of the autocosted line totals
@@ -270,6 +274,33 @@ def create_app() -> FastAPI:
                         subtotal=subtotal,
                     )
 
+                    # custom warehouse store (WHRECLINE101) - SAME transaction as the GP receipt, so a
+                    # failure here rolls the GP receipt back too (no orphaned receipt). only runs for a
+                    # company with a paired custom DB; sandboxes are GP-only.
+                    if custom_db:
+                        for rl, pl, rln in received:
+                            econnect.insert_whrecline_row(
+                                conn,
+                                custom_db=custom_db,
+                                po_number=request.po_number,
+                                polnenum=rl.po_line_ord,
+                                poprctnm=receipt_number,
+                                rcptlnnm=rln,
+                                qty_ordered=int(pl["qtyorder"]),
+                                qty_received=int(rl.quantity),
+                                item=pl["item"],
+                                itemdesc=pl["itemdesc"],
+                                vendor_id=vendor_id,
+                                vendname=vendor_name,
+                                job=pl["job"],
+                                jobname=pl["jobname"],
+                                location=rl.rack_location,
+                                revision=rl.revision_number,
+                                comments=rl.comments,
+                                date_received=rdate,
+                                received_by=request.received_by,
+                            )
+
                     conn.commit()
                     return models.ReceiptResponse(
                         receipt_number=receipt_number,
@@ -277,6 +308,7 @@ def create_app() -> FastAPI:
                         po_number=request.po_number,
                         company=request.company,
                         lines_received=len(request.lines),
+                        custom_db_written=bool(custom_db),
                     )
                 except econnect.EConnectError as e:
                     conn.rollback()

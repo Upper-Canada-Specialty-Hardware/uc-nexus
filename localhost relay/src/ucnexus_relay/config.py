@@ -36,6 +36,9 @@ class SqlCfg(BaseModel):
 class GpCfg(BaseModel):
     default_company: str = "TUBC"
     allowed_companies: list[str] = ["TUBC"]
+    # company -> paired custom warehouse DB that holds WHRECLINE101 (the table the company dashboards
+    # read). A company with no entry gets GP-only receipts (no WHRECLINE101 write). Sandboxes have none.
+    custom_db: dict[str, str] = {}
 
 
 class LoggingCfg(BaseModel):

@@ -11,8 +11,11 @@ Orchestration (all inside one BEGIN..COMMIT held by the caller's connection):
   5. taPoHdr (UpdateIfExists=1, real SUBTOTAL)   — set header total
 """
 
+import re
 from datetime import date
 from decimal import Decimal
+
+_DB_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")  # custom_db comes from trusted config, but validate before interpolating
 
 
 class EConnectError(Exception):
@@ -310,27 +313,32 @@ def get_next_receipt_number(conn) -> str:
 
 
 def read_po_receipt_context(conn, po_number: str):
-    """Read-only: (vendor_id, {ord: line_dict}) for building a receipt against a PO.
-    Returns (None, {}) if the PO header doesn't exist. The client only sends which line ORDs +
-    quantities to receive; the per-line item/vendor/job/location come from POP10110 here."""
+    """Read-only: (vendor_id, vendor_name, {ord: line_dict}) for building a receipt against a PO.
+    Returns (None, None, {}) if the PO header doesn't exist. The client only sends which line ORDs +
+    quantities to receive; the per-line item/desc/vendor/job/jobname/location come from POP10110
+    (+ JC00102 for the job name) here. The extra description fields feed WHRECLINE101."""
     hdr = conn.cursor().execute(
-        "SELECT RTRIM(VENDORID) AS vendor FROM dbo.POP10100 WHERE PONUMBER = ?", po_number
+        "SELECT RTRIM(VENDORID) AS vendor, RTRIM(VENDNAME) AS vendname FROM dbo.POP10100 WHERE PONUMBER = ?",
+        po_number,
     ).fetchone()
     if hdr is None:
-        return None, {}
+        return None, None, {}
     lines: dict[int, dict] = {}
     rows = conn.cursor().execute(
-        "SELECT ORD, RTRIM(ITEMNMBR) AS item, RTRIM(VENDORID) AS vendor, RTRIM(JOBNUMBR) AS job, "
-        "RTRIM(LOCNCODE) AS locn, NONINVEN, RTRIM(UOFM) AS uofm, RTRIM(VNDITNUM) AS vnditnum, "
-        "QTYORDER, UNITCOST "
-        "FROM dbo.POP10110 WHERE PONUMBER = ? ORDER BY ORD",
+        "SELECT l.ORD, RTRIM(l.ITEMNMBR) AS item, RTRIM(l.ITEMDESC) AS itemdesc, RTRIM(l.VENDORID) AS vendor, "
+        "RTRIM(l.JOBNUMBR) AS job, RTRIM(j.WS_Job_Name) AS jobname, RTRIM(l.LOCNCODE) AS locn, "
+        "l.NONINVEN, RTRIM(l.UOFM) AS uofm, RTRIM(l.VNDITNUM) AS vnditnum, l.QTYORDER, l.UNITCOST "
+        "FROM dbo.POP10110 l LEFT JOIN dbo.JC00102 j ON j.WS_Job_Number = l.JOBNUMBR "
+        "WHERE l.PONUMBER = ? ORDER BY l.ORD",
         po_number,
     ).fetchall()
     for r in rows:
         lines[int(r.ORD)] = {
             "item": r.item,
+            "itemdesc": r.itemdesc,
             "vendor": r.vendor,
             "job": r.job,
+            "jobname": r.jobname,
             "locn": r.locn,
             "noninven": int(r.NONINVEN),
             "uofm": r.uofm,
@@ -338,7 +346,7 @@ def read_po_receipt_context(conn, po_number: str):
             "qtyorder": r.QTYORDER,
             "unitcost": r.UNITCOST,  # AUTOCOST pulls this onto the receipt line; header subtotal must match
         }
-    return hdr.vendor, lines
+    return hdr.vendor, hdr.vendname, lines
 
 
 def create_receipt_header(conn, *, receipt_number, po_number, vendor_id, receipt_date, batch_number, subtotal) -> None:
@@ -422,3 +430,58 @@ def create_receipt_line(
             f"taPopRcptLineInsert failed for ORD={po_line_ord}: {row.err_string.strip()}",
             proc="taPopRcptLineInsert", error_state=row.error_state,
         )
+
+
+def insert_whrecline_row(
+    conn,
+    *,
+    custom_db: str,       # e.g. 'PMUBC' / 'PMUCSH' (the paired custom warehouse DB)
+    po_number: str,
+    polnenum: int,        # = the POP10110.ORD being received
+    poprctnm: str,        # GP receipt number from this receive
+    rcptlnnm: int,        # receipt line number (16384 steps)
+    qty_ordered: int,
+    qty_received: int,
+    item: str,
+    itemdesc: str | None,
+    vendor_id: str,
+    vendname: str | None,
+    job: str | None,
+    jobname: str | None,
+    location: str,        # the RACK location - the whole reason this table exists
+    revision: str | None,
+    comments: str | None,
+    date_received: date,
+    received_by: str | None,
+) -> None:
+    """Insert one row into <custom_db>.dbo.WHRECLINE101 - the custom warehouse-receipt store the
+    company dashboards (and the shipping/tagging chain) read. NOT a GP table and has NO eConnect proc;
+    the legacy app wrote it with a plain INSERT, same as here. Called inside the SAME transaction as the
+    GP receipt so a failure rolls the whole receive back (no orphaned GP receipt - the legacy's hazard).
+
+    QuantityRemainingOnRack starts equal to QuantityReceived (full received qty is on the rack until
+    later drawn down by shipping). DateReceived/UpdatingUser/UpdatingMachine mirror the legacy stamps;
+    TimeReceived + machine are taken from the SQL server/connection so they're consistent."""
+    if not _DB_NAME_RE.match(custom_db):
+        raise EConnectError(f"invalid custom_db name {custom_db!r}", proc="insert_whrecline_row", error_state=0)
+    sql = f"""
+    INSERT INTO {custom_db}.dbo.WHRECLINE101
+        (PONUMBER, POLNENUM, POPRCTNM, RCPTLNNM,
+         QuantityOrdered, QuantityReceived, QuantityRemainingOnRack, SopNumber,
+         ITEMNMBR, ITEMDESC, VENDORID, VENDNAME, JobNumber, JobName,
+         RevisionNumber, Location, Comments,
+         DateReceived, TimeReceived, UpdatingUser, UpdatingMachine)
+    VALUES (?, ?, ?, ?,
+            ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?,
+            ?, ?, ?,
+            ?, CAST(GETDATE() AS time), COALESCE(?, SUSER_SNAME()), HOST_NAME());
+    """
+    conn.cursor().execute(
+        sql,
+        po_number, polnenum, poprctnm, rcptlnnm,
+        qty_ordered, qty_received, qty_received, None,  # SopNumber null for plain job POs
+        item, itemdesc, vendor_id, vendname, job, jobname,
+        revision, location, comments,
+        date_received, received_by,
+    )
