@@ -439,6 +439,17 @@ export const CREATE_SHIPMENT_RETURN = gql`
   }
 `;
 
+export const RECORD_PO_GP_SYNC = gql`
+  mutation RecordPoGpSync($poId: ID!, $gpSyncStatus: GpSyncStatus!, $poNumber: String) {
+    recordPoGpSync(poId: $poId, gpSyncStatus: $gpSyncStatus, poNumber: $poNumber) {
+      id
+      poNumber
+      status
+      gpSyncStatus
+    }
+  }
+`;
+
 export const CREATE_PO = gql`
   mutation CreatePO($input: CreatePOInput!) {
     createPo(input: $input) {
