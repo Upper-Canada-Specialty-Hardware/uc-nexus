@@ -97,6 +97,7 @@ export interface PurchaseOrder {
   requestNumber: string;
   projectId: string | null;
   status: string;
+  gpSyncStatus: string;
   vendor: VendorRef | null;
   vendorQuoteNumber: string | null;
   notes: string | null;
@@ -472,11 +473,19 @@ function POTableRow({ po, expanded, onToggle, onOpen }: POTableRowProps) {
           )}
         </TableCell>
         <TableCell sx={dataCellSx} onClick={onOpen}>
-          <Chip
-            label={formatStatus(po.status)}
-            color={STATUS_CHIP_COLOR[po.status] ?? 'default'}
-            size="small"
-          />
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap' }}>
+            <Chip
+              label={formatStatus(po.status)}
+              color={STATUS_CHIP_COLOR[po.status] ?? 'default'}
+              size="small"
+            />
+            {po.gpSyncStatus === 'SYNCED' && (
+              <Chip label="GP" color="success" size="small" variant="outlined" sx={{ height: 20, fontSize: '0.7rem' }} />
+            )}
+            {po.gpSyncStatus === 'FAILED' && (
+              <Chip label="GP failed" color="error" size="small" variant="outlined" sx={{ height: 20, fontSize: '0.7rem' }} />
+            )}
+          </Box>
         </TableCell>
         <TableCell sx={dataCellSx} onClick={onOpen}>
           {po.vendor?.name || '-'}
