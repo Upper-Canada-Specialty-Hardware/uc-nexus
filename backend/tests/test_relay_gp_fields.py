@@ -2,7 +2,7 @@
 
 import uuid
 
-from app.models.enums import GpSyncStatus
+from app.models.enums import GpSyncStatus, POStatus
 from app.models.vendor import Vendor
 from app.repositories import po_repository, vendor_repository
 
@@ -57,3 +57,5 @@ def test_record_gp_sync_result_sets_status_and_po_number(db_session):
     db_session.refresh(po)
     assert po.gp_sync_status == GpSyncStatus.SYNCED
     assert po.po_number == "PO123456"
+    assert po.status == POStatus.ORDERED  # SYNCED advances a DRAFT to ORDERED (it's a real GP PO now)
+    assert po.ordered_at is not None
