@@ -112,6 +112,44 @@ export async function getRelayBuyers(company: string): Promise<string[]> {
   return (body as { buyers: string[] }).buyers;
 }
 
+export interface RelayPoLine {
+  item_number: string;
+  item_description: string;
+  quantity: number;
+  unit_cost: number;
+  location_code?: string;
+  uofm?: string;
+  product_indicator: number; // 1 non-inv, 2 job cost
+  job_number?: string | null;
+  cost_code?: string | null; // 'phase-step-element' e.g. '210-200-2'
+}
+
+export interface RelayPoRequest {
+  company: string;
+  header: { vendor_id: string; buyer_id: string; confirm_with: string; doc_date: string };
+  lines: RelayPoLine[];
+}
+
+export interface RelayPoResponse {
+  po_number: string;
+  company: string;
+  lines_created: number;
+  subtotal: string;
+  doc_date: string;
+  vendor_id: string;
+}
+
+export async function postRelayPo(req: RelayPoRequest): Promise<RelayPoResponse> {
+  const r = await relayFetch('/po', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+  const body = await r.json();
+  if (!r.ok) throw extractError(body, r.status);
+  return body as RelayPoResponse;
+}
+
 export async function getLoopbackPermissionState(): Promise<LoopbackPermission> {
   try {
     const permissions = navigator.permissions as unknown as {
