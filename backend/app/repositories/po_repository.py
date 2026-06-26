@@ -105,14 +105,17 @@ def record_gp_sync_result(
     po_number: str | None = None,
 ) -> PurchaseOrder:
     """Record the outcome of a relay GP push: GP's returned PONUMBER (on success) and the sync status.
-    The PO status transition (DRAFT -> ORDERED) is driven by the existing PO status flow, not here, so
-    this stays a pure record of the GP-side result that the create-in-both orchestration calls."""
+    On SYNCED the PO is now a real GP purchase order, so a DRAFT advances to ORDERED (mirroring
+    mark_po_as_ordered's preconditions: po_number + vendor present)."""
     po = session.get(PurchaseOrder, po_id)
     if po is None:
         raise NotFoundError(f"Purchase order {po_id} not found")
     po.gp_sync_status = gp_sync_status
     if po_number is not None:
         po.po_number = po_number.strip() or None
+    if gp_sync_status == GpSyncStatus.SYNCED and po.status == POStatus.DRAFT and po.po_number and po.vendor_id:
+        po.status = POStatus.ORDERED
+        po.ordered_at = datetime.utcnow()
     session.flush()
     return po
 

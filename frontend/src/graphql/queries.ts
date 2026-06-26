@@ -74,6 +74,7 @@ export const GET_PURCHASE_ORDERS = gql`
       requestNumber
       projectId
       status
+      gpSyncStatus
       vendor {
         id
         name
