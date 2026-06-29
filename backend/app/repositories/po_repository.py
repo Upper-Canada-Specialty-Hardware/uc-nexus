@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import InvalidStateTransitionError, NotFoundError, ValidationError
-from app.models.enums import Classification, GpSyncStatus, PODocumentType, POStatus
+from app.models.enums import Classification, PODocumentType, POStatus
 from app.models.purchase_order import PODocument, POLineItem, PurchaseOrder
 from app.models.receiving import ReceiveRecord
 
@@ -104,24 +104,22 @@ def create_po(
 def record_gp_sync_result(
     session: Session,
     po_id: uuid.UUID,
-    gp_sync_status: GpSyncStatus,
     po_number: str | None = None,
     gp_company: str | None = None,
 ) -> PurchaseOrder:
-    """Record the outcome of a relay GP push: GP's returned PONUMBER, the GP company it lives in (so a
-    later relay /receipt can target it), and the sync status. On SYNCED the PO is now a real GP purchase
-    order, so a DRAFT advances to ORDERED (mirroring mark_po_as_ordered's preconditions: po_number +
-    vendor present)."""
+    """Record the outcome of a relay GP push: GP's returned PONUMBER and the GP company it lives in (so a
+    later relay /receipt can target it). Only called on GP success - a failed push never creates the PO in
+    UC Nexus - so the PO is now a real GP purchase order and a DRAFT advances to GP_REGISTERED (mirroring
+    mark_po_as_ordered's preconditions: po_number + vendor present)."""
     po = session.get(PurchaseOrder, po_id)
     if po is None:
         raise NotFoundError(f"Purchase order {po_id} not found")
-    po.gp_sync_status = gp_sync_status
     if po_number is not None:
         po.po_number = po_number.strip() or None
     if gp_company is not None:
         po.gp_company = gp_company.strip() or None
-    if gp_sync_status == GpSyncStatus.SYNCED and po.status == POStatus.DRAFT and po.po_number and po.vendor_id:
-        po.status = POStatus.ORDERED
+    if po.status == POStatus.DRAFT and po.po_number and po.vendor_id:
+        po.status = POStatus.GP_REGISTERED
         po.ordered_at = datetime.utcnow()
     session.flush()
     return po
@@ -179,7 +177,8 @@ def get_receive_records_for_po(session: Session, po_id: uuid.UUID) -> list[Recei
 
 def get_po_statistics(session: Session, project_id: uuid.UUID | None = None) -> dict:
     """COUNT grouped by status WHERE optional project_id AND deleted_at IS NULL.
-    Return dict with keys: total, draft, ordered, partially_received, closed, cancelled."""
+    Return dict with keys: total, draft, gp_registered, vendor_confirmed, partially_received, closed,
+    cancelled."""
     stmt = (
         select(PurchaseOrder.status, func.count())
         .where(PurchaseOrder.deleted_at.is_(None))
@@ -192,7 +191,7 @@ def get_po_statistics(session: Session, project_id: uuid.UUID | None = None) -> 
     counts = {
         "total": 0,
         "draft": 0,
-        "ordered": 0,
+        "gp_registered": 0,
         "vendor_confirmed": 0,
         "partially_received": 0,
         "closed": 0,
@@ -200,7 +199,7 @@ def get_po_statistics(session: Session, project_id: uuid.UUID | None = None) -> 
     }
     status_key_map = {
         POStatus.DRAFT: "draft",
-        POStatus.ORDERED: "ordered",
+        POStatus.GP_REGISTERED: "gp_registered",
         POStatus.VENDOR_CONFIRMED: "vendor_confirmed",
         POStatus.PARTIALLY_RECEIVED: "partially_received",
         POStatus.CLOSED: "closed",
@@ -227,7 +226,7 @@ def update_po(
 ) -> PurchaseOrder:
     """
     - Validate PO exists + not soft-deleted (NotFoundError)
-    - Validate status in (Draft, Ordered) (InvalidStateTransitionError)
+    - Validate status in (Draft, GP_Registered, Vendor_Confirmed) (InvalidStateTransitionError)
     - Validate no ReceiveRecords exist (InvalidStateTransitionError)
     - Validate po_number uniqueness within project if provided
     - Update only provided fields (vendor_id/project_id use _UNSET sentinel)
@@ -237,7 +236,7 @@ def update_po(
     if po is None:
         raise NotFoundError(f"Purchase order {po_id} not found")
 
-    if po.status not in (POStatus.DRAFT, POStatus.ORDERED, POStatus.VENDOR_CONFIRMED):
+    if po.status not in (POStatus.DRAFT, POStatus.GP_REGISTERED, POStatus.VENDOR_CONFIRMED):
         raise InvalidStateTransitionError(f"Cannot edit PO in {po.status.value} status")
 
     # Check for existing receive records
@@ -293,16 +292,16 @@ def update_po(
     if notes is not None:
         po.notes = notes if notes.strip() else None
 
-    # Auto-transition: ORDERED → VENDOR_CONFIRMED when both vendor_quote_number and vendor_ack doc exist
-    if po.status == POStatus.ORDERED:
+    # Auto-transition: GP_REGISTERED → VENDOR_CONFIRMED when both vendor_quote_number and vendor_ack doc exist
+    if po.status == POStatus.GP_REGISTERED:
         has_vendor_ack = any(doc.document_type == PODocumentType.VENDOR_ACKNOWLEDGEMENT for doc in (po.documents or []))
         if po.vendor_quote_number is not None and has_vendor_ack:
             po.status = POStatus.VENDOR_CONFIRMED
-    # Auto-revert: VENDOR_CONFIRMED → ORDERED when conditions no longer met
+    # Auto-revert: VENDOR_CONFIRMED → GP_REGISTERED when conditions no longer met
     elif po.status == POStatus.VENDOR_CONFIRMED:
         has_vendor_ack = any(doc.document_type == PODocumentType.VENDOR_ACKNOWLEDGEMENT for doc in (po.documents or []))
         if po.vendor_quote_number is None or not has_vendor_ack:
-            po.status = POStatus.ORDERED
+            po.status = POStatus.GP_REGISTERED
 
     return po
 
@@ -313,7 +312,7 @@ def mark_po_as_ordered(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
     - Validate status == Draft (InvalidStateTransitionError)
     - Validate po_number is not None (ValidationError)
     - Validate vendor_id is not None (ValidationError)
-    - Set status=Ordered, ordered_at=datetime.utcnow()
+    - Set status=GP_Registered, ordered_at=datetime.utcnow()
     - Return updated PO
     """
     po = get_purchase_order(session, po_id)
@@ -332,7 +331,7 @@ def mark_po_as_ordered(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
             field="vendor_id",
         )
 
-    po.status = POStatus.ORDERED
+    po.status = POStatus.GP_REGISTERED
     po.ordered_at = datetime.utcnow()
 
     return po
@@ -341,7 +340,7 @@ def mark_po_as_ordered(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
 def cancel_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
     """
     - Validate exists + not soft-deleted (NotFoundError)
-    - Validate status in (Draft, Ordered) (InvalidStateTransitionError)
+    - Validate status in (Draft, GP_Registered, Vendor_Confirmed) (InvalidStateTransitionError)
     - Set status=Cancelled, deleted_at=datetime.utcnow()
     - Return updated PO
     """
@@ -349,7 +348,7 @@ def cancel_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
     if po is None:
         raise NotFoundError(f"Purchase order {po_id} not found")
 
-    if po.status not in (POStatus.DRAFT, POStatus.ORDERED, POStatus.VENDOR_CONFIRMED):
+    if po.status not in (POStatus.DRAFT, POStatus.GP_REGISTERED, POStatus.VENDOR_CONFIRMED):
         raise InvalidStateTransitionError(f"Cannot cancel PO in {po.status.value} status")
 
     po.status = POStatus.CANCELLED
@@ -482,10 +481,10 @@ def upload_po_document(
     )
     session.add(doc)
 
-    # Auto-transition: ORDERED → VENDOR_CONFIRMED when uploading vendor ack and quote number exists
+    # Auto-transition: GP_REGISTERED → VENDOR_CONFIRMED when uploading vendor ack and quote number exists
     if (
         document_type == PODocumentType.VENDOR_ACKNOWLEDGEMENT
-        and po.status == POStatus.ORDERED
+        and po.status == POStatus.GP_REGISTERED
         and po.vendor_quote_number is not None
     ):
         po.status = POStatus.VENDOR_CONFIRMED
@@ -516,7 +515,7 @@ def delete_po_document(session: Session, document_id: uuid.UUID) -> None:
     storage.delete_file(doc.s3_key)
     session.delete(doc)
 
-    # Auto-revert: VENDOR_CONFIRMED → ORDERED when last vendor ack doc is deleted
+    # Auto-revert: VENDOR_CONFIRMED → GP_REGISTERED when last vendor ack doc is deleted
     if deleted_doc_type == PODocumentType.VENDOR_ACKNOWLEDGEMENT and po.status == POStatus.VENDOR_CONFIRMED:
         remaining_ack = session.scalars(
             select(PODocument).where(
@@ -526,7 +525,7 @@ def delete_po_document(session: Session, document_id: uuid.UUID) -> None:
             )
         ).first()
         if remaining_ack is None:
-            po.status = POStatus.ORDERED
+            po.status = POStatus.GP_REGISTERED
 
 
 def get_po_document(session: Session, document_id: uuid.UUID) -> PODocument:

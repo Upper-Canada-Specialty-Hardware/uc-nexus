@@ -154,7 +154,8 @@ export default function ReceivingPage() {
           const status = params.value as string;
           const color =
             status === 'PARTIALLY_RECEIVED' ? 'warning' : 'info';
-          const label = status === 'PARTIALLY_RECEIVED' ? 'Partial' : status === 'VENDOR_CONFIRMED' ? 'Confirmed' : 'Ordered';
+          const label =
+            status === 'PARTIALLY_RECEIVED' ? 'Partial' : status === 'VENDOR_CONFIRMED' ? 'Confirmed' : 'GP-Registered';
           return <Chip label={label} color={color} size="small" />;
         },
       },

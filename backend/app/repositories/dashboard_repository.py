@@ -21,7 +21,7 @@ from app.models.shop_assembly import ShopAssemblyRequest
 from app.models.vendor import Vendor
 
 OPEN_PO_STATUSES = (
-    POStatus.ORDERED,
+    POStatus.GP_REGISTERED,
     POStatus.VENDOR_CONFIRMED,
     POStatus.PARTIALLY_RECEIVED,
 )

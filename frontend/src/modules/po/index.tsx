@@ -97,7 +97,6 @@ export interface PurchaseOrder {
   requestNumber: string;
   projectId: string | null;
   status: string;
-  gpSyncStatus: string;
   vendor: VendorRef | null;
   vendorQuoteNumber: string | null;
   notes: string | null;
@@ -113,7 +112,7 @@ export interface PurchaseOrder {
 interface POStatistics {
   total: number;
   draft: number;
-  ordered: number;
+  gpRegistered: number;
   vendorConfirmed: number;
   partiallyReceived: number;
   closed: number;
@@ -124,7 +123,7 @@ interface POStatistics {
 
 const STATUS_CHIP_COLOR: Record<string, 'default' | 'primary' | 'info' | 'warning' | 'success' | 'error'> = {
   DRAFT: 'default',
-  ORDERED: 'primary',
+  GP_REGISTERED: 'primary',
   VENDOR_CONFIRMED: 'info',
   PARTIALLY_RECEIVED: 'warning',
   CLOSED: 'success',
@@ -138,7 +137,7 @@ const STATUS_VALUES = Object.keys(STATUS_CHIP_COLOR);
 const STAT_CARDS: { label: string; key: keyof POStatistics }[] = [
   { label: 'Total', key: 'total' },
   { label: 'Draft', key: 'draft' },
-  { label: 'Ordered', key: 'ordered' },
+  { label: 'GP-Registered', key: 'gpRegistered' },
   { label: 'Vendor Confirmed', key: 'vendorConfirmed' },
   { label: 'Partially Received', key: 'partiallyReceived' },
   { label: 'Closed', key: 'closed' },
@@ -240,7 +239,13 @@ function comparePOs(a: PurchaseOrder, b: PurchaseOrder, sort: SortState): number
 
 // --- Helpers ---
 
+// Display labels that don't follow the generic Title_Case rule (e.g. GP_REGISTERED -> "GP-Registered").
+const STATUS_LABELS: Record<string, string> = {
+  GP_REGISTERED: 'GP-Registered',
+};
+
 function formatStatus(status: string): string {
+  if (STATUS_LABELS[status]) return STATUS_LABELS[status];
   return status
     .split('_')
     .map((w) => w.charAt(0) + w.slice(1).toLowerCase())
@@ -479,12 +484,6 @@ function POTableRow({ po, expanded, onToggle, onOpen }: POTableRowProps) {
               color={STATUS_CHIP_COLOR[po.status] ?? 'default'}
               size="small"
             />
-            {po.gpSyncStatus === 'SYNCED' && (
-              <Chip label="GP" color="success" size="small" variant="outlined" sx={{ height: 20, fontSize: '0.7rem' }} />
-            )}
-            {po.gpSyncStatus === 'FAILED' && (
-              <Chip label="GP failed" color="error" size="small" variant="outlined" sx={{ height: 20, fontSize: '0.7rem' }} />
-            )}
           </Box>
         </TableCell>
         <TableCell sx={dataCellSx} onClick={onOpen}>

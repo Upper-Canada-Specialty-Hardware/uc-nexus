@@ -10,7 +10,6 @@ from .enums import (
     Classification,
     DeficiencyResolution,
     DeficientItemSource,
-    GpSyncStatus,
     HardwareItemState,
     NotificationType,
     OpeningItemState,
@@ -208,7 +207,6 @@ class PurchaseOrder:
     project_id: strawberry.ID | None
     status: POStatus
     cost_code: str | None
-    gp_sync_status: GpSyncStatus
     gp_company: str | None
     vendor: Vendor | None
     vendor_quote_number: str | None
@@ -497,7 +495,7 @@ class ApproveShopAssemblyResult:
 class POStatistics:
     total: int
     draft: int
-    ordered: int
+    gp_registered: int
     vendor_confirmed: int
     partially_received: int
     closed: int

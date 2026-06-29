@@ -54,20 +54,20 @@ interface PODetailLineItem {
 interface PODetails {
   id: string;
   poNumber: string | null;
-  // The GP company + sync status this PO was registered in. A receive posts to GP, so it can only
-  // run against a PO that is SYNCED to GP (has a gpCompany + poNumber). See isPoGpRegistered.
+  // The GP company this PO was registered in. A receive posts to GP, so it can only run against a PO
+  // that was registered in GP (has a gpCompany + poNumber). See isPoGpRegistered.
   gpCompany: string | null;
-  gpSyncStatus: string;
   vendor: { id: string; name: string; contactName: string | null } | null;
   notes: string | null;
   status: string;
   lineItems: PODetailLineItem[];
 }
 
-// A receive must post the GP receipt to count (issue #177), so the PO has to be a real GP PO:
-// created through the relay (gpCompany + poNumber present) and SYNCED.
+// A receive must post the GP receipt to count (issue #177), so the PO has to be a real GP PO: created
+// through the relay, which records its gpCompany + poNumber (the same step that advances it to
+// GP-Registered). Those two being present is exactly "registered in GP".
 function isPoGpRegistered(d: PODetails | undefined): boolean {
-  return !!d && d.gpSyncStatus === 'SYNCED' && !!d.gpCompany && !!d.poNumber;
+  return !!d && !!d.gpCompany && !!d.poNumber;
 }
 
 // One destination bin for a received line, plus how many of those units arrived deficient.
