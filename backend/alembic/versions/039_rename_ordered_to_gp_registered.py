@@ -40,8 +40,5 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute("CREATE TYPE gp_sync_status AS ENUM ('NOT_PUSHED', 'SYNCED', 'FAILED')")
-    op.execute(
-        "ALTER TABLE purchase_orders ADD COLUMN gp_sync_status gp_sync_status "
-        "NOT NULL DEFAULT 'NOT_PUSHED'"
-    )
+    op.execute("ALTER TABLE purchase_orders ADD COLUMN gp_sync_status gp_sync_status NOT NULL DEFAULT 'NOT_PUSHED'")
     op.execute(_rename_enum_value_if_exists("po_status", "GP_REGISTERED", "ORDERED"))
