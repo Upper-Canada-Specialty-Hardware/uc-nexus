@@ -1,13 +1,25 @@
 """Config loading from config.toml (Python 3.11 tomllib + pydantic validation)."""
 
+import sys
 import tomllib
 from functools import lru_cache
 from pathlib import Path
 
 from pydantic import BaseModel
 
-# config.py lives at <root>/src/ucnexus_relay/config.py — config.toml is at <root>/config.toml
-DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config.toml"
+from . import dpapi
+
+
+def _default_config_path() -> Path:
+    # When packaged by PyInstaller, __file__ points into the temp extraction dir, so config.toml is
+    # resolved next to the .exe instead. In a dev checkout it sits at <root>/config.toml
+    # (config.py is <root>/src/ucnexus_relay/config.py).
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent / "config.toml"
+    return Path(__file__).resolve().parents[2] / "config.toml"
+
+
+DEFAULT_CONFIG_PATH = _default_config_path()
 
 
 class ServerCfg(BaseModel):
@@ -75,4 +87,9 @@ def get_settings(path: str | None = None) -> Settings:
         )
     with open(cfg_path, "rb") as f:
         data = tomllib.load(f)
+    # the shared_secret is DPAPI-encrypted at rest (see ucnexus_relay.dpapi); decrypt on read so the
+    # rest of the app only ever sees the plaintext. a plaintext (dev) value passes through unchanged.
+    auth = data.get("auth")
+    if isinstance(auth, dict) and isinstance(auth.get("shared_secret"), str):
+        auth["shared_secret"] = dpapi.unprotect(auth["shared_secret"])
     return Settings(**data)

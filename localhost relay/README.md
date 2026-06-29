@@ -6,7 +6,8 @@ the network, takes HTTP from UC Nexus, and creates POs in GP by calling the eCon
 stored procedures directly via pyodbc.
 
 the design + full reference is in `docs/localhost-relay.md`. the POC gate + auth notes are in
-`docs/relay-poc-next-steps.md`.
+`docs/relay-poc-next-steps.md`. per-workstation deployment - auto-start at logon + DPAPI-protected
+secret, packaged as a single `ucnexus-relay.exe` - is in `docs/relay-deployment.md`.
 
 hard rule: every GP write goes through an EXEC of an eConnect-registered proc (`taPo*`,
 `taGetPONextNumber`, `wsiWS*`). no direct INSERT/UPDATE/DELETE against GP tables, ever.
@@ -35,13 +36,24 @@ poetry run python -m ucnexus_relay.enroll --token <ENROLLMENT_TOKEN> --backend-u
 ```
 the relay generates its own long-lived secret, registers it with the backend using that one-time token
 (the backend can't reach the relay, but the relay can reach the backend), and writes the secret into
-`config.toml`. restart the relay afterwards. the frontend then fetches the same secret at runtime via the
-`relayCredential` query - it's never baked into the build.
+`config.toml` DPAPI-encrypted at rest (CurrentUser scope; see `src/ucnexus_relay/dpapi.py`). restart the
+relay afterwards. the frontend then fetches the same secret at runtime via the `relayCredential` query -
+it's never baked into the build.
 
-run
+set the secret by hand instead? put a plaintext `[auth] shared_secret` in `config.toml`, then run
+`python -m ucnexus_relay.protect_secret` (or `ucnexus-relay.exe protect-secret`) to DPAPI-encrypt it in
+place. on read the relay decrypts an `enc:dpapi:` value transparently and passes a plaintext value through
+unchanged, so dev configs keep working.
+
+run (dev)
 ```
 poetry run uvicorn ucnexus_relay.main:app --app-dir src --host 127.0.0.1 --port 7321
+# or via the CLI dispatcher (same entry point the packaged exe uses):
+poetry run python -m ucnexus_relay serve
 ```
+
+on a deployed workstation you don't run this by hand - the packaged `ucnexus-relay.exe serve` is launched
+at logon by a scheduled task and restarts on failure. see `docs/relay-deployment.md`.
 
 smoke (no GP)
 ```
