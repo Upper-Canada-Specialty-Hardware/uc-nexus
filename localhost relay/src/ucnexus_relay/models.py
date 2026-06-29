@@ -120,3 +120,17 @@ class VendorsResponse(BaseModel):
 class BuyersResponse(BaseModel):
     company: str
     buyers: list[str]  # registered GP buyer IDs (POP00101) for the Create PO buyer dropdown
+
+
+# --- cost codes (per-job, feeds the Create PO cost-code dropdown) ---
+
+class CostCodeOut(BaseModel):
+    cost_code: str                  # two-segment number 'cc1-cc2' e.g. '310-000'
+    description: str | None = None  # GP Cost_Code_Description
+    cost_element: int               # GP Cost_Element (varies by code: 2/3/5/6/...); the /po trailing digit
+
+
+class CostCodesResponse(BaseModel):
+    company: str
+    job: str
+    cost_codes: list[CostCodeOut]
