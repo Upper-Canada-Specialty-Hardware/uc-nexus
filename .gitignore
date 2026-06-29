@@ -25,9 +25,6 @@ frontend/build/
 .env.local
 .env.*.local
 
-# Local dev runtime (portable postgres binaries, cluster data, logs, downloaded zip)
-.localdev/
-
 # IDE / Tools
 .vscode/
 .idea/
