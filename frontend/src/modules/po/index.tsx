@@ -23,6 +23,7 @@ import {
   MenuItem,
   Checkbox,
   ListItemText,
+  Tooltip,
 } from '@mui/material';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import AddIcon from '@mui/icons-material/Add';
@@ -36,6 +37,8 @@ import ProjectLandingPage from '../../components/ProjectLandingPage';
 import type { Project } from '../../types/project';
 import PODetailModal from './PODetailModal';
 import CreatePODialog from './CreatePODialog';
+import RelayStatusChip from '../../relay/RelayStatusChip';
+import { useRelayStatus } from '../../relay/useRelayStatus';
 
 // --- Types ---
 
@@ -529,6 +532,11 @@ export default function POModule() {
   const [filterState, setFilterState] = useState<FilterState>(EMPTY_FILTER_STATE);
   const [sortState, setSortState] = useState<SortState>({ field: null, direction: 'asc' });
 
+  // Relay presence is probed as the page loads (not when a dialog opens), so the user knows up front
+  // whether GP actions work. Create PO is a GP-first flow, so it can't run when the relay is down.
+  const { health: relayHealth } = useRelayStatus();
+  const relayConnected = relayHealth?.ok === true;
+
   const toggleExpand = (id: string) => {
     setExpandedIds((prev) => {
       const next = new Set(prev);
@@ -647,14 +655,23 @@ export default function POModule() {
         <Typography variant="h5" sx={{ flex: 1 }}>
           Purchase Orders — {projectLabel}
         </Typography>
-        <Button
-          variant="contained"
-          size="small"
-          startIcon={<AddIcon />}
-          onClick={() => setCreateOpen(true)}
+        <RelayStatusChip health={relayHealth} />
+        <Tooltip
+          title={relayConnected ? '' : 'GP relay not detected on this machine - it must be running to create a PO'}
+          arrow
         >
-          Create PO
-        </Button>
+          <span>
+            <Button
+              variant="contained"
+              size="small"
+              startIcon={<AddIcon />}
+              onClick={() => setCreateOpen(true)}
+              disabled={!relayConnected}
+            >
+              Create PO
+            </Button>
+          </span>
+        </Tooltip>
       </Box>
 
       {/* Statistics Cards (display-only) */}
@@ -790,6 +807,7 @@ export default function POModule() {
           handleRefetch();
         }}
         defaultProjectId={projectId}
+        relayHealth={relayHealth}
       />
     </Box>
   );
