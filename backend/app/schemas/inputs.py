@@ -179,6 +179,11 @@ class CreatePOInput:
     # GP cost code for a project-linked PO (the issue #121 dropdown, 'phase-step-element').
     # Applied to every job-cost line when the PO is pushed to GP via the relay.
     cost_code: str | None = None
+    # GP's returned PONUMBER + the company it lives in. The frontend pushes the PO to the relay FIRST
+    # and passes these on success, so the PO is created already GP-registered in one commit (no
+    # numberless DRAFT window). Omitted for a plain draft.
+    po_number: str | None = None
+    gp_company: str | None = None
 
 
 @strawberry.input

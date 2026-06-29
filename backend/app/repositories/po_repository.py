@@ -29,6 +29,31 @@ def generate_next_request_number(session: Session) -> str:
     return f"PO-REQ-{next_seq:03d}"
 
 
+def _assert_po_number_available(
+    session: Session,
+    po_number: str,
+    *,
+    project_id: uuid.UUID | None,
+    exclude_po_id: uuid.UUID | None = None,
+) -> None:
+    """Raise a clean ValidationError if po_number is already used by another non-deleted PO in the
+    same scope (project-scoped, or global for project-less POs), matching the partial-unique indexes
+    ix_purchase_orders_(project|no_project)_po_number. Without this a collision surfaces as a raw
+    psycopg IntegrityError at commit instead of a field error."""
+    stmt = select(PurchaseOrder).where(
+        PurchaseOrder.po_number == po_number,
+        PurchaseOrder.deleted_at.is_(None),
+    )
+    if exclude_po_id is not None:
+        stmt = stmt.where(PurchaseOrder.id != exclude_po_id)
+    if project_id is not None:
+        stmt = stmt.where(PurchaseOrder.project_id == project_id)
+    else:
+        stmt = stmt.where(PurchaseOrder.project_id.is_(None))
+    if session.scalars(stmt).first() is not None:
+        raise ValidationError(f"PO number '{po_number}' already exists", field="po_number")
+
+
 def create_po(
     session: Session,
     line_items: list[dict],
@@ -36,8 +61,16 @@ def create_po(
     vendor_id: uuid.UUID | None = None,
     notes: str | None = None,
     cost_code: str | None = None,
+    po_number: str | None = None,
+    gp_company: str | None = None,
 ) -> PurchaseOrder:
-    """Create a manual PO with line items. No hardware items are created."""
+    """Create a manual PO with line items. No hardware items are created.
+
+    A manual PO is GP-first: the frontend pushes it to the GP relay and only calls this on success,
+    passing GP's returned po_number + gp_company. When those are present the PO is stamped and
+    advanced DRAFT -> GP_REGISTERED in this SAME commit, so there is no window where a created DRAFT
+    exists without its GP number (which would otherwise show "Register in GP" and let a retry create
+    a duplicate GP PO). Omitting them creates a plain DRAFT."""
     if not line_items:
         raise ValidationError("At least one line item is required", field="line_items")
 
@@ -98,30 +131,19 @@ def create_po(
         session.add(poli)
 
     session.flush()
-    return po
 
+    # GP-first: when the relay returned a number, stamp it + the company and advance this DRAFT to
+    # GP_REGISTERED in the same commit, so a created PO is never left numberless and re-registerable.
+    if po_number is not None and po_number.strip():
+        cleaned_number = po_number.strip()
+        _assert_po_number_available(session, cleaned_number, project_id=project_id, exclude_po_id=po.id)
+        po.po_number = cleaned_number
+        po.gp_company = gp_company.strip() if gp_company and gp_company.strip() else None
+        if po.vendor_id is not None:
+            po.status = POStatus.GP_REGISTERED
+            po.ordered_at = datetime.utcnow()
+        session.flush()
 
-def record_gp_sync_result(
-    session: Session,
-    po_id: uuid.UUID,
-    po_number: str | None = None,
-    gp_company: str | None = None,
-) -> PurchaseOrder:
-    """Record the outcome of a relay GP push: GP's returned PONUMBER and the GP company it lives in (so a
-    later relay /receipt can target it). Only called on GP success - a failed push never creates the PO in
-    UC Nexus - so the PO is now a real GP purchase order and a DRAFT advances to GP_REGISTERED (mirroring
-    mark_po_as_ordered's preconditions: po_number + vendor present)."""
-    po = session.get(PurchaseOrder, po_id)
-    if po is None:
-        raise NotFoundError(f"Purchase order {po_id} not found")
-    if po_number is not None:
-        po.po_number = po_number.strip() or None
-    if gp_company is not None:
-        po.gp_company = gp_company.strip() or None
-    if po.status == POStatus.DRAFT and po.po_number and po.vendor_id:
-        po.status = POStatus.GP_REGISTERED
-        po.ordered_at = datetime.utcnow()
-    session.flush()
     return po
 
 
@@ -155,8 +177,17 @@ def register_po_in_gp(
 
     from app.models.vendor import Vendor as VendorModel
 
-    if session.get(VendorModel, vendor_id) is None:
+    vendor = session.get(VendorModel, vendor_id)
+    if vendor is None:
         raise NotFoundError(f"Vendor {vendor_id} not found")
+    # A GP-registered PO must map to a GP vendor - the relay /po was pushed with this vendor's GP id, so
+    # the end-state vendor has to be the GP-linked one, not the imported placeholder. The dialog only
+    # offers GP-linked vendors; enforce it here too so a direct mutation can't break the invariant.
+    if not vendor.gp_vendor_id:
+        raise ValidationError(
+            "Vendor is not linked to GP (run GP Vendor Sync) and cannot back a GP-registered PO",
+            field="vendor_id",
+        )
 
     cleaned_po_number = po_number.strip() if po_number else ""
     if not cleaned_po_number:
@@ -164,6 +195,8 @@ def register_po_in_gp(
     cleaned_company = gp_company.strip() if gp_company else ""
     if not cleaned_company:
         raise ValidationError("GP company is required to register a PO", field="gp_company")
+    # Surface a duplicate GP number as a clean field error rather than a raw IntegrityError at commit.
+    _assert_po_number_available(session, cleaned_po_number, project_id=po.project_id, exclude_po_id=po.id)
 
     existing = {li.id: li for li in po.line_items}
     seen_ids: set[uuid.UUID] = set()
@@ -382,18 +415,7 @@ def update_po(
     if po_number is not None:
         # Validate uniqueness scoped to project (or globally for project-less POs)
         if po_number.strip():
-            uniqueness_stmt = select(PurchaseOrder).where(
-                PurchaseOrder.po_number == po_number,
-                PurchaseOrder.id != po.id,
-                PurchaseOrder.deleted_at.is_(None),
-            )
-            if po.project_id is not None:
-                uniqueness_stmt = uniqueness_stmt.where(PurchaseOrder.project_id == po.project_id)
-            else:
-                uniqueness_stmt = uniqueness_stmt.where(PurchaseOrder.project_id.is_(None))
-            existing = session.scalars(uniqueness_stmt).first()
-            if existing is not None:
-                raise ValidationError(f"PO number '{po_number}' already exists", field="po_number")
+            _assert_po_number_available(session, po_number, project_id=po.project_id, exclude_po_id=po.id)
             po.po_number = po_number
         else:
             po.po_number = None
