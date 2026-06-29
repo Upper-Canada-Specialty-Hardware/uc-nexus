@@ -191,25 +191,29 @@ def split_cost_code(cost_code: str) -> tuple[str, str, str, str, int]:
 def job_exists(conn, job_number: str) -> bool:
     """Read-only: is job_number a real GP job in the job master JC00102? The wsi proc rejects an
     unknown JOBNUMBR, so /po pre-checks here to return a clean job_not_registered instead of a raw
-    eConnect error (mirrors the buyer pre-check against POP00101). char(17) so the '=' comparison
-    is trailing-space-insensitive - pass the job as-is."""
+    eConnect error (mirrors the buyer pre-check against POP00101). RTRIM the column and strip the
+    arg so this normalizes the job the SAME way the /cost-codes dropdown (list_cost_codes) does -
+    a job the dropdown loads can't then fail the pre-check on surrounding whitespace."""
     row = conn.cursor().execute(
-        "SELECT COUNT(*) AS n FROM dbo.JC00102 WHERE WS_Job_Number = ?", job_number
+        "SELECT COUNT(*) AS n FROM dbo.JC00102 WHERE RTRIM(WS_Job_Number) = ?", job_number.strip()
     ).fetchone()
     return row.n > 0
 
 
 def cost_code_on_job(conn, job_number: str, cost_code: str) -> bool:
-    """Read-only: is cost_code set up on job_number in the cost-code detail master JC00701? Matches
-    the same six-column key the WennSoft proc uses (WS_Job_Number + Cost_Code_Number_1..4 +
-    Cost_Element), splitting cost_code with the identical split_cost_code the wsi call uses. /po
-    pre-checks this so a code not on the job returns a clean cost_code_not_on_job."""
+    """Read-only: is cost_code an ACTIVE cost code on job_number in the cost-code detail master
+    JC00701? Matches the same six-column key the WennSoft proc uses (WS_Job_Number +
+    Cost_Code_Number_1..4 + Cost_Element), splitting cost_code with the identical split_cost_code
+    the wsi call uses, and filtering WS_Inactive = 0 so it accepts exactly the codes the /cost-codes
+    dropdown (list_cost_codes) offers - an inactive code the dropdown hides must not slip past this
+    pre-check and then fail mid-orchestration with the raw eConnect error the pre-check exists to
+    prevent. /po pre-checks this so a code not on the job returns a clean cost_code_not_on_job."""
     cc1, cc2, cc3, cc4, cost_element = split_cost_code(cost_code)
     row = conn.cursor().execute(
         "SELECT COUNT(*) AS n FROM dbo.JC00701 "
-        "WHERE WS_Job_Number = ? AND Cost_Code_Number_1 = ? AND Cost_Code_Number_2 = ? "
-        "AND Cost_Code_Number_3 = ? AND Cost_Code_Number_4 = ? AND Cost_Element = ?",
-        job_number, cc1, cc2, cc3, cc4, cost_element,
+        "WHERE RTRIM(WS_Job_Number) = ? AND Cost_Code_Number_1 = ? AND Cost_Code_Number_2 = ? "
+        "AND Cost_Code_Number_3 = ? AND Cost_Code_Number_4 = ? AND Cost_Element = ? AND WS_Inactive = 0",
+        job_number.strip(), cc1, cc2, cc3, cc4, cost_element,
     ).fetchone()
     return row.n > 0
 

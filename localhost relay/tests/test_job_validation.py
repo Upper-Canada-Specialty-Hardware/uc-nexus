@@ -60,13 +60,22 @@ def test_job_exists_true_when_row_found():
     conn = _FakeConn(1)
     assert job_exists(conn, "80003") is True
     assert "JC00102" in conn.cursor_obj.sql
-    assert "WS_Job_Number = ?" in conn.cursor_obj.sql
+    # RTRIM the column so this matches list_cost_codes' normalization (not a bare '=')
+    assert "RTRIM(WS_Job_Number) = ?" in conn.cursor_obj.sql
     assert conn.cursor_obj.params == ("80003",)
 
 
 def test_job_exists_false_when_no_row():
     conn = _FakeConn(0)
     assert job_exists(conn, "NOPE") is False
+
+
+def test_job_exists_strips_whitespace_like_the_dropdown():
+    # /cost-codes strips its job param and RTRIMs the column; job_exists must too, or a job the
+    # dropdown loaded fails the /po pre-check on surrounding whitespace.
+    conn = _FakeConn(1)
+    assert job_exists(conn, "  80003 ") is True
+    assert conn.cursor_obj.params == ("80003",)
 
 
 # --- cost_code_on_job (JC00701) ---
@@ -76,6 +85,16 @@ def test_cost_code_on_job_matches_six_column_key():
     assert cost_code_on_job(conn, "80003", "210-200-2") is True
     # the split feeds the JC00701 key in WS_Job_Number, cc1..cc4, Cost_Element order
     assert "JC00701" in conn.cursor_obj.sql
+    assert conn.cursor_obj.params == ("80003", "210", "200", "", "", 2)
+
+
+def test_cost_code_on_job_filters_inactive_codes():
+    # must match list_cost_codes (WS_Inactive = 0): an inactive code the dropdown hides should not
+    # pass the pre-check, or the wsi proc rejects it mid-orchestration with a raw eConnect error.
+    conn = _FakeConn(1)
+    assert cost_code_on_job(conn, "  80003 ", "210-200-2") is True
+    assert "WS_Inactive = 0" in conn.cursor_obj.sql
+    assert "RTRIM(WS_Job_Number) = ?" in conn.cursor_obj.sql
     assert conn.cursor_obj.params == ("80003", "210", "200", "", "", 2)
 
 
