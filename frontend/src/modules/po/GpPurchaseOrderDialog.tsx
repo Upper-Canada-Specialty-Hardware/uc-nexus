@@ -3,6 +3,8 @@ import {
   Alert,
   Box,
   Button,
+  Checkbox,
+  FormControlLabel,
   IconButton,
   MenuItem,
   Stack,
@@ -15,7 +17,7 @@ import { useMutation, useQuery } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import VendorSelect from '../../components/VendorSelect';
 import { useToast } from '../../components/Toast';
-import { CREATE_PO, RECORD_PO_GP_SYNC, REGISTER_PO_IN_GP } from '../../graphql/mutations';
+import { CREATE_PO, REGISTER_PO_IN_GP } from '../../graphql/mutations';
 import { GET_PROJECTS, GET_VENDORS } from '../../graphql/queries';
 import type { Project } from '../../types/project';
 import type { PurchaseOrder } from './index';
@@ -69,29 +71,30 @@ const CLASSIFICATIONS = [
 // GP companies the relay is allowed to write to (sandboxes for the POC).
 const COMPANIES = ['TUBC', 'TUCSH'];
 
-// Pick the GP-linked vendor that best matches an imported draft's vendor name (issue #175). The selector
-// defaults to this, but the user must confirm it before registering. Prefers the draft's own vendor when
-// it is already GP-linked, then an exact name match, then a loose substring match. Returns null when no
-// GP-linked vendor plausibly matches - the user then picks one.
-function bestGuessGpVendorId(
+// Pick the GP-linked vendor that best matches an imported draft's vendor name (issue #175). Returns the
+// match plus whether it is CONFIDENT - the draft's own already-GP-linked vendor, or an exact name match -
+// versus a loose substring guess the user must explicitly confirm before registering against it. id is
+// null when no GP-linked vendor plausibly matches, and the user then picks one.
+function bestGuessGpVendor(
   vendors: VendorOption[],
   draftVendorName: string | null,
   draftVendorId: string | null,
-): string | null {
+): { id: string | null; confident: boolean } {
   if (draftVendorId) {
     const own = vendors.find((v) => v.id === draftVendorId);
-    if (own?.gpVendorId) return own.id;
+    if (own?.gpVendorId) return { id: own.id, confident: true };
   }
   const name = (draftVendorName ?? '').trim().toLowerCase();
-  if (!name) return null;
+  if (!name) return { id: null, confident: false };
   const linked = vendors.filter((v) => v.gpVendorId);
   const exact = linked.find((v) => v.name.trim().toLowerCase() === name);
-  if (exact) return exact.id;
+  if (exact) return { id: exact.id, confident: true };
   const partial = linked.find((v) => {
     const vn = v.name.trim().toLowerCase();
     return vn.includes(name) || name.includes(vn);
   });
-  return partial?.id ?? null;
+  // a fuzzy substring hit can be wrong (a short name is a substring of an unrelated vendor) - not confident
+  return { id: partial?.id ?? null, confident: false };
 }
 
 // --- Props ---
@@ -128,6 +131,9 @@ export default function GpPurchaseOrderDialog({
   // Form state
   const [projectId, setProjectId] = useState(defaultProjectId ?? '');
   const [vendorId, setVendorId] = useState<string | null>(null);
+  // Register mode only: false while a fuzzy name-matched GP vendor is pre-filled but not yet confirmed.
+  // A confident match (the draft's own GP vendor / an exact name hit) and any manual pick start confirmed.
+  const [vendorConfirmed, setVendorConfirmed] = useState(true);
   const [notes, setNotes] = useState('');
   const [company, setCompany] = useState('TUBC');
   const [buyerId, setBuyerId] = useState('');
@@ -146,7 +152,6 @@ export default function GpPurchaseOrderDialog({
   const [gpBusy, setGpBusy] = useState(false);
 
   const [createPO, { loading: createLoading }] = useMutation(CREATE_PO);
-  const [recordPoGpSync] = useMutation(RECORD_PO_GP_SYNC);
   const [registerPoInGp, { loading: registerLoading }] = useMutation(REGISTER_PO_IN_GP);
 
   const selectedVendor = useMemo(
@@ -196,17 +201,26 @@ export default function GpPurchaseOrderDialog({
     }
   }, [open, registerPo, defaultProjectId]);
 
-  // Seed the vendor once the vendor list is available: register mode defaults to the best-guess GP match
-  // (the user confirms), create mode starts empty.
+  // Seed the vendor once the vendor list is available: register mode defaults to the best-guess GP match,
+  // create mode starts empty. A fuzzy guess seeds unconfirmed so submit is blocked until the user confirms
+  // (or picks another); a confident match / create mode needs no confirmation.
   useEffect(() => {
     if (!open || vendorSeededRef.current) return;
     const vendors = vendorsData?.vendors;
     if (!vendors) return;
     vendorSeededRef.current = true;
-    setVendorId(
-      registerPo ? bestGuessGpVendorId(vendors, registerPo.vendor?.name ?? null, registerPo.vendor?.id ?? null) : null,
-    );
+    const guess = registerPo
+      ? bestGuessGpVendor(vendors, registerPo.vendor?.name ?? null, registerPo.vendor?.id ?? null)
+      : { id: null, confident: true };
+    setVendorId(guess.id);
+    setVendorConfirmed(guess.confident);
   }, [open, registerPo, vendorsData]);
+
+  // A manual vendor pick is an explicit choice, so it counts as confirmed.
+  const handleVendorChange = useCallback((id: string | null) => {
+    setVendorId(id);
+    setVendorConfirmed(true);
+  }, []);
 
   // Probe relay presence while the dialog is open - only when the page didn't pass relayHealth in.
   useEffect(() => {
@@ -246,10 +260,18 @@ export default function GpPurchaseOrderDialog({
   // are per-job and each carries its own Cost_Element, so the dropdown comes from the relay, not a
   // static list. A stock PO (no project) carries no cost code.
   const jobNumber = selectedProject?.projectId ?? null;
+  // Clear the selected cost code only when the job or company changes - a code from another job must
+  // not carry over. Deliberately NOT keyed on relayConnected: the page polls the relay /health every
+  // 10s, and a transient blip must not wipe the user's pick mid-form.
   useEffect(() => {
     if (!open) return;
-    // Reset any prior selection: a cost code from another job must not carry over.
     setCostCode('');
+  }, [open, company, jobNumber]);
+
+  // Load the job's cost codes from GP whenever the relay is up. A relay drop clears the dropdown options
+  // (the field is disabled while down) but leaves the chosen costCode intact, so it re-displays on reload.
+  useEffect(() => {
+    if (!open) return;
     if (!relayConnected || !jobNumber) {
       setCostCodes([]);
       return;
@@ -303,11 +325,12 @@ export default function GpPurchaseOrderDialog({
     if (!relayConnected) errs.gp = 'GP relay not detected on this machine - it must be running to push a PO to GP';
     if (!vendorId) errs.vendor = 'Select a vendor';
     else if (!selectedVendor?.gpVendorId) errs.vendor = 'This vendor is not linked to GP yet (run GP Vendor Sync)';
+    else if (isRegister && !vendorConfirmed) errs.vendor = 'Confirm the suggested GP vendor before registering';
     if (!buyerId) errs.buyer = 'Select a buyer';
     if (isJob && !costCode) errs.costCode = 'Cost code is required for a project PO';
     setErrors(errs);
     return Object.keys(errs).length === 0;
-  }, [lineItems, relayConnected, vendorId, selectedVendor, buyerId, isJob, costCode]);
+  }, [lineItems, relayConnected, vendorId, selectedVendor, isRegister, vendorConfirmed, buyerId, isJob, costCode]);
 
   const handleSubmit = useCallback(async () => {
     if (!validate()) return;
@@ -370,13 +393,16 @@ export default function GpPurchaseOrderDialog({
         });
         showToast(`PO ${gpPoNumber} registered in GP`, 'success');
       } else {
-        // Create path: GP accepted, so record it in UC Nexus with GP's PO number and company, which
-        // advances the new PO to GP-Registered.
+        // Create path: GP accepted, so create it in UC Nexus already carrying GP's number + company in
+        // one atomic mutation (it lands GP-Registered). No separate record step, so there is never a
+        // numberless DRAFT that could be re-registered into a duplicate GP PO.
         const ucInput = {
           projectId: projectId || null,
           vendorId: vendorId || null,
           notes: notes.trim() || null,
           costCode: gpCostCode,
+          poNumber: gpPoNumber,
+          gpCompany: company,
           lineItems: lineItems.map((li) => ({
             hardwareCategory: li.hardwareCategory.trim(),
             productCode: li.productCode.trim(),
@@ -386,9 +412,7 @@ export default function GpPurchaseOrderDialog({
             orderAs: li.orderAs.trim(),
           })),
         };
-        const created = await createPO({ variables: { input: ucInput } });
-        const poId = (created.data as { createPo: { id: string } }).createPo.id;
-        await recordPoGpSync({ variables: { poId, poNumber: gpPoNumber, gpCompany: company } });
+        await createPO({ variables: { input: ucInput } });
         showToast(`PO ${gpPoNumber} created in GP and UC Nexus`, 'success');
       }
 
@@ -418,7 +442,6 @@ export default function GpPurchaseOrderDialog({
     notes,
     registerPo,
     createPO,
-    recordPoGpSync,
     registerPoInGp,
     showToast,
     onSubmitted,
@@ -477,7 +500,23 @@ export default function GpPurchaseOrderDialog({
           ))}
         </TextField>
 
-        <VendorSelect value={vendorId} onChange={setVendorId} error={!!errors.vendor} helperText={vendorHelper} />
+        <Box>
+          <VendorSelect
+            value={vendorId}
+            onChange={handleVendorChange}
+            error={!!errors.vendor}
+            helperText={vendorHelper}
+          />
+          {isRegister && vendorId && !vendorConfirmed && (
+            <FormControlLabel
+              sx={{ mt: 0.5 }}
+              control={
+                <Checkbox size="small" checked={vendorConfirmed} onChange={(e) => setVendorConfirmed(e.target.checked)} />
+              }
+              label={`This is the correct GP vendor${selectedVendor ? ` (${selectedVendor.name})` : ''}`}
+            />
+          )}
+        </Box>
         <TextField
           label="Notes"
           value={notes}
