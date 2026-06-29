@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import InvalidStateTransitionError, NotFoundError, ValidationError
@@ -121,6 +121,119 @@ def record_gp_sync_result(
     if po.status == POStatus.DRAFT and po.po_number and po.vendor_id:
         po.status = POStatus.GP_REGISTERED
         po.ordered_at = datetime.utcnow()
+    session.flush()
+    return po
+
+
+def register_po_in_gp(
+    session: Session,
+    po_id: uuid.UUID,
+    vendor_id: uuid.UUID,
+    po_number: str,
+    gp_company: str,
+    line_items: list[dict],
+    cost_code: str | None = None,
+) -> PurchaseOrder:
+    """Register an imported DRAFT PO into GP (the import-acceptance path, issue #175).
+
+    The resolver calls this ONLY after the relay /po push already succeeded, so the PO is now a real GP
+    purchase order and the end state must be identical to a manually created one (path 2): map it to the
+    real GP vendor + cost code, replace the draft's line items with the (possibly edited) set the user
+    pushed - assigning gp_line_ord positionally in that SAME order so a later relay /receipt can target
+    each GP line - stamp GP's returned PONUMBER + company, and advance DRAFT -> GP_REGISTERED. All in one
+    commit. A GP failure never reaches here, so on failure the PO stays Draft and untouched.
+    """
+    from app.models.hardware import HardwareItem
+
+    po = get_purchase_order(session, po_id)
+    if po is None:
+        raise NotFoundError(f"Purchase order {po_id} not found")
+    if po.status != POStatus.DRAFT:
+        raise InvalidStateTransitionError(f"Only a Draft PO can be registered in GP; this one is {po.status.value}")
+    if not line_items:
+        raise ValidationError("At least one line item is required", field="line_items")
+
+    from app.models.vendor import Vendor as VendorModel
+
+    if session.get(VendorModel, vendor_id) is None:
+        raise NotFoundError(f"Vendor {vendor_id} not found")
+
+    cleaned_po_number = po_number.strip() if po_number else ""
+    if not cleaned_po_number:
+        raise ValidationError("GP PO number is required to register a PO", field="po_number")
+    cleaned_company = gp_company.strip() if gp_company else ""
+    if not cleaned_company:
+        raise ValidationError("GP company is required to register a PO", field="gp_company")
+
+    existing = {li.id: li for li in po.line_items}
+    seen_ids: set[uuid.UUID] = set()
+
+    # Reconcile the incoming lines against the draft's lines by id: update kept, create added. gp_line_ord
+    # is GP POP10110.ORD = line index * 16384, assigned in the order the lines were sent to the relay
+    # (== this payload order), which is what a relay /receipt targets per line.
+    for idx, li_data in enumerate(line_items, start=1):
+        order_as_raw = li_data.get("order_as")
+        if not order_as_raw or not order_as_raw.strip():
+            raise ValidationError("Order as is required for every line item", field="order_as")
+        qty = li_data.get("ordered_quantity")
+        if qty is None or qty < 1:
+            raise ValidationError("Ordered quantity must be at least 1", field="ordered_quantity")
+        unit_cost = li_data.get("unit_cost")
+        if unit_cost is None or unit_cost < 0:
+            raise ValidationError("Unit cost must be zero or greater", field="unit_cost")
+
+        classification_val = li_data.get("classification")
+        if isinstance(classification_val, str):
+            classification_val = Classification(classification_val)
+
+        raw_id = li_data.get("id")
+        if raw_id:
+            lid = uuid.UUID(str(raw_id))
+            poli = existing.get(lid)
+            if poli is None:
+                raise ValidationError(f"Line item {lid} does not belong to this PO", field="line_items")
+            seen_ids.add(lid)
+            poli.hardware_category = li_data["hardware_category"]
+            poli.product_code = li_data["product_code"]
+            poli.ordered_quantity = qty
+            poli.unit_cost = Decimal(str(unit_cost))
+            poli.classification = classification_val
+            poli.order_as = order_as_raw.strip()
+            poli.gp_line_ord = idx * 16384
+        else:
+            session.add(
+                POLineItem(
+                    id=uuid.uuid4(),
+                    po_id=po.id,
+                    hardware_category=li_data["hardware_category"],
+                    product_code=li_data["product_code"],
+                    ordered_quantity=qty,
+                    received_quantity=0,
+                    unit_cost=Decimal(str(unit_cost)),
+                    classification=classification_val,
+                    order_as=order_as_raw.strip(),
+                    gp_line_ord=idx * 16384,
+                )
+            )
+
+    # Remove lines the user dropped. A DRAFT PO has no receiving/inventory yet, so the only rows that can
+    # reference these lines are imported HardwareItem rows (FK is RESTRICT) - orphan them (po_line_item_id
+    # -> NULL) before deleting, which the user accepted as the cost of editing the imported line set.
+    removed = [poli for lid, poli in existing.items() if lid not in seen_ids]
+    if removed:
+        removed_ids = [poli.id for poli in removed]
+        session.execute(
+            update(HardwareItem).where(HardwareItem.po_line_item_id.in_(removed_ids)).values(po_line_item_id=None)
+        )
+        for poli in removed:
+            session.delete(poli)
+
+    po.vendor_id = vendor_id
+    po.cost_code = cost_code.strip() if cost_code and cost_code.strip() else None
+    po.po_number = cleaned_po_number
+    po.gp_company = cleaned_company
+    po.status = POStatus.GP_REGISTERED
+    po.ordered_at = datetime.utcnow()
     session.flush()
     return po
 

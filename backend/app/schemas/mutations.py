@@ -40,6 +40,7 @@ from .inputs import (
     MoveStockLocationInput,
     OverrideInventoryQuantityInput,
     ReclassifyStockItemInput,
+    RegisterPOInput,
     ReportDeficiencyAtAssemblyInput,
     ReportInventoryDeficiencyInput,
     ReportStockDeficiencyInput,
@@ -425,6 +426,57 @@ class Mutation:
         pid = uuid.UUID(str(po_id))
         with SessionLocal() as session:
             po_repository.record_gp_sync_result(session, pid, po_number=po_number, gp_company=gp_company)
+            session.commit()
+            refreshed_po = (
+                session.scalars(
+                    select(POModel)
+                    .options(
+                        selectinload(POModel.line_items),
+                        selectinload(POModel.documents),
+                        selectinload(POModel.vendor),
+                    )
+                    .where(POModel.id == pid)
+                )
+                .unique()
+                .first()
+            )
+            return _po_to_type(refreshed_po)
+
+    @strawberry.mutation
+    def register_po_in_gp(self, input: RegisterPOInput) -> PurchaseOrder:
+        """Register an imported DRAFT PO into GP (issue #175, the import-acceptance path). The frontend
+        runs GP-first - it calls the relay /po itself and only invokes this on success - so this records
+        GP's PONUMBER + company, maps the PO to the chosen GP vendor + cost code, replaces the draft's
+        line items with the (possibly edited) set that was pushed (assigning gp_line_ord positionally),
+        and advances DRAFT -> GP_REGISTERED. The end state is identical to a manually created PO."""
+        from sqlalchemy.orm import selectinload
+
+        from app.models.purchase_order import PurchaseOrder as POModel
+
+        pid = uuid.UUID(str(input.po_id))
+        vid = uuid.UUID(str(input.vendor_id))
+        line_items_data = [
+            {
+                "id": str(li.id) if li.id else None,
+                "hardware_category": li.hardware_category,
+                "product_code": li.product_code,
+                "ordered_quantity": li.ordered_quantity,
+                "unit_cost": li.unit_cost,
+                "classification": li.classification.value if li.classification else None,
+                "order_as": li.order_as,
+            }
+            for li in input.line_items
+        ]
+        with SessionLocal() as session:
+            po_repository.register_po_in_gp(
+                session,
+                pid,
+                vendor_id=vid,
+                po_number=input.po_number,
+                gp_company=input.gp_company,
+                line_items=line_items_data,
+                cost_code=input.cost_code,
+            )
             session.commit()
             refreshed_po = (
                 session.scalars(

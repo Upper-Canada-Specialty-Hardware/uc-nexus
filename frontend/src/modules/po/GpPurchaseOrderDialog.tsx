@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   Alert,
   Box,
@@ -15,9 +15,10 @@ import { useMutation, useQuery } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import VendorSelect from '../../components/VendorSelect';
 import { useToast } from '../../components/Toast';
-import { CREATE_PO, RECORD_PO_GP_SYNC } from '../../graphql/mutations';
+import { CREATE_PO, RECORD_PO_GP_SYNC, REGISTER_PO_IN_GP } from '../../graphql/mutations';
 import { GET_PROJECTS, GET_VENDORS } from '../../graphql/queries';
 import type { Project } from '../../types/project';
+import type { PurchaseOrder } from './index';
 import RelayStatusChip from '../../relay/RelayStatusChip';
 import {
   checkRelayHealth,
@@ -33,6 +34,8 @@ import {
 
 interface LineItemRow {
   key: number;
+  // The existing draft line item id (register mode). Absent for a row the user added in the dialog.
+  id?: string;
   hardwareCategory: string;
   productCode: string;
   orderedQuantity: string;
@@ -48,7 +51,7 @@ interface VendorOption {
   contactName: string | null;
 }
 
-const EMPTY_LINE_ITEM: Omit<LineItemRow, 'key'> = {
+const EMPTY_LINE_ITEM: Omit<LineItemRow, 'key' | 'id'> = {
   hardwareCategory: '',
   productCode: '',
   orderedQuantity: '1',
@@ -66,31 +69,61 @@ const CLASSIFICATIONS = [
 // GP companies the relay is allowed to write to (sandboxes for the POC).
 const COMPANIES = ['TUBC', 'TUCSH'];
 
+// Pick the GP-linked vendor that best matches an imported draft's vendor name (issue #175). The selector
+// defaults to this, but the user must confirm it before registering. Prefers the draft's own vendor when
+// it is already GP-linked, then an exact name match, then a loose substring match. Returns null when no
+// GP-linked vendor plausibly matches - the user then picks one.
+function bestGuessGpVendorId(
+  vendors: VendorOption[],
+  draftVendorName: string | null,
+  draftVendorId: string | null,
+): string | null {
+  if (draftVendorId) {
+    const own = vendors.find((v) => v.id === draftVendorId);
+    if (own?.gpVendorId) return own.id;
+  }
+  const name = (draftVendorName ?? '').trim().toLowerCase();
+  if (!name) return null;
+  const linked = vendors.filter((v) => v.gpVendorId);
+  const exact = linked.find((v) => v.name.trim().toLowerCase() === name);
+  if (exact) return exact.id;
+  const partial = linked.find((v) => {
+    const vn = v.name.trim().toLowerCase();
+    return vn.includes(name) || name.includes(vn);
+  });
+  return partial?.id ?? null;
+}
+
 // --- Props ---
 
-interface CreatePODialogProps {
+interface GpPurchaseOrderDialogProps {
   open: boolean;
   onClose: () => void;
-  onCreated: () => void;
+  onSubmitted: () => void;
   defaultProjectId?: string;
   // Relay status owned by the PO page (single source of truth). When omitted, the dialog probes
-  // /health itself so it stays usable standalone.
+  // /health itself so it stays usable standalone (e.g. opened from the PO detail modal).
   relayHealth?: RelayHealth | null;
+  // When provided, the dialog registers this existing Draft PO into GP instead of creating a new one.
+  registerPo?: PurchaseOrder | null;
 }
 
 // --- Component ---
 
-export default function CreatePODialog({
+export default function GpPurchaseOrderDialog({
   open,
   onClose,
-  onCreated,
+  onSubmitted,
   defaultProjectId,
   relayHealth: relayHealthProp,
-}: CreatePODialogProps) {
+  registerPo,
+}: GpPurchaseOrderDialogProps) {
   const { showToast } = useToast();
   const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
   const projects = projectsData?.projects ?? [];
   const { data: vendorsData } = useQuery<{ vendors: VendorOption[] }>(GET_VENDORS);
+
+  const isRegister = !!registerPo;
 
   // Form state
   const [projectId, setProjectId] = useState(defaultProjectId ?? '');
@@ -112,8 +145,9 @@ export default function CreatePODialog({
   const [costCodesLoading, setCostCodesLoading] = useState(false);
   const [gpBusy, setGpBusy] = useState(false);
 
-  const [createPO, { loading }] = useMutation(CREATE_PO);
+  const [createPO, { loading: createLoading }] = useMutation(CREATE_PO);
   const [recordPoGpSync] = useMutation(RECORD_PO_GP_SYNC);
+  const [registerPoInGp, { loading: registerLoading }] = useMutation(REGISTER_PO_IN_GP);
 
   const selectedVendor = useMemo(
     () => vendorsData?.vendors.find((v) => v.id === vendorId) ?? null,
@@ -122,6 +156,57 @@ export default function CreatePODialog({
   const selectedProject = useMemo(() => projects.find((p) => p.id === projectId) ?? null, [projects, projectId]);
   const isJob = !!projectId && !!selectedProject;
   const relayConnected = relayHealth?.ok === true;
+
+  // Seed the form when the dialog opens. Create mode -> empty; register mode -> the draft's values
+  // (project locked, line items carrying their ids so edits map back). The vendor is seeded separately
+  // (below) once the vendor list has loaded, so the best-guess match isn't clobbered before data arrives.
+  const seededRef = useRef(false);
+  const vendorSeededRef = useRef(false);
+  useEffect(() => {
+    if (!open) {
+      seededRef.current = false;
+      vendorSeededRef.current = false;
+      return;
+    }
+    if (seededRef.current) return;
+    seededRef.current = true;
+    setBuyerId('');
+    setCostCode('');
+    setErrors({});
+    if (registerPo) {
+      setProjectId(registerPo.projectId ?? '');
+      setNotes(registerPo.notes ?? '');
+      const rows: LineItemRow[] = registerPo.lineItems.map((li, i) => ({
+        key: i + 1,
+        id: li.id,
+        hardwareCategory: li.hardwareCategory ?? '',
+        productCode: li.productCode ?? '',
+        orderedQuantity: String(li.orderedQuantity ?? 1),
+        unitCost: li.unitCost != null ? String(li.unitCost) : '0',
+        classification: li.classification ?? '',
+        orderAs: li.orderAs ?? '',
+      }));
+      setLineItems(rows.length > 0 ? rows : [{ key: 1, ...EMPTY_LINE_ITEM }]);
+      setNextKey((rows.length || 1) + 1);
+    } else {
+      setProjectId(defaultProjectId ?? '');
+      setNotes('');
+      setLineItems([{ key: 1, ...EMPTY_LINE_ITEM }]);
+      setNextKey(2);
+    }
+  }, [open, registerPo, defaultProjectId]);
+
+  // Seed the vendor once the vendor list is available: register mode defaults to the best-guess GP match
+  // (the user confirms), create mode starts empty.
+  useEffect(() => {
+    if (!open || vendorSeededRef.current) return;
+    const vendors = vendorsData?.vendors;
+    if (!vendors) return;
+    vendorSeededRef.current = true;
+    setVendorId(
+      registerPo ? bestGuessGpVendorId(vendors, registerPo.vendor?.name ?? null, registerPo.vendor?.id ?? null) : null,
+    );
+  }, [open, registerPo, vendorsData]);
 
   // Probe relay presence while the dialog is open - only when the page didn't pass relayHealth in.
   useEffect(() => {
@@ -197,7 +282,7 @@ export default function CreatePODialog({
     setLineItems((prev) => prev.filter((li) => li.key !== key));
   }, []);
 
-  const updateLineItem = useCallback((key: number, field: keyof Omit<LineItemRow, 'key'>, value: string) => {
+  const updateLineItem = useCallback((key: number, field: keyof Omit<LineItemRow, 'key' | 'id'>, value: string) => {
     setLineItems((prev) => prev.map((li) => (li.key === key ? { ...li, [field]: value } : li)));
   }, []);
 
@@ -214,8 +299,8 @@ export default function CreatePODialog({
       if (isNaN(cost) || cost < 0) errs[`li_${i}_cost`] = 'Must be >= 0';
       if (!li.orderAs.trim()) errs[`li_${i}_orderAs`] = 'Required';
     }
-    // GP is mandatory: a PO that can't be created in GP isn't created at all.
-    if (!relayConnected) errs.gp = 'GP relay not detected on this machine - it must be running to create a PO';
+    // GP is mandatory: a PO that can't be created in GP isn't created/registered at all.
+    if (!relayConnected) errs.gp = 'GP relay not detected on this machine - it must be running to push a PO to GP';
     if (!vendorId) errs.vendor = 'Select a vendor';
     else if (!selectedVendor?.gpVendorId) errs.vendor = 'This vendor is not linked to GP yet (run GP Vendor Sync)';
     if (!buyerId) errs.buyer = 'Select a buyer';
@@ -223,17 +308,6 @@ export default function CreatePODialog({
     setErrors(errs);
     return Object.keys(errs).length === 0;
   }, [lineItems, relayConnected, vendorId, selectedVendor, buyerId, isJob, costCode]);
-
-  const handleReset = useCallback(() => {
-    setProjectId(defaultProjectId ?? '');
-    setVendorId(null);
-    setNotes('');
-    setBuyerId('');
-    setCostCode('');
-    setLineItems([{ key: 1, ...EMPTY_LINE_ITEM }]);
-    setNextKey(2);
-    setErrors({});
-  }, [defaultProjectId]);
 
   const handleSubmit = useCallback(async () => {
     if (!validate()) return;
@@ -264,43 +338,68 @@ export default function CreatePODialog({
       })),
     };
 
-    const ucInput = {
-      projectId: projectId || null,
-      vendorId: vendorId || null,
-      notes: notes.trim() || null,
-      costCode: gpCostCode,
-      lineItems: lineItems.map((li) => ({
-        hardwareCategory: li.hardwareCategory.trim(),
-        productCode: li.productCode.trim(),
-        orderedQuantity: parseInt(li.orderedQuantity, 10),
-        unitCost: parseFloat(li.unitCost),
-        classification: li.classification || null,
-        orderAs: li.orderAs.trim(),
-      })),
-    };
-
     setGpBusy(true);
     let gpPoNumber: string | null = null;
     try {
-      // GP first: if GP rejects it, nothing is created in UC Nexus.
+      // GP first: if GP rejects it, nothing changes in UC Nexus.
       const gpResp = await postRelayPo(relayReq);
       gpPoNumber = gpResp.po_number;
-      // GP succeeded - now record it in UC Nexus with GP's PO number and company, which advances the
-      // PO to GP-Registered.
-      const created = await createPO({ variables: { input: ucInput } });
-      const poId = (created.data as { createPo: { id: string } }).createPo.id;
-      await recordPoGpSync({
-        variables: { poId, poNumber: gpPoNumber, gpCompany: company },
-      });
-      showToast(`PO ${gpPoNumber} created in GP and UC Nexus`, 'success');
-      onCreated();
-      handleReset();
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Failed to create PO';
-      if (!gpPoNumber) {
-        showToast(`GP did not accept the PO, so nothing was created: ${message}`, 'error');
+
+      if (registerPo) {
+        // Register path: GP accepted, so map the existing draft to the GP vendor + cost code, persist the
+        // (possibly edited) line set, record GP's number + company, and advance Draft -> GP-Registered.
+        await registerPoInGp({
+          variables: {
+            input: {
+              poId: registerPo.id,
+              vendorId,
+              poNumber: gpPoNumber,
+              gpCompany: company,
+              costCode: gpCostCode,
+              lineItems: lineItems.map((li) => ({
+                id: li.id ?? null,
+                hardwareCategory: li.hardwareCategory.trim(),
+                productCode: li.productCode.trim(),
+                orderedQuantity: parseInt(li.orderedQuantity, 10),
+                unitCost: parseFloat(li.unitCost),
+                classification: li.classification || null,
+                orderAs: li.orderAs.trim(),
+              })),
+            },
+          },
+        });
+        showToast(`PO ${gpPoNumber} registered in GP`, 'success');
       } else {
-        showToast(`GP PO ${gpPoNumber} was created, but recording it in UC Nexus failed: ${message}`, 'error');
+        // Create path: GP accepted, so record it in UC Nexus with GP's PO number and company, which
+        // advances the new PO to GP-Registered.
+        const ucInput = {
+          projectId: projectId || null,
+          vendorId: vendorId || null,
+          notes: notes.trim() || null,
+          costCode: gpCostCode,
+          lineItems: lineItems.map((li) => ({
+            hardwareCategory: li.hardwareCategory.trim(),
+            productCode: li.productCode.trim(),
+            orderedQuantity: parseInt(li.orderedQuantity, 10),
+            unitCost: parseFloat(li.unitCost),
+            classification: li.classification || null,
+            orderAs: li.orderAs.trim(),
+          })),
+        };
+        const created = await createPO({ variables: { input: ucInput } });
+        const poId = (created.data as { createPo: { id: string } }).createPo.id;
+        await recordPoGpSync({ variables: { poId, poNumber: gpPoNumber, gpCompany: company } });
+        showToast(`PO ${gpPoNumber} created in GP and UC Nexus`, 'success');
+      }
+
+      onSubmitted();
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to push PO to GP';
+      if (!gpPoNumber) {
+        showToast(`GP did not accept the PO, so nothing was changed: ${message}`, 'error');
+      } else {
+        const step = registerPo ? 'registering it in UC Nexus' : 'recording it in UC Nexus';
+        showToast(`GP PO ${gpPoNumber} was created, but ${step} failed: ${message}`, 'error');
       }
     } finally {
       setGpBusy(false);
@@ -317,21 +416,20 @@ export default function CreatePODialog({
     projectId,
     vendorId,
     notes,
+    registerPo,
     createPO,
     recordPoGpSync,
+    registerPoInGp,
     showToast,
-    onCreated,
-    handleReset,
+    onSubmitted,
   ]);
-
-  const handleClose = useCallback(() => {
-    handleReset();
-    onClose();
-  }, [handleReset, onClose]);
 
   // --- Render ---
 
-  const busy = loading || gpBusy;
+  const busy = createLoading || registerLoading || gpBusy;
+  const title = isRegister ? 'Register Purchase Order in GP' : 'Create Purchase Order in GP';
+  const submitIdleLabel = isRegister ? 'Register in GP' : 'Create PO';
+  const submitBusyLabel = gpBusy ? 'Pushing to GP…' : isRegister ? 'Registering…' : 'Saving…';
 
   // Status line under the cost-code dropdown (an explicit validation error takes precedence).
   const costCodeHelper =
@@ -343,28 +441,33 @@ export default function CreatePODialog({
           ? 'No cost codes defined for this job in GP'
           : '';
 
+  const vendorHelper =
+    errors.vendor ||
+    (isRegister && registerPo?.vendor?.name ? `Imported as: ${registerPo.vendor.name} - confirm the GP vendor` : '');
+
   const actions = (
     <Stack direction="row" spacing={1}>
-      <Button onClick={handleClose} disabled={busy}>
+      <Button onClick={onClose} disabled={busy}>
         Cancel
       </Button>
       <Button variant="contained" onClick={handleSubmit} disabled={busy || lineItems.length === 0}>
-        {gpBusy ? 'Creating in GP…' : loading ? 'Saving…' : 'Create PO'}
+        {busy ? submitBusyLabel : submitIdleLabel}
       </Button>
     </Stack>
   );
 
   return (
-    <Modal open={open} title="Create Purchase Order" onClose={handleClose} actions={actions} maxWidth="md">
+    <Modal open={open} title={title} onClose={onClose} actions={actions} maxWidth="md">
       {/* Header Fields */}
       <Stack spacing={2} sx={{ mb: 3 }}>
         <TextField
           select
-          label="Project (Optional)"
+          label={isRegister ? 'Project' : 'Project (Optional)'}
           value={projectId}
           onChange={(e) => setProjectId(e.target.value)}
           size="small"
           fullWidth
+          disabled={isRegister}
         >
           <MenuItem value="">No Project (stock PO)</MenuItem>
           {projects.map((p) => (
@@ -374,7 +477,7 @@ export default function CreatePODialog({
           ))}
         </TextField>
 
-        <VendorSelect value={vendorId} onChange={setVendorId} error={!!errors.vendor} helperText={errors.vendor} />
+        <VendorSelect value={vendorId} onChange={setVendorId} error={!!errors.vendor} helperText={vendorHelper} />
         <TextField
           label="Notes"
           value={notes}
@@ -388,7 +491,7 @@ export default function CreatePODialog({
         />
       </Stack>
 
-      {/* GP purchase order (every PO is created in GP - it's the source of truth) */}
+      {/* GP purchase order (every PO lives in GP - it's the source of truth) */}
       <Box sx={{ mb: 3, p: 2, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
         <Stack direction="row" spacing={2} alignItems="center" sx={{ mb: 2 }} flexWrap="wrap" useFlexGap>
           <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
@@ -453,7 +556,7 @@ export default function CreatePODialog({
         )}
         {selectedVendor && !selectedVendor.gpVendorId && (
           <Alert severity="warning" sx={{ mt: 2 }}>
-            {selectedVendor.name} is not linked to GP yet. Link it via Admin → GP Vendor Sync before creating a PO.
+            {selectedVendor.name} is not linked to GP yet. Link it via Admin → GP Vendor Sync before pushing to GP.
           </Alert>
         )}
       </Box>
