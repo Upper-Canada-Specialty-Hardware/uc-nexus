@@ -36,7 +36,7 @@ import { GET_PURCHASE_ORDERS, GET_PO_STATISTICS } from '../../graphql/queries';
 import ProjectLandingPage from '../../components/ProjectLandingPage';
 import type { Project } from '../../types/project';
 import PODetailModal from './PODetailModal';
-import CreatePODialog from './CreatePODialog';
+import GpPurchaseOrderDialog from './GpPurchaseOrderDialog';
 import RelayStatusChip from '../../relay/RelayStatusChip';
 import { useRelayStatus } from '../../relay/useRelayStatus';
 
@@ -444,9 +444,11 @@ interface POTableRowProps {
   expanded: boolean;
   onToggle: () => void;
   onOpen: () => void;
+  onRegister: () => void;
+  relayConnected: boolean;
 }
 
-function POTableRow({ po, expanded, onToggle, onOpen }: POTableRowProps) {
+function POTableRow({ po, expanded, onToggle, onOpen, onRegister, relayConnected }: POTableRowProps) {
   const dataCellSx = { cursor: 'pointer' };
   return (
     <>
@@ -487,6 +489,27 @@ function POTableRow({ po, expanded, onToggle, onOpen }: POTableRowProps) {
               color={STATUS_CHIP_COLOR[po.status] ?? 'default'}
               size="small"
             />
+            {po.status === 'DRAFT' && (
+              <Tooltip
+                title={relayConnected ? '' : 'GP relay not detected on this machine - it must be running to register a PO'}
+                arrow
+              >
+                <span>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    disabled={!relayConnected}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onRegister();
+                    }}
+                    sx={{ py: 0, minHeight: 24, fontSize: '0.7rem' }}
+                  >
+                    Register in GP
+                  </Button>
+                </span>
+              </Tooltip>
+            )}
           </Box>
         </TableCell>
         <TableCell sx={dataCellSx} onClick={onOpen}>
@@ -528,6 +551,7 @@ export default function POModule() {
   const [selectedPOId, setSelectedPOId] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  const [registerPO, setRegisterPO] = useState<PurchaseOrder | null>(null);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [filterState, setFilterState] = useState<FilterState>(EMPTY_FILTER_STATE);
   const [sortState, setSortState] = useState<SortState>({ field: null, direction: 'asc' });
@@ -782,6 +806,8 @@ export default function POModule() {
                   expanded={expandedIds.has(po.id)}
                   onToggle={() => toggleExpand(po.id)}
                   onOpen={() => handleOpenPO(po.id)}
+                  onRegister={() => setRegisterPO(po)}
+                  relayConnected={relayConnected}
                 />
               ))}
           </TableBody>
@@ -795,18 +821,31 @@ export default function POModule() {
           po={selectedPO}
           onClose={handleCloseModal}
           onRefetch={handleRefetch}
+          relayHealth={relayHealth}
         />
       )}
 
-      {/* Create PO Dialog */}
-      <CreatePODialog
+      {/* Create PO Dialog (creates a brand-new PO directly in GP) */}
+      <GpPurchaseOrderDialog
         open={createOpen}
         onClose={() => setCreateOpen(false)}
-        onCreated={() => {
+        onSubmitted={() => {
           setCreateOpen(false);
           handleRefetch();
         }}
         defaultProjectId={projectId}
+        relayHealth={relayHealth}
+      />
+
+      {/* Register PO Dialog (registers an imported Draft into GP) */}
+      <GpPurchaseOrderDialog
+        open={!!registerPO}
+        registerPo={registerPO}
+        onClose={() => setRegisterPO(null)}
+        onSubmitted={() => {
+          setRegisterPO(null);
+          handleRefetch();
+        }}
         relayHealth={relayHealth}
       />
     </Box>

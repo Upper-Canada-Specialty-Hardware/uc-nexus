@@ -450,6 +450,25 @@ export const RECORD_PO_GP_SYNC = gql`
   }
 `;
 
+// Register an imported Draft PO into GP (issue #175). Called only after the relay /po push succeeds:
+// stamps GP's PO number + company, maps the chosen GP vendor + cost code, replaces the line items with
+// the pushed set, and advances Draft -> GP-Registered.
+export const REGISTER_PO_IN_GP = gql`
+  mutation RegisterPoInGp($input: RegisterPOInput!) {
+    registerPoInGp(input: $input) {
+      id
+      poNumber
+      status
+      gpCompany
+      costCode
+      vendor {
+        id
+        name
+      }
+    }
+  }
+`;
+
 export const CREATE_PO = gql`
   mutation CreatePO($input: CreatePOInput!) {
     createPo(input: $input) {
