@@ -152,12 +152,12 @@ def create_app() -> FastAPI:
         _check_company(company)
         job = job.strip()
         if not job:
-            raise HTTPException(status_code=422, detail={"error": "missing_job", "message": "job is required"})
+            raise HTTPException(status_code=422, detail=errors.error_body("missing_job", "job is required"))
         try:
             with db.get_read_connection(company) as conn:
                 rows = econnect.list_cost_codes(conn, job)
         except pyodbc.Error as e:
-            raise HTTPException(status_code=502, detail={"error": "sql_error", "message": str(e)})
+            raise HTTPException(status_code=502, detail=errors.error_body("sql_error", str(e)))
         return models.CostCodesResponse(
             company=company, job=job, cost_codes=[models.CostCodeOut(**r) for r in rows]
         )
