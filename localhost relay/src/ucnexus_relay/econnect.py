@@ -162,6 +162,48 @@ def create_po_line(
         )
 
 
+def split_cost_code(cost_code: str) -> tuple[str, str, str, str, int]:
+    """Split a 'phase-step-element' cost code (e.g. '210-200-2') into the JC00701 key columns
+    (Cost_Code_Number_1, _2, _3, _4, Cost_Element). cc3/cc4 are always blank at this customer;
+    Cost_Element is the TRAILING segment as int (the doc once mislabeled it COSTTYPE - it's not).
+    Used by BOTH apply_wennsoft_integration (the wsi call) and cost_code_on_job (the pre-check),
+    so the validated split and the applied split can never drift."""
+    segs = cost_code.split("-")
+    cc1 = segs[0] if len(segs) > 0 else ""
+    cc2 = segs[1] if len(segs) > 1 else ""
+    try:
+        cost_element = int(segs[2]) if len(segs) > 2 and segs[2] else 0
+    except ValueError:
+        cost_element = 0
+    return cc1, cc2, "", "", cost_element
+
+
+def job_exists(conn, job_number: str) -> bool:
+    """Read-only: is job_number a real GP job in the job master JC00102? The wsi proc rejects an
+    unknown JOBNUMBR, so /po pre-checks here to return a clean job_not_registered instead of a raw
+    eConnect error (mirrors the buyer pre-check against POP00101). char(17) so the '=' comparison
+    is trailing-space-insensitive - pass the job as-is."""
+    row = conn.cursor().execute(
+        "SELECT COUNT(*) AS n FROM dbo.JC00102 WHERE WS_Job_Number = ?", job_number
+    ).fetchone()
+    return row.n > 0
+
+
+def cost_code_on_job(conn, job_number: str, cost_code: str) -> bool:
+    """Read-only: is cost_code set up on job_number in the cost-code detail master JC00701? Matches
+    the same six-column key the WennSoft proc uses (WS_Job_Number + Cost_Code_Number_1..4 +
+    Cost_Element), splitting cost_code with the identical split_cost_code the wsi call uses. /po
+    pre-checks this so a code not on the job returns a clean cost_code_not_on_job."""
+    cc1, cc2, cc3, cc4, cost_element = split_cost_code(cost_code)
+    row = conn.cursor().execute(
+        "SELECT COUNT(*) AS n FROM dbo.JC00701 "
+        "WHERE WS_Job_Number = ? AND Cost_Code_Number_1 = ? AND Cost_Code_Number_2 = ? "
+        "AND Cost_Code_Number_3 = ? AND Cost_Code_Number_4 = ? AND Cost_Element = ?",
+        job_number, cc1, cc2, cc3, cc4, cost_element,
+    ).fetchone()
+    return row.n > 0
+
+
 def apply_wennsoft_integration(
     conn,
     *,
@@ -185,19 +227,12 @@ def apply_wennsoft_integration(
       is the Cost_Element, not the cost type (the localhost-relay.md doc mislabeled this).
     """
     if product_indicator == 2:
-        segs = cost_code.split("-")
-        cc1 = segs[0] if len(segs) > 0 else ""
-        cc2 = segs[1] if len(segs) > 1 else ""
-        try:
-            cost_element = int(segs[2]) if len(segs) > 2 and segs[2] else 0
-        except ValueError:
-            cost_element = 0
+        cc1, cc2, cc3, cc4, cost_element = split_cost_code(cost_code)
         job = job_number or ""
     else:
-        cc1 = cc2 = ""
+        cc1 = cc2 = cc3 = cc4 = ""
         cost_element = 0
         job = ""
-    cc3 = cc4 = ""
 
     sql = """
     DECLARE @err int = 0;

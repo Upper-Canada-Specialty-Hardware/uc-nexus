@@ -197,6 +197,38 @@ def create_app() -> FastAPI:
                             },
                         )
 
+                    # 0b. job + cost code: GP has a job master (JC00102) and per-job cost codes
+                    #     (JC00701). The wsi proc (step 4) rejects a made-up job or a cost code not
+                    #     set up on the job with a raw eConnect error mid-transaction, so pre-check
+                    #     job-cost lines here for clean job_not_registered / cost_code_not_on_job
+                    #     400s, mirroring the buyer check. Only PI=2 lines carry a job/cost code
+                    #     (the model validator guarantees PI=2 has both, PI=1 has neither).
+                    job_ok: dict[str, bool] = {}  # cache: a PO can repeat a job across lines
+                    for line in request.lines:
+                        if line.product_indicator != 2:
+                            continue
+                        job = line.job_number
+                        if job not in job_ok:
+                            job_ok[job] = econnect.job_exists(conn, job)
+                        if not job_ok[job]:
+                            raise HTTPException(
+                                status_code=400,
+                                detail={
+                                    "error": "job_not_registered",
+                                    "message": f"job '{job}' is not a registered GP job (JC00102) "
+                                               f"for {request.company}",
+                                },
+                            )
+                        if not econnect.cost_code_on_job(conn, job, line.cost_code):
+                            raise HTTPException(
+                                status_code=400,
+                                detail={
+                                    "error": "cost_code_not_on_job",
+                                    "message": f"cost code '{line.cost_code}' is not set up on job "
+                                               f"'{job}' (JC00701) for {request.company}",
+                                },
+                            )
+
                     # 1. PO number: use UC Nexus's own number (e.g. 'ucnexus...') if supplied,
                     #    else reserve GP's next 'PO' number via taGetPONextNumber.
                     if request.po_number:
