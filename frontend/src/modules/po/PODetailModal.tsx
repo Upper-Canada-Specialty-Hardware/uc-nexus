@@ -47,36 +47,13 @@ import { GET_PRIOR_ORDER_AS_VALUES } from '../../graphql/queries';
 import type { PurchaseOrder } from './index';
 import GpPurchaseOrderDialog from './GpPurchaseOrderDialog';
 import type { RelayHealth } from '../../relay/relayClient';
-
-// --- Status chip colors ---
-
-const STATUS_CHIP_COLOR: Record<string, 'default' | 'primary' | 'info' | 'warning' | 'success' | 'error'> = {
-  DRAFT: 'default',
-  GP_REGISTERED: 'primary',
-  VENDOR_CONFIRMED: 'info',
-  PARTIALLY_RECEIVED: 'warning',
-  CLOSED: 'success',
-  CANCELLED: 'error',
-};
+import { formatPoStatus, poStatusChipColor } from './poStatus';
 
 const DOC_TYPE_LABELS: Record<string, string> = {
   PO_DOCUMENT: 'PO Document',
   VENDOR_ACKNOWLEDGEMENT: 'Vendor Acknowledgement',
   MISCELLANEOUS: 'Miscellaneous',
 };
-
-// Display labels that don't follow the generic Title_Case rule (e.g. GP_REGISTERED -> "GP-Registered").
-const STATUS_LABELS: Record<string, string> = {
-  GP_REGISTERED: 'GP-Registered',
-};
-
-function formatStatus(status: string): string {
-  if (STATUS_LABELS[status]) return STATUS_LABELS[status];
-  return status
-    .split('_')
-    .map((w) => w.charAt(0) + w.slice(1).toLowerCase())
-    .join(' ');
-}
 
 function formatDate(dateStr: string | null | undefined): string {
   if (!dateStr) return '-';
@@ -512,8 +489,8 @@ export default function PODetailModal({ open, po, onClose, onRefetch, relayHealt
         {/* Header: Status + Request Number */}
         <Box sx={{ mb: 3, display: 'flex', alignItems: 'center', gap: 2 }}>
           <Chip
-            label={formatStatus(po.status)}
-            color={STATUS_CHIP_COLOR[po.status] ?? 'default'}
+            label={formatPoStatus(po.status)}
+            color={poStatusChipColor(po.status)}
             size="medium"
           />
           {po.poNumber && (
