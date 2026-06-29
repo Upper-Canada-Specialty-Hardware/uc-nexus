@@ -149,6 +149,7 @@ class POLineItem:
     received_quantity: int
     unit_cost: float
     order_as: str | None
+    gp_line_ord: int | None
     created_at: datetime
     updated_at: datetime
 
@@ -208,6 +209,7 @@ class PurchaseOrder:
     status: POStatus
     cost_code: str | None
     gp_sync_status: GpSyncStatus
+    gp_company: str | None
     vendor: Vendor | None
     vendor_quote_number: str | None
     notes: str | None

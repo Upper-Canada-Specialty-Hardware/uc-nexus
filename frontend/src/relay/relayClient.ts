@@ -150,6 +150,46 @@ export async function postRelayPo(req: RelayPoRequest): Promise<RelayPoResponse>
   return body as RelayPoResponse;
 }
 
+export interface RelayReceiptLine {
+  po_line_ord: number; // GP POP10110.ORD of the PO line being received (16384, 32768, ...)
+  quantity: number;
+  rack_location: string; // where the goods were physically shelved (aisle-bay-bin); required non-empty
+  revision_number?: string | null;
+  comments?: string | null;
+}
+
+export interface RelayReceiptRequest {
+  company: string;
+  po_number: string;
+  lines: RelayReceiptLine[];
+  batch_prefix?: string;
+  receipt_date?: string; // yyyy-mm-dd; defaults to today on the relay
+  received_by?: string | null;
+}
+
+export interface RelayReceiptResponse {
+  receipt_number: string;
+  batch_number: string;
+  po_number: string;
+  company: string;
+  lines_received: number;
+  custom_db_written: boolean;
+}
+
+// Post a GP receipt against a PO. The relay enforces remaining quantity and surfaces
+// qty_exceeds_remaining / line_not_receivable / po_line_not_found / po_not_found, which extractError
+// maps to RelayError.code + a human-readable message.
+export async function postRelayReceipt(req: RelayReceiptRequest): Promise<RelayReceiptResponse> {
+  const r = await relayFetch('/receipt', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+  const body = await r.json();
+  if (!r.ok) throw extractError(body, r.status);
+  return body as RelayReceiptResponse;
+}
+
 export async function getLoopbackPermissionState(): Promise<LoopbackPermission> {
   try {
     const permissions = navigator.permissions as unknown as {

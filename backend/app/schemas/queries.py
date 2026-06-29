@@ -117,6 +117,7 @@ def _po_line_item_to_type(li) -> POLineItem:
         received_quantity=li.received_quantity,
         unit_cost=float(li.unit_cost),
         order_as=li.order_as,
+        gp_line_ord=li.gp_line_ord,
         created_at=li.created_at,
         updated_at=li.updated_at,
     )
@@ -214,6 +215,7 @@ def _po_to_type(po, receive_records=None) -> PurchaseOrder:
         status=po.status,
         cost_code=po.cost_code,
         gp_sync_status=po.gp_sync_status,
+        gp_company=po.gp_company,
         vendor=_vendor_to_type(vendor) if vendor is not None else None,
         vendor_quote_number=po.vendor_quote_number,
         notes=po.notes,

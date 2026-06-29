@@ -5,10 +5,9 @@ import {
   Button,
   TextField,
   Alert,
+  Chip,
   CircularProgress,
   Paper,
-  Switch,
-  FormControlLabel,
   FormControl,
   InputLabel,
   Select,
@@ -29,6 +28,12 @@ import { useNavigate } from 'react-router-dom';
 import { GET_PO_RECEIVING_DETAILS, GET_WAREHOUSES } from '../../graphql/queries';
 import { CREATE_RECEIVE } from '../../graphql/mutations';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
+import {
+  checkRelayHealth,
+  postRelayReceipt,
+  type RelayHealth,
+  type RelayReceiptLine,
+} from '../../relay/relayClient';
 
 // ---- Types ----
 
@@ -42,15 +47,27 @@ interface PODetailLineItem {
   receivedQuantity: number;
   unitCost: number;
   orderAs: string | null;
+  // GP POP10110.ORD this line maps to; needed to target the GP line on a relay /receipt.
+  gpLineOrd: number | null;
 }
 
 interface PODetails {
   id: string;
   poNumber: string | null;
+  // The GP company + sync status this PO was registered in. A receive posts to GP, so it can only
+  // run against a PO that is SYNCED to GP (has a gpCompany + poNumber). See isPoGpRegistered.
+  gpCompany: string | null;
+  gpSyncStatus: string;
   vendor: { id: string; name: string; contactName: string | null } | null;
   notes: string | null;
   status: string;
   lineItems: PODetailLineItem[];
+}
+
+// A receive must post the GP receipt to count (issue #177), so the PO has to be a real GP PO:
+// created through the relay (gpCompany + poNumber present) and SYNCED.
+function isPoGpRegistered(d: PODetails | undefined): boolean {
+  return !!d && d.gpSyncStatus === 'SYNCED' && !!d.gpCompany && !!d.poNumber;
 }
 
 // One destination bin for a received line, plus how many of those units arrived deficient.
@@ -97,12 +114,14 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
   const [poDetailsMap, setPoDetailsMap] = useState<Record<string, PODetails>>({});
   const [poDetailsLoading, setPoDetailsLoading] = useState(false);
   const [poDetailsError, setPoDetailsError] = useState<string | null>(null);
-  // Optional put-away: when on, the user assigns destination bin(s) for each received line and
-  // may flag how many units arrived deficient. Off by default → receive as unlocated (locations: []).
-  const [putAwayMode, setPutAwayMode] = useState(false);
+  // Put-away is mandatory: a receive posts a GP receipt, which requires a rack location per line, so
+  // the user assigns destination bin(s) for every received unit (and may flag deficient units) up front.
   const [lineLocations, setLineLocations] = useState<Record<string, LocationDraft[]>>({});
+  // GP relay presence. A receive must reach GP to count, so the relay must be up to receive at all.
+  const [relayHealth, setRelayHealth] = useState<RelayHealth | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
-  const [createReceive, { loading: submitLoading }] = useMutation(CREATE_RECEIVE);
+  const [createReceive] = useMutation(CREATE_RECEIVE);
 
   // Warehouse the received goods land in (active warehouses only). Defaults to the primary.
   const { data: warehousesData } = useQuery<{ warehouses: WarehouseOption[] }>(GET_WAREHOUSES, {
@@ -156,11 +175,28 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
       setReceiveQuantities({});
       setMutationError(null);
       setSucceeded(false);
-      setPutAwayMode(false);
       setLineLocations({});
       fetchPODetails(poIds);
     }
   }, [open, poIds, fetchPODetails]);
+
+  // Probe the relay while the dialog is open - a receive posts a GP receipt, so the relay must be up.
+  useEffect(() => {
+    if (!open) {
+      setRelayHealth(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const h = await checkRelayHealth();
+      if (!cancelled) setRelayHealth(h);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
+  const relayConnected = relayHealth?.ok === true;
 
   // ---- Derived Data ----
 
@@ -247,10 +283,17 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
     [receiveQuantities],
   );
 
-  // In put-away mode every received unit must land in a valid bin and each bin's deficient count must
-  // be within its quantity. Mirrors the backend contract in warehouse_repository.create_receive.
+  // POs in this batch that can't be received because they aren't GP-registered (issue #177: a receive
+  // must post a GP receipt, so it needs a GP PO number + company). These block the whole submit.
+  const blockedPos = useMemo(
+    () => poIds.map((id) => poDetailsMap[id]).filter((d): d is PODetails => !!d && !isPoGpRegistered(d)),
+    [poIds, poDetailsMap],
+  );
+
+  // Put-away is mandatory: every received unit must land in a valid bin and each bin's deficient count
+  // must be within its quantity. Mirrors the backend contract in warehouse_repository.create_receive
+  // and gives the GP receipt a non-empty rack location per line.
   const putAwayValid = useMemo(() => {
-    if (!putAwayMode) return true;
     for (const li of lineItemsToReceive) {
       const receiveNow = receiveQuantities[li.id] ?? 0;
       let placed = 0;
@@ -265,7 +308,7 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
       if (placed !== receiveNow) return false;
     }
     return true;
-  }, [putAwayMode, lineItemsToReceive, receiveQuantities, draftsFor]);
+  }, [lineItemsToReceive, receiveQuantities, draftsFor]);
 
   // ---- Columns ----
 
@@ -328,41 +371,88 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
   const handleSubmit = useCallback(async () => {
     setConfirmOpen(false);
     setMutationError(null);
+    setSubmitting(true);
 
-    for (const poId of poIds) {
-      const poLineItems = lineItemsToReceive.filter((li) => li.poId === poId);
-      if (poLineItems.length === 0) continue;
+    // Same two-call shape as Create PO: for each PO, post the GP receipt via the relay FIRST, then
+    // record the UC Nexus receive. If GP rejects it (over-receipt, closed line, unknown PO), nothing is
+    // recorded for that PO. One relay line per PO line carrying the total received qty, so the relay's
+    // remaining-quantity check stays authoritative; the per-bin placement + deficient count stay
+    // UC-Nexus-side (sent to createReceive). rack_location composes the assigned bins (aisle-bay-bin).
+    try {
+      for (const poId of poIds) {
+        const poLineItems = lineItemsToReceive.filter((li) => li.poId === poId);
+        if (poLineItems.length === 0) continue;
 
-      const input = {
-        poId,
-        receivedBy: displayName,
-        warehouseId: warehouseId || null,
-        lineItems: poLineItems.map((li) => {
+        const details = poDetailsMap[poId];
+        const poLabel = details?.poNumber ?? poId;
+
+        const relayLines: RelayReceiptLine[] = [];
+        for (const li of poLineItems) {
           const receiveNow = receiveQuantities[li.id] ?? 0;
-          const drafts = putAwayMode ? draftsFor(li.id, receiveNow) : [];
-          return {
-            poLineItemId: li.id,
-            quantityReceived: receiveNow,
-            locations: drafts.map((d) => ({
-              aisle: d.aisle.trim(),
-              bay: d.bay.trim(),
-              bin: d.bin.trim(),
-              quantity: Number(d.quantity),
-              deficientQuantity: Number(d.deficient || '0'),
-            })),
-          };
-        }),
-      };
+          if (li.gpLineOrd == null) {
+            setMutationError(
+              `Cannot receive ${poLabel}: line ${li.productCode} has no GP line mapping. Re-create the PO through GP.`,
+            );
+            return;
+          }
+          const racks = Array.from(
+            new Set(draftsFor(li.id, receiveNow).map((d) => `${d.aisle.trim()}-${d.bay.trim()}-${d.bin.trim()}`)),
+          );
+          relayLines.push({
+            po_line_ord: li.gpLineOrd,
+            quantity: receiveNow,
+            rack_location: racks.join(', ').slice(0, 255),
+          });
+        }
 
-      try {
-        await createReceive({ variables: { input } });
-      } catch (err: unknown) {
-        const poDetails = poDetailsMap[poId];
-        const poLabel = poDetails ? (poDetails.poNumber ?? poId) : poId;
-        const message = err instanceof Error ? err.message : 'An unknown error occurred';
-        setMutationError(`Error receiving ${poLabel}: ${message}`);
-        return;
+        // GP first. details.gpCompany / poNumber are guaranteed by the isPoGpRegistered gate.
+        try {
+          await postRelayReceipt({
+            company: details!.gpCompany!,
+            po_number: details!.poNumber!,
+            lines: relayLines,
+            received_by: displayName,
+          });
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : 'An unknown error occurred';
+          setMutationError(`GP rejected the receipt for ${poLabel}, so nothing was recorded: ${message}`);
+          return;
+        }
+
+        // GP receipt posted - now record the UC Nexus receive.
+        const input = {
+          poId,
+          receivedBy: displayName,
+          warehouseId: warehouseId || null,
+          lineItems: poLineItems.map((li) => {
+            const receiveNow = receiveQuantities[li.id] ?? 0;
+            const drafts = draftsFor(li.id, receiveNow);
+            return {
+              poLineItemId: li.id,
+              quantityReceived: receiveNow,
+              locations: drafts.map((d) => ({
+                aisle: d.aisle.trim(),
+                bay: d.bay.trim(),
+                bin: d.bin.trim(),
+                quantity: Number(d.quantity),
+                deficientQuantity: Number(d.deficient || '0'),
+              })),
+            };
+          }),
+        };
+
+        try {
+          await createReceive({ variables: { input } });
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : 'An unknown error occurred';
+          setMutationError(
+            `GP receipt posted for ${poLabel}, but recording it in UC Nexus failed: ${message}`,
+          );
+          return;
+        }
       }
+    } finally {
+      setSubmitting(false);
     }
 
     // Refresh inventory/stock/dashboard counts once after all POs are received.
@@ -383,7 +473,6 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
     warehouseId,
     lineItemsToReceive,
     receiveQuantities,
-    putAwayMode,
     draftsFor,
     createReceive,
     client,
@@ -399,7 +488,6 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
     setMutationError(null);
     setSucceeded(false);
     setConfirmOpen(false);
-    setPutAwayMode(false);
     setLineLocations({});
     onClose();
   }, [onClose]);
@@ -573,10 +661,17 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
       <Button onClick={handleClose}>Cancel</Button>
       <Button
         variant="contained"
-        disabled={!hasAnyReceiveQuantity || hasQuantityErrors || !putAwayValid || submitLoading}
+        disabled={
+          !hasAnyReceiveQuantity ||
+          hasQuantityErrors ||
+          !putAwayValid ||
+          !relayConnected ||
+          blockedPos.length > 0 ||
+          submitting
+        }
         onClick={() => setConfirmOpen(true)}
       >
-        {submitLoading ? <CircularProgress size={24} /> : 'Complete Receive'}
+        {submitting ? <CircularProgress size={24} /> : 'Complete Receive'}
       </Button>
     </>
   );
@@ -604,6 +699,30 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
             {mutationError}
           </Alert>
         )}
+        {/* A receive posts a GP receipt via the on-prem relay, so the relay must be up. */}
+        {!poDetailsLoading && !poDetailsError && !succeeded && (
+          <Box sx={{ mb: 2 }}>
+            {relayHealth === null ? (
+              <Chip size="small" label="checking GP relay…" />
+            ) : relayConnected ? (
+              <Chip size="small" color="success" label={`GP relay connected (v${relayHealth.version})`} />
+            ) : (
+              <Alert severity="error">
+                GP relay not detected on this machine - it must be running to receive (a receive posts the
+                GP receipt).
+              </Alert>
+            )}
+          </Box>
+        )}
+        {/* Receiving requires a GP-registered PO (issue #177): it can only run against a PO created
+            through the relay, which has a GP PO number + company. */}
+        {!poDetailsLoading && !poDetailsError && !succeeded && blockedPos.length > 0 && (
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            {blockedPos.length === 1
+              ? `${blockedPos[0].poNumber ?? 'This PO'} isn't registered in GP yet, so it can't be received. Create or push it to GP first.`
+              : `${blockedPos.length} of the selected POs aren't registered in GP yet, so they can't be received. Create or push them to GP first.`}
+          </Alert>
+        )}
         {!poDetailsLoading && !poDetailsError && !succeeded && (
           <FormControl size="small" sx={{ minWidth: 240, mb: 2 }}>
             <InputLabel id="receive-warehouse-label">Receive into warehouse</InputLabel>
@@ -625,15 +744,14 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
 
         {!poDetailsLoading && !poDetailsError && !succeeded && hasAnyReceiveQuantity && (
           <Box sx={{ mt: 1 }}>
-            <FormControlLabel
-              control={<Switch checked={putAwayMode} onChange={(e) => setPutAwayMode(e.target.checked)} />}
-              label="Assign locations & flag deficient units now"
-            />
-            <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
-              Leave off to receive as unlocated and put away later. When on, place every received unit
-              and optionally record how many of each arrived deficient.
+            <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+              Assign locations & flag deficient units
             </Typography>
-            {putAwayMode && <Stack spacing={2}>{lineItemsToReceive.map(renderLineLocations)}</Stack>}
+            <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+              Place every received unit in a bin (the GP receipt records a rack location per line) and
+              optionally record how many of each arrived deficient.
+            </Typography>
+            <Stack spacing={2}>{lineItemsToReceive.map(renderLineLocations)}</Stack>
           </Box>
         )}
       </Modal>
