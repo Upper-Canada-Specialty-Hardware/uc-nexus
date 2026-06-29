@@ -3,7 +3,6 @@ import {
   Alert,
   Box,
   Button,
-  Chip,
   IconButton,
   MenuItem,
   Stack,
@@ -19,6 +18,7 @@ import { useToast } from '../../components/Toast';
 import { CREATE_PO, RECORD_PO_GP_SYNC } from '../../graphql/mutations';
 import { GET_PROJECTS, GET_VENDORS } from '../../graphql/queries';
 import type { Project } from '../../types/project';
+import RelayStatusChip from '../../relay/RelayStatusChip';
 import {
   checkRelayHealth,
   getRelayBuyers,
@@ -73,11 +73,20 @@ interface CreatePODialogProps {
   onClose: () => void;
   onCreated: () => void;
   defaultProjectId?: string;
+  // Relay status owned by the PO page (single source of truth). When omitted, the dialog probes
+  // /health itself so it stays usable standalone.
+  relayHealth?: RelayHealth | null;
 }
 
 // --- Component ---
 
-export default function CreatePODialog({ open, onClose, onCreated, defaultProjectId }: CreatePODialogProps) {
+export default function CreatePODialog({
+  open,
+  onClose,
+  onCreated,
+  defaultProjectId,
+  relayHealth: relayHealthProp,
+}: CreatePODialogProps) {
   const { showToast } = useToast();
   const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
   const projects = projectsData?.projects ?? [];
@@ -94,8 +103,10 @@ export default function CreatePODialog({ open, onClose, onCreated, defaultProjec
   const [lineItems, setLineItems] = useState<LineItemRow[]>([{ key: 1, ...EMPTY_LINE_ITEM }]);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
-  // GP relay state
-  const [relayHealth, setRelayHealth] = useState<RelayHealth | null>(null);
+  // GP relay state. The page passes relayHealth in (single source of truth); when it doesn't, the
+  // dialog falls back to probing /health itself via selfRelayHealth.
+  const [selfRelayHealth, setSelfRelayHealth] = useState<RelayHealth | null>(null);
+  const relayHealth = relayHealthProp !== undefined ? relayHealthProp : selfRelayHealth;
   const [buyers, setBuyers] = useState<string[]>([]);
   const [costCodes, setCostCodes] = useState<RelayCostCode[]>([]);
   const [costCodesLoading, setCostCodesLoading] = useState(false);
@@ -112,18 +123,28 @@ export default function CreatePODialog({ open, onClose, onCreated, defaultProjec
   const isJob = !!projectId && !!selectedProject;
   const relayConnected = relayHealth?.ok === true;
 
-  // Check relay presence + load registered buyers for the chosen company while the dialog is open.
+  // Probe relay presence while the dialog is open - only when the page didn't pass relayHealth in.
   useEffect(() => {
-    if (!open) return;
+    if (!open || relayHealthProp !== undefined) return;
     let cancelled = false;
     void (async () => {
       const h = await checkRelayHealth();
-      if (cancelled) return;
-      setRelayHealth(h);
-      if (!h.ok) {
-        setBuyers([]);
-        return;
-      }
+      if (!cancelled) setSelfRelayHealth(h);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, relayHealthProp]);
+
+  // Load registered buyers for the chosen company whenever the relay is up and the dialog is open.
+  useEffect(() => {
+    if (!open) return;
+    if (!relayConnected) {
+      setBuyers([]);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
       try {
         const b = await getRelayBuyers(company);
         if (!cancelled) setBuyers(b);
@@ -134,7 +155,7 @@ export default function CreatePODialog({ open, onClose, onCreated, defaultProjec
     return () => {
       cancelled = true;
     };
-  }, [open, company]);
+  }, [open, relayConnected, company]);
 
   // Load this job's cost codes from GP (JC00701) whenever the project/company changes. Cost codes
   // are per-job and each carries its own Cost_Element, so the dropdown comes from the relay, not a
@@ -373,13 +394,7 @@ export default function CreatePODialog({ open, onClose, onCreated, defaultProjec
           <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
             GP purchase order
           </Typography>
-          {relayHealth === null ? (
-            <Chip size="small" label="checking relay…" />
-          ) : relayConnected ? (
-            <Chip size="small" color="success" label={`relay connected (v${relayHealth.version})`} />
-          ) : (
-            <Chip size="small" color="error" label="GP relay not detected on this machine" />
-          )}
+          <RelayStatusChip health={relayHealth} />
         </Stack>
         <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
           <TextField

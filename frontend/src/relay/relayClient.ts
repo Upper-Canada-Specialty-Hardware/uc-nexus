@@ -61,6 +61,16 @@ async function getSecret(): Promise<string> {
   return secret;
 }
 
+// Best-effort warm of the credential cache so the first authed relay call doesn't pay for the
+// relayCredential round-trip. Safe to call when the relay is up; errors are swallowed.
+export async function prefetchRelaySecret(): Promise<void> {
+  try {
+    await getSecret();
+  } catch {
+    // no credential / network error - the next authed call will surface it for real
+  }
+}
+
 function extractError(body: unknown, status: number): RelayError {
   const detail = (body as { detail?: unknown })?.detail;
   if (typeof detail === 'string') return new RelayError(detail);
