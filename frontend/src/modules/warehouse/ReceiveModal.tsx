@@ -110,6 +110,10 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
   const [receiveQuantities, setReceiveQuantities] = useState<Record<string, number>>({});
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [succeeded, setSucceeded] = useState(false);
+  // Count of units received, captured at success time. Held in state because the success screen renders
+  // after receiveQuantities is cleared (so a committed PO can't be re-posted), which would otherwise make
+  // the live totalItemsToReceive read 0.
+  const [receivedCount, setReceivedCount] = useState(0);
   const [mutationError, setMutationError] = useState<string | null>(null);
   const [poDetailsMap, setPoDetailsMap] = useState<Record<string, PODetails>>({});
   const [poDetailsLoading, setPoDetailsLoading] = useState(false);
@@ -499,6 +503,7 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
       return;
     }
 
+    setReceivedCount(totalItemsToReceive);
     showToast(`Receive completed successfully. ${totalItemsToReceive} items added to inventory.`, 'success');
     setSucceeded(true);
   }, [
@@ -726,7 +731,7 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
         )}
         {succeeded && (
           <Alert severity="success" sx={{ mb: 2 }}>
-            Receive completed successfully! {totalItemsToReceive} items added to inventory.
+            Receive completed successfully! {receivedCount} items added to inventory.
           </Alert>
         )}
         {mutationError && (
