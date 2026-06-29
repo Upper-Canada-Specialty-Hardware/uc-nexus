@@ -20,7 +20,7 @@ from app.repositories import (
     warehouse_repository,
 )
 
-from .enums import ApproveOutcome, GpSyncStatus, PODocumentType
+from .enums import ApproveOutcome, PODocumentType
 from .inputs import (
     AdjustStockQuantityInput,
     AllocateStockToProjectInput,
@@ -411,22 +411,20 @@ class Mutation:
     def record_po_gp_sync(
         self,
         po_id: strawberry.ID,
-        gp_sync_status: GpSyncStatus,
         po_number: str | None = None,
         gp_company: str | None = None,
     ) -> PurchaseOrder:
         """Record the result of pushing this PO to GP via the relay (the create-in-both orchestration's
-        second step): store GP's returned PONUMBER and the GP company on success and set gp_sync_status
-        (SYNCED/FAILED). The company is what a later relay /receipt needs to target this PO."""
+        second step): store GP's returned PONUMBER and the GP company, and advance a DRAFT to
+        GP_REGISTERED. Only called on GP success (a failed push never reaches UC Nexus), so there is no
+        status arg. The company is what a later relay /receipt needs to target this PO."""
         from sqlalchemy.orm import selectinload
 
         from app.models.purchase_order import PurchaseOrder as POModel
 
         pid = uuid.UUID(str(po_id))
         with SessionLocal() as session:
-            po_repository.record_gp_sync_result(
-                session, pid, gp_sync_status, po_number=po_number, gp_company=gp_company
-            )
+            po_repository.record_gp_sync_result(session, pid, po_number=po_number, gp_company=gp_company)
             session.commit()
             refreshed_po = (
                 session.scalars(

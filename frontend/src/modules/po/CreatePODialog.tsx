@@ -246,11 +246,12 @@ export default function CreatePODialog({ open, onClose, onCreated, defaultProjec
       // GP first: if GP rejects it, nothing is created in UC Nexus.
       const gpResp = await postRelayPo(relayReq);
       gpPoNumber = gpResp.po_number;
-      // GP succeeded - now record it in UC Nexus and mark it SYNCED with GP's PO number.
+      // GP succeeded - now record it in UC Nexus with GP's PO number and company, which advances the
+      // PO to GP-Registered.
       const created = await createPO({ variables: { input: ucInput } });
       const poId = (created.data as { createPo: { id: string } }).createPo.id;
       await recordPoGpSync({
-        variables: { poId, gpSyncStatus: 'SYNCED', poNumber: gpPoNumber, gpCompany: company },
+        variables: { poId, poNumber: gpPoNumber, gpCompany: company },
       });
       showToast(`PO ${gpPoNumber} created in GP and UC Nexus`, 'success');
       onCreated();

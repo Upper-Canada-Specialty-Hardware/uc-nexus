@@ -51,7 +51,7 @@ import type { PurchaseOrder } from './index';
 
 const STATUS_CHIP_COLOR: Record<string, 'default' | 'primary' | 'info' | 'warning' | 'success' | 'error'> = {
   DRAFT: 'default',
-  ORDERED: 'primary',
+  GP_REGISTERED: 'primary',
   VENDOR_CONFIRMED: 'info',
   PARTIALLY_RECEIVED: 'warning',
   CLOSED: 'success',
@@ -64,7 +64,13 @@ const DOC_TYPE_LABELS: Record<string, string> = {
   MISCELLANEOUS: 'Miscellaneous',
 };
 
+// Display labels that don't follow the generic Title_Case rule (e.g. GP_REGISTERED -> "GP-Registered").
+const STATUS_LABELS: Record<string, string> = {
+  GP_REGISTERED: 'GP-Registered',
+};
+
 function formatStatus(status: string): string {
+  if (STATUS_LABELS[status]) return STATUS_LABELS[status];
   return status
     .split('_')
     .map((w) => w.charAt(0) + w.slice(1).toLowerCase())
@@ -440,7 +446,7 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
 
   const canEdit =
     po.status === 'DRAFT' ||
-    (po.status === 'ORDERED' && po.receiveRecords.length === 0) ||
+    (po.status === 'GP_REGISTERED' && po.receiveRecords.length === 0) ||
     (po.status === 'VENDOR_CONFIRMED' && po.receiveRecords.length === 0);
 
   const canUploadDocs = po.status !== 'CANCELLED' && po.status !== 'CLOSED';
@@ -457,7 +463,7 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
 
   const markAsOrderedEnabled = canMarkAsOrdered && missingRequirements.length === 0;
 
-  const canCancel = po.status === 'DRAFT' || po.status === 'ORDERED' || po.status === 'VENDOR_CONFIRMED';
+  const canCancel = po.status === 'DRAFT' || po.status === 'GP_REGISTERED' || po.status === 'VENDOR_CONFIRMED';
 
   const displayTitle = po.poNumber ? `PO: ${po.poNumber}` : `Request: ${po.requestNumber}`;
 

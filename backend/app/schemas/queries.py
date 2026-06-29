@@ -214,7 +214,6 @@ def _po_to_type(po, receive_records=None) -> PurchaseOrder:
         project_id=strawberry.ID(str(po.project_id)) if po.project_id else None,
         status=po.status,
         cost_code=po.cost_code,
-        gp_sync_status=po.gp_sync_status,
         gp_company=po.gp_company,
         vendor=_vendor_to_type(vendor) if vendor is not None else None,
         vendor_quote_number=po.vendor_quote_number,
@@ -721,7 +720,7 @@ class Query:
             return POStatistics(
                 total=stats["total"],
                 draft=stats["draft"],
-                ordered=stats["ordered"],
+                gp_registered=stats["gp_registered"],
                 vendor_confirmed=stats["vendor_confirmed"],
                 partially_received=stats["partially_received"],
                 closed=stats["closed"],
@@ -746,7 +745,7 @@ class Query:
                     POModel.deleted_at.is_(None),
                     POModel.status.in_(
                         [
-                            DBPOStatus.ORDERED,
+                            DBPOStatus.GP_REGISTERED,
                             DBPOStatus.VENDOR_CONFIRMED,
                             DBPOStatus.PARTIALLY_RECEIVED,
                         ]

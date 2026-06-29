@@ -48,7 +48,7 @@ export const GET_PO_STATISTICS = gql`
     poStatistics(projectId: $projectId) {
       total
       draft
-      ordered
+      gpRegistered
       vendorConfirmed
       partiallyReceived
       closed
@@ -74,7 +74,6 @@ export const GET_PURCHASE_ORDERS = gql`
       requestNumber
       projectId
       status
-      gpSyncStatus
       vendor {
         id
         name
@@ -284,7 +283,6 @@ export const GET_PO_RECEIVING_DETAILS = gql`
       poNumber
       requestNumber
       gpCompany
-      gpSyncStatus
       vendor {
         id
         name

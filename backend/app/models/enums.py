@@ -12,22 +12,14 @@ class HardwareItemState(str, enum.Enum):
 
 
 class POStatus(str, enum.Enum):
+    # GP_REGISTERED means "the PO exists in GP". A PO that fails to create in GP is never created in
+    # UC Nexus either, so there is no FAILED state and no separate gp_sync_status; the status carries it.
     DRAFT = "DRAFT"
-    ORDERED = "ORDERED"
+    GP_REGISTERED = "GP_REGISTERED"
     VENDOR_CONFIRMED = "VENDOR_CONFIRMED"
     PARTIALLY_RECEIVED = "PARTIALLY_RECEIVED"
     CLOSED = "CLOSED"
     CANCELLED = "CANCELLED"
-
-
-class GpSyncStatus(str, enum.Enum):
-    """Whether this PO has been pushed to Microsoft GP (the job-cost PO) via the localhost relay.
-    NOT_PUSHED: created in UC Nexus only. SYNCED: GP PO created, po_number recorded. FAILED: the
-    relay/GP push errored and is retryable."""
-
-    NOT_PUSHED = "NOT_PUSHED"
-    SYNCED = "SYNCED"
-    FAILED = "FAILED"
 
 
 class PullRequestSource(str, enum.Enum):
