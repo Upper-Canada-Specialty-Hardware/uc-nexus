@@ -30,7 +30,7 @@ def _check_company(company: str) -> None:
     if company not in allowed:
         raise HTTPException(
             status_code=400,
-            detail={"error": "company_not_allowed", "message": f"{company} not in allowed_companies {allowed}"},
+            detail=errors.error_body("company_not_allowed", f"{company} not in allowed_companies {allowed}"),
         )
 
 
@@ -38,12 +38,13 @@ def _econnect_http(conn, e: econnect.EConnectError) -> HTTPException:
     desc = errors.lookup_error_description(conn, e.error_state) if e.error_state else None
     return HTTPException(
         status_code=502,
-        detail={
-            "error": "econnect_error",
-            "proc": e.proc,
-            "error_state": e.error_state,
-            "error_description": desc or str(e),
-        },
+        detail=errors.error_body(
+            "econnect_error",
+            desc or str(e),
+            proc=e.proc,
+            error_state=e.error_state,
+            error_description=desc,
+        ),
     )
 
 
@@ -123,7 +124,7 @@ def create_app() -> FastAPI:
             with db.get_read_connection(company) as conn:
                 rows = econnect.list_vendors(conn, active_only=True)
         except pyodbc.Error as e:
-            raise HTTPException(status_code=502, detail={"error": "sql_error", "message": str(e)})
+            raise HTTPException(status_code=502, detail=errors.error_body("sql_error", str(e)))
         return models.VendorsResponse(company=company, vendors=[models.VendorOut(**r) for r in rows])
 
     @app.get("/buyers", response_model=models.BuyersResponse)
@@ -136,7 +137,7 @@ def create_app() -> FastAPI:
             with db.get_read_connection(company) as conn:
                 ids = econnect.list_buyers(conn)
         except pyodbc.Error as e:
-            raise HTTPException(status_code=502, detail={"error": "sql_error", "message": str(e)})
+            raise HTTPException(status_code=502, detail=errors.error_body("sql_error", str(e)))
         return models.BuyersResponse(company=company, buyers=ids)
 
     @app.post("/po/next-number")
@@ -155,7 +156,7 @@ def create_app() -> FastAPI:
                     conn.rollback()
                     raise
         except pyodbc.Error as e:
-            raise HTTPException(status_code=502, detail={"error": "sql_error", "message": str(e)})
+            raise HTTPException(status_code=502, detail=errors.error_body("sql_error", str(e)))
 
     @app.post("/po", response_model=models.CreatePoResponse, status_code=201)
     def create_po(request: models.CreatePoRequest, _=Depends(auth.verify_token)):
@@ -177,11 +178,11 @@ def create_app() -> FastAPI:
                         if not buyer_id:
                             raise HTTPException(
                                 status_code=400,
-                                detail={
-                                    "error": "buyer_unresolved",
-                                    "message": "no buyer_id sent and none resolved from [gp.buyers]; "
-                                               "pick a buyer from GET /buyers",
-                                },
+                                detail=errors.error_body(
+                                    "buyer_unresolved",
+                                    "no buyer_id sent and none resolved from [gp.buyers]; "
+                                    "pick a buyer from GET /buyers",
+                                ),
                             )
 
                     # validate against GP's buyer master: eConnect taPoHdr rejects an unregistered BUYERID
@@ -190,11 +191,11 @@ def create_app() -> FastAPI:
                     if buyer_id not in registered:
                         raise HTTPException(
                             status_code=400,
-                            detail={
-                                "error": "buyer_not_registered",
-                                "message": f"buyer '{buyer_id}' is not a registered GP buyer for "
-                                           f"{request.company} (registered: {registered})",
-                            },
+                            detail=errors.error_body(
+                                "buyer_not_registered",
+                                f"buyer '{buyer_id}' is not a registered GP buyer for "
+                                f"{request.company} (registered: {registered})",
+                            ),
                         )
 
                     # 0b. job + cost code: GP has a job master (JC00102) and per-job cost codes
@@ -213,27 +214,37 @@ def create_app() -> FastAPI:
                         if not job_ok[job]:
                             raise HTTPException(
                                 status_code=400,
-                                detail={
-                                    "error": "job_not_registered",
-                                    "message": f"job '{job}' is not a registered GP job (JC00102) "
-                                               f"for {request.company}",
-                                },
+                                detail=errors.error_body(
+                                    "job_not_registered",
+                                    f"job '{job}' is not a registered GP job (JC00102) for {request.company}",
+                                ),
                             )
                         if not econnect.cost_code_on_job(conn, job, line.cost_code):
                             raise HTTPException(
                                 status_code=400,
-                                detail={
-                                    "error": "cost_code_not_on_job",
-                                    "message": f"cost code '{line.cost_code}' is not set up on job "
-                                               f"'{job}' (JC00701) for {request.company}",
-                                },
+                                detail=errors.error_body(
+                                    "cost_code_not_on_job",
+                                    f"cost code '{line.cost_code}' is not set up on job "
+                                    f"'{job}' (JC00701) for {request.company}",
+                                ),
                             )
 
                     # 1. PO number: use UC Nexus's own number (e.g. 'ucnexus...') if supplied,
-                    #    else reserve GP's next 'PO' number via taGetPONextNumber.
+                    #    else reserve GP's next 'PO' number via taGetPONextNumber. A client-supplied
+                    #    number is rejected if it's already used anywhere in GP - active OR history
+                    #    (POP10100 / POP30100 / POP30300) - so a reused number fails fast with a clean
+                    #    po_number_taken instead of colliding mid-orchestration.
                     if request.po_number:
                         po_number = request.po_number
-                        econnect.assert_po_number_available(conn, po_number)
+                        in_use = econnect.po_number_in_use(conn, po_number)
+                        if in_use:
+                            raise HTTPException(
+                                status_code=400,
+                                detail=errors.error_body(
+                                    "po_number_taken",
+                                    f"PO number '{po_number}' is already in use in GP as {in_use}",
+                                ),
+                            )
                     else:
                         po_number = econnect.get_next_po_number(conn)
 
@@ -308,7 +319,7 @@ def create_app() -> FastAPI:
                     conn.rollback()
                     raise
         except pyodbc.Error as e:
-            raise HTTPException(status_code=502, detail={"error": "sql_error", "message": str(e)})
+            raise HTTPException(status_code=502, detail=errors.error_body("sql_error", str(e)))
 
     @app.post("/receipt", response_model=models.ReceiptResponse, status_code=201)
     def create_receipt(request: models.ReceiptRequest, _=Depends(auth.verify_token)):
@@ -327,22 +338,26 @@ def create_app() -> FastAPI:
                     if vendor_id is None:
                         raise HTTPException(
                             status_code=404,
-                            detail={"error": "po_not_found",
-                                    "message": f"PO {request.po_number} not found in {request.company}"},
+                            detail=errors.error_body(
+                                "po_not_found", f"PO {request.po_number} not found in {request.company}"
+                            ),
                         )
                     for rl in request.lines:
                         if rl.po_line_ord not in po_lines:
                             raise HTTPException(
                                 status_code=400,
-                                detail={"error": "po_line_not_found",
-                                        "message": f"PO {request.po_number} has no line ORD {rl.po_line_ord}"},
+                                detail=errors.error_body(
+                                    "po_line_not_found", f"PO {request.po_number} has no line ORD {rl.po_line_ord}"
+                                ),
                             )
                         pl = po_lines[rl.po_line_ord]
                         if pl["polnesta"] >= 4:
                             raise HTTPException(
                                 status_code=400,
-                                detail={"error": "line_not_receivable",
-                                        "message": f"line ORD {rl.po_line_ord} is closed/cancelled (POLNESTA={pl['polnesta']})"},
+                                detail=errors.error_body(
+                                    "line_not_receivable",
+                                    f"line ORD {rl.po_line_ord} is closed/cancelled (POLNESTA={pl['polnesta']})",
+                                ),
                             )
                         # validate against REMAINING (ordered - already received), not just ordered, so
                         # cumulative over-receipt across multiple receives is blocked.
@@ -350,9 +365,11 @@ def create_app() -> FastAPI:
                         if rl.quantity > remaining:
                             raise HTTPException(
                                 status_code=400,
-                                detail={"error": "qty_exceeds_remaining",
-                                        "message": f"line ORD {rl.po_line_ord}: qty {rl.quantity} exceeds remaining {remaining} "
-                                                   f"(ordered {pl['qtyorder']}, already received {pl['prev_received']})"},
+                                detail=errors.error_body(
+                                    "qty_exceeds_remaining",
+                                    f"line ORD {rl.po_line_ord}: qty {rl.quantity} exceeds remaining {remaining} "
+                                    f"(ordered {pl['qtyorder']}, already received {pl['prev_received']})",
+                                ),
                             )
 
                     receipt_number = econnect.get_next_receipt_number(conn)
@@ -440,7 +457,7 @@ def create_app() -> FastAPI:
                     conn.rollback()
                     raise
         except pyodbc.Error as e:
-            raise HTTPException(status_code=502, detail={"error": "sql_error", "message": str(e)})
+            raise HTTPException(status_code=502, detail=errors.error_body("sql_error", str(e)))
 
     return app
 

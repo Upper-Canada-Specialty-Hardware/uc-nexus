@@ -43,17 +43,27 @@ def get_next_po_number(conn) -> str:
     return row.po_number.strip()
 
 
-def assert_po_number_available(conn, po_number: str) -> None:
-    """Guard for client-supplied PO numbers: refuse one already used by an active PO.
-    (POC checks the live POP10100; production should also check history POP30100/POP30300.)"""
-    row = conn.cursor().execute(
-        "SELECT COUNT(*) AS n FROM dbo.POP10100 WHERE PONUMBER = ?", po_number
-    ).fetchone()
-    if row.n:
-        raise EConnectError(
-            f"PO number '{po_number}' already exists in GP (POP10100)",
-            proc="assert_po_number_available", error_state=0,
-        )
+def po_number_in_use(conn, po_number: str) -> str | None:
+    """Read-only guard for a client-supplied PO number: is it already used ANYWHERE in GP, not just
+    by an active PO? Returns a short human label of where it was found, or None if the number is free.
+    A PO number can live in three places, and a collision in any of them makes GP reject (or, worse,
+    silently reuse) the number, so /po pre-checks all three and returns a clean po_number_taken 400:
+      - POP10100.PONUMBER - an active (open/work) PO
+      - POP30100.PONUMBER - a historical (closed/posted/voided) PO
+      - POP30300.VNDDOCNM - a posted PO receipt's vendor-doc number (= the PO it received against)
+    Checked in that order and short-circuits on the first hit (active first, so no needless history
+    reads on the common path). Table + column are compile-time constants; only po_number is bound."""
+    for table, column, label in (
+        ("POP10100", "PONUMBER", "an active PO"),
+        ("POP30100", "PONUMBER", "a historical PO"),
+        ("POP30300", "VNDDOCNM", "a posted PO receipt"),
+    ):
+        row = conn.cursor().execute(
+            f"SELECT COUNT(*) AS n FROM dbo.{table} WHERE {column} = ?", po_number
+        ).fetchone()
+        if row.n:
+            return f"{label} ({table}.{column})"
+    return None
 
 
 def create_po_header(
