@@ -433,6 +433,33 @@ def list_buyers(conn) -> list[str]:
     return [r.b for r in rows]
 
 
+def list_cost_codes(conn, job_number: str) -> list[dict]:
+    """Read-only: the active cost codes defined for ONE job in JC00701 (WennSoft Job Cost).
+    Cost codes are per-job, and the real Cost_Element varies by code (210-200 is element 2,
+    310-000 is element 3, 510-000 is element 5, ...). The Create PO dropdown is populated from
+    this and the /po cost_code is assembled as 'phase-step-element' (e.g. '310-000-3') from the
+    code's own element - NOT a hardcoded 2.
+
+    Returns one dict per code: cost_code = the two-segment number 'cc1-cc2' (segments 3/4 are
+    blank for every code at this customer), description (Cost_Code_Description), and the integer
+    cost_element. WS_Inactive = 0 filters to codes usable on a new PO."""
+    rows = conn.cursor().execute(
+        "SELECT RTRIM(Cost_Code_Number_1) AS cc1, RTRIM(Cost_Code_Number_2) AS cc2, "
+        "Cost_Element AS elem, RTRIM(Cost_Code_Description) AS descr "
+        "FROM dbo.JC00701 WHERE RTRIM(WS_Job_Number) = ? AND WS_Inactive = 0 "
+        "ORDER BY Cost_Code_Number_1, Cost_Code_Number_2",
+        job_number,
+    ).fetchall()
+    return [
+        {
+            "cost_code": f"{r.cc1}-{r.cc2}",
+            "description": r.descr or None,
+            "cost_element": int(r.elem),
+        }
+        for r in rows
+    ]
+
+
 def create_receipt_header(conn, *, receipt_number, po_number, vendor_id, receipt_date, batch_number, subtotal) -> None:
     sql = """
     DECLARE @err int = 0;

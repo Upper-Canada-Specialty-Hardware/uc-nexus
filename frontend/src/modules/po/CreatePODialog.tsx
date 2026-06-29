@@ -22,7 +22,9 @@ import type { Project } from '../../types/project';
 import {
   checkRelayHealth,
   getRelayBuyers,
+  getRelayCostCodes,
   postRelayPo,
+  type RelayCostCode,
   type RelayHealth,
   type RelayPoRequest,
 } from '../../relay/relayClient';
@@ -64,23 +66,6 @@ const CLASSIFICATIONS = [
 // GP companies the relay is allowed to write to (sandboxes for the POC).
 const COMPANIES = ['TUBC', 'TUCSH'];
 
-// Issue #121 cost codes (the two DO-NOT-USE rows excluded). The 3rd segment (Cost_Element) defaults to 2.
-const COST_CODES = [
-  { value: '210-200', label: '210-200 · Supply Hardware' },
-  { value: '220-000', label: '220-000 · Supply Washroom Accessories' },
-  { value: '230-000', label: '230-000 · Supply of Entrance Mats' },
-  { value: '240-000', label: '240-000 · Supply of Misc. Spec. Material' },
-  { value: '250-000', label: '250-000 · Supply of ADO' },
-  { value: '310-000', label: '310-000 · Supply HM Frames & Screens' },
-  { value: '320-000', label: '320-000 · Supply Hollow Metal Doors' },
-  { value: '330-000', label: '330-000 · Supply Wood Doors & Frames' },
-  { value: '340-000', label: '340-000 · Supply Glazing' },
-  { value: '350-000', label: '350-000 · Specialty Doors & Frames' },
-  { value: '360-000', label: '360-000 · Supply of Washroom Partitions' },
-  { value: '370-000', label: '370-000 · Supply of Lockers' },
-];
-const COST_ELEMENT = '2';
-
 // --- Props ---
 
 interface CreatePODialogProps {
@@ -112,6 +97,8 @@ export default function CreatePODialog({ open, onClose, onCreated, defaultProjec
   // GP relay state
   const [relayHealth, setRelayHealth] = useState<RelayHealth | null>(null);
   const [buyers, setBuyers] = useState<string[]>([]);
+  const [costCodes, setCostCodes] = useState<RelayCostCode[]>([]);
+  const [costCodesLoading, setCostCodesLoading] = useState(false);
   const [gpBusy, setGpBusy] = useState(false);
 
   const [createPO, { loading }] = useMutation(CREATE_PO);
@@ -148,6 +135,35 @@ export default function CreatePODialog({ open, onClose, onCreated, defaultProjec
       cancelled = true;
     };
   }, [open, company]);
+
+  // Load this job's cost codes from GP (JC00701) whenever the project/company changes. Cost codes
+  // are per-job and each carries its own Cost_Element, so the dropdown comes from the relay, not a
+  // static list. A stock PO (no project) carries no cost code.
+  const jobNumber = selectedProject?.projectId ?? null;
+  useEffect(() => {
+    if (!open) return;
+    // Reset any prior selection: a cost code from another job must not carry over.
+    setCostCode('');
+    if (!relayConnected || !jobNumber) {
+      setCostCodes([]);
+      return;
+    }
+    let cancelled = false;
+    setCostCodesLoading(true);
+    void (async () => {
+      try {
+        const cc = await getRelayCostCodes(company, jobNumber);
+        if (!cancelled) setCostCodes(cc);
+      } catch {
+        if (!cancelled) setCostCodes([]);
+      } finally {
+        if (!cancelled) setCostCodesLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, relayConnected, company, jobNumber]);
 
   // --- Handlers ---
 
@@ -201,7 +217,9 @@ export default function CreatePODialog({ open, onClose, onCreated, defaultProjec
   const handleSubmit = useCallback(async () => {
     if (!validate()) return;
 
-    const gpCostCode = isJob ? `${costCode}-${COST_ELEMENT}` : null;
+    // costCode already holds GP's 'phase-step-element' (e.g. '310-000-3'); the element is the real
+    // one from JC00701, not a hardcoded 2. A stock PO (no project) carries no cost code.
+    const gpCostCode = isJob ? costCode : null;
     const today = new Date().toISOString().slice(0, 10);
 
     const relayReq: RelayPoRequest = {
@@ -293,6 +311,16 @@ export default function CreatePODialog({ open, onClose, onCreated, defaultProjec
   // --- Render ---
 
   const busy = loading || gpBusy;
+
+  // Status line under the cost-code dropdown (an explicit validation error takes precedence).
+  const costCodeHelper =
+    !isJob || !relayConnected
+      ? ''
+      : costCodesLoading
+        ? 'Loading cost codes from GP…'
+        : costCodes.length === 0
+          ? 'No cost codes defined for this job in GP'
+          : '';
 
   const actions = (
     <Stack direction="row" spacing={1}>
@@ -392,13 +420,13 @@ export default function CreatePODialog({ open, onClose, onCreated, defaultProjec
             onChange={(e) => setCostCode(e.target.value)}
             size="small"
             sx={{ minWidth: 260 }}
-            disabled={!isJob}
+            disabled={!isJob || !relayConnected || costCodesLoading || costCodes.length === 0}
             error={!!errors.costCode}
-            helperText={errors.costCode}
+            helperText={errors.costCode || costCodeHelper}
           >
-            {COST_CODES.map((c) => (
-              <MenuItem key={c.value} value={c.value}>
-                {c.label}
+            {costCodes.map((c) => (
+              <MenuItem key={`${c.cost_code}-${c.cost_element}`} value={`${c.cost_code}-${c.cost_element}`}>
+                {c.description ? `${c.cost_code} · ${c.description}` : c.cost_code}
               </MenuItem>
             ))}
           </TextField>

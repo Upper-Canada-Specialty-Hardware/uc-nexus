@@ -30,6 +30,12 @@ export interface RelayVendor {
   status: number;
 }
 
+export interface RelayCostCode {
+  cost_code: string; // two-segment number 'cc1-cc2' e.g. '310-000'
+  description: string | null; // GP Cost_Code_Description
+  cost_element: number; // GP Cost_Element (varies by code); the /po cost_code trailing digit
+}
+
 export interface RelayHealth {
   ok: boolean;
   version?: string;
@@ -110,6 +116,16 @@ export async function getRelayBuyers(company: string): Promise<string[]> {
   const body = await r.json();
   if (!r.ok) throw extractError(body, r.status);
   return (body as { buyers: string[] }).buyers;
+}
+
+// Active per-job cost codes from GP (JC00701). `job` is the GP job number (UC Nexus project_id).
+export async function getRelayCostCodes(company: string, job: string): Promise<RelayCostCode[]> {
+  const r = await relayFetch(
+    `/cost-codes?company=${encodeURIComponent(company)}&job=${encodeURIComponent(job)}`,
+  );
+  const body = await r.json();
+  if (!r.ok) throw extractError(body, r.status);
+  return (body as { cost_codes: RelayCostCode[] }).cost_codes;
 }
 
 export interface RelayPoLine {

@@ -4,6 +4,8 @@ Endpoints:
   GET  /health           — liveness, no auth
   GET  /info             — config + read-only SQL identity probe (+ workstation hostname), auth required
   GET  /vendors          — PM00200 vendor list for the vendor sync, auth required
+  GET  /buyers           — POP00101 registered buyers for the Create PO buyer dropdown, auth required
+  GET  /cost-codes       — JC00701 per-job cost codes for the Create PO cost-code dropdown, auth required
   POST /po/next-number   — reserve a PO number (live taGetPONextNumber), auth required
   POST /po               — create a PO end-to-end (5-step orchestration), auth required
   POST /receipt          — receive against a PO, auth required
@@ -139,6 +141,26 @@ def create_app() -> FastAPI:
         except pyodbc.Error as e:
             raise HTTPException(status_code=502, detail=errors.error_body("sql_error", str(e)))
         return models.BuyersResponse(company=company, buyers=ids)
+
+    @app.get("/cost-codes", response_model=models.CostCodesResponse)
+    def cost_codes(job: str, company: str | None = None, _=Depends(auth.verify_token)):
+        """Active cost codes for one job (JC00701) for the Create PO cost-code dropdown. Cost codes
+        are per-job and each carries its own Cost_Element, so the dropdown and the /po cost_code must
+        come from here rather than a static list with a hardcoded element. `job` is the GP job number
+        (UC Nexus project_id). A job with no cost codes returns an empty list (the UI shows that)."""
+        company = company or get_settings().gp.default_company
+        _check_company(company)
+        job = job.strip()
+        if not job:
+            raise HTTPException(status_code=422, detail={"error": "missing_job", "message": "job is required"})
+        try:
+            with db.get_read_connection(company) as conn:
+                rows = econnect.list_cost_codes(conn, job)
+        except pyodbc.Error as e:
+            raise HTTPException(status_code=502, detail={"error": "sql_error", "message": str(e)})
+        return models.CostCodesResponse(
+            company=company, job=job, cost_codes=[models.CostCodeOut(**r) for r in rows]
+        )
 
     @app.post("/po/next-number")
     def next_number(request: models.NextNumberRequest, _=Depends(auth.verify_token)):
