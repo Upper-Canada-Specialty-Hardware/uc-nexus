@@ -39,6 +39,7 @@ import PODetailModal from './PODetailModal';
 import GpPurchaseOrderDialog from './GpPurchaseOrderDialog';
 import RelayStatusChip from '../../relay/RelayStatusChip';
 import { useRelayStatus } from '../../relay/useRelayStatus';
+import { PO_STATUS_VALUES, formatPoStatus, poStatusChipColor } from './poStatus';
 
 // --- Types ---
 
@@ -122,18 +123,6 @@ interface POStatistics {
   cancelled: number;
 }
 
-// --- Status config ---
-
-const STATUS_CHIP_COLOR: Record<string, 'default' | 'primary' | 'info' | 'warning' | 'success' | 'error'> = {
-  DRAFT: 'default',
-  GP_REGISTERED: 'primary',
-  VENDOR_CONFIRMED: 'info',
-  PARTIALLY_RECEIVED: 'warning',
-  CLOSED: 'success',
-  CANCELLED: 'error',
-};
-
-const STATUS_VALUES = Object.keys(STATUS_CHIP_COLOR);
 
 // --- Stat card config (display-only) ---
 
@@ -238,21 +227,6 @@ function comparePOs(a: PurchaseOrder, b: PurchaseOrder, sort: SortState): number
   if (av < bv) return -1 * dir;
   if (av > bv) return 1 * dir;
   return 0;
-}
-
-// --- Helpers ---
-
-// Display labels that don't follow the generic Title_Case rule (e.g. GP_REGISTERED -> "GP-Registered").
-const STATUS_LABELS: Record<string, string> = {
-  GP_REGISTERED: 'GP-Registered',
-};
-
-function formatStatus(status: string): string {
-  if (STATUS_LABELS[status]) return STATUS_LABELS[status];
-  return status
-    .split('_')
-    .map((w) => w.charAt(0) + w.slice(1).toLowerCase())
-    .join(' ');
 }
 
 // --- Line items mini-table (rendered inside an expanded row) ---
@@ -373,8 +347,8 @@ function FilterRow({ filterState, onChange }: FilterRowProps) {
                 {(selected as string[]).map((s) => (
                   <Chip
                     key={s}
-                    label={formatStatus(s)}
-                    color={STATUS_CHIP_COLOR[s] ?? 'default'}
+                    label={formatPoStatus(s)}
+                    color={poStatusChipColor(s)}
                     size="small"
                   />
                 ))}
@@ -383,10 +357,10 @@ function FilterRow({ filterState, onChange }: FilterRowProps) {
           }}
           fullWidth
         >
-          {STATUS_VALUES.map((s) => (
+          {PO_STATUS_VALUES.map((s) => (
             <MenuItem key={s} value={s}>
               <Checkbox checked={filterState.statuses.has(s)} size="small" />
-              <ListItemText primary={formatStatus(s)} />
+              <ListItemText primary={formatPoStatus(s)} />
             </MenuItem>
           ))}
         </Select>
@@ -485,8 +459,8 @@ function POTableRow({ po, expanded, onToggle, onOpen, onRegister, relayConnected
         <TableCell sx={dataCellSx} onClick={onOpen}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap' }}>
             <Chip
-              label={formatStatus(po.status)}
-              color={STATUS_CHIP_COLOR[po.status] ?? 'default'}
+              label={formatPoStatus(po.status)}
+              color={poStatusChipColor(po.status)}
               size="small"
             />
             {po.status === 'DRAFT' && (
