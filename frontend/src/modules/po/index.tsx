@@ -23,6 +23,7 @@ import {
   MenuItem,
   Checkbox,
   ListItemText,
+  Tooltip,
 } from '@mui/material';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import AddIcon from '@mui/icons-material/Add';
@@ -35,7 +36,10 @@ import { GET_PURCHASE_ORDERS, GET_PO_STATISTICS } from '../../graphql/queries';
 import ProjectLandingPage from '../../components/ProjectLandingPage';
 import type { Project } from '../../types/project';
 import PODetailModal from './PODetailModal';
-import CreatePODialog from './CreatePODialog';
+import GpPurchaseOrderDialog from './GpPurchaseOrderDialog';
+import RelayStatusChip from '../../relay/RelayStatusChip';
+import { useRelayStatus } from '../../relay/useRelayStatus';
+import { PO_STATUS_VALUES, formatPoStatus, poStatusChipColor } from './poStatus';
 
 // --- Types ---
 
@@ -97,7 +101,6 @@ export interface PurchaseOrder {
   requestNumber: string;
   projectId: string | null;
   status: string;
-  gpSyncStatus: string;
   vendor: VendorRef | null;
   vendorQuoteNumber: string | null;
   notes: string | null;
@@ -113,32 +116,20 @@ export interface PurchaseOrder {
 interface POStatistics {
   total: number;
   draft: number;
-  ordered: number;
+  gpRegistered: number;
   vendorConfirmed: number;
   partiallyReceived: number;
   closed: number;
   cancelled: number;
 }
 
-// --- Status config ---
-
-const STATUS_CHIP_COLOR: Record<string, 'default' | 'primary' | 'info' | 'warning' | 'success' | 'error'> = {
-  DRAFT: 'default',
-  ORDERED: 'primary',
-  VENDOR_CONFIRMED: 'info',
-  PARTIALLY_RECEIVED: 'warning',
-  CLOSED: 'success',
-  CANCELLED: 'error',
-};
-
-const STATUS_VALUES = Object.keys(STATUS_CHIP_COLOR);
 
 // --- Stat card config (display-only) ---
 
 const STAT_CARDS: { label: string; key: keyof POStatistics }[] = [
   { label: 'Total', key: 'total' },
   { label: 'Draft', key: 'draft' },
-  { label: 'Ordered', key: 'ordered' },
+  { label: 'GP-Registered', key: 'gpRegistered' },
   { label: 'Vendor Confirmed', key: 'vendorConfirmed' },
   { label: 'Partially Received', key: 'partiallyReceived' },
   { label: 'Closed', key: 'closed' },
@@ -236,15 +227,6 @@ function comparePOs(a: PurchaseOrder, b: PurchaseOrder, sort: SortState): number
   if (av < bv) return -1 * dir;
   if (av > bv) return 1 * dir;
   return 0;
-}
-
-// --- Helpers ---
-
-function formatStatus(status: string): string {
-  return status
-    .split('_')
-    .map((w) => w.charAt(0) + w.slice(1).toLowerCase())
-    .join(' ');
 }
 
 // --- Line items mini-table (rendered inside an expanded row) ---
@@ -365,8 +347,8 @@ function FilterRow({ filterState, onChange }: FilterRowProps) {
                 {(selected as string[]).map((s) => (
                   <Chip
                     key={s}
-                    label={formatStatus(s)}
-                    color={STATUS_CHIP_COLOR[s] ?? 'default'}
+                    label={formatPoStatus(s)}
+                    color={poStatusChipColor(s)}
                     size="small"
                   />
                 ))}
@@ -375,10 +357,10 @@ function FilterRow({ filterState, onChange }: FilterRowProps) {
           }}
           fullWidth
         >
-          {STATUS_VALUES.map((s) => (
+          {PO_STATUS_VALUES.map((s) => (
             <MenuItem key={s} value={s}>
               <Checkbox checked={filterState.statuses.has(s)} size="small" />
-              <ListItemText primary={formatStatus(s)} />
+              <ListItemText primary={formatPoStatus(s)} />
             </MenuItem>
           ))}
         </Select>
@@ -436,9 +418,11 @@ interface POTableRowProps {
   expanded: boolean;
   onToggle: () => void;
   onOpen: () => void;
+  onRegister: () => void;
+  relayConnected: boolean;
 }
 
-function POTableRow({ po, expanded, onToggle, onOpen }: POTableRowProps) {
+function POTableRow({ po, expanded, onToggle, onOpen, onRegister, relayConnected }: POTableRowProps) {
   const dataCellSx = { cursor: 'pointer' };
   return (
     <>
@@ -475,15 +459,30 @@ function POTableRow({ po, expanded, onToggle, onOpen }: POTableRowProps) {
         <TableCell sx={dataCellSx} onClick={onOpen}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap' }}>
             <Chip
-              label={formatStatus(po.status)}
-              color={STATUS_CHIP_COLOR[po.status] ?? 'default'}
+              label={formatPoStatus(po.status)}
+              color={poStatusChipColor(po.status)}
               size="small"
             />
-            {po.gpSyncStatus === 'SYNCED' && (
-              <Chip label="GP" color="success" size="small" variant="outlined" sx={{ height: 20, fontSize: '0.7rem' }} />
-            )}
-            {po.gpSyncStatus === 'FAILED' && (
-              <Chip label="GP failed" color="error" size="small" variant="outlined" sx={{ height: 20, fontSize: '0.7rem' }} />
+            {po.status === 'DRAFT' && (
+              <Tooltip
+                title={relayConnected ? '' : 'GP relay not detected on this machine - it must be running to register a PO'}
+                arrow
+              >
+                <span>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    disabled={!relayConnected}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onRegister();
+                    }}
+                    sx={{ py: 0, minHeight: 24, fontSize: '0.7rem' }}
+                  >
+                    Register in GP
+                  </Button>
+                </span>
+              </Tooltip>
             )}
           </Box>
         </TableCell>
@@ -526,9 +525,15 @@ export default function POModule() {
   const [selectedPOId, setSelectedPOId] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  const [registerPO, setRegisterPO] = useState<PurchaseOrder | null>(null);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [filterState, setFilterState] = useState<FilterState>(EMPTY_FILTER_STATE);
   const [sortState, setSortState] = useState<SortState>({ field: null, direction: 'asc' });
+
+  // Relay presence is probed as the page loads (not when a dialog opens), so the user knows up front
+  // whether GP actions work. Create PO is a GP-first flow, so it can't run when the relay is down.
+  const { health: relayHealth } = useRelayStatus();
+  const relayConnected = relayHealth?.ok === true;
 
   const toggleExpand = (id: string) => {
     setExpandedIds((prev) => {
@@ -648,14 +653,23 @@ export default function POModule() {
         <Typography variant="h5" sx={{ flex: 1 }}>
           Purchase Orders — {projectLabel}
         </Typography>
-        <Button
-          variant="contained"
-          size="small"
-          startIcon={<AddIcon />}
-          onClick={() => setCreateOpen(true)}
+        <RelayStatusChip health={relayHealth} />
+        <Tooltip
+          title={relayConnected ? '' : 'GP relay not detected on this machine - it must be running to create a PO'}
+          arrow
         >
-          Create PO
-        </Button>
+          <span>
+            <Button
+              variant="contained"
+              size="small"
+              startIcon={<AddIcon />}
+              onClick={() => setCreateOpen(true)}
+              disabled={!relayConnected}
+            >
+              Create PO
+            </Button>
+          </span>
+        </Tooltip>
       </Box>
 
       {/* Statistics Cards (display-only) */}
@@ -766,6 +780,8 @@ export default function POModule() {
                   expanded={expandedIds.has(po.id)}
                   onToggle={() => toggleExpand(po.id)}
                   onOpen={() => handleOpenPO(po.id)}
+                  onRegister={() => setRegisterPO(po)}
+                  relayConnected={relayConnected}
                 />
               ))}
           </TableBody>
@@ -779,18 +795,32 @@ export default function POModule() {
           po={selectedPO}
           onClose={handleCloseModal}
           onRefetch={handleRefetch}
+          relayHealth={relayHealth}
         />
       )}
 
-      {/* Create PO Dialog */}
-      <CreatePODialog
+      {/* Create PO Dialog (creates a brand-new PO directly in GP) */}
+      <GpPurchaseOrderDialog
         open={createOpen}
         onClose={() => setCreateOpen(false)}
-        onCreated={() => {
+        onSubmitted={() => {
           setCreateOpen(false);
           handleRefetch();
         }}
         defaultProjectId={projectId}
+        relayHealth={relayHealth}
+      />
+
+      {/* Register PO Dialog (registers an imported Draft into GP) */}
+      <GpPurchaseOrderDialog
+        open={!!registerPO}
+        registerPo={registerPO}
+        onClose={() => setRegisterPO(null)}
+        onSubmitted={() => {
+          setRegisterPO(null);
+          handleRefetch();
+        }}
+        relayHealth={relayHealth}
       />
     </Box>
   );

@@ -18,6 +18,7 @@ import { useQuery } from '@apollo/client/react';
 import type { GridColDef, GridRowParams } from '@mui/x-data-grid';
 import DataTable from '../../components/DataTable';
 import ReceiveModal from './ReceiveModal';
+import { formatPoStatus, poStatusChipColor } from '../po/poStatus';
 import {
   GET_OPEN_POS,
   GET_PROJECTS,
@@ -152,10 +153,15 @@ export default function ReceivingPage() {
         flex: 0.7,
         renderCell: (params) => {
           const status = params.value as string;
-          const color =
-            status === 'PARTIALLY_RECEIVED' ? 'warning' : 'info';
-          const label = status === 'PARTIALLY_RECEIVED' ? 'Partial' : status === 'VENDOR_CONFIRMED' ? 'Confirmed' : 'Ordered';
-          return <Chip label={label} color={color} size="small" />;
+          // Short labels for the two common receiving states; the shared formatter handles the rest so a
+          // status that isn't one of these (e.g. CLOSED) isn't silently mislabeled as "GP-Registered".
+          const label =
+            status === 'PARTIALLY_RECEIVED'
+              ? 'Partial'
+              : status === 'VENDOR_CONFIRMED'
+                ? 'Confirmed'
+                : formatPoStatus(status);
+          return <Chip label={label} color={poStatusChipColor(status)} size="small" />;
         },
       },
     ],

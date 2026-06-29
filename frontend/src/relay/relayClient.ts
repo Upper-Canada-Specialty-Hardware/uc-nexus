@@ -30,6 +30,12 @@ export interface RelayVendor {
   status: number;
 }
 
+export interface RelayCostCode {
+  cost_code: string; // two-segment number 'cc1-cc2' e.g. '310-000'
+  description: string | null; // GP Cost_Code_Description
+  cost_element: number; // GP Cost_Element (varies by code); the /po cost_code trailing digit
+}
+
 export interface RelayHealth {
   ok: boolean;
   version?: string;
@@ -53,6 +59,16 @@ async function getSecret(): Promise<string> {
   if (!secret) throw new RelayError('no relay credential available for this user', 'no_credential');
   cachedSecret = secret;
   return secret;
+}
+
+// Best-effort warm of the credential cache so the first authed relay call doesn't pay for the
+// relayCredential round-trip. Safe to call when the relay is up; errors are swallowed.
+export async function prefetchRelaySecret(): Promise<void> {
+  try {
+    await getSecret();
+  } catch {
+    // no credential / network error - the next authed call will surface it for real
+  }
 }
 
 function extractError(body: unknown, status: number): RelayError {
@@ -112,6 +128,16 @@ export async function getRelayBuyers(company: string): Promise<string[]> {
   return (body as { buyers: string[] }).buyers;
 }
 
+// Active per-job cost codes from GP (JC00701). `job` is the GP job number (UC Nexus project_id).
+export async function getRelayCostCodes(company: string, job: string): Promise<RelayCostCode[]> {
+  const r = await relayFetch(
+    `/cost-codes?company=${encodeURIComponent(company)}&job=${encodeURIComponent(job)}`,
+  );
+  const body = await r.json();
+  if (!r.ok) throw extractError(body, r.status);
+  return (body as { cost_codes: RelayCostCode[] }).cost_codes;
+}
+
 export interface RelayPoLine {
   item_number: string;
   item_description: string;
@@ -148,6 +174,46 @@ export async function postRelayPo(req: RelayPoRequest): Promise<RelayPoResponse>
   const body = await r.json();
   if (!r.ok) throw extractError(body, r.status);
   return body as RelayPoResponse;
+}
+
+export interface RelayReceiptLine {
+  po_line_ord: number; // GP POP10110.ORD of the PO line being received (16384, 32768, ...)
+  quantity: number;
+  rack_location: string; // where the goods were physically shelved (aisle-bay-bin); required non-empty
+  revision_number?: string | null;
+  comments?: string | null;
+}
+
+export interface RelayReceiptRequest {
+  company: string;
+  po_number: string;
+  lines: RelayReceiptLine[];
+  batch_prefix?: string;
+  receipt_date?: string; // yyyy-mm-dd; defaults to today on the relay
+  received_by?: string | null;
+}
+
+export interface RelayReceiptResponse {
+  receipt_number: string;
+  batch_number: string;
+  po_number: string;
+  company: string;
+  lines_received: number;
+  custom_db_written: boolean;
+}
+
+// Post a GP receipt against a PO. The relay enforces remaining quantity and surfaces
+// qty_exceeds_remaining / line_not_receivable / po_line_not_found / po_not_found, which extractError
+// maps to RelayError.code + a human-readable message.
+export async function postRelayReceipt(req: RelayReceiptRequest): Promise<RelayReceiptResponse> {
+  const r = await relayFetch('/receipt', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+  const body = await r.json();
+  if (!r.ok) throw extractError(body, r.status);
+  return body as RelayReceiptResponse;
 }
 
 export async function getLoopbackPermissionState(): Promise<LoopbackPermission> {

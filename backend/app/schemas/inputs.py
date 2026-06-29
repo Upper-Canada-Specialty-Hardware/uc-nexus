@@ -179,6 +179,37 @@ class CreatePOInput:
     # GP cost code for a project-linked PO (the issue #121 dropdown, 'phase-step-element').
     # Applied to every job-cost line when the PO is pushed to GP via the relay.
     cost_code: str | None = None
+    # GP's returned PONUMBER + the company it lives in. The frontend pushes the PO to the relay FIRST
+    # and passes these on success, so the PO is created already GP-registered in one commit (no
+    # numberless DRAFT window). Omitted for a plain draft.
+    po_number: str | None = None
+    gp_company: str | None = None
+
+
+@strawberry.input
+class RegisterPOLineItemInput:
+    # The existing draft line this row maps to, or null for a line the user added in the register dialog.
+    id: strawberry.ID | None = None
+    hardware_category: str
+    product_code: str
+    ordered_quantity: int
+    unit_cost: float
+    classification: Classification | None = None
+    order_as: str | None = None
+
+
+@strawberry.input
+class RegisterPOInput:
+    """Register an imported DRAFT PO into GP (issue #175). Sent by the resolver only after the relay /po
+    push succeeded. line_items is the (possibly edited) set the user pushed, in the SAME order sent to the
+    relay - the backend assigns gp_line_ord positionally from it."""
+
+    po_id: strawberry.ID
+    vendor_id: strawberry.ID
+    po_number: str
+    gp_company: str
+    line_items: list[RegisterPOLineItemInput]
+    cost_code: str | None = None
 
 
 @strawberry.input

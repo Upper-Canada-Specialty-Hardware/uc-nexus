@@ -24,9 +24,6 @@ from app.models.enums import (
     DestockSource as DestockSourceDB,
 )
 from app.models.enums import (
-    GpSyncStatus as GpSyncStatusDB,
-)
-from app.models.enums import (
     HardwareItemState as HardwareItemStateDB,
 )
 from app.models.enums import (
@@ -76,7 +73,6 @@ AssemblyStatus = strawberry.enum(AssemblyStatusDB)
 NotificationType = strawberry.enum(NotificationTypeDB)
 PODocumentType = strawberry.enum(PODocumentTypeDB)
 DestockSource = strawberry.enum(DestockSourceDB)
-GpSyncStatus = strawberry.enum(GpSyncStatusDB)
 DeficiencyResolution = strawberry.enum(DeficiencyResolutionDB)
 DeficientItemSource = strawberry.enum(DeficientItemSourceDB)
 ReturnDisposition = strawberry.enum(ReturnDispositionDB)

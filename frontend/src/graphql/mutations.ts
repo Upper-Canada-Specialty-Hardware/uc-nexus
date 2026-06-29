@@ -52,55 +52,6 @@ export const UPDATE_PO = gql`
   }
 `;
 
-export const MARK_PO_AS_ORDERED = gql`
-  mutation MarkPOAsOrdered($id: ID!) {
-    markPoAsOrdered(id: $id) {
-      id
-      poNumber
-      requestNumber
-      status
-      orderedAt
-      updatedAt
-      vendor {
-        id
-        name
-        contactName
-      }
-      vendorQuoteNumber
-      notes
-      lineItems {
-        id
-        hardwareCategory
-        productCode
-        classification
-        orderedQuantity
-        receivedQuantity
-        unitCost
-        orderAs
-      }
-      receiveRecords {
-        id
-        receivedAt
-        receivedBy
-        lineItems {
-          id
-          quantityReceived
-        }
-      }
-      documents {
-        id
-        poId
-        fileName
-        contentType
-        fileSize
-        documentType
-        uploadedAt
-        downloadUrl
-      }
-    }
-  }
-`;
-
 export const CANCEL_PO = gql`
   mutation CancelPO($id: ID!) {
     cancelPo(id: $id) {
@@ -439,13 +390,21 @@ export const CREATE_SHIPMENT_RETURN = gql`
   }
 `;
 
-export const RECORD_PO_GP_SYNC = gql`
-  mutation RecordPoGpSync($poId: ID!, $gpSyncStatus: GpSyncStatus!, $poNumber: String) {
-    recordPoGpSync(poId: $poId, gpSyncStatus: $gpSyncStatus, poNumber: $poNumber) {
+// Register an imported Draft PO into GP (issue #175). Called only after the relay /po push succeeds:
+// stamps GP's PO number + company, maps the chosen GP vendor + cost code, replaces the line items with
+// the pushed set, and advances Draft -> GP-Registered.
+export const REGISTER_PO_IN_GP = gql`
+  mutation RegisterPoInGp($input: RegisterPOInput!) {
+    registerPoInGp(input: $input) {
       id
       poNumber
       status
-      gpSyncStatus
+      gpCompany
+      costCode
+      vendor {
+        id
+        name
+      }
     }
   }
 `;
@@ -458,6 +417,7 @@ export const CREATE_PO = gql`
       requestNumber
       projectId
       status
+      gpCompany
       vendor {
         id
         name
