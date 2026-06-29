@@ -49,12 +49,24 @@ def test_create_po_stores_cost_code(db_session):
     assert po.cost_code == "210-200-2"
 
 
-def test_record_gp_sync_result_sets_status_and_po_number(db_session):
+def test_create_po_with_gp_fields_lands_gp_registered(db_session):
+    # A GP-first create stamps GP's number + company and advances to GP_REGISTERED in one commit,
+    # so there is no numberless DRAFT window (the old create + record_po_gp_sync two-call shape).
     v = _make_vendor(db_session, f"Acme-{uuid.uuid4().hex[:6]}")
-    po = po_repository.create_po(db_session, line_items=[_line_item()], vendor_id=v.id)
-    po_repository.record_gp_sync_result(db_session, po.id, po_number="PO123456", gp_company="TUBC")
+    po = po_repository.create_po(
+        db_session, line_items=[_line_item()], vendor_id=v.id, po_number="  PO123456 ", gp_company="TUBC"
+    )
     db_session.refresh(po)
     assert po.po_number == "PO123456"
     assert po.gp_company == "TUBC"
-    assert po.status == POStatus.GP_REGISTERED  # a GP push advances a DRAFT to GP_REGISTERED (it's a real GP PO now)
+    assert po.status == POStatus.GP_REGISTERED
     assert po.ordered_at is not None
+
+
+def test_create_po_without_gp_fields_stays_draft(db_session):
+    v = _make_vendor(db_session, f"Acme-{uuid.uuid4().hex[:6]}")
+    po = po_repository.create_po(db_session, line_items=[_line_item()], vendor_id=v.id)
+    db_session.refresh(po)
+    assert po.po_number is None
+    assert po.gp_company is None
+    assert po.status == POStatus.DRAFT

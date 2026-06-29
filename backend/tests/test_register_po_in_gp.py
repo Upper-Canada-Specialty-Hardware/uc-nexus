@@ -257,6 +257,83 @@ def test_register_rejects_non_draft(db_session):
         )
 
 
+def test_register_rejects_non_gp_vendor(db_session):
+    # mapping a registered PO to a vendor with no GP link breaks the "GP-registered PO maps to a GP
+    # vendor" invariant - reject it server-side, not just in the dialog's vendor list.
+    project = _make_project(db_session)
+    imported_vendor = _make_vendor(db_session, "Imported")  # gp_vendor_id is None
+    po = _import_draft_po(db_session, project, imported_vendor)
+    lines = list(po.line_items)
+
+    with pytest.raises(ValidationError):
+        po_repository.register_po_in_gp(
+            db_session,
+            po.id,
+            vendor_id=imported_vendor.id,
+            po_number="PO0000200",
+            gp_company="TUBC",
+            line_items=[
+                {
+                    "id": str(lines[0].id),
+                    "hardware_category": "HINGE",
+                    "product_code": "HG-100",
+                    "ordered_quantity": 1,
+                    "unit_cost": 10.0,
+                    "classification": None,
+                    "order_as": "ALIAS-100",
+                }
+            ],
+        )
+
+
+def test_register_rejects_duplicate_po_number_in_project(db_session):
+    # a reused GP number must surface as a clean ValidationError before commit, not a raw
+    # IntegrityError that aborts the txn and orphans the GP PO the relay already created.
+    project = _make_project(db_session)
+    gp_vendor = _make_vendor(db_session, "GP Vendor", gp_vendor_id="GPV1")
+    line = {
+        "hardware_category": "HINGE",
+        "product_code": "HG-1",
+        "ordered_quantity": 1,
+        "unit_cost": 1.0,
+        "classification": None,
+        "order_as": "X",
+    }
+    # an existing GP-registered PO in this project already owns the number
+    po_repository.create_po(
+        db_session,
+        line_items=[line],
+        project_id=project.id,
+        vendor_id=gp_vendor.id,
+        po_number="PO-DUP-1",
+        gp_company="TUBC",
+    )
+    # a second draft in the same project can't be registered under the same number
+    draft = po_repository.create_po(db_session, line_items=[line], project_id=project.id, vendor_id=gp_vendor.id)
+    assert draft.status == POStatus.DRAFT
+    draft_line = draft.line_items[0]
+
+    with pytest.raises(ValidationError):
+        po_repository.register_po_in_gp(
+            db_session,
+            draft.id,
+            vendor_id=gp_vendor.id,
+            po_number="PO-DUP-1",
+            gp_company="TUBC",
+            line_items=[
+                {
+                    "id": str(draft_line.id),
+                    "hardware_category": "HINGE",
+                    "product_code": "HG-1",
+                    "ordered_quantity": 1,
+                    "unit_cost": 1.0,
+                    "classification": None,
+                    "order_as": "X",
+                }
+            ],
+        )
+
+
 def test_register_requires_order_as(db_session):
     project = _make_project(db_session)
     imported_vendor = _make_vendor(db_session, "Imported")
