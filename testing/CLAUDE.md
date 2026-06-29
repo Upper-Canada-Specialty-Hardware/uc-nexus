@@ -10,7 +10,7 @@ This is a tester's knowledge journal for UC Nexus. It documents how the app work
 
 Two runtimes. **Local is the default** for simulated user testing (no deploy wait); Railway is the fallback.
 
-- **Local (default)**: frontend `http://localhost:5173`, backend `http://localhost:8000`. Bring it up with `.\localdev\start-all.ps1` - see `localdev/README.md` for one-time setup.
+- **Local (default)**: frontend `http://localhost:5173`, backend `http://localhost:8000`. Run the backend with `poetry run uvicorn main:app --reload` (from `backend/`) and the frontend with `npm run dev` (from `frontend/`).
 - **Railway (fallback)**: frontend `https://frontend-production-34fc.up.railway.app/`, backend `https://backend-production-7866.up.railway.app/`.
 - **Auth**: Clerk sign-in, automated via one-time sign-in tokens (no manual password/verification needed).
   - Backend endpoint `GET /testing/clerk-sign-in` generates the token (requires `TESTING_ENABLED=true`).
