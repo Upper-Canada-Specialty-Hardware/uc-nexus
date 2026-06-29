@@ -72,7 +72,7 @@ def create_po(
     session.add(po)
     session.flush()
 
-    for li_data in line_items:
+    for idx, li_data in enumerate(line_items, start=1):
         classification_val = li_data.get("classification")
         if isinstance(classification_val, str):
             classification_val = Classification(classification_val)
@@ -91,6 +91,9 @@ def create_po(
             unit_cost=Decimal(str(li_data["unit_cost"])) if li_data.get("unit_cost") else Decimal("0"),
             classification=classification_val,
             order_as=order_as_raw.strip(),
+            # GP assigns ORD = line index * 16384 (1-based) in this same order when the PO is pushed
+            # via the relay, so record the mapping now - it's what a relay /receipt targets per line.
+            gp_line_ord=idx * 16384,
         )
         session.add(poli)
 
@@ -103,16 +106,20 @@ def record_gp_sync_result(
     po_id: uuid.UUID,
     gp_sync_status: GpSyncStatus,
     po_number: str | None = None,
+    gp_company: str | None = None,
 ) -> PurchaseOrder:
-    """Record the outcome of a relay GP push: GP's returned PONUMBER (on success) and the sync status.
-    On SYNCED the PO is now a real GP purchase order, so a DRAFT advances to ORDERED (mirroring
-    mark_po_as_ordered's preconditions: po_number + vendor present)."""
+    """Record the outcome of a relay GP push: GP's returned PONUMBER, the GP company it lives in (so a
+    later relay /receipt can target it), and the sync status. On SYNCED the PO is now a real GP purchase
+    order, so a DRAFT advances to ORDERED (mirroring mark_po_as_ordered's preconditions: po_number +
+    vendor present)."""
     po = session.get(PurchaseOrder, po_id)
     if po is None:
         raise NotFoundError(f"Purchase order {po_id} not found")
     po.gp_sync_status = gp_sync_status
     if po_number is not None:
         po.po_number = po_number.strip() or None
+    if gp_company is not None:
+        po.gp_company = gp_company.strip() or None
     if gp_sync_status == GpSyncStatus.SYNCED and po.status == POStatus.DRAFT and po.po_number and po.vendor_id:
         po.status = POStatus.ORDERED
         po.ordered_at = datetime.utcnow()

@@ -283,6 +283,8 @@ export const GET_PO_RECEIVING_DETAILS = gql`
       id
       poNumber
       requestNumber
+      gpCompany
+      gpSyncStatus
       vendor {
         id
         name
@@ -300,6 +302,7 @@ export const GET_PO_RECEIVING_DETAILS = gql`
         receivedQuantity
         unitCost
         orderAs
+        gpLineOrd
       }
       receiveRecords {
         id

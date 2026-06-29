@@ -249,7 +249,9 @@ export default function CreatePODialog({ open, onClose, onCreated, defaultProjec
       // GP succeeded - now record it in UC Nexus and mark it SYNCED with GP's PO number.
       const created = await createPO({ variables: { input: ucInput } });
       const poId = (created.data as { createPo: { id: string } }).createPo.id;
-      await recordPoGpSync({ variables: { poId, gpSyncStatus: 'SYNCED', poNumber: gpPoNumber } });
+      await recordPoGpSync({
+        variables: { poId, gpSyncStatus: 'SYNCED', poNumber: gpPoNumber, gpCompany: company },
+      });
       showToast(`PO ${gpPoNumber} created in GP and UC Nexus`, 'success');
       onCreated();
       handleReset();
