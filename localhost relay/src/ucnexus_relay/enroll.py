@@ -20,6 +20,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from . import dpapi
 from .config import DEFAULT_CONFIG_PATH, get_settings
 
 _MUTATION = (
@@ -36,8 +37,10 @@ def _post_graphql(url: str, query: str, variables: dict) -> dict:
 
 
 def write_secret_to_config(config_path: Path, secret: str) -> None:
-    """Replace the [auth] shared_secret value in config.toml, preserving the rest of the file.
-    token_urlsafe secrets contain only URL-safe chars, so there's nothing to escape in the TOML string."""
+    """Replace the [auth] shared_secret value in config.toml, preserving the rest of the file. The
+    `secret` written here is the storage form: either a token_urlsafe plaintext (dev) or a DPAPI
+    `enc:dpapi:<base64>` blob. Both contain only TOML-safe chars (URL-safe + standard base64), so there's
+    nothing to escape inside the double-quoted string."""
     text = config_path.read_text(encoding="utf-8")
     pattern = re.compile(r'^(\s*shared_secret\s*=\s*)".*?"', re.MULTILINE)
     if not pattern.search(text):
@@ -50,6 +53,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--token", required=True, help="one-time enrollment token from UC Nexus")
     parser.add_argument("--backend-url", required=True, help="UC Nexus backend GraphQL URL, e.g. https://host/graphql")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="path to config.toml")
+    parser.add_argument(
+        "--no-encrypt",
+        action="store_true",
+        help="store the secret as plaintext (dev only); the default DPAPI-encrypts it at rest",
+    )
     args = parser.parse_args(argv)
 
     config_path = Path(args.config)
@@ -72,10 +80,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"enrollment did not succeed: {json.dumps(result)}", file=sys.stderr)
         return 1
 
-    write_secret_to_config(config_path, secret)
+    # the backend stores the PLAINTEXT secret (it's what the frontend will present as the Bearer token);
+    # locally we persist the DPAPI-encrypted form so config.toml holds no plaintext at rest.
+    stored = secret if args.no_encrypt else dpapi.protect(secret)
+    write_secret_to_config(config_path, stored)
+    how = "plaintext" if args.no_encrypt else "DPAPI-encrypted (CurrentUser)"
     print(
         f"enrolled install {data.get('installId')} as host {hostname} (company {company}); "
-        f"secret written to {config_path}. restart the relay."
+        f"secret written {how} to {config_path}. restart the relay."
     )
     return 0
 

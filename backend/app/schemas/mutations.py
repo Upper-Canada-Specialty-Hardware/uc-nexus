@@ -20,7 +20,7 @@ from app.repositories import (
     warehouse_repository,
 )
 
-from .enums import ApproveOutcome, GpSyncStatus, PODocumentType
+from .enums import ApproveOutcome, PODocumentType
 from .inputs import (
     AdjustStockQuantityInput,
     AllocateStockToProjectInput,
@@ -40,6 +40,7 @@ from .inputs import (
     MoveStockLocationInput,
     OverrideInventoryQuantityInput,
     ReclassifyStockItemInput,
+    RegisterPOInput,
     ReportDeficiencyAtAssemblyInput,
     ReportInventoryDeficiencyInput,
     ReportStockDeficiencyInput,
@@ -388,6 +389,8 @@ class Mutation:
                 vendor_id=vendor_id,
                 notes=input.notes,
                 cost_code=input.cost_code,
+                po_number=input.po_number,
+                gp_company=input.gp_company,
             )
             session.commit()
 
@@ -408,21 +411,40 @@ class Mutation:
             return _po_to_type(refreshed_po)
 
     @strawberry.mutation
-    def record_po_gp_sync(
-        self,
-        po_id: strawberry.ID,
-        gp_sync_status: GpSyncStatus,
-        po_number: str | None = None,
-    ) -> PurchaseOrder:
-        """Record the result of pushing this PO to GP via the relay (the create-in-both orchestration's
-        second step): store GP's returned PONUMBER on success and set gp_sync_status (SYNCED/FAILED)."""
+    def register_po_in_gp(self, input: RegisterPOInput) -> PurchaseOrder:
+        """Register an imported DRAFT PO into GP (issue #175, the import-acceptance path). The frontend
+        runs GP-first - it calls the relay /po itself and only invokes this on success - so this records
+        GP's PONUMBER + company, maps the PO to the chosen GP vendor + cost code, replaces the draft's
+        line items with the (possibly edited) set that was pushed (assigning gp_line_ord positionally),
+        and advances DRAFT -> GP_REGISTERED. The end state is identical to a manually created PO."""
         from sqlalchemy.orm import selectinload
 
         from app.models.purchase_order import PurchaseOrder as POModel
 
-        pid = uuid.UUID(str(po_id))
+        pid = uuid.UUID(str(input.po_id))
+        vid = uuid.UUID(str(input.vendor_id))
+        line_items_data = [
+            {
+                "id": str(li.id) if li.id else None,
+                "hardware_category": li.hardware_category,
+                "product_code": li.product_code,
+                "ordered_quantity": li.ordered_quantity,
+                "unit_cost": li.unit_cost,
+                "classification": li.classification.value if li.classification else None,
+                "order_as": li.order_as,
+            }
+            for li in input.line_items
+        ]
         with SessionLocal() as session:
-            po_repository.record_gp_sync_result(session, pid, gp_sync_status, po_number=po_number)
+            po_repository.register_po_in_gp(
+                session,
+                pid,
+                vendor_id=vid,
+                po_number=input.po_number,
+                gp_company=input.gp_company,
+                line_items=line_items_data,
+                cost_code=input.cost_code,
+            )
             session.commit()
             refreshed_po = (
                 session.scalars(

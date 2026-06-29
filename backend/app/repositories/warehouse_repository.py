@@ -164,7 +164,7 @@ def get_warehouse_dashboard(session: Session) -> dict:
             select(func.coalesce(func.sum(POLineItemModel.ordered_quantity - POLineItemModel.received_quantity), 0))
             .join(POModel, POLineItemModel.po_id == POModel.id)
             .where(
-                POModel.status.in_([POStatus.ORDERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED]),
+                POModel.status.in_([POStatus.GP_REGISTERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED]),
                 POModel.deleted_at.is_(None),
                 POLineItemModel.ordered_quantity > POLineItemModel.received_quantity,
             )
@@ -189,7 +189,7 @@ def get_expected_deliveries(session: Session, project_id: uuid.UUID | None = Non
         select(POModel)
         .options(selectinload(POModel.line_items), selectinload(POModel.vendor))
         .where(
-            POModel.status.in_([POStatus.ORDERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED]),
+            POModel.status.in_([POStatus.GP_REGISTERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED]),
             POModel.deleted_at.is_(None),
         )
         .order_by(POModel.expected_delivery_date.asc().nulls_last(), POModel.ordered_at.asc())
@@ -206,7 +206,7 @@ def get_back_ordered_items(session: Session, project_id: uuid.UUID | None = None
         .join(POModel, POLineItemModel.po_id == POModel.id)
         .outerjoin(VendorModel, POModel.vendor_id == VendorModel.id)
         .where(
-            POModel.status.in_([POStatus.ORDERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED]),
+            POModel.status.in_([POStatus.GP_REGISTERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED]),
             POModel.deleted_at.is_(None),
             POLineItemModel.ordered_quantity > POLineItemModel.received_quantity,
         )
@@ -228,7 +228,7 @@ def get_back_ordered_items(session: Session, project_id: uuid.UUID | None = None
 
 
 PLACED_PO_STATUSES = (
-    POStatus.ORDERED,
+    POStatus.GP_REGISTERED,
     POStatus.VENDOR_CONFIRMED,
     POStatus.PARTIALLY_RECEIVED,
     POStatus.CLOSED,
@@ -244,7 +244,7 @@ def get_project_progress_by_product(session: Session, project_id: uuid.UUID) -> 
     - ordered_quantity / received_quantity: sum of ordered/received on placed POs
       (status in PLACED_PO_STATUSES, deleted_at IS NULL)
     - back_ordered: sum of (ordered - received) on placed POs that are NOT yet CLOSED
-      (i.e. ORDERED, VENDOR_CONFIRMED, PARTIALLY_RECEIVED)
+      (i.e. GP_REGISTERED, VENDOR_CONFIRMED, PARTIALLY_RECEIVED)
     - shipped_out: sum of packing_slip_items.quantity for the project
     """
     required_subq = (
@@ -283,7 +283,9 @@ def get_project_progress_by_product(session: Session, project_id: uuid.UUID) -> 
             func.sum(
                 case(
                     (
-                        POModel.status.in_([POStatus.ORDERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED]),
+                        POModel.status.in_(
+                            [POStatus.GP_REGISTERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED]
+                        ),
                         POLineItemModel.ordered_quantity - POLineItemModel.received_quantity,
                     ),
                     else_=0,
@@ -1307,9 +1309,10 @@ def create_receive(
         warehouse_id = warehouse_admin_repository.get_primary_warehouse_id(session)
 
     # Validate PO status
-    if po.status not in (POStatus.ORDERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED):
+    if po.status not in (POStatus.GP_REGISTERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED):
         raise InvalidStateTransitionError(
-            f"PO status must be Ordered, Vendor_Confirmed, or Partially_Received to receive, got {po.status.value}"
+            f"PO status must be GP_Registered, Vendor_Confirmed, or Partially_Received to receive, "
+            f"got {po.status.value}"
         )
 
     # 2. Validate received_by

@@ -6,7 +6,7 @@ from sqlalchemy import CheckConstraint, Date, DateTime, Enum, ForeignKey, Index,
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from . import Base
-from .enums import Classification, GpSyncStatus, PODocumentType, POStatus
+from .enums import Classification, PODocumentType, POStatus
 from .vendor import Vendor
 
 
@@ -41,13 +41,9 @@ class PurchaseOrder(Base):
     # GP cost code chosen per-PO (the issue #121 dropdown, 'phase-step-element' e.g. '210-200-2'),
     # applied to every job-cost line when pushed to GP. Null for stock POs / not-yet-pushed.
     cost_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    # Whether this PO's job-cost PO has been created in GP via the relay (see GpSyncStatus).
-    gp_sync_status: Mapped[GpSyncStatus] = mapped_column(
-        Enum(GpSyncStatus, name="gp_sync_status", create_constraint=True),
-        nullable=False,
-        default=GpSyncStatus.NOT_PUSHED,
-        server_default=GpSyncStatus.NOT_PUSHED.value,
-    )
+    # GP company this PO was created in (TUBC/TUCSH for the POC). Recorded at GP registration with the
+    # returned po_number; a relay /receipt needs it to target the right company DB. Null until pushed.
+    gp_company: Mapped[str | None] = mapped_column(String(15), nullable=True)
     vendor_quote_number: Mapped[str | None] = mapped_column(String, nullable=True)
     expected_delivery_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     ordered_at: Mapped[datetime | None] = mapped_column(nullable=True)
@@ -81,6 +77,9 @@ class POLineItem(Base):
     received_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     unit_cost: Mapped[Decimal] = mapped_column(Numeric(10, 4), nullable=False)
     order_as: Mapped[str | None] = mapped_column(String, nullable=True)
+    # GP POP10110.ORD this line maps to (16384, 32768, ...). Assigned positionally at create time
+    # (the relay assigns ORD = line index * 16384); used to target the GP line on a relay /receipt.
+    gp_line_ord: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 

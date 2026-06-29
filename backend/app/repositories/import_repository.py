@@ -218,7 +218,7 @@ def reconcile_schedule(
 
             if po_status == POStatus.DRAFT:
                 buckets["PO_DRAFTED"] += hi_qty
-            elif po_status in (POStatus.ORDERED, POStatus.VENDOR_CONFIRMED):
+            elif po_status in (POStatus.GP_REGISTERED, POStatus.VENDOR_CONFIRMED):
                 buckets["ORDERED"] += hi_qty
             elif po_status == POStatus.PARTIALLY_RECEIVED:
                 if row.ordered_quantity > 0:

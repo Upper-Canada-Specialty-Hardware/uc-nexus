@@ -2,7 +2,7 @@
 
 import uuid
 
-from app.models.enums import GpSyncStatus, POStatus
+from app.models.enums import POStatus
 from app.models.vendor import Vendor
 from app.repositories import po_repository, vendor_repository
 
@@ -42,20 +42,31 @@ def test_sync_gp_vendors_reports_unmatched(db_session):
     assert len(result["unmatched_gp"]) == 1
 
 
-def test_create_po_stores_cost_code_and_defaults_not_pushed(db_session):
+def test_create_po_stores_cost_code(db_session):
     v = _make_vendor(db_session, f"Acme-{uuid.uuid4().hex[:6]}")
     po = po_repository.create_po(db_session, line_items=[_line_item()], vendor_id=v.id, cost_code="  210-200-2  ")
     db_session.refresh(po)
     assert po.cost_code == "210-200-2"
-    assert po.gp_sync_status == GpSyncStatus.NOT_PUSHED
 
 
-def test_record_gp_sync_result_sets_status_and_po_number(db_session):
+def test_create_po_with_gp_fields_lands_gp_registered(db_session):
+    # A GP-first create stamps GP's number + company and advances to GP_REGISTERED in one commit,
+    # so there is no numberless DRAFT window (the old create + record_po_gp_sync two-call shape).
+    v = _make_vendor(db_session, f"Acme-{uuid.uuid4().hex[:6]}")
+    po = po_repository.create_po(
+        db_session, line_items=[_line_item()], vendor_id=v.id, po_number="  PO123456 ", gp_company="TUBC"
+    )
+    db_session.refresh(po)
+    assert po.po_number == "PO123456"
+    assert po.gp_company == "TUBC"
+    assert po.status == POStatus.GP_REGISTERED
+    assert po.ordered_at is not None
+
+
+def test_create_po_without_gp_fields_stays_draft(db_session):
     v = _make_vendor(db_session, f"Acme-{uuid.uuid4().hex[:6]}")
     po = po_repository.create_po(db_session, line_items=[_line_item()], vendor_id=v.id)
-    po_repository.record_gp_sync_result(db_session, po.id, GpSyncStatus.SYNCED, po_number="PO123456")
     db_session.refresh(po)
-    assert po.gp_sync_status == GpSyncStatus.SYNCED
-    assert po.po_number == "PO123456"
-    assert po.status == POStatus.ORDERED  # SYNCED advances a DRAFT to ORDERED (it's a real GP PO now)
-    assert po.ordered_at is not None
+    assert po.po_number is None
+    assert po.gp_company is None
+    assert po.status == POStatus.DRAFT

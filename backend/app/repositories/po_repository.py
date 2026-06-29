@@ -5,11 +5,11 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import InvalidStateTransitionError, NotFoundError, ValidationError
-from app.models.enums import Classification, GpSyncStatus, PODocumentType, POStatus
+from app.models.enums import Classification, PODocumentType, POStatus
 from app.models.purchase_order import PODocument, POLineItem, PurchaseOrder
 from app.models.receiving import ReceiveRecord
 
@@ -29,6 +29,31 @@ def generate_next_request_number(session: Session) -> str:
     return f"PO-REQ-{next_seq:03d}"
 
 
+def _assert_po_number_available(
+    session: Session,
+    po_number: str,
+    *,
+    project_id: uuid.UUID | None,
+    exclude_po_id: uuid.UUID | None = None,
+) -> None:
+    """Raise a clean ValidationError if po_number is already used by another non-deleted PO in the
+    same scope (project-scoped, or global for project-less POs), matching the partial-unique indexes
+    ix_purchase_orders_(project|no_project)_po_number. Without this a collision surfaces as a raw
+    psycopg IntegrityError at commit instead of a field error."""
+    stmt = select(PurchaseOrder).where(
+        PurchaseOrder.po_number == po_number,
+        PurchaseOrder.deleted_at.is_(None),
+    )
+    if exclude_po_id is not None:
+        stmt = stmt.where(PurchaseOrder.id != exclude_po_id)
+    if project_id is not None:
+        stmt = stmt.where(PurchaseOrder.project_id == project_id)
+    else:
+        stmt = stmt.where(PurchaseOrder.project_id.is_(None))
+    if session.scalars(stmt).first() is not None:
+        raise ValidationError(f"PO number '{po_number}' already exists", field="po_number")
+
+
 def create_po(
     session: Session,
     line_items: list[dict],
@@ -36,8 +61,16 @@ def create_po(
     vendor_id: uuid.UUID | None = None,
     notes: str | None = None,
     cost_code: str | None = None,
+    po_number: str | None = None,
+    gp_company: str | None = None,
 ) -> PurchaseOrder:
-    """Create a manual PO with line items. No hardware items are created."""
+    """Create a manual PO with line items. No hardware items are created.
+
+    A manual PO is GP-first: the frontend pushes it to the GP relay and only calls this on success,
+    passing GP's returned po_number + gp_company. When those are present the PO is stamped and
+    advanced DRAFT -> GP_REGISTERED in this SAME commit, so there is no window where a created DRAFT
+    exists without its GP number (which would otherwise show "Register in GP" and let a retry create
+    a duplicate GP PO). Omitting them creates a plain DRAFT."""
     if not line_items:
         raise ValidationError("At least one line item is required", field="line_items")
 
@@ -72,7 +105,7 @@ def create_po(
     session.add(po)
     session.flush()
 
-    for li_data in line_items:
+    for idx, li_data in enumerate(line_items, start=1):
         classification_val = li_data.get("classification")
         if isinstance(classification_val, str):
             classification_val = Classification(classification_val)
@@ -91,31 +124,149 @@ def create_po(
             unit_cost=Decimal(str(li_data["unit_cost"])) if li_data.get("unit_cost") else Decimal("0"),
             classification=classification_val,
             order_as=order_as_raw.strip(),
+            # GP assigns ORD = line index * 16384 (1-based) in this same order when the PO is pushed
+            # via the relay, so record the mapping now - it's what a relay /receipt targets per line.
+            gp_line_ord=idx * 16384,
         )
         session.add(poli)
 
     session.flush()
+
+    # GP-first: when the relay returned a number, stamp it + the company and advance this DRAFT to
+    # GP_REGISTERED in the same commit, so a created PO is never left numberless and re-registerable.
+    if po_number is not None and po_number.strip():
+        cleaned_number = po_number.strip()
+        _assert_po_number_available(session, cleaned_number, project_id=project_id, exclude_po_id=po.id)
+        po.po_number = cleaned_number
+        po.gp_company = gp_company.strip() if gp_company and gp_company.strip() else None
+        if po.vendor_id is not None:
+            po.status = POStatus.GP_REGISTERED
+            po.ordered_at = datetime.utcnow()
+        session.flush()
+
     return po
 
 
-def record_gp_sync_result(
+def register_po_in_gp(
     session: Session,
     po_id: uuid.UUID,
-    gp_sync_status: GpSyncStatus,
-    po_number: str | None = None,
+    vendor_id: uuid.UUID,
+    po_number: str,
+    gp_company: str,
+    line_items: list[dict],
+    cost_code: str | None = None,
 ) -> PurchaseOrder:
-    """Record the outcome of a relay GP push: GP's returned PONUMBER (on success) and the sync status.
-    On SYNCED the PO is now a real GP purchase order, so a DRAFT advances to ORDERED (mirroring
-    mark_po_as_ordered's preconditions: po_number + vendor present)."""
-    po = session.get(PurchaseOrder, po_id)
+    """Register an imported DRAFT PO into GP (the import-acceptance path, issue #175).
+
+    The resolver calls this ONLY after the relay /po push already succeeded, so the PO is now a real GP
+    purchase order and the end state must be identical to a manually created one (path 2): map it to the
+    real GP vendor + cost code, replace the draft's line items with the (possibly edited) set the user
+    pushed - assigning gp_line_ord positionally in that SAME order so a later relay /receipt can target
+    each GP line - stamp GP's returned PONUMBER + company, and advance DRAFT -> GP_REGISTERED. All in one
+    commit. A GP failure never reaches here, so on failure the PO stays Draft and untouched.
+    """
+    from app.models.hardware import HardwareItem
+
+    po = get_purchase_order(session, po_id)
     if po is None:
         raise NotFoundError(f"Purchase order {po_id} not found")
-    po.gp_sync_status = gp_sync_status
-    if po_number is not None:
-        po.po_number = po_number.strip() or None
-    if gp_sync_status == GpSyncStatus.SYNCED and po.status == POStatus.DRAFT and po.po_number and po.vendor_id:
-        po.status = POStatus.ORDERED
-        po.ordered_at = datetime.utcnow()
+    if po.status != POStatus.DRAFT:
+        raise InvalidStateTransitionError(f"Only a Draft PO can be registered in GP; this one is {po.status.value}")
+    if not line_items:
+        raise ValidationError("At least one line item is required", field="line_items")
+
+    from app.models.vendor import Vendor as VendorModel
+
+    vendor = session.get(VendorModel, vendor_id)
+    if vendor is None:
+        raise NotFoundError(f"Vendor {vendor_id} not found")
+    # A GP-registered PO must map to a GP vendor - the relay /po was pushed with this vendor's GP id, so
+    # the end-state vendor has to be the GP-linked one, not the imported placeholder. The dialog only
+    # offers GP-linked vendors; enforce it here too so a direct mutation can't break the invariant.
+    if not vendor.gp_vendor_id:
+        raise ValidationError(
+            "Vendor is not linked to GP (run GP Vendor Sync) and cannot back a GP-registered PO",
+            field="vendor_id",
+        )
+
+    cleaned_po_number = po_number.strip() if po_number else ""
+    if not cleaned_po_number:
+        raise ValidationError("GP PO number is required to register a PO", field="po_number")
+    cleaned_company = gp_company.strip() if gp_company else ""
+    if not cleaned_company:
+        raise ValidationError("GP company is required to register a PO", field="gp_company")
+    # Surface a duplicate GP number as a clean field error rather than a raw IntegrityError at commit.
+    _assert_po_number_available(session, cleaned_po_number, project_id=po.project_id, exclude_po_id=po.id)
+
+    existing = {li.id: li for li in po.line_items}
+    seen_ids: set[uuid.UUID] = set()
+
+    # Reconcile the incoming lines against the draft's lines by id: update kept, create added. gp_line_ord
+    # is GP POP10110.ORD = line index * 16384, assigned in the order the lines were sent to the relay
+    # (== this payload order), which is what a relay /receipt targets per line.
+    for idx, li_data in enumerate(line_items, start=1):
+        order_as_raw = li_data.get("order_as")
+        if not order_as_raw or not order_as_raw.strip():
+            raise ValidationError("Order as is required for every line item", field="order_as")
+        qty = li_data.get("ordered_quantity")
+        if qty is None or qty < 1:
+            raise ValidationError("Ordered quantity must be at least 1", field="ordered_quantity")
+        unit_cost = li_data.get("unit_cost")
+        if unit_cost is None or unit_cost < 0:
+            raise ValidationError("Unit cost must be zero or greater", field="unit_cost")
+
+        classification_val = li_data.get("classification")
+        if isinstance(classification_val, str):
+            classification_val = Classification(classification_val)
+
+        raw_id = li_data.get("id")
+        if raw_id:
+            lid = uuid.UUID(str(raw_id))
+            poli = existing.get(lid)
+            if poli is None:
+                raise ValidationError(f"Line item {lid} does not belong to this PO", field="line_items")
+            seen_ids.add(lid)
+            poli.hardware_category = li_data["hardware_category"]
+            poli.product_code = li_data["product_code"]
+            poli.ordered_quantity = qty
+            poli.unit_cost = Decimal(str(unit_cost))
+            poli.classification = classification_val
+            poli.order_as = order_as_raw.strip()
+            poli.gp_line_ord = idx * 16384
+        else:
+            session.add(
+                POLineItem(
+                    id=uuid.uuid4(),
+                    po_id=po.id,
+                    hardware_category=li_data["hardware_category"],
+                    product_code=li_data["product_code"],
+                    ordered_quantity=qty,
+                    received_quantity=0,
+                    unit_cost=Decimal(str(unit_cost)),
+                    classification=classification_val,
+                    order_as=order_as_raw.strip(),
+                    gp_line_ord=idx * 16384,
+                )
+            )
+
+    # Remove lines the user dropped. A DRAFT PO has no receiving/inventory yet, so the only rows that can
+    # reference these lines are imported HardwareItem rows (FK is RESTRICT) - orphan them (po_line_item_id
+    # -> NULL) before deleting, which the user accepted as the cost of editing the imported line set.
+    removed = [poli for lid, poli in existing.items() if lid not in seen_ids]
+    if removed:
+        removed_ids = [poli.id for poli in removed]
+        session.execute(
+            update(HardwareItem).where(HardwareItem.po_line_item_id.in_(removed_ids)).values(po_line_item_id=None)
+        )
+        for poli in removed:
+            session.delete(poli)
+
+    po.vendor_id = vendor_id
+    po.cost_code = cost_code.strip() if cost_code and cost_code.strip() else None
+    po.po_number = cleaned_po_number
+    po.gp_company = cleaned_company
+    po.status = POStatus.GP_REGISTERED
+    po.ordered_at = datetime.utcnow()
     session.flush()
     return po
 
@@ -172,7 +323,8 @@ def get_receive_records_for_po(session: Session, po_id: uuid.UUID) -> list[Recei
 
 def get_po_statistics(session: Session, project_id: uuid.UUID | None = None) -> dict:
     """COUNT grouped by status WHERE optional project_id AND deleted_at IS NULL.
-    Return dict with keys: total, draft, ordered, partially_received, closed, cancelled."""
+    Return dict with keys: total, draft, gp_registered, vendor_confirmed, partially_received, closed,
+    cancelled."""
     stmt = (
         select(PurchaseOrder.status, func.count())
         .where(PurchaseOrder.deleted_at.is_(None))
@@ -185,7 +337,7 @@ def get_po_statistics(session: Session, project_id: uuid.UUID | None = None) -> 
     counts = {
         "total": 0,
         "draft": 0,
-        "ordered": 0,
+        "gp_registered": 0,
         "vendor_confirmed": 0,
         "partially_received": 0,
         "closed": 0,
@@ -193,7 +345,7 @@ def get_po_statistics(session: Session, project_id: uuid.UUID | None = None) -> 
     }
     status_key_map = {
         POStatus.DRAFT: "draft",
-        POStatus.ORDERED: "ordered",
+        POStatus.GP_REGISTERED: "gp_registered",
         POStatus.VENDOR_CONFIRMED: "vendor_confirmed",
         POStatus.PARTIALLY_RECEIVED: "partially_received",
         POStatus.CLOSED: "closed",
@@ -220,7 +372,7 @@ def update_po(
 ) -> PurchaseOrder:
     """
     - Validate PO exists + not soft-deleted (NotFoundError)
-    - Validate status in (Draft, Ordered) (InvalidStateTransitionError)
+    - Validate status in (Draft, GP_Registered, Vendor_Confirmed) (InvalidStateTransitionError)
     - Validate no ReceiveRecords exist (InvalidStateTransitionError)
     - Validate po_number uniqueness within project if provided
     - Update only provided fields (vendor_id/project_id use _UNSET sentinel)
@@ -230,7 +382,7 @@ def update_po(
     if po is None:
         raise NotFoundError(f"Purchase order {po_id} not found")
 
-    if po.status not in (POStatus.DRAFT, POStatus.ORDERED, POStatus.VENDOR_CONFIRMED):
+    if po.status not in (POStatus.DRAFT, POStatus.GP_REGISTERED, POStatus.VENDOR_CONFIRMED):
         raise InvalidStateTransitionError(f"Cannot edit PO in {po.status.value} status")
 
     # Check for existing receive records
@@ -263,18 +415,7 @@ def update_po(
     if po_number is not None:
         # Validate uniqueness scoped to project (or globally for project-less POs)
         if po_number.strip():
-            uniqueness_stmt = select(PurchaseOrder).where(
-                PurchaseOrder.po_number == po_number,
-                PurchaseOrder.id != po.id,
-                PurchaseOrder.deleted_at.is_(None),
-            )
-            if po.project_id is not None:
-                uniqueness_stmt = uniqueness_stmt.where(PurchaseOrder.project_id == po.project_id)
-            else:
-                uniqueness_stmt = uniqueness_stmt.where(PurchaseOrder.project_id.is_(None))
-            existing = session.scalars(uniqueness_stmt).first()
-            if existing is not None:
-                raise ValidationError(f"PO number '{po_number}' already exists", field="po_number")
+            _assert_po_number_available(session, po_number, project_id=po.project_id, exclude_po_id=po.id)
             po.po_number = po_number
         else:
             po.po_number = None
@@ -286,16 +427,16 @@ def update_po(
     if notes is not None:
         po.notes = notes if notes.strip() else None
 
-    # Auto-transition: ORDERED → VENDOR_CONFIRMED when both vendor_quote_number and vendor_ack doc exist
-    if po.status == POStatus.ORDERED:
+    # Auto-transition: GP_REGISTERED → VENDOR_CONFIRMED when both vendor_quote_number and vendor_ack doc exist
+    if po.status == POStatus.GP_REGISTERED:
         has_vendor_ack = any(doc.document_type == PODocumentType.VENDOR_ACKNOWLEDGEMENT for doc in (po.documents or []))
         if po.vendor_quote_number is not None and has_vendor_ack:
             po.status = POStatus.VENDOR_CONFIRMED
-    # Auto-revert: VENDOR_CONFIRMED → ORDERED when conditions no longer met
+    # Auto-revert: VENDOR_CONFIRMED → GP_REGISTERED when conditions no longer met
     elif po.status == POStatus.VENDOR_CONFIRMED:
         has_vendor_ack = any(doc.document_type == PODocumentType.VENDOR_ACKNOWLEDGEMENT for doc in (po.documents or []))
         if po.vendor_quote_number is None or not has_vendor_ack:
-            po.status = POStatus.ORDERED
+            po.status = POStatus.GP_REGISTERED
 
     return po
 
@@ -306,7 +447,7 @@ def mark_po_as_ordered(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
     - Validate status == Draft (InvalidStateTransitionError)
     - Validate po_number is not None (ValidationError)
     - Validate vendor_id is not None (ValidationError)
-    - Set status=Ordered, ordered_at=datetime.utcnow()
+    - Set status=GP_Registered, ordered_at=datetime.utcnow()
     - Return updated PO
     """
     po = get_purchase_order(session, po_id)
@@ -325,7 +466,7 @@ def mark_po_as_ordered(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
             field="vendor_id",
         )
 
-    po.status = POStatus.ORDERED
+    po.status = POStatus.GP_REGISTERED
     po.ordered_at = datetime.utcnow()
 
     return po
@@ -334,7 +475,7 @@ def mark_po_as_ordered(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
 def cancel_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
     """
     - Validate exists + not soft-deleted (NotFoundError)
-    - Validate status in (Draft, Ordered) (InvalidStateTransitionError)
+    - Validate status in (Draft, GP_Registered, Vendor_Confirmed) (InvalidStateTransitionError)
     - Set status=Cancelled, deleted_at=datetime.utcnow()
     - Return updated PO
     """
@@ -342,7 +483,7 @@ def cancel_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
     if po is None:
         raise NotFoundError(f"Purchase order {po_id} not found")
 
-    if po.status not in (POStatus.DRAFT, POStatus.ORDERED, POStatus.VENDOR_CONFIRMED):
+    if po.status not in (POStatus.DRAFT, POStatus.GP_REGISTERED, POStatus.VENDOR_CONFIRMED):
         raise InvalidStateTransitionError(f"Cannot cancel PO in {po.status.value} status")
 
     po.status = POStatus.CANCELLED
@@ -475,10 +616,10 @@ def upload_po_document(
     )
     session.add(doc)
 
-    # Auto-transition: ORDERED → VENDOR_CONFIRMED when uploading vendor ack and quote number exists
+    # Auto-transition: GP_REGISTERED → VENDOR_CONFIRMED when uploading vendor ack and quote number exists
     if (
         document_type == PODocumentType.VENDOR_ACKNOWLEDGEMENT
-        and po.status == POStatus.ORDERED
+        and po.status == POStatus.GP_REGISTERED
         and po.vendor_quote_number is not None
     ):
         po.status = POStatus.VENDOR_CONFIRMED
@@ -509,7 +650,7 @@ def delete_po_document(session: Session, document_id: uuid.UUID) -> None:
     storage.delete_file(doc.s3_key)
     session.delete(doc)
 
-    # Auto-revert: VENDOR_CONFIRMED → ORDERED when last vendor ack doc is deleted
+    # Auto-revert: VENDOR_CONFIRMED → GP_REGISTERED when last vendor ack doc is deleted
     if deleted_doc_type == PODocumentType.VENDOR_ACKNOWLEDGEMENT and po.status == POStatus.VENDOR_CONFIRMED:
         remaining_ack = session.scalars(
             select(PODocument).where(
@@ -519,7 +660,7 @@ def delete_po_document(session: Session, document_id: uuid.UUID) -> None:
             )
         ).first()
         if remaining_ack is None:
-            po.status = POStatus.ORDERED
+            po.status = POStatus.GP_REGISTERED
 
 
 def get_po_document(session: Session, document_id: uuid.UUID) -> PODocument:

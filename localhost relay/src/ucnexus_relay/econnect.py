@@ -43,17 +43,27 @@ def get_next_po_number(conn) -> str:
     return row.po_number.strip()
 
 
-def assert_po_number_available(conn, po_number: str) -> None:
-    """Guard for client-supplied PO numbers: refuse one already used by an active PO.
-    (POC checks the live POP10100; production should also check history POP30100/POP30300.)"""
-    row = conn.cursor().execute(
-        "SELECT COUNT(*) AS n FROM dbo.POP10100 WHERE PONUMBER = ?", po_number
-    ).fetchone()
-    if row.n:
-        raise EConnectError(
-            f"PO number '{po_number}' already exists in GP (POP10100)",
-            proc="assert_po_number_available", error_state=0,
-        )
+def po_number_in_use(conn, po_number: str) -> str | None:
+    """Read-only guard for a client-supplied PO number: is it already used ANYWHERE in GP, not just
+    by an active PO? Returns a short human label of where it was found, or None if the number is free.
+    A PO number can live in three places, and a collision in any of them makes GP reject (or, worse,
+    silently reuse) the number, so /po pre-checks all three and returns a clean po_number_taken 400:
+      - POP10100.PONUMBER - an active (open/work) PO
+      - POP30100.PONUMBER - a historical (closed/posted/voided) PO
+      - POP30300.VNDDOCNM - a posted PO receipt's vendor-doc number (= the PO it received against)
+    Checked in that order and short-circuits on the first hit (active first, so no needless history
+    reads on the common path). Table + column are compile-time constants; only po_number is bound."""
+    for table, column, label in (
+        ("POP10100", "PONUMBER", "an active PO"),
+        ("POP30100", "PONUMBER", "a historical PO"),
+        ("POP30300", "VNDDOCNM", "a posted PO receipt"),
+    ):
+        row = conn.cursor().execute(
+            f"SELECT COUNT(*) AS n FROM dbo.{table} WHERE {column} = ?", po_number
+        ).fetchone()
+        if row.n:
+            return f"{label} ({table}.{column})"
+    return None
 
 
 def create_po_header(
@@ -162,6 +172,52 @@ def create_po_line(
         )
 
 
+def split_cost_code(cost_code: str) -> tuple[str, str, str, str, int]:
+    """Split a 'phase-step-element' cost code (e.g. '210-200-2') into the JC00701 key columns
+    (Cost_Code_Number_1, _2, _3, _4, Cost_Element). cc3/cc4 are always blank at this customer;
+    Cost_Element is the TRAILING segment as int (the doc once mislabeled it COSTTYPE - it's not).
+    Used by BOTH apply_wennsoft_integration (the wsi call) and cost_code_on_job (the pre-check),
+    so the validated split and the applied split can never drift."""
+    segs = cost_code.split("-")
+    cc1 = segs[0] if len(segs) > 0 else ""
+    cc2 = segs[1] if len(segs) > 1 else ""
+    try:
+        cost_element = int(segs[2]) if len(segs) > 2 and segs[2] else 0
+    except ValueError:
+        cost_element = 0
+    return cc1, cc2, "", "", cost_element
+
+
+def job_exists(conn, job_number: str) -> bool:
+    """Read-only: is job_number a real GP job in the job master JC00102? The wsi proc rejects an
+    unknown JOBNUMBR, so /po pre-checks here to return a clean job_not_registered instead of a raw
+    eConnect error (mirrors the buyer pre-check against POP00101). RTRIM the column and strip the
+    arg so this normalizes the job the SAME way the /cost-codes dropdown (list_cost_codes) does -
+    a job the dropdown loads can't then fail the pre-check on surrounding whitespace."""
+    row = conn.cursor().execute(
+        "SELECT COUNT(*) AS n FROM dbo.JC00102 WHERE RTRIM(WS_Job_Number) = ?", job_number.strip()
+    ).fetchone()
+    return row.n > 0
+
+
+def cost_code_on_job(conn, job_number: str, cost_code: str) -> bool:
+    """Read-only: is cost_code an ACTIVE cost code on job_number in the cost-code detail master
+    JC00701? Matches the same six-column key the WennSoft proc uses (WS_Job_Number +
+    Cost_Code_Number_1..4 + Cost_Element), splitting cost_code with the identical split_cost_code
+    the wsi call uses, and filtering WS_Inactive = 0 so it accepts exactly the codes the /cost-codes
+    dropdown (list_cost_codes) offers - an inactive code the dropdown hides must not slip past this
+    pre-check and then fail mid-orchestration with the raw eConnect error the pre-check exists to
+    prevent. /po pre-checks this so a code not on the job returns a clean cost_code_not_on_job."""
+    cc1, cc2, cc3, cc4, cost_element = split_cost_code(cost_code)
+    row = conn.cursor().execute(
+        "SELECT COUNT(*) AS n FROM dbo.JC00701 "
+        "WHERE RTRIM(WS_Job_Number) = ? AND Cost_Code_Number_1 = ? AND Cost_Code_Number_2 = ? "
+        "AND Cost_Code_Number_3 = ? AND Cost_Code_Number_4 = ? AND Cost_Element = ? AND WS_Inactive = 0",
+        job_number.strip(), cc1, cc2, cc3, cc4, cost_element,
+    ).fetchone()
+    return row.n > 0
+
+
 def apply_wennsoft_integration(
     conn,
     *,
@@ -185,19 +241,12 @@ def apply_wennsoft_integration(
       is the Cost_Element, not the cost type (the localhost-relay.md doc mislabeled this).
     """
     if product_indicator == 2:
-        segs = cost_code.split("-")
-        cc1 = segs[0] if len(segs) > 0 else ""
-        cc2 = segs[1] if len(segs) > 1 else ""
-        try:
-            cost_element = int(segs[2]) if len(segs) > 2 and segs[2] else 0
-        except ValueError:
-            cost_element = 0
+        cc1, cc2, cc3, cc4, cost_element = split_cost_code(cost_code)
         job = job_number or ""
     else:
-        cc1 = cc2 = ""
+        cc1 = cc2 = cc3 = cc4 = ""
         cost_element = 0
         job = ""
-    cc3 = cc4 = ""
 
     sql = """
     DECLARE @err int = 0;
@@ -386,6 +435,33 @@ def list_buyers(conn) -> list[str]:
         "SELECT RTRIM(BUYERID) AS b FROM dbo.POP00101 WHERE BUYERID <> '' ORDER BY BUYERID"
     ).fetchall()
     return [r.b for r in rows]
+
+
+def list_cost_codes(conn, job_number: str) -> list[dict]:
+    """Read-only: the active cost codes defined for ONE job in JC00701 (WennSoft Job Cost).
+    Cost codes are per-job, and the real Cost_Element varies by code (210-200 is element 2,
+    310-000 is element 3, 510-000 is element 5, ...). The Create PO dropdown is populated from
+    this and the /po cost_code is assembled as 'phase-step-element' (e.g. '310-000-3') from the
+    code's own element - NOT a hardcoded 2.
+
+    Returns one dict per code: cost_code = the two-segment number 'cc1-cc2' (segments 3/4 are
+    blank for every code at this customer), description (Cost_Code_Description), and the integer
+    cost_element. WS_Inactive = 0 filters to codes usable on a new PO."""
+    rows = conn.cursor().execute(
+        "SELECT RTRIM(Cost_Code_Number_1) AS cc1, RTRIM(Cost_Code_Number_2) AS cc2, "
+        "Cost_Element AS elem, RTRIM(Cost_Code_Description) AS descr "
+        "FROM dbo.JC00701 WHERE RTRIM(WS_Job_Number) = ? AND WS_Inactive = 0 "
+        "ORDER BY Cost_Code_Number_1, Cost_Code_Number_2",
+        job_number,
+    ).fetchall()
+    return [
+        {
+            "cost_code": f"{r.cc1}-{r.cc2}",
+            "description": r.descr or None,
+            "cost_element": int(r.elem),
+        }
+        for r in rows
+    ]
 
 
 def create_receipt_header(conn, *, receipt_number, po_number, vendor_id, receipt_date, batch_number, subtotal) -> None:

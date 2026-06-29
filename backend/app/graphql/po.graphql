@@ -18,7 +18,7 @@ type PurchaseOrder {
 
 enum POStatus {
   DRAFT
-  ORDERED
+  GP_REGISTERED
   VENDOR_CONFIRMED
   PARTIALLY_RECEIVED
   CLOSED
@@ -42,7 +42,7 @@ type POLineItem {
 type POStatistics {
   total: Int!
   draft: Int!
-  ordered: Int!
+  gp_registered: Int!
   vendor_confirmed: Int!
   partially_received: Int!
   closed: Int!

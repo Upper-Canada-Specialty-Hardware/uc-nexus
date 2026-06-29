@@ -37,7 +37,6 @@ import OrderAsAutocomplete from '../../components/OrderAsAutocomplete';
 import { useToast } from '../../components/Toast';
 import {
   UPDATE_PO,
-  MARK_PO_AS_ORDERED,
   CANCEL_PO,
   UPDATE_PO_LINE_ITEM_ORDER_AS,
   UPDATE_PO_LINE_ITEM_UNIT_COST,
@@ -46,30 +45,15 @@ import {
 } from '../../graphql/mutations';
 import { GET_PRIOR_ORDER_AS_VALUES } from '../../graphql/queries';
 import type { PurchaseOrder } from './index';
-
-// --- Status chip colors ---
-
-const STATUS_CHIP_COLOR: Record<string, 'default' | 'primary' | 'info' | 'warning' | 'success' | 'error'> = {
-  DRAFT: 'default',
-  ORDERED: 'primary',
-  VENDOR_CONFIRMED: 'info',
-  PARTIALLY_RECEIVED: 'warning',
-  CLOSED: 'success',
-  CANCELLED: 'error',
-};
+import GpPurchaseOrderDialog from './GpPurchaseOrderDialog';
+import type { RelayHealth } from '../../relay/relayClient';
+import { formatPoStatus, poStatusChipColor } from './poStatus';
 
 const DOC_TYPE_LABELS: Record<string, string> = {
   PO_DOCUMENT: 'PO Document',
   VENDOR_ACKNOWLEDGEMENT: 'Vendor Acknowledgement',
   MISCELLANEOUS: 'Miscellaneous',
 };
-
-function formatStatus(status: string): string {
-  return status
-    .split('_')
-    .map((w) => w.charAt(0) + w.slice(1).toLowerCase())
-    .join(' ');
-}
 
 function formatDate(dateStr: string | null | undefined): string {
   if (!dateStr) return '-';
@@ -94,11 +78,13 @@ interface PODetailModalProps {
   po: PurchaseOrder;
   onClose: () => void;
   onRefetch: () => void;
+  // Relay status owned by the PO page (single source of truth) - gates the Register in GP action.
+  relayHealth?: RelayHealth | null;
 }
 
 // --- Component ---
 
-export default function PODetailModal({ open, po, onClose, onRefetch }: PODetailModalProps) {
+export default function PODetailModal({ open, po, onClose, onRefetch, relayHealth }: PODetailModalProps) {
   const { showToast } = useToast();
 
   // Edit mode state
@@ -114,7 +100,7 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
   const [unitCostEdits, setUnitCostEdits] = useState<Record<string, string>>({});
 
   // Confirm dialog state
-  const [confirmOrderOpen, setConfirmOrderOpen] = useState(false);
+  const [registerOpen, setRegisterOpen] = useState(false);
   const [confirmCancelOpen, setConfirmCancelOpen] = useState(false);
 
   // Upload dialog state
@@ -145,23 +131,6 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
         } else {
           showToast(error.message, 'error');
         }
-      } else {
-        showToast(error.message, 'error');
-      }
-    },
-  });
-
-  const [markPoAsOrdered, { loading: orderLoading }] = useMutation(MARK_PO_AS_ORDERED, {
-    onCompleted: () => {
-      showToast('PO marked as ordered', 'success');
-      setConfirmOrderOpen(false);
-      onRefetch();
-      onClose();
-    },
-    onError: (error) => {
-      setConfirmOrderOpen(false);
-      if (CombinedGraphQLErrors.is(error)) {
-        showToast(error.errors?.[0]?.message ?? error.message, 'error');
       } else {
         showToast(error.message, 'error');
       }
@@ -282,10 +251,6 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
         notes: notes || null,
       },
     });
-  };
-
-  const handleMarkAsOrdered = () => {
-    markPoAsOrdered({ variables: { id: po.id } });
   };
 
   const handleCancelPO = () => {
@@ -440,24 +405,17 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
 
   const canEdit =
     po.status === 'DRAFT' ||
-    (po.status === 'ORDERED' && po.receiveRecords.length === 0) ||
+    (po.status === 'GP_REGISTERED' && po.receiveRecords.length === 0) ||
     (po.status === 'VENDOR_CONFIRMED' && po.receiveRecords.length === 0);
 
   const canUploadDocs = po.status !== 'CANCELLED' && po.status !== 'CLOSED';
 
-  const canMarkAsOrdered = po.status === 'DRAFT';
+  // A Draft is accepted into GP via the Register in GP flow (GP-first push, then map vendor + cost code
+  // and advance to GP-Registered). The relay must be up to push.
+  const canRegisterInGp = po.status === 'DRAFT';
+  const relayConnected = relayHealth?.ok === true;
 
-  // Compute missing requirements for tooltip
-  const missingRequirements = useMemo(() => {
-    const missing: string[] = [];
-    if (!po.poNumber) missing.push('PO Number');
-    if (!po.vendor?.id) missing.push('Vendor');
-    return missing;
-  }, [po.poNumber, po.vendor?.id]);
-
-  const markAsOrderedEnabled = canMarkAsOrdered && missingRequirements.length === 0;
-
-  const canCancel = po.status === 'DRAFT' || po.status === 'ORDERED' || po.status === 'VENDOR_CONFIRMED';
+  const canCancel = po.status === 'DRAFT' || po.status === 'GP_REGISTERED' || po.status === 'VENDOR_CONFIRMED';
 
   const displayTitle = po.poNumber ? `PO: ${po.poNumber}` : `Request: ${po.requestNumber}`;
 
@@ -485,23 +443,19 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
               Edit
             </Button>
           )}
-          {canMarkAsOrdered && (
+          {canRegisterInGp && (
             <Tooltip
-              title={
-                missingRequirements.length > 0
-                  ? `Missing: ${missingRequirements.join(', ')}`
-                  : ''
-              }
+              title={relayConnected ? '' : 'GP relay not detected on this machine - it must be running to register a PO'}
               arrow
             >
               <span>
                 <Button
                   variant="contained"
                   color="primary"
-                  onClick={() => setConfirmOrderOpen(true)}
-                  disabled={!markAsOrderedEnabled || orderLoading}
+                  onClick={() => setRegisterOpen(true)}
+                  disabled={!relayConnected}
                 >
-                  Mark as Ordered
+                  Register in GP
                 </Button>
               </span>
             </Tooltip>
@@ -535,8 +489,8 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
         {/* Header: Status + Request Number */}
         <Box sx={{ mb: 3, display: 'flex', alignItems: 'center', gap: 2 }}>
           <Chip
-            label={formatStatus(po.status)}
-            color={STATUS_CHIP_COLOR[po.status] ?? 'default'}
+            label={formatPoStatus(po.status)}
+            color={poStatusChipColor(po.status)}
             size="medium"
           />
           {po.poNumber && (
@@ -777,15 +731,17 @@ export default function PODetailModal({ open, po, onClose, onRefetch }: PODetail
         </DialogActions>
       </Dialog>
 
-      {/* Confirm: Mark as Ordered */}
-      <ConfirmDialog
-        open={confirmOrderOpen}
-        title="Mark as Ordered"
-        message="Mark this PO as ordered? This will update the status and record the order date."
-        confirmLabel="Mark as Ordered"
-        cancelLabel="Cancel"
-        onConfirm={handleMarkAsOrdered}
-        onCancel={() => setConfirmOrderOpen(false)}
+      {/* Register in GP */}
+      <GpPurchaseOrderDialog
+        open={registerOpen}
+        registerPo={po}
+        relayHealth={relayHealth}
+        onClose={() => setRegisterOpen(false)}
+        onSubmitted={() => {
+          setRegisterOpen(false);
+          onRefetch();
+          onClose();
+        }}
       />
 
       {/* Confirm: Cancel PO */}

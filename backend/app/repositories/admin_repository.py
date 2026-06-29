@@ -43,7 +43,7 @@ def get_opening_hardware_status(session: Session, project_id: uuid.UUID | None =
 
         if po_status == POStatus.DRAFT:
             status = "PO_DRAFTED"
-        elif po_status in (POStatus.ORDERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED):
+        elif po_status in (POStatus.GP_REGISTERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED):
             status = "ORDERED"
         elif po_status == POStatus.CLOSED:
             status = "RECEIVED"

@@ -1,0 +1,63 @@
+name: Relay Release
+
+# builds the localhost relay into a single ucnexus-relay.exe on a Windows runner and publishes it.
+# - push a tag like `relay-v0.1.0`  -> builds + attaches the exe to a GitHub Release
+# - run manually (workflow_dispatch) -> builds + uploads the exe as a workflow artifact (no release)
+# DPAPI happens on the workstation at enroll time, so the CI-built exe carries no secret - safe to build
+# in the cloud. see "localhost relay/docs/relay-deployment.md".
+
+on:
+  push:
+    tags:
+      - "relay-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build relay exe
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: "localhost relay"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install poetry
+      - run: poetry install --no-interaction --with dev
+
+      - name: Build exe
+        run: poetry run pyinstaller --clean --noconfirm ucnexus-relay.spec
+
+      - name: Smoke-test the exe (binary launches, CLI dispatches)
+        # an unknown subcommand exits 2 deterministically without needing config.toml - proves the bundled
+        # interpreter starts and ucnexus_relay.cli imports cleanly.
+        run: |
+          ./dist/ucnexus-relay.exe __smoke__
+          $code = $LASTEXITCODE
+          if ($code -ne 2) { Write-Error "expected exit 2 from unknown subcommand, got $code"; exit 1 }
+          exit 0
+        shell: pwsh
+
+      - name: Upload artifact (manual runs)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ucnexus-relay-exe
+          path: "localhost relay/dist/ucnexus-relay.exe"
+
+      - name: Publish to Release (tag pushes)
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" --title "relay $TAG" --notes "UC Nexus relay build $TAG. install steps: localhost relay/docs/relay-deployment.md" --verify-tag || true
+          gh release upload "$TAG" dist/ucnexus-relay.exe --clobber
