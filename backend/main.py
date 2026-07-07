@@ -2,7 +2,7 @@ from collections.abc import Callable
 from typing import Any
 
 import strawberry
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from graphql import GraphQLError, GraphQLResolveInfo
 from strawberry.extensions import SchemaExtension
@@ -12,6 +12,7 @@ from app.auth import get_context
 from app.errors import AppError
 from app.schemas.mutations import Mutation
 from app.schemas.queries import Query
+from app.services.relay_gateway import gateway as relay_gateway
 
 
 class ErrorHandlerExtension(SchemaExtension):
@@ -55,6 +56,13 @@ app.include_router(graphql_app, prefix="/graphql")
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.websocket("/relay-link")
+async def relay_link(websocket: WebSocket):
+    """The single authenticated relay connects here. See app/services/relay_gateway.py
+    for the wire protocol and connection lifecycle."""
+    await relay_gateway.accept(websocket)
 
 
 @app.post("/admin/reset-data")
