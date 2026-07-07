@@ -46,7 +46,10 @@ def test_get_settings_decrypts_shared_secret(tmp_path):
     secret = "round-trip-secret-xyz"
     enc = dpapi.protect(secret)
     cfg = tmp_path / "config.toml"
-    cfg.write_text(f'[auth]\nshared_secret = "{enc}"\n\n[sql]\nserver = "x"\n', encoding="utf-8")
+    cfg.write_text(
+        f'[auth]\nshared_secret = "{enc}"\n\n[backend]\nurl = "wss://x/relay-link"\n\n[sql]\nserver = "x"\n',
+        encoding="utf-8",
+    )
     # unique path -> not served from the lru_cache of other tests
     s = get_settings(str(cfg))
     assert s.auth.shared_secret == secret

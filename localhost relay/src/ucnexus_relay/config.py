@@ -31,8 +31,10 @@ class AuthCfg(BaseModel):
     shared_secret: str
 
 
-class CorsCfg(BaseModel):
-    allowed_origins: list[str] = []
+class BackendCfg(BaseModel):
+    # wss URL of the backend's relay-link endpoint (issue #189) this relay dials out to. The
+    # enrolled [auth] shared_secret is sent as a Bearer header on the WebSocket handshake.
+    url: str
 
 
 class SqlCfg(BaseModel):
@@ -72,7 +74,7 @@ class LoggingCfg(BaseModel):
 class Settings(BaseModel):
     server: ServerCfg = ServerCfg()
     auth: AuthCfg
-    cors: CorsCfg = CorsCfg()
+    backend: BackendCfg
     sql: SqlCfg
     gp: GpCfg = GpCfg()
     logging: LoggingCfg = LoggingCfg()

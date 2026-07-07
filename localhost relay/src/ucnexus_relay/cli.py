@@ -13,17 +13,25 @@ import sys
 
 
 def _serve(argv: list[str]) -> int:
+    import asyncio
+
     import uvicorn
 
+    from .channel import run_channel
     from .config import get_settings
     from .main import app
 
     s = get_settings()
-    # pin loop/http/ws so the PyInstaller bundle stays lean and deterministic: stdlib asyncio + pure-python
-    # h11, no websockets (the relay has none). this avoids bundling httptools/websockets/uvloop and the
-    # by-string "auto" loaders picking a backend that isn't packaged. throughput here is a few calls, so
-    # h11 is plenty.
-    uvicorn.run(app, host=s.server.host, port=s.server.port, loop="asyncio", http="h11", ws="none")
+
+    async def _run() -> None:
+        # pin loop/http so the PyInstaller bundle stays lean and deterministic: stdlib asyncio +
+        # pure-python h11. ws="none" is still correct here - uvicorn serves /health only, no inbound
+        # websockets; the outbound channel below uses the `websockets` package directly, not uvicorn.
+        config = uvicorn.Config(app, host=s.server.host, port=s.server.port, loop="asyncio", http="h11", ws="none")
+        server = uvicorn.Server(config)
+        await asyncio.gather(server.serve(), run_channel())
+
+    asyncio.run(_run())
     return 0
 
 

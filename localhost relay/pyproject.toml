@@ -13,6 +13,7 @@ pydantic = "^2.9"
 pydantic-settings = "^2.6"
 pyodbc = "^5.2"
 python-json-logger = "^2.0"
+websockets = "^16.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3"

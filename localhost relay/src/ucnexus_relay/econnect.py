@@ -464,6 +464,27 @@ def list_cost_codes(conn, job_number: str) -> list[dict]:
     ]
 
 
+def list_jobs(conn) -> list[dict]:
+    """Read-only: the job/project master JC00102 (job number + display name), left-joined to
+    JC00901 for the per-job WS_Inactive flag (the same flag list_cost_codes filters JC00701 on).
+    Unlike list_cost_codes, jobs are returned regardless of status - list_jobs is a picker source,
+    not a validation gate, so the caller decides what to do with an inactive job. A job with no
+    JC00901 row (not every job has one) is reported active."""
+    rows = conn.cursor().execute(
+        "SELECT RTRIM(j.WS_Job_Number) AS job_number, RTRIM(j.WS_Job_Name) AS job_name, s.WS_Inactive AS inactive "
+        "FROM dbo.JC00102 j LEFT JOIN dbo.JC00901 s ON s.WS_Job_Number = j.WS_Job_Number "
+        "ORDER BY j.WS_Job_Number"
+    ).fetchall()
+    return [
+        {
+            "job_number": r.job_number,
+            "job_name": r.job_name or None,
+            "status": "inactive" if r.inactive else "active",
+        }
+        for r in rows
+    ]
+
+
 def create_receipt_header(conn, *, receipt_number, po_number, vendor_id, receipt_date, batch_number, subtotal) -> None:
     sql = """
     DECLARE @err int = 0;

@@ -1,13 +1,14 @@
 """Job + cost-code GP validation: the split_cost_code parse, and the JC00102/JC00701
-read-only pre-checks /po runs so a bad job or cost code returns a clean relay error
-(job_not_registered / cost_code_not_on_job) instead of a raw eConnect one. No real SQL —
-a fake cursor records the SQL + params and returns a canned COUNT row."""
+read-only pre-checks create_po runs so a bad job or cost code returns a clean relay error
+(job_not_registered / cost_code_not_on_job) instead of a raw eConnect one. Also list_jobs
+(JC00102 x JC00901). No real SQL — fake cursors return canned rows and record SQL + params."""
 
 from collections import namedtuple
 
-from ucnexus_relay.econnect import cost_code_on_job, job_exists, split_cost_code
+from ucnexus_relay.econnect import cost_code_on_job, job_exists, list_jobs, split_cost_code
 
 _Row = namedtuple("_Row", "n")
+_JobRow = namedtuple("_JobRow", "job_number job_name inactive")
 
 
 class _FakeCursor:
@@ -101,3 +102,51 @@ def test_cost_code_on_job_filters_inactive_codes():
 def test_cost_code_not_on_job_when_no_row():
     conn = _FakeConn(0)
     assert cost_code_on_job(conn, "80003", "999-999-9") is False
+
+
+# --- list_jobs (JC00102 left-joined to JC00901 for WS_Inactive) ---
+
+
+class _JobsCursor:
+    def __init__(self, rows):
+        self._rows = rows
+        self.sql = None
+
+    def execute(self, sql, *params):
+        self.sql = sql
+        return self
+
+    def fetchall(self):
+        return self._rows
+
+
+class _JobsConn:
+    def __init__(self, rows):
+        self.cursor_obj = _JobsCursor(rows)
+
+    def cursor(self):
+        return self.cursor_obj
+
+
+def test_list_jobs_reads_job_number_and_name():
+    conn = _JobsConn([_JobRow("80003", "Signature Tower", 0)])
+    jobs = list_jobs(conn)
+    assert jobs == [{"job_number": "80003", "job_name": "Signature Tower", "status": "active"}]
+    assert "JC00102" in conn.cursor_obj.sql
+    assert "JC00901" in conn.cursor_obj.sql
+
+
+def test_list_jobs_marks_inactive_from_jc00901():
+    conn = _JobsConn([_JobRow("80099", "Old Job", 1)])
+    assert list_jobs(conn) == [{"job_number": "80099", "job_name": "Old Job", "status": "inactive"}]
+
+
+def test_list_jobs_defaults_to_active_with_no_jc00901_row():
+    # LEFT JOIN with no matching JC00901 row comes back NULL/None, not every job has one
+    conn = _JobsConn([_JobRow("80005", "No Status Row", None)])
+    assert list_jobs(conn) == [{"job_number": "80005", "job_name": "No Status Row", "status": "active"}]
+
+
+def test_list_jobs_blank_name_becomes_none():
+    conn = _JobsConn([_JobRow("80006", "", 0)])
+    assert list_jobs(conn)[0]["job_name"] is None

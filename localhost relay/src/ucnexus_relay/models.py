@@ -134,3 +134,16 @@ class CostCodesResponse(BaseModel):
     company: str
     job: str
     cost_codes: list[CostCodeOut]
+
+
+# --- jobs (JC00102 job/project master, feeds the project picker + create-PO job field) ---
+
+class JobOut(BaseModel):
+    job_number: str            # GP WS_Job_Number
+    job_name: str | None = None  # GP WS_Job_Name
+    status: str | None = None  # "active" / "inactive" from JC00901.WS_Inactive, when a row exists there
+
+
+class JobsResponse(BaseModel):
+    company: str
+    jobs: list[JobOut]

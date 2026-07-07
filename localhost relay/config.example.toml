@@ -8,12 +8,10 @@ port = 7321
 # generate with:  python -c "import secrets; print(secrets.token_urlsafe(32))"
 shared_secret = "REPLACE_ME_RANDOM_TOKEN"
 
-[cors]
-allowed_origins = [
-  "https://frontend-production-34fc.up.railway.app",
-  "http://localhost:5173",
-  "http://localhost:8000",
-]
+[backend]
+# wss URL of the backend's relay-link endpoint (issue #189) this relay dials out to. The [auth]
+# shared_secret above is sent as a Bearer header on the WebSocket handshake.
+url = "wss://backend-production-7866.up.railway.app/relay-link"
 
 [sql]
 # 10.0.0.246,1435 is the verified-reachable named-instance endpoint (UCSHSQL2\MSSQL2014).
