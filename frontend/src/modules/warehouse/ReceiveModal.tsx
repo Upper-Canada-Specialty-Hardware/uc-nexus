@@ -24,10 +24,9 @@ import { useToast } from '../../components/Toast';
 import Modal from '../../components/Modal';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import { useNavigate } from 'react-router-dom';
-import { GET_PO_RECEIVING_DETAILS, GET_WAREHOUSES } from '../../graphql/queries';
+import { GET_PO_RECEIVING_DETAILS, GET_RELAY_STATUS, GET_WAREHOUSES } from '../../graphql/queries';
 import { CREATE_RECEIVE } from '../../graphql/mutations';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
-import { checkRelayHealth, type RelayHealth } from '../../relay/relayClient';
 
 // ---- Types ----
 
@@ -51,6 +50,7 @@ interface PODetails {
   // The GP company this PO was registered in. A receive posts to GP, so it can only run against a PO
   // that was registered in GP (has a gpCompany + poNumber). See isPoGpRegistered.
   gpCompany: string | null;
+  vendorNameSnapshot: string | null;
   vendor: { id: string; name: string; contactName: string | null } | null;
   notes: string | null;
   status: string;
@@ -114,8 +114,6 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
   // Put-away is mandatory: a receive posts a GP receipt, which requires a rack location per line, so
   // the user assigns destination bin(s) for every received unit (and may flag deficient units) up front.
   const [lineLocations, setLineLocations] = useState<Record<string, LocationDraft[]>>({});
-  // GP relay presence. A receive must reach GP to count, so the relay must be up to receive at all.
-  const [relayHealth, setRelayHealth] = useState<RelayHealth | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   const [createReceive] = useMutation(CREATE_RECEIVE);
@@ -177,23 +175,14 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
     }
   }, [open, poIds, fetchPODetails]);
 
-  // Probe the relay while the dialog is open - a receive posts a GP receipt, so the relay must be up.
-  useEffect(() => {
-    if (!open) {
-      setRelayHealth(null);
-      return;
-    }
-    let cancelled = false;
-    void (async () => {
-      const h = await checkRelayHealth();
-      if (!cancelled) setRelayHealth(h);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [open]);
-
-  const relayConnected = relayHealth?.ok === true;
+  // Relay presence while the dialog is open - a receive posts a GP receipt, so the relay must be up.
+  // Backed by the backend's relayStatus field (the relay-to-backend WS channel), not a browser probe.
+  const { data: relayStatusData } = useQuery<{ relayStatus: { connected: boolean } }>(GET_RELAY_STATUS, {
+    skip: !open,
+    pollInterval: 10_000,
+  });
+  const relayStatus: boolean | null = open && relayStatusData ? relayStatusData.relayStatus.connected : null;
+  const relayConnected = relayStatus === true;
 
   // ---- Derived Data ----
 
@@ -511,7 +500,7 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
         {showHeader && (
           <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: details.notes ? 0.5 : 1 }}>
             {details.poNumber ?? 'Unknown PO'}
-            {details.vendor ? ` — ${details.vendor.name}` : ''}
+            {details.vendorNameSnapshot ?? details.vendor?.name ? ` — ${details.vendorNameSnapshot ?? details.vendor?.name}` : ''}
           </Typography>
         )}
         {details.notes && (
@@ -688,10 +677,10 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
         {/* A receive posts a GP receipt via the on-prem relay, so the relay must be up. */}
         {!poDetailsLoading && !poDetailsError && !succeeded && (
           <Box sx={{ mb: 2 }}>
-            {relayHealth === null ? (
+            {relayStatus === null ? (
               <Chip size="small" label="checking GP relay…" />
             ) : relayConnected ? (
-              <Chip size="small" color="success" label={`GP relay connected (v${relayHealth.version})`} />
+              <Chip size="small" color="success" label="GP relay connected" />
             ) : (
               <Alert severity="error">
                 GP relay not detected on this machine - it must be running to receive (a receive posts the

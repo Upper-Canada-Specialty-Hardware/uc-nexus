@@ -100,6 +100,8 @@ export interface PurchaseOrder {
   requestNumber: string;
   projectId: string | null;
   status: string;
+  gpVendorId: string | null;
+  vendorNameSnapshot: string | null;
   vendor: VendorRef | null;
   vendorQuoteNumber: string | null;
   notes: string | null;
@@ -166,13 +168,19 @@ function poDisplayId(po: PurchaseOrder): string {
   return po.poNumber ?? po.requestNumber;
 }
 
+// The GP vendor snapshot (issue #200) is the source of truth for display; the local vendor FK is only
+// a fallback for rows created before the snapshot existed.
+function poVendorName(po: PurchaseOrder): string {
+  return po.vendorNameSnapshot ?? po.vendor?.name ?? '';
+}
+
 function matchesFilter(po: PurchaseOrder, f: FilterState): boolean {
   if (f.poSearch) {
     if (!poDisplayId(po).toLowerCase().includes(f.poSearch.toLowerCase())) return false;
   }
   if (f.statuses.size > 0 && !f.statuses.has(po.status)) return false;
   if (f.vendorSearch) {
-    if (!(po.vendor?.name ?? '').toLowerCase().includes(f.vendorSearch.toLowerCase())) return false;
+    if (!poVendorName(po).toLowerCase().includes(f.vendorSearch.toLowerCase())) return false;
   }
   if (f.orderedFrom || f.orderedTo) {
     if (!po.orderedAt) return false;
@@ -204,10 +212,10 @@ function comparePOs(a: PurchaseOrder, b: PurchaseOrder, sort: SortState): number
       bv = b.status;
       break;
     case 'vendor':
-      av = (a.vendor?.name ?? '').toLowerCase();
-      bv = (b.vendor?.name ?? '').toLowerCase();
-      aNull = !a.vendor;
-      bNull = !b.vendor;
+      av = poVendorName(a).toLowerCase();
+      bv = poVendorName(b).toLowerCase();
+      aNull = !av;
+      bNull = !bv;
       break;
     case 'orderedAt':
       av = a.orderedAt ?? '';
@@ -486,7 +494,7 @@ function POTableRow({ po, expanded, onToggle, onOpen, onRegister, relayConnected
           </Box>
         </TableCell>
         <TableCell sx={dataCellSx} onClick={onOpen}>
-          {po.vendor?.name || '-'}
+          {poVendorName(po) || '-'}
         </TableCell>
         <TableCell sx={dataCellSx} onClick={onOpen}>
           {po.orderedAt ? new Date(po.orderedAt).toLocaleDateString() : '-'}

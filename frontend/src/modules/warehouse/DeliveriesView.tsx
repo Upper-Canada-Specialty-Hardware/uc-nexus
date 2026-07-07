@@ -33,6 +33,7 @@ interface ExpectedDeliveryPO {
   id: string;
   poNumber: string | null;
   requestNumber: string;
+  vendorNameSnapshot: string | null;
   vendor: { id: string; name: string } | null;
   expectedDeliveryDate: string | null;
   orderedAt: string | null;
@@ -162,7 +163,7 @@ function UpcomingView({ projectId }: { projectId: string }) {
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flex: 1, mr: 2 }}>
                 <Typography sx={{ fontWeight: 600 }}>{po.poNumber ?? po.requestNumber}</Typography>
                 <Typography variant="body2" color="text.secondary">
-                  {po.vendor?.name ?? 'No vendor'}
+                  {po.vendorNameSnapshot ?? po.vendor?.name ?? 'No vendor'}
                 </Typography>
                 <Typography variant="body2" color="text.secondary" sx={{ ml: 'auto' }}>
                   {formatDate(po.expectedDeliveryDate)}

@@ -63,6 +63,8 @@ def create_po(
     cost_code: str | None = None,
     po_number: str | None = None,
     gp_company: str | None = None,
+    gp_vendor_id: str | None = None,
+    vendor_name_snapshot: str | None = None,
 ) -> PurchaseOrder:
     """Create a manual PO with line items. No hardware items are created.
 
@@ -70,7 +72,10 @@ def create_po(
     passing GP's returned po_number + gp_company. When those are present the PO is stamped and
     advanced DRAFT -> GP_REGISTERED in this SAME commit, so there is no window where a created DRAFT
     exists without its GP number (which would otherwise show "Register in GP" and let a retry create
-    a duplicate GP PO). Omitting them creates a plain DRAFT."""
+    a duplicate GP PO). Omitting them creates a plain DRAFT.
+
+    gp_vendor_id/vendor_name_snapshot are the GP vendor picked live from gpVendors at push time
+    (issue #200 - there is no local vendor-to-GP mirror), frozen onto the PO for display."""
     if not line_items:
         raise ValidationError("At least one line item is required", field="line_items")
 
@@ -101,6 +106,10 @@ def create_po(
         status=POStatus.DRAFT,
         notes=notes,
         cost_code=cleaned_cost_code,
+        gp_vendor_id=gp_vendor_id.strip() if gp_vendor_id and gp_vendor_id.strip() else None,
+        vendor_name_snapshot=(
+            vendor_name_snapshot.strip() if vendor_name_snapshot and vendor_name_snapshot.strip() else None
+        ),
     )
     session.add(po)
     session.flush()
@@ -139,7 +148,9 @@ def create_po(
         _assert_po_number_available(session, cleaned_number, project_id=project_id, exclude_po_id=po.id)
         po.po_number = cleaned_number
         po.gp_company = gp_company.strip() if gp_company and gp_company.strip() else None
-        if po.vendor_id is not None:
+        # gp_vendor_id (not the optional local vendor_id link) is what proves this PO is backed by a
+        # real GP vendor - issue #200 decoupled the two, so GP-registration must gate on the former.
+        if po.gp_vendor_id is not None:
             po.status = POStatus.GP_REGISTERED
             po.ordered_at = datetime.utcnow()
         session.flush()
@@ -150,10 +161,12 @@ def create_po(
 def register_po_in_gp(
     session: Session,
     po_id: uuid.UUID,
-    vendor_id: uuid.UUID,
+    gp_vendor_id: str,
+    vendor_name_snapshot: str,
     po_number: str,
     gp_company: str,
     line_items: list[dict],
+    vendor_id: uuid.UUID | None = None,
     cost_code: str | None = None,
 ) -> PurchaseOrder:
     """Register an imported DRAFT PO into GP (the import-acceptance path, issue #175).
@@ -164,6 +177,10 @@ def register_po_in_gp(
     pushed - assigning gp_line_ord positionally in that SAME order so a later relay /receipt can target
     each GP line - stamp GP's returned PONUMBER + company, and advance DRAFT -> GP_REGISTERED. All in one
     commit. A GP failure never reaches here, so on failure the PO stays Draft and untouched.
+
+    gp_vendor_id/vendor_name_snapshot are the GP vendor picked live from gpVendors at push time (issue
+    #200 - there is no local vendor-to-GP mirror). vendor_id optionally links a UC Nexus vendor record
+    (contact info) and, when given, must exist - it carries no GP-linkage meaning anymore.
     """
     from app.models.hardware import HardwareItem
 
@@ -175,19 +192,18 @@ def register_po_in_gp(
     if not line_items:
         raise ValidationError("At least one line item is required", field="line_items")
 
-    from app.models.vendor import Vendor as VendorModel
+    if vendor_id is not None:
+        from app.models.vendor import Vendor as VendorModel
 
-    vendor = session.get(VendorModel, vendor_id)
-    if vendor is None:
-        raise NotFoundError(f"Vendor {vendor_id} not found")
-    # A GP-registered PO must map to a GP vendor - the relay /po was pushed with this vendor's GP id, so
-    # the end-state vendor has to be the GP-linked one, not the imported placeholder. The dialog only
-    # offers GP-linked vendors; enforce it here too so a direct mutation can't break the invariant.
-    if not vendor.gp_vendor_id:
-        raise ValidationError(
-            "Vendor is not linked to GP (run GP Vendor Sync) and cannot back a GP-registered PO",
-            field="vendor_id",
-        )
+        if session.get(VendorModel, vendor_id) is None:
+            raise NotFoundError(f"Vendor {vendor_id} not found")
+
+    cleaned_gp_vendor_id = gp_vendor_id.strip() if gp_vendor_id else ""
+    if not cleaned_gp_vendor_id:
+        raise ValidationError("GP vendor is required to register a PO", field="gp_vendor_id")
+    cleaned_vendor_name_snapshot = vendor_name_snapshot.strip() if vendor_name_snapshot else ""
+    if not cleaned_vendor_name_snapshot:
+        raise ValidationError("GP vendor name is required to register a PO", field="gp_vendor_name")
 
     cleaned_po_number = po_number.strip() if po_number else ""
     if not cleaned_po_number:
@@ -261,7 +277,10 @@ def register_po_in_gp(
         for poli in removed:
             session.delete(poli)
 
-    po.vendor_id = vendor_id
+    if vendor_id is not None:
+        po.vendor_id = vendor_id
+    po.gp_vendor_id = cleaned_gp_vendor_id
+    po.vendor_name_snapshot = cleaned_vendor_name_snapshot
     po.cost_code = cost_code.strip() if cost_code and cost_code.strip() else None
     po.po_number = cleaned_po_number
     po.gp_company = cleaned_company

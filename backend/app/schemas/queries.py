@@ -74,7 +74,6 @@ from .types import (
     ReceiveRecord,
     RecentReceiveRecord,
     ReconciliationResult,
-    RelayCredential,
     RelayInstallInfo,
     RelayStatus,
     ReturnableLine,
@@ -170,7 +169,6 @@ def _vendor_to_type(v) -> Vendor:
     return Vendor(
         id=strawberry.ID(str(v.id)),
         name=v.name,
-        gp_vendor_id=v.gp_vendor_id,
         contact_name=v.contact_name,
         email=v.email,
         phone=v.phone,
@@ -237,6 +235,10 @@ def _po_to_type(po, receive_records=None) -> PurchaseOrder:
         status=po.status,
         cost_code=po.cost_code,
         gp_company=po.gp_company,
+        gp_vendor_id=po.gp_vendor_id,
+        # dev data is disposable - the local-vendor fallback only covers rows from before this column
+        # existed; every PO created going forward carries its own snapshot.
+        vendor_name_snapshot=po.vendor_name_snapshot or (vendor.name if vendor is not None else None),
         vendor=_vendor_to_type(vendor) if vendor is not None else None,
         vendor_quote_number=po.vendor_quote_number,
         notes=po.notes,
@@ -1032,16 +1034,6 @@ class Query:
         with SessionLocal() as session:
             v = session.get(VendorModel, uuid.UUID(str(id)))
             return _vendor_to_type(v) if v is not None else None
-
-    @strawberry.field
-    def relay_credential(self, info: strawberry.Info) -> RelayCredential:
-        """Return the relay Bearer secret to the authenticated user (the frontend sends it to the
-        on-prem relay). POC: the single enrolled install's secret."""
-        require_user(info)
-        with SessionLocal() as session:
-            secret = relay_repository.get_credential(session)
-            session.commit()
-            return RelayCredential(secret=secret)
 
     @strawberry.field
     def relay_installs(self, info: strawberry.Info) -> list[RelayInstallInfo]:

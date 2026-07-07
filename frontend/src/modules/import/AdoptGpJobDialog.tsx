@@ -25,7 +25,7 @@ interface GpJobOption {
 }
 
 // GP companies the relay is allowed to read from (sandboxes for the POC) - mirrors the list used
-// by GpPurchaseOrderDialog / GpVendorSyncPage.
+// by GpPurchaseOrderDialog.
 const COMPANIES = ['TUBC', 'TUCSH'];
 
 interface AdoptGpJobDialogProps {
