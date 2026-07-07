@@ -610,6 +610,15 @@ export const GET_RELAY_STATUS = gql`
   }
 `;
 
+export const GET_GP_JOBS = gql`
+  query GetGpJobs($company: String!) {
+    gpJobs(company: $company) {
+      jobNumber
+      jobName
+    }
+  }
+`;
+
 export const GET_GP_BUYERS = gql`
   query GetGpBuyers($company: String!) {
     gpBuyers(company: $company)

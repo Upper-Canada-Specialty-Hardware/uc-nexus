@@ -482,9 +482,9 @@ export const FINALIZE_IMPORT_SESSION = gql`
   }
 `;
 
-export const CREATE_PROJECT = gql`
-  mutation CreateProject($input: CreateProjectInput!) {
-    createProject(input: $input) {
+export const ADOPT_GP_JOB = gql`
+  mutation AdoptGpJob($input: AdoptGpJobInput!) {
+    adoptGpJob(input: $input) {
       id
       projectId
       description
