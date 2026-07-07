@@ -4,8 +4,9 @@ from datetime import date
 import strawberry
 from sqlalchemy import select
 
-from app.auth import require_admin
+from app.auth import require_admin, require_user, resolve_display_name
 from app.database import SessionLocal
+from app.errors import NotFoundError, ValidationError
 from app.repositories import (
     notification_repository,
     po_repository,
@@ -19,6 +20,8 @@ from app.repositories import (
     warehouse_admin_repository,
     warehouse_repository,
 )
+from app.services import gp_po
+from app.services.relay_gateway import gateway as relay_gateway
 
 from .enums import ApproveOutcome, PODocumentType
 from .inputs import (
@@ -363,13 +366,21 @@ class Mutation:
 
     # PO
     @strawberry.mutation
-    def create_po(self, input: CreatePOInput) -> PurchaseOrder:
+    async def create_po(self, info: strawberry.Info, input: CreatePOInput) -> PurchaseOrder:
+        """Issue #199: GP-first, server-side. Pushes the PO to GP via relay_call (create_po) BEFORE
+        persisting anything, then records it already carrying GP's returned PONUMBER + company in one
+        commit (it lands GP-Registered) - there is never a numberless DRAFT that could be re-registered
+        into a duplicate GP PO."""
         from sqlalchemy.orm import selectinload
 
+        from app.models.project import Project as ProjectModel
         from app.models.purchase_order import PurchaseOrder as POModel
+        from app.models.vendor import Vendor as VendorModel
+
+        require_user(info)
 
         project_id = uuid.UUID(str(input.project_id)) if input.project_id else None
-        vendor_id = uuid.UUID(str(input.vendor_id)) if input.vendor_id else None
+        vendor_id = uuid.UUID(str(input.vendor_id))
         line_items_data = [
             {
                 "hardware_category": li.hardware_category,
@@ -383,6 +394,33 @@ class Mutation:
         ]
 
         with SessionLocal() as session:
+            vendor = session.get(VendorModel, vendor_id)
+            if vendor is None:
+                raise NotFoundError(f"Vendor {vendor_id} not found")
+            if not vendor.gp_vendor_id:
+                raise ValidationError(
+                    "Vendor is not linked to GP (run GP Vendor Sync) and cannot be pushed to GP",
+                    field="vendor_id",
+                )
+
+            job_number = None
+            if project_id is not None:
+                project = session.get(ProjectModel, project_id)
+                if project is None:
+                    raise NotFoundError(f"Project {project_id} not found")
+                job_number = project.project_id
+
+            payload = gp_po.build_create_po_payload(
+                vendor_gp_id=vendor.gp_vendor_id,
+                vendor_contact_name=vendor.contact_name,
+                buyer_id=input.buyer_id,
+                job_number=job_number,
+                cost_code=input.cost_code,
+                po_number=input.po_number,
+                line_items=line_items_data,
+            )
+            gp_result = await relay_gateway.relay_call(input.gp_company, "create_po", payload)
+
             po = po_repository.create_po(
                 session,
                 line_items=line_items_data,
@@ -390,8 +428,8 @@ class Mutation:
                 vendor_id=vendor_id,
                 notes=input.notes,
                 cost_code=input.cost_code,
-                po_number=input.po_number,
-                gp_company=input.gp_company,
+                po_number=gp_result["po_number"],
+                gp_company=gp_result["company"],
             )
             session.commit()
 
@@ -412,15 +450,20 @@ class Mutation:
             return _po_to_type(refreshed_po)
 
     @strawberry.mutation
-    def register_po_in_gp(self, input: RegisterPOInput) -> PurchaseOrder:
-        """Register an imported DRAFT PO into GP (issue #175, the import-acceptance path). The frontend
-        runs GP-first - it calls the relay /po itself and only invokes this on success - so this records
-        GP's PONUMBER + company, maps the PO to the chosen GP vendor + cost code, replaces the draft's
-        line items with the (possibly edited) set that was pushed (assigning gp_line_ord positionally),
-        and advances DRAFT -> GP_REGISTERED. The end state is identical to a manually created PO."""
+    async def register_po_in_gp(self, info: strawberry.Info, input: RegisterPOInput) -> PurchaseOrder:
+        """Register an imported DRAFT PO into GP (issue #175, the import-acceptance path; brokered
+        server-side as of issue #199). Pushes the PO to GP via relay_call (create_po) BEFORE persisting
+        anything, then maps the PO to the chosen GP vendor + cost code, replaces the draft's line items
+        with the (possibly edited) set that was pushed (assigning gp_line_ord positionally), records GP's
+        returned PONUMBER + company, and advances DRAFT -> GP_REGISTERED. The end state is identical to a
+        manually created PO."""
         from sqlalchemy.orm import selectinload
 
+        from app.models.project import Project as ProjectModel
         from app.models.purchase_order import PurchaseOrder as POModel
+        from app.models.vendor import Vendor as VendorModel
+
+        require_user(info)
 
         pid = uuid.UUID(str(input.po_id))
         vid = uuid.UUID(str(input.vendor_id))
@@ -437,12 +480,41 @@ class Mutation:
             for li in input.line_items
         ]
         with SessionLocal() as session:
+            po = po_repository.get_purchase_order(session, pid)
+            if po is None:
+                raise NotFoundError(f"Purchase order {pid} not found")
+
+            vendor = session.get(VendorModel, vid)
+            if vendor is None:
+                raise NotFoundError(f"Vendor {vid} not found")
+            if not vendor.gp_vendor_id:
+                raise ValidationError(
+                    "Vendor is not linked to GP (run GP Vendor Sync) and cannot back a GP-registered PO",
+                    field="vendor_id",
+                )
+
+            job_number = None
+            if po.project_id is not None:
+                project = session.get(ProjectModel, po.project_id)
+                job_number = project.project_id if project else None
+
+            payload = gp_po.build_create_po_payload(
+                vendor_gp_id=vendor.gp_vendor_id,
+                vendor_contact_name=vendor.contact_name,
+                buyer_id=input.buyer_id,
+                job_number=job_number,
+                cost_code=input.cost_code,
+                po_number=None,
+                line_items=line_items_data,
+            )
+            gp_result = await relay_gateway.relay_call(input.gp_company, "create_po", payload)
+
             po_repository.register_po_in_gp(
                 session,
                 pid,
                 vendor_id=vid,
-                po_number=input.po_number,
-                gp_company=input.gp_company,
+                po_number=gp_result["po_number"],
+                gp_company=gp_result["company"],
                 line_items=line_items_data,
                 cost_code=input.cost_code,
             )
@@ -573,9 +645,14 @@ class Mutation:
 
     # Warehouse - Receiving
     @strawberry.mutation
-    def create_receive(self, input: CreateReceiveInput) -> ReceiveRecord:
+    async def create_receive(self, info: strawberry.Info, input: CreateReceiveInput) -> ReceiveRecord:
+        """Issue #199: GP-first, server-side. Posts the GP receipt via relay_call (create_receipt)
+        BEFORE persisting the UC Nexus receive, and received_by is the acting UC Nexus user resolved
+        from the Clerk token - not a client-supplied string, and not the relay's Windows account."""
+        user = require_user(info)
+        received_by = resolve_display_name(user["user_id"])
+
         po_id = uuid.UUID(str(input.po_id))
-        received_by = input.received_by
         line_items_data = [
             {
                 "po_line_item_id": uuid.UUID(str(li.po_line_item_id)),
@@ -595,6 +672,38 @@ class Mutation:
         ]
         warehouse_id = uuid.UUID(str(input.warehouse_id)) if input.warehouse_id else None
         with SessionLocal() as session:
+            po = po_repository.get_purchase_order(session, po_id)
+            if po is None:
+                raise NotFoundError(f"Purchase order {po_id} not found")
+            if not po.gp_company or not po.po_number:
+                raise ValidationError("PO must be registered in GP before it can be received", field="po_id")
+
+            poli_by_id = {li.id: li for li in po.line_items}
+            receipt_line_items = []
+            for li in line_items_data:
+                poli = poli_by_id.get(li["po_line_item_id"])
+                if poli is None:
+                    raise NotFoundError(f"PO line item {li['po_line_item_id']} not found on this PO")
+                if poli.gp_line_ord is None:
+                    raise ValidationError(
+                        f"Line {poli.product_code} has no GP line mapping; re-create the PO through GP",
+                        field="line_items",
+                    )
+                receipt_line_items.append(
+                    {
+                        "gp_line_ord": poli.gp_line_ord,
+                        "quantity": li["quantity_received"],
+                        "locations": li["locations"],
+                    }
+                )
+
+            payload = gp_po.build_create_receipt_payload(
+                po_number=po.po_number,
+                received_by=received_by,
+                line_items=receipt_line_items,
+            )
+            await relay_gateway.relay_call(po.gp_company, "create_receipt", payload)
+
             receive_record = warehouse_repository.create_receive(
                 session, po_id, received_by, line_items_data, warehouse_id=warehouse_id
             )

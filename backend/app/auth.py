@@ -122,6 +122,15 @@ def require_user(info) -> dict:
     return {"user_id": user_id}
 
 
+def resolve_display_name(user_id: str) -> str:
+    """Full name (falling back to email, then the Clerk user id) for the acting user - issue #199's
+    server-side received_by, so a receive records the Clerk-authenticated caller, not the relay's
+    Windows account. Mirrors the frontend's useIdentity() fullName-or-email convention."""
+    profile = user_repository.get_user(user_id)
+    full_name = f"{profile['first_name']} {profile['last_name']}".strip()
+    return full_name or profile["email"] or user_id
+
+
 def require_admin(info) -> dict:
     """Enforce that the caller holds the Admin/Manager role. Returns {user_id, roles}."""
     request = info.context["request"]

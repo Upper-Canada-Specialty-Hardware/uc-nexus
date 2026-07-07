@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import {
   Typography,
   Box,
@@ -20,7 +20,6 @@ import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useMutation, useQuery } from '@apollo/client/react';
 import { useApolloClient } from '@apollo/client/react';
-import { useIdentity } from '../../hooks/useIdentity';
 import { useToast } from '../../components/Toast';
 import Modal from '../../components/Modal';
 import ConfirmDialog from '../../components/ConfirmDialog';
@@ -28,12 +27,7 @@ import { useNavigate } from 'react-router-dom';
 import { GET_PO_RECEIVING_DETAILS, GET_WAREHOUSES } from '../../graphql/queries';
 import { CREATE_RECEIVE } from '../../graphql/mutations';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
-import {
-  checkRelayHealth,
-  postRelayReceipt,
-  type RelayHealth,
-  type RelayReceiptLine,
-} from '../../relay/relayClient';
+import { checkRelayHealth, type RelayHealth } from '../../relay/relayClient';
 
 // ---- Types ----
 
@@ -102,7 +96,6 @@ function emptyDraft(quantity: number): LocationDraft {
 }
 
 export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps) {
-  const { displayName } = useIdentity();
   const { showToast } = useToast();
   const navigate = useNavigate();
   const client = useApolloClient();
@@ -124,10 +117,6 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
   // GP relay presence. A receive must reach GP to count, so the relay must be up to receive at all.
   const [relayHealth, setRelayHealth] = useState<RelayHealth | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  // POs whose GP receipt already posted but whose UC Nexus record hasn't landed yet. A retry skips
-  // re-posting their GP receipt so it isn't double-counted (GP would reject it as over-receipt). Cleared
-  // when the modal (re)opens.
-  const gpReceiptPostedRef = useRef<Set<string>>(new Set());
 
   const [createReceive] = useMutation(CREATE_RECEIVE);
 
@@ -184,7 +173,6 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
       setMutationError(null);
       setSucceeded(false);
       setLineLocations({});
-      gpReceiptPostedRef.current = new Set();
       fetchPODetails(poIds);
     }
   }, [open, poIds, fetchPODetails]);
@@ -382,15 +370,11 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
     setMutationError(null);
     setSubmitting(true);
 
-    // Same two-call shape as Create PO: for each PO, post the GP receipt via the relay FIRST, then record
-    // the UC Nexus receive. One relay line per PO line carrying the total received qty, so the relay's
-    // remaining-quantity check stays authoritative; the per-bin placement + deficient count stay
-    // UC-Nexus-side (sent to createReceive). rack_location composes the assigned bins (aisle-bay-bin).
-    //
-    // POs are committed one at a time and INDEPENDENTLY. A failure on a later PO must not abandon the ones
-    // already committed: those are dropped from the form and a refetch runs regardless, so the user sees
-    // what landed and can't re-post them. A PO whose GP receipt posted but whose UC record failed is
-    // remembered (gpReceiptPostedRef) so a retry finishes the UC record WITHOUT a second GP receipt.
+    // Each createReceive call brokers the GP receipt server-side (issue #199) before persisting the UC
+    // Nexus row, so a PO either lands fully in both or not at all. POs are committed one at a time and
+    // INDEPENDENTLY: a failure on a later PO must not abandon the ones already committed - those are
+    // dropped from the form and a refetch runs regardless, so the user sees what landed and can't
+    // re-post them.
     const completed: string[] = [];
     let failureMessage: string | null = null;
 
@@ -402,48 +386,14 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
         const details = poDetailsMap[poId];
         const poLabel = details?.poNumber ?? poId;
 
-        const relayLines: RelayReceiptLine[] = [];
-        let mappingError = false;
-        for (const li of poLineItems) {
-          const receiveNow = receiveQuantities[li.id] ?? 0;
-          if (li.gpLineOrd == null) {
-            failureMessage = `Cannot receive ${poLabel}: line ${li.productCode} has no GP line mapping. Re-create the PO through GP.`;
-            mappingError = true;
-            break;
-          }
-          const racks = Array.from(
-            new Set(draftsFor(li.id, receiveNow).map((d) => `${d.aisle.trim()}-${d.bay.trim()}-${d.bin.trim()}`)),
-          );
-          relayLines.push({
-            po_line_ord: li.gpLineOrd,
-            quantity: receiveNow,
-            rack_location: racks.join(', ').slice(0, 255),
-          });
-        }
-        if (mappingError) break;
-
-        // GP first - unless this PO's GP receipt already posted on a prior attempt (UC recording then
-        // failed); re-posting would double-count. details.gpCompany / poNumber are guaranteed by the gate.
-        if (!gpReceiptPostedRef.current.has(poId)) {
-          try {
-            await postRelayReceipt({
-              company: details!.gpCompany!,
-              po_number: details!.poNumber!,
-              lines: relayLines,
-              received_by: displayName,
-            });
-            gpReceiptPostedRef.current.add(poId);
-          } catch (err: unknown) {
-            const message = err instanceof Error ? err.message : 'An unknown error occurred';
-            failureMessage = `GP rejected the receipt for ${poLabel}, so nothing was recorded: ${message}`;
-            break;
-          }
+        const missingMapping = poLineItems.find((li) => li.gpLineOrd == null);
+        if (missingMapping) {
+          failureMessage = `Cannot receive ${poLabel}: line ${missingMapping.productCode} has no GP line mapping. Re-create the PO through GP.`;
+          break;
         }
 
-        // GP receipt posted - now record the UC Nexus receive.
         const input = {
           poId,
-          receivedBy: displayName,
           warehouseId: warehouseId || null,
           lineItems: poLineItems.map((li) => {
             const receiveNow = receiveQuantities[li.id] ?? 0;
@@ -466,12 +416,10 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
           await createReceive({ variables: { input } });
         } catch (err: unknown) {
           const message = err instanceof Error ? err.message : 'An unknown error occurred';
-          failureMessage = `GP receipt posted for ${poLabel}, but recording it in UC Nexus failed. Retry to finish recording it - the GP receipt won't be posted again: ${message}`;
+          failureMessage = `Receiving ${poLabel} failed, so nothing was recorded for it: ${message}`;
           break;
         }
 
-        // Fully committed in both GP and UC Nexus.
-        gpReceiptPostedRef.current.delete(poId);
         completed.push(poId);
       }
     } finally {
@@ -508,7 +456,6 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
     setSucceeded(true);
   }, [
     poIds,
-    displayName,
     warehouseId,
     lineItemsToReceive,
     receiveQuantities,
@@ -528,7 +475,6 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
     setSucceeded(false);
     setConfirmOpen(false);
     setLineLocations({});
-    gpReceiptPostedRef.current = new Set();
     onClose();
   }, [onClose]);
 

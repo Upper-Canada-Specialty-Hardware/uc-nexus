@@ -175,18 +175,23 @@ class CreatePOLineItemInput:
 
 @strawberry.input
 class CreatePOInput:
+    """Issue #199: GP-first, server-side. The resolver pushes this to GP via relay_call (create_po)
+    BEFORE persisting anything, using GP's returned PONUMBER + company, so the PO is created already
+    GP-registered in one commit (no numberless DRAFT window)."""
+
     line_items: list[CreatePOLineItemInput]
+    vendor_id: strawberry.ID
+    gp_company: str
+    # GP buyer (POP00101), picked from the gpBuyers dropdown - always sent so the relay's own
+    # per-workstation buyer fallback never decides it for a server-brokered call.
+    buyer_id: str
     project_id: strawberry.ID | None = None
-    vendor_id: strawberry.ID | None = None
     notes: str | None = None
     # GP cost code for a project-linked PO (the issue #121 dropdown, 'phase-step-element').
     # Applied to every job-cost line when the PO is pushed to GP via the relay.
     cost_code: str | None = None
-    # GP's returned PONUMBER + the company it lives in. The frontend pushes the PO to the relay FIRST
-    # and passes these on success, so the PO is created already GP-registered in one commit (no
-    # numberless DRAFT window). Omitted for a plain draft.
+    # Optional custom PO number to request from GP; the relay reserves GP's next number when omitted.
     po_number: str | None = None
-    gp_company: str | None = None
 
 
 @strawberry.input
@@ -203,14 +208,17 @@ class RegisterPOLineItemInput:
 
 @strawberry.input
 class RegisterPOInput:
-    """Register an imported DRAFT PO into GP (issue #175). Sent by the resolver only after the relay /po
-    push succeeded. line_items is the (possibly edited) set the user pushed, in the SAME order sent to the
-    relay - the backend assigns gp_line_ord positionally from it."""
+    """Register an imported DRAFT PO into GP (issue #175; brokered server-side as of issue #199). The
+    resolver pushes this to GP via relay_call (create_po) BEFORE persisting anything. line_items is the
+    (possibly edited) set pushed to GP, in the SAME order - the backend assigns gp_line_ord positionally
+    from it."""
 
     po_id: strawberry.ID
     vendor_id: strawberry.ID
-    po_number: str
     gp_company: str
+    # GP buyer (POP00101), picked from the gpBuyers dropdown - always sent so the relay's own
+    # per-workstation buyer fallback never decides it for a server-brokered call.
+    buyer_id: str
     line_items: list[RegisterPOLineItemInput]
     cost_code: str | None = None
 
@@ -312,8 +320,10 @@ class LocationInput:
 
 @strawberry.input
 class CreateReceiveInput:
+    """Issue #199: GP-first, server-side. received_by is no longer a client-supplied field - the
+    resolver resolves the acting UC Nexus user from the Clerk token instead."""
+
     po_id: strawberry.ID
-    received_by: str
     warehouse_id: strawberry.ID | None = None
     line_items: list[ReceiveLineItemInput] = strawberry.field(default_factory=list)
 

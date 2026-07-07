@@ -22,7 +22,6 @@ import { GET_GP_BUYERS, GET_GP_COST_CODES, GET_PROJECTS, GET_RELAY_STATUS, GET_V
 import type { Project } from '../../types/project';
 import type { PurchaseOrder } from './index';
 import RelayStatusChip from '../../relay/RelayStatusChip';
-import { postRelayPo, type RelayPoRequest } from '../../relay/relayClient';
 
 // --- Types ---
 
@@ -141,8 +140,10 @@ export default function GpPurchaseOrderDialog({
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [gpBusy, setGpBusy] = useState(false);
 
-  const [createPO, { loading: createLoading }] = useMutation(CREATE_PO);
-  const [registerPoInGp, { loading: registerLoading }] = useMutation(REGISTER_PO_IN_GP);
+  const [createPO, { loading: createLoading }] = useMutation<{ createPo: { poNumber: string | null } }>(CREATE_PO);
+  const [registerPoInGp, { loading: registerLoading }] = useMutation<{ registerPoInGp: { poNumber: string | null } }>(
+    REGISTER_PO_IN_GP,
+  );
 
   // GP relay status. The page passes relayConnected in (single source of truth); when it doesn't, the
   // dialog falls back to querying relayStatus itself so it stays usable standalone.
@@ -295,93 +296,57 @@ export default function GpPurchaseOrderDialog({
     // costCode already holds GP's 'phase-step-element' (e.g. '310-000-3'); the element is the real
     // one from JC00701, not a hardcoded 2. A stock PO (no project) carries no cost code.
     const gpCostCode = isJob ? costCode : null;
-    const today = new Date().toISOString().slice(0, 10);
-
-    const relayReq: RelayPoRequest = {
-      company,
-      header: {
-        vendor_id: selectedVendor!.gpVendorId!,
-        buyer_id: buyerId,
-        confirm_with: (selectedVendor?.contactName || buyerId).slice(0, 20),
-        doc_date: today,
-      },
-      lines: lineItems.map((li) => ({
-        item_number: (li.orderAs.trim() || li.productCode.trim()).slice(0, 30),
-        item_description: `${li.productCode.trim()} ${li.hardwareCategory.trim()}`.trim().slice(0, 100),
-        quantity: parseInt(li.orderedQuantity, 10),
-        unit_cost: parseFloat(li.unitCost),
-        location_code: 'VANCOUVER',
-        uofm: 'Each',
-        product_indicator: isJob ? 2 : 1,
-        job_number: isJob ? selectedProject!.projectId : null,
-        cost_code: gpCostCode,
-      })),
-    };
+    const lineItemsInput = lineItems.map((li) => ({
+      hardwareCategory: li.hardwareCategory.trim(),
+      productCode: li.productCode.trim(),
+      orderedQuantity: parseInt(li.orderedQuantity, 10),
+      unitCost: parseFloat(li.unitCost),
+      classification: li.classification || null,
+      orderAs: li.orderAs.trim(),
+    }));
 
     setGpBusy(true);
-    let gpPoNumber: string | null = null;
     try {
-      // GP first: if GP rejects it, nothing changes in UC Nexus.
-      const gpResp = await postRelayPo(relayReq);
-      gpPoNumber = gpResp.po_number;
-
+      // GP-first, server-side (issue #199): the resolver pushes to GP via the relay before persisting
+      // anything, so a GP rejection changes nothing in UC Nexus.
       if (registerPo) {
-        // Register path: GP accepted, so map the existing draft to the GP vendor + cost code, persist the
-        // (possibly edited) line set, record GP's number + company, and advance Draft -> GP-Registered.
-        await registerPoInGp({
+        const resp = await registerPoInGp({
           variables: {
             input: {
               poId: registerPo.id,
               vendorId,
-              poNumber: gpPoNumber,
+              buyerId,
               gpCompany: company,
               costCode: gpCostCode,
-              lineItems: lineItems.map((li) => ({
+              lineItems: lineItems.map((li, idx) => ({
                 id: li.id ?? null,
-                hardwareCategory: li.hardwareCategory.trim(),
-                productCode: li.productCode.trim(),
-                orderedQuantity: parseInt(li.orderedQuantity, 10),
-                unitCost: parseFloat(li.unitCost),
-                classification: li.classification || null,
-                orderAs: li.orderAs.trim(),
+                ...lineItemsInput[idx],
               })),
             },
           },
         });
-        showToast(`PO ${gpPoNumber} registered in GP`, 'success');
+        showToast(`PO ${resp.data?.registerPoInGp?.poNumber} registered in GP`, 'success');
       } else {
-        // Create path: GP accepted, so create it in UC Nexus already carrying GP's number + company in
-        // one atomic mutation (it lands GP-Registered). No separate record step, so there is never a
-        // numberless DRAFT that could be re-registered into a duplicate GP PO.
-        const ucInput = {
-          projectId: projectId || null,
-          vendorId: vendorId || null,
-          notes: notes.trim() || null,
-          costCode: gpCostCode,
-          poNumber: gpPoNumber,
-          gpCompany: company,
-          lineItems: lineItems.map((li) => ({
-            hardwareCategory: li.hardwareCategory.trim(),
-            productCode: li.productCode.trim(),
-            orderedQuantity: parseInt(li.orderedQuantity, 10),
-            unitCost: parseFloat(li.unitCost),
-            classification: li.classification || null,
-            orderAs: li.orderAs.trim(),
-          })),
-        };
-        await createPO({ variables: { input: ucInput } });
-        showToast(`PO ${gpPoNumber} created in GP and UC Nexus`, 'success');
+        const resp = await createPO({
+          variables: {
+            input: {
+              projectId: projectId || null,
+              vendorId,
+              buyerId,
+              notes: notes.trim() || null,
+              costCode: gpCostCode,
+              gpCompany: company,
+              lineItems: lineItemsInput,
+            },
+          },
+        });
+        showToast(`PO ${resp.data?.createPo?.poNumber} created in GP and UC Nexus`, 'success');
       }
 
       onSubmitted();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Failed to push PO to GP';
-      if (!gpPoNumber) {
-        showToast(`GP did not accept the PO, so nothing was changed: ${message}`, 'error');
-      } else {
-        const step = registerPo ? 'registering it in UC Nexus' : 'recording it in UC Nexus';
-        showToast(`GP PO ${gpPoNumber} was created, but ${step} failed: ${message}`, 'error');
-      }
+      showToast(`GP did not accept the PO, so nothing was changed: ${message}`, 'error');
     } finally {
       setGpBusy(false);
     }
@@ -390,10 +355,8 @@ export default function GpPurchaseOrderDialog({
     isJob,
     costCode,
     company,
-    selectedVendor,
     buyerId,
     lineItems,
-    selectedProject,
     projectId,
     vendorId,
     notes,
