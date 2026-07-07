@@ -18,19 +18,11 @@ import Modal from '../../components/Modal';
 import VendorSelect from '../../components/VendorSelect';
 import { useToast } from '../../components/Toast';
 import { CREATE_PO, REGISTER_PO_IN_GP } from '../../graphql/mutations';
-import { GET_PROJECTS, GET_VENDORS } from '../../graphql/queries';
+import { GET_GP_BUYERS, GET_GP_COST_CODES, GET_PROJECTS, GET_RELAY_STATUS, GET_VENDORS } from '../../graphql/queries';
 import type { Project } from '../../types/project';
 import type { PurchaseOrder } from './index';
 import RelayStatusChip from '../../relay/RelayStatusChip';
-import {
-  checkRelayHealth,
-  getRelayBuyers,
-  getRelayCostCodes,
-  postRelayPo,
-  type RelayCostCode,
-  type RelayHealth,
-  type RelayPoRequest,
-} from '../../relay/relayClient';
+import { postRelayPo, type RelayPoRequest } from '../../relay/relayClient';
 
 // --- Types ---
 
@@ -51,6 +43,12 @@ interface VendorOption {
   name: string;
   gpVendorId: string | null;
   contactName: string | null;
+}
+
+interface GpCostCode {
+  costCode: string; // two-segment number 'cc1-cc2' e.g. '310-000'
+  description: string | null;
+  costElement: number; // GP Cost_Element (varies by code); the /po cost_code trailing digit
 }
 
 const EMPTY_LINE_ITEM: Omit<LineItemRow, 'key' | 'id'> = {
@@ -104,9 +102,9 @@ interface GpPurchaseOrderDialogProps {
   onClose: () => void;
   onSubmitted: () => void;
   defaultProjectId?: string;
-  // Relay status owned by the PO page (single source of truth). When omitted, the dialog probes
-  // /health itself so it stays usable standalone (e.g. opened from the PO detail modal).
-  relayHealth?: RelayHealth | null;
+  // Relay status owned by the PO page (single source of truth). null while its first check is in
+  // flight. When omitted, the dialog queries relayStatus itself so it stays usable standalone.
+  relayConnected?: boolean | null;
   // When provided, the dialog registers this existing Draft PO into GP instead of creating a new one.
   registerPo?: PurchaseOrder | null;
 }
@@ -118,7 +116,7 @@ export default function GpPurchaseOrderDialog({
   onClose,
   onSubmitted,
   defaultProjectId,
-  relayHealth: relayHealthProp,
+  relayConnected: relayConnectedProp,
   registerPo,
 }: GpPurchaseOrderDialogProps) {
   const { showToast } = useToast();
@@ -141,18 +139,19 @@ export default function GpPurchaseOrderDialog({
   const [nextKey, setNextKey] = useState(2);
   const [lineItems, setLineItems] = useState<LineItemRow[]>([{ key: 1, ...EMPTY_LINE_ITEM }]);
   const [errors, setErrors] = useState<Record<string, string>>({});
-
-  // GP relay state. The page passes relayHealth in (single source of truth); when it doesn't, the
-  // dialog falls back to probing /health itself via selfRelayHealth.
-  const [selfRelayHealth, setSelfRelayHealth] = useState<RelayHealth | null>(null);
-  const relayHealth = relayHealthProp !== undefined ? relayHealthProp : selfRelayHealth;
-  const [buyers, setBuyers] = useState<string[]>([]);
-  const [costCodes, setCostCodes] = useState<RelayCostCode[]>([]);
-  const [costCodesLoading, setCostCodesLoading] = useState(false);
   const [gpBusy, setGpBusy] = useState(false);
 
   const [createPO, { loading: createLoading }] = useMutation(CREATE_PO);
   const [registerPoInGp, { loading: registerLoading }] = useMutation(REGISTER_PO_IN_GP);
+
+  // GP relay status. The page passes relayConnected in (single source of truth); when it doesn't, the
+  // dialog falls back to querying relayStatus itself so it stays usable standalone.
+  const { data: selfRelayStatusData } = useQuery<{ relayStatus: { connected: boolean } }>(GET_RELAY_STATUS, {
+    skip: relayConnectedProp !== undefined || !open,
+  });
+  const selfRelayConnected: boolean | null = selfRelayStatusData ? selfRelayStatusData.relayStatus.connected : null;
+  const relayStatus: boolean | null = relayConnectedProp !== undefined ? relayConnectedProp : selfRelayConnected;
+  const relayConnected = relayStatus === true;
 
   const selectedVendor = useMemo(
     () => vendorsData?.vendors.find((v) => v.id === vendorId) ?? null,
@@ -160,7 +159,28 @@ export default function GpPurchaseOrderDialog({
   );
   const selectedProject = useMemo(() => projects.find((p) => p.id === projectId) ?? null, [projects, projectId]);
   const isJob = !!projectId && !!selectedProject;
-  const relayConnected = relayHealth?.ok === true;
+  const jobNumber = selectedProject?.projectId ?? null;
+
+  // Registered buyers for the chosen company (POP00101), live from GP via the backend relay channel.
+  const { data: buyersData } = useQuery<{ gpBuyers: string[] }>(GET_GP_BUYERS, {
+    variables: { company },
+    skip: !open || !relayConnected,
+    fetchPolicy: 'network-only',
+  });
+  const buyers = buyersData?.gpBuyers ?? [];
+
+  // This job's cost codes from GP (JC00701), live via the backend relay channel. Cost codes are
+  // per-job and each carries its own Cost_Element, so the dropdown comes from GP, not a static list.
+  // A stock PO (no project) carries no cost code.
+  const { data: costCodesData, loading: costCodesLoading } = useQuery<{ gpCostCodes: GpCostCode[] }>(
+    GET_GP_COST_CODES,
+    {
+      variables: { company, job: jobNumber ?? '' },
+      skip: !open || !relayConnected || !jobNumber,
+      fetchPolicy: 'network-only',
+    },
+  );
+  const costCodes = costCodesData?.gpCostCodes ?? [];
 
   // Seed the form when the dialog opens. Create mode -> empty; register mode -> the draft's values
   // (project locked, line items carrying their ids so edits map back). The vendor is seeded separately
@@ -222,76 +242,13 @@ export default function GpPurchaseOrderDialog({
     setVendorConfirmed(true);
   }, []);
 
-  // Probe relay presence while the dialog is open - only when the page didn't pass relayHealth in.
-  useEffect(() => {
-    if (!open || relayHealthProp !== undefined) return;
-    let cancelled = false;
-    void (async () => {
-      const h = await checkRelayHealth();
-      if (!cancelled) setSelfRelayHealth(h);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [open, relayHealthProp]);
-
-  // Load registered buyers for the chosen company whenever the relay is up and the dialog is open.
-  useEffect(() => {
-    if (!open) return;
-    if (!relayConnected) {
-      setBuyers([]);
-      return;
-    }
-    let cancelled = false;
-    void (async () => {
-      try {
-        const b = await getRelayBuyers(company);
-        if (!cancelled) setBuyers(b);
-      } catch {
-        if (!cancelled) setBuyers([]);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [open, relayConnected, company]);
-
-  // Load this job's cost codes from GP (JC00701) whenever the project/company changes. Cost codes
-  // are per-job and each carries its own Cost_Element, so the dropdown comes from the relay, not a
-  // static list. A stock PO (no project) carries no cost code.
-  const jobNumber = selectedProject?.projectId ?? null;
   // Clear the selected cost code only when the job or company changes - a code from another job must
-  // not carry over. Deliberately NOT keyed on relayConnected: the page polls the relay /health every
-  // 10s, and a transient blip must not wipe the user's pick mid-form.
+  // not carry over. Deliberately NOT keyed on relayConnected: the page polls relayStatus every 10s,
+  // and a transient blip must not wipe the user's pick mid-form.
   useEffect(() => {
     if (!open) return;
     setCostCode('');
   }, [open, company, jobNumber]);
-
-  // Load the job's cost codes from GP whenever the relay is up. A relay drop clears the dropdown options
-  // (the field is disabled while down) but leaves the chosen costCode intact, so it re-displays on reload.
-  useEffect(() => {
-    if (!open) return;
-    if (!relayConnected || !jobNumber) {
-      setCostCodes([]);
-      return;
-    }
-    let cancelled = false;
-    setCostCodesLoading(true);
-    void (async () => {
-      try {
-        const cc = await getRelayCostCodes(company, jobNumber);
-        if (!cancelled) setCostCodes(cc);
-      } catch {
-        if (!cancelled) setCostCodes([]);
-      } finally {
-        if (!cancelled) setCostCodesLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [open, relayConnected, company, jobNumber]);
 
   // --- Handlers ---
 
@@ -536,7 +493,7 @@ export default function GpPurchaseOrderDialog({
           <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
             GP purchase order
           </Typography>
-          <RelayStatusChip health={relayHealth} />
+          <RelayStatusChip connected={relayStatus} />
         </Stack>
         <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
           <TextField
@@ -582,8 +539,8 @@ export default function GpPurchaseOrderDialog({
             helperText={errors.costCode || costCodeHelper}
           >
             {costCodes.map((c) => (
-              <MenuItem key={`${c.cost_code}-${c.cost_element}`} value={`${c.cost_code}-${c.cost_element}`}>
-                {c.description ? `${c.cost_code} · ${c.description}` : c.cost_code}
+              <MenuItem key={`${c.costCode}-${c.costElement}`} value={`${c.costCode}-${c.costElement}`}>
+                {c.description ? `${c.costCode} · ${c.description}` : c.costCode}
               </MenuItem>
             ))}
           </TextField>

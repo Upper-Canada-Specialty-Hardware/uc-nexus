@@ -30,12 +30,6 @@ export interface RelayVendor {
   status: number;
 }
 
-export interface RelayCostCode {
-  cost_code: string; // two-segment number 'cc1-cc2' e.g. '310-000'
-  description: string | null; // GP Cost_Code_Description
-  cost_element: number; // GP Cost_Element (varies by code); the /po cost_code trailing digit
-}
-
 export interface RelayHealth {
   ok: boolean;
   version?: string;
@@ -61,15 +55,6 @@ async function getSecret(): Promise<string> {
   return secret;
 }
 
-// Best-effort warm of the credential cache so the first authed relay call doesn't pay for the
-// relayCredential round-trip. Safe to call when the relay is up; errors are swallowed.
-export async function prefetchRelaySecret(): Promise<void> {
-  try {
-    await getSecret();
-  } catch {
-    // no credential / network error - the next authed call will surface it for real
-  }
-}
 
 function extractError(body: unknown, status: number): RelayError {
   const detail = (body as { detail?: unknown })?.detail;
@@ -119,23 +104,6 @@ export async function getRelayVendors(company: string): Promise<RelayVendor[]> {
   const body = await r.json();
   if (!r.ok) throw extractError(body, r.status);
   return (body as { vendors: RelayVendor[] }).vendors;
-}
-
-export async function getRelayBuyers(company: string): Promise<string[]> {
-  const r = await relayFetch(`/buyers?company=${encodeURIComponent(company)}`);
-  const body = await r.json();
-  if (!r.ok) throw extractError(body, r.status);
-  return (body as { buyers: string[] }).buyers;
-}
-
-// Active per-job cost codes from GP (JC00701). `job` is the GP job number (UC Nexus project_id).
-export async function getRelayCostCodes(company: string, job: string): Promise<RelayCostCode[]> {
-  const r = await relayFetch(
-    `/cost-codes?company=${encodeURIComponent(company)}&job=${encodeURIComponent(job)}`,
-  );
-  const body = await r.json();
-  if (!r.ok) throw extractError(body, r.status);
-  return (body as { cost_codes: RelayCostCode[] }).cost_codes;
 }
 
 export interface RelayPoLine {

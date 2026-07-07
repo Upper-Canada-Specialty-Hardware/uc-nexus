@@ -46,7 +46,6 @@ import {
 import { GET_PRIOR_ORDER_AS_VALUES } from '../../graphql/queries';
 import type { PurchaseOrder } from './index';
 import GpPurchaseOrderDialog from './GpPurchaseOrderDialog';
-import type { RelayHealth } from '../../relay/relayClient';
 import { formatPoStatus, poStatusChipColor } from './poStatus';
 
 const DOC_TYPE_LABELS: Record<string, string> = {
@@ -79,12 +78,19 @@ interface PODetailModalProps {
   onClose: () => void;
   onRefetch: () => void;
   // Relay status owned by the PO page (single source of truth) - gates the Register in GP action.
-  relayHealth?: RelayHealth | null;
+  // null while the page's first relayStatus check is in flight.
+  relayConnected?: boolean | null;
 }
 
 // --- Component ---
 
-export default function PODetailModal({ open, po, onClose, onRefetch, relayHealth }: PODetailModalProps) {
+export default function PODetailModal({
+  open,
+  po,
+  onClose,
+  onRefetch,
+  relayConnected: relayConnectedProp,
+}: PODetailModalProps) {
   const { showToast } = useToast();
 
   // Edit mode state
@@ -413,7 +419,7 @@ export default function PODetailModal({ open, po, onClose, onRefetch, relayHealt
   // A Draft is accepted into GP via the Register in GP flow (GP-first push, then map vendor + cost code
   // and advance to GP-Registered). The relay must be up to push.
   const canRegisterInGp = po.status === 'DRAFT';
-  const relayConnected = relayHealth?.ok === true;
+  const relayConnected = relayConnectedProp === true;
 
   const canCancel = po.status === 'DRAFT' || po.status === 'GP_REGISTERED' || po.status === 'VENDOR_CONFIRMED';
 
@@ -735,7 +741,7 @@ export default function PODetailModal({ open, po, onClose, onRefetch, relayHealt
       <GpPurchaseOrderDialog
         open={registerOpen}
         registerPo={po}
-        relayHealth={relayHealth}
+        relayConnected={relayConnectedProp}
         onClose={() => setRegisterOpen(false)}
         onSubmitted={() => {
           setRegisterOpen(false);
