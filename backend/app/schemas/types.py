@@ -87,20 +87,12 @@ class HardwareItem:
 class Vendor:
     id: strawberry.ID
     name: str
-    gp_vendor_id: str | None
     contact_name: str | None
     email: str | None
     phone: str | None
     notes: str | None
     created_at: datetime
     updated_at: datetime
-
-
-@strawberry.type
-class SyncGpVendorsResult:
-    matched_count: int
-    matched_vendor_names: list[str]
-    unmatched_gp_vendor_names: list[str]
 
 
 @strawberry.type
@@ -118,11 +110,6 @@ class RelayInstallProvision:
 class RelayEnrollResult:
     ok: bool
     install_id: strawberry.ID
-
-
-@strawberry.type
-class RelayCredential:
-    secret: str
 
 
 @strawberry.type
@@ -234,6 +221,8 @@ class PurchaseOrder:
     status: POStatus
     cost_code: str | None
     gp_company: str | None
+    gp_vendor_id: str | None
+    vendor_name_snapshot: str | None
     vendor: Vendor | None
     vendor_quote_number: str | None
     notes: str | None

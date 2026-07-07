@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.crypto import decrypt_secret, encrypt_secret, hash_token
-from app.errors import ConflictError, NotFoundError, ValidationError
+from app.errors import ConflictError, ValidationError
 from app.models.relay_install import RelayInstall
 
 _ENROLLMENT_TTL = timedelta(hours=24)
@@ -78,8 +78,8 @@ def enroll_install(session: Session, enrollment_token: str, hostname: str, secre
 
 def authenticate_secret(session: Session, secret: str) -> RelayInstall | None:
     """Verify a Bearer secret presented on the outbound WS channel's connect handshake against the
-    enrolled installs. Secrets are Fernet-encrypted (reversible, not hashed - see get_credential), so
-    this decrypts each enrolled install's secret and compares in constant time. POC scale (a handful
+    enrolled installs. Secrets are Fernet-encrypted (reversible, not hashed), so this decrypts each
+    enrolled install's secret and compares in constant time. POC scale (a handful
     of installs) makes the linear scan fine. Returns None on no match instead of raising - the caller
     (the /relay-link route) treats that as a clean close, same as a bad token anywhere else here."""
     secret = (secret or "").strip()
@@ -96,16 +96,3 @@ def authenticate_secret(session: Session, secret: str) -> RelayInstall | None:
             session.flush()
             return install
     return None
-
-
-def get_credential(session: Session) -> str:
-    """Return the decrypted Bearer secret for the enrolled install. POC: the single (most recently)
-    enrolled install. Production keys this per workstation/user assignment."""
-    install = session.scalars(
-        select(RelayInstall).where(RelayInstall.secret_encrypted.is_not(None)).order_by(RelayInstall.enrolled_at.desc())
-    ).first()
-    if install is None:
-        raise NotFoundError("no enrolled relay install found")
-    install.last_seen_at = datetime.utcnow()
-    session.flush()
-    return decrypt_secret(install.secret_encrypted)

@@ -560,7 +560,7 @@ export default function PODetailModal({
         ) : (
           <Box sx={{ mb: 3 }}>
             <InfoRow label="PO Number" value={po.poNumber || '(Not assigned)'} />
-            <InfoRow label="Vendor" value={po.vendor?.name || '-'} />
+            <InfoRow label="Vendor" value={po.vendorNameSnapshot || po.vendor?.name || '-'} />
             <InfoRow label="Vendor Contact" value={po.vendor?.contactName || '-'} />
             <InfoRow label="Vendor Quote #" value={po.vendorQuoteNumber || '-'} />
             <InfoRow label="Expected Delivery Date" value={formatDate(po.expectedDeliveryDate)} />

@@ -44,6 +44,11 @@ class PurchaseOrder(Base):
     # GP company this PO was created in (TUBC/TUCSH for the POC). Recorded at GP registration with the
     # returned po_number; a relay /receipt needs it to target the right company DB. Null until pushed.
     gp_company: Mapped[str | None] = mapped_column(String(15), nullable=True)
+    # GP VENDORID (char 15) this PO was pushed to, picked live from PM00200 at push time (issue #200 -
+    # there is no local vendor-to-GP mirror anymore). vendor_name_snapshot is that same pick's display
+    # name, frozen at push time since the GP vendor list isn't re-fetched just to render a PO.
+    gp_vendor_id: Mapped[str | None] = mapped_column(String(15), nullable=True)
+    vendor_name_snapshot: Mapped[str | None] = mapped_column(String, nullable=True)
     vendor_quote_number: Mapped[str | None] = mapped_column(String, nullable=True)
     expected_delivery_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     ordered_at: Mapped[datetime | None] = mapped_column(nullable=True)

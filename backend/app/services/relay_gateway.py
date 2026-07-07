@@ -1,9 +1,8 @@
 """Live-connection registry for the outbound relay WS channel, plus relay_call() - the single
 function every future slice uses to run a job on the connected relay.
 
-POC scope: one live connection at a time (mirrors relay_repository.get_credential's "most recently
-enrolled install" scope). A new connection replaces whatever was there; anything still awaiting a
-reply on the old connection fails with RelayUnavailableError rather than hanging."""
+POC scope: one live connection at a time. A new connection replaces whatever was there; anything still
+awaiting a reply on the old connection fails with RelayUnavailableError rather than hanging."""
 
 import asyncio
 import uuid

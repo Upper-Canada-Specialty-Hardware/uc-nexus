@@ -15,10 +15,9 @@ import DeleteIcon from '@mui/icons-material/Delete';
 import AddIcon from '@mui/icons-material/Add';
 import { useMutation, useQuery } from '@apollo/client/react';
 import Modal from '../../components/Modal';
-import VendorSelect from '../../components/VendorSelect';
 import { useToast } from '../../components/Toast';
 import { CREATE_PO, REGISTER_PO_IN_GP } from '../../graphql/mutations';
-import { GET_GP_BUYERS, GET_GP_COST_CODES, GET_PROJECTS, GET_RELAY_STATUS, GET_VENDORS } from '../../graphql/queries';
+import { GET_GP_BUYERS, GET_GP_COST_CODES, GET_GP_VENDORS, GET_PROJECTS, GET_RELAY_STATUS } from '../../graphql/queries';
 import type { Project } from '../../types/project';
 import type { PurchaseOrder } from './index';
 import RelayStatusChip from '../../relay/RelayStatusChip';
@@ -37,11 +36,11 @@ interface LineItemRow {
   orderAs: string;
 }
 
-interface VendorOption {
-  id: string;
-  name: string;
-  gpVendorId: string | null;
-  contactName: string | null;
+interface GpVendorOption {
+  vendorId: string;
+  vendorName: string;
+  vendorClass: string | null;
+  status: number;
 }
 
 interface GpCostCode {
@@ -68,30 +67,25 @@ const CLASSIFICATIONS = [
 // GP companies the relay is allowed to write to (sandboxes for the POC).
 const COMPANIES = ['TUBC', 'TUCSH'];
 
-// Pick the GP-linked vendor that best matches an imported draft's vendor name (issue #175). Returns the
-// match plus whether it is CONFIDENT - the draft's own already-GP-linked vendor, or an exact name match -
-// versus a loose substring guess the user must explicitly confirm before registering against it. id is
-// null when no GP-linked vendor plausibly matches, and the user then picks one.
+// Pick the live GP vendor that best matches an imported draft's vendor name (issue #175, reworked for
+// #200 now that the picker reads gpVendors live instead of a locally-synced mirror). Returns the match
+// plus whether it is CONFIDENT - an exact name match - versus a loose substring guess the user must
+// explicitly confirm before registering against it. vendorId is null when nothing plausibly matches,
+// and the user then picks one.
 function bestGuessGpVendor(
-  vendors: VendorOption[],
+  gpVendors: GpVendorOption[],
   draftVendorName: string | null,
-  draftVendorId: string | null,
-): { id: string | null; confident: boolean } {
-  if (draftVendorId) {
-    const own = vendors.find((v) => v.id === draftVendorId);
-    if (own?.gpVendorId) return { id: own.id, confident: true };
-  }
+): { vendorId: string | null; vendorName: string | null; confident: boolean } {
   const name = (draftVendorName ?? '').trim().toLowerCase();
-  if (!name) return { id: null, confident: false };
-  const linked = vendors.filter((v) => v.gpVendorId);
-  const exact = linked.find((v) => v.name.trim().toLowerCase() === name);
-  if (exact) return { id: exact.id, confident: true };
-  const partial = linked.find((v) => {
-    const vn = v.name.trim().toLowerCase();
+  if (!name) return { vendorId: null, vendorName: null, confident: false };
+  const exact = gpVendors.find((v) => v.vendorName.trim().toLowerCase() === name);
+  if (exact) return { vendorId: exact.vendorId, vendorName: exact.vendorName, confident: true };
+  const partial = gpVendors.find((v) => {
+    const vn = v.vendorName.trim().toLowerCase();
     return vn.includes(name) || name.includes(vn);
   });
   // a fuzzy substring hit can be wrong (a short name is a substring of an unrelated vendor) - not confident
-  return { id: partial?.id ?? null, confident: false };
+  return { vendorId: partial?.vendorId ?? null, vendorName: partial?.vendorName ?? null, confident: false };
 }
 
 // --- Props ---
@@ -121,13 +115,13 @@ export default function GpPurchaseOrderDialog({
   const { showToast } = useToast();
   const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
   const projects = projectsData?.projects ?? [];
-  const { data: vendorsData } = useQuery<{ vendors: VendorOption[] }>(GET_VENDORS);
 
   const isRegister = !!registerPo;
 
   // Form state
   const [projectId, setProjectId] = useState(defaultProjectId ?? '');
-  const [vendorId, setVendorId] = useState<string | null>(null);
+  const [gpVendorId, setGpVendorId] = useState<string | null>(null);
+  const [gpVendorName, setGpVendorName] = useState<string | null>(null);
   // Register mode only: false while a fuzzy name-matched GP vendor is pre-filled but not yet confirmed.
   // A confident match (the draft's own GP vendor / an exact name hit) and any manual pick start confirmed.
   const [vendorConfirmed, setVendorConfirmed] = useState(true);
@@ -154,10 +148,6 @@ export default function GpPurchaseOrderDialog({
   const relayStatus: boolean | null = relayConnectedProp !== undefined ? relayConnectedProp : selfRelayConnected;
   const relayConnected = relayStatus === true;
 
-  const selectedVendor = useMemo(
-    () => vendorsData?.vendors.find((v) => v.id === vendorId) ?? null,
-    [vendorsData, vendorId],
-  );
   const selectedProject = useMemo(() => projects.find((p) => p.id === projectId) ?? null, [projects, projectId]);
   const isJob = !!projectId && !!selectedProject;
   const jobNumber = selectedProject?.projectId ?? null;
@@ -169,6 +159,15 @@ export default function GpPurchaseOrderDialog({
     fetchPolicy: 'network-only',
   });
   const buyers = buyersData?.gpBuyers ?? [];
+
+  // Live GP vendor list (PM00200), per company - issue #200 replaces the locally-synced vendor mirror
+  // with a direct pick from this list, snapshotted onto the PO.
+  const { data: gpVendorsData } = useQuery<{ gpVendors: GpVendorOption[] }>(GET_GP_VENDORS, {
+    variables: { company },
+    skip: !open || !relayConnected,
+    fetchPolicy: 'network-only',
+  });
+  const gpVendors = gpVendorsData?.gpVendors ?? [];
 
   // This job's cost codes from GP (JC00701), live via the backend relay channel. Cost codes are
   // per-job and each carries its own Cost_Element, so the dropdown comes from GP, not a static list.
@@ -185,13 +184,14 @@ export default function GpPurchaseOrderDialog({
 
   // Seed the form when the dialog opens. Create mode -> empty; register mode -> the draft's values
   // (project locked, line items carrying their ids so edits map back). The vendor is seeded separately
-  // (below) once the vendor list has loaded, so the best-guess match isn't clobbered before data arrives.
+  // (below) once the live GP vendor list has loaded, so the best-guess match isn't clobbered before data
+  // arrives.
   const seededRef = useRef(false);
-  const vendorSeededRef = useRef(false);
+  const gpVendorSeededForCompanyRef = useRef<string | null>(null);
   useEffect(() => {
     if (!open) {
       seededRef.current = false;
-      vendorSeededRef.current = false;
+      gpVendorSeededForCompanyRef.current = null;
       return;
     }
     if (seededRef.current) return;
@@ -222,26 +222,35 @@ export default function GpPurchaseOrderDialog({
     }
   }, [open, registerPo, defaultProjectId]);
 
-  // Seed the vendor once the vendor list is available: register mode defaults to the best-guess GP match,
-  // create mode starts empty. A fuzzy guess seeds unconfirmed so submit is blocked until the user confirms
-  // (or picks another); a confident match / create mode needs no confirmation.
+  // Seed the GP vendor once this company's live list is available: register mode defaults to the
+  // best-guess match against the imported vendor name, create mode starts empty. A fuzzy guess seeds
+  // unconfirmed so submit is blocked until the user confirms (or picks another); a confident match /
+  // create mode needs no confirmation. Re-seeds if the company changes, since the vendor master is
+  // per-company and a pick from one company's list isn't valid against another's.
   useEffect(() => {
-    if (!open || vendorSeededRef.current) return;
-    const vendors = vendorsData?.vendors;
+    if (!open) return;
+    const vendors = gpVendorsData?.gpVendors;
     if (!vendors) return;
-    vendorSeededRef.current = true;
+    if (gpVendorSeededForCompanyRef.current === company) return;
+    gpVendorSeededForCompanyRef.current = company;
     const guess = registerPo
-      ? bestGuessGpVendor(vendors, registerPo.vendor?.name ?? null, registerPo.vendor?.id ?? null)
-      : { id: null, confident: true };
-    setVendorId(guess.id);
+      ? bestGuessGpVendor(vendors, registerPo.vendorNameSnapshot ?? registerPo.vendor?.name ?? null)
+      : { vendorId: null, vendorName: null, confident: true };
+    setGpVendorId(guess.vendorId);
+    setGpVendorName(guess.vendorName);
     setVendorConfirmed(guess.confident);
-  }, [open, registerPo, vendorsData]);
+  }, [open, company, registerPo, gpVendorsData]);
 
   // A manual vendor pick is an explicit choice, so it counts as confirmed.
-  const handleVendorChange = useCallback((id: string | null) => {
-    setVendorId(id);
-    setVendorConfirmed(true);
-  }, []);
+  const handleGpVendorChange = useCallback(
+    (id: string) => {
+      const picked = gpVendors.find((v) => v.vendorId === id) ?? null;
+      setGpVendorId(picked?.vendorId ?? null);
+      setGpVendorName(picked?.vendorName ?? null);
+      setVendorConfirmed(true);
+    },
+    [gpVendors],
+  );
 
   // Clear the selected cost code only when the job or company changes - a code from another job must
   // not carry over. Deliberately NOT keyed on relayConnected: the page polls relayStatus every 10s,
@@ -281,14 +290,13 @@ export default function GpPurchaseOrderDialog({
     }
     // GP is mandatory: a PO that can't be created in GP isn't created/registered at all.
     if (!relayConnected) errs.gp = 'GP relay not detected on this machine - it must be running to push a PO to GP';
-    if (!vendorId) errs.vendor = 'Select a vendor';
-    else if (!selectedVendor?.gpVendorId) errs.vendor = 'This vendor is not linked to GP yet (run GP Vendor Sync)';
+    if (!gpVendorId) errs.vendor = 'Select a GP vendor';
     else if (isRegister && !vendorConfirmed) errs.vendor = 'Confirm the suggested GP vendor before registering';
     if (!buyerId) errs.buyer = 'Select a buyer';
     if (isJob && !costCode) errs.costCode = 'Cost code is required for a project PO';
     setErrors(errs);
     return Object.keys(errs).length === 0;
-  }, [lineItems, relayConnected, vendorId, selectedVendor, isRegister, vendorConfirmed, buyerId, isJob, costCode]);
+  }, [lineItems, relayConnected, gpVendorId, isRegister, vendorConfirmed, buyerId, isJob, costCode]);
 
   const handleSubmit = useCallback(async () => {
     if (!validate()) return;
@@ -314,7 +322,8 @@ export default function GpPurchaseOrderDialog({
           variables: {
             input: {
               poId: registerPo.id,
-              vendorId,
+              gpVendorId,
+              gpVendorName,
               buyerId,
               gpCompany: company,
               costCode: gpCostCode,
@@ -331,7 +340,8 @@ export default function GpPurchaseOrderDialog({
           variables: {
             input: {
               projectId: projectId || null,
-              vendorId,
+              gpVendorId,
+              gpVendorName,
               buyerId,
               notes: notes.trim() || null,
               costCode: gpCostCode,
@@ -358,7 +368,8 @@ export default function GpPurchaseOrderDialog({
     buyerId,
     lineItems,
     projectId,
-    vendorId,
+    gpVendorId,
+    gpVendorName,
     notes,
     registerPo,
     createPO,
@@ -384,9 +395,10 @@ export default function GpPurchaseOrderDialog({
           ? 'No cost codes defined for this job in GP'
           : '';
 
+  const importedVendorName = registerPo?.vendorNameSnapshot ?? registerPo?.vendor?.name ?? null;
   const vendorHelper =
     errors.vendor ||
-    (isRegister && registerPo?.vendor?.name ? `Imported as: ${registerPo.vendor.name} - confirm the GP vendor` : '');
+    (isRegister && importedVendorName ? `Imported as: ${importedVendorName} - confirm the GP vendor` : '');
 
   const actions = (
     <Stack direction="row" spacing={1}>
@@ -421,19 +433,30 @@ export default function GpPurchaseOrderDialog({
         </TextField>
 
         <Box>
-          <VendorSelect
-            value={vendorId}
-            onChange={handleVendorChange}
+          <TextField
+            select
+            label="GP Vendor"
+            value={gpVendorId ?? ''}
+            onChange={(e) => handleGpVendorChange(e.target.value)}
+            size="small"
+            fullWidth
+            disabled={!relayConnected || gpVendors.length === 0}
             error={!!errors.vendor}
             helperText={vendorHelper}
-          />
-          {isRegister && vendorId && !vendorConfirmed && (
+          >
+            {gpVendors.map((v) => (
+              <MenuItem key={v.vendorId} value={v.vendorId}>
+                {v.vendorName}
+              </MenuItem>
+            ))}
+          </TextField>
+          {isRegister && gpVendorId && !vendorConfirmed && (
             <FormControlLabel
               sx={{ mt: 0.5 }}
               control={
                 <Checkbox size="small" checked={vendorConfirmed} onChange={(e) => setVendorConfirmed(e.target.checked)} />
               }
-              label={`This is the correct GP vendor${selectedVendor ? ` (${selectedVendor.name})` : ''}`}
+              label={`This is the correct GP vendor${gpVendorName ? ` (${gpVendorName})` : ''}`}
             />
           )}
         </Box>
@@ -511,11 +534,6 @@ export default function GpPurchaseOrderDialog({
         {errors.gp && (
           <Alert severity="error" sx={{ mt: 2 }}>
             {errors.gp}
-          </Alert>
-        )}
-        {selectedVendor && !selectedVendor.gpVendorId && (
-          <Alert severity="warning" sx={{ mt: 2 }}>
-            {selectedVendor.name} is not linked to GP yet. Link it via Admin → GP Vendor Sync before pushing to GP.
           </Alert>
         )}
       </Box>

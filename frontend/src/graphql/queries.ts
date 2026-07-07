@@ -74,6 +74,8 @@ export const GET_PURCHASE_ORDERS = gql`
       requestNumber
       projectId
       status
+      gpVendorId
+      vendorNameSnapshot
       vendor {
         id
         name
@@ -217,6 +219,8 @@ export const GET_OPEN_POS = gql`
       poNumber
       projectId
       status
+      gpVendorId
+      vendorNameSnapshot
       vendor {
         id
         name
@@ -283,6 +287,8 @@ export const GET_PO_RECEIVING_DETAILS = gql`
       poNumber
       requestNumber
       gpCompany
+      gpVendorId
+      vendorNameSnapshot
       vendor {
         id
         name
@@ -583,21 +589,12 @@ export const GET_VENDORS = gql`
     vendors {
       id
       name
-      gpVendorId
       contactName
       email
       phone
       notes
       createdAt
       updatedAt
-    }
-  }
-`;
-
-export const GET_RELAY_CREDENTIAL = gql`
-  query GetRelayCredential {
-    relayCredential {
-      secret
     }
   }
 `;
@@ -631,6 +628,17 @@ export const GET_GP_COST_CODES = gql`
       costCode
       description
       costElement
+    }
+  }
+`;
+
+export const GET_GP_VENDORS = gql`
+  query GetGpVendors($company: String!) {
+    gpVendors(company: $company) {
+      vendorId
+      vendorName
+      vendorClass
+      status
     }
   }
 `;
@@ -784,6 +792,8 @@ export const GET_EXPECTED_DELIVERIES = gql`
       id
       poNumber
       requestNumber
+      gpVendorId
+      vendorNameSnapshot
       vendor {
         id
         name

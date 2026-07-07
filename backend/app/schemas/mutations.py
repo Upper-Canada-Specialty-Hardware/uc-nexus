@@ -39,7 +39,6 @@ from .inputs import (
     DestockInventoryInput,
     EnrollRelayInstallInput,
     FinalizeImportSessionInput,
-    GpVendorInput,
     MoveStockLocationInput,
     OverrideInventoryQuantityInput,
     ReclassifyStockItemInput,
@@ -97,7 +96,6 @@ from .types import (
     ShopAssemblyOpening,
     ShopAssemblyRequest,
     StockItem,
-    SyncGpVendorsResult,
     TransferResult,
     Vendor,
     Warehouse,
@@ -370,7 +368,8 @@ class Mutation:
         """Issue #199: GP-first, server-side. Pushes the PO to GP via relay_call (create_po) BEFORE
         persisting anything, then records it already carrying GP's returned PONUMBER + company in one
         commit (it lands GP-Registered) - there is never a numberless DRAFT that could be re-registered
-        into a duplicate GP PO."""
+        into a duplicate GP PO. Issue #200: the GP vendor is picked live (gpVendors) and sent as
+        gp_vendor_id/gp_vendor_name - there is no local vendor-to-GP mirror to look up anymore."""
         from sqlalchemy.orm import selectinload
 
         from app.models.project import Project as ProjectModel
@@ -380,7 +379,7 @@ class Mutation:
         require_user(info)
 
         project_id = uuid.UUID(str(input.project_id)) if input.project_id else None
-        vendor_id = uuid.UUID(str(input.vendor_id))
+        vendor_id = uuid.UUID(str(input.vendor_id)) if input.vendor_id else None
         line_items_data = [
             {
                 "hardware_category": li.hardware_category,
@@ -394,14 +393,12 @@ class Mutation:
         ]
 
         with SessionLocal() as session:
-            vendor = session.get(VendorModel, vendor_id)
-            if vendor is None:
-                raise NotFoundError(f"Vendor {vendor_id} not found")
-            if not vendor.gp_vendor_id:
-                raise ValidationError(
-                    "Vendor is not linked to GP (run GP Vendor Sync) and cannot be pushed to GP",
-                    field="vendor_id",
-                )
+            vendor_contact_name = None
+            if vendor_id is not None:
+                vendor = session.get(VendorModel, vendor_id)
+                if vendor is None:
+                    raise NotFoundError(f"Vendor {vendor_id} not found")
+                vendor_contact_name = vendor.contact_name
 
             job_number = None
             if project_id is not None:
@@ -411,8 +408,8 @@ class Mutation:
                 job_number = project.project_id
 
             payload = gp_po.build_create_po_payload(
-                vendor_gp_id=vendor.gp_vendor_id,
-                vendor_contact_name=vendor.contact_name,
+                vendor_gp_id=input.gp_vendor_id,
+                vendor_contact_name=vendor_contact_name,
                 buyer_id=input.buyer_id,
                 job_number=job_number,
                 cost_code=input.cost_code,
@@ -430,6 +427,8 @@ class Mutation:
                 cost_code=input.cost_code,
                 po_number=gp_result["po_number"],
                 gp_company=gp_result["company"],
+                gp_vendor_id=input.gp_vendor_id,
+                vendor_name_snapshot=input.gp_vendor_name,
             )
             session.commit()
 
@@ -456,7 +455,8 @@ class Mutation:
         anything, then maps the PO to the chosen GP vendor + cost code, replaces the draft's line items
         with the (possibly edited) set that was pushed (assigning gp_line_ord positionally), records GP's
         returned PONUMBER + company, and advances DRAFT -> GP_REGISTERED. The end state is identical to a
-        manually created PO."""
+        manually created PO. Issue #200: the GP vendor is picked live (gpVendors) and sent as
+        gp_vendor_id/gp_vendor_name - there is no local vendor-to-GP mirror to look up anymore."""
         from sqlalchemy.orm import selectinload
 
         from app.models.project import Project as ProjectModel
@@ -466,7 +466,7 @@ class Mutation:
         require_user(info)
 
         pid = uuid.UUID(str(input.po_id))
-        vid = uuid.UUID(str(input.vendor_id))
+        vendor_id = uuid.UUID(str(input.vendor_id)) if input.vendor_id else None
         line_items_data = [
             {
                 "id": str(li.id) if li.id else None,
@@ -484,14 +484,12 @@ class Mutation:
             if po is None:
                 raise NotFoundError(f"Purchase order {pid} not found")
 
-            vendor = session.get(VendorModel, vid)
-            if vendor is None:
-                raise NotFoundError(f"Vendor {vid} not found")
-            if not vendor.gp_vendor_id:
-                raise ValidationError(
-                    "Vendor is not linked to GP (run GP Vendor Sync) and cannot back a GP-registered PO",
-                    field="vendor_id",
-                )
+            vendor_contact_name = None
+            if vendor_id is not None:
+                vendor = session.get(VendorModel, vendor_id)
+                if vendor is None:
+                    raise NotFoundError(f"Vendor {vendor_id} not found")
+                vendor_contact_name = vendor.contact_name
 
             job_number = None
             if po.project_id is not None:
@@ -499,8 +497,8 @@ class Mutation:
                 job_number = project.project_id if project else None
 
             payload = gp_po.build_create_po_payload(
-                vendor_gp_id=vendor.gp_vendor_id,
-                vendor_contact_name=vendor.contact_name,
+                vendor_gp_id=input.gp_vendor_id,
+                vendor_contact_name=vendor_contact_name,
                 buyer_id=input.buyer_id,
                 job_number=job_number,
                 cost_code=input.cost_code,
@@ -512,10 +510,12 @@ class Mutation:
             po_repository.register_po_in_gp(
                 session,
                 pid,
-                vendor_id=vid,
+                gp_vendor_id=input.gp_vendor_id,
+                vendor_name_snapshot=input.gp_vendor_name,
                 po_number=gp_result["po_number"],
                 gp_company=gp_result["company"],
                 line_items=line_items_data,
+                vendor_id=vendor_id,
                 cost_code=input.cost_code,
             )
             session.commit()
@@ -1092,23 +1092,6 @@ class Mutation:
             vendor_repository.delete_vendor(session, uuid.UUID(str(id)))
             session.commit()
             return True
-
-    @strawberry.mutation
-    def sync_gp_vendors(self, vendors: list[GpVendorInput]) -> SyncGpVendorsResult:
-        """Match UC Nexus vendors to the GP PM00200 list (by name) and set gp_vendor_id. The relay
-        reads PM00200 on the workstation and the frontend posts the list here. Unmatched GP vendors are
-        returned for a one-time manual mapping."""
-        with SessionLocal() as session:
-            result = vendor_repository.sync_gp_vendors(
-                session,
-                [{"gp_vendor_id": v.gp_vendor_id, "vendor_name": v.vendor_name} for v in vendors],
-            )
-            session.commit()
-            return SyncGpVendorsResult(
-                matched_count=len(result["matched"]),
-                matched_vendor_names=result["matched"],
-                unmatched_gp_vendor_names=result["unmatched_gp"],
-            )
 
     # Relay installs (localhost relay <-> GP)
     @strawberry.mutation

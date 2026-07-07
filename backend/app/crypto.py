@@ -1,8 +1,9 @@
 """Encryption + hashing for relay install credentials.
 
-The relay's long-lived Bearer secret is stored ENCRYPTED (Fernet) - not hashed - because the frontend
-needs the raw value back to send as the Authorization header (relayCredential returns it decrypted).
-The one-time enrollment token is stored HASHED (we only ever verify a presented token, never return it)."""
+The relay's long-lived Bearer secret is stored ENCRYPTED (Fernet) - not hashed - because
+relay_repository.authenticate_secret needs the raw value back to compare against what the relay
+presents on its outbound WS connect handshake. The one-time enrollment token is stored HASHED (we only
+ever verify a presented token, never return it)."""
 
 import hashlib
 import os

@@ -180,12 +180,17 @@ class CreatePOInput:
     GP-registered in one commit (no numberless DRAFT window)."""
 
     line_items: list[CreatePOLineItemInput]
-    vendor_id: strawberry.ID
+    # The GP vendor picked live from the gpVendors(company) list (issue #200 - there's no local
+    # vendor-to-GP mirror anymore). Snapshotted onto the PO for display.
+    gp_vendor_id: str
+    gp_vendor_name: str
     gp_company: str
     # GP buyer (POP00101), picked from the gpBuyers dropdown - always sent so the relay's own
     # per-workstation buyer fallback never decides it for a server-brokered call.
     buyer_id: str
     project_id: strawberry.ID | None = None
+    # Optional link to a UC Nexus vendor record (contact info), independent of the GP vendor above.
+    vendor_id: strawberry.ID | None = None
     notes: str | None = None
     # GP cost code for a project-linked PO (the issue #121 dropdown, 'phase-step-element').
     # Applied to every job-cost line when the PO is pushed to GP via the relay.
@@ -214,21 +219,18 @@ class RegisterPOInput:
     from it."""
 
     po_id: strawberry.ID
-    vendor_id: strawberry.ID
+    # The GP vendor picked live from the gpVendors(company) list (issue #200 - there's no local
+    # vendor-to-GP mirror anymore). Snapshotted onto the PO for display.
+    gp_vendor_id: str
+    gp_vendor_name: str
     gp_company: str
     # GP buyer (POP00101), picked from the gpBuyers dropdown - always sent so the relay's own
     # per-workstation buyer fallback never decides it for a server-brokered call.
     buyer_id: str
     line_items: list[RegisterPOLineItemInput]
+    # Optional link to a UC Nexus vendor record (contact info), independent of the GP vendor above.
+    vendor_id: strawberry.ID | None = None
     cost_code: str | None = None
-
-
-@strawberry.input
-class GpVendorInput:
-    """One vendor read from GP PM00200 by the relay, posted to syncGpVendors."""
-
-    gp_vendor_id: str
-    vendor_name: str
 
 
 @strawberry.input
