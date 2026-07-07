@@ -602,6 +602,30 @@ export const GET_RELAY_CREDENTIAL = gql`
   }
 `;
 
+export const GET_RELAY_STATUS = gql`
+  query GetRelayStatus {
+    relayStatus {
+      connected
+    }
+  }
+`;
+
+export const GET_GP_BUYERS = gql`
+  query GetGpBuyers($company: String!) {
+    gpBuyers(company: $company)
+  }
+`;
+
+export const GET_GP_COST_CODES = gql`
+  query GetGpCostCodes($company: String!, $job: String!) {
+    gpCostCodes(company: $company, job: $job) {
+      costCode
+      description
+      costElement
+    }
+  }
+`;
+
 export const GET_WAREHOUSES = gql`
   query GetWarehouses($includeInactive: Boolean) {
     warehouses(includeInactive: $includeInactive) {

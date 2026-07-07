@@ -23,6 +23,7 @@ from app.repositories import (
     warehouse_admin_repository,
     warehouse_repository,
 )
+from app.services.relay_gateway import gateway as relay_gateway
 
 from .enums import (
     AuditEntityType,
@@ -39,6 +40,9 @@ from .types import (
     BackOrderedItem,
     ClerkUser,
     DeficientItemRow,
+    GpCostCode,
+    GpJob,
+    GpVendor,
     HomeDashboardStats,
     InventoryHierarchyNode,
     InventoryItemDetail,
@@ -72,6 +76,7 @@ from .types import (
     ReconciliationResult,
     RelayCredential,
     RelayInstallInfo,
+    RelayStatus,
     ReturnableLine,
     ShipmentReturn,
     ShipmentReturnItem,
@@ -186,6 +191,23 @@ def _relay_install_to_type(ri) -> RelayInstallInfo:
         last_seen_at=ri.last_seen_at,
         created_at=ri.created_at,
     )
+
+
+def _gp_job_to_type(j: dict) -> GpJob:
+    return GpJob(job_number=j["job_number"], job_name=j.get("job_name"))
+
+
+def _gp_vendor_to_type(v: dict) -> GpVendor:
+    return GpVendor(
+        vendor_id=v["vendor_id"],
+        vendor_name=v["vendor_name"],
+        vendor_class=v.get("vendor_class"),
+        status=v["status"],
+    )
+
+
+def _gp_cost_code_to_type(c: dict) -> GpCostCode:
+    return GpCostCode(cost_code=c["cost_code"], description=c.get("description"), cost_element=c["cost_element"])
 
 
 def _warehouse_to_type(w) -> Warehouse:
@@ -1026,6 +1048,40 @@ class Query:
         require_admin(info)
         with SessionLocal() as session:
             return [_relay_install_to_type(ri) for ri in relay_repository.list_installs(session)]
+
+    @strawberry.field
+    def relay_status(self, info: strawberry.Info) -> RelayStatus:
+        """Whether the outbound relay WS channel is currently connected, for the relay status chip."""
+        require_user(info)
+        return RelayStatus(connected=relay_gateway.connected)
+
+    @strawberry.field
+    async def gp_jobs(self, info: strawberry.Info, company: str) -> list[GpJob]:
+        """Live job master (JC00102) via the connected relay."""
+        require_user(info)
+        result = await relay_gateway.relay_call(company, "list_jobs")
+        return [_gp_job_to_type(j) for j in result["jobs"]]
+
+    @strawberry.field
+    async def gp_vendors(self, info: strawberry.Info, company: str) -> list[GpVendor]:
+        """Live active vendor list (PM00200) via the connected relay."""
+        require_user(info)
+        result = await relay_gateway.relay_call(company, "list_vendors")
+        return [_gp_vendor_to_type(v) for v in result["vendors"]]
+
+    @strawberry.field
+    async def gp_buyers(self, info: strawberry.Info, company: str) -> list[str]:
+        """Registered GP buyers (POP00101) via the connected relay, for the Create PO buyer dropdown."""
+        require_user(info)
+        result = await relay_gateway.relay_call(company, "list_buyers")
+        return result["buyers"]
+
+    @strawberry.field
+    async def gp_cost_codes(self, info: strawberry.Info, company: str, job: str) -> list[GpCostCode]:
+        """Active per-job cost codes (JC00701) via the connected relay, for the Create PO cost-code dropdown."""
+        require_user(info)
+        result = await relay_gateway.relay_call(company, "list_cost_codes", {"job": job})
+        return [_gp_cost_code_to_type(c) for c in result["cost_codes"]]
 
     @strawberry.field
     def warehouses(self, include_inactive: bool = True) -> list[Warehouse]:

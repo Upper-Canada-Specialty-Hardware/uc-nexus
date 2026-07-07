@@ -32,13 +32,12 @@ import KeyboardArrowRightIcon from '@mui/icons-material/KeyboardArrowRight';
 import UnfoldMoreIcon from '@mui/icons-material/UnfoldMore';
 import UnfoldLessIcon from '@mui/icons-material/UnfoldLess';
 import { useQuery } from '@apollo/client/react';
-import { GET_PURCHASE_ORDERS, GET_PO_STATISTICS } from '../../graphql/queries';
+import { GET_PURCHASE_ORDERS, GET_PO_STATISTICS, GET_RELAY_STATUS } from '../../graphql/queries';
 import ProjectLandingPage from '../../components/ProjectLandingPage';
 import type { Project } from '../../types/project';
 import PODetailModal from './PODetailModal';
 import GpPurchaseOrderDialog from './GpPurchaseOrderDialog';
 import RelayStatusChip from '../../relay/RelayStatusChip';
-import { useRelayStatus } from '../../relay/useRelayStatus';
 import { PO_STATUS_VALUES, formatPoStatus, poStatusChipColor } from './poStatus';
 
 // --- Types ---
@@ -530,10 +529,13 @@ export default function POModule() {
   const [filterState, setFilterState] = useState<FilterState>(EMPTY_FILTER_STATE);
   const [sortState, setSortState] = useState<SortState>({ field: null, direction: 'asc' });
 
-  // Relay presence is probed as the page loads (not when a dialog opens), so the user knows up front
+  // Relay presence is polled as the page loads (not when a dialog opens), so the user knows up front
   // whether GP actions work. Create PO is a GP-first flow, so it can't run when the relay is down.
-  const { health: relayHealth } = useRelayStatus();
-  const relayConnected = relayHealth?.ok === true;
+  // Backed by the backend's relayStatus field (the relay-to-backend WS channel), not a browser probe.
+  const { data: relayStatusData } = useQuery<{ relayStatus: { connected: boolean } }>(GET_RELAY_STATUS, {
+    pollInterval: 10_000,
+  });
+  const relayConnected = relayStatusData ? relayStatusData.relayStatus.connected : null;
 
   const toggleExpand = (id: string) => {
     setExpandedIds((prev) => {
@@ -653,7 +655,7 @@ export default function POModule() {
         <Typography variant="h5" sx={{ flex: 1 }}>
           Purchase Orders — {projectLabel}
         </Typography>
-        <RelayStatusChip health={relayHealth} />
+        <RelayStatusChip connected={relayConnected} />
         <Tooltip
           title={relayConnected ? '' : 'GP relay not detected on this machine - it must be running to create a PO'}
           arrow
@@ -781,7 +783,7 @@ export default function POModule() {
                   onToggle={() => toggleExpand(po.id)}
                   onOpen={() => handleOpenPO(po.id)}
                   onRegister={() => setRegisterPO(po)}
-                  relayConnected={relayConnected}
+                  relayConnected={relayConnected === true}
                 />
               ))}
           </TableBody>
@@ -795,7 +797,7 @@ export default function POModule() {
           po={selectedPO}
           onClose={handleCloseModal}
           onRefetch={handleRefetch}
-          relayHealth={relayHealth}
+          relayConnected={relayConnected}
         />
       )}
 
@@ -808,7 +810,7 @@ export default function POModule() {
           handleRefetch();
         }}
         defaultProjectId={projectId}
-        relayHealth={relayHealth}
+        relayConnected={relayConnected}
       />
 
       {/* Register PO Dialog (registers an imported Draft into GP) */}
@@ -820,7 +822,7 @@ export default function POModule() {
           setRegisterPO(null);
           handleRefetch();
         }}
-        relayHealth={relayHealth}
+        relayConnected={relayConnected}
       />
     </Box>
   );

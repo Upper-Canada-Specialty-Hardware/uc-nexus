@@ -138,6 +138,32 @@ class RelayInstallInfo:
 
 
 @strawberry.type
+class RelayStatus:
+    connected: bool
+
+
+@strawberry.type
+class GpJob:
+    job_number: str
+    job_name: str | None
+
+
+@strawberry.type
+class GpVendor:
+    vendor_id: str
+    vendor_name: str
+    vendor_class: str | None
+    status: int
+
+
+@strawberry.type
+class GpCostCode:
+    cost_code: str  # two-segment number 'cc1-cc2' e.g. '310-000'
+    description: str | None
+    cost_element: int
+
+
+@strawberry.type
 class POLineItem:
     id: strawberry.ID
     po_id: strawberry.ID
