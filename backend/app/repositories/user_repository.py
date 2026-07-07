@@ -61,6 +61,25 @@ def list_users() -> list[dict]:
     return users
 
 
+def get_user(user_id: str) -> dict:
+    """Fetch one Clerk user's name + email (issue #199: server-side received_by resolution, so a
+    receive's acting user comes from the Clerk token, not a client-supplied string)."""
+    resp = _client.get(f"/users/{user_id}", headers=_headers())
+    resp.raise_for_status()
+    u = resp.json()
+    email_objs = u.get("email_addresses") or []
+    primary_email = ""
+    for e in email_objs:
+        if e.get("id") == u.get("primary_email_address_id"):
+            primary_email = e.get("email_address", "")
+            break
+    return {
+        "first_name": u.get("first_name") or "",
+        "last_name": u.get("last_name") or "",
+        "email": primary_email,
+    }
+
+
 def get_user_roles(user_id: str) -> list[str]:
     """Fetch a single Clerk user's roles from publicMetadata. Returns [] if none set."""
     resp = _client.get(f"/users/{user_id}", headers=_headers())
