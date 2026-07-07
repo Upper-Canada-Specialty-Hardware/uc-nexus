@@ -38,3 +38,24 @@ def test_enroll_rejects_reused_token(db_session):
 def test_enroll_rejects_invalid_token(db_session):
     with pytest.raises(ValidationError):
         relay_repository.enroll_install(db_session, "not-a-real-token", hostname="WS3", secret="abc")
+
+
+def test_authenticate_secret_finds_the_enrolled_install(db_session):
+    install, token = relay_repository.provision_install(db_session, label="WS4", company="TUBC")
+    relay_repository.enroll_install(db_session, token, hostname="WS4", secret="channel-secret")
+
+    found = relay_repository.authenticate_secret(db_session, "channel-secret")
+    assert found is not None
+    assert found.id == install.id
+    assert found.last_seen_at is not None
+
+
+def test_authenticate_secret_rejects_an_unknown_secret(db_session):
+    _, token = relay_repository.provision_install(db_session, label="WS5", company="TUBC")
+    relay_repository.enroll_install(db_session, token, hostname="WS5", secret="the-real-secret")
+
+    assert relay_repository.authenticate_secret(db_session, "not-the-secret") is None
+
+
+def test_authenticate_secret_rejects_blank():
+    assert relay_repository.authenticate_secret(None, "") is None

@@ -82,3 +82,19 @@ endpoints
 - `POST /receipt` — receive against a PO (taPopRcptLineInsert xN then taPopRcptHdrInsert, autocosted), and for a company mapped in `[gp.custom_db]` also writes the matching `WHRECLINE101` rows (the custom warehouse table the dashboards read) in the same transaction. needs a `rack_location` per line. bearer auth
 
 browser hop (the cloud frontend → `http://localhost:7321` call) is governed by Chrome Local Network Access from Chrome 142: the frontend fetch must set `targetAddressSpace: "loopback"` and the user grants a one-time loopback permission prompt (or IT pre-grants it via enterprise policy). that is a client-side gate — the relay needs no LNA server header. the relay does echo the legacy `Access-Control-Allow-Private-Network: true` on the preflight for stragglers on a pre-LNA Chrome, but it is not the mechanism.
+
+outbound channel (additive - the HTTP endpoints above are unchanged)
+
+alongside the inbound HTTP server, `ucnexus-relay serve` also dials OUT to the backend over a
+persistent `wss://` connection (`src/ucnexus_relay/channel.py`), authenticating with `[auth]
+shared_secret` on the connect handshake. the backend's `relay_call(company, op, payload)` sends a job
+down that socket as `{id, op, company, payload}`; the relay answers `{id, ok, result|error}` by
+running the same eConnect logic the HTTP routes use (`ops.py` holds the shared `create_po`/
+`create_receipt` orchestration). set `[channel] backend_url` in `config.toml` to enable it; leave it
+blank to run HTTP-only, as before. op dispatch: `list_vendors`, `list_buyers`, `list_cost_codes`,
+`list_jobs`, `create_po`, `create_receipt`. reconnects with exponential backoff on drop; the
+`websockets` client's default 20s ping/pong keeps the channel alive through a corporate proxy's idle
+timeout.
+
+this is a foundation slice - nothing calls through `relay_call` yet (no GraphQL fields, no frontend
+change). every other relay-through-backend slice builds on this channel.
