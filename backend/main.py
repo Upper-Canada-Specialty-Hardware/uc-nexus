@@ -2,16 +2,19 @@ from collections.abc import Callable
 from typing import Any
 
 import strawberry
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from graphql import GraphQLError, GraphQLResolveInfo
 from strawberry.extensions import SchemaExtension
 from strawberry.fastapi import GraphQLRouter
 
 from app.auth import get_context
+from app.database import SessionLocal
 from app.errors import AppError
+from app.repositories import relay_repository
 from app.schemas.mutations import Mutation
 from app.schemas.queries import Query
+from app.services.relay_gateway import gateway as relay_gateway
 
 
 class ErrorHandlerExtension(SchemaExtension):
@@ -55,6 +58,38 @@ app.include_router(graphql_app, prefix="/graphql")
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.websocket("/relay-link")
+async def relay_link(websocket: WebSocket):
+    """The relay's outbound wss channel. It dials in with `Authorization: Bearer <enrolled secret>`
+    on the connect handshake; once verified, this holds the socket open and feeds every {id, ok,
+    result|error} reply it sends back to relay_gateway so relay_call() can correlate it to the job
+    that requested it. Every other slice reaches the relay through relay_call(), never this route
+    directly."""
+    auth_header = websocket.headers.get("authorization") or ""
+    scheme, _, secret = auth_header.partition(" ")
+    if scheme.lower() != "bearer" or not secret.strip():
+        await websocket.close(code=4401)
+        return
+
+    with SessionLocal() as session:
+        install = relay_repository.authenticate_secret(session, secret.strip())
+        session.commit()
+    if install is None:
+        await websocket.close(code=4401)
+        return
+
+    await websocket.accept()
+    await relay_gateway.register(install.company, websocket)
+    try:
+        while True:
+            reply = await websocket.receive_json()
+            relay_gateway.resolve(reply)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        relay_gateway.unregister(websocket)
 
 
 @app.post("/admin/reset-data")

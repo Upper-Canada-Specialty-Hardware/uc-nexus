@@ -54,3 +54,8 @@ default = "mira"   # fallback registered buyer (TUBC registered buyers: donr, mi
 [logging]
 level = "INFO"
 file = "relay.log"
+
+[channel]
+# outbound wss channel to the UC Nexus backend's relay gateway. empty backend_url disables it (the
+# relay just runs its existing inbound HTTP server, as today). auths on connect with [auth].shared_secret.
+backend_url = "wss://backend-production-xxxx.up.railway.app/relay-link"
