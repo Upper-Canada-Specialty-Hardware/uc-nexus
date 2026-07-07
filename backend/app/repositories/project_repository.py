@@ -9,20 +9,21 @@ from app.errors import ConflictError, NotFoundError
 from app.models.project import Project as ProjectModel
 
 
-def create_project(session: Session, project_id: str, description: str, client: str) -> ProjectModel:
-    """Create a new project. Raises ConflictError if project_id already exists."""
-    existing = session.scalars(select(ProjectModel).where(ProjectModel.project_id == project_id)).first()
+def adopt_gp_job(session: Session, job_number: str, job_name: str | None) -> ProjectModel:
+    """Adopt a live GP job (JC00102) as a project. job_number becomes the project's identity
+    (project_id, immutable); job_name is a snapshot of GP's job description at adopt time, not
+    synced afterward. Raises ConflictError if this job has already been adopted."""
+    existing = session.scalars(select(ProjectModel).where(ProjectModel.project_id == job_number)).first()
     if existing is not None:
         raise ConflictError(
-            f"Project number {project_id} already exists",
-            field="project_id",
+            f"GP job {job_number} has already been adopted as a project",
+            field="job_number",
         )
 
     project = ProjectModel(
         id=uuid.uuid4(),
-        project_id=project_id,
-        description=description,
-        client=client,
+        project_id=job_number,
+        description=job_name,
     )
     session.add(project)
     session.flush()

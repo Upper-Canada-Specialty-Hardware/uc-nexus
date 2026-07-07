@@ -23,12 +23,12 @@ from app.repositories import (
 from .enums import ApproveOutcome, PODocumentType
 from .inputs import (
     AdjustStockQuantityInput,
+    AdoptGpJobInput,
     AllocateStockToProjectInput,
     AssignOpeningsInput,
     CompleteOpeningInput,
     ConfirmShipmentInput,
     CreatePOInput,
-    CreateProjectInput,
     CreateReceiveInput,
     CreateShipmentReturnInput,
     CreateVendorInput,
@@ -108,13 +108,14 @@ from .types import (
 class Mutation:
     # Project
     @strawberry.mutation
-    def create_project(self, input: CreateProjectInput) -> Project:
+    def adopt_gp_job(self, input: AdoptGpJobInput) -> Project:
+        """Adopt a live GP job as a project (issue #198). The frontend picks the job from the live
+        gpJobs query and posts its number + name here; job_number becomes the project's identity."""
         with SessionLocal() as session:
-            project = project_repository.create_project(
+            project = project_repository.adopt_gp_job(
                 session,
-                project_id=input.project_id,
-                description=input.description,
-                client=input.client,
+                job_number=input.job_number,
+                job_name=input.job_name,
             )
             session.commit()
             session.refresh(project)

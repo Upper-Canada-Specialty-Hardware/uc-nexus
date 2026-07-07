@@ -11,10 +11,13 @@ from .enums import (
 
 
 @strawberry.input
-class CreateProjectInput:
-    project_id: str
-    description: str
-    client: str
+class AdoptGpJobInput:
+    """Adopt a live GP job (JC00102) as a UC Nexus project. job_name is the display name the
+    frontend read from the live gpJobs picker at selection time, snapshotted onto the project -
+    it is not kept in sync with GP afterward."""
+
+    job_number: str
+    job_name: str | None = None
 
 
 @strawberry.input
