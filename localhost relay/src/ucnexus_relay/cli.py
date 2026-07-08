@@ -1,10 +1,13 @@
 """Single entry point for the packaged relay exe (and `python -m ucnexus_relay`).
 
 Subcommands:
-  serve (default)   run the relay - uvicorn on the configured [server] host/port
-  enroll  ...       one-time enrollment (delegates to ucnexus_relay.enroll; pass its flags through)
-  protect-secret    DPAPI-encrypt the shared_secret currently in config.toml
-  health            GET the local /health endpoint and print it (exit 0 if status ok)
+  serve (default)      run the relay - uvicorn on the configured [server] host/port
+  enroll  ...          one-time enrollment (delegates to ucnexus_relay.enroll; pass its flags through)
+  protect-secret       DPAPI-encrypt the shared_secret currently in config.toml
+  health               GET the local /health endpoint and print it (exit 0 if status ok)
+  install-autostart    register a no-admin logon autostart (HKCU Run) so the relay starts at logon
+  uninstall-autostart  remove that logon autostart entry
+  autostart-status     print whether the logon autostart is installed (JSON)
 
 The packaged exe bundles all of these so a workstation needs only the .exe + config.toml (no Poetry).
 """
@@ -74,6 +77,40 @@ def _health(argv: list[str]) -> int:
         return 1
 
 
+def _install_autostart(argv: list[str]) -> int:
+    from .autostart import default_command, install_autostart
+
+    if getattr(sys, "frozen", False):
+        command = install_autostart()
+    else:
+        # a dev checkout would register python.exe, which isn't a relay - refuse unless the packaged exe.
+        print(
+            "install-autostart is for the packaged exe (sys.frozen). In a dev checkout the Run entry would "
+            f"point at python, not the relay. default command would be: {default_command()}",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"autostart installed (HKCU Run '{command}'); the relay will start at your next logon.")
+    return 0
+
+
+def _uninstall_autostart(argv: list[str]) -> int:
+    from .autostart import uninstall_autostart
+
+    existed = uninstall_autostart()
+    print("autostart removed." if existed else "autostart was not installed (nothing to remove).")
+    return 0
+
+
+def _autostart_status(argv: list[str]) -> int:
+    import json
+
+    from .autostart import autostart_status
+
+    print(json.dumps(autostart_status()))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and not argv[0].startswith("-"):
@@ -91,8 +128,18 @@ def main(argv: list[str] | None = None) -> int:
         return protect_main(rest)
     if cmd == "health":
         return _health(rest)
+    if cmd == "install-autostart":
+        return _install_autostart(rest)
+    if cmd == "uninstall-autostart":
+        return _uninstall_autostart(rest)
+    if cmd == "autostart-status":
+        return _autostart_status(rest)
 
-    print(f"unknown command: {cmd!r} (expected: serve | enroll | protect-secret | health)", file=sys.stderr)
+    print(
+        f"unknown command: {cmd!r} (expected: serve | enroll | protect-secret | health | "
+        "install-autostart | uninstall-autostart | autostart-status)",
+        file=sys.stderr,
+    )
     return 2
 
 
