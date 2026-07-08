@@ -7,6 +7,9 @@ config.toml
 # office temp / lock files
 ~$*
 
+# build identity stamped into the package by CI (relay-release.yml); never committed
+src/ucnexus_relay/_build.py
+
 # python
 __pycache__/
 *.py[cod]
