@@ -25,6 +25,41 @@ from .logging_setup import get_logger
 
 logger = get_logger()
 
+# WS close code the backend sends when a second relay connects while one already holds the single
+# connection slot (backend/main.py: try_register -> close(4409)). It arrives AFTER accept(), so the
+# client sees it as a close frame - distinct from a secret rejection, which is refused pre-accept.
+_SLOT_BUSY_CLOSE_CODE = 4409
+
+
+def _classify_connect_failure(exc: Exception) -> tuple[str, str]:
+    """Map a failed/dropped channel connection to a (category, operator_message) so the log says WHY,
+    not just "retrying" (issue #204).
+
+    The backend refuses a bad or orphaned secret BEFORE accepting the socket (authenticate_secret ->
+    close(4401) before websocket.accept()), which the websockets client sees as an HTTP 403 at the
+    handshake (InvalidStatusCode.status_code == 403), NOT a WS close frame - that means this relay's
+    enrolled secret no longer matches any relay_installs row and it needs re-enrollment (e.g. after a
+    dev DB wipe). A VALID secret that loses the single-connection race is accepted and then closed with
+    code 4409. Everything else (network drop, backend restart, proxy idle close) is a transient retry.
+
+    Attribute-based on purpose: robust across websockets versions, and unit-testable with the real
+    exception types without a live socket."""
+    status = getattr(exc, "status_code", None)  # websockets InvalidStatusCode: handshake was rejected
+    if status in (401, 403):
+        return (
+            "secret_rejected",
+            "backend rejected the relay secret - this relay likely needs re-enrollment: provision a new "
+            "token in UC Nexus admin, then re-run `ucnexus-relay enroll` and restart the relay. still retrying.",
+        )
+    rcvd = getattr(exc, "rcvd", None)  # websockets ConnectionClosed: the close frame we received
+    close_code = getattr(rcvd, "code", None) if rcvd is not None else getattr(exc, "code", None)
+    if close_code == _SLOT_BUSY_CLOSE_CODE:
+        return (
+            "slot_busy",
+            "another relay already holds the backend connection for this company; standing by. still retrying.",
+        )
+    return ("dropped", "channel connection dropped, retrying")
+
 
 def _run_list_vendors(company: str, payload: dict) -> dict:
     ops.check_company_allowed(company)
@@ -207,6 +242,7 @@ async def run_forever(stop_event: asyncio.Event | None = None) -> None:
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.warning("channel connection dropped, retrying", extra={"error": str(e), "backoff": backoff})
+            category, message = _classify_connect_failure(e)
+            logger.warning(message, extra={"category": category, "error": str(e), "backoff": backoff})
             backoff = min(backoff * 2, cfg.reconnect_max_seconds)
         await asyncio.sleep(backoff)
