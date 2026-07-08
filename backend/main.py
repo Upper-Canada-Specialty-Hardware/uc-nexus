@@ -25,6 +25,14 @@ class ErrorHandlerExtension(SchemaExtension):
             extensions: dict[str, Any] = {"code": e.code}
             if e.field:
                 extensions["field"] = e.field
+            # A RelayCallError carries the relay's own error body ({error, message, context}) - the eConnect
+            # proc, numeric error_state, and its DYNAMICS.taErrorCode description. Surface it under
+            # `relayError` so the frontend can show the full GP failure (issue #187: end-user error
+            # screenshots are the main way these get reported, so the detail must reach the browser, not
+            # just the generic RELAY_CALL_FAILED code). Generic: any AppError that sets `.detail`.
+            detail = getattr(e, "detail", None)
+            if detail:
+                extensions["relayError"] = detail
             return GraphQLError(message=e.message, extensions=extensions)
         return GraphQLError(message=str(e), extensions={"code": "NOT_IMPLEMENTED"})
 

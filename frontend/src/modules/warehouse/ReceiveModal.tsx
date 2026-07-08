@@ -29,6 +29,8 @@ import { CREATE_RECEIVE } from '../../graphql/mutations';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
 import { useRelayStatus } from '../../relay/useRelayStatus';
 import { poVendorName } from '../po/poVendorName';
+import GpErrorAlert from '../../components/GpErrorAlert';
+import { extractGpError, type GpError } from '../../graphql/gpError';
 
 // ---- Types ----
 
@@ -110,6 +112,9 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
   // the live totalItemsToReceive read 0.
   const [receivedCount, setReceivedCount] = useState(0);
   const [mutationError, setMutationError] = useState<string | null>(null);
+  // Structured GP/eConnect detail for a failed receipt, shown persistently (issue #187) so the user can
+  // screenshot it; mutationError carries the which-PO + retry-safe context line.
+  const [gpError, setGpError] = useState<GpError | null>(null);
   const [poDetailsMap, setPoDetailsMap] = useState<Record<string, PODetails>>({});
   const [poDetailsLoading, setPoDetailsLoading] = useState(false);
   const [poDetailsError, setPoDetailsError] = useState<string | null>(null);
@@ -175,6 +180,7 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
     if (open && poIds.length > 0) {
       setReceiveQuantities({});
       setMutationError(null);
+      setGpError(null);
       setSucceeded(false);
       setLineLocations({});
       // Fresh open = fresh action set; drop any keys held from a prior batch.
@@ -363,6 +369,7 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
   const handleSubmit = useCallback(async () => {
     setConfirmOpen(false);
     setMutationError(null);
+    setGpError(null);
     setSubmitting(true);
 
     // Each createReceive call brokers the GP receipt server-side (issue #199) before persisting the UC
@@ -372,6 +379,7 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
     // re-post them.
     const completed: string[] = [];
     let failureMessage: string | null = null;
+    let capturedGpError: GpError | null = null;
 
     try {
       for (const poId of poIds) {
@@ -416,8 +424,12 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
         } catch (err: unknown) {
           // Keep this PO's key so the retry reuses it - the GP receipt may have committed even if the
           // mutation reported failure, and reusing the key makes the retry safe.
-          const message = err instanceof Error ? err.message : 'An unknown error occurred';
-          failureMessage = `Receiving ${poLabel} failed: ${message}. If it keeps failing, retry - a retry won't post a duplicate receipt.`;
+          capturedGpError = extractGpError(err);
+          // When GP gave a structured error, the detail goes in the persistent GpErrorAlert (issue #187),
+          // so this line just carries the which-PO + retry-safe context; otherwise it carries the message.
+          failureMessage = capturedGpError
+            ? `Receiving ${poLabel} failed - see the GP error detail below. A retry won't post a duplicate receipt.`
+            : `Receiving ${poLabel} failed: ${err instanceof Error ? err.message : 'An unknown error occurred'}. If it keeps failing, retry - a retry won't post a duplicate receipt.`;
           break;
         }
 
@@ -451,6 +463,7 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
     if (failureMessage) {
       // Stay open so the user can fix/retry the POs that didn't go through.
       setMutationError(failureMessage);
+      setGpError(capturedGpError);
       return;
     }
 
@@ -475,6 +488,7 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
     setPoDetailsMap({});
     setPoDetailsError(null);
     setMutationError(null);
+    setGpError(null);
     setSucceeded(false);
     setConfirmOpen(false);
     setLineLocations({});
@@ -684,9 +698,21 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
           </Alert>
         )}
         {mutationError && (
-          <Alert severity="error" sx={{ mb: 2 }}>
+          <Alert severity="error" sx={{ mb: gpError ? 1 : 2 }}>
             {mutationError}
           </Alert>
+        )}
+        {gpError && (
+          <Box sx={{ mb: 2 }}>
+            <GpErrorAlert
+              error={gpError}
+              title="GP could not complete the receipt"
+              onClose={() => {
+                setGpError(null);
+                setMutationError(null);
+              }}
+            />
+          </Box>
         )}
         {/* A receive posts a GP receipt via the on-prem relay, so the relay must be up. */}
         {!poDetailsLoading && !poDetailsError && !succeeded && (
