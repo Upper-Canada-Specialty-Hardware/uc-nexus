@@ -38,6 +38,21 @@ jobs:
       - run: pip install poetry
       - run: poetry install --no-interaction --with dev
 
+      - name: Stamp build identity into the package
+        # Write the release tag into _build.py so the packaged exe knows its own version, which the UI's
+        # updater compares against the latest GitHub release. Matches the tag the publish steps below use
+        # (github.ref_name for a tag push, relay-v<version>-build.<run_number> for a master push).
+        shell: bash
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            build="${{ github.ref_name }}"
+          else
+            version=$(grep -E '^version' pyproject.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+            build="relay-v${version}-build.${{ github.run_number }}"
+          fi
+          echo "BUILD = \"$build\"" > src/ucnexus_relay/_build.py
+          echo "stamped $build -> src/ucnexus_relay/_build.py"
+
       - name: Build exe
         run: poetry run pyinstaller --clean --noconfirm ucnexus-relay.spec
 

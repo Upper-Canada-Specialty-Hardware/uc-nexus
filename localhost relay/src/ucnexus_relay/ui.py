@@ -19,7 +19,7 @@ import tomllib
 import urllib.request
 from pathlib import Path
 
-from . import autostart
+from . import autostart, updater
 from .config import DEFAULT_CONFIG_PATH
 
 VERSION = "0.1.0"
@@ -141,6 +141,7 @@ def gather_status(config_path: str | Path | None = None) -> dict:
     health = relay_health(cfg.get("host", "127.0.0.1"), cfg.get("port", 7321)) if cfg.get("present") else relay_health()
     return {
         "ui_version": VERSION,
+        "build": updater.current_build(),
         "config": cfg,
         "relay": health,
         "channel": channel_state(config_path),
@@ -227,6 +228,24 @@ class Api:
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "error": str(e)}
 
+    # --- updater ---------------------------------------------------------------------------------------
+
+    def check_update(self) -> dict:
+        try:
+            return updater.check_update()
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": str(e)}
+
+    def apply_update(self, url: str) -> dict:
+        if not _frozen():
+            return {"ok": False, "error": "updates can only be applied to the packaged exe"}
+        if not (url or "").strip():
+            return {"ok": False, "error": "no download URL"}
+        try:
+            return updater.apply_update(url.strip(), DEFAULT_CONFIG_PATH.parent)
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": str(e)}
+
 
 _HTML = """<!doctype html><html><head><meta charset="utf-8"><title>UC Nexus Relay</title>
 <style>
@@ -270,7 +289,8 @@ _HTML = """<!doctype html><html><head><meta charset="utf-8"><title>UC Nexus Rela
   <header><span id="hdot" class="dot"></span><h1>UC Nexus Relay</h1><span id="hstate" class="muted"></span>
     <span style="flex:1"></span>
     <nav><button id="tab-status" class="tab active" onclick="showView('status')">Status</button>
-      <button id="tab-setup" class="tab" onclick="showView('setup')">Setup</button></nav>
+      <button id="tab-setup" class="tab" onclick="showView('setup')">Setup</button>
+      <button id="tab-updates" class="tab" onclick="showView('updates')">Updates</button></nav>
     <span id="uiver" class="muted"></span></header>
   <main>
     <section id="view-status">
@@ -314,6 +334,20 @@ _HTML = """<!doctype html><html><head><meta charset="utf-8"><title>UC Nexus Rela
         <div id="r-run" class="result"></div>
       </div>
     </section>
+    <section id="view-updates" hidden>
+      <div class="card">
+        <h2>Updates</h2>
+        <div class="grid" style="margin-bottom:10px">
+          <div class="k">Installed build</div><div class="v" id="u-current">-</div>
+          <div class="k">Latest release</div><div class="v" id="u-latest">-</div>
+        </div>
+        <div class="actions">
+          <button onclick="checkUpdate()">Check for updates</button>
+          <button id="u-apply" onclick="applyUpdate()" hidden>Update now</button></div>
+        <div id="r-update" class="result"></div>
+        <p class="muted" id="u-note" style="margin:6px 0 0"></p>
+      </div>
+    </section>
   </main>
 <script>
   const $ = id => document.getElementById(id);
@@ -325,11 +359,12 @@ _HTML = """<!doctype html><html><head><meta charset="utf-8"><title>UC Nexus Rela
   function result(id, ok, text) { $(id).innerHTML = `<span class="${ok ? 'ok' : 'bad'}">${esc(text)}</span>`; }
 
   function showView(v) {
-    $('view-status').hidden = v !== 'status';
-    $('view-setup').hidden = v !== 'setup';
-    $('tab-status').classList.toggle('active', v === 'status');
-    $('tab-setup').classList.toggle('active', v === 'setup');
+    for (const name of ['status', 'setup', 'updates']) {
+      $('view-' + name).hidden = v !== name;
+      $('tab-' + name).classList.toggle('active', v === name);
+    }
     if (v === 'setup') loadSetup();
+    if (v === 'updates') loadUpdates();
   }
 
   async function refresh() {
@@ -341,6 +376,7 @@ _HTML = """<!doctype html><html><head><meta charset="utf-8"><title>UC Nexus Rela
     $('hstate').innerText = connected ? 'connected to backend' : ('channel: ' + st);
     const c = s.config, r = s.relay, a = s.autostart;
     $('status').innerHTML =
+      row('Build', esc(s.build) || '-') +
       row('Relay process', r.running ? pill(true,'running v'+(r.version||'?')) : pill(false,'not running')) +
       row('Backend channel', pill(connected, st, st==='unknown')) +
       row('Config', c.present ? (c.parse_error ? pill(false,'parse error') : pill(true,'loaded')) : pill(false,'not set up')) +
@@ -407,6 +443,34 @@ _HTML = """<!doctype html><html><head><meta charset="utf-8"><title>UC Nexus Rela
     const r = await window.pywebview.api.stop_relay();
     result('r-run', r.ok, r.ok ? 'relay stopped' : (r.error || 'failed'));
     setTimeout(refresh, 1000);
+  }
+
+  let _updateUrl = null;
+  async function loadUpdates() {
+    const s = await window.pywebview.api.get_status();
+    $('u-current').innerText = s.build || '-';
+  }
+  async function checkUpdate() {
+    $('r-update').innerHTML = '<span class="muted">checking…</span>';
+    $('u-apply').hidden = true; _updateUrl = null;
+    const r = await window.pywebview.api.check_update();
+    if (!r.ok) { result('r-update', false, r.error || 'check failed'); return; }
+    $('u-current').innerText = r.current; $('u-latest').innerText = r.latest;
+    if (r.update_available) {
+      _updateUrl = r.url; $('u-apply').hidden = false;
+      result('r-update', true, 'update available: ' + r.latest);
+    } else {
+      result('r-update', true, 'up to date');
+    }
+  }
+  async function applyUpdate() {
+    if (!_updateUrl) return;
+    $('r-update').innerHTML = '<span class="muted">downloading and applying… the relay will restart</span>';
+    $('u-apply').hidden = true;
+    const r = await window.pywebview.api.apply_update(_updateUrl);
+    result('r-update', r.ok, r.ok ? 'updated - relay restarted' : (r.error || 'update failed'));
+    $('u-note').innerText = r.note || '';
+    setTimeout(refresh, 2000);
   }
 
   window.addEventListener('pywebviewready', () => { refresh(); setInterval(() => { if ($('auto').checked) refresh(); }, 3000); });
