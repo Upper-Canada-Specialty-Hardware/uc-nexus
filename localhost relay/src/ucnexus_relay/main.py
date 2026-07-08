@@ -68,6 +68,10 @@ def create_app() -> FastAPI:
     async def log_requests(request, call_next):
         start = time.perf_counter()
         response = await call_next(request)
+        # /health is a liveness probe the UI window polls every few seconds; logging every hit floods
+        # relay.log and the UI's own event-log view. Skip it - real GP ops and errors are still logged.
+        if request.url.path == "/health":
+            return response
         dur = (time.perf_counter() - start) * 1000
         logger.info(
             "request",
