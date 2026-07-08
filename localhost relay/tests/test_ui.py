@@ -119,7 +119,7 @@ def test_gather_status_shape(tmp_path, monkeypatch):
     monkeypatch.setattr(ui, "relay_health", lambda host="127.0.0.1", port=7321: {"running": True, "version": "0.1.0"})
     monkeypatch.setattr(ui.autostart, "autostart_status", lambda: {"installed": True, "command": "x"})
     s = ui.gather_status(p)
-    assert set(s) == {"ui_version", "config", "relay", "channel", "autostart"}
+    assert set(s) == {"ui_version", "build", "config", "relay", "channel", "autostart"}
     assert s["channel"]["state"] == "connected"
     assert s["relay"]["running"] is True
     assert s["config"]["default_company"] == "TUBC"
