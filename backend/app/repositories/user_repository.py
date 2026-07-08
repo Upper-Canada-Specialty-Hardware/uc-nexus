@@ -19,6 +19,28 @@ def _headers() -> dict[str, str]:
     }
 
 
+def _primary_email(u: dict) -> str:
+    """The user's primary email address from a Clerk user payload, or '' if none matches."""
+    primary_id = u.get("primary_email_address_id")
+    for e in u.get("email_addresses") or []:
+        if e.get("id") == primary_id:
+            return e.get("email_address", "")
+    return ""
+
+
+def _display_email(u: dict) -> str:
+    """The primary email, or - when Clerk marks no primary (which would otherwise leave received_by as
+    the raw 'user_2abc...' id, issue #202 #4) - the first email on the account. '' only if there are none."""
+    primary = _primary_email(u)
+    if primary:
+        return primary
+    for e in u.get("email_addresses") or []:
+        addr = e.get("email_address")
+        if addr:
+            return addr
+    return ""
+
+
 def list_users() -> list[dict]:
     """List all Clerk users with their roles from publicMetadata."""
     users = []
@@ -36,19 +58,12 @@ def list_users() -> list[dict]:
 
         for u in data:
             metadata = u.get("public_metadata") or {}
-            email_objs = u.get("email_addresses") or []
-            primary_email = ""
-            for e in email_objs:
-                if e.get("id") == u.get("primary_email_address_id"):
-                    primary_email = e.get("email_address", "")
-                    break
-
             users.append(
                 {
                     "id": u["id"],
                     "first_name": u.get("first_name") or "",
                     "last_name": u.get("last_name") or "",
-                    "email": primary_email,
+                    "email": _primary_email(u),
                     "roles": metadata.get("roles", []),
                     "image_url": u.get("image_url") or "",
                 }
@@ -59,6 +74,28 @@ def list_users() -> list[dict]:
         offset += limit
 
     return users
+
+
+def get_user(user_id: str) -> dict:
+    """Fetch one Clerk user's name + email (issue #199: server-side received_by resolution, so a
+    receive's acting user comes from the Clerk token, not a client-supplied string).
+
+    Issue #202 #4: a Clerk 5xx / timeout used to surface as a raw httpx.HTTPStatusError - an opaque 500
+    that coupled receiving to Clerk's availability. Map it to a clean AppError instead so the caller sees
+    a retryable, coded error."""
+    try:
+        resp = _client.get(f"/users/{user_id}", headers=_headers())
+        resp.raise_for_status()
+        u = resp.json()
+    except httpx.HTTPError as e:
+        raise AppError(
+            "Could not load your user profile from Clerk; please try again.", code="CLERK_UNAVAILABLE"
+        ) from e
+    return {
+        "first_name": u.get("first_name") or "",
+        "last_name": u.get("last_name") or "",
+        "email": _display_email(u),
+    }
 
 
 def get_user_roles(user_id: str) -> list[str]:
@@ -80,18 +117,11 @@ def update_user_roles(user_id: str, roles: list[str]) -> dict:
     resp.raise_for_status()
     u = resp.json()
     metadata = u.get("public_metadata") or {}
-    email_objs = u.get("email_addresses") or []
-    primary_email = ""
-    for e in email_objs:
-        if e.get("id") == u.get("primary_email_address_id"):
-            primary_email = e.get("email_address", "")
-            break
-
     return {
         "id": u["id"],
         "first_name": u.get("first_name") or "",
         "last_name": u.get("last_name") or "",
-        "email": primary_email,
+        "email": _primary_email(u),
         "roles": metadata.get("roles", []),
         "image_url": u.get("image_url") or "",
     }

@@ -1272,6 +1272,82 @@ def assign_opening_item_location(
 # ---------------------------------------------------------------------------
 
 
+def validate_receive_eligibility(
+    session: Session,
+    po_id: uuid.UUID,
+    received_by: str,
+    line_items_input: list[dict],
+) -> tuple[str, str, list[dict]]:
+    """Read-only pre-flight for create_receive, run BEFORE the GP receipt is posted (issue #202 #1).
+
+    Runs the same eligibility rules create_receive enforces - PO exists + GP-registered, status
+    receivable, received_by length, every line maps to a receivable PO line with a GP line ord, qty in
+    range, location sums - but persists nothing, so an over-receive / receive-against-a-complete-PO
+    never reaches GP. Returns (po_number, gp_company, receipt_line_items) where receipt_line_items is the
+    per-line gp_line_ord/quantity/locations shape build_create_receipt_payload expects. create_receive
+    re-validates authoritatively on persist."""
+    stmt = select(POModel).options(selectinload(POModel.line_items)).where(POModel.id == po_id)
+    po = session.scalars(stmt).unique().first()
+    if po is None or po.deleted_at is not None:
+        raise NotFoundError(f"Purchase order {po_id} not found")
+    if not po.gp_company or not po.po_number:
+        raise ValidationError("PO must be registered in GP before it can be received", field="po_id")
+    if po.status not in (POStatus.GP_REGISTERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED):
+        raise InvalidStateTransitionError(
+            f"PO status must be GP_Registered, Vendor_Confirmed, or Partially_Received to receive, "
+            f"got {po.status.value}"
+        )
+    if not received_by or len(received_by) < 1 or len(received_by) > 100:
+        raise ValidationError("received_by must be 1-100 characters", field="received_by")
+    if not line_items_input:
+        raise ValidationError("At least one line item is required", field="line_items")
+
+    poli_dict: dict[uuid.UUID, POLineItemModel] = {li.id: li for li in po.line_items}
+    receipt_line_items: list[dict] = []
+    for li_input in line_items_input:
+        poli_id = li_input["po_line_item_id"]
+        poli = poli_dict.get(poli_id)
+        if poli is None:
+            raise NotFoundError(f"PO line item {poli_id} not found on this PO")
+        if poli.gp_line_ord is None:
+            raise ValidationError(
+                f"Line {poli.product_code} has no GP line mapping; re-create the PO through GP",
+                field="line_items",
+            )
+        qty_received = li_input["quantity_received"]
+        if qty_received < 1:
+            raise ValidationError("quantity_received must be >= 1", field="quantity_received")
+        pending = poli.ordered_quantity - poli.received_quantity
+        if qty_received > pending:
+            raise ValidationError("Receive quantity exceeds pending quantity", field="quantity_received")
+
+        locations = li_input["locations"]
+        if locations:
+            loc_sum = sum(loc["quantity"] for loc in locations)
+            if loc_sum != qty_received:
+                raise ValidationError("Location quantities must sum to received quantity", field="locations")
+            for loc in locations:
+                if loc["quantity"] < 1:
+                    raise ValidationError("Location quantity must be >= 1", field="quantity")
+                deficient_q = loc.get("deficient_quantity", 0) or 0
+                if deficient_q < 0 or deficient_q > loc["quantity"]:
+                    raise ValidationError(
+                        "deficient_quantity must satisfy 0 <= deficient_quantity <= quantity",
+                        field="deficient_quantity",
+                    )
+                _normalize_and_validate_location_fields(loc["aisle"], loc["bay"], loc["bin"])
+
+        receipt_line_items.append(
+            {
+                "gp_line_ord": poli.gp_line_ord,
+                "quantity": qty_received,
+                "locations": locations,
+            }
+        )
+
+    return po.po_number, po.gp_company, receipt_line_items
+
+
 def create_receive(
     session: Session,
     po_id: uuid.UUID,

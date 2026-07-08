@@ -7,6 +7,8 @@ export const UPDATE_PO = gql`
       poNumber
       requestNumber
       status
+      gpVendorId
+      vendorNameSnapshot
       vendor {
         id
         name
@@ -401,6 +403,8 @@ export const REGISTER_PO_IN_GP = gql`
       status
       gpCompany
       costCode
+      gpVendorId
+      vendorNameSnapshot
       vendor {
         id
         name
@@ -418,6 +422,8 @@ export const CREATE_PO = gql`
       projectId
       status
       gpCompany
+      gpVendorId
+      vendorNameSnapshot
       vendor {
         id
         name
@@ -482,9 +488,9 @@ export const FINALIZE_IMPORT_SESSION = gql`
   }
 `;
 
-export const CREATE_PROJECT = gql`
-  mutation CreateProject($input: CreateProjectInput!) {
-    createProject(input: $input) {
+export const ADOPT_GP_JOB = gql`
+  mutation AdoptGpJob($input: AdoptGpJobInput!) {
+    adoptGpJob(input: $input) {
       id
       projectId
       description
@@ -800,20 +806,6 @@ export const RESOLVE_DEFICIENCY = gql`
     resolveDeficiency(input: $input) {
       id inventoryLocationId stockItemId resolution quantity reasonText
       rmaReference reviewedBy reviewedAt resultingStockItemId
-    }
-  }
-`;
-
-// ---------------------------------------------------------------------------
-// GP relay vendor sync
-// ---------------------------------------------------------------------------
-
-export const SYNC_GP_VENDORS = gql`
-  mutation SyncGpVendors($vendors: [GpVendorInput!]!) {
-    syncGpVendors(vendors: $vendors) {
-      matchedCount
-      matchedVendorNames
-      unmatchedGpVendorNames
     }
   }
 `;

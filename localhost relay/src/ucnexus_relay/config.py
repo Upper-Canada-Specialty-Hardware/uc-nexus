@@ -69,6 +69,19 @@ class LoggingCfg(BaseModel):
     file: str = "relay.log"
 
 
+class ChannelCfg(BaseModel):
+    # Outbound wss URL to the UC Nexus backend's relay gateway, e.g. "wss://backend.example/relay-link".
+    # Empty disables the channel (the relay just runs its existing inbound HTTP server).
+    backend_url: str = ""
+    # the `websockets` client's own ping_interval/ping_timeout default to 20s/20s, which already
+    # satisfies the ~20s keepalive the channel needs to hold a corporate-proxy idle timeout open -
+    # these just make that tunable without a code change.
+    ping_interval: float = 20.0
+    ping_timeout: float = 20.0
+    reconnect_min_seconds: float = 1.0
+    reconnect_max_seconds: float = 30.0
+
+
 class Settings(BaseModel):
     server: ServerCfg = ServerCfg()
     auth: AuthCfg
@@ -76,6 +89,7 @@ class Settings(BaseModel):
     sql: SqlCfg
     gp: GpCfg = GpCfg()
     logging: LoggingCfg = LoggingCfg()
+    channel: ChannelCfg = ChannelCfg()
 
 
 @lru_cache

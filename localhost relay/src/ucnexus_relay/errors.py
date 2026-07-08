@@ -21,3 +21,17 @@ def lookup_error_description(conn, error_code: int) -> str | None:
         error_code,
     ).fetchone()
     return row.ErrorDesc.strip() if row else None
+
+
+def econnect_error_body(conn, e) -> dict:
+    """error_body() for an econnect.EConnectError, with the numeric error_state resolved to its
+    taErrorCode description where possible. Shared by both transports: the HTTP routes wrap this in
+    an HTTPException(502, ...), the WS channel sends it as-is in an {ok: false, error: ...} reply."""
+    desc = lookup_error_description(conn, e.error_state) if e.error_state else None
+    return error_body(
+        "econnect_error",
+        desc or str(e),
+        proc=e.proc,
+        error_state=e.error_state,
+        error_description=desc,
+    )

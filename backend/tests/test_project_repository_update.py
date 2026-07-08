@@ -8,12 +8,14 @@ from app.repositories import project_repository
 
 
 def _make_project(session) -> ProjectModel:
-    return project_repository.create_project(
+    project = project_repository.adopt_gp_job(
         session,
-        project_id=f"PRJ-{uuid.uuid4().hex[:6]}",
-        description="orig desc",
-        client="orig client",
+        job_number=f"PRJ-{uuid.uuid4().hex[:6]}",
+        job_name="orig desc",
     )
+    project.client = "orig client"
+    session.flush()
+    return project
 
 
 def test_update_project_sets_editable_fields(db_session):

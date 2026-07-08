@@ -11,10 +11,13 @@ from .enums import (
 
 
 @strawberry.input
-class CreateProjectInput:
-    project_id: str
-    description: str
-    client: str
+class AdoptGpJobInput:
+    """Adopt a live GP job (JC00102) as a UC Nexus project. job_name is the display name the
+    frontend read from the live gpJobs picker at selection time, snapshotted onto the project -
+    it is not kept in sync with GP afterward."""
+
+    job_number: str
+    job_name: str | None = None
 
 
 @strawberry.input
@@ -172,18 +175,31 @@ class CreatePOLineItemInput:
 
 @strawberry.input
 class CreatePOInput:
+    """Issue #199: GP-first, server-side. The resolver pushes this to GP via relay_call (create_po)
+    BEFORE persisting anything, using GP's returned PONUMBER + company, so the PO is created already
+    GP-registered in one commit (no numberless DRAFT window)."""
+
     line_items: list[CreatePOLineItemInput]
+    # The GP vendor picked live from the gpVendors(company) list (issue #200 - there's no local
+    # vendor-to-GP mirror anymore). Snapshotted onto the PO for display.
+    gp_vendor_id: str
+    gp_vendor_name: str
+    gp_company: str
+    # GP buyer (POP00101), picked from the gpBuyers dropdown - always sent so the relay's own
+    # per-workstation buyer fallback never decides it for a server-brokered call.
+    buyer_id: str
     project_id: strawberry.ID | None = None
+    # Optional link to a UC Nexus vendor record (contact info), independent of the GP vendor above.
     vendor_id: strawberry.ID | None = None
     notes: str | None = None
     # GP cost code for a project-linked PO (the issue #121 dropdown, 'phase-step-element').
     # Applied to every job-cost line when the PO is pushed to GP via the relay.
     cost_code: str | None = None
-    # GP's returned PONUMBER + the company it lives in. The frontend pushes the PO to the relay FIRST
-    # and passes these on success, so the PO is created already GP-registered in one commit (no
-    # numberless DRAFT window). Omitted for a plain draft.
+    # Optional custom PO number to request from GP; the relay reserves GP's next number when omitted.
     po_number: str | None = None
-    gp_company: str | None = None
+    # Issue #202 #1: client-generated key (one per user action, re-sent on retry) that makes this
+    # GP-first write idempotent - a retry returns the already-created PO instead of a second GP PO.
+    idempotency_key: str = ""
 
 
 @strawberry.input
@@ -200,24 +216,26 @@ class RegisterPOLineItemInput:
 
 @strawberry.input
 class RegisterPOInput:
-    """Register an imported DRAFT PO into GP (issue #175). Sent by the resolver only after the relay /po
-    push succeeded. line_items is the (possibly edited) set the user pushed, in the SAME order sent to the
-    relay - the backend assigns gp_line_ord positionally from it."""
+    """Register an imported DRAFT PO into GP (issue #175; brokered server-side as of issue #199). The
+    resolver pushes this to GP via relay_call (create_po) BEFORE persisting anything. line_items is the
+    (possibly edited) set pushed to GP, in the SAME order - the backend assigns gp_line_ord positionally
+    from it."""
 
     po_id: strawberry.ID
-    vendor_id: strawberry.ID
-    po_number: str
-    gp_company: str
-    line_items: list[RegisterPOLineItemInput]
-    cost_code: str | None = None
-
-
-@strawberry.input
-class GpVendorInput:
-    """One vendor read from GP PM00200 by the relay, posted to syncGpVendors."""
-
+    # The GP vendor picked live from the gpVendors(company) list (issue #200 - there's no local
+    # vendor-to-GP mirror anymore). Snapshotted onto the PO for display.
     gp_vendor_id: str
-    vendor_name: str
+    gp_vendor_name: str
+    gp_company: str
+    # GP buyer (POP00101), picked from the gpBuyers dropdown - always sent so the relay's own
+    # per-workstation buyer fallback never decides it for a server-brokered call.
+    buyer_id: str
+    line_items: list[RegisterPOLineItemInput]
+    # Optional link to a UC Nexus vendor record (contact info), independent of the GP vendor above.
+    vendor_id: strawberry.ID | None = None
+    cost_code: str | None = None
+    # Issue #202 #1: client-generated key that makes this GP-first write idempotent on retry.
+    idempotency_key: str = ""
 
 
 @strawberry.input
@@ -309,10 +327,16 @@ class LocationInput:
 
 @strawberry.input
 class CreateReceiveInput:
+    """Issue #199: GP-first, server-side. received_by is no longer a client-supplied field - the
+    resolver resolves the acting UC Nexus user from the Clerk token instead."""
+
     po_id: strawberry.ID
-    received_by: str
     warehouse_id: strawberry.ID | None = None
     line_items: list[ReceiveLineItemInput] = strawberry.field(default_factory=list)
+    # Issue #202 #1: client-generated key (one per user action, re-sent on retry) that makes this
+    # GP-first receive idempotent - a retry returns the already-created receive instead of posting a
+    # SECOND GP receipt (replacing the deleted client-side gpReceiptPostedRef guard).
+    idempotency_key: str = ""
 
 
 @strawberry.input

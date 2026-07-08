@@ -10,7 +10,8 @@ from . import Base
 class RelayInstall(Base):
     """One on-prem relay install (one workstation). The relay generates its own long-lived Bearer
     secret and registers it here via the one-time enrollment token (the backend can't reach the relay,
-    but the relay can reach the backend). The frontend then fetches the secret via relayCredential."""
+    but the relay can reach the backend), then presents that same secret on its outbound WS connect
+    handshake (see relay_repository.authenticate_secret)."""
 
     __tablename__ = "relay_installs"
 

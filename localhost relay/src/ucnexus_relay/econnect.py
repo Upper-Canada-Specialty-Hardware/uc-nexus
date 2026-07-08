@@ -437,6 +437,16 @@ def list_buyers(conn) -> list[str]:
     return [r.b for r in rows]
 
 
+def list_jobs(conn) -> list[dict]:
+    """Read-only: the job master JC00102 (WennSoft Job Cost). Feeds the outbound-channel list_jobs
+    op - there's no existing HTTP route for this (nothing reads it via the browser hop today)."""
+    rows = conn.cursor().execute(
+        "SELECT RTRIM(WS_Job_Number) AS job_number, RTRIM(WS_Job_Name) AS job_name "
+        "FROM dbo.JC00102 ORDER BY WS_Job_Name"
+    ).fetchall()
+    return [{"job_number": r.job_number, "job_name": r.job_name or None} for r in rows]
+
+
 def list_cost_codes(conn, job_number: str) -> list[dict]:
     """Read-only: the active cost codes defined for ONE job in JC00701 (WennSoft Job Cost).
     Cost codes are per-job, and the real Cost_Element varies by code (210-200 is element 2,
