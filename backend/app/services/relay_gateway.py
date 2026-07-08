@@ -1,8 +1,14 @@
 """Live-connection registry for the outbound relay WS channel, plus relay_call() - the single
 function every future slice uses to run a job on the connected relay.
 
-POC scope: one live connection at a time. A new connection replaces whatever was there; anything still
-awaiting a reply on the old connection fails with RelayUnavailableError rather than hanging."""
+POC scope: ONE live connection at a time, and it wins. While a relay socket is registered, a second
+connecting relay is rejected (the /relay-link route closes it 4409) rather than superseding the first.
+This is deliberate: the old supersede-the-incumbent behaviour (issue #202 #6) both let two enrolled
+relays thrash - each new connection force-closing the other, reconnecting, and superseding back - and
+could drop a valid in-flight reply, failing a relay_call whose GP write had actually committed. Failing
+pending calls now happens only on a genuine disconnect (unregister), where the reply truly can't arrive.
+A briefly half-dead incumbent is detected by the websockets ping timeout, which fires unregister and
+frees the slot for the next reconnect."""
 
 import asyncio
 import uuid
@@ -24,17 +30,21 @@ class RelayGateway:
     def connected(self) -> bool:
         return self._socket is not None
 
-    async def register(self, company: str, websocket: WebSocket) -> None:
-        """Called by the /relay-link route once a connecting socket has authenticated."""
-        old = self._socket
+    @property
+    def company(self) -> str | None:
+        """The GP company the currently-connected relay is enrolled for (None when disconnected).
+        Surfaced on RelayStatus so the PO/receive/adopt dialogs offer only that company (issue #202 #6)."""
+        return self._company
+
+    def try_register(self, company: str, websocket: WebSocket) -> bool:
+        """Called by the /relay-link route once a connecting socket has authenticated. Returns True and
+        takes the single connection slot when it's free; returns False (route closes the socket) when a
+        relay is already connected, so the incumbent's in-flight calls are never disturbed."""
+        if self._socket is not None and self._socket is not websocket:
+            return False
         self._socket = websocket
         self._company = company
-        if old is not None and old is not websocket:
-            self._fail_all("superseded by a new relay connection")
-            try:
-                await old.close(code=4409)
-            except Exception:
-                pass
+        return True
 
     def unregister(self, websocket: WebSocket) -> None:
         """Called by the /relay-link route when its socket disconnects."""
@@ -67,7 +77,7 @@ class RelayGateway:
             raise RelayUnavailableError(f"connected relay is enrolled for {self._company}, not {company}")
 
         job_id = uuid.uuid4().hex
-        future: asyncio.Future = asyncio.get_event_loop().create_future()
+        future: asyncio.Future = asyncio.get_running_loop().create_future()
         self._pending[job_id] = future
         try:
             await self._socket.send_json({"id": job_id, "op": op, "company": company, "payload": payload or {}})

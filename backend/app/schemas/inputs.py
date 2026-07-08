@@ -197,6 +197,9 @@ class CreatePOInput:
     cost_code: str | None = None
     # Optional custom PO number to request from GP; the relay reserves GP's next number when omitted.
     po_number: str | None = None
+    # Issue #202 #1: client-generated key (one per user action, re-sent on retry) that makes this
+    # GP-first write idempotent - a retry returns the already-created PO instead of a second GP PO.
+    idempotency_key: str = ""
 
 
 @strawberry.input
@@ -231,6 +234,8 @@ class RegisterPOInput:
     # Optional link to a UC Nexus vendor record (contact info), independent of the GP vendor above.
     vendor_id: strawberry.ID | None = None
     cost_code: str | None = None
+    # Issue #202 #1: client-generated key that makes this GP-first write idempotent on retry.
+    idempotency_key: str = ""
 
 
 @strawberry.input
@@ -328,6 +333,10 @@ class CreateReceiveInput:
     po_id: strawberry.ID
     warehouse_id: strawberry.ID | None = None
     line_items: list[ReceiveLineItemInput] = strawberry.field(default_factory=list)
+    # Issue #202 #1: client-generated key (one per user action, re-sent on retry) that makes this
+    # GP-first receive idempotent - a retry returns the already-created receive instead of posting a
+    # SECOND GP receipt (replacing the deleted client-side gpReceiptPostedRef guard).
+    idempotency_key: str = ""
 
 
 @strawberry.input

@@ -35,7 +35,19 @@ def _serve(argv: list[str]) -> int:
         # the outbound channel is additive to the existing inbound HTTP server - a blank
         # [channel].backend_url makes channel.run_forever() a no-op, so this is safe on a relay that
         # hasn't been reconfigured for it yet.
-        await asyncio.gather(server.serve(), channel.run_forever())
+        #
+        # run_forever loops indefinitely (reconnect-with-backoff), so it must be cancelled on shutdown:
+        # a plain gather() would keep awaiting it after uvicorn's server.serve() returns on SIGINT /
+        # service stop, hanging the process. Run it as a task and cancel it once the server exits.
+        channel_task = asyncio.create_task(channel.run_forever())
+        try:
+            await server.serve()
+        finally:
+            channel_task.cancel()
+            try:
+                await channel_task
+            except asyncio.CancelledError:
+                pass
 
     asyncio.run(_run())
     return 0

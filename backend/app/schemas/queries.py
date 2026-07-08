@@ -1043,9 +1043,10 @@ class Query:
 
     @strawberry.field
     def relay_status(self, info: strawberry.Info) -> RelayStatus:
-        """Whether the outbound relay WS channel is currently connected, for the relay status chip."""
+        """Whether the outbound relay WS channel is currently connected (and, if so, the GP company it is
+        enrolled for), for the relay status chip and the company-aware PO/receive/adopt dialogs."""
         require_user(info)
-        return RelayStatus(connected=relay_gateway.connected)
+        return RelayStatus(connected=relay_gateway.connected, company=relay_gateway.company)
 
     @strawberry.field
     async def gp_jobs(self, info: strawberry.Info, company: str) -> list[GpJob]:

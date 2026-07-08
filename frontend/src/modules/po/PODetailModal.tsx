@@ -46,6 +46,7 @@ import {
 import { GET_PRIOR_ORDER_AS_VALUES } from '../../graphql/queries';
 import type { PurchaseOrder } from './index';
 import GpPurchaseOrderDialog from './GpPurchaseOrderDialog';
+import { poVendorName } from './poVendorName';
 import { formatPoStatus, poStatusChipColor } from './poStatus';
 
 const DOC_TYPE_LABELS: Record<string, string> = {
@@ -560,7 +561,7 @@ export default function PODetailModal({
         ) : (
           <Box sx={{ mb: 3 }}>
             <InfoRow label="PO Number" value={po.poNumber || '(Not assigned)'} />
-            <InfoRow label="Vendor" value={po.vendorNameSnapshot || po.vendor?.name || '-'} />
+            <InfoRow label="Vendor" value={poVendorName(po) || '-'} />
             <InfoRow label="Vendor Contact" value={po.vendor?.contactName || '-'} />
             <InfoRow label="Vendor Quote #" value={po.vendorQuoteNumber || '-'} />
             <InfoRow label="Expected Delivery Date" value={formatDate(po.expectedDeliveryDate)} />

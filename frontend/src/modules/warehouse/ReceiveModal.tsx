@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect } from 'react';
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import {
   Typography,
   Box,
@@ -24,9 +24,11 @@ import { useToast } from '../../components/Toast';
 import Modal from '../../components/Modal';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import { useNavigate } from 'react-router-dom';
-import { GET_PO_RECEIVING_DETAILS, GET_RELAY_STATUS, GET_WAREHOUSES } from '../../graphql/queries';
+import { GET_PO_RECEIVING_DETAILS, GET_WAREHOUSES } from '../../graphql/queries';
 import { CREATE_RECEIVE } from '../../graphql/mutations';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
+import { useRelayStatus } from '../../relay/useRelayStatus';
+import { poVendorName } from '../po/poVendorName';
 
 // ---- Types ----
 
@@ -118,6 +120,10 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
 
   const [createReceive] = useMutation(CREATE_RECEIVE);
 
+  // One idempotency key per PO, reused across retries so re-posting a PO that already committed in GP is
+  // a no-op (no duplicate receipt). Cleared per-PO on success; a failed PO keeps its key for the retry.
+  const idempotencyKeysRef = useRef<Record<string, string>>({});
+
   // Warehouse the received goods land in (active warehouses only). Defaults to the primary.
   const { data: warehousesData } = useQuery<{ warehouses: WarehouseOption[] }>(GET_WAREHOUSES, {
     variables: { includeInactive: false },
@@ -171,17 +177,17 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
       setMutationError(null);
       setSucceeded(false);
       setLineLocations({});
+      // Fresh open = fresh action set; drop any keys held from a prior batch.
+      idempotencyKeysRef.current = {};
       fetchPODetails(poIds);
     }
   }, [open, poIds, fetchPODetails]);
 
   // Relay presence while the dialog is open - a receive posts a GP receipt, so the relay must be up.
   // Backed by the backend's relayStatus field (the relay-to-backend WS channel), not a browser probe.
-  const { data: relayStatusData } = useQuery<{ relayStatus: { connected: boolean } }>(GET_RELAY_STATUS, {
-    skip: !open,
-    pollInterval: 10_000,
-  });
-  const relayStatus: boolean | null = open && relayStatusData ? relayStatusData.relayStatus.connected : null;
+  // skip: !open so a hidden modal doesn't poll.
+  const relay = useRelayStatus({ skip: !open });
+  const relayStatus: boolean | null = open ? relay.connected : null;
   const relayConnected = relayStatus === true;
 
   // ---- Derived Data ----
@@ -381,9 +387,13 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
           break;
         }
 
+        // Same key across retries of this PO so a retry is a no-op in GP (won't post a second receipt).
+        const idempotencyKey = (idempotencyKeysRef.current[poId] ??= crypto.randomUUID());
+
         const input = {
           poId,
           warehouseId: warehouseId || null,
+          idempotencyKey,
           lineItems: poLineItems.map((li) => {
             const receiveNow = receiveQuantities[li.id] ?? 0;
             const drafts = draftsFor(li.id, receiveNow);
@@ -404,11 +414,15 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
         try {
           await createReceive({ variables: { input } });
         } catch (err: unknown) {
+          // Keep this PO's key so the retry reuses it - the GP receipt may have committed even if the
+          // mutation reported failure, and reusing the key makes the retry safe.
           const message = err instanceof Error ? err.message : 'An unknown error occurred';
-          failureMessage = `Receiving ${poLabel} failed, so nothing was recorded for it: ${message}`;
+          failureMessage = `Receiving ${poLabel} failed: ${message}. If it keeps failing, retry - a retry won't post a duplicate receipt.`;
           break;
         }
 
+        // Committed: drop this PO's key so it isn't reused if the modal stays open for other POs.
+        delete idempotencyKeysRef.current[poId];
         completed.push(poId);
       }
     } finally {
@@ -500,7 +514,7 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
         {showHeader && (
           <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: details.notes ? 0.5 : 1 }}>
             {details.poNumber ?? 'Unknown PO'}
-            {details.vendorNameSnapshot ?? details.vendor?.name ? ` — ${details.vendorNameSnapshot ?? details.vendor?.name}` : ''}
+            {poVendorName(details) ? ` — ${poVendorName(details)}` : ''}
           </Typography>
         )}
         {details.notes && (

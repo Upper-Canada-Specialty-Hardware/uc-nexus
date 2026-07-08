@@ -140,21 +140,53 @@ async def _handle_job(job: dict) -> dict:
 
 
 async def _run_once(url: str, secret: str, cfg) -> None:
+    # websockets is pinned to ^13.0 (see pyproject); on 13.x the top-level websockets.connect is the
+    # legacy client whose keyword is `extra_headers`. `additional_headers` is the 14.0+ name and raises
+    # TypeError on 13.x, which run_forever would swallow and retry forever - the channel would never
+    # connect. Keep this as extra_headers until the pin moves to websockets >=14.
     async with websockets.connect(
         url,
-        additional_headers={"Authorization": f"Bearer {secret}"},
+        extra_headers={"Authorization": f"Bearer {secret}"},
         ping_interval=cfg.ping_interval,
         ping_timeout=cfg.ping_timeout,
     ) as ws:
         logger.info("channel connected", extra={"url": url})
-        async for raw in ws:
-            try:
-                job = json.loads(raw)
-            except (json.JSONDecodeError, TypeError):
-                logger.warning("channel received a non-JSON message", extra={"raw": str(raw)[:200]})
-                continue
+
+        # Dispatch each job as its own task so the read loop keeps pulling frames instead of blocking on
+        # the current job's GP round-trip (issue #202 #5). The Create-PO page fires list_vendors +
+        # list_buyers + list_jobs + list_cost_codes at once; serial handling made later jobs wait behind
+        # earlier ones and could push them past the backend's 30s relay_call timeout. Replies are pushed
+        # through a single writer coroutine so concurrent jobs never interleave frames on the socket.
+        send_queue: asyncio.Queue = asyncio.Queue()
+        jobs: set[asyncio.Task] = set()
+
+        async def _writer() -> None:
+            while True:
+                reply = await send_queue.get()
+                try:
+                    await ws.send(json.dumps(reply, default=str))
+                finally:
+                    send_queue.task_done()
+
+        async def _dispatch_job(job: dict) -> None:
             reply = await _handle_job(job)
-            await ws.send(json.dumps(reply, default=str))
+            await send_queue.put(reply)
+
+        writer_task = asyncio.create_task(_writer())
+        try:
+            async for raw in ws:
+                try:
+                    job = json.loads(raw)
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning("channel received a non-JSON message", extra={"raw": str(raw)[:200]})
+                    continue
+                task = asyncio.create_task(_dispatch_job(job))
+                jobs.add(task)
+                task.add_done_callback(jobs.discard)
+        finally:
+            writer_task.cancel()
+            for task in list(jobs):
+                task.cancel()
 
 
 async def run_forever(stop_event: asyncio.Event | None = None) -> None:

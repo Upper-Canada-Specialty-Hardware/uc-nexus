@@ -1,3 +1,4 @@
+import inspect
 from collections.abc import Callable
 from typing import Any
 
@@ -18,20 +19,33 @@ from app.services.relay_gateway import gateway as relay_gateway
 
 
 class ErrorHandlerExtension(SchemaExtension):
-    def resolve(self, _next: Callable, root: Any, info: GraphQLResolveInfo, *args, **kwargs):
-        try:
-            result = _next(root, info, *args, **kwargs)
-            return result
-        except AppError as e:
-            extensions = {"code": e.code}
+    @staticmethod
+    def _to_graphql_error(e: Exception) -> GraphQLError:
+        if isinstance(e, AppError):
+            extensions: dict[str, Any] = {"code": e.code}
             if e.field:
                 extensions["field"] = e.field
-            raise GraphQLError(message=e.message, extensions=extensions) from e
-        except NotImplementedError as e:
-            raise GraphQLError(
-                message=str(e),
-                extensions={"code": "NOT_IMPLEMENTED"},
-            ) from e
+            return GraphQLError(message=e.message, extensions=extensions)
+        return GraphQLError(message=str(e), extensions={"code": "NOT_IMPLEMENTED"})
+
+    def resolve(self, _next: Callable, root: Any, info: GraphQLResolveInfo, *args, **kwargs):
+        # For async resolvers _next() returns a coroutine that strawberry awaits *after* this method
+        # returns, so a synchronous try/except here would never see the exception - the AppError -> code
+        # mapping would be silently dropped. Handle the awaitable case in an async wrapper so both sync
+        # and async resolvers get the extension pattern.
+        try:
+            result = _next(root, info, *args, **kwargs)
+        except (AppError, NotImplementedError) as e:
+            raise self._to_graphql_error(e) from e
+        if inspect.isawaitable(result):
+            return self._resolve_async(result)
+        return result
+
+    async def _resolve_async(self, awaitable):
+        try:
+            return await awaitable
+        except (AppError, NotImplementedError) as e:
+            raise self._to_graphql_error(e) from e
 
 
 schema = strawberry.Schema(
@@ -81,7 +95,12 @@ async def relay_link(websocket: WebSocket):
         return
 
     await websocket.accept()
-    await relay_gateway.register(install.company, websocket)
+    # POC scope: one relay at a time, incumbent wins (issue #202 #6). If a relay is already connected,
+    # reject this one rather than superseding - superseding could drop an in-flight reply for a GP write
+    # that committed, and two enrolled relays would otherwise thrash by force-closing each other.
+    if not relay_gateway.try_register(install.company, websocket):
+        await websocket.close(code=4409)
+        return
     try:
         while True:
             reply = await websocket.receive_json()
