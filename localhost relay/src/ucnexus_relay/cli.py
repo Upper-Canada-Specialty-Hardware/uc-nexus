@@ -2,6 +2,7 @@
 
 Subcommands:
   serve (default)      run the relay - uvicorn on the configured [server] host/port
+  ui                   open the native desktop window (status + event log; setup/updates land here)
   enroll  ...          one-time enrollment (delegates to ucnexus_relay.enroll; pass its flags through)
   protect-secret       DPAPI-encrypt the shared_secret currently in config.toml
   health               GET the local /health endpoint and print it (exit 0 if status ok)
@@ -120,6 +121,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if cmd == "serve":
         return _serve(rest)
+    if cmd == "ui":
+        from .ui import run_ui
+        return run_ui()
     if cmd == "enroll":
         from .enroll import main as enroll_main
         return enroll_main(rest)
@@ -136,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
         return _autostart_status(rest)
 
     print(
-        f"unknown command: {cmd!r} (expected: serve | enroll | protect-secret | health | "
+        f"unknown command: {cmd!r} (expected: serve | ui | enroll | protect-secret | health | "
         "install-autostart | uninstall-autostart | autostart-status)",
         file=sys.stderr,
     )
