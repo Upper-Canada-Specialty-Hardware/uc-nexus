@@ -1,15 +1,21 @@
 name: Relay Release
 
 # builds the localhost relay into a single ucnexus-relay.exe on a Windows runner and publishes it.
-# - push a tag like `relay-v0.1.0`  -> builds + attaches the exe to a GitHub Release
-# - run manually (workflow_dispatch) -> builds + uploads the exe as a workflow artifact (no release)
+# - push to master touching "localhost relay/**" -> builds + publishes an auto-versioned Release
+# - push a tag like `relay-v0.1.0`               -> builds + attaches the exe to that GitHub Release
+# - run manually (workflow_dispatch)             -> builds + uploads the exe as a workflow artifact
+# path filters are not applied to tag pushes, so a `relay-v*` tag always builds regardless of what it touched.
 # DPAPI happens on the workstation at enroll time, so the CI-built exe carries no secret - safe to build
 # in the cloud. see "localhost relay/docs/relay-deployment.md".
 
 on:
   push:
+    branches:
+      - master
     tags:
       - "relay-v*"
+    paths:
+      - "localhost relay/**"
   workflow_dispatch:
 
 permissions:
@@ -61,3 +67,16 @@ jobs:
         run: |
           gh release create "$TAG" --title "relay $TAG" --notes "UC Nexus relay build $TAG. install steps: localhost relay/docs/relay-deployment.md" --verify-tag || true
           gh release upload "$TAG" dist/ucnexus-relay.exe --clobber
+
+      # A push to master that touched "localhost relay/**" auto-publishes a build-numbered Release.
+      # The tag is created by GITHUB_TOKEN, which never re-triggers this workflow, so there's no loop.
+      - name: Publish auto-release (relay change on master)
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(grep -E '^version' pyproject.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+          tag="relay-v${version}-build.${{ github.run_number }}"
+          gh release create "$tag" --target "${{ github.sha }}" --title "relay $tag" --notes "Auto-built from ${{ github.sha }} (localhost relay change on master). install steps: localhost relay/docs/relay-deployment.md" || true
+          gh release upload "$tag" dist/ucnexus-relay.exe --clobber
