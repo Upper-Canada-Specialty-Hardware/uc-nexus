@@ -5,7 +5,7 @@
 # .github/workflows/relay-release.yml. config.toml is NOT bundled - it lives next to the exe on each
 # workstation and is created at install/enroll time (see docs/relay-deployment.md).
 
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 # uvicorn imports its loop/protocol/lifespan backends lazily by string, so PyInstaller's static analysis
 # misses them - pull the whole package in. pyodbc is a C-extension and the json logger is imported by name.
@@ -13,13 +13,26 @@ hiddenimports = collect_submodules("uvicorn") + [
     "pyodbc",
     "pythonjsonlogger",
     "pythonjsonlogger.jsonlogger",
+    "clr",  # pythonnet's runtime import name (the `ui` window loads the WebView2 backend through it)
 ]
+
+# The `ui` subcommand's native window (pywebview) reaches the Edge WebView2 backend through pythonnet/clr.
+# Those are loaded dynamically (clr assemblies, pywebview's bundled JS + WebView2 loader), so static
+# analysis misses them - collect_all pulls each package's submodules, data files, and binaries. pywebview
+# also ships a PyInstaller hook that PyInstaller auto-discovers, but collecting explicitly is belt-and-braces.
+datas = []
+binaries = []
+for _pkg in ("webview", "clr_loader", "pythonnet"):
+    _d, _b, _h = collect_all(_pkg)
+    datas += _d
+    binaries += _b
+    hiddenimports += _h
 
 a = Analysis(
     ["relay_entry.py"],
     pathex=["src"],
-    binaries=[],
-    datas=[],
+    binaries=binaries,
+    datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],
