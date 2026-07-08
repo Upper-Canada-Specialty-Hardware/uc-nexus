@@ -24,6 +24,8 @@ import type { PurchaseOrder } from './index';
 import RelayStatusChip from '../../relay/RelayStatusChip';
 import { useRelayStatus } from '../../relay/useRelayStatus';
 import { poVendorName } from './poVendorName';
+import GpErrorAlert from '../../components/GpErrorAlert';
+import { extractGpError, type GpError } from '../../graphql/gpError';
 
 // --- Types ---
 
@@ -132,6 +134,9 @@ export default function GpPurchaseOrderDialog({
   const [lineItems, setLineItems] = useState<LineItemRow[]>([{ key: 1, ...EMPTY_LINE_ITEM }]);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [gpBusy, setGpBusy] = useState(false);
+  // A GP/eConnect failure from create/register, shown persistently and in detail (issue #187) so the end
+  // user can screenshot it. Distinct from the field-level `errors` map.
+  const [gpError, setGpError] = useState<GpError | null>(null);
 
   const [createPO, { loading: createLoading }] = useMutation<{ createPo: { poNumber: string | null } }>(CREATE_PO);
   const [registerPoInGp, { loading: registerLoading }] = useMutation<{ registerPoInGp: { poNumber: string | null } }>(
@@ -325,6 +330,7 @@ export default function GpPurchaseOrderDialog({
     // Same key for every retry of this action so a retry is a no-op in GP (won't post a second PO).
     const idempotencyKey = (idempotencyKeyRef.current ??= crypto.randomUUID());
 
+    setGpError(null);
     setGpBusy(true);
     try {
       // GP-first, server-side (issue #199): the resolver pushes to GP via the relay before persisting
@@ -373,8 +379,10 @@ export default function GpPurchaseOrderDialog({
     } catch (err: unknown) {
       // Keep idempotencyKeyRef so a retry reuses the same key - the GP write may have committed even if
       // the mutation reported failure, and reusing the key makes the retry safe.
-      const message = err instanceof Error ? err.message : 'Failed to push PO to GP';
-      showToast(`Could not complete the PO in GP: ${message}. If it keeps failing, retry - a retry won't create a duplicate.`, 'error');
+      // Surface the full GP error persistently (issue #187) so the user can screenshot it; the toast
+      // just points at the detail panel.
+      setGpError(extractGpError(err) ?? { message: 'Failed to push PO to GP' });
+      showToast("Could not complete the PO in GP - see the error detail below. A retry won't create a duplicate.", 'error');
     } finally {
       setGpBusy(false);
     }
@@ -431,6 +439,11 @@ export default function GpPurchaseOrderDialog({
 
   return (
     <Modal open={open} title={title} onClose={onClose} actions={actions} maxWidth="md">
+      {gpError && (
+        <Box sx={{ mb: 2 }}>
+          <GpErrorAlert error={gpError} onClose={() => setGpError(null)} />
+        </Box>
+      )}
       {/* Header Fields */}
       <Stack spacing={2} sx={{ mb: 3 }}>
         <TextField
