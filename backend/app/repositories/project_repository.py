@@ -5,7 +5,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.errors import ConflictError, NotFoundError
+from app.errors import ConflictError, NotFoundError, ValidationError
 from app.models.project import Project as ProjectModel
 
 
@@ -13,6 +13,12 @@ def adopt_gp_job(session: Session, job_number: str, job_name: str | None) -> Pro
     """Adopt a live GP job (JC00102) as a project. job_number becomes the project's identity
     (project_id, immutable); job_name is a snapshot of GP's job description at adopt time, not
     synced afterward. Raises ConflictError if this job has already been adopted."""
+    # job_number is the project's identity, so normalize it (the old CreateProjectDialog trimmed
+    # client-side; direct callers of this mutation don't). Blank/whitespace would create an
+    # identity-less project, and an un-trimmed ' 1001 ' would dodge the already-adopted check.
+    job_number = (job_number or "").strip()
+    if not job_number:
+        raise ValidationError("job_number is required", field="job_number")
     existing = session.scalars(select(ProjectModel).where(ProjectModel.project_id == job_number)).first()
     if existing is not None:
         raise ConflictError(

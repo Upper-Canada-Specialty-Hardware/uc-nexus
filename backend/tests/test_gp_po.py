@@ -109,3 +109,52 @@ def test_build_create_receipt_payload_dedupes_and_joins_rack_locations():
     assert line["po_line_ord"] == 16384
     assert line["quantity"] == 5
     assert line["rack_location"] == "A1-B1-C1, A2-B2-C2"
+
+
+# --- validate_create_po_inputs: pre-relay field checks (issue #202 #1) --------------------------------
+
+
+def test_validate_create_po_inputs_accepts_a_valid_non_job_po():
+    gp_po.validate_create_po_inputs(job_number=None, cost_code=None, po_number=None, line_items=[_line_item()])
+
+
+def test_validate_create_po_inputs_requires_a_cost_code_for_a_job_po():
+    import pytest
+
+    from app.errors import ValidationError
+
+    with pytest.raises(ValidationError) as exc:
+        gp_po.validate_create_po_inputs(job_number="JC00102", cost_code=None, po_number=None, line_items=[_line_item()])
+    assert exc.value.field == "cost_code"
+
+
+def test_validate_create_po_inputs_rejects_an_overlong_po_number():
+    import pytest
+
+    from app.errors import ValidationError
+
+    with pytest.raises(ValidationError) as exc:
+        gp_po.validate_create_po_inputs(job_number=None, cost_code=None, po_number="X" * 18, line_items=[_line_item()])
+    assert exc.value.field == "po_number"
+
+
+def test_validate_create_po_inputs_rejects_a_zero_quantity_line():
+    import pytest
+
+    from app.errors import ValidationError
+
+    with pytest.raises(ValidationError) as exc:
+        gp_po.validate_create_po_inputs(
+            job_number=None, cost_code=None, po_number=None, line_items=[_line_item(ordered_quantity=0)]
+        )
+    assert exc.value.field == "ordered_quantity"
+
+
+def test_validate_create_po_inputs_rejects_empty_line_items():
+    import pytest
+
+    from app.errors import ValidationError
+
+    with pytest.raises(ValidationError) as exc:
+        gp_po.validate_create_po_inputs(job_number=None, cost_code=None, po_number=None, line_items=[])
+    assert exc.value.field == "line_items"

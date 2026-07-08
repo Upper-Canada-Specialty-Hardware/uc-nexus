@@ -5,28 +5,26 @@ import {
   DialogContent,
   DialogActions,
   TextField,
-  MenuItem,
   Autocomplete,
   Button,
+  IconButton,
   Stack,
   Alert,
 } from '@mui/material';
+import RefreshIcon from '@mui/icons-material/Refresh';
 import { useMutation, useQuery } from '@apollo/client/react';
 import { CombinedGraphQLErrors } from '@apollo/client/errors';
 import { ADOPT_GP_JOB } from '../../graphql/mutations';
-import { GET_PROJECTS, GET_GP_JOBS, GET_RELAY_STATUS } from '../../graphql/queries';
+import { GET_PROJECTS, GET_GP_JOBS } from '../../graphql/queries';
 import { useToast } from '../../components/Toast';
 import RelayStatusChip from '../../relay/RelayStatusChip';
+import { useRelayStatus } from '../../relay/useRelayStatus';
 import type { Project } from '../../types/project';
 
 interface GpJobOption {
   jobNumber: string;
   jobName: string | null;
 }
-
-// GP companies the relay is allowed to read from (sandboxes for the POC) - mirrors the list used
-// by GpPurchaseOrderDialog.
-const COMPANIES = ['TUBC', 'TUCSH'];
 
 interface AdoptGpJobDialogProps {
   open: boolean;
@@ -35,26 +33,28 @@ interface AdoptGpJobDialogProps {
 
 export default function AdoptGpJobDialog({ open, onClose }: AdoptGpJobDialogProps) {
   const { showToast } = useToast();
-  const [company, setCompany] = useState('TUBC');
   const [selectedJob, setSelectedJob] = useState<GpJobOption | null>(null);
   const [jobError, setJobError] = useState<string | null>(null);
   const [generalError, setGeneralError] = useState<string | null>(null);
 
-  const { data: relayStatusData } = useQuery<{ relayStatus: { connected: boolean } }>(GET_RELAY_STATUS, {
-    skip: !open,
-  });
-  const relayConnected = relayStatusData?.relayStatus.connected === true;
+  // The connected relay is enrolled for exactly one company, so the company is the relay's, shown
+  // read-only rather than picked. skip: !open so a hidden dialog doesn't poll.
+  const relay = useRelayStatus({ skip: !open });
+  const company = relay.company ?? '';
+  const relayConnected = relay.connected === true;
 
   // The live GP job master (JC00102) for this company, via the connected relay - this IS the
   // project picker: adopting a project means picking one of these, not typing a free-form number.
+  // cache-first so reopening reuses the loaded list; the refresh control forces a re-pull from GP.
   const {
     data: jobsData,
     loading: jobsLoading,
     error: jobsFetchError,
+    refetch: refetchJobs,
   } = useQuery<{ gpJobs: GpJobOption[] }>(GET_GP_JOBS, {
     variables: { company },
-    skip: !open || !relayConnected,
-    fetchPolicy: 'network-only',
+    skip: !open || !relayConnected || !company,
+    fetchPolicy: 'cache-first',
   });
   const jobs = jobsData?.gpJobs ?? [];
 
@@ -72,12 +72,6 @@ export default function AdoptGpJobDialog({ open, onClose }: AdoptGpJobDialogProp
     reset();
     onClose();
   }, [reset, onClose]);
-
-  // A job picked under one company doesn't carry over to another.
-  const handleCompanyChange = useCallback((newCompany: string) => {
-    setCompany(newCompany);
-    setSelectedJob(null);
-  }, []);
 
   const handleSubmit = useCallback(async () => {
     setJobError(null);
@@ -121,52 +115,57 @@ export default function AdoptGpJobDialog({ open, onClose }: AdoptGpJobDialogProp
         <Stack spacing={2} sx={{ mt: 1 }}>
           {generalError && <Alert severity="error">{generalError}</Alert>}
           <Stack direction="row" spacing={2} alignItems="center">
+            {/* The connected relay is enrolled for exactly one company, so this is read-only, not a pick. */}
             <TextField
-              select
               label="GP company"
-              value={company}
-              onChange={(e) => handleCompanyChange(e.target.value)}
+              value={company || '—'}
               size="small"
-              disabled={loading}
+              disabled
               sx={{ minWidth: 140 }}
-            >
-              {COMPANIES.map((c) => (
-                <MenuItem key={c} value={c}>
-                  {c}
-                </MenuItem>
-              ))}
-            </TextField>
+            />
             <RelayStatusChip connected={relayConnected} />
           </Stack>
-          <Autocomplete
-            options={jobs}
-            loading={jobsLoading}
-            value={selectedJob}
-            getOptionLabel={(o) => (o.jobName ? `${o.jobNumber} - ${o.jobName}` : o.jobNumber)}
-            isOptionEqualToValue={(o, v) => o.jobNumber === v.jobNumber}
-            onChange={(_, value) => {
-              setSelectedJob(value);
-              if (jobError) setJobError(null);
-            }}
-            disabled={!relayConnected || loading}
-            renderInput={(params) => (
-              <TextField
-                {...params}
-                label="GP job"
-                required
-                autoFocus
-                error={Boolean(jobError)}
-                helperText={
-                  jobError ||
-                  (!relayConnected
-                    ? 'GP relay not detected on this machine - it must be running to list jobs'
-                    : jobsFetchError
-                      ? 'Failed to load jobs from GP'
-                      : 'Pick the GP job this project belongs to.')
-                }
-              />
-            )}
-          />
+          <Stack direction="row" spacing={0.5} alignItems="flex-start">
+            <Autocomplete
+              options={jobs}
+              loading={jobsLoading}
+              value={selectedJob}
+              getOptionLabel={(o) => (o.jobName ? `${o.jobNumber} - ${o.jobName}` : o.jobNumber)}
+              isOptionEqualToValue={(o, v) => o.jobNumber === v.jobNumber}
+              onChange={(_, value) => {
+                setSelectedJob(value);
+                if (jobError) setJobError(null);
+              }}
+              disabled={!relayConnected || loading}
+              sx={{ flex: 1 }}
+              renderInput={(params) => (
+                <TextField
+                  {...params}
+                  label="GP job"
+                  required
+                  autoFocus
+                  error={Boolean(jobError)}
+                  helperText={
+                    jobError ||
+                    (!relayConnected
+                      ? 'GP relay not detected on this machine - it must be running to list jobs'
+                      : jobsFetchError
+                        ? 'Failed to load jobs from GP'
+                        : 'Pick the GP job this project belongs to.')
+                  }
+                />
+              )}
+            />
+            <IconButton
+              size="small"
+              aria-label="Refresh GP jobs"
+              onClick={() => refetchJobs()}
+              disabled={!relayConnected || loading}
+              sx={{ mt: 1 }}
+            >
+              <RefreshIcon fontSize="small" />
+            </IconButton>
+          </Stack>
         </Stack>
       </DialogContent>
       <DialogActions>

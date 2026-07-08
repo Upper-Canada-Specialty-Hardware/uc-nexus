@@ -18,6 +18,7 @@ import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useQuery } from '@apollo/client/react';
 import { GET_EXPECTED_DELIVERIES, GET_BACK_ORDERED_ITEMS } from '../../graphql/queries';
 import ProjectLandingPage from '../../components/ProjectLandingPage';
+import { poVendorName } from '../po/poVendorName';
 import type { Project } from '../../types/project';
 
 interface POLineItem {
@@ -163,7 +164,7 @@ function UpcomingView({ projectId }: { projectId: string }) {
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flex: 1, mr: 2 }}>
                 <Typography sx={{ fontWeight: 600 }}>{po.poNumber ?? po.requestNumber}</Typography>
                 <Typography variant="body2" color="text.secondary">
-                  {po.vendorNameSnapshot ?? po.vendor?.name ?? 'No vendor'}
+                  {poVendorName(po) || 'No vendor'}
                 </Typography>
                 <Typography variant="body2" color="text.secondary" sx={{ ml: 'auto' }}>
                   {formatDate(po.expectedDeliveryDate)}

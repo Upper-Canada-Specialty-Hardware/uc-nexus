@@ -603,6 +603,7 @@ export const GET_RELAY_STATUS = gql`
   query GetRelayStatus {
     relayStatus {
       connected
+      company
     }
   }
 `;

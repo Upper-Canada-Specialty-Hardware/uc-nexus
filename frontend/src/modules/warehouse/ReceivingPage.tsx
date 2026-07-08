@@ -24,6 +24,7 @@ import {
   GET_PROJECTS,
   GET_RECENT_RECEIVE_RECORDS,
 } from '../../graphql/queries';
+import { poVendorName } from '../po/poVendorName';
 
 // ---- Types ----
 
@@ -182,7 +183,7 @@ export default function ReceivingPage() {
         return {
           id: po.id,
           poNumber: po.poNumber ?? '\u2014',
-          vendorName: po.vendorNameSnapshot ?? po.vendor?.name ?? '\u2014',
+          vendorName: poVendorName(po) || '\u2014',
           projectName: po.projectId ? (projectMap.get(po.projectId) ?? '\u2014') : 'Stock PO',
           expectedDeliveryDate: po.expectedDeliveryDate,
           pendingLines,

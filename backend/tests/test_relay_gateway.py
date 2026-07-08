@@ -35,18 +35,27 @@ def test_relay_call_without_a_connection_raises_unavailable():
 def test_relay_call_for_a_different_company_raises_unavailable():
     async def run():
         gateway = RelayGateway()
-        await gateway.register("TUBC", FakeWebSocket())
+        gateway.try_register("TUBC", FakeWebSocket())
         with pytest.raises(RelayUnavailableError):
             await gateway.relay_call("TUCSH", "list_vendors")
 
     asyncio.run(run())
 
 
+def test_try_register_exposes_connected_and_company():
+    gateway = RelayGateway()
+    assert gateway.connected is False
+    assert gateway.company is None
+    assert gateway.try_register("TUBC", FakeWebSocket()) is True
+    assert gateway.connected is True
+    assert gateway.company == "TUBC"
+
+
 def test_relay_call_resolves_with_the_matching_reply():
     async def run():
         gateway = RelayGateway()
         ws = FakeWebSocket()
-        await gateway.register("TUBC", ws)
+        gateway.try_register("TUBC", ws)
 
         async def responder():
             while not ws.sent:
@@ -66,7 +75,7 @@ def test_relay_call_resolves_with_the_matching_reply():
 def test_relay_call_times_out_when_no_reply_arrives():
     async def run():
         gateway = RelayGateway()
-        await gateway.register("TUBC", FakeWebSocket())
+        gateway.try_register("TUBC", FakeWebSocket())
         with pytest.raises(RelayTimeoutError):
             await gateway.relay_call("TUBC", "list_vendors", timeout=0.05)
 
@@ -77,7 +86,7 @@ def test_relay_call_raises_relay_call_error_on_ok_false():
     async def run():
         gateway = RelayGateway()
         ws = FakeWebSocket()
-        await gateway.register("TUBC", ws)
+        gateway.try_register("TUBC", ws)
 
         async def responder():
             while not ws.sent:
@@ -95,21 +104,26 @@ def test_relay_call_raises_relay_call_error_on_ok_false():
     asyncio.run(run())
 
 
-def test_registering_a_new_connection_closes_and_fails_the_old_one():
+def test_a_second_connection_is_rejected_and_the_incumbent_is_undisturbed():
+    # issue #202 #6: while a relay is connected, a second connecting relay is rejected (try_register ->
+    # False, the route closes it 4409) rather than superseding the incumbent. The old supersede behaviour
+    # could drop the in-flight reply for a GP write that had committed; here the incumbent's call still
+    # resolves normally.
     async def run():
         gateway = RelayGateway()
-        old_ws = FakeWebSocket()
-        await gateway.register("TUBC", old_ws)
+        first_ws = FakeWebSocket()
+        assert gateway.try_register("TUBC", first_ws) is True
 
         call_task = asyncio.create_task(gateway.relay_call("TUBC", "list_vendors", timeout=1))
-        while not old_ws.sent:
+        while not first_ws.sent:
             await asyncio.sleep(0)
 
-        await gateway.register("TUBC", FakeWebSocket())
+        second_ws = FakeWebSocket()
+        assert gateway.try_register("TUBC", second_ws) is False
+        assert gateway.connected is True
 
-        with pytest.raises(RelayUnavailableError):
-            await call_task
-        assert old_ws.closed_code == 4409
+        gateway.resolve({"id": first_ws.sent[0]["id"], "ok": True, "result": {"vendors": []}})
+        assert await call_task == {"vendors": []}
 
     asyncio.run(run())
 
@@ -118,7 +132,7 @@ def test_unregister_fails_any_pending_calls():
     async def run():
         gateway = RelayGateway()
         ws = FakeWebSocket()
-        await gateway.register("TUBC", ws)
+        gateway.try_register("TUBC", ws)
 
         call_task = asyncio.create_task(gateway.relay_call("TUBC", "list_vendors", timeout=1))
         while not ws.sent:

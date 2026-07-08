@@ -127,6 +127,10 @@ class RelayInstallInfo:
 @strawberry.type
 class RelayStatus:
     connected: bool
+    # The GP company the connected relay is enrolled for (null when disconnected). The PO/receive/adopt
+    # dialogs drive their company selection from this so they never offer a company the live relay can't
+    # serve - a mismatch would fail every gp_* read and reject a submit as RelayUnavailable (issue #202 #6).
+    company: str | None = None
 
 
 @strawberry.type

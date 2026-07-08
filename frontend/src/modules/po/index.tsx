@@ -32,12 +32,14 @@ import KeyboardArrowRightIcon from '@mui/icons-material/KeyboardArrowRight';
 import UnfoldMoreIcon from '@mui/icons-material/UnfoldMore';
 import UnfoldLessIcon from '@mui/icons-material/UnfoldLess';
 import { useQuery } from '@apollo/client/react';
-import { GET_PURCHASE_ORDERS, GET_PO_STATISTICS, GET_RELAY_STATUS } from '../../graphql/queries';
+import { GET_PURCHASE_ORDERS, GET_PO_STATISTICS } from '../../graphql/queries';
 import ProjectLandingPage from '../../components/ProjectLandingPage';
 import type { Project } from '../../types/project';
 import PODetailModal from './PODetailModal';
 import GpPurchaseOrderDialog from './GpPurchaseOrderDialog';
 import RelayStatusChip from '../../relay/RelayStatusChip';
+import { useRelayStatus } from '../../relay/useRelayStatus';
+import { poVendorName } from './poVendorName';
 import { PO_STATUS_VALUES, formatPoStatus, poStatusChipColor } from './poStatus';
 
 // --- Types ---
@@ -166,12 +168,6 @@ const EMPTY_FILTER_STATE: FilterState = {
 
 function poDisplayId(po: PurchaseOrder): string {
   return po.poNumber ?? po.requestNumber;
-}
-
-// The GP vendor snapshot (issue #200) is the source of truth for display; the local vendor FK is only
-// a fallback for rows created before the snapshot existed.
-function poVendorName(po: PurchaseOrder): string {
-  return po.vendorNameSnapshot ?? po.vendor?.name ?? '';
 }
 
 function matchesFilter(po: PurchaseOrder, f: FilterState): boolean {
@@ -539,11 +535,9 @@ export default function POModule() {
 
   // Relay presence is polled as the page loads (not when a dialog opens), so the user knows up front
   // whether GP actions work. Create PO is a GP-first flow, so it can't run when the relay is down.
-  // Backed by the backend's relayStatus field (the relay-to-backend WS channel), not a browser probe.
-  const { data: relayStatusData } = useQuery<{ relayStatus: { connected: boolean } }>(GET_RELAY_STATUS, {
-    pollInterval: 10_000,
-  });
-  const relayConnected = relayStatusData ? relayStatusData.relayStatus.connected : null;
+  // This is the main PO page, so it polls continuously (no skip) - it's the single relay poller the
+  // detail/create/register dialogs read through their relayConnected prop.
+  const { connected: relayConnected } = useRelayStatus();
 
   const toggleExpand = (id: string) => {
     setExpandedIds((prev) => {
