@@ -89,8 +89,14 @@ async def relay_link(websocket: WebSocket):
 
     with SessionLocal() as session:
         install = relay_repository.authenticate_secret(session, secret.strip())
+        # Read the company while the row is still bound to the session. session.commit() below expires
+        # every attribute (expire_on_commit), and leaving the `with` block detaches `install` - so any
+        # later install.company access raises DetachedInstanceError. Because that access sat AFTER
+        # websocket.accept(), the exception tore down every already-accepted relay socket, so no relay
+        # could ever register (relayStatus stayed false).
+        company = install.company if install is not None else None
         session.commit()
-    if install is None:
+    if company is None:
         await websocket.close(code=4401)
         return
 
@@ -98,7 +104,7 @@ async def relay_link(websocket: WebSocket):
     # POC scope: one relay at a time, incumbent wins (issue #202 #6). If a relay is already connected,
     # reject this one rather than superseding - superseding could drop an in-flight reply for a GP write
     # that committed, and two enrolled relays would otherwise thrash by force-closing each other.
-    if not relay_gateway.try_register(install.company, websocket):
+    if not relay_gateway.try_register(company, websocket):
         await websocket.close(code=4409)
         return
     try:
