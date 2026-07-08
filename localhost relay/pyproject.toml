@@ -14,6 +14,12 @@ pydantic-settings = "^2.6"
 pyodbc = "^5.2"
 python-json-logger = "^2.0"
 websockets = "^13.0"
+# Native desktop UI (the `ui` subcommand). Windows-only: pywebview uses the Edge WebView2 backend via
+# pythonnet. Scoped to <3.14 like pyinstaller below because pythonnet's wheels don't cover newer pythons;
+# CI + dev build on 3.11. pythonnet is pinned to 3.x directly so poetry doesn't resolve pywebview's
+# transitive dep down to the source-only 2.5.2 (which fails to build).
+pywebview = {version = "^6.2", python = "<3.14", markers = "sys_platform == 'win32'"}
+pythonnet = {version = ">=3.0,<4", python = "<3.14", markers = "sys_platform == 'win32'"}
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3"
