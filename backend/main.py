@@ -1,34 +1,51 @@
+import inspect
 from collections.abc import Callable
 from typing import Any
 
 import strawberry
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from graphql import GraphQLError, GraphQLResolveInfo
 from strawberry.extensions import SchemaExtension
 from strawberry.fastapi import GraphQLRouter
 
 from app.auth import get_context
+from app.database import SessionLocal
 from app.errors import AppError
+from app.repositories import relay_repository
 from app.schemas.mutations import Mutation
 from app.schemas.queries import Query
+from app.services.relay_gateway import gateway as relay_gateway
 
 
 class ErrorHandlerExtension(SchemaExtension):
-    def resolve(self, _next: Callable, root: Any, info: GraphQLResolveInfo, *args, **kwargs):
-        try:
-            result = _next(root, info, *args, **kwargs)
-            return result
-        except AppError as e:
-            extensions = {"code": e.code}
+    @staticmethod
+    def _to_graphql_error(e: Exception) -> GraphQLError:
+        if isinstance(e, AppError):
+            extensions: dict[str, Any] = {"code": e.code}
             if e.field:
                 extensions["field"] = e.field
-            raise GraphQLError(message=e.message, extensions=extensions) from e
-        except NotImplementedError as e:
-            raise GraphQLError(
-                message=str(e),
-                extensions={"code": "NOT_IMPLEMENTED"},
-            ) from e
+            return GraphQLError(message=e.message, extensions=extensions)
+        return GraphQLError(message=str(e), extensions={"code": "NOT_IMPLEMENTED"})
+
+    def resolve(self, _next: Callable, root: Any, info: GraphQLResolveInfo, *args, **kwargs):
+        # For async resolvers _next() returns a coroutine that strawberry awaits *after* this method
+        # returns, so a synchronous try/except here would never see the exception - the AppError -> code
+        # mapping would be silently dropped. Handle the awaitable case in an async wrapper so both sync
+        # and async resolvers get the extension pattern.
+        try:
+            result = _next(root, info, *args, **kwargs)
+        except (AppError, NotImplementedError) as e:
+            raise self._to_graphql_error(e) from e
+        if inspect.isawaitable(result):
+            return self._resolve_async(result)
+        return result
+
+    async def _resolve_async(self, awaitable):
+        try:
+            return await awaitable
+        except (AppError, NotImplementedError) as e:
+            raise self._to_graphql_error(e) from e
 
 
 schema = strawberry.Schema(
@@ -55,6 +72,43 @@ app.include_router(graphql_app, prefix="/graphql")
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.websocket("/relay-link")
+async def relay_link(websocket: WebSocket):
+    """The relay's outbound wss channel. It dials in with `Authorization: Bearer <enrolled secret>`
+    on the connect handshake; once verified, this holds the socket open and feeds every {id, ok,
+    result|error} reply it sends back to relay_gateway so relay_call() can correlate it to the job
+    that requested it. Every other slice reaches the relay through relay_call(), never this route
+    directly."""
+    auth_header = websocket.headers.get("authorization") or ""
+    scheme, _, secret = auth_header.partition(" ")
+    if scheme.lower() != "bearer" or not secret.strip():
+        await websocket.close(code=4401)
+        return
+
+    with SessionLocal() as session:
+        install = relay_repository.authenticate_secret(session, secret.strip())
+        session.commit()
+    if install is None:
+        await websocket.close(code=4401)
+        return
+
+    await websocket.accept()
+    # POC scope: one relay at a time, incumbent wins (issue #202 #6). If a relay is already connected,
+    # reject this one rather than superseding - superseding could drop an in-flight reply for a GP write
+    # that committed, and two enrolled relays would otherwise thrash by force-closing each other.
+    if not relay_gateway.try_register(install.company, websocket):
+        await websocket.close(code=4409)
+        return
+    try:
+        while True:
+            reply = await websocket.receive_json()
+            relay_gateway.resolve(reply)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        relay_gateway.unregister(websocket)
 
 
 @app.post("/admin/reset-data")

@@ -24,6 +24,7 @@ import {
   GET_PROJECTS,
   GET_RECENT_RECEIVE_RECORDS,
 } from '../../graphql/queries';
+import { poVendorName } from '../po/poVendorName';
 
 // ---- Types ----
 
@@ -38,6 +39,7 @@ interface OpenPO {
   poNumber: string | null;
   projectId: string | null;
   status: string;
+  vendorNameSnapshot: string | null;
   vendor: { id: string; name: string } | null;
   orderedAt: string | null;
   expectedDeliveryDate: string | null;
@@ -181,7 +183,7 @@ export default function ReceivingPage() {
         return {
           id: po.id,
           poNumber: po.poNumber ?? '\u2014',
-          vendorName: po.vendor?.name ?? '\u2014',
+          vendorName: poVendorName(po) || '\u2014',
           projectName: po.projectId ? (projectMap.get(po.projectId) ?? '\u2014') : 'Stock PO',
           expectedDeliveryDate: po.expectedDeliveryDate,
           pendingLines,

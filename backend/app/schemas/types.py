@@ -87,20 +87,12 @@ class HardwareItem:
 class Vendor:
     id: strawberry.ID
     name: str
-    gp_vendor_id: str | None
     contact_name: str | None
     email: str | None
     phone: str | None
     notes: str | None
     created_at: datetime
     updated_at: datetime
-
-
-@strawberry.type
-class SyncGpVendorsResult:
-    matched_count: int
-    matched_vendor_names: list[str]
-    unmatched_gp_vendor_names: list[str]
 
 
 @strawberry.type
@@ -121,11 +113,6 @@ class RelayEnrollResult:
 
 
 @strawberry.type
-class RelayCredential:
-    secret: str
-
-
-@strawberry.type
 class RelayInstallInfo:
     id: strawberry.ID
     label: str
@@ -135,6 +122,36 @@ class RelayInstallInfo:
     enrolled_at: datetime | None
     last_seen_at: datetime | None
     created_at: datetime
+
+
+@strawberry.type
+class RelayStatus:
+    connected: bool
+    # The GP company the connected relay is enrolled for (null when disconnected). The PO/receive/adopt
+    # dialogs drive their company selection from this so they never offer a company the live relay can't
+    # serve - a mismatch would fail every gp_* read and reject a submit as RelayUnavailable (issue #202 #6).
+    company: str | None = None
+
+
+@strawberry.type
+class GpJob:
+    job_number: str
+    job_name: str | None
+
+
+@strawberry.type
+class GpVendor:
+    vendor_id: str
+    vendor_name: str
+    vendor_class: str | None
+    status: int
+
+
+@strawberry.type
+class GpCostCode:
+    cost_code: str  # two-segment number 'cc1-cc2' e.g. '310-000'
+    description: str | None
+    cost_element: int
 
 
 @strawberry.type
@@ -208,6 +225,8 @@ class PurchaseOrder:
     status: POStatus
     cost_code: str | None
     gp_company: str | None
+    gp_vendor_id: str | None
+    vendor_name_snapshot: str | None
     vendor: Vendor | None
     vendor_quote_number: str | None
     notes: str | None

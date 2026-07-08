@@ -39,6 +39,7 @@ import PODetailModal from './PODetailModal';
 import GpPurchaseOrderDialog from './GpPurchaseOrderDialog';
 import RelayStatusChip from '../../relay/RelayStatusChip';
 import { useRelayStatus } from '../../relay/useRelayStatus';
+import { poVendorName } from './poVendorName';
 import { PO_STATUS_VALUES, formatPoStatus, poStatusChipColor } from './poStatus';
 
 // --- Types ---
@@ -101,6 +102,8 @@ export interface PurchaseOrder {
   requestNumber: string;
   projectId: string | null;
   status: string;
+  gpVendorId: string | null;
+  vendorNameSnapshot: string | null;
   vendor: VendorRef | null;
   vendorQuoteNumber: string | null;
   notes: string | null;
@@ -173,7 +176,7 @@ function matchesFilter(po: PurchaseOrder, f: FilterState): boolean {
   }
   if (f.statuses.size > 0 && !f.statuses.has(po.status)) return false;
   if (f.vendorSearch) {
-    if (!(po.vendor?.name ?? '').toLowerCase().includes(f.vendorSearch.toLowerCase())) return false;
+    if (!poVendorName(po).toLowerCase().includes(f.vendorSearch.toLowerCase())) return false;
   }
   if (f.orderedFrom || f.orderedTo) {
     if (!po.orderedAt) return false;
@@ -205,10 +208,10 @@ function comparePOs(a: PurchaseOrder, b: PurchaseOrder, sort: SortState): number
       bv = b.status;
       break;
     case 'vendor':
-      av = (a.vendor?.name ?? '').toLowerCase();
-      bv = (b.vendor?.name ?? '').toLowerCase();
-      aNull = !a.vendor;
-      bNull = !b.vendor;
+      av = poVendorName(a).toLowerCase();
+      bv = poVendorName(b).toLowerCase();
+      aNull = !av;
+      bNull = !bv;
       break;
     case 'orderedAt':
       av = a.orderedAt ?? '';
@@ -487,7 +490,7 @@ function POTableRow({ po, expanded, onToggle, onOpen, onRegister, relayConnected
           </Box>
         </TableCell>
         <TableCell sx={dataCellSx} onClick={onOpen}>
-          {po.vendor?.name || '-'}
+          {poVendorName(po) || '-'}
         </TableCell>
         <TableCell sx={dataCellSx} onClick={onOpen}>
           {po.orderedAt ? new Date(po.orderedAt).toLocaleDateString() : '-'}
@@ -530,10 +533,11 @@ export default function POModule() {
   const [filterState, setFilterState] = useState<FilterState>(EMPTY_FILTER_STATE);
   const [sortState, setSortState] = useState<SortState>({ field: null, direction: 'asc' });
 
-  // Relay presence is probed as the page loads (not when a dialog opens), so the user knows up front
+  // Relay presence is polled as the page loads (not when a dialog opens), so the user knows up front
   // whether GP actions work. Create PO is a GP-first flow, so it can't run when the relay is down.
-  const { health: relayHealth } = useRelayStatus();
-  const relayConnected = relayHealth?.ok === true;
+  // This is the main PO page, so it polls continuously (no skip) - it's the single relay poller the
+  // detail/create/register dialogs read through their relayConnected prop.
+  const { connected: relayConnected } = useRelayStatus();
 
   const toggleExpand = (id: string) => {
     setExpandedIds((prev) => {
@@ -653,7 +657,7 @@ export default function POModule() {
         <Typography variant="h5" sx={{ flex: 1 }}>
           Purchase Orders — {projectLabel}
         </Typography>
-        <RelayStatusChip health={relayHealth} />
+        <RelayStatusChip connected={relayConnected} />
         <Tooltip
           title={relayConnected ? '' : 'GP relay not detected on this machine - it must be running to create a PO'}
           arrow
@@ -781,7 +785,7 @@ export default function POModule() {
                   onToggle={() => toggleExpand(po.id)}
                   onOpen={() => handleOpenPO(po.id)}
                   onRegister={() => setRegisterPO(po)}
-                  relayConnected={relayConnected}
+                  relayConnected={relayConnected === true}
                 />
               ))}
           </TableBody>
@@ -795,7 +799,7 @@ export default function POModule() {
           po={selectedPO}
           onClose={handleCloseModal}
           onRefetch={handleRefetch}
-          relayHealth={relayHealth}
+          relayConnected={relayConnected}
         />
       )}
 
@@ -808,7 +812,7 @@ export default function POModule() {
           handleRefetch();
         }}
         defaultProjectId={projectId}
-        relayHealth={relayHealth}
+        relayConnected={relayConnected}
       />
 
       {/* Register PO Dialog (registers an imported Draft into GP) */}
@@ -820,7 +824,7 @@ export default function POModule() {
           setRegisterPO(null);
           handleRefetch();
         }}
-        relayHealth={relayHealth}
+        relayConnected={relayConnected}
       />
     </Box>
   );

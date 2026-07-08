@@ -13,24 +13,17 @@ import {
 } from '@mui/material';
 import DeleteIcon from '@mui/icons-material/Delete';
 import AddIcon from '@mui/icons-material/Add';
+import RefreshIcon from '@mui/icons-material/Refresh';
 import { useMutation, useQuery } from '@apollo/client/react';
 import Modal from '../../components/Modal';
-import VendorSelect from '../../components/VendorSelect';
 import { useToast } from '../../components/Toast';
 import { CREATE_PO, REGISTER_PO_IN_GP } from '../../graphql/mutations';
-import { GET_PROJECTS, GET_VENDORS } from '../../graphql/queries';
+import { GET_GP_BUYERS, GET_GP_COST_CODES, GET_GP_VENDORS, GET_PROJECTS } from '../../graphql/queries';
 import type { Project } from '../../types/project';
 import type { PurchaseOrder } from './index';
 import RelayStatusChip from '../../relay/RelayStatusChip';
-import {
-  checkRelayHealth,
-  getRelayBuyers,
-  getRelayCostCodes,
-  postRelayPo,
-  type RelayCostCode,
-  type RelayHealth,
-  type RelayPoRequest,
-} from '../../relay/relayClient';
+import { useRelayStatus } from '../../relay/useRelayStatus';
+import { poVendorName } from './poVendorName';
 
 // --- Types ---
 
@@ -46,11 +39,17 @@ interface LineItemRow {
   orderAs: string;
 }
 
-interface VendorOption {
-  id: string;
-  name: string;
-  gpVendorId: string | null;
-  contactName: string | null;
+interface GpVendorOption {
+  vendorId: string;
+  vendorName: string;
+  vendorClass: string | null;
+  status: number;
+}
+
+interface GpCostCode {
+  costCode: string; // two-segment number 'cc1-cc2' e.g. '310-000'
+  description: string | null;
+  costElement: number; // GP Cost_Element (varies by code); the /po cost_code trailing digit
 }
 
 const EMPTY_LINE_ITEM: Omit<LineItemRow, 'key' | 'id'> = {
@@ -68,33 +67,25 @@ const CLASSIFICATIONS = [
   { value: 'SHOP_HARDWARE', label: 'Shop Hardware' },
 ];
 
-// GP companies the relay is allowed to write to (sandboxes for the POC).
-const COMPANIES = ['TUBC', 'TUCSH'];
-
-// Pick the GP-linked vendor that best matches an imported draft's vendor name (issue #175). Returns the
-// match plus whether it is CONFIDENT - the draft's own already-GP-linked vendor, or an exact name match -
-// versus a loose substring guess the user must explicitly confirm before registering against it. id is
-// null when no GP-linked vendor plausibly matches, and the user then picks one.
+// Pick the live GP vendor that best matches an imported draft's vendor name (issue #175, reworked for
+// #200 now that the picker reads gpVendors live instead of a locally-synced mirror). Returns the match
+// plus whether it is CONFIDENT - an exact name match - versus a loose substring guess the user must
+// explicitly confirm before registering against it. vendorId is null when nothing plausibly matches,
+// and the user then picks one.
 function bestGuessGpVendor(
-  vendors: VendorOption[],
+  gpVendors: GpVendorOption[],
   draftVendorName: string | null,
-  draftVendorId: string | null,
-): { id: string | null; confident: boolean } {
-  if (draftVendorId) {
-    const own = vendors.find((v) => v.id === draftVendorId);
-    if (own?.gpVendorId) return { id: own.id, confident: true };
-  }
+): { vendorId: string | null; vendorName: string | null; confident: boolean } {
   const name = (draftVendorName ?? '').trim().toLowerCase();
-  if (!name) return { id: null, confident: false };
-  const linked = vendors.filter((v) => v.gpVendorId);
-  const exact = linked.find((v) => v.name.trim().toLowerCase() === name);
-  if (exact) return { id: exact.id, confident: true };
-  const partial = linked.find((v) => {
-    const vn = v.name.trim().toLowerCase();
+  if (!name) return { vendorId: null, vendorName: null, confident: false };
+  const exact = gpVendors.find((v) => v.vendorName.trim().toLowerCase() === name);
+  if (exact) return { vendorId: exact.vendorId, vendorName: exact.vendorName, confident: true };
+  const partial = gpVendors.find((v) => {
+    const vn = v.vendorName.trim().toLowerCase();
     return vn.includes(name) || name.includes(vn);
   });
   // a fuzzy substring hit can be wrong (a short name is a substring of an unrelated vendor) - not confident
-  return { id: partial?.id ?? null, confident: false };
+  return { vendorId: partial?.vendorId ?? null, vendorName: partial?.vendorName ?? null, confident: false };
 }
 
 // --- Props ---
@@ -104,9 +95,9 @@ interface GpPurchaseOrderDialogProps {
   onClose: () => void;
   onSubmitted: () => void;
   defaultProjectId?: string;
-  // Relay status owned by the PO page (single source of truth). When omitted, the dialog probes
-  // /health itself so it stays usable standalone (e.g. opened from the PO detail modal).
-  relayHealth?: RelayHealth | null;
+  // Relay status owned by the PO page (single source of truth). null while its first check is in
+  // flight. When omitted, the dialog queries relayStatus itself so it stays usable standalone.
+  relayConnected?: boolean | null;
   // When provided, the dialog registers this existing Draft PO into GP instead of creating a new one.
   registerPo?: PurchaseOrder | null;
 }
@@ -118,63 +109,102 @@ export default function GpPurchaseOrderDialog({
   onClose,
   onSubmitted,
   defaultProjectId,
-  relayHealth: relayHealthProp,
+  relayConnected: relayConnectedProp,
   registerPo,
 }: GpPurchaseOrderDialogProps) {
   const { showToast } = useToast();
   const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
   const projects = projectsData?.projects ?? [];
-  const { data: vendorsData } = useQuery<{ vendors: VendorOption[] }>(GET_VENDORS);
 
   const isRegister = !!registerPo;
 
   // Form state
   const [projectId, setProjectId] = useState(defaultProjectId ?? '');
-  const [vendorId, setVendorId] = useState<string | null>(null);
+  const [gpVendorId, setGpVendorId] = useState<string | null>(null);
+  const [gpVendorName, setGpVendorName] = useState<string | null>(null);
   // Register mode only: false while a fuzzy name-matched GP vendor is pre-filled but not yet confirmed.
   // A confident match (the draft's own GP vendor / an exact name hit) and any manual pick start confirmed.
   const [vendorConfirmed, setVendorConfirmed] = useState(true);
   const [notes, setNotes] = useState('');
-  const [company, setCompany] = useState('TUBC');
   const [buyerId, setBuyerId] = useState('');
   const [costCode, setCostCode] = useState('');
   const [nextKey, setNextKey] = useState(2);
   const [lineItems, setLineItems] = useState<LineItemRow[]>([{ key: 1, ...EMPTY_LINE_ITEM }]);
   const [errors, setErrors] = useState<Record<string, string>>({});
-
-  // GP relay state. The page passes relayHealth in (single source of truth); when it doesn't, the
-  // dialog falls back to probing /health itself via selfRelayHealth.
-  const [selfRelayHealth, setSelfRelayHealth] = useState<RelayHealth | null>(null);
-  const relayHealth = relayHealthProp !== undefined ? relayHealthProp : selfRelayHealth;
-  const [buyers, setBuyers] = useState<string[]>([]);
-  const [costCodes, setCostCodes] = useState<RelayCostCode[]>([]);
-  const [costCodesLoading, setCostCodesLoading] = useState(false);
   const [gpBusy, setGpBusy] = useState(false);
 
-  const [createPO, { loading: createLoading }] = useMutation(CREATE_PO);
-  const [registerPoInGp, { loading: registerLoading }] = useMutation(REGISTER_PO_IN_GP);
-
-  const selectedVendor = useMemo(
-    () => vendorsData?.vendors.find((v) => v.id === vendorId) ?? null,
-    [vendorsData, vendorId],
+  const [createPO, { loading: createLoading }] = useMutation<{ createPo: { poNumber: string | null } }>(CREATE_PO);
+  const [registerPoInGp, { loading: registerLoading }] = useMutation<{ registerPoInGp: { poNumber: string | null } }>(
+    REGISTER_PO_IN_GP,
   );
+
+  // One idempotency key per user action (create or register), reused across retries so a retry is a
+  // no-op in GP instead of a second PO. Reset on a fresh open and after a successful submit; kept on
+  // failure so the retry carries the same key.
+  const idempotencyKeyRef = useRef<string | null>(null);
+
+  // GP relay status. The company comes from the connected relay (it's enrolled for exactly one), so it's
+  // read from the hook here rather than picked by the user. The page still passes relayConnected in as
+  // the single source of truth for the connected flag; standalone, the hook's own connected value is used.
+  const relay = useRelayStatus({ skip: !open });
+  const company = relay.company ?? '';
+  const relayStatus: boolean | null = relayConnectedProp !== undefined ? relayConnectedProp : relay.connected;
+  const relayConnected = relayStatus === true;
+
   const selectedProject = useMemo(() => projects.find((p) => p.id === projectId) ?? null, [projects, projectId]);
   const isJob = !!projectId && !!selectedProject;
-  const relayConnected = relayHealth?.ok === true;
+  const jobNumber = selectedProject?.projectId ?? null;
+
+  // Registered buyers for the chosen company (POP00101), live from GP via the backend relay channel.
+  // cache-first so reopening the dialog reuses the loaded list instead of re-pulling it browser -> backend
+  // -> WS -> relay -> GP; the refresh control forces a re-pull when the master data changed.
+  const { data: buyersData, refetch: refetchBuyers } = useQuery<{ gpBuyers: string[] }>(GET_GP_BUYERS, {
+    variables: { company },
+    skip: !open || !relayConnected || !company,
+    fetchPolicy: 'cache-first',
+  });
+  const buyers = buyersData?.gpBuyers ?? [];
+
+  // Live GP vendor list (PM00200), per company - issue #200 replaces the locally-synced vendor mirror
+  // with a direct pick from this list, snapshotted onto the PO.
+  const { data: gpVendorsData, refetch: refetchVendors } = useQuery<{ gpVendors: GpVendorOption[] }>(GET_GP_VENDORS, {
+    variables: { company },
+    skip: !open || !relayConnected || !company,
+    fetchPolicy: 'cache-first',
+  });
+  const gpVendors = gpVendorsData?.gpVendors ?? [];
+
+  // This job's cost codes from GP (JC00701), live via the backend relay channel. Cost codes are
+  // per-job and each carries its own Cost_Element, so the dropdown comes from GP, not a static list.
+  // A stock PO (no project) carries no cost code. cache-first still keys on { company, job }, so a
+  // different job re-queries; the refresh control re-pulls the current job's codes.
+  const {
+    data: costCodesData,
+    loading: costCodesLoading,
+    refetch: refetchCostCodes,
+  } = useQuery<{ gpCostCodes: GpCostCode[] }>(GET_GP_COST_CODES, {
+    variables: { company, job: jobNumber ?? '' },
+    skip: !open || !relayConnected || !company || !jobNumber,
+    fetchPolicy: 'cache-first',
+  });
+  const costCodes = costCodesData?.gpCostCodes ?? [];
 
   // Seed the form when the dialog opens. Create mode -> empty; register mode -> the draft's values
   // (project locked, line items carrying their ids so edits map back). The vendor is seeded separately
-  // (below) once the vendor list has loaded, so the best-guess match isn't clobbered before data arrives.
+  // (below) once the live GP vendor list has loaded, so the best-guess match isn't clobbered before data
+  // arrives.
   const seededRef = useRef(false);
-  const vendorSeededRef = useRef(false);
+  const gpVendorSeededForCompanyRef = useRef<string | null>(null);
   useEffect(() => {
     if (!open) {
       seededRef.current = false;
-      vendorSeededRef.current = false;
+      gpVendorSeededForCompanyRef.current = null;
       return;
     }
     if (seededRef.current) return;
     seededRef.current = true;
+    // Fresh open = fresh user action, so start a new idempotency key on the next submit.
+    idempotencyKeyRef.current = null;
     setBuyerId('');
     setCostCode('');
     setErrors({});
@@ -201,97 +231,43 @@ export default function GpPurchaseOrderDialog({
     }
   }, [open, registerPo, defaultProjectId]);
 
-  // Seed the vendor once the vendor list is available: register mode defaults to the best-guess GP match,
-  // create mode starts empty. A fuzzy guess seeds unconfirmed so submit is blocked until the user confirms
-  // (or picks another); a confident match / create mode needs no confirmation.
-  useEffect(() => {
-    if (!open || vendorSeededRef.current) return;
-    const vendors = vendorsData?.vendors;
-    if (!vendors) return;
-    vendorSeededRef.current = true;
-    const guess = registerPo
-      ? bestGuessGpVendor(vendors, registerPo.vendor?.name ?? null, registerPo.vendor?.id ?? null)
-      : { id: null, confident: true };
-    setVendorId(guess.id);
-    setVendorConfirmed(guess.confident);
-  }, [open, registerPo, vendorsData]);
-
-  // A manual vendor pick is an explicit choice, so it counts as confirmed.
-  const handleVendorChange = useCallback((id: string | null) => {
-    setVendorId(id);
-    setVendorConfirmed(true);
-  }, []);
-
-  // Probe relay presence while the dialog is open - only when the page didn't pass relayHealth in.
-  useEffect(() => {
-    if (!open || relayHealthProp !== undefined) return;
-    let cancelled = false;
-    void (async () => {
-      const h = await checkRelayHealth();
-      if (!cancelled) setSelfRelayHealth(h);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [open, relayHealthProp]);
-
-  // Load registered buyers for the chosen company whenever the relay is up and the dialog is open.
+  // Seed the GP vendor once this company's live list is available: register mode defaults to the
+  // best-guess match against the imported vendor name, create mode starts empty. A fuzzy guess seeds
+  // unconfirmed so submit is blocked until the user confirms (or picks another); a confident match /
+  // create mode needs no confirmation. Re-seeds if the company changes, since the vendor master is
+  // per-company and a pick from one company's list isn't valid against another's.
   useEffect(() => {
     if (!open) return;
-    if (!relayConnected) {
-      setBuyers([]);
-      return;
-    }
-    let cancelled = false;
-    void (async () => {
-      try {
-        const b = await getRelayBuyers(company);
-        if (!cancelled) setBuyers(b);
-      } catch {
-        if (!cancelled) setBuyers([]);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [open, relayConnected, company]);
+    const vendors = gpVendorsData?.gpVendors;
+    if (!vendors) return;
+    if (gpVendorSeededForCompanyRef.current === company) return;
+    gpVendorSeededForCompanyRef.current = company;
+    const guess = registerPo
+      ? bestGuessGpVendor(vendors, poVendorName(registerPo))
+      : { vendorId: null, vendorName: null, confident: true };
+    setGpVendorId(guess.vendorId);
+    setGpVendorName(guess.vendorName);
+    setVendorConfirmed(guess.confident);
+  }, [open, company, registerPo, gpVendorsData]);
 
-  // Load this job's cost codes from GP (JC00701) whenever the project/company changes. Cost codes
-  // are per-job and each carries its own Cost_Element, so the dropdown comes from the relay, not a
-  // static list. A stock PO (no project) carries no cost code.
-  const jobNumber = selectedProject?.projectId ?? null;
+  // A manual vendor pick is an explicit choice, so it counts as confirmed.
+  const handleGpVendorChange = useCallback(
+    (id: string) => {
+      const picked = gpVendors.find((v) => v.vendorId === id) ?? null;
+      setGpVendorId(picked?.vendorId ?? null);
+      setGpVendorName(picked?.vendorName ?? null);
+      setVendorConfirmed(true);
+    },
+    [gpVendors],
+  );
+
   // Clear the selected cost code only when the job or company changes - a code from another job must
-  // not carry over. Deliberately NOT keyed on relayConnected: the page polls the relay /health every
-  // 10s, and a transient blip must not wipe the user's pick mid-form.
+  // not carry over. Deliberately NOT keyed on relayConnected: the page polls relayStatus every 10s,
+  // and a transient blip must not wipe the user's pick mid-form.
   useEffect(() => {
     if (!open) return;
     setCostCode('');
   }, [open, company, jobNumber]);
-
-  // Load the job's cost codes from GP whenever the relay is up. A relay drop clears the dropdown options
-  // (the field is disabled while down) but leaves the chosen costCode intact, so it re-displays on reload.
-  useEffect(() => {
-    if (!open) return;
-    if (!relayConnected || !jobNumber) {
-      setCostCodes([]);
-      return;
-    }
-    let cancelled = false;
-    setCostCodesLoading(true);
-    void (async () => {
-      try {
-        const cc = await getRelayCostCodes(company, jobNumber);
-        if (!cancelled) setCostCodes(cc);
-      } catch {
-        if (!cancelled) setCostCodes([]);
-      } finally {
-        if (!cancelled) setCostCodesLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [open, relayConnected, company, jobNumber]);
 
   // --- Handlers ---
 
@@ -323,14 +299,13 @@ export default function GpPurchaseOrderDialog({
     }
     // GP is mandatory: a PO that can't be created in GP isn't created/registered at all.
     if (!relayConnected) errs.gp = 'GP relay not detected on this machine - it must be running to push a PO to GP';
-    if (!vendorId) errs.vendor = 'Select a vendor';
-    else if (!selectedVendor?.gpVendorId) errs.vendor = 'This vendor is not linked to GP yet (run GP Vendor Sync)';
+    if (!gpVendorId) errs.vendor = 'Select a GP vendor';
     else if (isRegister && !vendorConfirmed) errs.vendor = 'Confirm the suggested GP vendor before registering';
     if (!buyerId) errs.buyer = 'Select a buyer';
     if (isJob && !costCode) errs.costCode = 'Cost code is required for a project PO';
     setErrors(errs);
     return Object.keys(errs).length === 0;
-  }, [lineItems, relayConnected, vendorId, selectedVendor, isRegister, vendorConfirmed, buyerId, isJob, costCode]);
+  }, [lineItems, relayConnected, gpVendorId, isRegister, vendorConfirmed, buyerId, isJob, costCode]);
 
   const handleSubmit = useCallback(async () => {
     if (!validate()) return;
@@ -338,93 +313,68 @@ export default function GpPurchaseOrderDialog({
     // costCode already holds GP's 'phase-step-element' (e.g. '310-000-3'); the element is the real
     // one from JC00701, not a hardcoded 2. A stock PO (no project) carries no cost code.
     const gpCostCode = isJob ? costCode : null;
-    const today = new Date().toISOString().slice(0, 10);
+    const lineItemsInput = lineItems.map((li) => ({
+      hardwareCategory: li.hardwareCategory.trim(),
+      productCode: li.productCode.trim(),
+      orderedQuantity: parseInt(li.orderedQuantity, 10),
+      unitCost: parseFloat(li.unitCost),
+      classification: li.classification || null,
+      orderAs: li.orderAs.trim(),
+    }));
 
-    const relayReq: RelayPoRequest = {
-      company,
-      header: {
-        vendor_id: selectedVendor!.gpVendorId!,
-        buyer_id: buyerId,
-        confirm_with: (selectedVendor?.contactName || buyerId).slice(0, 20),
-        doc_date: today,
-      },
-      lines: lineItems.map((li) => ({
-        item_number: (li.orderAs.trim() || li.productCode.trim()).slice(0, 30),
-        item_description: `${li.productCode.trim()} ${li.hardwareCategory.trim()}`.trim().slice(0, 100),
-        quantity: parseInt(li.orderedQuantity, 10),
-        unit_cost: parseFloat(li.unitCost),
-        location_code: 'VANCOUVER',
-        uofm: 'Each',
-        product_indicator: isJob ? 2 : 1,
-        job_number: isJob ? selectedProject!.projectId : null,
-        cost_code: gpCostCode,
-      })),
-    };
+    // Same key for every retry of this action so a retry is a no-op in GP (won't post a second PO).
+    const idempotencyKey = (idempotencyKeyRef.current ??= crypto.randomUUID());
 
     setGpBusy(true);
-    let gpPoNumber: string | null = null;
     try {
-      // GP first: if GP rejects it, nothing changes in UC Nexus.
-      const gpResp = await postRelayPo(relayReq);
-      gpPoNumber = gpResp.po_number;
-
+      // GP-first, server-side (issue #199): the resolver pushes to GP via the relay before persisting
+      // anything, so a GP rejection changes nothing in UC Nexus.
       if (registerPo) {
-        // Register path: GP accepted, so map the existing draft to the GP vendor + cost code, persist the
-        // (possibly edited) line set, record GP's number + company, and advance Draft -> GP-Registered.
-        await registerPoInGp({
+        const resp = await registerPoInGp({
           variables: {
             input: {
               poId: registerPo.id,
-              vendorId,
-              poNumber: gpPoNumber,
+              gpVendorId,
+              gpVendorName,
+              buyerId,
               gpCompany: company,
               costCode: gpCostCode,
-              lineItems: lineItems.map((li) => ({
+              idempotencyKey,
+              lineItems: lineItems.map((li, idx) => ({
                 id: li.id ?? null,
-                hardwareCategory: li.hardwareCategory.trim(),
-                productCode: li.productCode.trim(),
-                orderedQuantity: parseInt(li.orderedQuantity, 10),
-                unitCost: parseFloat(li.unitCost),
-                classification: li.classification || null,
-                orderAs: li.orderAs.trim(),
+                ...lineItemsInput[idx],
               })),
             },
           },
         });
-        showToast(`PO ${gpPoNumber} registered in GP`, 'success');
+        showToast(`PO ${resp.data?.registerPoInGp?.poNumber} registered in GP`, 'success');
       } else {
-        // Create path: GP accepted, so create it in UC Nexus already carrying GP's number + company in
-        // one atomic mutation (it lands GP-Registered). No separate record step, so there is never a
-        // numberless DRAFT that could be re-registered into a duplicate GP PO.
-        const ucInput = {
-          projectId: projectId || null,
-          vendorId: vendorId || null,
-          notes: notes.trim() || null,
-          costCode: gpCostCode,
-          poNumber: gpPoNumber,
-          gpCompany: company,
-          lineItems: lineItems.map((li) => ({
-            hardwareCategory: li.hardwareCategory.trim(),
-            productCode: li.productCode.trim(),
-            orderedQuantity: parseInt(li.orderedQuantity, 10),
-            unitCost: parseFloat(li.unitCost),
-            classification: li.classification || null,
-            orderAs: li.orderAs.trim(),
-          })),
-        };
-        await createPO({ variables: { input: ucInput } });
-        showToast(`PO ${gpPoNumber} created in GP and UC Nexus`, 'success');
+        const resp = await createPO({
+          variables: {
+            input: {
+              projectId: projectId || null,
+              gpVendorId,
+              gpVendorName,
+              buyerId,
+              notes: notes.trim() || null,
+              costCode: gpCostCode,
+              gpCompany: company,
+              idempotencyKey,
+              lineItems: lineItemsInput,
+            },
+          },
+        });
+        showToast(`PO ${resp.data?.createPo?.poNumber} created in GP and UC Nexus`, 'success');
       }
 
+      // Succeeded: clear the key so a later reopen starts a new action.
+      idempotencyKeyRef.current = null;
       onSubmitted();
     } catch (err: unknown) {
+      // Keep idempotencyKeyRef so a retry reuses the same key - the GP write may have committed even if
+      // the mutation reported failure, and reusing the key makes the retry safe.
       const message = err instanceof Error ? err.message : 'Failed to push PO to GP';
-      if (!gpPoNumber) {
-        showToast(`GP did not accept the PO, so nothing was changed: ${message}`, 'error');
-      } else {
-        const step = registerPo ? 'registering it in UC Nexus' : 'recording it in UC Nexus';
-        showToast(`GP PO ${gpPoNumber} was created, but ${step} failed: ${message}`, 'error');
-      }
+      showToast(`Could not complete the PO in GP: ${message}. If it keeps failing, retry - a retry won't create a duplicate.`, 'error');
     } finally {
       setGpBusy(false);
     }
@@ -433,12 +383,11 @@ export default function GpPurchaseOrderDialog({
     isJob,
     costCode,
     company,
-    selectedVendor,
     buyerId,
     lineItems,
-    selectedProject,
     projectId,
-    vendorId,
+    gpVendorId,
+    gpVendorName,
     notes,
     registerPo,
     createPO,
@@ -464,9 +413,10 @@ export default function GpPurchaseOrderDialog({
           ? 'No cost codes defined for this job in GP'
           : '';
 
+  const importedVendorName = registerPo ? poVendorName(registerPo) || null : null;
   const vendorHelper =
     errors.vendor ||
-    (isRegister && registerPo?.vendor?.name ? `Imported as: ${registerPo.vendor.name} - confirm the GP vendor` : '');
+    (isRegister && importedVendorName ? `Imported as: ${importedVendorName} - confirm the GP vendor` : '');
 
   const actions = (
     <Stack direction="row" spacing={1}>
@@ -501,19 +451,41 @@ export default function GpPurchaseOrderDialog({
         </TextField>
 
         <Box>
-          <VendorSelect
-            value={vendorId}
-            onChange={handleVendorChange}
-            error={!!errors.vendor}
-            helperText={vendorHelper}
-          />
-          {isRegister && vendorId && !vendorConfirmed && (
+          <Stack direction="row" spacing={0.5} alignItems="flex-start">
+            <TextField
+              select
+              label="GP Vendor"
+              value={gpVendorId ?? ''}
+              onChange={(e) => handleGpVendorChange(e.target.value)}
+              size="small"
+              sx={{ flex: 1 }}
+              disabled={!relayConnected || gpVendors.length === 0}
+              error={!!errors.vendor}
+              helperText={vendorHelper}
+            >
+              {gpVendors.map((v) => (
+                <MenuItem key={v.vendorId} value={v.vendorId}>
+                  {v.vendorName}
+                </MenuItem>
+              ))}
+            </TextField>
+            <IconButton
+              size="small"
+              aria-label="Refresh GP vendors"
+              onClick={() => refetchVendors()}
+              disabled={!relayConnected}
+              sx={{ mt: 0.5 }}
+            >
+              <RefreshIcon fontSize="small" />
+            </IconButton>
+          </Stack>
+          {isRegister && gpVendorId && !vendorConfirmed && (
             <FormControlLabel
               sx={{ mt: 0.5 }}
               control={
                 <Checkbox size="small" checked={vendorConfirmed} onChange={(e) => setVendorConfirmed(e.target.checked)} />
               }
-              label={`This is the correct GP vendor${selectedVendor ? ` (${selectedVendor.name})` : ''}`}
+              label={`This is the correct GP vendor${gpVendorName ? ` (${gpVendorName})` : ''}`}
             />
           )}
         </Box>
@@ -536,66 +508,77 @@ export default function GpPurchaseOrderDialog({
           <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
             GP purchase order
           </Typography>
-          <RelayStatusChip health={relayHealth} />
+          <RelayStatusChip connected={relayStatus} />
         </Stack>
-        <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
+        <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap alignItems="flex-start">
+          {/* The connected relay is enrolled for exactly one company, so this is read-only, not a pick. */}
           <TextField
-            select
             label="GP company"
-            value={company}
-            onChange={(e) => setCompany(e.target.value)}
+            value={company || '—'}
             size="small"
             sx={{ minWidth: 140 }}
-          >
-            {COMPANIES.map((c) => (
-              <MenuItem key={c} value={c}>
-                {c}
-              </MenuItem>
-            ))}
-          </TextField>
-          <TextField
-            select
-            label="Buyer"
-            value={buyerId}
-            onChange={(e) => setBuyerId(e.target.value)}
-            size="small"
-            sx={{ minWidth: 180 }}
-            disabled={!relayConnected || buyers.length === 0}
-            error={!!errors.buyer}
-            helperText={errors.buyer}
-          >
-            {buyers.map((b) => (
-              <MenuItem key={b} value={b}>
-                {b}
-              </MenuItem>
-            ))}
-          </TextField>
-          <TextField
-            select
-            label={isJob ? 'Cost code (required)' : 'Cost code (project POs)'}
-            value={costCode}
-            onChange={(e) => setCostCode(e.target.value)}
-            size="small"
-            sx={{ minWidth: 260 }}
-            disabled={!isJob || !relayConnected || costCodesLoading || costCodes.length === 0}
-            error={!!errors.costCode}
-            helperText={errors.costCode || costCodeHelper}
-          >
-            {costCodes.map((c) => (
-              <MenuItem key={`${c.cost_code}-${c.cost_element}`} value={`${c.cost_code}-${c.cost_element}`}>
-                {c.description ? `${c.cost_code} · ${c.description}` : c.cost_code}
-              </MenuItem>
-            ))}
-          </TextField>
+            disabled
+          />
+          <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 0.5 }}>
+            <TextField
+              select
+              label="Buyer"
+              value={buyerId}
+              onChange={(e) => setBuyerId(e.target.value)}
+              size="small"
+              sx={{ minWidth: 180 }}
+              disabled={!relayConnected || buyers.length === 0}
+              error={!!errors.buyer}
+              helperText={errors.buyer}
+            >
+              {buyers.map((b) => (
+                <MenuItem key={b} value={b}>
+                  {b}
+                </MenuItem>
+              ))}
+            </TextField>
+            <IconButton
+              size="small"
+              aria-label="Refresh buyers"
+              onClick={() => refetchBuyers()}
+              disabled={!relayConnected}
+              sx={{ mt: 0.5 }}
+            >
+              <RefreshIcon fontSize="small" />
+            </IconButton>
+          </Box>
+          <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 0.5 }}>
+            <TextField
+              select
+              label={isJob ? 'Cost code (required)' : 'Cost code (project POs)'}
+              value={costCode}
+              onChange={(e) => setCostCode(e.target.value)}
+              size="small"
+              sx={{ minWidth: 260 }}
+              disabled={!isJob || !relayConnected || costCodesLoading || costCodes.length === 0}
+              error={!!errors.costCode}
+              helperText={errors.costCode || costCodeHelper}
+            >
+              {costCodes.map((c) => (
+                <MenuItem key={`${c.costCode}-${c.costElement}`} value={`${c.costCode}-${c.costElement}`}>
+                  {c.description ? `${c.costCode} · ${c.description}` : c.costCode}
+                </MenuItem>
+              ))}
+            </TextField>
+            <IconButton
+              size="small"
+              aria-label="Refresh cost codes"
+              onClick={() => refetchCostCodes()}
+              disabled={!isJob || !relayConnected}
+              sx={{ mt: 0.5 }}
+            >
+              <RefreshIcon fontSize="small" />
+            </IconButton>
+          </Box>
         </Stack>
         {errors.gp && (
           <Alert severity="error" sx={{ mt: 2 }}>
             {errors.gp}
-          </Alert>
-        )}
-        {selectedVendor && !selectedVendor.gpVendorId && (
-          <Alert severity="warning" sx={{ mt: 2 }}>
-            {selectedVendor.name} is not linked to GP yet. Link it via Admin → GP Vendor Sync before pushing to GP.
           </Alert>
         )}
       </Box>

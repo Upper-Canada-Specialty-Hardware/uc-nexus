@@ -21,8 +21,8 @@ def _make_project(session) -> Project:
     return p
 
 
-def _make_vendor(session, name: str = "Acme", gp_vendor_id: str | None = None) -> Vendor:
-    v = Vendor(id=uuid.uuid4(), name=f"{name}-{uuid.uuid4().hex[:6]}", gp_vendor_id=gp_vendor_id)
+def _make_vendor(session, name: str = "Acme") -> Vendor:
+    v = Vendor(id=uuid.uuid4(), name=f"{name}-{uuid.uuid4().hex[:6]}")
     session.add(v)
     session.flush()
     return v
@@ -109,15 +109,17 @@ def _import_draft_po(session, project: Project, imported_vendor: Vendor) -> Purc
 
 def test_register_keeps_all_lines_and_advances(db_session):
     project = _make_project(db_session)
-    imported_vendor = _make_vendor(db_session, "Imported")  # not GP-linked
+    imported_vendor = _make_vendor(db_session, "Imported")
     po = _import_draft_po(db_session, project, imported_vendor)
     lines = {li.product_code: li for li in po.line_items}
 
-    gp_vendor = _make_vendor(db_session, "GP Vendor", gp_vendor_id="GPV1")
+    gp_vendor = _make_vendor(db_session, "GP Vendor")
 
     po_repository.register_po_in_gp(
         db_session,
         po.id,
+        gp_vendor_id="GPV1",
+        vendor_name_snapshot="GP Vendor",
         vendor_id=gp_vendor.id,
         po_number="  PO0000099  ",
         gp_company="  TUBC  ",
@@ -150,6 +152,8 @@ def test_register_keeps_all_lines_and_advances(db_session):
     assert po.po_number == "PO0000099"  # trimmed
     assert po.gp_company == "TUBC"
     assert po.vendor_id == gp_vendor.id
+    assert po.gp_vendor_id == "GPV1"
+    assert po.vendor_name_snapshot == "GP Vendor"
     assert po.cost_code == "210-200-2"
     assert po.ordered_at is not None
 
@@ -167,11 +171,13 @@ def test_register_add_edit_and_remove_lines(db_session):
     kept_id = lines["HG-100"].id
     dropped_id = lines["HG-200"].id
 
-    gp_vendor = _make_vendor(db_session, "GP Vendor", gp_vendor_id="GPV1")
+    gp_vendor = _make_vendor(db_session, "GP Vendor")
 
     po_repository.register_po_in_gp(
         db_session,
         po.id,
+        gp_vendor_id="GPV1",
+        vendor_name_snapshot="GP Vendor",
         vendor_id=gp_vendor.id,
         po_number="PO0000100",
         gp_company="TUBC",
@@ -231,7 +237,7 @@ def test_register_rejects_non_draft(db_session):
     imported_vendor = _make_vendor(db_session, "Imported")
     po = _import_draft_po(db_session, project, imported_vendor)
     lines = {li.product_code: li for li in po.line_items}
-    gp_vendor = _make_vendor(db_session, "GP Vendor", gp_vendor_id="GPV1")
+    gp_vendor = _make_vendor(db_session, "GP Vendor")
 
     payload = [
         {
@@ -247,21 +253,35 @@ def test_register_rejects_non_draft(db_session):
     ]
 
     po_repository.register_po_in_gp(
-        db_session, po.id, vendor_id=gp_vendor.id, po_number="PO0000101", gp_company="TUBC", line_items=payload
+        db_session,
+        po.id,
+        gp_vendor_id="GPV1",
+        vendor_name_snapshot="GP Vendor",
+        vendor_id=gp_vendor.id,
+        po_number="PO0000101",
+        gp_company="TUBC",
+        line_items=payload,
     )
     db_session.flush()
 
     with pytest.raises(InvalidStateTransitionError):
         po_repository.register_po_in_gp(
-            db_session, po.id, vendor_id=gp_vendor.id, po_number="PO0000101", gp_company="TUBC", line_items=payload
+            db_session,
+            po.id,
+            gp_vendor_id="GPV1",
+            vendor_name_snapshot="GP Vendor",
+            vendor_id=gp_vendor.id,
+            po_number="PO0000101",
+            gp_company="TUBC",
+            line_items=payload,
         )
 
 
-def test_register_rejects_non_gp_vendor(db_session):
-    # mapping a registered PO to a vendor with no GP link breaks the "GP-registered PO maps to a GP
-    # vendor" invariant - reject it server-side, not just in the dialog's vendor list.
+def test_register_rejects_blank_gp_vendor_id(db_session):
+    # issue #200: the GP vendor is picked live and sent explicitly - there's no local mirror to fall
+    # back on, so a blank id must be rejected server-side rather than silently registering ungrounded.
     project = _make_project(db_session)
-    imported_vendor = _make_vendor(db_session, "Imported")  # gp_vendor_id is None
+    imported_vendor = _make_vendor(db_session, "Imported")
     po = _import_draft_po(db_session, project, imported_vendor)
     lines = list(po.line_items)
 
@@ -269,7 +289,8 @@ def test_register_rejects_non_gp_vendor(db_session):
         po_repository.register_po_in_gp(
             db_session,
             po.id,
-            vendor_id=imported_vendor.id,
+            gp_vendor_id="  ",
+            vendor_name_snapshot="Imported",
             po_number="PO0000200",
             gp_company="TUBC",
             line_items=[
@@ -290,7 +311,7 @@ def test_register_rejects_duplicate_po_number_in_project(db_session):
     # a reused GP number must surface as a clean ValidationError before commit, not a raw
     # IntegrityError that aborts the txn and orphans the GP PO the relay already created.
     project = _make_project(db_session)
-    gp_vendor = _make_vendor(db_session, "GP Vendor", gp_vendor_id="GPV1")
+    gp_vendor = _make_vendor(db_session, "GP Vendor")
     line = {
         "hardware_category": "HINGE",
         "product_code": "HG-1",
@@ -307,6 +328,8 @@ def test_register_rejects_duplicate_po_number_in_project(db_session):
         vendor_id=gp_vendor.id,
         po_number="PO-DUP-1",
         gp_company="TUBC",
+        gp_vendor_id="GPV1",
+        vendor_name_snapshot="GP Vendor",
     )
     # a second draft in the same project can't be registered under the same number
     draft = po_repository.create_po(db_session, line_items=[line], project_id=project.id, vendor_id=gp_vendor.id)
@@ -317,6 +340,8 @@ def test_register_rejects_duplicate_po_number_in_project(db_session):
         po_repository.register_po_in_gp(
             db_session,
             draft.id,
+            gp_vendor_id="GPV1",
+            vendor_name_snapshot="GP Vendor",
             vendor_id=gp_vendor.id,
             po_number="PO-DUP-1",
             gp_company="TUBC",
@@ -339,12 +364,14 @@ def test_register_requires_order_as(db_session):
     imported_vendor = _make_vendor(db_session, "Imported")
     po = _import_draft_po(db_session, project, imported_vendor)
     lines = list(po.line_items)
-    gp_vendor = _make_vendor(db_session, "GP Vendor", gp_vendor_id="GPV1")
+    gp_vendor = _make_vendor(db_session, "GP Vendor")
 
     with pytest.raises(ValidationError):
         po_repository.register_po_in_gp(
             db_session,
             po.id,
+            gp_vendor_id="GPV1",
+            vendor_name_snapshot="GP Vendor",
             vendor_id=gp_vendor.id,
             po_number="PO0000102",
             gp_company="TUBC",

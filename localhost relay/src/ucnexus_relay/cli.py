@@ -13,17 +13,43 @@ import sys
 
 
 def _serve(argv: list[str]) -> int:
+    import asyncio
+
     import uvicorn
 
+    from . import channel
     from .config import get_settings
     from .main import app
 
     s = get_settings()
-    # pin loop/http/ws so the PyInstaller bundle stays lean and deterministic: stdlib asyncio + pure-python
-    # h11, no websockets (the relay has none). this avoids bundling httptools/websockets/uvloop and the
-    # by-string "auto" loaders picking a backend that isn't packaged. throughput here is a few calls, so
-    # h11 is plenty.
-    uvicorn.run(app, host=s.server.host, port=s.server.port, loop="asyncio", http="h11", ws="none")
+    # pin loop/http so the PyInstaller bundle stays lean and deterministic: stdlib asyncio + pure-python
+    # h11. this avoids bundling httptools/uvloop and the by-string "auto" loaders picking a backend
+    # that isn't packaged. throughput here is a few calls, so h11 is plenty. ws="none" disables
+    # uvicorn's OWN inbound websocket server - the FastAPI app has no websocket routes, so that's
+    # unused; it's unrelated to `channel`, which is an outbound `websockets` CLIENT run alongside this
+    # server below (a `websockets` build IS bundled for that).
+    config = uvicorn.Config(app, host=s.server.host, port=s.server.port, loop="asyncio", http="h11", ws="none")
+    server = uvicorn.Server(config)
+
+    async def _run() -> None:
+        # the outbound channel is additive to the existing inbound HTTP server - a blank
+        # [channel].backend_url makes channel.run_forever() a no-op, so this is safe on a relay that
+        # hasn't been reconfigured for it yet.
+        #
+        # run_forever loops indefinitely (reconnect-with-backoff), so it must be cancelled on shutdown:
+        # a plain gather() would keep awaiting it after uvicorn's server.serve() returns on SIGINT /
+        # service stop, hanging the process. Run it as a task and cancel it once the server exits.
+        channel_task = asyncio.create_task(channel.run_forever())
+        try:
+            await server.serve()
+        finally:
+            channel_task.cancel()
+            try:
+                await channel_task
+            except asyncio.CancelledError:
+                pass
+
+    asyncio.run(_run())
     return 0
 
 
