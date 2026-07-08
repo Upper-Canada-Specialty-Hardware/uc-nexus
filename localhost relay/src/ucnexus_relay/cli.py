@@ -18,14 +18,23 @@ import sys
 
 def _serve(argv: list[str]) -> int:
     import asyncio
+    import os
 
     import uvicorn
 
     from . import channel
-    from .config import get_settings
+    from .config import DEFAULT_CONFIG_PATH, get_settings
     from .main import app
 
     s = get_settings()
+
+    # Write a pid file next to config.toml so the UI's Stop/Restart can target THIS serve process. The ui
+    # window and serve are both ucnexus-relay.exe, so a pid file is the reliable way to tell them apart.
+    pid_path = DEFAULT_CONFIG_PATH.parent / "relay.pid"
+    try:
+        pid_path.write_text(str(os.getpid()), encoding="utf-8")
+    except OSError:
+        pid_path = None
     # pin loop/http so the PyInstaller bundle stays lean and deterministic: stdlib asyncio + pure-python
     # h11. this avoids bundling httptools/uvloop and the by-string "auto" loaders picking a backend
     # that isn't packaged. throughput here is a few calls, so h11 is plenty. ws="none" disables
@@ -53,7 +62,14 @@ def _serve(argv: list[str]) -> int:
             except asyncio.CancelledError:
                 pass
 
-    asyncio.run(_run())
+    try:
+        asyncio.run(_run())
+    finally:
+        if pid_path is not None:
+            try:
+                pid_path.unlink()
+            except OSError:
+                pass
     return 0
 
 

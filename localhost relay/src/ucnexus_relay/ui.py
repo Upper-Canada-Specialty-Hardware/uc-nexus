@@ -14,6 +14,7 @@ lazily inside run_ui() for the same reason (and so a headless test host never ne
 """
 
 import json
+import sys
 import tomllib
 import urllib.request
 from pathlib import Path
@@ -147,14 +148,84 @@ def gather_status(config_path: str | Path | None = None) -> dict:
     }
 
 
+def _frozen() -> bool:
+    return getattr(sys, "frozen", False)
+
+
 class Api:
-    """Exposed to the window's JS as window.pywebview.api. Methods must return JSON-serializable values."""
+    """Exposed to the window's JS as window.pywebview.api. Methods must return JSON-serializable values.
+    The setup-wizard methods below back the guided first-run flow; each returns a small {ok/...} dict the
+    JS renders inline, and never raises across the bridge (a raised exception surfaces to JS as a rejected
+    promise with no detail)."""
 
     def get_status(self) -> dict:
         return gather_status()
 
     def get_logs(self, limit: int = 200) -> list[dict]:
         return recent_log_events(limit=int(limit))
+
+    # --- setup wizard ---------------------------------------------------------------------------------
+
+    def save_config(self, fields: dict) -> dict:
+        """Write config.toml from the wizard form (preserving an already-enrolled secret). See setup.py."""
+        from . import setup
+
+        try:
+            return setup.write_config(fields or {}, DEFAULT_CONFIG_PATH)
+        except Exception as e:  # noqa: BLE001 - report, don't cross the bridge as a rejected promise
+            return {"ok": False, "error": str(e)}
+
+    def test_connection(self) -> dict:
+        """Read-only GP connectivity + identity probe against the saved config."""
+        from . import setup
+
+        try:
+            return setup.test_gp_connection(DEFAULT_CONFIG_PATH)
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": str(e)}
+
+    def enroll(self, token: str, backend_url: str) -> dict:
+        """Register this install with UC Nexus using a one-time token, writing the DPAPI-encrypted secret."""
+        from .enroll import EnrollError, enroll_relay
+
+        if not (token or "").strip() or not (backend_url or "").strip():
+            return {"ok": False, "error": "both an enrollment token and the backend URL are required"}
+        try:
+            return enroll_relay(token=token.strip(), backend_url=backend_url.strip(), config_path=str(DEFAULT_CONFIG_PATH))
+        except EnrollError as e:
+            return {"ok": False, "error": e.message, "detail": e.detail}
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": str(e)}
+
+    def install_autostart(self) -> dict:
+        if not _frozen():
+            return {"ok": False, "error": "autostart can only be registered from the packaged exe"}
+        try:
+            return {"ok": True, "command": autostart.install_autostart()}
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": str(e)}
+
+    def start_relay(self) -> dict:
+        """Launch the serve process now (idempotent: no-op if it's already answering /health)."""
+        from . import setup
+
+        cfg = config_summary()
+        if relay_health(cfg.get("host", "127.0.0.1"), cfg.get("port", 7321)).get("running"):
+            return {"ok": True, "already_running": True}
+        if not _frozen():
+            return {"ok": False, "error": "the relay can only be started from the packaged exe"}
+        try:
+            return setup.start_serve(sys.executable, DEFAULT_CONFIG_PATH.parent)
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": str(e)}
+
+    def stop_relay(self) -> dict:
+        from . import setup
+
+        try:
+            return setup.stop_serve(DEFAULT_CONFIG_PATH.parent)
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": str(e)}
 
 
 _HTML = """<!doctype html><html><head><meta charset="utf-8"><title>UC Nexus Relay</title>
@@ -165,6 +236,9 @@ _HTML = """<!doctype html><html><head><meta charset="utf-8"><title>UC Nexus Rela
   header h1 { font-size:16px; margin:0; font-weight:600; }
   .dot { width:11px; height:11px; border-radius:50%; background:#5a6072; box-shadow:0 0 0 3px rgba(255,255,255,0.04); }
   .dot.ok { background:#2ecc71; } .dot.bad { background:#e74c3c; } .dot.warn { background:#f39c12; }
+  nav { display:flex; gap:4px; }
+  .tab { background:transparent; border:1px solid transparent; color:#8b93a7; padding:4px 12px; border-radius:7px; cursor:pointer; font-size:12.5px; }
+  .tab.active { background:#20283a; color:#e6e8ee; border-color:#2c364b; }
   main { padding:16px 18px; }
   .card { background:#171b24; border:1px solid #232838; border-radius:10px; padding:14px 16px; margin-bottom:16px; }
   .card h2 { font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:#8b93a7; margin:0 0 10px; }
@@ -182,24 +256,82 @@ _HTML = """<!doctype html><html><head><meta charset="utf-8"><title>UC Nexus Rela
   button { background:#20283a; color:#cdd3e1; border:1px solid #2c364b; border-radius:7px; padding:5px 12px; cursor:pointer; font-size:12.5px; }
   button:hover { background:#28324a; }
   .muted { color:#6b7386; font-size:12px; }
+  .form { display:grid; gap:10px; margin:6px 0 10px; }
+  .form label { display:flex; flex-direction:column; gap:4px; font-size:11.5px; color:#8b93a7; }
+  .form input { background:#0f131b; border:1px solid #2c364b; border-radius:6px; color:#e6e8ee; padding:7px 9px; font-size:13px; }
+  .form input:focus { outline:none; border-color:#3a4a6b; }
+  .step { display:flex; align-items:center; gap:8px; font-weight:600; font-size:13px; margin:16px 0 6px; }
+  .stepn { display:inline-flex; width:20px; height:20px; align-items:center; justify-content:center; border-radius:50%; background:#20283a; color:#7fb2ff; font-size:12px; }
+  .actions { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:4px; }
+  .result { font-size:12.5px; min-height:16px; margin:2px 0 4px; }
+  .result .ok { color:#5be29a; } .result .bad { color:#f0857b; }
 </style></head>
 <body>
   <header><span id="hdot" class="dot"></span><h1>UC Nexus Relay</h1><span id="hstate" class="muted"></span>
-    <span style="flex:1"></span><span id="uiver" class="muted"></span></header>
+    <span style="flex:1"></span>
+    <nav><button id="tab-status" class="tab active" onclick="showView('status')">Status</button>
+      <button id="tab-setup" class="tab" onclick="showView('setup')">Setup</button></nav>
+    <span id="uiver" class="muted"></span></header>
   <main>
-    <div class="card"><h2>Status</h2><div id="status" class="grid"></div></div>
-    <div class="card">
-      <div class="bar"><h2 style="margin:0">Event log</h2><span style="flex:1"></span>
-        <label class="muted"><input type="checkbox" id="auto" checked> auto-refresh</label>
-        <button onclick="refresh()">Refresh</button></div>
-      <div class="logwrap"><table><thead><tr><th>Time</th><th>Level</th><th>Message</th><th>Detail</th></tr></thead>
-        <tbody id="logs"></tbody></table></div>
-    </div>
+    <section id="view-status">
+      <div class="card"><h2>Status</h2><div id="status" class="grid"></div></div>
+      <div class="card">
+        <div class="bar"><h2 style="margin:0">Event log</h2><span style="flex:1"></span>
+          <label class="muted"><input type="checkbox" id="auto" checked> auto-refresh</label>
+          <button onclick="refresh()">Refresh</button></div>
+        <div class="logwrap"><table><thead><tr><th>Time</th><th>Level</th><th>Message</th><th>Detail</th></tr></thead>
+          <tbody id="logs"></tbody></table></div>
+      </div>
+    </section>
+    <section id="view-setup" hidden>
+      <div class="card">
+        <h2>Guided setup</h2>
+        <p class="muted" style="margin:0 0 4px">Fill in the connection and backend, save, test GP, then enroll, install autostart, and start the relay.</p>
+        <div class="step"><span class="stepn">1</span> GP connection + backend</div>
+        <div class="form">
+          <label>SQL server<input id="f-sql" placeholder="10.0.0.246,1435"></label>
+          <label>SQL ODBC driver<input id="f-driver" placeholder="ODBC Driver 17 for SQL Server"></label>
+          <label>Default company<input id="f-defco" placeholder="TUBC"></label>
+          <label>Allowed companies (comma-separated)<input id="f-allowed" placeholder="TUBC, TUCSH"></label>
+          <label>Fallback buyer (optional)<input id="f-buyer" placeholder="mira"></label>
+          <label>Backend host<input id="f-host" placeholder="backend-production-7866.up.railway.app"></label>
+        </div>
+        <div class="actions">
+          <button onclick="saveConfig()">Save configuration</button>
+          <button onclick="testConn()">Test GP connection</button></div>
+        <div id="r-save" class="result"></div>
+        <div id="r-test" class="result"></div>
+        <div class="step"><span class="stepn">2</span> Enroll with UC Nexus</div>
+        <div class="form">
+          <label>Enrollment token<input id="f-token" placeholder="paste the one-time token from UC Nexus admin"></label></div>
+        <div class="actions"><button onclick="doEnroll()">Enroll</button></div>
+        <div id="r-enroll" class="result"></div>
+        <div class="step"><span class="stepn">3</span> Autostart + run</div>
+        <div class="actions">
+          <button onclick="doAutostart()">Install autostart</button>
+          <button onclick="startRelay()">Start relay</button>
+          <button onclick="stopRelay()">Stop relay</button></div>
+        <div id="r-run" class="result"></div>
+      </div>
+    </section>
   </main>
 <script>
   const $ = id => document.getElementById(id);
+  const val = id => $(id).value.trim();
+  const setVal = (id, v) => { $(id).value = v || ''; };
   function row(k, v) { return `<div class="k">${k}</div><div class="v">${v}</div>`; }
   function pill(ok, txt, warn) { const c = warn ? 'warn' : (ok ? 'ok' : 'bad'); return `<span class="pill ${c}">${txt}</span>`; }
+  function esc(s) { return String(s == null ? '' : s).replace(/</g, '&lt;'); }
+  function result(id, ok, text) { $(id).innerHTML = `<span class="${ok ? 'ok' : 'bad'}">${esc(text)}</span>`; }
+
+  function showView(v) {
+    $('view-status').hidden = v !== 'status';
+    $('view-setup').hidden = v !== 'setup';
+    $('tab-status').classList.toggle('active', v === 'status');
+    $('tab-setup').classList.toggle('active', v === 'setup');
+    if (v === 'setup') loadSetup();
+  }
+
   async function refresh() {
     if (!window.pywebview) return;
     const s = await window.pywebview.api.get_status();
@@ -219,9 +351,64 @@ _HTML = """<!doctype html><html><head><meta charset="utf-8"><title>UC Nexus Rela
       row('Autostart', a.installed===null ? '-' : pill(!!a.installed, a.installed?'installed':'not installed'));
     const logs = await window.pywebview.api.get_logs(200);
     $('logs').innerHTML = logs.slice().reverse().map(l =>
-      `<tr><td class="muted">${l.time||''}</td><td class="lvl ${l.level||''}">${l.level||''}</td>`+
-      `<td>${(l.message||'').replace(/</g,'&lt;')}</td><td class="muted">${(l.detail||'')}</td></tr>`).join('');
+      `<tr><td class="muted">${esc(l.time)}</td><td class="lvl ${l.level||''}">${esc(l.level)}</td>`+
+      `<td>${esc(l.message)}</td><td class="muted">${esc(l.detail)}</td></tr>`).join('');
   }
+
+  async function loadSetup() {
+    const s = await window.pywebview.api.get_status();
+    const c = s.config || {};
+    if (c.present) {
+      setVal('f-sql', c.sql_server); setVal('f-driver', c.odbc_driver);
+      setVal('f-defco', c.default_company); setVal('f-allowed', (c.allowed_companies||[]).join(', '));
+      const m = (c.backend_url||'').match(/wss:\\/\\/([^/]+)/); if (m) setVal('f-host', m[1]);
+    }
+  }
+  function wssUrl() { const h = val('f-host'); return h ? 'wss://' + h + '/relay-link' : ''; }
+  function gqlUrl() { const h = val('f-host'); return h ? 'https://' + h + '/graphql' : ''; }
+
+  async function saveConfig() {
+    const fields = {
+      sql_server: val('f-sql'), sql_driver: val('f-driver'),
+      default_company: val('f-defco'),
+      allowed_companies: val('f-allowed').split(',').map(x => x.trim()).filter(Boolean),
+      buyer_default: val('f-buyer'), backend_url: wssUrl(),
+    };
+    const r = await window.pywebview.api.save_config(fields);
+    result('r-save', r.ok, r.ok ? ('saved ' + r.path) : (r.error || 'save failed'));
+    refresh();
+  }
+  async function testConn() {
+    $('r-test').innerHTML = '<span class="muted">testing…</span>';
+    const r = await window.pywebview.api.test_connection();
+    result('r-test', r.ok, r.ok
+      ? `connected as ${r.connected_as} to ${r.database} (DYNGRP: ${r.is_member_dyngrp ? 'yes' : 'no'})`
+      : (r.error || 'connection failed'));
+  }
+  async function doEnroll() {
+    $('r-enroll').innerHTML = '<span class="muted">enrolling…</span>';
+    const r = await window.pywebview.api.enroll(val('f-token'), gqlUrl());
+    result('r-enroll', r.ok, r.ok
+      ? `enrolled ${r.install_id} as ${r.hostname} (${r.company}); secret written ${r.how}. now start/restart the relay.`
+      : (r.error || 'enrollment failed'));
+    refresh();
+  }
+  async function doAutostart() {
+    const r = await window.pywebview.api.install_autostart();
+    result('r-run', r.ok, r.ok ? ('autostart installed: ' + r.command) : (r.error || 'failed'));
+    refresh();
+  }
+  async function startRelay() {
+    const r = await window.pywebview.api.start_relay();
+    result('r-run', r.ok, r.ok ? (r.already_running ? 'relay already running' : 'relay started') : (r.error || 'failed'));
+    setTimeout(refresh, 1500);
+  }
+  async function stopRelay() {
+    const r = await window.pywebview.api.stop_relay();
+    result('r-run', r.ok, r.ok ? 'relay stopped' : (r.error || 'failed'));
+    setTimeout(refresh, 1000);
+  }
+
   window.addEventListener('pywebviewready', () => { refresh(); setInterval(() => { if ($('auto').checked) refresh(); }, 3000); });
 </script></body></html>"""
 
