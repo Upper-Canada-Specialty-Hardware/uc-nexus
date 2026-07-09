@@ -809,3 +809,15 @@ export const RESOLVE_DEFICIENCY = gql`
     }
   }
 `;
+
+export const PROVISION_RELAY_INSTALL = gql`
+  mutation ProvisionRelayInstall($label: String!, $company: String!) {
+    provisionRelayInstall(label: $label, company: $company) {
+      installId
+      label
+      company
+      enrollmentToken
+      enrollmentTokenExpiresAt
+    }
+  }
+`;
