@@ -1173,12 +1173,22 @@ class Mutation:
     @strawberry.mutation
     def complete_opening(self, input: CompleteOpeningInput) -> OpeningItem:
         with SessionLocal() as session:
+            item_results = [
+                shop_assembly_repository.OpeningItemResult(
+                    shop_assembly_opening_item_id=uuid.UUID(str(r.shop_assembly_opening_item_id)),
+                    installed=r.installed,
+                    deficient_reason=r.deficient_reason,
+                )
+                for r in input.item_results
+            ]
             result = shop_assembly_repository.complete_opening(
                 session,
                 uuid.UUID(str(input.opening_id)),
                 input.aisle,
                 input.bay,
                 input.bin,
+                item_results=item_results,
+                completed_by=input.completed_by,
             )
             session.commit()
             session.refresh(result)
@@ -1525,7 +1535,6 @@ class Mutation:
             il, pri = stock_repository.report_deficiency_at_assembly(
                 session,
                 sa_opening_item_id=uuid.UUID(str(input.shop_assembly_opening_item_id)),
-                source_inventory_location_id=uuid.UUID(str(input.source_inventory_location_id)),
                 quantity=input.quantity,
                 reason_text=input.reason_text,
                 performed_by=input.performed_by or "Admin/Manager",

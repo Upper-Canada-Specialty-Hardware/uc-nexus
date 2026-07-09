@@ -10,6 +10,7 @@ import {
   TableCell,
   Button,
   Stack,
+  Checkbox,
 } from '@mui/material';
 import { useMutation } from '@apollo/client/react';
 import { COMPLETE_OPENING } from '../../graphql/mutations';
@@ -51,6 +52,12 @@ export default function AssemblyDetailModal({
   const [bay, setBay] = useState('');
   const [bin, setBin] = useState('');
   const [confirmOpen, setConfirmOpen] = useState(false);
+  // Per-item checklist. Missing key -> installed (default). Reasons keyed by item id.
+  const [installed, setInstalled] = useState<Record<string, boolean>>({});
+  const [reasons, setReasons] = useState<Record<string, string>>({});
+
+  const isInstalled = (id: string): boolean => installed[id] ?? true;
+  const reasonFor = (id: string): string => reasons[id] ?? '';
 
   const [completeOpening, { loading }] = useMutation(COMPLETE_OPENING, {
     onCompleted: () => {
@@ -70,8 +77,26 @@ export default function AssemblyDetailModal({
     return value.length >= 1 && value.length <= 20;
   };
 
+  // Every not-installed item must carry a deficiency reason before completion.
+  const deficientMissingReason = opening.items.some(
+    (item) => !isInstalled(item.id) && reasonFor(item.id).trim() === ''
+  );
+  const deficientCount = opening.items.filter(
+    (item) => !isInstalled(item.id)
+  ).length;
+
   const isValid =
-    validateField(aisle) && validateField(bay) && validateField(bin);
+    validateField(aisle) &&
+    validateField(bay) &&
+    validateField(bin) &&
+    !deficientMissingReason;
+
+  const toggleInstalled = (id: string, checked: boolean) => {
+    setInstalled((prev) => ({ ...prev, [id]: checked }));
+  };
+  const setReason = (id: string, value: string) => {
+    setReasons((prev) => ({ ...prev, [id]: value }));
+  };
 
   const handleMarkComplete = useCallback(() => {
     setConfirmOpen(true);
@@ -86,10 +111,18 @@ export default function AssemblyDetailModal({
           aisle: aisle || null,
           bay: bay || null,
           bin: bin || null,
+          itemResults: opening.items.map((item) => ({
+            shopAssemblyOpeningItemId: item.id,
+            installed: isInstalled(item.id),
+            deficientReason: isInstalled(item.id)
+              ? null
+              : reasonFor(item.id).trim(),
+          })),
         },
       },
     });
-  }, [completeOpening, opening.id, aisle, bay, bin]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [completeOpening, opening.id, opening.items, aisle, bay, bin, installed, reasons]);
   return (
     <>
       <Modal
@@ -123,27 +156,67 @@ export default function AssemblyDetailModal({
             )}
           </Stack>
 
-          <Typography variant='subtitle1' sx={{ mb: 1, fontWeight: 'bold' }}>
-            Shop Hardware Items (reference)
+          <Typography variant='subtitle1' sx={{ mb: 0.5, fontWeight: 'bold' }}>
+            Shop Hardware Checklist
+          </Typography>
+          <Typography
+            variant='caption'
+            color='text.secondary'
+            sx={{ mb: 1, display: 'block' }}
+          >
+            Uncheck any item not installed to flag it deficient - a reason is
+            required. Only installed items are recorded on the assembled opening.
           </Typography>
 
           {opening.items.length > 0 ? (
             <Table size='small' sx={{ mb: 3 }}>
               <TableHead>
                 <TableRow>
+                  <TableCell padding='checkbox'>Installed</TableCell>
                   <TableCell>Product Code</TableCell>
                   <TableCell>Hardware Category</TableCell>
                   <TableCell align='right'>Quantity</TableCell>
+                  <TableCell>Deficiency reason</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
-                {opening.items.map((item) => (
-                  <TableRow key={item.id}>
-                    <TableCell>{item.productCode}</TableCell>
-                    <TableCell>{item.hardwareCategory}</TableCell>
-                    <TableCell align='right'>{item.quantity}</TableCell>
-                  </TableRow>
-                ))}
+                {opening.items.map((item) => {
+                  const installedNow = isInstalled(item.id);
+                  return (
+                    <TableRow key={item.id}>
+                      <TableCell padding='checkbox'>
+                        <Checkbox
+                          checked={installedNow}
+                          onChange={(e) =>
+                            toggleInstalled(item.id, e.target.checked)
+                          }
+                          inputProps={{
+                            'aria-label': `Installed: ${item.productCode}`,
+                          }}
+                        />
+                      </TableCell>
+                      <TableCell>{item.productCode}</TableCell>
+                      <TableCell>{item.hardwareCategory}</TableCell>
+                      <TableCell align='right'>{item.quantity}</TableCell>
+                      <TableCell>
+                        <TextField
+                          size='small'
+                          fullWidth
+                          placeholder={
+                            installedNow ? '-' : 'Reason (required)'
+                          }
+                          value={reasonFor(item.id)}
+                          onChange={(e) => setReason(item.id, e.target.value)}
+                          disabled={installedNow}
+                          error={
+                            !installedNow && reasonFor(item.id).trim() === ''
+                          }
+                          inputProps={{ maxLength: 500 }}
+                        />
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
               </TableBody>
             </Table>
           ) : (
@@ -194,7 +267,11 @@ export default function AssemblyDetailModal({
       <ConfirmDialog
         open={confirmOpen}
         title='Complete Assembly'
-        message={`Mark opening ${opening.openingNumber || 'item'} as assembled? This action cannot be undone.`}
+        message={
+          deficientCount > 0
+            ? `Mark opening ${opening.openingNumber || 'item'} as assembled? ${deficientCount} item(s) will be flagged deficient and a replacement pull requested. This action cannot be undone.`
+            : `Mark opening ${opening.openingNumber || 'item'} as assembled? This action cannot be undone.`
+        }
         confirmLabel='Mark Complete'
         onConfirm={handleConfirm}
         onCancel={() => setConfirmOpen(false)}

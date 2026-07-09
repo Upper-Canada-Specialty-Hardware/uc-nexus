@@ -1,6 +1,7 @@
 """Repository for shop assembly data access."""
 
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy import select
@@ -23,6 +24,15 @@ from app.models.shop_assembly import (
     ShopAssemblyOpening,
 )
 from app.services.locking import lock_rows
+
+
+@dataclass
+class OpeningItemResult:
+    """One line of the completion-time deficiency checklist (#225)."""
+
+    shop_assembly_opening_item_id: uuid.UUID
+    installed: bool = True
+    deficient_reason: str | None = None
 
 
 def get_assemble_list(
@@ -128,8 +138,17 @@ def complete_opening(
     aisle: str | None,
     bay: str | None,
     bin: str | None,
+    item_results: list[OpeningItemResult] | None = None,
+    completed_by: str | None = None,
 ) -> OpeningItemModel:
-    """Mark an opening's assembly as complete. Creates OpeningItem + OpeningItemHardware records."""
+    """Mark an opening's assembly as complete. Creates OpeningItem + OpeningItemHardware records.
+
+    Completion-time deficiency checklist (#225): only items marked installed are snapshotted as
+    OpeningItemHardware. Items marked not-installed are flagged deficient - the unit is returned to
+    inventory flagged deficient and a PR-REPL replacement pull is appended (via
+    stock_repository.report_deficiency_at_assembly). An empty/omitted item_results treats every
+    item as installed, preserving pre-checklist behaviour.
+    """
     # 1. Load and validate ShopAssemblyOpening (with pessimistic lock)
     locked = lock_rows(session, ShopAssemblyOpening, [opening_id])
     if not locked:
@@ -169,8 +188,19 @@ def complete_opening(
     if pr is None:
         raise NotFoundError(f"Completed shop-assembly pull request for opening {opening_id} not found")
 
-    # 4. Filter PR items for this opening's opening_number (snapshot)
-    opening_pr_items = [item for item in pr.items if item.opening_number == sa_opening.opening_number]
+    # 4. Resolve the per-item installed/deficient checklist (#225). The checklist is keyed on
+    #    ShopAssemblyOpeningItem ids (what the assembler sees in the modal). Any item without a
+    #    result row defaults to installed, so an empty checklist preserves the old snapshot-all path.
+    item_by_id = {item.id: item for item in sa_opening.items}
+    deficient_reason_by_id: dict[uuid.UUID, str | None] = {}
+    for res in item_results or []:
+        if res.shop_assembly_opening_item_id not in item_by_id:
+            raise ValidationError(
+                f"Checklist item {res.shop_assembly_opening_item_id} does not belong to opening {opening_id}",
+                field="item_results",
+            )
+        if not res.installed:
+            deficient_reason_by_id[res.shop_assembly_opening_item_id] = res.deficient_reason
 
     # 5. Create OpeningItem (snapshot opening identity from the ShopAssemblyOpening row)
     now = datetime.utcnow()
@@ -195,14 +225,27 @@ def complete_opening(
     session.add(opening_item)
     session.flush()  # Get opening_item.id for OpeningItemHardware FK
 
-    # 6. Create OpeningItemHardware for each PR item
-    for pr_item in opening_pr_items:
+    # 6. Snapshot only INSTALLED items as OpeningItemHardware; flag the rest deficient.
+    from app.repositories import stock_repository
+
+    performed_by = completed_by or "Assembler"
+    for item in sa_opening.items:
+        if item.id in deficient_reason_by_id:
+            # Not installed -> return the unit to inventory flagged deficient + append PR-REPL pull.
+            stock_repository.report_deficiency_at_assembly(
+                session,
+                sa_opening_item_id=item.id,
+                quantity=item.quantity,
+                reason_text=deficient_reason_by_id[item.id],
+                performed_by=performed_by,
+            )
+            continue
         oih = OIHModel(
             id=uuid.uuid4(),
             opening_item_id=opening_item.id,
-            product_code=pr_item.product_code,
-            hardware_category=pr_item.hardware_category,
-            quantity=pr_item.requested_quantity,
+            product_code=item.product_code,
+            hardware_category=item.hardware_category,
+            quantity=item.quantity,
         )
         session.add(oih)
 
