@@ -52,4 +52,4 @@ def test_uninstall_reports_whether_it_existed(clean_test_key):
 
 def test_default_command_quotes_the_exe(monkeypatch):
     monkeypatch.setattr(autostart.sys, "executable", r"C:\Program Files\UC\ucnexus-relay.exe")
-    assert autostart.default_command() == '"C:\\Program Files\\UC\\ucnexus-relay.exe" serve'
+    assert autostart.default_command() == '"C:\\Program Files\\UC\\ucnexus-relay.exe" app --minimized'
