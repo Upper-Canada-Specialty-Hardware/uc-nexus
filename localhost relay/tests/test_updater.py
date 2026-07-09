@@ -26,23 +26,35 @@ def test_current_build_falls_back_to_dev():
     assert updater.current_build() == "dev"
 
 
-def test_latest_release_picks_newest_relay_asset(monkeypatch):
+def test_latest_release_picks_highest_build_not_list_order(monkeypatch):
+    # regression: GitHub's /releases list is NOT reliably newest-first - the real API returned
+    # build.9, build.8, build.7, build.10 in that order. Picking the first entry gives build.9 and
+    # would offer a DOWNGRADE to anyone on build.10. Pick by build number, not position.
     payload = [
         {"tag_name": "some-other-v1", "assets": []},
         {
             "tag_name": "relay-v0.1.0-build.9",
             "assets": [{"name": "ucnexus-relay.exe", "browser_download_url": "https://x/build9.exe"}],
-            "published_at": "t9",
         },
         {
             "tag_name": "relay-v0.1.0-build.8",
             "assets": [{"name": "ucnexus-relay.exe", "browser_download_url": "https://x/build8.exe"}],
         },
+        {
+            "tag_name": "relay-v0.1.0-build.10",  # newest, but appears AFTER the older ones in the list
+            "assets": [{"name": "ucnexus-relay.exe", "browser_download_url": "https://x/build10.exe"}],
+            "published_at": "t10",
+        },
     ]
     monkeypatch.setattr(updater.urllib.request, "urlopen", lambda *a, **k: _Resp(payload))
     r = updater.latest_release()
-    assert r["tag"] == "relay-v0.1.0-build.9"
-    assert r["url"].endswith("build9.exe")
+    assert r["tag"] == "relay-v0.1.0-build.10"
+    assert r["url"].endswith("build10.exe")
+
+
+def test_latest_release_returns_empty_when_no_relay_release(monkeypatch):
+    monkeypatch.setattr(updater.urllib.request, "urlopen", lambda *a, **k: _Resp([{"tag_name": "some-other-v1", "assets": []}]))
+    assert updater.latest_release() == {}
 
 
 def test_latest_release_skips_releases_without_the_exe_asset(monkeypatch):
@@ -65,6 +77,20 @@ def test_check_update_up_to_date(monkeypatch):
     monkeypatch.setattr(updater, "current_build", lambda: "relay-v0.1.0-build.9")
     monkeypatch.setattr(updater, "latest_release", lambda: {"tag": "relay-v0.1.0-build.9", "url": "u"})
     assert updater.check_update()["update_available"] is False
+
+
+def test_check_update_never_offers_a_downgrade(monkeypatch):
+    # installed build is NEWER than what discovery returns (e.g. GitHub API lag) -> must NOT offer to
+    # "update" to the older build.
+    monkeypatch.setattr(updater, "current_build", lambda: "relay-v0.1.0-build.10")
+    monkeypatch.setattr(updater, "latest_release", lambda: {"tag": "relay-v0.1.0-build.9", "url": "u"})
+    assert updater.check_update()["update_available"] is False
+
+
+def test_check_update_from_dev_offers_any_release(monkeypatch):
+    monkeypatch.setattr(updater, "current_build", lambda: "dev")
+    monkeypatch.setattr(updater, "latest_release", lambda: {"tag": "relay-v0.1.0-build.1", "url": "u"})
+    assert updater.check_update()["update_available"] is True
 
 
 def test_check_update_no_release(monkeypatch):
