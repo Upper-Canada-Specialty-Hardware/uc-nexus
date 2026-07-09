@@ -7,7 +7,7 @@ from sqlalchemy import select
 
 from app.auth import require_admin, require_user, resolve_display_name
 from app.database import SessionLocal
-from app.errors import InvalidStateTransitionError, NotFoundError
+from app.errors import InvalidStateTransitionError, InventoryShortfallError, NotFoundError
 from app.repositories import (
     notification_repository,
     po_repository,
@@ -21,7 +21,7 @@ from app.repositories import (
     warehouse_admin_repository,
     warehouse_repository,
 )
-from app.services import gp_idempotency, gp_po
+from app.services import gp_idempotency, gp_po, notification_service
 from app.services.relay_gateway import gateway as relay_gateway
 
 from .enums import ApproveOutcome, PODocumentType
@@ -79,6 +79,7 @@ from .types import (
     DeficiencyReview,
     FinalizeImportResult,
     InventoryLocation,
+    InventoryShortfall,
     LocationMergeResult,
     Notification,
     OpeningItem,
@@ -520,8 +521,24 @@ class Mutation:
         }
 
         with SessionLocal() as session:
-            result = import_repository.finalize_import_session(session, input_data)
-            session.commit()
+            try:
+                result = import_repository.finalize_import_session(session, input_data)
+                session.commit()
+            except InventoryShortfallError as e:
+                # Gate 1 (#224): the shop-assembly task was refused. Roll the whole finalize back so
+                # no PR (and no partial state) survives, then mint the PO backfill notification in a
+                # fresh session so it outlives the rollback. Re-raise so the shortfall reaches the
+                # creator inline.
+                session.rollback()
+                with SessionLocal() as notif_session:
+                    notification_service.notify_po_shortfall(
+                        notif_session,
+                        project_id=e.project_id,
+                        request_number=e.request_number,
+                        shortfalls=e.shortfalls,
+                    )
+                    notif_session.commit()
+                raise
 
             # Re-load project with openings
             project = (
@@ -881,7 +898,7 @@ class Mutation:
     @strawberry.mutation
     def approve_pull_request(self, id: strawberry.ID, approved_by: str) -> ApproveResult:
         with SessionLocal() as session:
-            pr, outcome, notification = warehouse_repository.approve_pull_request(
+            pr, outcome, notification, shortfalls = warehouse_repository.approve_pull_request(
                 session, uuid.UUID(str(id)), approved_by
             )
             session.commit()
@@ -896,8 +913,18 @@ class Mutation:
 
             return ApproveResult(
                 pull_request=_pull_request_to_type(pr),
-                outcome=ApproveOutcome.APPROVED if outcome == "APPROVED" else ApproveOutcome.CANCELLED,
+                outcome=ApproveOutcome.APPROVED if outcome == "APPROVED" else ApproveOutcome.INSUFFICIENT,
                 notification=_notification_to_type(notification) if notification else None,
+                shortfalls=[
+                    InventoryShortfall(
+                        hardware_category=s.hardware_category,
+                        product_code=s.product_code,
+                        requested=s.requested,
+                        available=s.available,
+                        short=s.short,
+                    )
+                    for s in shortfalls
+                ],
             )
 
     @strawberry.mutation

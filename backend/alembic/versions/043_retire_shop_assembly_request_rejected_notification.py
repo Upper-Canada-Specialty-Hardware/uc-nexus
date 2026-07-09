@@ -17,22 +17,14 @@ down_revision = "042"
 branch_labels = None
 depends_on = None
 
-_WITHOUT = (
-    "'PULL_REQUEST_CANCELLED', 'PULL_REQUEST_COMPLETED', 'SHIPMENT_COMPLETED'"
-)
-_WITH = (
-    "'PULL_REQUEST_CANCELLED', 'PULL_REQUEST_COMPLETED', "
-    "'SHOP_ASSEMBLY_REQUEST_REJECTED', 'SHIPMENT_COMPLETED'"
-)
+_WITHOUT = "'PULL_REQUEST_CANCELLED', 'PULL_REQUEST_COMPLETED', 'SHIPMENT_COMPLETED'"
+_WITH = "'PULL_REQUEST_CANCELLED', 'PULL_REQUEST_COMPLETED', 'SHOP_ASSEMBLY_REQUEST_REJECTED', 'SHIPMENT_COMPLETED'"
 
 
 def _recreate(values: str) -> None:
     op.execute("ALTER TYPE notification_type RENAME TO notification_type_old")
     op.execute(f"CREATE TYPE notification_type AS ENUM ({values})")
-    op.execute(
-        "ALTER TABLE notifications ALTER COLUMN type TYPE notification_type "
-        "USING type::text::notification_type"
-    )
+    op.execute("ALTER TABLE notifications ALTER COLUMN type TYPE notification_type USING type::text::notification_type")
     op.execute("DROP TYPE notification_type_old")
 
 

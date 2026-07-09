@@ -223,6 +223,9 @@ export const APPROVE_PULL_REQUEST = gql`
       notification {
         id projectId recipientRole type message isRead createdAt
       }
+      shortfalls {
+        hardwareCategory productCode requested available short
+      }
     }
   }
 `;

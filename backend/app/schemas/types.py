@@ -562,10 +562,25 @@ class OpeningItemDetail:
 
 
 @strawberry.type
+class InventoryShortfall:
+    """One shorted (hardware_category, product_code) combo surfaced by an inventory-sufficiency
+    gate (#224): requested vs available (quantity - deficient_quantity), and the gap."""
+
+    hardware_category: str
+    product_code: str
+    requested: int
+    available: int
+    short: int
+
+
+@strawberry.type
 class ApproveResult:
     pull_request: PullRequest
     outcome: ApproveOutcome
     notification: Notification | None
+    # Populated when outcome is INSUFFICIENT: the exact per-combo shortfall shown inline to the
+    # approver. Empty on APPROVED.
+    shortfalls: list[InventoryShortfall] = strawberry.field(default_factory=list)
 
 
 @strawberry.type

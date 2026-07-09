@@ -8,7 +8,7 @@ from math import floor
 from sqlalchemy import delete, func, select, tuple_
 from sqlalchemy.orm import Session, selectinload
 
-from app.errors import ConflictError, NotFoundError
+from app.errors import ConflictError, InventoryShortfallError, NotFoundError
 from app.models.enums import (
     AssemblyStatus,
     Classification,
@@ -684,6 +684,27 @@ def finalize_import_session(
             raise ConflictError(
                 f"Pull request {sar_request_number} already exists",
                 field="shop_assembly_request_number",
+            )
+
+        # Gate 1 (#224): hard inventory-sufficiency check before minting the PR. No partial pulls -
+        # if any opening item can't be fully covered from available inventory, refuse creation. The
+        # resolver rolls the whole finalize back (no PR, no partial state) and notifies the PO.
+        from app.repositories import warehouse_repository
+        from app.services import notification_service
+
+        needs = [
+            (item["hardware_category"], item["product_code"], item["quantity"])
+            for sa_opening_input in sar_openings_input
+            for item in sa_opening_input.get("items", [])
+        ]
+        sufficiency = warehouse_repository.check_inventory_sufficiency(session, project.id, needs)
+        if not sufficiency.sufficient:
+            raise InventoryShortfallError(
+                "Cannot start shop-assembly task - insufficient inventory. "
+                + notification_service.format_shortfall_lines(sufficiency.shortfalls),
+                shortfalls=sufficiency.shortfalls,
+                project_id=project.id,
+                request_number=sar_request_number,
             )
 
         sa_pr = PullRequestModel(

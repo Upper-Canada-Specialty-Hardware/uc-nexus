@@ -14,6 +14,7 @@ from app.models.enums import (
     PullStatus,
 )
 from app.models.hardware import HardwareItem
+from app.models.inventory import InventoryLocation
 from app.models.opening_item import OpeningItem
 from app.models.project import Opening, Project
 from app.models.pull_request import PullRequest, PullRequestItem
@@ -21,8 +22,42 @@ from app.models.purchase_order import PurchaseOrder
 from app.models.shop_assembly import (
     ShopAssemblyOpening,
 )
+from app.models.stock_item import StockItem
 from app.models.vendor import Vendor
 from app.repositories import import_repository, shop_assembly_repository, warehouse_admin_repository
+
+
+def _seed_inventory(session, project_id, *, hardware_category="HINGE", product_code="HG-100", quantity=10):
+    """Put available inventory in the project so the #224 gate-1 sufficiency check passes."""
+    warehouse_id = warehouse_admin_repository.get_primary_warehouse_id(session)
+    si = StockItem(
+        id=uuid.uuid4(),
+        warehouse_id=warehouse_id,
+        hardware_category=hardware_category,
+        product_code=product_code,
+        quantity=quantity,
+        deficient_quantity=0,
+        received_at=datetime.utcnow(),
+    )
+    session.add(si)
+    session.flush()
+    il = InventoryLocation(
+        id=uuid.uuid4(),
+        project_id=project_id,
+        stock_item_id=si.id,
+        warehouse_id=warehouse_id,
+        hardware_category=hardware_category,
+        product_code=product_code,
+        quantity=quantity,
+        deficient_quantity=0,
+        aisle="A",
+        bay="1",
+        bin="1",
+        received_at=datetime.utcnow(),
+    )
+    session.add(il)
+    session.flush()
+    return il
 
 
 def _make_project(session, project_id: str = "PROJ-001") -> Project:
@@ -324,6 +359,7 @@ def test_shop_assembly_pr_created_directly(db_session):
     """finalize mints the shop-assembly PR directly (#222): no SAR row, a PENDING SHOP_ASSEMBLY PR,
     LOOSE PR items per opening item, and openings that hang off the PR with snapshot identity."""
     project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, product_code="HG-100", quantity=2)  # #224 gate 1
     db_session.commit()
 
     pr_number = f"SA-{uuid.uuid4().hex[:6]}"
@@ -379,6 +415,7 @@ def test_shop_assembly_pr_created_directly(db_session):
 def test_sar_queries_work_after_opening_deleted(db_session):
     """get_assemble_list / get_my_work must work even when the source Opening row was deleted."""
     project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, product_code="HG-100", quantity=1)  # #224 gate 1
     db_session.commit()
 
     pr_number = f"SA-{uuid.uuid4().hex[:6]}"
