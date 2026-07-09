@@ -119,7 +119,8 @@ def test_gather_status_shape(tmp_path, monkeypatch):
     monkeypatch.setattr(ui, "relay_health", lambda host="127.0.0.1", port=7321: {"running": True, "version": "0.1.0"})
     monkeypatch.setattr(ui.autostart, "autostart_status", lambda: {"installed": True, "command": "x"})
     s = ui.gather_status(p)
-    assert set(s) == {"ui_version", "build", "config", "relay", "channel", "autostart"}
+    assert set(s) == {"ui_version", "build", "known_companies", "config", "relay", "channel", "autostart"}
+    assert s["known_companies"]  # dev-determined company options for the Setup dropdowns
     assert s["channel"]["state"] == "connected"
     assert s["relay"]["running"] is True
     assert s["config"]["default_company"] == "TUBC"
@@ -131,3 +132,17 @@ def test_api_delegates(monkeypatch):
     api = ui.Api()
     assert api.get_status() == {"ok": 1}
     assert api.get_logs(50) == [{"n": 50}]
+
+
+def test_config_summary_shows_baked_infra_when_file_omits_it(tmp_path):
+    # config.toml now carries only [auth] + [gp]; SQL server + backend must come from the baked defaults.
+    p = _cfg(tmp_path, '[auth]\nshared_secret = "x"\n[gp]\ndefault_company = "TUBC"\n')
+    s = ui.config_summary(p)
+    assert s["sql_server"]
+    assert s["backend_url"].startswith("wss://")
+
+
+def test_enroll_url_derived_from_baked_backend():
+    url = ui._enroll_url_from_channel()
+    assert url.startswith("https://")
+    assert url.endswith("/graphql")
