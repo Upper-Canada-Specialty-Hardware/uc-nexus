@@ -248,6 +248,37 @@ class Api:
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "error": str(e)}
 
+    def restart_relay(self) -> dict:
+        """Restart the relay so it re-reads config (e.g. after enrolling). In the tray app this restarts
+        the supervised serve child; standalone it stop+starts serve directly."""
+        from . import app, setup
+
+        running = app.current()
+        if running is not None:
+            running.restart_serve()
+            return {"ok": True}
+        setup.stop_serve(DEFAULT_CONFIG_PATH.parent)
+        if _frozen():
+            setup.start_serve(sys.executable, DEFAULT_CONFIG_PATH.parent)
+        return {"ok": True}
+
+    def shutdown_app(self) -> dict:
+        """Stop the relay and quit the desktop app (the Status/tray 'Shut down'). The JS confirms first."""
+        from . import app
+
+        running = app.current()
+        if running is None:
+            return {"ok": False, "error": "not running as the desktop app"}
+        running.shutdown()
+        return {"ok": True}
+
+    def uninstall_autostart(self) -> dict:
+        try:
+            existed = autostart.uninstall_autostart()
+            return {"ok": True, "existed": existed}
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": str(e)}
+
     # --- updater ---------------------------------------------------------------------------------------
 
     def check_update(self) -> dict:
@@ -320,6 +351,14 @@ _HTML = """<!doctype html><html><head><meta charset="utf-8"><title>UC Nexus Rela
   <main>
     <section id="view-status">
       <div class="card"><h2>Status</h2><div id="status" class="grid"></div></div>
+      <div class="card">
+        <h2>Controls</h2>
+        <label class="muted"><input type="checkbox" id="c-autostart" onchange="toggleAutostart()"> start at logon</label>
+        <div class="actions" style="margin-top:8px">
+          <button onclick="restartRelay()">Restart relay</button>
+          <button onclick="shutDown()">Shut down</button></div>
+        <div id="r-ctl" class="result"></div>
+      </div>
       <div class="card">
         <div class="bar"><h2 style="margin:0">Event log</h2><span style="flex:1"></span>
           <label class="muted"><input type="checkbox" id="auto" checked> auto-refresh</label>
@@ -402,6 +441,7 @@ _HTML = """<!doctype html><html><head><meta charset="utf-8"><title>UC Nexus Rela
       row('SQL server', c.sql_server || '-') +
       row('Backend URL', c.backend_url || '-') +
       row('Autostart', a.installed===null ? '-' : pill(!!a.installed, a.installed?'installed':'not installed'));
+    if ($('c-autostart')) $('c-autostart').checked = !!a.installed;
     const logs = await window.pywebview.api.get_logs(200);
     $('logs').innerHTML = logs.slice().reverse().map(l =>
       `<tr><td class="muted">${esc(l.time)}</td><td class="lvl ${l.level||''}">${esc(l.level)}</td>`+
@@ -482,14 +522,22 @@ _HTML = """<!doctype html><html><head><meta charset="utf-8"><title>UC Nexus Rela
     setTimeout(refresh, 2000);
   }
 
+  async function toggleAutostart() {
+    const on = $('c-autostart').checked;
+    const r = on ? await window.pywebview.api.install_autostart() : await window.pywebview.api.uninstall_autostart();
+    result('r-ctl', r.ok, r.ok ? ('start at logon ' + (on ? 'on' : 'off')) : (r.error || 'failed'));
+    refresh();
+  }
+  async function restartRelay() {
+    $('r-ctl').innerHTML = '<span class="muted">restarting the relay…</span>';
+    const r = await window.pywebview.api.restart_relay();
+    result('r-ctl', r.ok, r.ok ? 'relay restarting' : (r.error || 'failed'));
+    setTimeout(refresh, 3000);
+  }
+  async function shutDown() {
+    if (!confirm('Shut down the relay? Cloud GP operations will stop until it is started again.')) return;
+    await window.pywebview.api.shutdown_app();
+  }
+
   window.addEventListener('pywebviewready', () => { refresh(); setInterval(() => { if ($('auto').checked) refresh(); }, 3000); });
 </script></body></html>"""
-
-
-def run_ui() -> int:
-    """Open the native window. Blocks until the window is closed (webview.start runs the GUI loop)."""
-    import webview  # lazy: only the `ui` subcommand needs the GUI backend
-
-    webview.create_window("UC Nexus Relay", html=_HTML, js_api=Api(), width=760, height=680, min_size=(560, 480))
-    webview.start()
-    return 0

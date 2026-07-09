@@ -20,6 +20,8 @@ websockets = "^13.0"
 # transitive dep down to the source-only 2.5.2 (which fails to build).
 pywebview = {version = "^6.2", python = "<3.14", markers = "sys_platform == 'win32'"}
 pythonnet = {version = ">=3.0,<4", python = "<3.14", markers = "sys_platform == 'win32'"}
+pystray = "^0.19"
+pillow = "^11.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3"

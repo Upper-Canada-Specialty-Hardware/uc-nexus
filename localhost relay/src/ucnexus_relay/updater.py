@@ -62,44 +62,73 @@ def check_update() -> dict:
     }
 
 
+def _unlink_quietly(p: Path) -> None:
+    try:
+        p.unlink()
+    except OSError:
+        pass
+
+
+def _free_old_path(install_dir: Path) -> Path:
+    """A '.old' path to rename the running exe aside to that isn't currently locked. A prior update's
+    '.old' may still be held by an app/ui window that hasn't closed; picking a free variant instead of
+    reusing a locked one is what keeps a second update from failing the swap."""
+    base = install_dir / (_ASSET_NAME + ".old")
+    for candidate in [base, *(install_dir / f"{_ASSET_NAME}.old.{i}" for i in range(1, 20))]:
+        _unlink_quietly(candidate)  # clear a stale one if we can
+        if not candidate.exists():
+            return candidate
+    return install_dir / (_ASSET_NAME + ".old.x")  # last resort
+
+
+def _cleanup_old(install_dir: Path) -> None:
+    for p in install_dir.glob(_ASSET_NAME + ".old*"):
+        _unlink_quietly(p)
+
+
 def apply_update(url: str, install_dir: str | Path) -> dict:
-    """Download `url` and swap it in for the installed exe, then restart serve (rename-while-running; see
-    the module docstring)."""
+    """Download `url` and swap it in for the installed exe, then restart serve. The relay is ALWAYS
+    restarted on the way out, so a failed swap leaves it running on the CURRENT version rather than down
+    (rename-while-running; see the module docstring)."""
     from . import setup
 
     install_dir = Path(install_dir)
     exe = install_dir / _ASSET_NAME
     new = install_dir / (_ASSET_NAME + ".new")
-    old = install_dir / (_ASSET_NAME + ".old")
 
     try:
         urllib.request.urlretrieve(url, str(new))  # noqa: S310 (release asset URL from latest_release)
     except OSError as e:
         return {"ok": False, "error": f"download failed: {e}"}
     if new.stat().st_size < _MIN_EXE_BYTES:
-        try:
-            new.unlink()
-        except OSError:
-            pass
+        _unlink_quietly(new)
         return {"ok": False, "error": "the downloaded file is too small - aborting the swap"}
 
-    # Stop serve so its lock on the exe is released. The ui process (this one) still holds the exe image,
-    # which is why we rename rather than overwrite below.
+    # Stop serve (releases its exe lock), swap, then ALWAYS restart serve in the finally so GP comes back
+    # up even if the swap fails. The app/ui process still holds the exe image, hence rename-not-overwrite.
     setup.stop_serve(install_dir)
-
-    try:
-        if old.exists():
-            old.unlink()  # a stale .old from a prior update whose ui window has since closed
-    except OSError:
-        pass  # still locked by a running ui; os.replace below will surface a clear error if it conflicts
+    old = _free_old_path(install_dir)
+    swapped = False
+    error = None
     try:
         os.replace(exe, old)  # rename the running exe aside (Windows permits renaming a running image)
         os.replace(new, exe)  # move the new exe into place
+        swapped = True
     except OSError as e:
-        return {
-            "ok": False,
-            "error": f"swap failed ({e}); a previous update's file may still be in use - reboot and retry",
-        }
+        error = str(e)
+        if not exe.exists() and old.exists():  # renamed aside but couldn't drop the new one -> roll back
+            try:
+                os.replace(old, exe)
+            except OSError:
+                pass
+    finally:
+        setup.start_serve(exe, install_dir)
 
-    r = setup.start_serve(exe, install_dir)
-    return {"ok": True, "restarted": bool(r.get("ok")), "note": "reopen this window to load the updated UI"}
+    if swapped:
+        _cleanup_old(install_dir)
+        return {"ok": True, "restarted": True, "note": "reopen the window to load the updated UI"}
+    _unlink_quietly(new)
+    return {
+        "ok": False,
+        "error": f"swap failed ({error}); the relay was restarted on the current version - reboot and retry",
+    }

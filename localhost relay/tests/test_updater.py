@@ -93,10 +93,29 @@ def test_apply_update_swaps_and_restarts(tmp_path, monkeypatch):
     r = updater.apply_update("https://x/e.exe", tmp_path)
     assert r["ok"] is True
     assert exe.read_bytes()[:1] == b"N"  # exe now holds the new bytes
-    assert (tmp_path / "ucnexus-relay.exe.old").read_bytes() == b"OLD-EXE"  # old renamed aside
+    assert not (tmp_path / "ucnexus-relay.exe.old").exists()  # cleaned up after a successful swap
     assert not (tmp_path / "ucnexus-relay.exe.new").exists()  # moved into place
     assert started["exe"] == exe  # serve restarted from the new exe
     assert stopped["d"] == tmp_path
+
+
+def test_apply_update_restarts_serve_even_when_the_swap_fails(tmp_path, monkeypatch):
+    # regression: a failed swap must NOT leave the relay stopped (it took GP down once).
+    exe = tmp_path / "ucnexus-relay.exe"
+    exe.write_bytes(b"OLD")
+    monkeypatch.setattr(updater.urllib.request, "urlretrieve", lambda url, dest: Path(dest).write_bytes(b"N" * 6_000_000))
+    started = []
+    monkeypatch.setattr(setup, "stop_serve", lambda d: {"ok": True})
+    monkeypatch.setattr(setup, "start_serve", lambda e, d: started.append(e) or {"ok": True})
+
+    def _raise(a, b):
+        raise OSError("locked")
+
+    monkeypatch.setattr(updater.os, "replace", _raise)
+    r = updater.apply_update("u", tmp_path)
+    assert r["ok"] is False
+    assert "swap failed" in r["error"]
+    assert started == [exe]  # serve was restarted on the current version despite the failure
 
 
 def test_apply_update_rejects_a_tiny_download(tmp_path, monkeypatch):
