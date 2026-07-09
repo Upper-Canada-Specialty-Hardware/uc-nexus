@@ -13,7 +13,36 @@ Subcommands:
 The packaged exe bundles all of these so a workstation needs only the .exe + config.toml (no Poetry).
 """
 
+import os
 import sys
+
+
+def _reattach_console() -> None:
+    """The exe is built windowed (console=False) so the tray app and the detached `serve` child never pop
+    a console window. The cost of a windowed build is that a CLI subcommand run from a terminal would be
+    silent, and PyInstaller leaves sys.stdout/stderr as None there, so a plain print() would crash. On
+    Windows, attach to the launching terminal's console if there is one - there ISN'T for the tray app
+    (launched from a shortcut) or the detached serve child, so those stay windowless - and guarantee
+    stdout/stderr are always writable."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            attach_parent = ctypes.c_uint(-1).value  # ATTACH_PARENT_PROCESS (DWORD (DWORD)-1)
+            if ctypes.windll.kernel32.AttachConsole(attach_parent):
+                sys.stdout = open("CONOUT$", "w", encoding="utf-8", buffering=1)  # noqa: SIM115
+                sys.stderr = open("CONOUT$", "w", encoding="utf-8", buffering=1)  # noqa: SIM115
+                try:
+                    sys.stdin = open("CONIN$", encoding="utf-8")  # noqa: SIM115
+                except OSError:
+                    pass
+        except OSError:
+            pass
+    # a windowed PyInstaller build can leave these None; keep print()/logging from crashing if no console
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115
 
 
 def _serve(argv: list[str]) -> int:
@@ -129,6 +158,7 @@ def _autostart_status(argv: list[str]) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _reattach_console()  # windowed build: attach to the launching terminal (if any) so CLI output shows
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and not argv[0].startswith("-"):
         cmd, rest = argv[0], argv[1:]

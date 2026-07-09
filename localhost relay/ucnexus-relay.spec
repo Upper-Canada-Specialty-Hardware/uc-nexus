@@ -53,7 +53,11 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    console=True,
+    # Windowed (GUI) subsystem: a console-subsystem exe pops a console window every time the tray app is
+    # launched (titled with the exe path), which stays for the app's whole life. Building windowed means
+    # neither the tray app nor the detached `serve` child ever shows a console. cli.py reattaches to the
+    # launching terminal's console (AttachConsole) so CLI subcommands still print when run by hand.
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
