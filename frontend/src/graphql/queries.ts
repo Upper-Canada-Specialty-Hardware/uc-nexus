@@ -608,6 +608,21 @@ export const GET_RELAY_STATUS = gql`
   }
 `;
 
+export const RELAY_INSTALLS = gql`
+  query RelayInstalls {
+    relayInstalls {
+      id
+      label
+      company
+      hostname
+      enrolled
+      enrolledAt
+      lastSeenAt
+      createdAt
+    }
+  }
+`;
+
 export const GET_GP_JOBS = gql`
   query GetGpJobs($company: String!) {
     gpJobs(company: $company) {
