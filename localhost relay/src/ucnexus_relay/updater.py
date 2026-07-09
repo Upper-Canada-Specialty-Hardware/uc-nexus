@@ -12,6 +12,7 @@ compares unequal to any release tag (always "behind")."""
 
 import json
 import os
+import re
 import subprocess
 import urllib.request
 from pathlib import Path
@@ -31,19 +32,34 @@ def current_build() -> str:
         return "dev"
 
 
+def build_number(tag: str) -> int:
+    """The trailing build number of a `relay-v<ver>-build.<N>` tag (-1 if none, e.g. 'dev' or a plain
+    relay-v tag). Used to pick the newest release and to gate updates by version, not list order."""
+    m = re.search(r"build\.(\d+)$", tag or "")
+    return int(m.group(1)) if m else -1
+
+
 def latest_release() -> dict:
-    """The newest relay-v* release that carries the exe asset, from the public releases API. {} if none."""
+    """The relay-v* release with the HIGHEST build number that carries the exe asset. GitHub's /releases
+    list is not reliably newest-first (a newer build can appear mid-list), so pick by build number rather
+    than trusting list order. {} if none."""
     req = urllib.request.Request(_RELEASES_API, headers={"Accept": "application/vnd.github+json"})
     with urllib.request.urlopen(req, timeout=15) as r:  # noqa: S310 (fixed public GitHub API URL)
         releases = json.loads(r.read().decode())
-    for rel in releases:  # the API returns releases newest-first
+    best: dict = {}
+    best_n = -2
+    for rel in releases:
         tag = rel.get("tag_name", "")
         if not tag.startswith("relay-v"):
             continue
         asset = next((a for a in rel.get("assets", []) if a.get("name") == _ASSET_NAME), None)
-        if asset and asset.get("browser_download_url"):
-            return {"tag": tag, "url": asset["browser_download_url"], "published_at": rel.get("published_at")}
-    return {}
+        if not (asset and asset.get("browser_download_url")):
+            continue
+        n = build_number(tag)
+        if n > best_n:
+            best_n = n
+            best = {"tag": tag, "url": asset["browser_download_url"], "published_at": rel.get("published_at")}
+    return best
 
 
 def check_update() -> dict:
@@ -54,11 +70,14 @@ def check_update() -> dict:
         return {"ok": False, "error": f"could not reach GitHub releases: {e}"}
     if not latest:
         return {"ok": False, "error": "no relay release with an exe asset was found"}
+    # Only offer an update when the release is a HIGHER build than the installed one - never a downgrade.
+    # 'dev' has build number -1, so any real release is an update from a dev checkout.
+    update_available = build_number(latest["tag"]) > build_number(cur)
     return {
         "ok": True,
         "current": cur,
         "latest": latest["tag"],
-        "update_available": latest["tag"] != cur,
+        "update_available": update_available,
         "url": latest["url"],
     }
 
