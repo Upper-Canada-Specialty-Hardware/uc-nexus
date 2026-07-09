@@ -28,10 +28,11 @@ def _require_winreg() -> None:
 
 
 def default_command() -> str:
-    """The command the Run entry launches at logon: the packaged exe with `serve`, quoted so a path with
-    spaces survives. In a dev checkout sys.executable is python, so this is only meaningful for the frozen
-    exe - the installer and the UI always run the packaged exe."""
-    return f'"{sys.executable}" serve'
+    """The command the Run entry launches at logon: the packaged exe as the desktop app, started minimized
+    to the tray (the app supervises the relay). Quoted so a path with spaces survives. In a dev checkout
+    sys.executable is python, so this is only meaningful for the frozen exe - the installer and the UI
+    always run the packaged exe."""
+    return f'"{sys.executable}" app --minimized'
 
 
 def install_autostart(command: str | None = None, subkey: str = RUN_SUBKEY) -> str:
