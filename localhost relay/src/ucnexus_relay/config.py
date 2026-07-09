@@ -21,6 +21,10 @@ def _default_config_path() -> Path:
 
 DEFAULT_CONFIG_PATH = _default_config_path()
 
+# The determined GP companies an operator may pick from in the Setup tab. Dev-determined - edit here to
+# change what's offered; allowed_companies + default_company in the wizard are chosen from this list.
+KNOWN_COMPANIES = ["TUBC", "TUCSH", "UBC", "UCSH"]
+
 
 class ServerCfg(BaseModel):
     host: str = "127.0.0.1"
@@ -32,11 +36,19 @@ class AuthCfg(BaseModel):
 
 
 class CorsCfg(BaseModel):
-    allowed_origins: list[str] = []
+    # Baked: the Nexus frontend origins (dev-determined infra, not a per-workstation setting).
+    allowed_origins: list[str] = [
+        "https://frontend-production-34fc.up.railway.app",
+        "https://ucnexus-frontend-production.up.railway.app",
+        "http://localhost:5173",
+        "http://localhost:8000",
+    ]
 
 
 class SqlCfg(BaseModel):
-    server: str
+    # Baked dev defaults: SQL server + driver are dev-determined infra, not per-workstation settings, so a
+    # workstation's config.toml no longer needs [sql]. Change here (dev) only if the infra actually moves.
+    server: str = "10.0.0.246,1435"
     driver: str = "ODBC Driver 17 for SQL Server"
     trusted_connection: bool = True
     encrypt: str = "yes"
@@ -60,7 +72,8 @@ class GpCfg(BaseModel):
     allowed_companies: list[str] = ["TUBC"]
     # company -> paired custom warehouse DB that holds WHRECLINE101 (the table the company dashboards
     # read). A company with no entry gets GP-only receipts (no WHRECLINE101 write). Sandboxes have none.
-    custom_db: dict[str, str] = {}
+    # Baked dev default: the prod pairings (applied only when that company is also allowed).
+    custom_db: dict[str, str] = {"UBC": "PMUBC", "UCSH": "PMUCSH"}
     buyers: BuyersCfg = BuyersCfg()
 
 
@@ -70,9 +83,9 @@ class LoggingCfg(BaseModel):
 
 
 class ChannelCfg(BaseModel):
-    # Outbound wss URL to the UC Nexus backend's relay gateway, e.g. "wss://backend.example/relay-link".
-    # Empty disables the channel (the relay just runs its existing inbound HTTP server).
-    backend_url: str = ""
+    # Outbound wss URL to the UC Nexus backend's relay gateway. Baked dev default (dev-determined infra);
+    # a blank value would disable the channel (relay runs only its inbound HTTP server).
+    backend_url: str = "wss://backend-production-7866.up.railway.app/relay-link"
     # the `websockets` client's own ping_interval/ping_timeout default to 20s/20s, which already
     # satisfies the ~20s keepalive the channel needs to hold a corporate-proxy idle timeout open -
     # these just make that tunable without a code change.
@@ -86,7 +99,7 @@ class Settings(BaseModel):
     server: ServerCfg = ServerCfg()
     auth: AuthCfg
     cors: CorsCfg = CorsCfg()
-    sql: SqlCfg
+    sql: SqlCfg = SqlCfg()
     gp: GpCfg = GpCfg()
     logging: LoggingCfg = LoggingCfg()
     channel: ChannelCfg = ChannelCfg()

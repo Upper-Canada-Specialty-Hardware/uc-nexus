@@ -14,13 +14,14 @@ lazily inside run_ui() for the same reason (and so a headless test host never ne
 """
 
 import json
+import re
 import sys
 import tomllib
 import urllib.request
 from pathlib import Path
 
 from . import autostart, updater
-from .config import DEFAULT_CONFIG_PATH
+from .config import ChannelCfg, DEFAULT_CONFIG_PATH, KNOWN_COMPANIES, SqlCfg
 
 VERSION = "0.1.0"
 
@@ -46,8 +47,10 @@ def config_summary(config_path: str | Path | None = None) -> dict:
         return {"present": True, "path": str(p), "parse_error": str(e)}
 
     gp = data.get("gp") or {}
-    sql = data.get("sql") or {}
-    channel = data.get("channel") or {}
+    # infra (SQL, channel) is baked into config.py, not written to config.toml - overlay the baked
+    # defaults so the read-only display shows the EFFECTIVE values; a file override (dev) still wins.
+    sql = {**SqlCfg().model_dump(), **(data.get("sql") or {})}
+    channel = {"backend_url": ChannelCfg().backend_url, **(data.get("channel") or {})}
     server = data.get("server") or {}
     auth = data.get("auth") or {}
     secret = auth.get("shared_secret") or ""
@@ -142,6 +145,7 @@ def gather_status(config_path: str | Path | None = None) -> dict:
     return {
         "ui_version": VERSION,
         "build": updater.current_build(),
+        "known_companies": KNOWN_COMPANIES,  # dev-determined options for the Setup company dropdowns
         "config": cfg,
         "relay": health,
         "channel": channel_state(config_path),
@@ -151,6 +155,17 @@ def gather_status(config_path: str | Path | None = None) -> dict:
 
 def _frozen() -> bool:
     return getattr(sys, "frozen", False)
+
+
+def _enroll_url_from_channel() -> str:
+    """The enroll GraphQL URL derived from the baked channel.backend_url so the operator supplies only the
+    token: wss://host/relay-link -> https://host/graphql (ws:// -> http://). '' if none is configured."""
+    backend = config_summary().get("backend_url") or ChannelCfg().backend_url
+    m = re.match(r"(wss?)://([^/]+)", backend or "")
+    if not m:
+        return ""
+    scheme = "https" if m.group(1) == "wss" else "http"
+    return f"{scheme}://{m.group(2)}/graphql"
 
 
 class Api:
@@ -185,14 +200,19 @@ class Api:
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "error": str(e)}
 
-    def enroll(self, token: str, backend_url: str) -> dict:
-        """Register this install with UC Nexus using a one-time token, writing the DPAPI-encrypted secret."""
+    def enroll(self, token: str) -> dict:
+        """Register this install with UC Nexus using a one-time token, writing the DPAPI-encrypted secret.
+        The backend URL is derived from the baked channel.backend_url (dev-determined), so the operator
+        only supplies the token."""
         from .enroll import EnrollError, enroll_relay
 
-        if not (token or "").strip() or not (backend_url or "").strip():
-            return {"ok": False, "error": "both an enrollment token and the backend URL are required"}
+        if not (token or "").strip():
+            return {"ok": False, "error": "an enrollment token is required"}
+        backend_url = _enroll_url_from_channel()
+        if not backend_url:
+            return {"ok": False, "error": "no backend URL is configured in the relay build"}
         try:
-            return enroll_relay(token=token.strip(), backend_url=backend_url.strip(), config_path=str(DEFAULT_CONFIG_PATH))
+            return enroll_relay(token=token.strip(), backend_url=backend_url, config_path=str(DEFAULT_CONFIG_PATH))
         except EnrollError as e:
             return {"ok": False, "error": e.message, "detail": e.detail}
         except Exception as e:  # noqa: BLE001
@@ -278,7 +298,12 @@ _HTML = """<!doctype html><html><head><meta charset="utf-8"><title>UC Nexus Rela
   .form { display:grid; gap:10px; margin:6px 0 10px; }
   .form label { display:flex; flex-direction:column; gap:4px; font-size:11.5px; color:#8b93a7; }
   .form input { background:#0f131b; border:1px solid #2c364b; border-radius:6px; color:#e6e8ee; padding:7px 9px; font-size:13px; }
-  .form input:focus { outline:none; border-color:#3a4a6b; }
+  .form input:focus, .form select:focus { outline:none; border-color:#3a4a6b; }
+  .form select { background:#0f131b; border:1px solid #2c364b; border-radius:6px; color:#e6e8ee; padding:7px 9px; font-size:13px; }
+  .fld { display:flex; flex-direction:column; gap:4px; }
+  .fld .lbl { font-size:11.5px; color:#8b93a7; }
+  .checks { display:flex; flex-wrap:wrap; gap:12px; padding:2px 0; }
+  .checks label { display:flex; flex-direction:row; align-items:center; gap:5px; font-size:12.5px; color:#cdd3e1; }
   .step { display:flex; align-items:center; gap:8px; font-weight:600; font-size:13px; margin:16px 0 6px; }
   .stepn { display:inline-flex; width:20px; height:20px; align-items:center; justify-content:center; border-radius:50%; background:#20283a; color:#7fb2ff; font-size:12px; }
   .actions { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:4px; }
@@ -306,15 +331,11 @@ _HTML = """<!doctype html><html><head><meta charset="utf-8"><title>UC Nexus Rela
     <section id="view-setup" hidden>
       <div class="card">
         <h2>Guided setup</h2>
-        <p class="muted" style="margin:0 0 4px">Fill in the connection and backend, save, test GP, then enroll, install autostart, and start the relay.</p>
-        <div class="step"><span class="stepn">1</span> GP connection + backend</div>
+        <p class="muted" style="margin:0 0 4px">Choose the GP company, test the connection, then enroll. Start-at-logon and shut down live on the Status tab.</p>
+        <div class="step"><span class="stepn">1</span> GP company</div>
         <div class="form">
-          <label>SQL server<input id="f-sql" placeholder="10.0.0.246,1435"></label>
-          <label>SQL ODBC driver<input id="f-driver" placeholder="ODBC Driver 17 for SQL Server"></label>
-          <label>Default company<input id="f-defco" placeholder="TUBC"></label>
-          <label>Allowed companies (comma-separated)<input id="f-allowed" placeholder="TUBC, TUCSH"></label>
-          <label>Fallback buyer (optional)<input id="f-buyer" placeholder="mira"></label>
-          <label>Backend host<input id="f-host" placeholder="backend-production-7866.up.railway.app"></label>
+          <div class="fld"><span class="lbl">Allowed companies</span><div id="f-allowed-box" class="checks"></div></div>
+          <label>Default company<select id="f-defco"></select></label>
         </div>
         <div class="actions">
           <button onclick="saveConfig()">Save configuration</button>
@@ -326,12 +347,8 @@ _HTML = """<!doctype html><html><head><meta charset="utf-8"><title>UC Nexus Rela
           <label>Enrollment token<input id="f-token" placeholder="paste the one-time token from UC Nexus admin"></label></div>
         <div class="actions"><button onclick="doEnroll()">Enroll</button></div>
         <div id="r-enroll" class="result"></div>
-        <div class="step"><span class="stepn">3</span> Autostart + run</div>
-        <div class="actions">
-          <button onclick="doAutostart()">Install autostart</button>
-          <button onclick="startRelay()">Start relay</button>
-          <button onclick="stopRelay()">Stop relay</button></div>
-        <div id="r-run" class="result"></div>
+        <div class="step">Baked configuration <span class="muted" style="font-weight:400">(set by dev)</span></div>
+        <div id="baked" class="grid"></div>
       </div>
     </section>
     <section id="view-updates" hidden>
@@ -391,26 +408,33 @@ _HTML = """<!doctype html><html><head><meta charset="utf-8"><title>UC Nexus Rela
       `<td>${esc(l.message)}</td><td class="muted">${esc(l.detail)}</td></tr>`).join('');
   }
 
+  function checkedAllowed() {
+    return Array.from(document.querySelectorAll('#f-allowed-box input:checked')).map(i => i.value);
+  }
+  function renderDefaultOptions(allowed, current) {
+    const cur = allowed.includes(current) ? current : (allowed[0] || '');
+    $('f-defco').innerHTML = allowed.map(c => `<option value="${c}"${c === cur ? ' selected' : ''}>${c}</option>`).join('');
+  }
+  function onAllowedChange() { renderDefaultOptions(checkedAllowed(), $('f-defco').value); }
+
   async function loadSetup() {
     const s = await window.pywebview.api.get_status();
     const c = s.config || {};
-    if (c.present) {
-      setVal('f-sql', c.sql_server); setVal('f-driver', c.odbc_driver);
-      setVal('f-defco', c.default_company); setVal('f-allowed', (c.allowed_companies||[]).join(', '));
-      const m = (c.backend_url||'').match(/wss:\\/\\/([^/]+)/); if (m) setVal('f-host', m[1]);
-    }
+    const known = s.known_companies || [];
+    const allowed = c.allowed_companies || [];
+    $('f-allowed-box').innerHTML = known.map(co =>
+      `<label><input type="checkbox" value="${co}"${allowed.includes(co) ? ' checked' : ''} onchange="onAllowedChange()">${co}</label>`).join('');
+    renderDefaultOptions(allowed.length ? allowed : known, c.default_company || (allowed[0] || known[0]));
+    $('baked').innerHTML =
+      row('Backend', c.backend_url || '-') +
+      row('SQL server', c.sql_server || '-') +
+      row('ODBC driver', c.odbc_driver || '-');
   }
-  function wssUrl() { const h = val('f-host'); return h ? 'wss://' + h + '/relay-link' : ''; }
-  function gqlUrl() { const h = val('f-host'); return h ? 'https://' + h + '/graphql' : ''; }
 
   async function saveConfig() {
-    const fields = {
-      sql_server: val('f-sql'), sql_driver: val('f-driver'),
-      default_company: val('f-defco'),
-      allowed_companies: val('f-allowed').split(',').map(x => x.trim()).filter(Boolean),
-      buyer_default: val('f-buyer'), backend_url: wssUrl(),
-    };
-    const r = await window.pywebview.api.save_config(fields);
+    const allowed = checkedAllowed();
+    if (!allowed.length) { result('r-save', false, 'select at least one allowed company'); return; }
+    const r = await window.pywebview.api.save_config({ allowed_companies: allowed, default_company: $('f-defco').value || allowed[0] });
     result('r-save', r.ok, r.ok ? ('saved ' + r.path) : (r.error || 'save failed'));
     refresh();
   }
@@ -423,26 +447,11 @@ _HTML = """<!doctype html><html><head><meta charset="utf-8"><title>UC Nexus Rela
   }
   async function doEnroll() {
     $('r-enroll').innerHTML = '<span class="muted">enrolling…</span>';
-    const r = await window.pywebview.api.enroll(val('f-token'), gqlUrl());
+    const r = await window.pywebview.api.enroll(val('f-token'));
     result('r-enroll', r.ok, r.ok
-      ? `enrolled ${r.install_id} as ${r.hostname} (${r.company}); secret written ${r.how}. now start/restart the relay.`
+      ? `enrolled ${r.install_id} as ${r.hostname} (${r.company}); secret written ${r.how}. restart the relay (Status tab) to use it.`
       : (r.error || 'enrollment failed'));
     refresh();
-  }
-  async function doAutostart() {
-    const r = await window.pywebview.api.install_autostart();
-    result('r-run', r.ok, r.ok ? ('autostart installed: ' + r.command) : (r.error || 'failed'));
-    refresh();
-  }
-  async function startRelay() {
-    const r = await window.pywebview.api.start_relay();
-    result('r-run', r.ok, r.ok ? (r.already_running ? 'relay already running' : 'relay started') : (r.error || 'failed'));
-    setTimeout(refresh, 1500);
-  }
-  async function stopRelay() {
-    const r = await window.pywebview.api.stop_relay();
-    result('r-run', r.ok, r.ok ? 'relay stopped' : (r.error || 'failed'));
-    setTimeout(refresh, 1000);
   }
 
   let _updateUrl = null;
