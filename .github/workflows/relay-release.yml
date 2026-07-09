@@ -16,6 +16,7 @@ on:
       - "relay-v*"
     paths:
       - "localhost relay/**"
+      - ".github/workflows/relay-release.yml"
   workflow_dispatch:
 
 permissions:
@@ -58,11 +59,13 @@ jobs:
 
       - name: Smoke-test the exe (binary launches, CLI dispatches)
         # an unknown subcommand exits 2 deterministically without needing config.toml - proves the bundled
-        # interpreter starts and ucnexus_relay.cli imports cleanly.
+        # interpreter starts and ucnexus_relay.cli imports cleanly. The exe is windowed (GUI subsystem) so
+        # PowerShell does NOT block on a bare call and $LASTEXITCODE stays empty - Start-Process -Wait
+        # -PassThru actually waits for it and reads the real exit code.
         run: |
-          ./dist/ucnexus-relay.exe __smoke__
-          $code = $LASTEXITCODE
-          if ($code -ne 2) { Write-Error "expected exit 2 from unknown subcommand, got $code"; exit 1 }
+          $exe = Resolve-Path ./dist/ucnexus-relay.exe
+          $p = Start-Process -FilePath $exe -ArgumentList '__smoke__' -Wait -PassThru
+          if ($p.ExitCode -ne 2) { Write-Error "expected exit 2 from unknown subcommand, got $($p.ExitCode)"; exit 1 }
           exit 0
         shell: pwsh
 
