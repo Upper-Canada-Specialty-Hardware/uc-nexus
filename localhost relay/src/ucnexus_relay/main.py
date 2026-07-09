@@ -17,7 +17,7 @@ import time
 import pyodbc
 from fastapi import Depends, FastAPI, HTTPException
 
-from . import auth, buyers, db, econnect, errors, models, ops
+from . import auth, buyers, channel, db, econnect, errors, models, ops
 from .config import get_settings
 from .cors import configure_cors
 from .logging_setup import configure_logging, get_logger
@@ -86,7 +86,12 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     def health():
-        return {"status": "ok", "version": VERSION, "uptime_seconds": round(time.monotonic() - _START, 1)}
+        return {
+            "status": "ok",
+            "version": VERSION,
+            "uptime_seconds": round(time.monotonic() - _START, 1),
+            "channel": channel.channel_state_snapshot(),  # the REAL backend-channel state, for the app UI
+        }
 
     @app.get("/info")
     def info(_=Depends(auth.verify_token)):

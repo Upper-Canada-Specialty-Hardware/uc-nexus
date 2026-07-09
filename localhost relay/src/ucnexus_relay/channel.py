@@ -25,6 +25,24 @@ from .logging_setup import get_logger
 
 logger = get_logger()
 
+# Live channel state, updated by run_forever and exposed on /health, so the desktop app shows the REAL
+# backend-channel status instead of inferring it from relay.log (a killed serve never writes a clean
+# disconnect line, so the log's last event goes stale). `state` mirrors _classify_connect_failure.
+_STATE: dict = {"connected": False, "state": "unknown"}
+
+
+def channel_state_snapshot() -> dict:
+    return dict(_STATE)
+
+
+def _mark_connected() -> None:
+    _STATE.update(connected=True, state="connected")
+
+
+def _mark_disconnected(state: str = "disconnected") -> None:
+    _STATE.update(connected=False, state=state)
+
+
 # WS close code the backend sends when a second relay connects while one already holds the single
 # connection slot (backend/main.py: try_register -> close(4409)). It arrives AFTER accept(), so the
 # client sees it as a close frame - distinct from a secret rejection, which is refused pre-accept.
@@ -186,6 +204,7 @@ async def _run_once(url: str, secret: str, cfg) -> None:
         ping_timeout=cfg.ping_timeout,
     ) as ws:
         logger.info("channel connected", extra={"url": url})
+        _mark_connected()
 
         # Dispatch each job as its own task so the read loop keeps pulling frames instead of blocking on
         # the current job's GP round-trip (issue #202 #5). The Create-PO page fires list_vendors +
@@ -239,10 +258,12 @@ async def run_forever(stop_event: asyncio.Event | None = None) -> None:
         try:
             await _run_once(cfg.backend_url, secret, cfg)
             backoff = cfg.reconnect_min_seconds  # clean run - reset backoff before the next attempt
+            _mark_disconnected()  # _run_once returned -> the socket closed; reconnecting on the next loop
         except asyncio.CancelledError:
             raise
         except Exception as e:
             category, message = _classify_connect_failure(e)
             logger.warning(message, extra={"category": category, "error": str(e), "backoff": backoff})
+            _mark_disconnected(category if category in ("secret_rejected", "slot_busy") else "disconnected")
             backoff = min(backoff * 2, cfg.reconnect_max_seconds)
         await asyncio.sleep(backoff)

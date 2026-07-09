@@ -128,3 +128,30 @@ def test_apply_update_rejects_a_tiny_download(tmp_path, monkeypatch):
     assert r["ok"] is False
     assert "too small" in r["error"]
     assert exe.read_bytes() == b"OLD"  # left untouched on a bad download
+
+
+def test_stage_update_downloads_writes_helper_and_spawns_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(updater.urllib.request, "urlretrieve", lambda url, dest: Path(dest).write_bytes(b"N" * 6_000_000))
+    calls = []
+    monkeypatch.setattr(updater.subprocess, "Popen", lambda *a, **k: calls.append((a, k)))
+    r = updater.stage_update("u", tmp_path, 4242)
+    assert r["ok"] is True
+    helper = tmp_path / "update-helper.bat"
+    assert helper.exists()
+    txt = helper.read_text(encoding="utf-8")
+    assert "4242" in txt  # waits for the app pid
+    assert "ucnexus-relay.exe" in txt  # relaunches the exe
+    assert (tmp_path / "ucnexus-relay.exe.new").exists()  # the new exe downloaded, not yet swapped
+    assert calls and calls[0][0][0] == ["cmd", "/c", str(helper)]  # helper spawned
+
+
+def test_stage_update_rejects_a_tiny_download_and_does_not_spawn(tmp_path, monkeypatch):
+    monkeypatch.setattr(updater.urllib.request, "urlretrieve", lambda url, dest: Path(dest).write_bytes(b"tiny"))
+
+    def _no_spawn(*a, **k):
+        raise AssertionError("must not spawn the helper on a bad download")
+
+    monkeypatch.setattr(updater.subprocess, "Popen", _no_spawn)
+    r = updater.stage_update("u", tmp_path, 1)
+    assert r["ok"] is False
+    assert "too small" in r["error"]

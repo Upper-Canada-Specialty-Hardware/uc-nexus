@@ -12,6 +12,7 @@ compares unequal to any release tag (always "behind")."""
 
 import json
 import os
+import subprocess
 import urllib.request
 from pathlib import Path
 
@@ -132,3 +133,60 @@ def apply_update(url: str, install_dir: str | Path) -> dict:
         "ok": False,
         "error": f"swap failed ({error}); the relay was restarted on the current version - reboot and retry",
     }
+
+
+# A running exe can't reliably be renamed/overwritten in place, so the desktop app updates by exiting
+# first: this helper waits for the app process (pid) to be gone, then moves the downloaded .new over the
+# now-unlocked exe and relaunches it, retrying the move while any bootloader child is still releasing the
+# image. It deletes itself at the end.
+_HELPER_BAT = r"""@echo off
+:waitapp
+tasklist /fi "PID eq {pid}" /nh 2>nul | find /i "ucnexus-relay" >nul
+if not errorlevel 1 (
+  timeout /t 1 /nobreak >nul
+  goto waitapp
+)
+set _n=0
+:swap
+move /y "{new}" "{exe}" >nul 2>&1
+if not errorlevel 1 goto relaunch
+set /a _n+=1
+if %_n% geq 30 goto done
+timeout /t 1 /nobreak >nul
+goto swap
+:relaunch
+start "" "{exe}" app
+:done
+del "%~f0"
+"""
+
+
+def stage_update(url: str, install_dir: str | Path, app_pid: int) -> dict:
+    """Download the new exe and spawn a detached helper that waits for `app_pid` to exit, swaps the exe
+    (unlocked once the app is gone), and relaunches the app. The caller MUST then shut the app down so the
+    helper can proceed - this is the desktop-app update path that avoids renaming a still-running exe."""
+    install_dir = Path(install_dir)
+    exe = install_dir / _ASSET_NAME
+    new = install_dir / (_ASSET_NAME + ".new")
+
+    try:
+        urllib.request.urlretrieve(url, str(new))  # noqa: S310 (release asset URL from latest_release)
+    except OSError as e:
+        return {"ok": False, "error": f"download failed: {e}"}
+    if new.stat().st_size < _MIN_EXE_BYTES:
+        _unlink_quietly(new)
+        return {"ok": False, "error": "the downloaded file is too small - aborting the update"}
+
+    helper = install_dir / "update-helper.bat"
+    helper.write_text(_HELPER_BAT.format(pid=int(app_pid), new=str(new), exe=str(exe)), encoding="utf-8")
+    detached = 0x00000008  # DETACHED_PROCESS
+    no_window = 0x08000000  # CREATE_NO_WINDOW
+    subprocess.Popen(  # noqa: S603 (fixed cmd + our own helper path)
+        ["cmd", "/c", str(helper)],
+        cwd=str(install_dir),
+        creationflags=detached | no_window,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return {"ok": True, "note": "the relay will close and reopen on the new version"}

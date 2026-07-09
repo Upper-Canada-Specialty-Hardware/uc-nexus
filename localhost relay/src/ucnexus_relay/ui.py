@@ -80,6 +80,7 @@ def relay_health(host: str = "127.0.0.1", port: int = 7321) -> dict:
             "status": body.get("status"),
             "version": body.get("version"),
             "uptime_seconds": body.get("uptime_seconds"),
+            "channel": body.get("channel"),  # the serve process's REAL backend-channel state
         }
     except (OSError, json.JSONDecodeError):
         return {"running": False}
@@ -142,13 +143,22 @@ def gather_status(config_path: str | Path | None = None) -> dict:
     """Everything the status panel shows, in one call."""
     cfg = config_summary(config_path)
     health = relay_health(cfg.get("host", "127.0.0.1"), cfg.get("port", 7321)) if cfg.get("present") else relay_health()
+    # Backend-channel state: trust the serve process's LIVE report (/health.channel). If serve isn't
+    # running the channel can't be up (it lives inside serve) -> disconnected. Fall back to the log
+    # inference only if a running serve didn't report a channel (an older serve build).
+    if not health.get("running"):
+        channel = {"state": "disconnected"}
+    elif health.get("channel"):
+        channel = {"state": health["channel"].get("state", "unknown")}
+    else:
+        channel = channel_state(config_path)
     return {
         "ui_version": VERSION,
         "build": updater.current_build(),
         "known_companies": KNOWN_COMPANIES,  # dev-determined options for the Setup company dropdowns
         "config": cfg,
         "relay": health,
-        "channel": channel_state(config_path),
+        "channel": channel,
         "autostart": autostart.autostart_status() if autostart.winreg is not None else {"installed": None},
     }
 
@@ -292,8 +302,21 @@ class Api:
             return {"ok": False, "error": "updates can only be applied to the packaged exe"}
         if not (url or "").strip():
             return {"ok": False, "error": "no download URL"}
+        from . import app
+
+        running = app.current()
         try:
-            return updater.apply_update(url.strip(), DEFAULT_CONFIG_PATH.parent)
+            if running is None:
+                # standalone (not the desktop app): the hardened in-process swap
+                return updater.apply_update(url.strip(), DEFAULT_CONFIG_PATH.parent)
+            # desktop app: stage the update, then shut ourselves down so the helper can swap the now-
+            # unlocked exe and relaunch - no renaming of a running exe.
+            import os
+
+            result = updater.stage_update(url.strip(), DEFAULT_CONFIG_PATH.parent, os.getpid())
+            if result.get("ok"):
+                running.shutdown()
+            return result
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "error": str(e)}
 
@@ -514,7 +537,7 @@ _HTML = """<!doctype html><html><head><meta charset="utf-8"><title>UC Nexus Rela
   }
   async function applyUpdate() {
     if (!_updateUrl) return;
-    $('r-update').innerHTML = '<span class="muted">downloading and applying… the relay will restart</span>';
+    $('r-update').innerHTML = '<span class="muted">downloading and applying… the app will close and reopen on the new version</span>';
     $('u-apply').hidden = true;
     const r = await window.pywebview.api.apply_update(_updateUrl);
     result('r-update', r.ok, r.ok ? 'updated - relay restarted' : (r.error || 'update failed'));

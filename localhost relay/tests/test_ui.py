@@ -146,3 +146,23 @@ def test_enroll_url_derived_from_baked_backend():
     url = ui._enroll_url_from_channel()
     assert url.startswith("https://")
     assert url.endswith("/graphql")
+
+
+def test_gather_status_channel_disconnected_when_serve_down(tmp_path, monkeypatch):
+    # a killed serve can't have a live channel, no matter what the log's last line says
+    p = _cfg(tmp_path, '[gp]\ndefault_company = "TUBC"\n[logging]\nfile = "relay.log"\n')
+    _log(tmp_path, {"asctime": "t1", "levelname": "INFO", "message": "channel connected"})
+    monkeypatch.setattr(ui, "relay_health", lambda host="127.0.0.1", port=7321: {"running": False})
+    monkeypatch.setattr(ui.autostart, "autostart_status", lambda: {"installed": True})
+    assert ui.gather_status(p)["channel"]["state"] == "disconnected"
+
+
+def test_gather_status_uses_live_channel_from_health(tmp_path, monkeypatch):
+    p = _cfg(tmp_path, '[gp]\ndefault_company = "TUBC"\n[logging]\nfile = "relay.log"\n')
+    _log(tmp_path, {"asctime": "t1", "levelname": "INFO", "message": "channel connected"})  # stale "connected"
+    monkeypatch.setattr(
+        ui, "relay_health", lambda host="127.0.0.1", port=7321: {"running": True, "channel": {"connected": False, "state": "secret_rejected"}}
+    )
+    monkeypatch.setattr(ui.autostart, "autostart_status", lambda: {"installed": True})
+    # the live /health channel wins over the stale log line
+    assert ui.gather_status(p)["channel"]["state"] == "secret_rejected"
