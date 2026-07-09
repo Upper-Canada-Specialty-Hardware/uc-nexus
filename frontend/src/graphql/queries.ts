@@ -361,6 +361,7 @@ export const GET_ASSEMBLE_LIST = gql`
     assembleList(projectId: $projectId) {
       id
       shopAssemblyRequestId
+      pullRequestId
       openingId
       pullStatus
       assignedTo
@@ -414,6 +415,7 @@ export const GET_MY_WORK = gql`
     myWork(assignedTo: $assignedTo) {
       id
       shopAssemblyRequestId
+      pullRequestId
       openingId
       pullStatus
       assignedTo

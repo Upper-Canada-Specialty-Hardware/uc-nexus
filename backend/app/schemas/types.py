@@ -388,7 +388,9 @@ class ShopAssemblyOpeningItem:
 @strawberry.type
 class ShopAssemblyOpening:
     id: strawberry.ID
-    shop_assembly_request_id: strawberry.ID
+    # Legacy SAR parent (nullable since #222); openings now hang off pull_request_id.
+    shop_assembly_request_id: strawberry.ID | None
+    pull_request_id: strawberry.ID | None
     opening_id: strawberry.ID
     pull_status: PullStatus
     assigned_to: str | None

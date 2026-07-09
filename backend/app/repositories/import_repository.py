@@ -19,7 +19,6 @@ from app.models.enums import (
     PullRequestSource,
     PullRequestStatus,
     PullStatus,
-    ShopAssemblyRequestStatus,
 )
 from app.models.hardware import HardwareItem as HardwareItemModel
 from app.models.opening_item import OpeningItem as OpeningItemModel
@@ -35,9 +34,6 @@ from app.models.shop_assembly import (
 )
 from app.models.shop_assembly import (
     ShopAssemblyOpeningItem as SAOItemModel,
-)
-from app.models.shop_assembly import (
-    ShopAssemblyRequest as SARModel,
 )
 
 
@@ -674,25 +670,31 @@ def finalize_import_session(
 
             created_prs.append(pr)
 
-    # 7. SAR creation
-    sar = None
+    # 7. Shop-assembly PR + openings (#222)
+    # Start a Task creates the shop-assembly PullRequest directly - no SAR row, no approval gate.
+    # Mirrors the shipping-out PR draft path above: one commit mints the PR (SHOP_ASSEMBLY, PENDING),
+    # its LOOSE PR items (one per opening item), and the ShopAssemblyOpening/Item rows that hang off it.
+    sa_pr = None
     if include_sar and sar_request_number:
-        # Validate uniqueness
-        existing_sar = session.scalars(select(SARModel).where(SARModel.request_number == sar_request_number)).first()
-        if existing_sar is not None:
+        # Validate uniqueness (against the PR number now, not a SAR number)
+        existing_pr = session.scalars(
+            select(PullRequestModel).where(PullRequestModel.request_number == sar_request_number)
+        ).first()
+        if existing_pr is not None:
             raise ConflictError(
-                f"Shop assembly request {sar_request_number} already exists",
+                f"Pull request {sar_request_number} already exists",
                 field="shop_assembly_request_number",
             )
 
-        sar = SARModel(
+        sa_pr = PullRequestModel(
             id=uuid.uuid4(),
             request_number=sar_request_number,
             project_id=project.id,
-            status=ShopAssemblyRequestStatus.PENDING,
-            created_by="Hardware Schedule Import",
+            source=PullRequestSource.SHOP_ASSEMBLY,
+            status=PullRequestStatus.PENDING,
+            requested_by="Hardware Schedule Import",
         )
-        session.add(sar)
+        session.add(sa_pr)
         session.flush()
 
         for sa_opening_input in sar_openings_input:
@@ -704,7 +706,7 @@ def finalize_import_session(
             opening_row = existing_openings_by_number.get(opening_number)
             sa_opening = SAOModel(
                 id=uuid.uuid4(),
-                shop_assembly_request_id=sar.id,
+                pull_request_id=sa_pr.id,
                 opening_id=opening_id,
                 opening_number=opening_number,
                 building=opening_row.building if opening_row else None,
@@ -717,14 +719,27 @@ def finalize_import_session(
             session.flush()
 
             for item_input in sa_opening_input.get("items", []):
-                sa_item = SAOItemModel(
-                    id=uuid.uuid4(),
-                    shop_assembly_opening_id=sa_opening.id,
-                    hardware_category=item_input["hardware_category"],
-                    product_code=item_input["product_code"],
-                    quantity=item_input["quantity"],
+                session.add(
+                    SAOItemModel(
+                        id=uuid.uuid4(),
+                        shop_assembly_opening_id=sa_opening.id,
+                        hardware_category=item_input["hardware_category"],
+                        product_code=item_input["product_code"],
+                        quantity=item_input["quantity"],
+                    )
                 )
-                session.add(sa_item)
+                # Mirror each opening item as a LOOSE PR item tied to the opening_number snapshot.
+                session.add(
+                    PullRequestItemModel(
+                        id=uuid.uuid4(),
+                        pull_request_id=sa_pr.id,
+                        item_type=PullRequestItemType.LOOSE,
+                        opening_number=opening_number,
+                        hardware_category=item_input["hardware_category"],
+                        product_code=item_input["product_code"],
+                        requested_quantity=item_input["quantity"],
+                    )
+                )
 
     session.flush()
 
@@ -732,5 +747,7 @@ def finalize_import_session(
         "project": project,
         "purchase_orders": created_pos,
         "shipping_out_pull_requests": created_prs,
-        "shop_assembly_request": sar,
+        # No SAR is created anymore; kept for the finalize result contract (always None here).
+        "shop_assembly_request": None,
+        "shop_assembly_pull_request": sa_pr,
     }

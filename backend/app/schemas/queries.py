@@ -422,7 +422,10 @@ def _shop_assembly_opening_item_to_type(item) -> ShopAssemblyOpeningItem:
 def _shop_assembly_opening_to_type(opening) -> ShopAssemblyOpening:
     return ShopAssemblyOpening(
         id=strawberry.ID(str(opening.id)),
-        shop_assembly_request_id=strawberry.ID(str(opening.shop_assembly_request_id)),
+        shop_assembly_request_id=(
+            strawberry.ID(str(opening.shop_assembly_request_id)) if opening.shop_assembly_request_id else None
+        ),
+        pull_request_id=(strawberry.ID(str(opening.pull_request_id)) if opening.pull_request_id else None),
         opening_id=strawberry.ID(str(opening.opening_id)),
         pull_status=opening.pull_status,
         assigned_to=opening.assigned_to,

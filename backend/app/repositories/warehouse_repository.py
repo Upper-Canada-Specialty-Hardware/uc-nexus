@@ -30,7 +30,7 @@ from app.models.receiving import ReceiveLineItem as ReceiveLineItemModel
 from app.models.receiving import ReceiveRecord as ReceiveRecordModel
 from app.models.shipping import PackingSlip as PackingSlipModel
 from app.models.shipping import PackingSlipItem as PackingSlipItemModel
-from app.models.shop_assembly import ShopAssemblyRequest as SARModel
+from app.models.shop_assembly import ShopAssemblyOpening
 from app.models.stock_item import StockItem as StockItemModel
 from app.models.vendor import Vendor as VendorModel
 from app.services import notification_service
@@ -1825,17 +1825,12 @@ def complete_pull_request(session: Session, pr_id: uuid.UUID) -> PullRequestMode
                     oi.state = OpeningItemState.SHIP_READY
 
     elif pr.source == PullRequestSource.SHOP_ASSEMBLY:
-        # Extract SAR request_number from PR number (strip "PR-" prefix)
-        sar_request_number = pr.request_number.replace("PR-", "", 1)
-        sar_stmt = (
-            select(SARModel)
-            .options(selectinload(SARModel.openings))
-            .where(SARModel.request_number == sar_request_number)
-        )
-        sar = session.scalars(sar_stmt).unique().first()
-        if sar is not None:
-            for opening in sar.openings:
-                opening.pull_status = PullStatus.PULLED
+        # Openings hang off this PR directly (#222) - no PR-number string parsing.
+        openings = session.scalars(
+            select(ShopAssemblyOpening).where(ShopAssemblyOpening.pull_request_id == pr.id)
+        ).all()
+        for opening in openings:
+            opening.pull_status = PullStatus.PULLED
 
     return pr
 

@@ -54,18 +54,21 @@ def get_assemble_list(
     session: Session,
     project_id: uuid.UUID | None = None,
 ) -> list[ShopAssemblyOpening]:
-    """Query ShopAssemblyOpenings from Approved SARs, optionally filtered by project."""
+    """Query ShopAssemblyOpenings whose shop-assembly PullRequest has been pulled (#222)."""
     stmt = (
         select(ShopAssemblyOpening)
         .join(
-            ShopAssemblyRequest,
-            ShopAssemblyOpening.shop_assembly_request_id == ShopAssemblyRequest.id,
+            PullRequestModel,
+            ShopAssemblyOpening.pull_request_id == PullRequestModel.id,
         )
         .options(selectinload(ShopAssemblyOpening.items))
-        .where(ShopAssemblyRequest.status == ShopAssemblyRequestStatus.APPROVED)
+        .where(
+            PullRequestModel.source == PullRequestSource.SHOP_ASSEMBLY,
+            PullRequestModel.status == PullRequestStatus.COMPLETED,
+        )
     )
     if project_id is not None:
-        stmt = stmt.where(ShopAssemblyRequest.project_id == project_id)
+        stmt = stmt.where(PullRequestModel.project_id == project_id)
     return list(session.scalars(stmt).unique().all())
 
 
@@ -77,14 +80,15 @@ def get_my_work(
     stmt = (
         select(ShopAssemblyOpening)
         .join(
-            ShopAssemblyRequest,
-            ShopAssemblyOpening.shop_assembly_request_id == ShopAssemblyRequest.id,
+            PullRequestModel,
+            ShopAssemblyOpening.pull_request_id == PullRequestModel.id,
         )
         .options(selectinload(ShopAssemblyOpening.items))
         .where(
             ShopAssemblyOpening.assigned_to == assigned_to,
             ShopAssemblyOpening.assembly_status == AssemblyStatus.PENDING,
-            ShopAssemblyRequest.status == ShopAssemblyRequestStatus.APPROVED,
+            PullRequestModel.source == PullRequestSource.SHOP_ASSEMBLY,
+            PullRequestModel.status == PullRequestStatus.COMPLETED,
         )
         .order_by(ShopAssemblyOpening.opening_number.asc())
     )
@@ -283,36 +287,34 @@ def complete_opening(
             field="assigned_to",
         )
 
-    # 2. Load the SAR for project_id and request_number
-    sar = session.get(ShopAssemblyRequest, sa_opening.shop_assembly_request_id)
-    if sar is None:
-        raise NotFoundError(f"ShopAssemblyRequest {sa_opening.shop_assembly_request_id} not found")
-
-    # 3. Derive the auto-generated PR number and find the completed PR
-    pr_number = f"PR-{sar.request_number}"
+    # 2. Load the shop-assembly PR this opening hangs off (#222). The FK gives it to us
+    #    directly - no PR-number string parsing, no SAR lookup. It carries project_id and
+    #    the LOOSE items that were pulled.
+    if sa_opening.pull_request_id is None:
+        raise NotFoundError(f"ShopAssemblyOpening {opening_id} is not linked to a pull request")
     pr_stmt = (
         select(PullRequestModel)
         .options(selectinload(PullRequestModel.items))
         .where(
-            PullRequestModel.request_number == pr_number,
+            PullRequestModel.id == sa_opening.pull_request_id,
             PullRequestModel.source == PullRequestSource.SHOP_ASSEMBLY,
             PullRequestModel.status == PullRequestStatus.COMPLETED,
         )
     )
     pr = session.scalars(pr_stmt).unique().first()
     if pr is None:
-        raise NotFoundError(f"Completed PullRequest {pr_number} not found")
+        raise NotFoundError(f"Completed shop-assembly pull request for opening {opening_id} not found")
 
     # 4. Filter PR items for this opening's opening_number (snapshot)
     opening_pr_items = [item for item in pr.items if item.opening_number == sa_opening.opening_number]
 
-    # 5. Create OpeningItem (snapshot opening identity from SAR row)
+    # 5. Create OpeningItem (snapshot opening identity from the ShopAssemblyOpening row)
     now = datetime.utcnow()
     from app.repositories import warehouse_admin_repository
 
     opening_item = OpeningItemModel(
         id=uuid.uuid4(),
-        project_id=sar.project_id,
+        project_id=pr.project_id,
         opening_id=sa_opening.opening_id,
         warehouse_id=warehouse_admin_repository.get_primary_warehouse_id(session),
         opening_number=sa_opening.opening_number,

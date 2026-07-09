@@ -42,6 +42,10 @@ class ShopAssemblyOpening(Base):
             "shop_assembly_request_id",
         ),
         Index(
+            "ix_shop_assembly_openings_pull_request",
+            "pull_request_id",
+        ),
+        Index(
             "ix_shop_assembly_openings_opening_pull",
             "opening_id",
             "pull_status",
@@ -49,7 +53,14 @@ class ShopAssemblyOpening(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    shop_assembly_request_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("shop_assembly_requests.id"), nullable=False)
+    # Legacy parent. Nullable since #222: openings created from Start a Task hang off a
+    # PullRequest, not a SAR. The SAR approval flow (approve_shop_assembly_request) still
+    # sets this; it is retired in a later slice.
+    shop_assembly_request_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("shop_assembly_requests.id"), nullable=True
+    )
+    # Current parent (#222): the shop-assembly PullRequest this opening was created under.
+    pull_request_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("pull_requests.id"), nullable=True)
     # Historical UUID of the source opening at request time. Not FK-enforced; the source
     # Opening row may be deleted in a later re-upload, but this stamp is preserved.
     opening_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
