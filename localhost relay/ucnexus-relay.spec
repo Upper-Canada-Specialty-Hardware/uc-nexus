@@ -22,7 +22,7 @@ hiddenimports = collect_submodules("uvicorn") + [
 # also ships a PyInstaller hook that PyInstaller auto-discovers, but collecting explicitly is belt-and-braces.
 datas = []
 binaries = []
-for _pkg in ("webview", "clr_loader", "pythonnet"):
+for _pkg in ("webview", "clr_loader", "pythonnet", "pystray", "PIL"):
     _d, _b, _h = collect_all(_pkg)
     datas += _d
     binaries += _b
