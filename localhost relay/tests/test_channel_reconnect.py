@@ -41,3 +41,15 @@ def test_normal_close_is_generic_retry():
     # A plain server-side close (e.g. backend restart) is a transient drop, not a secret problem.
     exc = ConnectionClosedError(Close(1000, ""), None)
     assert channel._classify_connect_failure(exc)[0] == "dropped"
+
+
+def test_channel_state_snapshot_reflects_the_mark_helpers():
+    # the live state run_forever maintains + /health exposes (so the UI shows the REAL channel state)
+    channel._mark_connected()
+    assert channel.channel_state_snapshot() == {"connected": True, "state": "connected"}
+    channel._mark_disconnected("secret_rejected")
+    snap = channel.channel_state_snapshot()
+    assert snap["connected"] is False
+    assert snap["state"] == "secret_rejected"
+    channel._mark_disconnected()
+    assert channel.channel_state_snapshot()["state"] == "disconnected"

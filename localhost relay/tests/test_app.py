@@ -76,3 +76,31 @@ def test_api_shutdown_app_errors_when_not_in_app_mode(monkeypatch):
     r = ui.Api().shutdown_app()
     assert r["ok"] is False
     assert "desktop app" in r["error"]
+
+
+def test_api_apply_update_stages_then_shuts_down_in_app_mode(monkeypatch):
+    from ucnexus_relay import updater
+
+    a = appmod.RelayApp()
+    shut = []
+    monkeypatch.setattr(a, "shutdown", lambda: shut.append(True))
+    monkeypatch.setattr(appmod, "_APP", a)
+    monkeypatch.setattr(ui, "_frozen", lambda: True)
+    monkeypatch.setattr(updater, "stage_update", lambda url, d, pid: {"ok": True, "note": "restarting"})
+    r = ui.Api().apply_update("https://x/e.exe")
+    assert r["ok"] is True
+    assert shut == [True]  # the app shut itself down so the helper can swap the unlocked exe
+
+
+def test_api_apply_update_does_not_shut_down_on_a_failed_stage(monkeypatch):
+    from ucnexus_relay import updater
+
+    a = appmod.RelayApp()
+    shut = []
+    monkeypatch.setattr(a, "shutdown", lambda: shut.append(True))
+    monkeypatch.setattr(appmod, "_APP", a)
+    monkeypatch.setattr(ui, "_frozen", lambda: True)
+    monkeypatch.setattr(updater, "stage_update", lambda url, d, pid: {"ok": False, "error": "download failed"})
+    r = ui.Api().apply_update("https://x/e.exe")
+    assert r["ok"] is False
+    assert shut == []  # a failed stage must NOT close the app
