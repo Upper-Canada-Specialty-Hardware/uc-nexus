@@ -52,11 +52,6 @@ type ShopAssemblyOpeningItem {
   quantity: Int!
 }
 
-type ApproveShopAssemblyResult {
-  shop_assembly_request: ShopAssemblyRequest!
-  pull_request: PullRequest!
-}
-
 input AssignOpeningsInput {
   opening_ids: [ID!]!
   assigned_to: String!
@@ -70,14 +65,11 @@ input CompleteOpeningInput {
 }
 
 type Query {
-  shopAssemblyRequests(projectId: ID!, status: ShopAssemblyRequestStatus): [ShopAssemblyRequest!]!
   assembleList(projectId: ID!): [ShopAssemblyOpening!]!
   myWork(assignedTo: String!): [ShopAssemblyOpening!]!
 }
 
 type Mutation {
-  approveShopAssemblyRequest(id: ID!): ApproveShopAssemblyResult!
-  rejectShopAssemblyRequest(id: ID!, reason: String!): ShopAssemblyRequest!
   assignOpenings(input: AssignOpeningsInput!): [ShopAssemblyOpening!]!
   removeOpeningFromUser(openingId: ID!): ShopAssemblyOpening!
   completeOpening(input: CompleteOpeningInput!): OpeningItem!

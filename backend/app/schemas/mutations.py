@@ -75,7 +75,6 @@ from .queries import (
 )
 from .types import (
     ApproveResult,
-    ApproveShopAssemblyResult,
     ClerkUser,
     DeficiencyReview,
     FinalizeImportResult,
@@ -95,7 +94,6 @@ from .types import (
     SAReplacementResult,
     ShipmentReturn,
     ShopAssemblyOpening,
-    ShopAssemblyRequest,
     StockItem,
     TransferResult,
     Vendor,
@@ -1116,50 +1114,6 @@ class Mutation:
             session.commit()
             session.refresh(notification)
             return _notification_to_type(notification)
-
-    # Shop Assembly
-    @strawberry.mutation
-    def approve_shop_assembly_request(self, id: strawberry.ID) -> ApproveShopAssemblyResult:
-        with SessionLocal() as session:
-            sar, pr = shop_assembly_repository.approve_shop_assembly_request(session, uuid.UUID(str(id)))
-            session.commit()
-            # Re-load with eager loading for relationships
-            from sqlalchemy.orm import selectinload
-
-            from app.models.pull_request import PullRequest as PRModel
-            from app.models.shop_assembly import (
-                ShopAssemblyOpening as SAOModel,
-            )
-            from app.models.shop_assembly import (
-                ShopAssemblyRequest as SARModel,
-            )
-
-            sar = (
-                session.scalars(
-                    select(SARModel)
-                    .options(selectinload(SARModel.openings).selectinload(SAOModel.items))
-                    .where(SARModel.id == sar.id)
-                )
-                .unique()
-                .first()
-            )
-            pr = (
-                session.scalars(select(PRModel).options(selectinload(PRModel.items)).where(PRModel.id == pr.id))
-                .unique()
-                .first()
-            )
-            return ApproveShopAssemblyResult(
-                shop_assembly_request=_shop_assembly_request_to_type(sar),
-                pull_request=_pull_request_to_type(pr),
-            )
-
-    @strawberry.mutation
-    def reject_shop_assembly_request(self, id: strawberry.ID, reason: str) -> ShopAssemblyRequest:
-        with SessionLocal() as session:
-            sar = shop_assembly_repository.reject_shop_assembly_request(session, uuid.UUID(str(id)), reason)
-            session.commit()
-            session.refresh(sar)
-            return _shop_assembly_request_to_type(sar)
 
     @strawberry.mutation
     def assign_openings(self, input: AssignOpeningsInput) -> list[ShopAssemblyOpening]:

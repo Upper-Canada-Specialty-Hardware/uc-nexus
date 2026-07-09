@@ -53,9 +53,9 @@ class ShopAssemblyOpening(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    # Legacy parent. Nullable since #222: openings created from Start a Task hang off a
-    # PullRequest, not a SAR. The SAR approval flow (approve_shop_assembly_request) still
-    # sets this; it is retired in a later slice.
+    # Legacy parent, nullable since #222 and now unused for new rows: openings created from
+    # Start a Task hang off a PullRequest (pull_request_id below), not a SAR. The SAR approval
+    # flow that used to set this was retired in #223; the column is kept for existing rows.
     shop_assembly_request_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("shop_assembly_requests.id"), nullable=True
     )

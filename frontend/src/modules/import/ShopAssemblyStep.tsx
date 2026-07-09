@@ -61,7 +61,7 @@ export default function ShopAssemblyStep({
       </Typography>
 
       <TextField
-        label="SAR Request Number"
+        label="Pull Request Number"
         size="small"
         required
         value={sarRequestNumber}

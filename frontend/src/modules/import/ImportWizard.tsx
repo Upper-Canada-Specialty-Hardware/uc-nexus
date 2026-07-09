@@ -1028,8 +1028,8 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
                   disabled={!isReimport}
                   label={
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                      Shop Assembly Request
-                      <Tooltip arrow title="What can I pull from warehouse to assemble? Only items with Received status can be included in the assembly request.">
+                      Pull Request for Shop Assembly
+                      <Tooltip arrow title="What can I pull from the warehouse to assemble? Creates a shop-assembly pull request. Only items with Received status can be included.">
                         <InfoOutlinedIcon fontSize="small" color="action" />
                       </Tooltip>
                     </Box>
@@ -1041,8 +1041,8 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
                   disabled={!isReimport}
                   label={
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                      Shipping Out
-                      <Tooltip arrow title="What can I ship out? Only items that are Received or Assembled can be included in shipping pull requests.">
+                      Pull Request for Shipping Out
+                      <Tooltip arrow title="What can I ship out? Creates a shipping-out pull request. Only items that are Received or Assembled can be included.">
                         <InfoOutlinedIcon fontSize="small" color="action" />
                       </Tooltip>
                     </Box>
@@ -1052,7 +1052,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
 
               {!isReimport && (
                 <Typography variant="caption" color="text.secondary" sx={{ mt: 1, ml: 4, display: 'block' }}>
-                  Shop Assembly and Shipping Out require an existing project with received inventory.
+                  Shop assembly and shipping-out pull requests require an existing project with received inventory.
                 </Typography>
               )}
 
@@ -1202,7 +1202,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
                 {purpose === 'assembly' && (
                   <Box sx={{ mb: 1 }}>
                     <Typography variant="body1">
-                      1 Shop Assembly Request (#{sarRequestNumber})
+                      1 Shop Assembly Pull Request (#{sarRequestNumber})
                     </Typography>
                   </Box>
                 )}
@@ -1279,7 +1279,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
               )}
               {finalizeResult.shopAssemblyRequest && (
                 <Typography variant="body2">
-                  SAR #{finalizeResult.shopAssemblyRequest.requestNumber} created
+                  Shop Assembly PR #{finalizeResult.shopAssemblyRequest.requestNumber} created
                 </Typography>
               )}
             </Box>

@@ -322,40 +322,6 @@ export const GET_PO_RECEIVING_DETAILS = gql`
   }
 `;
 
-export const GET_SHOP_ASSEMBLY_REQUESTS = gql`
-  query GetShopAssemblyRequests($projectId: ID, $status: ShopAssemblyRequestStatus) {
-    shopAssemblyRequests(projectId: $projectId, status: $status) {
-      id
-      requestNumber
-      projectId
-      status
-      createdBy
-      approvedBy
-      rejectedBy
-      rejectionReason
-      createdAt
-      approvedAt
-      rejectedAt
-      openings {
-        id
-        shopAssemblyRequestId
-        openingId
-        pullStatus
-        assignedTo
-        assemblyStatus
-        completedAt
-        items {
-          id
-          shopAssemblyOpeningId
-          hardwareCategory
-          productCode
-          quantity
-        }
-      }
-    }
-  }
-`;
-
 export const GET_ASSEMBLE_LIST = gql`
   query GetAssembleList($projectId: ID) {
     assembleList(projectId: $projectId) {
@@ -905,8 +871,6 @@ export const GET_HOME_DASHBOARD_STATS = gql`
 export const GET_SHOP_ASSEMBLY_STATS = gql`
   query GetShopAssemblyStats {
     shopAssemblyStats {
-      pendingSarCount
-      approvedSarCount
       activePullRequestCount
     }
   }

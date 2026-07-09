@@ -1,11 +1,8 @@
 import type { ReactNode } from 'react';
 import { Box, Typography, Card, CardContent, CardActionArea, Grid } from '@mui/material';
-import AssignmentIcon from '@mui/icons-material/Assignment';
 import BuildIcon from '@mui/icons-material/Build';
 import HowToRegIcon from '@mui/icons-material/HowToReg';
 import PersonIcon from '@mui/icons-material/Person';
-import PendingActionsIcon from '@mui/icons-material/PendingActions';
-import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import LocalShippingIcon from '@mui/icons-material/LocalShipping';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@apollo/client/react';
@@ -14,8 +11,6 @@ import { GET_SHOP_ASSEMBLY_STATS } from '../../graphql/queries';
 
 interface ShopAssemblyStatsData {
   shopAssemblyStats: {
-    pendingSarCount: number;
-    approvedSarCount: number;
     activePullRequestCount: number;
   };
 }
@@ -40,7 +35,6 @@ function ShortcutCard({ label, icon, onClick }: ShortcutCardProps) {
 }
 
 const SUB_ROUTES = [
-  { label: 'Requests', path: '/app/shop-assembly/requests', icon: <AssignmentIcon fontSize="large" /> },
   { label: 'Assemble List', path: '/app/shop-assembly/assemble', icon: <BuildIcon fontSize="large" /> },
   { label: 'Assignments', path: '/app/shop-assembly/assign', icon: <HowToRegIcon fontSize="large" /> },
   { label: 'My Work', path: '/app/shop-assembly/my-work', icon: <PersonIcon fontSize="large" /> },
@@ -58,28 +52,14 @@ export default function ShopAssemblyLanding() {
       <Typography variant="h5" sx={{ mb: 2 }}>Shop Assembly</Typography>
       <Box sx={{ display: 'flex', gap: 1.5, mb: 3, flexWrap: 'wrap' }}>
         {loading && !s ? (
-          Array.from({ length: 3 }).map((_, i) => <StatCardSkeleton key={i} />)
+          <StatCardSkeleton />
         ) : s ? (
-          <>
-            <StatCard
-              icon={<PendingActionsIcon />}
-              label="Pending Requests"
-              value={s.pendingSarCount}
-              color={s.pendingSarCount > 0 ? 'warning.main' : 'text.secondary'}
-            />
-            <StatCard
-              icon={<CheckCircleIcon />}
-              label="Approved (Ready)"
-              value={s.approvedSarCount}
-              color="info.main"
-            />
-            <StatCard
-              icon={<LocalShippingIcon />}
-              label="Active Pull Requests"
-              value={s.activePullRequestCount}
-              color="primary.main"
-            />
-          </>
+          <StatCard
+            icon={<LocalShippingIcon />}
+            label="Active Pull Requests"
+            value={s.activePullRequestCount}
+            color="primary.main"
+          />
         ) : null}
       </Box>
       <Typography variant="h6" sx={{ mb: 2, mt: 1 }}>Go to</Typography>

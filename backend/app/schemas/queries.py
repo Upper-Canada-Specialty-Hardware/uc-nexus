@@ -31,7 +31,6 @@ from .enums import (
     POStatus,
     PullRequestSource,
     PullRequestStatus,
-    ShopAssemblyRequestStatus,
 )
 from .inputs import ReconciliationItemInput
 from .types import (
@@ -960,18 +959,6 @@ class Query:
             return [_notification_to_type(n) for n in results]
 
     @strawberry.field
-    def shop_assembly_requests(
-        self,
-        project_id: strawberry.ID | None = None,
-        status: ShopAssemblyRequestStatus | None = None,
-    ) -> list[ShopAssemblyRequest]:
-        with SessionLocal() as session:
-            sars = shop_assembly_repository.get_shop_assembly_requests(
-                session, uuid.UUID(str(project_id)) if project_id else None, status
-            )
-            return [_shop_assembly_request_to_type(sar) for sar in sars]
-
-    @strawberry.field
     def assemble_list(self, project_id: strawberry.ID | None = None) -> list[ShopAssemblyOpening]:
         with SessionLocal() as session:
             saos = shop_assembly_repository.get_assemble_list(
@@ -1152,8 +1139,6 @@ class Query:
         with SessionLocal() as session:
             d = dashboard_repository.get_shop_assembly_stats(session)
             return ShopAssemblyStats(
-                pending_sar_count=d["pending_sar_count"],
-                approved_sar_count=d["approved_sar_count"],
                 active_pull_request_count=d["active_pull_request_count"],
             )
 

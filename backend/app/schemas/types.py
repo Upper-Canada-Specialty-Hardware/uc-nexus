@@ -507,12 +507,6 @@ class FinalizeImportResult:
 
 
 @strawberry.type
-class ApproveShopAssemblyResult:
-    shop_assembly_request: ShopAssemblyRequest
-    pull_request: PullRequest
-
-
-@strawberry.type
 class POStatistics:
     total: int
     draft: int
@@ -802,8 +796,6 @@ class HomeDashboardStats:
 
 @strawberry.type
 class ShopAssemblyStats:
-    pending_sar_count: int
-    approved_sar_count: int
     active_pull_request_count: int
 
 
