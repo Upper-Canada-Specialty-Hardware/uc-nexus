@@ -195,7 +195,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
       project: { id: string; projectId: string; description: string | null; jobSiteName: string | null };
       purchaseOrders: Array<{ id: string; poNumber: string; status: string }>;
       shippingOutPullRequests: Array<{ id: string; requestNumber: string; status: string }>;
-      shopAssemblyRequest: { id: string; requestNumber: string; status: string } | null;
+      shopAssemblyPullRequest: { id: string; requestNumber: string; status: string } | null;
     };
   }>(FINALIZE_IMPORT_SESSION, {
     refetchQueries: [{ query: GET_PROJECTS }],
@@ -575,7 +575,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
     project: { id: string; projectId: string; description: string | null; jobSiteName: string | null };
     purchaseOrders: Array<{ id: string; poNumber: string; status: string }>;
     shippingOutPullRequests: Array<{ id: string; requestNumber: string; status: string }>;
-    shopAssemblyRequest: { id: string; requestNumber: string; status: string } | null;
+    shopAssemblyPullRequest: { id: string; requestNumber: string; status: string } | null;
   }
 
   const buildFinalizeInput = useCallback(() => {
@@ -1277,9 +1277,9 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
                   {finalizeResult.shippingOutPullRequests.length} Shipping PR(s) created
                 </Typography>
               )}
-              {finalizeResult.shopAssemblyRequest && (
+              {finalizeResult.shopAssemblyPullRequest && (
                 <Typography variant="body2">
-                  Shop Assembly PR #{finalizeResult.shopAssemblyRequest.requestNumber} created
+                  Shop Assembly PR #{finalizeResult.shopAssemblyPullRequest.requestNumber} created
                 </Typography>
               )}
             </Box>

@@ -168,10 +168,12 @@ export default function PullRequestDetailModal({
       setConfirmApproveOpen(false);
       if (approveResult?.outcome === 'INSUFFICIENT') {
         // #224 gate 2: the pull is blocked, not cancelled. The PR stays PENDING; show the exact
-        // shortfall inline and let the user know purchasing was notified to backfill.
+        // shortfall inline and let the user know purchasing was notified to backfill. Do NOT call
+        // onRefetch() here - the parent nulls selectedPR and unmounts this modal, which would drop
+        // the shortfall Alert we just set. The PR row is unchanged (still PENDING), so no refetch is
+        // needed to keep the list accurate.
         setApproveShortfalls(approveResult.shortfalls ?? []);
-        showToast('Insufficient inventory — PR left pending; purchasing notified to backfill.', 'warning');
-        onRefetch();
+        showToast('Insufficient inventory - PR left pending; purchasing notified to backfill.', 'warning');
       } else {
         showToast('Pull Request approved. Inventory deducted.', 'success');
         onRefetch();
@@ -310,7 +312,7 @@ export default function PullRequestDetailModal({
             leaves the PR pending and notifies purchasing - it is no longer auto-cancelled). */}
         {isPending && !allLooseSufficient && looseItems.length > 0 && approveShortfalls.length === 0 && (
           <Alert severity="warning" sx={{ mb: 2 }}>
-            Insufficient inventory — approving will leave this PR pending and notify purchasing to backfill.
+            Insufficient inventory - approving will leave this PR pending and notify purchasing to backfill.
           </Alert>
         )}
 
@@ -318,7 +320,7 @@ export default function PullRequestDetailModal({
         {approveShortfalls.length > 0 && (
           <Alert severity="warning" sx={{ mb: 2 }}>
             <Typography variant="body2" fontWeight="bold" gutterBottom>
-              Approve blocked — insufficient inventory. PR left pending; purchasing notified to backfill.
+              Approve blocked - insufficient inventory. PR left pending; purchasing notified to backfill.
             </Typography>
             <Box component="ul" sx={{ m: 0, pl: 2 }}>
               {approveShortfalls.map((s) => (

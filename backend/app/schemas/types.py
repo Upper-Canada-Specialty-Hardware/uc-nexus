@@ -503,7 +503,11 @@ class FinalizeImportResult:
     project: Project
     purchase_orders: list[PurchaseOrder]
     shipping_out_pull_requests: list[PullRequest]
+    # Legacy SAR field, always None since #222 retired the SAR flow. Kept for the result contract.
     shop_assembly_request: ShopAssemblyRequest | None
+    # The shop-assembly PullRequest minted directly by "Start a Task" (#222). None unless the
+    # import created one. This is what the import success UI confirms.
+    shop_assembly_pull_request: PullRequest | None = None
 
 
 @strawberry.type

@@ -175,16 +175,14 @@ def complete_opening(
     #    the LOOSE items that were pulled.
     if sa_opening.pull_request_id is None:
         raise NotFoundError(f"ShopAssemblyOpening {opening_id} is not linked to a pull request")
-    pr_stmt = (
-        select(PullRequestModel)
-        .options(selectinload(PullRequestModel.items))
-        .where(
-            PullRequestModel.id == sa_opening.pull_request_id,
-            PullRequestModel.source == PullRequestSource.SHOP_ASSEMBLY,
-            PullRequestModel.status == PullRequestStatus.COMPLETED,
-        )
+    # Only pr.project_id is read below (step 6 snapshots from sa_opening.items, not pr.items),
+    # so don't eager-load pr.items - it would be a wasted query.
+    pr_stmt = select(PullRequestModel).where(
+        PullRequestModel.id == sa_opening.pull_request_id,
+        PullRequestModel.source == PullRequestSource.SHOP_ASSEMBLY,
+        PullRequestModel.status == PullRequestStatus.COMPLETED,
     )
-    pr = session.scalars(pr_stmt).unique().first()
+    pr = session.scalars(pr_stmt).first()
     if pr is None:
         raise NotFoundError(f"Completed shop-assembly pull request for opening {opening_id} not found")
 

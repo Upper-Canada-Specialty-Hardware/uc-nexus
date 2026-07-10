@@ -39,6 +39,9 @@ interface AssemblyDetailModalProps {
   opening: MyWorkOpening;
   onClose: () => void;
   onCompleted: () => void;
+  // The logged-in assembler; recorded as the performer on the completion and on any
+  // deficiency return so the audit trail names a real user, not the generic "Assembler".
+  completedBy?: string;
 }
 
 export default function AssemblyDetailModal({
@@ -46,6 +49,7 @@ export default function AssemblyDetailModal({
   opening,
   onClose,
   onCompleted,
+  completedBy,
 }: AssemblyDetailModalProps) {
   const { showToast } = useToast();
   const [aisle, setAisle] = useState('');
@@ -118,11 +122,12 @@ export default function AssemblyDetailModal({
               ? null
               : reasonFor(item.id).trim(),
           })),
+          completedBy: completedBy || null,
         },
       },
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [completeOpening, opening.id, opening.items, aisle, bay, bin, installed, reasons]);
+  }, [completeOpening, opening.id, opening.items, aisle, bay, bin, installed, reasons, completedBy]);
   return (
     <>
       <Modal

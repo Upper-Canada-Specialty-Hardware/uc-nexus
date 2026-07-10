@@ -593,11 +593,27 @@ class Mutation:
                 )
                 sar_type = _shop_assembly_request_to_type(refreshed_sar)
 
+            # Re-load the directly-minted shop-assembly PR (#222) with its items so the import
+            # success UI can confirm it. Always None when the import created no shop-assembly task.
+            sa_pr_type = None
+            if result["shop_assembly_pull_request"] is not None:
+                refreshed_sa_pr = (
+                    session.scalars(
+                        select(PRModel)
+                        .options(selectinload(PRModel.items))
+                        .where(PRModel.id == result["shop_assembly_pull_request"].id)
+                    )
+                    .unique()
+                    .first()
+                )
+                sa_pr_type = _pull_request_to_type(refreshed_sa_pr)
+
             return FinalizeImportResult(
                 project=_project_to_type(project),
                 purchase_orders=[_po_to_type(po) for po in pos],
                 shipping_out_pull_requests=[_pull_request_to_type(pr) for pr in prs],
                 shop_assembly_request=sar_type,
+                shop_assembly_pull_request=sa_pr_type,
             )
 
     # PO

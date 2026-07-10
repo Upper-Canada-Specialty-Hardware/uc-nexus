@@ -452,7 +452,7 @@ export const FINALIZE_IMPORT_SESSION = gql`
         requestNumber
         status
       }
-      shopAssemblyRequest {
+      shopAssemblyPullRequest {
         id
         requestNumber
         status
