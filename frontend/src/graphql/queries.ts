@@ -99,6 +99,7 @@ export const GET_PURCHASE_ORDERS = gql`
         receivedQuantity
         unitCost
         orderAs
+        manufacturer
         createdAt
         updatedAt
       }
@@ -504,6 +505,23 @@ export const GET_PROJECT_HARDWARE_SCHEDULE = gql`
         itemCategoryCode
         productGroupCode
         submittalId
+      }
+    }
+  }
+`;
+
+// Issue #232: suggest a GP ordering vendor for a hardware line's TITAN manufacturer. A saved mapping
+// wins (savedMapping true, one candidate at score 100); otherwise the top-N live vendors ranked by
+// fuzzy score are returned (savedMapping false).
+export const SUGGEST_VENDOR_FOR_MANUFACTURER = gql`
+  query SuggestVendorForManufacturer($gpCompany: String!, $manufacturer: String!) {
+    suggestVendorForManufacturer(gpCompany: $gpCompany, manufacturer: $manufacturer) {
+      manufacturer
+      savedMapping
+      candidates {
+        gpVendorId
+        gpVendorName
+        score
       }
     }
   }

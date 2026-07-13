@@ -86,7 +86,9 @@ from .types import (
     ShopAssemblyRequest,
     ShopAssemblyStats,
     Vendor,
+    VendorCandidate,
     VendorInventoryNode,
+    VendorSuggestion,
     Warehouse,
     WarehouseDashboard,
 )
@@ -110,6 +112,20 @@ from .types import (
 )
 
 
+def _po_line_item_manufacturer(li) -> str | None:
+    """Issue #232: derive a PO line's manufacturer from its linked HardwareItem rows (distinct, first
+    non-null if they disagree). Read only when the hardware_items relationship was eagerly loaded, so a
+    PO path that didn't selectinload it returns None rather than triggering an N+1 lazy load."""
+    from sqlalchemy import inspect as sa_inspect
+
+    if "hardware_items" in sa_inspect(li).unloaded:
+        return None
+    for hi in li.hardware_items:
+        if hi.manufacturer and hi.manufacturer.strip():
+            return hi.manufacturer.strip()
+    return None
+
+
 def _po_line_item_to_type(li) -> POLineItem:
     return POLineItem(
         id=strawberry.ID(str(li.id)),
@@ -122,6 +138,7 @@ def _po_line_item_to_type(li) -> POLineItem:
         unit_cost=float(li.unit_cost),
         order_as=li.order_as,
         gp_line_ord=li.gp_line_ord,
+        manufacturer=_po_line_item_manufacturer(li),
         created_at=li.created_at,
         updated_at=li.updated_at,
     )
@@ -1076,6 +1093,50 @@ class Query:
         require_user(info)
         result = await relay_gateway.relay_call(company, "list_cost_codes", {"job": job})
         return [_gp_cost_code_to_type(c) for c in result["cost_codes"]]
+
+    @strawberry.field
+    async def suggest_vendor_for_manufacturer(
+        self, info: strawberry.Info, gp_company: str, manufacturer: str
+    ) -> VendorSuggestion:
+        """Suggest a GP ordering vendor for a hardware line's TITAN manufacturer (issue #232). A saved
+        manufacturer->vendor mapping wins (one candidate, score 100, savedMapping true); otherwise the
+        live vendor list (PM00200 via the relay) is ranked by fuzzy score and the top candidates are
+        returned (savedMapping false). The DB session is scoped to the mapping lookup only, so no
+        session is held across the relay round-trip."""
+        require_user(info)
+        from app.repositories import manufacturer_vendor_map_repository
+        from app.services import manufacturer_match
+
+        key = manufacturer_match.normalize(manufacturer)
+        with SessionLocal() as session:
+            mapping = manufacturer_vendor_map_repository.lookup(session, gp_company, key)
+            if mapping is not None:
+                return VendorSuggestion(
+                    manufacturer=manufacturer,
+                    saved_mapping=True,
+                    candidates=[
+                        VendorCandidate(
+                            gp_vendor_id=mapping.gp_vendor_id,
+                            gp_vendor_name=mapping.gp_vendor_name,
+                            score=100.0,
+                        )
+                    ],
+                )
+
+        result = await relay_gateway.relay_call(gp_company, "list_vendors")
+        ranked = manufacturer_match.rank_vendors(manufacturer, result["vendors"])
+        return VendorSuggestion(
+            manufacturer=manufacturer,
+            saved_mapping=False,
+            candidates=[
+                VendorCandidate(
+                    gp_vendor_id=c["gp_vendor_id"],
+                    gp_vendor_name=c["gp_vendor_name"],
+                    score=c["score"],
+                )
+                for c in ranked
+            ],
+        )
 
     @strawberry.field
     def warehouses(self, include_inactive: bool = True) -> list[Warehouse]:
