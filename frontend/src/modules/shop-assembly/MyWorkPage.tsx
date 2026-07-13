@@ -84,6 +84,7 @@ export default function MyWorkPage() {
           opening={selectedOpening}
           onClose={() => setSelectedOpening(null)}
           onCompleted={handleCompleted}
+          completedBy={displayName}
         />
       )}
     </Box>

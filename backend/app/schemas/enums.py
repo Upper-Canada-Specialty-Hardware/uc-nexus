@@ -96,6 +96,9 @@ class ReconciliationStatus(enum.Enum):
 class ApproveOutcome(enum.Enum):
     APPROVED = "approved"
     CANCELLED = "cancelled"
+    # #224: an approve blocked by insufficient inventory leaves the PR PENDING (not cancelled) and
+    # returns the shortfall to the approver; the PO is notified for backfill.
+    INSUFFICIENT = "insufficient"
 
 
 @strawberry.enum

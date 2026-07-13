@@ -117,11 +117,21 @@ type ApproveResult {
   pull_request: PullRequest!
   outcome: ApproveOutcome!
   notification: Notification
+  shortfalls: [InventoryShortfall!]!
 }
 
 enum ApproveOutcome {
   APPROVED
   CANCELLED
+  INSUFFICIENT
+}
+
+type InventoryShortfall {
+  hardware_category: String!
+  product_code: String!
+  requested: Int!
+  available: Int!
+  short: Int!
 }
 
 type ShipReadyItems {

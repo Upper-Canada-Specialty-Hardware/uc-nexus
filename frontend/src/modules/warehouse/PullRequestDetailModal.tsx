@@ -68,6 +68,15 @@ interface InventoryCategoryGroup {
   productCodes: InventoryProductCode[];
 }
 
+// #224: per-combo shortfall returned by approvePullRequest when the pull is blocked.
+interface InventoryShortfall {
+  hardwareCategory: string;
+  productCode: string;
+  requested: number;
+  available: number;
+  short: number;
+}
+
 // --- Props ---
 
 interface PullRequestDetailModalProps {
@@ -105,8 +114,9 @@ export default function PullRequestDetailModal({
   const [confirmApproveOpen, setConfirmApproveOpen] = useState(false);
   const [confirmCompleteOpen, setConfirmCompleteOpen] = useState(false);
 
-  // Cancelled outcome dialog state
-  const [cancelledDialogOpen, setCancelledDialogOpen] = useState(false);
+  // #224 gate 2: the shortfall the server returned when an approve was blocked for insufficient
+  // inventory. The PR is left PENDING; we show this inline instead of cancelling.
+  const [approveShortfalls, setApproveShortfalls] = useState<InventoryShortfall[]>([]);
 
   // Fetch inventory hierarchy for availability checks
   const { data: inventoryData } = useQuery<{ inventoryHierarchy: InventoryCategoryGroup[] }>(
@@ -152,10 +162,18 @@ export default function PullRequestDetailModal({
 
   const [approvePR, { loading: approveLoading }] = useMutation(APPROVE_PULL_REQUEST, {
     onCompleted: (data) => {
-      const outcome = (data as { approvePullRequest?: { outcome?: string } })?.approvePullRequest?.outcome;
+      const approveResult = (
+        data as { approvePullRequest?: { outcome?: string; shortfalls?: InventoryShortfall[] } }
+      )?.approvePullRequest;
       setConfirmApproveOpen(false);
-      if (outcome === 'CANCELLED') {
-        setCancelledDialogOpen(true);
+      if (approveResult?.outcome === 'INSUFFICIENT') {
+        // #224 gate 2: the pull is blocked, not cancelled. The PR stays PENDING; show the exact
+        // shortfall inline and let the user know purchasing was notified to backfill. Do NOT call
+        // onRefetch() here - the parent nulls selectedPR and unmounts this modal, which would drop
+        // the shortfall Alert we just set. The PR row is unchanged (still PENDING), so no refetch is
+        // needed to keep the list accurate.
+        setApproveShortfalls(approveResult.shortfalls ?? []);
+        showToast('Insufficient inventory - PR left pending; purchasing notified to backfill.', 'warning');
       } else {
         showToast('Pull Request approved. Inventory deducted.', 'success');
         onRefetch();
@@ -182,17 +200,12 @@ export default function PullRequestDetailModal({
   // --- Handlers ---
 
   const handleApprove = () => {
+    setApproveShortfalls([]); // clear any prior shortfall before re-attempting
     approvePR({ variables: { id: pr.id, approvedBy: displayName } });
   };
 
   const handleComplete = () => {
     completePR({ variables: { id: pr.id } });
-  };
-
-  const handleCancelledDialogClose = () => {
-    setCancelledDialogOpen(false);
-    onClose();
-    onRefetch();
   };
 
   // --- Visibility rules ---
@@ -295,10 +308,27 @@ export default function PullRequestDetailModal({
           </Box>
         )}
 
-        {/* Insufficient inventory banner for pending PRs */}
-        {isPending && !allLooseSufficient && looseItems.length > 0 && (
+        {/* Insufficient inventory pre-check banner for pending PRs (#224: approving while short
+            leaves the PR pending and notifies purchasing - it is no longer auto-cancelled). */}
+        {isPending && !allLooseSufficient && looseItems.length > 0 && approveShortfalls.length === 0 && (
           <Alert severity="warning" sx={{ mb: 2 }}>
-            Insufficient inventory — this PR will be auto-cancelled
+            Insufficient inventory - approving will leave this PR pending and notify purchasing to backfill.
+          </Alert>
+        )}
+
+        {/* Shortfall returned by a blocked approve (#224). The PR stays pending. */}
+        {approveShortfalls.length > 0 && (
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            <Typography variant="body2" fontWeight="bold" gutterBottom>
+              Approve blocked - insufficient inventory. PR left pending; purchasing notified to backfill.
+            </Typography>
+            <Box component="ul" sx={{ m: 0, pl: 2 }}>
+              {approveShortfalls.map((s) => (
+                <li key={`${s.hardwareCategory}|${s.productCode}`}>
+                  {s.hardwareCategory} {s.productCode}: need {s.requested}, {s.available} available (short {s.short})
+                </li>
+              ))}
+            </Box>
           </Alert>
         )}
 
@@ -417,17 +447,6 @@ export default function PullRequestDetailModal({
         cancelLabel="Cancel"
         onConfirm={handleComplete}
         onCancel={() => setConfirmCompleteOpen(false)}
-      />
-
-      {/* Cancelled outcome dialog */}
-      <ConfirmDialog
-        open={cancelledDialogOpen}
-        title="Pull Request Cancelled"
-        message="Pull Request cancelled due to insufficient inventory. Originator has been notified."
-        confirmLabel="OK"
-        cancelLabel=""
-        onConfirm={handleCancelledDialogClose}
-        onCancel={handleCancelledDialogClose}
       />
     </>
   );
