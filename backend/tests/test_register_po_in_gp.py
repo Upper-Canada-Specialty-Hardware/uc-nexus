@@ -1,17 +1,20 @@
 """Register an imported Draft PO into GP (issue #175): po_repository.register_po_in_gp."""
 
+import logging
 import uuid
+from datetime import datetime
 
 import pytest
 from sqlalchemy import select
 
 from app.errors import InvalidStateTransitionError, ValidationError
-from app.models.enums import POStatus
+from app.models.enums import HardwareItemState, POStatus
 from app.models.hardware import HardwareItem
-from app.models.project import Project
+from app.models.project import Opening, Project
 from app.models.purchase_order import POLineItem, PurchaseOrder
 from app.models.vendor import Vendor
 from app.repositories import import_repository, po_repository
+from app.schemas import mutations
 
 
 def _make_project(session) -> Project:
@@ -387,3 +390,119 @@ def test_register_requires_order_as(db_session):
                 }
             ],
         )
+
+
+# --- issue #233: _prepare_register_po resolves each line's manufacturer from matching HardwareItems ----
+
+
+class _NoCloseSession:
+    """Wrap the test session as a context manager that does NOT close it (the db_session fixture owns its
+    lifecycle), so a monkeypatched _prepare_* runs against the test's uncommitted transaction instead of a
+    fresh, empty connection via the real SessionLocal()."""
+
+    def __init__(self, session):
+        self._session = session
+
+    def __enter__(self):
+        return self._session
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _use_test_session(monkeypatch, db_session) -> None:
+    monkeypatch.setattr(mutations, "SessionLocal", lambda: _NoCloseSession(db_session))
+
+
+def _add_hardware_item(session, project, *, hardware_category, product_code, manufacturer, created_at=None):
+    opening = Opening(id=uuid.uuid4(), project_id=project.id, opening_number=f"OP-{uuid.uuid4().hex[:4]}")
+    session.add(opening)
+    session.flush()
+    hi = HardwareItem(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        opening_id=opening.id,
+        hardware_category=hardware_category,
+        product_code=product_code,
+        item_quantity=1,
+        manufacturer=manufacturer,
+        state=HardwareItemState.AVAILABLE,
+    )
+    if created_at is not None:
+        hi.created_at = created_at
+    session.add(hi)
+    session.flush()
+    return hi
+
+
+def _register_line(hardware_category, product_code, order_as) -> dict:
+    return {
+        "id": None,
+        "hardware_category": hardware_category,
+        "product_code": product_code,
+        "ordered_quantity": 1,
+        "unit_cost": 10.0,
+        "classification": None,
+        "order_as": order_as,
+    }
+
+
+def test_prepare_register_po_attaches_manufacturer_per_line(monkeypatch, db_session):
+    project = _make_project(db_session)
+    _add_hardware_item(db_session, project, hardware_category="HINGE", product_code="HG-100", manufacturer="SCHLAGE")
+    _add_hardware_item(db_session, project, hardware_category="LOCK", product_code="LK-200", manufacturer="SARGENT")
+    gp_vendor = _make_vendor(db_session, "GP Vendor")
+    draft = po_repository.create_po(
+        db_session,
+        line_items=[_register_line("HINGE", "HG-100", "ALIAS-100"), _register_line("LOCK", "LK-200", "ALIAS-200")],
+        project_id=project.id,
+        vendor_id=gp_vendor.id,
+    )
+    assert draft.status == POStatus.DRAFT
+    _use_test_session(monkeypatch, db_session)
+
+    payload = mutations._prepare_register_po(
+        po_id=draft.id,
+        vendor_id=None,
+        gp_vendor_id="GPV1",
+        buyer_id="mira",
+        cost_code="210-200-2",
+        line_items_data=[_register_line("HINGE", "HG-100", "ALIAS-100"), _register_line("LOCK", "LK-200", "ALIAS-200")],
+    )
+
+    assert [line["manufacturer"] for line in payload["lines"]] == ["SCHLAGE", "SARGENT"]
+
+
+def test_prepare_register_po_disagreeing_items_take_first_non_null_and_log(monkeypatch, db_session, caplog):
+    project = _make_project(db_session)
+    # same category + code across two openings with conflicting manufacturers; created_at is set so
+    # "first non-null" is deterministic (SCHLAGE precedes SARGENT).
+    _add_hardware_item(
+        db_session, project, hardware_category="HINGE", product_code="HG-100",
+        manufacturer="SCHLAGE", created_at=datetime(2026, 1, 1, 0, 0, 1),
+    )
+    _add_hardware_item(
+        db_session, project, hardware_category="HINGE", product_code="HG-100",
+        manufacturer="SARGENT", created_at=datetime(2026, 1, 1, 0, 0, 2),
+    )
+    gp_vendor = _make_vendor(db_session, "GP Vendor")
+    draft = po_repository.create_po(
+        db_session,
+        line_items=[_register_line("HINGE", "HG-100", "ALIAS-100")],
+        project_id=project.id,
+        vendor_id=gp_vendor.id,
+    )
+    _use_test_session(monkeypatch, db_session)
+
+    with caplog.at_level(logging.WARNING):
+        payload = mutations._prepare_register_po(
+            po_id=draft.id,
+            vendor_id=None,
+            gp_vendor_id="GPV1",
+            buyer_id="mira",
+            cost_code="210-200-2",
+            line_items_data=[_register_line("HINGE", "HG-100", "ALIAS-100")],
+        )
+
+    assert payload["lines"][0]["manufacturer"] == "SCHLAGE"
+    assert any("manufacturer disagreement" in r.message for r in caplog.records)
