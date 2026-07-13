@@ -14,16 +14,23 @@ import {
 import DeleteIcon from '@mui/icons-material/Delete';
 import AddIcon from '@mui/icons-material/Add';
 import RefreshIcon from '@mui/icons-material/Refresh';
-import { useMutation, useQuery } from '@apollo/client/react';
+import { useApolloClient, useMutation, useQuery } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import { useToast } from '../../components/Toast';
 import { CREATE_PO, REGISTER_PO_IN_GP } from '../../graphql/mutations';
-import { GET_GP_BUYERS, GET_GP_COST_CODES, GET_GP_VENDORS, GET_PROJECTS } from '../../graphql/queries';
+import {
+  GET_GP_BUYERS,
+  GET_GP_COST_CODES,
+  GET_GP_VENDORS,
+  GET_PROJECTS,
+  SUGGEST_VENDOR_FOR_MANUFACTURER,
+} from '../../graphql/queries';
 import type { Project } from '../../types/project';
 import type { PurchaseOrder } from './index';
 import RelayStatusChip from '../../relay/RelayStatusChip';
 import { useRelayStatus } from '../../relay/useRelayStatus';
 import { poVendorName } from './poVendorName';
+import { computeManufacturerVendorHint, type ManufacturerSuggestion } from './manufacturerVendorHint';
 import GpErrorAlert from '../../components/GpErrorAlert';
 import { extractGpError, type GpError } from '../../graphql/gpError';
 
@@ -39,6 +46,9 @@ interface LineItemRow {
   unitCost: string;
   classification: string;
   orderAs: string;
+  // Issue #232: the line's derived manufacturer (register mode, from the imported HardwareItem). Absent
+  // for a manually added row - drives the vendor suggestion, not editable here.
+  manufacturer?: string | null;
 }
 
 interface GpVendorOption {
@@ -179,6 +189,60 @@ export default function GpPurchaseOrderDialog({
   });
   const gpVendors = gpVendorsData?.gpVendors ?? [];
 
+  // Issue #232: suggest the ordering vendor from each line's TITAN manufacturer. The manufacturer is
+  // the derived POLineItem.manufacturer (resolved server-side from the line's linked HardwareItem),
+  // carried on the line rows. Register mode (draft from import) -> lines carry it; a manually added
+  // create-mode row has none, so its (category, code) simply contributes no manufacturer.
+  const client = useApolloClient();
+  const distinctManufacturers = useMemo(() => {
+    const set = new Set<string>();
+    for (const li of lineItems) {
+      const mfr = (li.manufacturer ?? '').trim();
+      if (mfr) set.add(mfr);
+    }
+    return Array.from(set);
+  }, [lineItems]);
+  // Stable key so the fetch effect doesn't refire on every render (arrays are new each render).
+  const manufacturerKey = useMemo(() => distinctManufacturers.slice().sort().join('|'), [distinctManufacturers]);
+
+  const [mfrSuggestions, setMfrSuggestions] = useState<Record<string, ManufacturerSuggestion>>({});
+  useEffect(() => {
+    if (!open) setMfrSuggestions({});
+  }, [open]);
+
+  useEffect(() => {
+    if (!open || !relayConnected || !company || distinctManufacturers.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      const results: Record<string, ManufacturerSuggestion> = {};
+      for (const manufacturer of distinctManufacturers) {
+        try {
+          const { data } = await client.query<{ suggestVendorForManufacturer: ManufacturerSuggestion }>({
+            query: SUGGEST_VENDOR_FOR_MANUFACTURER,
+            variables: { gpCompany: company, manufacturer },
+            fetchPolicy: 'cache-first',
+          });
+          if (data?.suggestVendorForManufacturer) results[manufacturer] = data.suggestVendorForManufacturer;
+        } catch {
+          // A failed suggestion must not break the dialog - treat it as "no candidate" (soft note).
+          results[manufacturer] = { manufacturer, savedMapping: false, candidates: [] };
+        }
+      }
+      if (!cancelled) setMfrSuggestions((prev) => ({ ...prev, ...results }));
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, relayConnected, company, manufacturerKey, client]);
+
+  const suggestionsLoaded =
+    distinctManufacturers.length > 0 && distinctManufacturers.every((m) => mfrSuggestions[m] !== undefined);
+  const manufacturerHint = useMemo(
+    () => computeManufacturerVendorHint(distinctManufacturers, mfrSuggestions),
+    [distinctManufacturers, mfrSuggestions],
+  );
+
   // This job's cost codes from GP (JC00701), live via the backend relay channel. Cost codes are
   // per-job and each carries its own Cost_Element, so the dropdown comes from GP, not a static list.
   // A stock PO (no project) carries no cost code. cache-first still keys on { company, job }, so a
@@ -200,10 +264,16 @@ export default function GpPurchaseOrderDialog({
   // arrives.
   const seededRef = useRef(false);
   const gpVendorSeededForCompanyRef = useRef<string | null>(null);
+  // Issue #232: which manufacturer-signature has already driven a pre-select, and whether the user has
+  // since taken over the vendor pick (a manual pick freezes the manufacturer suggestion from moving it).
+  const appliedMfrSignatureRef = useRef<string | null>(null);
+  const userPickedVendorRef = useRef(false);
   useEffect(() => {
     if (!open) {
       seededRef.current = false;
       gpVendorSeededForCompanyRef.current = null;
+      appliedMfrSignatureRef.current = null;
+      userPickedVendorRef.current = false;
       return;
     }
     if (seededRef.current) return;
@@ -225,6 +295,7 @@ export default function GpPurchaseOrderDialog({
         unitCost: li.unitCost != null ? String(li.unitCost) : '0',
         classification: li.classification ?? '',
         orderAs: li.orderAs ?? '',
+        manufacturer: li.manufacturer ?? null,
       }));
       setLineItems(rows.length > 0 ? rows : [{ key: 1, ...EMPTY_LINE_ITEM }]);
       setNextKey((rows.length || 1) + 1);
@@ -255,9 +326,31 @@ export default function GpPurchaseOrderDialog({
     setVendorConfirmed(guess.confident);
   }, [open, company, registerPo, gpVendorsData]);
 
-  // A manual vendor pick is an explicit choice, so it counts as confirmed.
+  // Issue #232: once every line manufacturer's suggestion has loaded, pre-select the suggested vendor
+  // for a single-vendor result (unless the user has already picked one). A mixed result never pre-
+  // selects. Runs once per manufacturer-signature; a manual pick freezes it. The pre-selected vendor
+  // must exist in the live picker list so the dropdown can actually show it.
+  useEffect(() => {
+    if (!open || !suggestionsLoaded || userPickedVendorRef.current) return;
+    if (appliedMfrSignatureRef.current === manufacturerKey) return;
+    if (manufacturerHint.kind === 'single') {
+      const vendors = gpVendorsData?.gpVendors ?? [];
+      if (!vendors.some((v) => v.vendorId === manufacturerHint.top.gpVendorId)) return;
+      appliedMfrSignatureRef.current = manufacturerKey;
+      setGpVendorId(manufacturerHint.top.gpVendorId);
+      setGpVendorName(manufacturerHint.top.gpVendorName);
+      setVendorConfirmed(true);
+    } else if (manufacturerHint.kind === 'mixed') {
+      // Conflicting manufacturers: record the signature so this doesn't re-run, but don't pre-select.
+      appliedMfrSignatureRef.current = manufacturerKey;
+    }
+  }, [open, suggestionsLoaded, manufacturerHint, manufacturerKey, gpVendorsData]);
+
+  // A manual vendor pick is an explicit choice, so it counts as confirmed and stops the manufacturer
+  // suggestion from moving the selection out from under the user.
   const handleGpVendorChange = useCallback(
     (id: string) => {
+      userPickedVendorRef.current = true;
       const picked = gpVendors.find((v) => v.vendorId === id) ?? null;
       setGpVendorId(picked?.vendorId ?? null);
       setGpVendorName(picked?.vendorName ?? null);
@@ -426,6 +519,35 @@ export default function GpPurchaseOrderDialog({
     errors.vendor ||
     (isRegister && importedVendorName ? `Imported as: ${importedVendorName} - confirm the GP vendor` : '');
 
+  // Issue #232: the manufacturer-driven vendor suggestion, shown under the vendor picker once every
+  // line manufacturer's suggestion has resolved. Nothing renders until then, or when the lines carry
+  // no known manufacturer ('none').
+  const manufacturerHintNode =
+    suggestionsLoaded && manufacturerHint.kind !== 'none' ? (
+      manufacturerHint.kind === 'single' ? (
+        <Alert severity="info" sx={{ mt: 1 }}>
+          Suggested from manufacturer <strong>{manufacturerHint.label}</strong>:{' '}
+          {manufacturerHint.top.gpVendorName}
+          {manufacturerHint.savedMapping
+            ? ' (learned from a prior PO)'
+            : ` (${Math.round(manufacturerHint.top.score)}% name match)`}
+          .
+          {manufacturerHint.others.length > 0 &&
+            ` Other candidates: ${manufacturerHint.others.map((c) => c.gpVendorName).join(', ')}.`}
+        </Alert>
+      ) : manufacturerHint.kind === 'mixed' ? (
+        <Alert severity="warning" sx={{ mt: 1 }}>
+          These lines span manufacturers that map to different vendors:{' '}
+          {manufacturerHint.entries.map((e) => `${e.manufacturer} → ${e.vendorName ?? 'no match'}`).join('; ')}. Pick
+          the GP vendor to order from.
+        </Alert>
+      ) : (
+        <Alert severity="info" icon={false} sx={{ mt: 1 }}>
+          No saved or matching GP vendor for {manufacturerHint.manufacturers.join(', ')} - pick a vendor manually.
+        </Alert>
+      )
+    ) : null;
+
   const actions = (
     <Stack direction="row" spacing={1}>
       <Button onClick={onClose} disabled={busy}>
@@ -501,6 +623,7 @@ export default function GpPurchaseOrderDialog({
               label={`This is the correct GP vendor${gpVendorName ? ` (${gpVendorName})` : ''}`}
             />
           )}
+          {manufacturerHintNode}
         </Box>
         <TextField
           label="Notes"
