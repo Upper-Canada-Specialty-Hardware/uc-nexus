@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import uuid
 from datetime import date
 
@@ -105,6 +106,9 @@ from .types import (
     PackingSlip as PackingSlipType,
 )
 
+logger = logging.getLogger(__name__)
+
+
 # --- GP-first write orchestration (issue #202 #1/#3) --------------------------------------------------
 # create_po / register_po_in_gp / create_receive push to GP via the relay BEFORE persisting, and the two
 # systems are not atomic. Each resolver runs as: idempotency short-circuit -> validate eligibility ->
@@ -135,6 +139,49 @@ def _load_po_type(po_id: uuid.UUID) -> PurchaseOrder:
         return _po_to_type(po)
 
 
+def _resolve_line_manufacturers(session, project_id, line_items_data) -> list[str | None]:
+    """Resolve the manufacturer for each payload line from the project's HardwareItem rows, joining on
+    (project_id, hardware_category, product_code) - the key line_items_data already carries, so no new
+    frontend input (issue #233). Returns a list parallel to line_items_data (None where nothing matches).
+
+    A category+code can map to several imported items; the manufacturer is normally the same across them,
+    but if they disagree we take the first non-null (deterministic by created_at, id) and log the conflict
+    rather than guessing or failing. No project -> nothing to join against -> all None."""
+    if project_id is None:
+        return [None] * len(line_items_data)
+
+    from app.models.hardware import HardwareItem
+
+    cache: dict[tuple[str, str], str | None] = {}
+    resolved: list[str | None] = []
+    for li in line_items_data:
+        key = (li["hardware_category"], li["product_code"])
+        if key not in cache:
+            rows = session.scalars(
+                select(HardwareItem.manufacturer)
+                .where(
+                    HardwareItem.project_id == project_id,
+                    HardwareItem.hardware_category == key[0],
+                    HardwareItem.product_code == key[1],
+                )
+                .order_by(HardwareItem.created_at, HardwareItem.id)
+            ).all()
+            distinct = list(dict.fromkeys(m.strip() for m in rows if m and m.strip()))
+            chosen = distinct[0] if distinct else None
+            if len(distinct) > 1:
+                logger.warning(
+                    "manufacturer disagreement for line %s/%s in project %s: %s; using %r",
+                    key[0],
+                    key[1],
+                    project_id,
+                    distinct,
+                    chosen,
+                )
+            cache[key] = chosen
+        resolved.append(cache[key])
+    return resolved
+
+
 def _prepare_create_po(*, project_id, vendor_id, gp_vendor_id, buyer_id, cost_code, po_number, line_items_data) -> dict:
     """Read-only: resolve the vendor contact + job number, pre-validate the fields, and build the relay
     create_po payload. Raises before the GP write so a bad request never reaches the relay."""
@@ -156,10 +203,12 @@ def _prepare_create_po(*, project_id, vendor_id, gp_vendor_id, buyer_id, cost_co
                 raise NotFoundError(f"Project {project_id} not found")
             job_number = project.project_id
 
+        manufacturers = _resolve_line_manufacturers(session, project_id, line_items_data)
+
     gp_po.validate_create_po_inputs(
         job_number=job_number, cost_code=cost_code, po_number=po_number, line_items=line_items_data
     )
-    return gp_po.build_create_po_payload(
+    payload = gp_po.build_create_po_payload(
         vendor_gp_id=gp_vendor_id,
         vendor_contact_name=vendor_contact_name,
         buyer_id=buyer_id,
@@ -168,6 +217,11 @@ def _prepare_create_po(*, project_id, vendor_id, gp_vendor_id, buyer_id, cost_co
         po_number=po_number,
         line_items=line_items_data,
     )
+    # build_create_po_payload emits one line per line_items_data entry, in order, so index-align the
+    # resolved manufacturers onto the relay payload lines (the relay caps/RTRIMs to USRDEFND1's char(50)).
+    for line, manufacturer in zip(payload["lines"], manufacturers):
+        line["manufacturer"] = manufacturer
+    return payload
 
 
 def _persist_create_po(
@@ -219,10 +273,12 @@ def _prepare_register_po(*, po_id, vendor_id, gp_vendor_id, buyer_id, cost_code,
                 raise NotFoundError(f"Project {po.project_id} not found")
             job_number = project.project_id
 
+        manufacturers = _resolve_line_manufacturers(session, po.project_id, line_items_data)
+
     gp_po.validate_create_po_inputs(
         job_number=job_number, cost_code=cost_code, po_number=None, line_items=line_items_data
     )
-    return gp_po.build_create_po_payload(
+    payload = gp_po.build_create_po_payload(
         vendor_gp_id=gp_vendor_id,
         vendor_contact_name=None,
         buyer_id=buyer_id,
@@ -231,6 +287,11 @@ def _prepare_register_po(*, po_id, vendor_id, gp_vendor_id, buyer_id, cost_code,
         po_number=None,
         line_items=line_items_data,
     )
+    # build_create_po_payload emits one line per line_items_data entry, in order, so index-align the
+    # resolved manufacturers onto the relay payload lines (the relay caps/RTRIMs to USRDEFND1's char(50)).
+    for line, manufacturer in zip(payload["lines"], manufacturers):
+        line["manufacturer"] = manufacturer
+    return payload
 
 
 def _persist_register_po(
