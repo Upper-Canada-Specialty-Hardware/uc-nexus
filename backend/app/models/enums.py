@@ -71,8 +71,10 @@ class PODocumentType(str, enum.Enum):
 class NotificationType(str, enum.Enum):
     PULL_REQUEST_CANCELLED = "PULL_REQUEST_CANCELLED"
     PULL_REQUEST_COMPLETED = "PULL_REQUEST_COMPLETED"
-    SHOP_ASSEMBLY_REQUEST_REJECTED = "SHOP_ASSEMBLY_REQUEST_REJECTED"
     SHIPMENT_COMPLETED = "SHIPMENT_COMPLETED"
+    # PO "couldn't be fulfilled - backfill needed" signal from the inventory-sufficiency gates (#224).
+    # Carries the per-combo shortfall detail in its message.
+    INVENTORY_SHORTFALL = "INVENTORY_SHORTFALL"
 
 
 class AuditEntityType(str, enum.Enum):

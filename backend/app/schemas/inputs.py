@@ -382,11 +382,27 @@ class AssignOpeningsInput:
 
 
 @strawberry.input
+class CompleteOpeningItemResultInput:
+    """One line of the completion-time deficiency checklist (#225). Identifies a
+    ShopAssemblyOpeningItem and whether the assembler installed it. Not-installed lines
+    are flagged deficient with an optional reason."""
+
+    shop_assembly_opening_item_id: strawberry.ID
+    installed: bool = True
+    deficient_reason: str | None = None
+
+
+@strawberry.input
 class CompleteOpeningInput:
     opening_id: strawberry.ID
     aisle: str | None = None
     bay: str | None = None
     bin: str | None = None
+    # Per-item installed/deficient checklist (#225). Empty -> every item treated as installed
+    # (preserves pre-checklist behaviour). Only installed items are snapshotted as
+    # OpeningItemHardware; deficient items are returned to inventory flagged deficient.
+    item_results: list[CompleteOpeningItemResultInput] = strawberry.field(default_factory=list)
+    completed_by: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -485,7 +501,6 @@ class ReportStockDeficiencyInput:
 @strawberry.input
 class ReportDeficiencyAtAssemblyInput:
     shop_assembly_opening_item_id: strawberry.ID
-    source_inventory_location_id: strawberry.ID
     quantity: int
     reason_text: str | None = None
     performed_by: str = ""

@@ -8,19 +8,56 @@ from sqlalchemy import select
 from app.models.enums import (
     HardwareItemState,
     OpeningItemState,
+    PullRequestItemType,
+    PullRequestSource,
+    PullRequestStatus,
     PullStatus,
-    ShopAssemblyRequestStatus,
 )
 from app.models.hardware import HardwareItem
+from app.models.inventory import InventoryLocation
 from app.models.opening_item import OpeningItem
 from app.models.project import Opening, Project
+from app.models.pull_request import PullRequest, PullRequestItem
 from app.models.purchase_order import PurchaseOrder
 from app.models.shop_assembly import (
     ShopAssemblyOpening,
-    ShopAssemblyRequest,
 )
+from app.models.stock_item import StockItem
 from app.models.vendor import Vendor
 from app.repositories import import_repository, shop_assembly_repository, warehouse_admin_repository
+
+
+def _seed_inventory(session, project_id, *, hardware_category="HINGE", product_code="HG-100", quantity=10):
+    """Put available inventory in the project so the #224 gate-1 sufficiency check passes."""
+    warehouse_id = warehouse_admin_repository.get_primary_warehouse_id(session)
+    si = StockItem(
+        id=uuid.uuid4(),
+        warehouse_id=warehouse_id,
+        hardware_category=hardware_category,
+        product_code=product_code,
+        quantity=quantity,
+        deficient_quantity=0,
+        received_at=datetime.utcnow(),
+    )
+    session.add(si)
+    session.flush()
+    il = InventoryLocation(
+        id=uuid.uuid4(),
+        project_id=project_id,
+        stock_item_id=si.id,
+        warehouse_id=warehouse_id,
+        hardware_category=hardware_category,
+        product_code=product_code,
+        quantity=quantity,
+        deficient_quantity=0,
+        aisle="A",
+        bay="1",
+        bin="1",
+        received_at=datetime.utcnow(),
+    )
+    session.add(il)
+    session.flush()
+    return il
 
 
 def _make_project(session, project_id: str = "PROJ-001") -> Project:
@@ -318,12 +355,14 @@ def test_replace_schedule_preserves_inventory(db_session):
     assert refreshed_oi.quantity == 1
 
 
-def test_sar_opening_carries_snapshot(db_session):
-    """ShopAssemblyOpening created via finalize should have snapshot opening identity columns populated."""
+def test_shop_assembly_pr_created_directly(db_session):
+    """finalize mints the shop-assembly PR directly (#222): no SAR row, a PENDING SHOP_ASSEMBLY PR,
+    LOOSE PR items per opening item, and openings that hang off the PR with snapshot identity."""
     project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, product_code="HG-100", quantity=2)  # #224 gate 1
     db_session.commit()
 
-    sar_number = f"SAR-{uuid.uuid4().hex[:6]}"
+    pr_number = f"SA-{uuid.uuid4().hex[:6]}"
     import_repository.finalize_import_session(
         db_session,
         {
@@ -331,7 +370,7 @@ def test_sar_opening_carries_snapshot(db_session):
             "openings": [_opening_input("A01", building="B1", floor="F2", location="Lobby")],
             "hardware_items": [],
             "include_shop_assembly_request": True,
-            "shop_assembly_request_number": sar_number,
+            "shop_assembly_request_number": pr_number,
             "shop_assembly_openings": [
                 {
                     "opening_number": "A01",
@@ -344,12 +383,29 @@ def test_sar_opening_carries_snapshot(db_session):
     )
     db_session.flush()
 
+    # A shop-assembly PR is created directly, no approval gate.
+    pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == pr_number))
+    assert pr is not None
+    assert pr.source == PullRequestSource.SHOP_ASSEMBLY
+    assert pr.status == PullRequestStatus.PENDING
+    assert pr.project_id == project.id
+
+    # Each opening item is mirrored as a LOOSE PR item.
+    pr_items = db_session.scalars(select(PullRequestItem).where(PullRequestItem.pull_request_id == pr.id)).all()
+    assert len(pr_items) == 1
+    assert pr_items[0].item_type == PullRequestItemType.LOOSE
+    assert pr_items[0].opening_number == "A01"
+    assert pr_items[0].product_code == "HG-100"
+    assert pr_items[0].requested_quantity == 2
+
+    # The opening hangs off the PR (not a SAR) and carries snapshot identity.
     sao = db_session.scalar(
         select(ShopAssemblyOpening)
-        .join(ShopAssemblyRequest, ShopAssemblyOpening.shop_assembly_request_id == ShopAssemblyRequest.id)
-        .where(ShopAssemblyRequest.request_number == sar_number)
+        .join(PullRequest, ShopAssemblyOpening.pull_request_id == PullRequest.id)
+        .where(PullRequest.request_number == pr_number)
     )
     assert sao is not None
+    assert sao.shop_assembly_request_id is None
     assert sao.opening_number == "A01"
     assert sao.building == "B1"
     assert sao.floor == "F2"
@@ -359,9 +415,10 @@ def test_sar_opening_carries_snapshot(db_session):
 def test_sar_queries_work_after_opening_deleted(db_session):
     """get_assemble_list / get_my_work must work even when the source Opening row was deleted."""
     project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, product_code="HG-100", quantity=1)  # #224 gate 1
     db_session.commit()
 
-    sar_number = f"SAR-{uuid.uuid4().hex[:6]}"
+    pr_number = f"SA-{uuid.uuid4().hex[:6]}"
     import_repository.finalize_import_session(
         db_session,
         {
@@ -369,7 +426,7 @@ def test_sar_queries_work_after_opening_deleted(db_session):
             "openings": [_opening_input("A01")],
             "hardware_items": [],
             "include_shop_assembly_request": True,
-            "shop_assembly_request_number": sar_number,
+            "shop_assembly_request_number": pr_number,
             "shop_assembly_openings": [
                 {
                     "opening_number": "A01",
@@ -380,10 +437,10 @@ def test_sar_queries_work_after_opening_deleted(db_session):
     )
     db_session.flush()
 
-    # Approve SAR so it shows up in assemble_list (assigned_to needs setting for my_work)
-    sar = db_session.scalar(select(ShopAssemblyRequest).where(ShopAssemblyRequest.request_number == sar_number))
-    sar.status = ShopAssemblyRequestStatus.APPROVED
-    sao = db_session.scalar(select(ShopAssemblyOpening).where(ShopAssemblyOpening.shop_assembly_request_id == sar.id))
+    # Complete the pull so the opening shows up in assemble_list (assigned_to needs setting for my_work)
+    pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == pr_number))
+    pr.status = PullRequestStatus.COMPLETED
+    sao = db_session.scalar(select(ShopAssemblyOpening).where(ShopAssemblyOpening.pull_request_id == pr.id))
     sao.pull_status = PullStatus.PULLED
     sao.assigned_to = "tester"
     db_session.flush()
