@@ -4,8 +4,8 @@ Captures the TITAN manufacturer read from each product's Material_List_Fields bl
 end from the parser through finalize onto the HardwareItem row. Nullable, no backfill: existing rows
 keep NULL and render blank.
 
-Revision ID: 042
-Revises: 041
+Revision ID: 045
+Revises: 044
 Create Date: 2026-07-13
 """
 
@@ -13,8 +13,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision = "042"
-down_revision = "041"
+revision = "045"
+down_revision = "044"
 branch_labels = None
 depends_on = None
 

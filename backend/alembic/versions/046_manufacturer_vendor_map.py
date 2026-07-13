@@ -5,8 +5,8 @@ PO for it was confirmed against, keyed per GP company. Feeds the PO dialog's ven
 upserted from every confirmed PO. Unique on (gp_company, manufacturer_key) so an upsert collapses
 variants of the same manufacturer onto one row per company.
 
-Revision ID: 043
-Revises: 042
+Revision ID: 046
+Revises: 045
 Create Date: 2026-07-13
 """
 
@@ -14,8 +14,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision = "043"
-down_revision = "042"
+revision = "046"
+down_revision = "045"
 branch_labels = None
 depends_on = None
 
