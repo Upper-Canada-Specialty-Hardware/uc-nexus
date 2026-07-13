@@ -189,7 +189,8 @@ def _finalize_shop_assembly(session, project, *, code, qty):
 
 def test_gate1_refuses_task_when_short_and_creates_no_pr(db_session):
     project = _make_project(db_session)
-    _seed_inventory(db_session, project.id, quantity=1)  # need 3, only 1 available
+    project_id = project.id  # capture before the refused finalize dirties the session and expires the instance
+    _seed_inventory(db_session, project_id, quantity=1)  # need 3, only 1 available
     db_session.commit()
 
     with pytest.raises(InventoryShortfallError) as excinfo:
@@ -197,7 +198,7 @@ def test_gate1_refuses_task_when_short_and_creates_no_pr(db_session):
 
     # The refusal carries the shortfall detail for the creator and the PO notification.
     err = excinfo.value
-    assert err.project_id == project.id
+    assert err.project_id == project_id
     assert len(err.shortfalls) == 1
     assert err.shortfalls[0].short == 2
 
@@ -206,7 +207,7 @@ def test_gate1_refuses_task_when_short_and_creates_no_pr(db_session):
     # No shop-assembly PR was created.
     prs = db_session.scalars(
         select(PullRequest).where(
-            PullRequest.project_id == project.id,
+            PullRequest.project_id == project_id,
             PullRequest.source == PullRequestSource.SHOP_ASSEMBLY,
         )
     ).all()
