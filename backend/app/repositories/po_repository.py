@@ -54,11 +54,14 @@ def _learn_manufacturer_vendor_mappings(
                     HardwareItem.hardware_category,
                     HardwareItem.product_code,
                     HardwareItem.manufacturer,
-                ).where(
+                )
+                .where(
                     HardwareItem.project_id == project_id,
                     HardwareItem.product_code.in_(product_codes),
                     HardwareItem.manufacturer.isnot(None),
                 )
+                # Deterministic label per key: first-seen wins below, so fix the row order.
+                .order_by(HardwareItem.created_at, HardwareItem.id)
             ).all()
 
             # Collapse to one label per normalized key (variants of the same manufacturer share a row).

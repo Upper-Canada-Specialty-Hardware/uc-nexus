@@ -1108,6 +1108,10 @@ class Query:
         from app.services import manufacturer_match
 
         key = manufacturer_match.normalize(manufacturer)
+        # A blank/normalized-empty manufacturer has nothing to look up or rank (lookup returns None,
+        # rank_vendors returns []); return empty without the wasted list_vendors relay round-trip.
+        if not key:
+            return VendorSuggestion(manufacturer=manufacturer, saved_mapping=False, candidates=[])
         with SessionLocal() as session:
             mapping = manufacturer_vendor_map_repository.lookup(session, gp_company, key)
             if mapping is not None:
