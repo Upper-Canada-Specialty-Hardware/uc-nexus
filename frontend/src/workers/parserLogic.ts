@@ -227,7 +227,10 @@ export function extractHardwareItems(
     const vendorDiscount = parseFloatOrNull(mlf?.Vendor_Discount);
     const markupPct = parseFloatOrNull(mlf?.Markup_Pct);
     const vendorNo = textOrNull(mlf?.Vendor_No);
-    const manufacturer = textOrNull(mlf?.Manufacturer) ?? textOrNull(mlf?.MFG);
+    // TITAN stores the manufacturer/brand name in the Vendor_No column (SARGENT, Schlage, Pemko, ...).
+    // Confirmed against real TITAN exports: Material_List_Fields has no Manufacturer/MFG element, so the
+    // manufacturer IS the Vendor_No value. Carried under its own name for the GP vendor-matching flow.
+    const manufacturer = vendorNo;
     const itemCategoryCode = textOrNull(mlf?.Item_Category_Code);
     const productGroupCode = textOrNull(mlf?.Product_Group_Code);
     const submittalId = textOrNull(mlf?.Submittal_ID);
