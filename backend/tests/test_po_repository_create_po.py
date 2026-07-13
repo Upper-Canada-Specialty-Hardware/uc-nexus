@@ -124,16 +124,28 @@ def test_prepare_create_po_disagreeing_items_take_first_non_null_and_log(monkeyp
     # same category + code across three openings: a null, then two conflicting manufacturers. created_at
     # is set explicitly so "first non-null" is deterministic (SCHLAGE precedes SARGENT).
     _add_hardware_item(
-        db_session, project, hardware_category="HINGE", product_code="HG-100",
-        manufacturer=None, created_at=datetime(2026, 1, 1, 0, 0, 0),
+        db_session,
+        project,
+        hardware_category="HINGE",
+        product_code="HG-100",
+        manufacturer=None,
+        created_at=datetime(2026, 1, 1, 0, 0, 0),
     )
     _add_hardware_item(
-        db_session, project, hardware_category="HINGE", product_code="HG-100",
-        manufacturer="SCHLAGE", created_at=datetime(2026, 1, 1, 0, 0, 1),
+        db_session,
+        project,
+        hardware_category="HINGE",
+        product_code="HG-100",
+        manufacturer="SCHLAGE",
+        created_at=datetime(2026, 1, 1, 0, 0, 1),
     )
     _add_hardware_item(
-        db_session, project, hardware_category="HINGE", product_code="HG-100",
-        manufacturer="SARGENT", created_at=datetime(2026, 1, 1, 0, 0, 2),
+        db_session,
+        project,
+        hardware_category="HINGE",
+        product_code="HG-100",
+        manufacturer="SARGENT",
+        created_at=datetime(2026, 1, 1, 0, 0, 2),
     )
     _use_test_session(monkeypatch, db_session)
 

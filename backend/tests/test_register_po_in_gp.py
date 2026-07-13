@@ -478,12 +478,20 @@ def test_prepare_register_po_disagreeing_items_take_first_non_null_and_log(monke
     # same category + code across two openings with conflicting manufacturers; created_at is set so
     # "first non-null" is deterministic (SCHLAGE precedes SARGENT).
     _add_hardware_item(
-        db_session, project, hardware_category="HINGE", product_code="HG-100",
-        manufacturer="SCHLAGE", created_at=datetime(2026, 1, 1, 0, 0, 1),
+        db_session,
+        project,
+        hardware_category="HINGE",
+        product_code="HG-100",
+        manufacturer="SCHLAGE",
+        created_at=datetime(2026, 1, 1, 0, 0, 1),
     )
     _add_hardware_item(
-        db_session, project, hardware_category="HINGE", product_code="HG-100",
-        manufacturer="SARGENT", created_at=datetime(2026, 1, 1, 0, 0, 2),
+        db_session,
+        project,
+        hardware_category="HINGE",
+        product_code="HG-100",
+        manufacturer="SARGENT",
+        created_at=datetime(2026, 1, 1, 0, 0, 2),
     )
     gp_vendor = _make_vendor(db_session, "GP Vendor")
     draft = po_repository.create_po(
