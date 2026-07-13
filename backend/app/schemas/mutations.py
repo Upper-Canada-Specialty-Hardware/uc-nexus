@@ -425,6 +425,7 @@ class Mutation:
                     "vendor_discount": hi.vendor_discount,
                     "markup_pct": hi.markup_pct,
                     "vendor_no": hi.vendor_no,
+                    "manufacturer": hi.manufacturer,
                     "phase_code": hi.phase_code,
                     "item_category_code": hi.item_category_code,
                     "product_group_code": hi.product_group_code,

@@ -72,6 +72,7 @@ class HardwareItem:
     vendor_discount: float | None
     markup_pct: float | None
     vendor_no: str | None
+    manufacturer: str | None
     phase_code: str | None
     item_category_code: str | None
     product_group_code: str | None
@@ -281,6 +282,7 @@ class ProjectScheduleHardwareItem:
     vendor_discount: float | None
     markup_pct: float | None
     vendor_no: str | None
+    manufacturer: str | None
     phase_code: str | None
     item_category_code: str | None
     product_group_code: str | None

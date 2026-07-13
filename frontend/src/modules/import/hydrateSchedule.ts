@@ -55,6 +55,7 @@ export interface ProjectHardwareScheduleHardwareItemResponse {
   vendorDiscount: number | null;
   markupPct: number | null;
   vendorNo: string | null;
+  manufacturer: string | null;
   phaseCode: string | null;
   itemCategoryCode: string | null;
   productGroupCode: string | null;
@@ -122,6 +123,7 @@ function mapHardwareItem(hi: ProjectHardwareScheduleHardwareItemResponse): Parse
     vendor_discount: hi.vendorDiscount,
     markup_pct: hi.markupPct,
     vendor_no: hi.vendorNo,
+    manufacturer: hi.manufacturer,
     phase_code: hi.phaseCode,
     item_category_code: hi.itemCategoryCode,
     product_group_code: hi.productGroupCode,
