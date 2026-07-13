@@ -214,21 +214,24 @@ export default function GpPurchaseOrderDialog({
     if (!open || !relayConnected || !company || distinctManufacturers.length === 0) return;
     let cancelled = false;
     (async () => {
-      const results: Record<string, ManufacturerSuggestion> = {};
-      for (const manufacturer of distinctManufacturers) {
-        try {
-          const { data } = await client.query<{ suggestVendorForManufacturer: ManufacturerSuggestion }>({
-            query: SUGGEST_VENDOR_FOR_MANUFACTURER,
-            variables: { gpCompany: company, manufacturer },
-            fetchPolicy: 'cache-first',
-          });
-          if (data?.suggestVendorForManufacturer) results[manufacturer] = data.suggestVendorForManufacturer;
-        } catch {
-          // A failed suggestion must not break the dialog - treat it as "no candidate" (soft note).
-          results[manufacturer] = { manufacturer, savedMapping: false, candidates: [] };
-        }
-      }
-      if (!cancelled) setMfrSuggestions((prev) => ({ ...prev, ...results }));
+      // Fetch each manufacturer's suggestion concurrently, not one after another, so N distinct
+      // manufacturers cost one round-trip of latency rather than N.
+      const entries = await Promise.all(
+        distinctManufacturers.map(async (manufacturer): Promise<[string, ManufacturerSuggestion]> => {
+          try {
+            const { data } = await client.query<{ suggestVendorForManufacturer: ManufacturerSuggestion }>({
+              query: SUGGEST_VENDOR_FOR_MANUFACTURER,
+              variables: { gpCompany: company, manufacturer },
+              fetchPolicy: 'cache-first',
+            });
+            if (data?.suggestVendorForManufacturer) return [manufacturer, data.suggestVendorForManufacturer];
+          } catch {
+            // A failed suggestion must not break the dialog - fall through to the "no candidate" soft note.
+          }
+          return [manufacturer, { manufacturer, savedMapping: false, candidates: [] }];
+        }),
+      );
+      if (!cancelled) setMfrSuggestions((prev) => ({ ...prev, ...Object.fromEntries(entries) }));
     })();
     return () => {
       cancelled = true;

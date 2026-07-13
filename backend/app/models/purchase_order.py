@@ -99,6 +99,11 @@ class POLineItem(Base):
     hardware_items: Mapped[list["HardwareItem"]] = relationship(
         "HardwareItem",
         primaryjoin="POLineItem.id == HardwareItem.po_line_item_id",
+        # Order by created_at, id so the derived manufacturer (queries._po_line_item_manufacturer,
+        # first non-null) matches mutations._resolve_line_manufacturers, which resolves the GP-written
+        # value with the same ordering. Without this the two paths could pick different manufacturers
+        # when items for one (category, product_code) disagree.
+        order_by="HardwareItem.created_at, HardwareItem.id",
         viewonly=True,
     )
 
