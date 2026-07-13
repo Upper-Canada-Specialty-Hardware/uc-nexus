@@ -334,7 +334,6 @@ describe('extractHardwareItems', () => {
               Vendor_Discount: '10',
               Markup_Pct: '30',
               Vendor_No: 'V001',
-              Manufacturer: 'TITAN',
               Item_Category_Code: 'CAT1',
               Product_Group_Code: 'GRP1',
               Submittal_ID: 'SUB1',
@@ -380,7 +379,8 @@ describe('extractHardwareItems', () => {
     expect(result.hardwareItems[0].vendor_discount).toBe(10);
     expect(result.hardwareItems[0].markup_pct).toBe(30);
     expect(result.hardwareItems[0].vendor_no).toBe('V001');
-    expect(result.hardwareItems[0].manufacturer).toBe('TITAN');
+    // manufacturer mirrors Vendor_No (TITAN stores the manufacturer name there)
+    expect(result.hardwareItems[0].manufacturer).toBe('V001');
     expect(result.hardwareItems[0].item_category_code).toBe('CAT1');
     expect(result.hardwareItems[0].product_group_code).toBe('GRP1');
     expect(result.hardwareItems[0].submittal_id).toBe('SUB1');
@@ -398,54 +398,40 @@ describe('extractHardwareItems', () => {
     expect(result.skippedRows).toHaveLength(0);
   });
 
-  it('captures manufacturer with Manufacturer preferred, MFG fallback, null when absent', () => {
+  it('sources manufacturer from Vendor_No, null when Vendor_No absent', () => {
     const contract = {
       Detail: {
         Material_List: [
           {
-            '@_Description': 'MFR-PREFERRED',
+            '@_Description': 'HAS-VENDOR',
             Material_List_Fields: {
               Product_Description: 'Lockset',
-              Vendor_No: 'V1',
-              Manufacturer: 'TITAN',
-              MFG: 'IGNORED',
+              Vendor_No: 'SARGENT',
             },
             Assignments: {
               Assignment: [{ '@_Code': 'D101', Material_ID: 'M1', Qty_Per: '1' }],
             },
           },
           {
-            '@_Description': 'MFG-FALLBACK',
+            '@_Description': 'NO-VENDOR',
             Material_List_Fields: {
-              Product_Description: 'Closer',
-              Vendor_No: 'V2',
-              MFG: 'ACME',
+              Product_Description: 'Hinge',
             },
             Assignments: {
               Assignment: [{ '@_Code': 'D102', Material_ID: 'M2', Qty_Per: '1' }],
-            },
-          },
-          {
-            '@_Description': 'NO-MFR',
-            Material_List_Fields: {
-              Product_Description: 'Hinge',
-              Vendor_No: 'V3',
-            },
-            Assignments: {
-              Assignment: [{ '@_Code': 'D103', Material_ID: 'M3', Qty_Per: '1' }],
             },
           },
         ],
       },
     };
     const result = extractHardwareItems(contract);
-    expect(result.hardwareItems).toHaveLength(3);
-    // Manufacturer wins over MFG when both present
-    expect(result.hardwareItems[0].manufacturer).toBe('TITAN');
-    // MFG used when Manufacturer absent
-    expect(result.hardwareItems[1].manufacturer).toBe('ACME');
-    // null when neither present
-    expect(result.hardwareItems[2].manufacturer).toBeNull();
+    expect(result.hardwareItems).toHaveLength(2);
+    // TITAN stores the manufacturer name in Vendor_No, so manufacturer mirrors it
+    expect(result.hardwareItems[0].vendor_no).toBe('SARGENT');
+    expect(result.hardwareItems[0].manufacturer).toBe('SARGENT');
+    // null when Vendor_No is absent
+    expect(result.hardwareItems[1].vendor_no).toBeNull();
+    expect(result.hardwareItems[1].manufacturer).toBeNull();
   });
 
   it('skips items with missing Product_Code', () => {
