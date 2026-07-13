@@ -736,13 +736,22 @@ def report_deficiency_at_assembly(
     session: Session,
     *,
     sa_opening_item_id: uuid.UUID,
-    source_inventory_location_id: uuid.UUID,
     quantity: int,
     reason_text: str | None,
     performed_by: str,
 ):
-    """During SA, bump source InventoryLocation deficient_quantity AND auto-create a replacement
-    pull request item against the same SAR opening.
+    """A checklist item was flagged deficient at assembly completion (#225).
+
+    Returns the deficient unit(s) to project inventory flagged deficient (quantity AND
+    deficient_quantity both bumped on an existing InventoryLocation row for the same
+    project/category/product) AND auto-creates a replacement pull request item so the
+    shortfall flows back through the pull gates.
+
+    Both counts move together, so the row never violates deficient_quantity <= quantity;
+    available (= quantity - deficient) is unchanged, so the returned unit can't be re-pulled.
+
+    The replacement pull request is derived from the opening's shop-assembly PullRequest
+    (#222 re-parenting); the retired SAR link is only a fallback for legacy rows.
 
     Returns (inventory_location, replacement_pull_request_item).
     """
@@ -752,27 +761,72 @@ def report_deficiency_at_assembly(
     from app.models.shop_assembly import ShopAssemblyOpening as SAOpeningModel
     from app.models.shop_assembly import ShopAssemblyOpeningItem as SAOpeningItemModel
 
+    if quantity < 1:
+        raise ValidationError("quantity must be >= 1", field="quantity")
+
     sa_oi = session.get(SAOpeningItemModel, sa_opening_item_id)
     if sa_oi is None:
         raise NotFoundError(f"Shop assembly opening item {sa_opening_item_id} not found")
 
-    il = report_inventory_deficiency(
-        session,
-        inventory_location_id=source_inventory_location_id,
-        quantity=quantity,
-        reason_text=reason_text,
-        performed_by=performed_by,
-    )
-
-    # Pull the parent SAR opening to learn opening_number for the replacement PR item
     sa_opening = session.get(SAOpeningModel, sa_oi.shop_assembly_opening_id)
     if sa_opening is None:
         raise NotFoundError(f"Shop assembly opening {sa_oi.shop_assembly_opening_id} not found")
 
-    sar = sa_opening.shop_assembly_request
+    # Learn project + replacement PR number from the shop-assembly PullRequest the opening
+    # hangs off (#222). Fall back to the legacy SAR link only for pre-#222 rows.
+    source_pr = session.get(PullRequestModel, sa_opening.pull_request_id) if sa_opening.pull_request_id else None
+    if source_pr is not None:
+        project_id = source_pr.project_id
+        replacement_basis = source_pr.request_number
+    elif sa_opening.shop_assembly_request is not None:
+        project_id = sa_opening.shop_assembly_request.project_id
+        replacement_basis = sa_opening.shop_assembly_request.request_number
+    else:
+        raise NotFoundError(f"Shop assembly opening {sa_opening.id} is not linked to a pull request")
 
-    # Find or create an open replacement pull request for this SAR
-    replacement_request_number = f"PR-REPL-{sar.request_number}"
+    # Resolve an existing project inventory row for this category/product to return the
+    # deficient unit onto. A row persists even at quantity 0 after a pull (never deleted),
+    # so the pulled-then-deficient unit has somewhere to land.
+    il_stmt = (
+        select(InventoryLocationModel)
+        .where(
+            InventoryLocationModel.project_id == project_id,
+            InventoryLocationModel.hardware_category == sa_oi.hardware_category,
+            InventoryLocationModel.product_code == sa_oi.product_code,
+        )
+        .order_by(InventoryLocationModel.received_at.desc())
+    )
+    il = session.scalars(il_stmt).first()
+    if il is None:
+        raise NotFoundError(
+            f"No inventory location for {sa_oi.hardware_category}/{sa_oi.product_code} "
+            f"in project {project_id} to return the deficient unit to"
+        )
+
+    il.quantity += quantity
+    il.deficient_quantity = (il.deficient_quantity or 0) + quantity
+
+    _log_audit_event(
+        session,
+        project_id=il.project_id,
+        entity_type=AuditEntityType.INVENTORY_LOCATION,
+        entity_id=il.id,
+        action=AuditAction.REPORT_DEFICIENT,
+        performed_by=performed_by,
+        detail={
+            "quantity": quantity,
+            "newQuantity": il.quantity,
+            "newDeficientQuantity": il.deficient_quantity,
+            "reasonText": reason_text,
+            "hardwareCategory": il.hardware_category,
+            "productCode": il.product_code,
+            "context": "assembly_completion",
+            "shopAssemblyOpeningItemId": str(sa_oi.id),
+        },
+    )
+
+    # Find or create an open replacement pull request for this opening's shop-assembly PR.
+    replacement_request_number = f"PR-REPL-{replacement_basis}"
     existing_pr_stmt = select(PullRequestModel).where(
         PullRequestModel.request_number == replacement_request_number,
         PullRequestModel.deleted_at.is_(None),

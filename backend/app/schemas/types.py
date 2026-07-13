@@ -412,7 +412,9 @@ class ShopAssemblyOpeningItem:
 @strawberry.type
 class ShopAssemblyOpening:
     id: strawberry.ID
-    shop_assembly_request_id: strawberry.ID
+    # Legacy SAR parent (nullable since #222); openings now hang off pull_request_id.
+    shop_assembly_request_id: strawberry.ID | None
+    pull_request_id: strawberry.ID | None
     opening_id: strawberry.ID
     pull_status: PullStatus
     assigned_to: str | None
@@ -525,13 +527,11 @@ class FinalizeImportResult:
     project: Project
     purchase_orders: list[PurchaseOrder]
     shipping_out_pull_requests: list[PullRequest]
+    # Legacy SAR field, always None since #222 retired the SAR flow. Kept for the result contract.
     shop_assembly_request: ShopAssemblyRequest | None
-
-
-@strawberry.type
-class ApproveShopAssemblyResult:
-    shop_assembly_request: ShopAssemblyRequest
-    pull_request: PullRequest
+    # The shop-assembly PullRequest minted directly by "Start a Task" (#222). None unless the
+    # import created one. This is what the import success UI confirms.
+    shop_assembly_pull_request: PullRequest | None = None
 
 
 @strawberry.type
@@ -590,10 +590,25 @@ class OpeningItemDetail:
 
 
 @strawberry.type
+class InventoryShortfall:
+    """One shorted (hardware_category, product_code) combo surfaced by an inventory-sufficiency
+    gate (#224): requested vs available (quantity - deficient_quantity), and the gap."""
+
+    hardware_category: str
+    product_code: str
+    requested: int
+    available: int
+    short: int
+
+
+@strawberry.type
 class ApproveResult:
     pull_request: PullRequest
     outcome: ApproveOutcome
     notification: Notification | None
+    # Populated when outcome is INSUFFICIENT: the exact per-combo shortfall shown inline to the
+    # approver. Empty on APPROVED.
+    shortfalls: list[InventoryShortfall] = strawberry.field(default_factory=list)
 
 
 @strawberry.type
@@ -824,8 +839,6 @@ class HomeDashboardStats:
 
 @strawberry.type
 class ShopAssemblyStats:
-    pending_sar_count: int
-    approved_sar_count: int
     active_pull_request_count: int
 
 

@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from app.auth import require_admin, require_user, resolve_display_name
 from app.database import SessionLocal
-from app.errors import InvalidStateTransitionError, NotFoundError
+from app.errors import InvalidStateTransitionError, InventoryShortfallError, NotFoundError
 from app.repositories import (
     notification_repository,
     po_repository,
@@ -22,7 +22,7 @@ from app.repositories import (
     warehouse_admin_repository,
     warehouse_repository,
 )
-from app.services import gp_idempotency, gp_po
+from app.services import gp_idempotency, gp_po, notification_service
 from app.services.relay_gateway import gateway as relay_gateway
 
 from .enums import ApproveOutcome, PODocumentType
@@ -76,11 +76,11 @@ from .queries import (
 )
 from .types import (
     ApproveResult,
-    ApproveShopAssemblyResult,
     ClerkUser,
     DeficiencyReview,
     FinalizeImportResult,
     InventoryLocation,
+    InventoryShortfall,
     LocationMergeResult,
     Notification,
     OpeningItem,
@@ -96,7 +96,6 @@ from .types import (
     SAReplacementResult,
     ShipmentReturn,
     ShopAssemblyOpening,
-    ShopAssemblyRequest,
     StockItem,
     TransferResult,
     Vendor,
@@ -584,8 +583,24 @@ class Mutation:
         }
 
         with SessionLocal() as session:
-            result = import_repository.finalize_import_session(session, input_data)
-            session.commit()
+            try:
+                result = import_repository.finalize_import_session(session, input_data)
+                session.commit()
+            except InventoryShortfallError as e:
+                # Gate 1 (#224): the shop-assembly task was refused. Roll the whole finalize back so
+                # no PR (and no partial state) survives, then mint the PO backfill notification in a
+                # fresh session so it outlives the rollback. Re-raise so the shortfall reaches the
+                # creator inline.
+                session.rollback()
+                with SessionLocal() as notif_session:
+                    notification_service.notify_po_shortfall(
+                        notif_session,
+                        project_id=e.project_id,
+                        request_number=e.request_number,
+                        shortfalls=e.shortfalls,
+                    )
+                    notif_session.commit()
+                raise
 
             # Re-load project with openings
             project = (
@@ -640,11 +655,27 @@ class Mutation:
                 )
                 sar_type = _shop_assembly_request_to_type(refreshed_sar)
 
+            # Re-load the directly-minted shop-assembly PR (#222) with its items so the import
+            # success UI can confirm it. Always None when the import created no shop-assembly task.
+            sa_pr_type = None
+            if result["shop_assembly_pull_request"] is not None:
+                refreshed_sa_pr = (
+                    session.scalars(
+                        select(PRModel)
+                        .options(selectinload(PRModel.items))
+                        .where(PRModel.id == result["shop_assembly_pull_request"].id)
+                    )
+                    .unique()
+                    .first()
+                )
+                sa_pr_type = _pull_request_to_type(refreshed_sa_pr)
+
             return FinalizeImportResult(
                 project=_project_to_type(project),
                 purchase_orders=[_po_to_type(po) for po in pos],
                 shipping_out_pull_requests=[_pull_request_to_type(pr) for pr in prs],
                 shop_assembly_request=sar_type,
+                shop_assembly_pull_request=sa_pr_type,
             )
 
     # PO
@@ -945,7 +976,7 @@ class Mutation:
     @strawberry.mutation
     def approve_pull_request(self, id: strawberry.ID, approved_by: str) -> ApproveResult:
         with SessionLocal() as session:
-            pr, outcome, notification = warehouse_repository.approve_pull_request(
+            pr, outcome, notification, shortfalls = warehouse_repository.approve_pull_request(
                 session, uuid.UUID(str(id)), approved_by
             )
             session.commit()
@@ -960,8 +991,18 @@ class Mutation:
 
             return ApproveResult(
                 pull_request=_pull_request_to_type(pr),
-                outcome=ApproveOutcome.APPROVED if outcome == "APPROVED" else ApproveOutcome.CANCELLED,
+                outcome=ApproveOutcome.APPROVED if outcome == "APPROVED" else ApproveOutcome.INSUFFICIENT,
                 notification=_notification_to_type(notification) if notification else None,
+                shortfalls=[
+                    InventoryShortfall(
+                        hardware_category=s.hardware_category,
+                        product_code=s.product_code,
+                        requested=s.requested,
+                        available=s.available,
+                        short=s.short,
+                    )
+                    for s in shortfalls
+                ],
             )
 
     @strawberry.mutation
@@ -1179,50 +1220,6 @@ class Mutation:
             session.refresh(notification)
             return _notification_to_type(notification)
 
-    # Shop Assembly
-    @strawberry.mutation
-    def approve_shop_assembly_request(self, id: strawberry.ID) -> ApproveShopAssemblyResult:
-        with SessionLocal() as session:
-            sar, pr = shop_assembly_repository.approve_shop_assembly_request(session, uuid.UUID(str(id)))
-            session.commit()
-            # Re-load with eager loading for relationships
-            from sqlalchemy.orm import selectinload
-
-            from app.models.pull_request import PullRequest as PRModel
-            from app.models.shop_assembly import (
-                ShopAssemblyOpening as SAOModel,
-            )
-            from app.models.shop_assembly import (
-                ShopAssemblyRequest as SARModel,
-            )
-
-            sar = (
-                session.scalars(
-                    select(SARModel)
-                    .options(selectinload(SARModel.openings).selectinload(SAOModel.items))
-                    .where(SARModel.id == sar.id)
-                )
-                .unique()
-                .first()
-            )
-            pr = (
-                session.scalars(select(PRModel).options(selectinload(PRModel.items)).where(PRModel.id == pr.id))
-                .unique()
-                .first()
-            )
-            return ApproveShopAssemblyResult(
-                shop_assembly_request=_shop_assembly_request_to_type(sar),
-                pull_request=_pull_request_to_type(pr),
-            )
-
-    @strawberry.mutation
-    def reject_shop_assembly_request(self, id: strawberry.ID, reason: str) -> ShopAssemblyRequest:
-        with SessionLocal() as session:
-            sar = shop_assembly_repository.reject_shop_assembly_request(session, uuid.UUID(str(id)), reason)
-            session.commit()
-            session.refresh(sar)
-            return _shop_assembly_request_to_type(sar)
-
     @strawberry.mutation
     def assign_openings(self, input: AssignOpeningsInput) -> list[ShopAssemblyOpening]:
         opening_ids = [uuid.UUID(str(oid)) for oid in input.opening_ids]
@@ -1254,12 +1251,22 @@ class Mutation:
     @strawberry.mutation
     def complete_opening(self, input: CompleteOpeningInput) -> OpeningItem:
         with SessionLocal() as session:
+            item_results = [
+                shop_assembly_repository.OpeningItemResult(
+                    shop_assembly_opening_item_id=uuid.UUID(str(r.shop_assembly_opening_item_id)),
+                    installed=r.installed,
+                    deficient_reason=r.deficient_reason,
+                )
+                for r in input.item_results
+            ]
             result = shop_assembly_repository.complete_opening(
                 session,
                 uuid.UUID(str(input.opening_id)),
                 input.aisle,
                 input.bay,
                 input.bin,
+                item_results=item_results,
+                completed_by=input.completed_by,
             )
             session.commit()
             session.refresh(result)
@@ -1606,7 +1613,6 @@ class Mutation:
             il, pri = stock_repository.report_deficiency_at_assembly(
                 session,
                 sa_opening_item_id=uuid.UUID(str(input.shop_assembly_opening_item_id)),
-                source_inventory_location_id=uuid.UUID(str(input.source_inventory_location_id)),
                 quantity=input.quantity,
                 reason_text=input.reason_text,
                 performed_by=input.performed_by or "Admin/Manager",

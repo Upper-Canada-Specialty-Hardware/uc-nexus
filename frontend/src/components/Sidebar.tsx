@@ -70,7 +70,6 @@ const SIDEBAR_ITEMS: SidebarItem[] = [
     icon: <BuildIcon />,
     requiredRoles: ['Shop Assembly User', 'Shop Assembly Manager'],
     subItems: [
-      { label: 'Requests', path: '/app/shop-assembly/requests' },
       { label: 'Assemble List', path: '/app/shop-assembly/assemble' },
       { label: 'Assignments', path: '/app/shop-assembly/assign' },
       { label: 'My Work', path: '/app/shop-assembly/my-work' },
