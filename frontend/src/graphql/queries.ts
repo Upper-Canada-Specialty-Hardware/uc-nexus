@@ -499,6 +499,7 @@ export const GET_PROJECT_HARDWARE_SCHEDULE = gql`
         vendorDiscount
         markupPct
         vendorNo
+        manufacturer
         phaseCode
         itemCategoryCode
         productGroupCode

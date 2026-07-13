@@ -227,6 +227,7 @@ export function extractHardwareItems(
     const vendorDiscount = parseFloatOrNull(mlf?.Vendor_Discount);
     const markupPct = parseFloatOrNull(mlf?.Markup_Pct);
     const vendorNo = textOrNull(mlf?.Vendor_No);
+    const manufacturer = textOrNull(mlf?.Manufacturer) ?? textOrNull(mlf?.MFG);
     const itemCategoryCode = textOrNull(mlf?.Item_Category_Code);
     const productGroupCode = textOrNull(mlf?.Product_Group_Code);
     const submittalId = textOrNull(mlf?.Submittal_ID);
@@ -281,6 +282,7 @@ export function extractHardwareItems(
         vendor_discount: vendorDiscount,
         markup_pct: markupPct,
         vendor_no: vendorNo,
+        manufacturer: manufacturer,
         phase_code: phaseCode,
         item_category_code: itemCategoryCode,
         product_group_code: productGroupCode,

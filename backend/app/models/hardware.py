@@ -36,6 +36,7 @@ class HardwareItem(Base):
     vendor_discount: Mapped[Decimal | None] = mapped_column(Numeric(10, 4), nullable=True)
     markup_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4), nullable=True)
     vendor_no: Mapped[str | None] = mapped_column(String, nullable=True)
+    manufacturer: Mapped[str | None] = mapped_column(String, nullable=True)
     phase_code: Mapped[str | None] = mapped_column(String, nullable=True)
     item_category_code: Mapped[str | None] = mapped_column(String, nullable=True)
     product_group_code: Mapped[str | None] = mapped_column(String, nullable=True)

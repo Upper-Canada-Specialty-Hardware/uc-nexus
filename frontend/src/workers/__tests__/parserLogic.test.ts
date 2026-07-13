@@ -334,6 +334,7 @@ describe('extractHardwareItems', () => {
               Vendor_Discount: '10',
               Markup_Pct: '30',
               Vendor_No: 'V001',
+              Manufacturer: 'TITAN',
               Item_Category_Code: 'CAT1',
               Product_Group_Code: 'GRP1',
               Submittal_ID: 'SUB1',
@@ -379,6 +380,7 @@ describe('extractHardwareItems', () => {
     expect(result.hardwareItems[0].vendor_discount).toBe(10);
     expect(result.hardwareItems[0].markup_pct).toBe(30);
     expect(result.hardwareItems[0].vendor_no).toBe('V001');
+    expect(result.hardwareItems[0].manufacturer).toBe('TITAN');
     expect(result.hardwareItems[0].item_category_code).toBe('CAT1');
     expect(result.hardwareItems[0].product_group_code).toBe('GRP1');
     expect(result.hardwareItems[0].submittal_id).toBe('SUB1');
@@ -394,6 +396,56 @@ describe('extractHardwareItems', () => {
     expect(result.hardwareItems[2].phase_code).toBeNull();
 
     expect(result.skippedRows).toHaveLength(0);
+  });
+
+  it('captures manufacturer with Manufacturer preferred, MFG fallback, null when absent', () => {
+    const contract = {
+      Detail: {
+        Material_List: [
+          {
+            '@_Description': 'MFR-PREFERRED',
+            Material_List_Fields: {
+              Product_Description: 'Lockset',
+              Vendor_No: 'V1',
+              Manufacturer: 'TITAN',
+              MFG: 'IGNORED',
+            },
+            Assignments: {
+              Assignment: [{ '@_Code': 'D101', Material_ID: 'M1', Qty_Per: '1' }],
+            },
+          },
+          {
+            '@_Description': 'MFG-FALLBACK',
+            Material_List_Fields: {
+              Product_Description: 'Closer',
+              Vendor_No: 'V2',
+              MFG: 'ACME',
+            },
+            Assignments: {
+              Assignment: [{ '@_Code': 'D102', Material_ID: 'M2', Qty_Per: '1' }],
+            },
+          },
+          {
+            '@_Description': 'NO-MFR',
+            Material_List_Fields: {
+              Product_Description: 'Hinge',
+              Vendor_No: 'V3',
+            },
+            Assignments: {
+              Assignment: [{ '@_Code': 'D103', Material_ID: 'M3', Qty_Per: '1' }],
+            },
+          },
+        ],
+      },
+    };
+    const result = extractHardwareItems(contract);
+    expect(result.hardwareItems).toHaveLength(3);
+    // Manufacturer wins over MFG when both present
+    expect(result.hardwareItems[0].manufacturer).toBe('TITAN');
+    // MFG used when Manufacturer absent
+    expect(result.hardwareItems[1].manufacturer).toBe('ACME');
+    // null when neither present
+    expect(result.hardwareItems[2].manufacturer).toBeNull();
   });
 
   it('skips items with missing Product_Code', () => {

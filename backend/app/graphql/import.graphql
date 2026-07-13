@@ -50,6 +50,7 @@ input HardwareItemInput {
   vendor_discount: Float
   markup_pct: Float
   vendor_no: String
+  manufacturer: String
   phase_code: String
   item_category_code: String
   product_group_code: String
