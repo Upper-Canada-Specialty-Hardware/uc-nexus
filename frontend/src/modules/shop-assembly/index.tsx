@@ -1,7 +1,6 @@
 import type { ReactNode } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { Box } from '@mui/material';
-import SARListPage from './SARListPage';
 import AssembleListPage from './AssembleListPage';
 import AssignmentBoard from './AssignmentBoard';
 import MyWorkPage from './MyWorkPage';
@@ -21,7 +20,6 @@ export default function ShopAssemblyModule() {
   return (
     <Routes>
       <Route index element={<ShopAssemblyLanding />} />
-      <Route path="requests" element={<ShopAssemblySubLayout><SARListPage /></ShopAssemblySubLayout>} />
       <Route path="assemble" element={<ShopAssemblySubLayout><AssembleListPage /></ShopAssemblySubLayout>} />
       <Route path="assign" element={<ShopAssemblySubLayout><AssignmentBoard /></ShopAssemblySubLayout>} />
       <Route path="my-work" element={<ShopAssemblySubLayout><MyWorkPage /></ShopAssemblySubLayout>} />

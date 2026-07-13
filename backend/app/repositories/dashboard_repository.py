@@ -11,13 +11,11 @@ from app.models.enums import (
     POStatus,
     PullRequestSource,
     PullRequestStatus,
-    ShopAssemblyRequestStatus,
 )
 from app.models.hardware import HardwareItem
 from app.models.project import Opening, Project
 from app.models.pull_request import PullRequest
 from app.models.purchase_order import POLineItem, PurchaseOrder
-from app.models.shop_assembly import ShopAssemblyRequest
 from app.models.vendor import Vendor
 
 OPEN_PO_STATUSES = (
@@ -79,24 +77,6 @@ def get_home_dashboard_stats(session: Session) -> dict:
 
 def get_shop_assembly_stats(session: Session) -> dict:
     """KPIs for the Shop Assembly landing."""
-    pending_sars = (
-        session.scalar(
-            select(func.count())
-            .select_from(ShopAssemblyRequest)
-            .where(ShopAssemblyRequest.status == ShopAssemblyRequestStatus.PENDING)
-        )
-        or 0
-    )
-
-    approved_sars = (
-        session.scalar(
-            select(func.count())
-            .select_from(ShopAssemblyRequest)
-            .where(ShopAssemblyRequest.status == ShopAssemblyRequestStatus.APPROVED)
-        )
-        or 0
-    )
-
     active_shop_pulls = (
         session.scalar(
             select(func.count())
@@ -111,8 +91,6 @@ def get_shop_assembly_stats(session: Session) -> dict:
     )
 
     return {
-        "pending_sar_count": int(pending_sars),
-        "approved_sar_count": int(approved_sars),
         "active_pull_request_count": int(active_shop_pulls),
     }
 
