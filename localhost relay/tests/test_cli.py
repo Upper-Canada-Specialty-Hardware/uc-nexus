@@ -40,3 +40,32 @@ def test_main_dispatches_health(monkeypatch):
     monkeypatch.setattr(cli, "_health", lambda rest: called.setdefault("rest", rest) or 0)
     assert cli.main(["health"]) == 0
     assert called["rest"] == []
+
+
+def _fake_run_app(store):
+    def _run(minimized=False):
+        store["minimized"] = minimized
+        return 0
+
+    return _run
+
+
+def test_bare_invocation_defaults_to_app(monkeypatch):
+    # single-file model: a double-clicked exe (no args) opens the desktop app, not headless serve.
+    monkeypatch.setattr(cli, "_reattach_console", lambda: None)
+    from ucnexus_relay import app as app_mod
+
+    called = {}
+    monkeypatch.setattr(app_mod, "run_app", _fake_run_app(called))
+    assert cli.main([]) == 0
+    assert called["minimized"] is False
+
+
+def test_flags_only_invocation_defaults_to_app_minimized(monkeypatch):
+    monkeypatch.setattr(cli, "_reattach_console", lambda: None)
+    from ucnexus_relay import app as app_mod
+
+    called = {}
+    monkeypatch.setattr(app_mod, "run_app", _fake_run_app(called))
+    assert cli.main(["--minimized"]) == 0
+    assert called["minimized"] is True
