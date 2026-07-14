@@ -316,6 +316,16 @@ class Api:
             result = updater.stage_update(url.strip(), DEFAULT_CONFIG_PATH.parent, os.getpid())
             if result.get("ok"):
                 running.shutdown()
+                # Make sure this process actually exits so the helper's swap can proceed promptly.
+                # shutdown() stopped serve + tray and asked the window to close, but destroy() runs from
+                # this pywebview API worker thread and doesn't always tear down webview.start(); a daemon
+                # timer hard-exits as a fallback (it's killed with the process if we exit cleanly first,
+                # so it only fires when the GUI loop is stuck).
+                import threading
+
+                timer = threading.Timer(2.0, lambda: os._exit(0))
+                timer.daemon = True
+                timer.start()
             return result
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "error": str(e)}

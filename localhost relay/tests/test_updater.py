@@ -167,6 +167,10 @@ def test_stage_update_downloads_writes_helper_and_spawns_it(tmp_path, monkeypatc
     txt = helper.read_text(encoding="utf-8")
     assert "4242" in txt  # waits for the app pid
     assert "ucnexus-relay.exe" in txt  # relaunches the exe
+    # robustness: bounded wait -> force-kill any stuck relay process, and relaunch even if the swap fails
+    assert "taskkill /f /im ucnexus-relay.exe" in txt  # force any hung relay/serve process down
+    assert "geq 20" in txt  # the app-exit wait is bounded (can't loop forever)
+    assert ":failed" in txt and "if exist" in txt  # relaunch the current exe if the swap never takes
     assert (tmp_path / "ucnexus-relay.exe.new").exists()  # the new exe downloaded, not yet swapped
     assert calls and calls[0][0][0] == ["cmd", "/c", str(helper)]  # helper spawned
 
