@@ -13,6 +13,7 @@ from app.repositories import (
     admin_repository,
     dashboard_repository,
     notification_repository,
+    po_document_settings_repository,
     po_repository,
     relay_repository,
     shipping_repository,
@@ -56,7 +57,9 @@ from .types import (
     OpeningHardwareStatusItem,
     OpeningItem,
     OpeningItemDetail,
+    PODocumentData,
     PODocumentInfo,
+    PODocumentSettings,
     POLineItem,
     POStatistics,
     PriorOrderAsForProduct,
@@ -66,6 +69,7 @@ from .types import (
     ProjectHardwareSchedule,
     ProjectProgressByProduct,
     ProjectScheduleHardwareItem,
+    ProjectShipTo,
     PullRequest,
     PullRequestItem,
     PurchaseOrder,
@@ -240,9 +244,52 @@ def _warehouse_to_type(w) -> Warehouse:
     )
 
 
+def _po_document_data_to_type(d) -> PODocumentData:
+    return PODocumentData(
+        id=strawberry.ID(str(d.id)),
+        po_id=strawberry.ID(str(d.po_id)),
+        vendor_address=d.vendor_address,
+        buyer_name=d.buyer_name,
+        currency=d.currency,
+        ship_to=d.ship_to,
+        shipping_method=d.shipping_method,
+        proposal_number=d.proposal_number,
+        freight=float(d.freight),
+        miscellaneous=float(d.miscellaneous),
+        tax_amount=float(d.tax_amount),
+        tax_label=d.tax_label,
+        required_by_override=d.required_by_override,
+        include_fsc=d.include_fsc,
+        include_usa_tariff=d.include_usa_tariff,
+        include_customs=d.include_customs,
+    )
+
+
+def _po_document_settings_to_type(s) -> PODocumentSettings:
+    return PODocumentSettings(
+        tax_numbers=s.tax_numbers,
+        mandatory_bullets=list(s.mandatory_bullets or []),
+        shipping_accounts=list(s.shipping_accounts or []),
+        customs_broker_block=s.customs_broker_block,
+        fsc_note=s.fsc_note,
+        usa_tariff_note=s.usa_tariff_note,
+        usa_tariff_effective_until=s.usa_tariff_effective_until,
+        company_from_address=s.company_from_address,
+        payment_terms=s.payment_terms,
+        confirm_with=s.confirm_with,
+        footer_notes=s.footer_notes,
+        signature_note=s.signature_note,
+        updated_at=s.updated_at,
+    )
+
+
 def _po_to_type(po, receive_records=None) -> PurchaseOrder:
     documents = getattr(po, "documents", None) or []
     vendor = getattr(po, "vendor", None)
+    # Read document_data ONLY if the caller eager-loaded it (in __dict__): a bare attribute access would
+    # lazy-load, turning list resolvers that don't need it into an N+1. get_purchase_orders /
+    # get_purchase_order selectinload it (that's what the generate dialog reads); everything else gets None.
+    doc_data = po.__dict__.get("document_data")
     return PurchaseOrder(
         id=strawberry.ID(str(po.id)),
         po_number=po.po_number,
@@ -255,6 +302,7 @@ def _po_to_type(po, receive_records=None) -> PurchaseOrder:
         # dev data is disposable - the local-vendor fallback only covers rows from before this column
         # existed; every PO created going forward carries its own snapshot.
         vendor_name_snapshot=po.vendor_name_snapshot or (vendor.name if vendor is not None else None),
+        buyer_id=po.buyer_id,
         vendor=_vendor_to_type(vendor) if vendor is not None else None,
         vendor_quote_number=po.vendor_quote_number,
         notes=po.notes,
@@ -265,6 +313,7 @@ def _po_to_type(po, receive_records=None) -> PurchaseOrder:
         line_items=[_po_line_item_to_type(li) for li in po.line_items],
         receive_records=[_receive_record_to_type(rr) for rr in (receive_records or [])],
         documents=[_po_document_to_type(doc) for doc in documents],
+        document_data=_po_document_data_to_type(doc_data) if doc_data is not None else None,
     )
 
 
@@ -666,6 +715,24 @@ class Query:
             if p is None:
                 return None
             return _project_to_type(p)
+
+    @strawberry.field
+    def project_ship_to(self, project_id: strawberry.ID) -> ProjectShipTo | None:
+        """The job-site address block for a project, by its UUID - the "deliver to site" ship-to option
+        on the generated PO document (issue #230). A lean projection, kept off the PO list query."""
+        with SessionLocal() as session:
+            p = session.get(ProjectModel, uuid.UUID(str(project_id)))
+            if p is None:
+                return None
+            return ProjectShipTo(
+                id=strawberry.ID(str(p.id)),
+                project_id=p.project_id,
+                job_site_name=p.job_site_name,
+                address=p.address,
+                city=p.city,
+                state=p.state,
+                zip=p.zip,
+            )
 
     @strawberry.field
     def project_hardware_schedule(self, project_id: strawberry.ID) -> ProjectHardwareSchedule | None:
@@ -1131,6 +1198,17 @@ class Query:
                 for c in ranked
             ],
         )
+
+    @strawberry.field
+    def po_document_settings(self, info: strawberry.Info) -> PODocumentSettings:
+        """The admin boilerplate for the generated supplier PO document (issue #230). require_user, not
+        admin: the PO user's generate form reads it to render the document. Get-or-creates the singleton
+        with guideline defaults on first read, so it never returns null."""
+        require_user(info)
+        with SessionLocal() as session:
+            settings = po_document_settings_repository.get_settings(session)
+            session.commit()
+            return _po_document_settings_to_type(settings)
 
     @strawberry.field
     def warehouses(self, include_inactive: bool = True) -> list[Warehouse]:

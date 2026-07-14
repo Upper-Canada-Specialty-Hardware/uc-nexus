@@ -76,6 +76,7 @@ export const GET_PURCHASE_ORDERS = gql`
       status
       gpVendorId
       vendorNameSnapshot
+      buyerId
       vendor {
         id
         name
@@ -89,6 +90,24 @@ export const GET_PURCHASE_ORDERS = gql`
       orderedAt
       createdAt
       updatedAt
+      documentData {
+        id
+        poId
+        vendorAddress
+        buyerName
+        currency
+        shipTo
+        shippingMethod
+        proposalNumber
+        freight
+        miscellaneous
+        taxAmount
+        taxLabel
+        requiredByOverride
+        includeFsc
+        includeUsaTariff
+        includeCustoms
+      }
       lineItems {
         id
         poId
@@ -660,6 +679,44 @@ export const GET_WAREHOUSES = gql`
       isActive
       createdAt
       updatedAt
+    }
+  }
+`;
+
+export const PO_DOCUMENT_SETTINGS_FIELDS = `
+  taxNumbers
+  mandatoryBullets
+  shippingAccounts
+  customsBrokerBlock
+  fscNote
+  usaTariffNote
+  usaTariffEffectiveUntil
+  companyFromAddress
+  paymentTerms
+  confirmWith
+  footerNotes
+  signatureNote
+  updatedAt
+`;
+
+export const GET_PO_DOCUMENT_SETTINGS = gql`
+  query GetPoDocumentSettings {
+    poDocumentSettings {
+      ${PO_DOCUMENT_SETTINGS_FIELDS}
+    }
+  }
+`;
+
+export const GET_PROJECT_SHIP_TO = gql`
+  query GetProjectShipTo($projectId: ID!) {
+    projectShipTo(projectId: $projectId) {
+      id
+      projectId
+      jobSiteName
+      address
+      city
+      state
+      zip
     }
   }
 `;

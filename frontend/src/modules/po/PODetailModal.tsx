@@ -46,6 +46,7 @@ import {
 import { GET_PRIOR_ORDER_AS_VALUES } from '../../graphql/queries';
 import type { PurchaseOrder } from './index';
 import GpPurchaseOrderDialog from './GpPurchaseOrderDialog';
+import POGenerateDialog from './POGenerateDialog';
 import { poVendorName } from './poVendorName';
 import { formatPoStatus, poStatusChipColor } from './poStatus';
 
@@ -53,6 +54,7 @@ const DOC_TYPE_LABELS: Record<string, string> = {
   PO_DOCUMENT: 'PO Document',
   VENDOR_ACKNOWLEDGEMENT: 'Vendor Acknowledgement',
   MISCELLANEOUS: 'Miscellaneous',
+  GENERATED_PO: 'Generated PO',
 };
 
 function formatDate(dateStr: string | null | undefined): string {
@@ -114,6 +116,9 @@ export default function PODetailModal({
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [uploadDocType, setUploadDocType] = useState<string>('PO_DOCUMENT');
+
+  // Generate-document dialog state
+  const [generateOpen, setGenerateOpen] = useState(false);
 
   // --- Mutations ---
 
@@ -424,6 +429,9 @@ export default function PODetailModal({
 
   const canCancel = po.status === 'DRAFT' || po.status === 'GP_REGISTERED' || po.status === 'VENDOR_CONFIRMED';
 
+  // The supplier PO document can be generated for any live PO (not a cancelled one).
+  const canGenerate = po.status !== 'CANCELLED';
+
   const displayTitle = po.poNumber ? `PO: ${po.poNumber}` : `Request: ${po.requestNumber}`;
 
   // --- Action buttons ---
@@ -448,6 +456,15 @@ export default function PODetailModal({
           {canEdit && (
             <Button variant="outlined" onClick={handleStartEdit}>
               Edit
+            </Button>
+          )}
+          {canGenerate && (
+            <Button
+              variant="outlined"
+              startIcon={<DescriptionIcon />}
+              onClick={() => setGenerateOpen(true)}
+            >
+              Generate PO Document
             </Button>
           )}
           {canRegisterInGp && (
@@ -737,6 +754,14 @@ export default function PODetailModal({
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Generate PO Document */}
+      <POGenerateDialog
+        open={generateOpen}
+        po={po}
+        onClose={() => setGenerateOpen(false)}
+        onRefetch={onRefetch}
+      />
 
       {/* Register in GP */}
       <GpPurchaseOrderDialog

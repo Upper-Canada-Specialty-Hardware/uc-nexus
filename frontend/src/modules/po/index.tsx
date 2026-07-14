@@ -98,6 +98,25 @@ export interface VendorRef {
   phone: string | null;
 }
 
+export interface PODocumentData {
+  id: string;
+  poId: string;
+  vendorAddress: string | null;
+  buyerName: string | null;
+  currency: string;
+  shipTo: string | null;
+  shippingMethod: string | null;
+  proposalNumber: string | null;
+  freight: number;
+  miscellaneous: number;
+  taxAmount: number;
+  taxLabel: string;
+  requiredByOverride: string | null;
+  includeFsc: boolean;
+  includeUsaTariff: boolean;
+  includeCustoms: boolean;
+}
+
 export interface PurchaseOrder {
   id: string;
   poNumber: string | null;
@@ -106,6 +125,7 @@ export interface PurchaseOrder {
   status: string;
   gpVendorId: string | null;
   vendorNameSnapshot: string | null;
+  buyerId: string | null;
   vendor: VendorRef | null;
   vendorQuoteNumber: string | null;
   notes: string | null;
@@ -116,6 +136,7 @@ export interface PurchaseOrder {
   lineItems: POLineItem[];
   receiveRecords: ReceiveRecord[];
   documents: PODocumentInfo[];
+  documentData: PODocumentData | null;
 }
 
 interface POStatistics {
