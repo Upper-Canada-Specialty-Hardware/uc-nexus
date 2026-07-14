@@ -43,8 +43,9 @@ def test_main_dispatches_health(monkeypatch):
 
 
 def _fake_run_app(store):
-    def _run(minimized=False):
+    def _run(minimized=False, force=False):
         store["minimized"] = minimized
+        store["force"] = force
         return 0
 
     return _run
@@ -69,3 +70,52 @@ def test_flags_only_invocation_defaults_to_app_minimized(monkeypatch):
     monkeypatch.setattr(app_mod, "run_app", _fake_run_app(called))
     assert cli.main(["--minimized"]) == 0
     assert called["minimized"] is True
+
+
+def test_app_passes_force_through(monkeypatch):
+    monkeypatch.setattr(cli, "_reattach_console", lambda: None)
+    from ucnexus_relay import app as app_mod
+
+    called = {}
+    monkeypatch.setattr(app_mod, "run_app", _fake_run_app(called))
+    assert cli.main(["app", "--force"]) == 0
+    assert called["force"] is True and called["minimized"] is False
+
+
+def test_main_dispatches_print_build(monkeypatch, capfd):
+    # capfd (fd-level), not capsys: print-build writes to fd 1 directly so it survives the windowed build's
+    # devnull stdout when spawned over a pipe by promote's installed_build.
+    monkeypatch.setattr(cli, "_reattach_console", lambda: None)
+    from ucnexus_relay import updater
+
+    monkeypatch.setattr(updater, "current_build", lambda: "relay-v0.1.0-build.7")
+    assert cli.main(["print-build"]) == 0
+    assert "relay-v0.1.0-build.7" in capfd.readouterr().out
+
+
+def test_relay_already_serving_true(monkeypatch):
+    import json
+    import urllib.request
+
+    class _Resp:
+        def read(self):
+            return json.dumps({"status": "ok"}).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _Resp())
+    assert cli._relay_already_serving("127.0.0.1", 7321) is True
+
+
+def test_relay_already_serving_false_when_unreachable(monkeypatch):
+    import urllib.request
+
+    def _boom(*a, **k):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(urllib.request, "urlopen", _boom)
+    assert cli._relay_already_serving("127.0.0.1", 7321) is False
