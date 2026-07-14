@@ -71,7 +71,10 @@ function projectBlock(p: ProjectShipTo): string {
 
 function formatDocDate(dateStr: string | null | undefined): string {
   if (!dateStr) return '';
-  const d = new Date(dateStr);
+  // Parse a date-only string (YYYY-MM-DD, from a date input or a GraphQL Date) as LOCAL midnight, not
+  // UTC - `new Date("2026-08-15")` is UTC, which renders as the previous day in a behind-UTC timezone.
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr);
+  const d = m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(dateStr);
   return isNaN(d.getTime()) ? '' : d.toLocaleDateString();
 }
 
