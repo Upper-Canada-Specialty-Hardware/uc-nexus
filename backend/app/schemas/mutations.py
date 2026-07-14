@@ -1426,6 +1426,7 @@ class Mutation:
                 "tax_numbers",
                 "mandatory_bullets",
                 "shipping_accounts",
+                "shipping_methods",
                 "customs_broker_block",
                 "fsc_note",
                 "usa_tariff_note",

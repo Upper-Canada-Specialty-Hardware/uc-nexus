@@ -74,6 +74,7 @@ export const GET_PURCHASE_ORDERS = gql`
       requestNumber
       projectId
       status
+      gpCompany
       gpVendorId
       vendorNameSnapshot
       buyerId
@@ -644,6 +645,18 @@ export const GET_GP_BUYERS = gql`
   }
 `;
 
+export const GET_GP_PO_TOTALS = gql`
+  query GetGpPoTotals($company: String!, $poNumber: String!) {
+    gpPoTotals(company: $company, poNumber: $poNumber) {
+      poNumber
+      subtotal
+      freight
+      miscellaneous
+      taxAmount
+    }
+  }
+`;
+
 export const GET_GP_COST_CODES = gql`
   query GetGpCostCodes($company: String!, $job: String!) {
     gpCostCodes(company: $company, job: $job) {
@@ -687,6 +700,7 @@ export const PO_DOCUMENT_SETTINGS_FIELDS = `
   taxNumbers
   mandatoryBullets
   shippingAccounts
+  shippingMethods
   customsBrokerBlock
   fscNote
   usaTariffNote

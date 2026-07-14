@@ -429,8 +429,9 @@ export default function PODetailModal({
 
   const canCancel = po.status === 'DRAFT' || po.status === 'GP_REGISTERED' || po.status === 'VENDOR_CONFIRMED';
 
-  // The supplier PO document can be generated for any live PO (not a cancelled one).
-  const canGenerate = po.status !== 'CANCELLED';
+  // The supplier PO document reads the buyer list + GP totals live, so it's only for a PO that
+  // exists in GP (has a GP company + number) and needs the relay connected.
+  const canGenerate = !!po.gpCompany && !!po.poNumber && po.status !== 'CANCELLED';
 
   const displayTitle = po.poNumber ? `PO: ${po.poNumber}` : `Request: ${po.requestNumber}`;
 
@@ -459,13 +460,21 @@ export default function PODetailModal({
             </Button>
           )}
           {canGenerate && (
-            <Button
-              variant="outlined"
-              startIcon={<DescriptionIcon />}
-              onClick={() => setGenerateOpen(true)}
+            <Tooltip
+              title={relayConnected ? '' : 'GP relay not detected on this machine - it must be running to generate a PO document (buyer + GP totals are read live)'}
+              arrow
             >
-              Generate PO Document
-            </Button>
+              <span>
+                <Button
+                  variant="outlined"
+                  startIcon={<DescriptionIcon />}
+                  onClick={() => setGenerateOpen(true)}
+                  disabled={!relayConnected}
+                >
+                  Generate PO Document
+                </Button>
+              </span>
+            </Tooltip>
           )}
           {canRegisterInGp && (
             <Tooltip
