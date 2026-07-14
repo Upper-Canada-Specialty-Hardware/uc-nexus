@@ -134,6 +134,12 @@ DRAFT -> ORDERED -> VENDOR_CONFIRMED -> PARTIALLY_RECEIVED -> CLOSED
 - **VENDOR_CONFIRMED** auto-triggers when ORDERED PO has both vendor quote number and vendor acknowledgement document; auto-reverts if either is removed
 - **Receiving** a PO without a project will show error: "PO must be associated with a project before receiving"
 
+**Generate PO Document** (issue #230): button on the PO detail modal action bar, shown for any non-cancelled PO. Opens a dialog that builds the finished supplier PO as a client-side PDF (`@react-pdf/renderer`), replacing the old hand-edit-GP's-doc workflow. No relay involved.
+- Dialog fields pre-fill from the PO, its saved `PODocumentData`, and `poDocumentSettings`: vendor mailing address, buyer (from `buyerId`), currency (CAD `$` / USD `$US`), ship-to (warehouse dropdown | "Use project site" button | custom text - the resolved block is stored verbatim), shipping method, proposal #, required-by (defaults to `expectedDeliveryDate`), freight/misc/tax + tax label, and three conditional toggles (wood-door FSC, USA tariff, international customs).
+- **Generate & preview** opens the PDF in a new tab (`window.open` blob). **Save to PO documents** persists `PODocumentData` + uploads the PDF as a `GENERATED_PO` document (appears in the Documents list, label "Generated PO", downloadable via presigned URL). Both first call `savePoDocumentData`, so re-opening the dialog pre-fills.
+- Doc math: each line ext = ordered x unitCost; Subtotal = sum of ext; Order Total = Subtotal + Freight + Miscellaneous + Tax. The item column shows `hardwareCategory` (main line) + `orderAs` (Reference line). Boilerplate (tax numbers, mandatory bullets, signature, footer) always prints; the FSC / USA-tariff / customs blocks print only when their toggle is on.
+- Admin boilerplate lives at Admin -> PO Document Settings (see Admin Module); the per-PO gaps are captured in this dialog.
+
 ### Import Module
 
 **Entry**: `/app/import` -> Opens the Import Hardware Schedule wizard (full-screen dialog)
@@ -233,6 +239,7 @@ Both entry points open a "Transfer <productCode>" MUI dialog with: an "X availab
 - Projects (`/app/admin/projects`) — edit project details + OSSA flag (see below)
 - User Management (`/app/admin/users`) — assign Clerk roles
 - Location Cleanup (`/app/admin/location-cleanup`)
+- PO Document Settings (`/app/admin/po-document-settings`) — company-wide boilerplate for the generated PO document (issue #230); see below
 
 Inventory quantity corrections are NOT here — they live in the Warehouse module (Locations tab).
 
@@ -250,6 +257,11 @@ Inventory quantity corrections are NOT here — they live in the Warehouse modul
 - DataGrid columns: Project #, Description, Client, Job Site, OSSA (chip "Yes" / "—"), Openings. Click a row to open the edit dialog.
 - **Edit dialog**: OSSA toggle + editable text fields (description, client, job site name, address/city/state/zip, general contractor, GC contact name/phone/email, project manager, application). A read-only "From TITAN" section shows project number, submittal job no, submittal assignment count, estimator code, TITAN user ID — these are immutable.
 - Save calls `updateProject`, refetches the grid, and shows a "Project updated" toast.
+
+**PO Document Settings page** (`/app/admin/po-document-settings`, issue #230):
+- Admin/Manager only (non-admins get a permission Alert; the mutation is `require_admin`-gated). Single-record form, not a grid.
+- Fields: company from-address, payment terms, confirm-with, tax numbers, mandatory bullets (one per line), wood-door FSC note, USA tariff note + effective-until date, customs broker block, shipping accounts (one per line), signature note, footer notes.
+- Backed by `poDocumentSettings` (get-or-creates a single row seeded from the guideline doc on first read, so it never returns null) and `updatePoDocumentSettings`. Save toast = "PO document settings saved". These values print on every generated PO document.
 
 ---
 
@@ -289,3 +301,7 @@ Inventory quantity corrections are NOT here — they live in the Warehouse modul
 - Receiving wizard: "Assign locations & flag deficient units now" toggle appears only AFTER entering a Receive Now quantity > 0. Turn it on to get the Aisle/Bay/Bin text fields (regular textbox, not autocomplete). `fill_form` works fine on these.
 - Transfer dialog Aisle/Bay/Bin: these are comboboxes with autocomplete="list". Use `evaluate_script` to set the underlying input value (native value setter + `input` event). This reliably sets the values without triggering dropdown selection. The Transfer button enables once all three fields are filled.
 - Locations page (Warden filter, panel open): when a single warehouse filter is active, the left rail single-column shows just the bin name + qty (no warehouse chip in that column, since filter is already scoped). The right panel header still shows the warehouse chip (e.g. "WRD").
+- Verifying a generated PDF (issue #230 PO document): the doc is text-based react-pdf, not an image, so `pdftotext` works. Fastest path for content assertions: use the dialog's "Save to PO documents" to upload it, query the PO's `documents { downloadUrl }` (presigned S3 URL) via GraphQL, `curl` the URL to a file, then `pdftotext -layout` (or `-raw` for the totals column, which `-layout` misaligns since Subtotal/Freight/Miscellaneous/Tax/Order-Total are right-aligned). "Generate & preview" opens a blob in a new tab that's hard to read via MCP - prefer save-then-fetch.
+- The generate dialog + admin PO-settings text fields APPEND when driven by `fill`/`fill_form` if they already hold a value (same MUI controlled-input quirk as spinbuttons). For a pre-filled field, set the value via `evaluate_script` using the native value setter + an `input` event (match the label's `for` attr to the input id), or drive the mutation directly. Empty fields fill fine.
+- Date-only fields: a `<TextField type="date">` renders as Month/Day/Year spinbuttons in the a11y tree. Set it via `evaluate_script` native setter with a `YYYY-MM-DD` string on the underlying input (dispatch `input` + `change`). Note: formatting a `YYYY-MM-DD` string with `new Date(str)` is UTC and prints the previous calendar day in a behind-UTC tz - the PO-document code parses date-only strings as local (fixed in #238), so the printed required-by should match what was entered.
+- To seed a project's job-site address for the PO document's "Use project site" ship-to option (most test projects have null address fields), call `updateProject(id, {jobSiteName, address, city, state, zip})` via `evaluate_script` (Admin/Manager gated). Then the dialog's "Use project site" button builds a real "UC Hardware Inc. - Deliver to site / ..." block.
