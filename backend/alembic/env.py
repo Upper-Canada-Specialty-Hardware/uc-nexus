@@ -13,8 +13,11 @@ config = context.config
 # Override sqlalchemy.url from environment variable
 config.set_main_option("sqlalchemy.url", os.getenv("DATABASE_URL", ""))
 
+# disable_existing_loggers=False: when the test suite runs migrations in-process (the _migrate_database
+# fixture), the default True would disable every logger not listed in alembic.ini - including the app's
+# own loggers that were already imported - silencing their output and breaking caplog assertions.
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # Import all models so metadata is populated
 from app.models import Base  # noqa: E402

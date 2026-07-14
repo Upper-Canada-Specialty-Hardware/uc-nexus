@@ -54,6 +54,8 @@ interface POLineItem {
   receivedQuantity: number;
   unitCost: number;
   orderAs: string | null;
+  // Issue #232: derived from the line's linked HardwareItem(s); drives the PO dialog's vendor suggestion.
+  manufacturer: string | null;
   createdAt: string;
   updatedAt: string;
 }

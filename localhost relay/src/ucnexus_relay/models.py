@@ -21,6 +21,10 @@ class POLine(BaseModel):
     product_indicator: int = 1  # 1 = Non-Inventoried, 2 = Job Cost
     job_number: str | None = None
     cost_code: str | None = None  # 'phase-step-type' e.g. '210-200-2'
+    # captured manufacturer -> taPoLine USRDEFND1 (POP10110). char(50) in GP; create_po_line RTRIMs +
+    # truncates to 50 when binding, so an over-length value is capped there. No max_length guard here:
+    # rejecting at the model boundary would fail the whole PO over an optional annotation field.
+    manufacturer: str | None = None
 
     @model_validator(mode="after")
     def check_job_cost_consistency(self):

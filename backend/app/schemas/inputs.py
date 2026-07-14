@@ -72,6 +72,7 @@ class HardwareItemInput:
     vendor_discount: float | None = None
     markup_pct: float | None = None
     vendor_no: str | None = None
+    manufacturer: str | None = None
     phase_code: str | None = None
     item_category_code: str | None = None
     product_group_code: str | None = None

@@ -73,6 +73,7 @@ export interface ParsedHardwareItem {
   vendor_discount: number | null;
   markup_pct: number | null;
   vendor_no: string | null;
+  manufacturer: string | null;
   phase_code: string | null;
   item_category_code: string | null;
   product_group_code: string | null;

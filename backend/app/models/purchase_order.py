@@ -1,6 +1,7 @@
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from sqlalchemy import CheckConstraint, Date, DateTime, Enum, ForeignKey, Index, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -8,6 +9,9 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from . import Base
 from .enums import Classification, PODocumentType, POStatus
 from .vendor import Vendor
+
+if TYPE_CHECKING:
+    from .hardware import HardwareItem
 
 
 class PurchaseOrder(Base):
@@ -89,6 +93,19 @@ class POLineItem(Base):
     updated_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     purchase_order: Mapped["PurchaseOrder"] = relationship(back_populates="line_items")
+    # Issue #232: the imported HardwareItem rows this PO line covers (HardwareItem.po_line_item_id).
+    # viewonly, read-only - used only to derive the line's TITAN manufacturer for the vendor
+    # suggestion. No DB change: the FK already lives on hardware_items.
+    hardware_items: Mapped[list["HardwareItem"]] = relationship(
+        "HardwareItem",
+        primaryjoin="POLineItem.id == HardwareItem.po_line_item_id",
+        # Order by created_at, id so the derived manufacturer (queries._po_line_item_manufacturer,
+        # first non-null) matches mutations._resolve_line_manufacturers, which resolves the GP-written
+        # value with the same ordering. Without this the two paths could pick different manufacturers
+        # when items for one (category, product_code) disagree.
+        order_by="HardwareItem.created_at, HardwareItem.id",
+        viewonly=True,
+    )
 
 
 class PODocument(Base):

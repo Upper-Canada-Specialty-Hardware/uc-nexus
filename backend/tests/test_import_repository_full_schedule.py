@@ -115,6 +115,7 @@ def _hardware_item_input(opening_number: str, product_code: str, **overrides) ->
         "vendor_discount": None,
         "markup_pct": None,
         "vendor_no": overrides.get("vendor_no", "V1"),
+        "manufacturer": overrides.get("manufacturer", "TITAN"),
         "phase_code": None,
         "item_category_code": None,
         "product_group_code": None,
@@ -545,3 +546,35 @@ def test_get_project_hardware_schedule_returns_all_items(db_session):
     assert len(hw_items) == 3
     product_codes = {hi["product_code"] for hi in hw_items}
     assert product_codes == {"HG-100", "HG-200", "HG-300"}
+
+
+def test_manufacturer_persists_and_round_trips(db_session):
+    """Manufacturer flows finalize input -> HardwareItem row -> schedule query, and a null
+    manufacturer round-trips as None (blank) rather than erroring."""
+    project = _make_project(db_session)
+    db_session.commit()
+
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening_input("A01"), _opening_input("A02")],
+            "hardware_items": [
+                _hardware_item_input("A01", "HG-100", manufacturer="TITAN"),
+                _hardware_item_input("A02", "HG-200", manufacturer=None),
+            ],
+        },
+    )
+    db_session.flush()
+
+    # Persisted onto the HardwareItem rows
+    rows = db_session.scalars(select(HardwareItem).where(HardwareItem.project_id == project.id)).all()
+    by_product = {hi.product_code: hi for hi in rows}
+    assert by_product["HG-100"].manufacturer == "TITAN"
+    assert by_product["HG-200"].manufacturer is None
+
+    # Round-trips through the schedule hydration path
+    schedule = import_repository.get_project_hardware_schedule(db_session, project.id)
+    mfr_by_product = {hi["product_code"]: hi["manufacturer"] for hi in schedule["hardware_items"]}
+    assert mfr_by_product["HG-100"] == "TITAN"
+    assert mfr_by_product["HG-200"] is None
