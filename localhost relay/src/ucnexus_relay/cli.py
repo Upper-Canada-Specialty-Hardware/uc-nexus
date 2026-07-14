@@ -1,8 +1,8 @@
 """Single entry point for the packaged relay exe (and `python -m ucnexus_relay`).
 
 Subcommands:
-  serve (default)      run the relay (headless) - uvicorn on the configured [server] host/port
-  app [--minimized]    the desktop app: window + system tray, supervising the relay (--minimized = start in tray)
+  app (default)        the desktop app: window + system tray, supervising the relay (--minimized = start in tray)
+  serve                run the relay (headless) - uvicorn on the configured [server] host/port
   enroll  ...          one-time enrollment (delegates to ucnexus_relay.enroll; pass its flags through)
   protect-secret       DPAPI-encrypt the shared_secret currently in config.toml
   health               GET the local /health endpoint and print it (exit 0 if status ok)
@@ -78,18 +78,23 @@ def _serve(argv: list[str]) -> int:
         # [channel].backend_url makes channel.run_forever() a no-op, so this is safe on a relay that
         # hasn't been reconfigured for it yet.
         #
+        # Skip the channel entirely when unenrolled (no secret): the backend refuses it pre-accept, so
+        # running it would just spam secret-rejected retries. serve still binds the local HTTP server so
+        # /health answers and the app shows "running"; enrolling + restarting serve brings the channel up.
+        #
         # run_forever loops indefinitely (reconnect-with-backoff), so it must be cancelled on shutdown:
         # a plain gather() would keep awaiting it after uvicorn's server.serve() returns on SIGINT /
         # service stop, hanging the process. Run it as a task and cancel it once the server exits.
-        channel_task = asyncio.create_task(channel.run_forever())
+        channel_task = asyncio.create_task(channel.run_forever()) if s.auth.shared_secret else None
         try:
             await server.serve()
         finally:
-            channel_task.cancel()
-            try:
-                await channel_task
-            except asyncio.CancelledError:
-                pass
+            if channel_task is not None:
+                channel_task.cancel()
+                try:
+                    await channel_task
+                except asyncio.CancelledError:
+                    pass
 
     try:
         asyncio.run(_run())
@@ -163,7 +168,9 @@ def main(argv: list[str] | None = None) -> int:
     if argv and not argv[0].startswith("-"):
         cmd, rest = argv[0], argv[1:]
     else:
-        cmd, rest = "serve", argv  # bare invocation (or only flags) defaults to serving
+        # bare invocation (a double-clicked exe) opens the desktop app. The serve child (setup.start_serve)
+        # and the autostart entries pass an explicit command, so only a bare double-click is affected.
+        cmd, rest = "app", argv
 
     if cmd == "serve":
         return _serve(rest)

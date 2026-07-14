@@ -1,5 +1,6 @@
 """Config loading from config.toml (Python 3.11 tomllib + pydantic validation)."""
 
+import os
 import sys
 import tomllib
 from functools import lru_cache
@@ -11,11 +12,13 @@ from . import dpapi
 
 
 def _default_config_path() -> Path:
-    # When packaged by PyInstaller, __file__ points into the temp extraction dir, so config.toml is
-    # resolved next to the .exe instead. In a dev checkout it sits at <root>/config.toml
+    # Packaged: a FIXED per-user path (%LOCALAPPDATA%\UCNexusRelay\config.toml), NOT next to the exe, so
+    # the exe can be run from anywhere (Downloads, a USB stick) and still find the enrolled config - the
+    # single-file-distributable model. In a dev checkout it sits at <root>/config.toml
     # (config.py is <root>/src/ucnexus_relay/config.py).
     if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent / "config.toml"
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        return Path(base) / "UCNexusRelay" / "config.toml"
     return Path(__file__).resolve().parents[2] / "config.toml"
 
 
@@ -32,7 +35,9 @@ class ServerCfg(BaseModel):
 
 
 class AuthCfg(BaseModel):
-    shared_secret: str
+    # Empty until enrolled. When it's blank the desktop app boots to the Setup tab; serve brokers nothing
+    # (no outbound channel) until enrollment writes a real secret.
+    shared_secret: str = ""
 
 
 class CorsCfg(BaseModel):
@@ -97,7 +102,7 @@ class ChannelCfg(BaseModel):
 
 class Settings(BaseModel):
     server: ServerCfg = ServerCfg()
-    auth: AuthCfg
+    auth: AuthCfg = AuthCfg()
     cors: CorsCfg = CorsCfg()
     sql: SqlCfg = SqlCfg()
     gp: GpCfg = GpCfg()
@@ -109,9 +114,10 @@ class Settings(BaseModel):
 def get_settings(path: str | None = None) -> Settings:
     cfg_path = Path(path) if path else DEFAULT_CONFIG_PATH
     if not cfg_path.exists():
-        raise RuntimeError(
-            f"config file not found: {cfg_path} — copy config.example.toml to config.toml and set the shared_secret"
-        )
+        # First run / not yet enrolled: every setting except the secret is baked into the defaults above,
+        # so build from them with an empty secret rather than failing. The app opens Setup to enroll;
+        # serve runs its local HTTP server but brokers nothing until a config with a secret exists.
+        return Settings()
     with open(cfg_path, "rb") as f:
         data = tomllib.load(f)
     # the shared_secret is DPAPI-encrypted at rest (see ucnexus_relay.dpapi); decrypt on read so the
