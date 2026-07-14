@@ -26,6 +26,8 @@ class PODocumentSettings(Base):
     mandatory_bullets: Mapped[list] = mapped_column(JSON, nullable=False)
     # Courier / freight account numbers (informational block).
     shipping_accounts: Mapped[list] = mapped_column(JSON, nullable=False)
+    # The selectable shipping-method options for the generate dialog's dropdown.
+    shipping_methods: Mapped[list] = mapped_column(JSON, nullable=False)
     # The customs-broker + business-number block, included on international shipments.
     customs_broker_block: Mapped[str] = mapped_column(Text, nullable=False)
     # Wood-door FSC certification note (conditional, toggled per PO).

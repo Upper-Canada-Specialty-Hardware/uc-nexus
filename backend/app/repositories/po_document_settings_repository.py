@@ -29,6 +29,13 @@ DEFAULT_SHIPPING_ACCOUNTS = [
     "UPS acct# 1167F1",
 ]
 
+DEFAULT_SHIPPING_METHODS = [
+    "LOCAL DELIVERY",
+    "Supply by your freight company",
+    "Supply by our freight company",
+    "Pick up",
+]
+
 DEFAULT_CUSTOMS_BROKER_BLOCK = (
     "UC Hardware Inc. (UCH) Business Number 728227356 RT0001\n"
     "UCH Customs Broker:\n"
@@ -82,6 +89,7 @@ def get_settings(session: Session) -> PODocumentSettings:
         tax_numbers=DEFAULT_TAX_NUMBERS,
         mandatory_bullets=list(DEFAULT_MANDATORY_BULLETS),
         shipping_accounts=list(DEFAULT_SHIPPING_ACCOUNTS),
+        shipping_methods=list(DEFAULT_SHIPPING_METHODS),
         customs_broker_block=DEFAULT_CUSTOMS_BROKER_BLOCK,
         fsc_note=DEFAULT_FSC_NOTE,
         usa_tariff_note=DEFAULT_USA_TARIFF_NOTE,
@@ -106,6 +114,7 @@ def update_settings(
     tax_numbers=_UNSET,
     mandatory_bullets=_UNSET,
     shipping_accounts=_UNSET,
+    shipping_methods=_UNSET,
     customs_broker_block=_UNSET,
     fsc_note=_UNSET,
     usa_tariff_note=_UNSET,
@@ -127,6 +136,8 @@ def update_settings(
         settings.mandatory_bullets = [b.strip() for b in (mandatory_bullets or []) if b and b.strip()]
     if shipping_accounts is not _UNSET:
         settings.shipping_accounts = [a.strip() for a in (shipping_accounts or []) if a and a.strip()]
+    if shipping_methods is not _UNSET:
+        settings.shipping_methods = [m.strip() for m in (shipping_methods or []) if m and m.strip()]
     if customs_broker_block is not _UNSET:
         settings.customs_broker_block = customs_broker_block or ""
     if fsc_note is not _UNSET:

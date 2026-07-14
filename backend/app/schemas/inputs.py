@@ -300,6 +300,7 @@ class UpdatePODocumentSettingsInput:
     tax_numbers: str | None = strawberry.UNSET
     mandatory_bullets: list[str] | None = strawberry.UNSET
     shipping_accounts: list[str] | None = strawberry.UNSET
+    shipping_methods: list[str] | None = strawberry.UNSET
     customs_broker_block: str | None = strawberry.UNSET
     fsc_note: str | None = strawberry.UNSET
     usa_tariff_note: str | None = strawberry.UNSET
