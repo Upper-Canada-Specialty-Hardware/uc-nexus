@@ -72,6 +72,7 @@ class HardwareItem:
     vendor_discount: float | None
     markup_pct: float | None
     vendor_no: str | None
+    manufacturer: str | None
     phase_code: str | None
     item_category_code: str | None
     product_group_code: str | None
@@ -155,6 +156,25 @@ class GpCostCode:
 
 
 @strawberry.type
+class VendorCandidate:
+    # A GP vendor proposed for a manufacturer. score is 0..100: 100 for a saved mapping hit, else the
+    # fuzzy match of the vendor name to the manufacturer (issue #232).
+    gp_vendor_id: str
+    gp_vendor_name: str
+    score: float
+
+
+@strawberry.type
+class VendorSuggestion:
+    # The manufacturer that was resolved (echoed back for the dialog label). saved_mapping is true when
+    # a persisted manufacturer->vendor mapping decided it (candidates then holds exactly that vendor at
+    # score 100); false when candidates are the top-N live vendors ranked by fuzzy score.
+    manufacturer: str
+    saved_mapping: bool
+    candidates: list[VendorCandidate]
+
+
+@strawberry.type
 class POLineItem:
     id: strawberry.ID
     po_id: strawberry.ID
@@ -166,6 +186,9 @@ class POLineItem:
     unit_cost: float
     order_as: str | None
     gp_line_ord: int | None
+    # Issue #232: derived (not stored) - the TITAN manufacturer of the HardwareItem rows this line
+    # covers, for the PO dialog's vendor suggestion. Null when no linked item carries a manufacturer.
+    manufacturer: str | None
     created_at: datetime
     updated_at: datetime
 
@@ -281,6 +304,7 @@ class ProjectScheduleHardwareItem:
     vendor_discount: float | None
     markup_pct: float | None
     vendor_no: str | None
+    manufacturer: str | None
     phase_code: str | None
     item_category_code: str | None
     product_group_code: str | None

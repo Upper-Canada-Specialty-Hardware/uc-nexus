@@ -35,6 +35,7 @@ type POLineItem {
   received_quantity: Int!
   unit_cost: Float!
   order_as: String
+  manufacturer: String
   created_at: DateTime!
   updated_at: DateTime!
 }

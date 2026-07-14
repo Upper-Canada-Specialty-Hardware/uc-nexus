@@ -1,6 +1,7 @@
 """Repository for purchase order data access."""
 
 import base64
+import logging
 import uuid
 from datetime import datetime
 from decimal import Decimal
@@ -13,7 +14,81 @@ from app.models.enums import Classification, PODocumentType, POStatus
 from app.models.purchase_order import PODocument, POLineItem, PurchaseOrder
 from app.models.receiving import ReceiveRecord
 
+logger = logging.getLogger(__name__)
+
 _UNSET = object()
+
+
+def _learn_manufacturer_vendor_mappings(
+    session: Session,
+    *,
+    project_id: uuid.UUID | None,
+    gp_company: str | None,
+    gp_vendor_id: str | None,
+    gp_vendor_name: str | None,
+    line_items: list[dict],
+) -> None:
+    """Learn-on-confirm (issue #232): after a PO is persisted GP-registered, upsert every distinct
+    manufacturer on its hardware lines -> the vendor it was confirmed against, so the next PO for the
+    same manufacturer auto-picks that vendor.
+
+    The manufacturer isn't on the PO line - it's on the HardwareItem, matched by project_id +
+    hardware_category + product_code. A stock PO (no project) or a not-yet-registered draft (no GP
+    company/vendor) has nothing to learn and is skipped.
+
+    The whole batch runs in a SAVEPOINT wrapped in try/except: a mapping-write failure rolls back only
+    the mapping and is swallowed, so it can never fail the PO the caller is about to commit."""
+    if project_id is None or not gp_company or not gp_vendor_id or not gp_vendor_name or not line_items:
+        return
+
+    try:
+        with session.begin_nested():
+            from app.models.hardware import HardwareItem
+            from app.repositories import manufacturer_vendor_map_repository
+            from app.services import manufacturer_match
+
+            pairs = {(li["hardware_category"], li["product_code"]) for li in line_items}
+            product_codes = {code for _cat, code in pairs}
+            rows = session.execute(
+                select(
+                    HardwareItem.hardware_category,
+                    HardwareItem.product_code,
+                    HardwareItem.manufacturer,
+                )
+                .where(
+                    HardwareItem.project_id == project_id,
+                    HardwareItem.product_code.in_(product_codes),
+                    HardwareItem.manufacturer.isnot(None),
+                )
+                # Deterministic label per key: first-seen wins below, so fix the row order.
+                .order_by(HardwareItem.created_at, HardwareItem.id)
+            ).all()
+
+            # Collapse to one label per normalized key (variants of the same manufacturer share a row).
+            labels_by_key: dict[str, str] = {}
+            for cat, code, manufacturer in rows:
+                if (cat, code) not in pairs:
+                    continue
+                label = (manufacturer or "").strip()
+                key = manufacturer_match.normalize(label)
+                if not key:
+                    continue
+                labels_by_key.setdefault(key, label)
+
+            for key, label in labels_by_key.items():
+                manufacturer_vendor_map_repository.upsert(
+                    session,
+                    gp_company=gp_company,
+                    manufacturer_key=key,
+                    label=label,
+                    gp_vendor_id=gp_vendor_id,
+                    gp_vendor_name=gp_vendor_name,
+                    source="confirmed",
+                )
+    except Exception:
+        # Best-effort: never let a mapping-write failure fail the PO (the savepoint has already rolled
+        # back the partial mapping writes; the PO rows stay pending for the caller's commit).
+        logger.warning("Failed to learn manufacturer -> vendor mappings for project %s", project_id, exc_info=True)
 
 
 def generate_next_request_number(session: Session) -> str:
@@ -155,6 +230,17 @@ def create_po(
             po.ordered_at = datetime.utcnow()
         session.flush()
 
+    # Learn manufacturer -> vendor from this PO once it is GP-registered (issue #232). The helper
+    # guards on project_id + GP company/vendor, so a plain DRAFT or a stock PO is a no-op.
+    _learn_manufacturer_vendor_mappings(
+        session,
+        project_id=project_id,
+        gp_company=po.gp_company,
+        gp_vendor_id=po.gp_vendor_id,
+        gp_vendor_name=po.vendor_name_snapshot,
+        line_items=line_items,
+    )
+
     return po
 
 
@@ -287,6 +373,18 @@ def register_po_in_gp(
     po.status = POStatus.GP_REGISTERED
     po.ordered_at = datetime.utcnow()
     session.flush()
+
+    # Learn manufacturer -> vendor from this now-registered PO (issue #232). Best-effort, savepoint-
+    # isolated: a mapping failure never fails the registration the relay already committed in GP.
+    _learn_manufacturer_vendor_mappings(
+        session,
+        project_id=po.project_id,
+        gp_company=cleaned_company,
+        gp_vendor_id=cleaned_gp_vendor_id,
+        gp_vendor_name=cleaned_vendor_name_snapshot,
+        line_items=line_items,
+    )
+
     return po
 
 
@@ -297,7 +395,9 @@ def get_purchase_orders(
     stmt = (
         select(PurchaseOrder)
         .options(
-            selectinload(PurchaseOrder.line_items),
+            # Nested load of each line's HardwareItem rows so the derived `manufacturer` field (issue
+            # #232) is one selectin query, not an N+1 lazy load per line.
+            selectinload(PurchaseOrder.line_items).selectinload(POLineItem.hardware_items),
             selectinload(PurchaseOrder.documents),
             selectinload(PurchaseOrder.vendor),
         )
@@ -316,7 +416,9 @@ def get_purchase_order(session: Session, po_id: uuid.UUID) -> PurchaseOrder | No
     stmt = (
         select(PurchaseOrder)
         .options(
-            selectinload(PurchaseOrder.line_items),
+            # See get_purchase_orders: nested load keeps the derived line manufacturer (issue #232) off
+            # the N+1 path.
+            selectinload(PurchaseOrder.line_items).selectinload(POLineItem.hardware_items),
             selectinload(PurchaseOrder.documents),
             selectinload(PurchaseOrder.vendor),
         )

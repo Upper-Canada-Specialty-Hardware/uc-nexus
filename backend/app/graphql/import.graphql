@@ -50,6 +50,7 @@ input HardwareItemInput {
   vendor_discount: Float
   markup_pct: Float
   vendor_no: String
+  manufacturer: String
   phase_code: String
   item_category_code: String
   product_group_code: String
@@ -154,10 +155,23 @@ enum ReconciliationStatus {
   NOT_COVERED
 }
 
+type VendorCandidate {
+  gpVendorId: String!
+  gpVendorName: String!
+  score: Float!
+}
+
+type VendorSuggestion {
+  manufacturer: String!
+  savedMapping: Boolean!
+  candidates: [VendorCandidate!]!
+}
+
 type Query {
   projects: [Project!]!
   projectByScheduleId(projectId: String!): Project
   reconcileSchedule(projectId: ID!, items: [ReconciliationItemInput!]!): [ReconciliationResult!]!
+  suggestVendorForManufacturer(gpCompany: String!, manufacturer: String!): VendorSuggestion!
 }
 
 type Mutation {

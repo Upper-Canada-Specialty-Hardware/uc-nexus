@@ -379,6 +379,8 @@ describe('extractHardwareItems', () => {
     expect(result.hardwareItems[0].vendor_discount).toBe(10);
     expect(result.hardwareItems[0].markup_pct).toBe(30);
     expect(result.hardwareItems[0].vendor_no).toBe('V001');
+    // manufacturer mirrors Vendor_No (TITAN stores the manufacturer name there)
+    expect(result.hardwareItems[0].manufacturer).toBe('V001');
     expect(result.hardwareItems[0].item_category_code).toBe('CAT1');
     expect(result.hardwareItems[0].product_group_code).toBe('GRP1');
     expect(result.hardwareItems[0].submittal_id).toBe('SUB1');
@@ -394,6 +396,42 @@ describe('extractHardwareItems', () => {
     expect(result.hardwareItems[2].phase_code).toBeNull();
 
     expect(result.skippedRows).toHaveLength(0);
+  });
+
+  it('sources manufacturer from Vendor_No, null when Vendor_No absent', () => {
+    const contract = {
+      Detail: {
+        Material_List: [
+          {
+            '@_Description': 'HAS-VENDOR',
+            Material_List_Fields: {
+              Product_Description: 'Lockset',
+              Vendor_No: 'SARGENT',
+            },
+            Assignments: {
+              Assignment: [{ '@_Code': 'D101', Material_ID: 'M1', Qty_Per: '1' }],
+            },
+          },
+          {
+            '@_Description': 'NO-VENDOR',
+            Material_List_Fields: {
+              Product_Description: 'Hinge',
+            },
+            Assignments: {
+              Assignment: [{ '@_Code': 'D102', Material_ID: 'M2', Qty_Per: '1' }],
+            },
+          },
+        ],
+      },
+    };
+    const result = extractHardwareItems(contract);
+    expect(result.hardwareItems).toHaveLength(2);
+    // TITAN stores the manufacturer name in Vendor_No, so manufacturer mirrors it
+    expect(result.hardwareItems[0].vendor_no).toBe('SARGENT');
+    expect(result.hardwareItems[0].manufacturer).toBe('SARGENT');
+    // null when Vendor_No is absent
+    expect(result.hardwareItems[1].vendor_no).toBeNull();
+    expect(result.hardwareItems[1].manufacturer).toBeNull();
   });
 
   it('skips items with missing Product_Code', () => {

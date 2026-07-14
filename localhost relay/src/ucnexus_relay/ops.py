@@ -117,6 +117,7 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
             unit_cost=line.unit_cost,
             location_code=line.location_code,
             uofm=line.uofm,
+            manufacturer=line.manufacturer,
         )
 
     # 4. WennSoft integration for EVERY line - this is what sets Product_Indicator (1 non-inv / 2

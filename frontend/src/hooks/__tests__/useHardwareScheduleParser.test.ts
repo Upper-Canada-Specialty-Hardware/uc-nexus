@@ -132,6 +132,7 @@ const mockParseResult: ParseResult = {
       vendor_discount: null,
       markup_pct: null,
       vendor_no: null,
+      manufacturer: null,
       phase_code: null,
       item_category_code: null,
       product_group_code: null,

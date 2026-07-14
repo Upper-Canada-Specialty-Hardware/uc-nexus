@@ -124,11 +124,18 @@ def create_po_line(
     unit_cost: Decimal,
     location_code: str = "VANCOUVER",
     uofm: str = "Each",
+    manufacturer: str | None = None,
     po_type: int = 1,
 ) -> None:
     """Create one non-inventoried PO line. For job-cost lines, follow with
     apply_wennsoft_job_cost(). Do NOT pass ProjNum/CostCatID — they fail silently
-    here (PA42201 absent; Project Accounting not configured)."""
+    here (PA42201 absent; Project Accounting not configured).
+
+    manufacturer (when captured) is written to USRDEFND1 on POP10110 - the free user-defined
+    line field this customer uses for it (issue #233)."""
+    # USRDEFND1 is char(50) in GP: RTRIM (trailing pad is meaningless there) + cap at 50 so an
+    # over-length value can't overflow the column. None/blank -> '' leaves the field blank.
+    usrdefnd1 = (manufacturer or "").rstrip()[:50]
     sql = """
     DECLARE @err int = 0;
     DECLARE @err_str varchar(255) = '';
@@ -146,6 +153,7 @@ def create_po_line(
         @I_vQUANTITY       = ?,
         @I_vUOFM           = ?,
         @I_vUNITCOST       = ?,
+        @I_vUSRDEFND1      = ?,
         @O_iErrorState     = @err OUTPUT,
         @oErrString        = @err_str OUTPUT;
     SELECT @err AS error_state, @err_str AS err_string;
@@ -153,7 +161,7 @@ def create_po_line(
     row = conn.cursor().execute(
         sql,
         po_type, po_number, doc_date, vendor_id,
-        location_code, item_number, item_description, quantity, uofm, unit_cost,
+        location_code, item_number, item_description, quantity, uofm, unit_cost, usrdefnd1,
     ).fetchone()
     if row.error_state != 0:
         raise EConnectError(
