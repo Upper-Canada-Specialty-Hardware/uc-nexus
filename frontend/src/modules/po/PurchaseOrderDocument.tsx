@@ -1,4 +1,5 @@
-import { Document, Page, Text, View, StyleSheet } from '@react-pdf/renderer';
+import { Document, Page, Text, View, Image, StyleSheet } from '@react-pdf/renderer';
+import { PO_COMPANY_LOGO } from './poCompanyLogo';
 
 // The finished supplier PO document (issue #230), laid out to match the hand-edited Word output a PO
 // user currently produces from GP's raw PO: header (from / vendor / ship-to / meta), the info row,
@@ -11,6 +12,7 @@ const styles = StyleSheet.create({
 
   headerRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 14 },
   fromBlock: { maxWidth: '55%' },
+  logo: { width: 128, height: 79, marginBottom: 8 },
   fromLine: { fontSize: 9, lineHeight: 1.35 },
   metaBlock: { minWidth: 200 },
   title: { fontSize: 16, fontFamily: 'Helvetica-Bold', textAlign: 'right', marginBottom: 6 },
@@ -148,6 +150,7 @@ export default function PurchaseOrderDocument(props: PurchaseOrderDocumentProps)
         {/* Header: from-address + meta */}
         <View style={styles.headerRow}>
           <View style={styles.fromBlock}>
+            <Image src={PO_COMPANY_LOGO} style={styles.logo} />
             {lines(companyFromAddress).map((l, i) => (
               <Text key={i} style={styles.fromLine}>{l}</Text>
             ))}
