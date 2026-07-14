@@ -155,35 +155,50 @@ def apply_update(url: str, install_dir: str | Path) -> dict:
 
 
 # A running exe can't reliably be renamed/overwritten in place, so the desktop app updates by exiting
-# first: this helper waits for the app process (pid) to be gone, then moves the downloaded .new over the
-# now-unlocked exe and relaunches it, retrying the move while any bootloader child is still releasing the
-# image. It deletes itself at the end.
+# first. This detached helper is the safety net around that, hardened so a stuck app can never leave the
+# relay hung or down:
+#   1. wait a BOUNDED time (~20s) for the app (pid) to exit on its own, so a clean shutdown can finish;
+#   2. then FORCE any remaining relay process down (a stuck app that never exited + the serve child, both
+#      ucnexus-relay.exe and both holding the exe lock) - a no-op if step 1 already succeeded;
+#   3. swap the downloaded .new over the now-unlocked exe, retrying while Windows releases the handle;
+#   4. relaunch - the new exe on success, or the CURRENT exe if the swap never took, so the relay is
+#      never left down.
+# It deletes itself at the end.
 _HELPER_BAT = r"""@echo off
+set _w=0
 :waitapp
 tasklist /fi "PID eq {pid}" /nh 2>nul | find /i "ucnexus-relay" >nul
-if not errorlevel 1 (
-  timeout /t 1 /nobreak >nul
-  goto waitapp
-)
+if errorlevel 1 goto force
+set /a _w+=1
+if %_w% geq 20 goto force
+timeout /t 1 /nobreak >nul
+goto waitapp
+:force
+taskkill /f /im ucnexus-relay.exe >nul 2>&1
+timeout /t 2 /nobreak >nul
 set _n=0
 :swap
 move /y "{new}" "{exe}" >nul 2>&1
 if not errorlevel 1 goto relaunch
 set /a _n+=1
-if %_n% geq 30 goto done
+if %_n% geq 30 goto failed
 timeout /t 1 /nobreak >nul
 goto swap
 :relaunch
 start "" "{exe}" app
+goto done
+:failed
+if exist "{exe}" start "" "{exe}" app
 :done
 del "%~f0"
 """
 
 
 def stage_update(url: str, install_dir: str | Path, app_pid: int) -> dict:
-    """Download the new exe and spawn a detached helper that waits for `app_pid` to exit, swaps the exe
-    (unlocked once the app is gone), and relaunches the app. The caller MUST then shut the app down so the
-    helper can proceed - this is the desktop-app update path that avoids renaming a still-running exe."""
+    """Download the new exe and spawn a detached helper that swaps the exe and relaunches the app once
+    the relay is no longer running. The caller should shut the app down so the swap is clean, but the
+    helper no longer depends on it: it waits a bounded time for `app_pid` to exit, then force-stops any
+    remaining relay process so it can't hang forever, and always relaunches (see _HELPER_BAT)."""
     install_dir = Path(install_dir)
     exe = install_dir / _ASSET_NAME
     new = install_dir / (_ASSET_NAME + ".new")
