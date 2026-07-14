@@ -42,6 +42,7 @@ from .types import (
     DeficientItemRow,
     GpCostCode,
     GpJob,
+    GpPoTotals,
     GpVendor,
     HomeDashboardStats,
     InventoryHierarchyNode,
@@ -270,6 +271,7 @@ def _po_document_settings_to_type(s) -> PODocumentSettings:
         tax_numbers=s.tax_numbers,
         mandatory_bullets=list(s.mandatory_bullets or []),
         shipping_accounts=list(s.shipping_accounts or []),
+        shipping_methods=list(s.shipping_methods or []),
         customs_broker_block=s.customs_broker_block,
         fsc_note=s.fsc_note,
         usa_tariff_note=s.usa_tariff_note,
@@ -1150,6 +1152,23 @@ class Query:
         require_user(info)
         result = await relay_gateway.relay_call(company, "list_cost_codes", {"job": job})
         return [_gp_cost_code_to_type(c) for c in result["cost_codes"]]
+
+    @strawberry.field
+    async def gp_po_totals(self, info: strawberry.Info, company: str, po_number: str) -> GpPoTotals | None:
+        """GP-computed header totals (POP10100) for a PO, read live via the connected relay - auto-fills
+        the generated PO document (issue #230). Returns null if the PO isn't found in GP."""
+        require_user(info)
+        result = await relay_gateway.relay_call(company, "read_po_totals", {"po_number": po_number})
+        if result is None or result.get("totals") is None:
+            return None
+        t = result["totals"]
+        return GpPoTotals(
+            po_number=t["po_number"],
+            subtotal=float(t["subtotal"]),
+            freight=float(t["freight"]),
+            miscellaneous=float(t["miscellaneous"]),
+            tax_amount=float(t["tax_amount"]),
+        )
 
     @strawberry.field
     async def suggest_vendor_for_manufacturer(

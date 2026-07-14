@@ -7,11 +7,13 @@ import { GET_PO_DOCUMENT_SETTINGS } from '../../graphql/queries';
 import { UPDATE_PO_DOCUMENT_SETTINGS } from '../../graphql/mutations';
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
+import BackToModule from '../../components/BackToModule';
 
 interface PODocumentSettings {
   taxNumbers: string;
   mandatoryBullets: string[];
   shippingAccounts: string[];
+  shippingMethods: string[];
   customsBrokerBlock: string;
   fscNote: string;
   usaTariffNote: string;
@@ -35,19 +37,20 @@ export default function PODocumentSettingsPage() {
   const { isAdmin } = useIdentity();
   const { data, loading } = useQuery<{ poDocumentSettings: PODocumentSettings }>(GET_PO_DOCUMENT_SETTINGS);
 
-  if (!isAdmin) {
-    return <Alert severity="warning">You need the Admin/Manager role to edit PO document settings.</Alert>;
-  }
-  if (loading && !data) {
-    return (
-      <Box sx={{ display: 'flex', justifyContent: 'center', py: 6 }}>
-        <CircularProgress />
-      </Box>
-    );
-  }
-  if (!data) return null;
-  // key on the loaded values so the form re-initializes if the settings ever change underneath it.
-  return <SettingsForm settings={data.poDocumentSettings} />;
+  return (
+    <Box>
+      <BackToModule to="/app/po" label="Purchase Orders" />
+      {!isAdmin ? (
+        <Alert severity="warning">You need the Admin/Manager role to edit PO document settings.</Alert>
+      ) : loading && !data ? (
+        <Box sx={{ display: 'flex', justifyContent: 'center', py: 6 }}>
+          <CircularProgress />
+        </Box>
+      ) : data ? (
+        <SettingsForm settings={data.poDocumentSettings} />
+      ) : null}
+    </Box>
+  );
 }
 
 function SettingsForm({ settings }: { settings: PODocumentSettings }) {
@@ -56,6 +59,7 @@ function SettingsForm({ settings }: { settings: PODocumentSettings }) {
   const [taxNumbers, setTaxNumbers] = useState(settings.taxNumbers);
   const [mandatoryBullets, setMandatoryBullets] = useState(toLines(settings.mandatoryBullets));
   const [shippingAccounts, setShippingAccounts] = useState(toLines(settings.shippingAccounts));
+  const [shippingMethods, setShippingMethods] = useState(toLines(settings.shippingMethods));
   const [customsBrokerBlock, setCustomsBrokerBlock] = useState(settings.customsBrokerBlock);
   const [fscNote, setFscNote] = useState(settings.fscNote);
   const [usaTariffNote, setUsaTariffNote] = useState(settings.usaTariffNote);
@@ -78,6 +82,7 @@ function SettingsForm({ settings }: { settings: PODocumentSettings }) {
           taxNumbers,
           mandatoryBullets: fromLines(mandatoryBullets),
           shippingAccounts: fromLines(shippingAccounts),
+          shippingMethods: fromLines(shippingMethods),
           customsBrokerBlock,
           fscNote,
           usaTariffNote,
@@ -117,6 +122,12 @@ function SettingsForm({ settings }: { settings: PODocumentSettings }) {
             fullWidth
           />
         </Stack>
+        <TextField
+          label="Shipping methods" value={shippingMethods}
+          onChange={(e) => setShippingMethods(e.target.value)}
+          fullWidth multiline minRows={3}
+          helperText="Dropdown options for the generate dialog's Shipping Method, one per line."
+        />
 
         <Divider />
         <TextField

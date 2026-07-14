@@ -172,9 +172,7 @@ export default function PurchaseOrderDocument(props: PurchaseOrderDocumentProps)
           </View>
           <View style={styles.party}>
             <Text style={styles.partyLabel}>Ship To</Text>
-            {lines(shipTo).length > 0
-              ? lines(shipTo).map((l, i) => <Text key={i} style={styles.partyLine}>{l}</Text>)
-              : <Text style={styles.partyLine}>Affix SHIP TO label</Text>}
+            {lines(shipTo).map((l, i) => <Text key={i} style={styles.partyLine}>{l}</Text>)}
           </View>
         </View>
 

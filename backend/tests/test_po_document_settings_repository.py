@@ -12,6 +12,7 @@ def test_get_settings_creates_default_on_first_read(db_session):
     assert settings.tax_numbers == repo.DEFAULT_TAX_NUMBERS
     assert settings.mandatory_bullets == repo.DEFAULT_MANDATORY_BULLETS
     assert settings.shipping_accounts == repo.DEFAULT_SHIPPING_ACCOUNTS
+    assert settings.shipping_methods == repo.DEFAULT_SHIPPING_METHODS
     assert settings.customs_broker_block == repo.DEFAULT_CUSTOMS_BROKER_BLOCK
     assert settings.usa_tariff_effective_until == repo.DEFAULT_USA_TARIFF_EFFECTIVE_UNTIL
     assert settings.company_from_address == repo.DEFAULT_COMPANY_FROM_ADDRESS
@@ -45,9 +46,11 @@ def test_update_settings_drops_blank_list_entries(db_session):
         db_session,
         mandatory_bullets=["  keep me  ", "", "   ", "second"],
         shipping_accounts=["acct", None, ""],
+        shipping_methods=["  LOCAL DELIVERY ", "", "Pick up"],
     )
     assert updated.mandatory_bullets == ["keep me", "second"]
     assert updated.shipping_accounts == ["acct"]
+    assert updated.shipping_methods == ["LOCAL DELIVERY", "Pick up"]
 
 
 def test_update_settings_can_clear_the_tariff_date(db_session):

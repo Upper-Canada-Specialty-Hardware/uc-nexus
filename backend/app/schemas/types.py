@@ -268,6 +268,7 @@ class PODocumentSettings:
     tax_numbers: str
     mandatory_bullets: list[str]
     shipping_accounts: list[str]
+    shipping_methods: list[str]
     customs_broker_block: str
     fsc_note: str
     usa_tariff_note: str
@@ -278,6 +279,18 @@ class PODocumentSettings:
     footer_notes: str
     signature_note: str
     updated_at: datetime
+
+
+@strawberry.type
+class GpPoTotals:
+    """GP-computed PO header totals (POP10100) read live via the relay, to auto-fill the generated
+    supplier PO document (issue #230). Only available for a PO that exists in GP."""
+
+    po_number: str
+    subtotal: float
+    freight: float
+    miscellaneous: float
+    tax_amount: float
 
 
 @strawberry.type

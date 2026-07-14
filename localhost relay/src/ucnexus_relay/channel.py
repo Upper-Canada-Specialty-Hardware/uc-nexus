@@ -110,6 +110,16 @@ def _run_list_jobs(company: str, payload: dict) -> dict:
     return {"company": company, "jobs": rows}
 
 
+def _run_read_po_totals(company: str, payload: dict) -> dict:
+    ops.check_company_allowed(company)
+    po_number = (payload.get("po_number") or "").strip()
+    if not po_number:
+        raise ops.RelayOpError("missing_po_number", "po_number is required")
+    with db.get_read_connection(company) as conn:
+        totals = econnect.read_po_totals(conn, po_number)
+    return {"company": company, "totals": totals}
+
+
 def _run_create_po(company: str, payload: dict) -> dict:
     ops.check_company_allowed(company)
     request = models.CreatePoRequest(company=company, **payload)
@@ -141,6 +151,7 @@ _OPS = {
     "list_buyers": _run_list_buyers,
     "list_cost_codes": _run_list_cost_codes,
     "list_jobs": _run_list_jobs,
+    "read_po_totals": _run_read_po_totals,
     "create_po": _run_create_po,
     "create_receipt": _run_create_receipt,
 }

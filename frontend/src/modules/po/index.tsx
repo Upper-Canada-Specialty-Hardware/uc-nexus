@@ -41,6 +41,10 @@ import RelayStatusChip from '../../relay/RelayStatusChip';
 import { useRelayStatus } from '../../relay/useRelayStatus';
 import { poVendorName } from './poVendorName';
 import { PO_STATUS_VALUES, formatPoStatus, poStatusChipColor } from './poStatus';
+import { Routes, Route, useNavigate } from 'react-router-dom';
+import SettingsIcon from '@mui/icons-material/Settings';
+import { useIdentity } from '../../hooks/useIdentity';
+import PODocumentSettingsPage from './PODocumentSettingsPage';
 
 // --- Types ---
 
@@ -123,6 +127,7 @@ export interface PurchaseOrder {
   requestNumber: string;
   projectId: string | null;
   status: string;
+  gpCompany: string | null;
   gpVendorId: string | null;
   vendorNameSnapshot: string | null;
   buyerId: string | null;
@@ -546,7 +551,9 @@ function POTableRow({ po, expanded, onToggle, onOpen, onRegister, relayConnected
 
 // --- Component ---
 
-export default function POModule() {
+function POListPage() {
+  const navigate = useNavigate();
+  const { isAdmin } = useIdentity();
   const [selectedProject, setSelectedProject] = useState<Project | 'all' | null>(null);
   const [selectedPOId, setSelectedPOId] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
@@ -681,6 +688,15 @@ export default function POModule() {
           Purchase Orders — {projectLabel}
         </Typography>
         <RelayStatusChip connected={relayConnected} />
+        {isAdmin && (
+          <Button
+            size="small"
+            startIcon={<SettingsIcon />}
+            onClick={() => navigate('/app/po/document-settings')}
+          >
+            Document Settings
+          </Button>
+        )}
         <Tooltip
           title={relayConnected ? '' : 'GP relay not detected on this machine - it must be running to create a PO'}
           arrow
@@ -850,5 +866,14 @@ export default function POModule() {
         relayConnected={relayConnected}
       />
     </Box>
+  );
+}
+
+export default function POModule() {
+  return (
+    <Routes>
+      <Route index element={<POListPage />} />
+      <Route path="document-settings" element={<PODocumentSettingsPage />} />
+    </Routes>
   );
 }

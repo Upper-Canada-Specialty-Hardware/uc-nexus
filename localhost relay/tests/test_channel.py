@@ -79,6 +79,31 @@ def test_list_jobs_routes_to_econnect(monkeypatch):
     }
 
 
+def test_read_po_totals_requires_po_number():
+    reply = channel._dispatch("read_po_totals", "TUBC", {})
+    assert reply["ok"] is False
+    assert reply["error"]["error"] == "missing_po_number"
+
+
+def test_read_po_totals_routes_to_econnect_and_strips_number(monkeypatch):
+    seen = {}
+
+    def _fake(conn, po_number):
+        seen["po"] = po_number
+        return {"po_number": po_number, "subtotal": 20.0, "freight": 0.0, "miscellaneous": 0.0, "tax_amount": 0.0}
+
+    monkeypatch.setattr(econnect, "read_po_totals", _fake)
+    reply = channel._dispatch("read_po_totals", "TUBC", {"po_number": "  PO0000056  "})
+    assert seen["po"] == "PO0000056"
+    assert reply["result"]["totals"]["subtotal"] == 20.0
+
+
+def test_read_po_totals_passes_through_none_when_not_found(monkeypatch):
+    monkeypatch.setattr(econnect, "read_po_totals", lambda conn, po_number: None)
+    reply = channel._dispatch("read_po_totals", "TUBC", {"po_number": "PO-NOPE"})
+    assert reply == {"ok": True, "result": {"company": "TUBC", "totals": None}}
+
+
 def test_unknown_op_returns_a_clean_error():
     reply = channel._dispatch("not_a_real_op", "TUBC", {})
     assert reply == {"ok": False, "error": {"error": "unknown_op", "message": "unknown op 'not_a_real_op'", "context": {}}}
