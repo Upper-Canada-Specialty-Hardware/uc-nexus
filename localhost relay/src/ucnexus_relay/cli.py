@@ -1,11 +1,13 @@
 """Single entry point for the packaged relay exe (and `python -m ucnexus_relay`).
 
 Subcommands:
-  app (default)        the desktop app: window + system tray, supervising the relay (--minimized = start in tray)
+  app (default)        the desktop app: window + system tray, supervising the relay (--minimized = start in
+                       tray; --force = take over from a running instance even if same/older/dev)
   serve                run the relay (headless) - uvicorn on the configured [server] host/port
   enroll  ...          one-time enrollment (delegates to ucnexus_relay.enroll; pass its flags through)
   protect-secret       DPAPI-encrypt the shared_secret currently in config.toml
   health               GET the local /health endpoint and print it (exit 0 if status ok)
+  print-build          print this exe's build tag (used by promote to compare against the installed exe)
   install-autostart    register a no-admin logon autostart (HKCU Run) so the relay starts at logon
   uninstall-autostart  remove that logon autostart entry
   autostart-status     print whether the logon autostart is installed (JSON)
@@ -45,6 +47,21 @@ def _reattach_console() -> None:
         sys.stderr = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115
 
 
+def _relay_already_serving(host: str, port: int) -> bool:
+    """True if a relay is already answering /health on host:port. A second serve would fail the port bind
+    anyway, but the OLD flow wrote relay.pid before binding and deleted it on the way out - orphaning the
+    first serve (the app could no longer stop/restart it). Bailing here before touching relay.pid avoids
+    that."""
+    import json
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"http://{host}:{port}/health", timeout=2) as r:  # noqa: S310 (localhost)
+            return json.loads(r.read().decode()).get("status") == "ok"
+    except (OSError, json.JSONDecodeError):
+        return False
+
+
 def _serve(argv: list[str]) -> int:
     import asyncio
     import os
@@ -56,6 +73,13 @@ def _serve(argv: list[str]) -> int:
     from .main import app
 
     s = get_settings()
+
+    # Single-instance: if a relay is already serving on this host/port, don't start a second one (and do NOT
+    # touch relay.pid - see _relay_already_serving). The app's ensure_serve/restart already gate on /health;
+    # this covers a stray manual `serve`, the scheduled-task deployment, and a double logon trigger.
+    if _relay_already_serving(s.server.host, s.server.port):
+        print(f"relay already serving on {s.server.host}:{s.server.port}; not starting a second one", file=sys.stderr)
+        return 0
 
     # Write a pid file next to config.toml so the UI's Stop/Restart can target THIS serve process. The ui
     # window and serve are both ucnexus-relay.exe, so a pid file is the reliable way to tell them apart.
@@ -176,7 +200,19 @@ def main(argv: list[str] | None = None) -> int:
         return _serve(rest)
     if cmd == "app":
         from .app import run_app
-        return run_app(minimized="--minimized" in rest)
+        return run_app(minimized="--minimized" in rest, force="--force" in rest)
+    if cmd == "print-build":
+        from .updater import current_build
+
+        # Write to fd 1 directly, NOT print(): the windowed build's _reattach_console rebinds sys.stdout to
+        # devnull when there's no console, which is exactly how promote's `installed_build` spawns us
+        # (detached, no window, output over a pipe). os.write(1) reaches that captured pipe regardless.
+        data = (current_build() + "\n").encode("utf-8")
+        try:
+            os.write(1, data)
+        except OSError:
+            sys.stdout.write(data.decode("utf-8"))
+        return 0
     if cmd == "enroll":
         from .enroll import main as enroll_main
         return enroll_main(rest)
@@ -193,7 +229,7 @@ def main(argv: list[str] | None = None) -> int:
         return _autostart_status(rest)
 
     print(
-        f"unknown command: {cmd!r} (expected: serve | app | enroll | protect-secret | health | "
+        f"unknown command: {cmd!r} (expected: serve | app | enroll | protect-secret | health | print-build | "
         "install-autostart | uninstall-autostart | autostart-status)",
         file=sys.stderr,
     )
