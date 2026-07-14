@@ -11,6 +11,7 @@ from app.database import SessionLocal
 from app.errors import InvalidStateTransitionError, InventoryShortfallError, NotFoundError
 from app.repositories import (
     notification_repository,
+    po_document_settings_repository,
     po_repository,
     project_repository,
     relay_repository,
@@ -49,7 +50,9 @@ from .inputs import (
     ReportInventoryDeficiencyInput,
     ReportStockDeficiencyInput,
     ResolveDeficiencyInput,
+    SavePODocumentDataInput,
     TransferInventoryInput,
+    UpdatePODocumentSettingsInput,
     UpdateProjectInput,
     UpdateVendorInput,
     UpdateWarehouseInput,
@@ -60,6 +63,7 @@ from .queries import (
     _notification_to_type,
     _opening_item_to_type,
     _packing_slip_to_type,
+    _po_document_settings_to_type,
     _po_document_to_type,
     _po_line_item_to_type,
     _po_to_type,
@@ -85,6 +89,7 @@ from .types import (
     Notification,
     OpeningItem,
     PODocumentInfo,
+    PODocumentSettings,
     POLineItem,
     Project,
     PullRequest,
@@ -224,7 +229,17 @@ def _prepare_create_po(*, project_id, vendor_id, gp_vendor_id, buyer_id, cost_co
 
 
 def _persist_create_po(
-    *, key, line_items_data, project_id, vendor_id, notes, cost_code, gp_result, gp_vendor_id, vendor_name_snapshot
+    *,
+    key,
+    line_items_data,
+    project_id,
+    vendor_id,
+    notes,
+    cost_code,
+    gp_result,
+    gp_vendor_id,
+    vendor_name_snapshot,
+    buyer_id,
 ) -> PurchaseOrder:
     with SessionLocal() as session:
         po = po_repository.create_po(
@@ -238,6 +253,7 @@ def _persist_create_po(
             gp_company=gp_result["company"],
             gp_vendor_id=gp_vendor_id,
             vendor_name_snapshot=vendor_name_snapshot,
+            buyer_id=buyer_id,
         )
         gp_idempotency.stamp_result_id(session, key, "create_po", gp_result, str(po.id))
         session.commit()
@@ -294,7 +310,7 @@ def _prepare_register_po(*, po_id, vendor_id, gp_vendor_id, buyer_id, cost_code,
 
 
 def _persist_register_po(
-    *, key, po_id, gp_vendor_id, vendor_name_snapshot, gp_result, line_items_data, vendor_id, cost_code
+    *, key, po_id, gp_vendor_id, vendor_name_snapshot, gp_result, line_items_data, vendor_id, cost_code, buyer_id
 ) -> PurchaseOrder:
     with SessionLocal() as session:
         po_repository.register_po_in_gp(
@@ -307,6 +323,7 @@ def _persist_register_po(
             line_items=line_items_data,
             vendor_id=vendor_id,
             cost_code=cost_code,
+            buyer_id=buyer_id,
         )
         gp_idempotency.stamp_result_id(session, key, "register_po_in_gp", gp_result, str(po_id))
         session.commit()
@@ -739,6 +756,7 @@ class Mutation:
             gp_result=gp_result,
             gp_vendor_id=input.gp_vendor_id,
             vendor_name_snapshot=input.gp_vendor_name,
+            buyer_id=input.buyer_id,
         )
 
     @strawberry.mutation
@@ -802,6 +820,7 @@ class Mutation:
             line_items_data=line_items_data,
             vendor_id=vendor_id,
             cost_code=input.cost_code,
+            buyer_id=input.buyer_id,
         )
 
     @strawberry.mutation
@@ -1393,6 +1412,69 @@ class Mutation:
             warehouse_admin_repository.delete_warehouse(session, uuid.UUID(str(id)))
             session.commit()
             return True
+
+    @strawberry.mutation
+    def update_po_document_settings(
+        self, info: strawberry.Info, input: UpdatePODocumentSettingsInput
+    ) -> PODocumentSettings:
+        """Patch the single-row PO-document boilerplate (issue #230). Admin-only. Only fields the client
+        actually sent (not UNSET) are written, so a partial edit leaves the rest intact."""
+        require_admin(info)
+        fields = {
+            name: getattr(input, name)
+            for name in (
+                "tax_numbers",
+                "mandatory_bullets",
+                "shipping_accounts",
+                "customs_broker_block",
+                "fsc_note",
+                "usa_tariff_note",
+                "usa_tariff_effective_until",
+                "company_from_address",
+                "payment_terms",
+                "confirm_with",
+                "footer_notes",
+                "signature_note",
+            )
+            if getattr(input, name) is not strawberry.UNSET
+        }
+        with SessionLocal() as session:
+            settings = po_document_settings_repository.update_settings(session, **fields)
+            session.commit()
+            session.refresh(settings)
+            return _po_document_settings_to_type(settings)
+
+    @strawberry.mutation
+    def save_po_document_data(
+        self, info: strawberry.Info, po_id: strawberry.ID, input: SavePODocumentDataInput
+    ) -> PurchaseOrder:
+        """Persist the generate-dialog capture for a PO (issue #230) and return the PO with its now-saved
+        documentData, so a re-open of the dialog pre-fills. require_user (any PO user generates)."""
+        require_user(info)
+        pid = uuid.UUID(str(po_id))
+        with SessionLocal() as session:
+            po_repository.upsert_po_document_data(
+                session,
+                pid,
+                vendor_address=input.vendor_address,
+                buyer_name=input.buyer_name,
+                currency=input.currency,
+                ship_to=input.ship_to,
+                shipping_method=input.shipping_method,
+                proposal_number=input.proposal_number,
+                freight=input.freight,
+                miscellaneous=input.miscellaneous,
+                tax_amount=input.tax_amount,
+                tax_label=input.tax_label,
+                required_by_override=input.required_by_override,
+                include_fsc=input.include_fsc,
+                include_usa_tariff=input.include_usa_tariff,
+                include_customs=input.include_customs,
+            )
+            session.commit()
+            po = po_repository.get_purchase_order(session, pid)
+            receive_records = po_repository.get_receive_records_for_po(session, pid)
+            return _po_to_type(po, receive_records)
 
     @strawberry.mutation
     def update_user_roles(self, user_id: str, roles: list[str]) -> ClerkUser:

@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.errors import InvalidStateTransitionError, NotFoundError, ValidationError
 from app.models.enums import Classification, PODocumentType, POStatus
-from app.models.purchase_order import PODocument, POLineItem, PurchaseOrder
+from app.models.purchase_order import PODocument, PODocumentData, POLineItem, PurchaseOrder
 from app.models.receiving import ReceiveRecord
 
 logger = logging.getLogger(__name__)
@@ -140,6 +140,7 @@ def create_po(
     gp_company: str | None = None,
     gp_vendor_id: str | None = None,
     vendor_name_snapshot: str | None = None,
+    buyer_id: str | None = None,
 ) -> PurchaseOrder:
     """Create a manual PO with line items. No hardware items are created.
 
@@ -185,6 +186,7 @@ def create_po(
         vendor_name_snapshot=(
             vendor_name_snapshot.strip() if vendor_name_snapshot and vendor_name_snapshot.strip() else None
         ),
+        buyer_id=buyer_id.strip() if buyer_id and buyer_id.strip() else None,
     )
     session.add(po)
     session.flush()
@@ -254,6 +256,7 @@ def register_po_in_gp(
     line_items: list[dict],
     vendor_id: uuid.UUID | None = None,
     cost_code: str | None = None,
+    buyer_id: str | None = None,
 ) -> PurchaseOrder:
     """Register an imported DRAFT PO into GP (the import-acceptance path, issue #175).
 
@@ -367,6 +370,8 @@ def register_po_in_gp(
         po.vendor_id = vendor_id
     po.gp_vendor_id = cleaned_gp_vendor_id
     po.vendor_name_snapshot = cleaned_vendor_name_snapshot
+    if buyer_id and buyer_id.strip():
+        po.buyer_id = buyer_id.strip()
     po.cost_code = cost_code.strip() if cost_code and cost_code.strip() else None
     po.po_number = cleaned_po_number
     po.gp_company = cleaned_company
@@ -399,6 +404,7 @@ def get_purchase_orders(
             # #232) is one selectin query, not an N+1 lazy load per line.
             selectinload(PurchaseOrder.line_items).selectinload(POLineItem.hardware_items),
             selectinload(PurchaseOrder.documents),
+            selectinload(PurchaseOrder.document_data),
             selectinload(PurchaseOrder.vendor),
         )
         .where(PurchaseOrder.deleted_at.is_(None))
@@ -420,6 +426,7 @@ def get_purchase_order(session: Session, po_id: uuid.UUID) -> PurchaseOrder | No
             # the N+1 path.
             selectinload(PurchaseOrder.line_items).selectinload(POLineItem.hardware_items),
             selectinload(PurchaseOrder.documents),
+            selectinload(PurchaseOrder.document_data),
             selectinload(PurchaseOrder.vendor),
         )
         .where(
@@ -791,3 +798,62 @@ def get_po_document(session: Session, document_id: uuid.UUID) -> PODocument:
     if doc is None:
         raise NotFoundError(f"Document {document_id} not found")
     return doc
+
+
+def get_po_document_data(session: Session, po_id: uuid.UUID) -> PODocumentData | None:
+    """The captured generate-time gap data for a PO (issue #230), or None if never saved."""
+    return session.scalars(select(PODocumentData).where(PODocumentData.po_id == po_id)).first()
+
+
+_DOC_DATA_TEXT_FIELDS = (
+    "vendor_address",
+    "buyer_name",
+    "ship_to",
+    "shipping_method",
+    "proposal_number",
+    "tax_label",
+)
+_DOC_DATA_MONEY_FIELDS = ("freight", "miscellaneous", "tax_amount")
+_DOC_DATA_BOOL_FIELDS = ("include_fsc", "include_usa_tariff", "include_customs")
+
+
+def upsert_po_document_data(session: Session, po_id: uuid.UUID, **fields) -> PODocumentData:
+    """Create or update the 1:1 PODocumentData for a PO (issue #230). Only keys present in fields are
+    written, so a partial save leaves the rest intact. Money fields coerce to Decimal; blank text
+    coerces to None. Validates the PO exists."""
+    po = get_purchase_order(session, po_id)
+    if po is None:
+        raise NotFoundError(f"Purchase order {po_id} not found")
+
+    data = get_po_document_data(session, po_id)
+    created = data is None
+    if created:
+        data = PODocumentData(id=uuid.uuid4(), po_id=po_id)
+        session.add(data)
+
+    for key in _DOC_DATA_TEXT_FIELDS:
+        if key in fields:
+            value = fields[key]
+            setattr(data, key, value.strip() if value and value.strip() else None)
+    if "tax_label" in fields and not (fields["tax_label"] and fields["tax_label"].strip()):
+        # tax_label is NOT NULL; keep the default rather than storing None from a blanked input.
+        data.tax_label = "Taxes"
+
+    for key in _DOC_DATA_MONEY_FIELDS:
+        if key in fields:
+            value = fields[key]
+            setattr(data, key, Decimal(str(value)) if value is not None else Decimal("0"))
+
+    for key in _DOC_DATA_BOOL_FIELDS:
+        if key in fields and fields[key] is not None:
+            setattr(data, key, bool(fields[key]))
+
+    if "currency" in fields:
+        currency = (fields["currency"] or "CAD").strip().upper()
+        data.currency = currency if currency in ("CAD", "USD") else "CAD"
+
+    if "required_by_override" in fields:
+        data.required_by_override = fields["required_by_override"]
+
+    session.flush()
+    return data

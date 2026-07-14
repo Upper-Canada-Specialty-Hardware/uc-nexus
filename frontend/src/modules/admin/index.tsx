@@ -9,6 +9,7 @@ import WarehousesPage from './WarehousesPage';
 import ProjectsPage from './ProjectsPage';
 import LocationCleanupPage from './LocationCleanupPage';
 import RelayInstallsPage from './RelayInstallsPage';
+import PODocumentSettingsPage from './PODocumentSettingsPage';
 import AdminLanding from './AdminLanding';
 import BackToModule from '../../components/BackToModule';
 
@@ -32,6 +33,7 @@ export default function AdminModule() {
       <Route path="projects" element={<AdminSubLayout><ProjectsPage /></AdminSubLayout>} />
       <Route path="users" element={<AdminSubLayout><UserManagementPage /></AdminSubLayout>} />
       <Route path="relay-installs" element={<AdminSubLayout><RelayInstallsPage /></AdminSubLayout>} />
+      <Route path="po-document-settings" element={<AdminSubLayout><PODocumentSettingsPage /></AdminSubLayout>} />
       <Route path="location-cleanup" element={<AdminSubLayout><LocationCleanupPage /></AdminSubLayout>} />
       <Route path="*" element={<Navigate to="/app/admin" replace />} />
     </Routes>

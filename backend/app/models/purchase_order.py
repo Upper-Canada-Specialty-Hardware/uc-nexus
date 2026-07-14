@@ -3,7 +3,20 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from sqlalchemy import CheckConstraint, Date, DateTime, Enum, ForeignKey, Index, Integer, Numeric, String, Text
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Date,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from . import Base
@@ -53,6 +66,9 @@ class PurchaseOrder(Base):
     # name, frozen at push time since the GP vendor list isn't re-fetched just to render a PO.
     gp_vendor_id: Mapped[str | None] = mapped_column(String(15), nullable=True)
     vendor_name_snapshot: Mapped[str | None] = mapped_column(String, nullable=True)
+    # GP BUYERID (POP00101, char 15) picked in the Create/Register PO dialog and sent to GP at push
+    # time. Persisted so the generated PO document (issue #230) can pre-fill the Buyer field.
+    buyer_id: Mapped[str | None] = mapped_column(String(15), nullable=True)
     vendor_quote_number: Mapped[str | None] = mapped_column(String, nullable=True)
     expected_delivery_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     ordered_at: Mapped[datetime | None] = mapped_column(nullable=True)
@@ -64,6 +80,7 @@ class PurchaseOrder(Base):
     vendor: Mapped[Vendor | None] = relationship()
     line_items: Mapped[list["POLineItem"]] = relationship(back_populates="purchase_order")
     documents: Mapped[list["PODocument"]] = relationship(back_populates="purchase_order")
+    document_data: Mapped["PODocumentData | None"] = relationship(back_populates="purchase_order", uselist=False)
 
 
 class POLineItem(Base):
@@ -124,3 +141,45 @@ class PODocument(Base):
     uploaded_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
     purchase_order: Mapped["PurchaseOrder"] = relationship(back_populates="documents")
+
+
+class PODocumentData(Base):
+    """The per-PO fields the generated supplier PO document (issue #230) needs but Nexus doesn't
+    otherwise hold. GP computes some of these (freight/misc/tax), and others are only known at
+    generate time (vendor mailing address, currency, resolved ship-to block); the PO user captures
+    them once in the generate dialog and they persist here 1:1 with the PO so a re-generate pre-fills.
+    """
+
+    __tablename__ = "po_document_data"
+    __table_args__ = (UniqueConstraint("po_id", name="uq_po_document_data_po_id"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    po_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("purchase_orders.id"), nullable=False)
+    # Vendor mailing address block (GP holds it on the PM vendor card; Nexus doesn't mirror it).
+    vendor_address: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Buyer display name for the document (defaults from PurchaseOrder.buyer_id, editable here).
+    buyer_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Document currency: 'CAD' or 'USD'. Drives the "$" vs "$US" money prefix.
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="CAD")
+    # The resolved Ship-To block that prints on the document (from a warehouse, the project job site,
+    # or custom text - resolved in the frontend and stored verbatim).
+    ship_to: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Shipping method line for the header row (e.g. "LOCAL DELIVERY", "Supply by your freight company").
+    shipping_method: Mapped[str | None] = mapped_column(String, nullable=True)
+    proposal_number: Mapped[str | None] = mapped_column(String, nullable=True)
+    # GP-computed totals lines Nexus can't derive without a relay read - captured from the user.
+    freight: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=Decimal("0"))
+    miscellaneous: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=Decimal("0"))
+    tax_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=Decimal("0"))
+    # Label for the tax line (e.g. 'HST' or 'Taxes').
+    tax_label: Mapped[str] = mapped_column(String, nullable=False, default="Taxes")
+    # Overrides the header Required-by date (defaults to PurchaseOrder.expected_delivery_date).
+    required_by_override: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # Conditional boilerplate toggles (wood-door FSC note, USA tariff note, international customs block).
+    include_fsc: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    include_usa_tariff: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    include_customs: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    purchase_order: Mapped["PurchaseOrder"] = relationship(back_populates="document_data")

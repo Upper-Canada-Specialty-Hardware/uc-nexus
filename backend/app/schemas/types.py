@@ -240,6 +240,61 @@ class PODocumentInfo:
 
 
 @strawberry.type
+class PODocumentData:
+    """Per-PO captured gap data for the generated supplier PO document (issue #230)."""
+
+    id: strawberry.ID
+    po_id: strawberry.ID
+    vendor_address: str | None
+    buyer_name: str | None
+    currency: str
+    ship_to: str | None
+    shipping_method: str | None
+    proposal_number: str | None
+    freight: float
+    miscellaneous: float
+    tax_amount: float
+    tax_label: str
+    required_by_override: date | None
+    include_fsc: bool
+    include_usa_tariff: bool
+    include_customs: bool
+
+
+@strawberry.type
+class PODocumentSettings:
+    """Admin-configurable boilerplate for the generated supplier PO document (issue #230)."""
+
+    tax_numbers: str
+    mandatory_bullets: list[str]
+    shipping_accounts: list[str]
+    customs_broker_block: str
+    fsc_note: str
+    usa_tariff_note: str
+    usa_tariff_effective_until: date | None
+    company_from_address: str
+    payment_terms: str
+    confirm_with: str
+    footer_notes: str
+    signature_note: str
+    updated_at: datetime
+
+
+@strawberry.type
+class ProjectShipTo:
+    """The job-site address of a project, used to build the "deliver to site" ship-to block on the
+    generated PO document (issue #230). A lean projection so the PO list query stays cheap."""
+
+    id: strawberry.ID
+    project_id: str
+    job_site_name: str | None
+    address: str | None
+    city: str | None
+    state: str | None
+    zip: str | None
+
+
+@strawberry.type
 class PurchaseOrder:
     id: strawberry.ID
     po_number: str | None
@@ -250,6 +305,7 @@ class PurchaseOrder:
     gp_company: str | None
     gp_vendor_id: str | None
     vendor_name_snapshot: str | None
+    buyer_id: str | None
     vendor: Vendor | None
     vendor_quote_number: str | None
     notes: str | None
@@ -260,6 +316,7 @@ class PurchaseOrder:
     line_items: list[POLineItem]
     receive_records: list[ReceiveRecord]
     documents: list[PODocumentInfo]
+    document_data: PODocumentData | None = None
 
 
 @strawberry.type
