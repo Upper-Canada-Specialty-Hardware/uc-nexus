@@ -24,16 +24,16 @@ import {
   Checkbox,
   ListItemText,
   Tooltip,
+  Autocomplete,
+  createFilterOptions,
 } from '@mui/material';
-import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import AddIcon from '@mui/icons-material/Add';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
 import KeyboardArrowRightIcon from '@mui/icons-material/KeyboardArrowRight';
 import UnfoldMoreIcon from '@mui/icons-material/UnfoldMore';
 import UnfoldLessIcon from '@mui/icons-material/UnfoldLess';
 import { useQuery } from '@apollo/client/react';
-import { GET_PURCHASE_ORDERS, GET_PO_STATISTICS } from '../../graphql/queries';
-import ProjectLandingPage from '../../components/ProjectLandingPage';
+import { GET_PURCHASE_ORDERS, GET_PO_STATISTICS, GET_PROJECTS } from '../../graphql/queries';
 import type { Project } from '../../types/project';
 import PODetailModal from './PODetailModal';
 import GpPurchaseOrderDialog from './GpPurchaseOrderDialog';
@@ -169,7 +169,14 @@ const STAT_CARDS: { label: string; key: keyof POStatistics }[] = [
 
 // --- Sort + filter state ---
 
-type SortField = 'poNumber' | 'status' | 'vendor' | 'orderedAt' | 'itemsCount';
+type SortField =
+  | 'projectNumber'
+  | 'projectName'
+  | 'poNumber'
+  | 'status'
+  | 'vendor'
+  | 'orderedAt'
+  | 'itemsCount';
 
 interface SortState {
   field: SortField | null;
@@ -177,6 +184,7 @@ interface SortState {
 }
 
 interface FilterState {
+  projectIds: Set<string>;
   poSearch: string;
   statuses: Set<string>;
   vendorSearch: string;
@@ -186,6 +194,7 @@ interface FilterState {
 }
 
 const EMPTY_FILTER_STATE: FilterState = {
+  projectIds: new Set(),
   poSearch: '',
   statuses: new Set(),
   vendorSearch: '',
@@ -198,7 +207,25 @@ function poDisplayId(po: PurchaseOrder): string {
   return po.poNumber ?? po.requestNumber;
 }
 
+// Project columns (issue: PO list is now all-projects). POs carry only projectId (a UUID); the human
+// project number + name come from the projects list, joined client-side via this map.
+type ProjectsById = Map<string, Project>;
+
+function poProjectNumber(po: PurchaseOrder, projectsById: ProjectsById): string {
+  if (!po.projectId) return '';
+  return projectsById.get(po.projectId)?.projectId ?? '';
+}
+
+function poProjectName(po: PurchaseOrder, projectsById: ProjectsById): string {
+  if (!po.projectId) return '';
+  const p = projectsById.get(po.projectId);
+  return p?.description || p?.projectId || '';
+}
+
 function matchesFilter(po: PurchaseOrder, f: FilterState): boolean {
+  if (f.projectIds.size > 0) {
+    if (!po.projectId || !f.projectIds.has(po.projectId)) return false;
+  }
   if (f.poSearch) {
     if (!poDisplayId(po).toLowerCase().includes(f.poSearch.toLowerCase())) return false;
   }
@@ -219,7 +246,12 @@ function matchesFilter(po: PurchaseOrder, f: FilterState): boolean {
   return true;
 }
 
-function comparePOs(a: PurchaseOrder, b: PurchaseOrder, sort: SortState): number {
+function comparePOs(
+  a: PurchaseOrder,
+  b: PurchaseOrder,
+  sort: SortState,
+  projectsById: ProjectsById,
+): number {
   if (!sort.field) return 0;
   const dir = sort.direction === 'asc' ? 1 : -1;
   let av: string | number = 0;
@@ -227,6 +259,18 @@ function comparePOs(a: PurchaseOrder, b: PurchaseOrder, sort: SortState): number
   let aNull = false;
   let bNull = false;
   switch (sort.field) {
+    case 'projectNumber':
+      av = poProjectNumber(a, projectsById).toLowerCase();
+      bv = poProjectNumber(b, projectsById).toLowerCase();
+      aNull = !av;
+      bNull = !bv;
+      break;
+    case 'projectName':
+      av = poProjectName(a, projectsById).toLowerCase();
+      bv = poProjectName(b, projectsById).toLowerCase();
+      aNull = !av;
+      bNull = !bv;
+      break;
     case 'poNumber':
       av = poDisplayId(a).toLowerCase();
       bv = poDisplayId(b).toLowerCase();
@@ -337,15 +381,58 @@ function SortHeader({ field, label, align = 'left', sortState, onSort }: SortHea
 
 // --- Filter row ---
 
+// Match projects by both number and name so typing either narrows the list.
+const projectFilterOptions = createFilterOptions<Project>({
+  stringify: (p) => `${p.projectId} ${p.description ?? ''}`,
+});
+
 interface FilterRowProps {
   filterState: FilterState;
   onChange: (updater: (prev: FilterState) => FilterState) => void;
+  projects: Project[];
 }
 
-function FilterRow({ filterState, onChange }: FilterRowProps) {
+function FilterRow({ filterState, onChange, projects }: FilterRowProps) {
   return (
     <TableRow>
       <TableCell sx={{ width: 48 }} />
+      {/* Spans both project columns (# and name) — one selector filters by project. */}
+      <TableCell colSpan={2}>
+        <Autocomplete
+          multiple
+          size="small"
+          options={projects}
+          value={projects.filter((p) => filterState.projectIds.has(p.id))}
+          onChange={(_e, selected) =>
+            onChange((s) => ({ ...s, projectIds: new Set(selected.map((p) => p.id)) }))
+          }
+          disableCloseOnSelect
+          limitTags={2}
+          filterOptions={projectFilterOptions}
+          getOptionLabel={(p) => p.description || p.projectId}
+          isOptionEqualToValue={(a, b) => a.id === b.id}
+          renderOption={(props, option, { selected }) => {
+            const { key, ...liProps } = props as typeof props & { key: string };
+            return (
+              <li key={key} {...liProps}>
+                <Checkbox size="small" checked={selected} sx={{ mr: 1 }} />
+                <ListItemText
+                  primary={option.description || option.projectId}
+                  secondary={option.description ? `#${option.projectId}` : undefined}
+                />
+              </li>
+            );
+          }}
+          renderInput={(params) => (
+            <TextField
+              {...params}
+              placeholder={filterState.projectIds.size === 0 ? 'All projects' : undefined}
+              inputProps={{ ...params.inputProps, 'aria-label': 'Filter by project' }}
+            />
+          )}
+          sx={{ minWidth: 200 }}
+        />
+      </TableCell>
       <TableCell>
         <TextField
           size="small"
@@ -442,10 +529,12 @@ function FilterRow({ filterState, onChange }: FilterRowProps) {
 
 // --- Single PO row + collapsible line-item panel ---
 
-const PO_TABLE_COLUMN_COUNT = 6;
+const PO_TABLE_COLUMN_COUNT = 8;
 
 interface POTableRowProps {
   po: PurchaseOrder;
+  projectNumber: string;
+  projectName: string;
   expanded: boolean;
   onToggle: () => void;
   onOpen: () => void;
@@ -453,7 +542,16 @@ interface POTableRowProps {
   relayConnected: boolean;
 }
 
-function POTableRow({ po, expanded, onToggle, onOpen, onRegister, relayConnected }: POTableRowProps) {
+function POTableRow({
+  po,
+  projectNumber,
+  projectName,
+  expanded,
+  onToggle,
+  onOpen,
+  onRegister,
+  relayConnected,
+}: POTableRowProps) {
   const dataCellSx = { cursor: 'pointer' };
   return (
     <>
@@ -469,6 +567,14 @@ function POTableRow({ po, expanded, onToggle, onOpen, onRegister, relayConnected
           >
             {expanded ? <KeyboardArrowDownIcon /> : <KeyboardArrowRightIcon />}
           </IconButton>
+        </TableCell>
+        <TableCell sx={dataCellSx} onClick={onOpen}>
+          {projectNumber || '-'}
+        </TableCell>
+        <TableCell sx={dataCellSx} onClick={onOpen}>
+          <Typography variant="body2" noWrap title={projectName || undefined} sx={{ maxWidth: 240 }}>
+            {projectName || '-'}
+          </Typography>
         </TableCell>
         <TableCell sx={dataCellSx} onClick={onOpen}>
           {po.poNumber ? (
@@ -554,7 +660,6 @@ function POTableRow({ po, expanded, onToggle, onOpen, onRegister, relayConnected
 function POListPage() {
   const navigate = useNavigate();
   const { isAdmin } = useIdentity();
-  const [selectedProject, setSelectedProject] = useState<Project | 'all' | null>(null);
   const [selectedPOId, setSelectedPOId] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
@@ -578,33 +683,33 @@ function POListPage() {
     });
   };
 
-  const projectId = selectedProject && selectedProject !== 'all' ? selectedProject.id : undefined;
-
-  // --- Queries ---
+  // --- Queries (all-projects view; per-project scoping is done via the table's project filter) ---
 
   const {
     data: statsData,
     loading: statsLoading,
     refetch: refetchStats,
-  } = useQuery<{ poStatistics: POStatistics }>(GET_PO_STATISTICS, {
-    variables: { projectId },
-    skip: selectedProject === null,
-  });
+  } = useQuery<{ poStatistics: POStatistics }>(GET_PO_STATISTICS);
 
   const {
     data: posData,
     loading: posLoading,
     refetch: refetchPOs,
   } = useQuery<{ purchaseOrders: PurchaseOrder[] }>(GET_PURCHASE_ORDERS, {
-    variables: { projectId },
-    skip: selectedProject === null,
     fetchPolicy: 'cache-and-network',
   });
+
+  const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
 
   const stats = statsData?.poStatistics;
   const purchaseOrders = useMemo(
     () => posData?.purchaseOrders ?? [],
     [posData?.purchaseOrders],
+  );
+  const projects = useMemo(() => projectsData?.projects ?? [], [projectsData?.projects]);
+  const projectsById = useMemo<ProjectsById>(
+    () => new Map(projects.map((p) => [p.id, p])),
+    [projects],
   );
   const selectedPO = purchaseOrders.find((po) => po.id === selectedPOId) ?? null;
 
@@ -613,8 +718,8 @@ function POListPage() {
   const filteredAndSortedPOs = useMemo(() => {
     const filtered = purchaseOrders.filter((po) => matchesFilter(po, filterState));
     if (!sortState.field) return filtered;
-    return [...filtered].sort((a, b) => comparePOs(a, b, sortState));
-  }, [purchaseOrders, filterState, sortState]);
+    return [...filtered].sort((a, b) => comparePOs(a, b, sortState, projectsById));
+  }, [purchaseOrders, filterState, sortState, projectsById]);
 
   const handleSortClick = (field: SortField) => {
     setSortState((prev) => {
@@ -658,34 +763,13 @@ function POListPage() {
     refetchStats();
   };
 
-  // --- Landing page ---
-
-  if (selectedProject === null) {
-    return (
-      <ProjectLandingPage
-        title="Purchase Orders"
-        onSelect={(p) => setSelectedProject(p === null ? 'all' : p)}
-      />
-    );
-  }
-
   // --- Render ---
-
-  const projectLabel =
-    selectedProject === 'all' ? 'All Projects' : (selectedProject.description || selectedProject.projectId);
 
   return (
     <Box>
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
-        <Button
-          size="small"
-          startIcon={<ArrowBackIcon />}
-          onClick={() => setSelectedProject(null)}
-        >
-          Projects
-        </Button>
         <Typography variant="h5" sx={{ flex: 1 }}>
-          Purchase Orders — {projectLabel}
+          Purchase Orders
         </Typography>
         <RelayStatusChip connected={relayConnected} />
         {isAdmin && (
@@ -760,6 +844,18 @@ function POListPage() {
             <TableRow>
               <TableCell sx={{ width: 48 }} />
               <SortHeader
+                field="projectNumber"
+                label="Project #"
+                sortState={sortState}
+                onSort={handleSortClick}
+              />
+              <SortHeader
+                field="projectName"
+                label="Project"
+                sortState={sortState}
+                onSort={handleSortClick}
+              />
+              <SortHeader
                 field="poNumber"
                 label="PO / Request #"
                 sortState={sortState}
@@ -794,6 +890,7 @@ function POListPage() {
             <FilterRow
               filterState={filterState}
               onChange={setFilterState}
+              projects={projects}
             />
           </TableHead>
           <TableBody>
@@ -820,6 +917,8 @@ function POListPage() {
                 <POTableRow
                   key={po.id}
                   po={po}
+                  projectNumber={poProjectNumber(po, projectsById)}
+                  projectName={poProjectName(po, projectsById)}
                   expanded={expandedIds.has(po.id)}
                   onToggle={() => toggleExpand(po.id)}
                   onOpen={() => handleOpenPO(po.id)}
@@ -850,7 +949,6 @@ function POListPage() {
           setCreateOpen(false);
           handleRefetch();
         }}
-        defaultProjectId={projectId}
         relayConnected={relayConnected}
       />
 
