@@ -652,6 +652,52 @@ export const DELETE_WAREHOUSE = gql`
   }
 `;
 
+export const SAVE_PO_DOCUMENT_DATA = gql`
+  mutation SavePoDocumentData($poId: ID!, $input: SavePODocumentDataInput!) {
+    savePoDocumentData(poId: $poId, input: $input) {
+      id
+      documentData {
+        id
+        poId
+        vendorAddress
+        buyerName
+        currency
+        shipTo
+        shippingMethod
+        proposalNumber
+        freight
+        miscellaneous
+        taxAmount
+        taxLabel
+        requiredByOverride
+        includeFsc
+        includeUsaTariff
+        includeCustoms
+      }
+    }
+  }
+`;
+
+export const UPDATE_PO_DOCUMENT_SETTINGS = gql`
+  mutation UpdatePoDocumentSettings($input: UpdatePODocumentSettingsInput!) {
+    updatePoDocumentSettings(input: $input) {
+      taxNumbers
+      mandatoryBullets
+      shippingAccounts
+      customsBrokerBlock
+      fscNote
+      usaTariffNote
+      usaTariffEffectiveUntil
+      companyFromAddress
+      paymentTerms
+      confirmWith
+      footerNotes
+      signatureNote
+      updatedAt
+    }
+  }
+`;
+
 export const TRANSFER_INVENTORY = gql`
   mutation TransferInventory($input: TransferInventoryInput!) {
     transferInventory(input: $input) {

@@ -1,3 +1,5 @@
+from datetime import date
+
 import strawberry
 
 from .enums import (
@@ -288,6 +290,45 @@ class CreateWarehouseInput:
     postal_code: str | None = None
     is_primary: bool = False
     is_active: bool = True
+
+
+@strawberry.input
+class UpdatePODocumentSettingsInput:
+    """Patch for the single-row PO-document boilerplate (issue #230). Every field defaults to UNSET so
+    an omitted field is left untouched; the admin form is a full-record editor so it sends them all."""
+
+    tax_numbers: str | None = strawberry.UNSET
+    mandatory_bullets: list[str] | None = strawberry.UNSET
+    shipping_accounts: list[str] | None = strawberry.UNSET
+    customs_broker_block: str | None = strawberry.UNSET
+    fsc_note: str | None = strawberry.UNSET
+    usa_tariff_note: str | None = strawberry.UNSET
+    usa_tariff_effective_until: date | None = strawberry.UNSET
+    company_from_address: str | None = strawberry.UNSET
+    payment_terms: str | None = strawberry.UNSET
+    confirm_with: str | None = strawberry.UNSET
+    footer_notes: str | None = strawberry.UNSET
+    signature_note: str | None = strawberry.UNSET
+
+
+@strawberry.input
+class SavePODocumentDataInput:
+    """The generate-dialog capture for a PO (issue #230). Sent whole on each save; upsert overwrites."""
+
+    vendor_address: str | None = None
+    buyer_name: str | None = None
+    currency: str = "CAD"
+    ship_to: str | None = None
+    shipping_method: str | None = None
+    proposal_number: str | None = None
+    freight: float = 0
+    miscellaneous: float = 0
+    tax_amount: float = 0
+    tax_label: str = "Taxes"
+    required_by_override: date | None = None
+    include_fsc: bool = False
+    include_usa_tariff: bool = False
+    include_customs: bool = False
 
 
 @strawberry.input
