@@ -458,18 +458,13 @@ def list_jobs(conn) -> list[dict]:
 def read_po_totals(conn, po_number: str) -> dict | None:
     """Read-only: a PO's GP-computed header totals, to auto-fill the generated PO document (issue
     #230). Reads the open-PO work table POP10100 first, then the history table POP30100 (a fully
-    processed PO moves there). Columns: SUBTOTAL, FRTAMNT (freight), MSCCHRG (misc charges), TAXAMNT
-    (tax). Returns None if the PO number isn't in GP.
-
-    NOTE: MSCCHRG is the physical POP10100 column for misc charges (eConnect's element for it is
-    MSCCHAMT); verify it against the live table on the first relay run - it's the only column name
-    here that isn't already read/written elsewhere in this file, so if GP rejects it, that one alias
-    is the fix."""
+    processed PO moves there). Columns (verified against the live TUBC POP10100 schema): SUBTOTAL,
+    FRTAMNT (freight), MSCCHAMT (misc charges), TAXAMNT (tax). Returns None if the PO isn't in GP."""
     cur = conn.cursor()
     for table in ("POP10100", "POP30100"):
         row = cur.execute(
             f"SELECT RTRIM(PONUMBER) AS po, SUBTOTAL AS subtotal, FRTAMNT AS freight, "
-            f"MSCCHRG AS misc, TAXAMNT AS tax FROM dbo.{table} WHERE PONUMBER = ?",
+            f"MSCCHAMT AS misc, TAXAMNT AS tax FROM dbo.{table} WHERE PONUMBER = ?",
             po_number,
         ).fetchone()
         if row is not None:
