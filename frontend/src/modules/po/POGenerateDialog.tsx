@@ -286,7 +286,7 @@ function GenerateForm({ po, settings, buyers, gpTotals, projectNumber, onClose, 
           <Stack direction="row" spacing={2}>
             <FormControl fullWidth size="small">
               <InputLabel>Buyer</InputLabel>
-              <Select label="Buyer" value={buyerName} onChange={(e) => setBuyerName(e.target.value)} displayEmpty>
+              <Select label="Buyer" value={buyerName} onChange={(e) => setBuyerName(e.target.value)}>
                 <MenuItem value=""><em>None</em></MenuItem>
                 {buyerOptions.map((b) => (
                   <MenuItem key={b} value={b}>{b}</MenuItem>
@@ -314,7 +314,7 @@ function GenerateForm({ po, settings, buyers, gpTotals, projectNumber, onClose, 
             <InputLabel>Shipping method</InputLabel>
             <Select
               label="Shipping method" value={shippingMethod}
-              onChange={(e) => setShippingMethod(e.target.value)} displayEmpty
+              onChange={(e) => setShippingMethod(e.target.value)}
             >
               <MenuItem value=""><em>None</em></MenuItem>
               {shippingMethodOptions.map((m) => (
