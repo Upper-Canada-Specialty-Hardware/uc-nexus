@@ -18,7 +18,7 @@ import {
 import { DataGrid, type GridColDef, type GridRowParams } from '@mui/x-data-grid';
 import { useQuery, useMutation } from '@apollo/client/react';
 import { GET_USERS } from '../../graphql/queries';
-import { UPDATE_USER_GP_BUYER_ID, UPDATE_USER_ROLES } from '../../graphql/mutations';
+import { UPDATE_USER_GP_BUYER_ID, UPDATE_USER_NAME, UPDATE_USER_ROLES } from '../../graphql/mutations';
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
 
@@ -88,12 +88,16 @@ export default function UserManagementPage() {
   const [selectedUser, setSelectedUser] = useState<ClerkUser | null>(null);
   const [editRoles, setEditRoles] = useState<string[]>([]);
   const [editGpBuyerId, setEditGpBuyerId] = useState('');
+  // Issue #240: admin-editable display name (Clerk first/last name).
+  const [editFirstName, setEditFirstName] = useState('');
+  const [editLastName, setEditLastName] = useState('');
   const [saving, setSaving] = useState(false);
 
   const { data, loading } = useQuery<{ users: ClerkUser[] }>(GET_USERS);
   const users = useMemo(() => data?.users ?? [], [data]);
 
   const [updateRoles] = useMutation(UPDATE_USER_ROLES);
+  const [updateName] = useMutation(UPDATE_USER_NAME);
   const [updateGpBuyerId] = useMutation(UPDATE_USER_GP_BUYER_ID, {
     refetchQueries: [{ query: GET_USERS }],
   });
@@ -102,6 +106,8 @@ export default function UserManagementPage() {
     setSelectedUser(params.row);
     setEditRoles(params.row.roles);
     setEditGpBuyerId(params.row.gpBuyerId ?? '');
+    setEditFirstName(params.row.firstName ?? '');
+    setEditLastName(params.row.lastName ?? '');
   }, []);
 
   const handleToggleRole = useCallback((role: string) => {
@@ -115,6 +121,15 @@ export default function UserManagementPage() {
     setSaving(true);
     try {
       await updateRoles({ variables: { userId: selectedUser.id, roles: editRoles } });
+      // Issue #240: only write the name when it actually changed (Clerk PATCH is not a no-op).
+      if (
+        editFirstName.trim() !== (selectedUser.firstName ?? '') ||
+        editLastName.trim() !== (selectedUser.lastName ?? '')
+      ) {
+        await updateName({
+          variables: { userId: selectedUser.id, firstName: editFirstName.trim(), lastName: editLastName.trim() },
+        });
+      }
       await updateGpBuyerId({ variables: { userId: selectedUser.id, gpBuyerId: editGpBuyerId.trim() || null } });
       showToast('User updated successfully', 'success');
       setSelectedUser(null);
@@ -123,7 +138,7 @@ export default function UserManagementPage() {
     } finally {
       setSaving(false);
     }
-  }, [selectedUser, editRoles, editGpBuyerId, updateRoles, updateGpBuyerId, showToast]);
+  }, [selectedUser, editRoles, editFirstName, editLastName, editGpBuyerId, updateRoles, updateName, updateGpBuyerId, showToast]);
 
   if (!isAdmin) {
     return (
@@ -180,6 +195,23 @@ export default function UserManagementPage() {
                 </Box>
               </>
             )}
+          </Stack>
+          {/* Issue #240: admin-editable display name (Clerk first/last name). */}
+          <Stack direction="row" spacing={2} sx={{ mb: 2 }}>
+            <TextField
+              label="First name"
+              value={editFirstName}
+              onChange={(e) => setEditFirstName(e.target.value)}
+              size="small"
+              sx={{ flex: 1 }}
+            />
+            <TextField
+              label="Last name"
+              value={editLastName}
+              onChange={(e) => setEditLastName(e.target.value)}
+              size="small"
+              sx={{ flex: 1 }}
+            />
           </Stack>
           <FormGroup>
             {ALL_ROLES.map((role) => (

@@ -129,6 +129,19 @@ def update_user_roles(user_id: str, roles: list[str]) -> dict:
     return _merge_public_metadata(user_id, {"roles": roles})
 
 
+def update_user_name(user_id: str, first_name: str, last_name: str) -> dict:
+    """Issue #240: admin-driven display-name change. first_name/last_name are top-level Clerk user
+    fields (not metadata), so this never touches roles/gpBuyerId. Everything that shows a display
+    name (useIdentity fullName, resolve_display_name for received_by) derives from these."""
+    resp = _client.patch(
+        f"/users/{user_id}",
+        headers=_headers(),
+        json={"first_name": (first_name or "").strip(), "last_name": (last_name or "").strip()},
+    )
+    resp.raise_for_status()
+    return _user_summary(resp.json())
+
+
 def update_user_gp_buyer_id(user_id: str, gp_buyer_id: str | None) -> dict:
     """Issue #216: set (or clear, with None) the GP BUYERID this UC Nexus account acts as. The PO
     dialog auto-uses it and the create/register mutations enforce it server-side."""

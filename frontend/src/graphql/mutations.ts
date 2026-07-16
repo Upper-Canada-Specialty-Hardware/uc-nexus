@@ -584,6 +584,20 @@ export const UPDATE_USER_ROLES = gql`
   }
 `;
 
+export const UPDATE_USER_NAME = gql`
+  mutation UpdateUserName($userId: String!, $firstName: String!, $lastName: String!) {
+    updateUserName(userId: $userId, firstName: $firstName, lastName: $lastName) {
+      id
+      firstName
+      lastName
+      email
+      roles
+      gpBuyerId
+      imageUrl
+    }
+  }
+`;
+
 export const UPDATE_USER_GP_BUYER_ID = gql`
   mutation UpdateUserGpBuyerId($userId: String!, $gpBuyerId: String) {
     updateUserGpBuyerId(userId: $userId, gpBuyerId: $gpBuyerId) {
