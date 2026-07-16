@@ -35,7 +35,7 @@ from .inputs import (
     AssignOpeningsInput,
     CompleteOpeningInput,
     ConfirmShipmentInput,
-    CreatePOInput,
+    CreateDraftPOInput,
     CreateReceiveInput,
     CreateShipmentReturnInput,
     CreateVendorInput,
@@ -190,52 +190,6 @@ def _resolve_line_manufacturers(session, project_id, line_items_data) -> list[st
     return resolved
 
 
-def _prepare_create_po(*, project_id, vendor_id, gp_vendor_id, buyer_id, cost_code, po_number, line_items_data) -> dict:
-    """Read-only: resolve the vendor contact + job number, pre-validate the fields, and build the relay
-    create_po payload. Raises before the GP write so a bad request never reaches the relay."""
-    from app.models.project import Project as ProjectModel
-    from app.models.vendor import Vendor as VendorModel
-
-    with SessionLocal() as session:
-        vendor_contact_name = None
-        if vendor_id is not None:
-            vendor = session.get(VendorModel, vendor_id)
-            if vendor is None:
-                raise NotFoundError(f"Vendor {vendor_id} not found")
-            vendor_contact_name = vendor.contact_name
-
-        job_number = None
-        if project_id is not None:
-            project = session.get(ProjectModel, project_id)
-            if project is None:
-                raise NotFoundError(f"Project {project_id} not found")
-            job_number = project.project_id
-
-        # Issue #216: a project PO requires the buyer to be assigned to the project with a
-        # designated cost code (strict - no assignment row means no project POs).
-        buyer_repository.validate_buyer_can_order(session, buyer_id, project_id, cost_code)
-
-        manufacturers = _resolve_line_manufacturers(session, project_id, line_items_data)
-
-    gp_po.validate_create_po_inputs(
-        job_number=job_number, cost_code=cost_code, po_number=po_number, line_items=line_items_data
-    )
-    payload = gp_po.build_create_po_payload(
-        vendor_gp_id=gp_vendor_id,
-        vendor_contact_name=vendor_contact_name,
-        buyer_id=buyer_id,
-        job_number=job_number,
-        cost_code=cost_code,
-        po_number=po_number,
-        line_items=line_items_data,
-    )
-    # build_create_po_payload emits one line per line_items_data entry, in order, so index-align the
-    # resolved manufacturers onto the relay payload lines (the relay caps/RTRIMs to USRDEFND1's char(50)).
-    for line, manufacturer in zip(payload["lines"], manufacturers):
-        line["manufacturer"] = manufacturer
-    return payload
-
-
 def _assert_buyer_identity(caller_gp_buyer_id: str | None, input_buyer_id: str) -> None:
     """Issue #216: a PO is pushed as the CALLER's GP buyer identity (Clerk publicMetadata.gpBuyerId),
     not a free pick - reject a missing identity or a mismatched buyer_id before anything hits GP."""
@@ -246,42 +200,6 @@ def _assert_buyer_identity(caller_gp_buyer_id: str | None, input_buyer_id: str) 
         )
     if (input_buyer_id or "").strip().upper() != caller_gp_buyer_id.strip().upper():
         raise ValidationError("POs can only be created as your own GP buyer", field="buyer_id")
-
-
-def _persist_create_po(
-    *,
-    key,
-    line_items_data,
-    project_id,
-    vendor_id,
-    notes,
-    cost_code,
-    gp_result,
-    gp_vendor_id,
-    vendor_name_snapshot,
-    buyer_id,
-    shipping_cost,
-    tariff_amount,
-) -> PurchaseOrder:
-    with SessionLocal() as session:
-        po = po_repository.create_po(
-            session,
-            line_items=line_items_data,
-            project_id=project_id,
-            vendor_id=vendor_id,
-            notes=notes,
-            cost_code=cost_code,
-            po_number=gp_result["po_number"],
-            gp_company=gp_result["company"],
-            gp_vendor_id=gp_vendor_id,
-            vendor_name_snapshot=vendor_name_snapshot,
-            buyer_id=buyer_id,
-            shipping_cost=shipping_cost,
-            tariff_amount=tariff_amount,
-        )
-        gp_idempotency.stamp_result_id(session, key, "create_po", gp_result, str(po.id))
-        session.commit()
-        return _load_po_within(session, po.id)
 
 
 def _prepare_register_po(*, po_id, vendor_id, gp_vendor_id, buyer_id, cost_code, line_items_data) -> dict:
@@ -738,24 +656,12 @@ class Mutation:
 
     # PO
     @strawberry.mutation
-    async def create_po(self, info: strawberry.Info, input: CreatePOInput) -> PurchaseOrder:
-        """Issue #199: GP-first, server-side. Pushes the PO to GP via relay_call (create_po) BEFORE
-        persisting anything, then records it already carrying GP's returned PONUMBER + company in one
-        commit (it lands GP-Registered) - there is never a numberless DRAFT that could be re-registered
-        into a duplicate GP PO. Issue #200: the GP vendor is picked live (gpVendors) and sent as
-        gp_vendor_id/gp_vendor_name - there is no local vendor-to-GP mirror to look up anymore.
-
-        Issue #202 #1/#3: idempotency_key (client-generated, one per user action, re-sent on retry) makes
-        a retry a no-op in GP; fields are validated before the relay_call; the DB work is offloaded so no
-        Postgres connection is held across the relay round-trip."""
-        auth = require_user(info)
-        # Issue #216: the PO is pushed as the caller's own GP buyer identity, never a free pick.
-        caller_buyer = await asyncio.to_thread(user_repository.get_user_gp_buyer_id, auth["user_id"])
-        _assert_buyer_identity(caller_buyer, input.buyer_id)
-        key = gp_idempotency.validate_key(input.idempotency_key)
-
-        project_id = uuid.UUID(str(input.project_id)) if input.project_id else None
-        vendor_id = uuid.UUID(str(input.vendor_id)) if input.vendor_id else None
+    def create_draft_po(self, info: strawberry.Info, input: CreateDraftPOInput) -> PurchaseOrder:
+        """Issue #256: manual PO creation lands as a plain DRAFT - no relay round-trip, no GP fields,
+        no buyer involved. Registering the draft into GP (register_po_in_gp) is the separate,
+        conscious user action where GP vendor / buyer identity / cost code are captured and the
+        issue #216 assignment gating applies."""
+        require_user(info)
         line_items_data = [
             {
                 "hardware_category": li.hardware_category,
@@ -767,43 +673,19 @@ class Mutation:
             }
             for li in input.line_items
         ]
-
-        state = await asyncio.to_thread(gp_idempotency.load, key)
-        if state is not None and state.result_id is not None:
-            return await asyncio.to_thread(_load_po_type, uuid.UUID(state.result_id))
-
-        payload = await asyncio.to_thread(
-            _prepare_create_po,
-            project_id=project_id,
-            vendor_id=vendor_id,
-            gp_vendor_id=input.gp_vendor_id,
-            buyer_id=input.buyer_id,
-            cost_code=input.cost_code,
-            po_number=input.po_number,
-            line_items_data=line_items_data,
-        )
-
-        if state is not None and state.relay_result is not None:
-            gp_result = state.relay_result
-        else:
-            gp_result = await relay_gateway.relay_call(input.gp_company, "create_po", payload)
-            await asyncio.to_thread(gp_idempotency.record_relay_result, key, "create_po", gp_result)
-
-        return await asyncio.to_thread(
-            _persist_create_po,
-            key=key,
-            line_items_data=line_items_data,
-            project_id=project_id,
-            vendor_id=vendor_id,
-            notes=input.notes,
-            cost_code=input.cost_code,
-            gp_result=gp_result,
-            gp_vendor_id=input.gp_vendor_id,
-            vendor_name_snapshot=input.gp_vendor_name,
-            buyer_id=input.buyer_id,
-            shipping_cost=input.shipping_cost,
-            tariff_amount=input.tariff_amount,
-        )
+        with SessionLocal() as session:
+            po = po_repository.create_po(
+                session,
+                line_items=line_items_data,
+                project_id=uuid.UUID(str(input.project_id)) if input.project_id else None,
+                vendor_id=uuid.UUID(str(input.vendor_id)) if input.vendor_id else None,
+                notes=input.notes,
+                shipping_cost=input.shipping_cost,
+                tariff_amount=input.tariff_amount,
+                preferred_delivery_date=input.preferred_delivery_date,
+            )
+            session.commit()
+            return _load_po_within(session, po.id)
 
     @strawberry.mutation
     async def register_po_in_gp(self, info: strawberry.Info, input: RegisterPOInput) -> PurchaseOrder:
