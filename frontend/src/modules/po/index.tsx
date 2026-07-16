@@ -786,22 +786,16 @@ function POListPage() {
             Document Settings
           </Button>
         )}
-        <Tooltip
-          title={relayConnected ? '' : 'GP relay not detected on this machine - it must be running to create a PO'}
-          arrow
+        {/* Issue #256: creating a PO lands as a DRAFT (no GP involved), so no relay gating here -
+            the relay is only needed later, to register the draft into GP. */}
+        <Button
+          variant="contained"
+          size="small"
+          startIcon={<AddIcon />}
+          onClick={() => setCreateOpen(true)}
         >
-          <span>
-            <Button
-              variant="contained"
-              size="small"
-              startIcon={<AddIcon />}
-              onClick={() => setCreateOpen(true)}
-              disabled={!relayConnected}
-            >
-              Create PO
-            </Button>
-          </span>
-        </Tooltip>
+          Create PO
+        </Button>
       </Box>
 
       {/* Statistics Cards (display-only) */}

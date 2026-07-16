@@ -5,10 +5,12 @@ export const GET_INVENTORY_HIERARCHY = gql`
     inventoryHierarchy(projectId: $projectId, warehouseId: $warehouseId) {
       hardwareCategory
       totalQuantity
+      totalAvailableQuantity
       totalValue
       productCodes {
         productCode
         totalQuantity
+        totalAvailableQuantity
         totalValue
         items {
           id

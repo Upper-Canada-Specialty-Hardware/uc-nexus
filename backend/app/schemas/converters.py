@@ -9,6 +9,9 @@ import strawberry
 from app.models.project import Project as ProjectModel
 
 from .types import (
+    BuyerAssignment,
+    BuyerAssignmentProject,
+    ClerkUser,
     DeficiencyReview,
     DeficientItemRow,
     GpCostCode,
@@ -212,6 +215,33 @@ def po_document_settings_to_type(s) -> PODocumentSettings:
         footer_notes=s.footer_notes,
         signature_note=s.signature_note,
         updated_at=s.updated_at,
+    )
+
+
+def clerk_user_to_type(u: dict) -> ClerkUser:
+    return ClerkUser(
+        id=u["id"],
+        first_name=u["first_name"],
+        last_name=u["last_name"],
+        email=u["email"],
+        roles=u["roles"],
+        gp_buyer_id=u.get("gp_buyer_id"),
+        image_url=u["image_url"],
+    )
+
+
+def buyer_assignment_to_type(a) -> BuyerAssignment:
+    return BuyerAssignment(
+        buyer_id=a.buyer_id,
+        cost_codes=list(a.cost_codes or []),
+        projects=[
+            BuyerAssignmentProject(
+                id=strawberry.ID(str(p.id)),
+                project_id=p.project_id,
+                description=p.description,
+            )
+            for p in a.projects
+        ],
     )
 
 

@@ -143,3 +143,17 @@ export const MARK_NOTIFICATION_AS_READ = gql`
     }
   }
 `;
+
+export const GET_BUYER_ASSIGNMENTS = gql`
+  query GetBuyerAssignments {
+    buyerAssignments {
+      buyerId
+      costCodes
+      projects {
+        id
+        projectId
+        description
+      }
+    }
+  }
+`;

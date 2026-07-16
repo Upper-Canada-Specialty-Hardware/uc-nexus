@@ -7,6 +7,7 @@ class Base(DeclarativeBase):
 
 # Import all models so Alembic can detect them
 from .audit_log import InventoryAuditLog  # noqa: E402, F401
+from .buyer_assignment import BuyerAssignment  # noqa: E402, F401
 from .deficiency_review import DeficiencyReview  # noqa: E402, F401
 from .gp_write import GpWriteIdempotency  # noqa: E402, F401
 from .hardware import HardwareItem  # noqa: E402, F401

@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within, configure } from '@testing-library/react';
 import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
 import { GraphQLError } from 'graphql';
 import { ToastProvider } from '../../../components/Toast';
@@ -7,11 +7,34 @@ import type { PurchaseOrder } from '../index';
 import {
   CREATE_PO,
   REGISTER_PO_IN_GP,
-  GET_GP_BUYERS,
   GET_GP_COST_CODES,
   GET_GP_VENDORS,
 } from '../../../graphql/po';
-import { GET_PROJECTS, GET_RELAY_STATUS } from '../../../graphql/shared';
+import { GET_BUYER_ASSIGNMENTS, GET_PROJECTS, GET_RELAY_STATUS } from '../../../graphql/shared';
+
+// DataGrid-heavy dialogs render slowly under jsdom, slower still when the whole suite runs in
+// parallel - lift both the per-test budget and testing-library's 1s async-util default.
+vi.setConfig({ testTimeout: 60_000 });
+configure({ asyncUtilTimeout: 15_000 });
+
+
+// Issue #216: the buyer IS the caller's GP identity (Clerk publicMetadata.gpBuyerId). Stub the hook
+// with a mutable slot so individual tests can drop the identity.
+const identity = vi.hoisted(() => ({ gpBuyerId: 'JSMITH' as string | null }));
+vi.mock('../../../hooks/useIdentity', () => ({
+  useIdentity: () => ({
+    displayName: 'Test Buyer',
+    roles: [],
+    hasRole: () => false,
+    isAdmin: false,
+    gpBuyerId: identity.gpBuyerId,
+    user: null,
+  }),
+}));
+
+beforeEach(() => {
+  identity.gpBuyerId = 'JSMITH';
+});
 
 const INFINITE = Number.POSITIVE_INFINITY;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -60,7 +83,26 @@ const stockDraft: PurchaseOrder = {
 
 const projectDraft: PurchaseOrder = { ...stockDraft, projectId: 'p1' };
 
-function baseMocks(connected = true): MockedResponse[] {
+// Buyer JSMITH is assigned to project p1 with cost code 310-000 designated (issue #216).
+interface AssignmentFixture {
+  costCodes: string[];
+  projects: { id: string; projectId: string; description: string | null; __typename: string }[];
+}
+const assignedProjectRef = {
+  id: 'p1',
+  projectId: 'JOB-100',
+  description: 'Main St Job',
+  __typename: 'Project',
+};
+const defaultAssignment: AssignmentFixture = {
+  costCodes: ['310-000'],
+  projects: [assignedProjectRef],
+};
+
+function baseMocks(
+  connected = true,
+  assignment: AssignmentFixture | null = defaultAssignment,
+): MockedResponse[] {
   return [
     {
       request: { query: GET_RELAY_STATUS },
@@ -89,14 +131,37 @@ function baseMocks(connected = true): MockedResponse[] {
               openingCount: 3,
               __typename: 'Project',
             },
+            // Not in JSMITH's assignment - must not be offered for a create-mode project PO.
+            {
+              id: 'p2',
+              projectId: 'JOB-200',
+              description: 'Elm St Job',
+              client: 'ACME',
+              jobSiteName: 'Elm St',
+              openingCount: 2,
+              __typename: 'Project',
+            },
           ],
         },
       },
       maxUsageCount: INFINITE,
     },
     {
-      request: { query: GET_GP_BUYERS, variables: { company: 'UCS' } },
-      result: { data: { gpBuyers: ['jsmith', 'mdoe'] } },
+      request: { query: GET_BUYER_ASSIGNMENTS },
+      result: {
+        data: {
+          buyerAssignments: assignment
+            ? [
+                {
+                  buyerId: 'JSMITH',
+                  costCodes: assignment.costCodes,
+                  projects: assignment.projects,
+                  __typename: 'BuyerAssignment',
+                },
+              ]
+            : [],
+        },
+      },
       maxUsageCount: INFINITE,
     },
     {
@@ -114,6 +179,7 @@ function baseMocks(connected = true): MockedResponse[] {
   ];
 }
 
+// GP offers two codes for the job; only 310-000 is designated to JSMITH.
 function costCodesMock(): MockedResponse {
   return {
     request: { query: GET_GP_COST_CODES, variables: { company: 'UCS', job: 'JOB-100' } },
@@ -121,6 +187,7 @@ function costCodesMock(): MockedResponse {
       data: {
         gpCostCodes: [
           { costCode: '310-000', description: 'Hardware', costElement: 3, __typename: 'GpCostCode' },
+          { costCode: '520-000', description: 'Electrical', costElement: 2, __typename: 'GpCostCode' },
         ],
       },
     },
@@ -167,12 +234,20 @@ function renderDialog(
 }
 
 // MUI TextField select: the label is wired to the combobox div via aria-labelledby.
-async function pickOption(label: string, optionText: string) {
+async function openSelect(label: string) {
   await waitFor(() => expect(screen.getByLabelText(label)).not.toHaveAttribute('aria-disabled'));
   fireEvent.mouseDown(screen.getByLabelText(label));
-  const listbox = await screen.findByRole('listbox');
-  fireEvent.click(within(listbox).getByText(optionText));
+  return await screen.findByRole('listbox');
+}
+
+async function closeSelect() {
   await waitFor(() => expect(screen.queryByRole('listbox')).not.toBeInTheDocument());
+}
+
+async function pickOption(label: string, optionText: string) {
+  const listbox = await openSelect(label);
+  fireEvent.click(within(listbox).getByText(optionText));
+  await closeSelect();
 }
 
 async function waitForVendorPreselect() {
@@ -182,7 +257,7 @@ async function waitForVendorPreselect() {
 }
 
 describe('GpPurchaseOrderDialog', () => {
-  it('register mode seeds the draft and pre-selects an exact-match GP vendor as confirmed', async () => {
+  it('register mode seeds the draft, shows the caller as buyer and pre-selects an exact-match GP vendor', async () => {
     renderDialog({ registerPo: stockDraft });
 
     expect(screen.getByText('Register Purchase Order in GP')).toBeInTheDocument();
@@ -192,6 +267,10 @@ describe('GpPurchaseOrderDialog', () => {
     expect(screen.getByDisplayValue('10')).toBeInTheDocument();
     expect(screen.getByDisplayValue('2.5')).toBeInTheDocument();
     expect(screen.getByDisplayValue('ML2010')).toBeInTheDocument();
+
+    // The buyer is the caller's GP identity - display only, never a pick (issue #216).
+    expect(screen.getByLabelText('Buyer (you)')).toHaveValue('JSMITH');
+    expect(screen.getByLabelText('Buyer (you)')).toBeDisabled();
 
     // Company comes from the connected relay; the vendor is matched by exact name.
     await waitFor(() => expect(screen.getByLabelText('GP company')).toHaveValue('UCS'));
@@ -203,13 +282,33 @@ describe('GpPurchaseOrderDialog', () => {
     expect(screen.queryByRole('checkbox')).toBeNull();
   });
 
-  it('blocks submit until a buyer is picked', async () => {
+  it('blocks submission when the caller has no GP buyer identity', async () => {
+    identity.gpBuyerId = null;
     const { onSubmitted } = renderDialog({ registerPo: stockDraft });
-    await waitForVendorPreselect();
 
+    expect(screen.getByText(/Your account has no GP buyer identity/)).toBeInTheDocument();
+    expect(screen.getByLabelText('Buyer (you)')).toHaveValue('—');
+
+    await waitForVendorPreselect(); // everything else is valid - identity is the only gate
     fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
 
-    expect(await screen.findByText('Select a buyer')).toBeInTheDocument();
+    expect(onSubmitted).not.toHaveBeenCalled();
+    expect(screen.getByText(/Your account has no GP buyer identity/)).toBeInTheDocument();
+  });
+
+  it('blocks registering a draft whose project the buyer is not assigned to', async () => {
+    const { onSubmitted } = renderDialog({ registerPo: projectDraft }, [
+      ...baseMocks(true, { costCodes: ['310-000'], projects: [] }),
+      costCodesMock(),
+    ]);
+
+    expect(
+      await screen.findByText(/Buyer JSMITH is not assigned to this project/),
+    ).toBeInTheDocument();
+
+    await waitForVendorPreselect();
+    fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+
     expect(onSubmitted).not.toHaveBeenCalled();
   });
 
@@ -227,7 +326,6 @@ describe('GpPurchaseOrderDialog', () => {
       [...baseMocks(), registerMock],
     );
     await waitForVendorPreselect(); // fuzzy substring hit pre-fills Ace Hardware Co
-    await pickOption('Buyer', 'jsmith');
 
     fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
     expect(
@@ -246,7 +344,7 @@ describe('GpPurchaseOrderDialog', () => {
     expect(calls[0]).toMatchObject({ input: { gpVendorId: 'V-ACE' } });
   });
 
-  it('registers a project draft with gpCompany, the picked cost code and an idempotency key', async () => {
+  it('registers a project draft with gpCompany, a designated cost code and an idempotency key', async () => {
     const calls: Record<string, unknown>[] = [];
     const registerMock: MockedResponse = {
       request: { query: REGISTER_PO_IN_GP, variables: () => true },
@@ -261,7 +359,6 @@ describe('GpPurchaseOrderDialog', () => {
       registerMock,
     ]);
     await waitForVendorPreselect();
-    await pickOption('Buyer', 'jsmith');
 
     // A project PO cannot go up without a cost code.
     fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
@@ -270,7 +367,13 @@ describe('GpPurchaseOrderDialog', () => {
     ).toBeInTheDocument();
     expect(calls).toHaveLength(0);
 
-    await pickOption('Cost code (required)', '310-000 · Hardware');
+    // Only the buyer's designated code is offered, not everything GP has for the job.
+    const listbox = await openSelect('Cost code (required)');
+    expect(within(listbox).getByText('310-000 · Hardware')).toBeInTheDocument();
+    expect(within(listbox).queryByText(/520-000/)).toBeNull();
+    fireEvent.click(within(listbox).getByText('310-000 · Hardware'));
+    await closeSelect();
+
     fireEvent.change(screen.getByLabelText('Shipping costs (optional)'), {
       target: { value: '25' },
     });
@@ -283,7 +386,7 @@ describe('GpPurchaseOrderDialog', () => {
         poId: 'po-1',
         gpVendorId: 'V-ACE',
         gpVendorName: 'Ace Hardware Co',
-        buyerId: 'jsmith',
+        buyerId: 'JSMITH',
         gpCompany: 'UCS',
         costCode: '310-000-3',
         shippingCost: 25,
@@ -304,7 +407,7 @@ describe('GpPurchaseOrderDialog', () => {
     });
   });
 
-  it('create mode submits CREATE_PO with the entered line items and gpCompany', async () => {
+  it('create mode offers only assigned projects and submits CREATE_PO with the caller as buyer', async () => {
     const calls: Record<string, unknown>[] = [];
     const createMock: MockedResponse = {
       request: { query: CREATE_PO, variables: () => true },
@@ -337,8 +440,15 @@ describe('GpPurchaseOrderDialog', () => {
     const { onSubmitted } = renderDialog({}, [...baseMocks(), createMock]);
 
     expect(screen.getByText('Create Purchase Order in GP')).toBeInTheDocument();
+
+    // The project dropdown offers only JSMITH's assigned project (plus the stock option).
+    const projectListbox = await openSelect('Project (Optional)');
+    expect(within(projectListbox).getByText('Main St Job')).toBeInTheDocument();
+    expect(within(projectListbox).queryByText('Elm St Job')).toBeNull();
+    fireEvent.click(within(projectListbox).getByText('No Project (stock PO)'));
+    await closeSelect();
+
     await pickOption('GP Vendor', 'Allegion Hardware');
-    await pickOption('Buyer', 'mdoe');
     fireEvent.change(screen.getByPlaceholderText('e.g. Hinges'), { target: { value: 'Hinges' } });
     fireEvent.change(screen.getByPlaceholderText('e.g. AB123'), { target: { value: 'AB123' } });
     fireEvent.change(screen.getByDisplayValue('1'), { target: { value: '5' } });
@@ -356,7 +466,7 @@ describe('GpPurchaseOrderDialog', () => {
         projectId: null,
         gpVendorId: 'V-ALL',
         gpVendorName: 'Allegion Hardware',
-        buyerId: 'mdoe',
+        buyerId: 'JSMITH',
         notes: 'rush order',
         costCode: null,
         shippingCost: null,
@@ -405,7 +515,6 @@ describe('GpPurchaseOrderDialog', () => {
       okMock,
     ]);
     await waitForVendorPreselect();
-    await pickOption('Buyer', 'jsmith');
 
     fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
     // The persistent GP error detail (issue #187), not just a toast; the dialog stays open.

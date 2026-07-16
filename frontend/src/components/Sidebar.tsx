@@ -92,6 +92,7 @@ const SIDEBAR_ITEMS: SidebarItem[] = [
       { label: 'Opening Status', path: '/app/admin/opening-status' },
       { label: 'Vendors', path: '/app/admin/vendors' },
       { label: 'User Management', path: '/app/admin/users' },
+      { label: 'Buyers', path: '/app/admin/buyers' },
       { label: 'Relay Installs', path: '/app/admin/relay-installs' },
     ],
   },

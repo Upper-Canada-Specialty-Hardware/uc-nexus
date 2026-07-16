@@ -154,14 +154,14 @@ def create_po(
     buyer_id: str | None = None,
     shipping_cost: float | None = None,
     tariff_amount: float | None = None,
+    preferred_delivery_date=None,
 ) -> PurchaseOrder:
     """Create a manual PO with line items. No hardware items are created.
 
-    A manual PO is GP-first: the frontend pushes it to the GP relay and only calls this on success,
-    passing GP's returned po_number + gp_company. When those are present the PO is stamped and
-    advanced DRAFT -> GP_REGISTERED in this SAME commit, so there is no window where a created DRAFT
-    exists without its GP number (which would otherwise show "Register in GP" and let a retry create
-    a duplicate GP PO). Omitting them creates a plain DRAFT.
+    Issue #256: the manual path creates a plain DRAFT (no po_number/gp_company) - registering it
+    into GP is a separate, conscious user action (register_po_in_gp). The GP-first stamping branch
+    below (po_number + gp_company present, advancing DRAFT -> GP_REGISTERED in the same commit)
+    remains for callers that already hold a GP result.
 
     gp_vendor_id/vendor_name_snapshot are the GP vendor picked live from gpVendors at push time
     (issue #200 - there is no local vendor-to-GP mirror), frozen onto the PO for display."""
@@ -202,6 +202,8 @@ def create_po(
         buyer_id=buyer_id.strip() if buyer_id and buyer_id.strip() else None,
         shipping_cost=_coerce_order_cost(shipping_cost, "shipping_cost"),
         tariff_amount=_coerce_order_cost(tariff_amount, "tariff_amount"),
+        # Issue #216/#256: the PM's requested date, captured at request creation.
+        preferred_delivery_date=preferred_delivery_date,
     )
     session.add(po)
     session.flush()

@@ -55,6 +55,7 @@ export const GET_USERS = gql`
       lastName
       email
       roles
+      gpBuyerId
       imageUrl
     }
   }
@@ -186,6 +187,7 @@ export const UPDATE_USER_ROLES = gql`
       lastName
       email
       roles
+      gpBuyerId
       imageUrl
     }
   }
@@ -288,5 +290,53 @@ export const PROVISION_RELAY_INSTALL = gql`
       enrollmentToken
       enrollmentTokenExpiresAt
     }
+  }
+`;
+
+export const UPDATE_USER_NAME = gql`
+  mutation UpdateUserName($userId: String!, $firstName: String!, $lastName: String!) {
+    updateUserName(userId: $userId, firstName: $firstName, lastName: $lastName) {
+      id
+      firstName
+      lastName
+      email
+      roles
+      gpBuyerId
+      imageUrl
+    }
+  }
+`;
+
+export const UPDATE_USER_GP_BUYER_ID = gql`
+  mutation UpdateUserGpBuyerId($userId: String!, $gpBuyerId: String) {
+    updateUserGpBuyerId(userId: $userId, gpBuyerId: $gpBuyerId) {
+      id
+      firstName
+      lastName
+      email
+      roles
+      gpBuyerId
+      imageUrl
+    }
+  }
+`;
+
+export const SAVE_BUYER_ASSIGNMENT = gql`
+  mutation SaveBuyerAssignment($buyerId: String!, $projectIds: [ID!]!, $costCodes: [String!]!) {
+    saveBuyerAssignment(buyerId: $buyerId, projectIds: $projectIds, costCodes: $costCodes) {
+      buyerId
+      costCodes
+      projects {
+        id
+        projectId
+        description
+      }
+    }
+  }
+`;
+
+export const DELETE_BUYER_ASSIGNMENT = gql`
+  mutation DeleteBuyerAssignment($buyerId: String!) {
+    deleteBuyerAssignment(buyerId: $buyerId)
   }
 `;
