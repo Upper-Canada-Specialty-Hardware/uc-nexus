@@ -534,6 +534,7 @@ class Mutation:
                     "po_number": po.po_number,
                     "vendor_id": str(po.vendor_id) if po.vendor_id else None,
                     "notes": po.notes,
+                    "preferred_delivery_date": po.preferred_delivery_date,
                     "hardware_item_refs": [
                         {
                             "opening_number": ref.opening_number,
@@ -850,6 +851,7 @@ class Mutation:
         id: strawberry.ID,
         vendor_id: strawberry.ID | None = None,
         expected_delivery_date: date | None = None,
+        preferred_delivery_date: date | None = None,
         po_number: str | None = None,
         vendor_quote_number: str | None = None,
         project_id: strawberry.ID | None = None,
@@ -871,6 +873,7 @@ class Mutation:
                 uuid.UUID(str(id)),
                 vendor_id=vid,
                 expected_delivery_date=expected_delivery_date,
+                preferred_delivery_date=preferred_delivery_date,
                 po_number=po_number,
                 vendor_quote_number=vendor_quote_number,
                 project_id=pid,

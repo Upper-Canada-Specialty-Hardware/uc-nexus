@@ -7,6 +7,8 @@ import type { ImportPurpose } from './types';
 interface ClassificationStepProps {
   classificationRows: ClassificationRow[];
   onClassify: (keys: string[], value: string) => void;
+  // Issue #216: PO-purpose second axis - the PM sets Site/Shop here, not the PO user at register time.
+  onClassifySiteShop: (keys: string[], value: string) => void;
   purpose: ImportPurpose;
   itemCount: number;
   openingCount: number;
@@ -18,6 +20,7 @@ interface ClassificationStepProps {
 export default function ClassificationStep({
   classificationRows,
   onClassify,
+  onClassifySiteShop,
   purpose,
   itemCount,
   openingCount,
@@ -32,10 +35,19 @@ export default function ClassificationStep({
 
   const options = purpose === 'po' ? SCOPE_OPTIONS : ASSEMBLY_OPTIONS;
 
+  // Issue #216: for PO purpose, every in-scope (non-By-Others) item also needs a Site/Shop pick.
+  const inScopeRows = useMemo(
+    () => (purpose === 'po' ? classificationRows.filter((r) => r.classification !== 'BY_OTHERS') : []),
+    [purpose, classificationRows],
+  );
+  const siteShopCount = inScopeRows.filter((r) => (r.siteShop ?? '') !== '').length;
+  const allSiteShopClassified = siteShopCount === inScopeRows.length;
+
   const canProceed = useMemo(() => {
     if (isReadOnly) return true;
+    if (purpose === 'po') return allClassified && allSiteShopClassified;
     return allClassified;
-  }, [isReadOnly, allClassified]);
+  }, [isReadOnly, purpose, allClassified, allSiteShopClassified]);
 
   return (
     <Box>
@@ -56,16 +68,25 @@ export default function ClassificationStep({
         <>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
             {purpose === 'po'
-              ? 'Classify each item as By UCSH (in scope) or By Others (excluded from scope).'
+              ? 'Classify each item as By UCSH (in scope) or By Others (excluded from scope), and each in-scope item as Site or Shop hardware.'
               : 'Classify each item group as Site Hardware or Shop Hardware.'}
           </Typography>
           <Typography
             variant="body2"
-            sx={{ mb: 2 }}
+            sx={{ mb: purpose === 'po' ? 0.5 : 2 }}
             color={allClassified ? 'success.main' : 'text.secondary'}
           >
             {classifiedCount} of {classificationRows.length} items classified
           </Typography>
+          {purpose === 'po' && (
+            <Typography
+              variant="body2"
+              sx={{ mb: 2 }}
+              color={allSiteShopClassified ? 'success.main' : 'text.secondary'}
+            >
+              {siteShopCount} of {inScopeRows.length} in-scope items site/shop classified
+            </Typography>
+          )}
         </>
       )}
 
@@ -74,6 +95,9 @@ export default function ClassificationStep({
         options={options}
         onClassify={onClassify}
         readOnly={isReadOnly}
+        siteShopOptions={purpose === 'po' ? ASSEMBLY_OPTIONS : undefined}
+        onClassifySiteShop={purpose === 'po' ? onClassifySiteShop : undefined}
+        siteShopExemptValue={purpose === 'po' ? 'BY_OTHERS' : undefined}
       />
 
       <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 3 }}>

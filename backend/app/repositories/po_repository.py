@@ -512,6 +512,7 @@ def update_po(
     po_id: uuid.UUID,
     vendor_id=_UNSET,
     expected_delivery_date=None,
+    preferred_delivery_date=None,
     po_number: str | None = None,
     vendor_quote_number: str | None = None,
     project_id=_UNSET,
@@ -569,7 +570,16 @@ def update_po(
         else:
             po.po_number = None
 
+    # Issue #216: the two delivery dates are status-gated. Preferred is the PM's ask, captured on the
+    # DRAFT request; expected is the vendor's answer, only enterable once the PO exists in GP (the
+    # DRAFT/GP_REGISTERED/VENDOR_CONFIRMED guard above already blocks both after receiving starts).
+    if preferred_delivery_date is not None:
+        if po.status != POStatus.DRAFT:
+            raise InvalidStateTransitionError("Preferred delivery date can only be set on a Draft PO request")
+        po.preferred_delivery_date = preferred_delivery_date
     if expected_delivery_date is not None:
+        if po.status == POStatus.DRAFT:
+            raise InvalidStateTransitionError("Expected delivery date can only be set after the PO is GP-Registered")
         po.expected_delivery_date = expected_delivery_date
     if vendor_quote_number is not None:
         po.vendor_quote_number = vendor_quote_number if vendor_quote_number.strip() else None

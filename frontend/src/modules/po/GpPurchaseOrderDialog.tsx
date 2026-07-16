@@ -73,12 +73,6 @@ const EMPTY_LINE_ITEM: Omit<LineItemRow, 'key' | 'id'> = {
   orderAs: '',
 };
 
-const CLASSIFICATIONS = [
-  { value: '', label: 'None' },
-  { value: 'SITE_HARDWARE', label: 'Site Hardware' },
-  { value: 'SHOP_HARDWARE', label: 'Shop Hardware' },
-];
-
 // Pick the live GP vendor that best matches an imported draft's vendor name (issue #175, reworked for
 // #200 now that the picker reads gpVendors live instead of a locally-synced mirror). Returns the match
 // plus whether it is CONFIDENT - an exact name match - versus a loose substring guess the user must
@@ -784,11 +778,12 @@ export default function GpPurchaseOrderDialog({
         </Typography>
       )}
 
-      {/* Column headers */}
+      {/* Column headers. Site/shop classification is set by the PM at request creation (issue #216),
+          so there is no Classification column here - register mode passes the draft's values through. */}
       <Box
         sx={{
           display: 'grid',
-          gridTemplateColumns: '1.2fr 1.2fr 0.6fr 0.7fr 1fr 1fr auto',
+          gridTemplateColumns: '1.3fr 1.3fr 0.6fr 0.7fr 1.2fr auto',
           gap: 1,
           mb: 0.5,
         }}
@@ -797,7 +792,6 @@ export default function GpPurchaseOrderDialog({
         <Typography variant="caption" sx={{ fontWeight: 'bold' }}>Product Code</Typography>
         <Typography variant="caption" sx={{ fontWeight: 'bold' }}>Qty</Typography>
         <Typography variant="caption" sx={{ fontWeight: 'bold' }}>Unit Cost</Typography>
-        <Typography variant="caption" sx={{ fontWeight: 'bold' }}>Classification</Typography>
         <Typography variant="caption" sx={{ fontWeight: 'bold' }}>Order As</Typography>
         <Box />
       </Box>
@@ -808,7 +802,7 @@ export default function GpPurchaseOrderDialog({
           key={li.key}
           sx={{
             display: 'grid',
-            gridTemplateColumns: '1.2fr 1.2fr 0.6fr 0.7fr 1fr 1fr auto',
+            gridTemplateColumns: '1.3fr 1.3fr 0.6fr 0.7fr 1.2fr auto',
             gap: 1,
             mb: 1,
             alignItems: 'start',
@@ -848,18 +842,6 @@ export default function GpPurchaseOrderDialog({
             helperText={errors[`li_${idx}_cost`]}
             slotProps={{ htmlInput: { min: 0, step: 0.01 } }}
           />
-          <TextField
-            select
-            size="small"
-            value={li.classification}
-            onChange={(e) => updateLineItem(li.key, 'classification', e.target.value)}
-          >
-            {CLASSIFICATIONS.map((c) => (
-              <MenuItem key={c.value} value={c.value}>
-                {c.label}
-              </MenuItem>
-            ))}
-          </TextField>
           <TextField
             size="small"
             required

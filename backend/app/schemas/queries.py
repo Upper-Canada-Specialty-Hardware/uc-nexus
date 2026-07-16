@@ -311,6 +311,7 @@ def _po_to_type(po, receive_records=None) -> PurchaseOrder:
         shipping_cost=float(po.shipping_cost) if po.shipping_cost is not None else None,
         tariff_amount=float(po.tariff_amount) if po.tariff_amount is not None else None,
         notes=po.notes,
+        preferred_delivery_date=po.preferred_delivery_date,
         expected_delivery_date=po.expected_delivery_date,
         ordered_at=po.ordered_at,
         created_at=po.created_at,

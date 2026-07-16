@@ -137,6 +137,7 @@ export interface PurchaseOrder {
   shippingCost: number | null;
   tariffAmount: number | null;
   notes: string | null;
+  preferredDeliveryDate: string | null;
   expectedDeliveryDate: string | null;
   orderedAt: string | null;
   createdAt: string;
