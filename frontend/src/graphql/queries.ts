@@ -590,7 +590,22 @@ export const GET_USERS = gql`
       lastName
       email
       roles
+      gpBuyerId
       imageUrl
+    }
+  }
+`;
+
+export const GET_BUYER_ASSIGNMENTS = gql`
+  query GetBuyerAssignments {
+    buyerAssignments {
+      buyerId
+      costCodes
+      projects {
+        id
+        projectId
+        description
+      }
     }
   }
 `;

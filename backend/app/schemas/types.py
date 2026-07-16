@@ -900,7 +900,27 @@ class ClerkUser:
     last_name: str
     email: str
     roles: list[str]
+    # Issue #216: the GP BUYERID this account acts as (Clerk publicMetadata.gpBuyerId), or null.
+    gp_buyer_id: str | None
     image_url: str
+
+
+@strawberry.type
+class BuyerAssignmentProject:
+    """Slim project ref for buyer assignments (the full Project type carries openings)."""
+
+    id: strawberry.ID
+    project_id: str
+    description: str | None
+
+
+@strawberry.type
+class BuyerAssignment:
+    """Issue #216: the projects a GP buyer may create POs for + their designated cost codes."""
+
+    buyer_id: str
+    cost_codes: list[str]
+    projects: list[BuyerAssignmentProject]
 
 
 @strawberry.type

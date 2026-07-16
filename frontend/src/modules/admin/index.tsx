@@ -4,6 +4,7 @@ import { Box } from '@mui/material';
 import ProjectPurchasingProgressPage from './ProjectPurchasingProgressPage';
 import OpeningStatusTab from './OpeningStatusTab';
 import UserManagementPage from './UserManagementPage';
+import BuyersPage from './BuyersPage';
 import VendorsPage from './VendorsPage';
 import WarehousesPage from './WarehousesPage';
 import ProjectsPage from './ProjectsPage';
@@ -31,6 +32,7 @@ export default function AdminModule() {
       <Route path="warehouses" element={<AdminSubLayout><WarehousesPage /></AdminSubLayout>} />
       <Route path="projects" element={<AdminSubLayout><ProjectsPage /></AdminSubLayout>} />
       <Route path="users" element={<AdminSubLayout><UserManagementPage /></AdminSubLayout>} />
+      <Route path="buyers" element={<AdminSubLayout><BuyersPage /></AdminSubLayout>} />
       <Route path="relay-installs" element={<AdminSubLayout><RelayInstallsPage /></AdminSubLayout>} />
       <Route path="location-cleanup" element={<AdminSubLayout><LocationCleanupPage /></AdminSubLayout>} />
       <Route path="*" element={<Navigate to="/app/admin" replace />} />

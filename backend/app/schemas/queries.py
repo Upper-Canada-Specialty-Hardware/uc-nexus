@@ -38,6 +38,8 @@ from .types import (
     AdminStats,
     AuditLogEntry,
     BackOrderedItem,
+    BuyerAssignment,
+    BuyerAssignmentProject,
     ClerkUser,
     DeficientItemRow,
     GpCostCode,
@@ -283,6 +285,33 @@ def _po_document_settings_to_type(s) -> PODocumentSettings:
         footer_notes=s.footer_notes,
         signature_note=s.signature_note,
         updated_at=s.updated_at,
+    )
+
+
+def _clerk_user_to_type(u: dict) -> ClerkUser:
+    return ClerkUser(
+        id=u["id"],
+        first_name=u["first_name"],
+        last_name=u["last_name"],
+        email=u["email"],
+        roles=u["roles"],
+        gp_buyer_id=u.get("gp_buyer_id"),
+        image_url=u["image_url"],
+    )
+
+
+def _buyer_assignment_to_type(a) -> BuyerAssignment:
+    return BuyerAssignment(
+        buyer_id=a.buyer_id,
+        cost_codes=list(a.cost_codes or []),
+        projects=[
+            BuyerAssignmentProject(
+                id=strawberry.ID(str(p.id)),
+                project_id=p.project_id,
+                description=p.description,
+            )
+            for p in a.projects
+        ],
     )
 
 
@@ -1091,17 +1120,16 @@ class Query:
     @strawberry.field
     def users(self) -> list[ClerkUser]:
         results = user_repository.list_users()
-        return [
-            ClerkUser(
-                id=u["id"],
-                first_name=u["first_name"],
-                last_name=u["last_name"],
-                email=u["email"],
-                roles=u["roles"],
-                image_url=u["image_url"],
-            )
-            for u in results
-        ]
+        return [_clerk_user_to_type(u) for u in results]
+
+    @strawberry.field
+    def buyer_assignments(self) -> list[BuyerAssignment]:
+        """Issue #216: per-buyer project + cost-code authorization. The PO dialog reads this to
+        filter its options; the create/register mutations re-enforce it server-side."""
+        from app.repositories import buyer_repository
+
+        with SessionLocal() as session:
+            return [_buyer_assignment_to_type(a) for a in buyer_repository.list_assignments(session)]
 
     @strawberry.field
     def vendors(self) -> list[Vendor]:
