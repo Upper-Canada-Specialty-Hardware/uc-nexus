@@ -129,6 +129,17 @@ def _assert_po_number_available(
         raise ValidationError(f"PO number '{po_number}' already exists", field="po_number")
 
 
+def _coerce_order_cost(value, field: str) -> Decimal | None:
+    """Issue #156: coerce an optional order-time dollar cost (shipping_cost / tariff_amount) to
+    Decimal. Null passes through ("not entered"); a negative value is a clean field error."""
+    if value is None:
+        return None
+    amount = Decimal(str(value))
+    if amount < 0:
+        raise ValidationError(f"{field.replace('_', ' ').capitalize()} must be zero or greater", field=field)
+    return amount
+
+
 def create_po(
     session: Session,
     line_items: list[dict],
@@ -141,6 +152,8 @@ def create_po(
     gp_vendor_id: str | None = None,
     vendor_name_snapshot: str | None = None,
     buyer_id: str | None = None,
+    shipping_cost: float | None = None,
+    tariff_amount: float | None = None,
 ) -> PurchaseOrder:
     """Create a manual PO with line items. No hardware items are created.
 
@@ -187,6 +200,8 @@ def create_po(
             vendor_name_snapshot.strip() if vendor_name_snapshot and vendor_name_snapshot.strip() else None
         ),
         buyer_id=buyer_id.strip() if buyer_id and buyer_id.strip() else None,
+        shipping_cost=_coerce_order_cost(shipping_cost, "shipping_cost"),
+        tariff_amount=_coerce_order_cost(tariff_amount, "tariff_amount"),
     )
     session.add(po)
     session.flush()
@@ -257,6 +272,8 @@ def register_po_in_gp(
     vendor_id: uuid.UUID | None = None,
     cost_code: str | None = None,
     buyer_id: str | None = None,
+    shipping_cost: float | None = None,
+    tariff_amount: float | None = None,
 ) -> PurchaseOrder:
     """Register an imported DRAFT PO into GP (the import-acceptance path, issue #175).
 
@@ -373,6 +390,8 @@ def register_po_in_gp(
     if buyer_id and buyer_id.strip():
         po.buyer_id = buyer_id.strip()
     po.cost_code = cost_code.strip() if cost_code and cost_code.strip() else None
+    po.shipping_cost = _coerce_order_cost(shipping_cost, "shipping_cost")
+    po.tariff_amount = _coerce_order_cost(tariff_amount, "tariff_amount")
     po.po_number = cleaned_po_number
     po.gp_company = cleaned_company
     po.status = POStatus.GP_REGISTERED
@@ -497,6 +516,8 @@ def update_po(
     vendor_quote_number: str | None = None,
     project_id=_UNSET,
     notes: str | None = None,
+    shipping_cost=_UNSET,
+    tariff_amount=_UNSET,
 ) -> PurchaseOrder:
     """
     - Validate PO exists + not soft-deleted (NotFoundError)
@@ -554,6 +575,11 @@ def update_po(
         po.vendor_quote_number = vendor_quote_number if vendor_quote_number.strip() else None
     if notes is not None:
         po.notes = notes if notes.strip() else None
+    # Issue #156: null clears the value, 0 is a valid entered value - so these use the _UNSET sentinel.
+    if shipping_cost is not _UNSET:
+        po.shipping_cost = _coerce_order_cost(shipping_cost, "shipping_cost")
+    if tariff_amount is not _UNSET:
+        po.tariff_amount = _coerce_order_cost(tariff_amount, "tariff_amount")
 
     # Auto-transition: GP_REGISTERED → VENDOR_CONFIRMED when both vendor_quote_number and vendor_ack doc exist
     if po.status == POStatus.GP_REGISTERED:
@@ -813,7 +839,7 @@ _DOC_DATA_TEXT_FIELDS = (
     "proposal_number",
     "tax_label",
 )
-_DOC_DATA_MONEY_FIELDS = ("freight", "miscellaneous", "tax_amount")
+_DOC_DATA_MONEY_FIELDS = ("freight", "miscellaneous", "tax_amount", "tariff_amount")
 _DOC_DATA_BOOL_FIELDS = ("include_fsc", "include_usa_tariff", "include_customs")
 
 

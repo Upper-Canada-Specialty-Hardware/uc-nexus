@@ -198,6 +198,9 @@ class CreatePOInput:
     # GP cost code for a project-linked PO (the issue #121 dropdown, 'phase-step-element').
     # Applied to every job-cost line when the PO is pushed to GP via the relay.
     cost_code: str | None = None
+    # Issue #156: optional order-time dollar costs. Null means "not entered"; 0 is a valid value.
+    shipping_cost: float | None = None
+    tariff_amount: float | None = None
     # Optional custom PO number to request from GP; the relay reserves GP's next number when omitted.
     po_number: str | None = None
     # Issue #202 #1: client-generated key (one per user action, re-sent on retry) that makes this
@@ -237,6 +240,9 @@ class RegisterPOInput:
     # Optional link to a UC Nexus vendor record (contact info), independent of the GP vendor above.
     vendor_id: strawberry.ID | None = None
     cost_code: str | None = None
+    # Issue #156: optional order-time dollar costs. Null means "not entered"; 0 is a valid value.
+    shipping_cost: float | None = None
+    tariff_amount: float | None = None
     # Issue #202 #1: client-generated key that makes this GP-first write idempotent on retry.
     idempotency_key: str = ""
 
@@ -326,6 +332,7 @@ class SavePODocumentDataInput:
     miscellaneous: float = 0
     tax_amount: float = 0
     tax_label: str = "Taxes"
+    tariff_amount: float = 0
     required_by_override: date | None = None
     include_fsc: bool = False
     include_usa_tariff: bool = False
