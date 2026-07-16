@@ -497,6 +497,8 @@ def finalize_import_session(
                 status=POStatus.DRAFT,
                 vendor_id=vendor_id,
                 notes=po_draft.get("notes"),
+                # Issue #216: the PM's requested date, captured at PO-request creation.
+                preferred_delivery_date=po_draft.get("preferred_delivery_date"),
             )
             session.add(po)
             session.flush()
