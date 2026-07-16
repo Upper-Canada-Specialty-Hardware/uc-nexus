@@ -798,10 +798,36 @@ def report_deficiency_at_assembly(
     )
     il = session.scalars(il_stmt).first()
     if il is None:
-        raise NotFoundError(
-            f"No inventory location for {sa_oi.hardware_category}/{sa_oi.product_code} "
-            f"in project {project_id} to return the deficient unit to"
+        # Row was hard-deleted (e.g. replace-schedule re-upload) after the unit was pulled.
+        # Re-materialize a project inventory row so the returned deficient unit has somewhere to
+        # land. Origin is a stock row (find-or-create) to satisfy ck_inventory_locations_has_origin;
+        # no stock quantity is decremented - this unit came from the project's own deleted inventory.
+        from app.repositories import warehouse_admin_repository
+
+        now = datetime.utcnow()
+        warehouse_id = warehouse_admin_repository.get_primary_warehouse_id(session)
+        stock_row = _find_or_create_stock_row(
+            session,
+            warehouse_id=warehouse_id,
+            hardware_category=sa_oi.hardware_category,
+            product_code=sa_oi.product_code,
+            aisle=None,
+            bay=None,
+            bin=None,
+            received_at=now,
         )
+        il = InventoryLocationModel(
+            project_id=project_id,
+            stock_item_id=stock_row.id,
+            warehouse_id=warehouse_id,
+            hardware_category=sa_oi.hardware_category,
+            product_code=sa_oi.product_code,
+            quantity=0,
+            deficient_quantity=0,
+            received_at=now,
+        )
+        session.add(il)
+        session.flush()  # populate il.id for the audit log's entity_id
 
     il.quantity += quantity
     il.deficient_quantity = (il.deficient_quantity or 0) + quantity
