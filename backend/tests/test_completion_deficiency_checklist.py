@@ -242,3 +242,111 @@ def test_checklist_item_must_belong_to_opening(db_session):
                 shop_assembly_repository.OpeningItemResult(uuid.uuid4(), installed=False, deficient_reason="x")
             ],
         )
+
+
+def test_completion_creates_inventory_row_when_deleted(db_session):
+    """#227(2): a deficient flag still completes when the source inventory row was hard-deleted.
+
+    Simulates a replace-schedule re-upload that removed the InventoryLocation row after the unit
+    was pulled. report_deficiency_at_assembly re-materializes the row instead of aborting, so the
+    installed items' snapshots are preserved.
+    """
+    project = _make_project(db_session)
+    il = _seed_inventory(db_session, project.id, category=DEFICIENT[0], code=DEFICIENT[1], quantity=0)
+    db_session.delete(il)
+    db_session.flush()
+
+    _, opening, sao = _make_pulled_opening(
+        db_session,
+        project.id,
+        request_number="PR-SA-CHK4",
+        items=[(*INSTALLED, 1), (*DEFICIENT, 1)],
+    )
+
+    result = shop_assembly_repository.complete_opening(
+        db_session,
+        opening.id,
+        "A",
+        "2",
+        "3",
+        item_results=[
+            shop_assembly_repository.OpeningItemResult(sao[INSTALLED[1]].id, installed=True),
+            shop_assembly_repository.OpeningItemResult(
+                sao[DEFICIENT[1]].id, installed=False, deficient_reason="bent tab"
+            ),
+        ],
+        completed_by="assembler",
+    )
+    db_session.flush()
+
+    # Installed item is still snapshotted despite the missing deficient-product row.
+    hw = _installed_hardware(db_session, result.id)
+    assert {h.product_code for h in hw} == {INSTALLED[1]}
+
+    # A fresh inventory row was materialized for the returned deficient unit (available 0).
+    def_il = db_session.scalars(
+        select(InventoryLocation).where(
+            InventoryLocation.project_id == project.id,
+            InventoryLocation.product_code == DEFICIENT[1],
+        )
+    ).first()
+    assert def_il is not None
+    assert def_il.quantity == 1
+    assert def_il.deficient_quantity == 1
+    assert def_il.stock_item_id is not None
+
+    # Replacement pull is still appended.
+    repl = db_session.scalars(select(PullRequest).where(PullRequest.request_number == "PR-REPL-PR-SA-CHK4")).first()
+    assert repl is not None
+    assert opening.assembly_status == AssemblyStatus.COMPLETED
+
+
+def test_deficient_item_requires_reason(db_session):
+    """#227(3): complete_opening rejects a not-installed item with a missing/blank reason."""
+    project = _make_project(db_session)
+    _, opening, sao = _make_pulled_opening(
+        db_session,
+        project.id,
+        request_number="PR-SA-CHK5",
+        items=[(*DEFICIENT, 1)],
+    )
+
+    for bad_reason in (None, "   "):
+        with pytest.raises(ValidationError):
+            shop_assembly_repository.complete_opening(
+                db_session,
+                opening.id,
+                None,
+                None,
+                None,
+                item_results=[
+                    shop_assembly_repository.OpeningItemResult(
+                        sao[DEFICIENT[1]].id, installed=False, deficient_reason=bad_reason
+                    )
+                ],
+            )
+
+
+def test_deficient_reason_length_capped(db_session):
+    """#227(3): complete_opening rejects a deficiency reason over 500 characters."""
+    project = _make_project(db_session)
+    _, opening, sao = _make_pulled_opening(
+        db_session,
+        project.id,
+        request_number="PR-SA-CHK6",
+        items=[(*DEFICIENT, 1)],
+    )
+
+    with pytest.raises(ValidationError):
+        shop_assembly_repository.complete_opening(
+            db_session,
+            opening.id,
+            None,
+            None,
+            None,
+            item_results=[
+                shop_assembly_repository.OpeningItemResult(
+                    sao[DEFICIENT[1]].id, installed=False, deficient_reason="x" * 501
+                )
+            ],
+        )

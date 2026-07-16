@@ -198,7 +198,18 @@ def complete_opening(
                 field="item_results",
             )
         if not res.installed:
-            deficient_reason_by_id[res.shop_assembly_opening_item_id] = res.deficient_reason
+            reason = (res.deficient_reason or "").strip()
+            if not reason:
+                raise ValidationError(
+                    "A deficiency reason is required for items not installed",
+                    field="deficient_reason",
+                )
+            if len(reason) > 500:
+                raise ValidationError(
+                    "Deficiency reason must be 500 characters or fewer",
+                    field="deficient_reason",
+                )
+            deficient_reason_by_id[res.shop_assembly_opening_item_id] = reason
 
     # 5. Create OpeningItem (snapshot opening identity from the ShopAssemblyOpening row)
     now = datetime.utcnow()
