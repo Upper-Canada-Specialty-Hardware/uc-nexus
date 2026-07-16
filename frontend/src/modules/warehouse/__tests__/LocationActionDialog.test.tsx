@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, configure } from '@testing-library/react';
 import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
 import { ToastProvider } from '../../../components/Toast';
 import LocationActionDialog, { type LocationActionTarget } from '../LocationActionDialog';
@@ -7,6 +7,12 @@ import {
   MARK_INVENTORY_UNLOCATED,
 } from '../../../graphql/shared';
 import { ADJUST_INVENTORY_QUANTITY, MOVE_STOCK_LOCATION } from '../../../graphql/warehouse';
+
+// DataGrid-heavy dialogs render slowly under jsdom, slower still when the whole suite runs in
+// parallel - lift both the per-test budget and testing-library's 1s async-util default.
+vi.setConfig({ testTimeout: 60_000 });
+configure({ asyncUtilTimeout: 15_000 });
+
 
 const invTarget: LocationActionTarget = {
   id: 'inv-1',

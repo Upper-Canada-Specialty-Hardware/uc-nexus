@@ -73,17 +73,23 @@ def get_inventory_hierarchy(
         category_total = 0
         category_total_value = 0.0
 
+        category_available = 0
         for pc in sorted(product_codes_map.keys()):
             items_with_cost = product_codes_map[pc]
             pc_total = sum(il.quantity for il, _ in items_with_cost)
+            # Issue #229: net available = quantity - deficient_quantity, the same basis the
+            # approve gate (check_inventory_sufficiency) uses - so pre-checks can agree with it.
+            pc_available = sum(il.quantity - il.deficient_quantity for il, _ in items_with_cost)
             pc_total_value = sum(float(uc) * il.quantity for il, uc in items_with_cost)
             category_total += pc_total
+            category_available += pc_available
             category_total_value += pc_total_value
             product_code_nodes.append(
                 {
                     "product_code": pc,
                     "items": [il for il, _ in items_with_cost],
                     "total_quantity": pc_total,
+                    "total_available_quantity": pc_available,
                     "total_value": pc_total_value,
                 }
             )
@@ -93,6 +99,7 @@ def get_inventory_hierarchy(
                 "hardware_category": category,
                 "product_codes": product_code_nodes,
                 "total_quantity": category_total,
+                "total_available_quantity": category_available,
                 "total_value": category_total_value,
             }
         )

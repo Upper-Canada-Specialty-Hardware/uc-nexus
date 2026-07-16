@@ -9,8 +9,8 @@ import strawberry
 
 from app.auth import require_admin, require_user
 from app.database import SessionLocal
-from app.errors import InvalidStateTransitionError, NotFoundError
-from app.repositories import po_document_settings_repository, po_repository
+from app.errors import InvalidStateTransitionError, NotFoundError, ValidationError
+from app.repositories import buyer_repository, po_document_settings_repository, po_repository, user_repository
 from app.services import gp_idempotency, gp_po
 from app.services.relay_gateway import gateway as relay_gateway
 
@@ -114,6 +114,10 @@ def _prepare_create_po(*, project_id, vendor_id, gp_vendor_id, buyer_id, cost_co
                 raise NotFoundError(f"Project {project_id} not found")
             job_number = project.project_id
 
+        # Issue #216: a project PO requires the buyer to be assigned to the project with a
+        # designated cost code (strict - no assignment row means no project POs).
+        buyer_repository.validate_buyer_can_order(session, buyer_id, project_id, cost_code)
+
         manufacturers = _resolve_line_manufacturers(session, project_id, line_items_data)
 
     gp_po.validate_create_po_inputs(
@@ -133,6 +137,18 @@ def _prepare_create_po(*, project_id, vendor_id, gp_vendor_id, buyer_id, cost_co
     for line, manufacturer in zip(payload["lines"], manufacturers):
         line["manufacturer"] = manufacturer
     return payload
+
+
+def _assert_buyer_identity(caller_gp_buyer_id: str | None, input_buyer_id: str) -> None:
+    """Issue #216: a PO is pushed as the CALLER's GP buyer identity (Clerk publicMetadata.gpBuyerId),
+    not a free pick - reject a missing identity or a mismatched buyer_id before anything hits GP."""
+    if not caller_gp_buyer_id:
+        raise ValidationError(
+            "Your account has no GP buyer identity; an Admin must set it in User Management",
+            field="buyer_id",
+        )
+    if (input_buyer_id or "").strip().upper() != caller_gp_buyer_id.strip().upper():
+        raise ValidationError("POs can only be created as your own GP buyer", field="buyer_id")
 
 
 def _persist_create_po(
@@ -200,6 +216,9 @@ def _prepare_register_po(*, po_id, vendor_id, gp_vendor_id, buyer_id, cost_code,
             if project is None:
                 raise NotFoundError(f"Project {po.project_id} not found")
             job_number = project.project_id
+
+        # Issue #216: registering a draft is the ordering action - same strict buyer gating.
+        buyer_repository.validate_buyer_can_order(session, buyer_id, po.project_id, cost_code)
 
         manufacturers = _resolve_line_manufacturers(session, po.project_id, line_items_data)
 
@@ -339,7 +358,10 @@ class POMutations:
         Issue #202 #1/#3: idempotency_key (client-generated, one per user action, re-sent on retry) makes
         a retry a no-op in GP; fields are validated before the relay_call; the DB work is offloaded so no
         Postgres connection is held across the relay round-trip."""
-        require_user(info)
+        auth = require_user(info)
+        # Issue #216: the PO is pushed as the caller's own GP buyer identity, never a free pick.
+        caller_buyer = await asyncio.to_thread(user_repository.get_user_gp_buyer_id, auth["user_id"])
+        _assert_buyer_identity(caller_buyer, input.buyer_id)
         key = gp_idempotency.validate_key(input.idempotency_key)
 
         project_id = uuid.UUID(str(input.project_id)) if input.project_id else None
@@ -406,7 +428,10 @@ class POMutations:
         Issue #202 #1/#3: idempotency_key makes a retry a no-op in GP; the DRAFT-state guard and fields
         are checked before the relay_call so a double-submit never reaches GP; the DB work is offloaded
         so no Postgres connection is held across the relay round-trip."""
-        require_user(info)
+        auth = require_user(info)
+        # Issue #216: the PO is registered as the caller's own GP buyer identity, never a free pick.
+        caller_buyer = await asyncio.to_thread(user_repository.get_user_gp_buyer_id, auth["user_id"])
+        _assert_buyer_identity(caller_buyer, input.buyer_id)
         key = gp_idempotency.validate_key(input.idempotency_key)
 
         pid = uuid.UUID(str(input.po_id))

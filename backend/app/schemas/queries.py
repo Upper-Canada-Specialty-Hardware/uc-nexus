@@ -7,6 +7,7 @@ mirroring app/repositories/. DTO builders live in schemas/converters.py.
 import strawberry
 
 from .admin import AdminQueries
+from .buyer import BuyerQueries
 from .dashboard import DashboardQueries
 from .imports import ImportQueries
 from .notification import NotificationQueries
@@ -24,6 +25,7 @@ from .warehouse import WarehouseQueries
 @strawberry.type
 class Query(
     AdminQueries,
+    BuyerQueries,
     DashboardQueries,
     ImportQueries,
     NotificationQueries,

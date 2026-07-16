@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within, configure } from '@testing-library/react';
 import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
 import { ToastProvider } from '../../../components/Toast';
 import PODetailModal from '../PODetailModal';
@@ -11,8 +11,27 @@ import {
 } from '../../../graphql/po';
 import { GET_PROJECTS, GET_VENDORS } from '../../../graphql/shared';
 
+// DataGrid-heavy dialogs render slowly under jsdom, slower still when the whole suite runs in
+// parallel - lift both the per-test budget and testing-library's 1s async-util default.
+vi.setConfig({ testTimeout: 60_000 });
+configure({ asyncUtilTimeout: 15_000 });
+
+
 // POGenerateDialog drags in @react-pdf/renderer at module level; it is not under test here.
 vi.mock('../POGenerateDialog', () => ({ default: () => null }));
+
+// The embedded GpPurchaseOrderDialog reads the caller's GP buyer identity from Clerk (issue #216);
+// there is no ClerkProvider in these tests, so stub the hook.
+vi.mock('../../../hooks/useIdentity', () => ({
+  useIdentity: () => ({
+    displayName: 'Test Buyer',
+    roles: [],
+    hasRole: () => false,
+    isAdmin: false,
+    gpBuyerId: 'JSMITH',
+    user: null,
+  }),
+}));
 
 // Run date formatting in a fixed non-UTC zone so a `new Date('YYYY-MM-DD')` UTC-parse regression
 // (the #238 off-by-one) shifts the rendered day and fails the assertions below.

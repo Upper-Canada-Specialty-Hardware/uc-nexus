@@ -41,6 +41,20 @@ def _display_email(u: dict) -> str:
     return ""
 
 
+def _user_summary(u: dict) -> dict:
+    """The shape the users query / user mutations return, from a raw Clerk user payload."""
+    metadata = u.get("public_metadata") or {}
+    return {
+        "id": u["id"],
+        "first_name": u.get("first_name") or "",
+        "last_name": u.get("last_name") or "",
+        "email": _primary_email(u),
+        "roles": metadata.get("roles", []),
+        "gp_buyer_id": metadata.get("gpBuyerId") or None,
+        "image_url": u.get("image_url") or "",
+    }
+
+
 def list_users() -> list[dict]:
     """List all Clerk users with their roles from publicMetadata."""
     users = []
@@ -57,17 +71,7 @@ def list_users() -> list[dict]:
         data = resp.json()
 
         for u in data:
-            metadata = u.get("public_metadata") or {}
-            users.append(
-                {
-                    "id": u["id"],
-                    "first_name": u.get("first_name") or "",
-                    "last_name": u.get("last_name") or "",
-                    "email": _primary_email(u),
-                    "roles": metadata.get("roles", []),
-                    "image_url": u.get("image_url") or "",
-                }
-            )
+            users.append(_user_summary(u))
 
         if len(data) < limit:
             break
@@ -107,21 +111,53 @@ def get_user_roles(user_id: str) -> list[str]:
     return metadata.get("roles") or []
 
 
+def _merge_public_metadata(user_id: str, patch: dict) -> dict:
+    """Merge keys into a Clerk user's publicMetadata via the /metadata endpoint (deep merge), so
+    writing one key (roles) never wipes another (gpBuyerId) - PATCH /users/{id} would replace the
+    whole object. Returns the updated user summary."""
+    resp = _client.patch(
+        f"/users/{user_id}/metadata",
+        headers=_headers(),
+        json={"public_metadata": patch},
+    )
+    resp.raise_for_status()
+    return _user_summary(resp.json())
+
+
 def update_user_roles(user_id: str, roles: list[str]) -> dict:
     """Update a Clerk user's roles in publicMetadata."""
+    return _merge_public_metadata(user_id, {"roles": roles})
+
+
+def update_user_name(user_id: str, first_name: str, last_name: str) -> dict:
+    """Issue #240: admin-driven display-name change. first_name/last_name are top-level Clerk user
+    fields (not metadata), so this never touches roles/gpBuyerId. Everything that shows a display
+    name (useIdentity fullName, resolve_display_name for received_by) derives from these."""
     resp = _client.patch(
         f"/users/{user_id}",
         headers=_headers(),
-        json={"public_metadata": {"roles": roles}},
+        json={"first_name": (first_name or "").strip(), "last_name": (last_name or "").strip()},
     )
     resp.raise_for_status()
-    u = resp.json()
+    return _user_summary(resp.json())
+
+
+def update_user_gp_buyer_id(user_id: str, gp_buyer_id: str | None) -> dict:
+    """Issue #216: set (or clear, with None) the GP BUYERID this UC Nexus account acts as. The PO
+    dialog auto-uses it and the create/register mutations enforce it server-side."""
+    cleaned = (gp_buyer_id or "").strip() or None
+    return _merge_public_metadata(user_id, {"gpBuyerId": cleaned})
+
+
+def get_user_gp_buyer_id(user_id: str) -> str | None:
+    """Issue #216: the caller's GP buyer identity from Clerk publicMetadata, or None if unset."""
+    try:
+        resp = _client.get(f"/users/{user_id}", headers=_headers())
+        resp.raise_for_status()
+        u = resp.json()
+    except httpx.HTTPError as e:
+        raise AppError(
+            "Could not load your user profile from Clerk; please try again.", code="CLERK_UNAVAILABLE"
+        ) from e
     metadata = u.get("public_metadata") or {}
-    return {
-        "id": u["id"],
-        "first_name": u.get("first_name") or "",
-        "last_name": u.get("last_name") or "",
-        "email": _primary_email(u),
-        "roles": metadata.get("roles", []),
-        "image_url": u.get("image_url") or "",
-    }
+    return metadata.get("gpBuyerId") or None
