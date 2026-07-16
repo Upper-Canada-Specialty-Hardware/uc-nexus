@@ -1,8 +1,8 @@
 # uc nexus to from relay - full spec
 
-this is the full spec for the nexus <-> relay half of the localhost relay work. the relay <-> gp half
+this is the full spec for the nexus <-> relay half of the relay work. the relay <-> gp half
 (PO create + receiving against GP via eConnect, including the WHRECLINE101 sync) is built and proven and
-lives in `../relay to from gp/`. the shorter `nexus-relay-implementation-plan.md` in this same folder is
+lives in `../relay-to-from-gp/`. the shorter `nexus-relay-implementation-plan.md` in this same folder is
 the earlier sketch; this doc supersedes it for the nexus-side work and is exhaustive enough to build from.
 
 what this half has to do: get UC Nexus's cloud frontend (Railway) to drive the on-prem relay so that

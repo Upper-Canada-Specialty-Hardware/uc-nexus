@@ -1,4 +1,4 @@
-# UC Nexus localhost relay
+# UC Nexus relay
 
 bridges UC Nexus (cloud, Railway) to Microsoft Dynamics GP on the corporate network. UC Nexus
 runs in the browser and can't reach the on-prem SQL server; this relay runs on a machine inside
@@ -21,7 +21,7 @@ prerequisites
 
 setup
 ```
-cd "localhost relay"
+cd relay
 cp config.example.toml config.toml          # then set [auth] shared_secret
 poetry install
 ```

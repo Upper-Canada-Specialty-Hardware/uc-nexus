@@ -1,10 +1,10 @@
 # Relay POC - next steps
 
-what we have to prove, and how, before scaffolding the localhost relay. companion to `localhost-relay.md` (the full design) and the `UC Connects source code/UC Connects code review/` library (the deprecated app's as-built behaviour).
+what we have to prove, and how, before scaffolding the relay. companion to `localhost-relay.md` (the full design) and the `UC Connects source code/UC Connects code review/` library (the deprecated app's as-built behaviour).
 
 where the relay POC stands today
 
-- the relay is scaffolded and running at `localhost relay/` (FastAPI + pyodbc, package `ucnexus_relay`). this `docs/` folder now lives under it.
+- the relay is scaffolded and running at `relay/` (FastAPI + pyodbc, package `ucnexus_relay`). this `docs/` folder now lives under it.
 - workflow 1 (PO creation) is PROVEN end to end against TUBC as of 2026-06-24, including the WennSoft job-cost commitment and custom `ucnexus`-prefixed PO numbers. the design plus the corrections found while proving it are in `localhost-relay.md` ("what the live POC proved").
 - the deprecated app (`UC Connects source code`, solution PM_Project_Tracking) is confirmed owner of PMUCSH/PMUBC and is what UC Nexus replaces. its only live GP writeback is receipts; its PO-create path was a dead developer test stub, so workflow 1 had no working reference and had to be proven live - which it now is.
 - workflow 2 (receiving) is also PROVEN against TUBC as of 2026-06-24: RC0000038 received PO0000044 end to end. both POC workflows are done.
@@ -58,5 +58,5 @@ what the POC must prove
 
 after the POC
 
-- the relay is scaffolded at `localhost relay/` (not `relay/`); the proven proc-call code lives in `src/ucnexus_relay/`. both POC workflows (PO create + receiving) are proven; what remains is the human GP-side eyeball (pending TUBC access) and production hardening.
+- the relay is scaffolded at `relay/`; the proven proc-call code lives in `src/ucnexus_relay/`. both POC workflows (PO create + receiving) are proven; what remains is the human GP-side eyeball (pending TUBC access) and production hardening.
 - production hardening (dedicated service account, distribution, auto-start) stays as the follow-ups already listed at the end of `localhost-relay.md`.

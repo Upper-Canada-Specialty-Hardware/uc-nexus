@@ -1,13 +1,13 @@
-# localhost relay - remaining implementation plan (nexus <-> relay)
+# relay - remaining implementation plan (nexus <-> relay)
 
 where things stand right now (read this first if you're picking this up cold)
 
-the relay is a working FastAPI service at `localhost relay/` in this repo (a sibling to `backend/` and `frontend/`, but deployed on-prem, not on Railway). it bridges UC Nexus to Microsoft Dynamics GP by calling eConnect-registered stored procedures directly via pyodbc. two GP workflows are built and PROVEN end to end:
+the relay is a working FastAPI service at `relay/` in this repo (a sibling to `backend/` and `frontend/`, but deployed on-prem, not on Railway). it bridges UC Nexus to Microsoft Dynamics GP by calling eConnect-registered stored procedures directly via pyodbc. two GP workflows are built and PROVEN end to end:
 - PO creation - `POST /po` runs the 5-step orchestration (taGetPONextNumber -> taPoHdr -> taPoLine -> wsiWSCreateUpdatePurchaseOrderIntegration -> taPoHdr subtotal), including the WennSoft job-cost commitment (WS10101 / JC00102 / JC00701). takes a UC-Nexus-supplied PO number (e.g. `ucnexus...`) or reserves GP's next number.
 - receiving - `POST /receipt` runs taGetPurchReceiptNextNumber -> taPopRcptLineInsert x N -> taPopRcptHdrInsert, and for UBC/UCSH ALSO writes the custom `WHRECLINE101` rows (in the same transaction) that UC Connects' dashboards read.
 both were proven against TUBC (sandbox), and receiving was validated twice on live UBC under explicit one-time approval (PO502088 GP-only, PO502090 GP + PMUBC.WHRECLINE101). PO creation on production is NOT yet validated (no go-ahead given) but is expected to work - same procs / schema / WennSoft config as TUBC.
 
-how to run it (from `localhost relay/`):
+how to run it (from `relay/`):
 - `poetry install` once, then `poetry run uvicorn ucnexus_relay.main:app --app-dir src --host 127.0.0.1 --port 7321`
 - config is `config.toml` (gitignored - holds the bearer secret, the SQL target `10.0.0.246,1435` reached via ODBC Driver 17 + Windows SSPI, the company allowlist, and the `[gp.custom_db]` map). `config.example.toml` is the committed template.
 - endpoints: `/health`, `/info` (read-only identity probe), `/po/next-number`, `/po`, `/receipt`. all but `/health` require `Authorization: Bearer <secret>`.
@@ -19,7 +19,7 @@ hard guardrails, do NOT break:
 - the WHRECLINE101 dual-write only engages for companies mapped in `[gp.custom_db]` (UBC->PMUBC, UCSH->PMUCSH). sandboxes have no paired PM database, so TUBC/TUCSH are GP-only with zero UC Connects dependency.
 - all GP discovery stays read-only unless the user explicitly authorizes a write; pause for explicit OK before any first live write on a new company.
 
-gotchas already solved - do not re-derive; the long-form detail is in `../relay to from gp/localhost-relay.md`:
+gotchas already solved - do not re-derive; the long-form detail is in `../relay-to-from-gp/localhost-relay.md`:
 - pyodbc + eConnect needs `SET NOCOUNT ON` on the session, or the trailing `SELECT @err` after an EXEC fails.
 - `taPoLine` can't set Product_Indicator; the wsi proc must run for EVERY line (PI=1 non-inv / PI=2 job cost).
 - the trailing digit of a cost code (`210-200-2`) is the `Cost_Element`, not COSTTYPE (which stays 0).
@@ -33,7 +33,7 @@ the next concrete step is sequencing step 1 below: add the relay's Private-Netwo
 
 the rest of this doc is the plan for that remaining work.
 
-the relay-to-from-gp half is built and proven: PO creation and receiving against GP via eConnect, including the WHRECLINE101 sync to PMUBC so receives show on UC Connects' dashboards. that work and all its references live in `../relay to from gp/`. what's left, and what this doc plans, is the OTHER half - getting UC Nexus (the cloud web app) to actually talk to the relay, plus the on-prem deployment that makes the relay real for end users.
+the relay-to-from-gp half is built and proven: PO creation and receiving against GP via eConnect, including the WHRECLINE101 sync to PMUBC so receives show on UC Connects' dashboards. that work and all its references live in `../relay-to-from-gp/`. what's left, and what this doc plans, is the OTHER half - getting UC Nexus (the cloud web app) to actually talk to the relay, plus the on-prem deployment that makes the relay real for end users.
 
 the one hop we have NOT exercised yet is a browser on a corporate workstation making a cross-origin `https -> http://localhost:7321` call to the relay. everything to date has hit the relay from curl/PowerShell on the same machine. proving that browser hop is the heart of this phase.
 

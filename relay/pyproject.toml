@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "ucnexus-relay"
 version = "0.1.0"
-description = "Localhost relay bridging UC Nexus (cloud) to Dynamics GP via eConnect stored procedures"
+description = "Relay bridging UC Nexus (cloud) to Dynamics GP via eConnect stored procedures"
 authors = ["UC Nexus Team"]
 package-mode = false
 

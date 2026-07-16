@@ -1366,7 +1366,7 @@ class Mutation:
             session.commit()
             return True
 
-    # Relay installs (localhost relay <-> GP)
+    # Relay installs (relay <-> GP)
     @strawberry.mutation
     def provision_relay_install(self, info: strawberry.Info, label: str, company: str) -> RelayInstallProvision:
         """Admin: create a relay install + a one-time enrollment token shown ONCE. The relay uses the

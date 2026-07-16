@@ -1,6 +1,6 @@
 # PyInstaller spec for the UC Nexus relay. Produces a single dist/ucnexus-relay.exe.
 #
-# Build:  pyinstaller --clean --noconfirm ucnexus-relay.spec   (run from the "localhost relay" dir)
+# Build:  pyinstaller --clean --noconfirm ucnexus-relay.spec   (run from the relay dir)
 # CI builds this on a windows-latest runner and attaches the exe to a GitHub Release; see
 # .github/workflows/relay-release.yml. config.toml is NOT bundled - it lives next to the exe on each
 # workstation and is created at install/enroll time (see docs/relay-deployment.md).
