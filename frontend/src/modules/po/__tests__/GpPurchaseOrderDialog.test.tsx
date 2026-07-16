@@ -5,12 +5,17 @@ import { ToastProvider } from '../../../components/Toast';
 import GpPurchaseOrderDialog from '../GpPurchaseOrderDialog';
 import type { PurchaseOrder } from '../index';
 import {
-  CREATE_PO,
+  CREATE_DRAFT_PO,
   REGISTER_PO_IN_GP,
   GET_GP_COST_CODES,
   GET_GP_VENDORS,
 } from '../../../graphql/po';
-import { GET_BUYER_ASSIGNMENTS, GET_PROJECTS, GET_RELAY_STATUS } from '../../../graphql/shared';
+import {
+  GET_BUYER_ASSIGNMENTS,
+  GET_PROJECTS,
+  GET_RELAY_STATUS,
+  GET_VENDORS,
+} from '../../../graphql/shared';
 
 // DataGrid-heavy dialogs render slowly under jsdom, slower still when the whole suite runs in
 // parallel - lift both the per-test budget and testing-library's 1s async-util default.
@@ -131,7 +136,7 @@ function baseMocks(
               openingCount: 3,
               __typename: 'Project',
             },
-            // Not in JSMITH's assignment - must not be offered for a create-mode project PO.
+            // A second project outside JSMITH's assignment.
             {
               id: 'p2',
               projectId: 'JOB-200',
@@ -177,6 +182,32 @@ function baseMocks(
       maxUsageCount: INFINITE,
     },
   ];
+}
+
+// Nexus vendors for the create-mode VendorSelect autocomplete (issue #272: a draft links a Nexus
+// vendor, not a GP one).
+function nexusVendorsMock(): MockedResponse {
+  return {
+    request: { query: GET_VENDORS },
+    result: {
+      data: {
+        vendors: [
+          {
+            id: 'v-1',
+            name: 'Ace Hardware Co',
+            contactName: null,
+            email: null,
+            phone: null,
+            notes: null,
+            createdAt: '2026-07-01T12:00:00Z',
+            updatedAt: '2026-07-01T12:00:00Z',
+            __typename: 'Vendor',
+          },
+        ],
+      },
+    },
+    maxUsageCount: INFINITE,
+  };
 }
 
 // GP offers two codes for the job; only 310-000 is designated to JSMITH.
@@ -242,12 +273,6 @@ async function openSelect(label: string) {
 
 async function closeSelect() {
   await waitFor(() => expect(screen.queryByRole('listbox')).not.toBeInTheDocument());
-}
-
-async function pickOption(label: string, optionText: string) {
-  const listbox = await openSelect(label);
-  fireEvent.click(within(listbox).getByText(optionText));
-  await closeSelect();
 }
 
 async function waitForVendorPreselect() {
@@ -407,26 +432,27 @@ describe('GpPurchaseOrderDialog', () => {
     });
   });
 
-  it('create mode offers only assigned projects and submits CREATE_PO with the caller as buyer', async () => {
+  it('create mode saves a plain draft via CREATE_DRAFT_PO with no GP fields, even with the relay down', async () => {
     const calls: Record<string, unknown>[] = [];
-    const createMock: MockedResponse = {
-      request: { query: CREATE_PO, variables: () => true },
+    const createDraftMock: MockedResponse = {
+      request: { query: CREATE_DRAFT_PO, variables: () => true },
       result: (vars) => {
         calls.push(vars as Record<string, unknown>);
         return {
           data: {
-            createPo: {
+            createDraftPo: {
               __typename: 'PurchaseOrder',
               id: 'po-9',
-              poNumber: 'PO-3001',
+              poNumber: null,
               requestNumber: 'REQ-009',
-              projectId: null,
-              status: 'GP_REGISTERED',
-              gpCompany: 'UCS',
-              gpVendorId: 'V-ALL',
-              vendorNameSnapshot: 'Allegion Hardware',
+              projectId: 'p1',
+              status: 'DRAFT',
+              gpCompany: null,
+              gpVendorId: null,
+              vendorNameSnapshot: null,
               vendor: null,
               notes: 'rush order',
+              preferredDeliveryDate: '2026-09-15',
               createdAt: '2026-07-02T12:00:00Z',
               updatedAt: '2026-07-02T12:00:00Z',
               lineItems: [],
@@ -437,18 +463,32 @@ describe('GpPurchaseOrderDialog', () => {
         };
       },
     };
-    const { onSubmitted } = renderDialog({}, [...baseMocks(), createMock]);
+    // Issue #272: drafting never touches GP, so a downed relay must not block it.
+    const { onSubmitted } = renderDialog({ relayConnected: false }, [
+      ...baseMocks(false),
+      nexusVendorsMock(),
+      createDraftMock,
+    ]);
 
-    expect(screen.getByText('Create Purchase Order in GP')).toBeInTheDocument();
+    expect(screen.getByText('Create PO Request (Draft)')).toBeInTheDocument();
+    // No GP surface at all in create mode - company/buyer/cost-code and the GP vendor picker are
+    // register-time concerns.
+    expect(screen.queryByText('GP purchase order')).toBeNull();
+    expect(screen.queryByLabelText('Buyer (you)')).toBeNull();
+    expect(screen.queryByLabelText('GP Vendor')).toBeNull();
 
-    // The project dropdown offers only JSMITH's assigned project (plus the stock option).
+    // Any project is draftable (buyer gating applies at registration, not drafting).
     const projectListbox = await openSelect('Project (Optional)');
-    expect(within(projectListbox).getByText('Main St Job')).toBeInTheDocument();
-    expect(within(projectListbox).queryByText('Elm St Job')).toBeNull();
-    fireEvent.click(within(projectListbox).getByText('No Project (stock PO)'));
+    fireEvent.click(await within(projectListbox).findByText('Main St Job'));
     await closeSelect();
 
-    await pickOption('GP Vendor', 'Allegion Hardware');
+    // Optional Nexus vendor link via the vendor autocomplete.
+    fireEvent.mouseDown(screen.getByLabelText('Vendor'));
+    fireEvent.click(await screen.findByText('Ace Hardware Co'));
+
+    fireEvent.change(screen.getByLabelText('Preferred delivery date'), {
+      target: { value: '2026-09-15' },
+    });
     fireEvent.change(screen.getByPlaceholderText('e.g. Hinges'), { target: { value: 'Hinges' } });
     fireEvent.change(screen.getByPlaceholderText('e.g. AB123'), { target: { value: 'AB123' } });
     fireEvent.change(screen.getByDisplayValue('1'), { target: { value: '5' } });
@@ -457,22 +497,19 @@ describe('GpPurchaseOrderDialog', () => {
     fireEvent.change(screen.getByPlaceholderText('Optional notes for this purchase order'), {
       target: { value: 'rush order' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Create PO' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create Draft' }));
 
     await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
     expect(calls).toHaveLength(1);
+    // toEqual proves the draft input carries NO buyer / gpCompany / costCode / idempotency key.
     expect(calls[0]).toEqual({
       input: {
-        projectId: null,
-        gpVendorId: 'V-ALL',
-        gpVendorName: 'Allegion Hardware',
-        buyerId: 'JSMITH',
+        projectId: 'p1',
+        vendorId: 'v-1',
         notes: 'rush order',
-        costCode: null,
+        preferredDeliveryDate: '2026-09-15',
         shippingCost: null,
         tariffAmount: null,
-        gpCompany: 'UCS',
-        idempotencyKey: expect.stringMatching(UUID_RE) as string,
         lineItems: [
           {
             hardwareCategory: 'Hinges',
