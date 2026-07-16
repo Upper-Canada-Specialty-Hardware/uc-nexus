@@ -115,6 +115,7 @@ export interface PODocumentData {
   miscellaneous: number;
   taxAmount: number;
   taxLabel: string;
+  tariffAmount: number;
   requiredByOverride: string | null;
   includeFsc: boolean;
   includeUsaTariff: boolean;
@@ -133,6 +134,8 @@ export interface PurchaseOrder {
   buyerId: string | null;
   vendor: VendorRef | null;
   vendorQuoteNumber: string | null;
+  shippingCost: number | null;
+  tariffAmount: number | null;
   notes: string | null;
   expectedDeliveryDate: string | null;
   orderedAt: string | null;

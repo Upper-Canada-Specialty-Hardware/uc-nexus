@@ -240,6 +240,8 @@ def _persist_create_po(
     gp_vendor_id,
     vendor_name_snapshot,
     buyer_id,
+    shipping_cost,
+    tariff_amount,
 ) -> PurchaseOrder:
     with SessionLocal() as session:
         po = po_repository.create_po(
@@ -254,6 +256,8 @@ def _persist_create_po(
             gp_vendor_id=gp_vendor_id,
             vendor_name_snapshot=vendor_name_snapshot,
             buyer_id=buyer_id,
+            shipping_cost=shipping_cost,
+            tariff_amount=tariff_amount,
         )
         gp_idempotency.stamp_result_id(session, key, "create_po", gp_result, str(po.id))
         session.commit()
@@ -310,7 +314,18 @@ def _prepare_register_po(*, po_id, vendor_id, gp_vendor_id, buyer_id, cost_code,
 
 
 def _persist_register_po(
-    *, key, po_id, gp_vendor_id, vendor_name_snapshot, gp_result, line_items_data, vendor_id, cost_code, buyer_id
+    *,
+    key,
+    po_id,
+    gp_vendor_id,
+    vendor_name_snapshot,
+    gp_result,
+    line_items_data,
+    vendor_id,
+    cost_code,
+    buyer_id,
+    shipping_cost,
+    tariff_amount,
 ) -> PurchaseOrder:
     with SessionLocal() as session:
         po_repository.register_po_in_gp(
@@ -324,6 +339,8 @@ def _persist_register_po(
             vendor_id=vendor_id,
             cost_code=cost_code,
             buyer_id=buyer_id,
+            shipping_cost=shipping_cost,
+            tariff_amount=tariff_amount,
         )
         gp_idempotency.stamp_result_id(session, key, "register_po_in_gp", gp_result, str(po_id))
         session.commit()
@@ -757,6 +774,8 @@ class Mutation:
             gp_vendor_id=input.gp_vendor_id,
             vendor_name_snapshot=input.gp_vendor_name,
             buyer_id=input.buyer_id,
+            shipping_cost=input.shipping_cost,
+            tariff_amount=input.tariff_amount,
         )
 
     @strawberry.mutation
@@ -821,6 +840,8 @@ class Mutation:
             vendor_id=vendor_id,
             cost_code=input.cost_code,
             buyer_id=input.buyer_id,
+            shipping_cost=input.shipping_cost,
+            tariff_amount=input.tariff_amount,
         )
 
     @strawberry.mutation
@@ -833,6 +854,9 @@ class Mutation:
         vendor_quote_number: str | None = None,
         project_id: strawberry.ID | None = None,
         notes: str | None = None,
+        # Issue #156: tri-state (omitted / null / value) - null clears, 0 is a valid entered value.
+        shipping_cost: float | None = strawberry.UNSET,
+        tariff_amount: float | None = strawberry.UNSET,
     ) -> PurchaseOrder:
         from sqlalchemy.orm import selectinload
 
@@ -851,6 +875,8 @@ class Mutation:
                 vendor_quote_number=vendor_quote_number,
                 project_id=pid,
                 notes=notes,
+                shipping_cost=_UNSET if shipping_cost is strawberry.UNSET else shipping_cost,
+                tariff_amount=_UNSET if tariff_amount is strawberry.UNSET else tariff_amount,
             )
             session.commit()
             refreshed_po = (
@@ -1467,6 +1493,7 @@ class Mutation:
                 miscellaneous=input.miscellaneous,
                 tax_amount=input.tax_amount,
                 tax_label=input.tax_label,
+                tariff_amount=input.tariff_amount,
                 required_by_override=input.required_by_override,
                 include_fsc=input.include_fsc,
                 include_usa_tariff=input.include_usa_tariff,

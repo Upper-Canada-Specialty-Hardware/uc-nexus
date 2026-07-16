@@ -255,6 +255,7 @@ class PODocumentData:
     miscellaneous: float
     tax_amount: float
     tax_label: str
+    tariff_amount: float
     required_by_override: date | None
     include_fsc: bool
     include_usa_tariff: bool
@@ -321,6 +322,8 @@ class PurchaseOrder:
     buyer_id: str | None
     vendor: Vendor | None
     vendor_quote_number: str | None
+    shipping_cost: float | None
+    tariff_amount: float | None
     notes: str | None
     expected_delivery_date: date | None
     ordered_at: datetime | None

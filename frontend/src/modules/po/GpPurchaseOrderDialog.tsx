@@ -138,6 +138,9 @@ export default function GpPurchaseOrderDialog({
   // A confident match (the draft's own GP vendor / an exact name hit) and any manual pick start confirmed.
   const [vendorConfirmed, setVendorConfirmed] = useState(true);
   const [notes, setNotes] = useState('');
+  // Issue #156: optional order-time dollar costs. Kept as strings ('' = not entered, distinct from 0).
+  const [shippingCost, setShippingCost] = useState('');
+  const [tariffAmount, setTariffAmount] = useState('');
   const [buyerId, setBuyerId] = useState('');
   const [costCode, setCostCode] = useState('');
   const [nextKey, setNextKey] = useState(2);
@@ -289,6 +292,8 @@ export default function GpPurchaseOrderDialog({
     if (registerPo) {
       setProjectId(registerPo.projectId ?? '');
       setNotes(registerPo.notes ?? '');
+      setShippingCost(registerPo.shippingCost != null ? String(registerPo.shippingCost) : '');
+      setTariffAmount(registerPo.tariffAmount != null ? String(registerPo.tariffAmount) : '');
       const rows: LineItemRow[] = registerPo.lineItems.map((li, i) => ({
         key: i + 1,
         id: li.id,
@@ -305,6 +310,8 @@ export default function GpPurchaseOrderDialog({
     } else {
       setProjectId(defaultProjectId ?? '');
       setNotes('');
+      setShippingCost('');
+      setTariffAmount('');
       setLineItems([{ key: 1, ...EMPTY_LINE_ITEM }]);
       setNextKey(2);
     }
@@ -404,9 +411,14 @@ export default function GpPurchaseOrderDialog({
     else if (isRegister && !vendorConfirmed) errs.vendor = 'Confirm the suggested GP vendor before registering';
     if (!buyerId) errs.buyer = 'Select a buyer';
     if (isJob && !costCode) errs.costCode = 'Cost code is required for a project PO';
+    // Issue #156: optional, but a non-empty entry must be a valid non-negative dollar value.
+    if (shippingCost.trim() !== '' && (isNaN(parseFloat(shippingCost)) || parseFloat(shippingCost) < 0))
+      errs.shippingCost = 'Must be >= 0';
+    if (tariffAmount.trim() !== '' && (isNaN(parseFloat(tariffAmount)) || parseFloat(tariffAmount) < 0))
+      errs.tariffAmount = 'Must be >= 0';
     setErrors(errs);
     return Object.keys(errs).length === 0;
-  }, [lineItems, relayConnected, gpVendorId, isRegister, vendorConfirmed, buyerId, isJob, costCode]);
+  }, [lineItems, relayConnected, gpVendorId, isRegister, vendorConfirmed, buyerId, isJob, costCode, shippingCost, tariffAmount]);
 
   const handleSubmit = useCallback(async () => {
     if (!validate()) return;
@@ -426,6 +438,10 @@ export default function GpPurchaseOrderDialog({
     // Same key for every retry of this action so a retry is a no-op in GP (won't post a second PO).
     const idempotencyKey = (idempotencyKeyRef.current ??= crypto.randomUUID());
 
+    // Issue #156: '' = not entered (null); 0 is a valid entered value.
+    const shippingCostValue = shippingCost.trim() === '' ? null : parseFloat(shippingCost);
+    const tariffAmountValue = tariffAmount.trim() === '' ? null : parseFloat(tariffAmount);
+
     setGpError(null);
     setGpBusy(true);
     try {
@@ -441,6 +457,8 @@ export default function GpPurchaseOrderDialog({
               buyerId,
               gpCompany: company,
               costCode: gpCostCode,
+              shippingCost: shippingCostValue,
+              tariffAmount: tariffAmountValue,
               idempotencyKey,
               lineItems: lineItems.map((li, idx) => ({
                 id: li.id ?? null,
@@ -460,6 +478,8 @@ export default function GpPurchaseOrderDialog({
               buyerId,
               notes: notes.trim() || null,
               costCode: gpCostCode,
+              shippingCost: shippingCostValue,
+              tariffAmount: tariffAmountValue,
               gpCompany: company,
               idempotencyKey,
               lineItems: lineItemsInput,
@@ -493,6 +513,8 @@ export default function GpPurchaseOrderDialog({
     gpVendorId,
     gpVendorName,
     notes,
+    shippingCost,
+    tariffAmount,
     registerPo,
     createPO,
     registerPoInGp,
@@ -628,6 +650,30 @@ export default function GpPurchaseOrderDialog({
           )}
           {manufacturerHintNode}
         </Box>
+        <Stack direction="row" spacing={2}>
+          <TextField
+            label="Shipping costs (optional)"
+            value={shippingCost}
+            onChange={(e) => setShippingCost(e.target.value)}
+            size="small"
+            type="number"
+            slotProps={{ htmlInput: { min: 0, step: 0.01 } }}
+            sx={{ width: 200 }}
+            error={!!errors.shippingCost}
+            helperText={errors.shippingCost}
+          />
+          <TextField
+            label="Tariffs (optional)"
+            value={tariffAmount}
+            onChange={(e) => setTariffAmount(e.target.value)}
+            size="small"
+            type="number"
+            slotProps={{ htmlInput: { min: 0, step: 0.01 } }}
+            sx={{ width: 200 }}
+            error={!!errors.tariffAmount}
+            helperText={errors.tariffAmount}
+          />
+        </Stack>
         <TextField
           label="Notes"
           value={notes}
