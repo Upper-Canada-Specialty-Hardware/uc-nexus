@@ -5,7 +5,7 @@ import uuid
 import strawberry
 
 from app.database import SessionLocal
-from app.repositories import stock_repository
+from app.repositories import stock as stock_repository
 
 from .converters import (
     deficiency_review_to_type,

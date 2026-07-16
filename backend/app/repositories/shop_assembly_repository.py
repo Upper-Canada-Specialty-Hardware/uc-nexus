@@ -235,7 +235,7 @@ def complete_opening(
     session.flush()  # Get opening_item.id for OpeningItemHardware FK
 
     # 6. Snapshot only INSTALLED items as OpeningItemHardware; flag the rest deficient.
-    from app.repositories import stock_repository
+    from app.repositories import stock as stock_repository
 
     performed_by = completed_by or "Assembler"
     for item in sa_opening.items:

@@ -11,7 +11,9 @@ from app.repositories import (
     po_repository,
     project_repository,
     shop_assembly_repository,
-    warehouse_repository,
+)
+from app.repositories import (
+    warehouse as warehouse_repository,
 )
 from app.services import notification_service
 

@@ -7,7 +7,8 @@ import strawberry
 
 from app.auth import require_user, resolve_display_name
 from app.database import SessionLocal
-from app.repositories import warehouse_admin_repository, warehouse_repository
+from app.repositories import warehouse as warehouse_repository
+from app.repositories import warehouse_admin_repository
 from app.services import gp_idempotency, gp_po
 from app.services.relay_gateway import gateway as relay_gateway
 

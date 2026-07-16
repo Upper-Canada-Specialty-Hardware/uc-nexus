@@ -33,7 +33,7 @@ from app.models.shipping import (
     ShipmentReturnItem,
 )
 from app.models.warehouse import Warehouse
-from app.repositories.stock_repository import _find_or_create_stock_row, _log_audit_event
+from app.repositories.stock import _find_or_create_stock_row, _log_audit_event
 from app.services import notification_service
 from app.services.locking import lock_rows
 

@@ -5,7 +5,8 @@ import uuid
 import strawberry
 
 from app.database import SessionLocal
-from app.repositories import shop_assembly_repository, warehouse_repository
+from app.repositories import shop_assembly_repository
+from app.repositories import warehouse as warehouse_repository
 
 from .converters import opening_item_to_type, shop_assembly_opening_to_type
 from .inputs import AssignOpeningsInput, CompleteOpeningInput
