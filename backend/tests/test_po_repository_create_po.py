@@ -10,7 +10,7 @@ from app.models.hardware import HardwareItem
 from app.models.project import Opening, Project
 from app.models.vendor import Vendor
 from app.repositories import po_repository
-from app.schemas import mutations
+from app.schemas import po as po_schema
 
 
 def _make_vendor(session, name: str = "Acme") -> Vendor:
@@ -36,7 +36,7 @@ class _NoCloseSession:
 
 
 def _use_test_session(monkeypatch, db_session) -> None:
-    monkeypatch.setattr(mutations, "SessionLocal", lambda: _NoCloseSession(db_session))
+    monkeypatch.setattr(po_schema, "SessionLocal", lambda: _NoCloseSession(db_session))
 
 
 def _make_project(session) -> Project:
@@ -87,7 +87,7 @@ def test_prepare_create_po_attaches_manufacturer_per_line(monkeypatch, db_sessio
     _add_hardware_item(db_session, project, hardware_category="LOCK", product_code="LK-200", manufacturer="SARGENT")
     _use_test_session(monkeypatch, db_session)
 
-    payload = mutations._prepare_create_po(
+    payload = po_schema._prepare_create_po(
         project_id=project.id,
         vendor_id=None,
         gp_vendor_id="GPV1",
@@ -106,7 +106,7 @@ def test_prepare_create_po_leaves_manufacturer_blank_without_a_hardware_match(mo
     _add_hardware_item(db_session, project, hardware_category="HINGE", product_code="HG-100", manufacturer="SCHLAGE")
     _use_test_session(monkeypatch, db_session)
 
-    payload = mutations._prepare_create_po(
+    payload = po_schema._prepare_create_po(
         project_id=project.id,
         vendor_id=None,
         gp_vendor_id="GPV1",
@@ -150,7 +150,7 @@ def test_prepare_create_po_disagreeing_items_take_first_non_null_and_log(monkeyp
     _use_test_session(monkeypatch, db_session)
 
     with caplog.at_level(logging.WARNING):
-        payload = mutations._prepare_create_po(
+        payload = po_schema._prepare_create_po(
             project_id=project.id,
             vendor_id=None,
             gp_vendor_id="GPV1",
@@ -167,7 +167,7 @@ def test_prepare_create_po_disagreeing_items_take_first_non_null_and_log(monkeyp
 def test_prepare_create_po_without_a_project_sends_no_manufacturer(monkeypatch, db_session):
     _use_test_session(monkeypatch, db_session)
 
-    payload = mutations._prepare_create_po(
+    payload = po_schema._prepare_create_po(
         project_id=None,
         vendor_id=None,
         gp_vendor_id="GPV1",

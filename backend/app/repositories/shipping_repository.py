@@ -503,3 +503,19 @@ def create_shipment_return(
             )
 
     return shipment_return
+
+
+def get_packing_slip(session: Session, packing_slip_id: uuid.UUID) -> PackingSlip | None:
+    """Single packing slip with items eagerly loaded (mutation response reload)."""
+    stmt = select(PackingSlip).options(selectinload(PackingSlip.items)).where(PackingSlip.id == packing_slip_id)
+    return session.scalars(stmt).unique().first()
+
+
+def get_shipment_return(session: Session, shipment_return_id: uuid.UUID) -> ShipmentReturn | None:
+    """Single shipment return with items eagerly loaded (mutation response reload)."""
+    stmt = (
+        select(ShipmentReturn)
+        .options(selectinload(ShipmentReturn.items))
+        .where(ShipmentReturn.id == shipment_return_id)
+    )
+    return session.scalars(stmt).unique().first()

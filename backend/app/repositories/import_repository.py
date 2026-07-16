@@ -777,3 +777,9 @@ def finalize_import_session(
         "shop_assembly_request": None,
         "shop_assembly_pull_request": sa_pr,
     }
+
+
+def list_excluded_items(session: Session, project_id: uuid.UUID):
+    from app.models.project_excluded_item import ProjectExcludedItem as PEIModel
+
+    return list(session.scalars(select(PEIModel).where(PEIModel.project_id == project_id)).all())

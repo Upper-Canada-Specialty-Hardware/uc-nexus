@@ -263,3 +263,25 @@ def complete_opening(
     sa_opening.completed_at = now
 
     return opening_item
+
+
+def get_openings_with_items(session: Session, opening_ids: list[uuid.UUID]) -> list[ShopAssemblyOpening]:
+    """Shop-assembly openings by id with items eagerly loaded (mutation response reload)."""
+    stmt = (
+        select(ShopAssemblyOpening)
+        .options(selectinload(ShopAssemblyOpening.items))
+        .where(ShopAssemblyOpening.id.in_(opening_ids))
+    )
+    return list(session.scalars(stmt).unique().all())
+
+
+def get_request_with_openings(session: Session, request_id: uuid.UUID):
+    """Shop-assembly request with openings + their items eagerly loaded (finalize-import reload)."""
+    from app.models.shop_assembly import ShopAssemblyRequest
+
+    stmt = (
+        select(ShopAssemblyRequest)
+        .options(selectinload(ShopAssemblyRequest.openings).selectinload(ShopAssemblyOpening.items))
+        .where(ShopAssemblyRequest.id == request_id)
+    )
+    return session.scalars(stmt).unique().first()
