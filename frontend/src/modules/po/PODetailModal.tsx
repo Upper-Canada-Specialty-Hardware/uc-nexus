@@ -59,7 +59,11 @@ const DOC_TYPE_LABELS: Record<string, string> = {
 
 function formatDate(dateStr: string | null | undefined): string {
   if (!dateStr) return '-';
-  return new Date(dateStr).toLocaleDateString();
+  // Parse a date-only string (YYYY-MM-DD) as LOCAL midnight, not UTC, so it displays as entered
+  // (same #238 fix as the PO-document code - `new Date('2026-08-01')` renders 7/31 behind UTC).
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr);
+  const d = m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(dateStr);
+  return isNaN(d.getTime()) ? '-' : d.toLocaleDateString();
 }
 
 function formatDateTime(dateStr: string | null | undefined): string {
