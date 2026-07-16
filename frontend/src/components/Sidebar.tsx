@@ -10,6 +10,7 @@ import {
   Collapse,
   Box,
   Typography,
+  Tooltip,
 } from '@mui/material';
 import HomeIcon from '@mui/icons-material/Home';
 import UploadFileIcon from '@mui/icons-material/UploadFile';
@@ -101,6 +102,10 @@ function isActive(pathname: string, itemPath: string): boolean {
   return pathname === itemPath || pathname.startsWith(itemPath + '/');
 }
 
+function requiredRolesLabel(roles: string[]): string {
+  return `Requires the ${roles.join(' or ')} role`;
+}
+
 interface SidebarProps {
   open: boolean;
   onClose: () => void;
@@ -112,11 +117,11 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
   const { hasRole, isAdmin } = useIdentity();
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
-  const visibleItems = SIDEBAR_ITEMS.filter((item) => {
+  const canAccess = (item: SidebarItem) => {
     if (item.requiredRoles.length === 0) return true;
     if (isAdmin) return true;
     return item.requiredRoles.some((role) => hasRole(role));
-  });
+  };
 
   const handleParentClick = (item: SidebarItem) => {
     navigate(item.path);
@@ -139,21 +144,38 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
           <Typography variant="h6">UC Nexus</Typography>
         </Box>
         <List>
-          {visibleItems.map((item) => {
+          {SIDEBAR_ITEMS.map((item) => {
             const active = isActive(location.pathname, item.path);
             const hasSubItems = !!item.subItems && item.subItems.length > 0;
             const isExpanded = hasSubItems ? (expanded[item.path] ?? active) : false;
+            const accessible = canAccess(item);
+
+            const button = (
+              <ListItemButton
+                selected={active}
+                disabled={!accessible}
+                onClick={() => handleParentClick(item)}
+              >
+                <ListItemIcon>{item.icon}</ListItemIcon>
+                <ListItemText primary={item.label} />
+                {accessible && hasSubItems && (isExpanded ? <ExpandLessIcon /> : <ExpandMoreIcon />)}
+              </ListItemButton>
+            );
 
             return (
               <Box key={item.path}>
                 <ListItem disablePadding>
-                  <ListItemButton selected={active} onClick={() => handleParentClick(item)}>
-                    <ListItemIcon>{item.icon}</ListItemIcon>
-                    <ListItemText primary={item.label} />
-                    {hasSubItems && (isExpanded ? <ExpandLessIcon /> : <ExpandMoreIcon />)}
-                  </ListItemButton>
+                  {accessible ? (
+                    button
+                  ) : (
+                    <Tooltip title={requiredRolesLabel(item.requiredRoles)} placement="right">
+                      <Box component="span" sx={{ width: '100%' }}>
+                        {button}
+                      </Box>
+                    </Tooltip>
+                  )}
                 </ListItem>
-                {hasSubItems && (
+                {accessible && hasSubItems && (
                   <Collapse in={isExpanded} timeout="auto" unmountOnExit>
                     <List component="div" disablePadding>
                       {item.subItems!.map((sub) => {
