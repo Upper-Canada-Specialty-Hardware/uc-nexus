@@ -9,8 +9,14 @@ from app.models.enums import HardwareItemState
 from app.models.hardware import HardwareItem
 from app.models.project import Opening, Project
 from app.models.vendor import Vendor
-from app.repositories import po_repository
+from app.repositories import buyer_repository, po_repository
 from app.schemas import mutations
+
+
+def _assign_buyer(session, buyer_id, project, cost_codes=("210-200",)):
+    """Issue #216: _prepare_create_po/_prepare_register_po enforce buyer->project/cost-code
+    assignments for project POs, so tests exercising them must seed one."""
+    return buyer_repository.save_assignment(session, buyer_id, [project.id], list(cost_codes))
 
 
 def _make_vendor(session, name: str = "Acme") -> Vendor:
@@ -85,6 +91,7 @@ def test_prepare_create_po_attaches_manufacturer_per_line(monkeypatch, db_sessio
     project = _make_project(db_session)
     _add_hardware_item(db_session, project, hardware_category="HINGE", product_code="HG-100", manufacturer="SCHLAGE")
     _add_hardware_item(db_session, project, hardware_category="LOCK", product_code="LK-200", manufacturer="SARGENT")
+    _assign_buyer(db_session, "mira", project)
     _use_test_session(monkeypatch, db_session)
 
     payload = mutations._prepare_create_po(
@@ -104,6 +111,7 @@ def test_prepare_create_po_leaves_manufacturer_blank_without_a_hardware_match(mo
     project = _make_project(db_session)
     # a hardware item exists, but not for this line's category + code
     _add_hardware_item(db_session, project, hardware_category="HINGE", product_code="HG-100", manufacturer="SCHLAGE")
+    _assign_buyer(db_session, "mira", project)
     _use_test_session(monkeypatch, db_session)
 
     payload = mutations._prepare_create_po(
@@ -147,6 +155,7 @@ def test_prepare_create_po_disagreeing_items_take_first_non_null_and_log(monkeyp
         manufacturer="SARGENT",
         created_at=datetime(2026, 1, 1, 0, 0, 2),
     )
+    _assign_buyer(db_session, "mira", project)
     _use_test_session(monkeypatch, db_session)
 
     with caplog.at_level(logging.WARNING):

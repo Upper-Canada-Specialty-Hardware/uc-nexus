@@ -13,11 +13,12 @@ import {
   Checkbox,
   Avatar,
   Stack,
+  TextField,
 } from '@mui/material';
 import { DataGrid, type GridColDef, type GridRowParams } from '@mui/x-data-grid';
 import { useQuery, useMutation } from '@apollo/client/react';
 import { GET_USERS } from '../../graphql/queries';
-import { UPDATE_USER_ROLES } from '../../graphql/mutations';
+import { UPDATE_USER_GP_BUYER_ID, UPDATE_USER_ROLES } from '../../graphql/mutations';
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
 
@@ -37,6 +38,8 @@ interface ClerkUser {
   lastName: string;
   email: string;
   roles: string[];
+  // Issue #216: the GP BUYERID this account acts as when creating POs, or null.
+  gpBuyerId: string | null;
   imageUrl: string;
 }
 
@@ -71,6 +74,12 @@ const columns: GridColDef[] = [
     valueGetter: (_value: unknown, row: ClerkUser) =>
       row.roles.length > 0 ? row.roles.join(', ') : 'No roles',
   },
+  {
+    field: 'gpBuyerId',
+    headerName: 'GP Buyer',
+    width: 120,
+    valueGetter: (_value: unknown, row: ClerkUser) => row.gpBuyerId || '—',
+  },
 ];
 
 export default function UserManagementPage() {
@@ -78,22 +87,21 @@ export default function UserManagementPage() {
   const { showToast } = useToast();
   const [selectedUser, setSelectedUser] = useState<ClerkUser | null>(null);
   const [editRoles, setEditRoles] = useState<string[]>([]);
+  const [editGpBuyerId, setEditGpBuyerId] = useState('');
+  const [saving, setSaving] = useState(false);
 
   const { data, loading } = useQuery<{ users: ClerkUser[] }>(GET_USERS);
   const users = useMemo(() => data?.users ?? [], [data]);
 
-  const [updateRoles, { loading: saving }] = useMutation(UPDATE_USER_ROLES, {
+  const [updateRoles] = useMutation(UPDATE_USER_ROLES);
+  const [updateGpBuyerId] = useMutation(UPDATE_USER_GP_BUYER_ID, {
     refetchQueries: [{ query: GET_USERS }],
-    onCompleted: () => {
-      showToast('Roles updated successfully', 'success');
-      setSelectedUser(null);
-    },
-    onError: (err) => showToast(err.message, 'error'),
   });
 
   const handleRowClick = useCallback((params: GridRowParams<ClerkUser>) => {
     setSelectedUser(params.row);
     setEditRoles(params.row.roles);
+    setEditGpBuyerId(params.row.gpBuyerId ?? '');
   }, []);
 
   const handleToggleRole = useCallback((role: string) => {
@@ -102,10 +110,20 @@ export default function UserManagementPage() {
     );
   }, []);
 
-  const handleSave = useCallback(() => {
+  const handleSave = useCallback(async () => {
     if (!selectedUser) return;
-    updateRoles({ variables: { userId: selectedUser.id, roles: editRoles } });
-  }, [selectedUser, editRoles, updateRoles]);
+    setSaving(true);
+    try {
+      await updateRoles({ variables: { userId: selectedUser.id, roles: editRoles } });
+      await updateGpBuyerId({ variables: { userId: selectedUser.id, gpBuyerId: editGpBuyerId.trim() || null } });
+      showToast('User updated successfully', 'success');
+      setSelectedUser(null);
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : 'Failed to update user', 'error');
+    } finally {
+      setSaving(false);
+    }
+  }, [selectedUser, editRoles, editGpBuyerId, updateRoles, updateGpBuyerId, showToast]);
 
   if (!isAdmin) {
     return (
@@ -121,7 +139,7 @@ export default function UserManagementPage() {
         User Management
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Click a user to manage their roles.
+        Click a user to manage their roles and GP buyer identity.
       </Typography>
 
       <DataGrid
@@ -143,7 +161,7 @@ export default function UserManagementPage() {
         fullWidth
       >
         <DialogTitle>
-          Edit Roles: {selectedUser ? [selectedUser.firstName, selectedUser.lastName].filter(Boolean).join(' ') || selectedUser.email : ''}
+          Edit User: {selectedUser ? [selectedUser.firstName, selectedUser.lastName].filter(Boolean).join(' ') || selectedUser.email : ''}
         </DialogTitle>
         <DialogContent>
           <Stack direction="row" spacing={2} alignItems="center" sx={{ mb: 2 }}>
@@ -177,6 +195,14 @@ export default function UserManagementPage() {
               />
             ))}
           </FormGroup>
+          <TextField
+            label="GP Buyer ID"
+            value={editGpBuyerId}
+            onChange={(e) => setEditGpBuyerId(e.target.value)}
+            size="small"
+            sx={{ mt: 2, width: 240 }}
+            helperText="The GP BUYERID this account creates POs as (issue #216). Blank = cannot create POs."
+          />
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setSelectedUser(null)}>Cancel</Button>

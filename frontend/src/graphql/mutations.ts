@@ -578,8 +578,43 @@ export const UPDATE_USER_ROLES = gql`
       lastName
       email
       roles
+      gpBuyerId
       imageUrl
     }
+  }
+`;
+
+export const UPDATE_USER_GP_BUYER_ID = gql`
+  mutation UpdateUserGpBuyerId($userId: String!, $gpBuyerId: String) {
+    updateUserGpBuyerId(userId: $userId, gpBuyerId: $gpBuyerId) {
+      id
+      firstName
+      lastName
+      email
+      roles
+      gpBuyerId
+      imageUrl
+    }
+  }
+`;
+
+export const SAVE_BUYER_ASSIGNMENT = gql`
+  mutation SaveBuyerAssignment($buyerId: String!, $projectIds: [ID!]!, $costCodes: [String!]!) {
+    saveBuyerAssignment(buyerId: $buyerId, projectIds: $projectIds, costCodes: $costCodes) {
+      buyerId
+      costCodes
+      projects {
+        id
+        projectId
+        description
+      }
+    }
+  }
+`;
+
+export const DELETE_BUYER_ASSIGNMENT = gql`
+  mutation DeleteBuyerAssignment($buyerId: String!) {
+    deleteBuyerAssignment(buyerId: $buyerId)
   }
 `;
 
