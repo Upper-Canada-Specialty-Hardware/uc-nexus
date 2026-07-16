@@ -624,6 +624,8 @@ class ProductCodeNode:
     product_code: str
     items: list[InventoryLocation]
     total_quantity: int
+    # Issue #229: net of deficient units (quantity - deficient_quantity) - the approve gate's basis.
+    total_available_quantity: int
     total_value: float
 
 
@@ -632,6 +634,7 @@ class InventoryHierarchyNode:
     hardware_category: str
     product_codes: list[ProductCodeNode]
     total_quantity: int
+    total_available_quantity: int
     total_value: float
 
 
