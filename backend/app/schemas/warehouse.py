@@ -90,9 +90,12 @@ def _persist_create_receive(*, key, po_id, received_by, line_items_data, warehou
         receive_record = warehouse_repository.create_receive(
             session, po_id, received_by, line_items_data, warehouse_id=warehouse_id
         )
-        gp_idempotency.stamp_result_id(session, key, "create_receive", relay_result, str(receive_record.id))
+        # Capture the id before commit: expire_on_commit would make receive_record.id raise
+        # DetachedInstanceError once the session block closes.
+        receive_id = receive_record.id
+        gp_idempotency.stamp_result_id(session, key, "create_receive", relay_result, str(receive_id))
         session.commit()
-    return _load_receive_type(receive_record.id)
+    return _load_receive_type(receive_id)
 
 
 @strawberry.type
