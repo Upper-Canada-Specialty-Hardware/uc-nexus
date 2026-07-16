@@ -106,9 +106,14 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
 
   // Action step state
   const [selectedVendors, setSelectedVendors] = useState<Set<string>>(new Set());
-  const [vendorPOInfo, setVendorPOInfo] = useState<Map<string, { vendorId: string | null; notes: string }>>(new Map());
+  const [vendorPOInfo, setVendorPOInfo] = useState<
+    Map<string, { vendorId: string | null; notes: string; preferredDeliveryDate: string }>
+  >(new Map());
   const [unitCostOverrides, setUnitCostOverrides] = useState<Map<string, number>>(new Map());
   const [classifications, setClassifications] = useState<Map<string, string>>(new Map());
+  // Issue #216: PO-purpose second axis (SITE_HARDWARE/SHOP_HARDWARE), set by the PM at request
+  // creation. Same classificationKey keying as `classifications` (which holds scope for PO purpose).
+  const [siteShopClassifications, setSiteShopClassifications] = useState<Map<string, string>>(new Map());
   const [orderAsValues, setOrderAsValues] = useState<Map<string, string>>(new Map());
   const [sarRequestNumber, setSarRequestNumber] = useState('');
   const [shippingPRDrafts, setShippingPRDrafts] = useState<ShippingPRDraft[]>([]);
@@ -331,9 +336,10 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
         itemQuantity: hi.item_quantity,
         classificationKey: ck,
         classification: classifications.get(ck) ?? '',
+        siteShop: siteShopClassifications.get(ck) ?? '',
       };
     });
-  }, [aggregatedHardwareItems, classifications]);
+  }, [aggregatedHardwareItems, classifications, siteShopClassifications]);
 
   // Items grouped by vendor for auto PO segregation (excludes BY_OTHERS items)
   const vendorGroups = useMemo(() => {
@@ -398,6 +404,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
     setUnitCostOverrides(new Map());
     setOrderAsValues(new Map());
     setClassifications(new Map());
+    setSiteShopClassifications(new Map());
     setSarRequestNumber('');
     setShippingPRDrafts([]);
     setSelectedReconItems(new Set());
@@ -472,14 +479,14 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
 
   // Manufacturer-group PO info
   const updateVendorPO = useCallback(
-    (manufacturerKey: string, field: 'vendorId' | 'notes', value: string | null) => {
+    (manufacturerKey: string, field: 'vendorId' | 'notes' | 'preferredDeliveryDate', value: string | null) => {
       setVendorPOInfo((prev) => {
         const next = new Map(prev);
-        const existing = next.get(manufacturerKey) ?? { vendorId: null, notes: '' };
+        const existing = next.get(manufacturerKey) ?? { vendorId: null, notes: '', preferredDeliveryDate: '' };
         if (field === 'vendorId') {
           next.set(manufacturerKey, { ...existing, vendorId: value });
         } else {
-          next.set(manufacturerKey, { ...existing, notes: value ?? '' });
+          next.set(manufacturerKey, { ...existing, [field]: value ?? '' });
         }
         return next;
       });
@@ -499,6 +506,15 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
   // Classification (batch-capable)
   const classifyBatch = useCallback((keys: string[], value: string) => {
     setClassifications((prev) => {
+      const next = new Map(prev);
+      for (const key of keys) next.set(key, value);
+      return next;
+    });
+  }, []);
+
+  // Issue #216: PO-purpose Site/Shop axis (batch-capable)
+  const classifySiteShopBatch = useCallback((keys: string[], value: string) => {
+    setSiteShopClassifications((prev) => {
       const next = new Map(prev);
       for (const key of keys) next.set(key, value);
       return next;
@@ -646,7 +662,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
               // Filter out BY_OTHERS items from this vendor's PO draft
               const inScopeItems = items.filter((hi) => !isByOthers(hi));
               if (inScopeItems.length === 0) return null;
-              const info = vendorPOInfo.get(vendor) ?? { vendorId: null, notes: '' };
+              const info = vendorPOInfo.get(vendor) ?? { vendorId: null, notes: '', preferredDeliveryDate: '' };
               // Collect aliases for this manufacturer group's aggregated line items
               const seenKeys = new Set<string>();
               const lineItemAliases: Array<{ hardwareCategory: string; productCode: string; orderAs: string }> = [];
@@ -668,6 +684,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
                 poNumber: null,
                 vendorId: info.vendorId,
                 notes: info.notes || null,
+                preferredDeliveryDate: info.preferredDeliveryDate || null,
                 hardwareItemRefs: inScopeItems.map((hi) => ({
                   openingNumber: hi.opening_number,
                   productCode: hi.product_code,
@@ -684,7 +701,16 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
             const [hardwareCategory, productCode, unitCost] = key.split('|');
             return { hardwareCategory, productCode, unitCost: parseFloat(unitCost), classification: cls };
           })
-        : null,
+        : purpose === 'po'
+          // Issue #216: the PM's Site/Shop picks from the Classification step's second axis.
+          // By-Others items are out of scope and carry none.
+          ? Array.from(siteShopClassifications.entries())
+              .filter(([key, cls]) => cls !== '' && !byOthersKeys.has(key))
+              .map(([key, cls]) => {
+                const [hardwareCategory, productCode, unitCost] = key.split('|');
+                return { hardwareCategory, productCode, unitCost: parseFloat(unitCost), classification: cls };
+              })
+          : null,
       shippingOutPrDrafts: purpose === 'shipping'
         ? shippingPRDrafts.map((pr) => ({
             requestNumber: pr.requestNumber,
@@ -738,7 +764,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
             .filter(Boolean)
         : null,
     };
-  }, [parsed, project.id, selectedOpenings, purpose, vendorGroups, vendorPOInfo, selectedVendors, unitCostOverrides, orderAsValues, classifications, shippingPRDrafts, sarRequestNumber, canStartFromLatest, hydratedFromPersisted]);
+  }, [parsed, project.id, selectedOpenings, purpose, vendorGroups, vendorPOInfo, selectedVendors, unitCostOverrides, orderAsValues, classifications, siteShopClassifications, shippingPRDrafts, sarRequestNumber, canStartFromLatest, hydratedFromPersisted]);
 
   const handleFinalize = useCallback(async () => {
     setConfirmOpen(false);
@@ -1107,6 +1133,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
             <ClassificationStep
               classificationRows={classificationRows}
               onClassify={classifyBatch}
+              onClassifySiteShop={classifySiteShopBatch}
               purpose={purpose!}
               itemCount={aggregatedHardwareItems.length}
               openingCount={selectedOpenings.size}

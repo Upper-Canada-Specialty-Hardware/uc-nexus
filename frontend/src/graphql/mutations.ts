@@ -1,8 +1,8 @@
 import { gql } from '@apollo/client/core';
 
 export const UPDATE_PO = gql`
-  mutation UpdatePO($id: ID!, $vendorId: ID, $expectedDeliveryDate: Date, $poNumber: String, $vendorQuoteNumber: String, $notes: String, $shippingCost: Float, $tariffAmount: Float) {
-    updatePo(id: $id, vendorId: $vendorId, expectedDeliveryDate: $expectedDeliveryDate, poNumber: $poNumber, vendorQuoteNumber: $vendorQuoteNumber, notes: $notes, shippingCost: $shippingCost, tariffAmount: $tariffAmount) {
+  mutation UpdatePO($id: ID!, $vendorId: ID, $expectedDeliveryDate: Date, $preferredDeliveryDate: Date, $poNumber: String, $vendorQuoteNumber: String, $notes: String, $shippingCost: Float, $tariffAmount: Float) {
+    updatePo(id: $id, vendorId: $vendorId, expectedDeliveryDate: $expectedDeliveryDate, preferredDeliveryDate: $preferredDeliveryDate, poNumber: $poNumber, vendorQuoteNumber: $vendorQuoteNumber, notes: $notes, shippingCost: $shippingCost, tariffAmount: $tariffAmount) {
       id
       poNumber
       requestNumber
@@ -20,6 +20,7 @@ export const UPDATE_PO = gql`
       shippingCost
       tariffAmount
       notes
+      preferredDeliveryDate
       expectedDeliveryDate
       orderedAt
       updatedAt

@@ -129,7 +129,11 @@ function GenerateForm({ po, settings, buyers, gpTotals, projectNumber, onClose, 
   const [shipTo, setShipTo] = useState(dd?.shipTo ?? '');
   const [shippingMethod, setShippingMethod] = useState(dd?.shippingMethod ?? '');
   const [proposalNumber, setProposalNumber] = useState(dd?.proposalNumber ?? '');
-  const [requiredBy, setRequiredBy] = useState(dd?.requiredByOverride ?? po.expectedDeliveryDate ?? '');
+  // Required-by: saved override, else the vendor's expected date, else the PM's preferred date
+  // (issue #216 - pre-send, expected doesn't exist yet, so the doc asks for the preferred date).
+  const [requiredBy, setRequiredBy] = useState(
+    dd?.requiredByOverride ?? po.expectedDeliveryDate ?? po.preferredDeliveryDate ?? '',
+  );
   // Totals: saved override if this PO was generated before, else the PO's own order-time value
   // (issue #156), else the GP-read values, else 0.
   const [freight, setFreight] = useState(String(dd?.freight ?? po.shippingCost ?? gpTotals?.freight ?? 0));

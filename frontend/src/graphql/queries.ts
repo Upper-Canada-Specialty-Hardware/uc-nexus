@@ -89,6 +89,7 @@ export const GET_PURCHASE_ORDERS = gql`
       shippingCost
       tariffAmount
       notes
+      preferredDeliveryDate
       expectedDeliveryDate
       orderedAt
       createdAt

@@ -325,6 +325,7 @@ class PurchaseOrder:
     shipping_cost: float | None
     tariff_amount: float | None
     notes: str | None
+    preferred_delivery_date: date | None
     expected_delivery_date: date | None
     ordered_at: datetime | None
     created_at: datetime

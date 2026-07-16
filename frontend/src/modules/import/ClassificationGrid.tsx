@@ -36,6 +36,8 @@ export interface ClassificationRow {
   itemQuantity: number;
   classificationKey: string;
   classification: string;
+  // Issue #216: second axis (Site/Shop) for PO-purpose imports; '' = not yet classified.
+  siteShop?: string;
 }
 
 export type GroupByField = 'hardwareCategory' | 'vendorNo' | 'productCode' | 'openingNumber'
@@ -57,12 +59,28 @@ interface ClassificationGridProps {
   options: ClassificationOption[];
   onClassify: (classificationKeys: string[], value: string) => void;
   readOnly?: boolean;
+  // Issue #216: optional second axis (Site/Shop). Rows whose primary classification equals
+  // siteShopExemptValue (By Others) don't need it and render an em-dash.
+  siteShopOptions?: ClassificationOption[];
+  onClassifySiteShop?: (classificationKeys: string[], value: string) => void;
+  siteShopExemptValue?: string;
 }
 
 interface GroupNode {
   label: string;
   rows: ClassificationRow[];
   children: Map<string, GroupNode> | null;
+}
+
+// Issue #216: the optional Site/Shop axis, bundled so it threads through the group tree in one prop.
+interface SiteShopAxis {
+  options: ClassificationOption[];
+  onClassify: (classificationKeys: string[], value: string) => void;
+  exemptValue?: string;
+}
+
+function siteShopEligibleKeys(rows: ClassificationRow[], exemptValue?: string): string[] {
+  return uniqueClassificationKeys(rows.filter((r) => !exemptValue || r.classification !== exemptValue));
 }
 
 function formatGroupKey(field: GroupByField, value: unknown): string {
@@ -146,9 +164,10 @@ interface LeafGridProps {
   options: ClassificationOption[];
   onClassify: ClassificationGridProps['onClassify'];
   readOnly?: boolean;
+  siteShop?: SiteShopAxis;
 }
 
-function LeafGrid({ rows, columns, options, onClassify, readOnly }: LeafGridProps) {
+function LeafGrid({ rows, columns, options, onClassify, readOnly, siteShop }: LeafGridProps) {
   const [selectionModel, setSelectionModel] = useState<GridRowSelectionModel>({
     type: 'include',
     ids: new Set(),
@@ -163,6 +182,16 @@ function LeafGrid({ rows, columns, options, onClassify, readOnly }: LeafGridProp
       setSelectionModel({ type: 'include', ids: new Set() });
     },
     [selectionModel, rows, onClassify],
+  );
+
+  const handleBulkSiteShop = useCallback(
+    (value: string) => {
+      if (!siteShop) return;
+      const selectedRows = rows.filter((r) => selectionModel.ids.has(r.id));
+      siteShop.onClassify(siteShopEligibleKeys(selectedRows, siteShop.exemptValue), value);
+      setSelectionModel({ type: 'include', ids: new Set() });
+    },
+    [selectionModel, rows, siteShop],
   );
 
   return (
@@ -187,10 +216,15 @@ function LeafGrid({ rows, columns, options, onClassify, readOnly }: LeafGridProp
       slots={{
         toolbar: !readOnly && selectedCount > 0
           ? () => (
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 1, py: 0.5 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 1, py: 0.5, flexWrap: 'wrap' }}>
                 <Typography variant="body2">{selectedCount} selected</Typography>
                 {options.map((opt) => (
                   <Button key={opt.value} size="small" color={opt.color} onClick={() => handleBulkClassify(opt.value)}>
+                    Classify as {opt.label}
+                  </Button>
+                ))}
+                {siteShop?.options.map((opt) => (
+                  <Button key={opt.value} size="small" color={opt.color} onClick={() => handleBulkSiteShop(opt.value)}>
                     Classify as {opt.label}
                   </Button>
                 ))}
@@ -209,9 +243,10 @@ interface GroupAccordionProps {
   onClassify: ClassificationGridProps['onClassify'];
   readOnly?: boolean;
   depth: number;
+  siteShop?: SiteShopAxis;
 }
 
-function GroupAccordion({ node, columns, options, onClassify, readOnly, depth }: GroupAccordionProps) {
+function GroupAccordion({ node, columns, options, onClassify, readOnly, depth, siteShop }: GroupAccordionProps) {
   const { labelMap, colorMap } = useMemo(() => buildOptionLookups(options), [options]);
 
   const classifiedCount = node.rows.filter((r) => r.classification !== '').length;
@@ -224,6 +259,15 @@ function GroupAccordion({ node, columns, options, onClassify, readOnly, depth }:
       onClassify(uniqueClassificationKeys(node.rows), value);
     },
     [node.rows, onClassify],
+  );
+
+  const handleGroupAllSiteShop = useCallback(
+    (value: string, e: React.MouseEvent) => {
+      e.stopPropagation();
+      if (!siteShop) return;
+      siteShop.onClassify(siteShopEligibleKeys(node.rows, siteShop.exemptValue), value);
+    },
+    [node.rows, siteShop],
   );
 
   const singleValue = allSameClassification ? [...uniqueClassifications][0] : null;
@@ -254,7 +298,7 @@ function GroupAccordion({ node, columns, options, onClassify, readOnly, depth }:
             ({node.rows.length} items)
           </Typography>
           {!readOnly && (
-            <Box sx={{ ml: 'auto', display: 'flex', gap: 0.5 }}>
+            <Box sx={{ ml: 'auto', display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
               {options.map((opt) => (
                 <Button
                   key={opt.value}
@@ -262,6 +306,17 @@ function GroupAccordion({ node, columns, options, onClassify, readOnly, depth }:
                   variant="outlined"
                   color={opt.color}
                   onClick={(e) => handleGroupAll(opt.value, e)}
+                >
+                  {opt.label} All
+                </Button>
+              ))}
+              {siteShop?.options.map((opt) => (
+                <Button
+                  key={opt.value}
+                  size="small"
+                  variant="outlined"
+                  color={opt.color}
+                  onClick={(e) => handleGroupAllSiteShop(opt.value, e)}
                 >
                   {opt.label} All
                 </Button>
@@ -281,18 +336,42 @@ function GroupAccordion({ node, columns, options, onClassify, readOnly, depth }:
               onClassify={onClassify}
               readOnly={readOnly}
               depth={depth + 1}
+              siteShop={siteShop}
             />
           ))
         ) : (
-          <LeafGrid rows={node.rows} columns={columns} options={options} onClassify={onClassify} readOnly={readOnly} />
+          <LeafGrid
+            rows={node.rows}
+            columns={columns}
+            options={options}
+            onClassify={onClassify}
+            readOnly={readOnly}
+            siteShop={siteShop}
+          />
         )}
       </AccordionDetails>
     </Accordion>
   );
 }
 
-export default function ClassificationGrid({ rows, options, onClassify, readOnly }: ClassificationGridProps) {
+export default function ClassificationGrid({
+  rows,
+  options,
+  onClassify,
+  readOnly,
+  siteShopOptions,
+  onClassifySiteShop,
+  siteShopExemptValue,
+}: ClassificationGridProps) {
   const { labelMap, colorMap } = useMemo(() => buildOptionLookups(options), [options]);
+
+  const siteShop = useMemo<SiteShopAxis | undefined>(
+    () =>
+      siteShopOptions && onClassifySiteShop
+        ? { options: siteShopOptions, onClassify: onClassifySiteShop, exemptValue: siteShopExemptValue }
+        : undefined,
+    [siteShopOptions, onClassifySiteShop, siteShopExemptValue],
+  );
 
   const [groupByFields, setGroupByFields] = useState<GroupByField[]>([]);
 
@@ -321,7 +400,40 @@ export default function ClassificationGrid({ rows, options, onClassify, readOnly
   const columns: GridColDef[] = useMemo(() => {
     const hiddenFields = new Set(groupByFields);
     const visible = ALL_COLUMNS.filter((col) => !hiddenFields.has(col.field as GroupByField));
-    return [
+    const toggleCell = (
+      value: string,
+      cellOptions: ClassificationOption[],
+      onChange: (newValue: string) => void,
+    ) => (
+      <ToggleButtonGroup
+        size="small"
+        exclusive
+        value={value || null}
+        onChange={(_, newValue) => {
+          if (newValue !== null) onChange(newValue);
+        }}
+        sx={{ height: 28 }}
+      >
+        {cellOptions.map((opt) => (
+          <ToggleButton
+            key={opt.value}
+            value={opt.value}
+            sx={{
+              px: 1, fontSize: '0.75rem',
+              '&.Mui-selected': {
+                backgroundColor: `${opt.color}.main`,
+                color: `${opt.color}.contrastText`,
+                '&:hover': { backgroundColor: `${opt.color}.dark` },
+              },
+            }}
+          >
+            {opt.label}
+          </ToggleButton>
+        ))}
+      </ToggleButtonGroup>
+    );
+
+    const cols: GridColDef[] = [
       ...visible,
       {
         field: 'classification',
@@ -341,40 +453,38 @@ export default function ClassificationGrid({ rows, options, onClassify, readOnly
               />
             );
           }
-          return (
-            <ToggleButtonGroup
-              size="small"
-              exclusive
-              value={value || null}
-              onChange={(_, newValue) => {
-                if (newValue !== null) {
-                  onClassify([params.row.classificationKey], newValue);
-                }
-              }}
-              sx={{ height: 28 }}
-            >
-              {options.map((opt) => (
-                <ToggleButton
-                  key={opt.value}
-                  value={opt.value}
-                  sx={{
-                    px: 1, fontSize: '0.75rem',
-                    '&.Mui-selected': {
-                      backgroundColor: `${opt.color}.main`,
-                      color: `${opt.color}.contrastText`,
-                      '&:hover': { backgroundColor: `${opt.color}.dark` },
-                    },
-                  }}
-                >
-                  {opt.label}
-                </ToggleButton>
-              ))}
-            </ToggleButtonGroup>
-          );
+          return toggleCell(value, options, (newValue) => onClassify([params.row.classificationKey], newValue));
         },
       },
     ];
-  }, [groupByFields, onClassify, readOnly, options, labelMap, colorMap]);
+
+    if (siteShop) {
+      cols.push({
+        field: 'siteShop',
+        headerName: 'Site/Shop',
+        flex: 0.8,
+        minWidth: 120,
+        sortable: false,
+        renderCell: (params: GridRenderCellParams) => {
+          // A By-Others item is out of scope, so it carries no site/shop classification.
+          if (siteShop.exemptValue && params.row.classification === siteShop.exemptValue) {
+            return <Chip size="small" label="—" />;
+          }
+          const value = params.row.siteShop ?? '';
+          if (readOnly) {
+            if (!value) return <Chip size="small" label="—" />;
+            const opt = siteShop.options.find((o) => o.value === value);
+            return <Chip size="small" label={opt?.label ?? value} color={opt?.color ?? 'default'} />;
+          }
+          return toggleCell(value, siteShop.options, (newValue) =>
+            siteShop.onClassify([params.row.classificationKey], newValue),
+          );
+        },
+      });
+    }
+
+    return cols;
+  }, [groupByFields, onClassify, readOnly, options, labelMap, colorMap, siteShop]);
 
   return (
     <Box>
@@ -424,10 +534,18 @@ export default function ClassificationGrid({ rows, options, onClassify, readOnly
             onClassify={onClassify}
             readOnly={readOnly}
             depth={0}
+            siteShop={siteShop}
           />
         ))
       ) : (
-        <LeafGrid rows={rows} columns={columns} options={options} onClassify={onClassify} readOnly={readOnly} />
+        <LeafGrid
+          rows={rows}
+          columns={columns}
+          options={options}
+          onClassify={onClassify}
+          readOnly={readOnly}
+          siteShop={siteShop}
+        />
       )}
     </Box>
   );

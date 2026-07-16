@@ -74,6 +74,10 @@ class PurchaseOrder(Base):
     # dialog), editable on the PO afterward. Null means "not entered"; 0 is a valid entered value.
     shipping_cost: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     tariff_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    # Issue #216: the PM's requested date, captured at PO-request creation (import wizard) and
+    # editable only while DRAFT. expected_delivery_date is the vendor's answer - it can only be
+    # entered after the PO is GP-Registered (and before receiving starts).
+    preferred_delivery_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     expected_delivery_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     ordered_at: Mapped[datetime | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)

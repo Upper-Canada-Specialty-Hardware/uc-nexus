@@ -258,6 +258,35 @@ def test_create_po_rejects_when_any_line_item_missing_order_as(db_session):
     assert exc.value.field == "order_as"
 
 
+# --- issue #216: status-gated delivery dates ------------------------------------------------------
+
+
+def test_update_po_preferred_date_only_on_draft(db_session):
+    from datetime import date as date_cls
+
+    from app.errors import InvalidStateTransitionError
+    from app.models.enums import POStatus
+
+    vendor = _make_vendor(db_session)
+    po = po_repository.create_po(db_session, line_items=[_line_item("ML2010")], vendor_id=vendor.id)
+    db_session.flush()
+
+    po_repository.update_po(db_session, po.id, preferred_delivery_date=date_cls(2026, 8, 1))
+    assert po.preferred_delivery_date == date_cls(2026, 8, 1)
+
+    # Expected is rejected while DRAFT
+    with pytest.raises(InvalidStateTransitionError):
+        po_repository.update_po(db_session, po.id, expected_delivery_date=date_cls(2026, 8, 15))
+
+    # After GP registration, expected is allowed and preferred is locked
+    po.status = POStatus.GP_REGISTERED
+    db_session.flush()
+    po_repository.update_po(db_session, po.id, expected_delivery_date=date_cls(2026, 8, 15))
+    assert po.expected_delivery_date == date_cls(2026, 8, 15)
+    with pytest.raises(InvalidStateTransitionError):
+        po_repository.update_po(db_session, po.id, preferred_delivery_date=date_cls(2026, 8, 2))
+
+
 # --- issue #156: optional order-time shipping cost + tariff -------------------------------------
 
 
