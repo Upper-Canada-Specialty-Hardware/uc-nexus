@@ -6,7 +6,7 @@ import AssignmentIcon from '@mui/icons-material/Assignment';
 import DownloadDoneIcon from '@mui/icons-material/DownloadDone';
 import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import { useQuery } from '@apollo/client/react';
-import { GET_WAREHOUSE_DASHBOARD } from '../../graphql/queries';
+import { GET_WAREHOUSE_DASHBOARD } from '../../graphql/warehouse';
 import { StatCard, StatCardSkeleton } from '../../components/StatCard';
 
 interface DashboardData {

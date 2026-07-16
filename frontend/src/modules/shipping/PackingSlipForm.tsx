@@ -9,7 +9,7 @@ import { useIdentity } from '../../hooks/useIdentity';
 import { useCart, type CartItem } from '../../contexts/CartContext';
 import { useToast } from '../../components/Toast';
 import { useNavigate } from 'react-router-dom';
-import { CONFIRM_SHIPMENT } from '../../graphql/mutations';
+import { CONFIRM_SHIPMENT } from '../../graphql/shipping';
 import PackingSlipDocument from './PackingSlipDocument';
 
 interface PackingSlipFormProps {

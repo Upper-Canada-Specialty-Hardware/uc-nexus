@@ -15,17 +15,8 @@ import { useMutation, useQuery } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import LocationAutocomplete from '../../components/LocationAutocomplete';
 import { useToast } from '../../components/Toast';
-import { GET_WAREHOUSES } from '../../graphql/queries';
-import {
-  ADJUST_INVENTORY_QUANTITY,
-  MOVE_INVENTORY_LOCATION,
-  MARK_INVENTORY_UNLOCATED,
-  MOVE_OPENING_ITEM_LOCATION,
-  MARK_OPENING_ITEM_UNLOCATED,
-  MOVE_STOCK_LOCATION,
-  MARK_STOCK_ITEM_UNLOCATED,
-  ADJUST_STOCK_QUANTITY,
-} from '../../graphql/mutations';
+import { GET_WAREHOUSES, MOVE_INVENTORY_LOCATION, MARK_INVENTORY_UNLOCATED, MOVE_OPENING_ITEM_LOCATION, MARK_OPENING_ITEM_UNLOCATED } from '../../graphql/shared';
+import { ADJUST_INVENTORY_QUANTITY, MOVE_STOCK_LOCATION, MARK_STOCK_ITEM_UNLOCATED, ADJUST_STOCK_QUANTITY } from '../../graphql/warehouse';
 
 export type LocationActionTarget = {
   id: string;

@@ -16,8 +16,7 @@ import {
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import CancelIcon from '@mui/icons-material/Cancel';
 import { useMutation, useQuery } from '@apollo/client/react';
-import { APPROVE_PULL_REQUEST, COMPLETE_PULL_REQUEST } from '../../graphql/mutations';
-import { GET_INVENTORY_HIERARCHY } from '../../graphql/queries';
+import { APPROVE_PULL_REQUEST, COMPLETE_PULL_REQUEST, GET_INVENTORY_HIERARCHY } from '../../graphql/warehouse';
 import { useIdentity } from '../../hooks/useIdentity';
 import { useToast } from '../../components/Toast';
 import Modal from '../../components/Modal';

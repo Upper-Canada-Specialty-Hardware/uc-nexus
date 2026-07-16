@@ -2,7 +2,7 @@ import { useState, useMemo, useCallback } from 'react';
 import { Alert, Box, Chip, Typography } from '@mui/material';
 import { DataGrid, type GridColDef, type GridRowParams } from '@mui/x-data-grid';
 import { useQuery } from '@apollo/client/react';
-import { GET_ADMIN_PROJECTS } from '../../graphql/queries';
+import { GET_ADMIN_PROJECTS } from '../../graphql/admin';
 import { useIdentity } from '../../hooks/useIdentity';
 import ProjectEditDialog, { type ProjectFormValue } from './ProjectEditDialog';
 

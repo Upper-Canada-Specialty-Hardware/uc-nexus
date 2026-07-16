@@ -3,7 +3,7 @@ import { Box, Button, Checkbox, FormControlLabel, InputAdornment, Paper, TextFie
 import { useQuery } from '@apollo/client/react';
 import VendorSelect from '../../components/VendorSelect';
 import OrderAsAutocomplete from '../../components/OrderAsAutocomplete';
-import { GET_PRIOR_ORDER_AS_VALUES } from '../../graphql/queries';
+import { GET_PRIOR_ORDER_AS_VALUES } from '../../graphql/shared';
 import type { AggregatedHardwareItem } from './types';
 
 // ---- Aggregation Types ----

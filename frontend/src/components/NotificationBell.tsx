@@ -12,8 +12,7 @@ import {
 } from '@mui/material';
 import NotificationsIcon from '@mui/icons-material/Notifications';
 import { useQuery, useMutation } from '@apollo/client/react';
-import { GET_NOTIFICATIONS } from '../graphql/queries';
-import { MARK_NOTIFICATION_AS_READ } from '../graphql/mutations';
+import { GET_NOTIFICATIONS, MARK_NOTIFICATION_AS_READ } from '../graphql/shared';
 
 interface Notification {
   id: string;

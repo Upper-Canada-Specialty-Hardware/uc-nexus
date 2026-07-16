@@ -13,7 +13,7 @@ import {
   Checkbox,
 } from '@mui/material';
 import { useMutation } from '@apollo/client/react';
-import { COMPLETE_OPENING } from '../../graphql/mutations';
+import { COMPLETE_OPENING } from '../../graphql/shop-assembly';
 import Modal from '../../components/Modal';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import { useToast } from '../../components/Toast';

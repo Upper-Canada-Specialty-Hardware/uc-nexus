@@ -14,7 +14,7 @@ import {
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useQuery } from '@apollo/client/react';
 import GavelIcon from '@mui/icons-material/Gavel';
-import { GET_DEFICIENT_ITEMS } from '../../graphql/queries';
+import { GET_DEFICIENT_ITEMS } from '../../graphql/warehouse';
 import ResolveDeficiencyModal, { type DeficientRow } from './stock/ResolveDeficiencyModal';
 
 type SourceFilter = 'ALL' | 'PROJECT_INVENTORY' | 'STOCK_POOL';

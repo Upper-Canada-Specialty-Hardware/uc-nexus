@@ -17,7 +17,7 @@ import {
 } from '@mui/material';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import { useQuery } from '@apollo/client/react';
-import { GET_OPENING_HARDWARE_STATUS } from '../../graphql/queries';
+import { GET_OPENING_HARDWARE_STATUS } from '../../graphql/admin';
 
 interface OpeningHardwareStatusItem {
   hardwareCategory: string;

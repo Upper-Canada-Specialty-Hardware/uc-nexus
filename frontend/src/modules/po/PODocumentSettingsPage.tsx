@@ -3,8 +3,7 @@ import {
   Box, Typography, TextField, Button, Stack, Divider, Alert, CircularProgress,
 } from '@mui/material';
 import { useQuery, useMutation } from '@apollo/client/react';
-import { GET_PO_DOCUMENT_SETTINGS } from '../../graphql/queries';
-import { UPDATE_PO_DOCUMENT_SETTINGS } from '../../graphql/mutations';
+import { GET_PO_DOCUMENT_SETTINGS, UPDATE_PO_DOCUMENT_SETTINGS } from '../../graphql/po';
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
 import BackToModule from '../../components/BackToModule';
