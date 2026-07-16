@@ -50,19 +50,39 @@ def test_score_zero_for_empty_side():
 
 
 def test_rank_vendors_orders_best_first_and_caps():
+    # All three are token-subset matches (score 100 under token_set_ratio); ties break by name so
+    # the ordering is deterministic, and top_n caps the list.
     vendors = [
         {"vendor_id": "V1", "vendor_name": "Acme Inc"},
-        {"vendor_id": "V2", "vendor_name": "Schlage Lock Company"},
-        {"vendor_id": "V3", "vendor_name": "Best Access"},
+        {"vendor_id": "V2", "vendor_name": "Acme Hardware Group"},
+        {"vendor_id": "V3", "vendor_name": "Acme Hardware Group of Canada"},
     ]
     ranked = m.rank_vendors("ACME", vendors, top_n=2)
     assert len(ranked) == 2
-    assert ranked[0]["gp_vendor_id"] == "V1"
-    assert ranked[0]["score"] == 100.0
-    assert ranked[0]["score"] >= ranked[1]["score"]
+    assert ranked[0]["score"] >= ranked[1]["score"] >= m.MIN_SCORE
+    assert [c["gp_vendor_name"] for c in ranked] == sorted(c["gp_vendor_name"] for c in ranked)
 
 
 def test_rank_vendors_blank_manufacturer_returns_nothing():
     vendors = [{"vendor_id": "V1", "vendor_name": "Acme Inc"}]
     assert m.rank_vendors("", vendors) == []
     assert m.rank_vendors("   ", vendors) == []
+
+
+def test_rank_vendors_drops_weak_matches_below_the_floor():
+    # Issue #236: the 44%-style coincidental overlap must yield NO candidates, not a junk
+    # pre-select (seen on prod: ZZQX WIDGETWORKS INC -> BRIDGEPORT WORLDWIDE at 44).
+    vendors = [
+        {"vendor_id": "V1", "vendor_name": "Bridgeport Worldwide"},
+        {"vendor_id": "V2", "vendor_name": "Best Access"},
+    ]
+    assert m.rank_vendors("ZZQX WIDGETWORKS INC", vendors) == []
+
+
+def test_rank_vendors_keeps_genuine_partial_matches():
+    # token_set_ratio scores subset-token names at/near 100, so real partials survive the floor.
+    vendors = [{"vendor_id": "V1", "vendor_name": "Schlage Lock Company"}]
+    ranked = m.rank_vendors("SCHLAGE", vendors)
+    assert len(ranked) == 1
+    assert ranked[0]["gp_vendor_id"] == "V1"
+    assert ranked[0]["score"] >= m.MIN_SCORE
