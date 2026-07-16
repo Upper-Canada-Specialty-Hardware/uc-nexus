@@ -103,6 +103,9 @@ export default function PODetailModal({
   const [vendorQuoteNumber, setVendorQuoteNumber] = useState(po.vendorQuoteNumber ?? '');
   const [expectedDeliveryDate, setExpectedDeliveryDate] = useState(po.expectedDeliveryDate ?? '');
   const [notes, setNotes] = useState(po.notes ?? '');
+  // Issue #156: optional order-time dollar costs, kept as strings ('' = not entered, distinct from 0).
+  const [shippingCost, setShippingCost] = useState(po.shippingCost != null ? String(po.shippingCost) : '');
+  const [tariffAmount, setTariffAmount] = useState(po.tariffAmount != null ? String(po.tariffAmount) : '');
   const [vendorIdError, setVendorIdError] = useState('');
   const [poNumberError, setPoNumberError] = useState('');
   const [aliasEdits, setAliasEdits] = useState<Record<string, string>>({});
@@ -196,6 +199,8 @@ export default function PODetailModal({
     setVendorQuoteNumber(po.vendorQuoteNumber ?? '');
     setExpectedDeliveryDate(po.expectedDeliveryDate ?? '');
     setNotes(po.notes ?? '');
+    setShippingCost(po.shippingCost != null ? String(po.shippingCost) : '');
+    setTariffAmount(po.tariffAmount != null ? String(po.tariffAmount) : '');
     setVendorIdError('');
     setPoNumberError('');
     const initialAliases: Record<string, string> = {};
@@ -261,6 +266,9 @@ export default function PODetailModal({
         poNumber: poNumber || null,
         vendorQuoteNumber: vendorQuoteNumber || null,
         notes: notes || null,
+        // Issue #156: '' = not entered (null clears); 0 is a valid entered value.
+        shippingCost: shippingCost.trim() === '' ? null : parseFloat(shippingCost),
+        tariffAmount: tariffAmount.trim() === '' ? null : parseFloat(tariffAmount),
       },
     });
   };
@@ -573,6 +581,26 @@ export default function PODetailModal({
               size="small"
               slotProps={{ inputLabel: { shrink: true } }}
             />
+            <Stack direction="row" spacing={2}>
+              <TextField
+                label="Shipping Costs"
+                value={shippingCost}
+                onChange={(e) => setShippingCost(e.target.value)}
+                size="small"
+                type="number"
+                slotProps={{ htmlInput: { min: 0, step: 0.01 } }}
+                sx={{ width: 200 }}
+              />
+              <TextField
+                label="Tariffs"
+                value={tariffAmount}
+                onChange={(e) => setTariffAmount(e.target.value)}
+                size="small"
+                type="number"
+                slotProps={{ htmlInput: { min: 0, step: 0.01 } }}
+                sx={{ width: 200 }}
+              />
+            </Stack>
             <TextField
               label="Notes"
               value={notes}
@@ -590,6 +618,8 @@ export default function PODetailModal({
             <InfoRow label="Vendor" value={poVendorName(po) || '-'} />
             <InfoRow label="Vendor Contact" value={po.vendor?.contactName || '-'} />
             <InfoRow label="Vendor Quote #" value={po.vendorQuoteNumber || '-'} />
+            <InfoRow label="Shipping Costs" value={po.shippingCost != null ? `$${po.shippingCost.toFixed(2)}` : '-'} />
+            <InfoRow label="Tariffs" value={po.tariffAmount != null ? `$${po.tariffAmount.toFixed(2)}` : '-'} />
             <InfoRow label="Expected Delivery Date" value={formatDate(po.expectedDeliveryDate)} />
             <InfoRow label="Order Date" value={formatDate(po.orderedAt)} />
             {po.notes && (

@@ -130,11 +130,13 @@ function GenerateForm({ po, settings, buyers, gpTotals, projectNumber, onClose, 
   const [shippingMethod, setShippingMethod] = useState(dd?.shippingMethod ?? '');
   const [proposalNumber, setProposalNumber] = useState(dd?.proposalNumber ?? '');
   const [requiredBy, setRequiredBy] = useState(dd?.requiredByOverride ?? po.expectedDeliveryDate ?? '');
-  // Totals: saved override if this PO was generated before, else the GP-read values, else 0.
-  const [freight, setFreight] = useState(String(dd?.freight ?? gpTotals?.freight ?? 0));
+  // Totals: saved override if this PO was generated before, else the PO's own order-time value
+  // (issue #156), else the GP-read values, else 0.
+  const [freight, setFreight] = useState(String(dd?.freight ?? po.shippingCost ?? gpTotals?.freight ?? 0));
   const [miscellaneous, setMiscellaneous] = useState(String(dd?.miscellaneous ?? gpTotals?.miscellaneous ?? 0));
   const [taxAmount, setTaxAmount] = useState(String(dd?.taxAmount ?? gpTotals?.taxAmount ?? 0));
   const [taxLabel, setTaxLabel] = useState(dd?.taxLabel ?? 'Taxes');
+  const [tariffAmount, setTariffAmount] = useState(String(dd?.tariffAmount ?? po.tariffAmount ?? 0));
   const [includeFsc, setIncludeFsc] = useState(dd?.includeFsc ?? false);
   const [includeUsaTariff, setIncludeUsaTariff] = useState(dd?.includeUsaTariff ?? false);
   const [includeCustoms, setIncludeCustoms] = useState(dd?.includeCustoms ?? false);
@@ -172,13 +174,14 @@ function GenerateForm({ po, settings, buyers, gpTotals, projectNumber, onClose, 
       miscellaneous: num(miscellaneous),
       taxAmount: num(taxAmount),
       taxLabel: taxLabel || 'Taxes',
+      tariffAmount: num(tariffAmount),
       requiredByOverride: requiredBy || null,
       includeFsc,
       includeUsaTariff,
       includeCustoms,
     }),
     [vendorAddress, buyerName, currency, shipTo, shippingMethod, proposalNumber, freight,
-      miscellaneous, taxAmount, taxLabel, requiredBy, includeFsc, includeUsaTariff, includeCustoms],
+      miscellaneous, taxAmount, taxLabel, tariffAmount, requiredBy, includeFsc, includeUsaTariff, includeCustoms],
   );
 
   const buildDocProps = useCallback((): PurchaseOrderDocumentProps => {
@@ -210,6 +213,7 @@ function GenerateForm({ po, settings, buyers, gpTotals, projectNumber, onClose, 
       miscellaneous: num(miscellaneous),
       taxAmount: num(taxAmount),
       taxLabel: taxLabel || 'Taxes',
+      tariffAmount: num(tariffAmount),
       taxNumbers: settings.taxNumbers,
       mandatoryBullets: settings.mandatoryBullets,
       shippingAccounts: settings.shippingAccounts,
@@ -223,7 +227,7 @@ function GenerateForm({ po, settings, buyers, gpTotals, projectNumber, onClose, 
       includeCustoms,
     };
   }, [po, proposalNumber, settings, vendorAddress, shipTo, shippingMethod, buyerName, currency, projectNumber,
-    requiredBy, freight, miscellaneous, taxAmount, taxLabel, includeFsc, includeUsaTariff, includeCustoms]);
+    requiredBy, freight, miscellaneous, taxAmount, taxLabel, tariffAmount, includeFsc, includeUsaTariff, includeCustoms]);
 
   const persist = useCallback(async () => {
     await saveDocData({ variables: { poId: po.id, input: docInput() } });
@@ -339,7 +343,7 @@ function GenerateForm({ po, settings, buyers, gpTotals, projectNumber, onClose, 
 
           <Divider />
           <Typography variant="subtitle2" color="text.secondary">
-            Totals (pre-filled from GP - override if needed)
+            Totals (pre-filled from the PO / GP - override if needed)
           </Typography>
           <Stack direction="row" spacing={2}>
             <TextField
@@ -349,6 +353,11 @@ function GenerateForm({ po, settings, buyers, gpTotals, projectNumber, onClose, 
             <TextField
               label="Miscellaneous" type="number" value={miscellaneous}
               onChange={(e) => setMiscellaneous(e.target.value)}
+              fullWidth size="small" slotProps={{ htmlInput: { min: 0, step: 0.01 } }}
+            />
+            <TextField
+              label="Tariffs" type="number" value={tariffAmount}
+              onChange={(e) => setTariffAmount(e.target.value)}
               fullWidth size="small" slotProps={{ htmlInput: { min: 0, step: 0.01 } }}
             />
           </Stack>

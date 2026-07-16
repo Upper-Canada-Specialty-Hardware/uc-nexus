@@ -70,6 +70,10 @@ class PurchaseOrder(Base):
     # time. Persisted so the generated PO document (issue #230) can pre-fill the Buyer field.
     buyer_id: Mapped[str | None] = mapped_column(String(15), nullable=True)
     vendor_quote_number: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Issue #156: optional order-time dollar costs captured during the ordering action (Create PO
+    # dialog), editable on the PO afterward. Null means "not entered"; 0 is a valid entered value.
+    shipping_cost: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    tariff_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     expected_delivery_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     ordered_at: Mapped[datetime | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
@@ -173,6 +177,8 @@ class PODocumentData(Base):
     tax_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=Decimal("0"))
     # Label for the tax line (e.g. 'HST' or 'Taxes').
     tax_label: Mapped[str] = mapped_column(String, nullable=False, default="Taxes")
+    # Tariff line for the document totals (issue #156). Prefills from PurchaseOrder.tariff_amount.
+    tariff_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=Decimal("0"))
     # Overrides the header Required-by date (defaults to PurchaseOrder.expected_delivery_date).
     required_by_override: Mapped[date | None] = mapped_column(Date, nullable=True)
     # Conditional boilerplate toggles (wood-door FSC note, USA tariff note, international customs block).

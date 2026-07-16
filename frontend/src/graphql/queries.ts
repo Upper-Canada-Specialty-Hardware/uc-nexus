@@ -86,6 +86,8 @@ export const GET_PURCHASE_ORDERS = gql`
         phone
       }
       vendorQuoteNumber
+      shippingCost
+      tariffAmount
       notes
       expectedDeliveryDate
       orderedAt
@@ -104,6 +106,7 @@ export const GET_PURCHASE_ORDERS = gql`
         miscellaneous
         taxAmount
         taxLabel
+        tariffAmount
         requiredByOverride
         includeFsc
         includeUsaTariff

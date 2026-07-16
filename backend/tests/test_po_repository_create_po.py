@@ -256,3 +256,86 @@ def test_create_po_rejects_when_any_line_item_missing_order_as(db_session):
             vendor_id=vendor.id,
         )
     assert exc.value.field == "order_as"
+
+
+# --- issue #156: optional order-time shipping cost + tariff -------------------------------------
+
+
+def test_create_po_persists_shipping_cost_and_tariff(db_session):
+    from decimal import Decimal
+
+    vendor = _make_vendor(db_session)
+    po = po_repository.create_po(
+        db_session,
+        line_items=[_line_item("ML2010")],
+        vendor_id=vendor.id,
+        shipping_cost=125.5,
+        tariff_amount=0,
+    )
+    db_session.refresh(po)
+    assert po.shipping_cost == Decimal("125.50")
+    # 0 is a valid entered value, distinct from "not entered" (null)
+    assert po.tariff_amount == Decimal("0")
+
+
+def test_create_po_defaults_shipping_cost_and_tariff_to_null(db_session):
+    vendor = _make_vendor(db_session)
+    po = po_repository.create_po(
+        db_session,
+        line_items=[_line_item("ML2010")],
+        vendor_id=vendor.id,
+    )
+    db_session.refresh(po)
+    assert po.shipping_cost is None
+    assert po.tariff_amount is None
+
+
+def test_create_po_rejects_negative_shipping_cost(db_session):
+    vendor = _make_vendor(db_session)
+    with pytest.raises(ValidationError) as exc:
+        po_repository.create_po(
+            db_session,
+            line_items=[_line_item("ML2010")],
+            vendor_id=vendor.id,
+            shipping_cost=-1,
+        )
+    assert exc.value.field == "shipping_cost"
+
+
+def test_update_po_rejects_negative_tariff(db_session):
+    vendor = _make_vendor(db_session)
+    po = po_repository.create_po(
+        db_session,
+        line_items=[_line_item("ML2010")],
+        vendor_id=vendor.id,
+    )
+    db_session.flush()
+    with pytest.raises(ValidationError) as exc:
+        po_repository.update_po(db_session, po.id, tariff_amount=-0.01)
+    assert exc.value.field == "tariff_amount"
+
+
+def test_update_po_sets_clears_and_leaves_shipping_cost_and_tariff(db_session):
+    from decimal import Decimal
+
+    vendor = _make_vendor(db_session)
+    po = po_repository.create_po(
+        db_session,
+        line_items=[_line_item("ML2010")],
+        vendor_id=vendor.id,
+    )
+    db_session.flush()
+
+    po_repository.update_po(db_session, po.id, shipping_cost=75.25, tariff_amount=10)
+    assert po.shipping_cost == Decimal("75.25")
+    assert po.tariff_amount == Decimal("10")
+
+    # Omitted (_UNSET) leaves the values untouched
+    po_repository.update_po(db_session, po.id, notes="unrelated edit")
+    assert po.shipping_cost == Decimal("75.25")
+    assert po.tariff_amount == Decimal("10")
+
+    # Explicit null clears
+    po_repository.update_po(db_session, po.id, shipping_cost=None, tariff_amount=None)
+    assert po.shipping_cost is None
+    assert po.tariff_amount is None
