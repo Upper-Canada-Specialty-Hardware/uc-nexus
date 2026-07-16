@@ -389,9 +389,9 @@ export const REGISTER_PO_IN_GP = gql`
   }
 `;
 
-export const CREATE_PO = gql`
-  mutation CreatePO($input: CreatePOInput!) {
-    createPo(input: $input) {
+export const CREATE_DRAFT_PO = gql`
+  mutation CreateDraftPO($input: CreateDraftPOInput!) {
+    createDraftPo(input: $input) {
       id
       poNumber
       requestNumber
@@ -408,6 +408,7 @@ export const CREATE_PO = gql`
         phone
       }
       notes
+      preferredDeliveryDate
       createdAt
       updatedAt
       lineItems {

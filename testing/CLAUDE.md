@@ -111,12 +111,14 @@ This is a tester's knowledge journal for UC Nexus. It documents how the app work
 - **Expand all** targets only the currently-visible (filtered + sorted) rows — not the raw fetch.
 - The Status multi-select uses underlying enum values (DRAFT, PARTIALLY_RECEIVED, etc.) but displays formatted labels. When driving via JS, the option's a11y `value` attribute reflects the display label, but the actual MUI state holds the enum value — so test by observing filtered rows, not by reading the option's a11y value.
 
-**Create PO Dialog** (manual PO creation):
-- Project selector (optional — can create POs without a project)
-- Vendor Name, Vendor Contact fields
-- Line items grid: Hardware Category, Product Code, Qty, Unit Cost, Classification (optional), Order As (optional — vendor alias/alternate product name)
+**Create PO Dialog** (manual PO creation, issue #256 - draft-first, NO relay needed):
+- Title "Create PO Request (Draft)"; the Create PO button works with the relay offline
+- Project selector (optional, all projects — buyer assignments only gate the register step)
+- Vendor (Nexus vendor strict-select, optional) + Preferred delivery date
+- Shipping costs / Tariffs (optional), Notes
+- Line items grid: Hardware Category, Product Code, Qty, Unit Cost, Order As (REQUIRED per line; no Classification column - the PM sets site/shop at import)
 - "Add Item" button to add rows, delete button per row (minimum 1 item)
-- Submit creates a DRAFT PO with auto-generated request number (PO-REQ-XXX)
+- Submit ("Create Draft") creates a DRAFT PO with auto-generated request number (PO-REQ-XXX); no GP push. Registering into GP is the separate "Register in GP" action on the draft (relay + buyer identity required there)
 
 **PO Detail Modal**:
 - Shows: status chip, PO number, vendor info, quote #, dates, "No Project" label if project-less
@@ -305,7 +307,7 @@ Inventory quantity corrections are NOT here — they live in the Warehouse modul
 - Verifying a generated PDF (issue #230 PO document): the doc is text-based react-pdf, not an image, so `pdftotext` works. Fastest path for content assertions: use the dialog's "Save to PO documents" to upload it, query the PO's `documents { downloadUrl }` (presigned S3 URL) via GraphQL, `curl` the URL to a file, then `pdftotext -layout` (or `-raw` for the totals column, which `-layout` misaligns since Subtotal/Freight/Miscellaneous/Tax/Order-Total are right-aligned). "Generate & preview" opens a blob in a new tab that's hard to read via MCP - prefer save-then-fetch.
 - pdftotext/poppler is NOT installed on the dev machine, and naive stream-inflation can't read the text (react-pdf subsets fonts to custom glyph IDs). Working alternative: open the presigned `downloadUrl` directly in a browser tab (Chrome renders PDFs natively) and `take_screenshot` - the full totals column is readable in the image. Verified this way for issue #156 (Tariffs line + Order Total math).
 - Issue #156 fields: PO detail modal shows "Shipping Costs" / "Tariffs" info rows ('-' when null) and edit-mode number fields; the generate-document dialog's Freight prefills from the PO's shippingCost (saved documentData override wins) and its new Tariffs field from the PO's tariffAmount; the PDF prints a Tariffs totals line only when > 0.
-- Issue #216 buyer identity: creating/registering POs REQUIRES the signed-in user to have a GP buyer identity (Clerk publicMetadata.gpBuyerId, set in Admin -> User Management) AND, for project POs, a buyer assignment (Admin -> Buyers: assigned projects + designated 'cc1-cc2' cost codes). Without them the dialog blocks and the backend rejects. The test user (Jay Puzon) is linked to GP buyer "mira" with project 80003 + cost codes 210-200/310-000 assigned. The dialog's Buyer field is read-only (your identity); the project dropdown offers only assigned projects; the cost-code dropdown only designated codes. Stock POs (no project) skip the assignment check but still need the identity.
+- Issue #216 buyer identity (scoped to REGISTERING by issue #256 - drafting needs neither): registering a PO into GP REQUIRES the signed-in user to have a GP buyer identity (Clerk publicMetadata.gpBuyerId, set in Admin -> User Management) AND, for project POs, a buyer assignment (Admin -> Buyers: assigned projects + designated 'cc1-cc2' cost codes). Without them the register dialog blocks and the backend rejects. The test user (Jay Puzon) is linked to GP buyer "mira" with project 80003 + cost codes 210-200/310-000 assigned. The register dialog's Buyer field is read-only (your identity); its cost-code dropdown offers only designated codes. Stock POs (no project) skip the assignment check but still need the identity.
 - Issue #216 delivery dates: PO Requests capture "Preferred delivery date" per vendor card in the import wizard's PO step; the detail modal edits Preferred only while DRAFT and Expected only when GP-Registered/Vendor-Confirmed (server-enforced).
 - Import-created PO drafts have EMPTY Order As values unless set in the wizard's PO step - the register dialog then blocks submit with per-line 'Required' errors until each line's Order As is filled.
 - The generate dialog + admin PO-settings text fields APPEND when driven by `fill`/`fill_form` if they already hold a value (same MUI controlled-input quirk as spinbuttons). For a pre-filled field, set the value via `evaluate_script` using the native value setter + an `input` event (match the label's `for` attr to the input id), or drive the mutation directly. Empty fields fill fine.
