@@ -7,7 +7,7 @@ import LocalShippingIcon from '@mui/icons-material/LocalShipping';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@apollo/client/react';
 import { StatCard, StatCardSkeleton } from '../../components/StatCard';
-import { GET_SHOP_ASSEMBLY_STATS } from '../../graphql/queries';
+import { GET_SHOP_ASSEMBLY_STATS } from '../../graphql/shop-assembly';
 
 interface ShopAssemblyStatsData {
   shopAssemblyStats: {

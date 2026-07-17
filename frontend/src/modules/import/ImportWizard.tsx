@@ -32,13 +32,8 @@ import ProgressBar from '../../components/ProgressBar';
 import ValidationSummaryDisplay from '../../components/ValidationSummaryDisplay';
 import { useHardwareScheduleParser } from '../../hooks/useHardwareScheduleParser';
 import { useNavigate } from 'react-router-dom';
-import {
-  GET_PROJECTS,
-  GET_PROJECT_EXCLUDED_ITEMS,
-  GET_PROJECT_HARDWARE_SCHEDULE,
-  RECONCILE_SCHEDULE,
-} from '../../graphql/queries';
-import { FINALIZE_IMPORT_SESSION } from '../../graphql/mutations';
+import { GET_PROJECT_EXCLUDED_ITEMS, GET_PROJECT_HARDWARE_SCHEDULE, RECONCILE_SCHEDULE, FINALIZE_IMPORT_SESSION } from '../../graphql/import';
+import { GET_PROJECTS } from '../../graphql/shared';
 import type { ClassificationRow } from './ClassificationGrid';
 import type { AggregatedHardwareItem, ImportPurpose, ReconciliationRow, ShippingPRDraft } from './types';
 import { aggregationKey, classificationKey } from './types';

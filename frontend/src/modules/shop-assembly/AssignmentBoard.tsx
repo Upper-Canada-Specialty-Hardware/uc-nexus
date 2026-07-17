@@ -20,8 +20,7 @@ import {
 } from '@dnd-kit/core';
 import { CSS } from '@dnd-kit/utilities';
 import { useQuery, useMutation } from '@apollo/client/react';
-import { GET_ASSEMBLE_LIST } from '../../graphql/queries';
-import { ASSIGN_OPENINGS, REMOVE_OPENING_FROM_USER } from '../../graphql/mutations';
+import { GET_ASSEMBLE_LIST, ASSIGN_OPENINGS, REMOVE_OPENING_FROM_USER } from '../../graphql/shop-assembly';
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
 

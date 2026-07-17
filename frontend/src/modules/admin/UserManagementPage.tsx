@@ -17,8 +17,7 @@ import {
 } from '@mui/material';
 import { DataGrid, type GridColDef, type GridRowParams } from '@mui/x-data-grid';
 import { useQuery, useMutation } from '@apollo/client/react';
-import { GET_USERS } from '../../graphql/queries';
-import { UPDATE_USER_GP_BUYER_ID, UPDATE_USER_NAME, UPDATE_USER_ROLES } from '../../graphql/mutations';
+import { GET_USERS, UPDATE_USER_GP_BUYER_ID, UPDATE_USER_NAME, UPDATE_USER_ROLES } from '../../graphql/admin';
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
 

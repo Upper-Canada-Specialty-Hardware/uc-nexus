@@ -10,7 +10,8 @@ from datetime import datetime
 from app.models.inventory import InventoryLocation
 from app.models.project import Project
 from app.models.stock_item import StockItem
-from app.repositories import warehouse_admin_repository, warehouse_repository
+from app.repositories import warehouse as warehouse_repository
+from app.repositories import warehouse_admin_repository
 
 
 def _make_project(session) -> Project:

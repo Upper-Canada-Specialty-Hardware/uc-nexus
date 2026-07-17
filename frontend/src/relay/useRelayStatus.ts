@@ -1,5 +1,5 @@
 import { useQuery } from '@apollo/client/react';
-import { GET_RELAY_STATUS } from '../graphql/queries';
+import { GET_RELAY_STATUS } from '../graphql/shared';
 
 export interface RelayStatusInfo {
   // null = the first relayStatus check is still in flight.

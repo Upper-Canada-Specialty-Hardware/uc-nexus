@@ -1,0 +1,165 @@
+"""Relay installs + live GP reads via the connected relay."""
+
+import strawberry
+
+from app.auth import require_admin, require_user
+from app.database import SessionLocal
+from app.repositories import relay_repository
+from app.services.relay_gateway import gateway as relay_gateway
+
+from .converters import gp_cost_code_to_type, gp_job_to_type, gp_vendor_to_type, relay_install_to_type
+from .inputs import EnrollRelayInstallInput
+from .types import (
+    GpCostCode,
+    GpJob,
+    GpPoTotals,
+    GpVendor,
+    RelayEnrollResult,
+    RelayInstallInfo,
+    RelayInstallProvision,
+    RelayStatus,
+    VendorCandidate,
+    VendorSuggestion,
+)
+
+
+@strawberry.type
+class RelayQueries:
+    @strawberry.field
+    def relay_installs(self, info: strawberry.Info) -> list[RelayInstallInfo]:
+        require_admin(info)
+        with SessionLocal() as session:
+            return [relay_install_to_type(ri) for ri in relay_repository.list_installs(session)]
+
+    @strawberry.field
+    def relay_status(self, info: strawberry.Info) -> RelayStatus:
+        """Whether the outbound relay WS channel is currently connected (and, if so, the GP company it is
+        enrolled for), for the relay status chip and the company-aware PO/receive/adopt dialogs."""
+        require_user(info)
+        return RelayStatus(connected=relay_gateway.connected, company=relay_gateway.company)
+
+    @strawberry.field
+    async def gp_jobs(self, info: strawberry.Info, company: str) -> list[GpJob]:
+        """Live job master (JC00102) via the connected relay."""
+        require_user(info)
+        result = await relay_gateway.relay_call(company, "list_jobs")
+        return [gp_job_to_type(j) for j in result["jobs"]]
+
+    @strawberry.field
+    async def gp_vendors(self, info: strawberry.Info, company: str) -> list[GpVendor]:
+        """Live active vendor list (PM00200) via the connected relay."""
+        require_user(info)
+        result = await relay_gateway.relay_call(company, "list_vendors")
+        return [gp_vendor_to_type(v) for v in result["vendors"]]
+
+    @strawberry.field
+    async def gp_buyers(self, info: strawberry.Info, company: str) -> list[str]:
+        """Registered GP buyers (POP00101) via the connected relay, for the Create PO buyer dropdown."""
+        require_user(info)
+        result = await relay_gateway.relay_call(company, "list_buyers")
+        return result["buyers"]
+
+    @strawberry.field
+    async def gp_cost_codes(self, info: strawberry.Info, company: str, job: str) -> list[GpCostCode]:
+        """Active per-job cost codes (JC00701) via the connected relay, for the Create PO cost-code dropdown."""
+        require_user(info)
+        result = await relay_gateway.relay_call(company, "list_cost_codes", {"job": job})
+        return [gp_cost_code_to_type(c) for c in result["cost_codes"]]
+
+    @strawberry.field
+    async def gp_po_totals(self, info: strawberry.Info, company: str, po_number: str) -> GpPoTotals | None:
+        """GP-computed header totals (POP10100) for a PO, read live via the connected relay - auto-fills
+        the generated PO document (issue #230). Returns null if the PO isn't found in GP."""
+        require_user(info)
+        result = await relay_gateway.relay_call(company, "read_po_totals", {"po_number": po_number})
+        if result is None or result.get("totals") is None:
+            return None
+        t = result["totals"]
+        return GpPoTotals(
+            po_number=t["po_number"],
+            subtotal=float(t["subtotal"]),
+            freight=float(t["freight"]),
+            miscellaneous=float(t["miscellaneous"]),
+            tax_amount=float(t["tax_amount"]),
+        )
+
+    @strawberry.field
+    async def suggest_vendor_for_manufacturer(
+        self, info: strawberry.Info, gp_company: str, manufacturer: str
+    ) -> VendorSuggestion:
+        """Suggest a GP ordering vendor for a hardware line's TITAN manufacturer (issue #232). A saved
+        manufacturer->vendor mapping wins (one candidate, score 100, savedMapping true); otherwise the
+        live vendor list (PM00200 via the relay) is ranked by fuzzy score and the top candidates are
+        returned (savedMapping false). The DB session is scoped to the mapping lookup only, so no
+        session is held across the relay round-trip."""
+        require_user(info)
+        from app.repositories import manufacturer_vendor_map_repository
+        from app.services import manufacturer_match
+
+        key = manufacturer_match.normalize(manufacturer)
+        # A blank/normalized-empty manufacturer has nothing to look up or rank (lookup returns None,
+        # rank_vendors returns []); return empty without the wasted list_vendors relay round-trip.
+        if not key:
+            return VendorSuggestion(manufacturer=manufacturer, saved_mapping=False, candidates=[])
+        with SessionLocal() as session:
+            mapping = manufacturer_vendor_map_repository.lookup(session, gp_company, key)
+            if mapping is not None:
+                return VendorSuggestion(
+                    manufacturer=manufacturer,
+                    saved_mapping=True,
+                    candidates=[
+                        VendorCandidate(
+                            gp_vendor_id=mapping.gp_vendor_id,
+                            gp_vendor_name=mapping.gp_vendor_name,
+                            score=100.0,
+                        )
+                    ],
+                )
+
+        result = await relay_gateway.relay_call(gp_company, "list_vendors")
+        ranked = manufacturer_match.rank_vendors(manufacturer, result["vendors"])
+        return VendorSuggestion(
+            manufacturer=manufacturer,
+            saved_mapping=False,
+            candidates=[
+                VendorCandidate(
+                    gp_vendor_id=c["gp_vendor_id"],
+                    gp_vendor_name=c["gp_vendor_name"],
+                    score=c["score"],
+                )
+                for c in ranked
+            ],
+        )
+
+
+@strawberry.type
+class RelayMutations:
+    @strawberry.mutation
+    def provision_relay_install(self, info: strawberry.Info, label: str, company: str) -> RelayInstallProvision:
+        """Admin: create a relay install + a one-time enrollment token shown ONCE. The relay uses the
+        token during setup to register its self-generated Bearer secret (which never comes back here)."""
+        require_admin(info)
+        with SessionLocal() as session:
+            install, token = relay_repository.provision_install(session, label=label, company=company)
+            session.commit()
+            return RelayInstallProvision(
+                install_id=strawberry.ID(str(install.id)),
+                label=install.label,
+                company=install.company,
+                enrollment_token=token,
+                enrollment_token_expires_at=install.enrollment_token_expires_at,
+            )
+
+    @strawberry.mutation
+    def enroll_relay_install(self, input: EnrollRelayInstallInput) -> RelayEnrollResult:
+        """Called BY THE RELAY during one-time setup, authenticated by the enrollment token (not Clerk).
+        Stores the relay's self-generated secret encrypted and consumes the token."""
+        with SessionLocal() as session:
+            install = relay_repository.enroll_install(
+                session,
+                enrollment_token=input.enrollment_token,
+                hostname=input.hostname,
+                secret=input.secret,
+            )
+            session.commit()
+            return RelayEnrollResult(ok=True, install_id=strawberry.ID(str(install.id)))

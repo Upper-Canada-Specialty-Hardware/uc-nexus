@@ -14,7 +14,7 @@ from app.models.project import Opening, Project
 from app.models.purchase_order import POLineItem, PurchaseOrder
 from app.models.vendor import Vendor
 from app.repositories import buyer_repository, import_repository, po_repository
-from app.schemas import mutations
+from app.schemas import po as po_schema
 
 
 def _assign_buyer(session, buyer_id, project, cost_codes=("210-200",)):
@@ -416,7 +416,7 @@ class _NoCloseSession:
 
 
 def _use_test_session(monkeypatch, db_session) -> None:
-    monkeypatch.setattr(mutations, "SessionLocal", lambda: _NoCloseSession(db_session))
+    monkeypatch.setattr(po_schema, "SessionLocal", lambda: _NoCloseSession(db_session))
 
 
 def _add_hardware_item(session, project, *, hardware_category, product_code, manufacturer, created_at=None):
@@ -467,7 +467,7 @@ def test_prepare_register_po_attaches_manufacturer_per_line(monkeypatch, db_sess
     _assign_buyer(db_session, "mira", project)
     _use_test_session(monkeypatch, db_session)
 
-    payload = mutations._prepare_register_po(
+    payload = po_schema._prepare_register_po(
         po_id=draft.id,
         vendor_id=None,
         gp_vendor_id="GPV1",
@@ -510,7 +510,7 @@ def test_prepare_register_po_disagreeing_items_take_first_non_null_and_log(monke
     _use_test_session(monkeypatch, db_session)
 
     with caplog.at_level(logging.WARNING):
-        payload = mutations._prepare_register_po(
+        payload = po_schema._prepare_register_po(
             po_id=draft.id,
             vendor_id=None,
             gp_vendor_id="GPV1",

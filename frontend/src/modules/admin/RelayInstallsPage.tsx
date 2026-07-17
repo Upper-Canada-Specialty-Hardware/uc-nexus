@@ -19,8 +19,7 @@ import {
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import { useQuery, useMutation } from '@apollo/client/react';
-import { RELAY_INSTALLS } from '../../graphql/queries';
-import { PROVISION_RELAY_INSTALL } from '../../graphql/mutations';
+import { RELAY_INSTALLS, PROVISION_RELAY_INSTALL } from '../../graphql/admin';
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
 import { useRelayStatus } from '../../relay/useRelayStatus';
