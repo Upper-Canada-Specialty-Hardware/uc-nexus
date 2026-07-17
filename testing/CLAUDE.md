@@ -141,7 +141,7 @@ DRAFT -> ORDERED -> VENDOR_CONFIRMED -> PARTIALLY_RECEIVED -> CLOSED
 - Dialog fields pre-fill from the PO, its saved `PODocumentData`, and `poDocumentSettings`: vendor mailing address, buyer (from `buyerId`), currency (CAD `$` / USD `$US`), ship-to (warehouse dropdown | "Use project site" button | custom text - the resolved block is stored verbatim), shipping method, proposal #, required-by (defaults to `expectedDeliveryDate`), freight/misc/tax + tax label, and three conditional toggles (wood-door FSC, USA tariff, international customs).
 - **Generate & preview** opens the PDF in a new tab (`window.open` blob). **Save to PO documents** persists `PODocumentData` + uploads the PDF as a `GENERATED_PO` document (appears in the Documents list, label "Generated PO", downloadable via presigned URL). Both first call `savePoDocumentData`, so re-opening the dialog pre-fills.
 - Doc math: each line ext = ordered x unitCost; Subtotal = sum of ext; Order Total = Subtotal + Freight + Miscellaneous + Tax. The item column shows `hardwareCategory` (main line) + `orderAs` (Reference line). Boilerplate (tax numbers, mandatory bullets, signature, footer) always prints; the FSC / USA-tariff / customs blocks print only when their toggle is on.
-- Admin boilerplate lives at Admin -> PO Document Settings (see Admin Module); the per-PO gaps are captured in this dialog.
+- Company-wide boilerplate lives at the PO module's Document Settings page (`/app/po/document-settings`, "Document Settings" button in the PO list header - it moved out of Admin); the per-PO gaps are captured in this dialog.
 
 ### Import Module
 
@@ -242,7 +242,7 @@ Both entry points open a "Transfer <productCode>" MUI dialog with: an "X availab
 - Projects (`/app/admin/projects`) — edit project details + OSSA flag (see below)
 - User Management (`/app/admin/users`) — assign Clerk roles
 - Location Cleanup (`/app/admin/location-cleanup`)
-- PO Document Settings (`/app/admin/po-document-settings`) — company-wide boilerplate for the generated PO document (issue #230); see below
+- (PO Document Settings moved to the PO module: `/app/po/document-settings`; see below. Unknown `/app/admin/*` sub-routes silently render the Admin landing, not a 404.)
 
 Inventory quantity corrections are NOT here — they live in the Warehouse module (Locations tab).
 
@@ -261,7 +261,7 @@ Inventory quantity corrections are NOT here — they live in the Warehouse modul
 - **Edit dialog**: OSSA toggle + editable text fields (description, client, job site name, address/city/state/zip, general contractor, GC contact name/phone/email, project manager, application). A read-only "From TITAN" section shows project number, submittal job no, submittal assignment count, estimator code, TITAN user ID — these are immutable.
 - Save calls `updateProject`, refetches the grid, and shows a "Project updated" toast.
 
-**PO Document Settings page** (`/app/admin/po-document-settings`, issue #230):
+**PO Document Settings page** (`/app/po/document-settings`, issue #230 - lives in the PO module, reached via the "Document Settings" button on the PO list header):
 - Admin/Manager only (non-admins get a permission Alert; the mutation is `require_admin`-gated). Single-record form, not a grid.
 - Fields: company from-address, payment terms, confirm-with, tax numbers, mandatory bullets (one per line), wood-door FSC note, USA tariff note + effective-until date, customs broker block, shipping accounts (one per line), signature note, footer notes.
 - Backed by `poDocumentSettings` (get-or-creates a single row seeded from the guideline doc on first read, so it never returns null) and `updatePoDocumentSettings`. Save toast = "PO document settings saved". These values print on every generated PO document.
@@ -313,3 +313,7 @@ Inventory quantity corrections are NOT here — they live in the Warehouse modul
 - The generate dialog + admin PO-settings text fields APPEND when driven by `fill`/`fill_form` if they already hold a value (same MUI controlled-input quirk as spinbuttons). For a pre-filled field, set the value via `evaluate_script` using the native value setter + an `input` event (match the label's `for` attr to the input id), or drive the mutation directly. Empty fields fill fine.
 - Date-only fields: a `<TextField type="date">` renders as Month/Day/Year spinbuttons in the a11y tree. Set it via `evaluate_script` native setter with a `YYYY-MM-DD` string on the underlying input (dispatch `input` + `change`). Note: formatting a `YYYY-MM-DD` string with `new Date(str)` is UTC and prints the previous calendar day in a behind-UTC tz - the PO-document code parses date-only strings as local (fixed in #238), so the printed required-by should match what was entered.
 - To seed a project's job-site address for the PO document's "Use project site" ship-to option (most test projects have null address fields), call `updateProject(id, {jobSiteName, address, city, state, zip})` via `evaluate_script` (Admin/Manager gated). Then the dialog's "Use project site" button builds a real "UC Hardware Inc. - Deliver to site / ..." block.
+- PO list rows: clicking the row's StaticText via a snapshot uid may NOT open the detail modal (the a11y click can miss the row handler). Reliable alternative: `evaluate_script` finding the leaf element by text and clicking its `closest('td')`.
+- Locations page bin panel "Item actions" menu (stock rows): Move / Transfer / Adjust Qty / Unlocate. "Adjust Qty" opens the shared LocationActionDialog - Confirm stays disabled until a non-zero adjustment AND a reason are entered; the helper text under the adjustment shows the computed "New qty: N" and flags negatives. Verified live: adjustment writes an ADJUSTMENT audit row (`auditLog(limit: N)`) with performedBy "Admin/Manager".
+- Draft PO create (issue #256 dialog) works with the relay down end to end: the created draft's `preferredDeliveryDate` round-trips exactly (entered 2026-08-15 -> stored 2026-08-15 -> detail modal renders 8/15/2026, no UTC day shift). Cancelling a draft removes it from the `purchaseOrders` list entirely.
+- `inventoryHierarchy` returns `totalAvailableQuantity` at both category and product-code levels (issue #229): available = quantity - deficient, so a 10-qty row with 7 deficient shows total 10 / available 3. Cross-check against `deficientItems`.
