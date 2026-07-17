@@ -15,8 +15,8 @@ import Modal from '../../components/Modal';
 import LocationAutocomplete from '../../components/LocationAutocomplete';
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
-import { GET_WAREHOUSES, GET_LOCATION_DISTINCT_VALUES } from '../../graphql/queries';
-import { TRANSFER_INVENTORY } from '../../graphql/mutations';
+import { GET_WAREHOUSES } from '../../graphql/shared';
+import { GET_LOCATION_DISTINCT_VALUES, TRANSFER_INVENTORY } from '../../graphql/warehouse';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
 
 export interface TransferSource {

@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback } from 'react';
 import { Box, Typography } from '@mui/material';
 import { useQuery } from '@apollo/client/react';
-import { GET_MY_WORK } from '../../graphql/queries';
+import { GET_MY_WORK } from '../../graphql/shop-assembly';
 import { useIdentity } from '../../hooks/useIdentity';
 import DataTable from '../../components/DataTable';
 import AssemblyDetailModal from './AssemblyDetailModal';

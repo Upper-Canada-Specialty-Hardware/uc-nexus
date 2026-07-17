@@ -16,7 +16,7 @@ import {
 } from '@mui/material';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useQuery, useLazyQuery } from '@apollo/client/react';
-import { GET_OPENING_ITEMS, GET_OPENING_ITEM_DETAILS } from '../../graphql/queries';
+import { GET_OPENING_ITEMS, GET_OPENING_ITEM_DETAILS } from '../../graphql/warehouse';
 import Modal from '../../components/Modal';
 import { useIdentity } from '../../hooks/useIdentity';
 import InventoryCorrectionModal from '../admin/InventoryCorrectionModal';

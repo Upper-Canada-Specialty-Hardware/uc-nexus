@@ -7,7 +7,7 @@ import pytest
 from app.errors import NotFoundError, ValidationError
 from app.models.project import Project
 from app.repositories import buyer_repository
-from app.schemas.mutations import _assert_buyer_identity
+from app.schemas.po import _assert_buyer_identity
 
 
 def _make_project(session) -> Project:

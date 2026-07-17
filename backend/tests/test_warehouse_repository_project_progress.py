@@ -10,7 +10,7 @@ from app.models.project import Opening, Project
 from app.models.purchase_order import POLineItem, PurchaseOrder
 from app.models.shipping import PackingSlip, PackingSlipItem
 from app.models.vendor import Vendor
-from app.repositories import warehouse_repository
+from app.repositories import warehouse as warehouse_repository
 
 
 def _make_project(session) -> Project:

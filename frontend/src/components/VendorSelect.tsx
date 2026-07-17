@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback } from 'react';
 import { Autocomplete, TextField } from '@mui/material';
 import { useQuery } from '@apollo/client/react';
-import { GET_VENDORS } from '../graphql/queries';
+import { GET_VENDORS } from '../graphql/shared';
 import VendorEditDialog from '../modules/admin/VendorEditDialog';
 
 export interface VendorOption {

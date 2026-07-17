@@ -5,7 +5,7 @@ import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useQuery } from '@apollo/client/react';
 import { useCart } from '../../contexts/CartContext';
 import { useToast } from '../../components/Toast';
-import { GET_SHIP_READY_ITEMS } from '../../graphql/queries';
+import { GET_SHIP_READY_ITEMS } from '../../graphql/shipping';
 
 interface InstalledHardware {
   id: string;

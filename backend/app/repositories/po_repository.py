@@ -458,6 +458,49 @@ def get_purchase_order(session: Session, po_id: uuid.UUID) -> PurchaseOrder | No
     return session.scalars(stmt).unique().first()
 
 
+def get_open_pos(session: Session, project_id: uuid.UUID | None = None) -> list[PurchaseOrder]:
+    """Open POs (GP-Registered / Vendor-Confirmed / Partially-Received), oldest ordered_at first, for
+    the receiving picker. Lean load - line_items/documents/vendor only, no nested hardware_items and
+    no document_data (the derived line manufacturer resolves to None here by design)."""
+    stmt = (
+        select(PurchaseOrder)
+        .options(
+            selectinload(PurchaseOrder.line_items),
+            selectinload(PurchaseOrder.documents),
+            selectinload(PurchaseOrder.vendor),
+        )
+        .where(
+            PurchaseOrder.deleted_at.is_(None),
+            PurchaseOrder.status.in_(
+                [
+                    POStatus.GP_REGISTERED,
+                    POStatus.VENDOR_CONFIRMED,
+                    POStatus.PARTIALLY_RECEIVED,
+                ]
+            ),
+        )
+        .order_by(PurchaseOrder.ordered_at.asc())
+    )
+    if project_id is not None:
+        stmt = stmt.where(PurchaseOrder.project_id == project_id)
+    return list(session.scalars(stmt).unique().all())
+
+
+def reload_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder | None:
+    """Re-read a PO with the relationships every mutation response needs (line_items, documents,
+    vendor). No deleted_at filter - callers hold an id they just wrote."""
+    stmt = (
+        select(PurchaseOrder)
+        .options(
+            selectinload(PurchaseOrder.line_items),
+            selectinload(PurchaseOrder.documents),
+            selectinload(PurchaseOrder.vendor),
+        )
+        .where(PurchaseOrder.id == po_id)
+    )
+    return session.scalars(stmt).unique().first()
+
+
 def get_receive_records_for_po(session: Session, po_id: uuid.UUID) -> list[ReceiveRecord]:
     """Get all ReceiveRecords for a PO, eagerly load their line_items.
     NOTE: PurchaseOrder model has NO receive_records relationship -- must query ReceiveRecord.po_id directly."""

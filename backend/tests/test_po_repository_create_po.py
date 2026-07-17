@@ -10,7 +10,7 @@ from app.models.hardware import HardwareItem
 from app.models.project import Opening, Project
 from app.models.vendor import Vendor
 from app.repositories import po_repository
-from app.schemas import mutations
+from app.schemas import po as po_schema
 
 
 def _make_vendor(session, name: str = "Acme") -> Vendor:
@@ -67,7 +67,7 @@ def test_resolve_line_manufacturers_attaches_per_line(db_session):
     _add_hardware_item(db_session, project, hardware_category="HINGE", product_code="HG-100", manufacturer="SCHLAGE")
     _add_hardware_item(db_session, project, hardware_category="LOCK", product_code="LK-200", manufacturer="SARGENT")
 
-    resolved = mutations._resolve_line_manufacturers(
+    resolved = po_schema._resolve_line_manufacturers(
         db_session, project.id, [_po_line("HINGE", "HG-100"), _po_line("LOCK", "LK-200")]
     )
 
@@ -79,7 +79,7 @@ def test_resolve_line_manufacturers_blank_without_a_hardware_match(db_session):
     # a hardware item exists, but not for this line's category + code
     _add_hardware_item(db_session, project, hardware_category="HINGE", product_code="HG-100", manufacturer="SCHLAGE")
 
-    resolved = mutations._resolve_line_manufacturers(db_session, project.id, [_po_line("LOCK", "LK-999")])
+    resolved = po_schema._resolve_line_manufacturers(db_session, project.id, [_po_line("LOCK", "LK-999")])
 
     assert resolved == [None]
 
@@ -114,14 +114,14 @@ def test_resolve_line_manufacturers_disagreeing_items_take_first_non_null_and_lo
     )
 
     with caplog.at_level(logging.WARNING):
-        resolved = mutations._resolve_line_manufacturers(db_session, project.id, [_po_line("HINGE", "HG-100")])
+        resolved = po_schema._resolve_line_manufacturers(db_session, project.id, [_po_line("HINGE", "HG-100")])
 
     assert resolved == ["SCHLAGE"]
     assert any("manufacturer disagreement" in r.message for r in caplog.records)
 
 
 def test_resolve_line_manufacturers_without_a_project_sends_none(db_session):
-    resolved = mutations._resolve_line_manufacturers(db_session, None, [_po_line("HINGE", "HG-100")])
+    resolved = po_schema._resolve_line_manufacturers(db_session, None, [_po_line("HINGE", "HG-100")])
     assert resolved == [None]
 
 

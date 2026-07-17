@@ -35,15 +35,8 @@ import ConfirmDialog from '../../components/ConfirmDialog';
 import VendorSelect from '../../components/VendorSelect';
 import OrderAsAutocomplete from '../../components/OrderAsAutocomplete';
 import { useToast } from '../../components/Toast';
-import {
-  UPDATE_PO,
-  CANCEL_PO,
-  UPDATE_PO_LINE_ITEM_ORDER_AS,
-  UPDATE_PO_LINE_ITEM_UNIT_COST,
-  UPLOAD_PO_DOCUMENT,
-  DELETE_PO_DOCUMENT,
-} from '../../graphql/mutations';
-import { GET_PRIOR_ORDER_AS_VALUES } from '../../graphql/queries';
+import { UPDATE_PO, CANCEL_PO, UPDATE_PO_LINE_ITEM_ORDER_AS, UPDATE_PO_LINE_ITEM_UNIT_COST, UPLOAD_PO_DOCUMENT, DELETE_PO_DOCUMENT } from '../../graphql/po';
+import { GET_PRIOR_ORDER_AS_VALUES } from '../../graphql/shared';
 import type { PurchaseOrder } from './index';
 import GpPurchaseOrderDialog from './GpPurchaseOrderDialog';
 import POGenerateDialog from './POGenerateDialog';

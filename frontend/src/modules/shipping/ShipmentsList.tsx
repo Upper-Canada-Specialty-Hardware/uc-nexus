@@ -13,7 +13,8 @@ import {
 import KeyboardReturnIcon from '@mui/icons-material/KeyboardReturn';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useQuery } from '@apollo/client/react';
-import { GET_PACKING_SLIPS, GET_PROJECTS } from '../../graphql/queries';
+import { GET_PROJECTS } from '../../graphql/shared';
+import { GET_PACKING_SLIPS } from '../../graphql/shipping';
 import ReturnShipmentDialog, { type ReturnSlip } from './ReturnShipmentDialog';
 
 interface PackingSlipItem {

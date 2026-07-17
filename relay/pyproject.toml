@@ -1,0 +1,44 @@
+[tool.poetry]
+name = "ucnexus-relay"
+version = "0.1.0"
+description = "Relay bridging UC Nexus (cloud) to Dynamics GP via eConnect stored procedures"
+authors = ["UC Nexus Team"]
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "^0.115"
+uvicorn = {extras = ["standard"], version = "^0.32"}
+pydantic = "^2.9"
+pydantic-settings = "^2.6"
+pyodbc = "^5.2"
+python-json-logger = "^2.0"
+websockets = "^13.0"
+# Native desktop UI (the `ui` subcommand). Windows-only: pywebview uses the Edge WebView2 backend via
+# pythonnet. Scoped to <3.14 like pyinstaller below because pythonnet's wheels don't cover newer pythons;
+# CI + dev build on 3.11. pythonnet is pinned to 3.x directly so poetry doesn't resolve pywebview's
+# transitive dep down to the source-only 2.5.2 (which fails to build).
+pywebview = {version = "^6.2", python = "<3.14", markers = "sys_platform == 'win32'"}
+pythonnet = {version = ">=3.0,<4", python = "<3.14", markers = "sys_platform == 'win32'"}
+pystray = "^0.19"
+pillow = "^11.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3"
+httpx = "^0.27"
+ruff = "^0.7"
+# build tool only (produces ucnexus-relay.exe). marker scopes it to the pythons PyInstaller supports so it
+# doesn't conflict with the project's broader ^3.11 constraint; CI + dev build on 3.11.
+pyinstaller = {version = "^6.11", python = "<3.14"}
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

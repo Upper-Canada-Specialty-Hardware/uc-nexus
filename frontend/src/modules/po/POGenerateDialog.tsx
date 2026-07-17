@@ -6,8 +6,7 @@ import {
 } from '@mui/material';
 import { useQuery, useMutation } from '@apollo/client/react';
 import { pdf } from '@react-pdf/renderer';
-import { GET_PO_DOCUMENT_SETTINGS, GET_GP_BUYERS, GET_GP_PO_TOTALS, GET_PROJECT_SHIP_TO } from '../../graphql/queries';
-import { SAVE_PO_DOCUMENT_DATA, UPLOAD_PO_DOCUMENT } from '../../graphql/mutations';
+import { GET_PO_DOCUMENT_SETTINGS, GET_GP_BUYERS, GET_GP_PO_TOTALS, GET_PROJECT_SHIP_TO, SAVE_PO_DOCUMENT_DATA, UPLOAD_PO_DOCUMENT } from '../../graphql/po';
 import { useToast } from '../../components/Toast';
 import { poVendorName } from './poVendorName';
 import PurchaseOrderDocument, { type PurchaseOrderDocumentProps } from './PurchaseOrderDocument';

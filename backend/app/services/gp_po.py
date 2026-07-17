@@ -2,7 +2,7 @@
 create/register + receive, brokered server-side via relay_call instead of the browser).
 
 The UC Nexus fields (vendor, buyer, job, cost code, line items) map onto POHeader/POLine/ReceiptLine
-in localhost relay/src/ucnexus_relay/models.py - kept here as pure functions so createPo and
+in relay/src/ucnexus_relay/models.py - kept here as pure functions so createPo and
 registerPoInGp (which both push a create_po job) share one mapping instead of drifting apart."""
 
 from datetime import date

@@ -17,14 +17,8 @@ import RefreshIcon from '@mui/icons-material/Refresh';
 import { useApolloClient, useMutation, useQuery } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import { useToast } from '../../components/Toast';
-import { CREATE_DRAFT_PO, REGISTER_PO_IN_GP } from '../../graphql/mutations';
-import {
-  GET_BUYER_ASSIGNMENTS,
-  GET_GP_COST_CODES,
-  GET_GP_VENDORS,
-  GET_PROJECTS,
-  SUGGEST_VENDOR_FOR_MANUFACTURER,
-} from '../../graphql/queries';
+import { CREATE_DRAFT_PO, REGISTER_PO_IN_GP, GET_GP_COST_CODES, GET_GP_VENDORS, SUGGEST_VENDOR_FOR_MANUFACTURER } from '../../graphql/po';
+import { GET_BUYER_ASSIGNMENTS, GET_PROJECTS } from '../../graphql/shared';
 import { useIdentity } from '../../hooks/useIdentity';
 import VendorSelect from '../../components/VendorSelect';
 import type { Project } from '../../types/project';

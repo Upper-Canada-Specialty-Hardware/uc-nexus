@@ -7,7 +7,7 @@ from sqlalchemy import select
 
 from app.models.purchase_order import PurchaseOrder
 from app.repositories import import_repository, po_repository
-from app.schemas.queries import _po_line_item_to_type
+from app.schemas.converters import po_line_item_to_type
 
 
 def _make_project(session) -> PurchaseOrder:
@@ -59,10 +59,10 @@ def test_line_manufacturer_derived_from_linked_hardware(db_session):
 
     # get_purchase_orders selectinloads line_items -> hardware_items, so the derived field is populated.
     po = po_repository.get_purchase_orders(db_session, project.id)[0]
-    assert _po_line_item_to_type(po.line_items[0]).manufacturer == "Acme Inc"
+    assert po_line_item_to_type(po.line_items[0]).manufacturer == "Acme Inc"
     # the single-PO loader derives it too
     po_single = po_repository.get_purchase_order(db_session, draft.id)
-    assert _po_line_item_to_type(po_single.line_items[0]).manufacturer == "Acme Inc"
+    assert po_line_item_to_type(po_single.line_items[0]).manufacturer == "Acme Inc"
 
 
 def test_line_manufacturer_none_when_hardware_has_none(db_session):
@@ -70,4 +70,4 @@ def test_line_manufacturer_none_when_hardware_has_none(db_session):
     draft = _import_draft_with_manufacturer(db_session, project, manufacturer=None)
 
     po = po_repository.get_purchase_order(db_session, draft.id)
-    assert _po_line_item_to_type(po.line_items[0]).manufacturer is None
+    assert po_line_item_to_type(po.line_items[0]).manufacturer is None

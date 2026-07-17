@@ -16,7 +16,7 @@ import DoorFrontIcon from '@mui/icons-material/DoorFront';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@apollo/client/react';
 import { StatCard, StatCardSkeleton } from '../../components/StatCard';
-import { GET_ADMIN_STATS } from '../../graphql/queries';
+import { GET_ADMIN_STATS } from '../../graphql/admin';
 
 interface AdminStatsData {
   adminStats: {

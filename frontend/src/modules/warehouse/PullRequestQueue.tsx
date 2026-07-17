@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Box, Typography, Chip } from '@mui/material';
 import { useQuery } from '@apollo/client/react';
 import type { GridColDef, GridRowParams } from '@mui/x-data-grid';
-import { GET_PULL_REQUESTS } from '../../graphql/queries';
+import { GET_PULL_REQUESTS } from '../../graphql/warehouse';
 import DataTable from '../../components/DataTable';
 import Tabs from '../../components/Tabs';
 import PullRequestDetailModal from './PullRequestDetailModal';
