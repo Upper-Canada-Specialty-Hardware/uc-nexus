@@ -205,6 +205,9 @@ function LeafGrid({ rows, columns, options, onClassify, readOnly, siteShop }: Le
       disableRowSelectionOnClick
       rowSelectionModel={selectionModel}
       onRowSelectionModelChange={setSelectionModel}
+      // MUI X v8 hides the toolbar slot unless showToolbar is set - without it the bulk-classify
+      // toolbar below never rendered, so checkbox selection had no effect.
+      showToolbar={!readOnly && selectedCount > 0}
       sx={{
         '& .MuiDataGrid-cell.wrap-cell': {
           whiteSpace: 'normal',
