@@ -35,15 +35,8 @@ import ConfirmDialog from '../../components/ConfirmDialog';
 import VendorSelect from '../../components/VendorSelect';
 import OrderAsAutocomplete from '../../components/OrderAsAutocomplete';
 import { useToast } from '../../components/Toast';
-import {
-  UPDATE_PO,
-  CANCEL_PO,
-  UPDATE_PO_LINE_ITEM_ORDER_AS,
-  UPDATE_PO_LINE_ITEM_UNIT_COST,
-  UPLOAD_PO_DOCUMENT,
-  DELETE_PO_DOCUMENT,
-} from '../../graphql/mutations';
-import { GET_PRIOR_ORDER_AS_VALUES } from '../../graphql/queries';
+import { UPDATE_PO, CANCEL_PO, UPDATE_PO_LINE_ITEM_ORDER_AS, UPDATE_PO_LINE_ITEM_UNIT_COST, UPLOAD_PO_DOCUMENT, DELETE_PO_DOCUMENT } from '../../graphql/po';
+import { GET_PRIOR_ORDER_AS_VALUES } from '../../graphql/shared';
 import type { PurchaseOrder } from './index';
 import GpPurchaseOrderDialog from './GpPurchaseOrderDialog';
 import POGenerateDialog from './POGenerateDialog';
@@ -59,7 +52,11 @@ const DOC_TYPE_LABELS: Record<string, string> = {
 
 function formatDate(dateStr: string | null | undefined): string {
   if (!dateStr) return '-';
-  return new Date(dateStr).toLocaleDateString();
+  // Parse a date-only string (YYYY-MM-DD) as LOCAL midnight, not UTC, so it displays as entered
+  // (same #238 fix as the PO-document code - `new Date('2026-08-01')` renders 7/31 behind UTC).
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr);
+  const d = m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(dateStr);
+  return isNaN(d.getTime()) ? '-' : d.toLocaleDateString();
 }
 
 function formatDateTime(dateStr: string | null | undefined): string {
@@ -102,7 +99,11 @@ export default function PODetailModal({
   const [vendorId, setVendorId] = useState<string | null>(po.vendor?.id ?? null);
   const [vendorQuoteNumber, setVendorQuoteNumber] = useState(po.vendorQuoteNumber ?? '');
   const [expectedDeliveryDate, setExpectedDeliveryDate] = useState(po.expectedDeliveryDate ?? '');
+  const [preferredDeliveryDate, setPreferredDeliveryDate] = useState(po.preferredDeliveryDate ?? '');
   const [notes, setNotes] = useState(po.notes ?? '');
+  // Issue #156: optional order-time dollar costs, kept as strings ('' = not entered, distinct from 0).
+  const [shippingCost, setShippingCost] = useState(po.shippingCost != null ? String(po.shippingCost) : '');
+  const [tariffAmount, setTariffAmount] = useState(po.tariffAmount != null ? String(po.tariffAmount) : '');
   const [vendorIdError, setVendorIdError] = useState('');
   const [poNumberError, setPoNumberError] = useState('');
   const [aliasEdits, setAliasEdits] = useState<Record<string, string>>({});
@@ -195,7 +196,10 @@ export default function PODetailModal({
     setVendorId(po.vendor?.id ?? null);
     setVendorQuoteNumber(po.vendorQuoteNumber ?? '');
     setExpectedDeliveryDate(po.expectedDeliveryDate ?? '');
+    setPreferredDeliveryDate(po.preferredDeliveryDate ?? '');
     setNotes(po.notes ?? '');
+    setShippingCost(po.shippingCost != null ? String(po.shippingCost) : '');
+    setTariffAmount(po.tariffAmount != null ? String(po.tariffAmount) : '');
     setVendorIdError('');
     setPoNumberError('');
     const initialAliases: Record<string, string> = {};
@@ -253,14 +257,22 @@ export default function PODetailModal({
       return;
     }
 
+    // Issue #216: the delivery dates are status-gated - preferred is the PM's ask on the DRAFT
+    // request, expected is the vendor's answer once GP-Registered. Send only the one editable now
+    // (null = "not provided" for these).
+    const isDraft = po.status === 'DRAFT';
     updatePo({
       variables: {
         id: po.id,
         vendorId: vendorId || null,
-        expectedDeliveryDate: expectedDeliveryDate || null,
+        preferredDeliveryDate: isDraft ? preferredDeliveryDate || null : null,
+        expectedDeliveryDate: !isDraft ? expectedDeliveryDate || null : null,
         poNumber: poNumber || null,
         vendorQuoteNumber: vendorQuoteNumber || null,
         notes: notes || null,
+        // Issue #156: '' = not entered (null clears); 0 is a valid entered value.
+        shippingCost: shippingCost.trim() === '' ? null : parseFloat(shippingCost),
+        tariffAmount: tariffAmount.trim() === '' ? null : parseFloat(tariffAmount),
       },
     });
   };
@@ -564,15 +576,49 @@ export default function PODetailModal({
               fullWidth
               size="small"
             />
-            <TextField
-              label="Expected Delivery Date"
-              type="date"
-              value={expectedDeliveryDate}
-              onChange={(e) => setExpectedDeliveryDate(e.target.value)}
-              fullWidth
-              size="small"
-              slotProps={{ inputLabel: { shrink: true } }}
-            />
+            {/* Issue #216: preferred is the PM's ask, editable only on the DRAFT request; expected is
+                the vendor's answer, only enterable once GP-Registered (and before receiving). */}
+            {po.status === 'DRAFT' ? (
+              <TextField
+                label="Preferred Delivery Date"
+                type="date"
+                value={preferredDeliveryDate}
+                onChange={(e) => setPreferredDeliveryDate(e.target.value)}
+                fullWidth
+                size="small"
+                slotProps={{ inputLabel: { shrink: true } }}
+              />
+            ) : (
+              <TextField
+                label="Expected Delivery Date"
+                type="date"
+                value={expectedDeliveryDate}
+                onChange={(e) => setExpectedDeliveryDate(e.target.value)}
+                fullWidth
+                size="small"
+                slotProps={{ inputLabel: { shrink: true } }}
+              />
+            )}
+            <Stack direction="row" spacing={2}>
+              <TextField
+                label="Shipping Costs"
+                value={shippingCost}
+                onChange={(e) => setShippingCost(e.target.value)}
+                size="small"
+                type="number"
+                slotProps={{ htmlInput: { min: 0, step: 0.01 } }}
+                sx={{ width: 200 }}
+              />
+              <TextField
+                label="Tariffs"
+                value={tariffAmount}
+                onChange={(e) => setTariffAmount(e.target.value)}
+                size="small"
+                type="number"
+                slotProps={{ htmlInput: { min: 0, step: 0.01 } }}
+                sx={{ width: 200 }}
+              />
+            </Stack>
             <TextField
               label="Notes"
               value={notes}
@@ -590,6 +636,9 @@ export default function PODetailModal({
             <InfoRow label="Vendor" value={poVendorName(po) || '-'} />
             <InfoRow label="Vendor Contact" value={po.vendor?.contactName || '-'} />
             <InfoRow label="Vendor Quote #" value={po.vendorQuoteNumber || '-'} />
+            <InfoRow label="Shipping Costs" value={po.shippingCost != null ? `$${po.shippingCost.toFixed(2)}` : '-'} />
+            <InfoRow label="Tariffs" value={po.tariffAmount != null ? `$${po.tariffAmount.toFixed(2)}` : '-'} />
+            <InfoRow label="Preferred Delivery Date" value={formatDate(po.preferredDeliveryDate)} />
             <InfoRow label="Expected Delivery Date" value={formatDate(po.expectedDeliveryDate)} />
             <InfoRow label="Order Date" value={formatDate(po.orderedAt)} />
             {po.notes && (

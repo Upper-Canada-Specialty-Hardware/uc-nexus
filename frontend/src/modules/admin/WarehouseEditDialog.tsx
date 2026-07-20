@@ -3,8 +3,8 @@ import { Button, Stack, TextField, FormControlLabel, Checkbox } from '@mui/mater
 import { useMutation } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import { useToast } from '../../components/Toast';
-import { CREATE_WAREHOUSE, UPDATE_WAREHOUSE } from '../../graphql/mutations';
-import { GET_WAREHOUSES } from '../../graphql/queries';
+import { CREATE_WAREHOUSE, UPDATE_WAREHOUSE } from '../../graphql/admin';
+import { GET_WAREHOUSES } from '../../graphql/shared';
 
 export interface WarehouseFormValue {
   id?: string;

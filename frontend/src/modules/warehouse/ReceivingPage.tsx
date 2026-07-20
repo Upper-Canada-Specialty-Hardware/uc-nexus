@@ -19,11 +19,8 @@ import type { GridColDef, GridRowParams } from '@mui/x-data-grid';
 import DataTable from '../../components/DataTable';
 import ReceiveModal from './ReceiveModal';
 import { formatPoStatus, poStatusChipColor } from '../po/poStatus';
-import {
-  GET_OPEN_POS,
-  GET_PROJECTS,
-  GET_RECENT_RECEIVE_RECORDS,
-} from '../../graphql/queries';
+import { GET_PROJECTS } from '../../graphql/shared';
+import { GET_OPEN_POS, GET_RECENT_RECEIVE_RECORDS } from '../../graphql/warehouse';
 import { poVendorName } from '../po/poVendorName';
 
 // ---- Types ----

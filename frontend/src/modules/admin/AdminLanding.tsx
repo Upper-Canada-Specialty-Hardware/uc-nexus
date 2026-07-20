@@ -8,6 +8,7 @@ import FolderIcon from '@mui/icons-material/Folder';
 import GroupIcon from '@mui/icons-material/Group';
 import CleaningServicesIcon from '@mui/icons-material/CleaningServices';
 import RouterIcon from '@mui/icons-material/Router';
+import BadgeIcon from '@mui/icons-material/Badge';
 import PeopleIcon from '@mui/icons-material/People';
 import BusinessIcon from '@mui/icons-material/Business';
 import CategoryIcon from '@mui/icons-material/Category';
@@ -15,7 +16,7 @@ import DoorFrontIcon from '@mui/icons-material/DoorFront';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@apollo/client/react';
 import { StatCard, StatCardSkeleton } from '../../components/StatCard';
-import { GET_ADMIN_STATS } from '../../graphql/queries';
+import { GET_ADMIN_STATS } from '../../graphql/admin';
 
 interface AdminStatsData {
   adminStats: {
@@ -52,6 +53,7 @@ const SUB_ROUTES = [
   { label: 'Warehouses', path: '/app/admin/warehouses', icon: <WarehouseIcon fontSize="large" /> },
   { label: 'Projects', path: '/app/admin/projects', icon: <FolderIcon fontSize="large" /> },
   { label: 'User Management', path: '/app/admin/users', icon: <GroupIcon fontSize="large" /> },
+  { label: 'Buyers', path: '/app/admin/buyers', icon: <BadgeIcon fontSize="large" /> },
   { label: 'Relay Installs', path: '/app/admin/relay-installs', icon: <RouterIcon fontSize="large" /> },
   { label: 'Location Cleanup', path: '/app/admin/location-cleanup', icon: <CleaningServicesIcon fontSize="large" /> },
 ];

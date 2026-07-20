@@ -46,6 +46,19 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # PR-parented openings (Start a Task, #222) have shop_assembly_request_id NULL, so
+    # re-tightening it to NOT NULL would abort. Refuse rather than silently drop or orphan
+    # them - the operator must remove them before downgrading past 042.
+    bind = op.get_bind()
+    orphans = bind.execute(
+        sa.text("SELECT count(*) FROM shop_assembly_openings WHERE shop_assembly_request_id IS NULL")
+    ).scalar()
+    if orphans:
+        raise RuntimeError(
+            f"Cannot downgrade past migration 042: {orphans} shop_assembly_openings row(s) are "
+            "PR-parented (shop_assembly_request_id IS NULL). Delete them before downgrading."
+        )
+
     op.drop_index("ix_shop_assembly_openings_pull_request", table_name="shop_assembly_openings")
     op.drop_column("shop_assembly_openings", "pull_request_id")
     op.alter_column(

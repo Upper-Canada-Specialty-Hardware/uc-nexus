@@ -13,9 +13,9 @@ import {
 import { useMutation, useQuery } from '@apollo/client/react';
 import Modal from '../../../components/Modal';
 import { useToast } from '../../../components/Toast';
-import { ALLOCATE_STOCK_TO_PROJECT } from '../../../graphql/mutations';
+import { GET_PROJECTS } from '../../../graphql/shared';
+import { ALLOCATE_STOCK_TO_PROJECT } from '../../../graphql/warehouse';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../../graphql/refetch';
-import { GET_PROJECTS } from '../../../graphql/queries';
 import type { StockItem } from '../StockPoolView';
 
 interface Project {

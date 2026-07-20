@@ -3,7 +3,7 @@ import { Box, Button, Checkbox, FormControlLabel, InputAdornment, Paper, TextFie
 import { useQuery } from '@apollo/client/react';
 import VendorSelect from '../../components/VendorSelect';
 import OrderAsAutocomplete from '../../components/OrderAsAutocomplete';
-import { GET_PRIOR_ORDER_AS_VALUES } from '../../graphql/queries';
+import { GET_PRIOR_ORDER_AS_VALUES } from '../../graphql/shared';
 import type { AggregatedHardwareItem } from './types';
 
 // ---- Aggregation Types ----
@@ -29,12 +29,16 @@ interface PriorOrderAsQueryData {
 
 interface PurchaseOrdersStepProps {
   vendorGroups: Map<string, AggregatedHardwareItem[]>;
-  vendorPOInfo: Map<string, { vendorId: string | null; notes: string }>;
+  vendorPOInfo: Map<string, { vendorId: string | null; notes: string; preferredDeliveryDate: string }>;
   selectedVendors: Set<string>;
   unitCostOverrides: Map<string, number>;
   orderAsValues: Map<string, string>;
   onToggleVendor: (vendor: string) => void;
-  onUpdateVendorPO: (manufacturerKey: string, field: 'vendorId' | 'notes', value: string | null) => void;
+  onUpdateVendorPO: (
+    manufacturerKey: string,
+    field: 'vendorId' | 'notes' | 'preferredDeliveryDate',
+    value: string | null,
+  ) => void;
   onUpdateUnitCost: (vendor: string, productCode: string, hardwareCategory: string, newCost: number) => void;
   onUpdateOrderAs: (key: string, value: string) => void;
   onNext: () => void;
@@ -81,12 +85,16 @@ function aggregateLineItems(
 interface VendorGroupCardProps {
   vendor: string;
   items: AggregatedHardwareItem[];
-  info: { vendorId: string | null; notes: string };
+  info: { vendorId: string | null; notes: string; preferredDeliveryDate: string };
   isSelected: boolean;
   unitCostOverrides: Map<string, number>;
   orderAsValues: Map<string, string>;
   onToggleVendor: (vendor: string) => void;
-  onUpdateVendorPO: (manufacturerKey: string, field: 'vendorId' | 'notes', value: string | null) => void;
+  onUpdateVendorPO: (
+    manufacturerKey: string,
+    field: 'vendorId' | 'notes' | 'preferredDeliveryDate',
+    value: string | null,
+  ) => void;
   onUpdateUnitCost: (vendor: string, productCode: string, hardwareCategory: string, newCost: number) => void;
   onUpdateOrderAs: (key: string, value: string) => void;
 }
@@ -150,7 +158,7 @@ function VendorGroupCard({
         </Typography>
       </Box>
 
-      {/* Vendor select + Notes fields */}
+      {/* Vendor select + Preferred delivery date + Notes fields */}
       <Box sx={{ display: 'flex', gap: 2, mb: 2 }}>
         <Box sx={{ flex: 1 }}>
           <VendorSelect
@@ -159,6 +167,16 @@ function VendorGroupCard({
             disabled={!isSelected}
           />
         </Box>
+        <TextField
+          label="Preferred delivery date"
+          size="small"
+          type="date"
+          disabled={!isSelected}
+          value={info.preferredDeliveryDate}
+          onChange={(e) => onUpdateVendorPO(vendor, 'preferredDeliveryDate', e.target.value)}
+          sx={{ width: 190 }}
+          slotProps={{ inputLabel: { shrink: true } }}
+        />
         <TextField
           label="Notes"
           size="small"
@@ -303,7 +321,7 @@ export default function PurchaseOrdersStep({
       </Typography>
 
       {sortedVendors.map(([vendor, items]) => {
-        const info = vendorPOInfo.get(vendor) ?? { vendorId: null, notes: '' };
+        const info = vendorPOInfo.get(vendor) ?? { vendorId: null, notes: '', preferredDeliveryDate: '' };
         const isSelected = selectedVendors.has(vendor);
         return (
           <VendorGroupCard

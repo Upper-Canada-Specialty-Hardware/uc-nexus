@@ -9,7 +9,7 @@ import asyncio
 import pytest
 
 from app.repositories import manufacturer_vendor_map_repository as map_repo
-from app.schemas import queries as queries_module
+from app.schemas import relay as relay_module
 from app.schemas.queries import Query
 
 
@@ -19,7 +19,7 @@ class FakeInfo:
 
 @pytest.fixture(autouse=True)
 def _bypass_require_user(monkeypatch):
-    monkeypatch.setattr(queries_module, "require_user", lambda info: {"user_id": "test-user"})
+    monkeypatch.setattr(relay_module, "require_user", lambda info: {"user_id": "test-user"})
 
 
 class FakeGateway:
@@ -48,7 +48,7 @@ def test_saved_mapping_hit_returns_that_vendor_and_skips_relay(monkeypatch):
 
     monkeypatch.setattr(map_repo, "lookup", fake_lookup)
     gateway = FakeGateway({"vendors": []})
-    monkeypatch.setattr(queries_module, "relay_gateway", gateway)
+    monkeypatch.setattr(relay_module, "relay_gateway", gateway)
 
     async def run():
         return await Query().suggest_vendor_for_manufacturer(FakeInfo(), gp_company="TUBC", manufacturer="Acme, Inc.")
@@ -76,7 +76,7 @@ def test_no_mapping_ranks_live_vendors_by_fuzzy_score(monkeypatch):
             ]
         }
     )
-    monkeypatch.setattr(queries_module, "relay_gateway", gateway)
+    monkeypatch.setattr(relay_module, "relay_gateway", gateway)
 
     async def run():
         return await Query().suggest_vendor_for_manufacturer(FakeInfo(), gp_company="TUBC", manufacturer="Acme")

@@ -23,12 +23,8 @@ import MoreVertIcon from '@mui/icons-material/MoreVert';
 import LocationOnIcon from '@mui/icons-material/LocationOn';
 import { DataGrid, type GridColDef, type GridRowParams } from '@mui/x-data-grid';
 import { useQuery } from '@apollo/client/react';
-import {
-  GET_LOCATION_UTILIZATION,
-  GET_LOCATION_CONTENTS,
-  GET_LOCATION_DISTINCT_VALUES,
-  GET_WAREHOUSES,
-} from '../../graphql/queries';
+import { GET_WAREHOUSES } from '../../graphql/shared';
+import { GET_LOCATION_UTILIZATION, GET_LOCATION_CONTENTS, GET_LOCATION_DISTINCT_VALUES } from '../../graphql/warehouse';
 import LocationActionDialog, {
   type LocationActionMode,
   type LocationActionTarget,

@@ -2,11 +2,40 @@
 
 import uuid
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session, selectinload
 
 from app.errors import ConflictError, NotFoundError, ValidationError
+from app.models.project import Opening as OpeningModel
 from app.models.project import Project as ProjectModel
+
+
+def list_projects_with_opening_counts(session: Session) -> list[tuple[ProjectModel, int]]:
+    """All projects newest-first, each paired with its opening count from one grouped query -
+    list views never lazy-load the openings relationship."""
+    projects = list(session.scalars(select(ProjectModel).order_by(ProjectModel.created_at.desc())).unique().all())
+    count_rows = session.execute(select(OpeningModel.project_id, func.count()).group_by(OpeningModel.project_id)).all()
+    counts: dict[uuid.UUID, int] = {pid: c for pid, c in count_rows}
+    return [(p, counts.get(p.id, 0)) for p in projects]
+
+
+def get_project(session: Session, project_uuid: uuid.UUID) -> ProjectModel | None:
+    return session.get(ProjectModel, project_uuid)
+
+
+def get_project_by_schedule_id(session: Session, schedule_project_id: str) -> ProjectModel | None:
+    """Project by its TITAN schedule identity (the project_id column), openings eagerly loaded."""
+    stmt = (
+        select(ProjectModel)
+        .options(selectinload(ProjectModel.openings))
+        .where(ProjectModel.project_id == schedule_project_id)
+    )
+    return session.scalars(stmt).unique().first()
+
+
+def get_project_with_openings(session: Session, project_uuid: uuid.UUID) -> ProjectModel | None:
+    stmt = select(ProjectModel).options(selectinload(ProjectModel.openings)).where(ProjectModel.id == project_uuid)
+    return session.scalars(stmt).unique().first()
 
 
 def adopt_gp_job(session: Session, job_number: str, job_name: str | None) -> ProjectModel:

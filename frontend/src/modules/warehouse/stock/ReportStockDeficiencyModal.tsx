@@ -3,7 +3,7 @@ import { Button, Stack, TextField, Alert, Typography } from '@mui/material';
 import { useMutation } from '@apollo/client/react';
 import Modal from '../../../components/Modal';
 import { useToast } from '../../../components/Toast';
-import { REPORT_STOCK_DEFICIENCY } from '../../../graphql/mutations';
+import { REPORT_STOCK_DEFICIENCY } from '../../../graphql/warehouse';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../../graphql/refetch';
 import type { StockItem } from '../StockPoolView';
 

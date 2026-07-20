@@ -8,28 +8,29 @@ This is a tester's knowledge journal for UC Nexus. It documents how the app work
 
 ## Environment
 
-Two runtimes. **Local is the default** for simulated user testing (no deploy wait); Railway is the fallback.
+**Railway is the default** for simulated user testing (issue #182 pivot - the localdev runtime was dropped for UC Nexus e2e; zero local setup needed).
 
-- **Local (default)**: frontend `http://localhost:5173`, backend `http://localhost:8000`. Run the backend with `poetry run uvicorn main:app --reload` (from `backend/`) and the frontend with `npm run dev` (from `frontend/`).
-- **Railway (fallback)**: frontend `https://frontend-production-34fc.up.railway.app/`, backend `https://backend-production-7866.up.railway.app/`.
+- **Railway production (default)**: frontend `https://frontend-production-34fc.up.railway.app/`, backend `https://backend-production-7866.up.railway.app/`. Deploys from master after CI passes.
+- **Railway PR environments** (once enabled in Project Settings → Environments): every PR gets a full ephemeral replica (frontend + backend + fresh empty Postgres, migrated on boot). The Railway GitHub bot comments the environment's URLs on the PR - test there BEFORE merge, substituting those URLs into the sign-in flow below. Data starts empty; seed via the import fixture. `VITE_GRAPHQL_URL` is a reference variable (`https://${{backend.RAILWAY_PUBLIC_DOMAIN}}/graphql`) so each environment self-wires; `TESTING_ENABLED` and Clerk keys inherit from production.
+- **Local (manual fallback)**: frontend `http://localhost:5173`, backend `http://localhost:8000`. Run the backend with `poetry run uvicorn main:app --reload` (from `backend/`) and the frontend with `npm run dev` (from `frontend/`). Needs a local Postgres (not provided; the worktree-localdev adoption was dropped).
 - **Auth**: Clerk sign-in, automated via one-time sign-in tokens (no manual password/verification needed).
   - Backend endpoint `GET /testing/clerk-sign-in` generates the token (requires `TESTING_ENABLED=true`).
   - Navigate to the frontend URL with `?__clerk_ticket=TOKEN` to auto-authenticate.
-  - Clerk dev instances already allow `localhost`, so the same flow works against the local runtime unchanged.
+  - Tokens are one-time use; fetch a fresh one each session. Works on any runtime with the same Clerk dev instance.
 - **Test XML file**: `testing/fixtures/contracterp-74.xml` - TITAN hardware schedule export, use for Import wizard testing (upload via `upload_file`)
 
 ## Getting Started (Every Session)
 
-1. **Sign in**: Use `evaluate_script` to fetch a sign-in token and navigate with it. Local (default):
+1. **Sign in**: Use `evaluate_script` to fetch a sign-in token and navigate with it. Railway production (default):
    ```js
    (async () => {
-     const resp = await fetch('http://localhost:8000/testing/clerk-sign-in');
+     const resp = await fetch('https://backend-production-7866.up.railway.app/testing/clerk-sign-in');
      const { token } = await resp.json();
-     window.location.href = 'http://localhost:5173/?__clerk_ticket=' + token;
+     window.location.href = 'https://frontend-production-34fc.up.railway.app/?__clerk_ticket=' + token + '&cb=' + Date.now();
      return 'Navigating with sign-in token...';
    })()
    ```
-   For the Railway fallback, swap in the `backend-production-7866` / `frontend-production-34fc` URLs.
+   For a PR environment, swap in the URLs from the Railway bot's PR comment. For the local fallback, use `http://localhost:8000` / `http://localhost:5173`.
    - Clerk auto-authenticates — no email, password, or verification code needed.
    - You land on `/app` (Module Selector) fully signed in.
 2. **Reset data** (if needed): Click the "DevAction: drop and rebuild schema" button in the app bar.
@@ -110,12 +111,14 @@ Two runtimes. **Local is the default** for simulated user testing (no deploy wai
 - **Expand all** targets only the currently-visible (filtered + sorted) rows — not the raw fetch.
 - The Status multi-select uses underlying enum values (DRAFT, PARTIALLY_RECEIVED, etc.) but displays formatted labels. When driving via JS, the option's a11y `value` attribute reflects the display label, but the actual MUI state holds the enum value — so test by observing filtered rows, not by reading the option's a11y value.
 
-**Create PO Dialog** (manual PO creation):
-- Project selector (optional — can create POs without a project)
-- Vendor Name, Vendor Contact fields
-- Line items grid: Hardware Category, Product Code, Qty, Unit Cost, Classification (optional), Order As (optional — vendor alias/alternate product name)
+**Create PO Dialog** (manual PO creation, issue #256 - draft-first, NO relay needed):
+- Title "Create PO Request (Draft)"; the Create PO button works with the relay offline
+- Project selector (optional, all projects — buyer assignments only gate the register step)
+- Vendor (Nexus vendor strict-select, optional) + Preferred delivery date
+- Shipping costs / Tariffs (optional), Notes
+- Line items grid: Hardware Category, Product Code, Qty, Unit Cost, Order As (REQUIRED per line; no Classification column - the PM sets site/shop at import)
 - "Add Item" button to add rows, delete button per row (minimum 1 item)
-- Submit creates a DRAFT PO with auto-generated request number (PO-REQ-XXX)
+- Submit ("Create Draft") creates a DRAFT PO with auto-generated request number (PO-REQ-XXX); no GP push. Registering into GP is the separate "Register in GP" action on the draft (relay + buyer identity required there)
 
 **PO Detail Modal**:
 - Shows: status chip, PO number, vendor info, quote #, dates, "No Project" label if project-less
@@ -138,7 +141,7 @@ DRAFT -> ORDERED -> VENDOR_CONFIRMED -> PARTIALLY_RECEIVED -> CLOSED
 - Dialog fields pre-fill from the PO, its saved `PODocumentData`, and `poDocumentSettings`: vendor mailing address, buyer (from `buyerId`), currency (CAD `$` / USD `$US`), ship-to (warehouse dropdown | "Use project site" button | custom text - the resolved block is stored verbatim), shipping method, proposal #, required-by (defaults to `expectedDeliveryDate`), freight/misc/tax + tax label, and three conditional toggles (wood-door FSC, USA tariff, international customs).
 - **Generate & preview** opens the PDF in a new tab (`window.open` blob). **Save to PO documents** persists `PODocumentData` + uploads the PDF as a `GENERATED_PO` document (appears in the Documents list, label "Generated PO", downloadable via presigned URL). Both first call `savePoDocumentData`, so re-opening the dialog pre-fills.
 - Doc math: each line ext = ordered x unitCost; Subtotal = sum of ext; Order Total = Subtotal + Freight + Miscellaneous + Tax. The item column shows `hardwareCategory` (main line) + `orderAs` (Reference line). Boilerplate (tax numbers, mandatory bullets, signature, footer) always prints; the FSC / USA-tariff / customs blocks print only when their toggle is on.
-- Admin boilerplate lives at Admin -> PO Document Settings (see Admin Module); the per-PO gaps are captured in this dialog.
+- Company-wide boilerplate lives at the PO module's Document Settings page (`/app/po/document-settings`, "Document Settings" button in the PO list header - it moved out of Admin); the per-PO gaps are captured in this dialog.
 
 ### Import Module
 
@@ -239,7 +242,7 @@ Both entry points open a "Transfer <productCode>" MUI dialog with: an "X availab
 - Projects (`/app/admin/projects`) — edit project details + OSSA flag (see below)
 - User Management (`/app/admin/users`) — assign Clerk roles
 - Location Cleanup (`/app/admin/location-cleanup`)
-- PO Document Settings (`/app/admin/po-document-settings`) — company-wide boilerplate for the generated PO document (issue #230); see below
+- (PO Document Settings moved to the PO module: `/app/po/document-settings`; see below. Unknown `/app/admin/*` sub-routes silently render the Admin landing, not a 404.)
 
 Inventory quantity corrections are NOT here — they live in the Warehouse module (Locations tab).
 
@@ -258,7 +261,7 @@ Inventory quantity corrections are NOT here — they live in the Warehouse modul
 - **Edit dialog**: OSSA toggle + editable text fields (description, client, job site name, address/city/state/zip, general contractor, GC contact name/phone/email, project manager, application). A read-only "From TITAN" section shows project number, submittal job no, submittal assignment count, estimator code, TITAN user ID — these are immutable.
 - Save calls `updateProject`, refetches the grid, and shows a "Project updated" toast.
 
-**PO Document Settings page** (`/app/admin/po-document-settings`, issue #230):
+**PO Document Settings page** (`/app/po/document-settings`, issue #230 - lives in the PO module, reached via the "Document Settings" button on the PO list header):
 - Admin/Manager only (non-admins get a permission Alert; the mutation is `require_admin`-gated). Single-record form, not a grid.
 - Fields: company from-address, payment terms, confirm-with, tax numbers, mandatory bullets (one per line), wood-door FSC note, USA tariff note + effective-until date, customs broker block, shipping accounts (one per line), signature note, footer notes.
 - Backed by `poDocumentSettings` (get-or-creates a single row seeded from the guideline doc on first read, so it never returns null) and `updatePoDocumentSettings`. Save toast = "PO document settings saved". These values print on every generated PO document.
@@ -269,7 +272,7 @@ Inventory quantity corrections are NOT here — they live in the Warehouse modul
 
 - `fill_form` is much more reliable than sequential `fill` calls for forms with many fields.
 - After "DevAction: drop and rebuild schema", there are TWO dialogs: a MUI confirm dialog, then a `window.alert()`. Must handle both.
-- Clerk sign-in tokens: Fetch from `GET /testing/clerk-sign-in` on the backend, then navigate to the frontend with `?__clerk_ticket=TOKEN`. Local default is `http://localhost:8000` (backend) + `http://localhost:5173` (frontend); Railway is the fallback. Clerk auto-authenticates - no form fill, no verification code. Tokens are one-time use; fetch a fresh one each session.
+- Clerk sign-in tokens: Fetch from `GET /testing/clerk-sign-in` on the backend, then navigate to the frontend with `?__clerk_ticket=TOKEN`. Railway production is the default runtime (issue #182); PR environments and localhost use the same flow with their own URLs. Clerk auto-authenticates - no form fill, no verification code. Tokens are one-time use; fetch a fresh one each session.
 - When viewing "All Projects", `projectId` is undefined/null in queries — this returns all POs across projects.
 - To test the Warehouse Receiving wizard's "Enter Quantities" step, you need at least one PO in ORDERED (or higher) status. DRAFT POs do not appear in the receiving wizard's PO selection list.
 - The line item field formerly called "Vendor Alias" is now called "Order As" in pre-order screens (Create PO dialog, PO detail modal) and "Ordered As" in post-order screens (Warehouse receiving wizard).
@@ -302,6 +305,15 @@ Inventory quantity corrections are NOT here — they live in the Warehouse modul
 - Transfer dialog Aisle/Bay/Bin: these are comboboxes with autocomplete="list". Use `evaluate_script` to set the underlying input value (native value setter + `input` event). This reliably sets the values without triggering dropdown selection. The Transfer button enables once all three fields are filled.
 - Locations page (Warden filter, panel open): when a single warehouse filter is active, the left rail single-column shows just the bin name + qty (no warehouse chip in that column, since filter is already scoped). The right panel header still shows the warehouse chip (e.g. "WRD").
 - Verifying a generated PDF (issue #230 PO document): the doc is text-based react-pdf, not an image, so `pdftotext` works. Fastest path for content assertions: use the dialog's "Save to PO documents" to upload it, query the PO's `documents { downloadUrl }` (presigned S3 URL) via GraphQL, `curl` the URL to a file, then `pdftotext -layout` (or `-raw` for the totals column, which `-layout` misaligns since Subtotal/Freight/Miscellaneous/Tax/Order-Total are right-aligned). "Generate & preview" opens a blob in a new tab that's hard to read via MCP - prefer save-then-fetch.
+- pdftotext/poppler is NOT installed on the dev machine, and naive stream-inflation can't read the text (react-pdf subsets fonts to custom glyph IDs). Working alternative: open the presigned `downloadUrl` directly in a browser tab (Chrome renders PDFs natively) and `take_screenshot` - the full totals column is readable in the image. Verified this way for issue #156 (Tariffs line + Order Total math).
+- Issue #156 fields: PO detail modal shows "Shipping Costs" / "Tariffs" info rows ('-' when null) and edit-mode number fields; the generate-document dialog's Freight prefills from the PO's shippingCost (saved documentData override wins) and its new Tariffs field from the PO's tariffAmount; the PDF prints a Tariffs totals line only when > 0.
+- Issue #216 buyer identity (scoped to REGISTERING by issue #256 - drafting needs neither): registering a PO into GP REQUIRES the signed-in user to have a GP buyer identity (Clerk publicMetadata.gpBuyerId, set in Admin -> User Management) AND, for project POs, a buyer assignment (Admin -> Buyers: assigned projects + designated 'cc1-cc2' cost codes). Without them the register dialog blocks and the backend rejects. The test user (Jay Puzon) is linked to GP buyer "mira" with project 80003 + cost codes 210-200/310-000 assigned. The register dialog's Buyer field is read-only (your identity); its cost-code dropdown offers only designated codes. Stock POs (no project) skip the assignment check but still need the identity.
+- Issue #216 delivery dates: PO Requests capture "Preferred delivery date" per vendor card in the import wizard's PO step; the detail modal edits Preferred only while DRAFT and Expected only when GP-Registered/Vendor-Confirmed (server-enforced).
+- Import-created PO drafts have EMPTY Order As values unless set in the wizard's PO step - the register dialog then blocks submit with per-line 'Required' errors until each line's Order As is filled.
 - The generate dialog + admin PO-settings text fields APPEND when driven by `fill`/`fill_form` if they already hold a value (same MUI controlled-input quirk as spinbuttons). For a pre-filled field, set the value via `evaluate_script` using the native value setter + an `input` event (match the label's `for` attr to the input id), or drive the mutation directly. Empty fields fill fine.
 - Date-only fields: a `<TextField type="date">` renders as Month/Day/Year spinbuttons in the a11y tree. Set it via `evaluate_script` native setter with a `YYYY-MM-DD` string on the underlying input (dispatch `input` + `change`). Note: formatting a `YYYY-MM-DD` string with `new Date(str)` is UTC and prints the previous calendar day in a behind-UTC tz - the PO-document code parses date-only strings as local (fixed in #238), so the printed required-by should match what was entered.
 - To seed a project's job-site address for the PO document's "Use project site" ship-to option (most test projects have null address fields), call `updateProject(id, {jobSiteName, address, city, state, zip})` via `evaluate_script` (Admin/Manager gated). Then the dialog's "Use project site" button builds a real "UC Hardware Inc. - Deliver to site / ..." block.
+- PO list rows: clicking the row's StaticText via a snapshot uid may NOT open the detail modal (the a11y click can miss the row handler). Reliable alternative: `evaluate_script` finding the leaf element by text and clicking its `closest('td')`.
+- Locations page bin panel "Item actions" menu (stock rows): Move / Transfer / Adjust Qty / Unlocate. "Adjust Qty" opens the shared LocationActionDialog - Confirm stays disabled until a non-zero adjustment AND a reason are entered; the helper text under the adjustment shows the computed "New qty: N" and flags negatives. Verified live: adjustment writes an ADJUSTMENT audit row (`auditLog(limit: N)`) with performedBy "Admin/Manager".
+- Draft PO create (issue #256 dialog) works with the relay down end to end: the created draft's `preferredDeliveryDate` round-trips exactly (entered 2026-08-15 -> stored 2026-08-15 -> detail modal renders 8/15/2026, no UTC day shift). Cancelling a draft removes it from the `purchaseOrders` list entirely.
+- `inventoryHierarchy` returns `totalAvailableQuantity` at both category and product-code levels (issue #229): available = quantity - deficient, so a 10-qty row with 7 deficient shows total 10 / available 3. Cross-check against `deficientItems`.

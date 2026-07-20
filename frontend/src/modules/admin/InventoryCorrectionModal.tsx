@@ -15,15 +15,8 @@ import Modal from '../../components/Modal';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
-import {
-  OVERRIDE_INVENTORY_QUANTITY,
-  MOVE_INVENTORY_LOCATION,
-  MARK_INVENTORY_UNLOCATED,
-  ASSIGN_INVENTORY_LOCATION,
-  MOVE_OPENING_ITEM_LOCATION,
-  MARK_OPENING_ITEM_UNLOCATED,
-  ASSIGN_OPENING_ITEM_LOCATION,
-} from '../../graphql/mutations';
+import { OVERRIDE_INVENTORY_QUANTITY, ASSIGN_OPENING_ITEM_LOCATION } from '../../graphql/admin';
+import { MOVE_INVENTORY_LOCATION, MARK_INVENTORY_UNLOCATED, ASSIGN_INVENTORY_LOCATION, MOVE_OPENING_ITEM_LOCATION, MARK_OPENING_ITEM_UNLOCATED } from '../../graphql/shared';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
 
 // --- Item types ---

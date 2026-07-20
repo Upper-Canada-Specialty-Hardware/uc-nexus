@@ -100,6 +100,8 @@ class PODraftInput:
     po_number: str | None = None
     vendor_id: strawberry.ID | None = None
     notes: str | None = None
+    # Issue #216: the PM's requested date, captured at PO-request creation.
+    preferred_delivery_date: date | None = None
     hardware_item_refs: list[HardwareItemRef] = strawberry.field(default_factory=list)
     line_item_aliases: list[POLineItemOrderAsInput] = strawberry.field(default_factory=list)
 
@@ -177,32 +179,21 @@ class CreatePOLineItemInput:
 
 
 @strawberry.input
-class CreatePOInput:
-    """Issue #199: GP-first, server-side. The resolver pushes this to GP via relay_call (create_po)
-    BEFORE persisting anything, using GP's returned PONUMBER + company, so the PO is created already
-    GP-registered in one commit (no numberless DRAFT window)."""
+class CreateDraftPOInput:
+    """Issue #256: manual PO creation lands as a plain DRAFT - no relay, no GP fields. Registering
+    the draft into GP (register_po_in_gp) is a separate, conscious user action where the GP vendor,
+    buyer identity, and cost code are captured."""
 
     line_items: list[CreatePOLineItemInput]
-    # The GP vendor picked live from the gpVendors(company) list (issue #200 - there's no local
-    # vendor-to-GP mirror anymore). Snapshotted onto the PO for display.
-    gp_vendor_id: str
-    gp_vendor_name: str
-    gp_company: str
-    # GP buyer (POP00101), picked from the gpBuyers dropdown - always sent so the relay's own
-    # per-workstation buyer fallback never decides it for a server-brokered call.
-    buyer_id: str
     project_id: strawberry.ID | None = None
-    # Optional link to a UC Nexus vendor record (contact info), independent of the GP vendor above.
+    # Optional link to a UC Nexus vendor record (contact info).
     vendor_id: strawberry.ID | None = None
     notes: str | None = None
-    # GP cost code for a project-linked PO (the issue #121 dropdown, 'phase-step-element').
-    # Applied to every job-cost line when the PO is pushed to GP via the relay.
-    cost_code: str | None = None
-    # Optional custom PO number to request from GP; the relay reserves GP's next number when omitted.
-    po_number: str | None = None
-    # Issue #202 #1: client-generated key (one per user action, re-sent on retry) that makes this
-    # GP-first write idempotent - a retry returns the already-created PO instead of a second GP PO.
-    idempotency_key: str = ""
+    # Issue #216: the PM's requested date, captured at request creation.
+    preferred_delivery_date: date | None = None
+    # Issue #156: optional order-time dollar costs. Null means "not entered"; 0 is a valid value.
+    shipping_cost: float | None = None
+    tariff_amount: float | None = None
 
 
 @strawberry.input
@@ -237,6 +228,9 @@ class RegisterPOInput:
     # Optional link to a UC Nexus vendor record (contact info), independent of the GP vendor above.
     vendor_id: strawberry.ID | None = None
     cost_code: str | None = None
+    # Issue #156: optional order-time dollar costs. Null means "not entered"; 0 is a valid value.
+    shipping_cost: float | None = None
+    tariff_amount: float | None = None
     # Issue #202 #1: client-generated key that makes this GP-first write idempotent on retry.
     idempotency_key: str = ""
 
@@ -326,6 +320,7 @@ class SavePODocumentDataInput:
     miscellaneous: float = 0
     tax_amount: float = 0
     tax_label: str = "Taxes"
+    tariff_amount: float = 0
     required_by_override: date | None = None
     include_fsc: bool = False
     include_usa_tariff: bool = False

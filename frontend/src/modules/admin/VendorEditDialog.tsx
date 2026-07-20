@@ -3,8 +3,8 @@ import { Button, Stack, TextField } from '@mui/material';
 import { useMutation } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import { useToast } from '../../components/Toast';
-import { CREATE_VENDOR, UPDATE_VENDOR } from '../../graphql/mutations';
-import { GET_VENDORS } from '../../graphql/queries';
+import { CREATE_VENDOR, UPDATE_VENDOR } from '../../graphql/admin';
+import { GET_VENDORS } from '../../graphql/shared';
 
 export interface VendorFormValue {
   id?: string;

@@ -12,7 +12,7 @@ import {
 import FolderIcon from '@mui/icons-material/Folder';
 import AllInboxIcon from '@mui/icons-material/AllInbox';
 import { useQuery } from '@apollo/client/react';
-import { GET_PROJECTS } from '../graphql/queries';
+import { GET_PROJECTS } from '../graphql/shared';
 import type { Project } from '../types/project';
 
 interface ProjectLandingPageProps {

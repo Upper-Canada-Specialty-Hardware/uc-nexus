@@ -14,8 +14,8 @@ import {
 import RefreshIcon from '@mui/icons-material/Refresh';
 import { useMutation, useQuery } from '@apollo/client/react';
 import { CombinedGraphQLErrors } from '@apollo/client/errors';
-import { ADOPT_GP_JOB } from '../../graphql/mutations';
-import { GET_PROJECTS, GET_GP_JOBS } from '../../graphql/queries';
+import { ADOPT_GP_JOB, GET_GP_JOBS } from '../../graphql/import';
+import { GET_PROJECTS } from '../../graphql/shared';
 import { useToast } from '../../components/Toast';
 import RelayStatusChip from '../../relay/RelayStatusChip';
 import { useRelayStatus } from '../../relay/useRelayStatus';

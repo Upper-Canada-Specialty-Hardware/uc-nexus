@@ -18,8 +18,8 @@ import { useMutation, useQuery } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
-import { GET_RETURNABLE_LINES, GET_WAREHOUSES } from '../../graphql/queries';
-import { CREATE_SHIPMENT_RETURN } from '../../graphql/mutations';
+import { GET_WAREHOUSES } from '../../graphql/shared';
+import { GET_RETURNABLE_LINES, CREATE_SHIPMENT_RETURN } from '../../graphql/shipping';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
 
 type Disposition = 'RETURN_TO_PROJECT' | 'NON_STOCK' | 'RMA_DEFECTIVE';

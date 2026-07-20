@@ -129,6 +129,17 @@ def _assert_po_number_available(
         raise ValidationError(f"PO number '{po_number}' already exists", field="po_number")
 
 
+def _coerce_order_cost(value, field: str) -> Decimal | None:
+    """Issue #156: coerce an optional order-time dollar cost (shipping_cost / tariff_amount) to
+    Decimal. Null passes through ("not entered"); a negative value is a clean field error."""
+    if value is None:
+        return None
+    amount = Decimal(str(value))
+    if amount < 0:
+        raise ValidationError(f"{field.replace('_', ' ').capitalize()} must be zero or greater", field=field)
+    return amount
+
+
 def create_po(
     session: Session,
     line_items: list[dict],
@@ -141,14 +152,16 @@ def create_po(
     gp_vendor_id: str | None = None,
     vendor_name_snapshot: str | None = None,
     buyer_id: str | None = None,
+    shipping_cost: float | None = None,
+    tariff_amount: float | None = None,
+    preferred_delivery_date=None,
 ) -> PurchaseOrder:
     """Create a manual PO with line items. No hardware items are created.
 
-    A manual PO is GP-first: the frontend pushes it to the GP relay and only calls this on success,
-    passing GP's returned po_number + gp_company. When those are present the PO is stamped and
-    advanced DRAFT -> GP_REGISTERED in this SAME commit, so there is no window where a created DRAFT
-    exists without its GP number (which would otherwise show "Register in GP" and let a retry create
-    a duplicate GP PO). Omitting them creates a plain DRAFT.
+    Issue #256: the manual path creates a plain DRAFT (no po_number/gp_company) - registering it
+    into GP is a separate, conscious user action (register_po_in_gp). The GP-first stamping branch
+    below (po_number + gp_company present, advancing DRAFT -> GP_REGISTERED in the same commit)
+    remains for callers that already hold a GP result.
 
     gp_vendor_id/vendor_name_snapshot are the GP vendor picked live from gpVendors at push time
     (issue #200 - there is no local vendor-to-GP mirror), frozen onto the PO for display."""
@@ -187,6 +200,10 @@ def create_po(
             vendor_name_snapshot.strip() if vendor_name_snapshot and vendor_name_snapshot.strip() else None
         ),
         buyer_id=buyer_id.strip() if buyer_id and buyer_id.strip() else None,
+        shipping_cost=_coerce_order_cost(shipping_cost, "shipping_cost"),
+        tariff_amount=_coerce_order_cost(tariff_amount, "tariff_amount"),
+        # Issue #216/#256: the PM's requested date, captured at request creation.
+        preferred_delivery_date=preferred_delivery_date,
     )
     session.add(po)
     session.flush()
@@ -257,6 +274,8 @@ def register_po_in_gp(
     vendor_id: uuid.UUID | None = None,
     cost_code: str | None = None,
     buyer_id: str | None = None,
+    shipping_cost: float | None = None,
+    tariff_amount: float | None = None,
 ) -> PurchaseOrder:
     """Register an imported DRAFT PO into GP (the import-acceptance path, issue #175).
 
@@ -373,6 +392,8 @@ def register_po_in_gp(
     if buyer_id and buyer_id.strip():
         po.buyer_id = buyer_id.strip()
     po.cost_code = cost_code.strip() if cost_code and cost_code.strip() else None
+    po.shipping_cost = _coerce_order_cost(shipping_cost, "shipping_cost")
+    po.tariff_amount = _coerce_order_cost(tariff_amount, "tariff_amount")
     po.po_number = cleaned_po_number
     po.gp_company = cleaned_company
     po.status = POStatus.GP_REGISTERED
@@ -437,6 +458,49 @@ def get_purchase_order(session: Session, po_id: uuid.UUID) -> PurchaseOrder | No
     return session.scalars(stmt).unique().first()
 
 
+def get_open_pos(session: Session, project_id: uuid.UUID | None = None) -> list[PurchaseOrder]:
+    """Open POs (GP-Registered / Vendor-Confirmed / Partially-Received), oldest ordered_at first, for
+    the receiving picker. Lean load - line_items/documents/vendor only, no nested hardware_items and
+    no document_data (the derived line manufacturer resolves to None here by design)."""
+    stmt = (
+        select(PurchaseOrder)
+        .options(
+            selectinload(PurchaseOrder.line_items),
+            selectinload(PurchaseOrder.documents),
+            selectinload(PurchaseOrder.vendor),
+        )
+        .where(
+            PurchaseOrder.deleted_at.is_(None),
+            PurchaseOrder.status.in_(
+                [
+                    POStatus.GP_REGISTERED,
+                    POStatus.VENDOR_CONFIRMED,
+                    POStatus.PARTIALLY_RECEIVED,
+                ]
+            ),
+        )
+        .order_by(PurchaseOrder.ordered_at.asc())
+    )
+    if project_id is not None:
+        stmt = stmt.where(PurchaseOrder.project_id == project_id)
+    return list(session.scalars(stmt).unique().all())
+
+
+def reload_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder | None:
+    """Re-read a PO with the relationships every mutation response needs (line_items, documents,
+    vendor). No deleted_at filter - callers hold an id they just wrote."""
+    stmt = (
+        select(PurchaseOrder)
+        .options(
+            selectinload(PurchaseOrder.line_items),
+            selectinload(PurchaseOrder.documents),
+            selectinload(PurchaseOrder.vendor),
+        )
+        .where(PurchaseOrder.id == po_id)
+    )
+    return session.scalars(stmt).unique().first()
+
+
 def get_receive_records_for_po(session: Session, po_id: uuid.UUID) -> list[ReceiveRecord]:
     """Get all ReceiveRecords for a PO, eagerly load their line_items.
     NOTE: PurchaseOrder model has NO receive_records relationship -- must query ReceiveRecord.po_id directly."""
@@ -493,10 +557,13 @@ def update_po(
     po_id: uuid.UUID,
     vendor_id=_UNSET,
     expected_delivery_date=None,
+    preferred_delivery_date=None,
     po_number: str | None = None,
     vendor_quote_number: str | None = None,
     project_id=_UNSET,
     notes: str | None = None,
+    shipping_cost=_UNSET,
+    tariff_amount=_UNSET,
 ) -> PurchaseOrder:
     """
     - Validate PO exists + not soft-deleted (NotFoundError)
@@ -548,12 +615,26 @@ def update_po(
         else:
             po.po_number = None
 
+    # Issue #216: the two delivery dates are status-gated. Preferred is the PM's ask, captured on the
+    # DRAFT request; expected is the vendor's answer, only enterable once the PO exists in GP (the
+    # DRAFT/GP_REGISTERED/VENDOR_CONFIRMED guard above already blocks both after receiving starts).
+    if preferred_delivery_date is not None:
+        if po.status != POStatus.DRAFT:
+            raise InvalidStateTransitionError("Preferred delivery date can only be set on a Draft PO request")
+        po.preferred_delivery_date = preferred_delivery_date
     if expected_delivery_date is not None:
+        if po.status == POStatus.DRAFT:
+            raise InvalidStateTransitionError("Expected delivery date can only be set after the PO is GP-Registered")
         po.expected_delivery_date = expected_delivery_date
     if vendor_quote_number is not None:
         po.vendor_quote_number = vendor_quote_number if vendor_quote_number.strip() else None
     if notes is not None:
         po.notes = notes if notes.strip() else None
+    # Issue #156: null clears the value, 0 is a valid entered value - so these use the _UNSET sentinel.
+    if shipping_cost is not _UNSET:
+        po.shipping_cost = _coerce_order_cost(shipping_cost, "shipping_cost")
+    if tariff_amount is not _UNSET:
+        po.tariff_amount = _coerce_order_cost(tariff_amount, "tariff_amount")
 
     # Auto-transition: GP_REGISTERED → VENDOR_CONFIRMED when both vendor_quote_number and vendor_ack doc exist
     if po.status == POStatus.GP_REGISTERED:
@@ -813,7 +894,7 @@ _DOC_DATA_TEXT_FIELDS = (
     "proposal_number",
     "tax_label",
 )
-_DOC_DATA_MONEY_FIELDS = ("freight", "miscellaneous", "tax_amount")
+_DOC_DATA_MONEY_FIELDS = ("freight", "miscellaneous", "tax_amount", "tariff_amount")
 _DOC_DATA_BOOL_FIELDS = ("include_fsc", "include_usa_tariff", "include_customs")
 
 
