@@ -16,7 +16,7 @@ import {
 } from '@mui/material';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import { useQuery } from '@apollo/client/react';
-import { GET_ASSEMBLE_LIST } from '../../graphql/queries';
+import { GET_ASSEMBLE_LIST } from '../../graphql/shop-assembly';
 
 // --- Types ---
 

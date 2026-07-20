@@ -8,7 +8,7 @@ import asyncio
 
 import pytest
 
-from app.schemas import queries as queries_module
+from app.schemas import relay as relay_module
 from app.schemas.queries import Query
 from app.services.relay_gateway import RelayGateway
 
@@ -19,7 +19,7 @@ class FakeInfo:
 
 @pytest.fixture(autouse=True)
 def _bypass_require_user(monkeypatch):
-    monkeypatch.setattr(queries_module, "require_user", lambda info: {"user_id": "test-user"})
+    monkeypatch.setattr(relay_module, "require_user", lambda info: {"user_id": "test-user"})
 
 
 class FakeGateway:
@@ -34,7 +34,7 @@ class FakeGateway:
 
 def _install_fake_gateway(monkeypatch, result):
     fake = FakeGateway(result)
-    monkeypatch.setattr(queries_module, "relay_gateway", fake)
+    monkeypatch.setattr(relay_module, "relay_gateway", fake)
     return fake
 
 
@@ -100,5 +100,5 @@ def test_gp_cost_codes_maps_relay_result_to_type(monkeypatch):
 
 def test_relay_status_resolver_reads_gateway_connected(monkeypatch):
     gateway = RelayGateway()
-    monkeypatch.setattr(queries_module, "relay_gateway", gateway)
+    monkeypatch.setattr(relay_module, "relay_gateway", gateway)
     assert Query().relay_status(FakeInfo()).connected is False

@@ -4,7 +4,7 @@ import { useMutation } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import { useToast } from '../../components/Toast';
-import { ADJUST_INVENTORY_QUANTITY } from '../../graphql/mutations';
+import { ADJUST_INVENTORY_QUANTITY } from '../../graphql/warehouse';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
 
 interface SpotCheckItem {

@@ -17,7 +17,7 @@ import {
 import { useLazyQuery } from '@apollo/client/react';
 import SearchIcon from '@mui/icons-material/Search';
 import Modal from '../../../components/Modal';
-import { GET_STOCK_MATCHES_FOR_OPENING } from '../../../graphql/queries';
+import { GET_STOCK_MATCHES_FOR_OPENING } from '../../../graphql/warehouse';
 import AllocateStockModal from './AllocateStockModal';
 import type { StockItem } from '../StockPoolView';
 

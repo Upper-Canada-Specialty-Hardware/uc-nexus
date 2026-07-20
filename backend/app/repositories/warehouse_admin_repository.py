@@ -26,6 +26,11 @@ def get_warehouse(session: Session, warehouse_id: uuid.UUID) -> Warehouse:
     return wh
 
 
+def find_warehouse(session: Session, warehouse_id: uuid.UUID) -> Warehouse | None:
+    """None-safe lookup for the nullable `warehouse` query (get_warehouse raises)."""
+    return session.get(Warehouse, warehouse_id)
+
+
 def get_primary_warehouse_id(session: Session) -> uuid.UUID:
     """The default warehouse new rows fall back to when none is otherwise determined."""
     wh_id = session.scalar(

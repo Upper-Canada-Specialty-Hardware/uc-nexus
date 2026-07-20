@@ -13,8 +13,8 @@ import {
 import { DataGrid, type GridColDef, type GridRowParams } from '@mui/x-data-grid';
 import DeleteIcon from '@mui/icons-material/Delete';
 import { useQuery, useMutation } from '@apollo/client/react';
-import { GET_VENDORS } from '../../graphql/queries';
-import { DELETE_VENDOR } from '../../graphql/mutations';
+import { DELETE_VENDOR } from '../../graphql/admin';
+import { GET_VENDORS } from '../../graphql/shared';
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
 import VendorEditDialog, { type VendorFormValue } from './VendorEditDialog';

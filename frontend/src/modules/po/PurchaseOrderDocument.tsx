@@ -99,6 +99,7 @@ export interface PurchaseOrderDocumentProps {
   miscellaneous: number;
   taxAmount: number;
   taxLabel: string;
+  tariffAmount: number;
   taxNumbers: string;
   mandatoryBullets: string[];
   shippingAccounts: string[];
@@ -129,14 +130,14 @@ export default function PurchaseOrderDocument(props: PurchaseOrderDocumentProps)
     poNumber, date, requiredBy, proposalNumber, companyFromAddress,
     vendorName, vendorAddress, shipTo,
     projectNumber, shippingMethod, paymentTerms, confirmWith, buyerName,
-    currency, lineItems, freight, miscellaneous, taxAmount, taxLabel,
+    currency, lineItems, freight, miscellaneous, taxAmount, taxLabel, tariffAmount,
     taxNumbers, mandatoryBullets, shippingAccounts, customsBrokerBlock,
     fscNote, usaTariffNote, footerNotes, signatureNote,
     includeFsc, includeUsaTariff, includeCustoms,
   } = props;
 
   const subtotal = lineItems.reduce((sum, li) => sum + (li.ordered ?? 0) * (li.unitPrice ?? 0), 0);
-  const orderTotal = subtotal + (freight ?? 0) + (miscellaneous ?? 0) + (taxAmount ?? 0);
+  const orderTotal = subtotal + (freight ?? 0) + (miscellaneous ?? 0) + (taxAmount ?? 0) + (tariffAmount ?? 0);
 
   return (
     <Document>
@@ -245,6 +246,12 @@ export default function PurchaseOrderDocument(props: PurchaseOrderDocumentProps)
             <Text style={styles.totalLabel}>{taxLabel || 'Taxes'}</Text>
             <Text style={styles.totalValue}>{formatMoney(taxAmount, currency)}</Text>
           </View>
+          {(tariffAmount ?? 0) > 0 && (
+            <View style={styles.totalRow}>
+              <Text style={styles.totalLabel}>Tariffs</Text>
+              <Text style={styles.totalValue}>{formatMoney(tariffAmount, currency)}</Text>
+            </View>
+          )}
           <View style={styles.grandRow}>
             <Text style={styles.grandLabel}>Order Total</Text>
             <Text style={styles.grandValue}>{formatMoney(orderTotal, currency)}</Text>

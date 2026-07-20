@@ -1,6 +1,6 @@
 import { useQuery } from '@apollo/client/react';
 import { Box, Typography, List, ListItem, ListItemText, Skeleton, Alert, Chip } from '@mui/material';
-import { GET_LOCATION_AUDIT_HISTORY } from '../../graphql/queries';
+import { GET_LOCATION_AUDIT_HISTORY } from '../../graphql/warehouse';
 
 interface AuditDetail {
   fromLocation?: { aisle?: string | null; bay?: string | null; bin?: string | null };

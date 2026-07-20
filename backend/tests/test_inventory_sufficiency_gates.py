@@ -23,7 +23,8 @@ from app.models.notification import Notification
 from app.models.project import Project
 from app.models.pull_request import PullRequest, PullRequestItem
 from app.models.stock_item import StockItem
-from app.repositories import import_repository, warehouse_admin_repository, warehouse_repository
+from app.repositories import import_repository, warehouse_admin_repository
+from app.repositories import warehouse as warehouse_repository
 
 
 def _make_project(session) -> Project:

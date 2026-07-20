@@ -33,7 +33,8 @@ import KeyboardArrowRightIcon from '@mui/icons-material/KeyboardArrowRight';
 import UnfoldMoreIcon from '@mui/icons-material/UnfoldMore';
 import UnfoldLessIcon from '@mui/icons-material/UnfoldLess';
 import { useQuery } from '@apollo/client/react';
-import { GET_PURCHASE_ORDERS, GET_PO_STATISTICS, GET_PROJECTS } from '../../graphql/queries';
+import { GET_PURCHASE_ORDERS, GET_PO_STATISTICS } from '../../graphql/po';
+import { GET_PROJECTS } from '../../graphql/shared';
 import type { Project } from '../../types/project';
 import PODetailModal from './PODetailModal';
 import GpPurchaseOrderDialog from './GpPurchaseOrderDialog';
@@ -115,6 +116,7 @@ export interface PODocumentData {
   miscellaneous: number;
   taxAmount: number;
   taxLabel: string;
+  tariffAmount: number;
   requiredByOverride: string | null;
   includeFsc: boolean;
   includeUsaTariff: boolean;
@@ -133,7 +135,10 @@ export interface PurchaseOrder {
   buyerId: string | null;
   vendor: VendorRef | null;
   vendorQuoteNumber: string | null;
+  shippingCost: number | null;
+  tariffAmount: number | null;
   notes: string | null;
+  preferredDeliveryDate: string | null;
   expectedDeliveryDate: string | null;
   orderedAt: string | null;
   createdAt: string;
@@ -781,22 +786,16 @@ function POListPage() {
             Document Settings
           </Button>
         )}
-        <Tooltip
-          title={relayConnected ? '' : 'GP relay not detected on this machine - it must be running to create a PO'}
-          arrow
+        {/* Issue #256: creating a PO lands as a DRAFT (no GP involved), so no relay gating here -
+            the relay is only needed later, to register the draft into GP. */}
+        <Button
+          variant="contained"
+          size="small"
+          startIcon={<AddIcon />}
+          onClick={() => setCreateOpen(true)}
         >
-          <span>
-            <Button
-              variant="contained"
-              size="small"
-              startIcon={<AddIcon />}
-              onClick={() => setCreateOpen(true)}
-              disabled={!relayConnected}
-            >
-              Create PO
-            </Button>
-          </span>
-        </Tooltip>
+          Create PO
+        </Button>
       </Box>
 
       {/* Statistics Cards (display-only) */}

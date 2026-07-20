@@ -11,7 +11,8 @@ import {
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useQuery } from '@apollo/client/react';
-import { GET_PROJECTS, GET_PROJECT_PROGRESS_BY_PRODUCT } from '../../graphql/queries';
+import { GET_PROJECT_PROGRESS_BY_PRODUCT } from '../../graphql/admin';
+import { GET_PROJECTS } from '../../graphql/shared';
 import type { Project } from '../../types/project';
 
 interface ProgressRow {

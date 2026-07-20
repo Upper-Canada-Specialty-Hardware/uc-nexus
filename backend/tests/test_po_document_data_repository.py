@@ -107,6 +107,16 @@ def test_upsert_rejects_unknown_po(db_session):
         po_repository.upsert_po_document_data(db_session, uuid.uuid4(), buyer_name="Nobody")
 
 
+def test_upsert_persists_tariff_amount(db_session):
+    # Issue #156: tariff is a money field like freight/misc/tax - coerced to Decimal, defaults to 0.
+    po = _make_po(db_session)
+    data = po_repository.upsert_po_document_data(db_session, po.id, tariff_amount=42.75)
+    assert data.tariff_amount == Decimal("42.75")
+
+    untouched = po_repository.upsert_po_document_data(db_session, po.id, buyer_name="Second")
+    assert untouched.tariff_amount == Decimal("42.75")
+
+
 def test_get_document_data_none_when_never_saved(db_session):
     po = _make_po(db_session)
     assert po_repository.get_po_document_data(db_session, po.id) is None

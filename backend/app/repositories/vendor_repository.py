@@ -21,6 +21,11 @@ def get_vendor(session: Session, vendor_id: uuid.UUID) -> Vendor:
     return vendor
 
 
+def find_vendor(session: Session, vendor_id: uuid.UUID) -> Vendor | None:
+    """None-safe lookup for the nullable `vendor` query (get_vendor raises)."""
+    return session.get(Vendor, vendor_id)
+
+
 def _check_name_unique(session: Session, name: str, exclude_id: uuid.UUID | None = None) -> None:
     stmt = select(Vendor).where(Vendor.name == name)
     if exclude_id is not None:

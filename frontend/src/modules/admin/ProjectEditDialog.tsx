@@ -3,8 +3,7 @@ import { Box, Button, Divider, FormControlLabel, Stack, Switch, TextField, Typog
 import { useMutation } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import { useToast } from '../../components/Toast';
-import { UPDATE_PROJECT } from '../../graphql/mutations';
-import { GET_ADMIN_PROJECTS } from '../../graphql/queries';
+import { UPDATE_PROJECT, GET_ADMIN_PROJECTS } from '../../graphql/admin';
 
 export interface ProjectFormValue {
   id: string;

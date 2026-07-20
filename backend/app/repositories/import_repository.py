@@ -497,6 +497,8 @@ def finalize_import_session(
                 status=POStatus.DRAFT,
                 vendor_id=vendor_id,
                 notes=po_draft.get("notes"),
+                # Issue #216: the PM's requested date, captured at PO-request creation.
+                preferred_delivery_date=po_draft.get("preferred_delivery_date"),
             )
             session.add(po)
             session.flush()
@@ -692,7 +694,7 @@ def finalize_import_session(
         # Gate 1 (#224): hard inventory-sufficiency check before minting the PR. No partial pulls -
         # if any opening item can't be fully covered from available inventory, refuse creation. The
         # resolver rolls the whole finalize back (no PR, no partial state) and notifies the PO.
-        from app.repositories import warehouse_repository
+        from app.repositories import warehouse as warehouse_repository
         from app.services import notification_service
 
         needs = [
@@ -775,3 +777,9 @@ def finalize_import_session(
         "shop_assembly_request": None,
         "shop_assembly_pull_request": sa_pr,
     }
+
+
+def list_excluded_items(session: Session, project_id: uuid.UUID):
+    from app.models.project_excluded_item import ProjectExcludedItem as PEIModel
+
+    return list(session.scalars(select(PEIModel).where(PEIModel.project_id == project_id)).all())

@@ -24,12 +24,8 @@ import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import { useQuery, useMutation } from '@apollo/client/react';
 import { useToast } from '../../components/Toast';
 import LocationAutocomplete from '../../components/LocationAutocomplete';
-import {
-  GET_UNLOCATED_INVENTORY,
-  GET_PROJECTS,
-  GET_LOCATION_DISTINCT_VALUES,
-} from '../../graphql/queries';
-import { ASSIGN_INVENTORY_LOCATION } from '../../graphql/mutations';
+import { GET_PROJECTS, ASSIGN_INVENTORY_LOCATION } from '../../graphql/shared';
+import { GET_UNLOCATED_INVENTORY, GET_LOCATION_DISTINCT_VALUES } from '../../graphql/warehouse';
 
 // ---- Types ----
 

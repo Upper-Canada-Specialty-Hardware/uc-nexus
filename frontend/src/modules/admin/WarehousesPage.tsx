@@ -14,8 +14,8 @@ import {
 import { DataGrid, type GridColDef, type GridRowParams } from '@mui/x-data-grid';
 import DeleteIcon from '@mui/icons-material/Delete';
 import { useQuery, useMutation } from '@apollo/client/react';
-import { GET_WAREHOUSES } from '../../graphql/queries';
-import { DELETE_WAREHOUSE } from '../../graphql/mutations';
+import { DELETE_WAREHOUSE } from '../../graphql/admin';
+import { GET_WAREHOUSES } from '../../graphql/shared';
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
 import WarehouseEditDialog, { type WarehouseFormValue } from './WarehouseEditDialog';

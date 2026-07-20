@@ -16,8 +16,7 @@ import {
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import CancelIcon from '@mui/icons-material/Cancel';
 import { useMutation, useQuery } from '@apollo/client/react';
-import { APPROVE_PULL_REQUEST, COMPLETE_PULL_REQUEST } from '../../graphql/mutations';
-import { GET_INVENTORY_HIERARCHY } from '../../graphql/queries';
+import { APPROVE_PULL_REQUEST, COMPLETE_PULL_REQUEST, GET_INVENTORY_HIERARCHY } from '../../graphql/warehouse';
 import { useIdentity } from '../../hooks/useIdentity';
 import { useToast } from '../../components/Toast';
 import Modal from '../../components/Modal';
@@ -60,11 +59,14 @@ function formatDateTime(dateStr: string | null | undefined): string {
 interface InventoryProductCode {
   productCode: string;
   totalQuantity: number;
+  // Issue #229: net of deficient units (quantity - deficient_quantity) - the approve gate's basis.
+  totalAvailableQuantity: number;
 }
 
 interface InventoryCategoryGroup {
   hardwareCategory: string;
   totalQuantity: number;
+  totalAvailableQuantity: number;
   productCodes: InventoryProductCode[];
 }
 
@@ -129,13 +131,15 @@ export default function PullRequestDetailModal({
 
   const inventoryHierarchy = inventoryData?.inventoryHierarchy ?? [];
 
-  // Build lookup map: "category|productCode" -> available quantity
+  // Build lookup map: "category|productCode" -> available quantity. Issue #229: use the NET
+  // available (quantity - deficient_quantity), the same basis as the backend approve gate, so the
+  // Available Qty column and the pre-approve warning agree with what approval will actually allow.
   const availabilityMap = useMemo(() => {
     const map = new Map<string, number>();
     for (const cat of inventoryHierarchy) {
       for (const pc of cat.productCodes) {
         const key = `${cat.hardwareCategory}|${pc.productCode}`;
-        map.set(key, pc.totalQuantity);
+        map.set(key, pc.totalAvailableQuantity);
       }
     }
     return map;

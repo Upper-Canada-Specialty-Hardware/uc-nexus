@@ -13,7 +13,7 @@ import {
 import { useMutation } from '@apollo/client/react';
 import Modal from '../../../components/Modal';
 import { useToast } from '../../../components/Toast';
-import { RESOLVE_DEFICIENCY } from '../../../graphql/mutations';
+import { RESOLVE_DEFICIENCY } from '../../../graphql/warehouse';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../../graphql/refetch';
 
 export interface DeficientRow {

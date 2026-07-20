@@ -17,14 +17,10 @@ import RefreshIcon from '@mui/icons-material/Refresh';
 import { useApolloClient, useMutation, useQuery } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import { useToast } from '../../components/Toast';
-import { CREATE_PO, REGISTER_PO_IN_GP } from '../../graphql/mutations';
-import {
-  GET_GP_BUYERS,
-  GET_GP_COST_CODES,
-  GET_GP_VENDORS,
-  GET_PROJECTS,
-  SUGGEST_VENDOR_FOR_MANUFACTURER,
-} from '../../graphql/queries';
+import { CREATE_DRAFT_PO, REGISTER_PO_IN_GP, GET_GP_COST_CODES, GET_GP_VENDORS, SUGGEST_VENDOR_FOR_MANUFACTURER } from '../../graphql/po';
+import { GET_BUYER_ASSIGNMENTS, GET_PROJECTS } from '../../graphql/shared';
+import { useIdentity } from '../../hooks/useIdentity';
+import VendorSelect from '../../components/VendorSelect';
 import type { Project } from '../../types/project';
 import type { PurchaseOrder } from './index';
 import RelayStatusChip from '../../relay/RelayStatusChip';
@@ -73,12 +69,6 @@ const EMPTY_LINE_ITEM: Omit<LineItemRow, 'key' | 'id'> = {
   orderAs: '',
 };
 
-const CLASSIFICATIONS = [
-  { value: '', label: 'None' },
-  { value: 'SITE_HARDWARE', label: 'Site Hardware' },
-  { value: 'SHOP_HARDWARE', label: 'Shop Hardware' },
-];
-
 // Pick the live GP vendor that best matches an imported draft's vendor name (issue #175, reworked for
 // #200 now that the picker reads gpVendors live instead of a locally-synced mirror). Returns the match
 // plus whether it is CONFIDENT - an exact name match - versus a loose substring guess the user must
@@ -125,8 +115,11 @@ export default function GpPurchaseOrderDialog({
   registerPo,
 }: GpPurchaseOrderDialogProps) {
   const { showToast } = useToast();
+  // Issue #216: a PO is REGISTERED as the CALLER's GP buyer identity (Clerk publicMetadata.gpBuyerId),
+  // not a free pick - enforced again server-side. Drafting (issue #256) involves no buyer at all.
+  const { gpBuyerId } = useIdentity();
   const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
-  const projects = projectsData?.projects ?? [];
+  const projects = useMemo(() => projectsData?.projects ?? [], [projectsData]);
 
   const isRegister = !!registerPo;
 
@@ -138,7 +131,12 @@ export default function GpPurchaseOrderDialog({
   // A confident match (the draft's own GP vendor / an exact name hit) and any manual pick start confirmed.
   const [vendorConfirmed, setVendorConfirmed] = useState(true);
   const [notes, setNotes] = useState('');
-  const [buyerId, setBuyerId] = useState('');
+  // Issue #156: optional order-time dollar costs. Kept as strings ('' = not entered, distinct from 0).
+  const [shippingCost, setShippingCost] = useState('');
+  const [tariffAmount, setTariffAmount] = useState('');
+  // Issue #256: create mode drafts carry an optional Nexus vendor link + the PM's preferred date.
+  const [vendorId, setVendorId] = useState<string | null>(null);
+  const [preferredDeliveryDate, setPreferredDeliveryDate] = useState('');
   const [costCode, setCostCode] = useState('');
   const [nextKey, setNextKey] = useState(2);
   const [lineItems, setLineItems] = useState<LineItemRow[]>([{ key: 1, ...EMPTY_LINE_ITEM }]);
@@ -148,7 +146,9 @@ export default function GpPurchaseOrderDialog({
   // user can screenshot it. Distinct from the field-level `errors` map.
   const [gpError, setGpError] = useState<GpError | null>(null);
 
-  const [createPO, { loading: createLoading }] = useMutation<{ createPo: { poNumber: string | null } }>(CREATE_PO);
+  const [createDraftPo, { loading: createLoading }] = useMutation<{ createDraftPo: { requestNumber: string } }>(
+    CREATE_DRAFT_PO,
+  );
   const [registerPoInGp, { loading: registerLoading }] = useMutation<{ registerPoInGp: { poNumber: string | null } }>(
     REGISTER_PO_IN_GP,
   );
@@ -161,7 +161,8 @@ export default function GpPurchaseOrderDialog({
   // GP relay status. The company comes from the connected relay (it's enrolled for exactly one), so it's
   // read from the hook here rather than picked by the user. The page still passes relayConnected in as
   // the single source of truth for the connected flag; standalone, the hook's own connected value is used.
-  const relay = useRelayStatus({ skip: !open });
+  // Issue #256: only register mode talks to GP - create mode is a plain draft and needs no relay.
+  const relay = useRelayStatus({ skip: !open || !isRegister });
   const company = relay.company ?? '';
   const relayStatus: boolean | null = relayConnectedProp !== undefined ? relayConnectedProp : relay.connected;
   const relayConnected = relayStatus === true;
@@ -170,21 +171,35 @@ export default function GpPurchaseOrderDialog({
   const isJob = !!projectId && !!selectedProject;
   const jobNumber = selectedProject?.projectId ?? null;
 
-  // Registered buyers for the chosen company (POP00101), live from GP via the backend relay channel.
-  // cache-first so reopening the dialog reuses the loaded list instead of re-pulling it browser -> backend
-  // -> WS -> relay -> GP; the refresh control forces a re-pull when the master data changed.
-  const { data: buyersData, refetch: refetchBuyers } = useQuery<{ gpBuyers: string[] }>(GET_GP_BUYERS, {
-    variables: { company },
-    skip: !open || !relayConnected || !company,
-    fetchPolicy: 'cache-first',
+  // Issue #216: the caller's buyer assignment (their projects + designated cost codes). Register-only
+  // (issue #256: drafting is open to everyone; the GP registration is where the buyer gating applies) -
+  // the caller must be assigned to the draft's project and only designated cost codes are offered.
+  interface BuyerAssignmentData {
+    buyerId: string;
+    costCodes: string[];
+    projects: { id: string; projectId: string; description: string | null }[];
+  }
+  const { data: assignmentsData } = useQuery<{ buyerAssignments: BuyerAssignmentData[] }>(GET_BUYER_ASSIGNMENTS, {
+    skip: !open || !isRegister,
+    fetchPolicy: 'cache-and-network',
   });
-  const buyers = buyersData?.gpBuyers ?? [];
+  const myAssignment = useMemo(() => {
+    if (!gpBuyerId) return null;
+    return (
+      (assignmentsData?.buyerAssignments ?? []).find(
+        (a) => a.buyerId.trim().toUpperCase() === gpBuyerId.trim().toUpperCase(),
+      ) ?? null
+    );
+  }, [assignmentsData, gpBuyerId]);
+  const assignedProjectIds = useMemo(() => new Set((myAssignment?.projects ?? []).map((p) => p.id)), [myAssignment]);
+  const designatedCostCodes = useMemo(() => new Set(myAssignment?.costCodes ?? []), [myAssignment]);
+  const registerProjectAllowed = !isRegister || !registerPo?.projectId || assignedProjectIds.has(registerPo.projectId);
 
   // Live GP vendor list (PM00200), per company - issue #200 replaces the locally-synced vendor mirror
   // with a direct pick from this list, snapshotted onto the PO.
   const { data: gpVendorsData, refetch: refetchVendors } = useQuery<{ gpVendors: GpVendorOption[] }>(GET_GP_VENDORS, {
     variables: { company },
-    skip: !open || !relayConnected || !company,
+    skip: !open || !isRegister || !relayConnected || !company,
     fetchPolicy: 'cache-first',
   });
   const gpVendors = gpVendorsData?.gpVendors ?? [];
@@ -211,7 +226,7 @@ export default function GpPurchaseOrderDialog({
   }, [open]);
 
   useEffect(() => {
-    if (!open || !relayConnected || !company || distinctManufacturers.length === 0) return;
+    if (!open || !isRegister || !relayConnected || !company || distinctManufacturers.length === 0) return;
     let cancelled = false;
     (async () => {
       // Fetch each manufacturer's suggestion concurrently, not one after another, so N distinct
@@ -237,7 +252,7 @@ export default function GpPurchaseOrderDialog({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, relayConnected, company, manufacturerKey, client]);
+  }, [open, isRegister, relayConnected, company, manufacturerKey, client]);
 
   const suggestionsLoaded =
     distinctManufacturers.length > 0 && distinctManufacturers.every((m) => mfrSuggestions[m] !== undefined);
@@ -256,10 +271,11 @@ export default function GpPurchaseOrderDialog({
     refetch: refetchCostCodes,
   } = useQuery<{ gpCostCodes: GpCostCode[] }>(GET_GP_COST_CODES, {
     variables: { company, job: jobNumber ?? '' },
-    skip: !open || !relayConnected || !company || !jobNumber,
+    skip: !open || !isRegister || !relayConnected || !company || !jobNumber,
     fetchPolicy: 'cache-first',
   });
-  const costCodes = costCodesData?.gpCostCodes ?? [];
+  // Issue #216: only the caller's designated cost codes ('cc1-cc2') are offered for the job.
+  const costCodes = (costCodesData?.gpCostCodes ?? []).filter((c) => designatedCostCodes.has(c.costCode));
 
   // Seed the form when the dialog opens. Create mode -> empty; register mode -> the draft's values
   // (project locked, line items carrying their ids so edits map back). The vendor is seeded separately
@@ -283,12 +299,13 @@ export default function GpPurchaseOrderDialog({
     seededRef.current = true;
     // Fresh open = fresh user action, so start a new idempotency key on the next submit.
     idempotencyKeyRef.current = null;
-    setBuyerId('');
     setCostCode('');
     setErrors({});
     if (registerPo) {
       setProjectId(registerPo.projectId ?? '');
       setNotes(registerPo.notes ?? '');
+      setShippingCost(registerPo.shippingCost != null ? String(registerPo.shippingCost) : '');
+      setTariffAmount(registerPo.tariffAmount != null ? String(registerPo.tariffAmount) : '');
       const rows: LineItemRow[] = registerPo.lineItems.map((li, i) => ({
         key: i + 1,
         id: li.id,
@@ -305,6 +322,10 @@ export default function GpPurchaseOrderDialog({
     } else {
       setProjectId(defaultProjectId ?? '');
       setNotes('');
+      setShippingCost('');
+      setTariffAmount('');
+      setVendorId(null);
+      setPreferredDeliveryDate('');
       setLineItems([{ key: 1, ...EMPTY_LINE_ITEM }]);
       setNextKey(2);
     }
@@ -398,15 +419,25 @@ export default function GpPurchaseOrderDialog({
       if (isNaN(cost) || cost < 0) errs[`li_${i}_cost`] = 'Must be >= 0';
       if (!li.orderAs.trim()) errs[`li_${i}_orderAs`] = 'Required';
     }
-    // GP is mandatory: a PO that can't be created in GP isn't created/registered at all.
-    if (!relayConnected) errs.gp = 'GP relay not detected on this machine - it must be running to push a PO to GP';
-    if (!gpVendorId) errs.vendor = 'Select a GP vendor';
-    else if (isRegister && !vendorConfirmed) errs.vendor = 'Confirm the suggested GP vendor before registering';
-    if (!buyerId) errs.buyer = 'Select a buyer';
-    if (isJob && !costCode) errs.costCode = 'Cost code is required for a project PO';
+    // Issue #256: only register mode talks to GP - draft creation has no relay/vendor/buyer/cost-code
+    // requirements at all.
+    if (isRegister) {
+      if (!relayConnected) errs.gp = 'GP relay not detected on this machine - it must be running to push a PO to GP';
+      if (!gpVendorId) errs.vendor = 'Select a GP vendor';
+      else if (!vendorConfirmed) errs.vendor = 'Confirm the suggested GP vendor before registering';
+      // Issue #216: the PO is pushed as the caller's own GP buyer identity.
+      if (!gpBuyerId) errs.buyer = 'Your account has no GP buyer identity - ask an Admin to set it in User Management';
+      else if (!registerProjectAllowed) errs.buyer = `Buyer ${gpBuyerId} is not assigned to this project`;
+      if (isJob && !costCode) errs.costCode = 'Cost code is required for a project PO';
+    }
+    // Issue #156: optional, but a non-empty entry must be a valid non-negative dollar value.
+    if (shippingCost.trim() !== '' && (isNaN(parseFloat(shippingCost)) || parseFloat(shippingCost) < 0))
+      errs.shippingCost = 'Must be >= 0';
+    if (tariffAmount.trim() !== '' && (isNaN(parseFloat(tariffAmount)) || parseFloat(tariffAmount) < 0))
+      errs.tariffAmount = 'Must be >= 0';
     setErrors(errs);
     return Object.keys(errs).length === 0;
-  }, [lineItems, relayConnected, gpVendorId, isRegister, vendorConfirmed, buyerId, isJob, costCode]);
+  }, [lineItems, relayConnected, gpVendorId, isRegister, vendorConfirmed, gpBuyerId, registerProjectAllowed, isJob, costCode, shippingCost, tariffAmount]);
 
   const handleSubmit = useCallback(async () => {
     if (!validate()) return;
@@ -426,6 +457,10 @@ export default function GpPurchaseOrderDialog({
     // Same key for every retry of this action so a retry is a no-op in GP (won't post a second PO).
     const idempotencyKey = (idempotencyKeyRef.current ??= crypto.randomUUID());
 
+    // Issue #156: '' = not entered (null); 0 is a valid entered value.
+    const shippingCostValue = shippingCost.trim() === '' ? null : parseFloat(shippingCost);
+    const tariffAmountValue = tariffAmount.trim() === '' ? null : parseFloat(tariffAmount);
+
     setGpError(null);
     setGpBusy(true);
     try {
@@ -438,9 +473,11 @@ export default function GpPurchaseOrderDialog({
               poId: registerPo.id,
               gpVendorId,
               gpVendorName,
-              buyerId,
+              buyerId: gpBuyerId,
               gpCompany: company,
               costCode: gpCostCode,
+              shippingCost: shippingCostValue,
+              tariffAmount: tariffAmountValue,
               idempotencyKey,
               lineItems: lineItems.map((li, idx) => ({
                 id: li.id ?? null,
@@ -451,22 +488,22 @@ export default function GpPurchaseOrderDialog({
         });
         showToast(`PO ${resp.data?.registerPoInGp?.poNumber} registered in GP`, 'success');
       } else {
-        const resp = await createPO({
+        // Issue #256: manual creation lands as a plain DRAFT - no relay, no GP fields. Registering
+        // it into GP is a separate, conscious action on the draft row.
+        const resp = await createDraftPo({
           variables: {
             input: {
               projectId: projectId || null,
-              gpVendorId,
-              gpVendorName,
-              buyerId,
+              vendorId: vendorId || null,
               notes: notes.trim() || null,
-              costCode: gpCostCode,
-              gpCompany: company,
-              idempotencyKey,
+              preferredDeliveryDate: preferredDeliveryDate || null,
+              shippingCost: shippingCostValue,
+              tariffAmount: tariffAmountValue,
               lineItems: lineItemsInput,
             },
           },
         });
-        showToast(`PO ${resp.data?.createPo?.poNumber} created in GP and UC Nexus`, 'success');
+        showToast(`PO request ${resp.data?.createDraftPo?.requestNumber} created as draft`, 'success');
       }
 
       // Succeeded: clear the key so a later reopen starts a new action.
@@ -477,8 +514,13 @@ export default function GpPurchaseOrderDialog({
       // the mutation reported failure, and reusing the key makes the retry safe.
       // Surface the full GP error persistently (issue #187) so the user can screenshot it; the toast
       // just points at the detail panel.
-      setGpError(extractGpError(err) ?? { message: 'Failed to push PO to GP' });
-      showToast("Could not complete the PO in GP - see the error detail below. A retry won't create a duplicate.", 'error');
+      setGpError(extractGpError(err) ?? { message: isRegister ? 'Failed to push PO to GP' : 'Failed to create the draft PO' });
+      showToast(
+        isRegister
+          ? "Could not complete the PO in GP - see the error detail below. A retry won't create a duplicate."
+          : 'Could not create the draft PO - see the error detail below.',
+        'error',
+      );
     } finally {
       setGpBusy(false);
     }
@@ -487,14 +529,19 @@ export default function GpPurchaseOrderDialog({
     isJob,
     costCode,
     company,
-    buyerId,
+    gpBuyerId,
     lineItems,
     projectId,
+    vendorId,
+    preferredDeliveryDate,
     gpVendorId,
     gpVendorName,
     notes,
+    shippingCost,
+    tariffAmount,
     registerPo,
-    createPO,
+    isRegister,
+    createDraftPo,
     registerPoInGp,
     showToast,
     onSubmitted,
@@ -503,9 +550,9 @@ export default function GpPurchaseOrderDialog({
   // --- Render ---
 
   const busy = createLoading || registerLoading || gpBusy;
-  const title = isRegister ? 'Register Purchase Order in GP' : 'Create Purchase Order in GP';
-  const submitIdleLabel = isRegister ? 'Register in GP' : 'Create PO';
-  const submitBusyLabel = gpBusy ? 'Pushing to GP…' : isRegister ? 'Registering…' : 'Saving…';
+  const title = isRegister ? 'Register Purchase Order in GP' : 'Create PO Request (Draft)';
+  const submitIdleLabel = isRegister ? 'Register in GP' : 'Create Draft';
+  const submitBusyLabel = isRegister ? (gpBusy ? 'Pushing to GP…' : 'Registering…') : 'Saving…';
 
   // Status line under the cost-code dropdown (an explicit validation error takes precedence).
   const costCodeHelper =
@@ -569,6 +616,19 @@ export default function GpPurchaseOrderDialog({
           <GpErrorAlert error={gpError} onClose={() => setGpError(null)} />
         </Box>
       )}
+      {/* Issue #216: GP registration happens as YOUR buyer identity, against your assigned projects.
+          Drafting (issue #256) is open to everyone, so these gate register mode only. */}
+      {isRegister && !gpBuyerId ? (
+        <Alert severity="error" sx={{ mb: 2 }}>
+          Your account has no GP buyer identity - an Admin must set it in User Management before you can
+          register purchase orders.
+        </Alert>
+      ) : isRegister && !registerProjectAllowed ? (
+        <Alert severity="error" sx={{ mb: 2 }}>
+          Buyer {gpBuyerId} is not assigned to this project - an Admin can change assignments under
+          Admin → Buyers.
+        </Alert>
+      ) : null}
       {/* Header Fields */}
       <Stack spacing={2} sx={{ mb: 3 }}>
         <TextField
@@ -588,46 +648,89 @@ export default function GpPurchaseOrderDialog({
           ))}
         </TextField>
 
-        <Box>
-          <Stack direction="row" spacing={0.5} alignItems="flex-start">
+        {isRegister ? (
+          <Box>
+            <Stack direction="row" spacing={0.5} alignItems="flex-start">
+              <TextField
+                select
+                label="GP Vendor"
+                value={gpVendorId ?? ''}
+                onChange={(e) => handleGpVendorChange(e.target.value)}
+                size="small"
+                sx={{ flex: 1 }}
+                disabled={!relayConnected || gpVendors.length === 0}
+                error={!!errors.vendor}
+                helperText={vendorHelper}
+              >
+                {gpVendors.map((v) => (
+                  <MenuItem key={v.vendorId} value={v.vendorId}>
+                    {v.vendorName}
+                  </MenuItem>
+                ))}
+              </TextField>
+              <IconButton
+                size="small"
+                aria-label="Refresh GP vendors"
+                onClick={() => refetchVendors()}
+                disabled={!relayConnected}
+                sx={{ mt: 0.5 }}
+              >
+                <RefreshIcon fontSize="small" />
+              </IconButton>
+            </Stack>
+            {gpVendorId && !vendorConfirmed && (
+              <FormControlLabel
+                sx={{ mt: 0.5 }}
+                control={
+                  <Checkbox size="small" checked={vendorConfirmed} onChange={(e) => setVendorConfirmed(e.target.checked)} />
+                }
+                label={`This is the correct GP vendor${gpVendorName ? ` (${gpVendorName})` : ''}`}
+              />
+            )}
+            {manufacturerHintNode}
+          </Box>
+        ) : (
+          /* Issue #256: a draft carries an optional Nexus vendor link + the PM's preferred date; the
+             GP vendor is picked later, at register time. */
+          <Stack direction="row" spacing={2}>
+            <Box sx={{ flex: 1 }}>
+              <VendorSelect value={vendorId} onChange={setVendorId} />
+            </Box>
             <TextField
-              select
-              label="GP Vendor"
-              value={gpVendorId ?? ''}
-              onChange={(e) => handleGpVendorChange(e.target.value)}
+              label="Preferred delivery date"
+              type="date"
+              value={preferredDeliveryDate}
+              onChange={(e) => setPreferredDeliveryDate(e.target.value)}
               size="small"
-              sx={{ flex: 1 }}
-              disabled={!relayConnected || gpVendors.length === 0}
-              error={!!errors.vendor}
-              helperText={vendorHelper}
-            >
-              {gpVendors.map((v) => (
-                <MenuItem key={v.vendorId} value={v.vendorId}>
-                  {v.vendorName}
-                </MenuItem>
-              ))}
-            </TextField>
-            <IconButton
-              size="small"
-              aria-label="Refresh GP vendors"
-              onClick={() => refetchVendors()}
-              disabled={!relayConnected}
-              sx={{ mt: 0.5 }}
-            >
-              <RefreshIcon fontSize="small" />
-            </IconButton>
-          </Stack>
-          {isRegister && gpVendorId && !vendorConfirmed && (
-            <FormControlLabel
-              sx={{ mt: 0.5 }}
-              control={
-                <Checkbox size="small" checked={vendorConfirmed} onChange={(e) => setVendorConfirmed(e.target.checked)} />
-              }
-              label={`This is the correct GP vendor${gpVendorName ? ` (${gpVendorName})` : ''}`}
+              sx={{ width: 190 }}
+              slotProps={{ inputLabel: { shrink: true } }}
             />
-          )}
-          {manufacturerHintNode}
-        </Box>
+          </Stack>
+        )}
+        <Stack direction="row" spacing={2}>
+          <TextField
+            label="Shipping costs (optional)"
+            value={shippingCost}
+            onChange={(e) => setShippingCost(e.target.value)}
+            size="small"
+            type="number"
+            slotProps={{ htmlInput: { min: 0, step: 0.01 } }}
+            sx={{ width: 200 }}
+            error={!!errors.shippingCost}
+            helperText={errors.shippingCost}
+          />
+          <TextField
+            label="Tariffs (optional)"
+            value={tariffAmount}
+            onChange={(e) => setTariffAmount(e.target.value)}
+            size="small"
+            type="number"
+            slotProps={{ htmlInput: { min: 0, step: 0.01 } }}
+            sx={{ width: 200 }}
+            error={!!errors.tariffAmount}
+            helperText={errors.tariffAmount}
+          />
+        </Stack>
         <TextField
           label="Notes"
           value={notes}
@@ -641,7 +744,9 @@ export default function GpPurchaseOrderDialog({
         />
       </Stack>
 
-      {/* GP purchase order (every PO lives in GP - it's the source of truth) */}
+      {/* GP purchase order - register mode only (issue #256: a draft doesn't touch GP; company,
+          buyer identity, and cost code are captured when the draft is consciously registered). */}
+      {isRegister && (
       <Box sx={{ mb: 3, p: 2, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
         <Stack direction="row" spacing={2} alignItems="center" sx={{ mb: 2 }} flexWrap="wrap" useFlexGap>
           <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
@@ -658,34 +763,14 @@ export default function GpPurchaseOrderDialog({
             sx={{ minWidth: 140 }}
             disabled
           />
-          <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 0.5 }}>
-            <TextField
-              select
-              label="Buyer"
-              value={buyerId}
-              onChange={(e) => setBuyerId(e.target.value)}
-              size="small"
-              sx={{ minWidth: 180 }}
-              disabled={!relayConnected || buyers.length === 0}
-              error={!!errors.buyer}
-              helperText={errors.buyer}
-            >
-              {buyers.map((b) => (
-                <MenuItem key={b} value={b}>
-                  {b}
-                </MenuItem>
-              ))}
-            </TextField>
-            <IconButton
-              size="small"
-              aria-label="Refresh buyers"
-              onClick={() => refetchBuyers()}
-              disabled={!relayConnected}
-              sx={{ mt: 0.5 }}
-            >
-              <RefreshIcon fontSize="small" />
-            </IconButton>
-          </Box>
+          {/* Issue #216: the buyer IS the caller's GP identity - display only, never a pick. */}
+          <TextField
+            label="Buyer (you)"
+            value={gpBuyerId ?? '—'}
+            size="small"
+            sx={{ minWidth: 180 }}
+            disabled
+          />
           <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 0.5 }}>
             <TextField
               select
@@ -721,6 +806,7 @@ export default function GpPurchaseOrderDialog({
           </Alert>
         )}
       </Box>
+      )}
 
       {/* Line Items */}
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
@@ -738,11 +824,12 @@ export default function GpPurchaseOrderDialog({
         </Typography>
       )}
 
-      {/* Column headers */}
+      {/* Column headers. Site/shop classification is set by the PM at request creation (issue #216),
+          so there is no Classification column here - register mode passes the draft's values through. */}
       <Box
         sx={{
           display: 'grid',
-          gridTemplateColumns: '1.2fr 1.2fr 0.6fr 0.7fr 1fr 1fr auto',
+          gridTemplateColumns: '1.3fr 1.3fr 0.6fr 0.7fr 1.2fr auto',
           gap: 1,
           mb: 0.5,
         }}
@@ -751,7 +838,6 @@ export default function GpPurchaseOrderDialog({
         <Typography variant="caption" sx={{ fontWeight: 'bold' }}>Product Code</Typography>
         <Typography variant="caption" sx={{ fontWeight: 'bold' }}>Qty</Typography>
         <Typography variant="caption" sx={{ fontWeight: 'bold' }}>Unit Cost</Typography>
-        <Typography variant="caption" sx={{ fontWeight: 'bold' }}>Classification</Typography>
         <Typography variant="caption" sx={{ fontWeight: 'bold' }}>Order As</Typography>
         <Box />
       </Box>
@@ -762,7 +848,7 @@ export default function GpPurchaseOrderDialog({
           key={li.key}
           sx={{
             display: 'grid',
-            gridTemplateColumns: '1.2fr 1.2fr 0.6fr 0.7fr 1fr 1fr auto',
+            gridTemplateColumns: '1.3fr 1.3fr 0.6fr 0.7fr 1.2fr auto',
             gap: 1,
             mb: 1,
             alignItems: 'start',
@@ -802,18 +888,6 @@ export default function GpPurchaseOrderDialog({
             helperText={errors[`li_${idx}_cost`]}
             slotProps={{ htmlInput: { min: 0, step: 0.01 } }}
           />
-          <TextField
-            select
-            size="small"
-            value={li.classification}
-            onChange={(e) => updateLineItem(li.key, 'classification', e.target.value)}
-          >
-            {CLASSIFICATIONS.map((c) => (
-              <MenuItem key={c.value} value={c.value}>
-                {c.label}
-              </MenuItem>
-            ))}
-          </TextField>
           <TextField
             size="small"
             required

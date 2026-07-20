@@ -255,6 +255,7 @@ class PODocumentData:
     miscellaneous: float
     tax_amount: float
     tax_label: str
+    tariff_amount: float
     required_by_override: date | None
     include_fsc: bool
     include_usa_tariff: bool
@@ -321,7 +322,10 @@ class PurchaseOrder:
     buyer_id: str | None
     vendor: Vendor | None
     vendor_quote_number: str | None
+    shipping_cost: float | None
+    tariff_amount: float | None
     notes: str | None
+    preferred_delivery_date: date | None
     expected_delivery_date: date | None
     ordered_at: datetime | None
     created_at: datetime
@@ -620,6 +624,8 @@ class ProductCodeNode:
     product_code: str
     items: list[InventoryLocation]
     total_quantity: int
+    # Issue #229: net of deficient units (quantity - deficient_quantity) - the approve gate's basis.
+    total_available_quantity: int
     total_value: float
 
 
@@ -628,6 +634,7 @@ class InventoryHierarchyNode:
     hardware_category: str
     product_codes: list[ProductCodeNode]
     total_quantity: int
+    total_available_quantity: int
     total_value: float
 
 
@@ -896,7 +903,27 @@ class ClerkUser:
     last_name: str
     email: str
     roles: list[str]
+    # Issue #216: the GP BUYERID this account acts as (Clerk publicMetadata.gpBuyerId), or null.
+    gp_buyer_id: str | None
     image_url: str
+
+
+@strawberry.type
+class BuyerAssignmentProject:
+    """Slim project ref for buyer assignments (the full Project type carries openings)."""
+
+    id: strawberry.ID
+    project_id: str
+    description: str | None
+
+
+@strawberry.type
+class BuyerAssignment:
+    """Issue #216: the projects a GP buyer may create POs for + their designated cost codes."""
+
+    buyer_id: str
+    cost_codes: list[str]
+    projects: list[BuyerAssignmentProject]
 
 
 @strawberry.type

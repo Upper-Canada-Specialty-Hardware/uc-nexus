@@ -198,7 +198,18 @@ def complete_opening(
                 field="item_results",
             )
         if not res.installed:
-            deficient_reason_by_id[res.shop_assembly_opening_item_id] = res.deficient_reason
+            reason = (res.deficient_reason or "").strip()
+            if not reason:
+                raise ValidationError(
+                    "A deficiency reason is required for items not installed",
+                    field="deficient_reason",
+                )
+            if len(reason) > 500:
+                raise ValidationError(
+                    "Deficiency reason must be 500 characters or fewer",
+                    field="deficient_reason",
+                )
+            deficient_reason_by_id[res.shop_assembly_opening_item_id] = reason
 
     # 5. Create OpeningItem (snapshot opening identity from the ShopAssemblyOpening row)
     now = datetime.utcnow()
@@ -224,7 +235,7 @@ def complete_opening(
     session.flush()  # Get opening_item.id for OpeningItemHardware FK
 
     # 6. Snapshot only INSTALLED items as OpeningItemHardware; flag the rest deficient.
-    from app.repositories import stock_repository
+    from app.repositories import stock as stock_repository
 
     performed_by = completed_by or "Assembler"
     for item in sa_opening.items:
@@ -252,3 +263,25 @@ def complete_opening(
     sa_opening.completed_at = now
 
     return opening_item
+
+
+def get_openings_with_items(session: Session, opening_ids: list[uuid.UUID]) -> list[ShopAssemblyOpening]:
+    """Shop-assembly openings by id with items eagerly loaded (mutation response reload)."""
+    stmt = (
+        select(ShopAssemblyOpening)
+        .options(selectinload(ShopAssemblyOpening.items))
+        .where(ShopAssemblyOpening.id.in_(opening_ids))
+    )
+    return list(session.scalars(stmt).unique().all())
+
+
+def get_request_with_openings(session: Session, request_id: uuid.UUID):
+    """Shop-assembly request with openings + their items eagerly loaded (finalize-import reload)."""
+    from app.models.shop_assembly import ShopAssemblyRequest
+
+    stmt = (
+        select(ShopAssemblyRequest)
+        .options(selectinload(ShopAssemblyRequest.openings).selectinload(ShopAssemblyOpening.items))
+        .where(ShopAssemblyRequest.id == request_id)
+    )
+    return session.scalars(stmt).unique().first()

@@ -10,7 +10,8 @@ from datetime import datetime
 from app.models.inventory import InventoryLocation
 from app.models.project import Project
 from app.models.stock_item import StockItem
-from app.repositories import warehouse_admin_repository, warehouse_repository
+from app.repositories import warehouse as warehouse_repository
+from app.repositories import warehouse_admin_repository
 
 
 def _make_project(session) -> Project:
@@ -36,7 +37,16 @@ def _make_stock_item(session) -> StockItem:
     return si
 
 
-def _make_il(session, project_id, stock_item_id, *, quantity, product_code="HG-100", hardware_category="HINGE"):
+def _make_il(
+    session,
+    project_id,
+    stock_item_id,
+    *,
+    quantity,
+    deficient_quantity=0,
+    product_code="HG-100",
+    hardware_category="HINGE",
+):
     il = InventoryLocation(
         id=uuid.uuid4(),
         project_id=project_id,
@@ -45,12 +55,29 @@ def _make_il(session, project_id, stock_item_id, *, quantity, product_code="HG-1
         hardware_category=hardware_category,
         product_code=product_code,
         quantity=quantity,
-        deficient_quantity=0,
+        deficient_quantity=deficient_quantity,
         received_at=datetime.utcnow(),
     )
     session.add(il)
     session.flush()
     return il
+
+
+def test_inventory_hierarchy_available_nets_out_deficient(db_session):
+    # Issue #229: total_available_quantity = quantity - deficient_quantity, the approve gate's basis.
+    project = _make_project(db_session)
+    origin = _make_stock_item(db_session)
+    _make_il(db_session, project.id, origin.id, quantity=8, deficient_quantity=5)
+    _make_il(db_session, project.id, origin.id, quantity=4)
+
+    hierarchy = warehouse_repository.get_inventory_hierarchy(db_session, project.id)
+
+    cat = hierarchy[0]
+    assert cat["total_quantity"] == 12
+    assert cat["total_available_quantity"] == 7
+    pc = cat["product_codes"][0]
+    assert pc["total_quantity"] == 12
+    assert pc["total_available_quantity"] == 7
 
 
 def test_inventory_hierarchy_hides_zero_quantity_rows(db_session):

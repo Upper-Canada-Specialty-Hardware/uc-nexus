@@ -16,7 +16,7 @@ import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useQuery } from '@apollo/client/react';
-import { GET_EXPECTED_DELIVERIES, GET_BACK_ORDERED_ITEMS } from '../../graphql/queries';
+import { GET_EXPECTED_DELIVERIES, GET_BACK_ORDERED_ITEMS } from '../../graphql/warehouse';
 import ProjectLandingPage from '../../components/ProjectLandingPage';
 import { poVendorName } from '../po/poVendorName';
 import type { Project } from '../../types/project';

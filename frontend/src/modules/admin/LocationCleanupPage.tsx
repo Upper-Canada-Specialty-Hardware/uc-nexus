@@ -17,8 +17,7 @@ import {
   Divider,
 } from '@mui/material';
 import { useQuery, useMutation } from '@apollo/client/react';
-import { GET_LOCATION_DUPLICATES } from '../../graphql/queries';
-import { MERGE_LOCATIONS } from '../../graphql/mutations';
+import { GET_LOCATION_DUPLICATES, MERGE_LOCATIONS } from '../../graphql/admin';
 import { useToast } from '../../components/Toast';
 
 interface LocationVariant {

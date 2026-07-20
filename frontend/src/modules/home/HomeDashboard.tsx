@@ -6,7 +6,8 @@ import FolderIcon from '@mui/icons-material/Folder';
 import { useQuery } from '@apollo/client/react';
 import { useIdentity } from '../../hooks/useIdentity';
 import { StatCard, StatCardSkeleton } from '../../components/StatCard';
-import { GET_HOME_DASHBOARD_STATS, GET_AUDIT_LOG } from '../../graphql/queries';
+import { GET_HOME_DASHBOARD_STATS } from '../../graphql/home';
+import { GET_AUDIT_LOG } from '../../graphql/shared';
 
 interface HomeStatsData {
   homeDashboardStats: {

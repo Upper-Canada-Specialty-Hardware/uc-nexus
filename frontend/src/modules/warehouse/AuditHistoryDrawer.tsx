@@ -11,7 +11,7 @@ import {
 } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
 import { useQuery } from '@apollo/client/react';
-import { GET_AUDIT_LOG } from '../../graphql/queries';
+import { GET_AUDIT_LOG } from '../../graphql/shared';
 
 interface AuditLogEntry {
   id: string;
