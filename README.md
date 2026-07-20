@@ -12,5 +12,4 @@ monorepo layout
 - testing/ - simulated user testing knowledgebase
 - docs/ - design docs
 
-frontend and backend talk through a single /graphql endpoint. dev commands, conventions, and the
-architecture guide live in CLAUDE.md.
+frontend and backend talk through a single /graphql endpoint.
