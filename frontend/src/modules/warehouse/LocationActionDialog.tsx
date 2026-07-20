@@ -90,6 +90,7 @@ export default function LocationActionDialog({
   // Reset state whenever the dialog opens
   useEffect(() => {
     if (!open) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset dialog form state on open
     setAdjustment('');
     setReason('');
     if (mode === 'move') {

@@ -30,7 +30,8 @@ const parserOptions = {
   trimValues: true,
   isArray: (
     _name: string,
-    _jpath: string,
+    // fast-xml-parser 5.10 widened this param's type (string -> JPathOrMatcher); unused here.
+    _jpath: unknown,
     _isLeafNode: boolean,
     isAttribute: boolean,
   ) => {
