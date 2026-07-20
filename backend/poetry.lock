@@ -65,18 +65,18 @@ trio = ["trio (>=0.31.0) ; python_version < \"3.10\"", "trio (>=0.32.0) ; python
 
 [[package]]
 name = "boto3"
-version = "1.43.46"
+version = "1.43.47"
 description = "The AWS SDK for Python"
 optional = false
 python-versions = ">=3.10"
 groups = ["main"]
 files = [
-    {file = "boto3-1.43.46-py3-none-any.whl", hash = "sha256:69453e2c1bcb9fd9806527ab99950cacfc2826cb0dce9a3a0414d19270c06c3c"},
-    {file = "boto3-1.43.46.tar.gz", hash = "sha256:66c0d943b049a46a492ec4ec2ebe73c930b1842c7137bee83aad6d93e95d4d96"},
+    {file = "boto3-1.43.47-py3-none-any.whl", hash = "sha256:aef0cccd5bc4a443fb3e64fada023f7b5b9da36864cb4255b68cf93067476676"},
+    {file = "boto3-1.43.47.tar.gz", hash = "sha256:09a8ce4abab4391bf08315e2dcc449b4b33e97ce7654ee9398d9fe4ef73a33da"},
 ]
 
 [package.dependencies]
-botocore = ">=1.43.46,<1.44.0"
+botocore = ">=1.43.47,<1.44.0"
 jmespath = ">=0.7.1,<2.0.0"
 s3transfer = ">=0.19.0,<0.20.0"
 
@@ -1424,14 +1424,14 @@ full = ["httpx (>=0.27.0,<0.29.0)", "httpx2 (>=2.0.0)", "itsdangerous", "jinja2"
 
 [[package]]
 name = "strawberry-graphql"
-version = "0.320.4"
+version = "0.321.0"
 description = "A library for creating GraphQL APIs"
 optional = false
 python-versions = "<4.0,>=3.10"
 groups = ["main"]
 files = [
-    {file = "strawberry_graphql-0.320.4-py3-none-any.whl", hash = "sha256:79a0172ecb372cd1855a199b78668629dc7c6e54276554d459ff51678385e389"},
-    {file = "strawberry_graphql-0.320.4.tar.gz", hash = "sha256:cd02eb963c63b84a89007c2784704327924d826ca8f4f172e8386701f839416b"},
+    {file = "strawberry_graphql-0.321.0-py3-none-any.whl", hash = "sha256:bd85d8a3eda351cc4a952d3d6216096b112c94ee9149e18c4cda754bb967c0d9"},
+    {file = "strawberry_graphql-0.321.0.tar.gz", hash = "sha256:54e916c83f21219bbe3067b40ca4d10d550a487ea6690336e3be9e5536409214"},
 ]
 
 [package.dependencies]
@@ -1840,4 +1840,4 @@ files = [
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.11"
-content-hash = "88ed35531d0137f5cdfc87bab9eda4bbcd58d56541edca5c7c9e4028f778f5e4"
+content-hash = "9a00275daea84b4dfa786f5ad4030836ddb8ae4ae80906c8648ba72ad3ed7c97"
