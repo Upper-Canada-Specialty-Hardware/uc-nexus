@@ -14,7 +14,7 @@ updates:
   - package-ecosystem: pip
     directories:
       - /backend
-      - "/localhost relay"
+      - /relay
     schedule:
       interval: weekly
     cooldown:
