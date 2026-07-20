@@ -13,7 +13,7 @@ pydantic = "^2.9"
 pydantic-settings = "^2.6"
 pyodbc = "^5.2"
 python-json-logger = "^2.0"
-websockets = "^13.0"
+websockets = ">=13,<17"
 # Native desktop UI (the `ui` subcommand). Windows-only: pywebview uses the Edge WebView2 backend via
 # pythonnet. Scoped to <3.14 like pyinstaller below because pythonnet's wheels don't cover newer pythons;
 # CI + dev build on 3.11. pythonnet is pinned to 3.x directly so poetry doesn't resolve pywebview's
