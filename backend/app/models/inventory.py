@@ -19,7 +19,7 @@ class InventoryLocation(Base):
         Index("ix_inventory_locations_aisle", "aisle"),
         Index("ix_inventory_locations_stock_item", "stock_item_id"),
         Index("ix_inventory_locations_shipment_return_item", "shipment_return_item_id"),
-        Index("ix_inventory_locations_warehouse", "warehouse_id", "aisle", "bay", "bin"),
+        Index("ix_inventory_locations_warehouse", "warehouse_id", "aisle", "row", "bay"),
         CheckConstraint("quantity >= 0", name="ck_inventory_locations_quantity_nonneg"),
         CheckConstraint(
             "deficient_quantity >= 0",
@@ -53,9 +53,8 @@ class InventoryLocation(Base):
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     deficient_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     aisle: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    bay: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    bin: Mapped[str | None] = mapped_column(String(20), nullable=True)
     row: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    bay: Mapped[str | None] = mapped_column(String(20), nullable=True)
     received_at: Mapped[datetime] = mapped_column(nullable=False)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)

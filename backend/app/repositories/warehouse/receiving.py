@@ -82,7 +82,7 @@ def validate_receive_eligibility(
                         "deficient_quantity must satisfy 0 <= deficient_quantity <= quantity",
                         field="deficient_quantity",
                     )
-                _normalize_and_validate_location_fields(loc["aisle"], loc["bay"], loc["bin"])
+                _normalize_and_validate_location_fields(loc["aisle"], loc["row"], loc["bay"])
 
         receipt_line_items.append(
             {
@@ -113,7 +113,7 @@ def create_receive(
         line_items_input: list of dicts, each with:
             - po_line_item_id: uuid.UUID
             - quantity_received: int
-            - locations: list[dict] each with aisle, bay, bin, quantity
+            - locations: list[dict] each with aisle, row, bay, quantity
     Returns:
         The created ReceiveRecord with line_items loaded.
     """
@@ -178,8 +178,8 @@ def create_receive(
                         "deficient_quantity must satisfy 0 <= deficient_quantity <= quantity",
                         field="deficient_quantity",
                     )
-                loc["aisle"], loc["bay"], loc["bin"] = _normalize_and_validate_location_fields(
-                    loc["aisle"], loc["bay"], loc["bin"]
+                loc["aisle"], loc["row"], loc["bay"] = _normalize_and_validate_location_fields(
+                    loc["aisle"], loc["row"], loc["bay"]
                 )
 
     # 5. Execute in single transaction
@@ -222,8 +222,8 @@ def create_receive(
                         quantity=loc["quantity"],
                         deficient_quantity=loc.get("deficient_quantity", 0) or 0,
                         aisle=loc["aisle"],
+                        row=loc["row"],
                         bay=loc["bay"],
-                        bin=loc["bin"],
                         received_at=receive_record.received_at,
                         received_by=received_by,
                         po_number=po.po_number,
@@ -237,8 +237,8 @@ def create_receive(
                     quantity=li_input["quantity_received"],
                     deficient_quantity=0,
                     aisle=None,
+                    row=None,
                     bay=None,
-                    bin=None,
                     received_at=receive_record.received_at,
                     received_by=received_by,
                     po_number=po.po_number,
@@ -255,8 +255,8 @@ def create_receive(
                     quantity=loc["quantity"],
                     deficient_quantity=loc.get("deficient_quantity", 0) or 0,
                     aisle=loc["aisle"],
+                    row=loc["row"],
                     bay=loc["bay"],
-                    bin=loc["bin"],
                     received_at=receive_record.received_at,
                 )
                 session.add(inv_loc)
@@ -271,8 +271,8 @@ def create_receive(
                 product_code=poli.product_code,
                 quantity=li_input["quantity_received"],
                 aisle=None,
+                row=None,
                 bay=None,
-                bin=None,
                 received_at=receive_record.received_at,
             )
             session.add(inv_loc)
@@ -292,7 +292,7 @@ def create_receive(
                     "hardwareCategory": inv_loc.hardware_category,
                     "productCode": inv_loc.product_code,
                     "poNumber": po.po_number,
-                    "location": {"aisle": inv_loc.aisle, "bay": inv_loc.bay, "bin": inv_loc.bin},
+                    "location": {"aisle": inv_loc.aisle, "row": inv_loc.row, "bay": inv_loc.bay},
                 },
             )
 

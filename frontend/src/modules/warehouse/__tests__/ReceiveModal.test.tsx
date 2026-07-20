@@ -16,7 +16,7 @@ type CreateReceiveVars = {
     lineItems: {
       poLineItemId: string;
       quantityReceived: number;
-      locations: { aisle: string; bay: string; bin: string; quantity: number; deficientQuantity: number }[];
+      locations: { aisle: string; row: string; bay: string; quantity: number; deficientQuantity: number }[];
     }[];
   };
 };
@@ -176,10 +176,10 @@ function setReceiveQty(value: string) {
   fireEvent.change(receiveNowInput(), { target: { value } });
 }
 
-function fillLocation(idx: number, aisle: string, bay: string, bin: string, qty?: string) {
+function fillLocation(idx: number, aisle: string, row: string, bay: string, qty?: string) {
   fireEvent.change(screen.getAllByLabelText('Aisle')[idx], { target: { value: aisle } });
+  fireEvent.change(screen.getAllByLabelText('Row')[idx], { target: { value: row } });
   fireEvent.change(screen.getAllByLabelText('Bay')[idx], { target: { value: bay } });
-  fireEvent.change(screen.getAllByLabelText('Bin')[idx], { target: { value: bin } });
   if (qty !== undefined) {
     fireEvent.change(screen.getAllByLabelText('Qty')[idx], { target: { value: qty } });
   }
@@ -213,14 +213,14 @@ describe('ReceiveModal', () => {
     expect(completeButton()).toBeDisabled();
   });
 
-  it('enables submit only after a quantity is entered and every unit is placed in a bin', async () => {
+  it('enables submit only after a quantity is entered and every unit is placed in a row', async () => {
     await openModal([poDetailsMock()]);
 
     expect(completeButton()).toBeDisabled();
 
     setReceiveQty('3');
     expect(screen.getByText(/placing 3/)).toBeInTheDocument();
-    // bin fields still blank, so put-away is incomplete
+    // row fields still blank, so put-away is incomplete
     expect(completeButton()).toBeDisabled();
 
     fillLocation(0, 'A1', 'B2', 'C3');
@@ -236,14 +236,14 @@ describe('ReceiveModal', () => {
     fillLocation(0, 'A1', 'B2', 'C3'); // put-away itself is valid at 5 placed
     expect(completeButton()).toBeDisabled();
 
-    // dropping back within pending (and matching the bin qty) makes it submittable
+    // dropping back within pending (and matching the row qty) makes it submittable
     setReceiveQty('3');
     fireEvent.change(screen.getByLabelText('Qty'), { target: { value: '3' } });
     expect(screen.queryByText('Max: 3')).toBeNull();
     expect(completeButton()).toBeEnabled();
   });
 
-  it('requires the bin split to sum to the received quantity', async () => {
+  it('requires the row split to sum to the received quantity', async () => {
     await openModal([poDetailsMock()]);
 
     setReceiveQty('3');
@@ -270,7 +270,7 @@ describe('ReceiveModal', () => {
     await screen.findByText(/Main \(MAIN\)/, undefined, SLOW); // default warehouse selected
 
     setReceiveQty('2');
-    fillLocation(0, 'A1', 'B2', 'C3'); // bin qty defaults to the received 2
+    fillLocation(0, 'A1', 'B2', 'C3'); // row qty defaults to the received 2
     fireEvent.change(screen.getByLabelText('Deficient'), { target: { value: '1' } });
     await submitViaConfirm();
 
@@ -284,7 +284,7 @@ describe('ReceiveModal', () => {
           {
             poLineItemId: 'li-1',
             quantityReceived: 2,
-            locations: [{ aisle: 'A1', bay: 'B2', bin: 'C3', quantity: 2, deficientQuantity: 1 }],
+            locations: [{ aisle: 'A1', row: 'B2', bay: 'C3', quantity: 2, deficientQuantity: 1 }],
           },
         ],
       },

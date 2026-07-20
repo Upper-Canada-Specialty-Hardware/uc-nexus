@@ -66,8 +66,8 @@ input CompleteOpeningItemResultInput {
 input CompleteOpeningInput {
   opening_id: ID!
   aisle: String
+  row: String
   bay: String
-  bin: String
   item_results: [CompleteOpeningItemResultInput!]
   completed_by: String
 }

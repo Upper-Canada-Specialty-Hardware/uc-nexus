@@ -99,7 +99,7 @@ export default function FindInStockButton({
                       <TableCell>{m.productCode}</TableCell>
                       <TableCell align="right">{m.available}</TableCell>
                       <TableCell>
-                        {[m.aisle, m.bay, m.bin].filter(Boolean).join(' / ') || '— unlocated —'}
+                        {[m.aisle, m.row, m.bay].filter(Boolean).join(' / ') || '— unlocated —'}
                       </TableCell>
                       <TableCell>
                         <Button

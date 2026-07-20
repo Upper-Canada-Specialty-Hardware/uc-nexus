@@ -27,8 +27,8 @@ interface OpeningItem {
   assemblyCompletedAt: string | null;
   state: string;
   aisle: string | null;
+  row: string | null;
   bay: string | null;
-  bin: string | null;
   createdAt: string;
   updatedAt: string;
   installedHardware: InstalledHardware[];

@@ -5,7 +5,7 @@ export const GET_SHIP_READY_ITEMS = gql`
     shipReadyItems(projectId: $projectId) {
       openingItems {
         id projectId openingId openingNumber building floor location quantity
-        assemblyCompletedAt state aisle row bay bin createdAt updatedAt
+        assemblyCompletedAt state aisle row bay createdAt updatedAt
         installedHardware { id openingItemId productCode hardwareCategory quantity }
       }
       looseItems {

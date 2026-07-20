@@ -94,9 +94,9 @@ export const GET_AUDIT_LOG = gql`
 `;
 
 export const MOVE_INVENTORY_LOCATION = gql`
-  mutation MoveInventoryLocation($inventoryLocationId: ID!, $newAisle: String!, $newBay: String!, $newBin: String!) {
-    moveInventoryLocation(inventoryLocationId: $inventoryLocationId, newAisle: $newAisle, newBay: $newBay, newBin: $newBin) {
-      id projectId poLineItemId receiveLineItemId hardwareCategory productCode quantity aisle bay bin receivedAt createdAt updatedAt
+  mutation MoveInventoryLocation($inventoryLocationId: ID!, $newAisle: String!, $newRow: String!, $newBay: String!) {
+    moveInventoryLocation(inventoryLocationId: $inventoryLocationId, newAisle: $newAisle, newRow: $newRow, newBay: $newBay) {
+      id projectId poLineItemId receiveLineItemId hardwareCategory productCode quantity aisle row bay receivedAt createdAt updatedAt
     }
   }
 `;
@@ -104,23 +104,23 @@ export const MOVE_INVENTORY_LOCATION = gql`
 export const MARK_INVENTORY_UNLOCATED = gql`
   mutation MarkInventoryUnlocated($inventoryLocationId: ID!) {
     markInventoryUnlocated(inventoryLocationId: $inventoryLocationId) {
-      id projectId poLineItemId receiveLineItemId hardwareCategory productCode quantity aisle bay bin receivedAt createdAt updatedAt
+      id projectId poLineItemId receiveLineItemId hardwareCategory productCode quantity aisle row bay receivedAt createdAt updatedAt
     }
   }
 `;
 
 export const ASSIGN_INVENTORY_LOCATION = gql`
-  mutation AssignInventoryLocation($inventoryLocationId: ID!, $aisle: String!, $bay: String!, $bin: String!) {
-    assignInventoryLocation(inventoryLocationId: $inventoryLocationId, aisle: $aisle, bay: $bay, bin: $bin) {
-      id projectId poLineItemId receiveLineItemId hardwareCategory productCode quantity aisle bay bin receivedAt createdAt updatedAt
+  mutation AssignInventoryLocation($inventoryLocationId: ID!, $aisle: String!, $row: String!, $bay: String!) {
+    assignInventoryLocation(inventoryLocationId: $inventoryLocationId, aisle: $aisle, row: $row, bay: $bay) {
+      id projectId poLineItemId receiveLineItemId hardwareCategory productCode quantity aisle row bay receivedAt createdAt updatedAt
     }
   }
 `;
 
 export const MOVE_OPENING_ITEM_LOCATION = gql`
-  mutation MoveOpeningItemLocation($openingItemId: ID!, $aisle: String!, $bay: String!, $bin: String!, $warehouseId: ID) {
-    moveOpeningItemLocation(openingItemId: $openingItemId, aisle: $aisle, bay: $bay, bin: $bin, warehouseId: $warehouseId) {
-      id projectId openingId warehouseId openingNumber building floor location quantity assemblyCompletedAt state aisle bay bin createdAt updatedAt
+  mutation MoveOpeningItemLocation($openingItemId: ID!, $aisle: String!, $row: String!, $bay: String!, $warehouseId: ID) {
+    moveOpeningItemLocation(openingItemId: $openingItemId, aisle: $aisle, row: $row, bay: $bay, warehouseId: $warehouseId) {
+      id projectId openingId warehouseId openingNumber building floor location quantity assemblyCompletedAt state aisle row bay createdAt updatedAt
       installedHardware { id openingItemId productCode hardwareCategory quantity }
     }
   }
@@ -129,7 +129,7 @@ export const MOVE_OPENING_ITEM_LOCATION = gql`
 export const MARK_OPENING_ITEM_UNLOCATED = gql`
   mutation MarkOpeningItemUnlocated($openingItemId: ID!) {
     markOpeningItemUnlocated(openingItemId: $openingItemId) {
-      id projectId openingId openingNumber building floor location quantity assemblyCompletedAt state aisle bay bin createdAt updatedAt
+      id projectId openingId openingNumber building floor location quantity assemblyCompletedAt state aisle row bay createdAt updatedAt
       installedHardware { id openingItemId productCode hardwareCategory quantity }
     }
   }

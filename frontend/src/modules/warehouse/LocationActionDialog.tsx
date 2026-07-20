@@ -25,8 +25,8 @@ export type LocationActionTarget = {
   quantity: number;
   warehouseId?: string | null;
   aisle: string | null;
+  row: string | null;
   bay: string | null;
-  bin: string | null;
 };
 
 interface WarehouseOption {
@@ -44,15 +44,15 @@ interface Props {
   mode: LocationActionMode;
   targets: LocationActionTarget[];
   aisleOptions: string[];
+  rowOptions: string[];
   bayOptions: string[];
-  binOptions: string[];
 }
 
 const REASON_MAX_LENGTH = 500;
 
 function formatLocation(t: LocationActionTarget): string {
-  if (!t.aisle || !t.bay || !t.bin) return 'Unlocated';
-  return `${t.aisle}-${t.bay}-${t.bin}`;
+  if (!t.aisle || !t.row || !t.bay) return 'Unlocated';
+  return `${t.aisle}-${t.row}-${t.bay}`;
 }
 
 export default function LocationActionDialog({
@@ -62,16 +62,16 @@ export default function LocationActionDialog({
   mode,
   targets,
   aisleOptions,
+  rowOptions,
   bayOptions,
-  binOptions,
 }: Props) {
   const { showToast } = useToast();
   const single = targets.length === 1 ? targets[0] : null;
 
   // Move state
   const [aisle, setAisle] = useState('');
+  const [row, setRow] = useState('');
   const [bay, setBay] = useState('');
-  const [bin, setBin] = useState('');
   const [warehouseId, setWarehouseId] = useState('');
 
   // Opening-item kits can't be partial-transferred, so their move may also change warehouse.
@@ -94,13 +94,13 @@ export default function LocationActionDialog({
     setReason('');
     if (mode === 'move') {
       setAisle(single?.aisle ?? '');
+      setRow(single?.row ?? '');
       setBay(single?.bay ?? '');
-      setBin(single?.bin ?? '');
       setWarehouseId(single?.warehouseId ?? '');
     } else {
       setAisle('');
+      setRow('');
       setBay('');
-      setBin('');
       setWarehouseId('');
     }
   }, [open, mode, single]);
@@ -129,7 +129,7 @@ export default function LocationActionDialog({
   const isValid = useMemo(() => {
     if (mode === 'unlocate') return true;
     if (mode === 'move') {
-      return aisle.trim().length > 0 && bay.trim().length > 0 && bin.trim().length > 0;
+      return aisle.trim().length > 0 && row.trim().length > 0 && bay.trim().length > 0;
     }
     // adjust
     if (!single) return false;
@@ -137,7 +137,7 @@ export default function LocationActionDialog({
     if (newQuantity < 0) return false;
     if (!reason.trim() || reason.length > REASON_MAX_LENGTH) return false;
     return true;
-  }, [mode, aisle, bay, bin, adjustmentNum, newQuantity, reason, single]);
+  }, [mode, aisle, row, bay, adjustmentNum, newQuantity, reason, single]);
 
   const title = useMemo(() => {
     const noun = targets.length > 1 ? `${targets.length} items` : 'item';
@@ -157,8 +157,8 @@ export default function LocationActionDialog({
               variables: {
                 inventoryLocationId: t.id,
                 newAisle: aisle.trim(),
+                newRow: row.trim(),
                 newBay: bay.trim(),
-                newBin: bin.trim(),
               },
             });
           } else if (t.kind === 'opening') {
@@ -166,8 +166,8 @@ export default function LocationActionDialog({
               variables: {
                 openingItemId: t.id,
                 aisle: aisle.trim(),
+                row: row.trim(),
                 bay: bay.trim(),
-                bin: bin.trim(),
                 warehouseId: warehouseId || null,
               },
             });
@@ -177,8 +177,8 @@ export default function LocationActionDialog({
                 input: {
                   stockItemId: t.id,
                   newAisle: aisle.trim(),
+                  newRow: row.trim(),
                   newBay: bay.trim(),
-                  newBin: bin.trim(),
                 },
               },
             });
@@ -287,8 +287,8 @@ export default function LocationActionDialog({
             options={aisleOptions}
             autoFocus
           />
+          <LocationAutocomplete label="Row" value={row} onChange={setRow} options={rowOptions} />
           <LocationAutocomplete label="Bay" value={bay} onChange={setBay} options={bayOptions} />
-          <LocationAutocomplete label="Bin" value={bin} onChange={setBin} options={binOptions} />
           <Typography variant="caption" color="text.secondary">
             Suggestions come from locations already in use. Free-form values are accepted.
           </Typography>
@@ -297,7 +297,7 @@ export default function LocationActionDialog({
 
       {mode === 'unlocate' && (
         <Alert severity="warning" sx={{ mt: 1 }}>
-          Clears aisle/bay/bin on {targets.length === 1 ? 'this item' : `${targets.length} items`}.
+          Clears aisle/row/bay on {targets.length === 1 ? 'this item' : `${targets.length} items`}.
           The item(s) will need to be re-located later.
         </Alert>
       )}

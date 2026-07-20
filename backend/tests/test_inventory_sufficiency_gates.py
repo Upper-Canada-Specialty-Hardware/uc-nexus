@@ -57,8 +57,8 @@ def _seed_inventory(session, project_id, *, category="HINGE", code="HG-100", qua
         quantity=quantity,
         deficient_quantity=deficient,
         aisle="A",
+        row="1",
         bay="1",
-        bin="1",
         received_at=received_at or datetime.utcnow(),
     )
     session.add(il)

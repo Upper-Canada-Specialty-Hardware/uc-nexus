@@ -136,8 +136,8 @@ def complete_opening(
     session: Session,
     opening_id: uuid.UUID,
     aisle: str | None,
+    row: str | None,
     bay: str | None,
-    bin: str | None,
     item_results: list[OpeningItemResult] | None = None,
     completed_by: str | None = None,
 ) -> OpeningItemModel:
@@ -228,8 +228,8 @@ def complete_opening(
         assembly_completed_at=now,
         state=OpeningItemState.IN_INVENTORY,
         aisle=aisle,
+        row=row,
         bay=bay,
-        bin=bin,
     )
     session.add(opening_item)
     session.flush()  # Get opening_item.id for OpeningItemHardware FK

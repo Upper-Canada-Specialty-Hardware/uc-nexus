@@ -27,8 +27,8 @@ export default function DeficientItemsReview() {
     deficientItems: (DeficientRow & {
       projectId: string | null;
       aisle: string | null;
+      row: string | null;
       bay: string | null;
-      bin: string | null;
     })[];
   }>(GET_DEFICIENT_ITEMS, {
     variables: { source: filter === 'ALL' ? null : filter },
@@ -65,7 +65,7 @@ export default function DeficientItemsReview() {
       flex: 1,
       minWidth: 160,
       valueGetter: (_v, row) =>
-        [row.aisle, row.bay, row.bin].filter(Boolean).join(' / ') || '— Unlocated —',
+        [row.aisle, row.row, row.bay].filter(Boolean).join(' / ') || '— Unlocated —',
     },
     {
       field: 'actions',

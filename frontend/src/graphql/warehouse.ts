@@ -21,8 +21,8 @@ export const GET_INVENTORY_HIERARCHY = gql`
           productCode
           quantity
           aisle
+          row
           bay
-          bin
           receivedAt
           createdAt
           updatedAt
@@ -38,7 +38,7 @@ export const GET_INVENTORY_ITEMS = gql`
       inventoryLocation {
         id projectId poLineItemId receiveLineItemId stockItemId
         hardwareCategory productCode quantity deficientQuantity available
-        aisle row bay bin receivedAt createdAt updatedAt
+        aisle row bay receivedAt createdAt updatedAt
       }
       poNumber
       classification
@@ -53,7 +53,7 @@ export const GET_OPENING_ITEMS = gql`
       id projectId openingId openingNumber
       building floor location quantity
       assemblyCompletedAt state
-      aisle row bay bin
+      aisle row bay
       createdAt updatedAt
       installedHardware {
         id openingItemId productCode hardwareCategory quantity
@@ -69,7 +69,7 @@ export const GET_OPENING_ITEM_DETAILS = gql`
         id projectId openingId openingNumber
         building floor location quantity
         assemblyCompletedAt state
-        aisle row bay bin
+        aisle row bay
         createdAt updatedAt
         installedHardware {
           id openingItemId productCode hardwareCategory quantity
@@ -116,7 +116,7 @@ export const GET_UNLOCATED_INVENTORY = gql`
       inventoryLocation {
         id projectId poLineItemId receiveLineItemId
         hardwareCategory productCode quantity
-        aisle row bay bin receivedAt createdAt updatedAt
+        aisle row bay receivedAt createdAt updatedAt
       }
       poNumber
       classification
@@ -234,7 +234,7 @@ export const GET_INVENTORY_BY_VENDOR = gql`
         items {
           id projectId poLineItemId receiveLineItemId
           hardwareCategory productCode quantity
-          aisle row bay bin receivedAt createdAt updatedAt
+          aisle row bay receivedAt createdAt updatedAt
         }
       }
     }
@@ -248,7 +248,6 @@ export const GET_LOCATION_UTILIZATION = gql`
       aisle
       row
       bay
-      bin
       itemCount
       totalQuantity
     }
@@ -256,13 +255,13 @@ export const GET_LOCATION_UTILIZATION = gql`
 `;
 
 export const GET_LOCATION_CONTENTS = gql`
-  query GetLocationContents($aisle: String!, $bay: String, $bin: String, $warehouseId: ID) {
-    locationContents(aisle: $aisle, bay: $bay, bin: $bin, warehouseId: $warehouseId) {
+  query GetLocationContents($aisle: String!, $row: String, $bay: String, $warehouseId: ID) {
+    locationContents(aisle: $aisle, row: $row, bay: $bay, warehouseId: $warehouseId) {
       inventoryItems {
         inventoryLocation {
           id projectId poLineItemId receiveLineItemId stockItemId warehouseId
           hardwareCategory productCode quantity deficientQuantity available
-          aisle row bay bin receivedAt createdAt updatedAt
+          aisle row bay receivedAt createdAt updatedAt
         }
         poNumber
         unitCost
@@ -270,21 +269,21 @@ export const GET_LOCATION_CONTENTS = gql`
       openingItems {
         id projectId openingId warehouseId openingNumber
         building floor location quantity
-        assemblyCompletedAt state aisle row bay bin
+        assemblyCompletedAt state aisle row bay
         createdAt updatedAt
         installedHardware { id openingItemId productCode hardwareCategory quantity }
       }
       stockItems {
         id warehouseId hardwareCategory productCode quantity deficientQuantity available
-        aisle bay bin receivedAt createdAt updatedAt
+        aisle row bay receivedAt createdAt updatedAt
       }
     }
   }
 `;
 
 export const GET_LOCATION_AUDIT_HISTORY = gql`
-  query GetLocationAuditHistory($aisle: String!, $bay: String, $bin: String, $limit: Int) {
-    locationAuditHistory(aisle: $aisle, bay: $bay, bin: $bin, limit: $limit) {
+  query GetLocationAuditHistory($aisle: String!, $row: String, $bay: String, $limit: Int) {
+    locationAuditHistory(aisle: $aisle, row: $row, bay: $bay, limit: $limit) {
       id projectId entityType entityId action detail performedBy createdAt
     }
   }
@@ -294,8 +293,8 @@ export const GET_LOCATION_DISTINCT_VALUES = gql`
   query GetLocationDistinctValues {
     locationDistinctValues {
       aisles
+      rows
       bays
-      bins
     }
   }
 `;
@@ -380,8 +379,8 @@ export const GET_STOCK_ITEMS = gql`
       deficientQuantity
       available
       aisle
+      row
       bay
-      bin
       receivedAt
       createdAt
       updatedAt
@@ -399,8 +398,8 @@ export const GET_STOCK_ITEM = gql`
       deficientQuantity
       available
       aisle
+      row
       bay
-      bin
       receivedAt
       createdAt
       updatedAt
@@ -419,8 +418,8 @@ export const GET_DEFICIENT_ITEMS = gql`
       productCode
       deficientQuantity
       aisle
+      row
       bay
-      bin
     }
   }
 `;
@@ -456,8 +455,8 @@ export const GET_STOCK_MATCHES_FOR_OPENING = gql`
       deficientQuantity
       available
       aisle
+      row
       bay
-      bin
     }
   }
 `;
@@ -473,8 +472,8 @@ export const ADJUST_INVENTORY_QUANTITY = gql`
       productCode
       quantity
       aisle
+      row
       bay
-      bin
       receivedAt
       createdAt
       updatedAt
@@ -550,7 +549,7 @@ export const DESTOCK_INVENTORY = gql`
   mutation DestockInventory($input: DestockInventoryInput!) {
     destockInventory(input: $input) {
       id hardwareCategory productCode quantity deficientQuantity available
-      aisle bay bin receivedAt
+      aisle row bay receivedAt
     }
   }
 `;
@@ -559,7 +558,7 @@ export const ALLOCATE_STOCK_TO_PROJECT = gql`
   mutation AllocateStockToProject($input: AllocateStockToProjectInput!) {
     allocateStockToProject(input: $input) {
       id projectId hardwareCategory productCode quantity deficientQuantity available
-      aisle bay bin receivedAt
+      aisle row bay receivedAt
     }
   }
 `;
@@ -575,15 +574,15 @@ export const ADJUST_STOCK_QUANTITY = gql`
 export const MOVE_STOCK_LOCATION = gql`
   mutation MoveStockLocation($input: MoveStockLocationInput!) {
     moveStockLocation(input: $input) {
-      id aisle bay bin
+      id aisle row bay
     }
   }
 `;
 
 export const ASSIGN_STOCK_ITEM_LOCATION = gql`
-  mutation AssignStockItemLocation($stockItemId: ID!, $aisle: String!, $bay: String!, $bin: String!) {
-    assignStockItemLocation(stockItemId: $stockItemId, aisle: $aisle, bay: $bay, bin: $bin) {
-      id aisle bay bin
+  mutation AssignStockItemLocation($stockItemId: ID!, $aisle: String!, $row: String!, $bay: String!) {
+    assignStockItemLocation(stockItemId: $stockItemId, aisle: $aisle, row: $row, bay: $bay) {
+      id aisle row bay
     }
   }
 `;
@@ -591,7 +590,7 @@ export const ASSIGN_STOCK_ITEM_LOCATION = gql`
 export const MARK_STOCK_ITEM_UNLOCATED = gql`
   mutation MarkStockItemUnlocated($stockItemId: ID!) {
     markStockItemUnlocated(stockItemId: $stockItemId) {
-      id aisle bay bin
+      id aisle row bay
     }
   }
 `;
@@ -601,11 +600,11 @@ export const RECLASSIFY_STOCK_ITEM = gql`
     reclassifyStockItem(input: $input) {
       reclassifiedStockItem {
         id hardwareCategory productCode quantity deficientQuantity available
-        aisle bay bin
+        aisle row bay
       }
       originalStockItem {
         id hardwareCategory productCode quantity deficientQuantity available
-        aisle bay bin
+        aisle row bay
       }
     }
   }

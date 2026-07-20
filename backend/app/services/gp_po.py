@@ -113,15 +113,15 @@ def build_create_receipt_payload(
     received_by: str,
     line_items: list[dict],
 ) -> dict:
-    """line_items: each with gp_line_ord, quantity, and locations (the same aisle/bay/bin dicts the
-    createReceive input carries for the UC Nexus put-away) - rack_location composes the distinct bins
-    a line's units were placed in, same convention the browser used to build it."""
+    """line_items: each with gp_line_ord, quantity, and locations (the same aisle/row/bay dicts the
+    createReceive input carries for the UC Nexus put-away) - rack_location composes the distinct
+    locations a line's units were placed in, same convention the browser used to build it."""
     lines = []
     for li in line_items:
         racks: list[str] = []
         seen: set[str] = set()
         for loc in li["locations"]:
-            key = f"{loc['aisle']}-{loc['bay']}-{loc['bin']}"
+            key = f"{loc['aisle']}-{loc['row']}-{loc['bay']}"
             if key not in seen:
                 seen.add(key)
                 racks.append(key)

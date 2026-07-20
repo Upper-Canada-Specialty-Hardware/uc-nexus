@@ -20,8 +20,8 @@ const invTarget: LocationActionTarget = {
   productCode: 'HG-100',
   quantity: 10,
   aisle: 'A1',
+  row: 'C1',
   bay: 'B1',
-  bin: 'C1',
 };
 
 const stockTarget: LocationActionTarget = {
@@ -30,8 +30,8 @@ const stockTarget: LocationActionTarget = {
   productCode: 'LK-200',
   quantity: 4,
   aisle: null,
+  row: null,
   bay: null,
-  bin: null,
 };
 
 function renderDialog(
@@ -50,8 +50,8 @@ function renderDialog(
           mode="move"
           targets={[invTarget]}
           aisleOptions={['A1', 'A2']}
+          rowOptions={['C1']}
           bayOptions={['B1']}
-          binOptions={['C1']}
           {...props}
         />
       </ToastProvider>
@@ -68,8 +68,8 @@ describe('LocationActionDialog', () => {
   it('move mode pre-fills the single target location and enables confirm', () => {
     renderDialog();
     expect(screen.getByLabelText('Aisle')).toHaveValue('A1');
+    expect(screen.getByLabelText('Row')).toHaveValue('C1');
     expect(screen.getByLabelText('Bay')).toHaveValue('B1');
-    expect(screen.getByLabelText('Bin')).toHaveValue('C1');
     expect(confirmButton()).toBeEnabled();
   });
 
@@ -85,13 +85,13 @@ describe('LocationActionDialog', () => {
       {
         request: {
           query: MOVE_INVENTORY_LOCATION,
-          variables: { inventoryLocationId: 'inv-1', newAisle: 'A2', newBay: 'B1', newBin: 'C1' },
+          variables: { inventoryLocationId: 'inv-1', newAisle: 'A2', newRow: 'C1', newBay: 'B1' },
         },
         result: (vars) => {
           calledVariables = vars as Record<string, unknown>;
           return {
             data: {
-              moveInventoryLocation: { id: 'inv-1', aisle: 'A2', bay: 'B1', bin: 'C1', __typename: 'InventoryLocation' },
+              moveInventoryLocation: { id: 'inv-1', aisle: 'A2', row: 'C1', bay: 'B1', __typename: 'InventoryLocation' },
             },
           };
         },
@@ -107,8 +107,8 @@ describe('LocationActionDialog', () => {
     expect(calledVariables).toEqual({
       inventoryLocationId: 'inv-1',
       newAisle: 'A2',
+      newRow: 'C1',
       newBay: 'B1',
-      newBin: 'C1',
     });
   });
 
@@ -118,12 +118,12 @@ describe('LocationActionDialog', () => {
       {
         request: {
           query: MOVE_STOCK_LOCATION,
-          variables: { input: { stockItemId: 'stock-1', newAisle: 'A1', newBay: 'B1', newBin: 'C1' } },
+          variables: { input: { stockItemId: 'stock-1', newAisle: 'A1', newRow: 'C1', newBay: 'B1' } },
         },
         result: () => {
           called = true;
           return {
-            data: { moveStockLocation: { id: 'stock-1', aisle: 'A1', bay: 'B1', bin: 'C1', __typename: 'StockItem' } },
+            data: { moveStockLocation: { id: 'stock-1', aisle: 'A1', row: 'C1', bay: 'B1', __typename: 'StockItem' } },
           };
         },
       },
@@ -131,8 +131,8 @@ describe('LocationActionDialog', () => {
     const { onSuccess } = renderDialog({ targets: [stockTarget] }, mocks);
 
     fireEvent.change(screen.getByLabelText('Aisle'), { target: { value: 'A1' } });
+    fireEvent.change(screen.getByLabelText('Row'), { target: { value: 'C1' } });
     fireEvent.change(screen.getByLabelText('Bay'), { target: { value: 'B1' } });
-    fireEvent.change(screen.getByLabelText('Bin'), { target: { value: 'C1' } });
     fireEvent.click(confirmButton());
 
     await waitFor(() => expect(onSuccess).toHaveBeenCalled());
@@ -194,14 +194,14 @@ describe('LocationActionDialog', () => {
         result: () => {
           called = true;
           return {
-            data: { markInventoryUnlocated: { id: 'inv-1', aisle: null, bay: null, bin: null, __typename: 'InventoryLocation' } },
+            data: { markInventoryUnlocated: { id: 'inv-1', aisle: null, row: null, bay: null, __typename: 'InventoryLocation' } },
           };
         },
       },
     ];
     const { onSuccess } = renderDialog({ mode: 'unlocate' }, mocks);
 
-    expect(screen.getByText(/Clears aisle\/bay\/bin/)).toBeInTheDocument();
+    expect(screen.getByText(/Clears aisle\/row\/bay/)).toBeInTheDocument();
     fireEvent.click(confirmButton());
 
     await waitFor(() => expect(onSuccess).toHaveBeenCalled());

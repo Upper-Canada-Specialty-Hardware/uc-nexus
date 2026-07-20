@@ -29,8 +29,8 @@ type InventoryLocation {
   product_code: String!
   quantity: Int!
   aisle: String
+  row: String
   bay: String
-  bin: String
   received_at: DateTime!
   created_at: DateTime!
   updated_at: DateTime!
@@ -66,8 +66,8 @@ type OpeningItem {
   assembly_completed_at: DateTime!
   state: OpeningItemState!
   aisle: String
+  row: String
   bay: String
-  bin: String
   created_at: DateTime!
   updated_at: DateTime!
   installed_hardware: [OpeningItemHardware!]!
@@ -234,8 +234,8 @@ input ReceiveLineItemInput {
 
 input LocationInput {
   aisle: String!
+  row: String!
   bay: String!
-  bin: String!
   quantity: Int!
 }
 
@@ -313,11 +313,11 @@ type Mutation {
   confirmShipment(input: ConfirmShipmentInput!): PackingSlip!
   createShipmentReturn(input: CreateShipmentReturnInput!): ShipmentReturn!
   adjustInventoryQuantity(inventoryLocationId: ID!, adjustment: Int!, reason: String!): InventoryLocation!
-  moveInventoryLocation(inventoryLocationId: ID!, newAisle: String!, newBay: String!, newBin: String!): InventoryLocation!
+  moveInventoryLocation(inventoryLocationId: ID!, newAisle: String!, newRow: String!, newBay: String!): InventoryLocation!
   markInventoryUnlocated(inventoryLocationId: ID!): InventoryLocation!
-  assignInventoryLocation(inventoryLocationId: ID!, aisle: String!, bay: String!, bin: String!): InventoryLocation!
-  moveOpeningItemLocation(openingItemId: ID!, aisle: String!, bay: String!, bin: String!): OpeningItem!
+  assignInventoryLocation(inventoryLocationId: ID!, aisle: String!, row: String!, bay: String!): InventoryLocation!
+  moveOpeningItemLocation(openingItemId: ID!, aisle: String!, row: String!, bay: String!): OpeningItem!
   markOpeningItemUnlocated(openingItemId: ID!): OpeningItem!
-  assignOpeningItemLocation(openingItemId: ID!, aisle: String!, bay: String!, bin: String!): OpeningItem!
+  assignOpeningItemLocation(openingItemId: ID!, aisle: String!, row: String!, bay: String!): OpeningItem!
   markNotificationAsRead(id: ID!): Notification!
 }

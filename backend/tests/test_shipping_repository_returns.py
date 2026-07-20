@@ -82,7 +82,7 @@ def test_return_to_project_creates_unlocated_inventory(db_session):
     assert len(rows) == 1
     row = rows[0]
     assert row.quantity == 3
-    assert (row.aisle, row.bay, row.bin) == (None, None, None)  # unlocated -> Put-Away
+    assert (row.aisle, row.row, row.bay) == (None, None, None)  # unlocated -> Put-Away
     assert row.shipment_return_item_id is not None
     assert row.po_line_item_id is None and row.stock_item_id is None
 

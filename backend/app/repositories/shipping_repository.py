@@ -458,8 +458,8 @@ def create_shipment_return(
                 quantity=qty,
                 deficient_quantity=0,
                 aisle=None,
+                row=None,
                 bay=None,
-                bin=None,
                 shipment_return_item_id=return_item.id,
                 received_at=now,
             )
@@ -483,8 +483,8 @@ def create_shipment_return(
                 hardware_category=psi.hardware_category,
                 product_code=psi.product_code,
                 aisle=None,
+                row=None,
                 bay=None,
-                bin=None,
                 received_at=now,
             )
             stock_row.quantity += qty

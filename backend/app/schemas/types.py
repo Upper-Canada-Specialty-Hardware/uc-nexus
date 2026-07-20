@@ -408,7 +408,6 @@ class InventoryLocation:
     aisle: str | None
     row: str | None
     bay: str | None
-    bin: str | None
     received_at: datetime
     created_at: datetime
     updated_at: datetime
@@ -439,7 +438,6 @@ class OpeningItem:
     aisle: str | None
     row: str | None
     bay: str | None
-    bin: str | None
     created_at: datetime
     updated_at: datetime
     installed_hardware: list[OpeningItemHardware]
@@ -728,7 +726,6 @@ class LocationUtilizationEntry:
     aisle: str
     row: str | None
     bay: str | None
-    bin: str | None
     item_count: int
     total_quantity: int
 
@@ -743,23 +740,23 @@ class LocationContents:
 @strawberry.type
 class LocationVariant:
     aisle: str | None
+    row: str | None
     bay: str | None
-    bin: str | None
 
 
 @strawberry.type
 class LocationDuplicateGroup:
     canonical_aisle: str | None
+    canonical_row: str | None
     canonical_bay: str | None
-    canonical_bin: str | None
     variants: list[LocationVariant]
 
 
 @strawberry.type
 class LocationDistinctValues:
     aisles: list[str]
+    rows: list[str]
     bays: list[str]
-    bins: list[str]
 
 
 @strawberry.type
@@ -849,8 +846,8 @@ class StockItem:
     deficient_quantity: int
     available: int
     aisle: str | None
+    row: str | None
     bay: str | None
-    bin: str | None
     received_at: datetime
     created_at: datetime
     updated_at: datetime
@@ -880,8 +877,8 @@ class DeficientItemRow:
     product_code: str
     deficient_quantity: int
     aisle: str | None
+    row: str | None
     bay: str | None
-    bin: str | None
 
 
 @strawberry.type

@@ -120,8 +120,8 @@ export const COMPLETE_OPENING = gql`
       assemblyCompletedAt
       state
       aisle
+      row
       bay
-      bin
       createdAt
       updatedAt
       installedHardware {

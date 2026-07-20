@@ -64,8 +64,8 @@ class ShopAssemblyMutations:
                 session,
                 uuid.UUID(str(input.opening_id)),
                 input.aisle,
+                input.row,
                 input.bay,
-                input.bin,
                 item_results=item_results,
                 completed_by=input.completed_by,
             )

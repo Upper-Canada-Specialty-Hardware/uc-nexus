@@ -28,8 +28,8 @@ def destock_inventory(
     source: DestockSource,
     reason_text: str | None,
     target_aisle: str | None,
+    target_row: str | None,
     target_bay: str | None,
-    target_bin: str | None,
     performed_by: str,
 ) -> StockItem:
     """Move quantity units from a project's InventoryLocation row into the stock pool."""
@@ -37,7 +37,7 @@ def destock_inventory(
         raise ValidationError("quantity must be >= 1", field="quantity")
     if not performed_by:
         raise ValidationError("performed_by is required", field="performed_by")
-    _validate_location_fields(target_aisle, target_bay, target_bin)
+    _validate_location_fields(target_aisle, target_row, target_bay)
 
     il = session.get(InventoryLocationModel, inventory_location_id)
     if il is None:
@@ -54,10 +54,10 @@ def destock_inventory(
                 field="quantity",
             )
 
-    # Pick target bin: explicit override or fall back to source bin
+    # Pick target location: explicit override or fall back to source location
     final_aisle = target_aisle if target_aisle is not None else il.aisle
+    final_row = target_row if target_row is not None else il.row
     final_bay = target_bay if target_bay is not None else il.bay
-    final_bin = target_bin if target_bin is not None else il.bin
 
     now = datetime.utcnow()
     stock_row = _find_or_create_stock_row(
@@ -66,8 +66,8 @@ def destock_inventory(
         hardware_category=il.hardware_category,
         product_code=il.product_code,
         aisle=final_aisle,
+        row=final_row,
         bay=final_bay,
-        bin=final_bin,
         received_at=now,
     )
 
@@ -87,7 +87,7 @@ def destock_inventory(
         "quantity": quantity,
         "source": source.value,
         "reasonText": reason_text,
-        "targetLocation": {"aisle": final_aisle, "bay": final_bay, "bin": final_bin},
+        "targetLocation": {"aisle": final_aisle, "row": final_row, "bay": final_bay},
         "stockItemId": str(stock_row.id),
     }
     _log_audit_event(
@@ -120,8 +120,8 @@ def allocate_stock_to_project(
     target_product_code: str,
     quantity: int,
     target_aisle: str | None,
+    target_row: str | None,
     target_bay: str | None,
-    target_bin: str | None,
     performed_by: str,
 ) -> InventoryLocationModel:
     """Transfer `quantity` units from a stock row into a project's inventory.
@@ -138,7 +138,7 @@ def allocate_stock_to_project(
         raise ValidationError("target_hardware_category is required", field="target_hardware_category")
     if not target_product_code:
         raise ValidationError("target_product_code is required", field="target_product_code")
-    _validate_location_fields(target_aisle, target_bay, target_bin)
+    _validate_location_fields(target_aisle, target_row, target_bay)
 
     si = get_stock_item(session, stock_item_id)
     available = si.quantity - (si.deficient_quantity or 0)
@@ -162,8 +162,8 @@ def allocate_stock_to_project(
         quantity=quantity,
         deficient_quantity=0,
         aisle=target_aisle,
+        row=target_row,
         bay=target_bay,
-        bin=target_bin,
         received_at=now,
     )
     session.add(new_il)
@@ -177,7 +177,7 @@ def allocate_stock_to_project(
         "targetHardwareCategory": target_hardware_category,
         "targetProductCode": target_product_code,
         "quantity": quantity,
-        "targetLocation": {"aisle": target_aisle, "bay": target_bay, "bin": target_bin},
+        "targetLocation": {"aisle": target_aisle, "row": target_row, "bay": target_bay},
         "newInventoryLocationId": str(new_il.id),
     }
     _log_audit_event(
@@ -216,8 +216,8 @@ def receive_into_stock(
     quantity: int,
     deficient_quantity: int,
     aisle: str | None,
+    row: str | None,
     bay: str | None,
-    bin: str | None,
     received_at: datetime,
     received_by: str,
     po_number: str | None,
@@ -242,8 +242,8 @@ def receive_into_stock(
         hardware_category=hardware_category,
         product_code=product_code,
         aisle=aisle,
+        row=row,
         bay=bay,
-        bin=bin,
         received_at=received_at,
     )
     stock_row.quantity += quantity
@@ -262,7 +262,7 @@ def receive_into_stock(
             "hardwareCategory": hardware_category,
             "productCode": product_code,
             "poNumber": po_number,
-            "location": {"aisle": aisle, "bay": bay, "bin": bin},
+            "location": {"aisle": aisle, "row": row, "bay": bay},
         },
     )
     return stock_row
@@ -273,10 +273,10 @@ def _find_matching_inventory_location(
     src: InventoryLocationModel,
     warehouse_id: uuid.UUID,
     aisle: str | None,
+    row: str | None,
     bay: str | None,
-    bin: str | None,
 ) -> InventoryLocationModel | None:
-    """An existing IL row sharing src's origin identity at the destination (warehouse, bin)."""
+    """An existing IL row sharing src's origin identity at the destination (warehouse, location)."""
     stmt = select(InventoryLocationModel).where(
         InventoryLocationModel.id != src.id,
         InventoryLocationModel.warehouse_id == warehouse_id,
@@ -284,8 +284,8 @@ def _find_matching_inventory_location(
         InventoryLocationModel.hardware_category == src.hardware_category,
         InventoryLocationModel.product_code == src.product_code,
         InventoryLocationModel.aisle == aisle,
+        InventoryLocationModel.row == row,
         InventoryLocationModel.bay == bay,
-        InventoryLocationModel.bin == bin,
     )
     for col, val in (
         (InventoryLocationModel.po_line_item_id, src.po_line_item_id),
@@ -304,15 +304,15 @@ def transfer_inventory(
     quantity: int,
     dest_warehouse_id: uuid.UUID,
     dest_aisle: str,
+    dest_row: str,
     dest_bay: str,
-    dest_bin: str,
     performed_by: str,
 ) -> dict:
-    """Move `quantity` available units from a source row to a destination bin/warehouse.
+    """Move `quantity` available units from a source row to a destination location/warehouse.
 
     Partial + immediate. Source keeps the remainder (an InventoryLocation may sit at 0, a fully
     drained stock row is hidden by the qty>0 list filter). The destination merges into a matching
-    row (same origin + bin) or a new row is created. Same- and cross-warehouse use one path.
+    row (same origin + location) or a new row is created. Same- and cross-warehouse use one path.
     """
     from app.models.warehouse import Warehouse
 
@@ -322,12 +322,12 @@ def transfer_inventory(
         raise ValidationError("performed_by is required", field="performed_by")
     if (
         not (dest_aisle and dest_aisle.strip())
+        or not (dest_row and dest_row.strip())
         or not (dest_bay and dest_bay.strip())
-        or not (dest_bin and dest_bin.strip())
     ):
-        raise ValidationError("destination aisle, bay, and bin are all required", field="destination")
+        raise ValidationError("destination aisle, row, and bay are all required", field="destination")
 
-    dest_aisle, dest_bay, dest_bin = _normalize_optional_location_fields(dest_aisle, dest_bay, dest_bin)
+    dest_aisle, dest_row, dest_bay = _normalize_optional_location_fields(dest_aisle, dest_row, dest_bay)
 
     dest_wh = session.get(Warehouse, dest_warehouse_id)
     if dest_wh is None:
@@ -342,12 +342,12 @@ def transfer_inventory(
         available = il.quantity - (il.deficient_quantity or 0)
         if quantity > available:
             raise ValidationError("Transfer quantity exceeds available (non-deficient) quantity", field="quantity")
-        if il.warehouse_id == dest_warehouse_id and (il.aisle, il.bay, il.bin) == (dest_aisle, dest_bay, dest_bin):
+        if il.warehouse_id == dest_warehouse_id and (il.aisle, il.row, il.bay) == (dest_aisle, dest_row, dest_bay):
             raise ValidationError("Destination is the same as the source location", field="destination")
 
-        from_wh, from_loc = il.warehouse_id, {"aisle": il.aisle, "bay": il.bay, "bin": il.bin}
+        from_wh, from_loc = il.warehouse_id, {"aisle": il.aisle, "row": il.row, "bay": il.bay}
         il.quantity -= quantity
-        target = _find_matching_inventory_location(session, il, dest_warehouse_id, dest_aisle, dest_bay, dest_bin)
+        target = _find_matching_inventory_location(session, il, dest_warehouse_id, dest_aisle, dest_row, dest_bay)
         if target is not None:
             target.quantity += quantity
         else:
@@ -362,8 +362,8 @@ def transfer_inventory(
                 quantity=quantity,
                 deficient_quantity=0,
                 aisle=dest_aisle,
+                row=dest_row,
                 bay=dest_bay,
-                bin=dest_bin,
                 received_at=now,
             )
             session.add(target)
@@ -379,7 +379,7 @@ def transfer_inventory(
                 "fromWarehouseId": str(from_wh),
                 "fromLocation": from_loc,
                 "toWarehouseId": str(dest_warehouse_id),
-                "toLocation": {"aisle": dest_aisle, "bay": dest_bay, "bin": dest_bin},
+                "toLocation": {"aisle": dest_aisle, "row": dest_row, "bay": dest_bay},
                 "quantity": quantity,
                 "targetInventoryLocationId": str(target.id),
             },
@@ -393,10 +393,10 @@ def transfer_inventory(
         available = si.quantity - (si.deficient_quantity or 0)
         if quantity > available:
             raise ValidationError("Transfer quantity exceeds available (non-deficient) quantity", field="quantity")
-        if si.warehouse_id == dest_warehouse_id and (si.aisle, si.bay, si.bin) == (dest_aisle, dest_bay, dest_bin):
+        if si.warehouse_id == dest_warehouse_id and (si.aisle, si.row, si.bay) == (dest_aisle, dest_row, dest_bay):
             raise ValidationError("Destination is the same as the source location", field="destination")
 
-        from_wh, from_loc = si.warehouse_id, {"aisle": si.aisle, "bay": si.bay, "bin": si.bin}
+        from_wh, from_loc = si.warehouse_id, {"aisle": si.aisle, "row": si.row, "bay": si.bay}
         si.quantity -= quantity
         target = _find_or_create_stock_row(
             session,
@@ -404,8 +404,8 @@ def transfer_inventory(
             hardware_category=si.hardware_category,
             product_code=si.product_code,
             aisle=dest_aisle,
+            row=dest_row,
             bay=dest_bay,
-            bin=dest_bin,
             received_at=now,
         )
         target.quantity += quantity
@@ -421,7 +421,7 @@ def transfer_inventory(
                 "fromWarehouseId": str(from_wh),
                 "fromLocation": from_loc,
                 "toWarehouseId": str(dest_warehouse_id),
-                "toLocation": {"aisle": dest_aisle, "bay": dest_bay, "bin": dest_bin},
+                "toLocation": {"aisle": dest_aisle, "row": dest_row, "bay": dest_bay},
                 "quantity": quantity,
                 "targetStockItemId": str(target.id),
             },

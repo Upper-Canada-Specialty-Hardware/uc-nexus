@@ -51,8 +51,8 @@ def _seed_inventory(session, project_id, *, hardware_category="HINGE", product_c
         quantity=quantity,
         deficient_quantity=0,
         aisle="A",
+        row="1",
         bay="1",
-        bin="1",
         received_at=datetime.utcnow(),
     )
     session.add(il)
@@ -324,8 +324,8 @@ def test_replace_schedule_preserves_inventory(db_session):
         assembly_completed_at=datetime.utcnow(),
         state=OpeningItemState.IN_INVENTORY,
         aisle="A1",
+        row="01",
         bay="B1",
-        bin="01",
     )
     db_session.add(oi)
     db_session.flush()

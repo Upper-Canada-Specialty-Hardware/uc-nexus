@@ -180,8 +180,8 @@ def report_deficiency_at_assembly(
             hardware_category=sa_oi.hardware_category,
             product_code=sa_oi.product_code,
             aisle=None,
+            row=None,
             bay=None,
-            bin=None,
             received_at=now,
         )
         il = InventoryLocationModel(
@@ -315,8 +315,8 @@ def resolve_deficiency(
                 hardware_category=il.hardware_category,
                 product_code=il.product_code,
                 aisle=il.aisle,
+                row=il.row,
                 bay=il.bay,
-                bin=il.bin,
                 received_at=datetime.utcnow(),
             )
             stock_row.quantity += quantity
@@ -435,8 +435,8 @@ def get_deficient_items(
                     "product_code": il.product_code,
                     "deficient_quantity": il.deficient_quantity,
                     "aisle": il.aisle,
+                    "row": il.row,
                     "bay": il.bay,
-                    "bin": il.bin,
                 }
             )
 
@@ -457,8 +457,8 @@ def get_deficient_items(
                     "product_code": si.product_code,
                     "deficient_quantity": si.deficient_quantity,
                     "aisle": si.aisle,
+                    "row": si.row,
                     "bay": si.bay,
-                    "bin": si.bin,
                 }
             )
     return rows

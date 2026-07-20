@@ -13,8 +13,8 @@ interface SpotCheckItem {
   hardwareCategory: string;
   quantity: number;
   aisle: string | null;
+  row: string | null;
   bay: string | null;
-  bin: string | null;
 }
 
 interface SpotCheckModalProps {
@@ -24,8 +24,8 @@ interface SpotCheckModalProps {
   onSuccess: () => void;
 }
 
-function formatLocation(aisle: string | null, bay: string | null, bin: string | null): string {
-  if (aisle && bay && bin) return `${aisle}-${bay}-${bin}`;
+function formatLocation(aisle: string | null, row: string | null, bay: string | null): string {
+  if (aisle && row && bay) return `${aisle}-${row}-${bay}`;
   return 'Unlocated';
 }
 
@@ -100,7 +100,7 @@ export default function SpotCheckModal({ open, onClose, item, onSuccess }: SpotC
           </Box>
           <Box>
             <Typography variant="caption" color="text.secondary">Location</Typography>
-            <Typography variant="body2">{formatLocation(item.aisle, item.bay, item.bin)}</Typography>
+            <Typography variant="body2">{formatLocation(item.aisle, item.row, item.bay)}</Typography>
           </Box>
           <Box>
             <Typography variant="caption" color="text.secondary">System Quantity</Typography>

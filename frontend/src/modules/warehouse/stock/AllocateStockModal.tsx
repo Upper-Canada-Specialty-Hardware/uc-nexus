@@ -46,8 +46,8 @@ export default function AllocateStockModal({
   const [productCode, setProductCode] = useState(prefillProductCode ?? item.productCode);
   const [quantity, setQuantity] = useState<string>('1');
   const [aisle, setAisle] = useState('');
+  const [row, setRow] = useState('');
   const [bay, setBay] = useState('');
-  const [bin, setBin] = useState('');
   const { showToast } = useToast();
 
   const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
@@ -81,8 +81,8 @@ export default function AllocateStockModal({
           targetProductCode: productCode.trim(),
           quantity: q,
           targetAisle: aisle.trim() || null,
+          targetRow: row.trim() || null,
           targetBay: bay.trim() || null,
-          targetBin: bin.trim() || null,
           performedBy: 'Warehouse',
         },
       },
@@ -148,12 +148,12 @@ export default function AllocateStockModal({
           inputProps={{ min: 1, max: item.available }}
         />
         <Typography variant="body2" color="text.secondary">
-          Optional: pre-locate the new inventory row at a specific bin (leave blank for unlocated).
+          Optional: pre-locate the new inventory row at a specific location (leave blank for unlocated).
         </Typography>
         <Stack direction="row" spacing={2}>
           <TextField label="Aisle" value={aisle} onChange={(e) => setAisle(e.target.value)} />
+          <TextField label="Row" value={row} onChange={(e) => setRow(e.target.value)} />
           <TextField label="Bay" value={bay} onChange={(e) => setBay(e.target.value)} />
-          <TextField label="Bin" value={bin} onChange={(e) => setBin(e.target.value)} />
         </Stack>
       </Stack>
     </Modal>
