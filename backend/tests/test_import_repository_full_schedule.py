@@ -8,19 +8,19 @@ from sqlalchemy import select
 from app.models.enums import (
     HardwareItemState,
     OpeningItemState,
-    PullRequestItemType,
-    PullRequestSource,
     PullRequestStatus,
     PullStatus,
+    ShopAssemblyRequestStatus,
 )
 from app.models.hardware import HardwareItem
 from app.models.inventory import InventoryLocation
 from app.models.opening_item import OpeningItem
 from app.models.project import Opening, Project
-from app.models.pull_request import PullRequest, PullRequestItem
+from app.models.pull_request import PullRequest
 from app.models.purchase_order import PurchaseOrder
 from app.models.shop_assembly import (
     ShopAssemblyOpening,
+    ShopAssemblyRequest,
 )
 from app.models.stock_item import StockItem
 from app.models.vendor import Vendor
@@ -356,22 +356,22 @@ def test_replace_schedule_preserves_inventory(db_session):
     assert refreshed_oi.quantity == 1
 
 
-def test_shop_assembly_pr_created_directly(db_session):
-    """finalize mints the shop-assembly PR directly (#222): no SAR row, a PENDING SHOP_ASSEMBLY PR,
-    LOOSE PR items per opening item, and openings that hang off the PR with snapshot identity."""
+def test_shop_assembly_request_created_pending(db_session):
+    """finalize mints a PENDING ShopAssemblyRequest (#293): NO PullRequest yet, openings hang off the
+    SAR via shop_assembly_request_id with pull_request_id NULL, items + snapshot identity captured.
+    No inventory-sufficiency gate at import - it moved to accept."""
     project = _make_project(db_session)
-    _seed_inventory(db_session, project.id, product_code="HG-100", quantity=2)  # #224 gate 1
     db_session.commit()
 
-    pr_number = f"SA-{uuid.uuid4().hex[:6]}"
-    import_repository.finalize_import_session(
+    req_number = f"SA-{uuid.uuid4().hex[:6]}"
+    result = import_repository.finalize_import_session(
         db_session,
         {
             "project_id": str(project.id),
             "openings": [_opening_input("A01", building="B1", floor="F2", location="Lobby")],
             "hardware_items": [],
             "include_shop_assembly_request": True,
-            "shop_assembly_request_number": pr_number,
+            "shop_assembly_request_number": req_number,
             "shop_assembly_openings": [
                 {
                     "opening_number": "A01",
@@ -384,33 +384,28 @@ def test_shop_assembly_pr_created_directly(db_session):
     )
     db_session.flush()
 
-    # A shop-assembly PR is created directly, no approval gate.
-    pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == pr_number))
-    assert pr is not None
-    assert pr.source == PullRequestSource.SHOP_ASSEMBLY
-    assert pr.status == PullRequestStatus.PENDING
-    assert pr.project_id == project.id
+    # A PENDING shop-assembly request is created, no approval, no PullRequest.
+    sar = db_session.scalar(select(ShopAssemblyRequest).where(ShopAssemblyRequest.request_number == req_number))
+    assert sar is not None
+    assert sar.status == ShopAssemblyRequestStatus.PENDING
+    assert sar.created_by == "Hardware Schedule Import"
+    assert sar.project_id == project.id
+    assert result["shop_assembly_request"].id == sar.id
 
-    # Each opening item is mirrored as a LOOSE PR item.
-    pr_items = db_session.scalars(select(PullRequestItem).where(PullRequestItem.pull_request_id == pr.id)).all()
-    assert len(pr_items) == 1
-    assert pr_items[0].item_type == PullRequestItemType.LOOSE
-    assert pr_items[0].opening_number == "A01"
-    assert pr_items[0].product_code == "HG-100"
-    assert pr_items[0].requested_quantity == 2
+    # No PullRequest exists yet - it is minted only at accept.
+    assert db_session.scalar(select(PullRequest).where(PullRequest.request_number == req_number)) is None
 
-    # The opening hangs off the PR (not a SAR) and carries snapshot identity.
-    sao = db_session.scalar(
-        select(ShopAssemblyOpening)
-        .join(PullRequest, ShopAssemblyOpening.pull_request_id == PullRequest.id)
-        .where(PullRequest.request_number == pr_number)
-    )
+    # The opening hangs off the SAR (not a PR) with pull_request_id NULL and snapshot identity.
+    sao = db_session.scalar(select(ShopAssemblyOpening).where(ShopAssemblyOpening.shop_assembly_request_id == sar.id))
     assert sao is not None
-    assert sao.shop_assembly_request_id is None
+    assert sao.pull_request_id is None
     assert sao.opening_number == "A01"
     assert sao.building == "B1"
     assert sao.floor == "F2"
     assert sao.location == "Lobby"
+    assert len(sao.items) == 1
+    assert sao.items[0].product_code == "HG-100"
+    assert sao.items[0].quantity == 2
 
 
 def test_sar_queries_work_after_opening_deleted(db_session):
@@ -419,15 +414,15 @@ def test_sar_queries_work_after_opening_deleted(db_session):
     _seed_inventory(db_session, project.id, product_code="HG-100", quantity=1)  # #224 gate 1
     db_session.commit()
 
-    pr_number = f"SA-{uuid.uuid4().hex[:6]}"
-    import_repository.finalize_import_session(
+    req_number = f"SA-{uuid.uuid4().hex[:6]}"
+    result = import_repository.finalize_import_session(
         db_session,
         {
             "project_id": str(project.id),
             "openings": [_opening_input("A01")],
             "hardware_items": [],
             "include_shop_assembly_request": True,
-            "shop_assembly_request_number": pr_number,
+            "shop_assembly_request_number": req_number,
             "shop_assembly_openings": [
                 {
                     "opening_number": "A01",
@@ -438,8 +433,12 @@ def test_sar_queries_work_after_opening_deleted(db_session):
     )
     db_session.flush()
 
+    # Accept the request (#293) so it mints the shop-assembly PR and repoints the opening at it.
+    shop_assembly_repository.accept_shop_assembly_request(db_session, result["shop_assembly_request"].id, "acceptor")
+    db_session.flush()
+
     # Complete the pull so the opening shows up in assemble_list (assigned_to needs setting for my_work)
-    pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == pr_number))
+    pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == req_number))
     pr.status = PullRequestStatus.COMPLETED
     sao = db_session.scalar(select(ShopAssemblyOpening).where(ShopAssemblyOpening.pull_request_id == pr.id))
     sao.pull_status = PullStatus.PULLED

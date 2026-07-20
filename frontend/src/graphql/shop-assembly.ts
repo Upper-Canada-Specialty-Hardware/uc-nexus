@@ -58,6 +58,49 @@ export const GET_SHOP_ASSEMBLY_STATS = gql`
   }
 `;
 
+export const GET_SHOP_ASSEMBLY_REQUESTS = gql`
+  query GetShopAssemblyRequests($projectId: ID, $status: ShopAssemblyRequestStatus) {
+    shopAssemblyRequests(projectId: $projectId, status: $status) {
+      id
+      requestNumber
+      projectId
+      status
+      createdBy
+      createdAt
+      openings {
+        id
+        openingNumber
+        building
+        floor
+        items {
+          id
+          hardwareCategory
+          productCode
+          quantity
+        }
+      }
+    }
+  }
+`;
+
+export const ACCEPT_SHOP_ASSEMBLY_REQUEST = gql`
+  mutation AcceptShopAssemblyRequest($id: ID!, $acceptedBy: String!) {
+    acceptShopAssemblyRequest(id: $id, acceptedBy: $acceptedBy) {
+      id
+      status
+    }
+  }
+`;
+
+export const REJECT_SHOP_ASSEMBLY_REQUEST = gql`
+  mutation RejectShopAssemblyRequest($id: ID!, $rejectedBy: String!, $reason: String) {
+    rejectShopAssemblyRequest(id: $id, rejectedBy: $rejectedBy, reason: $reason) {
+      id
+      status
+    }
+  }
+`;
+
 export const ASSIGN_OPENINGS = gql`
   mutation AssignOpenings($input: AssignOpeningsInput!) {
     assignOpenings(input: $input) {

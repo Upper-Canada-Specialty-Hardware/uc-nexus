@@ -4,15 +4,23 @@ import uuid
 
 import strawberry
 
+from app.auth import require_user
 from app.database import SessionLocal
 from app.repositories import shipping_repository
 
-from .converters import opening_item_to_type, packing_slip_to_type, shipment_return_to_type
+from .converters import (
+    opening_item_to_type,
+    packing_slip_to_type,
+    shipment_return_to_type,
+    shipping_out_request_to_type,
+)
+from .enums import ShippingOutRequestStatus
 from .inputs import ConfirmShipmentInput, CreateShipmentReturnInput
 from .types import (
     PackingSlip,
     ReturnableLine,
     ShipmentReturn,
+    ShippingOutRequest,
     ShipReadyItems,
     ShipReadyLooseItem,
 )
@@ -44,6 +52,19 @@ class ShippingQueries:
             return [packing_slip_to_type(ps) for ps in slips]
 
     @strawberry.field
+    def shipping_out_requests(
+        self,
+        project_id: strawberry.ID | None = None,
+        status: ShippingOutRequestStatus | None = None,
+    ) -> list[ShippingOutRequest]:
+        """Accept UI (#293): shipping-out requests for a project, PENDING by default."""
+        with SessionLocal() as session:
+            reqs = shipping_repository.get_shipping_out_requests(
+                session, uuid.UUID(str(project_id)) if project_id else None, status
+            )
+            return [shipping_out_request_to_type(r) for r in reqs]
+
+    @strawberry.field
     def returnable_lines(self, packing_slip_id: strawberry.ID) -> list[ReturnableLine]:
         with SessionLocal() as session:
             lines = shipping_repository.get_returnable_lines(session, uuid.UUID(str(packing_slip_id)))
@@ -63,6 +84,34 @@ class ShippingQueries:
 
 @strawberry.type
 class ShippingMutations:
+    @strawberry.mutation
+    def accept_shipping_out_request(
+        self, info: strawberry.Info, id: strawberry.ID, accepted_by: str
+    ) -> ShippingOutRequest:
+        """Accept a PENDING shipping-out request (#293). Open to any signed-in user. Mints the
+        warehouse PullRequest (SHIPPING_OUT, PENDING) from the request's items; the warehouse
+        approve handles any inventory shortfall (no gate here)."""
+        require_user(info)
+        request_id = uuid.UUID(str(id))
+        with SessionLocal() as session:
+            shipping_repository.accept_shipping_out_request(session, request_id, accepted_by)
+            session.commit()
+            refreshed = shipping_repository.get_shipping_out_request(session, request_id)
+            return shipping_out_request_to_type(refreshed)
+
+    @strawberry.mutation
+    def reject_shipping_out_request(
+        self, info: strawberry.Info, id: strawberry.ID, rejected_by: str, reason: str | None = None
+    ) -> ShippingOutRequest:
+        """Reject a PENDING shipping-out request (#293). Open to any signed-in user."""
+        require_user(info)
+        request_id = uuid.UUID(str(id))
+        with SessionLocal() as session:
+            shipping_repository.reject_shipping_out_request(session, request_id, rejected_by, reason)
+            session.commit()
+            refreshed = shipping_repository.get_shipping_out_request(session, request_id)
+            return shipping_out_request_to_type(refreshed)
+
     @strawberry.mutation
     def confirm_shipment(self, input: ConfirmShipmentInput) -> PackingSlip:
         from app.models.enums import PullRequestItemType

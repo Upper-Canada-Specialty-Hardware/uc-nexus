@@ -7,21 +7,33 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from app.errors import ConflictError, InvalidStateTransitionError, NotFoundError, ValidationError
+from app.errors import (
+    ConflictError,
+    InvalidStateTransitionError,
+    InventoryShortfallError,
+    NotFoundError,
+    ValidationError,
+)
 from app.models.enums import (
     AssemblyStatus,
     OpeningItemState,
+    PullRequestItemType,
     PullRequestSource,
     PullRequestStatus,
     PullStatus,
+    ShopAssemblyRequestStatus,
 )
 from app.models.opening_item import OpeningItem as OpeningItemModel
 from app.models.opening_item import OpeningItemHardware as OIHModel
 from app.models.pull_request import (
     PullRequest as PullRequestModel,
 )
+from app.models.pull_request import (
+    PullRequestItem as PullRequestItemModel,
+)
 from app.models.shop_assembly import (
     ShopAssemblyOpening,
+    ShopAssemblyRequest,
 )
 from app.services.locking import lock_rows
 
@@ -277,11 +289,151 @@ def get_openings_with_items(session: Session, opening_ids: list[uuid.UUID]) -> l
 
 def get_request_with_openings(session: Session, request_id: uuid.UUID):
     """Shop-assembly request with openings + their items eagerly loaded (finalize-import reload)."""
-    from app.models.shop_assembly import ShopAssemblyRequest
-
     stmt = (
         select(ShopAssemblyRequest)
         .options(selectinload(ShopAssemblyRequest.openings).selectinload(ShopAssemblyOpening.items))
         .where(ShopAssemblyRequest.id == request_id)
     )
     return session.scalars(stmt).unique().first()
+
+
+def find_already_assembled_openings(
+    session: Session,
+    project_id: uuid.UUID,
+    opening_id_by_number: dict[str, uuid.UUID],
+) -> list[str]:
+    """REQ-5 guard (#293): among the given openings, return the opening_numbers whose source opening
+    already has an assembled OpeningItem in this project (any state except SHIPPED_OUT). Such an
+    opening has already been through assembly and must not be sent to shop assembly again."""
+    opening_ids = list(opening_id_by_number.values())
+    if not opening_ids:
+        return []
+    assembled_ids = set(
+        session.scalars(
+            select(OpeningItemModel.opening_id).where(
+                OpeningItemModel.project_id == project_id,
+                OpeningItemModel.opening_id.in_(opening_ids),
+                OpeningItemModel.state != OpeningItemState.SHIPPED_OUT,
+            )
+        ).all()
+    )
+    return [num for num, oid in opening_id_by_number.items() if oid in assembled_ids]
+
+
+def get_shop_assembly_requests(
+    session: Session,
+    project_id: uuid.UUID | None = None,
+    status: ShopAssemblyRequestStatus | None = None,
+) -> list[ShopAssemblyRequest]:
+    """List shop-assembly requests for the accept UI (#293). Defaults to PENDING when no status is
+    given. Openings + their items are eagerly loaded (shop_assembly_request_to_type walks both)."""
+    effective_status = status if status is not None else ShopAssemblyRequestStatus.PENDING
+    stmt = (
+        select(ShopAssemblyRequest)
+        .options(selectinload(ShopAssemblyRequest.openings).selectinload(ShopAssemblyOpening.items))
+        .where(ShopAssemblyRequest.status == effective_status)
+        .order_by(ShopAssemblyRequest.created_at.asc())
+    )
+    if project_id is not None:
+        stmt = stmt.where(ShopAssemblyRequest.project_id == project_id)
+    return list(session.scalars(stmt).unique().all())
+
+
+def accept_shop_assembly_request(
+    session: Session,
+    request_id: uuid.UUID,
+    accepted_by: str,
+) -> ShopAssemblyRequest:
+    """Accept a PENDING shop-assembly request (#293).
+
+    Re-runs the shared inventory-sufficiency gate over the request's openings' items. If short,
+    raises InventoryShortfallError WITHOUT minting anything - the resolver rolls back, notifies the
+    PO in a fresh session, and re-raises so the shortfall reaches the caller inline. If covered,
+    flips the request to APPROVED and mints the warehouse PullRequest (SHOP_ASSEMBLY, PENDING) with
+    one LOOSE item per opening item, then repoints the request's ShopAssemblyOpenings at that PR
+    (pull_request_id) so the unchanged warehouse pull/complete flow works exactly as before.
+    """
+    from app.repositories import warehouse as warehouse_repository
+    from app.services import notification_service
+
+    stmt = (
+        select(ShopAssemblyRequest)
+        .options(selectinload(ShopAssemblyRequest.openings).selectinload(ShopAssemblyOpening.items))
+        .where(ShopAssemblyRequest.id == request_id)
+    )
+    sar = session.scalars(stmt).unique().first()
+    if sar is None:
+        raise NotFoundError(f"Shop-assembly request {request_id} not found")
+    if sar.status != ShopAssemblyRequestStatus.PENDING:
+        raise InvalidStateTransitionError(f"Shop-assembly request must be Pending to accept, got {sar.status.value}")
+
+    needs = [
+        (item.hardware_category, item.product_code, item.quantity) for opening in sar.openings for item in opening.items
+    ]
+    sufficiency = warehouse_repository.check_inventory_sufficiency(session, sar.project_id, needs)
+    if not sufficiency.sufficient:
+        raise InventoryShortfallError(
+            "Cannot accept shop-assembly request - insufficient inventory. "
+            + notification_service.format_shortfall_lines(sufficiency.shortfalls),
+            shortfalls=sufficiency.shortfalls,
+            project_id=sar.project_id,
+            request_number=sar.request_number,
+        )
+
+    now = datetime.utcnow()
+    sar.status = ShopAssemblyRequestStatus.APPROVED
+    sar.approved_by = accepted_by
+    sar.approved_at = now
+
+    pr = PullRequestModel(
+        id=uuid.uuid4(),
+        request_number=sar.request_number,
+        project_id=sar.project_id,
+        source=PullRequestSource.SHOP_ASSEMBLY,
+        status=PullRequestStatus.PENDING,
+        requested_by=accepted_by,
+    )
+    session.add(pr)
+    session.flush()
+
+    for opening in sar.openings:
+        opening.pull_request_id = pr.id
+        for item in opening.items:
+            session.add(
+                PullRequestItemModel(
+                    id=uuid.uuid4(),
+                    pull_request_id=pr.id,
+                    item_type=PullRequestItemType.LOOSE,
+                    opening_number=opening.opening_number,
+                    hardware_category=item.hardware_category,
+                    product_code=item.product_code,
+                    requested_quantity=item.quantity,
+                )
+            )
+
+    return sar
+
+
+def reject_shop_assembly_request(
+    session: Session,
+    request_id: uuid.UUID,
+    rejected_by: str,
+    reason: str | None,
+) -> ShopAssemblyRequest:
+    """Reject a PENDING shop-assembly request (#293). Mints no PullRequest."""
+    stmt = (
+        select(ShopAssemblyRequest)
+        .options(selectinload(ShopAssemblyRequest.openings).selectinload(ShopAssemblyOpening.items))
+        .where(ShopAssemblyRequest.id == request_id)
+    )
+    sar = session.scalars(stmt).unique().first()
+    if sar is None:
+        raise NotFoundError(f"Shop-assembly request {request_id} not found")
+    if sar.status != ShopAssemblyRequestStatus.PENDING:
+        raise InvalidStateTransitionError(f"Shop-assembly request must be Pending to reject, got {sar.status.value}")
+
+    sar.status = ShopAssemblyRequestStatus.REJECTED
+    sar.rejected_by = rejected_by
+    sar.rejection_reason = (reason or "").strip() or None
+    sar.rejected_at = datetime.utcnow()
+    return sar

@@ -39,6 +39,8 @@ from .types import (
     RelayInstallInfo,
     ShipmentReturn,
     ShipmentReturnItem,
+    ShippingOutRequest,
+    ShippingOutRequestItem,
     ShopAssemblyOpening,
     ShopAssemblyOpeningItem,
     ShopAssemblyRequest,
@@ -481,6 +483,37 @@ def shop_assembly_request_to_type(sar) -> ShopAssemblyRequest:
         approved_at=sar.approved_at,
         rejected_at=sar.rejected_at,
         openings=[shop_assembly_opening_to_type(o) for o in sar.openings],
+    )
+
+
+def shipping_out_request_item_to_type(item) -> ShippingOutRequestItem:
+    return ShippingOutRequestItem(
+        id=strawberry.ID(str(item.id)),
+        shipping_out_request_id=strawberry.ID(str(item.shipping_out_request_id)),
+        item_type=item.item_type,
+        opening_number=item.opening_number,
+        opening_item_id=strawberry.ID(str(item.opening_item_id)) if item.opening_item_id else None,
+        hardware_category=item.hardware_category,
+        product_code=item.product_code,
+        requested_quantity=item.requested_quantity,
+    )
+
+
+def shipping_out_request_to_type(req) -> ShippingOutRequest:
+    return ShippingOutRequest(
+        id=strawberry.ID(str(req.id)),
+        request_number=req.request_number,
+        project_id=strawberry.ID(str(req.project_id)),
+        status=req.status,
+        created_by=req.created_by,
+        approved_by=req.approved_by,
+        rejected_by=req.rejected_by,
+        rejection_reason=req.rejection_reason,
+        created_at=req.created_at,
+        approved_at=req.approved_at,
+        rejected_at=req.rejected_at,
+        pull_request_id=strawberry.ID(str(req.pull_request_id)) if req.pull_request_id else None,
+        items=[shipping_out_request_item_to_type(i) for i in req.items],
     )
 
 

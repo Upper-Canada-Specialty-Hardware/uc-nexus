@@ -73,6 +73,45 @@ export const CONFIRM_SHIPMENT = gql`
   }
 `;
 
+export const GET_SHIPPING_OUT_REQUESTS = gql`
+  query GetShippingOutRequests($projectId: ID, $status: ShippingOutRequestStatus) {
+    shippingOutRequests(projectId: $projectId, status: $status) {
+      id
+      requestNumber
+      projectId
+      status
+      createdBy
+      createdAt
+      items {
+        id
+        itemType
+        openingNumber
+        hardwareCategory
+        productCode
+        requestedQuantity
+      }
+    }
+  }
+`;
+
+export const ACCEPT_SHIPPING_OUT_REQUEST = gql`
+  mutation AcceptShippingOutRequest($id: ID!, $acceptedBy: String!) {
+    acceptShippingOutRequest(id: $id, acceptedBy: $acceptedBy) {
+      id
+      status
+    }
+  }
+`;
+
+export const REJECT_SHIPPING_OUT_REQUEST = gql`
+  mutation RejectShippingOutRequest($id: ID!, $rejectedBy: String!, $reason: String) {
+    rejectShippingOutRequest(id: $id, rejectedBy: $rejectedBy, reason: $reason) {
+      id
+      status
+    }
+  }
+`;
+
 export const CREATE_SHIPMENT_RETURN = gql`
   mutation CreateShipmentReturn($input: CreateShipmentReturnInput!) {
     createShipmentReturn(input: $input) {

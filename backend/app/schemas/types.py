@@ -21,6 +21,7 @@ from .enums import (
     PullStatus,
     ReconciliationStatus,
     ReturnDisposition,
+    ShippingOutRequestStatus,
     ShopAssemblyRequestStatus,
 )
 
@@ -516,6 +517,35 @@ class ShopAssemblyRequest:
 
 
 @strawberry.type
+class ShippingOutRequestItem:
+    id: strawberry.ID
+    shipping_out_request_id: strawberry.ID
+    item_type: PullRequestItemType
+    opening_number: str
+    opening_item_id: strawberry.ID | None
+    hardware_category: str | None
+    product_code: str | None
+    requested_quantity: int
+
+
+@strawberry.type
+class ShippingOutRequest:
+    id: strawberry.ID
+    request_number: str
+    project_id: strawberry.ID
+    status: ShippingOutRequestStatus
+    created_by: str
+    approved_by: str | None
+    rejected_by: str | None
+    rejection_reason: str | None
+    created_at: datetime
+    approved_at: datetime | None
+    rejected_at: datetime | None
+    pull_request_id: strawberry.ID | None
+    items: list[ShippingOutRequestItem]
+
+
+@strawberry.type
 class PackingSlipItem:
     id: strawberry.ID
     packing_slip_id: strawberry.ID
@@ -598,12 +628,10 @@ class Notification:
 class FinalizeImportResult:
     project: Project
     purchase_orders: list[PurchaseOrder]
-    shipping_out_pull_requests: list[PullRequest]
-    # Legacy SAR field, always None since #222 retired the SAR flow. Kept for the result contract.
+    # #293: Start a Task now mints request entities (PENDING), not PullRequests. A signed-in user
+    # accepts them downstream, which mints the warehouse PullRequest.
+    shipping_out_requests: list[ShippingOutRequest]
     shop_assembly_request: ShopAssemblyRequest | None
-    # The shop-assembly PullRequest minted directly by "Start a Task" (#222). None unless the
-    # import created one. This is what the import success UI confirms.
-    shop_assembly_pull_request: PullRequest | None = None
 
 
 @strawberry.type

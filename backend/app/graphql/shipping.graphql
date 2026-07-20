@@ -1,0 +1,80 @@
+# Shipping Module SDL Reference
+# Source of truth: Strawberry resolvers in app/schemas/shipping.py
+
+# --- Shipping-out request (accept gate, #293) ---
+# Start-a-Task mints a PENDING ShippingOutRequest; a signed-in user accepts it, which mints the
+# warehouse PullRequest (SHIPPING_OUT, PENDING) from the request's items and stamps pullRequestId.
+
+enum ShippingOutRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+type ShippingOutRequestItem {
+  id: ID!
+  shippingOutRequestId: ID!
+  itemType: PullRequestItemType!
+  openingNumber: String!
+  openingItemId: ID
+  hardwareCategory: String
+  productCode: String
+  requestedQuantity: Int!
+}
+
+type ShippingOutRequest {
+  id: ID!
+  requestNumber: String!
+  projectId: ID!
+  status: ShippingOutRequestStatus!
+  createdBy: String!
+  approvedBy: String
+  rejectedBy: String
+  rejectionReason: String
+  createdAt: DateTime!
+  approvedAt: DateTime
+  rejectedAt: DateTime
+  pullRequestId: ID
+  items: [ShippingOutRequestItem!]!
+}
+
+# --- Ship-ready / packing slips / returns (existing) ---
+
+type ShipReadyItems {
+  openingItems: [OpeningItem!]!
+  looseItems: [ShipReadyLooseItem!]!
+}
+
+type ShipReadyLooseItem {
+  openingNumber: String!
+  hardwareCategory: String!
+  productCode: String!
+  availableQuantity: Int!
+}
+
+type ReturnableLine {
+  packingSlipItemId: ID!
+  openingNumber: String
+  productCode: String!
+  hardwareCategory: String!
+  shippedQuantity: Int!
+  returnedQuantity: Int!
+  returnableQuantity: Int!
+}
+
+type Query {
+  shipReadyItems(projectId: ID): ShipReadyItems!
+  packingSlips(projectId: ID): [PackingSlip!]!
+  returnableLines(packingSlipId: ID!): [ReturnableLine!]!
+  # Accept UI (#293): shipping-out requests, PENDING by default.
+  shippingOutRequests(projectId: ID, status: ShippingOutRequestStatus): [ShippingOutRequest!]!
+}
+
+type Mutation {
+  confirmShipment(input: ConfirmShipmentInput!): PackingSlip!
+  createShipmentReturn(input: CreateShipmentReturnInput!): ShipmentReturn!
+  # Accept gate (#293). Any signed-in user (require_user). acceptedBy/rejectedBy is the caller's
+  # display name. Accept mints the warehouse PullRequest; the warehouse approve handles shortfalls.
+  acceptShippingOutRequest(id: ID!, acceptedBy: String!): ShippingOutRequest!
+  rejectShippingOutRequest(id: ID!, rejectedBy: String!, reason: String): ShippingOutRequest!
+}

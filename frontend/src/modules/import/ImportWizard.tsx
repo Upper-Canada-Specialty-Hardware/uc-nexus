@@ -194,8 +194,8 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
     finalizeImportSession: {
       project: { id: string; projectId: string; description: string | null; jobSiteName: string | null };
       purchaseOrders: Array<{ id: string; poNumber: string; status: string }>;
-      shippingOutPullRequests: Array<{ id: string; requestNumber: string; status: string }>;
-      shopAssemblyPullRequest: { id: string; requestNumber: string; status: string } | null;
+      shippingOutRequests: Array<{ id: string; requestNumber: string; status: string }>;
+      shopAssemblyRequest: { id: string; requestNumber: string; status: string } | null;
     };
   }>(FINALIZE_IMPORT_SESSION, {
     refetchQueries: [{ query: GET_PROJECTS }],
@@ -585,8 +585,8 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
   interface FinalizeResultData {
     project: { id: string; projectId: string; description: string | null; jobSiteName: string | null };
     purchaseOrders: Array<{ id: string; poNumber: string; status: string }>;
-    shippingOutPullRequests: Array<{ id: string; requestNumber: string; status: string }>;
-    shopAssemblyPullRequest: { id: string; requestNumber: string; status: string } | null;
+    shippingOutRequests: Array<{ id: string; requestNumber: string; status: string }>;
+    shopAssemblyRequest: { id: string; requestNumber: string; status: string } | null;
   }
 
   const buildFinalizeInput = useCallback(() => {
@@ -1294,14 +1294,14 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
                   {finalizeResult.purchaseOrders.length} PO(s) created
                 </Typography>
               )}
-              {finalizeResult.shippingOutPullRequests.length > 0 && (
+              {finalizeResult.shippingOutRequests.length > 0 && (
                 <Typography variant="body2">
-                  {finalizeResult.shippingOutPullRequests.length} Shipping PR(s) created
+                  {finalizeResult.shippingOutRequests.length} Shipping request(s) created
                 </Typography>
               )}
-              {finalizeResult.shopAssemblyPullRequest && (
+              {finalizeResult.shopAssemblyRequest && (
                 <Typography variant="body2">
-                  Shop Assembly PR #{finalizeResult.shopAssemblyPullRequest.requestNumber} created
+                  Shop Assembly request #{finalizeResult.shopAssemblyRequest.requestNumber} created
                 </Typography>
               )}
             </Box>
