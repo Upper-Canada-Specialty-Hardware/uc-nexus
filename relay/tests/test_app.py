@@ -214,49 +214,17 @@ def test_acquire_defers_when_it_loses_the_cold_start_race(monkeypatch):
     assert 7 in sent and (9, "z") in sent
 
 
-def test_maybe_promote_skips_when_launched_from_install_dir(monkeypatch):
+def test_cleanup_old_versions_keeps_running_drops_others(monkeypatch, tmp_path):
+    from ucnexus_relay import layout
+
     a = appmod.RelayApp()
-    monkeypatch.setattr(si, "same_path", lambda x, y: True)
-    monkeypatch.setattr(si, "installed_build", lambda d: BUILD5)
-    monkeypatch.setattr(si, "current_build", lambda: BUILD5)
-    assert a._maybe_promote(force=False) is False
+    monkeypatch.setattr(a, "_install_dir", lambda: tmp_path)
+    for name in ("app-relay-v0.1.0-build.26", "app-relay-v0.1.0-build.27", "app-old"):
+        (tmp_path / name).mkdir()
+    running = tmp_path / "app-relay-v0.1.0-build.27"
+    monkeypatch.setattr(layout, "running_version_dir", lambda: running)
 
+    a._cleanup_old_versions()
 
-def test_maybe_promote_delegates_when_installed_is_current(monkeypatch):
-    a = appmod.RelayApp()
-    monkeypatch.setattr(si, "same_path", lambda x, y: False)
-    monkeypatch.setattr(si, "installed_build", lambda d: BUILD6)
-    monkeypatch.setattr(si, "current_build", lambda: BUILD5)  # we're older -> delegate to installed
-    monkeypatch.setattr(si, "live_owner", lambda d: None)
-    launched = []
-    monkeypatch.setattr(si, "launch_installed", lambda d, **k: launched.append(True))
-    assert a._maybe_promote(force=False) is True
-    assert launched == [True]
-
-
-def test_maybe_promote_swaps_and_relaunches_when_newer(monkeypatch):
-    a = appmod.RelayApp()
-    monkeypatch.setattr(si, "same_path", lambda x, y: False)
-    monkeypatch.setattr(si, "installed_build", lambda d: BUILD5)
-    monkeypatch.setattr(si, "current_build", lambda: BUILD6)  # newer -> promote
-    monkeypatch.setattr(si, "live_owner", lambda d: None)
-    swapped = []
-    monkeypatch.setattr(si, "promote_swap", lambda src, d: swapped.append(src) or {"ok": True})
-    monkeypatch.setattr(si, "refresh_autostart_if_present", lambda d: None)
-    launched = []
-    monkeypatch.setattr(si, "launch_installed", lambda d, **k: launched.append(True))
-    assert a._maybe_promote(force=False) is True
-    assert swapped and launched == [True]
-
-
-def test_maybe_promote_runs_in_place_when_swap_fails(monkeypatch):
-    a = appmod.RelayApp()
-    monkeypatch.setattr(si, "same_path", lambda x, y: False)
-    monkeypatch.setattr(si, "installed_build", lambda d: BUILD5)
-    monkeypatch.setattr(si, "current_build", lambda: BUILD6)
-    monkeypatch.setattr(si, "live_owner", lambda d: None)
-    monkeypatch.setattr(si, "promote_swap", lambda src, d: {"ok": False, "error": "locked"})
-    launched = []
-    monkeypatch.setattr(si, "launch_installed", lambda d, **k: launched.append(True))
-    assert a._maybe_promote(force=False) is False  # fall back to running in place
-    assert launched == []
+    remaining = sorted(p.name for p in tmp_path.glob("app-*"))
+    assert remaining == ["app-relay-v0.1.0-build.27"]  # kept the running version, dropped the rest

@@ -19,7 +19,6 @@ import os
 import sys
 import threading
 import time
-from pathlib import Path
 
 from . import setup, single_instance
 from .config import DEFAULT_CONFIG_PATH
@@ -199,50 +198,18 @@ class RelayApp:
         timer.daemon = True
         timer.start()
 
-    def _maybe_promote(self, force: bool) -> bool:
-        """If this frozen exe was launched from OUTSIDE the install dir, converge on the installed exe:
-        promote (swap self in + relaunch) when we're newer / forced / there's no install yet, otherwise
-        delegate to the installed exe. Returns True if the caller should exit (we handed off)."""
-        cfg_dir = self._install_dir()
-        me = Path(sys.executable)
-        installed = single_instance.installed_exe_path(cfg_dir)
-        # Short-circuit the common case (launched from the install dir) before probing the installed exe's
-        # build, so a normal startup never spawns a `print-build` subprocess.
-        if single_instance.same_path(me, installed):
-            return False
-        my_build = single_instance.current_build()
-        decision = single_instance.promote_decision(
-            frozen=True,
-            same_path=False,
-            installed_build=single_instance.installed_build(cfg_dir),
-            my_build=my_build,
-            force=force,
-        )
-        if decision == "skip":
-            return False
-        if decision == "delegate":
-            # the installed exe is same/newer: surface it if it's running, else launch it. Never run from here.
-            owner = single_instance.live_owner(cfg_dir)
-            if owner is not None:
-                single_instance.allow_foreground(owner["pid"])
-                single_instance.send_show(owner["port"], owner["nonce"])
-                logger.info("installed relay is current and running; focused it instead of running from %s", me)
-            else:
-                single_instance.launch_installed(cfg_dir)
-                logger.info("installed relay is current; launched it instead of running from %s", me)
-            return True
-        # promote: evict a running (installed) owner so its exe unlocks, swap, relaunch from the install dir
-        owner = single_instance.live_owner(cfg_dir)
-        if owner is not None:
-            single_instance.evict(owner, cfg_dir)
-        res = single_instance.promote_swap(me, cfg_dir)
-        if not res.get("ok"):
-            logger.error("promote failed (%s); running in place from %s", res.get("error"), me)
-            return False  # fall back to running from where we are rather than not running at all
-        single_instance.refresh_autostart_if_present(cfg_dir)
-        single_instance.launch_installed(cfg_dir)
-        logger.info("promoted %s -> %s (build %s) and relaunched", me, installed, my_build)
-        return True
+    def _cleanup_old_versions(self) -> None:
+        """Delete stale app-<build>/ version folders a past update left behind, keeping the one we run
+        from. Best-effort - a folder still held by an exiting update helper is skipped and cleaned on a
+        later start (see layout.cleanup_old_versions)."""
+        from . import layout
+
+        try:
+            running = layout.running_version_dir()
+            keep = {running.name} if running is not None else set()
+            layout.cleanup_old_versions(self._install_dir(), keep)
+        except Exception:
+            logger.exception("error cleaning up old relay versions")
 
     def _acquire_single_instance(self, force: bool) -> bool:
         """Become the single app owner, or signal an existing one and bow out. Returns True to proceed as
@@ -293,13 +260,13 @@ class RelayApp:
 
         global _APP
         _APP = self
-        # Single-instance + promote gate. Only meaningful for the packaged exe: a dev run has
-        # sys.executable = python (no exe to promote/relaunch, build 'dev'), so keep today's behaviour there.
+        # Single-instance gate. Only meaningful for the packaged exe: a dev run has sys.executable = python
+        # (build 'dev'), so keep today's behaviour there. Onedir installs run via the `current` junction;
+        # there is no promote-from-Downloads step anymore (see single_instance / layout).
         if getattr(sys, "frozen", False):
-            if self._maybe_promote(force):
-                return 0
             if not self._acquire_single_instance(force):
                 return 0
+            self._cleanup_old_versions()
         self.ensure_serve()
         self._window = webview.create_window(
             "UC Nexus Relay",
