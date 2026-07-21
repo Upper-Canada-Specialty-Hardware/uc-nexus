@@ -20,10 +20,9 @@ import tomllib
 import urllib.request
 from pathlib import Path
 
+from . import __version__ as VERSION
 from . import autostart, updater
 from .config import ChannelCfg, DEFAULT_CONFIG_PATH, KNOWN_COMPANIES, SqlCfg
-
-VERSION = "0.1.0"
 
 
 def _resolve_log_path(config_path: Path, logging_file: str) -> Path:
