@@ -28,17 +28,6 @@ def test_decide_action_matrix():
     assert si.decide_action("dev", BUILD5, force=True) == "replace"  # --force always replaces
 
 
-def test_promote_decision_matrix():
-    d = si.promote_decision
-    assert d(frozen=False, same_path=False, installed_build=BUILD5, my_build=BUILD6, force=False) == "skip"
-    assert d(frozen=True, same_path=True, installed_build=BUILD5, my_build=BUILD6, force=False) == "skip"
-    assert d(frozen=True, same_path=False, installed_build=None, my_build=BUILD5, force=False) == "promote"
-    assert d(frozen=True, same_path=False, installed_build=BUILD5, my_build=BUILD6, force=False) == "promote"
-    assert d(frozen=True, same_path=False, installed_build=BUILD6, my_build=BUILD5, force=False) == "delegate"
-    assert d(frozen=True, same_path=False, installed_build=BUILD5, my_build=BUILD5, force=False) == "delegate"
-    assert d(frozen=True, same_path=False, installed_build=BUILD6, my_build=BUILD5, force=True) == "promote"
-
-
 # --- lockfile -----------------------------------------------------------------------------------------
 
 
@@ -134,28 +123,7 @@ def test_evict_force_kills_when_graceful_times_out(monkeypatch, tmp_path):
     assert killed == [9]
 
 
-# --- promote-to-installed -----------------------------------------------------------------------------
-
-
-def test_promote_swap_replaces_installed(tmp_path):
-    installed = si.installed_exe_path(tmp_path)
-    installed.write_text("OLD", encoding="utf-8")
-    src = tmp_path / "Downloads" / "ucnexus-relay.exe"
-    src.parent.mkdir()
-    src.write_text("NEW", encoding="utf-8")
-
-    res = si.promote_swap(src, tmp_path)
-    assert res["ok"] is True
-    assert installed.read_text(encoding="utf-8") == "NEW"
-    assert not list(tmp_path.glob("ucnexus-relay.exe.old*"))  # the aside copy is cleaned up
-
-
-def test_promote_swap_fresh_install(tmp_path):
-    src = tmp_path / "src.exe"
-    src.write_text("NEW", encoding="utf-8")
-    res = si.promote_swap(src, tmp_path)
-    assert res["ok"] is True
-    assert si.installed_exe_path(tmp_path).read_text(encoding="utf-8") == "NEW"
+# --- installed-exe resolution -------------------------------------------------------------------------
 
 
 def test_installed_build_reads_print_build(monkeypatch, tmp_path):

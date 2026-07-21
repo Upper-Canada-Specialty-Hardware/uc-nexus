@@ -57,6 +57,9 @@ class SqlCfg(BaseModel):
     driver: str = "ODBC Driver 17 for SQL Server"
     trusted_connection: bool = True
     encrypt: str = "yes"
+    # Encrypt=yes but TrustServerCertificate=yes: the connection is encrypted, but the SQL Server cert is
+    # NOT validated (a self-signed cert is accepted). Acceptable for the trusted internal LAN this relay
+    # runs on; if the SQL box gets a CA-issued/pinned cert, set this False to actually validate against it.
     trust_server_certificate: bool = True
     connection_timeout: int = 10
     command_timeout: int = 30

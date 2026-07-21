@@ -28,11 +28,22 @@ def _require_winreg() -> None:
 
 
 def default_command() -> str:
-    """The command the Run entry launches at logon: the packaged exe as the desktop app, started minimized
-    to the tray (the app supervises the relay). Quoted so a path with spaces survives. In a dev checkout
-    sys.executable is python, so this is only meaningful for the frozen exe - the installer and the UI
-    always run the packaged exe."""
-    return f'"{sys.executable}" app --minimized'
+    """The command the Run entry launches at logon: the packaged app, started minimized to the tray. For an
+    onedir install it targets the STABLE `current` junction path, so a version update (which only repoints
+    the junction) needs no autostart change; it falls back to sys.executable for a dev run. Quoted so a
+    path with spaces survives."""
+    exe = sys.executable
+    if getattr(sys, "frozen", False):
+        try:
+            from . import layout
+            from .config import DEFAULT_CONFIG_PATH
+
+            cur = layout.current_link(DEFAULT_CONFIG_PATH.parent) / layout.ASSET_NAME
+            if cur.exists():
+                exe = str(cur)
+        except Exception:  # noqa: BLE001 - fall back to sys.executable if the layout can't be resolved
+            pass
+    return f'"{exe}" app --minimized'
 
 
 def install_autostart(command: str | None = None, subkey: str = RUN_SUBKEY) -> str:

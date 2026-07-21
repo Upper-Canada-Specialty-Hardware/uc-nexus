@@ -20,10 +20,9 @@ import tomllib
 import urllib.request
 from pathlib import Path
 
+from . import __version__ as VERSION
 from . import autostart, updater
 from .config import ChannelCfg, DEFAULT_CONFIG_PATH, KNOWN_COMPANIES, SqlCfg
-
-VERSION = "0.1.0"
 
 
 def _resolve_log_path(config_path: Path, logging_file: str) -> Path:
@@ -89,10 +88,20 @@ def relay_health(host: str = "127.0.0.1", port: int = 7321) -> dict:
 def _tail_lines(path: Path, limit: int) -> list[str]:
     if not path.exists():
         return []
-    # relay.log stays small (a few events per op); reading it whole and slicing is fine and avoids
-    # seek-based tailing edge cases with the JSON-per-line format.
-    with open(path, encoding="utf-8", errors="replace") as f:
-        return f.readlines()[-limit:]
+    # Read only a bounded tail from the END rather than the whole file. relay.log is capped at ~2MB by
+    # rotation (logging_setup), and the UI polls this every few seconds, so reading megabytes for the last
+    # N events is wasteful. Grab ~400 bytes per requested line from the end, drop the partial first line.
+    approx = max(int(limit), 1) * 400
+    with open(path, "rb") as f:
+        f.seek(0, 2)
+        size = f.tell()
+        start = max(0, size - approx)
+        f.seek(start)
+        data = f.read()
+    lines = data.decode("utf-8", errors="replace").splitlines()
+    if start > 0 and lines:
+        lines = lines[1:]  # first line is likely truncated by the offset read
+    return lines[-limit:]
 
 
 def recent_log_events(config_path: str | Path | None = None, limit: int = 200) -> list[dict]:
@@ -273,13 +282,14 @@ class Api:
         return {"ok": True}
 
     def shutdown_app(self) -> dict:
-        """Stop the relay and quit the desktop app (the Status/tray 'Shut down'). The JS confirms first."""
+        """Stop the relay and quit the desktop app (the Status/tray 'Shut down'). The JS confirms first.
+        user_shutdown so an in-flight update is cancelled rather than relaunched."""
         from . import app
 
         running = app.current()
         if running is None:
             return {"ok": False, "error": "not running as the desktop app"}
-        running.shutdown()
+        running.user_shutdown()
         return {"ok": True}
 
     def uninstall_autostart(self) -> dict:
@@ -297,7 +307,7 @@ class Api:
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "error": str(e)}
 
-    def apply_update(self, url: str) -> dict:
+    def apply_update(self, url: str, build: str | None = None) -> dict:
         if not _frozen():
             return {"ok": False, "error": "updates can only be applied to the packaged exe"}
         if not (url or "").strip():
@@ -313,8 +323,13 @@ class Api:
             # unlocked exe and relaunch - no renaming of a running exe.
             import os
 
-            result = updater.stage_update(url.strip(), DEFAULT_CONFIG_PATH.parent, os.getpid())
+            result = updater.stage_update(
+                url.strip(), DEFAULT_CONFIG_PATH.parent, os.getpid(), target_build=(build or "").strip() or None
+            )
             if result.get("ok"):
+                # mark this teardown as the update handoff so it's NOT treated as a user cancel
+                # (RelayApp.user_shutdown writes the cancel flag only when _updating is False).
+                running._updating = True
                 running.shutdown()
                 # Make sure this process actually exits so the helper's swap can proceed promptly.
                 # shutdown() stopped serve + tray and asked the window to close, but destroy() runs from
@@ -329,6 +344,14 @@ class Api:
             return result
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "error": str(e)}
+
+    def last_update_result(self) -> dict:
+        """The last update outcome from the ledger (update-state.json), so the Updates tab can show
+        'updated to build N' or a failure - instead of a silent mystery. {} if no update was ever run."""
+        try:
+            return updater.read_ledger(DEFAULT_CONFIG_PATH.parent)
+        except Exception:  # noqa: BLE001
+            return {}
 
 
 _HTML = """<!doctype html><html><head><meta charset="utf-8"><title>UC Nexus Relay</title>
@@ -435,6 +458,7 @@ _HTML = """<!doctype html><html><head><meta charset="utf-8"><title>UC Nexus Rela
           <button id="u-apply" onclick="applyUpdate()" hidden>Update now</button></div>
         <div id="r-update" class="result"></div>
         <p class="muted" id="u-note" style="margin:6px 0 0"></p>
+        <div id="u-last" class="result" style="margin-top:6px"></div>
       </div>
     </section>
   </main>
@@ -527,19 +551,33 @@ _HTML = """<!doctype html><html><head><meta charset="utf-8"><title>UC Nexus Rela
     refresh();
   }
 
-  let _updateUrl = null;
+  let _updateUrl = null, _updateBuild = null;
+  function showLastUpdate(u) {
+    if (!u || !u.status || !u.target_build) { $('u-last').innerHTML = ''; return; }
+    const when = u.updated_at ? ' (' + esc(u.updated_at) + ')' : '';
+    if (u.status === 'success') {
+      $('u-last').innerHTML = `<span class="ok">last update: installed ${esc(u.target_build)}${when}</span>`;
+    } else if (u.status === 'failed') {
+      $('u-last').innerHTML = `<span class="bad">last update to ${esc(u.target_build)} failed: ${esc(u.last_error || 'unknown')}</span>`;
+    } else if (u.status === 'cancelled') {
+      $('u-last').innerHTML = `<span class="muted">last update to ${esc(u.target_build)} was cancelled${when}</span>`;
+    } else {
+      $('u-last').innerHTML = `<span class="muted">update to ${esc(u.target_build)}: ${esc(u.status)}…</span>`;
+    }
+  }
   async function loadUpdates() {
     const s = await window.pywebview.api.get_status();
     $('u-current').innerText = s.build || '-';
+    try { showLastUpdate(await window.pywebview.api.last_update_result()); } catch (e) {}
   }
   async function checkUpdate() {
     $('r-update').innerHTML = '<span class="muted">checking…</span>';
-    $('u-apply').hidden = true; _updateUrl = null;
+    $('u-apply').hidden = true; _updateUrl = null; _updateBuild = null;
     const r = await window.pywebview.api.check_update();
     if (!r.ok) { result('r-update', false, r.error || 'check failed'); return; }
     $('u-current').innerText = r.current; $('u-latest').innerText = r.latest;
     if (r.update_available) {
-      _updateUrl = r.url; $('u-apply').hidden = false;
+      _updateUrl = r.url; _updateBuild = r.latest; $('u-apply').hidden = false;
       result('r-update', true, 'update available: ' + r.latest);
     } else {
       result('r-update', true, 'up to date');
@@ -549,8 +587,8 @@ _HTML = """<!doctype html><html><head><meta charset="utf-8"><title>UC Nexus Rela
     if (!_updateUrl) return;
     $('r-update').innerHTML = '<span class="muted">downloading and applying… the app will close and reopen on the new version</span>';
     $('u-apply').hidden = true;
-    const r = await window.pywebview.api.apply_update(_updateUrl);
-    result('r-update', r.ok, r.ok ? 'updated - relay restarted' : (r.error || 'update failed'));
+    const r = await window.pywebview.api.apply_update(_updateUrl, _updateBuild);
+    result('r-update', r.ok, r.ok ? 'updating - the app will close and reopen on the new version' : (r.error || 'update failed'));
     $('u-note').innerText = r.note || '';
     setTimeout(refresh, 2000);
   }

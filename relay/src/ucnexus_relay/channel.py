@@ -19,6 +19,7 @@ within ~a minute (issue #277) - the websockets client auto-answers protocol ping
 
 import asyncio
 import json
+import logging
 
 import pyodbc
 import websockets
@@ -285,16 +286,28 @@ async def run_forever(stop_event: asyncio.Event | None = None) -> None:
 
     secret = get_settings().auth.shared_secret
     backoff = cfg.reconnect_min_seconds
+    prev_category: str | None = None
     while stop_event is None or not stop_event.is_set():
         try:
             await _run_once(cfg.backend_url, secret, cfg)
             backoff = cfg.reconnect_min_seconds  # clean run - reset backoff before the next attempt
+            prev_category = None
             _mark_disconnected()  # _run_once returned -> the socket closed; reconnecting on the next loop
         except asyncio.CancelledError:
             raise
         except Exception as e:
             category, message = _classify_connect_failure(e)
-            logger.warning(message, extra={"category": category, "error": str(e), "backoff": backoff})
+            # A rejected/orphaned secret can't self-heal until re-enrollment (which restarts serve), so a
+            # de-enrolled relay would otherwise log the same WARNING every ~30s forever. Log it loudly once
+            # on the transition into that state, then at DEBUG. Transient drops and slot-busy stay at
+            # WARNING - each is a real, distinct reconnect event.
+            quiet_repeat = category == "secret_rejected" and prev_category == "secret_rejected"
+            logger.log(
+                logging.DEBUG if quiet_repeat else logging.WARNING,
+                message,
+                extra={"category": category, "error": str(e), "backoff": backoff},
+            )
             _mark_disconnected(category if category in ("secret_rejected", "slot_busy") else "disconnected")
             backoff = min(backoff * 2, cfg.reconnect_max_seconds)
+            prev_category = category
         await asyncio.sleep(backoff)

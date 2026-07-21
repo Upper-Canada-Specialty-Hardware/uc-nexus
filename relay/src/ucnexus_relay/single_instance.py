@@ -10,9 +10,9 @@ same serve. This module makes `app` single-instance and version-aware:
     build), or defers to it (older / dev), per decide_action();
   - a session-local named mutex serialises two simultaneous cold starts so exactly one becomes owner.
 
-Promote-to-installed lives here too: a newer exe launched from anywhere (Downloads, a USB stick) swaps
-itself over the installed exe and relaunches from there, so the single-file distributable doubles as its
-own upgrader (see promote_decision / promote_swap).
+The installed exe is resolved through the onedir `current` junction (see layout.installed_exe); updates
+swap versions by repointing that junction (see updater), not by copying an exe, so there is no
+promote-from-Downloads path here anymore.
 
 Everything is import-safe without a GUI backend - app.py wires the show / quit callbacks to the window -
 so the decision logic and the lockfile plumbing unit-test without opening a window.
@@ -21,7 +21,6 @@ so the decision logic and the lockfile plumbing unit-test without opening a wind
 import json
 import os
 import secrets
-import shutil
 import socket
 import subprocess
 import sys
@@ -29,7 +28,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import updater
+from . import layout, updater
 from .logging_setup import get_logger
 
 logger = get_logger()
@@ -67,18 +66,6 @@ def decide_action(new_build: str, running_build: str, force: bool = False) -> st
     if force:
         return "replace"
     return "replace" if build_is_newer(new_build, running_build) else "focus"
-
-
-def promote_decision(*, frozen: bool, same_path: bool, installed_build: str | None, my_build: str, force: bool) -> str:
-    """Whether a launched exe should copy itself over the installed exe. Returns:
-    'skip'     - run in place (a dev run, or already the installed exe);
-    'promote'  - swap self in + relaunch from the install dir (newer, forced, or no install yet);
-    'delegate' - the installed exe is same/newer, so launch it instead of running from here."""
-    if not frozen or same_path:
-        return "skip"
-    if force or installed_build is None or build_is_newer(my_build, installed_build):
-        return "promote"
-    return "delegate"
 
 
 # --- lockfile -----------------------------------------------------------------------------------------
@@ -381,7 +368,9 @@ def bring_to_front(title: str = WINDOW_TITLE) -> bool:
 
 
 def installed_exe_path(config_dir) -> Path:
-    return Path(config_dir) / ASSET_NAME
+    """The exe to run/inspect for this install - resolved through the onedir `current` junction to the
+    active app-<build>/ version (see layout.installed_exe)."""
+    return layout.installed_exe(config_dir)
 
 
 def same_path(a, b) -> bool:
@@ -406,54 +395,20 @@ def installed_build(config_dir, timeout: float = 8.0) -> str | None:
     return (out.stdout or "").strip() or None
 
 
-def promote_swap(src_exe, config_dir, retries: int = 30) -> dict:
-    """Copy `src_exe` (this newer running exe, e.g. from Downloads) over the installed exe, renaming the
-    installed one aside first - Windows locks a running/held image but permits renaming it (the updater
-    relies on the same trick). Retries while the handle releases."""
-    install_dir = Path(config_dir)
-    install_dir.mkdir(parents=True, exist_ok=True)
-    exe = installed_exe_path(install_dir)
-    error = None
-    for _ in range(retries):
-        try:
-            if exe.exists():
-                os.replace(exe, updater._free_old_path(install_dir))  # move the installed exe aside
-            shutil.copy2(src_exe, exe)  # drop our newer exe into place
-            updater._cleanup_old(install_dir)
-            return {"ok": True, "path": str(exe)}
-        except OSError as e:
-            error = str(e)
-            time.sleep(0.5)
-    return {"ok": False, "error": f"promote swap failed: {error}"}
-
-
-def launch_installed(config_dir, minimized: bool = False) -> None:
-    """Spawn the installed exe as the desktop app, detached so it outlives this (promoting/delegating)
-    process. The relaunched exe runs the single-instance gate itself and becomes the owner."""
+def launch_installed(config_dir, minimized: bool = False) -> int | None:
+    """Spawn the installed exe (via the `current` junction) as the desktop app, detached so it outlives
+    this process. The relaunched exe runs the single-instance gate itself and becomes the owner.
+    Autostart + shortcuts target the stable `current` path, so a version change needs no refresh here.
+    Returns the launched app's pid so a caller (the updater's health-gated retry) can force it down BY PID
+    if it comes up unhealthy - onedir, so the exe process IS the app process (no bootloader child)."""
     exe = installed_exe_path(config_dir)
     args = [str(exe), "app"] + (["--minimized"] if minimized else [])
-    subprocess.Popen(  # noqa: S603 (our own installed exe path)
+    proc = subprocess.Popen(  # noqa: S603 (our own installed exe path)
         args,
         cwd=str(config_dir),
-        creationflags=_DETACHED | _NO_WINDOW,
+        creationflags=_DETACHED,  # DETACHED alone (GUI exe: no console either way; not paired with NO_WINDOW)
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-
-
-def refresh_autostart_if_present(config_dir) -> None:
-    """After a promote, repoint the HKCU Run entry at the (stable) installed exe path - a no-op if it
-    already points there. Only touches autostart when it's already installed, so a promote never silently
-    enables start-at-logon for someone who didn't ask for it. Shortcuts need no refresh: they already
-    target the fixed installed path, which a promote doesn't change."""
-    from . import autostart
-
-    if autostart.winreg is None:
-        return
-    try:
-        if autostart.autostart_status().get("installed"):
-            exe = installed_exe_path(config_dir)
-            autostart.install_autostart(command=f'"{exe}" app --minimized')
-    except OSError:
-        logger.exception("could not refresh autostart after promote")
+    return proc.pid
