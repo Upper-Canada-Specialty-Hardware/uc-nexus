@@ -80,10 +80,13 @@ if (-not (Test-Path $destCfg)) {
     Write-Host "kept existing config.toml at $destCfg"
 }
 
-# no-admin logon autostart via the HKCU Run key (the exe registers itself, targeting the stable `current`
-# path). The Run entry launches `app --minimized` at logon, so the relay comes up in the system tray.
-& $curExe install-autostart
-if ($LASTEXITCODE -ne 0) { Write-Error "install-autostart failed (exit $LASTEXITCODE)"; exit 1 }
+# no-admin logon autostart via the HKCU Run key, set directly (the exe is GUI-subsystem, so `& exe
+# install-autostart` returns immediately without a usable $LASTEXITCODE). This targets the stable `current`
+# path and matches the key/value the relay's own autostart-status / uninstall-autostart use, so the UI
+# "start at logon" toggle stays in sync.
+$runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+New-ItemProperty -Path $runKey -Name "UC Nexus Relay" -Value "`"$curExe`" app --minimized" -PropertyType String -Force | Out-Null
+Write-Host "registered HKCU Run autostart -> `"$curExe`" app --minimized"
 
 # Desktop + Start-menu shortcuts that open the app (window + tray), via the stable `current` path.
 $wsh = New-Object -ComObject WScript.Shell
