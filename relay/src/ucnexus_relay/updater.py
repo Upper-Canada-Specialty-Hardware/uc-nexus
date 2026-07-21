@@ -313,19 +313,21 @@ def _wait_for_health(url: str, deadline: float) -> bool:
 def _relaunch_and_wait_healthy(install_dir: Path, deadline: float, log: logging.Logger, attempts: int = 2) -> bool:
     """Launch the current version and wait for /health, retrying up to `attempts` within the deadline. The
     first launch after an extract also completes Defender's scan of the new .pyd, so a retry lands clean if
-    the first ever stumbles. Between attempts, kill the serve child so the port frees for a fresh bind."""
+    the first ever stumbles. Between attempts, kill the app we just launched AND its serve child: the app is
+    single-instance, so a still-alive-but-unhealthy owner would focus-deflect (and never re-serve) the next
+    launch and the rollback launch, leaving the relay down - the exact failure the health gate must prevent."""
     from . import single_instance
 
     url = _health_url(install_dir)
     for i in range(1, attempts + 1):
         if _monotonic() >= deadline:
             break
-        single_instance.launch_installed(install_dir)
-        log.info("relaunch attempt %d of %d", i, attempts)
+        app_pid = single_instance.launch_installed(install_dir)
+        log.info("relaunch attempt %d of %d (pid %s)", i, attempts, app_pid)
         if _wait_for_health(url, min(deadline, _monotonic() + _HEALTH_WAIT_PER_ATTEMPT)):
             log.info("relay healthy after relaunch")
             return True
-        _kill_relay_pids(None, install_dir, log)  # clear a crashed/half attempt before retrying
+        _kill_relay_pids(app_pid, install_dir, log)  # clear the crashed/hung app + serve before retrying
     return False
 
 
@@ -408,7 +410,10 @@ def apply_staged_update(app_pid, install_dir: str | Path) -> dict:
     ledger["status"] = "applying"
     ledger["attempts"] = attempts
     ledger["updated_at"] = _now_iso()
-    ledger.setdefault("first_attempt_at", _now_iso())
+    if not ledger.get("first_attempt_at"):
+        # _stage_ledger seeds this key as None for a fresh target, so setdefault would never stamp it -
+        # set it explicitly on the first apply that has no timestamp yet.
+        ledger["first_attempt_at"] = _now_iso()
     _write_ledger(install_dir, ledger)
     log.info("update-apply start: target=%s attempt=%s app_pid=%s", target, attempts, app_pid)
 
@@ -442,7 +447,16 @@ def apply_staged_update(app_pid, install_dir: str | Path) -> dict:
         return {"ok": False, "cancelled": True}
 
     if not layout.repoint_current(install_dir, new_dir):
-        log.warning("could not repoint the current junction to %s", new_dir)
+        # The junction is the single source of truth for autostart + shortcuts (they target
+        # current\ucnexus-relay.exe). A failed repoint may have removed the link without recreating it;
+        # relaunching would come up via the newest-version fallback and record "success" while current is
+        # broken, silently breaking the next logon's autostart. Roll back to the previous version instead.
+        log.warning("could not repoint the current junction to %s; rolling back", new_dir)
+        if old_target is not None and old_target != new_dir:
+            layout.repoint_current(install_dir, old_target)
+        _relaunch_and_wait_healthy(install_dir, _monotonic() + 30.0, log)
+        _finish_ledger(install_dir, "failed", "could not repoint the current junction to the new version")
+        return {"ok": False, "error": "could not repoint the current junction to the new version"}
 
     if _relaunch_and_wait_healthy(install_dir, deadline, log):
         _finish_ledger(install_dir, "success", None)

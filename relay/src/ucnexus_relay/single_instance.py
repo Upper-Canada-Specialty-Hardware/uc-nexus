@@ -395,13 +395,15 @@ def installed_build(config_dir, timeout: float = 8.0) -> str | None:
     return (out.stdout or "").strip() or None
 
 
-def launch_installed(config_dir, minimized: bool = False) -> None:
+def launch_installed(config_dir, minimized: bool = False) -> int | None:
     """Spawn the installed exe (via the `current` junction) as the desktop app, detached so it outlives
     this process. The relaunched exe runs the single-instance gate itself and becomes the owner.
-    Autostart + shortcuts target the stable `current` path, so a version change needs no refresh here."""
+    Autostart + shortcuts target the stable `current` path, so a version change needs no refresh here.
+    Returns the launched app's pid so a caller (the updater's health-gated retry) can force it down BY PID
+    if it comes up unhealthy - onedir, so the exe process IS the app process (no bootloader child)."""
     exe = installed_exe_path(config_dir)
     args = [str(exe), "app"] + (["--minimized"] if minimized else [])
-    subprocess.Popen(  # noqa: S603 (our own installed exe path)
+    proc = subprocess.Popen(  # noqa: S603 (our own installed exe path)
         args,
         cwd=str(config_dir),
         creationflags=_DETACHED,  # DETACHED alone (GUI exe: no console either way; not paired with NO_WINDOW)
@@ -409,3 +411,4 @@ def launch_installed(config_dir, minimized: bool = False) -> None:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+    return proc.pid
