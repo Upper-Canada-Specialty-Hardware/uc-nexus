@@ -1,31 +1,11 @@
-import { useState } from 'react';
-import {
-  Box,
-  Typography,
-  Alert,
-  Accordion,
-  AccordionSummary,
-  AccordionDetails,
-  Table,
-  TableHead,
-  TableBody,
-  TableRow,
-  TableCell,
-  Stack,
-  Button,
-  Chip,
-} from '@mui/material';
-import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
-import CheckIcon from '@mui/icons-material/Check';
-import CloseIcon from '@mui/icons-material/Close';
-import { useQuery, useMutation } from '@apollo/client/react';
+import { Box, Chip, Table, TableHead, TableBody, TableRow, TableCell, Stack, Typography } from '@mui/material';
+import { useQuery } from '@apollo/client/react';
 import {
   GET_SHOP_ASSEMBLY_REQUESTS,
   ACCEPT_SHOP_ASSEMBLY_REQUEST,
   REJECT_SHOP_ASSEMBLY_REQUEST,
 } from '../../graphql/shop-assembly';
-import { useToast } from '../../components/Toast';
-import { useIdentity } from '../../hooks/useIdentity';
+import RequestsReviewPage from '../../components/RequestsReviewPage';
 
 interface RequestOpeningItem {
   id: string;
@@ -53,155 +33,65 @@ interface ShopAssemblyRequest {
 }
 
 export default function ShopAssemblyRequestsPage() {
-  const { showToast } = useToast();
-  const { displayName } = useIdentity();
-  const [busyId, setBusyId] = useState<string | null>(null);
-
   const { data, loading, refetch } = useQuery<{ shopAssemblyRequests: ShopAssemblyRequest[] }>(
     GET_SHOP_ASSEMBLY_REQUESTS,
     { variables: { status: 'PENDING' }, fetchPolicy: 'cache-and-network' },
   );
 
-  const [acceptRequest] = useMutation(ACCEPT_SHOP_ASSEMBLY_REQUEST, {
-    onCompleted: () => {
-      showToast('Request accepted - pull request created', 'success');
-      setBusyId(null);
-      refetch();
-    },
-    onError: (e) => {
-      showToast(e.message, 'error');
-      setBusyId(null);
-      refetch();
-    },
-  });
-
-  const [rejectRequest] = useMutation(REJECT_SHOP_ASSEMBLY_REQUEST, {
-    onCompleted: () => {
-      showToast('Request rejected', 'success');
-      setBusyId(null);
-      refetch();
-    },
-    onError: (e) => {
-      showToast(e.message, 'error');
-      setBusyId(null);
-      refetch();
-    },
-  });
-
-  const requests = data?.shopAssemblyRequests ?? [];
-
-  const handleAccept = (id: string) => {
-    setBusyId(id);
-    acceptRequest({ variables: { id, acceptedBy: displayName } });
-  };
-
-  const handleReject = (id: string) => {
-    setBusyId(id);
-    rejectRequest({ variables: { id, rejectedBy: displayName, reason: null } });
-  };
-
   return (
-    <Box>
-      <Typography variant="h5" gutterBottom>
-        Shop Assembly Requests
-      </Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Pending requests from Start a Task. Accepting one creates the warehouse pull request.
-      </Typography>
-
-      {loading && !data && (
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          Loading...
-        </Typography>
+    <RequestsReviewPage<ShopAssemblyRequest>
+      title="Shop Assembly Requests"
+      description="Pending requests from Start a Task. Accepting one creates the warehouse pull request."
+      emptyMessage="No pending shop assembly requests."
+      loading={loading}
+      loaded={data !== undefined}
+      requests={data?.shopAssemblyRequests ?? []}
+      acceptMutation={ACCEPT_SHOP_ASSEMBLY_REQUEST}
+      rejectMutation={REJECT_SHOP_ASSEMBLY_REQUEST}
+      onChanged={refetch}
+      renderSummary={(req) => (
+        <Chip label={`${req.openings.length} opening(s)`} size="small" variant="outlined" />
       )}
-
-      {!loading && data && requests.length === 0 && (
-        <Alert severity="info">No pending shop assembly requests.</Alert>
-      )}
-
-      <Stack spacing={1}>
-        {requests.map((req) => (
-          <Accordion key={req.id} variant="outlined" defaultExpanded={requests.length === 1}>
-            <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-              <Stack
-                direction="row"
-                spacing={2}
-                alignItems="center"
-                sx={{ width: '100%', minWidth: 0, flexWrap: 'wrap' }}
-              >
-                <Typography fontWeight="bold">{req.requestNumber}</Typography>
-                <Chip label={`${req.openings.length} opening(s)`} size="small" variant="outlined" />
-                <Typography variant="body2" color="text.secondary" sx={{ minWidth: 0 }}>
-                  by {req.createdBy}
+      renderDetails={(req) =>
+        req.openings.map((opening) => (
+          <Box key={opening.id}>
+            <Stack direction="row" spacing={1} alignItems="baseline" sx={{ mb: 0.5 }}>
+              <Typography variant="subtitle2">
+                {opening.openingNumber || opening.id.slice(0, 8)}
+              </Typography>
+              {(opening.building || opening.floor) && (
+                <Typography variant="caption" color="text.secondary">
+                  {[opening.building, opening.floor].filter(Boolean).join(' / ')}
                 </Typography>
-              </Stack>
-            </AccordionSummary>
-            <AccordionDetails>
-              <Stack spacing={2}>
-                {req.openings.map((opening) => (
-                  <Box key={opening.id}>
-                    <Stack direction="row" spacing={1} alignItems="baseline" sx={{ mb: 0.5 }}>
-                      <Typography variant="subtitle2">
-                        {opening.openingNumber || opening.id.slice(0, 8)}
-                      </Typography>
-                      {(opening.building || opening.floor) && (
-                        <Typography variant="caption" color="text.secondary">
-                          {[opening.building, opening.floor].filter(Boolean).join(' / ')}
-                        </Typography>
-                      )}
-                    </Stack>
-                    {opening.items.length > 0 ? (
-                      <Table size="small">
-                        <TableHead>
-                          <TableRow>
-                            <TableCell>Product Code</TableCell>
-                            <TableCell>Hardware Category</TableCell>
-                            <TableCell align="right">Quantity</TableCell>
-                          </TableRow>
-                        </TableHead>
-                        <TableBody>
-                          {opening.items.map((item) => (
-                            <TableRow key={item.id}>
-                              <TableCell>{item.productCode}</TableCell>
-                              <TableCell>{item.hardwareCategory}</TableCell>
-                              <TableCell align="right">{item.quantity}</TableCell>
-                            </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
-                    ) : (
-                      <Typography variant="body2" color="text.secondary">
-                        No hardware items.
-                      </Typography>
-                    )}
-                  </Box>
-                ))}
-
-                <Stack direction="row" spacing={1}>
-                  <Button
-                    variant="contained"
-                    color="success"
-                    startIcon={<CheckIcon />}
-                    disabled={busyId === req.id}
-                    onClick={() => handleAccept(req.id)}
-                  >
-                    Accept
-                  </Button>
-                  <Button
-                    variant="outlined"
-                    color="error"
-                    startIcon={<CloseIcon />}
-                    disabled={busyId === req.id}
-                    onClick={() => handleReject(req.id)}
-                  >
-                    Reject
-                  </Button>
-                </Stack>
-              </Stack>
-            </AccordionDetails>
-          </Accordion>
-        ))}
-      </Stack>
-    </Box>
+              )}
+            </Stack>
+            {opening.items.length > 0 ? (
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Product Code</TableCell>
+                    <TableCell>Hardware Category</TableCell>
+                    <TableCell align="right">Quantity</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {opening.items.map((item) => (
+                    <TableRow key={item.id}>
+                      <TableCell>{item.productCode}</TableCell>
+                      <TableCell>{item.hardwareCategory}</TableCell>
+                      <TableCell align="right">{item.quantity}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            ) : (
+              <Typography variant="body2" color="text.secondary">
+                No hardware items.
+              </Typography>
+            )}
+          </Box>
+        ))
+      }
+    />
   );
 }
