@@ -88,10 +88,20 @@ def relay_health(host: str = "127.0.0.1", port: int = 7321) -> dict:
 def _tail_lines(path: Path, limit: int) -> list[str]:
     if not path.exists():
         return []
-    # relay.log stays small (a few events per op); reading it whole and slicing is fine and avoids
-    # seek-based tailing edge cases with the JSON-per-line format.
-    with open(path, encoding="utf-8", errors="replace") as f:
-        return f.readlines()[-limit:]
+    # Read only a bounded tail from the END rather than the whole file. relay.log is capped at ~2MB by
+    # rotation (logging_setup), and the UI polls this every few seconds, so reading megabytes for the last
+    # N events is wasteful. Grab ~400 bytes per requested line from the end, drop the partial first line.
+    approx = max(int(limit), 1) * 400
+    with open(path, "rb") as f:
+        f.seek(0, 2)
+        size = f.tell()
+        start = max(0, size - approx)
+        f.seek(start)
+        data = f.read()
+    lines = data.decode("utf-8", errors="replace").splitlines()
+    if start > 0 and lines:
+        lines = lines[1:]  # first line is likely truncated by the offset read
+    return lines[-limit:]
 
 
 def recent_log_events(config_path: str | Path | None = None, limit: int = 200) -> list[dict]:

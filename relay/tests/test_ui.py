@@ -88,6 +88,18 @@ def test_recent_log_events_limit(tmp_path):
     assert len(ui.recent_log_events(p, limit=10)) == 10
 
 
+def test_tail_lines_reads_a_bounded_tail_of_a_large_log(tmp_path):
+    # the UI polls the log every few seconds; a large file must be tailed from the END, not read whole,
+    # and must still return the last `limit` COMPLETE (parseable) lines in order.
+    log = tmp_path / "relay.log"
+    events = [json.dumps({"asctime": f"t{i}", "levelname": "INFO", "message": "x" * 60, "i": i}) for i in range(5000)]
+    log.write_text("\n".join(events) + "\n", encoding="utf-8")
+    tail = ui._tail_lines(log, 20)
+    assert len(tail) == 20
+    parsed = [json.loads(t) for t in tail]  # every returned line is complete, not truncated by the offset read
+    assert [row["i"] for row in parsed] == list(range(4980, 5000))  # the LAST 20 events, in order
+
+
 def test_channel_state_connected_wins_over_earlier_drop(tmp_path):
     p = _cfg(tmp_path, '[logging]\nfile = "relay.log"\n')
     _log(
