@@ -1,6 +1,8 @@
 """Outbound WS channel: the relay dials OUT to the UC Nexus backend at wss://<backend>/relay-link,
 authenticates with the enrolled [auth].shared_secret on the connect handshake, and answers job
-messages of the shape {id, op, company, payload} with {id, ok, result|error}.
+messages of the shape {id, op, company, payload} with {id, ok, result|error}. It also answers the
+backend's application-level heartbeat - a {"type": "ping"} control message - with {"type": "pong"}
+(issue #277).
 
 This is a second, additive transport alongside the existing inbound HTTP server (main.py) - nothing
 here changes GET /vendors etc. Op handlers call the SAME eConnect functions (and, for create_po /
@@ -9,7 +11,10 @@ either way.
 
 Reconnects with exponential backoff on drop. The `websockets` client's default ping_interval=20s /
 ping_timeout=20s already satisfies the ~20s keepalive a corporate proxy idle timeout needs, so no
-separate ping loop is required here - see ChannelCfg in config.py.
+separate ping loop is required here - see ChannelCfg in config.py. That WS-protocol ping is distinct
+from the backend's data-message heartbeat above: the protocol ping keeps a corporate proxy from idling
+the socket, while answering the data heartbeat lets the backend reap a dead relay from its registry
+within ~a minute (issue #277) - the websockets client auto-answers protocol pings but not data pings.
 """
 
 import asyncio
@@ -203,6 +208,15 @@ async def _handle_job(job: dict) -> dict:
     return reply
 
 
+def _heartbeat_reply(message: object) -> dict | None:
+    """The pong to send for the backend's application-level heartbeat ping (issue #277), or None if
+    `message` is a normal job to dispatch. ASGI can't send a WS ping frame, so the backend pings on a
+    data message; the relay answers it here (the websockets client auto-answers only protocol pings)."""
+    if isinstance(message, dict) and message.get("type") == "ping":
+        return {"type": "pong"}
+    return None
+
+
 async def _run_once(url: str, secret: str, cfg) -> None:
     # websockets is pinned to ^13.0 (see pyproject); on 13.x the top-level websockets.connect is the
     # legacy client whose keyword is `extra_headers`. `additional_headers` is the 14.0+ name and raises
@@ -244,6 +258,12 @@ async def _run_once(url: str, secret: str, cfg) -> None:
                     job = json.loads(raw)
                 except (json.JSONDecodeError, TypeError):
                     logger.warning("channel received a non-JSON message", extra={"raw": str(raw)[:200]})
+                    continue
+                pong = _heartbeat_reply(job)
+                if pong is not None:
+                    # Backend heartbeat (issue #277): answer through the same writer queue so the pong
+                    # never interleaves mid-frame with a job reply, and don't dispatch it as a job.
+                    await send_queue.put(pong)
                     continue
                 task = asyncio.create_task(_dispatch_job(job))
                 jobs.add(task)

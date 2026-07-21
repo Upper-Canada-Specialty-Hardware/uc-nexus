@@ -1,3 +1,4 @@
+import asyncio
 import inspect
 from collections.abc import Callable
 from typing import Any
@@ -15,6 +16,7 @@ from app.errors import AppError
 from app.repositories import relay_repository
 from app.schemas.mutations import Mutation
 from app.schemas.queries import Query
+from app.services.relay_gateway import HEARTBEAT_INTERVAL_SECONDS
 from app.services.relay_gateway import gateway as relay_gateway
 
 
@@ -82,6 +84,65 @@ def health():
     return {"status": "ok"}
 
 
+async def _relay_read_loop(websocket: WebSocket) -> None:
+    """Feed each frame the relay sends to relay_gateway: a {"type": "pong"} answers the heartbeat
+    (issue #277), anything else is a {id, ok, result|error} job reply to correlate with relay_call()."""
+    while True:
+        message = await websocket.receive_json()
+        if isinstance(message, dict) and message.get("type") == "pong":
+            relay_gateway.note_pong()
+        else:
+            relay_gateway.resolve(message)
+
+
+async def _relay_heartbeat_loop(websocket: WebSocket) -> None:
+    """Ping the connected relay on a data message every interval; once it misses too many pongs, close
+    the socket so the route's finally unregisters it and relayStatus flips (issue #277). ASGI has no WS
+    ping frame, so this is an application-level {"type": "ping"} the relay answers with {"type": "pong"}."""
+    while True:
+        await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
+        if relay_gateway.register_ping_miss():
+            # The relay has gone quiet: close so the read loop ends and finally -> unregister runs, which
+            # also fails any in-flight relay_call fast instead of letting it burn the full 30s timeout.
+            # A half-dead socket may fail to close; reaping is decided either way, so swallow and return.
+            try:
+                await websocket.close(code=1011)
+            except Exception:
+                pass
+            return
+        try:
+            await websocket.send_json({"type": "ping"})
+        except Exception:
+            # Socket already gone; let the read loop's disconnect drive unregister via the route's finally.
+            return
+
+
+async def _serve_relay_link(websocket: WebSocket) -> None:
+    """Run the relay read loop and the heartbeat concurrently. Whichever finishes first (a disconnect,
+    or the heartbeat reaping a silent relay) cancels the other; a read-loop disconnect is re-raised so
+    the route's `except WebSocketDisconnect` handles it exactly as before the heartbeat existed."""
+    reader = asyncio.create_task(_relay_read_loop(websocket))
+    heartbeat = asyncio.create_task(_relay_heartbeat_loop(websocket))
+    try:
+        done, _ = await asyncio.wait({reader, heartbeat}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        reader.cancel()
+        heartbeat.cancel()
+        await asyncio.gather(reader, heartbeat, return_exceptions=True)
+    # Surface a genuine reader disconnect so the route handles it as before. Skip a task that finished by
+    # cancellation: task.exception() re-raises CancelledError there, which would propagate out of the
+    # route uncaught and mark the whole route task cancelled (a spurious failure on a clean teardown).
+    for task in done:
+        if task.cancelled():
+            continue
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            continue
+        if exc is not None:
+            raise exc
+
+
 @app.websocket("/relay-link")
 async def relay_link(websocket: WebSocket):
     """The relay's outbound wss channel. It dials in with `Authorization: Bearer <enrolled secret>`
@@ -116,10 +177,13 @@ async def relay_link(websocket: WebSocket):
         await websocket.close(code=4409)
         return
     try:
-        while True:
-            reply = await websocket.receive_json()
-            relay_gateway.resolve(reply)
+        await _serve_relay_link(websocket)
     except WebSocketDisconnect:
+        pass
+    except asyncio.CancelledError:
+        # The connection is being torn down (server shutdown, or a test harness closing its portal) while
+        # the background heartbeat task made the read loop's teardown yield. The relay is gone either way,
+        # so treat it as a clean disconnect and let the handler end normally rather than error out.
         pass
     finally:
         relay_gateway.unregister(websocket)

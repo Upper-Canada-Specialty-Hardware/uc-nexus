@@ -144,3 +144,44 @@ def test_unregister_fails_any_pending_calls():
             await call_task
 
     asyncio.run(run())
+
+
+def test_register_ping_miss_does_not_reap_before_the_first_pong():
+    # issue #277: a relay build that doesn't answer the data heartbeat yet must never be reaped on a
+    # false positive - missed pings only count once the relay has proven it speaks the protocol.
+    gateway = RelayGateway()
+    gateway.try_register("TUBC", FakeWebSocket())
+    assert gateway.register_ping_miss() is False
+    assert gateway.register_ping_miss() is False
+    assert gateway.register_ping_miss() is False
+
+
+def test_register_ping_miss_reaps_after_two_misses_once_armed():
+    gateway = RelayGateway()
+    gateway.try_register("TUBC", FakeWebSocket())
+    gateway.note_pong()  # the first pong arms the reaper
+    assert gateway.register_ping_miss() is False  # 1 unanswered ping
+    assert gateway.register_ping_miss() is True  # 2 unanswered pings -> reap
+
+
+def test_note_pong_resets_the_miss_counter():
+    gateway = RelayGateway()
+    gateway.try_register("TUBC", FakeWebSocket())
+    gateway.note_pong()
+    assert gateway.register_ping_miss() is False
+    gateway.note_pong()  # a responsive relay keeps the counter from ever reaching the reap threshold
+    assert gateway.register_ping_miss() is False
+
+
+def test_try_register_resets_heartbeat_state_for_the_new_connection():
+    # A fresh connection must not inherit the previous socket's armed flag or miss count.
+    gateway = RelayGateway()
+    first_ws = FakeWebSocket()
+    gateway.try_register("TUBC", first_ws)
+    gateway.note_pong()
+    gateway.register_ping_miss()
+    gateway.unregister(first_ws)
+
+    gateway.try_register("TUBC", FakeWebSocket())
+    assert gateway.register_ping_miss() is False  # not armed yet on the new connection
+    assert gateway.register_ping_miss() is False
