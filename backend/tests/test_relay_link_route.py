@@ -18,6 +18,7 @@ from cryptography.fernet import Fernet
 # The crypto layer reads RELAY_SECRET_ENC_KEY at call time; provide one before enroll/authenticate.
 os.environ.setdefault("RELAY_SECRET_ENC_KEY", Fernet.generate_key().decode())
 
+from fastapi import FastAPI, WebSocket  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from starlette.websockets import WebSocketDisconnect  # noqa: E402
 
@@ -129,6 +130,88 @@ def test_relay_link_heartbeat_reaps_a_relay_that_stops_answering(_migrate_databa
         assert gateway.connected is False
     finally:
         _delete_install(install_id)
+
+
+def test_relay_link_serves_a_relay_call_concurrently_with_heartbeat_pings(monkeypatch):
+    # issue #304 (follow-up to #277/#303): the heartbeat added a SECOND concurrent sender on the one
+    # /relay-link socket - _relay_heartbeat_loop sends {"type": "ping"} while relay_call() sends its
+    # {id, op, company, payload} job from a separate task. No test drove the two senders on one socket.
+    # Run a real relay_call() on the server's event loop while pings are in flight and assert both frames
+    # reach the relay intact (complete JSON, not interleaved bytes) and the call still correlates to its
+    # reply.
+    #
+    # This mounts the real _serve_relay_link on a throwaway app rather than going through the DB-authed
+    # /relay-link route: the concurrent-sender behaviour is identical either way (same event loop, same
+    # Starlette WebSocket send path), and skipping the enroll keeps this runnable without a DATABASE_URL,
+    # unlike the route tests above.
+    monkeypatch.setattr(main, "HEARTBEAT_INTERVAL_SECONDS", 0.05)
+
+    link_app = FastAPI()
+
+    @link_app.websocket("/relay-link")
+    async def _link(websocket: WebSocket):  # mirrors main.relay_link's teardown, minus the DB auth
+        await websocket.accept()
+        gateway.try_register("TUBC", websocket)
+        try:
+            await main._serve_relay_link(websocket)
+        except WebSocketDisconnect:
+            pass
+        except asyncio.CancelledError:
+            pass
+        finally:
+            gateway.unregister(websocket)
+
+    assert gateway.connected is False
+    with TestClient(link_app) as client:
+        with client.websocket_connect("/relay-link") as ws:
+            _wait_until(lambda: gateway.connected)
+
+            # Arm the reaper with one pong so it's live for the rest of the exchange, and prove a ping is
+            # already flowing before the job goes out.
+            assert ws.receive_json() == {"type": "ping"}
+            ws.send_json({"type": "pong"})
+
+            # Run relay_call() on the server's event loop (the loop the heartbeat runs on) so its job send
+            # races the pings, exactly as in production. start_task_soon hands back a concurrent Future.
+            async def _do_call():
+                return await gateway.relay_call("TUBC", "list_vendors", timeout=5)
+
+            call_future = ws.portal.start_task_soon(_do_call)
+
+            # Service frames until the job has gone out AND at least one ping has followed it - i.e. both
+            # senders were on the wire together. receive_json raises if a frame is not complete JSON, so
+            # each pass also asserts the two senders did not interleave into one corrupt frame.
+            job_frame = None
+            pings_after_job = 0
+            deadline = time.monotonic() + 5.0
+            while job_frame is None or pings_after_job < 1:
+                if time.monotonic() > deadline:
+                    if call_future.done():
+                        call_future.result()  # re-raise a server-side relay_call failure with its traceback
+                    raise AssertionError(f"timed out; job_frame={job_frame} pings_after_job={pings_after_job}")
+                msg = ws.receive_json()
+                if msg.get("type") == "ping":
+                    ws.send_json({"type": "pong"})
+                    if job_frame is not None:
+                        pings_after_job += 1
+                else:
+                    assert job_frame is None, "relay_call sent more than one job frame"
+                    job_frame = msg
+
+            # The job frame arrived whole and correlatable, not shredded by the interleaved ping.
+            assert job_frame["op"] == "list_vendors"
+            assert job_frame["company"] == "TUBC"
+            assert job_frame["payload"] == {}
+            assert isinstance(job_frame["id"], str) and job_frame["id"]
+
+            # Answer the job: the read loop must still route this reply to relay_call's pending future
+            # despite the pings threaded through, and the call resolves to the reply's result.
+            ws.send_json({"id": job_frame["id"], "ok": True, "result": {"vendors": []}})
+            assert call_future.result(timeout=5) == {"vendors": []}
+
+            ws.close()
+            _wait_until(lambda: not gateway.connected)
+        assert gateway.connected is False
 
 
 class _FakeRelaySocket:
