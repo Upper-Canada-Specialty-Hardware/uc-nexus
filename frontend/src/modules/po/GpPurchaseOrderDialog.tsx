@@ -222,6 +222,7 @@ export default function GpPurchaseOrderDialog({
 
   const [mfrSuggestions, setMfrSuggestions] = useState<Record<string, ManufacturerSuggestion>>({});
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional reset on close, guarded by !open
     if (!open) setMfrSuggestions({});
   }, [open]);
 
@@ -302,6 +303,7 @@ export default function GpPurchaseOrderDialog({
     setCostCode('');
     setErrors({});
     if (registerPo) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time form seed on open, guarded by seededRef
       setProjectId(registerPo.projectId ?? '');
       setNotes(registerPo.notes ?? '');
       setShippingCost(registerPo.shippingCost != null ? String(registerPo.shippingCost) : '');
@@ -361,6 +363,7 @@ export default function GpPurchaseOrderDialog({
       const vendors = gpVendorsData?.gpVendors ?? [];
       if (!vendors.some((v) => v.vendorId === manufacturerHint.top.gpVendorId)) return;
       appliedMfrSignatureRef.current = manufacturerKey;
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time pre-select once suggestions load, guarded by appliedMfrSignatureRef
       setGpVendorId(manufacturerHint.top.gpVendorId);
       setGpVendorName(manufacturerHint.top.gpVendorName);
       setVendorConfirmed(true);
@@ -388,6 +391,7 @@ export default function GpPurchaseOrderDialog({
   // and a transient blip must not wipe the user's pick mid-form.
   useEffect(() => {
     if (!open) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- clear cost code when job/company changes
     setCostCode('');
   }, [open, company, jobNumber]);
 

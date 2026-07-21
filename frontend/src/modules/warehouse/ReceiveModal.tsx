@@ -139,6 +139,7 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
   useEffect(() => {
     if (!warehouseId && warehouses.length > 0) {
       const primary = warehouses.find((w) => w.isPrimary) ?? warehouses[0];
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- lazy-init default warehouse once loaded
       setWarehouseId(primary.id);
     }
   }, [warehouses, warehouseId]);
@@ -178,6 +179,7 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
 
   useEffect(() => {
     if (open && poIds.length > 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- reset receive form state on open
       setReceiveQuantities({});
       setMutationError(null);
       setGpError(null);
