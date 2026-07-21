@@ -269,8 +269,8 @@ class TransferInventoryInput:
     quantity: int
     dest_warehouse_id: strawberry.ID
     dest_aisle: str
+    dest_row: str
     dest_bay: str
-    dest_bin: str
     performed_by: str = ""
 
 
@@ -357,8 +357,8 @@ class ReceiveLineItemInput:
 @strawberry.input
 class LocationInput:
     aisle: str
+    row: str
     bay: str
-    bin: str
     quantity: int
     deficient_quantity: int = 0
 
@@ -434,8 +434,8 @@ class CompleteOpeningItemResultInput:
 class CompleteOpeningInput:
     opening_id: strawberry.ID
     aisle: str | None = None
+    row: str | None = None
     bay: str | None = None
-    bin: str | None = None
     # Per-item installed/deficient checklist (#225). Empty -> every item treated as installed
     # (preserves pre-checklist behaviour). Only installed items are snapshotted as
     # OpeningItemHardware; deficient items are returned to inventory flagged deficient.
@@ -455,8 +455,8 @@ class DestockInventoryInput:
     source: DestockSource
     reason_text: str | None = None
     target_aisle: str | None = None
+    target_row: str | None = None
     target_bay: str | None = None
-    target_bin: str | None = None
     performed_by: str = ""
 
 
@@ -468,8 +468,8 @@ class AllocateStockToProjectInput:
     target_product_code: str
     quantity: int
     target_aisle: str | None = None
+    target_row: str | None = None
     target_bay: str | None = None
-    target_bin: str | None = None
     performed_by: str = ""
 
 
@@ -485,8 +485,8 @@ class AdjustStockQuantityInput:
 class MoveStockLocationInput:
     stock_item_id: strawberry.ID
     new_aisle: str
+    new_row: str
     new_bay: str
-    new_bin: str
     performed_by: str = ""
 
 
@@ -510,11 +510,11 @@ class ReportInventoryDeficiencyInput:
 
 @strawberry.input
 class OverrideDestinationInput:
-    """A bin and how many of the added units land there (used by an inventory quantity override)."""
+    """A location and how many of the added units land there (used by an inventory quantity override)."""
 
     aisle: str
+    row: str
     bay: str
-    bin: str
     quantity: int
 
 

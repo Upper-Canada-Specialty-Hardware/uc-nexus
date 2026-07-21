@@ -119,12 +119,12 @@ export const FINALIZE_IMPORT_SESSION = gql`
         status
         notes
       }
-      shippingOutPullRequests {
+      shippingOutRequests {
         id
         requestNumber
         status
       }
-      shopAssemblyPullRequest {
+      shopAssemblyRequest {
         id
         requestNumber
         status

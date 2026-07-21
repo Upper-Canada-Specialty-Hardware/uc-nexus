@@ -48,8 +48,8 @@ export interface StockItem {
   deficientQuantity: number;
   available: number;
   aisle: string | null;
+  row: string | null;
   bay: string | null;
-  bin: string | null;
   receivedAt: string;
   createdAt: string;
   updatedAt: string;
@@ -144,7 +144,7 @@ export default function StockPoolView() {
       flex: 1,
       minWidth: 160,
       valueGetter: (_value, row) =>
-        [row.aisle, row.bay, row.bin].filter(Boolean).join(' / ') || '— Unlocated —',
+        [row.aisle, row.row, row.bay].filter(Boolean).join(' / ') || '— Unlocated —',
     },
     {
       field: 'actions',
@@ -329,8 +329,8 @@ export default function StockPoolView() {
             available: selected.available,
             warehouseId: selected.warehouseId,
             aisle: selected.aisle,
+            row: selected.row,
             bay: selected.bay,
-            bin: selected.bin,
           }}
           onClose={closeModal}
           onSuccess={onSuccess}

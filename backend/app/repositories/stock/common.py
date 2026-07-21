@@ -36,20 +36,20 @@ def _log_audit_event(
     )
 
 
-def _validate_location_fields(aisle: str | None, bay: str | None, bin: str | None) -> None:
-    """Validate aisle, bay, bin lengths when provided."""
-    for field_name, value in [("aisle", aisle), ("bay", bay), ("bin", bin)]:
+def _validate_location_fields(aisle: str | None, row: str | None, bay: str | None) -> None:
+    """Validate aisle, row, bay lengths when provided."""
+    for field_name, value in [("aisle", aisle), ("row", row), ("bay", bay)]:
         if value is not None and (len(value) < 1 or len(value) > 20):
             raise ValidationError(f"{field_name} must be 1-20 characters", field=field_name)
 
 
 def _normalize_optional_location_fields(
-    aisle: str | None, bay: str | None, bin: str | None
+    aisle: str | None, row: str | None, bay: str | None
 ) -> tuple[str | None, str | None, str | None]:
     """Normalize each optional field then re-validate. Returns canonical triple (nullable)."""
     a = normalize_location_value(aisle)
-    b = normalize_location_value(bay)
-    c = normalize_location_value(bin)
+    b = normalize_location_value(row)
+    c = normalize_location_value(bay)
     _validate_location_fields(a, b, c)
     return (a, b, c)
 
@@ -61,18 +61,18 @@ def _find_or_create_stock_row(
     hardware_category: str,
     product_code: str,
     aisle: str | None,
+    row: str | None,
     bay: str | None,
-    bin: str | None,
     received_at: datetime,
 ) -> StockItem:
-    """Find an existing stock row matching (warehouse, category, code, aisle, bay, bin) or create one with qty=0.
+    """Find an existing stock row matching (warehouse, category, code, aisle, row, bay) or create one with qty=0.
 
     Caller is responsible for incrementing quantity and writing audit events. Location fields are
     normalized here so writes from any entry path (destock, allocate, receive) match canonical form.
     """
     aisle = normalize_location_value(aisle)
+    row = normalize_location_value(row)
     bay = normalize_location_value(bay)
-    bin = normalize_location_value(bin)
 
     stmt = select(StockItem).where(
         StockItem.warehouse_id == warehouse_id,
@@ -83,14 +83,14 @@ def _find_or_create_stock_row(
         stmt = stmt.where(StockItem.aisle.is_(None))
     else:
         stmt = stmt.where(StockItem.aisle == aisle)
+    if row is None:
+        stmt = stmt.where(StockItem.row.is_(None))
+    else:
+        stmt = stmt.where(StockItem.row == row)
     if bay is None:
         stmt = stmt.where(StockItem.bay.is_(None))
     else:
         stmt = stmt.where(StockItem.bay == bay)
-    if bin is None:
-        stmt = stmt.where(StockItem.bin.is_(None))
-    else:
-        stmt = stmt.where(StockItem.bin == bin)
 
     existing = session.scalars(stmt).first()
     if existing is not None:
@@ -103,8 +103,8 @@ def _find_or_create_stock_row(
         quantity=0,
         deficient_quantity=0,
         aisle=aisle,
+        row=row,
         bay=bay,
-        bin=bin,
         received_at=received_at,
     )
     session.add(new_row)

@@ -33,8 +33,8 @@ interface InventoryItem {
   deficientQuantity?: number;
   available?: number;
   aisle: string | null;
+  row: string | null;
   bay: string | null;
-  bin: string | null;
   receivedAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -60,8 +60,8 @@ interface OpeningItem {
   assemblyCompletedAt: string | null;
   state: string;
   aisle: string | null;
+  row: string | null;
   bay: string | null;
-  bin: string | null;
   createdAt: string;
   updatedAt: string;
   installedHardware: InstalledHardware[];
@@ -69,11 +69,11 @@ interface OpeningItem {
 
 type CorrectionType = 'overrideQuantity' | 'moveLocation' | 'markUnlocated' | 'assignLocation';
 
-// A destination bin for the units ADDED by a quantity increase. Strings bind to text inputs.
+// A destination row for the units ADDED by a quantity increase. Strings bind to text inputs.
 interface DestinationDraft {
   aisle: string;
+  row: string;
   bay: string;
-  bin: string;
   quantity: string;
 }
 
@@ -86,12 +86,12 @@ interface InventoryCorrectionModalProps {
 }
 
 function hasLocation(item: InventoryItem | OpeningItem): boolean {
-  return !!(item.aisle && item.bay && item.bin);
+  return !!(item.aisle && item.row && item.bay);
 }
 
-function formatLocation(aisle: string | null, bay: string | null, bin: string | null): string {
-  if (aisle && bay && bin) {
-    return `${aisle}-${bay}-${bin}`;
+function formatLocation(aisle: string | null, row: string | null, bay: string | null): string {
+  if (aisle && row && bay) {
+    return `${aisle}-${row}-${bay}`;
   }
   return 'Unlocated';
 }
@@ -117,13 +117,13 @@ export default function InventoryCorrectionModal({
   // Override Quantity state: an absolute new quantity for this row plus a required reason.
   const [newQty, setNewQty] = useState<string>('');
   const [reason, setReason] = useState('');
-  // Where the ADDED units land when increasing. Empty falls back to one bin = this row's location.
+  // Where the ADDED units land when increasing. Empty falls back to one location = this row's location.
   const [destinations, setDestinations] = useState<DestinationDraft[]>([]);
 
   // Move / Assign Location state
   const [aisle, setAisle] = useState(item.aisle ?? '');
+  const [row, setRow] = useState(item.row ?? '');
   const [bay, setBay] = useState(item.bay ?? '');
-  const [bin, setBin] = useState(item.bin ?? '');
 
   // Available correction types for this item type
   const correctionOptions = useMemo(() => {
@@ -145,12 +145,12 @@ export default function InventoryCorrectionModal({
     setDestinations([]);
     if (type === 'moveLocation') {
       setAisle(item.aisle ?? '');
+      setRow(item.row ?? '');
       setBay(item.bay ?? '');
-      setBin(item.bin ?? '');
     } else if (type === 'assignLocation') {
       setAisle('');
+      setRow('');
       setBay('');
-      setBin('');
     }
   };
 
@@ -160,7 +160,7 @@ export default function InventoryCorrectionModal({
   const delta = Number.isNaN(newQtyNum) ? 0 : newQtyNum - item.quantity;
   const itemDeficient = (item as InventoryItem).deficientQuantity ?? 0;
 
-  // Destination rows for the added units, defaulting to one bin = this row's current location with
+  // Destination rows for the added units, defaulting to one location = this row's current location with
   // the whole delta. The default tracks delta until the user edits, then their edits stick.
   const destRows = useMemo<DestinationDraft[]>(
     () =>
@@ -169,12 +169,12 @@ export default function InventoryCorrectionModal({
         : [
             {
               aisle: item.aisle ?? '',
+              row: item.row ?? '',
               bay: item.bay ?? '',
-              bin: item.bin ?? '',
               quantity: delta > 0 ? String(delta) : '',
             },
           ],
-    [destinations, item.aisle, item.bay, item.bin, delta],
+    [destinations, item.aisle, item.row, item.bay, delta],
   );
 
   const placedTotal = destRows.reduce((s, d) => s + (Number(d.quantity) || 0), 0);
@@ -183,7 +183,7 @@ export default function InventoryCorrectionModal({
     const v = field === 'quantity' ? value : value.slice(0, 20);
     setDestinations(destRows.map((d, i) => (i === idx ? { ...d, [field]: v } : d)));
   };
-  const addDest = () => setDestinations([...destRows, { aisle: '', bay: '', bin: '', quantity: '' }]);
+  const addDest = () => setDestinations([...destRows, { aisle: '', row: '', bay: '', quantity: '' }]);
   const removeDest = (idx: number) => setDestinations(destRows.filter((_, i) => i !== idx));
 
   // --- Validation ---
@@ -195,13 +195,13 @@ export default function InventoryCorrectionModal({
         if (Number.isNaN(newQtyNum) || newQtyNum < 0) return false;
         if (delta === 0) return false;
         if (delta < 0) return newQtyNum >= itemDeficient;
-        // increase: every added unit must be placed in a valid bin, summing to the delta
+        // increase: every added unit must be placed in a valid location, summing to the delta
         let sum = 0;
         for (const d of destRows) {
           const q = Number(d.quantity);
           if (!d.aisle.trim() || d.aisle.length > 20) return false;
+          if (!d.row.trim() || d.row.length > 20) return false;
           if (!d.bay.trim() || d.bay.length > 20) return false;
-          if (!d.bin.trim() || d.bin.length > 20) return false;
           if (!Number.isInteger(q) || q < 1) return false;
           sum += q;
         }
@@ -210,8 +210,8 @@ export default function InventoryCorrectionModal({
       case 'moveLocation':
       case 'assignLocation': {
         if (!aisle.trim() || aisle.length > 20) return false;
+        if (!row.trim() || row.length > 20) return false;
         if (!bay.trim() || bay.length > 20) return false;
-        if (!bin.trim() || bin.length > 20) return false;
         return true;
       }
       case 'markUnlocated':
@@ -219,7 +219,7 @@ export default function InventoryCorrectionModal({
       default:
         return false;
     }
-  }, [correctionType, newQtyNum, delta, itemDeficient, destRows, reason, aisle, bay, bin]);
+  }, [correctionType, newQtyNum, delta, itemDeficient, destRows, reason, aisle, row, bay]);
 
   // --- Confirmation message ---
 
@@ -230,15 +230,15 @@ export default function InventoryCorrectionModal({
           ? `Override quantity ${item.quantity} -> ${newQtyNum} (remove ${-delta}). Reason: "${reason.trim()}"`
           : `Override quantity ${item.quantity} -> ${newQtyNum} (add ${delta} across ${destRows.length} location(s)). Reason: "${reason.trim()}"`;
       case 'moveLocation':
-        return `Move item from ${formatLocation(item.aisle, item.bay, item.bin)} to ${formatLocation(aisle, bay, bin)}`;
+        return `Move item from ${formatLocation(item.aisle, item.row, item.bay)} to ${formatLocation(aisle, row, bay)}`;
       case 'markUnlocated':
-        return `Mark item as unlocated (currently at ${formatLocation(item.aisle, item.bay, item.bin)})`;
+        return `Mark item as unlocated (currently at ${formatLocation(item.aisle, item.row, item.bay)})`;
       case 'assignLocation':
-        return `Assign location ${formatLocation(aisle, bay, bin)} to this item`;
+        return `Assign location ${formatLocation(aisle, row, bay)} to this item`;
       default:
         return '';
     }
-  }, [correctionType, delta, newQtyNum, destRows, item, reason, aisle, bay, bin]);
+  }, [correctionType, delta, newQtyNum, destRows, item, reason, aisle, row, bay]);
 
   // --- Mutations ---
 
@@ -360,8 +360,8 @@ export default function InventoryCorrectionModal({
                   delta > 0
                     ? destRows.map((d) => ({
                         aisle: d.aisle.trim(),
+                        row: d.row.trim(),
                         bay: d.bay.trim(),
-                        bin: d.bin.trim(),
                         quantity: Number(d.quantity),
                       }))
                     : [],
@@ -375,8 +375,8 @@ export default function InventoryCorrectionModal({
             variables: {
               inventoryLocationId: item.id,
               newAisle: aisle.trim(),
+              newRow: row.trim(),
               newBay: bay.trim(),
-              newBin: bin.trim(),
             },
           });
           break;
@@ -390,8 +390,8 @@ export default function InventoryCorrectionModal({
             variables: {
               inventoryLocationId: item.id,
               aisle: aisle.trim(),
+              row: row.trim(),
               bay: bay.trim(),
-              bin: bin.trim(),
             },
           });
           break;
@@ -403,8 +403,8 @@ export default function InventoryCorrectionModal({
             variables: {
               openingItemId: item.id,
               aisle: aisle.trim(),
+              row: row.trim(),
               bay: bay.trim(),
-              bin: bin.trim(),
             },
           });
           break;
@@ -418,8 +418,8 @@ export default function InventoryCorrectionModal({
             variables: {
               openingItemId: item.id,
               aisle: aisle.trim(),
+              row: row.trim(),
               bay: bay.trim(),
-              bin: bin.trim(),
             },
           });
           break;
@@ -448,7 +448,7 @@ export default function InventoryCorrectionModal({
           </Box>
           <Box>
             <Typography variant="caption" color="text.secondary">Location</Typography>
-            <Typography variant="body2">{formatLocation(inv.aisle, inv.bay, inv.bin)}</Typography>
+            <Typography variant="body2">{formatLocation(inv.aisle, inv.row, inv.bay)}</Typography>
           </Box>
         </Box>
       );
@@ -478,7 +478,7 @@ export default function InventoryCorrectionModal({
           </Box>
           <Box>
             <Typography variant="caption" color="text.secondary">Warehouse Location</Typography>
-            <Typography variant="body2">{formatLocation(op.aisle, op.bay, op.bin)}</Typography>
+            <Typography variant="body2">{formatLocation(op.aisle, op.row, op.bay)}</Typography>
           </Box>
         </Box>
       );
@@ -548,17 +548,17 @@ export default function InventoryCorrectionModal({
                         sx={{ width: 90 }}
                       />
                       <TextField
+                        label="Row"
+                        size="small"
+                        value={d.row}
+                        onChange={(e) => updateDest(idx, 'row', e.target.value)}
+                        sx={{ width: 90 }}
+                      />
+                      <TextField
                         label="Bay"
                         size="small"
                         value={d.bay}
                         onChange={(e) => updateDest(idx, 'bay', e.target.value)}
-                        sx={{ width: 90 }}
-                      />
-                      <TextField
-                        label="Bin"
-                        size="small"
-                        value={d.bin}
-                        onChange={(e) => updateDest(idx, 'bin', e.target.value)}
                         sx={{ width: 90 }}
                       />
                       <TextField
@@ -594,12 +594,19 @@ export default function InventoryCorrectionModal({
         return (
           <Stack spacing={2}>
             <Typography variant="body2" color="text.secondary">
-              Current location: {formatLocation(item.aisle, item.bay, item.bin)}
+              Current location: {formatLocation(item.aisle, item.row, item.bay)}
             </Typography>
             <TextField
               label="Aisle"
               value={aisle}
               onChange={(e) => setAisle(e.target.value.slice(0, 20))}
+              size="small"
+              fullWidth
+            />
+            <TextField
+              label="Row"
+              value={row}
+              onChange={(e) => setRow(e.target.value.slice(0, 20))}
               size="small"
               fullWidth
             />
@@ -610,13 +617,6 @@ export default function InventoryCorrectionModal({
               size="small"
               fullWidth
             />
-            <TextField
-              label="Bin"
-              value={bin}
-              onChange={(e) => setBin(e.target.value.slice(0, 20))}
-              size="small"
-              fullWidth
-            />
           </Stack>
         );
 
@@ -624,7 +624,7 @@ export default function InventoryCorrectionModal({
         return (
           <Box sx={{ p: 2, bgcolor: 'warning.light', borderRadius: 1 }}>
             <Typography variant="body2">
-              This will remove the current location ({formatLocation(item.aisle, item.bay, item.bin)}) from this item.
+              This will remove the current location ({formatLocation(item.aisle, item.row, item.bay)}) from this item.
               The item will need to be reassigned a location later.
             </Typography>
           </Box>
@@ -641,16 +641,16 @@ export default function InventoryCorrectionModal({
               fullWidth
             />
             <TextField
-              label="Bay"
-              value={bay}
-              onChange={(e) => setBay(e.target.value.slice(0, 20))}
+              label="Row"
+              value={row}
+              onChange={(e) => setRow(e.target.value.slice(0, 20))}
               size="small"
               fullWidth
             />
             <TextField
-              label="Bin"
-              value={bin}
-              onChange={(e) => setBin(e.target.value.slice(0, 20))}
+              label="Bay"
+              value={bay}
+              onChange={(e) => setBay(e.target.value.slice(0, 20))}
               size="small"
               fullWidth
             />

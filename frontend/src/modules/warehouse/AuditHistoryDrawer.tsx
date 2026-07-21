@@ -58,8 +58,8 @@ function formatDateTime(dateStr: string): string {
 
 function formatLocation(loc: Record<string, unknown> | null | undefined): string {
   if (!loc) return '—';
-  const { aisle, bay, bin } = loc as { aisle?: string; bay?: string; bin?: string };
-  if (aisle && bay && bin) return `${aisle}-${bay}-${bin}`;
+  const { aisle, row, bay } = loc as { aisle?: string; row?: string; bay?: string };
+  if (aisle && row && bay) return `${aisle}-${row}-${bay}`;
   return 'Unlocated';
 }
 

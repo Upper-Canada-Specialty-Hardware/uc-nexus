@@ -15,8 +15,8 @@ interface Props {
 
 export default function MoveStockLocationModal({ item, onClose, onSuccess }: Props) {
   const [aisle, setAisle] = useState(item.aisle ?? '');
+  const [row, setRow] = useState(item.row ?? '');
   const [bay, setBay] = useState(item.bay ?? '');
-  const [bin, setBin] = useState(item.bin ?? '');
   const { showToast } = useToast();
 
   const [mutate, { loading, error }] = useMutation(MOVE_STOCK_LOCATION, {
@@ -29,7 +29,7 @@ export default function MoveStockLocationModal({ item, onClose, onSuccess }: Pro
     onError: (err) => showToast(err.message, 'error'),
   });
 
-  const valid = aisle.trim() && bay.trim() && bin.trim();
+  const valid = aisle.trim() && row.trim() && bay.trim();
 
   const handleSubmit = () => {
     if (!valid) return;
@@ -38,8 +38,8 @@ export default function MoveStockLocationModal({ item, onClose, onSuccess }: Pro
         input: {
           stockItemId: item.id,
           newAisle: aisle.trim(),
+          newRow: row.trim(),
           newBay: bay.trim(),
-          newBin: bin.trim(),
           performedBy: 'Warehouse',
         },
       },
@@ -50,7 +50,7 @@ export default function MoveStockLocationModal({ item, onClose, onSuccess }: Pro
     <Modal
       open
       onClose={onClose}
-      title={`Move ${item.productCode} to new bin`}
+      title={`Move ${item.productCode} to new location`}
       actions={
         <>
           <Button onClick={onClose}>Cancel</Button>
@@ -64,8 +64,8 @@ export default function MoveStockLocationModal({ item, onClose, onSuccess }: Pro
         {error && <Alert severity="error">{error.message}</Alert>}
         <Stack direction="row" spacing={2}>
           <TextField label="Aisle" value={aisle} onChange={(e) => setAisle(e.target.value)} required />
+          <TextField label="Row" value={row} onChange={(e) => setRow(e.target.value)} required />
           <TextField label="Bay" value={bay} onChange={(e) => setBay(e.target.value)} required />
-          <TextField label="Bin" value={bin} onChange={(e) => setBin(e.target.value)} required />
         </Stack>
       </Stack>
     </Modal>

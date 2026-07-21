@@ -68,12 +68,12 @@ function isPoGpRegistered(d: PODetails | undefined): boolean {
   return !!d && !!d.gpCompany && !!d.poNumber;
 }
 
-// One destination bin for a received line, plus how many of those units arrived deficient.
+// One destination row for a received line, plus how many of those units arrived deficient.
 // Fields are strings because they are bound to text inputs; parsed at validate/submit time.
 interface LocationDraft {
   aisle: string;
+  row: string;
   bay: string;
-  bin: string;
   quantity: string;
   deficient: string;
 }
@@ -96,7 +96,7 @@ interface WarehouseOption {
 const MAX_LOC_LEN = 20;
 
 function emptyDraft(quantity: number): LocationDraft {
-  return { aisle: '', bay: '', bin: '', quantity: String(quantity), deficient: '0' };
+  return { aisle: '', row: '', bay: '', quantity: String(quantity), deficient: '0' };
 }
 
 export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps) {
@@ -119,7 +119,7 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
   const [poDetailsLoading, setPoDetailsLoading] = useState(false);
   const [poDetailsError, setPoDetailsError] = useState<string | null>(null);
   // Put-away is mandatory: a receive posts a GP receipt, which requires a rack location per line, so
-  // the user assigns destination bin(s) for every received unit (and may flag deficient units) up front.
+  // the user assigns destination row(s) for every received unit (and may flag deficient units) up front.
   const [lineLocations, setLineLocations] = useState<Record<string, LocationDraft[]>>({});
   const [submitting, setSubmitting] = useState(false);
 
@@ -223,7 +223,7 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
 
   // ---- Put-away helpers ----
 
-  // Drafts for a line, defaulting to a single bin holding the whole received quantity. The default
+  // Drafts for a line, defaulting to a single row holding the whole received quantity. The default
   // is materialized on first edit, so an untouched line carries one row whose location is still blank
   // (which keeps the line invalid until the user fills it in put-away mode).
   const draftsFor = useCallback(
@@ -237,7 +237,7 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
 
   const updateLocation = useCallback(
     (lineId: string, receiveNow: number, idx: number, field: keyof LocationDraft, value: string) => {
-      const v = field === 'aisle' || field === 'bay' || field === 'bin' ? value.slice(0, MAX_LOC_LEN) : value;
+      const v = field === 'aisle' || field === 'row' || field === 'bay' ? value.slice(0, MAX_LOC_LEN) : value;
       setDrafts(
         lineId,
         draftsFor(lineId, receiveNow).map((d, i) => (i === idx ? { ...d, [field]: v } : d)),
@@ -290,7 +290,7 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
     [poIds, poDetailsMap],
   );
 
-  // Put-away is mandatory: every received unit must land in a valid bin and each bin's deficient count
+  // Put-away is mandatory: every received unit must land in a valid row and each row's deficient count
   // must be within its quantity. Mirrors the backend contract in warehouse_repository.create_receive
   // and gives the GP receipt a non-empty rack location per line.
   const putAwayValid = useMemo(() => {
@@ -300,7 +300,7 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
       for (const d of draftsFor(li.id, receiveNow)) {
         const q = Number(d.quantity);
         const def = Number(d.deficient || '0');
-        if (!d.aisle.trim() || !d.bay.trim() || !d.bin.trim()) return false;
+        if (!d.aisle.trim() || !d.row.trim() || !d.bay.trim()) return false;
         if (!Number.isInteger(q) || q < 1) return false;
         if (!Number.isInteger(def) || def < 0 || def > q) return false;
         placed += q;
@@ -412,8 +412,8 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
               quantityReceived: receiveNow,
               locations: drafts.map((d) => ({
                 aisle: d.aisle.trim(),
+                row: d.row.trim(),
                 bay: d.bay.trim(),
-                bin: d.bin.trim(),
                 quantity: Number(d.quantity),
                 deficientQuantity: Number(d.deficient || '0'),
               })),
@@ -595,17 +595,17 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
                   sx={{ width: 90 }}
                 />
                 <TextField
+                  label="Row"
+                  size="small"
+                  value={d.row}
+                  onChange={(e) => updateLocation(li.id, receiveNow, idx, 'row', e.target.value)}
+                  sx={{ width: 90 }}
+                />
+                <TextField
                   label="Bay"
                   size="small"
                   value={d.bay}
                   onChange={(e) => updateLocation(li.id, receiveNow, idx, 'bay', e.target.value)}
-                  sx={{ width: 90 }}
-                />
-                <TextField
-                  label="Bin"
-                  size="small"
-                  value={d.bin}
-                  onChange={(e) => updateLocation(li.id, receiveNow, idx, 'bin', e.target.value)}
                   sx={{ width: 90 }}
                 />
                 <TextField
@@ -765,7 +765,7 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
               Assign locations & flag deficient units
             </Typography>
             <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
-              Place every received unit in a bin (the GP receipt records a rack location per line) and
+              Place every received unit in a row (the GP receipt records a rack location per line) and
               optionally record how many of each arrived deficient.
             </Typography>
             <Stack spacing={2}>{lineItemsToReceive.map(renderLineLocations)}</Stack>

@@ -147,7 +147,7 @@ def get_inventory_items(
 
 def get_unlocated_inventory(session: Session, project_id: uuid.UUID | None = None) -> list[dict]:
     """
-    Query InventoryLocation rows where aisle, bay, and bin are all NULL and quantity > 0.
+    Query InventoryLocation rows where aisle, row, and bay are all NULL and quantity > 0.
     Joins to POLineItem for unit_cost/classification and PurchaseOrder for po_number.
     """
     stmt = (
@@ -156,8 +156,8 @@ def get_unlocated_inventory(session: Session, project_id: uuid.UUID | None = Non
         .outerjoin(POModel, POLineItemModel.po_id == POModel.id)
         .where(
             InventoryLocationModel.aisle.is_(None),
+            InventoryLocationModel.row.is_(None),
             InventoryLocationModel.bay.is_(None),
-            InventoryLocationModel.bin.is_(None),
             InventoryLocationModel.quantity > 0,
         )
     )
@@ -317,7 +317,7 @@ def override_inventory_quantity(
     below the row's own deficient_quantity.
 
     Increase: the added (new_quantity - current) units must be placed via `destinations`, whose
-    quantities sum to the delta. A destination at the row's own aisle/bay/bin bumps this row; any other
+    quantities sum to the delta. A destination at the row's own aisle/row/bay bumps this row; any other
     destination becomes a new InventoryLocation that inherits this row's origin, so the has-origin CHECK
     holds and valuations keep the same unit_cost.
     """
@@ -355,8 +355,8 @@ def override_inventory_quantity(
             qty = dest["quantity"]
             if qty < 1:
                 raise ValidationError("destination quantity must be >= 1", field="destinations")
-            a, b, c = _normalize_and_validate_location_fields(dest["aisle"], dest["bay"], dest["bin"])
-            normalized.append({"aisle": a, "bay": b, "bin": c, "quantity": qty})
+            a, b, c = _normalize_and_validate_location_fields(dest["aisle"], dest["row"], dest["bay"])
+            normalized.append({"aisle": a, "row": b, "bay": c, "quantity": qty})
         if sum(d["quantity"] for d in normalized) != delta:
             raise ValidationError(
                 "destination quantities must sum to the added quantity",
@@ -366,7 +366,7 @@ def override_inventory_quantity(
         now = datetime.utcnow()
         for dest in normalized:
             audit_destinations.append(dest)
-            if (dest["aisle"], dest["bay"], dest["bin"]) == (il.aisle, il.bay, il.bin):
+            if (dest["aisle"], dest["row"], dest["bay"]) == (il.aisle, il.row, il.bay):
                 il.quantity += dest["quantity"]
             else:
                 new_il = InventoryLocationModel(
@@ -380,8 +380,8 @@ def override_inventory_quantity(
                     quantity=dest["quantity"],
                     deficient_quantity=0,
                     aisle=dest["aisle"],
+                    row=dest["row"],
                     bay=dest["bay"],
-                    bin=dest["bin"],
                     received_at=now,
                 )
                 session.add(new_il)
@@ -416,7 +416,7 @@ def override_inventory_quantity(
             detail={
                 "createdByOverrideOf": str(il.id),
                 "quantity": new_il.quantity,
-                "location": {"aisle": new_il.aisle, "bay": new_il.bay, "bin": new_il.bin},
+                "location": {"aisle": new_il.aisle, "row": new_il.row, "bay": new_il.bay},
                 "reason": reason,
             },
         )

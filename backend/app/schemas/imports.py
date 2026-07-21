@@ -5,23 +5,19 @@ import uuid
 import strawberry
 
 from app.database import SessionLocal
-from app.errors import InventoryShortfallError
 from app.repositories import (
     import_repository,
     po_repository,
     project_repository,
+    shipping_repository,
     shop_assembly_repository,
 )
-from app.repositories import (
-    warehouse as warehouse_repository,
-)
-from app.services import notification_service
 
 from .converters import (
     po_to_type,
     project_hardware_schedule_to_type,
     project_to_type,
-    pull_request_to_type,
+    shipping_out_request_to_type,
     shop_assembly_request_to_type,
 )
 from .inputs import FinalizeImportSessionInput, ReconciliationItemInput
@@ -225,31 +221,18 @@ class ImportMutations:
         }
 
         with SessionLocal() as session:
-            try:
-                result = import_repository.finalize_import_session(session, input_data)
-                session.commit()
-            except InventoryShortfallError as e:
-                # Gate 1 (#224): the shop-assembly task was refused. Roll the whole finalize back so
-                # no PR (and no partial state) survives, then mint the PO backfill notification in a
-                # fresh session so it outlives the rollback. Re-raise so the shortfall reaches the
-                # creator inline.
-                session.rollback()
-                with SessionLocal() as notif_session:
-                    notification_service.notify_po_shortfall(
-                        notif_session,
-                        project_id=e.project_id,
-                        request_number=e.request_number,
-                        shortfalls=e.shortfalls,
-                    )
-                    notif_session.commit()
-                raise
+            # #293: Start a Task no longer mints PullRequests, so there is no inventory-sufficiency
+            # gate here - a request may be created even if inventory is short. Sufficiency is enforced
+            # when a signed-in user ACCEPTS the shop-assembly request (see accept mutation).
+            result = import_repository.finalize_import_session(session, input_data)
+            session.commit()
 
             # Re-load everything with the relationships the response types walk
             project = project_repository.get_project_with_openings(session, result["project"].id)
             pos = [po_repository.reload_po(session, po_obj.id) for po_obj in result["purchase_orders"]]
-            prs = [
-                warehouse_repository.get_pull_request_details(session, pr_obj.id)
-                for pr_obj in result["shipping_out_pull_requests"]
+            shipping_requests = [
+                shipping_repository.get_shipping_out_request(session, req_obj.id)
+                for req_obj in result["shipping_out_requests"]
             ]
 
             sar_type = None
@@ -259,19 +242,9 @@ class ImportMutations:
                 )
                 sar_type = shop_assembly_request_to_type(refreshed_sar)
 
-            # Re-load the directly-minted shop-assembly PR (#222) with its items so the import
-            # success UI can confirm it. Always None when the import created no shop-assembly task.
-            sa_pr_type = None
-            if result["shop_assembly_pull_request"] is not None:
-                refreshed_sa_pr = warehouse_repository.get_pull_request_details(
-                    session, result["shop_assembly_pull_request"].id
-                )
-                sa_pr_type = pull_request_to_type(refreshed_sa_pr)
-
             return FinalizeImportResult(
                 project=project_to_type(project),
                 purchase_orders=[po_to_type(po) for po in pos],
-                shipping_out_pull_requests=[pull_request_to_type(pr) for pr in prs],
+                shipping_out_requests=[shipping_out_request_to_type(req) for req in shipping_requests],
                 shop_assembly_request=sar_type,
-                shop_assembly_pull_request=sa_pr_type,
             )

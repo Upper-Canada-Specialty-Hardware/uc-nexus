@@ -307,13 +307,13 @@ class WarehouseQueries:
     def location_contents(
         self,
         aisle: str,
+        row: str | None = None,
         bay: str | None = None,
-        bin: str | None = None,
         warehouse_id: strawberry.ID | None = None,
     ) -> LocationContents:
         with SessionLocal() as session:
             data = warehouse_repository.get_location_contents(
-                session, aisle, bay, bin, uuid.UUID(str(warehouse_id)) if warehouse_id else None
+                session, aisle, row, bay, uuid.UUID(str(warehouse_id)) if warehouse_id else None
             )
             return LocationContents(
                 inventory_items=[
@@ -333,12 +333,12 @@ class WarehouseQueries:
     def location_audit_history(
         self,
         aisle: str,
+        row: str | None = None,
         bay: str | None = None,
-        bin: str | None = None,
         limit: int = 10,
     ) -> list[AuditLogEntry]:
         with SessionLocal() as session:
-            entries = warehouse_repository.get_location_audit_history(session, aisle, bay, bin, limit=limit)
+            entries = warehouse_repository.get_location_audit_history(session, aisle, row, bay, limit=limit)
             return [
                 AuditLogEntry(
                     id=strawberry.ID(str(e.id)),
@@ -359,8 +359,8 @@ class WarehouseQueries:
             values = warehouse_repository.get_distinct_location_values(session)
             return LocationDistinctValues(
                 aisles=values["aisles"],
+                rows=values["rows"],
                 bays=values["bays"],
-                bins=values["bins"],
             )
 
     @strawberry.field
@@ -370,9 +370,9 @@ class WarehouseQueries:
             return [
                 LocationDuplicateGroup(
                     canonical_aisle=g["canonical_aisle"],
+                    canonical_row=g["canonical_row"],
                     canonical_bay=g["canonical_bay"],
-                    canonical_bin=g["canonical_bin"],
-                    variants=[LocationVariant(aisle=v["aisle"], bay=v["bay"], bin=v["bin"]) for v in g["variants"]],
+                    variants=[LocationVariant(aisle=v["aisle"], row=v["row"], bay=v["bay"]) for v in g["variants"]],
                 )
                 for g in groups
             ]
@@ -387,9 +387,8 @@ class WarehouseQueries:
                 LocationUtilizationEntry(
                     warehouse_id=strawberry.ID(str(r["warehouse_id"])) if r.get("warehouse_id") else None,
                     aisle=r["aisle"],
-                    row=r.get("row"),
+                    row=r["row"],
                     bay=r["bay"],
-                    bin=r["bin"],
                     item_count=r["item_count"],
                     total_quantity=r["total_quantity"],
                 )
@@ -465,8 +464,8 @@ class WarehouseMutations:
                 "locations": [
                     {
                         "aisle": loc.aisle,
+                        "row": loc.row,
                         "bay": loc.bay,
-                        "bin": loc.bin,
                         "quantity": loc.quantity,
                         "deficient_quantity": loc.deficient_quantity,
                     }
@@ -558,7 +557,7 @@ class WarehouseMutations:
                 new_quantity=input.new_quantity,
                 reason=input.reason_text,
                 destinations=[
-                    {"aisle": d.aisle, "bay": d.bay, "bin": d.bin, "quantity": d.quantity} for d in input.destinations
+                    {"aisle": d.aisle, "row": d.row, "bay": d.bay, "quantity": d.quantity} for d in input.destinations
                 ],
                 performed_by=input.performed_by or "Warehouse",
             )
@@ -571,12 +570,12 @@ class WarehouseMutations:
         self,
         inventory_location_id: strawberry.ID,
         new_aisle: str,
+        new_row: str,
         new_bay: str,
-        new_bin: str,
     ) -> InventoryLocation:
         with SessionLocal() as session:
             result = warehouse_repository.move_inventory_location(
-                session, uuid.UUID(str(inventory_location_id)), new_aisle, new_bay, new_bin
+                session, uuid.UUID(str(inventory_location_id)), new_aisle, new_row, new_bay
             )
             session.commit()
             session.refresh(result)
@@ -595,12 +594,12 @@ class WarehouseMutations:
         self,
         inventory_location_id: strawberry.ID,
         aisle: str,
+        row: str,
         bay: str,
-        bin: str,
     ) -> InventoryLocation:
         with SessionLocal() as session:
             result = warehouse_repository.assign_inventory_location(
-                session, uuid.UUID(str(inventory_location_id)), aisle, bay, bin
+                session, uuid.UUID(str(inventory_location_id)), aisle, row, bay
             )
             session.commit()
             session.refresh(result)
@@ -611,8 +610,8 @@ class WarehouseMutations:
         self,
         opening_item_id: strawberry.ID,
         aisle: str,
+        row: str,
         bay: str,
-        bin: str,
         warehouse_id: strawberry.ID | None = None,
     ) -> OpeningItem:
         with SessionLocal() as session:
@@ -620,8 +619,8 @@ class WarehouseMutations:
                 session,
                 uuid.UUID(str(opening_item_id)),
                 aisle,
+                row,
                 bay,
-                bin,
                 warehouse_id=uuid.UUID(str(warehouse_id)) if warehouse_id else None,
             )
             session.commit()
@@ -641,12 +640,12 @@ class WarehouseMutations:
         self,
         opening_item_id: strawberry.ID,
         aisle: str,
+        row: str,
         bay: str,
-        bin: str,
     ) -> OpeningItem:
         with SessionLocal() as session:
             result = warehouse_repository.assign_opening_item_location(
-                session, uuid.UUID(str(opening_item_id)), aisle, bay, bin
+                session, uuid.UUID(str(opening_item_id)), aisle, row, bay
             )
             session.commit()
             session.refresh(result)
@@ -656,21 +655,21 @@ class WarehouseMutations:
     def merge_locations(
         self,
         from_aisle: str,
+        from_row: str,
         from_bay: str,
-        from_bin: str,
         to_aisle: str,
+        to_row: str,
         to_bay: str,
-        to_bin: str,
     ) -> LocationMergeResult:
         with SessionLocal() as session:
             counts = warehouse_repository.merge_locations(
                 session,
                 from_aisle=from_aisle,
+                from_row=from_row,
                 from_bay=from_bay,
-                from_bin=from_bin,
                 to_aisle=to_aisle,
+                to_row=to_row,
                 to_bay=to_bay,
-                to_bin=to_bin,
                 performed_by="Admin/Manager",
             )
             session.commit()

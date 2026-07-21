@@ -42,8 +42,8 @@ interface OpeningItem {
   assemblyCompletedAt: string | null;
   state: string;
   aisle: string | null;
+  row: string | null;
   bay: string | null;
-  bin: string | null;
   createdAt: string;
   updatedAt: string;
   installedHardware: InstalledHardware[];
@@ -63,9 +63,9 @@ function formatDate(dateStr: string | null): string {
   return new Date(dateStr).toLocaleDateString();
 }
 
-function formatLocation(aisle: string | null, bay: string | null, bin: string | null): string {
-  if (aisle && bay && bin) {
-    return `${aisle}-${bay}-${bin}`;
+function formatLocation(aisle: string | null, row: string | null, bay: string | null): string {
+  if (aisle && row && bay) {
+    return `${aisle}-${row}-${bay}`;
   }
   return 'Unlocated';
 }
@@ -91,8 +91,8 @@ const columns: GridColDef[] = [
   { field: 'floor', headerName: 'Floor', flex: 0.6 },
   { field: 'location', headerName: 'Location', flex: 1 },
   { field: 'aisle', headerName: 'Aisle', flex: 0.6 },
+  { field: 'row', headerName: 'Row', flex: 0.6 },
   { field: 'bay', headerName: 'Bay', flex: 0.6 },
-  { field: 'bin', headerName: 'Bin', flex: 0.6 },
   { field: 'quantity', headerName: 'Quantity', flex: 0.6, type: 'number' },
   {
     field: 'assemblyCompletedAt',
@@ -194,7 +194,7 @@ function OpeningItemDetailModal({
                   Warehouse Location
                 </Typography>
                 <Typography>
-                  {formatLocation(openingItem.aisle, openingItem.bay, openingItem.bin)}
+                  {formatLocation(openingItem.aisle, openingItem.row, openingItem.bay)}
                 </Typography>
               </Box>
               <Box>

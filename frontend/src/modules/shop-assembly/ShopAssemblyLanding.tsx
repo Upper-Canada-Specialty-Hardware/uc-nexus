@@ -4,6 +4,7 @@ import BuildIcon from '@mui/icons-material/Build';
 import HowToRegIcon from '@mui/icons-material/HowToReg';
 import PersonIcon from '@mui/icons-material/Person';
 import LocalShippingIcon from '@mui/icons-material/LocalShipping';
+import AssignmentTurnedInIcon from '@mui/icons-material/AssignmentTurnedIn';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@apollo/client/react';
 import { StatCard, StatCardSkeleton } from '../../components/StatCard';
@@ -35,6 +36,7 @@ function ShortcutCard({ label, icon, onClick }: ShortcutCardProps) {
 }
 
 const SUB_ROUTES = [
+  { label: 'Requests', path: '/app/shop-assembly/requests', icon: <AssignmentTurnedInIcon fontSize="large" /> },
   { label: 'Assemble List', path: '/app/shop-assembly/assemble', icon: <BuildIcon fontSize="large" /> },
   { label: 'Assignments', path: '/app/shop-assembly/assign', icon: <HowToRegIcon fontSize="large" /> },
   { label: 'My Work', path: '/app/shop-assembly/my-work', icon: <PersonIcon fontSize="large" /> },

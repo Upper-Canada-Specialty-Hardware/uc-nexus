@@ -22,14 +22,14 @@ import { useToast } from '../../components/Toast';
 
 interface LocationVariant {
   aisle: string | null;
+  row: string | null;
   bay: string | null;
-  bin: string | null;
 }
 
 interface LocationDuplicateGroup {
   canonicalAisle: string | null;
+  canonicalRow: string | null;
   canonicalBay: string | null;
-  canonicalBin: string | null;
   variants: LocationVariant[];
 }
 
@@ -37,21 +37,21 @@ interface DuplicatesData {
   locationDuplicates: LocationDuplicateGroup[];
 }
 
-function fmt(v: LocationVariant | { aisle: string | null; bay: string | null; bin: string | null }): string {
-  if (!v.aisle && !v.bay && !v.bin) return '—';
-  return [v.aisle, v.bay, v.bin].filter(Boolean).join('-');
+function fmt(v: LocationVariant | { aisle: string | null; row: string | null; bay: string | null }): string {
+  if (!v.aisle && !v.row && !v.bay) return '—';
+  return [v.aisle, v.row, v.bay].filter(Boolean).join('-');
 }
 
 function variantKey(v: LocationVariant): string {
-  return `${v.aisle ?? ''}|${v.bay ?? ''}|${v.bin ?? ''}`;
+  return `${v.aisle ?? ''}|${v.row ?? ''}|${v.bay ?? ''}`;
 }
 
 interface MergeDialogState {
   group: LocationDuplicateGroup;
   from: LocationVariant;
   toAisle: string;
+  toRow: string;
   toBay: string;
-  toBin: string;
 }
 
 export default function LocationCleanupPage() {
@@ -70,8 +70,8 @@ export default function LocationCleanupPage() {
       group,
       from,
       toAisle: group.canonicalAisle ?? '',
+      toRow: group.canonicalRow ?? '',
       toBay: group.canonicalBay ?? '',
-      toBin: group.canonicalBin ?? '',
     });
   }, []);
 
@@ -81,17 +81,17 @@ export default function LocationCleanupPage() {
       const result = await mergeLocations({
         variables: {
           fromAisle: dialog.from.aisle ?? '',
+          fromRow: dialog.from.row ?? '',
           fromBay: dialog.from.bay ?? '',
-          fromBin: dialog.from.bin ?? '',
           toAisle: dialog.toAisle.trim(),
+          toRow: dialog.toRow.trim(),
           toBay: dialog.toBay.trim(),
-          toBin: dialog.toBin.trim(),
         },
       });
       const counts = (result.data as { mergeLocations: { inventoryLocations: number; openingItems: number; stockItems: number } } | null | undefined)
         ?.mergeLocations;
       const total = counts ? counts.inventoryLocations + counts.openingItems + counts.stockItems : 0;
-      showToast(`Merged ${total} rows to ${dialog.toAisle}-${dialog.toBay}-${dialog.toBin}`, 'success');
+      showToast(`Merged ${total} rows to ${dialog.toAisle}-${dialog.toRow}-${dialog.toBay}`, 'success');
       setDialog(null);
       refetch();
     } catch (err: unknown) {
@@ -124,12 +124,12 @@ export default function LocationCleanupPage() {
       ) : (
         <Stack spacing={2}>
           {groups.map((g, gi) => (
-            <Card key={`${g.canonicalAisle}-${g.canonicalBay}-${g.canonicalBin}-${gi}`} variant="outlined">
+            <Card key={`${g.canonicalAisle}-${g.canonicalRow}-${g.canonicalBay}-${gi}`} variant="outlined">
               <CardContent>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
                   <Typography variant="subtitle1">Canonical:</Typography>
                   <Chip
-                    label={fmt({ aisle: g.canonicalAisle, bay: g.canonicalBay, bin: g.canonicalBin })}
+                    label={fmt({ aisle: g.canonicalAisle, row: g.canonicalRow, bay: g.canonicalBay })}
                     color="primary"
                   />
                   <Typography variant="caption" color="text.secondary">
@@ -141,8 +141,8 @@ export default function LocationCleanupPage() {
                   {g.variants.map((v) => {
                     const isAlreadyCanonical =
                       v.aisle === g.canonicalAisle &&
-                      v.bay === g.canonicalBay &&
-                      v.bin === g.canonicalBin;
+                      v.row === g.canonicalRow &&
+                      v.bay === g.canonicalBay;
                     return (
                       <Box
                         key={variantKey(v)}
@@ -157,8 +157,8 @@ export default function LocationCleanupPage() {
                           <Button size="small" variant="outlined" onClick={() => openMerge(g, v)}>
                             Merge to {fmt({
                               aisle: g.canonicalAisle,
+                              row: g.canonicalRow,
                               bay: g.canonicalBay,
-                              bin: g.canonicalBin,
                             })}
                           </Button>
                         )}
@@ -190,16 +190,16 @@ export default function LocationCleanupPage() {
                 fullWidth
               />
               <TextField
-                label="Destination bay"
-                value={dialog.toBay}
-                onChange={(e) => setDialog({ ...dialog, toBay: e.target.value.slice(0, 20) })}
+                label="Destination row"
+                value={dialog.toRow}
+                onChange={(e) => setDialog({ ...dialog, toRow: e.target.value.slice(0, 20) })}
                 size="small"
                 fullWidth
               />
               <TextField
-                label="Destination bin"
-                value={dialog.toBin}
-                onChange={(e) => setDialog({ ...dialog, toBin: e.target.value.slice(0, 20) })}
+                label="Destination bay"
+                value={dialog.toBay}
+                onChange={(e) => setDialog({ ...dialog, toBay: e.target.value.slice(0, 20) })}
                 size="small"
                 fullWidth
               />

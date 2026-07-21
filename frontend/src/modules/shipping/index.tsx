@@ -7,6 +7,7 @@ import { useCart } from '../../contexts/CartContext';
 import ShipReadyBrowser from './ShipReadyBrowser';
 import ShipmentsList from './ShipmentsList';
 import ShippingCart from './ShippingCart';
+import ShippingRequestsPage from './ShippingRequestsPage';
 import ProjectLandingPage from '../../components/ProjectLandingPage';
 import type { Project } from '../../types/project';
 
@@ -16,7 +17,11 @@ export default function ShippingModule() {
   const { itemCount } = useCart();
   const navigate = useNavigate();
   const location = useLocation();
-  const view = location.pathname.endsWith('/returns') ? 'returns' : 'ship';
+  const view = location.pathname.endsWith('/returns')
+    ? 'returns'
+    : location.pathname.endsWith('/requests')
+      ? 'requests'
+      : 'ship';
 
   if (selectedProject === null) {
     return (
@@ -50,9 +55,10 @@ export default function ShippingModule() {
             exclusive
             value={view}
             onChange={(_, v) => {
-              if (v) navigate(v === 'returns' ? 'returns' : 'browse');
+              if (v) navigate(v === 'ship' ? 'browse' : v);
             }}
           >
+            <ToggleButton value="requests">Requests</ToggleButton>
             <ToggleButton value="ship">Ship</ToggleButton>
             <ToggleButton value="returns">Returns</ToggleButton>
           </ToggleButtonGroup>
@@ -64,6 +70,7 @@ export default function ShippingModule() {
         </Box>
       </Box>
       <Routes>
+        <Route path="requests" element={<ShippingRequestsPage projectId={projectId} />} />
         <Route path="browse" element={<ShipReadyBrowser projectId={projectId} />} />
         <Route path="returns" element={<ShipmentsList projectId={projectId} />} />
         <Route index element={<Navigate to="browse" replace />} />

@@ -23,8 +23,8 @@ export interface DestockSource {
   quantity: number;
   deficientQuantity?: number;
   aisle: string | null;
+  row: string | null;
   bay: string | null;
-  bin: string | null;
 }
 
 interface Props {
@@ -46,8 +46,8 @@ export default function DestockInventoryModal({ inventoryLocation, onClose, onSu
   const [reason, setReason] = useState('');
   const [overrideLoc, setOverrideLoc] = useState(false);
   const [aisle, setAisle] = useState('');
+  const [row, setRow] = useState('');
   const [bay, setBay] = useState('');
-  const [bin, setBin] = useState('');
   const { showToast } = useToast();
 
   const [mutate, { loading, error }] = useMutation(DESTOCK_INVENTORY, {
@@ -77,8 +77,8 @@ export default function DestockInventoryModal({ inventoryLocation, onClose, onSu
           source,
           reasonText: reason.trim() || null,
           targetAisle: overrideLoc ? aisle.trim() || null : null,
+          targetRow: overrideLoc ? row.trim() || null : null,
           targetBay: overrideLoc ? bay.trim() || null : null,
-          targetBin: overrideLoc ? bin.trim() || null : null,
           performedBy: 'Warehouse',
         },
       },
@@ -103,7 +103,7 @@ export default function DestockInventoryModal({ inventoryLocation, onClose, onSu
         {error && <Alert severity="error">{error.message}</Alert>}
         <Typography variant="body2" color="text.secondary">
           Source row: {inventoryLocation.hardwareCategory} / {inventoryLocation.productCode} at{' '}
-          {[inventoryLocation.aisle, inventoryLocation.bay, inventoryLocation.bin]
+          {[inventoryLocation.aisle, inventoryLocation.row, inventoryLocation.bay]
             .filter(Boolean)
             .join(' / ') || 'unlocated'}{' '}
           (qty {inventoryLocation.quantity})
@@ -134,13 +134,13 @@ export default function DestockInventoryModal({ inventoryLocation, onClose, onSu
           minRows={2}
         />
         <Button size="small" onClick={() => setOverrideLoc((v) => !v)}>
-          {overrideLoc ? 'Use source bin' : 'Override target bin'}
+          {overrideLoc ? 'Use source location' : 'Override target location'}
         </Button>
         {overrideLoc && (
           <Stack direction="row" spacing={2}>
             <TextField label="Aisle" value={aisle} onChange={(e) => setAisle(e.target.value)} />
+            <TextField label="Row" value={row} onChange={(e) => setRow(e.target.value)} />
             <TextField label="Bay" value={bay} onChange={(e) => setBay(e.target.value)} />
-            <TextField label="Bin" value={bin} onChange={(e) => setBin(e.target.value)} />
           </Stack>
         )}
       </Stack>

@@ -8,7 +8,7 @@ from . import Base
 
 
 class Warehouse(Base):
-    """A physical warehouse building. Bins (aisle/bay/bin) are scoped to one warehouse."""
+    """A physical warehouse building. Locations (aisle/row/bay) are scoped to one warehouse."""
 
     __tablename__ = "warehouses"
     __table_args__ = (

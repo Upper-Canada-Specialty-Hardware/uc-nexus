@@ -26,8 +26,8 @@ export interface TransferSource {
   available: number;
   warehouseId: string | null;
   aisle?: string | null;
+  row?: string | null;
   bay?: string | null;
-  bin?: string | null;
 }
 
 interface WarehouseOption {
@@ -52,16 +52,16 @@ export default function TransferDialog({ source, onClose, onSuccess }: TransferD
   const warehouses = useMemo(() => warehousesData?.warehouses ?? [], [warehousesData]);
 
   const { data: distinctData } = useQuery<{
-    locationDistinctValues: { aisles: string[]; bays: string[]; bins: string[] };
+    locationDistinctValues: { aisles: string[]; rows: string[]; bays: string[] };
   }>(GET_LOCATION_DISTINCT_VALUES, { fetchPolicy: 'cache-and-network' });
   const aisleOptions = distinctData?.locationDistinctValues.aisles ?? [];
+  const rowOptions = distinctData?.locationDistinctValues.rows ?? [];
   const bayOptions = distinctData?.locationDistinctValues.bays ?? [];
-  const binOptions = distinctData?.locationDistinctValues.bins ?? [];
 
   const [destWarehouseId, setDestWarehouseId] = useState<string>(source.warehouseId ?? '');
   const [aisle, setAisle] = useState('');
+  const [row, setRow] = useState('');
   const [bay, setBay] = useState('');
-  const [bin, setBin] = useState('');
   const [quantity, setQuantity] = useState<string>(String(source.available));
 
   const [transfer, { loading, error }] = useMutation(TRANSFER_INVENTORY, {
@@ -75,20 +75,20 @@ export default function TransferDialog({ source, onClose, onSuccess }: TransferD
   });
 
   const q = Number(quantity);
-  const sameBin =
+  const sameLocation =
     destWarehouseId === source.warehouseId &&
     (source.aisle ?? '') === aisle.trim() &&
-    (source.bay ?? '') === bay.trim() &&
-    (source.bin ?? '') === bin.trim();
+    (source.row ?? '') === row.trim() &&
+    (source.bay ?? '') === bay.trim();
   const valid =
     !!destWarehouseId &&
     !!aisle.trim() &&
+    !!row.trim() &&
     !!bay.trim() &&
-    !!bin.trim() &&
     Number.isInteger(q) &&
     q >= 1 &&
     q <= source.available &&
-    !sameBin;
+    !sameLocation;
 
   const handleSubmit = () => {
     if (!valid) return;
@@ -100,8 +100,8 @@ export default function TransferDialog({ source, onClose, onSuccess }: TransferD
           quantity: q,
           destWarehouseId,
           destAisle: aisle.trim(),
+          destRow: row.trim(),
           destBay: bay.trim(),
-          destBin: bin.trim(),
           performedBy: displayName,
         },
       },
@@ -146,8 +146,8 @@ export default function TransferDialog({ source, onClose, onSuccess }: TransferD
         </FormControl>
         <Stack direction="row" spacing={2}>
           <LocationAutocomplete label="Aisle" value={aisle} onChange={setAisle} options={aisleOptions} />
+          <LocationAutocomplete label="Row" value={row} onChange={setRow} options={rowOptions} />
           <LocationAutocomplete label="Bay" value={bay} onChange={setBay} options={bayOptions} />
-          <LocationAutocomplete label="Bin" value={bin} onChange={setBin} options={binOptions} />
         </Stack>
         <TextField
           label="Quantity"
@@ -160,7 +160,7 @@ export default function TransferDialog({ source, onClose, onSuccess }: TransferD
           slotProps={{ htmlInput: { min: 1, max: source.available } }}
           sx={{ width: 160 }}
         />
-        {sameBin && (
+        {sameLocation && (
           <Alert severity="warning">Destination is the same as the source location.</Alert>
         )}
       </Stack>

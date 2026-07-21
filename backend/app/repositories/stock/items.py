@@ -140,22 +140,22 @@ def move_stock_location(
     *,
     stock_item_id: uuid.UUID,
     new_aisle: str,
+    new_row: str,
     new_bay: str,
-    new_bin: str,
     performed_by: str,
 ) -> StockItem:
-    if new_aisle is None or new_bay is None or new_bin is None:
-        raise ValidationError("new aisle/bay/bin are required", field="location")
+    if new_aisle is None or new_row is None or new_bay is None:
+        raise ValidationError("new aisle/row/bay are required", field="location")
     new_aisle = normalize_location_value(new_aisle) or ""
+    new_row = normalize_location_value(new_row) or ""
     new_bay = normalize_location_value(new_bay) or ""
-    new_bin = normalize_location_value(new_bin) or ""
-    _validate_location_fields(new_aisle, new_bay, new_bin)
+    _validate_location_fields(new_aisle, new_row, new_bay)
 
     si = get_stock_item(session, stock_item_id)
-    old = {"aisle": si.aisle, "bay": si.bay, "bin": si.bin}
+    old = {"aisle": si.aisle, "row": si.row, "bay": si.bay}
     si.aisle = new_aisle
+    si.row = new_row
     si.bay = new_bay
-    si.bin = new_bin
 
     _log_audit_event(
         session,
@@ -164,20 +164,20 @@ def move_stock_location(
         entity_id=si.id,
         action=AuditAction.MOVE,
         performed_by=performed_by,
-        detail={"fromLocation": old, "toLocation": {"aisle": new_aisle, "bay": new_bay, "bin": new_bin}},
+        detail={"fromLocation": old, "toLocation": {"aisle": new_aisle, "row": new_row, "bay": new_bay}},
     )
     return si
 
 
 def mark_stock_item_unlocated(session: Session, *, stock_item_id: uuid.UUID, performed_by: str) -> StockItem:
-    """Clear the aisle/bay/bin on a StockItem."""
+    """Clear the aisle/row/bay on a StockItem."""
     if not performed_by:
         raise ValidationError("performed_by is required", field="performed_by")
     si = get_stock_item(session, stock_item_id)
-    old = {"aisle": si.aisle, "bay": si.bay, "bin": si.bin}
+    old = {"aisle": si.aisle, "row": si.row, "bay": si.bay}
     si.aisle = None
+    si.row = None
     si.bay = None
-    si.bin = None
     _log_audit_event(
         session,
         project_id=None,
@@ -195,21 +195,21 @@ def assign_stock_item_location(
     *,
     stock_item_id: uuid.UUID,
     aisle: str,
+    row: str,
     bay: str,
-    bin: str,
     performed_by: str,
 ) -> StockItem:
-    """Assign aisle/bay/bin to a StockItem (initial put-away or re-locate after unlocate)."""
+    """Assign aisle/row/bay to a StockItem (initial put-away or re-locate after unlocate)."""
     if not performed_by:
         raise ValidationError("performed_by is required", field="performed_by")
     aisle = normalize_location_value(aisle) or ""
+    row = normalize_location_value(row) or ""
     bay = normalize_location_value(bay) or ""
-    bin = normalize_location_value(bin) or ""
-    _validate_location_fields(aisle, bay, bin)
+    _validate_location_fields(aisle, row, bay)
     si = get_stock_item(session, stock_item_id)
     si.aisle = aisle
+    si.row = row
     si.bay = bay
-    si.bin = bin
     _log_audit_event(
         session,
         project_id=None,
@@ -217,7 +217,7 @@ def assign_stock_item_location(
         entity_id=si.id,
         action=AuditAction.PUT_AWAY,
         performed_by=performed_by,
-        detail={"toLocation": {"aisle": aisle, "bay": bay, "bin": bin}},
+        detail={"toLocation": {"aisle": aisle, "row": row, "bay": bay}},
     )
     return si
 
@@ -289,8 +289,8 @@ def reclassify_stock_item(
         hardware_category=new_hardware_category,
         product_code=new_product_code,
         aisle=si.aisle,
+        row=si.row,
         bay=si.bay,
-        bin=si.bin,
         received_at=now,
     )
     new_row.quantity += quantity

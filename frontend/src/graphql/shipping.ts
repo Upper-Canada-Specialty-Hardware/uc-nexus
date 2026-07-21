@@ -5,7 +5,7 @@ export const GET_SHIP_READY_ITEMS = gql`
     shipReadyItems(projectId: $projectId) {
       openingItems {
         id projectId openingId openingNumber building floor location quantity
-        assemblyCompletedAt state aisle row bay bin createdAt updatedAt
+        assemblyCompletedAt state aisle row bay createdAt updatedAt
         installedHardware { id openingItemId productCode hardwareCategory quantity }
       }
       looseItems {
@@ -69,6 +69,45 @@ export const CONFIRM_SHIPMENT = gql`
         hardwareCategory
         quantity
       }
+    }
+  }
+`;
+
+export const GET_SHIPPING_OUT_REQUESTS = gql`
+  query GetShippingOutRequests($projectId: ID, $status: ShippingOutRequestStatus) {
+    shippingOutRequests(projectId: $projectId, status: $status) {
+      id
+      requestNumber
+      projectId
+      status
+      createdBy
+      createdAt
+      items {
+        id
+        itemType
+        openingNumber
+        hardwareCategory
+        productCode
+        requestedQuantity
+      }
+    }
+  }
+`;
+
+export const ACCEPT_SHIPPING_OUT_REQUEST = gql`
+  mutation AcceptShippingOutRequest($id: ID!, $acceptedBy: String!) {
+    acceptShippingOutRequest(id: $id, acceptedBy: $acceptedBy) {
+      id
+      status
+    }
+  }
+`;
+
+export const REJECT_SHIPPING_OUT_REQUEST = gql`
+  mutation RejectShippingOutRequest($id: ID!, $rejectedBy: String!, $reason: String) {
+    rejectShippingOutRequest(id: $id, rejectedBy: $rejectedBy, reason: $reason) {
+      id
+      status
     }
   }
 `;
