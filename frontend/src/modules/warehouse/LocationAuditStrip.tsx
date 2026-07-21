@@ -3,9 +3,9 @@ import { Box, Typography, List, ListItem, ListItemText, Skeleton, Alert, Chip } 
 import { GET_LOCATION_AUDIT_HISTORY } from '../../graphql/warehouse';
 
 interface AuditDetail {
-  fromLocation?: { aisle?: string | null; bay?: string | null; bin?: string | null };
-  toLocation?: { aisle?: string | null; bay?: string | null; bin?: string | null };
-  targetLocation?: { aisle?: string | null; bay?: string | null; bin?: string | null };
+  fromLocation?: { aisle?: string | null; row?: string | null; bay?: string | null };
+  toLocation?: { aisle?: string | null; row?: string | null; bay?: string | null };
+  targetLocation?: { aisle?: string | null; row?: string | null; bay?: string | null };
   oldQuantity?: number;
   newQuantity?: number;
   adjustment?: number;
@@ -29,9 +29,9 @@ interface LocationAuditHistoryData {
   locationAuditHistory: AuditEntry[];
 }
 
-function formatLoc(loc?: { aisle?: string | null; bay?: string | null; bin?: string | null }): string {
-  if (!loc?.aisle || !loc?.bay || !loc?.bin) return '—';
-  return `${loc.aisle}-${loc.bay}-${loc.bin}`;
+function formatLoc(loc?: { aisle?: string | null; row?: string | null; bay?: string | null }): string {
+  if (!loc?.aisle || !loc?.row || !loc?.bay) return '—';
+  return `${loc.aisle}-${loc.row}-${loc.bay}`;
 }
 
 function summarize(entry: AuditEntry): string {
@@ -62,13 +62,13 @@ function summarize(entry: AuditEntry): string {
 
 interface Props {
   aisle: string;
+  row: string | null;
   bay: string | null;
-  bin: string | null;
 }
 
-export default function LocationAuditStrip({ aisle, bay, bin }: Props) {
+export default function LocationAuditStrip({ aisle, row, bay }: Props) {
   const { data, loading, error } = useQuery<LocationAuditHistoryData>(GET_LOCATION_AUDIT_HISTORY, {
-    variables: { aisle, bay, bin, limit: 10 },
+    variables: { aisle, row, bay, limit: 10 },
     fetchPolicy: 'cache-and-network',
   });
 

@@ -36,7 +36,7 @@ def _make_stock_item(session) -> StockItem:
     return si
 
 
-def _make_il(session, project_id, stock_item_id, *, quantity, deficient=0, aisle="A", bay="1", bin="1"):
+def _make_il(session, project_id, stock_item_id, *, quantity, deficient=0, aisle="A", row="1", bay="1"):
     il = InventoryLocation(
         id=uuid.uuid4(),
         project_id=project_id,
@@ -47,8 +47,8 @@ def _make_il(session, project_id, stock_item_id, *, quantity, deficient=0, aisle
         quantity=quantity,
         deficient_quantity=deficient,
         aisle=aisle,
+        row=row,
         bay=bay,
-        bin=bin,
         received_at=datetime.utcnow(),
     )
     session.add(il)
@@ -87,14 +87,14 @@ def test_override_decrease_below_deficient_rejected(db_session):
 def test_override_increase_same_location_bumps_row(db_session):
     project = _make_project(db_session)
     origin = _make_stock_item(db_session)
-    il = _make_il(db_session, project.id, origin.id, quantity=5, aisle="A", bay="1", bin="1")
+    il = _make_il(db_session, project.id, origin.id, quantity=5, aisle="A", row="1", bay="1")
 
     warehouse_repository.override_inventory_quantity(
         db_session,
         inv_id=il.id,
         new_quantity=8,
         reason="found extra",
-        destinations=[{"aisle": "A", "bay": "1", "bin": "1", "quantity": 3}],
+        destinations=[{"aisle": "A", "row": "1", "bay": "1", "quantity": 3}],
         performed_by="tester",
     )
 
@@ -105,14 +105,14 @@ def test_override_increase_same_location_bumps_row(db_session):
 def test_override_increase_new_location_creates_row(db_session):
     project = _make_project(db_session)
     origin = _make_stock_item(db_session)
-    il = _make_il(db_session, project.id, origin.id, quantity=5, aisle="A", bay="1", bin="1")
+    il = _make_il(db_session, project.id, origin.id, quantity=5, aisle="A", row="1", bay="1")
 
     warehouse_repository.override_inventory_quantity(
         db_session,
         inv_id=il.id,
         new_quantity=8,
-        reason="found extra in another bin",
-        destinations=[{"aisle": "B", "bay": "2", "bin": "2", "quantity": 3}],
+        reason="found extra in another row",
+        destinations=[{"aisle": "B", "row": "2", "bay": "2", "quantity": 3}],
         performed_by="tester",
     )
 
@@ -120,7 +120,7 @@ def test_override_increase_new_location_creates_row(db_session):
     assert il.quantity == 5  # source row unchanged; added units landed elsewhere
     assert len(rows) == 2
     new_row = next(r for r in rows if r.id != il.id)
-    assert (new_row.aisle, new_row.bay, new_row.bin) == ("B", "2", "2")
+    assert (new_row.aisle, new_row.row, new_row.bay) == ("B", "2", "2")
     assert new_row.quantity == 3
     assert new_row.stock_item_id == origin.id  # inherits the source row's origin
 
@@ -147,7 +147,7 @@ def test_override_increase_destinations_must_sum_to_delta(db_session):
             inv_id=il.id,
             new_quantity=8,  # delta = 3
             reason="extra",
-            destinations=[{"aisle": "B", "bay": "2", "bin": "2", "quantity": 2}],  # sums to 2, not 3
+            destinations=[{"aisle": "B", "row": "2", "bay": "2", "quantity": 2}],  # sums to 2, not 3
             performed_by="tester",
         )
 

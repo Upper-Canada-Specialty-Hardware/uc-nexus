@@ -64,8 +64,8 @@ def _seed_inventory(session, project_id, *, category, code, quantity, deficient=
         quantity=quantity,
         deficient_quantity=deficient,
         aisle="A",
+        row="1",
         bay="1",
-        bin="1",
         received_at=datetime.utcnow(),
     )
     session.add(il)
@@ -168,7 +168,7 @@ def test_completion_snapshots_only_installed_and_flags_deficient(db_session):
 
     # Assembled opening returns to inventory.
     assert result.state == OpeningItemState.IN_INVENTORY
-    assert result.aisle == "A" and result.bay == "2" and result.bin == "3"
+    assert result.aisle == "A" and result.row == "2" and result.bay == "3"
 
     # Only the installed item is snapshotted as hardware.
     hw = _installed_hardware(db_session, result.id)

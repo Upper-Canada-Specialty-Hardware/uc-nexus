@@ -54,6 +54,9 @@ from app.models.enums import (
     ReturnDisposition as ReturnDispositionDB,
 )
 from app.models.enums import (
+    ShippingOutRequestStatus as ShippingOutRequestStatusDB,
+)
+from app.models.enums import (
     ShopAssemblyRequestStatus as ShopAssemblyRequestStatusDB,
 )
 
@@ -68,6 +71,7 @@ PullRequestStatus = strawberry.enum(PullRequestStatusDB)
 PullRequestItemType = strawberry.enum(PullRequestItemTypeDB)
 OpeningItemState = strawberry.enum(OpeningItemStateDB)
 ShopAssemblyRequestStatus = strawberry.enum(ShopAssemblyRequestStatusDB)
+ShippingOutRequestStatus = strawberry.enum(ShippingOutRequestStatusDB)
 PullStatus = strawberry.enum(PullStatusDB)
 AssemblyStatus = strawberry.enum(AssemblyStatusDB)
 NotificationType = strawberry.enum(NotificationTypeDB)

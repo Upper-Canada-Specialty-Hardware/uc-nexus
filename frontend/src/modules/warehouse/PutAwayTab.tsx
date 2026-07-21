@@ -53,8 +53,8 @@ interface Project {
 
 interface LocationInput {
   aisle: string;
+  row: string;
   bay: string;
-  bin: string;
 }
 
 // ---- Helpers ----
@@ -84,7 +84,7 @@ export default function PutAwayTab() {
   // Queries
   const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
   const { data: distinctData } = useQuery<{
-    locationDistinctValues: { aisles: string[]; bays: string[]; bins: string[] };
+    locationDistinctValues: { aisles: string[]; rows: string[]; bays: string[] };
   }>(GET_LOCATION_DISTINCT_VALUES, { fetchPolicy: 'cache-and-network' });
 
   const {
@@ -97,8 +97,8 @@ export default function PutAwayTab() {
   });
 
   const aisleOptions = distinctData?.locationDistinctValues.aisles ?? [];
+  const rowOptions = distinctData?.locationDistinctValues.rows ?? [];
   const bayOptions = distinctData?.locationDistinctValues.bays ?? [];
-  const binOptions = distinctData?.locationDistinctValues.bins ?? [];
 
   // Mutation
   const [assignLocation] = useMutation(ASSIGN_INVENTORY_LOCATION);
@@ -110,7 +110,7 @@ export default function PutAwayTab() {
 
   // Handlers
   const getLocationInput = useCallback(
-    (id: string): LocationInput => locationInputs[id] ?? { aisle: '', bay: '', bin: '' },
+    (id: string): LocationInput => locationInputs[id] ?? { aisle: '', row: '', bay: '' },
     [locationInputs],
   );
 
@@ -118,7 +118,7 @@ export default function PutAwayTab() {
     (id: string, field: keyof LocationInput, value: string) => {
       setLocationInputs((prev) => ({
         ...prev,
-        [id]: { ...(prev[id] ?? { aisle: '', bay: '', bin: '' }), [field]: value },
+        [id]: { ...(prev[id] ?? { aisle: '', row: '', bay: '' }), [field]: value },
       }));
     },
     [],
@@ -130,10 +130,10 @@ export default function PutAwayTab() {
       return (
         loc.aisle.trim().length >= 1 &&
         loc.aisle.trim().length <= 20 &&
+        loc.row.trim().length >= 1 &&
+        loc.row.trim().length <= 20 &&
         loc.bay.trim().length >= 1 &&
-        loc.bay.trim().length <= 20 &&
-        loc.bin.trim().length >= 1 &&
-        loc.bin.trim().length <= 20
+        loc.bay.trim().length <= 20
       );
     },
     [getLocationInput],
@@ -148,8 +148,8 @@ export default function PutAwayTab() {
           variables: {
             inventoryLocationId: id,
             aisle: loc.aisle.trim(),
+            row: loc.row.trim(),
             bay: loc.bay.trim(),
-            bin: loc.bin.trim(),
           },
         });
         showToast(`Location assigned for ${productCode}`, 'success');
@@ -233,8 +233,8 @@ export default function PutAwayTab() {
                       <TableCell>PO#</TableCell>
                       <TableCell>Received</TableCell>
                       <TableCell>Aisle</TableCell>
+                      <TableCell>Row</TableCell>
                       <TableCell>Bay</TableCell>
-                      <TableCell>Bin</TableCell>
                       <TableCell></TableCell>
                     </TableRow>
                   </TableHead>
@@ -262,17 +262,17 @@ export default function PutAwayTab() {
                           <TableCell sx={{ minWidth: 140 }}>
                             <LocationAutocomplete
                               label=""
-                              value={loc.bay}
-                              onChange={(v) => updateLocationInput(id, 'bay', v)}
-                              options={bayOptions}
+                              value={loc.row}
+                              onChange={(v) => updateLocationInput(id, 'row', v)}
+                              options={rowOptions}
                             />
                           </TableCell>
                           <TableCell sx={{ minWidth: 140 }}>
                             <LocationAutocomplete
                               label=""
-                              value={loc.bin}
-                              onChange={(v) => updateLocationInput(id, 'bin', v)}
-                              options={binOptions}
+                              value={loc.bay}
+                              onChange={(v) => updateLocationInput(id, 'bay', v)}
+                              options={bayOptions}
                             />
                           </TableCell>
                           <TableCell>

@@ -39,6 +39,8 @@ from .types import (
     RelayInstallInfo,
     ShipmentReturn,
     ShipmentReturnItem,
+    ShippingOutRequest,
+    ShippingOutRequestItem,
     ShopAssemblyOpening,
     ShopAssemblyOpeningItem,
     ShopAssemblyRequest,
@@ -400,7 +402,6 @@ def inventory_location_to_type(il) -> InventoryLocation:
         aisle=il.aisle,
         row=il.row,
         bay=il.bay,
-        bin=il.bin,
         received_at=il.received_at,
         created_at=il.created_at,
         updated_at=il.updated_at,
@@ -433,7 +434,6 @@ def opening_item_to_type(oi) -> OpeningItem:
         aisle=oi.aisle,
         row=oi.row,
         bay=oi.bay,
-        bin=oi.bin,
         created_at=oi.created_at,
         updated_at=oi.updated_at,
         installed_hardware=[opening_item_hardware_to_type(h) for h in oi.installed_hardware],
@@ -483,6 +483,37 @@ def shop_assembly_request_to_type(sar) -> ShopAssemblyRequest:
         approved_at=sar.approved_at,
         rejected_at=sar.rejected_at,
         openings=[shop_assembly_opening_to_type(o) for o in sar.openings],
+    )
+
+
+def shipping_out_request_item_to_type(item) -> ShippingOutRequestItem:
+    return ShippingOutRequestItem(
+        id=strawberry.ID(str(item.id)),
+        shipping_out_request_id=strawberry.ID(str(item.shipping_out_request_id)),
+        item_type=item.item_type,
+        opening_number=item.opening_number,
+        opening_item_id=strawberry.ID(str(item.opening_item_id)) if item.opening_item_id else None,
+        hardware_category=item.hardware_category,
+        product_code=item.product_code,
+        requested_quantity=item.requested_quantity,
+    )
+
+
+def shipping_out_request_to_type(req) -> ShippingOutRequest:
+    return ShippingOutRequest(
+        id=strawberry.ID(str(req.id)),
+        request_number=req.request_number,
+        project_id=strawberry.ID(str(req.project_id)),
+        status=req.status,
+        created_by=req.created_by,
+        approved_by=req.approved_by,
+        rejected_by=req.rejected_by,
+        rejection_reason=req.rejection_reason,
+        created_at=req.created_at,
+        approved_at=req.approved_at,
+        rejected_at=req.rejected_at,
+        pull_request_id=strawberry.ID(str(req.pull_request_id)) if req.pull_request_id else None,
+        items=[shipping_out_request_item_to_type(i) for i in req.items],
     )
 
 
@@ -600,8 +631,8 @@ def stock_item_to_type(si) -> StockItem:
         deficient_quantity=deficient_qty,
         available=si.quantity - deficient_qty,
         aisle=si.aisle,
+        row=si.row,
         bay=si.bay,
-        bin=si.bin,
         received_at=si.received_at,
         created_at=si.created_at,
         updated_at=si.updated_at,
@@ -637,6 +668,6 @@ def deficient_item_row_to_type(row: dict) -> DeficientItemRow:
         product_code=row["product_code"],
         deficient_quantity=row["deficient_quantity"],
         aisle=row["aisle"],
+        row=row["row"],
         bay=row["bay"],
-        bin=row["bin"],
     )

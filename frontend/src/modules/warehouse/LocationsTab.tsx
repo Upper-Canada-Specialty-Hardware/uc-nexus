@@ -35,8 +35,8 @@ import TransferDialog, { type TransferSource } from './TransferDialog';
 interface LocationEntry {
   warehouseId: string | null;
   aisle: string;
+  row: string | null;
   bay: string | null;
-  bin: string | null;
   itemCount: number;
   totalQuantity: number;
 }
@@ -56,8 +56,8 @@ interface InventoryLocationItem {
   quantity: number;
   available: number;
   aisle: string | null;
+  row: string | null;
   bay: string | null;
-  bin: string | null;
 }
 
 interface ContentsInventoryItem {
@@ -75,8 +75,8 @@ interface ContentsOpeningItem {
   state: string;
   quantity: number;
   aisle: string | null;
+  row: string | null;
   bay: string | null;
-  bin: string | null;
 }
 
 interface ContentsStockItem {
@@ -88,8 +88,8 @@ interface ContentsStockItem {
   deficientQuantity: number;
   available: number;
   aisle: string | null;
+  row: string | null;
   bay: string | null;
-  bin: string | null;
 }
 
 interface LocationContentsData {
@@ -103,15 +103,15 @@ interface LocationContentsData {
 interface DistinctValuesData {
   locationDistinctValues: {
     aisles: string[];
+    rows: string[];
     bays: string[];
-    bins: string[];
   };
 }
 
-function formatLocation(aisle: string, bay: string | null, bin: string | null): string {
+function formatLocation(aisle: string, row: string | null, bay: string | null): string {
   const parts = [aisle];
+  if (row) parts.push(row);
   if (bay) parts.push(bay);
-  if (bin) parts.push(bin);
   return parts.join('-');
 }
 
@@ -130,7 +130,7 @@ function warehouseChip(id: string | null, warehouseCode: Map<string, string>) {
   );
 }
 
-// Two column sets, space-efficiency law: the full table drops the redundant aisle/bay/bin
+// Two column sets, space-efficiency law: the full table drops the redundant aisle/row/bay
 // columns (Location already encodes them) and keeps one flexible column. When a location is
 // selected the list collapses to a single compact rail so the contents panel gets the width.
 function buildUtilColumns(
@@ -145,12 +145,12 @@ function buildUtilColumns(
         headerName: 'Location',
         flex: 1,
         minWidth: 0,
-        valueGetter: (_v, row) => formatLocation(row.aisle, row.bay, row.bin),
+        valueGetter: (_v, row) => formatLocation(row.aisle, row.row, row.bay),
         renderCell: ({ row }) => (
           <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0, width: '100%' }}>
             <LocationOnIcon fontSize="small" color="action" />
             <Typography variant="body2" noWrap sx={{ flex: 1, minWidth: 0 }}>
-              {formatLocation(row.aisle, row.bay, row.bin)}
+              {formatLocation(row.aisle, row.row, row.bay)}
             </Typography>
             {showWarehouse && warehouseChip(row.warehouseId, warehouseCode)}
             <Typography variant="caption" color="text.secondary">
@@ -167,7 +167,7 @@ function buildUtilColumns(
       headerName: 'Location',
       flex: 1,
       minWidth: 140,
-      valueGetter: (_v, row) => formatLocation(row.aisle, row.bay, row.bin),
+      valueGetter: (_v, row) => formatLocation(row.aisle, row.row, row.bay),
       renderCell: (p) => (
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
           <LocationOnIcon fontSize="small" color="action" />
@@ -198,8 +198,8 @@ interface ContentsPanelProps {
   warehouseLabel?: string;
   onClose: () => void;
   aisleOptions: string[];
+  rowOptions: string[];
   bayOptions: string[];
-  binOptions: string[];
 }
 
 function RowActionMenu({
@@ -270,14 +270,14 @@ function ContentsPanel({
   warehouseLabel,
   onClose,
   aisleOptions,
+  rowOptions,
   bayOptions,
-  binOptions,
 }: ContentsPanelProps) {
   const { data, loading, error } = useQuery<LocationContentsData>(GET_LOCATION_CONTENTS, {
     variables: {
       aisle: selected.aisle,
+      row: selected.row,
       bay: selected.bay,
-      bin: selected.bin,
       warehouseId: selected.warehouseId,
     },
     fetchPolicy: 'cache-and-network',
@@ -319,8 +319,8 @@ function ContentsPanel({
         quantity: i.inventoryLocation.quantity,
         warehouseId: i.inventoryLocation.warehouseId,
         aisle: i.inventoryLocation.aisle,
+        row: i.inventoryLocation.row,
         bay: i.inventoryLocation.bay,
-        bin: i.inventoryLocation.bin,
       }),
     );
     oiItems.forEach((o) =>
@@ -331,8 +331,8 @@ function ContentsPanel({
         quantity: o.quantity,
         warehouseId: o.warehouseId,
         aisle: o.aisle,
+        row: o.row,
         bay: o.bay,
-        bin: o.bin,
       }),
     );
     stockItems.forEach((s) =>
@@ -343,8 +343,8 @@ function ContentsPanel({
         quantity: s.quantity,
         warehouseId: s.warehouseId,
         aisle: s.aisle,
+        row: s.row,
         bay: s.bay,
-        bin: s.bin,
       }),
     );
     return map;
@@ -371,7 +371,7 @@ function ContentsPanel({
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1, gap: 1 }}>
         <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, minWidth: 0 }}>
           <Typography variant="h6" noWrap>
-            {formatLocation(selected.aisle, selected.bay, selected.bin)}
+            {formatLocation(selected.aisle, selected.row, selected.bay)}
           </Typography>
           {warehouseLabel && (
             <Chip label={warehouseLabel} size="small" variant="outlined" />
@@ -463,8 +463,8 @@ function ContentsPanel({
                         available: il.available,
                         warehouseId: il.warehouseId,
                         aisle: il.aisle,
+                        row: il.row,
                         bay: il.bay,
-                        bin: il.bin,
                       })
                     }
                   />
@@ -572,8 +572,8 @@ function ContentsPanel({
                         available: si.available,
                         warehouseId: si.warehouseId,
                         aisle: si.aisle,
+                        row: si.row,
                         bay: si.bay,
-                        bin: si.bin,
                       })
                     }
                   />
@@ -584,7 +584,7 @@ function ContentsPanel({
         </>
       )}
 
-      <LocationAuditStrip aisle={selected.aisle} bay={selected.bay} bin={selected.bin} />
+      <LocationAuditStrip aisle={selected.aisle} row={selected.row} bay={selected.bay} />
 
       {dialog && (
         <LocationActionDialog
@@ -594,8 +594,8 @@ function ContentsPanel({
           mode={dialog.mode}
           targets={dialog.targets}
           aisleOptions={aisleOptions}
+          rowOptions={rowOptions}
           bayOptions={bayOptions}
-          binOptions={binOptions}
         />
       )}
       {transferSource && (
@@ -637,14 +637,14 @@ export default function LocationsTab() {
     fetchPolicy: 'cache-and-network',
   });
 
-  // For product-code search, we also need to look INSIDE bins. Apollo cache may already have
+  // For product-code search, we also need to look INSIDE rows. Apollo cache may already have
   // some location_contents from prior interactions; for an authoritative search we'd ideally have
   // a backend "find product" query. For now, we filter location-string substrings AND let users
   // know that product-level search drills in lazily. The empty-state and search hint reflect this.
 
   const aisles = distinctData?.locationDistinctValues.aisles ?? [];
+  const rowValues = distinctData?.locationDistinctValues.rows ?? [];
   const bays = distinctData?.locationDistinctValues.bays ?? [];
-  const bins = distinctData?.locationDistinctValues.bins ?? [];
 
   const rows = useMemo(() => {
     const all = utilData?.locationUtilization ?? [];
@@ -652,17 +652,17 @@ export default function LocationsTab() {
     const filtered = !q
       ? all
       : all.filter((loc) => {
-          const formatted = formatLocation(loc.aisle, loc.bay, loc.bin).toLowerCase();
+          const formatted = formatLocation(loc.aisle, loc.row, loc.bay).toLowerCase();
           return (
             formatted.includes(q) ||
             loc.aisle.toLowerCase().includes(q) ||
-            (loc.bay ?? '').toLowerCase().includes(q) ||
-            (loc.bin ?? '').toLowerCase().includes(q)
+            (loc.row ?? '').toLowerCase().includes(q) ||
+            (loc.bay ?? '').toLowerCase().includes(q)
           );
         });
     return filtered.map((loc, i) => ({
       ...loc,
-      id: `${loc.warehouseId ?? 'none'}-${loc.aisle}-${loc.bay}-${loc.bin}-${i}`,
+      id: `${loc.warehouseId ?? 'none'}-${loc.aisle}-${loc.row}-${loc.bay}-${i}`,
     }));
   }, [utilData, search]);
 
@@ -680,8 +680,8 @@ export default function LocationsTab() {
       selected !== null &&
       row.warehouseId === selected.warehouseId &&
       row.aisle === selected.aisle &&
-      row.bay === selected.bay &&
-      row.bin === selected.bin,
+      row.row === selected.row &&
+      row.bay === selected.bay,
     [selected],
   );
 
@@ -703,7 +703,7 @@ export default function LocationsTab() {
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 2, flexWrap: 'wrap' }}>
         <TextField
           label="Search locations"
-          placeholder="Aisle, bay, bin, or formatted label (e.g. A-22-L)"
+          placeholder="Aisle, row, bay, or formatted label (e.g. A-22-L)"
           size="small"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
@@ -737,7 +737,7 @@ export default function LocationsTab() {
         <Alert severity="info">No items are currently located in the warehouse.</Alert>
       ) : rows.length === 0 ? (
         <Alert severity="info">
-          No locations match {`"${search}"`}. Search currently matches aisle/bay/bin labels — drill into a
+          No locations match {`"${search}"`}. Search currently matches aisle/row/bay labels — drill into a
           specific location to see its product codes.
         </Alert>
       ) : (
@@ -772,8 +772,8 @@ export default function LocationsTab() {
                 warehouseLabel={selected.warehouseId ? warehouseCode.get(selected.warehouseId) : undefined}
                 onClose={() => setSelected(null)}
                 aisleOptions={aisles}
+                rowOptions={rowValues}
                 bayOptions={bays}
-                binOptions={bins}
               />
             </Box>
           )}

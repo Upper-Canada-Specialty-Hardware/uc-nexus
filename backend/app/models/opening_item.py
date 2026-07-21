@@ -13,7 +13,7 @@ class OpeningItem(Base):
     __table_args__ = (
         Index("ix_opening_items_project_state", "project_id", "state"),
         Index("ix_opening_items_opening_id", "opening_id"),
-        Index("ix_opening_items_warehouse", "warehouse_id", "aisle", "bay", "bin"),
+        Index("ix_opening_items_warehouse", "warehouse_id", "aisle", "row", "bay"),
         CheckConstraint("quantity >= 1", name="ck_opening_items_quantity_positive"),
     )
 
@@ -36,7 +36,6 @@ class OpeningItem(Base):
     aisle: Mapped[str | None] = mapped_column(String, nullable=True)
     row: Mapped[str | None] = mapped_column(String, nullable=True)
     bay: Mapped[str | None] = mapped_column(String, nullable=True)
-    bin: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 

@@ -51,6 +51,12 @@ class ShopAssemblyRequestStatus(str, enum.Enum):
     REJECTED = "REJECTED"
 
 
+class ShippingOutRequestStatus(str, enum.Enum):
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+
+
 class PullStatus(str, enum.Enum):
     NOT_PULLED = "NOT_PULLED"
     PARTIAL = "PARTIAL"

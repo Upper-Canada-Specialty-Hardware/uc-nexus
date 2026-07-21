@@ -53,8 +53,8 @@ export default function AssemblyDetailModal({
 }: AssemblyDetailModalProps) {
   const { showToast } = useToast();
   const [aisle, setAisle] = useState('');
+  const [row, setRow] = useState('');
   const [bay, setBay] = useState('');
-  const [bin, setBin] = useState('');
   const [confirmOpen, setConfirmOpen] = useState(false);
   // Per-item checklist. Missing key -> installed (default). Reasons keyed by item id.
   const [installed, setInstalled] = useState<Record<string, boolean>>({});
@@ -91,8 +91,8 @@ export default function AssemblyDetailModal({
 
   const isValid =
     validateField(aisle) &&
+    validateField(row) &&
     validateField(bay) &&
-    validateField(bin) &&
     !deficientMissingReason;
 
   const toggleInstalled = (id: string, checked: boolean) => {
@@ -113,8 +113,8 @@ export default function AssemblyDetailModal({
         input: {
           openingId: opening.id,
           aisle: aisle || null,
+          row: row || null,
           bay: bay || null,
-          bin: bin || null,
           itemResults: opening.items.map((item) => ({
             shopAssemblyOpeningItemId: item.id,
             installed: isInstalled(item.id),
@@ -127,7 +127,7 @@ export default function AssemblyDetailModal({
       },
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [completeOpening, opening.id, opening.items, aisle, bay, bin, installed, reasons, completedBy]);
+  }, [completeOpening, opening.id, opening.items, aisle, row, bay, installed, reasons, completedBy]);
   return (
     <>
       <Modal
@@ -248,21 +248,21 @@ export default function AssemblyDetailModal({
               inputProps={{ maxLength: 20 }}
             />
             <TextField
+              label='Row'
+              size='small'
+              value={row}
+              onChange={(e) => setRow(e.target.value)}
+              error={!validateField(row)}
+              helperText={!validateField(row) ? '1-20 characters' : ''}
+              inputProps={{ maxLength: 20 }}
+            />
+            <TextField
               label='Bay'
               size='small'
               value={bay}
               onChange={(e) => setBay(e.target.value)}
               error={!validateField(bay)}
               helperText={!validateField(bay) ? '1-20 characters' : ''}
-              inputProps={{ maxLength: 20 }}
-            />
-            <TextField
-              label='Bin'
-              size='small'
-              value={bin}
-              onChange={(e) => setBin(e.target.value)}
-              error={!validateField(bin)}
-              helperText={!validateField(bin) ? '1-20 characters' : ''}
               inputProps={{ maxLength: 20 }}
             />
           </Stack>

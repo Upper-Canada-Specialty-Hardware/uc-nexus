@@ -118,8 +118,8 @@ class StockMutations:
                 source=input.source,
                 reason_text=input.reason_text,
                 target_aisle=input.target_aisle,
+                target_row=input.target_row,
                 target_bay=input.target_bay,
-                target_bin=input.target_bin,
                 performed_by=input.performed_by or "Admin/Manager",
             )
             session.commit()
@@ -136,8 +136,8 @@ class StockMutations:
                 quantity=input.quantity,
                 dest_warehouse_id=uuid.UUID(str(input.dest_warehouse_id)),
                 dest_aisle=input.dest_aisle,
+                dest_row=input.dest_row,
                 dest_bay=input.dest_bay,
-                dest_bin=input.dest_bin,
                 performed_by=input.performed_by or "Warehouse",
             )
             session.commit()
@@ -158,8 +158,8 @@ class StockMutations:
                 target_product_code=input.target_product_code,
                 quantity=input.quantity,
                 target_aisle=input.target_aisle,
+                target_row=input.target_row,
                 target_bay=input.target_bay,
-                target_bin=input.target_bin,
                 performed_by=input.performed_by or "Admin/Manager",
             )
             session.commit()
@@ -187,8 +187,8 @@ class StockMutations:
                 session,
                 stock_item_id=uuid.UUID(str(input.stock_item_id)),
                 new_aisle=input.new_aisle,
+                new_row=input.new_row,
                 new_bay=input.new_bay,
-                new_bin=input.new_bin,
                 performed_by=input.performed_by or "Admin/Manager",
             )
             session.commit()
@@ -200,16 +200,16 @@ class StockMutations:
         self,
         stock_item_id: strawberry.ID,
         aisle: str,
+        row: str,
         bay: str,
-        bin: str,
     ) -> StockItem:
         with SessionLocal() as session:
             result = stock_repository.assign_stock_item_location(
                 session,
                 stock_item_id=uuid.UUID(str(stock_item_id)),
                 aisle=aisle,
+                row=row,
                 bay=bay,
-                bin=bin,
                 performed_by="Admin/Manager",
             )
             session.commit()

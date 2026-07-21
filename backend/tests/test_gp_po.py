@@ -96,9 +96,9 @@ def test_build_create_receipt_payload_dedupes_and_joins_rack_locations():
                 "gp_line_ord": 16384,
                 "quantity": 5,
                 "locations": [
-                    {"aisle": "A1", "bay": "B1", "bin": "C1"},
-                    {"aisle": "A1", "bay": "B1", "bin": "C1"},
-                    {"aisle": "A2", "bay": "B2", "bin": "C2"},
+                    {"aisle": "A1", "row": "B1", "bay": "C1"},
+                    {"aisle": "A1", "row": "B1", "bay": "C1"},
+                    {"aisle": "A2", "row": "B2", "bay": "C2"},
                 ],
             }
         ],

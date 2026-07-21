@@ -17,6 +17,7 @@ from app.models.enums import (
     PullRequestSource,
     PullRequestStatus,
     ReturnDisposition,
+    ShippingOutRequestStatus,
 )
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.opening_item import OpeningItem as OpeningItemModel
@@ -31,6 +32,9 @@ from app.models.shipping import (
     PackingSlipItem,
     ShipmentReturn,
     ShipmentReturnItem,
+)
+from app.models.shipping_out_request import (
+    ShippingOutRequest,
 )
 from app.models.warehouse import Warehouse
 from app.repositories.stock import _find_or_create_stock_row, _log_audit_event
@@ -458,8 +462,8 @@ def create_shipment_return(
                 quantity=qty,
                 deficient_quantity=0,
                 aisle=None,
+                row=None,
                 bay=None,
-                bin=None,
                 shipment_return_item_id=return_item.id,
                 received_at=now,
             )
@@ -483,8 +487,8 @@ def create_shipment_return(
                 hardware_category=psi.hardware_category,
                 product_code=psi.product_code,
                 aisle=None,
+                row=None,
                 bay=None,
-                bin=None,
                 received_at=now,
             )
             stock_row.quantity += qty
@@ -519,3 +523,117 @@ def get_shipment_return(session: Session, shipment_return_id: uuid.UUID) -> Ship
         .where(ShipmentReturn.id == shipment_return_id)
     )
     return session.scalars(stmt).unique().first()
+
+
+# ---------------------------------------------------------------------------
+# Shipping-out requests (#293): the accept gate between Start-a-Task and the warehouse pull.
+# Start-a-Task mints a PENDING ShippingOutRequest; a signed-in user accepts it, which mints the
+# existing warehouse PullRequest (SHIPPING_OUT, PENDING) that the warehouse approves unchanged.
+# ---------------------------------------------------------------------------
+
+
+def get_shipping_out_request(session: Session, request_id: uuid.UUID) -> ShippingOutRequest | None:
+    """Single shipping-out request with items eagerly loaded (mutation/finalize response reload)."""
+    stmt = (
+        select(ShippingOutRequest)
+        .options(selectinload(ShippingOutRequest.items))
+        .where(ShippingOutRequest.id == request_id)
+    )
+    return session.scalars(stmt).unique().first()
+
+
+def get_shipping_out_requests(
+    session: Session,
+    project_id: uuid.UUID | None = None,
+    status: ShippingOutRequestStatus | None = None,
+) -> list[ShippingOutRequest]:
+    """List shipping-out requests for the accept UI (#293). Defaults to PENDING when no status is
+    given. Items are eagerly loaded (shipping_out_request_to_type walks them)."""
+    effective_status = status if status is not None else ShippingOutRequestStatus.PENDING
+    stmt = (
+        select(ShippingOutRequest)
+        .options(selectinload(ShippingOutRequest.items))
+        .where(ShippingOutRequest.status == effective_status)
+        .order_by(ShippingOutRequest.created_at.asc())
+    )
+    if project_id is not None:
+        stmt = stmt.where(ShippingOutRequest.project_id == project_id)
+    return list(session.scalars(stmt).unique().all())
+
+
+def accept_shipping_out_request(
+    session: Session,
+    request_id: uuid.UUID,
+    accepted_by: str,
+) -> ShippingOutRequest:
+    """Accept a PENDING shipping-out request (#293): mint the warehouse PullRequest (SHIPPING_OUT,
+    PENDING) copying this request's items into PullRequestItems, flip the request to APPROVED, and
+    stamp pull_request_id. No sufficiency gate here - the warehouse approve handles shortfalls for
+    the shipping path (it re-checks and leaves the PR PENDING if short, #224)."""
+    stmt = (
+        select(ShippingOutRequest)
+        .options(selectinload(ShippingOutRequest.items))
+        .where(ShippingOutRequest.id == request_id)
+    )
+    req = session.scalars(stmt).unique().first()
+    if req is None:
+        raise NotFoundError(f"Shipping-out request {request_id} not found")
+    if req.status != ShippingOutRequestStatus.PENDING:
+        raise InvalidStateTransitionError(f"Shipping-out request must be Pending to accept, got {req.status.value}")
+
+    now = datetime.utcnow()
+    pr = PullRequestModel(
+        id=uuid.uuid4(),
+        request_number=req.request_number,
+        project_id=req.project_id,
+        source=PullRequestSource.SHIPPING_OUT,
+        status=PullRequestStatus.PENDING,
+        requested_by=accepted_by,
+    )
+    session.add(pr)
+    session.flush()
+
+    for item in req.items:
+        session.add(
+            PullRequestItemModel(
+                id=uuid.uuid4(),
+                pull_request_id=pr.id,
+                item_type=item.item_type,
+                opening_number=item.opening_number,
+                opening_item_id=item.opening_item_id,
+                hardware_category=item.hardware_category,
+                product_code=item.product_code,
+                requested_quantity=item.requested_quantity,
+            )
+        )
+
+    req.status = ShippingOutRequestStatus.APPROVED
+    req.approved_by = accepted_by
+    req.approved_at = now
+    req.pull_request_id = pr.id
+    return req
+
+
+def reject_shipping_out_request(
+    session: Session,
+    request_id: uuid.UUID,
+    rejected_by: str,
+    reason: str | None,
+) -> ShippingOutRequest:
+    """Reject a PENDING shipping-out request (#293). Mints no PullRequest."""
+    stmt = (
+        select(ShippingOutRequest)
+        .options(selectinload(ShippingOutRequest.items))
+        .where(ShippingOutRequest.id == request_id)
+    )
+    req = session.scalars(stmt).unique().first()
+    if req is None:
+        raise NotFoundError(f"Shipping-out request {request_id} not found")
+    if req.status != ShippingOutRequestStatus.PENDING:
+        raise InvalidStateTransitionError(f"Shipping-out request must be Pending to reject, got {req.status.value}")
+
+    req.status = ShippingOutRequestStatus.REJECTED
+    req.rejected_by = rejected_by
+    req.rejection_reason = (reason or "").strip() or None
+    req.rejected_at = datetime.utcnow()
+    return req

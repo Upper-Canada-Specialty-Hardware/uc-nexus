@@ -28,6 +28,10 @@ from .shipping import (  # noqa: E402, F401
     ShipmentReturn,
     ShipmentReturnItem,
 )
+from .shipping_out_request import (  # noqa: E402, F401
+    ShippingOutRequest,
+    ShippingOutRequestItem,
+)
 from .shop_assembly import (  # noqa: E402, F401
     ShopAssemblyOpening,
     ShopAssemblyOpeningItem,

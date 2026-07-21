@@ -40,8 +40,8 @@ interface InventoryItem {
   deficientQuantity: number;
   available: number;
   aisle: string | null;
+  row: string | null;
   bay: string | null;
-  bin: string | null;
   receivedAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -81,9 +81,9 @@ interface HardwareItemsTabProps {
   projectId?: string;
 }
 
-function formatLocation(aisle: string | null, bay: string | null, bin: string | null): string {
-  if (aisle && bay && bin) {
-    return `${aisle}-${bay}-${bin}`;
+function formatLocation(aisle: string | null, row: string | null, bay: string | null): string {
+  if (aisle && row && bay) {
+    return `${aisle}-${row}-${bay}`;
   }
   return 'Unlocated';
 }
@@ -138,8 +138,8 @@ const baseDetailColumns: GridColDef[] = [
     valueGetter: (_value: unknown, row: InventoryItemDetail) =>
       formatLocation(
         row.inventoryLocation.aisle,
+        row.inventoryLocation.row,
         row.inventoryLocation.bay,
-        row.inventoryLocation.bin,
       ),
   },
   { field: 'poNumber', headerName: 'PO Number', flex: 1 },

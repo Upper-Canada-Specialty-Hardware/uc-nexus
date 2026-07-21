@@ -8,7 +8,7 @@ from math import floor
 from sqlalchemy import delete, func, select, tuple_
 from sqlalchemy.orm import Session, selectinload
 
-from app.errors import ConflictError, InventoryShortfallError, NotFoundError
+from app.errors import ConflictError, NotFoundError, ValidationError
 from app.models.enums import (
     AssemblyStatus,
     Classification,
@@ -19,6 +19,8 @@ from app.models.enums import (
     PullRequestSource,
     PullRequestStatus,
     PullStatus,
+    ShippingOutRequestStatus,
+    ShopAssemblyRequestStatus,
 )
 from app.models.hardware import HardwareItem as HardwareItemModel
 from app.models.opening_item import OpeningItem as OpeningItemModel
@@ -29,11 +31,20 @@ from app.models.pull_request import PullRequest as PullRequestModel
 from app.models.pull_request import PullRequestItem as PullRequestItemModel
 from app.models.purchase_order import POLineItem as POLineItemModel
 from app.models.purchase_order import PurchaseOrder as POModel
+from app.models.shipping_out_request import (
+    ShippingOutRequest as ShippingOutRequestModel,
+)
+from app.models.shipping_out_request import (
+    ShippingOutRequestItem as ShippingOutRequestItemModel,
+)
 from app.models.shop_assembly import (
     ShopAssemblyOpening as SAOModel,
 )
 from app.models.shop_assembly import (
     ShopAssemblyOpeningItem as SAOItemModel,
+)
+from app.models.shop_assembly import (
+    ShopAssemblyRequest as SARModel,
 )
 
 
@@ -632,36 +643,38 @@ def finalize_import_session(
         )
     session.flush()
 
-    # 6. Shipping Out PRs
-    created_prs: list[PullRequestModel] = []
+    # 6. Shipping-out requests (#293): Start a Task mints a PENDING ShippingOutRequest, NOT a
+    # PullRequest. A signed-in user accepts it later, which mints the warehouse PullRequest.
+    created_shipping_requests: list[ShippingOutRequestModel] = []
     if shipping_pr_drafts:
         for pr_draft in shipping_pr_drafts:
-            # Validate uniqueness
-            existing_pr = session.scalars(
-                select(PullRequestModel).where(PullRequestModel.request_number == pr_draft["request_number"])
+            # Validate uniqueness against the request entity's own number space.
+            existing_req = session.scalars(
+                select(ShippingOutRequestModel).where(
+                    ShippingOutRequestModel.request_number == pr_draft["request_number"]
+                )
             ).first()
-            if existing_pr is not None:
+            if existing_req is not None:
                 raise ConflictError(
-                    f"Pull request {pr_draft['request_number']} already exists",
+                    f"Shipping-out request {pr_draft['request_number']} already exists",
                     field="request_number",
                 )
 
-            pr = PullRequestModel(
+            req = ShippingOutRequestModel(
                 id=uuid.uuid4(),
                 request_number=pr_draft["request_number"],
                 project_id=project.id,
-                source=PullRequestSource.SHIPPING_OUT,
-                status=PullRequestStatus.PENDING,
-                requested_by=pr_draft["requested_by"],
+                status=ShippingOutRequestStatus.PENDING,
+                created_by="Hardware Schedule Import",
             )
-            session.add(pr)
+            session.add(req)
             session.flush()
 
             for item_input in pr_draft.get("items", []):
                 item_type = PullRequestItemType(item_input["item_type"])
-                pr_item = PullRequestItemModel(
+                req_item = ShippingOutRequestItemModel(
                     id=uuid.uuid4(),
-                    pull_request_id=pr.id,
+                    shipping_out_request_id=req.id,
                     item_type=item_type,
                     opening_number=item_input["opening_number"],
                     opening_item_id=(
@@ -671,68 +684,65 @@ def finalize_import_session(
                     product_code=item_input.get("product_code"),
                     requested_quantity=item_input.get("requested_quantity", 1),
                 )
-                session.add(pr_item)
+                session.add(req_item)
 
-            created_prs.append(pr)
+            created_shipping_requests.append(req)
 
-    # 7. Shop-assembly PR + openings (#222)
-    # Start a Task creates the shop-assembly PullRequest directly - no SAR row, no approval gate.
-    # Mirrors the shipping-out PR draft path above: one commit mints the PR (SHOP_ASSEMBLY, PENDING),
-    # its LOOSE PR items (one per opening item), and the ShopAssemblyOpening/Item rows that hang off it.
-    sa_pr = None
+    # 7. Shop-assembly request + openings (#293)
+    # Start a Task mints a PENDING ShopAssemblyRequest (NO PullRequest, NO approval-time sufficiency
+    # gate). The ShopAssemblyOpening/Item rows hang off the SAR via shop_assembly_request_id; their
+    # pull_request_id stays NULL until a signed-in user accepts the request (accept mints the PR and
+    # backfills pull_request_id). Sufficiency is enforced at accept, not here.
+    sar = None
     if include_sar and sar_request_number:
-        # Validate uniqueness (against the PR number now, not a SAR number)
-        existing_pr = session.scalars(
-            select(PullRequestModel).where(PullRequestModel.request_number == sar_request_number)
-        ).first()
-        if existing_pr is not None:
+        # Validate uniqueness against the SAR number space.
+        existing_sar = session.scalars(select(SARModel).where(SARModel.request_number == sar_request_number)).first()
+        if existing_sar is not None:
             raise ConflictError(
-                f"Pull request {sar_request_number} already exists",
+                f"Shop-assembly request {sar_request_number} already exists",
                 field="shop_assembly_request_number",
             )
 
-        # Gate 1 (#224): hard inventory-sufficiency check before minting the PR. No partial pulls -
-        # if any opening item can't be fully covered from available inventory, refuse creation. The
-        # resolver rolls the whole finalize back (no PR, no partial state) and notifies the PO.
-        from app.repositories import warehouse as warehouse_repository
-        from app.services import notification_service
+        # REQ-5 guard (#293): an opening that already has an assembled OpeningItem for this project
+        # (any state except SHIPPED_OUT) can't be sent to shop assembly again.
+        from app.repositories import shop_assembly_repository
 
-        needs = [
-            (item["hardware_category"], item["product_code"], item["quantity"])
-            for sa_opening_input in sar_openings_input
-            for item in sa_opening_input.get("items", [])
-        ]
-        sufficiency = warehouse_repository.check_inventory_sufficiency(session, project.id, needs)
-        if not sufficiency.sufficient:
-            raise InventoryShortfallError(
-                "Cannot start shop-assembly task - insufficient inventory. "
-                + notification_service.format_shortfall_lines(sufficiency.shortfalls),
-                shortfalls=sufficiency.shortfalls,
-                project_id=project.id,
-                request_number=sar_request_number,
-            )
-
-        sa_pr = PullRequestModel(
-            id=uuid.uuid4(),
-            request_number=sar_request_number,
-            project_id=project.id,
-            source=PullRequestSource.SHOP_ASSEMBLY,
-            status=PullRequestStatus.PENDING,
-            requested_by="Hardware Schedule Import",
-        )
-        session.add(sa_pr)
-        session.flush()
-
+        opening_id_by_number: dict[str, uuid.UUID] = {}
         for sa_opening_input in sar_openings_input:
             opening_number = sa_opening_input["opening_number"]
             opening_id = opening_map.get(opening_number)
             if opening_id is None:
                 raise NotFoundError(f"Opening {opening_number} not found in project")
+            opening_id_by_number[opening_number] = opening_id
+
+        already_assembled = shop_assembly_repository.find_already_assembled_openings(
+            session, project.id, opening_id_by_number
+        )
+        if already_assembled:
+            raise ValidationError(
+                f"Opening {', '.join(already_assembled)} is already assembled and cannot be sent to shop assembly.",
+                field="shop_assembly_openings",
+            )
+
+        sar = SARModel(
+            id=uuid.uuid4(),
+            request_number=sar_request_number,
+            project_id=project.id,
+            status=ShopAssemblyRequestStatus.PENDING,
+            created_by="Hardware Schedule Import",
+        )
+        session.add(sar)
+        session.flush()
+
+        for sa_opening_input in sar_openings_input:
+            opening_number = sa_opening_input["opening_number"]
+            opening_id = opening_id_by_number[opening_number]
 
             opening_row = existing_openings_by_number.get(opening_number)
             sa_opening = SAOModel(
                 id=uuid.uuid4(),
-                pull_request_id=sa_pr.id,
+                shop_assembly_request_id=sar.id,
+                pull_request_id=None,
                 opening_id=opening_id,
                 opening_number=opening_number,
                 building=opening_row.building if opening_row else None,
@@ -754,28 +764,14 @@ def finalize_import_session(
                         quantity=item_input["quantity"],
                     )
                 )
-                # Mirror each opening item as a LOOSE PR item tied to the opening_number snapshot.
-                session.add(
-                    PullRequestItemModel(
-                        id=uuid.uuid4(),
-                        pull_request_id=sa_pr.id,
-                        item_type=PullRequestItemType.LOOSE,
-                        opening_number=opening_number,
-                        hardware_category=item_input["hardware_category"],
-                        product_code=item_input["product_code"],
-                        requested_quantity=item_input["quantity"],
-                    )
-                )
 
     session.flush()
 
     return {
         "project": project,
         "purchase_orders": created_pos,
-        "shipping_out_pull_requests": created_prs,
-        # No SAR is created anymore; kept for the finalize result contract (always None here).
-        "shop_assembly_request": None,
-        "shop_assembly_pull_request": sa_pr,
+        "shipping_out_requests": created_shipping_requests,
+        "shop_assembly_request": sar,
     }
 
 

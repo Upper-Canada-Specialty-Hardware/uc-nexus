@@ -66,8 +66,8 @@ input CompleteOpeningItemResultInput {
 input CompleteOpeningInput {
   opening_id: ID!
   aisle: String
+  row: String
   bay: String
-  bin: String
   item_results: [CompleteOpeningItemResultInput!]
   completed_by: String
 }
@@ -75,10 +75,16 @@ input CompleteOpeningInput {
 type Query {
   assembleList(projectId: ID!): [ShopAssemblyOpening!]!
   myWork(assignedTo: String!): [ShopAssemblyOpening!]!
+  # Accept UI (#293): shop-assembly requests, PENDING by default.
+  shopAssemblyRequests(projectId: ID, status: ShopAssemblyRequestStatus): [ShopAssemblyRequest!]!
 }
 
 type Mutation {
   assignOpenings(input: AssignOpeningsInput!): [ShopAssemblyOpening!]!
   removeOpeningFromUser(openingId: ID!): ShopAssemblyOpening!
   completeOpening(input: CompleteOpeningInput!): OpeningItem!
+  # Accept gate (#293). Any signed-in user (require_user). acceptedBy/rejectedBy is the caller's
+  # display name. Accept re-checks inventory sufficiency and mints the warehouse PullRequest.
+  acceptShopAssemblyRequest(id: ID!, acceptedBy: String!): ShopAssemblyRequest!
+  rejectShopAssemblyRequest(id: ID!, rejectedBy: String!, reason: String): ShopAssemblyRequest!
 }

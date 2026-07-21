@@ -14,7 +14,7 @@ class StockItem(Base):
     __table_args__ = (
         Index("ix_stock_items_cat_code", "hardware_category", "product_code"),
         Index("ix_stock_items_aisle", "aisle"),
-        Index("ix_stock_items_warehouse", "warehouse_id", "aisle", "bay", "bin"),
+        Index("ix_stock_items_warehouse", "warehouse_id", "aisle", "row", "bay"),
         CheckConstraint("quantity >= 0", name="ck_stock_items_quantity_nonneg"),
         CheckConstraint(
             "deficient_quantity >= 0",
@@ -33,8 +33,8 @@ class StockItem(Base):
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     deficient_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     aisle: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    row: Mapped[str | None] = mapped_column(String(20), nullable=True)
     bay: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    bin: Mapped[str | None] = mapped_column(String(20), nullable=True)
     received_at: Mapped[datetime] = mapped_column(nullable=False)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)

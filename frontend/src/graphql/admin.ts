@@ -80,9 +80,9 @@ export const GET_LOCATION_DUPLICATES = gql`
   query GetLocationDuplicates {
     locationDuplicates {
       canonicalAisle
+      canonicalRow
       canonicalBay
-      canonicalBin
-      variants { aisle bay bin }
+      variants { aisle row bay }
     }
   }
 `;
@@ -131,8 +131,8 @@ export const OVERRIDE_INVENTORY_QUANTITY = gql`
       deficientQuantity
       available
       aisle
+      row
       bay
-      bin
       receivedAt
       createdAt
       updatedAt
@@ -141,9 +141,9 @@ export const OVERRIDE_INVENTORY_QUANTITY = gql`
 `;
 
 export const ASSIGN_OPENING_ITEM_LOCATION = gql`
-  mutation AssignOpeningItemLocation($openingItemId: ID!, $aisle: String!, $bay: String!, $bin: String!) {
-    assignOpeningItemLocation(openingItemId: $openingItemId, aisle: $aisle, bay: $bay, bin: $bin) {
-      id projectId openingId openingNumber building floor location quantity assemblyCompletedAt state aisle bay bin createdAt updatedAt
+  mutation AssignOpeningItemLocation($openingItemId: ID!, $aisle: String!, $row: String!, $bay: String!) {
+    assignOpeningItemLocation(openingItemId: $openingItemId, aisle: $aisle, row: $row, bay: $bay) {
+      id projectId openingId openingNumber building floor location quantity assemblyCompletedAt state aisle row bay createdAt updatedAt
       installedHardware { id openingItemId productCode hardwareCategory quantity }
     }
   }
@@ -267,12 +267,12 @@ export const DELETE_WAREHOUSE = gql`
 
 export const MERGE_LOCATIONS = gql`
   mutation MergeLocations(
-    $fromAisle: String!, $fromBay: String!, $fromBin: String!,
-    $toAisle: String!, $toBay: String!, $toBin: String!
+    $fromAisle: String!, $fromRow: String!, $fromBay: String!,
+    $toAisle: String!, $toRow: String!, $toBay: String!
   ) {
     mergeLocations(
-      fromAisle: $fromAisle, fromBay: $fromBay, fromBin: $fromBin,
-      toAisle: $toAisle, toBay: $toBay, toBin: $toBin
+      fromAisle: $fromAisle, fromRow: $fromRow, fromBay: $fromBay,
+      toAisle: $toAisle, toRow: $toRow, toBay: $toBay
     ) {
       inventoryLocations
       openingItems

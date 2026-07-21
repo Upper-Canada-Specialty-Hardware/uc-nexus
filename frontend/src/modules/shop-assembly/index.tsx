@@ -5,6 +5,7 @@ import AssembleListPage from './AssembleListPage';
 import AssignmentBoard from './AssignmentBoard';
 import MyWorkPage from './MyWorkPage';
 import ShopAssemblyLanding from './ShopAssemblyLanding';
+import ShopAssemblyRequestsPage from './ShopAssemblyRequestsPage';
 import BackToModule from '../../components/BackToModule';
 
 function ShopAssemblySubLayout({ children }: { children: ReactNode }) {
@@ -20,6 +21,7 @@ export default function ShopAssemblyModule() {
   return (
     <Routes>
       <Route index element={<ShopAssemblyLanding />} />
+      <Route path="requests" element={<ShopAssemblySubLayout><ShopAssemblyRequestsPage /></ShopAssemblySubLayout>} />
       <Route path="assemble" element={<ShopAssemblySubLayout><AssembleListPage /></ShopAssemblySubLayout>} />
       <Route path="assign" element={<ShopAssemblySubLayout><AssignmentBoard /></ShopAssemblySubLayout>} />
       <Route path="my-work" element={<ShopAssemblySubLayout><MyWorkPage /></ShopAssemblySubLayout>} />

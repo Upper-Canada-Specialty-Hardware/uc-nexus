@@ -21,6 +21,7 @@ from .enums import (
     PullStatus,
     ReconciliationStatus,
     ReturnDisposition,
+    ShippingOutRequestStatus,
     ShopAssemblyRequestStatus,
 )
 
@@ -408,7 +409,6 @@ class InventoryLocation:
     aisle: str | None
     row: str | None
     bay: str | None
-    bin: str | None
     received_at: datetime
     created_at: datetime
     updated_at: datetime
@@ -439,7 +439,6 @@ class OpeningItem:
     aisle: str | None
     row: str | None
     bay: str | None
-    bin: str | None
     created_at: datetime
     updated_at: datetime
     installed_hardware: list[OpeningItemHardware]
@@ -515,6 +514,35 @@ class ShopAssemblyRequest:
     approved_at: datetime | None
     rejected_at: datetime | None
     openings: list[ShopAssemblyOpening]
+
+
+@strawberry.type
+class ShippingOutRequestItem:
+    id: strawberry.ID
+    shipping_out_request_id: strawberry.ID
+    item_type: PullRequestItemType
+    opening_number: str
+    opening_item_id: strawberry.ID | None
+    hardware_category: str | None
+    product_code: str | None
+    requested_quantity: int
+
+
+@strawberry.type
+class ShippingOutRequest:
+    id: strawberry.ID
+    request_number: str
+    project_id: strawberry.ID
+    status: ShippingOutRequestStatus
+    created_by: str
+    approved_by: str | None
+    rejected_by: str | None
+    rejection_reason: str | None
+    created_at: datetime
+    approved_at: datetime | None
+    rejected_at: datetime | None
+    pull_request_id: strawberry.ID | None
+    items: list[ShippingOutRequestItem]
 
 
 @strawberry.type
@@ -600,12 +628,10 @@ class Notification:
 class FinalizeImportResult:
     project: Project
     purchase_orders: list[PurchaseOrder]
-    shipping_out_pull_requests: list[PullRequest]
-    # Legacy SAR field, always None since #222 retired the SAR flow. Kept for the result contract.
+    # #293: Start a Task now mints request entities (PENDING), not PullRequests. A signed-in user
+    # accepts them downstream, which mints the warehouse PullRequest.
+    shipping_out_requests: list[ShippingOutRequest]
     shop_assembly_request: ShopAssemblyRequest | None
-    # The shop-assembly PullRequest minted directly by "Start a Task" (#222). None unless the
-    # import created one. This is what the import success UI confirms.
-    shop_assembly_pull_request: PullRequest | None = None
 
 
 @strawberry.type
@@ -728,7 +754,6 @@ class LocationUtilizationEntry:
     aisle: str
     row: str | None
     bay: str | None
-    bin: str | None
     item_count: int
     total_quantity: int
 
@@ -743,23 +768,23 @@ class LocationContents:
 @strawberry.type
 class LocationVariant:
     aisle: str | None
+    row: str | None
     bay: str | None
-    bin: str | None
 
 
 @strawberry.type
 class LocationDuplicateGroup:
     canonical_aisle: str | None
+    canonical_row: str | None
     canonical_bay: str | None
-    canonical_bin: str | None
     variants: list[LocationVariant]
 
 
 @strawberry.type
 class LocationDistinctValues:
     aisles: list[str]
+    rows: list[str]
     bays: list[str]
-    bins: list[str]
 
 
 @strawberry.type
@@ -849,8 +874,8 @@ class StockItem:
     deficient_quantity: int
     available: int
     aisle: str | None
+    row: str | None
     bay: str | None
-    bin: str | None
     received_at: datetime
     created_at: datetime
     updated_at: datetime
@@ -880,8 +905,8 @@ class DeficientItemRow:
     product_code: str
     deficient_quantity: int
     aisle: str | None
+    row: str | None
     bay: str | None
-    bin: str | None
 
 
 @strawberry.type
