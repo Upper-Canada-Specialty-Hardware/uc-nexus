@@ -180,6 +180,11 @@ async def relay_link(websocket: WebSocket):
         await _serve_relay_link(websocket)
     except WebSocketDisconnect:
         pass
+    except asyncio.CancelledError:
+        # The connection is being torn down (server shutdown, or a test harness closing its portal) while
+        # the background heartbeat task made the read loop's teardown yield. The relay is gone either way,
+        # so treat it as a clean disconnect and let the handler end normally rather than error out.
+        pass
     finally:
         relay_gateway.unregister(websocket)
 

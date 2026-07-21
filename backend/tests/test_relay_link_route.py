@@ -60,12 +60,16 @@ def test_relay_link_handshake_registers_the_company(_migrate_database):
     install_id = _enroll_committed("WS-REGRESSION", "TUBC", secret)
     try:
         with TestClient(app) as client:
-            with client.websocket_connect("/relay-link", headers={"Authorization": f"Bearer {secret}"}):
+            with client.websocket_connect("/relay-link", headers={"Authorization": f"Bearer {secret}"}) as ws:
                 _wait_until(lambda: gateway.connected)
                 assert gateway.connected is True
                 assert gateway.company == "TUBC"
-            # Leaving the context closes the socket; the route's finally unregisters it.
-            _wait_until(lambda: not gateway.connected)
+                # Close client-side and let the route's finally unregister BEFORE leaving the context, so
+                # the app task has already returned when the test client tears its portal down. Now that
+                # the route also runs a background heartbeat task, its disconnect teardown yields once,
+                # which otherwise races the portal's cancel-on-exit and surfaces a spurious CancelledError.
+                ws.close()
+                _wait_until(lambda: not gateway.connected)
             assert gateway.connected is False
     finally:
         _delete_install(install_id)
@@ -96,6 +100,11 @@ def test_relay_link_heartbeat_keeps_a_responsive_relay_connected(_migrate_databa
                     assert ws.receive_json() == {"type": "ping"}
                     ws.send_json({"type": "pong"})
                 assert gateway.connected is True
+                # Close and let the route unregister before the context tears the portal down (see the
+                # handshake test) so a clean teardown doesn't race the heartbeat into a spurious cancel.
+                ws.close()
+                _wait_until(lambda: not gateway.connected)
+            assert gateway.connected is False
     finally:
         _delete_install(install_id)
 
