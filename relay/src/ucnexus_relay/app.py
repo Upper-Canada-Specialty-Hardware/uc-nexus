@@ -19,7 +19,6 @@ import os
 import sys
 import threading
 import time
-from pathlib import Path
 
 from . import setup, single_instance
 from .config import DEFAULT_CONFIG_PATH
@@ -41,6 +40,7 @@ class RelayApp:
         self._window = None
         self._tray = None
         self._shutting_down = False
+        self._updating = False  # set while an update handoff is in progress, so user_shutdown doesn't cancel it
         self._mutex = None  # single_instance.MutexResult while we own the app slot
         self._control = None  # single_instance.ControlServer answering ping / show / quit_for_upgrade
 
@@ -101,7 +101,8 @@ class RelayApp:
         self._mutex = None
 
     def shutdown(self) -> None:
-        """Stop the relay + tray and close the window (used by the tray/Status 'Shut down')."""
+        """Stop the relay + tray and close the window. Used by the update handoff (apply_update) and,
+        via user_shutdown(), by the tray/Status 'Shut down'."""
         if self._shutting_down:
             return
         self._shutting_down = True
@@ -111,6 +112,24 @@ class RelayApp:
                 self._window.destroy()
         except Exception:
             logger.exception("error destroying the window")
+
+    def user_shutdown(self) -> None:
+        """A shutdown the USER asked for (tray/Status 'Shut down'). Distinct from the update handoff
+        (apply_update sets _updating): if an update is staged/applying, tell the helper to abort instead
+        of relaunching, so closing the relay mid-update is respected."""
+        self._cancel_update_if_pending()
+        self.shutdown()
+
+    def _cancel_update_if_pending(self) -> None:
+        if self._updating:
+            return  # this teardown IS the update handoff, not a user cancel
+        try:
+            from . import updater
+
+            if updater.read_ledger(self._install_dir()).get("status") in ("staging", "applying"):
+                updater.request_cancel(self._install_dir())
+        except Exception:
+            logger.exception("error requesting update cancel on shutdown")
 
     def _confirm_shutdown(self) -> bool:
         try:
@@ -137,6 +156,7 @@ class RelayApp:
         if self._shutting_down:
             return True
         if self._confirm_shutdown():
+            self._cancel_update_if_pending()  # a user-initiated close aborts an in-flight update
             self._shutting_down = True
             self._stop_relay_and_tray()  # the window closes naturally via the returned True
             return True
@@ -157,7 +177,7 @@ class RelayApp:
         ImageDraw.Draw(img).ellipse((16, 16, 48, 48), fill=(46, 204, 113))
         menu = pystray.Menu(
             pystray.MenuItem("Open", lambda: self._show_window(), default=True),
-            pystray.MenuItem("Shut down", lambda: self.shutdown()),
+            pystray.MenuItem("Shut down", lambda: self.user_shutdown()),
         )
         self._tray = pystray.Icon("ucnexus-relay", img, "UC Nexus Relay", menu)
 
@@ -178,50 +198,18 @@ class RelayApp:
         timer.daemon = True
         timer.start()
 
-    def _maybe_promote(self, force: bool) -> bool:
-        """If this frozen exe was launched from OUTSIDE the install dir, converge on the installed exe:
-        promote (swap self in + relaunch) when we're newer / forced / there's no install yet, otherwise
-        delegate to the installed exe. Returns True if the caller should exit (we handed off)."""
-        cfg_dir = self._install_dir()
-        me = Path(sys.executable)
-        installed = single_instance.installed_exe_path(cfg_dir)
-        # Short-circuit the common case (launched from the install dir) before probing the installed exe's
-        # build, so a normal startup never spawns a `print-build` subprocess.
-        if single_instance.same_path(me, installed):
-            return False
-        my_build = single_instance.current_build()
-        decision = single_instance.promote_decision(
-            frozen=True,
-            same_path=False,
-            installed_build=single_instance.installed_build(cfg_dir),
-            my_build=my_build,
-            force=force,
-        )
-        if decision == "skip":
-            return False
-        if decision == "delegate":
-            # the installed exe is same/newer: surface it if it's running, else launch it. Never run from here.
-            owner = single_instance.live_owner(cfg_dir)
-            if owner is not None:
-                single_instance.allow_foreground(owner["pid"])
-                single_instance.send_show(owner["port"], owner["nonce"])
-                logger.info("installed relay is current and running; focused it instead of running from %s", me)
-            else:
-                single_instance.launch_installed(cfg_dir)
-                logger.info("installed relay is current; launched it instead of running from %s", me)
-            return True
-        # promote: evict a running (installed) owner so its exe unlocks, swap, relaunch from the install dir
-        owner = single_instance.live_owner(cfg_dir)
-        if owner is not None:
-            single_instance.evict(owner, cfg_dir)
-        res = single_instance.promote_swap(me, cfg_dir)
-        if not res.get("ok"):
-            logger.error("promote failed (%s); running in place from %s", res.get("error"), me)
-            return False  # fall back to running from where we are rather than not running at all
-        single_instance.refresh_autostart_if_present(cfg_dir)
-        single_instance.launch_installed(cfg_dir)
-        logger.info("promoted %s -> %s (build %s) and relaunched", me, installed, my_build)
-        return True
+    def _cleanup_old_versions(self) -> None:
+        """Delete stale app-<build>/ version folders a past update left behind, keeping the one we run
+        from. Best-effort - a folder still held by an exiting update helper is skipped and cleaned on a
+        later start (see layout.cleanup_old_versions)."""
+        from . import layout
+
+        try:
+            running = layout.running_version_dir()
+            keep = {running.name} if running is not None else set()
+            layout.cleanup_old_versions(self._install_dir(), keep)
+        except Exception:
+            logger.exception("error cleaning up old relay versions")
 
     def _acquire_single_instance(self, force: bool) -> bool:
         """Become the single app owner, or signal an existing one and bow out. Returns True to proceed as
@@ -272,13 +260,13 @@ class RelayApp:
 
         global _APP
         _APP = self
-        # Single-instance + promote gate. Only meaningful for the packaged exe: a dev run has
-        # sys.executable = python (no exe to promote/relaunch, build 'dev'), so keep today's behaviour there.
+        # Single-instance gate. Only meaningful for the packaged exe: a dev run has sys.executable = python
+        # (build 'dev'), so keep today's behaviour there. Onedir installs run via the `current` junction;
+        # there is no promote-from-Downloads step anymore (see single_instance / layout).
         if getattr(sys, "frozen", False):
-            if self._maybe_promote(force):
-                return 0
             if not self._acquire_single_instance(force):
                 return 0
+            self._cleanup_old_versions()
         self.ensure_serve()
         self._window = webview.create_window(
             "UC Nexus Relay",

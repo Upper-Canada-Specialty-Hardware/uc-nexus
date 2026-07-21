@@ -17,12 +17,12 @@ import time
 import pyodbc
 from fastapi import Depends, FastAPI, HTTPException
 
+from . import __version__ as VERSION
 from . import auth, buyers, channel, db, econnect, errors, models, ops
 from .config import get_settings
 from .cors import configure_cors
 from .logging_setup import configure_logging, get_logger
 
-VERSION = "0.1.0"
 _START = time.monotonic()
 
 

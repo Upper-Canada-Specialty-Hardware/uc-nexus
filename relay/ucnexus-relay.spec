@@ -42,12 +42,19 @@ a = Analysis(
 
 pyz = PYZ(a.pure)
 
+# ONEDIR (not onefile): a onefile exe re-extracts its whole bundle - including C-extension .pyd like
+# _multiprocessing and PIL._imaging - to %TEMP%\_MEIxxxx on EVERY launch. On a Windows Defender box with no
+# %TEMP%/install-dir exclusions, a freshly-written exe (a self-update swap) launched immediately has its
+# just-extracted .pyd scanned as they load, and the relaunched relay crashes (ModuleNotFoundError:
+# _multiprocessing / ImportError: _imaging). Onedir writes the .pyd once, as permanent files in the install
+# folder (Defender scans them at install/update time, before launch), so every launch loads the same
+# pre-scanned files - no per-launch extraction, no scan collision. See docs/relay-deployment.md + the
+# updater's versioned-folder self-update.
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,  # onedir: binaries/datas go in COLLECT below, not baked into the exe
     name="ucnexus-relay",
     debug=False,
     bootloader_ignore_signals=False,
@@ -63,4 +70,16 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+)
+
+# Collect the exe + binaries + datas into dist/ucnexus-relay/ (ucnexus-relay.exe + _internal/). The install
+# and self-update flows ship/extract this whole folder (zipped) into a versioned app-<build>/ directory.
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=False,
+    upx_exclude=[],
+    name="ucnexus-relay",
 )

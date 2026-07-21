@@ -1,12 +1,14 @@
 name: Relay Release
 
-# builds the relay into a single ucnexus-relay.exe on a Windows runner and publishes it.
+# builds the relay ONEDIR bundle on a Windows runner and publishes it as ucnexus-relay.zip.
 # - push to master touching "relay/**" -> builds + publishes an auto-versioned Release
-# - push a tag like `relay-v0.1.0`               -> builds + attaches the exe to that GitHub Release
-# - run manually (workflow_dispatch)             -> builds + uploads the exe as a workflow artifact
+# - push a tag like `relay-v0.1.0`               -> builds + attaches the zip to that GitHub Release
+# - run manually (workflow_dispatch)             -> builds + uploads the zip as a workflow artifact
 # path filters are not applied to tag pushes, so a `relay-v*` tag always builds regardless of what it touched.
-# DPAPI happens on the workstation at enroll time, so the CI-built exe carries no secret - safe to build
-# in the cloud. see "relay/docs/relay-deployment.md".
+# Onedir (not onefile) so the C-extension .pyd are permanent files, not re-extracted to %TEMP% on every
+# launch - that per-launch extraction collides with Windows Defender on a fresh self-update and crashes the
+# relaunched relay. DPAPI happens on the workstation at enroll time, so the CI build carries no secret -
+# safe to build in the cloud. see "relay/docs/relay-deployment.md".
 
 on:
   push:
@@ -63,18 +65,24 @@ jobs:
         # PowerShell does NOT block on a bare call and $LASTEXITCODE stays empty - Start-Process -Wait
         # -PassThru actually waits for it and reads the real exit code.
         run: |
-          $exe = Resolve-Path ./dist/ucnexus-relay.exe
+          $exe = Resolve-Path ./dist/ucnexus-relay/ucnexus-relay.exe
           $p = Start-Process -FilePath $exe -ArgumentList '__smoke__' -Wait -PassThru
           if ($p.ExitCode -ne 2) { Write-Error "expected exit 2 from unknown subcommand, got $($p.ExitCode)"; exit 1 }
           exit 0
+        shell: pwsh
+
+      - name: Package the onedir bundle as a zip
+        # zip the CONTENTS of the onedir (ucnexus-relay.exe + _internal\ at the archive root) so the
+        # installer/updater extract it straight into a versioned app-<build>\ folder.
+        run: Compress-Archive -Path dist/ucnexus-relay/* -DestinationPath dist/ucnexus-relay.zip -Force
         shell: pwsh
 
       - name: Upload artifact (manual runs)
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v7
         with:
-          name: ucnexus-relay-exe
-          path: "relay/dist/ucnexus-relay.exe"
+          name: ucnexus-relay-zip
+          path: "relay/dist/ucnexus-relay.zip"
 
       - name: Publish to Release (tag pushes)
         if: startsWith(github.ref, 'refs/tags/')
@@ -84,7 +92,7 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           gh release create "$TAG" --title "relay $TAG" --notes "UC Nexus relay build $TAG. install steps: relay/docs/relay-deployment.md" --verify-tag || true
-          gh release upload "$TAG" dist/ucnexus-relay.exe --clobber
+          gh release upload "$TAG" dist/ucnexus-relay.zip --clobber
 
       # A push to master that touched "relay/**" auto-publishes a build-numbered Release.
       # The tag is created by GITHUB_TOKEN, which never re-triggers this workflow, so there's no loop.
@@ -97,4 +105,4 @@ jobs:
           version=$(grep -E '^version' pyproject.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
           tag="relay-v${version}-build.${{ github.run_number }}"
           gh release create "$tag" --target "${{ github.sha }}" --title "relay $tag" --notes "Auto-built from ${{ github.sha }} (relay change on master). install steps: relay/docs/relay-deployment.md" || true
-          gh release upload "$tag" dist/ucnexus-relay.exe --clobber
+          gh release upload "$tag" dist/ucnexus-relay.zip --clobber

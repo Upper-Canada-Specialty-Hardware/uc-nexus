@@ -79,6 +79,8 @@ def test_api_shutdown_app_errors_when_not_in_app_mode(monkeypatch):
 
 
 def test_api_apply_update_stages_then_shuts_down_in_app_mode(monkeypatch):
+    import os
+
     from ucnexus_relay import updater
 
     a = appmod.RelayApp()
@@ -86,10 +88,16 @@ def test_api_apply_update_stages_then_shuts_down_in_app_mode(monkeypatch):
     monkeypatch.setattr(a, "shutdown", lambda: shut.append(True))
     monkeypatch.setattr(appmod, "_APP", a)
     monkeypatch.setattr(ui, "_frozen", lambda: True)
-    monkeypatch.setattr(updater, "stage_update", lambda url, d, pid: {"ok": True, "note": "restarting"})
-    r = ui.Api().apply_update("https://x/e.exe")
+    monkeypatch.setattr(os, "_exit", lambda code: None)  # neutralize the hard-exit fallback timer
+    passed = {}
+    monkeypatch.setattr(
+        updater, "stage_update", lambda url, d, pid, target_build=None: passed.update(build=target_build) or {"ok": True}
+    )
+    r = ui.Api().apply_update("https://x/e.exe", "relay-v0.1.0-build.11")
     assert r["ok"] is True
     assert shut == [True]  # the app shut itself down so the helper can swap the unlocked exe
+    assert a._updating is True  # marked as the update handoff, so a later teardown isn't a user cancel
+    assert passed["build"] == "relay-v0.1.0-build.11"  # target build threaded through to the ledger
 
 
 def test_api_apply_update_does_not_shut_down_on_a_failed_stage(monkeypatch):
@@ -100,10 +108,35 @@ def test_api_apply_update_does_not_shut_down_on_a_failed_stage(monkeypatch):
     monkeypatch.setattr(a, "shutdown", lambda: shut.append(True))
     monkeypatch.setattr(appmod, "_APP", a)
     monkeypatch.setattr(ui, "_frozen", lambda: True)
-    monkeypatch.setattr(updater, "stage_update", lambda url, d, pid: {"ok": False, "error": "download failed"})
+    monkeypatch.setattr(
+        updater, "stage_update", lambda url, d, pid, target_build=None: {"ok": False, "error": "download failed"}
+    )
     r = ui.Api().apply_update("https://x/e.exe")
     assert r["ok"] is False
     assert shut == []  # a failed stage must NOT close the app
+    assert a._updating is False  # not marked updating, so a later user shutdown still cancels normally
+
+
+def test_user_shutdown_cancels_a_pending_update(monkeypatch, tmp_path):
+    from ucnexus_relay import updater
+
+    a = appmod.RelayApp()
+    monkeypatch.setattr(a, "_install_dir", lambda: tmp_path)
+    monkeypatch.setattr(a, "shutdown", lambda: None)
+    updater._write_ledger(tmp_path, {"status": "applying", "target_build": "b", "attempts": 1})
+    a.user_shutdown()
+    assert (tmp_path / updater._CANCEL_FLAG).exists()  # user closing mid-update signals the helper to abort
+
+
+def test_update_handoff_shutdown_does_not_cancel_itself(monkeypatch, tmp_path):
+    from ucnexus_relay import updater
+
+    a = appmod.RelayApp()
+    a._updating = True  # this teardown IS the update handoff
+    monkeypatch.setattr(a, "_install_dir", lambda: tmp_path)
+    updater._write_ledger(tmp_path, {"status": "applying", "target_build": "b", "attempts": 1})
+    a._cancel_update_if_pending()
+    assert not (tmp_path / updater._CANCEL_FLAG).exists()  # must not cancel the update it just started
 
 
 # --- single-instance gate ----------------------------------------------------------------------------
@@ -181,49 +214,17 @@ def test_acquire_defers_when_it_loses_the_cold_start_race(monkeypatch):
     assert 7 in sent and (9, "z") in sent
 
 
-def test_maybe_promote_skips_when_launched_from_install_dir(monkeypatch):
+def test_cleanup_old_versions_keeps_running_drops_others(monkeypatch, tmp_path):
+    from ucnexus_relay import layout
+
     a = appmod.RelayApp()
-    monkeypatch.setattr(si, "same_path", lambda x, y: True)
-    monkeypatch.setattr(si, "installed_build", lambda d: BUILD5)
-    monkeypatch.setattr(si, "current_build", lambda: BUILD5)
-    assert a._maybe_promote(force=False) is False
+    monkeypatch.setattr(a, "_install_dir", lambda: tmp_path)
+    for name in ("app-relay-v0.1.0-build.26", "app-relay-v0.1.0-build.27", "app-old"):
+        (tmp_path / name).mkdir()
+    running = tmp_path / "app-relay-v0.1.0-build.27"
+    monkeypatch.setattr(layout, "running_version_dir", lambda: running)
 
+    a._cleanup_old_versions()
 
-def test_maybe_promote_delegates_when_installed_is_current(monkeypatch):
-    a = appmod.RelayApp()
-    monkeypatch.setattr(si, "same_path", lambda x, y: False)
-    monkeypatch.setattr(si, "installed_build", lambda d: BUILD6)
-    monkeypatch.setattr(si, "current_build", lambda: BUILD5)  # we're older -> delegate to installed
-    monkeypatch.setattr(si, "live_owner", lambda d: None)
-    launched = []
-    monkeypatch.setattr(si, "launch_installed", lambda d, **k: launched.append(True))
-    assert a._maybe_promote(force=False) is True
-    assert launched == [True]
-
-
-def test_maybe_promote_swaps_and_relaunches_when_newer(monkeypatch):
-    a = appmod.RelayApp()
-    monkeypatch.setattr(si, "same_path", lambda x, y: False)
-    monkeypatch.setattr(si, "installed_build", lambda d: BUILD5)
-    monkeypatch.setattr(si, "current_build", lambda: BUILD6)  # newer -> promote
-    monkeypatch.setattr(si, "live_owner", lambda d: None)
-    swapped = []
-    monkeypatch.setattr(si, "promote_swap", lambda src, d: swapped.append(src) or {"ok": True})
-    monkeypatch.setattr(si, "refresh_autostart_if_present", lambda d: None)
-    launched = []
-    monkeypatch.setattr(si, "launch_installed", lambda d, **k: launched.append(True))
-    assert a._maybe_promote(force=False) is True
-    assert swapped and launched == [True]
-
-
-def test_maybe_promote_runs_in_place_when_swap_fails(monkeypatch):
-    a = appmod.RelayApp()
-    monkeypatch.setattr(si, "same_path", lambda x, y: False)
-    monkeypatch.setattr(si, "installed_build", lambda d: BUILD5)
-    monkeypatch.setattr(si, "current_build", lambda: BUILD6)
-    monkeypatch.setattr(si, "live_owner", lambda d: None)
-    monkeypatch.setattr(si, "promote_swap", lambda src, d: {"ok": False, "error": "locked"})
-    launched = []
-    monkeypatch.setattr(si, "launch_installed", lambda d, **k: launched.append(True))
-    assert a._maybe_promote(force=False) is False  # fall back to running in place
-    assert launched == []
+    remaining = sorted(p.name for p in tmp_path.glob("app-*"))
+    assert remaining == ["app-relay-v0.1.0-build.27"]  # kept the running version, dropped the rest
