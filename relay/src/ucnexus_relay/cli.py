@@ -21,13 +21,23 @@ import os
 import sys
 
 
+def _ensure_std_streams() -> None:
+    """A windowed PyInstaller build leaves sys.stdout/stderr as None; point them at devnull so print() /
+    logging never crash. Does NOT touch any console."""
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115
+
+
 def _reattach_console() -> None:
-    """The exe is built windowed (console=False) so the tray app and the detached `serve` child never pop
-    a console window. The cost of a windowed build is that a CLI subcommand run from a terminal would be
-    silent, and PyInstaller leaves sys.stdout/stderr as None there, so a plain print() would crash. On
-    Windows, attach to the launching terminal's console if there is one - there ISN'T for the tray app
-    (launched from a shortcut) or the detached serve child, so those stay windowless - and guarantee
-    stdout/stderr are always writable."""
+    """For a HAND-RUN CLI subcommand: the exe is built windowed (console=False), so PyInstaller leaves
+    stdout/stderr None and a plain print() would be silent (or crash). Attach to the launching terminal's
+    console so the output shows, then guarantee the streams are writable.
+
+    Do NOT call this for `serve` / `app` / `update-apply`: they are background/GUI processes, and attaching
+    a `serve` child to whatever console spawned it leaks uvicorn's access logs (INFO: ... "GET /health")
+    into that terminal. Those paths call _ensure_std_streams() instead - writable, no console."""
     if sys.platform == "win32":
         try:
             import ctypes
@@ -42,11 +52,7 @@ def _reattach_console() -> None:
                     pass
         except OSError:
             pass
-    # a windowed PyInstaller build can leave these None; keep print()/logging from crashing if no console
-    if sys.stdout is None:
-        sys.stdout = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115
-    if sys.stderr is None:
-        sys.stderr = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115
+    _ensure_std_streams()
 
 
 def _relay_already_serving(host: str, port: int) -> bool:
@@ -189,7 +195,6 @@ def _autostart_status(argv: list[str]) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    _reattach_console()  # windowed build: attach to the launching terminal (if any) so CLI output shows
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and not argv[0].startswith("-"):
         cmd, rest = argv[0], argv[1:]
@@ -197,6 +202,14 @@ def main(argv: list[str] | None = None) -> int:
         # bare invocation (a double-clicked exe) opens the desktop app. The serve child (setup.start_serve)
         # and the autostart entries pass an explicit command, so only a bare double-click is affected.
         cmd, rest = "app", argv
+
+    # Background / GUI subcommands must NOT attach to the launching console - a reattached `serve` leaks
+    # uvicorn's access logs (INFO: ... "GET /health") into whatever terminal spawned it. Hand-run CLI
+    # subcommands DO attach, so their output shows. Both guarantee stdout/stderr are writable.
+    if cmd in ("serve", "app", "update-apply"):
+        _ensure_std_streams()
+    else:
+        _reattach_console()
 
     if cmd == "serve":
         return _serve(rest)
