@@ -7,8 +7,10 @@ This is deliberate: the old supersede-the-incumbent behaviour (issue #202 #6) bo
 relays thrash - each new connection force-closing the other, reconnecting, and superseding back - and
 could drop a valid in-flight reply, failing a relay_call whose GP write had actually committed. Failing
 pending calls now happens only on a genuine disconnect (unregister), where the reply truly can't arrive.
-A briefly half-dead incumbent is detected by the websockets ping timeout, which fires unregister and
-frees the slot for the next reconnect."""
+A briefly half-dead incumbent is detected by the app-level heartbeat (issue #277): the /relay-link route
+pings the relay on a data message every HEARTBEAT_INTERVAL_SECONDS and, after HEARTBEAT_MAX_MISSED
+unanswered pings, closes the socket - which fires unregister, frees the slot, and flips relayStatus
+within ~a minute instead of the ~hour it took the platform to reap the dead TCP connection."""
 
 import asyncio
 import uuid
@@ -19,12 +21,25 @@ from app.errors import RelayCallError, RelayTimeoutError, RelayUnavailableError
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
 
+# App-level heartbeat (issue #277). ASGI exposes no WS ping/pong control frame, so the route rides a
+# {"type": "ping"} / {"type": "pong"} data exchange rather than protocol pings. The relay's websockets
+# client answers protocol pings automatically but NOT these data pings, so it carries a matching handler
+# (relay channel.py). Detection is up to HEARTBEAT_INTERVAL_SECONDS * HEARTBEAT_MAX_MISSED (~40s here).
+HEARTBEAT_INTERVAL_SECONDS = 20.0
+HEARTBEAT_MAX_MISSED = 2
+
 
 class RelayGateway:
     def __init__(self) -> None:
         self._socket: WebSocket | None = None
         self._company: str | None = None
         self._pending: dict[str, asyncio.Future] = {}
+        # Heartbeat bookkeeping for the current connection (issue #277). `_unanswered_pings` counts pings
+        # sent since the last pong; `_heartbeat_armed` only turns True after the relay answers its first
+        # ping, so a relay build that doesn't speak the data heartbeat yet is never falsely reaped - it
+        # just falls back to the old disconnect-on-read behaviour.
+        self._unanswered_pings = 0
+        self._heartbeat_armed = False
 
     @property
     def connected(self) -> bool:
@@ -44,6 +59,8 @@ class RelayGateway:
             return False
         self._socket = websocket
         self._company = company
+        self._unanswered_pings = 0
+        self._heartbeat_armed = False
         return True
 
     def unregister(self, websocket: WebSocket) -> None:
@@ -51,7 +68,24 @@ class RelayGateway:
         if self._socket is websocket:
             self._socket = None
             self._company = None
+            self._unanswered_pings = 0
+            self._heartbeat_armed = False
             self._fail_all("relay disconnected")
+
+    def note_pong(self) -> None:
+        """Called by the route's read loop for each {"type": "pong"} the relay sends. Clears the miss
+        counter and arms the reaper - once the relay has answered one ping, missed pings mean it's gone."""
+        if self._socket is not None:
+            self._unanswered_pings = 0
+            self._heartbeat_armed = True
+
+    def register_ping_miss(self) -> bool:
+        """Called by the route's heartbeat once per interval, just before it sends the next ping. Counts
+        the pings the relay hasn't answered yet and returns True when it has gone quiet long enough to
+        reap (HEARTBEAT_MAX_MISSED unanswered pings) - but only once armed, so a relay that never answers
+        a ping is left to the disconnect-on-read path rather than being killed on a false positive."""
+        self._unanswered_pings += 1
+        return self._heartbeat_armed and self._unanswered_pings >= HEARTBEAT_MAX_MISSED
 
     def _fail_all(self, message: str) -> None:
         pending, self._pending = self._pending, {}

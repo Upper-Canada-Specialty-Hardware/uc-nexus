@@ -19,6 +19,7 @@ os.environ.setdefault("RELAY_SECRET_ENC_KEY", Fernet.generate_key().decode())
 from fastapi.testclient import TestClient  # noqa: E402
 from starlette.websockets import WebSocketDisconnect  # noqa: E402
 
+import main  # noqa: E402
 from app.database import SessionLocal  # noqa: E402
 from app.models.relay_install import RelayInstall  # noqa: E402
 from app.repositories import relay_repository  # noqa: E402
@@ -77,3 +78,43 @@ def test_relay_link_rejects_an_unknown_secret(_migrate_database):
         except WebSocketDisconnect:
             pass
     assert gateway.connected is False
+
+
+def test_relay_link_heartbeat_keeps_a_responsive_relay_connected(_migrate_database, monkeypatch):
+    # issue #277: a relay that answers the data-message pings must stay registered - the heartbeat only
+    # reaps a relay that has gone silent, never one that keeps ponging.
+    monkeypatch.setattr(main, "HEARTBEAT_INTERVAL_SECONDS", 0.1)
+    secret = "relay-link-heartbeat-alive"
+    install_id = _enroll_committed("WS-HB-ALIVE", "TUBC", secret)
+    try:
+        with TestClient(app) as client:
+            with client.websocket_connect("/relay-link", headers={"Authorization": f"Bearer {secret}"}) as ws:
+                _wait_until(lambda: gateway.connected)
+                for _ in range(3):
+                    assert ws.receive_json() == {"type": "ping"}
+                    ws.send_json({"type": "pong"})
+                assert gateway.connected is True
+    finally:
+        _delete_install(install_id)
+
+
+def test_relay_link_heartbeat_reaps_a_relay_that_stops_answering(_migrate_database, monkeypatch):
+    # issue #277: answer the first ping to arm the reaper, then go silent. The route must close the
+    # socket so the gateway unregisters and relayStatus flips, instead of reading connected for ~an hour.
+    monkeypatch.setattr(main, "HEARTBEAT_INTERVAL_SECONDS", 0.05)
+    secret = "relay-link-heartbeat-drop"
+    install_id = _enroll_committed("WS-HB-DROP", "TUBC", secret)
+    try:
+        with TestClient(app) as client:
+            try:
+                with client.websocket_connect("/relay-link", headers={"Authorization": f"Bearer {secret}"}) as ws:
+                    _wait_until(lambda: gateway.connected)
+                    assert ws.receive_json() == {"type": "ping"}
+                    ws.send_json({"type": "pong"})  # arm, then stop answering
+                    _wait_until(lambda: not gateway.connected, timeout=5.0)
+            except WebSocketDisconnect:
+                # The server-side close (heartbeat reap) surfaces here as the context exits; expected.
+                pass
+        assert gateway.connected is False
+    finally:
+        _delete_install(install_id)
