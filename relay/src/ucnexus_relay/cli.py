@@ -8,6 +8,8 @@ Subcommands:
   protect-secret       DPAPI-encrypt the shared_secret currently in config.toml
   health               GET the local /health endpoint and print it (exit 0 if status ok)
   print-build          print this exe's build tag (used by promote to compare against the installed exe)
+  update-apply --pid N the detached self-update helper: wait for app pid N to exit, swap the staged exe,
+                       relaunch (spawned by updater.stage_update; not run by hand)
   install-autostart    register a no-admin logon autostart (HKCU Run) so the relay starts at logon
   uninstall-autostart  remove that logon autostart entry
   autostart-status     print whether the logon autostart is installed (JSON)
@@ -213,6 +215,22 @@ def main(argv: list[str] | None = None) -> int:
         except OSError:
             sys.stdout.write(data.decode("utf-8"))
         return 0
+    if cmd == "update-apply":
+        # the detached self-update helper (spawned by updater.stage_update). Windowless, logged to
+        # update.log, bounded by a deadline + attempt ledger. --pid is the app process to wait for.
+        from .config import DEFAULT_CONFIG_PATH
+        from .updater import apply_staged_update
+
+        app_pid = None
+        if "--pid" in rest:
+            i = rest.index("--pid")
+            if i + 1 < len(rest):
+                try:
+                    app_pid = int(rest[i + 1])
+                except ValueError:
+                    app_pid = None
+        apply_staged_update(app_pid, DEFAULT_CONFIG_PATH.parent)
+        return 0
     if cmd == "enroll":
         from .enroll import main as enroll_main
         return enroll_main(rest)
@@ -230,7 +248,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(
         f"unknown command: {cmd!r} (expected: serve | app | enroll | protect-secret | health | print-build | "
-        "install-autostart | uninstall-autostart | autostart-status)",
+        "update-apply | install-autostart | uninstall-autostart | autostart-status)",
         file=sys.stderr,
     )
     return 2

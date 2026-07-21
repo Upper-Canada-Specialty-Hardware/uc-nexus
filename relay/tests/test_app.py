@@ -79,6 +79,8 @@ def test_api_shutdown_app_errors_when_not_in_app_mode(monkeypatch):
 
 
 def test_api_apply_update_stages_then_shuts_down_in_app_mode(monkeypatch):
+    import os
+
     from ucnexus_relay import updater
 
     a = appmod.RelayApp()
@@ -86,10 +88,16 @@ def test_api_apply_update_stages_then_shuts_down_in_app_mode(monkeypatch):
     monkeypatch.setattr(a, "shutdown", lambda: shut.append(True))
     monkeypatch.setattr(appmod, "_APP", a)
     monkeypatch.setattr(ui, "_frozen", lambda: True)
-    monkeypatch.setattr(updater, "stage_update", lambda url, d, pid: {"ok": True, "note": "restarting"})
-    r = ui.Api().apply_update("https://x/e.exe")
+    monkeypatch.setattr(os, "_exit", lambda code: None)  # neutralize the hard-exit fallback timer
+    passed = {}
+    monkeypatch.setattr(
+        updater, "stage_update", lambda url, d, pid, target_build=None: passed.update(build=target_build) or {"ok": True}
+    )
+    r = ui.Api().apply_update("https://x/e.exe", "relay-v0.1.0-build.11")
     assert r["ok"] is True
     assert shut == [True]  # the app shut itself down so the helper can swap the unlocked exe
+    assert a._updating is True  # marked as the update handoff, so a later teardown isn't a user cancel
+    assert passed["build"] == "relay-v0.1.0-build.11"  # target build threaded through to the ledger
 
 
 def test_api_apply_update_does_not_shut_down_on_a_failed_stage(monkeypatch):
@@ -100,10 +108,35 @@ def test_api_apply_update_does_not_shut_down_on_a_failed_stage(monkeypatch):
     monkeypatch.setattr(a, "shutdown", lambda: shut.append(True))
     monkeypatch.setattr(appmod, "_APP", a)
     monkeypatch.setattr(ui, "_frozen", lambda: True)
-    monkeypatch.setattr(updater, "stage_update", lambda url, d, pid: {"ok": False, "error": "download failed"})
+    monkeypatch.setattr(
+        updater, "stage_update", lambda url, d, pid, target_build=None: {"ok": False, "error": "download failed"}
+    )
     r = ui.Api().apply_update("https://x/e.exe")
     assert r["ok"] is False
     assert shut == []  # a failed stage must NOT close the app
+    assert a._updating is False  # not marked updating, so a later user shutdown still cancels normally
+
+
+def test_user_shutdown_cancels_a_pending_update(monkeypatch, tmp_path):
+    from ucnexus_relay import updater
+
+    a = appmod.RelayApp()
+    monkeypatch.setattr(a, "_install_dir", lambda: tmp_path)
+    monkeypatch.setattr(a, "shutdown", lambda: None)
+    updater._write_ledger(tmp_path, {"status": "applying", "target_build": "b", "attempts": 1})
+    a.user_shutdown()
+    assert (tmp_path / updater._CANCEL_FLAG).exists()  # user closing mid-update signals the helper to abort
+
+
+def test_update_handoff_shutdown_does_not_cancel_itself(monkeypatch, tmp_path):
+    from ucnexus_relay import updater
+
+    a = appmod.RelayApp()
+    a._updating = True  # this teardown IS the update handoff
+    monkeypatch.setattr(a, "_install_dir", lambda: tmp_path)
+    updater._write_ledger(tmp_path, {"status": "applying", "target_build": "b", "attempts": 1})
+    a._cancel_update_if_pending()
+    assert not (tmp_path / updater._CANCEL_FLAG).exists()  # must not cancel the update it just started
 
 
 # --- single-instance gate ----------------------------------------------------------------------------

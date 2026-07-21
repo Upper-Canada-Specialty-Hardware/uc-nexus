@@ -77,6 +77,19 @@ how the secret is protected, and the one gotcha
 updating to a new build
 - download the new `ucnexus-relay.exe` and re-run `install-relay.ps1 -ExePath <new exe>`. it re-stages the
   exe and re-registers the task, and leaves the existing `config.toml` (and its encrypted secret) in place.
+- or use the desktop app's Updates tab: it checks the public GitHub releases, downloads the exe, and
+  applies it in place. The app stages the download, exits, and a detached windowless helper
+  (`ucnexus-relay update-apply`) waits for the app to close, force-kills any remaining relay process BY PID
+  (never by image name), swaps the exe (rename-aside + drop-in), and relaunches - exactly once. The whole
+  sequence is bounded by a ~90s deadline and an attempt cap, so a failed update leaves the relay running on
+  the CURRENT build rather than looping or hanging.
+- update artifacts in the install dir (`%LOCALAPPDATA%\UCNexusRelay`):
+  - `update.log` - the helper's step-by-step log (wait -> kill -> swap -> relaunch); read this first if an
+    update misbehaves.
+  - `update-state.json` - the attempt ledger the Updates tab surfaces ("installed build N" / "update to
+    build N failed: <reason>"). status is one of staging/applying/success/failed/cancelled.
+  - `ucnexus-relay.exe.new` (in-flight download) and `ucnexus-relay.exe.old*` (the swapped-out exe, cleaned
+    up after a successful swap) are transient.
 
 uninstall
 - `install\uninstall-relay.ps1` removes the scheduled task and leaves the install dir. add `-RemoveFiles`

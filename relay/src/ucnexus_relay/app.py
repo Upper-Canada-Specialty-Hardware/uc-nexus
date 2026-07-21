@@ -41,6 +41,7 @@ class RelayApp:
         self._window = None
         self._tray = None
         self._shutting_down = False
+        self._updating = False  # set while an update handoff is in progress, so user_shutdown doesn't cancel it
         self._mutex = None  # single_instance.MutexResult while we own the app slot
         self._control = None  # single_instance.ControlServer answering ping / show / quit_for_upgrade
 
@@ -101,7 +102,8 @@ class RelayApp:
         self._mutex = None
 
     def shutdown(self) -> None:
-        """Stop the relay + tray and close the window (used by the tray/Status 'Shut down')."""
+        """Stop the relay + tray and close the window. Used by the update handoff (apply_update) and,
+        via user_shutdown(), by the tray/Status 'Shut down'."""
         if self._shutting_down:
             return
         self._shutting_down = True
@@ -111,6 +113,24 @@ class RelayApp:
                 self._window.destroy()
         except Exception:
             logger.exception("error destroying the window")
+
+    def user_shutdown(self) -> None:
+        """A shutdown the USER asked for (tray/Status 'Shut down'). Distinct from the update handoff
+        (apply_update sets _updating): if an update is staged/applying, tell the helper to abort instead
+        of relaunching, so closing the relay mid-update is respected."""
+        self._cancel_update_if_pending()
+        self.shutdown()
+
+    def _cancel_update_if_pending(self) -> None:
+        if self._updating:
+            return  # this teardown IS the update handoff, not a user cancel
+        try:
+            from . import updater
+
+            if updater.read_ledger(self._install_dir()).get("status") in ("staging", "applying"):
+                updater.request_cancel(self._install_dir())
+        except Exception:
+            logger.exception("error requesting update cancel on shutdown")
 
     def _confirm_shutdown(self) -> bool:
         try:
@@ -137,6 +157,7 @@ class RelayApp:
         if self._shutting_down:
             return True
         if self._confirm_shutdown():
+            self._cancel_update_if_pending()  # a user-initiated close aborts an in-flight update
             self._shutting_down = True
             self._stop_relay_and_tray()  # the window closes naturally via the returned True
             return True
@@ -157,7 +178,7 @@ class RelayApp:
         ImageDraw.Draw(img).ellipse((16, 16, 48, 48), fill=(46, 204, 113))
         menu = pystray.Menu(
             pystray.MenuItem("Open", lambda: self._show_window(), default=True),
-            pystray.MenuItem("Shut down", lambda: self.shutdown()),
+            pystray.MenuItem("Shut down", lambda: self.user_shutdown()),
         )
         self._tray = pystray.Icon("ucnexus-relay", img, "UC Nexus Relay", menu)
 
