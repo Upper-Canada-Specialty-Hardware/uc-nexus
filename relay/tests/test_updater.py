@@ -274,3 +274,49 @@ def test_relaunch_and_wait_healthy_retries_then_gives_up(tmp_path, monkeypatch):
 
     ok = updater._relaunch_and_wait_healthy(tmp_path, updater._monotonic() + 1000, _LOG, attempts=2)
     assert ok is False and len(launches) == 2  # tried twice within the deadline, never healthy
+
+
+def test_relaunch_and_wait_healthy_kills_the_launched_app_between_retries(tmp_path, monkeypatch):
+    # regression: an unhealthy-but-alive app is the single-instance owner, so the next attempt (and the
+    # rollback launch) would focus-deflect to it and never re-serve. The between-attempts kill must target
+    # the app pid launch_installed returned, NOT None (which would leave that owner alive).
+    pids = iter([111, 222])
+    monkeypatch.setattr(single_instance, "launch_installed", lambda d: next(pids))
+    killed = []
+    monkeypatch.setattr(updater, "_kill_relay_pids", lambda pid, d, log: killed.append(pid))
+    monkeypatch.setattr(updater, "_wait_for_health", lambda url, deadline: False)
+    monkeypatch.setattr(updater, "_sleep", lambda s: None)
+
+    ok = updater._relaunch_and_wait_healthy(tmp_path, updater._monotonic() + 1000, _LOG, attempts=2)
+
+    assert ok is False
+    assert killed == [111, 222]  # each unhealthy attempt's own app pid is force-killed before the next
+
+
+def test_apply_staged_update_rolls_back_when_the_repoint_fails(tmp_path, monkeypatch):
+    # regression: a failed junction repoint (removed the link but couldn't recreate it) left `current`
+    # broken; proceeding would relaunch via the newest-version fallback and record success while autostart
+    # + shortcuts point at a dead junction. Must roll the junction back to the previous version + fail.
+    ver = _seed_staged(tmp_path)
+    old = tmp_path / "app-relay-v0.1.0-build.10"
+    old.mkdir()
+    monkeypatch.setattr(updater, "_update_logger", lambda d: _LOG)
+    monkeypatch.setattr(updater, "_wait_for_pid_exit", lambda pid, deadline, log: None)
+    monkeypatch.setattr(updater, "_kill_relay_pids", lambda pid, d, log: None)
+    monkeypatch.setattr(updater, "_current_target", lambda d: old)
+    repoints = []
+
+    def _repoint(d, target):
+        repoints.append(Path(target))
+        return Path(target).name != ver.name  # the repoint TO the new version fails; the rollback succeeds
+
+    monkeypatch.setattr(layout, "repoint_current", _repoint)
+    relaunched = []
+    monkeypatch.setattr(updater, "_relaunch_and_wait_healthy", lambda d, deadline, log, attempts=2: relaunched.append(1) or True)
+
+    r = updater.apply_staged_update(4242, tmp_path)
+
+    assert r["ok"] is False
+    assert repoints == [ver, old]  # tried the new version, then rolled the junction back to the old one
+    assert relaunched == [1]  # relaunched the rolled-back (previous) version so the relay stays up
+    assert updater.read_ledger(tmp_path)["status"] == "failed"
