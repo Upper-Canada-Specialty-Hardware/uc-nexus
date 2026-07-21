@@ -8,9 +8,11 @@ relay socket, so no relay ever registered and relayStatus stayed false. These te
 route so that failure mode can't come back unnoticed.
 """
 
+import asyncio
 import os
 import time
 
+import pytest
 from cryptography.fernet import Fernet
 
 # The crypto layer reads RELAY_SECRET_ENC_KEY at call time; provide one before enroll/authenticate.
@@ -118,3 +120,56 @@ def test_relay_link_heartbeat_reaps_a_relay_that_stops_answering(_migrate_databa
         assert gateway.connected is False
     finally:
         _delete_install(install_id)
+
+
+class _FakeRelaySocket:
+    """A minimal WebSocket stand-in for driving _serve_relay_link directly (no DB, no TestClient thread).
+    receive_json yields the queued messages/exceptions in order, then blocks as an idle relay would."""
+
+    def __init__(self, incoming):
+        self._incoming = list(incoming)
+        self.sent: list[dict] = []
+        self.closed_code: int | None = None
+
+    async def receive_json(self):
+        if self._incoming:
+            item = self._incoming.pop(0)
+            if isinstance(item, BaseException):
+                raise item
+            return item
+        await asyncio.Event().wait()  # nothing more to read: block until the heartbeat/cancel ends us
+
+    async def send_json(self, data: dict) -> None:
+        self.sent.append(data)
+
+    async def close(self, code: int = 1000) -> None:
+        self.closed_code = code
+
+
+def test_serve_relay_link_reraises_a_reader_disconnect():
+    # A genuine client disconnect must surface as WebSocketDisconnect so the route's except handles it.
+    async def run():
+        ws = _FakeRelaySocket([WebSocketDisconnect()])
+        gateway.try_register("TEST", ws)
+        try:
+            with pytest.raises(WebSocketDisconnect):
+                await main._serve_relay_link(ws)
+        finally:
+            gateway.unregister(ws)
+
+    asyncio.run(run())
+
+
+def test_serve_relay_link_swallows_a_cancelled_reader():
+    # Regression for the CI failure on the responsive-relay test: when the read task ends by cancellation
+    # (a clean teardown races the active heartbeat), _serve_relay_link must return normally. Re-raising
+    # there marked the whole route task cancelled, which TestClient surfaced as a CancelledError.
+    async def run():
+        ws = _FakeRelaySocket([asyncio.CancelledError()])
+        gateway.try_register("TEST", ws)
+        try:
+            await main._serve_relay_link(ws)  # must not raise
+        finally:
+            gateway.unregister(ws)
+
+    asyncio.run(run())

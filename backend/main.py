@@ -129,8 +129,16 @@ async def _serve_relay_link(websocket: WebSocket) -> None:
         reader.cancel()
         heartbeat.cancel()
         await asyncio.gather(reader, heartbeat, return_exceptions=True)
+    # Surface a genuine reader disconnect so the route handles it as before. Skip a task that finished by
+    # cancellation: task.exception() re-raises CancelledError there, which would propagate out of the
+    # route uncaught and mark the whole route task cancelled (a spurious failure on a clean teardown).
     for task in done:
-        exc = task.exception()
+        if task.cancelled():
+            continue
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            continue
         if exc is not None:
             raise exc
 
