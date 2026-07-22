@@ -5,6 +5,7 @@ Endpoints:
   GET  /info             — config + read-only SQL identity probe (+ workstation hostname), auth required
   GET  /vendors          — PM00200 vendor list for the vendor sync, auth required
   GET  /buyers           — POP00101 registered buyers for the Create PO buyer dropdown, auth required
+  GET  /tax-details      — TX00201 purchase tax details for the register-PO tax-detail dropdown, auth required
   GET  /cost-codes       — JC00701 per-job cost codes for the Create PO cost-code dropdown, auth required
   POST /po/next-number   — reserve a PO number (live taGetPONextNumber), auth required
   POST /po               — create a PO end-to-end (5-step orchestration), auth required
@@ -139,6 +140,19 @@ def create_app() -> FastAPI:
         except pyodbc.Error as e:
             raise HTTPException(status_code=502, detail=errors.error_body("sql_error", str(e)))
         return models.BuyersResponse(company=company, buyers=ids)
+
+    @app.get("/tax-details", response_model=models.TaxDetailsResponse)
+    def tax_details(company: str | None = None, _=Depends(auth.verify_token)):
+        """Purchase tax details (TX00201, TXDTLTYP=2) for the register-PO tax-detail dropdown (issue
+        #257). GP-first: the options are whatever the company defines, read live, not a hardcoded list."""
+        company = company or get_settings().gp.default_company
+        _check_company(company)
+        try:
+            with db.get_read_connection(company) as conn:
+                rows = econnect.list_tax_details(conn)
+        except pyodbc.Error as e:
+            raise HTTPException(status_code=502, detail=errors.error_body("sql_error", str(e)))
+        return models.TaxDetailsResponse(company=company, tax_details=[models.TaxDetailOut(**r) for r in rows])
 
     @app.get("/cost-codes", response_model=models.CostCodesResponse)
     def cost_codes(job: str, company: str | None = None, _=Depends(auth.verify_token)):
