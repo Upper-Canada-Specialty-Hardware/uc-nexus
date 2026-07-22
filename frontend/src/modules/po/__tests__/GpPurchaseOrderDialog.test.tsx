@@ -482,6 +482,28 @@ describe('GpPurchaseOrderDialog', () => {
     expect(calls[0]).toMatchObject({ input: { taxDetailId: 'ON HST - P' } });
   });
 
+  it('does not require a tax detail when the company defines none (issue #257)', async () => {
+    const calls: Record<string, unknown>[] = [];
+    const registerMock: MockedResponse = {
+      request: { query: REGISTER_PO_IN_GP, variables: () => true },
+      result: (vars) => {
+        calls.push(vars as Record<string, unknown>);
+        return { data: registerData() };
+      },
+    };
+    // A company with no purchase tax details: the dropdown is empty/disabled, so registration must not
+    // be hard-blocked on picking one.
+    const mocksNoTax = baseMocks().map((m) =>
+      m.request.query === GET_GP_TAX_DETAILS ? { ...m, result: { data: { gpTaxDetails: [] } } } : m,
+    );
+    const { onSubmitted } = renderDialog({ registerPo: stockDraft }, [...mocksNoTax, registerMock]);
+    await waitForVendorPreselect();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+    await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
+    expect(calls[0]).toMatchObject({ input: { taxDetailId: null } });
+  });
+
   it('registers a USD vendor PO with no tax detail (foreign currency, issue #257)', async () => {
     const calls: Record<string, unknown>[] = [];
     const registerMock: MockedResponse = {

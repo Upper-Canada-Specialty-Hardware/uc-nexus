@@ -468,8 +468,11 @@ export default function GpPurchaseOrderDialog({
       else if (!registerProjectAllowed) errs.buyer = `Buyer ${gpBuyerId} is not assigned to this project`;
       if (isJob && !costCode) errs.costCode = 'Cost code is required for a project PO';
       // Issue #257: a CAD PO must carry a tax detail (the relay computes tax from it); a foreign-currency
-      // PO carries none (the relay blanks the schedule), so require it for CAD only.
-      if (!isForeignCurrency && gpVendorId && !taxDetailId) errs.taxDetail = 'Select a tax detail';
+      // PO carries none (the relay blanks the schedule), so require it for CAD only. Only enforce it when
+      // the company actually defines purchase tax details - a company with none would otherwise be
+      // hard-blocked, since the dropdown is disabled/empty when gpTaxDetails is empty.
+      if (!isForeignCurrency && gpVendorId && gpTaxDetails.length > 0 && !taxDetailId)
+        errs.taxDetail = 'Select a tax detail';
     }
     // Issue #156: optional, but a non-empty entry must be a valid non-negative dollar value.
     if (shippingCost.trim() !== '' && (isNaN(parseFloat(shippingCost)) || parseFloat(shippingCost) < 0))
@@ -483,7 +486,7 @@ export default function GpPurchaseOrderDialog({
       errs.tradeDiscount = 'Must be >= 0';
     setErrors(errs);
     return Object.keys(errs).length === 0;
-  }, [lineItems, relayConnected, gpVendorId, isRegister, vendorConfirmed, gpBuyerId, registerProjectAllowed, isJob, costCode, shippingCost, tariffAmount, isForeignCurrency, taxDetailId, miscellaneous, tradeDiscount]);
+  }, [lineItems, relayConnected, gpVendorId, isRegister, vendorConfirmed, gpBuyerId, registerProjectAllowed, isJob, costCode, shippingCost, tariffAmount, isForeignCurrency, taxDetailId, gpTaxDetails.length, miscellaneous, tradeDiscount]);
 
   const handleSubmit = useCallback(async () => {
     if (!validate()) return;
@@ -862,7 +865,7 @@ export default function GpPurchaseOrderDialog({
         <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap alignItems="flex-start" sx={{ mt: 2 }}>
           <TextField
             label="Currency"
-            value={gpVendorId ? gpVendorCurrency : '—'}
+            value={gpVendorId ? gpVendorCurrency : '-'}
             size="small"
             sx={{ minWidth: 120 }}
             disabled
