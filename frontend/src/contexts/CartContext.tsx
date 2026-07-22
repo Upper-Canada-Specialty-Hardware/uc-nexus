@@ -5,6 +5,8 @@ export interface CartItem {
   itemType: 'Loose' | 'Opening_Item';
   openingItemId?: string;
   openingNumber?: string;
+  // Door leaf (#311) for an assembled opening item; null/undefined for loose or legacy.
+  leaf?: number | null;
   hardwareCategory?: string;
   productCode?: string;
   quantity: number;

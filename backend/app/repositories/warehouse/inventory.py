@@ -11,6 +11,7 @@ from app.errors import NotFoundError, ValidationError
 from app.models.enums import AuditAction, AuditEntityType
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.opening_item import OpeningItem as OpeningItemModel
+from app.models.project import Opening as OpeningModel
 from app.models.purchase_order import POLineItem as POLineItemModel
 from app.models.purchase_order import PurchaseOrder as POModel
 from app.models.vendor import Vendor as VendorModel
@@ -248,6 +249,15 @@ def get_opening_items(session: Session, project_id: uuid.UUID | None = None) -> 
     if project_id is not None:
         stmt = stmt.where(OpeningItemModel.project_id == project_id)
     return list(session.scalars(stmt).unique().all())
+
+
+def get_opening_leaf_counts(session: Session, project_id: uuid.UUID) -> dict[str, int | None]:
+    """Map opening_number -> Opening.leaf_count for a project (#311). This is the "N of M leaves
+    shipped" denominator M; a single query keeps the openingItems list resolver free of N+1s."""
+    rows = session.execute(
+        select(OpeningModel.opening_number, OpeningModel.leaf_count).where(OpeningModel.project_id == project_id)
+    ).all()
+    return {opening_number: leaf_count for opening_number, leaf_count in rows}
 
 
 def get_opening_item_details(session: Session, oi_id: uuid.UUID) -> OpeningItemModel:

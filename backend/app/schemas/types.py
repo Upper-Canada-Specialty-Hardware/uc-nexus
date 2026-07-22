@@ -441,6 +441,9 @@ class OpeningItem:
     location: str | None
     # Door leaf this assembled unit is (#311): 1 or 2, or null (legacy whole-opening unit).
     leaf: int | None
+    # The opening's total door-leaf count (#311), the "N of M leaves shipped" denominator. Only
+    # populated by the openingItems list resolver; null elsewhere.
+    leaf_count: int | None
     quantity: int
     assembly_completed_at: datetime
     state: OpeningItemState
@@ -564,6 +567,8 @@ class PackingSlipItem:
     item_type: PullRequestItemType
     opening_item_id: strawberry.ID | None
     opening_number: str | None
+    # Door leaf this shipped line was for (#311): 1 or 2, or null (loose / legacy).
+    leaf: int | None
     product_code: str
     hardware_category: str
     quantity: int

@@ -186,8 +186,12 @@ class WarehouseQueries:
     @strawberry.field
     def opening_items(self, project_id: strawberry.ID | None = None) -> list[OpeningItem]:
         with SessionLocal() as session:
-            ois = warehouse_repository.get_opening_items(session, uuid.UUID(str(project_id)) if project_id else None)
-            return [opening_item_to_type(oi) for oi in ois]
+            pid = uuid.UUID(str(project_id)) if project_id else None
+            ois = warehouse_repository.get_opening_items(session, pid)
+            # leaf_count (#311) is the "N of M leaves shipped" denominator; one grouped query,
+            # attached per item so OpeningItemsTab can roll up by opening without an N+1.
+            leaf_counts = warehouse_repository.get_opening_leaf_counts(session, pid) if pid else {}
+            return [opening_item_to_type(oi, leaf_count=leaf_counts.get(oi.opening_number)) for oi in ois]
 
     @strawberry.field
     def opening_item_details(self, id: strawberry.ID) -> OpeningItemDetail:

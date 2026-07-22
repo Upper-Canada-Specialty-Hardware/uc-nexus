@@ -420,7 +420,7 @@ def opening_item_hardware_to_type(oih) -> OpeningItemHardware:
     )
 
 
-def opening_item_to_type(oi) -> OpeningItem:
+def opening_item_to_type(oi, *, leaf_count: int | None = None) -> OpeningItem:
     return OpeningItem(
         id=strawberry.ID(str(oi.id)),
         project_id=strawberry.ID(str(oi.project_id)),
@@ -431,6 +431,7 @@ def opening_item_to_type(oi) -> OpeningItem:
         floor=oi.floor,
         location=oi.location,
         leaf=oi.leaf,
+        leaf_count=leaf_count,
         quantity=oi.quantity,
         assembly_completed_at=oi.assembly_completed_at,
         state=oi.state,
@@ -572,6 +573,7 @@ def packing_slip_item_to_type(psi) -> PackingSlipItem:
         item_type=psi.item_type,
         opening_item_id=strawberry.ID(str(psi.opening_item_id)) if psi.opening_item_id else None,
         opening_number=psi.opening_number,
+        leaf=psi.leaf,
         product_code=psi.product_code,
         hardware_category=psi.hardware_category,
         quantity=psi.quantity,

@@ -40,6 +40,7 @@ interface OpeningItem {
   floor: string | null;
   location: string | null;
   leaf: number | null;
+  leafCount: number | null;
   quantity: number;
   assemblyCompletedAt: string | null;
   state: string;
@@ -294,6 +295,23 @@ export default function OpeningItemsTab({ projectId }: OpeningItemsTabProps) {
 
   const rows = useMemo(() => data?.openingItems ?? [], [data]);
 
+  // "N of M door leaves shipped" rollup (#311): group assembled units by opening; M is the
+  // opening's leaf_count (schedule), N the count already SHIPPED_OUT. Only pairs (M >= 2) are
+  // worth a rollup - a single leaf is just its own row.
+  const leafSummaries = useMemo(() => {
+    const byOpening = new Map<string, { leafCount: number | null; shipped: number }>();
+    for (const oi of rows) {
+      const g = byOpening.get(oi.openingNumber) ?? { leafCount: oi.leafCount, shipped: 0 };
+      if (oi.state === 'SHIPPED_OUT') g.shipped += 1;
+      if (oi.leafCount != null) g.leafCount = oi.leafCount;
+      byOpening.set(oi.openingNumber, g);
+    }
+    return Array.from(byOpening.entries())
+      .filter(([, g]) => (g.leafCount ?? 1) >= 2)
+      .map(([openingNumber, g]) => ({ openingNumber, shipped: g.shipped, total: g.leafCount as number }))
+      .sort((a, b) => a.openingNumber.localeCompare(b.openingNumber));
+  }, [rows]);
+
   const handleRowClick = useCallback((params: { id: string | number }) => {
     setSelectedItemId(String(params.id));
     setModalOpen(true);
@@ -322,6 +340,21 @@ export default function OpeningItemsTab({ projectId }: OpeningItemsTabProps) {
 
   return (
     <Box>
+      {leafSummaries.length > 0 && (
+        <Box sx={{ mb: 2, display: 'flex', flexWrap: 'wrap', gap: 1, alignItems: 'center' }}>
+          <Typography variant="subtitle2" color="text.secondary">
+            Door leaves shipped:
+          </Typography>
+          {leafSummaries.map((s) => (
+            <Chip
+              key={s.openingNumber}
+              size="small"
+              color={s.shipped >= s.total ? 'success' : s.shipped > 0 ? 'warning' : 'default'}
+              label={`Opening ${s.openingNumber}: ${s.shipped} of ${s.total} leaves shipped`}
+            />
+          ))}
+        </Box>
+      )}
       <Box sx={{ height: 600, width: '100%' }}>
         <DataGrid
           rows={rows}

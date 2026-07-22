@@ -51,7 +51,7 @@ export const GET_OPENING_ITEMS = gql`
   query GetOpeningItems($projectId: ID) {
     openingItems(projectId: $projectId) {
       id projectId openingId openingNumber
-      building floor location leaf quantity
+      building floor location leaf leafCount quantity
       assemblyCompletedAt state
       aisle row bay
       createdAt updatedAt

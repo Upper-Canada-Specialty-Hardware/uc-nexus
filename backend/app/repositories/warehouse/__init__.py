@@ -15,6 +15,7 @@ from .inventory import (
     get_inventory_items,
     get_opening_item_details,
     get_opening_items,
+    get_opening_leaf_counts,
     get_unlocated_inventory,
     override_inventory_quantity,
 )
@@ -83,6 +84,7 @@ __all__ = [
     "get_location_utilization",
     "get_opening_item_details",
     "get_opening_items",
+    "get_opening_leaf_counts",
     "get_po_receiving_details",
     "get_project_progress_by_product",
     "get_pull_request_details",
