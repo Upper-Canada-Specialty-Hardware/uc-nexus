@@ -157,6 +157,18 @@ export const GET_GP_VENDORS = gql`
       vendorName
       vendorClass
       status
+      currency
+    }
+  }
+`;
+
+// Issue #257: GP purchase tax details (TX00201, TXDTLTYP=2) for the register-PO tax-detail dropdown.
+export const GET_GP_TAX_DETAILS = gql`
+  query GetGpTaxDetails($company: String!) {
+    gpTaxDetails(company: $company) {
+      taxDetailId
+      description
+      percent
     }
   }
 `;
