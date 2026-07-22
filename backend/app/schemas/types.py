@@ -48,6 +48,8 @@ class Opening:
     heading_no: str | None
     single_pair: str | None
     assignment_multiplier: str | None
+    # Door-leaf count (#311): 1 (single) or 2 (pair). The "N of M leaves shipped" denominator.
+    leaf_count: int | None
     created_at: datetime
     updated_at: datetime
 
@@ -66,6 +68,8 @@ class HardwareItem:
     hardware_category: str
     product_code: str
     material_id: str | None
+    # Door leaf this item belongs to (#311): 1 or 2, or null for frames.
+    leaf: int | None
     item_quantity: int
     unit_cost: float | None
     unit_price: float | None
@@ -371,6 +375,8 @@ class ProjectScheduleHardwareItem:
     opening_number: str
     product_code: str
     material_id: str
+    # Door leaf this item belongs to (#311): 1 or 2, or null for frames.
+    leaf: int | None
     hardware_category: str
     item_quantity: int
     unit_cost: float | None

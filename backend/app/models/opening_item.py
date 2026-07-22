@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, Enum, ForeignKey, Index, Integer, String
+from sqlalchemy import CheckConstraint, Enum, ForeignKey, Index, Integer, SmallInteger, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from . import Base
@@ -27,6 +27,9 @@ class OpeningItem(Base):
     building: Mapped[str | None] = mapped_column(String, nullable=True)
     floor: Mapped[str | None] = mapped_column(String, nullable=True)
     location: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Door leaf this assembled unit is (#311): 1 or 2. A pair = two rows sharing opening_number,
+    # each its own location + state; quantity stays 1 (one physical leaf). Null = legacy whole-opening.
+    leaf: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     assembly_completed_at: Mapped[datetime] = mapped_column(nullable=False)
     state: Mapped[OpeningItemState] = mapped_column(

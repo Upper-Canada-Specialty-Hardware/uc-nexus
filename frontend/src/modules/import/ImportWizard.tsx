@@ -624,7 +624,9 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
     // become AVAILABLE so the persisted schedule is byte-equivalent to a fresh XML upload.
     const fullScheduleAggMap = new Map<string, AggregatedHardwareItem>();
     for (const hi of parsed.hardwareItems) {
-      const aggKey = `${hi.opening_number}|${hi.hardware_category}|${hi.product_code}`;
+      // Leaf is part of the key (#311): a pair's leaf-1 and leaf-2 rows for the same product must
+      // persist as separate HardwareItems, not collapse into one. `rest` below keeps `leaf`.
+      const aggKey = `${hi.opening_number}|${hi.hardware_category}|${hi.product_code}|${hi.leaf}`;
       const existing = fullScheduleAggMap.get(aggKey);
       if (existing) {
         existing.item_quantity += hi.item_quantity;
