@@ -11,6 +11,7 @@ from .enums import (
     DeficiencyResolution,
     DeficientItemSource,
     HardwareItemState,
+    LeafStatus,
     NotificationType,
     OpeningItemState,
     PODocumentType,
@@ -755,6 +756,27 @@ class OpeningHardwareStatus:
     floor: str | None
     location: str | None
     items: list[OpeningHardwareStatusItem]
+
+
+@strawberry.type
+class OpeningLeafState:
+    """One door leaf's status in the per-opening leaf-status rollup (#313)."""
+
+    leaf: int
+    status: LeafStatus
+
+
+@strawberry.type
+class OpeningLeafStatus:
+    """Per-opening door-leaf rollup (#313): every leaf 1..leaf_count and its status. project_id /
+    project_name are carried so the global (no-projectId) shop-assembly view disambiguates opening
+    numbers that collide across projects."""
+
+    project_id: strawberry.ID
+    project_name: str
+    opening_number: str
+    leaf_count: int
+    leaves: list[OpeningLeafState]
 
 
 @strawberry.type

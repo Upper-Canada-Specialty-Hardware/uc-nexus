@@ -7,6 +7,7 @@ import { useCart } from '../../contexts/CartContext';
 import { useToast } from '../../components/Toast';
 import { GET_SHIP_READY_ITEMS } from '../../graphql/shipping';
 import { leafLabel, leafSuffix } from '../../utils/leaf';
+import OpeningLeafStatusPanel from '../../components/OpeningLeafStatusPanel';
 
 interface InstalledHardware {
   id: string;
@@ -219,6 +220,12 @@ export default function ShipReadyBrowser({ projectId }: ShipReadyBrowserProps) {
 
   return (
     <Box>
+      <OpeningLeafStatusPanel
+        projectId={projectId}
+        mode="shipping"
+        grouped={!projectId}
+        title="Door leaves shipped"
+      />
       <Tabs value={tabIndex} onChange={(_, v) => setTabIndex(v)} sx={{ mb: 2 }}>
         <Tab label="Opening Items" />
         <Tab label="Loose Hardware" />

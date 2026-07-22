@@ -18,6 +18,7 @@ import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import { useQuery } from '@apollo/client/react';
 import { GET_ASSEMBLE_LIST } from '../../graphql/shop-assembly';
 import { leafSuffix } from '../../utils/leaf';
+import OpeningLeafStatusPanel from '../../components/OpeningLeafStatusPanel';
 
 // --- Types ---
 
@@ -92,6 +93,8 @@ export default function AssembleListPage() {
       <Typography variant="h5" gutterBottom>
         Assemble List
       </Typography>
+
+      <OpeningLeafStatusPanel mode="assembly" grouped title="Door leaves assembled (by project)" />
 
       {loading && !data && (
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>

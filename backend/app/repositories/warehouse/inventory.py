@@ -12,6 +12,7 @@ from app.models.enums import AuditAction, AuditEntityType
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.opening_item import OpeningItem as OpeningItemModel
 from app.models.project import Opening as OpeningModel
+from app.models.project import Project as ProjectModel
 from app.models.purchase_order import POLineItem as POLineItemModel
 from app.models.purchase_order import PurchaseOrder as POModel
 from app.models.vendor import Vendor as VendorModel
@@ -258,6 +259,74 @@ def get_opening_leaf_counts(session: Session, project_id: uuid.UUID) -> dict[str
         select(OpeningModel.opening_number, OpeningModel.leaf_count).where(OpeningModel.project_id == project_id)
     ).all()
     return {opening_number: leaf_count for opening_number, leaf_count in rows}
+
+
+# Furthest-along ordering when a leaf has more than one OpeningItem (e.g. after a correction): the
+# most-advanced state wins. NOT_ASSEMBLED is the floor - a leaf the schedule expects but that has no
+# OpeningItem at all.
+_LEAF_STATUS_RANK = {"NOT_ASSEMBLED": 0, "IN_INVENTORY": 1, "SHIP_READY": 2, "SHIPPED_OUT": 3}
+
+
+def get_opening_leaf_status(session: Session, project_id: uuid.UUID | None = None) -> list[dict]:
+    """Per-opening door-leaf rollup (#313). One row per PAIR opening (leaf_count >= 2 - a single leaf
+    is just its own row, matching the phase-5 rollup convention); each row lists every leaf
+    1..leaf_count with its status. Status comes from OpeningItems (one grouped query, no N+1); a leaf
+    with no OpeningItem is NOT_ASSEMBLED. project_id scopes to one project (shipping); omitting it
+    spans all projects (global shop-assembly), so each row carries project identity to disambiguate
+    opening numbers that collide across projects."""
+    # Pairs only. leaf_count is the denominator M; a NULL leaf_count (legacy) fails `>= 2` and drops.
+    op_stmt = select(OpeningModel.project_id, OpeningModel.opening_number, OpeningModel.leaf_count).where(
+        OpeningModel.leaf_count >= 2
+    )
+    if project_id is not None:
+        op_stmt = op_stmt.where(OpeningModel.project_id == project_id)
+    openings = session.execute(op_stmt).all()
+    if not openings:
+        return []
+
+    # Furthest-along OpeningItem state per (project_id, opening_number, leaf).
+    oi_stmt = select(
+        OpeningItemModel.project_id,
+        OpeningItemModel.opening_number,
+        OpeningItemModel.leaf,
+        OpeningItemModel.state,
+    )
+    if project_id is not None:
+        oi_stmt = oi_stmt.where(OpeningItemModel.project_id == project_id)
+    leaf_state: dict[tuple[uuid.UUID, str, int], str] = {}
+    for pid, opening_number, leaf, state in session.execute(oi_stmt).all():
+        if leaf is None:
+            continue
+        state_value = state.value if hasattr(state, "value") else str(state)
+        key = (pid, opening_number, leaf)
+        current = leaf_state.get(key)
+        if current is None or _LEAF_STATUS_RANK[state_value] > _LEAF_STATUS_RANK[current]:
+            leaf_state[key] = state_value
+
+    project_names = {
+        pid: (description or code)
+        for pid, description, code in session.execute(
+            select(ProjectModel.id, ProjectModel.description, ProjectModel.project_id).where(
+                ProjectModel.id.in_({pid for pid, _, _ in openings})
+            )
+        ).all()
+    }
+
+    rows = [
+        {
+            "project_id": pid,
+            "project_name": project_names.get(pid, ""),
+            "opening_number": opening_number,
+            "leaf_count": leaf_count,
+            "leaves": [
+                {"leaf": n, "status": leaf_state.get((pid, opening_number, n), "NOT_ASSEMBLED")}
+                for n in range(1, leaf_count + 1)
+            ],
+        }
+        for pid, opening_number, leaf_count in openings
+    ]
+    rows.sort(key=lambda r: (r["project_name"], r["opening_number"]))
+    return rows
 
 
 def get_opening_item_details(session: Session, oi_id: uuid.UUID) -> OpeningItemModel:
