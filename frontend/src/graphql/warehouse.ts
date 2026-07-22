@@ -268,7 +268,7 @@ export const GET_LOCATION_CONTENTS = gql`
       }
       openingItems {
         id projectId openingId warehouseId openingNumber
-        building floor location quantity
+        building floor location leaf quantity
         assemblyCompletedAt state aisle row bay
         createdAt updatedAt
         installedHardware { id openingItemId productCode hardwareCategory quantity }

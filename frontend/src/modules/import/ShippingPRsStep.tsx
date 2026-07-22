@@ -14,6 +14,7 @@ import AddIcon from '@mui/icons-material/Add';
 import DeleteIcon from '@mui/icons-material/Delete';
 import type { AggregatedHardwareItem, ShippingPRDraft } from './types';
 import { aggregationKey } from './types';
+import { leafLabel } from '../../utils/leaf';
 
 interface ShippingPRsStepProps {
   shippingPRDrafts: ShippingPRDraft[];
@@ -110,6 +111,7 @@ export default function ShippingPRsStep({
                     <Typography variant="body2">
                       Opening: {hi.opening_number} | Product: {hi.product_code} | Category:{' '}
                       {hi.hardware_category} | Qty: {hi.item_quantity}
+                      {leafLabel(hi.leaf) ? ` | ${leafLabel(hi.leaf)}` : ''}
                     </Typography>
                   }
                   sx={{ display: 'block' }}
