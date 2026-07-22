@@ -16,6 +16,7 @@ from .types import (
     DeficientItemRow,
     GpCostCode,
     GpJob,
+    GpTaxDetail,
     GpVendor,
     InventoryLocation,
     Notification,
@@ -156,11 +157,20 @@ def gp_vendor_to_type(v: dict) -> GpVendor:
         vendor_name=v["vendor_name"],
         vendor_class=v.get("vendor_class"),
         status=v["status"],
+        # older relays predate the currency field (issue #257); default to CAD so a mixed-version
+        # relay doesn't break the vendor dropdown.
+        currency=v.get("currency") or "CAD",
     )
 
 
 def gp_cost_code_to_type(c: dict) -> GpCostCode:
     return GpCostCode(cost_code=c["cost_code"], description=c.get("description"), cost_element=c["cost_element"])
+
+
+def gp_tax_detail_to_type(t: dict) -> GpTaxDetail:
+    return GpTaxDetail(
+        tax_detail_id=t["tax_detail_id"], description=t.get("description"), percent=t["percent"]
+    )
 
 
 def warehouse_to_type(w) -> Warehouse:

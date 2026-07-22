@@ -229,8 +229,15 @@ class RegisterPOInput:
     vendor_id: strawberry.ID | None = None
     cost_code: str | None = None
     # Issue #156: optional order-time dollar costs. Null means "not entered"; 0 is a valid value.
+    # shipping_cost also feeds GP's Freight (FRTAMNT) at push time (issue #257); tariff_amount stays
+    # nexus-only (its own PO-document line, not a GP charge).
     shipping_cost: float | None = None
     tariff_amount: float | None = None
+    # Issue #257: GP purchase tax detail (TX00201 TXDTLTYP=2, picked from gpTaxDetails; CAD only) plus
+    # the Miscellaneous (MSCCHAMT) and Trade Discount (TRDISAMT) charges written to the GP PO header.
+    tax_detail_id: str | None = None
+    miscellaneous: float | None = None
+    trade_discount: float | None = None
     # Issue #202 #1: client-generated key that makes this GP-first write idempotent on retry.
     idempotency_key: str = ""
 

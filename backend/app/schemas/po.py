@@ -105,7 +105,10 @@ def _assert_buyer_identity(caller_gp_buyer_id: str | None, input_buyer_id: str) 
         raise ValidationError("POs can only be created as your own GP buyer", field="buyer_id")
 
 
-def _prepare_register_po(*, po_id, vendor_id, gp_vendor_id, buyer_id, cost_code, line_items_data) -> dict:
+def _prepare_register_po(
+    *, po_id, vendor_id, gp_vendor_id, buyer_id, cost_code, line_items_data,
+    tax_detail_id=None, shipping_cost=None, miscellaneous=None, trade_discount=None,
+) -> dict:
     """Read-only pre-flight for register_po_in_gp: confirm the PO is a registerable DRAFT, resolve the
     job number, pre-validate, and build the relay create_po payload (po_number=None; GP assigns it).
     A lean scalar read - the resolver never needs the PO's documents/vendor here."""
@@ -151,6 +154,11 @@ def _prepare_register_po(*, po_id, vendor_id, gp_vendor_id, buyer_id, cost_code,
         cost_code=cost_code,
         po_number=None,
         line_items=line_items_data,
+        # Issue #257: freight maps from the PO's shipping_cost; misc + trade discount are new inputs.
+        tax_detail_id=tax_detail_id,
+        freight_amount=shipping_cost,
+        misc_amount=miscellaneous,
+        trade_discount=trade_discount,
     )
     # build_create_po_payload emits one line per line_items_data entry, in order, so index-align the
     # resolved manufacturers onto the relay payload lines (the relay caps/RTRIMs to USRDEFND1's char(50)).
@@ -343,6 +351,10 @@ class POMutations:
             buyer_id=input.buyer_id,
             cost_code=input.cost_code,
             line_items_data=line_items_data,
+            tax_detail_id=input.tax_detail_id,
+            shipping_cost=input.shipping_cost,
+            miscellaneous=input.miscellaneous,
+            trade_discount=input.trade_discount,
         )
 
         if state is not None and state.relay_result is not None:

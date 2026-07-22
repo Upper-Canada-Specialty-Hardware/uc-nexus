@@ -304,39 +304,98 @@ def update_po_header_subtotal(
     shipping_method: str = "LOCAL DELIVERY",
     po_status: int = 2,
     po_type: int = 1,
+    trade_discount: Decimal = Decimal(0),
+    freight_amount: Decimal = Decimal(0),
+    misc_amount: Decimal = Decimal(0),
+    tax_amount: Decimal = Decimal(0),
+    using_header_taxes: bool = False,
 ) -> None:
-    """Re-call taPoHdr with UpdateIfExists=1 + the computed SUBTOTAL (validated now
-    against the line totals from steps 3-4). May be droppable if the wsi proc sets
-    SUBTOTAL itself — that's one of the two unknowns to resolve after the first create."""
+    """Re-call taPoHdr with UpdateIfExists=1 + the computed SUBTOTAL (validated now against the line
+    totals from steps 3-4) and the order-time GP charges (issue #257): trade discount, freight, misc,
+    and the header-level tax amount.
+
+    Freight/misc go on non-taxable (Purchase_Freight_Taxable/Purchase_Misc_Taxable=0), so no
+    FRTSCHID/MSCSCHID is needed. When a tax detail was inserted (via insert_po_tax_detail),
+    using_header_taxes=1 tells GP to use the passed TAXAMNT rather than compute one - GP does NOT
+    calculate PO tax under header-level taxes (verified live). TAXSCHID is left blank; GP accepts a
+    header-level-tax PO with a blank schedule (verified TUBC)."""
     sql = """
     DECLARE @err int = 0;
     DECLARE @err_str varchar(255) = '';
     EXEC dbo.taPoHdr
-        @I_vPOTYPE         = ?,
-        @I_vPONUMBER       = ?,
-        @I_vVENDORID       = ?,
-        @I_vDOCDATE        = ?,
-        @I_vBUYERID        = ?,
-        @I_vCURNCYID       = ?,
-        @I_vPOSTATUS       = ?,
-        @I_vCONFIRM1       = ?,
-        @I_vVADCDPAD       = ?,
-        @I_vSHIPMTHD       = ?,
-        @I_vSUBTOTAL       = ?,
-        @I_vUpdateIfExists = 1,
-        @O_iErrorState     = @err OUTPUT,
-        @oErrString        = @err_str OUTPUT;
+        @I_vPOTYPE                   = ?,
+        @I_vPONUMBER                 = ?,
+        @I_vVENDORID                 = ?,
+        @I_vDOCDATE                  = ?,
+        @I_vBUYERID                  = ?,
+        @I_vCURNCYID                 = ?,
+        @I_vPOSTATUS                 = ?,
+        @I_vCONFIRM1                 = ?,
+        @I_vVADCDPAD                 = ?,
+        @I_vSHIPMTHD                 = ?,
+        @I_vSUBTOTAL                 = ?,
+        @I_vTRDISAMT                 = ?,
+        @I_vFRTAMNT                  = ?,
+        @I_vMSCCHAMT                 = ?,
+        @I_vTAXAMNT                  = ?,
+        @I_vPurchase_Freight_Taxable = 0,
+        @I_vPurchase_Misc_Taxable    = 0,
+        @I_vUSINGHEADERLEVELTAXES    = ?,
+        @I_vUpdateIfExists           = 1,
+        @O_iErrorState               = @err OUTPUT,
+        @oErrString                  = @err_str OUTPUT;
     SELECT @err AS error_state, @err_str AS err_string;
     """
     row = conn.cursor().execute(
         sql,
         po_type, po_number, vendor_id, doc_date, buyer_id, currency_id,
         po_status, confirm_with, vendor_address_code, shipping_method, subtotal,
+        trade_discount, freight_amount, misc_amount, tax_amount, 1 if using_header_taxes else 0,
     ).fetchone()
     if row.error_state != 0:
         raise EConnectError(
             f"taPoHdr (subtotal update) failed: {row.err_string.strip()}",
             proc="taPoHdr", error_state=row.error_state,
+        )
+
+
+def insert_po_tax_detail(
+    conn,
+    *,
+    po_number: str,
+    vendor_id: str,
+    tax_detail_id: str,
+    tax_amount: Decimal,
+    taxable_purchase: Decimal,
+) -> None:
+    """taPopIvcTaxInsert: attach ONE purchase tax detail to a PO (issue #257). TAXTYPE=0 = the PO item
+    tax. GP does not compute PO tax under header-level taxes, so the caller passes the computed TAXAMNT
+    (= detail rate x taxable purchase) plus the taxable/total purchase base. Called BEFORE the final
+    update_po_header_subtotal, which sets USINGHEADERLEVELTAXES=1 + the matching TAXAMNT."""
+    sql = """
+    DECLARE @err int = 0;
+    DECLARE @err_str varchar(255) = '';
+    EXEC dbo.taPopIvcTaxInsert
+        @I_vPONUMBER   = ?,
+        @I_vTAXTYPE    = 0,
+        @I_vORD        = 0,
+        @I_vTAXDTLID   = ?,
+        @I_vBKOUTTAX   = 0,
+        @I_vTAXAMNT    = ?,
+        @I_vTAXPURCH   = ?,
+        @I_vTOTPURCH   = ?,
+        @I_vVENDORID   = ?,
+        @O_iErrorState = @err OUTPUT,
+        @oErrString    = @err_str OUTPUT;
+    SELECT @err AS error_state, @err_str AS err_string;
+    """
+    row = conn.cursor().execute(
+        sql, po_number, tax_detail_id, tax_amount, taxable_purchase, taxable_purchase, vendor_id
+    ).fetchone()
+    if row.error_state != 0:
+        raise EConnectError(
+            f"taPopIvcTaxInsert failed for detail {tax_detail_id}: {row.err_string.strip()}",
+            proc="taPopIvcTaxInsert", error_state=row.error_state,
         )
 
 
@@ -414,11 +473,12 @@ def read_po_receipt_context(conn, po_number: str):
 
 def list_vendors(conn, *, active_only: bool = True) -> list[dict]:
     """Read-only: PM00200 vendor list for the vendor sync (feeds UC Nexus's Vendor.gp_vendor_id).
-    Returns VENDORID / VENDNAME / VNDCLSID (class) / VENDSTTS (status). VENDSTTS 1 = active; the
-    sync only wants vendors usable on a new PO, so active_only filters to those."""
+    Returns VENDORID / VENDNAME / VNDCLSID (class) / VENDSTTS (status) / CURNCYID (currency). VENDSTTS
+    1 = active; the sync only wants vendors usable on a new PO, so active_only filters to those.
+    currency (issue #257) is the vendor's GP currency the PO inherits; blank -> functional 'CAD'."""
     sql = (
         "SELECT RTRIM(VENDORID) AS vendor_id, RTRIM(VENDNAME) AS vendor_name, "
-        "RTRIM(VNDCLSID) AS vendor_class, VENDSTTS AS status FROM dbo.PM00200 "
+        "RTRIM(VNDCLSID) AS vendor_class, VENDSTTS AS status, RTRIM(CURNCYID) AS currency FROM dbo.PM00200 "
     )
     if active_only:
         sql += "WHERE VENDSTTS = 1 "
@@ -430,9 +490,46 @@ def list_vendors(conn, *, active_only: bool = True) -> list[dict]:
             "vendor_name": r.vendor_name,
             "vendor_class": r.vendor_class or None,
             "status": int(r.status),
+            "currency": (r.currency or "").strip().upper() or "CAD",
         }
         for r in rows
     ]
+
+
+def get_vendor_currency(conn, vendor_id: str) -> str:
+    """Read-only: a vendor's GP currency (PM00200.CURNCYID), for GP-first currency resolution at PO
+    create (issue #257: the vendor dictates PO currency). Blank -> functional currency 'CAD'. Returns
+    an uppercased currency id, or 'CAD' if the vendor row is missing (create_po_header would then fail
+    on VENDORID with a clear eConnect error anyway)."""
+    row = conn.cursor().execute(
+        "SELECT RTRIM(CURNCYID) AS cur FROM dbo.PM00200 WHERE VENDORID = ?", vendor_id
+    ).fetchone()
+    return ((row.cur if row else "") or "").strip().upper() or "CAD"
+
+
+def list_tax_details(conn) -> list[dict]:
+    """Read-only: PURCHASE tax details (TX00201 WHERE TXDTLTYP = 2) for the register-PO tax-detail
+    dropdown (issue #257). TXDTLTYP 1 = Sales, 2 = Purchases. TXDTLPCT is the percent the relay uses
+    to compute the PO tax. GP-first: the options are whatever the company defines (e.g. BC HST P /
+    ON HST - P / PST 7% in production), never a hardcoded list."""
+    rows = conn.cursor().execute(
+        "SELECT RTRIM(TAXDTLID) AS tax_detail_id, RTRIM(TXDTLDSC) AS description, TXDTLPCT AS percent "
+        "FROM dbo.TX00201 WHERE TXDTLTYP = 2 ORDER BY TAXDTLID"
+    ).fetchall()
+    return [
+        {"tax_detail_id": r.tax_detail_id, "description": r.description or None, "percent": float(r.percent)}
+        for r in rows
+    ]
+
+
+def get_tax_detail_percent(conn, tax_detail_id: str) -> Decimal | None:
+    """Read-only: the percent rate of a PURCHASE tax detail (TX00201.TXDTLPCT WHERE TXDTLTYP = 2), for
+    computing the PO tax amount. Returns None if the id isn't a purchase tax detail (caller raises a
+    clean tax_detail_not_found instead of letting taPopIvcTaxInsert reject it mid-transaction)."""
+    row = conn.cursor().execute(
+        "SELECT TXDTLPCT AS pct FROM dbo.TX00201 WHERE TAXDTLID = ? AND TXDTLTYP = 2", tax_detail_id
+    ).fetchone()
+    return Decimal(str(row.pct)) if row is not None else None
 
 
 def list_buyers(conn) -> list[str]:

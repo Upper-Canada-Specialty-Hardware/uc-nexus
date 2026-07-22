@@ -17,7 +17,7 @@ import RefreshIcon from '@mui/icons-material/Refresh';
 import { useApolloClient, useMutation, useQuery } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import { useToast } from '../../components/Toast';
-import { CREATE_DRAFT_PO, REGISTER_PO_IN_GP, GET_GP_COST_CODES, GET_GP_VENDORS, SUGGEST_VENDOR_FOR_MANUFACTURER } from '../../graphql/po';
+import { CREATE_DRAFT_PO, REGISTER_PO_IN_GP, GET_GP_COST_CODES, GET_GP_VENDORS, GET_GP_TAX_DETAILS, SUGGEST_VENDOR_FOR_MANUFACTURER } from '../../graphql/po';
 import { GET_BUYER_ASSIGNMENTS, GET_PROJECTS } from '../../graphql/shared';
 import { useIdentity } from '../../hooks/useIdentity';
 import VendorSelect from '../../components/VendorSelect';
@@ -52,12 +52,19 @@ interface GpVendorOption {
   vendorName: string;
   vendorClass: string | null;
   status: number;
+  currency: string; // GP CURNCYID (issue #257); the PO inherits it, blank -> 'CAD'
 }
 
 interface GpCostCode {
   costCode: string; // two-segment number 'cc1-cc2' e.g. '310-000'
   description: string | null;
   costElement: number; // GP Cost_Element (varies by code); the /po cost_code trailing digit
+}
+
+interface GpTaxDetailOption {
+  taxDetailId: string; // GP TAXDTLID (purchase detail, TX00201 TXDTLTYP=2)
+  description: string | null;
+  percent: number; // GP TXDTLPCT
 }
 
 const EMPTY_LINE_ITEM: Omit<LineItemRow, 'key' | 'id'> = {
@@ -134,6 +141,11 @@ export default function GpPurchaseOrderDialog({
   // Issue #156: optional order-time dollar costs. Kept as strings ('' = not entered, distinct from 0).
   const [shippingCost, setShippingCost] = useState('');
   const [tariffAmount, setTariffAmount] = useState('');
+  // Issue #257: GP header charges captured at register time. taxDetailId is a GP purchase tax detail
+  // (CAD only); miscellaneous + tradeDiscount are dollar inputs. Freight maps from shippingCost above.
+  const [taxDetailId, setTaxDetailId] = useState('');
+  const [miscellaneous, setMiscellaneous] = useState('');
+  const [tradeDiscount, setTradeDiscount] = useState('');
   // Issue #256: create mode drafts carry an optional Nexus vendor link + the PM's preferred date.
   const [vendorId, setVendorId] = useState<string | null>(null);
   const [preferredDeliveryDate, setPreferredDeliveryDate] = useState('');
@@ -203,6 +215,20 @@ export default function GpPurchaseOrderDialog({
     fetchPolicy: 'cache-first',
   });
   const gpVendors = gpVendorsData?.gpVendors ?? [];
+
+  // Issue #257: live GP purchase tax details (TX00201, TXDTLTYP=2) for the tax-detail dropdown.
+  const { data: gpTaxDetailsData } = useQuery<{ gpTaxDetails: GpTaxDetailOption[] }>(GET_GP_TAX_DETAILS, {
+    variables: { company },
+    skip: !open || !isRegister || !relayConnected || !company,
+    fetchPolicy: 'cache-first',
+  });
+  const gpTaxDetails = gpTaxDetailsData?.gpTaxDetails ?? [];
+
+  // Issue #257: the PO currency is the selected GP vendor's (GP-first, resolved again server-side).
+  // USD POs need exchange-rate handling not yet built (the relay guards them), so surface USD here and
+  // show the CAD-only tax-detail dropdown accordingly.
+  const gpVendorCurrency = gpVendors.find((v) => v.vendorId === gpVendorId)?.currency ?? 'CAD';
+  const isUsdVendor = isRegister && !!gpVendorId && gpVendorCurrency !== 'CAD';
 
   // Issue #232: suggest the ordering vendor from each line's TITAN manufacturer. The manufacturer is
   // the derived POLineItem.manufacturer (resolved server-side from the line's linked HardwareItem),
@@ -308,6 +334,10 @@ export default function GpPurchaseOrderDialog({
       setNotes(registerPo.notes ?? '');
       setShippingCost(registerPo.shippingCost != null ? String(registerPo.shippingCost) : '');
       setTariffAmount(registerPo.tariffAmount != null ? String(registerPo.tariffAmount) : '');
+      // Issue #257: no draft-side source for these; the user enters them at register time.
+      setTaxDetailId('');
+      setMiscellaneous('');
+      setTradeDiscount('');
       const rows: LineItemRow[] = registerPo.lineItems.map((li, i) => ({
         key: i + 1,
         id: li.id,
@@ -326,6 +356,9 @@ export default function GpPurchaseOrderDialog({
       setNotes('');
       setShippingCost('');
       setTariffAmount('');
+      setTaxDetailId('');
+      setMiscellaneous('');
+      setTradeDiscount('');
       setVendorId(null);
       setPreferredDeliveryDate('');
       setLineItems([{ key: 1, ...EMPTY_LINE_ITEM }]);
@@ -433,15 +466,26 @@ export default function GpPurchaseOrderDialog({
       if (!gpBuyerId) errs.buyer = 'Your account has no GP buyer identity - ask an Admin to set it in User Management';
       else if (!registerProjectAllowed) errs.buyer = `Buyer ${gpBuyerId} is not assigned to this project`;
       if (isJob && !costCode) errs.costCode = 'Cost code is required for a project PO';
+      // Issue #257: USD (foreign-currency) POs need exchange-rate handling not yet built - the relay
+      // rejects them - so block registration here with a clear message instead of a relay error.
+      if (isUsdVendor)
+        errs.vendor = `${gpVendorCurrency} vendor POs are not supported yet (issue #257 follow-up); pick a CAD vendor`;
+      // A CAD PO must carry a tax detail (the relay computes tax from it). USD carries none.
+      else if (gpVendorId && !taxDetailId) errs.taxDetail = 'Select a tax detail';
     }
     // Issue #156: optional, but a non-empty entry must be a valid non-negative dollar value.
     if (shippingCost.trim() !== '' && (isNaN(parseFloat(shippingCost)) || parseFloat(shippingCost) < 0))
       errs.shippingCost = 'Must be >= 0';
     if (tariffAmount.trim() !== '' && (isNaN(parseFloat(tariffAmount)) || parseFloat(tariffAmount) < 0))
       errs.tariffAmount = 'Must be >= 0';
+    // Issue #257: the new GP charges are optional but must be valid non-negative dollars when entered.
+    if (miscellaneous.trim() !== '' && (isNaN(parseFloat(miscellaneous)) || parseFloat(miscellaneous) < 0))
+      errs.miscellaneous = 'Must be >= 0';
+    if (tradeDiscount.trim() !== '' && (isNaN(parseFloat(tradeDiscount)) || parseFloat(tradeDiscount) < 0))
+      errs.tradeDiscount = 'Must be >= 0';
     setErrors(errs);
     return Object.keys(errs).length === 0;
-  }, [lineItems, relayConnected, gpVendorId, isRegister, vendorConfirmed, gpBuyerId, registerProjectAllowed, isJob, costCode, shippingCost, tariffAmount]);
+  }, [lineItems, relayConnected, gpVendorId, isRegister, vendorConfirmed, gpBuyerId, registerProjectAllowed, isJob, costCode, shippingCost, tariffAmount, isUsdVendor, gpVendorCurrency, taxDetailId, miscellaneous, tradeDiscount]);
 
   const handleSubmit = useCallback(async () => {
     if (!validate()) return;
@@ -464,6 +508,10 @@ export default function GpPurchaseOrderDialog({
     // Issue #156: '' = not entered (null); 0 is a valid entered value.
     const shippingCostValue = shippingCost.trim() === '' ? null : parseFloat(shippingCost);
     const tariffAmountValue = tariffAmount.trim() === '' ? null : parseFloat(tariffAmount);
+    // Issue #257: same '' -> null convention. tax detail is not sent for a USD PO (it carries none).
+    const miscellaneousValue = miscellaneous.trim() === '' ? null : parseFloat(miscellaneous);
+    const tradeDiscountValue = tradeDiscount.trim() === '' ? null : parseFloat(tradeDiscount);
+    const taxDetailIdValue = isUsdVendor || !taxDetailId ? null : taxDetailId;
 
     setGpError(null);
     setGpBusy(true);
@@ -482,6 +530,9 @@ export default function GpPurchaseOrderDialog({
               costCode: gpCostCode,
               shippingCost: shippingCostValue,
               tariffAmount: tariffAmountValue,
+              taxDetailId: taxDetailIdValue,
+              miscellaneous: miscellaneousValue,
+              tradeDiscount: tradeDiscountValue,
               idempotencyKey,
               lineItems: lineItems.map((li, idx) => ({
                 id: li.id ?? null,
@@ -543,6 +594,10 @@ export default function GpPurchaseOrderDialog({
     notes,
     shippingCost,
     tariffAmount,
+    taxDetailId,
+    miscellaneous,
+    tradeDiscount,
+    isUsdVendor,
     registerPo,
     isRegister,
     createDraftPo,
@@ -803,6 +858,60 @@ export default function GpPurchaseOrderDialog({
               <RefreshIcon fontSize="small" />
             </IconButton>
           </Box>
+        </Stack>
+        {/* Issue #257: GP currency (read-only, from the vendor), the CAD-only tax detail, and the
+            Miscellaneous / Trade discount charges. Freight is the "Shipping costs" field above. */}
+        <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap alignItems="flex-start" sx={{ mt: 2 }}>
+          <TextField
+            label="Currency"
+            value={gpVendorId ? gpVendorCurrency : '—'}
+            size="small"
+            sx={{ minWidth: 120 }}
+            disabled
+            error={isUsdVendor}
+            helperText={isUsdVendor ? 'USD not supported yet' : ' '}
+          />
+          <TextField
+            select
+            label="Tax detail (required)"
+            value={taxDetailId}
+            onChange={(e) => setTaxDetailId(e.target.value)}
+            size="small"
+            sx={{ minWidth: 260 }}
+            disabled={!relayConnected || isUsdVendor || gpTaxDetails.length === 0}
+            error={!!errors.taxDetail}
+            helperText={errors.taxDetail || (isUsdVendor ? 'Not applicable for USD' : '')}
+          >
+            {gpTaxDetails.map((t) => (
+              <MenuItem key={t.taxDetailId} value={t.taxDetailId}>
+                {t.description
+                  ? `${t.taxDetailId} · ${t.description} (${t.percent}%)`
+                  : `${t.taxDetailId} (${t.percent}%)`}
+              </MenuItem>
+            ))}
+          </TextField>
+          <TextField
+            label="Miscellaneous (optional)"
+            value={miscellaneous}
+            onChange={(e) => setMiscellaneous(e.target.value)}
+            size="small"
+            type="number"
+            slotProps={{ htmlInput: { min: 0, step: 0.01 } }}
+            sx={{ width: 190 }}
+            error={!!errors.miscellaneous}
+            helperText={errors.miscellaneous}
+          />
+          <TextField
+            label="Trade discount (optional)"
+            value={tradeDiscount}
+            onChange={(e) => setTradeDiscount(e.target.value)}
+            size="small"
+            type="number"
+            slotProps={{ htmlInput: { min: 0, step: 0.01 } }}
+            sx={{ width: 190 }}
+            error={!!errors.tradeDiscount}
+            helperText={errors.tradeDiscount}
+          />
         </Stack>
         {errors.gp && (
           <Alert severity="error" sx={{ mt: 2 }}>

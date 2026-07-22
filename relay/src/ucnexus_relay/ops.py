@@ -8,6 +8,7 @@ propagate for a raw eConnect failure."""
 
 import socket
 from datetime import date
+from decimal import Decimal
 
 from . import buyers, econnect, models
 from .config import get_settings
@@ -58,6 +59,18 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
             f"buyer '{buyer_id}' is not a registered GP buyer for {company} (registered: {registered})",
         )
 
+    # 0c. currency: GP-first, the vendor master dictates the PO currency (issue #257), not the client.
+    #     Foreign-currency POs need an exchange rate (XCHGRATE/RATETPID) that this path does not yet
+    #     supply - eConnect rejects a non-CAD PO with no rate - so guard them out with a clear error
+    #     until the exchange-rate follow-up lands. CAD (functional currency) needs no rate.
+    currency = econnect.get_vendor_currency(conn, h.vendor_id)
+    if currency != "CAD":
+        raise RelayOpError(
+            "currency_unsupported",
+            f"vendor '{h.vendor_id}' is a {currency} vendor; foreign-currency POs need exchange-rate "
+            f"handling not yet implemented (issue #257 follow-up). Only CAD POs are supported for now.",
+        )
+
     # 0b. job + cost code: the wsi proc (step 4 below) rejects a made-up job or a cost code not set up
     #     on the job with a raw eConnect error mid-transaction, so pre-check job-cost lines here for
     #     clean job_not_registered / cost_code_not_on_job errors, mirroring the buyer check. Only PI=2
@@ -99,7 +112,7 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
         doc_date=h.doc_date,
         buyer_id=buyer_id,
         confirm_with=h.confirm_with,
-        currency_id=h.currency_id,
+        currency_id=currency,
         vendor_address_code=h.vendor_address_code,
         shipping_method=h.shipping_method,
     )
@@ -132,8 +145,28 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
             cost_code=line.cost_code,
         )
 
-    # 5. header subtotal
+    # 5. subtotal + order-time charges. GP does NOT compute PO tax under header-level taxes, so when a
+    #    tax detail was picked the relay looks up its rate, computes the tax, inserts the detail
+    #    (taPopIvcTaxInsert) BEFORE the final header, then sets USINGHEADERLEVELTAXES=1 + that TAXAMNT.
     subtotal = sum(line.quantity * line.unit_cost for line in request.lines)
+    tax_amount = Decimal(0)
+    if h.tax_detail_id:
+        pct = econnect.get_tax_detail_percent(conn, h.tax_detail_id)
+        if pct is None:
+            raise RelayOpError(
+                "tax_detail_not_found",
+                f"tax detail '{h.tax_detail_id}' is not a GP purchase tax detail "
+                f"(TX00201 TXDTLTYP=2) for {company}",
+            )
+        tax_amount = (subtotal * pct / Decimal(100)).quantize(Decimal("0.01"))
+        econnect.insert_po_tax_detail(
+            conn,
+            po_number=po_number,
+            vendor_id=h.vendor_id,
+            tax_detail_id=h.tax_detail_id,
+            tax_amount=tax_amount,
+            taxable_purchase=subtotal,
+        )
     econnect.update_po_header_subtotal(
         conn,
         po_number=po_number,
@@ -141,10 +174,15 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
         doc_date=h.doc_date,
         buyer_id=buyer_id,
         confirm_with=h.confirm_with,
-        currency_id=h.currency_id,
+        currency_id=currency,
         vendor_address_code=h.vendor_address_code,
         shipping_method=h.shipping_method,
         subtotal=subtotal,
+        trade_discount=h.trade_discount,
+        freight_amount=h.freight_amount,
+        misc_amount=h.misc_amount,
+        tax_amount=tax_amount,
+        using_header_taxes=bool(h.tax_detail_id),
     )
 
     return models.CreatePoResponse(
@@ -154,6 +192,8 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
         subtotal=subtotal,
         doc_date=h.doc_date,
         vendor_id=h.vendor_id,
+        currency=currency,
+        tax_amount=tax_amount,
     )
 
 
