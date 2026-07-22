@@ -9,6 +9,7 @@ import {
   REGISTER_PO_IN_GP,
   GET_GP_COST_CODES,
   GET_GP_VENDORS,
+  GET_GP_TAX_DETAILS,
 } from '../../../graphql/po';
 import {
   GET_BUYER_ASSIGNMENTS,
@@ -174,8 +175,20 @@ function baseMocks(
       result: {
         data: {
           gpVendors: [
-            { vendorId: 'V-ACE', vendorName: 'Ace Hardware Co', vendorClass: null, status: 1, __typename: 'GpVendor' },
-            { vendorId: 'V-ALL', vendorName: 'Allegion Hardware', vendorClass: null, status: 1, __typename: 'GpVendor' },
+            { vendorId: 'V-ACE', vendorName: 'Ace Hardware Co', vendorClass: null, status: 1, currency: 'CAD', __typename: 'GpVendor' },
+            { vendorId: 'V-ALL', vendorName: 'Allegion Hardware', vendorClass: null, status: 1, currency: 'CAD', __typename: 'GpVendor' },
+            { vendorId: 'V-USD', vendorName: 'US Supplier Co', vendorClass: null, status: 1, currency: 'USD', __typename: 'GpVendor' },
+          ],
+        },
+      },
+      maxUsageCount: INFINITE,
+    },
+    {
+      request: { query: GET_GP_TAX_DETAILS, variables: { company: 'UCS' } },
+      result: {
+        data: {
+          gpTaxDetails: [
+            { taxDetailId: 'ON HST - P', description: 'ON HST on Purchases', percent: 13, __typename: 'GpTaxDetail' },
           ],
         },
       },
@@ -281,6 +294,13 @@ async function waitForVendorPreselect() {
   );
 }
 
+// Issue #257: a CAD PO requires a tax detail before it can be registered.
+async function selectTaxDetail() {
+  const listbox = await openSelect('Tax detail (required)');
+  fireEvent.click(within(listbox).getByText(/ON HST - P/));
+  await closeSelect();
+}
+
 describe('GpPurchaseOrderDialog', () => {
   it('register mode seeds the draft, shows the caller as buyer and pre-selects an exact-match GP vendor', async () => {
     renderDialog({ registerPo: stockDraft });
@@ -362,11 +382,12 @@ describe('GpPurchaseOrderDialog', () => {
     fireEvent.click(
       screen.getByRole('checkbox', { name: 'This is the correct GP vendor (Ace Hardware Co)' }),
     );
+    await selectTaxDetail();
     fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
 
     await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
     expect(calls).toHaveLength(1);
-    expect(calls[0]).toMatchObject({ input: { gpVendorId: 'V-ACE' } });
+    expect(calls[0]).toMatchObject({ input: { gpVendorId: 'V-ACE', taxDetailId: 'ON HST - P' } });
   });
 
   it('registers a project draft with gpCompany, a designated cost code and an idempotency key', async () => {
@@ -402,6 +423,7 @@ describe('GpPurchaseOrderDialog', () => {
     fireEvent.change(screen.getByLabelText('Shipping costs (optional)'), {
       target: { value: '25' },
     });
+    await selectTaxDetail();
     fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
 
     await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
@@ -416,6 +438,9 @@ describe('GpPurchaseOrderDialog', () => {
         costCode: '310-000-3',
         shippingCost: 25,
         tariffAmount: null,
+        taxDetailId: 'ON HST - P',
+        miscellaneous: null,
+        tradeDiscount: null,
         idempotencyKey: expect.stringMatching(UUID_RE) as string,
         lineItems: [
           {
@@ -430,6 +455,75 @@ describe('GpPurchaseOrderDialog', () => {
         ],
       },
     });
+  });
+
+  it('requires a tax detail before a CAD PO can be registered (issue #257)', async () => {
+    const calls: Record<string, unknown>[] = [];
+    const registerMock: MockedResponse = {
+      request: { query: REGISTER_PO_IN_GP, variables: () => true },
+      result: (vars) => {
+        calls.push(vars as Record<string, unknown>);
+        return { data: registerData() };
+      },
+    };
+    const { onSubmitted } = renderDialog({ registerPo: stockDraft }, [...baseMocks(), registerMock]);
+    await waitForVendorPreselect();
+
+    // No tax detail picked yet -> blocked with a clear message; nothing reaches GP.
+    fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+    expect(await screen.findByText('Select a tax detail')).toBeInTheDocument();
+    expect(calls).toHaveLength(0);
+    expect(onSubmitted).not.toHaveBeenCalled();
+
+    // Pick it and the PO registers, carrying the chosen detail.
+    await selectTaxDetail();
+    fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+    await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
+    expect(calls[0]).toMatchObject({ input: { taxDetailId: 'ON HST - P' } });
+  });
+
+  it('does not require a tax detail when the company defines none (issue #257)', async () => {
+    const calls: Record<string, unknown>[] = [];
+    const registerMock: MockedResponse = {
+      request: { query: REGISTER_PO_IN_GP, variables: () => true },
+      result: (vars) => {
+        calls.push(vars as Record<string, unknown>);
+        return { data: registerData() };
+      },
+    };
+    // A company with no purchase tax details: the dropdown is empty/disabled, so registration must not
+    // be hard-blocked on picking one.
+    const mocksNoTax = baseMocks().map((m) =>
+      m.request.query === GET_GP_TAX_DETAILS ? { ...m, result: { data: { gpTaxDetails: [] } } } : m,
+    );
+    const { onSubmitted } = renderDialog({ registerPo: stockDraft }, [...mocksNoTax, registerMock]);
+    await waitForVendorPreselect();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+    await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
+    expect(calls[0]).toMatchObject({ input: { taxDetailId: null } });
+  });
+
+  it('registers a USD vendor PO with no tax detail (foreign currency, issue #257)', async () => {
+    const calls: Record<string, unknown>[] = [];
+    const registerMock: MockedResponse = {
+      request: { query: REGISTER_PO_IN_GP, variables: () => true },
+      result: (vars) => {
+        calls.push(vars as Record<string, unknown>);
+        return { data: registerData() };
+      },
+    };
+    // A draft whose vendor name exact-matches the USD vendor auto-preselects it (confident).
+    const usdDraft = { ...stockDraft, vendorNameSnapshot: 'US Supplier Co' };
+    const { onSubmitted } = renderDialog({ registerPo: usdDraft }, [...baseMocks(), registerMock]);
+    await waitFor(() => expect(screen.getByLabelText('GP Vendor')).toHaveTextContent('US Supplier Co'));
+
+    // Foreign currency: the tax detail is not applicable and not required to register.
+    expect(screen.getByLabelText('Currency')).toHaveValue('USD');
+    fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+    await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
+    // No tax detail sent; the relay resolves the GP exchange rate + blanks TAXSCHID server-side.
+    expect(calls[0]).toMatchObject({ input: { gpVendorId: 'V-USD', taxDetailId: null } });
   });
 
   it('create mode saves a plain draft via CREATE_DRAFT_PO with no GP fields, even with the relay down', async () => {
@@ -552,6 +646,7 @@ describe('GpPurchaseOrderDialog', () => {
       okMock,
     ]);
     await waitForVendorPreselect();
+    await selectTaxDetail();
 
     fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
     // The persistent GP error detail (issue #187), not just a toast; the dialog stays open.

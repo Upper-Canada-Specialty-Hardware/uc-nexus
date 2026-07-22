@@ -99,6 +99,13 @@ def _run_list_buyers(company: str, payload: dict) -> dict:
     return {"company": company, "buyers": ids}
 
 
+def _run_list_tax_details(company: str, payload: dict) -> dict:
+    ops.check_company_allowed(company)
+    with db.get_read_connection(company) as conn:
+        rows = econnect.list_tax_details(conn)
+    return {"company": company, "tax_details": rows}
+
+
 def _run_list_cost_codes(company: str, payload: dict) -> dict:
     ops.check_company_allowed(company)
     job = (payload.get("job") or "").strip()
@@ -155,6 +162,7 @@ def _run_create_receipt(company: str, payload: dict) -> dict:
 _OPS = {
     "list_vendors": _run_list_vendors,
     "list_buyers": _run_list_buyers,
+    "list_tax_details": _run_list_tax_details,
     "list_cost_codes": _run_list_cost_codes,
     "list_jobs": _run_list_jobs,
     "read_po_totals": _run_read_po_totals,

@@ -147,6 +147,9 @@ class GpVendor:
     vendor_name: str
     vendor_class: str | None
     status: int
+    # GP CURNCYID (issue #257: the vendor dictates the PO currency). Blank in GP -> 'CAD'. Shown
+    # read-only on the register-PO form; USD vendors have no tax-detail dropdown.
+    currency: str
 
 
 @strawberry.type
@@ -154,6 +157,17 @@ class GpCostCode:
     cost_code: str  # two-segment number 'cc1-cc2' e.g. '310-000'
     description: str | None
     cost_element: int
+
+
+@strawberry.type
+class GpTaxDetail:
+    """A GP purchase tax detail (TX00201, TXDTLTYP=2) read live via the relay, for the register-PO
+    tax-detail dropdown (issue #257). GP-first: the options are whatever the company defines
+    (e.g. BC HST P / ON HST - P / PST 7% in production)."""
+
+    tax_detail_id: str
+    description: str | None
+    percent: float
 
 
 @strawberry.type

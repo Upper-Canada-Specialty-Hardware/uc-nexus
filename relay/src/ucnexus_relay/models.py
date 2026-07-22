@@ -46,9 +46,18 @@ class POHeader(BaseModel):
     buyer_id: str | None = Field(default=None, max_length=15)
     confirm_with: str = Field(..., max_length=20)
     doc_date: date
+    # currency_id is informational only: the relay resolves the PO currency GP-first from the vendor
+    # master (PM00200.CURNCYID) at create time and ignores whatever is sent here (issue #257).
     currency_id: str = "CAD"
     vendor_address_code: str = "PRIMARY"
     shipping_method: str = "LOCAL DELIVERY"
+    # Issue #257: order-time GP charges. tax_detail_id is a GP purchase tax detail (TX00201,
+    # TXDTLTYP=2) the user picked; the relay looks up its rate and computes the tax. The three
+    # dollar amounts are entered on the register form. All optional; a PO with none is valid.
+    tax_detail_id: str | None = Field(default=None, max_length=15)
+    trade_discount: Decimal = Decimal(0)
+    freight_amount: Decimal = Decimal(0)
+    misc_amount: Decimal = Decimal(0)
 
 
 class CreatePoRequest(BaseModel):
@@ -75,6 +84,10 @@ class CreatePoResponse(BaseModel):
     subtotal: Decimal
     doc_date: date
     vendor_id: str
+    # Issue #257: resolved GP-first from the vendor master, and the tax the relay computed from the
+    # chosen tax detail (0 when none was picked). Returned so the backend can snapshot them.
+    currency: str = "CAD"
+    tax_amount: Decimal = Decimal(0)
 
 
 # --- receiving (workflow 2) ---
@@ -114,11 +127,25 @@ class VendorOut(BaseModel):
     vendor_name: str     # GP VENDNAME
     vendor_class: str | None = None  # GP VNDCLSID
     status: int          # GP VENDSTTS (1 = active)
+    currency: str = "CAD"  # GP CURNCYID, blank -> 'CAD' (issue #257: vendor dictates PO currency)
 
 
 class VendorsResponse(BaseModel):
     company: str
     vendors: list[VendorOut]
+
+
+# --- tax details (per-company, feeds the register-PO tax-detail dropdown - issue #257) ---
+
+class TaxDetailOut(BaseModel):
+    tax_detail_id: str          # GP TAXDTLID (purchase detail, TX00201 TXDTLTYP=2)
+    description: str | None = None  # GP TXDTLDSC
+    percent: float              # GP TXDTLPCT (the rate the relay computes tax with)
+
+
+class TaxDetailsResponse(BaseModel):
+    company: str
+    tax_details: list[TaxDetailOut]
 
 
 class BuyersResponse(BaseModel):
