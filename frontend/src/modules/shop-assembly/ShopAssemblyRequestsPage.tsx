@@ -6,6 +6,7 @@ import {
   REJECT_SHOP_ASSEMBLY_REQUEST,
 } from '../../graphql/shop-assembly';
 import RequestsReviewPage from '../../components/RequestsReviewPage';
+import { leafSuffix } from '../../utils/leaf';
 
 interface RequestOpeningItem {
   id: string;
@@ -19,6 +20,7 @@ interface RequestOpening {
   openingNumber: string | null;
   building: string | null;
   floor: string | null;
+  leaf: number | null;
   items: RequestOpeningItem[];
 }
 
@@ -57,7 +59,7 @@ export default function ShopAssemblyRequestsPage() {
           <Box key={opening.id}>
             <Stack direction="row" spacing={1} alignItems="baseline" sx={{ mb: 0.5 }}>
               <Typography variant="subtitle2">
-                {opening.openingNumber || opening.id.slice(0, 8)}
+                {(opening.openingNumber || opening.id.slice(0, 8)) + leafSuffix(opening.leaf)}
               </Typography>
               {(opening.building || opening.floor) && (
                 <Typography variant="caption" color="text.secondary">

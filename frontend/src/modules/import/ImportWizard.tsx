@@ -731,16 +731,25 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
       shopAssemblyOpenings: purpose === 'assembly'
         ? parsed.openings
             .filter((o) => selectedOpenings.has(o.opening_number))
-            .map((opening) => {
+            .flatMap((opening) => {
               const shopItems = filteredHardwareItems.filter((hi) => {
                 if (hi.opening_number !== opening.opening_number) return false;
                 const ck = classificationKey(hi);
                 return classifications.get(ck) === 'SHOP_HARDWARE';
               });
-              if (shopItems.length === 0) return null;
-              // Aggregate by (product_code, hardware_category) to avoid duplicates from multiple material_ids
-              const aggMap = new Map<string, { hardwareCategory: string; productCode: string; quantity: number }>();
+              if (shopItems.length === 0) return [];
+              // One SAR opening per door leaf (#311): group SHOP_HARDWARE by leaf, then aggregate
+              // each leaf's items by (product_code, hardware_category). A pair yields two work units.
+              const byLeaf = new Map<
+                number | null,
+                Map<string, { hardwareCategory: string; productCode: string; quantity: number }>
+              >();
               for (const hi of shopItems) {
+                let aggMap = byLeaf.get(hi.leaf);
+                if (!aggMap) {
+                  aggMap = new Map();
+                  byLeaf.set(hi.leaf, aggMap);
+                }
                 const key = `${hi.product_code}|${hi.hardware_category}`;
                 const existing = aggMap.get(key);
                 if (existing) {
@@ -753,12 +762,12 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
                   });
                 }
               }
-              return {
+              return Array.from(byLeaf.entries()).map(([leaf, aggMap]) => ({
                 openingNumber: opening.opening_number,
+                leaf,
                 items: Array.from(aggMap.values()),
-              };
+              }));
             })
-            .filter(Boolean)
         : null,
     };
   }, [parsed, project.id, selectedOpenings, purpose, vendorGroups, vendorPOInfo, selectedVendors, unitCostOverrides, orderAsValues, classifications, siteShopClassifications, shippingPRDrafts, sarRequestNumber, canStartFromLatest, hydratedFromPersisted]);

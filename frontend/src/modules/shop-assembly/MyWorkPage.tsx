@@ -5,6 +5,7 @@ import { GET_MY_WORK } from '../../graphql/shop-assembly';
 import { useIdentity } from '../../hooks/useIdentity';
 import DataTable from '../../components/DataTable';
 import AssemblyDetailModal from './AssemblyDetailModal';
+import { leafLabel } from '../../utils/leaf';
 import type { GridColDef } from '@mui/x-data-grid';
 
 interface OpeningItem {
@@ -26,11 +27,18 @@ interface MyWorkOpening {
   openingNumber: string | null;
   building: string | null;
   floor: string | null;
+  leaf: number | null;
   items: OpeningItem[];
 }
 
 const columns: GridColDef[] = [
   { field: 'openingNumber', headerName: 'Opening Number', flex: 1 },
+  {
+    field: 'leaf',
+    headerName: 'Leaf',
+    flex: 0.6,
+    valueGetter: (_value: unknown, row: MyWorkOpening) => leafLabel(row.leaf) ?? '-',
+  },
   { field: 'building', headerName: 'Building', flex: 1 },
   { field: 'floor', headerName: 'Floor', flex: 1 },
   {

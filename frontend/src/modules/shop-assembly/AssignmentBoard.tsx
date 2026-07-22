@@ -23,6 +23,7 @@ import { useQuery, useMutation } from '@apollo/client/react';
 import { GET_ASSEMBLE_LIST, ASSIGN_OPENINGS, REMOVE_OPENING_FROM_USER } from '../../graphql/shop-assembly';
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
+import { leafSuffix } from '../../utils/leaf';
 
 interface OpeningItem {
   id: string;
@@ -43,6 +44,7 @@ interface AssembleOpening {
   openingNumber: string | null;
   building: string | null;
   floor: string | null;
+  leaf: number | null;
   items: OpeningItem[];
 }
 
@@ -80,7 +82,7 @@ function DraggableCard({ opening, isDragOverlay }: { opening: AssembleOpening; i
       >
         <Stack direction='row' justifyContent='space-between' alignItems='center'>
           <Typography fontWeight='bold' variant='body2'>
-            {opening.openingNumber || opening.openingId.slice(0, 8)}
+            {(opening.openingNumber || opening.openingId.slice(0, 8)) + leafSuffix(opening.leaf)}
           </Typography>
           <Chip label={`${opening.items.length} items`} size="small" variant="outlined" />
         </Stack>

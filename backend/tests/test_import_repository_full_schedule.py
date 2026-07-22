@@ -16,8 +16,8 @@ from app.models.hardware import HardwareItem
 from app.models.inventory import InventoryLocation
 from app.models.opening_item import OpeningItem
 from app.models.project import Opening, Project
-from app.models.pull_request import PullRequest
-from app.models.purchase_order import PurchaseOrder
+from app.models.pull_request import PullRequest, PullRequestItem
+from app.models.purchase_order import POLineItem, PurchaseOrder
 from app.models.shop_assembly import (
     ShopAssemblyOpening,
     ShopAssemblyRequest,
@@ -577,3 +577,185 @@ def test_manufacturer_persists_and_round_trips(db_session):
     mfr_by_product = {hi["product_code"]: hi["manufacturer"] for hi in schedule["hardware_items"]}
     assert mfr_by_product["HG-100"] == "TITAN"
     assert mfr_by_product["HG-200"] is None
+
+
+# ---------------------------------------------------------------------------
+# Door-leaf awareness (#311)
+# ---------------------------------------------------------------------------
+
+
+def test_leaf_persisted_per_leaf_for_pair(db_session):
+    """A pair's leaf-1 and leaf-2 rows for the same product persist as two HardwareItems, not one;
+    opening.leaf_count is stamped and the leaf round-trips through the schedule query."""
+    project = _make_project(db_session)
+    db_session.commit()
+
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening_input("PR1", leaf_count=2)],
+            "hardware_items": [
+                _hardware_item_input("PR1", "HG-100", leaf=1, item_quantity=1),
+                _hardware_item_input("PR1", "HG-100", leaf=2, item_quantity=1),
+            ],
+        },
+    )
+    db_session.flush()
+
+    rows = db_session.scalars(select(HardwareItem).where(HardwareItem.project_id == project.id)).all()
+    assert len(rows) == 2
+    assert {hi.leaf for hi in rows} == {1, 2}
+
+    opening = db_session.scalar(
+        select(Opening).where(Opening.project_id == project.id, Opening.opening_number == "PR1")
+    )
+    assert opening.leaf_count == 2
+
+    schedule = import_repository.get_project_hardware_schedule(db_session, project.id)
+    assert {hi["leaf"] for hi in schedule["hardware_items"]} == {1, 2}
+
+
+def test_leaf_po_ref_attaches_both_leaf_rows_to_one_line(db_session):
+    """A leaf-agnostic PO ref claims every leaf row for the combo: both leaf HardwareItems land
+    IN_PO on one PO line, whose ordered_quantity sums across the leaves."""
+    project = _make_project(db_session)
+    vendor = _make_vendor(db_session)
+    db_session.commit()
+
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening_input("PR1", leaf_count=2)],
+            "hardware_items": [
+                _hardware_item_input("PR1", "HG-100", leaf=1, item_quantity=2),
+                _hardware_item_input("PR1", "HG-100", leaf=2, item_quantity=3),
+            ],
+            "po_drafts": [
+                {
+                    "po_number": "PO-1",
+                    "vendor_id": str(vendor.id),
+                    "notes": None,
+                    "hardware_item_refs": [
+                        {"opening_number": "PR1", "product_code": "HG-100", "hardware_category": "HINGE"},
+                    ],
+                    "line_item_aliases": [],
+                },
+            ],
+        },
+    )
+    db_session.flush()
+
+    rows = db_session.scalars(select(HardwareItem).where(HardwareItem.project_id == project.id)).all()
+    assert len(rows) == 2
+    assert all(hi.state == HardwareItemState.IN_PO for hi in rows)
+    assert {hi.leaf for hi in rows} == {1, 2}
+
+    line_item_ids = {hi.po_line_item_id for hi in rows}
+    assert len(line_item_ids) == 1  # both leaves roll into one PO line
+    poli = db_session.scalar(select(POLineItem).where(POLineItem.id == next(iter(line_item_ids))))
+    assert poli.ordered_quantity == 5  # 2 (leaf 1) + 3 (leaf 2)
+
+
+def test_sar_created_per_leaf(db_session):
+    """A pair produces one ShopAssemblyOpening per door leaf, each stamped with its leaf."""
+    project = _make_project(db_session)
+    db_session.commit()
+
+    req_number = f"SA-{uuid.uuid4().hex[:6]}"
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening_input("PR1", leaf_count=2)],
+            "hardware_items": [],
+            "include_shop_assembly_request": True,
+            "shop_assembly_request_number": req_number,
+            "shop_assembly_openings": [
+                {
+                    "opening_number": "PR1",
+                    "leaf": 1,
+                    "items": [{"hardware_category": "HINGE", "product_code": "HG-100", "quantity": 1}],
+                },
+                {
+                    "opening_number": "PR1",
+                    "leaf": 2,
+                    "items": [{"hardware_category": "HINGE", "product_code": "HG-100", "quantity": 1}],
+                },
+            ],
+        },
+    )
+    db_session.flush()
+
+    saos = db_session.scalars(select(ShopAssemblyOpening).where(ShopAssemblyOpening.opening_number == "PR1")).all()
+    assert len(saos) == 2
+    assert {sao.leaf for sao in saos} == {1, 2}
+
+
+def test_find_already_assembled_openings_is_per_leaf(db_session):
+    """Assembling Leaf 1 must not block sending Leaf 2: the guard keys on (opening_id, leaf)."""
+    project = _make_project(db_session)
+    opening = Opening(id=uuid.uuid4(), project_id=project.id, opening_number="PR1")
+    db_session.add(opening)
+    db_session.flush()
+
+    warehouse_id = warehouse_admin_repository.get_primary_warehouse_id(db_session)
+    db_session.add(
+        OpeningItem(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            opening_id=opening.id,
+            warehouse_id=warehouse_id,
+            opening_number="PR1",
+            leaf=1,
+            quantity=1,
+            assembly_completed_at=datetime.utcnow(),
+            state=OpeningItemState.IN_INVENTORY,
+        )
+    )
+    db_session.flush()
+
+    specs = [("PR1", opening.id, 1), ("PR1", opening.id, 2)]
+    result = shop_assembly_repository.find_already_assembled_openings(db_session, project.id, specs)
+    assert result == [("PR1", 1)]  # leaf 1 blocked, leaf 2 free
+
+
+def test_accept_stamps_leaf_on_pull_items(db_session):
+    """accept mints one LOOSE PullRequestItem per leaf, each stamped from ShopAssemblyOpening.leaf."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, product_code="HG-100", quantity=2)
+    db_session.commit()
+
+    req_number = f"SA-{uuid.uuid4().hex[:6]}"
+    result = import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening_input("PR1", leaf_count=2)],
+            "hardware_items": [],
+            "include_shop_assembly_request": True,
+            "shop_assembly_request_number": req_number,
+            "shop_assembly_openings": [
+                {
+                    "opening_number": "PR1",
+                    "leaf": 1,
+                    "items": [{"hardware_category": "HINGE", "product_code": "HG-100", "quantity": 1}],
+                },
+                {
+                    "opening_number": "PR1",
+                    "leaf": 2,
+                    "items": [{"hardware_category": "HINGE", "product_code": "HG-100", "quantity": 1}],
+                },
+            ],
+        },
+    )
+    db_session.flush()
+
+    shop_assembly_repository.accept_shop_assembly_request(db_session, result["shop_assembly_request"].id, "acceptor")
+    db_session.flush()
+
+    pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == req_number))
+    items = db_session.scalars(select(PullRequestItem).where(PullRequestItem.pull_request_id == pr.id)).all()
+    assert len(items) == 2
+    assert {i.leaf for i in items} == {1, 2}

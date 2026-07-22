@@ -721,19 +721,23 @@ def finalize_import_session(
         from app.repositories import shop_assembly_repository
 
         opening_id_by_number: dict[str, uuid.UUID] = {}
+        # Guard per (opening, leaf) (#311): assembling Leaf 1 must not block sending Leaf 2.
+        opening_leaf_specs: list[tuple[str, uuid.UUID, int | None]] = []
         for sa_opening_input in sar_openings_input:
             opening_number = sa_opening_input["opening_number"]
             opening_id = opening_map.get(opening_number)
             if opening_id is None:
                 raise NotFoundError(f"Opening {opening_number} not found in project")
             opening_id_by_number[opening_number] = opening_id
+            opening_leaf_specs.append((opening_number, opening_id, sa_opening_input.get("leaf")))
 
         already_assembled = shop_assembly_repository.find_already_assembled_openings(
-            session, project.id, opening_id_by_number
+            session, project.id, opening_leaf_specs
         )
         if already_assembled:
+            labels = ", ".join(f"{num} Leaf {leaf}" if leaf is not None else num for num, leaf in already_assembled)
             raise ValidationError(
-                f"Opening {', '.join(already_assembled)} is already assembled and cannot be sent to shop assembly.",
+                f"Opening {labels} is already assembled and cannot be sent to shop assembly.",
                 field="shop_assembly_openings",
             )
 
@@ -758,6 +762,7 @@ def finalize_import_session(
                 pull_request_id=None,
                 opening_id=opening_id,
                 opening_number=opening_number,
+                leaf=sa_opening_input.get("leaf"),
                 building=opening_row.building if opening_row else None,
                 floor=opening_row.floor if opening_row else None,
                 location=opening_row.location if opening_row else None,

@@ -145,6 +145,8 @@ class SAROpeningItemInput:
 @strawberry.input
 class SAROpeningInput:
     opening_number: str
+    # Door leaf this assembly work unit is for (#311): 1 or 2, or null (frame / legacy).
+    leaf: int | None = None
     items: list[SAROpeningItemInput] = strawberry.field(default_factory=list)
 
 

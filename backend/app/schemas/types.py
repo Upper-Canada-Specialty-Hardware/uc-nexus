@@ -457,6 +457,8 @@ class PullRequestItem:
     item_type: PullRequestItemType
     opening_number: str
     opening_item_id: strawberry.ID | None
+    # Door leaf this pull line is for (#311): 1 or 2, or null (legacy / leaf-agnostic).
+    leaf: int | None
     hardware_category: str | None
     product_code: str | None
     requested_quantity: int
@@ -500,6 +502,8 @@ class ShopAssemblyOpening:
     assembly_status: AssemblyStatus
     completed_at: datetime | None
     items: list[ShopAssemblyOpeningItem]
+    # Door leaf this assembly work unit is for (#311): 1 or 2, or null (legacy whole-opening).
+    leaf: int | None = None
     # Resolved from Opening table (populated by myWork and assembleList queries)
     opening_number: str | None = None
     building: str | None = None

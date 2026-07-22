@@ -300,24 +300,25 @@ def get_request_with_openings(session: Session, request_id: uuid.UUID):
 def find_already_assembled_openings(
     session: Session,
     project_id: uuid.UUID,
-    opening_id_by_number: dict[str, uuid.UUID],
-) -> list[str]:
-    """REQ-5 guard (#293): among the given openings, return the opening_numbers whose source opening
-    already has an assembled OpeningItem in this project (any state except SHIPPED_OUT). Such an
-    opening has already been through assembly and must not be sent to shop assembly again."""
-    opening_ids = list(opening_id_by_number.values())
-    if not opening_ids:
+    opening_leaf_specs: list[tuple[str, uuid.UUID, int | None]],
+) -> list[tuple[str, int | None]]:
+    """REQ-5 guard (#293), per door leaf (#311): given (opening_number, opening_id, leaf) specs,
+    return the (opening_number, leaf) pairs whose (opening_id, leaf) already has an assembled
+    OpeningItem in this project (any state except SHIPPED_OUT). Keying on leaf means assembling
+    Leaf 1 does NOT block sending Leaf 2 to shop assembly. Legacy null-leaf assembled units only
+    match a null-leaf spec."""
+    if not opening_leaf_specs:
         return []
-    assembled_ids = set(
-        session.scalars(
-            select(OpeningItemModel.opening_id).where(
-                OpeningItemModel.project_id == project_id,
-                OpeningItemModel.opening_id.in_(opening_ids),
-                OpeningItemModel.state != OpeningItemState.SHIPPED_OUT,
-            )
-        ).all()
-    )
-    return [num for num, oid in opening_id_by_number.items() if oid in assembled_ids]
+    opening_ids = [oid for _, oid, _ in opening_leaf_specs]
+    rows = session.execute(
+        select(OpeningItemModel.opening_id, OpeningItemModel.leaf).where(
+            OpeningItemModel.project_id == project_id,
+            OpeningItemModel.opening_id.in_(opening_ids),
+            OpeningItemModel.state != OpeningItemState.SHIPPED_OUT,
+        )
+    ).all()
+    assembled = {(r.opening_id, r.leaf) for r in rows}
+    return [(num, leaf) for num, oid, leaf in opening_leaf_specs if (oid, leaf) in assembled]
 
 
 def get_shop_assembly_requests(
@@ -405,6 +406,8 @@ def accept_shop_assembly_request(
                     pull_request_id=pr.id,
                     item_type=PullRequestItemType.LOOSE,
                     opening_number=opening.opening_number,
+                    # Snapshot the door leaf (#311) so a leaf-1 pull reads distinct from a leaf-2 pull.
+                    leaf=opening.leaf,
                     hardware_category=item.hardware_category,
                     product_code=item.product_code,
                     requested_quantity=item.quantity,

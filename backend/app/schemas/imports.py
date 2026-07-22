@@ -206,6 +206,7 @@ class ImportMutations:
             "shop_assembly_openings": [
                 {
                     "opening_number": sa.opening_number,
+                    "leaf": sa.leaf,
                     "items": [
                         {
                             "hardware_category": item.hardware_category,
