@@ -44,8 +44,13 @@ def test_build_create_po_payload_defaults_gp_charges_to_zero_without_tax_detail(
     # issue #257: with no charges/tax passed, the header carries the zeroed GP charge fields (the
     # relay POHeader Decimals are non-null) and a null tax detail (relay writes no tax).
     payload = gp_po.build_create_po_payload(
-        vendor_gp_id="ING100", vendor_contact_name=None, buyer_id="mira",
-        job_number=None, cost_code=None, po_number=None, line_items=[_line_item()],
+        vendor_gp_id="ING100",
+        vendor_contact_name=None,
+        buyer_id="mira",
+        job_number=None,
+        cost_code=None,
+        po_number=None,
+        line_items=[_line_item()],
     )
     h = payload["header"]
     assert h["tax_detail_id"] is None
@@ -58,9 +63,17 @@ def test_build_create_po_payload_maps_gp_charges_with_freight_from_shipping_cost
     # issue #257: freight_amount is passed from the PO's shipping_cost at the call site; misc + trade
     # discount are the new register-form inputs; tax_detail_id drives the relay's tax computation.
     payload = gp_po.build_create_po_payload(
-        vendor_gp_id="ING100", vendor_contact_name=None, buyer_id="mira",
-        job_number=None, cost_code=None, po_number=None, line_items=[_line_item()],
-        tax_detail_id="ON HST - P", freight_amount=25.0, misc_amount=5.0, trade_discount=2.0,
+        vendor_gp_id="ING100",
+        vendor_contact_name=None,
+        buyer_id="mira",
+        job_number=None,
+        cost_code=None,
+        po_number=None,
+        line_items=[_line_item()],
+        tax_detail_id="ON HST - P",
+        freight_amount=25.0,
+        misc_amount=5.0,
+        trade_discount=2.0,
     )
     h = payload["header"]
     assert h["tax_detail_id"] == "ON HST - P"

@@ -168,9 +168,7 @@ def gp_cost_code_to_type(c: dict) -> GpCostCode:
 
 
 def gp_tax_detail_to_type(t: dict) -> GpTaxDetail:
-    return GpTaxDetail(
-        tax_detail_id=t["tax_detail_id"], description=t.get("description"), percent=t["percent"]
-    )
+    return GpTaxDetail(tax_detail_id=t["tax_detail_id"], description=t.get("description"), percent=t["percent"])
 
 
 def warehouse_to_type(w) -> Warehouse:

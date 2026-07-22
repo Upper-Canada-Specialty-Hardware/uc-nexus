@@ -106,8 +106,17 @@ def _assert_buyer_identity(caller_gp_buyer_id: str | None, input_buyer_id: str) 
 
 
 def _prepare_register_po(
-    *, po_id, vendor_id, gp_vendor_id, buyer_id, cost_code, line_items_data,
-    tax_detail_id=None, shipping_cost=None, miscellaneous=None, trade_discount=None,
+    *,
+    po_id,
+    vendor_id,
+    gp_vendor_id,
+    buyer_id,
+    cost_code,
+    line_items_data,
+    tax_detail_id=None,
+    shipping_cost=None,
+    miscellaneous=None,
+    trade_discount=None,
 ) -> dict:
     """Read-only pre-flight for register_po_in_gp: confirm the PO is a registerable DRAFT, resolve the
     job number, pre-validate, and build the relay create_po payload (po_number=None; GP assigns it).

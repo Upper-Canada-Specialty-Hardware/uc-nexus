@@ -55,9 +55,7 @@ def test_gp_jobs_maps_relay_result_to_type(monkeypatch):
 def test_gp_vendors_maps_relay_result_to_type(monkeypatch):
     fake = _install_fake_gateway(
         monkeypatch,
-        {"vendors": [
-            {"vendor_id": "V1", "vendor_name": "Acme", "vendor_class": "HW", "status": 1, "currency": "USD"}
-        ]},
+        {"vendors": [{"vendor_id": "V1", "vendor_name": "Acme", "vendor_class": "HW", "status": 1, "currency": "USD"}]},
     )
 
     async def run():
@@ -89,10 +87,12 @@ def test_gp_vendors_currency_defaults_to_cad_for_older_relay(monkeypatch):
 def test_gp_tax_details_maps_relay_result_to_type(monkeypatch):
     fake = _install_fake_gateway(
         monkeypatch,
-        {"tax_details": [
-            {"tax_detail_id": "ON HST - P", "description": "ON HST on Purchases", "percent": 13.0},
-            {"tax_detail_id": "PST 7%", "description": None, "percent": 7.0},
-        ]},
+        {
+            "tax_details": [
+                {"tax_detail_id": "ON HST - P", "description": "ON HST on Purchases", "percent": 13.0},
+                {"tax_detail_id": "PST 7%", "description": None, "percent": 7.0},
+            ]
+        },
     )
 
     async def run():
