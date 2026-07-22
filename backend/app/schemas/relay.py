@@ -7,12 +7,19 @@ from app.database import SessionLocal
 from app.repositories import relay_repository
 from app.services.relay_gateway import gateway as relay_gateway
 
-from .converters import gp_cost_code_to_type, gp_job_to_type, gp_vendor_to_type, relay_install_to_type
+from .converters import (
+    gp_cost_code_to_type,
+    gp_job_to_type,
+    gp_tax_detail_to_type,
+    gp_vendor_to_type,
+    relay_install_to_type,
+)
 from .inputs import EnrollRelayInstallInput
 from .types import (
     GpCostCode,
     GpJob,
     GpPoTotals,
+    GpTaxDetail,
     GpVendor,
     RelayEnrollResult,
     RelayInstallInfo,
@@ -65,6 +72,14 @@ class RelayQueries:
         require_user(info)
         result = await relay_gateway.relay_call(company, "list_cost_codes", {"job": job})
         return [gp_cost_code_to_type(c) for c in result["cost_codes"]]
+
+    @strawberry.field
+    async def gp_tax_details(self, info: strawberry.Info, company: str) -> list[GpTaxDetail]:
+        """Live GP purchase tax details (TX00201, TXDTLTYP=2) via the connected relay, for the
+        register-PO tax-detail dropdown (issue #257)."""
+        require_user(info)
+        result = await relay_gateway.relay_call(company, "list_tax_details")
+        return [gp_tax_detail_to_type(t) for t in result["tax_details"]]
 
     @strawberry.field
     async def gp_po_totals(self, info: strawberry.Info, company: str, po_number: str) -> GpPoTotals | None:
