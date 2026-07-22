@@ -177,6 +177,7 @@ function baseMocks(
           gpVendors: [
             { vendorId: 'V-ACE', vendorName: 'Ace Hardware Co', vendorClass: null, status: 1, currency: 'CAD', __typename: 'GpVendor' },
             { vendorId: 'V-ALL', vendorName: 'Allegion Hardware', vendorClass: null, status: 1, currency: 'CAD', __typename: 'GpVendor' },
+            { vendorId: 'V-USD', vendorName: 'US Supplier Co', vendorClass: null, status: 1, currency: 'USD', __typename: 'GpVendor' },
           ],
         },
       },
@@ -479,6 +480,28 @@ describe('GpPurchaseOrderDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
     await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
     expect(calls[0]).toMatchObject({ input: { taxDetailId: 'ON HST - P' } });
+  });
+
+  it('registers a USD vendor PO with no tax detail (foreign currency, issue #257)', async () => {
+    const calls: Record<string, unknown>[] = [];
+    const registerMock: MockedResponse = {
+      request: { query: REGISTER_PO_IN_GP, variables: () => true },
+      result: (vars) => {
+        calls.push(vars as Record<string, unknown>);
+        return { data: registerData() };
+      },
+    };
+    // A draft whose vendor name exact-matches the USD vendor auto-preselects it (confident).
+    const usdDraft = { ...stockDraft, vendorNameSnapshot: 'US Supplier Co' };
+    const { onSubmitted } = renderDialog({ registerPo: usdDraft }, [...baseMocks(), registerMock]);
+    await waitFor(() => expect(screen.getByLabelText('GP Vendor')).toHaveTextContent('US Supplier Co'));
+
+    // Foreign currency: the tax detail is not applicable and not required to register.
+    expect(screen.getByLabelText('Currency')).toHaveValue('USD');
+    fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+    await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
+    // No tax detail sent; the relay resolves the GP exchange rate + blanks TAXSCHID server-side.
+    expect(calls[0]).toMatchObject({ input: { gpVendorId: 'V-USD', taxDetailId: null } });
   });
 
   it('create mode saves a plain draft via CREATE_DRAFT_PO with no GP fields, even with the relay down', async () => {

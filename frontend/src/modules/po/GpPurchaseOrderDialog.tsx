@@ -225,10 +225,11 @@ export default function GpPurchaseOrderDialog({
   const gpTaxDetails = gpTaxDetailsData?.gpTaxDetails ?? [];
 
   // Issue #257: the PO currency is the selected GP vendor's (GP-first, resolved again server-side).
-  // USD POs need exchange-rate handling not yet built (the relay guards them), so surface USD here and
-  // show the CAD-only tax-detail dropdown accordingly.
+  // A foreign-currency PO (non-CAD) carries no tax schedule/detail - the relay blanks TAXSCHID and
+  // prices the PO from GP's own maintained exchange rate - so the CAD-only tax-detail dropdown is
+  // hidden for it. Freight/misc/trade discount still apply (in the PO's currency).
   const gpVendorCurrency = gpVendors.find((v) => v.vendorId === gpVendorId)?.currency ?? 'CAD';
-  const isUsdVendor = isRegister && !!gpVendorId && gpVendorCurrency !== 'CAD';
+  const isForeignCurrency = isRegister && !!gpVendorId && gpVendorCurrency !== 'CAD';
 
   // Issue #232: suggest the ordering vendor from each line's TITAN manufacturer. The manufacturer is
   // the derived POLineItem.manufacturer (resolved server-side from the line's linked HardwareItem),
@@ -466,12 +467,9 @@ export default function GpPurchaseOrderDialog({
       if (!gpBuyerId) errs.buyer = 'Your account has no GP buyer identity - ask an Admin to set it in User Management';
       else if (!registerProjectAllowed) errs.buyer = `Buyer ${gpBuyerId} is not assigned to this project`;
       if (isJob && !costCode) errs.costCode = 'Cost code is required for a project PO';
-      // Issue #257: USD (foreign-currency) POs need exchange-rate handling not yet built - the relay
-      // rejects them - so block registration here with a clear message instead of a relay error.
-      if (isUsdVendor)
-        errs.vendor = `${gpVendorCurrency} vendor POs are not supported yet (issue #257 follow-up); pick a CAD vendor`;
-      // A CAD PO must carry a tax detail (the relay computes tax from it). USD carries none.
-      else if (gpVendorId && !taxDetailId) errs.taxDetail = 'Select a tax detail';
+      // Issue #257: a CAD PO must carry a tax detail (the relay computes tax from it); a foreign-currency
+      // PO carries none (the relay blanks the schedule), so require it for CAD only.
+      if (!isForeignCurrency && gpVendorId && !taxDetailId) errs.taxDetail = 'Select a tax detail';
     }
     // Issue #156: optional, but a non-empty entry must be a valid non-negative dollar value.
     if (shippingCost.trim() !== '' && (isNaN(parseFloat(shippingCost)) || parseFloat(shippingCost) < 0))
@@ -485,7 +483,7 @@ export default function GpPurchaseOrderDialog({
       errs.tradeDiscount = 'Must be >= 0';
     setErrors(errs);
     return Object.keys(errs).length === 0;
-  }, [lineItems, relayConnected, gpVendorId, isRegister, vendorConfirmed, gpBuyerId, registerProjectAllowed, isJob, costCode, shippingCost, tariffAmount, isUsdVendor, gpVendorCurrency, taxDetailId, miscellaneous, tradeDiscount]);
+  }, [lineItems, relayConnected, gpVendorId, isRegister, vendorConfirmed, gpBuyerId, registerProjectAllowed, isJob, costCode, shippingCost, tariffAmount, isForeignCurrency, taxDetailId, miscellaneous, tradeDiscount]);
 
   const handleSubmit = useCallback(async () => {
     if (!validate()) return;
@@ -508,10 +506,10 @@ export default function GpPurchaseOrderDialog({
     // Issue #156: '' = not entered (null); 0 is a valid entered value.
     const shippingCostValue = shippingCost.trim() === '' ? null : parseFloat(shippingCost);
     const tariffAmountValue = tariffAmount.trim() === '' ? null : parseFloat(tariffAmount);
-    // Issue #257: same '' -> null convention. tax detail is not sent for a USD PO (it carries none).
+    // Issue #257: same '' -> null convention. tax detail is not sent for a foreign-currency PO (none).
     const miscellaneousValue = miscellaneous.trim() === '' ? null : parseFloat(miscellaneous);
     const tradeDiscountValue = tradeDiscount.trim() === '' ? null : parseFloat(tradeDiscount);
-    const taxDetailIdValue = isUsdVendor || !taxDetailId ? null : taxDetailId;
+    const taxDetailIdValue = isForeignCurrency || !taxDetailId ? null : taxDetailId;
 
     setGpError(null);
     setGpBusy(true);
@@ -597,7 +595,7 @@ export default function GpPurchaseOrderDialog({
     taxDetailId,
     miscellaneous,
     tradeDiscount,
-    isUsdVendor,
+    isForeignCurrency,
     registerPo,
     isRegister,
     createDraftPo,
@@ -868,19 +866,18 @@ export default function GpPurchaseOrderDialog({
             size="small"
             sx={{ minWidth: 120 }}
             disabled
-            error={isUsdVendor}
-            helperText={isUsdVendor ? 'USD not supported yet' : ' '}
+            helperText={isForeignCurrency ? `${gpVendorCurrency}: no tax schedule, GP rate applied` : ' '}
           />
           <TextField
             select
-            label="Tax detail (required)"
-            value={taxDetailId}
+            label={isForeignCurrency ? 'Tax detail' : 'Tax detail (required)'}
+            value={isForeignCurrency ? '' : taxDetailId}
             onChange={(e) => setTaxDetailId(e.target.value)}
             size="small"
             sx={{ minWidth: 260 }}
-            disabled={!relayConnected || isUsdVendor || gpTaxDetails.length === 0}
+            disabled={!relayConnected || isForeignCurrency || gpTaxDetails.length === 0}
             error={!!errors.taxDetail}
-            helperText={errors.taxDetail || (isUsdVendor ? 'Not applicable for USD' : '')}
+            helperText={errors.taxDetail || (isForeignCurrency ? 'Not applicable for a foreign-currency PO' : '')}
           >
             {gpTaxDetails.map((t) => (
               <MenuItem key={t.taxDetailId} value={t.taxDetailId}>

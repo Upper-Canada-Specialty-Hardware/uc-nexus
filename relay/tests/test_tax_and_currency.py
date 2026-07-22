@@ -7,6 +7,7 @@ from collections import namedtuple
 from decimal import Decimal
 
 from ucnexus_relay.econnect import (
+    get_mc_setup,
     get_tax_detail_percent,
     get_vendor_currency,
     list_tax_details,
@@ -65,6 +66,27 @@ def test_vendor_currency_blank_falls_back_to_cad():
 
 def test_vendor_currency_missing_row_falls_back_to_cad():
     assert get_vendor_currency(_FakeConn(one=None), "GHOST") == "CAD"
+
+
+# --- get_mc_setup (MC40000: functional currency + default purchasing rate type) ---
+
+_McRow = namedtuple("_McRow", "functional purchase_rate_type")
+
+
+def test_mc_setup_reads_functional_and_purchase_rate_type():
+    conn = _FakeConn(one=_McRow("CAD", "BUY"))
+    out = get_mc_setup(conn)
+    assert out == {"functional": "CAD", "purchase_rate_type": "BUY"}
+    assert "MC40000" in conn.cursor_obj.sql
+
+
+def test_mc_setup_blank_purchase_rate_type_is_none():
+    assert get_mc_setup(_FakeConn(one=_McRow("CAD", ""))) == {"functional": "CAD", "purchase_rate_type": None}
+
+
+def test_mc_setup_no_row_defaults_to_cad_single_currency():
+    # a single-currency company has no MC40000 row -> functional CAD, no rate type
+    assert get_mc_setup(_FakeConn(one=None)) == {"functional": "CAD", "purchase_rate_type": None}
 
 
 # --- list_tax_details (TX00201 purchase details, TXDTLTYP=2) ---

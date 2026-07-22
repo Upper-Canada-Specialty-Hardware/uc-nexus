@@ -59,17 +59,30 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
             f"buyer '{buyer_id}' is not a registered GP buyer for {company} (registered: {registered})",
         )
 
-    # 0c. currency: GP-first, the vendor master dictates the PO currency (issue #257), not the client.
-    #     Foreign-currency POs need an exchange rate (XCHGRATE/RATETPID) that this path does not yet
-    #     supply - eConnect rejects a non-CAD PO with no rate - so guard them out with a clear error
-    #     until the exchange-rate follow-up lands. CAD (functional currency) needs no rate.
+    # 0c. currency + exchange rate: GP-first, the vendor master dictates the PO currency (issue #257),
+    #     not the client. A foreign-currency PO (vendor currency != the company's functional currency)
+    #     is priced with the company's default PURCHASING rate type; eConnect resolves the actual rate
+    #     from GP's maintained exchange rate table (DYNAMICS.MC00100) itself. It must ALSO carry no tax
+    #     schedule - GP would otherwise fill the company default - so a foreign PO blanks TAXSCHID and
+    #     takes no tax detail. CAD (functional) needs no rate and keeps GP's default schedule.
     currency = econnect.get_vendor_currency(conn, h.vendor_id)
-    if currency != "CAD":
-        raise RelayOpError(
-            "currency_unsupported",
-            f"vendor '{h.vendor_id}' is a {currency} vendor; foreign-currency POs need exchange-rate "
-            f"handling not yet implemented (issue #257 follow-up). Only CAD POs are supported for now.",
-        )
+    mc = econnect.get_mc_setup(conn)
+    is_foreign = currency != mc["functional"]
+    rate_type = None
+    if is_foreign:
+        rate_type = mc["purchase_rate_type"]
+        if not rate_type:
+            raise RelayOpError(
+                "rate_type_unresolved",
+                f"no default purchasing rate type (MC40000.DEFPURTP) configured for {company}; "
+                f"cannot price a {currency} PO",
+            )
+        if h.tax_detail_id:
+            raise RelayOpError(
+                "tax_detail_on_foreign_po",
+                f"a {currency} PO carries no tax schedule (issue #257); tax_detail_id must be omitted",
+            )
+    exchange_date = h.doc_date if is_foreign else None
 
     # 0b. job + cost code: the wsi proc (step 4 below) rejects a made-up job or a cost code not set up
     #     on the job with a raw eConnect error mid-transaction, so pre-check job-cost lines here for
@@ -115,6 +128,9 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
         currency_id=currency,
         vendor_address_code=h.vendor_address_code,
         shipping_method=h.shipping_method,
+        rate_type=rate_type,
+        exchange_date=exchange_date,
+        null_tax_schedule=is_foreign,
     )
 
     # 3. lines
@@ -183,6 +199,9 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
         misc_amount=h.misc_amount,
         tax_amount=tax_amount,
         using_header_taxes=bool(h.tax_detail_id),
+        rate_type=rate_type,
+        exchange_date=exchange_date,
+        null_tax_schedule=is_foreign,
     )
 
     return models.CreatePoResponse(

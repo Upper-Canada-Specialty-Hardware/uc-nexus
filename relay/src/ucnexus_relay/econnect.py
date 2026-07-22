@@ -66,6 +66,42 @@ def po_number_in_use(conn, po_number: str) -> str | None:
     return None
 
 
+def _exec_tapohdr(conn, fields: dict) -> None:
+    """Build + EXEC dbo.taPoHdr from an ordered {param: value} map (param name minus the @I_v prefix),
+    always appending UpdateIfExists=1 + the OUTPUT error params. One place wires the header upsert so
+    the create / subtotal / currency-rate / tax variants can't drift on parameter naming."""
+    assignments = ",\n        ".join(f"@I_v{name} = ?" for name in fields)
+    sql = f"""
+    DECLARE @err int = 0;
+    DECLARE @err_str varchar(255) = '';
+    EXEC dbo.taPoHdr
+        {assignments},
+        @I_vUpdateIfExists = 1,
+        @O_iErrorState     = @err OUTPUT,
+        @oErrString        = @err_str OUTPUT;
+    SELECT @err AS error_state, @err_str AS err_string;
+    """
+    row = conn.cursor().execute(sql, *fields.values()).fetchone()
+    if row.error_state != 0:
+        raise EConnectError(
+            f"taPoHdr failed: {row.err_string.strip()}", proc="taPoHdr", error_state=row.error_state
+        )
+
+
+def _foreign_currency_fields(rate_type: str | None, exchange_date: date | None, null_tax_schedule: bool) -> dict:
+    """The taPoHdr fields that differ for a foreign-currency PO (issue #257). rate_type set -> pass
+    RATETPID + EXCHDATE and let eConnect auto-resolve XCHGRATE from GP's maintained exchange rate table
+    (DYNAMICS.MC00100). null_tax_schedule -> blank TAXSCHID: a USD PO must carry no tax schedule, and GP
+    would otherwise fill the company default (verified live - it does NOT auto-null for a foreign PO)."""
+    fields: dict = {}
+    if rate_type:
+        fields["RATETPID"] = rate_type
+        fields["EXCHDATE"] = exchange_date
+    if null_tax_schedule:
+        fields["TAXSCHID"] = ""
+    return fields
+
+
 def create_po_header(
     conn,
     *,
@@ -79,37 +115,27 @@ def create_po_header(
     shipping_method: str = "LOCAL DELIVERY",
     po_status: int = 2,  # 2 = Released
     po_type: int = 1,
+    rate_type: str | None = None,
+    exchange_date: date | None = None,
+    null_tax_schedule: bool = False,
 ) -> None:
-    """Create the PO header. SUBTOTAL is NOT passed here (no lines exist yet);
-    it's set by update_po_header_subtotal() after the lines land."""
-    sql = """
-    DECLARE @err int = 0;
-    DECLARE @err_str varchar(255) = '';
-    EXEC dbo.taPoHdr
-        @I_vPOTYPE         = ?,
-        @I_vPONUMBER       = ?,
-        @I_vVENDORID       = ?,
-        @I_vDOCDATE        = ?,
-        @I_vBUYERID        = ?,
-        @I_vCURNCYID       = ?,
-        @I_vPOSTATUS       = ?,
-        @I_vCONFIRM1       = ?,
-        @I_vVADCDPAD       = ?,
-        @I_vSHIPMTHD       = ?,
-        @I_vUpdateIfExists = 1,
-        @O_iErrorState     = @err OUTPUT,
-        @oErrString        = @err_str OUTPUT;
-    SELECT @err AS error_state, @err_str AS err_string;
-    """
-    row = conn.cursor().execute(
-        sql,
-        po_type, po_number, vendor_id, doc_date, buyer_id, currency_id,
-        po_status, confirm_with, vendor_address_code, shipping_method,
-    ).fetchone()
-    if row.error_state != 0:
-        raise EConnectError(
-            f"taPoHdr failed: {row.err_string.strip()}", proc="taPoHdr", error_state=row.error_state
-        )
+    """Create the PO header. SUBTOTAL is NOT passed here (no lines exist yet); update_po_header_subtotal
+    sets it after the lines land. For a foreign-currency PO (issue #257), rate_type/exchange_date let
+    eConnect resolve the exchange rate and null_tax_schedule blanks TAXSCHID."""
+    fields = {
+        "POTYPE": po_type,
+        "PONUMBER": po_number,
+        "VENDORID": vendor_id,
+        "DOCDATE": doc_date,
+        "BUYERID": buyer_id,
+        "CURNCYID": currency_id,
+        "POSTATUS": po_status,
+        "CONFIRM1": confirm_with,
+        "VADCDPAD": vendor_address_code,
+        "SHIPMTHD": shipping_method,
+    }
+    fields.update(_foreign_currency_fields(rate_type, exchange_date, null_tax_schedule))
+    _exec_tapohdr(conn, fields)
 
 
 def create_po_line(
@@ -309,6 +335,9 @@ def update_po_header_subtotal(
     misc_amount: Decimal = Decimal(0),
     tax_amount: Decimal = Decimal(0),
     using_header_taxes: bool = False,
+    rate_type: str | None = None,
+    exchange_date: date | None = None,
+    null_tax_schedule: bool = False,
 ) -> None:
     """Re-call taPoHdr with UpdateIfExists=1 + the computed SUBTOTAL (validated now against the line
     totals from steps 3-4) and the order-time GP charges (issue #257): trade discount, freight, misc,
@@ -317,46 +346,31 @@ def update_po_header_subtotal(
     Freight/misc go on non-taxable (Purchase_Freight_Taxable/Purchase_Misc_Taxable=0), so no
     FRTSCHID/MSCSCHID is needed. When a tax detail was inserted (via insert_po_tax_detail),
     using_header_taxes=1 tells GP to use the passed TAXAMNT rather than compute one - GP does NOT
-    calculate PO tax under header-level taxes (verified live). TAXSCHID is left blank; GP accepts a
-    header-level-tax PO with a blank schedule (verified TUBC)."""
-    sql = """
-    DECLARE @err int = 0;
-    DECLARE @err_str varchar(255) = '';
-    EXEC dbo.taPoHdr
-        @I_vPOTYPE                   = ?,
-        @I_vPONUMBER                 = ?,
-        @I_vVENDORID                 = ?,
-        @I_vDOCDATE                  = ?,
-        @I_vBUYERID                  = ?,
-        @I_vCURNCYID                 = ?,
-        @I_vPOSTATUS                 = ?,
-        @I_vCONFIRM1                 = ?,
-        @I_vVADCDPAD                 = ?,
-        @I_vSHIPMTHD                 = ?,
-        @I_vSUBTOTAL                 = ?,
-        @I_vTRDISAMT                 = ?,
-        @I_vFRTAMNT                  = ?,
-        @I_vMSCCHAMT                 = ?,
-        @I_vTAXAMNT                  = ?,
-        @I_vPurchase_Freight_Taxable = 0,
-        @I_vPurchase_Misc_Taxable    = 0,
-        @I_vUSINGHEADERLEVELTAXES    = ?,
-        @I_vUpdateIfExists           = 1,
-        @O_iErrorState               = @err OUTPUT,
-        @oErrString                  = @err_str OUTPUT;
-    SELECT @err AS error_state, @err_str AS err_string;
-    """
-    row = conn.cursor().execute(
-        sql,
-        po_type, po_number, vendor_id, doc_date, buyer_id, currency_id,
-        po_status, confirm_with, vendor_address_code, shipping_method, subtotal,
-        trade_discount, freight_amount, misc_amount, tax_amount, 1 if using_header_taxes else 0,
-    ).fetchone()
-    if row.error_state != 0:
-        raise EConnectError(
-            f"taPoHdr (subtotal update) failed: {row.err_string.strip()}",
-            proc="taPoHdr", error_state=row.error_state,
-        )
+    calculate PO tax under header-level taxes (verified live). rate_type/exchange_date/null_tax_schedule
+    carry the foreign-currency handling (re-sent here so the UpdateIfExists upsert can't revert the
+    rate or re-default a blanked TAXSCHID)."""
+    fields = {
+        "POTYPE": po_type,
+        "PONUMBER": po_number,
+        "VENDORID": vendor_id,
+        "DOCDATE": doc_date,
+        "BUYERID": buyer_id,
+        "CURNCYID": currency_id,
+        "POSTATUS": po_status,
+        "CONFIRM1": confirm_with,
+        "VADCDPAD": vendor_address_code,
+        "SHIPMTHD": shipping_method,
+        "SUBTOTAL": subtotal,
+        "TRDISAMT": trade_discount,
+        "FRTAMNT": freight_amount,
+        "MSCCHAMT": misc_amount,
+        "TAXAMNT": tax_amount,
+        "Purchase_Freight_Taxable": 0,
+        "Purchase_Misc_Taxable": 0,
+        "USINGHEADERLEVELTAXES": 1 if using_header_taxes else 0,
+    }
+    fields.update(_foreign_currency_fields(rate_type, exchange_date, null_tax_schedule))
+    _exec_tapohdr(conn, fields)
 
 
 def insert_po_tax_detail(
@@ -505,6 +519,23 @@ def get_vendor_currency(conn, vendor_id: str) -> str:
         "SELECT RTRIM(CURNCYID) AS cur FROM dbo.PM00200 WHERE VENDORID = ?", vendor_id
     ).fetchone()
     return ((row.cur if row else "") or "").strip().upper() or "CAD"
+
+
+def get_mc_setup(conn) -> dict:
+    """Read-only: the company's multicurrency setup (MC40000) - functional currency + the default
+    PURCHASING rate type (issue #257). A foreign-currency PO (vendor currency != functional) is priced
+    with that rate type; eConnect then resolves the actual XCHGRATE from GP's maintained exchange rate
+    table (DYNAMICS.MC00100) itself. Returns {'functional': <id>, 'purchase_rate_type': <id or None>};
+    a company with no MC setup (single-currency) yields functional 'CAD' and no rate type."""
+    row = conn.cursor().execute(
+        "SELECT RTRIM(FUNLCURR) AS functional, RTRIM(DEFPURTP) AS purchase_rate_type FROM dbo.MC40000"
+    ).fetchone()
+    if row is None:
+        return {"functional": "CAD", "purchase_rate_type": None}
+    return {
+        "functional": ((row.functional or "").strip().upper() or "CAD"),
+        "purchase_rate_type": ((row.purchase_rate_type or "").strip() or None),
+    }
 
 
 def list_tax_details(conn) -> list[dict]:
