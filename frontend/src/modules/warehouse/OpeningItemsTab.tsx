@@ -21,6 +21,7 @@ import Modal from '../../components/Modal';
 import { useIdentity } from '../../hooks/useIdentity';
 import InventoryCorrectionModal from '../admin/InventoryCorrectionModal';
 import FindInStockButton from './stock/FindInStockButton';
+import { leafLabel } from '../../utils/leaf';
 
 interface InstalledHardware {
   id: string;
@@ -38,6 +39,7 @@ interface OpeningItem {
   building: string | null;
   floor: string | null;
   location: string | null;
+  leaf: number | null;
   quantity: number;
   assemblyCompletedAt: string | null;
   state: string;
@@ -87,6 +89,12 @@ function getStateDisplay(state: string): { label: string; color: StateColor } {
 
 const columns: GridColDef[] = [
   { field: 'openingNumber', headerName: 'Opening Number', flex: 1, sortable: true },
+  {
+    field: 'leaf',
+    headerName: 'Leaf',
+    flex: 0.6,
+    valueGetter: (_value: unknown, row: OpeningItem) => leafLabel(row.leaf) ?? '—',
+  },
   { field: 'building', headerName: 'Building', flex: 0.8 },
   { field: 'floor', headerName: 'Floor', flex: 0.6 },
   { field: 'location', headerName: 'Location', flex: 1 },
@@ -154,6 +162,12 @@ function OpeningItemDetailModal({
                   Opening Number
                 </Typography>
                 <Typography>{openingItem.openingNumber}</Typography>
+              </Box>
+              <Box>
+                <Typography variant="subtitle2" color="text.secondary">
+                  Leaf
+                </Typography>
+                <Typography>{leafLabel(openingItem.leaf) ?? '—'}</Typography>
               </Box>
               <Box>
                 <Typography variant="subtitle2" color="text.secondary">

@@ -439,6 +439,8 @@ class OpeningItem:
     building: str | None
     floor: str | None
     location: str | None
+    # Door leaf this assembled unit is (#311): 1 or 2, or null (legacy whole-opening unit).
+    leaf: int | None
     quantity: int
     assembly_completed_at: datetime
     state: OpeningItemState

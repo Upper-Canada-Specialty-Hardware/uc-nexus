@@ -759,3 +759,45 @@ def test_accept_stamps_leaf_on_pull_items(db_session):
     items = db_session.scalars(select(PullRequestItem).where(PullRequestItem.pull_request_id == pr.id)).all()
     assert len(items) == 2
     assert {i.leaf for i in items} == {1, 2}
+
+
+def test_complete_opening_stamps_leaf(db_session):
+    """complete_opening stamps the assembled OpeningItem's leaf from the ShopAssemblyOpening (#311)."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, product_code="HG-100", quantity=1)
+    db_session.commit()
+
+    req_number = f"SA-{uuid.uuid4().hex[:6]}"
+    result = import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening_input("PR1", leaf_count=2)],
+            "hardware_items": [],
+            "include_shop_assembly_request": True,
+            "shop_assembly_request_number": req_number,
+            "shop_assembly_openings": [
+                {
+                    "opening_number": "PR1",
+                    "leaf": 2,
+                    "items": [{"hardware_category": "HINGE", "product_code": "HG-100", "quantity": 1}],
+                },
+            ],
+        },
+    )
+    db_session.flush()
+
+    shop_assembly_repository.accept_shop_assembly_request(db_session, result["shop_assembly_request"].id, "acceptor")
+    db_session.flush()
+
+    # Drive the opening to a completable state: PR pulled+completed, opening assigned.
+    pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == req_number))
+    pr.status = PullRequestStatus.COMPLETED
+    sao = db_session.scalar(select(ShopAssemblyOpening).where(ShopAssemblyOpening.pull_request_id == pr.id))
+    sao.pull_status = PullStatus.PULLED
+    sao.assigned_to = "tester"
+    db_session.flush()
+
+    opening_item = shop_assembly_repository.complete_opening(db_session, sao.id, "A", "1", "1", completed_by="tester")
+    db_session.flush()
+    assert opening_item.leaf == 2

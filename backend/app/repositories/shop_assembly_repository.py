@@ -233,6 +233,9 @@ def complete_opening(
         opening_id=sa_opening.opening_id,
         warehouse_id=warehouse_admin_repository.get_primary_warehouse_id(session),
         opening_number=sa_opening.opening_number,
+        # Assembled unit is a single door leaf (#311): one OpeningItem per leaf, stamped from the
+        # ShopAssemblyOpening. A pair yields two independently-located, independently-shippable units.
+        leaf=sa_opening.leaf,
         building=sa_opening.building,
         floor=sa_opening.floor,
         location=sa_opening.location,

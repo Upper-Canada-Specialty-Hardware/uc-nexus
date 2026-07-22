@@ -164,6 +164,7 @@ export const COMPLETE_OPENING = gql`
       building
       floor
       location
+      leaf
       quantity
       assemblyCompletedAt
       state

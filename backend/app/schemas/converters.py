@@ -430,6 +430,7 @@ def opening_item_to_type(oi) -> OpeningItem:
         building=oi.building,
         floor=oi.floor,
         location=oi.location,
+        leaf=oi.leaf,
         quantity=oi.quantity,
         assembly_completed_at=oi.assembly_completed_at,
         state=oi.state,
