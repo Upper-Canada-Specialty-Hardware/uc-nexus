@@ -68,10 +68,19 @@ def build_create_po_payload(
     cost_code: str | None,
     po_number: str | None,
     line_items: list[dict],
+    tax_detail_id: str | None = None,
+    freight_amount: float | None = None,
+    misc_amount: float | None = None,
+    trade_discount: float | None = None,
 ) -> dict:
     """line_items: the same dicts create_po/register_po_in_gp build for the repository call, each
     with hardware_category, product_code, ordered_quantity, unit_cost, order_as. job_number present
-    means every line is job-cost (product_indicator=2); absent means non-inventoried (1)."""
+    means every line is job-cost (product_indicator=2); absent means non-inventoried (1).
+
+    Issue #257 GP header charges: tax_detail_id is the GP purchase tax detail the relay computes tax
+    from (CAD only; the relay resolves currency from the vendor). freight_amount maps from the PO's
+    shipping_cost, misc_amount + trade_discount are the new register-form inputs. None -> 0 (the relay
+    POHeader charge fields are non-null Decimals)."""
     is_job = job_number is not None
     confirm_with = (vendor_contact_name or buyer_id).strip()[:_MAX_CONFIRM_WITH]
 
@@ -101,6 +110,12 @@ def build_create_po_payload(
             "buyer_id": buyer_id,
             "confirm_with": confirm_with,
             "doc_date": date.today().isoformat(),
+            # Issue #257: GP header charges. None -> 0 for the non-null relay Decimals; tax_detail_id
+            # stays None when no detail was picked (relay then writes no tax).
+            "tax_detail_id": tax_detail_id,
+            "freight_amount": freight_amount or 0,
+            "misc_amount": misc_amount or 0,
+            "trade_discount": trade_discount or 0,
         },
         "lines": lines,
         "po_number": po_number,
