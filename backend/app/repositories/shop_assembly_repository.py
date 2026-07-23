@@ -105,6 +105,9 @@ def assign_openings(
         raise ValidationError("opening_ids must not be empty", field="opening_ids")
     if not assigned_to_user_id:
         raise ValidationError("assigned_to_user_id must not be empty", field="assigned_to_user_id")
+    # Keep the pre-#324 invariant that an assigned opening always carries a display name.
+    if not assigned_to_name:
+        raise ValidationError("assigned_to must not be empty", field="assigned_to")
 
     locked = lock_rows(session, ShopAssemblyOpening, opening_ids)
     if len(locked) != len(opening_ids):
@@ -142,7 +145,7 @@ def remove_opening_from_user(
     if opening.assembly_status != AssemblyStatus.PENDING:
         raise InvalidStateTransitionError("Cannot unassign a completed opening")
     if opening.assigned_to_user_id is None:
-        raise ValidationError("Opening is not assigned to anyone", field="assigned_to")
+        raise ValidationError("Opening is not assigned to anyone", field="assigned_to_user_id")
 
     opening.assigned_to_user_id = None
     opening.assigned_to = None
