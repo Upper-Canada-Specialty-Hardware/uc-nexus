@@ -1,9 +1,23 @@
-import { Box, Chip, Table, TableHead, TableBody, TableRow, TableCell, Stack, Typography } from '@mui/material';
+import { useState } from 'react';
+import {
+  Box,
+  Chip,
+  Table,
+  TableHead,
+  TableBody,
+  TableRow,
+  TableCell,
+  Stack,
+  ToggleButton,
+  ToggleButtonGroup,
+  Typography,
+} from '@mui/material';
 import { useQuery } from '@apollo/client/react';
 import {
   GET_SHOP_ASSEMBLY_REQUESTS,
   ACCEPT_SHOP_ASSEMBLY_REQUEST,
   REJECT_SHOP_ASSEMBLY_REQUEST,
+  REOPEN_SHOP_ASSEMBLY_REQUEST,
 } from '../../graphql/shop-assembly';
 import RequestsReviewPage from '../../components/RequestsReviewPage';
 import { leafSuffix } from '../../utils/leaf';
@@ -35,26 +49,47 @@ interface ShopAssemblyRequest {
 }
 
 export default function ShopAssemblyRequestsPage() {
+  const [view, setView] = useState<'PENDING' | 'APPROVED'>('PENDING');
   const { data, loading, refetch } = useQuery<{ shopAssemblyRequests: ShopAssemblyRequest[] }>(
     GET_SHOP_ASSEMBLY_REQUESTS,
-    { variables: { status: 'PENDING' }, fetchPolicy: 'cache-and-network' },
+    { variables: { status: view, reopenableOnly: view === 'APPROVED' }, fetchPolicy: 'cache-and-network' },
   );
 
   return (
-    <RequestsReviewPage<ShopAssemblyRequest>
-      title="Shop Assembly Requests"
-      description="Pending requests from Start a Task. Accepting one creates the warehouse pull request."
-      emptyMessage="No pending shop assembly requests."
-      loading={loading}
-      loaded={data !== undefined}
-      requests={data?.shopAssemblyRequests ?? []}
-      acceptMutation={ACCEPT_SHOP_ASSEMBLY_REQUEST}
-      rejectMutation={REJECT_SHOP_ASSEMBLY_REQUEST}
-      onChanged={refetch}
-      renderSummary={(req) => (
-        <Chip label={`${req.openings.length} opening(s)`} size="small" variant="outlined" />
-      )}
-      renderDetails={(req) =>
+    <Box>
+      <ToggleButtonGroup
+        size="small"
+        exclusive
+        value={view}
+        onChange={(_e, next) => next && setView(next)}
+        sx={{ mb: 2 }}
+      >
+        <ToggleButton value="PENDING">Pending</ToggleButton>
+        <ToggleButton value="APPROVED">Approved</ToggleButton>
+      </ToggleButtonGroup>
+
+      <RequestsReviewPage<ShopAssemblyRequest>
+        title="Shop Assembly Requests"
+        description={
+          view === 'PENDING'
+            ? 'Pending requests from Start a Task. Accepting one creates the warehouse pull request.'
+            : 'Accepted requests whose warehouse pull has not started yet. Reopen one to undo the accept and send it back to Pending.'
+        }
+        emptyMessage={
+          view === 'PENDING' ? 'No pending shop assembly requests.' : 'No shop assembly requests can be reopened.'
+        }
+        loading={loading}
+        loaded={data !== undefined}
+        requests={data?.shopAssemblyRequests ?? []}
+        acceptMutation={ACCEPT_SHOP_ASSEMBLY_REQUEST}
+        rejectMutation={REJECT_SHOP_ASSEMBLY_REQUEST}
+        reopenMutation={REOPEN_SHOP_ASSEMBLY_REQUEST}
+        mode={view === 'APPROVED' ? 'approved' : 'pending'}
+        onChanged={refetch}
+        renderSummary={(req) => (
+          <Chip label={`${req.openings.length} opening(s)`} size="small" variant="outlined" />
+        )}
+        renderDetails={(req) =>
         req.openings.map((opening) => (
           <Box key={opening.id}>
             <Stack direction="row" spacing={1} alignItems="baseline" sx={{ mb: 0.5 }}>
@@ -93,7 +128,8 @@ export default function ShopAssemblyRequestsPage() {
             )}
           </Box>
         ))
-      }
-    />
+        }
+      />
+    </Box>
   );
 }
