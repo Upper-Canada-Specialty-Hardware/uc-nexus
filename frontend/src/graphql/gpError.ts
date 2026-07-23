@@ -42,6 +42,16 @@ export function extractGpError(err: unknown): GpError | null {
   return null;
 }
 
+// Backend code (app/errors.py RelayOpUnsupportedError) for a call the connected relay build is too old
+// to serve (issue #315). The dialogs special-case it: show an 'update the relay' banner and fall back
+// (e.g. manual tax-detail entry) instead of leaving a dropdown silently empty.
+export const RELAY_OP_UNSUPPORTED = 'RELAY_OP_UNSUPPORTED';
+
+/** True when an Apollo error is a RELAY_OP_UNSUPPORTED failure (relay too old for the op, issue #315). */
+export function isRelayOpUnsupported(err: unknown): boolean {
+  return extractGpError(err)?.code === RELAY_OP_UNSUPPORTED;
+}
+
 /** Plain-text rendering of a GpError, for the "Copy details" button (a paste-able alternative to a screenshot). */
 export function formatGpErrorText(e: GpError): string {
   const ctx = e.relay?.context ?? {};

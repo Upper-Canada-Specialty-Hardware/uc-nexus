@@ -91,7 +91,9 @@ def test_mc_setup_no_row_defaults_to_cad_single_currency():
 
 # --- list_tax_details (TX00201 purchase details, TXDTLTYP=2) ---
 
-_TaxRow = namedtuple("_TaxRow", "tax_detail_id description percent")
+# The percent column comes back under the alias `pct`, not `percent` - PERCENT is a reserved SQL Server
+# keyword, so the query aliases TXDTLPCT AS pct (see the assertion below, issue #315 follow-up).
+_TaxRow = namedtuple("_TaxRow", "tax_detail_id description pct")
 
 
 def test_list_tax_details_filters_to_purchases_and_maps_rows():
@@ -102,6 +104,11 @@ def test_list_tax_details_filters_to_purchases_and_maps_rows():
     out = list_tax_details(conn)
     assert "TX00201" in conn.cursor_obj.sql
     assert "TXDTLTYP = 2" in conn.cursor_obj.sql
+    # Regression guard (issue #315 follow-up): PERCENT is a reserved SQL Server keyword, so a bare
+    # `AS percent` throws "Incorrect syntax near the keyword 'percent'" against real GP and the dropdown
+    # never loads. The alias must stay a non-reserved word (pct).
+    assert "as pct" in conn.cursor_obj.sql.lower()
+    assert "as percent" not in conn.cursor_obj.sql.lower()
     assert out[0] == {"tax_detail_id": "ON HST - P", "description": "ON HST on Purchases", "percent": 13.0}
     # a blank GP description maps to None, not an empty string
     assert out[1]["description"] is None

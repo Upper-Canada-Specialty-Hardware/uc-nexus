@@ -85,11 +85,14 @@ def health():
 
 
 async def _relay_read_loop(websocket: WebSocket) -> None:
-    """Feed each frame the relay sends to relay_gateway: a {"type": "pong"} answers the heartbeat
-    (issue #277), anything else is a {id, ok, result|error} job reply to correlate with relay_call()."""
+    """Feed each frame the relay sends to relay_gateway: a {"type": "hello"} advertises the relay's build
+    and op-set on connect (issue #315), a {"type": "pong"} answers the heartbeat (issue #277), anything
+    else is a {id, ok, result|error} job reply to correlate with relay_call()."""
     while True:
         message = await websocket.receive_json()
-        if isinstance(message, dict) and message.get("type") == "pong":
+        if isinstance(message, dict) and message.get("type") == "hello":
+            relay_gateway.note_hello(message.get("build"), message.get("ops"))
+        elif isinstance(message, dict) and message.get("type") == "pong":
             relay_gateway.note_pong()
         else:
             relay_gateway.resolve(message)
