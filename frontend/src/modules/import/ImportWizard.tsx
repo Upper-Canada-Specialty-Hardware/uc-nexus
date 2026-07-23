@@ -36,7 +36,7 @@ import { GET_PROJECT_EXCLUDED_ITEMS, GET_PROJECT_HARDWARE_SCHEDULE, RECONCILE_SC
 import { GET_PROJECTS } from '../../graphql/shared';
 import type { ClassificationRow } from './ClassificationGrid';
 import type { AggregatedHardwareItem, ImportPurpose, ReconciliationRow, ShippingPRDraft } from './types';
-import { aggregationKey, classificationKey } from './types';
+import { aggregationKey, classificationKey, toClassificationInputs } from './types';
 import type { Project } from '../../types/project';
 import type { ProjectHardwareScheduleResponse } from './hydrateSchedule';
 import { mapScheduleResponseToParseResult } from './hydrateSchedule';
@@ -694,10 +694,10 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
         : null,
       excludedItems,
       classifications: purpose === 'assembly'
-        ? Array.from(classifications.entries()).map(([key, cls]) => {
-            const [hardwareCategory, productCode, unitCost] = key.split('|');
-            return { hardwareCategory, productCode, unitCost: parseFloat(unitCost), classification: cls };
-          })
+        // #321: only Site/Shop belong here. Re-imports pre-populate the classifications Map with
+        // BY_OTHERS (ownership) from the exclusion table; those items are out of scope for shop
+        // assembly and BY_OTHERS is not in the Classification enum, so toClassificationInputs drops them.
+        ? toClassificationInputs(classifications)
         : purpose === 'po'
           // Issue #216: the PM's Site/Shop picks from the Classification step's second axis.
           // By-Others items are out of scope and carry none.
