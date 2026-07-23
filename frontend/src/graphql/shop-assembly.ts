@@ -8,6 +8,7 @@ export const GET_ASSEMBLE_LIST = gql`
       pullRequestId
       openingId
       pullStatus
+      assignedToUserId
       assignedTo
       assemblyStatus
       completedAt
@@ -27,13 +28,14 @@ export const GET_ASSEMBLE_LIST = gql`
 `;
 
 export const GET_MY_WORK = gql`
-  query GetMyWork($assignedTo: String!) {
-    myWork(assignedTo: $assignedTo) {
+  query GetMyWork($assignedToUserId: String!) {
+    myWork(assignedToUserId: $assignedToUserId) {
       id
       shopAssemblyRequestId
       pullRequestId
       openingId
       pullStatus
+      assignedToUserId
       assignedTo
       assemblyStatus
       completedAt
@@ -111,6 +113,7 @@ export const ASSIGN_OPENINGS = gql`
       shopAssemblyRequestId
       openingId
       pullStatus
+      assignedToUserId
       assignedTo
       assemblyStatus
       completedAt
@@ -136,6 +139,7 @@ export const REMOVE_OPENING_FROM_USER = gql`
       shopAssemblyRequestId
       openingId
       pullStatus
+      assignedToUserId
       assignedTo
       assemblyStatus
       completedAt

@@ -522,6 +522,8 @@ class ShopAssemblyOpening:
     pull_request_id: strawberry.ID | None
     opening_id: strawberry.ID
     pull_status: PullStatus
+    # Stable Clerk user id the opening is claimed by (#324); assigned_to is the display name.
+    assigned_to_user_id: str | None
     assigned_to: str | None
     assembly_status: AssemblyStatus
     completed_at: datetime | None

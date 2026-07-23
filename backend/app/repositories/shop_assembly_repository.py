@@ -71,9 +71,10 @@ def get_assemble_list(
 
 def get_my_work(
     session: Session,
-    assigned_to: str,
+    assigned_to_user_id: str,
 ) -> list[ShopAssemblyOpening]:
-    """Query ShopAssemblyOpenings assigned to a user with Pending assembly_status."""
+    """Query ShopAssemblyOpenings claimed by a user (by stable Clerk user id, #324) with Pending
+    assembly_status."""
     stmt = (
         select(ShopAssemblyOpening)
         .join(
@@ -82,7 +83,7 @@ def get_my_work(
         )
         .options(selectinload(ShopAssemblyOpening.items))
         .where(
-            ShopAssemblyOpening.assigned_to == assigned_to,
+            ShopAssemblyOpening.assigned_to_user_id == assigned_to_user_id,
             ShopAssemblyOpening.assembly_status == AssemblyStatus.PENDING,
             PullRequestModel.source == PullRequestSource.SHOP_ASSEMBLY,
             PullRequestModel.status == PullRequestStatus.COMPLETED,
@@ -95,13 +96,15 @@ def get_my_work(
 def assign_openings(
     session: Session,
     opening_ids: list[uuid.UUID],
-    assigned_to: str,
+    assigned_to_user_id: str,
+    assigned_to_name: str,
 ) -> list[ShopAssemblyOpening]:
-    """Assign ShopAssemblyOpenings to a user with pessimistic locking."""
+    """Assign ShopAssemblyOpenings to a user with pessimistic locking. Keyed on the stable Clerk
+    user id (#324); assigned_to_name is the display name stored alongside for the UI."""
     if not opening_ids:
         raise ValidationError("opening_ids must not be empty", field="opening_ids")
-    if not assigned_to:
-        raise ValidationError("assigned_to must not be empty", field="assigned_to")
+    if not assigned_to_user_id:
+        raise ValidationError("assigned_to_user_id must not be empty", field="assigned_to_user_id")
 
     locked = lock_rows(session, ShopAssemblyOpening, opening_ids)
     if len(locked) != len(opening_ids):
@@ -114,9 +117,10 @@ def assign_openings(
             raise InvalidStateTransitionError("Opening is not ready for assignment - hardware has not been pulled")
         if opening.assembly_status != AssemblyStatus.PENDING:
             raise InvalidStateTransitionError("Opening assembly is already completed")
-        if opening.assigned_to is not None:
+        if opening.assigned_to_user_id is not None:
             raise ConflictError(f"Opening already assigned to {opening.assigned_to}")
-        opening.assigned_to = assigned_to
+        opening.assigned_to_user_id = assigned_to_user_id
+        opening.assigned_to = assigned_to_name
 
     return locked
 
@@ -137,9 +141,10 @@ def remove_opening_from_user(
 
     if opening.assembly_status != AssemblyStatus.PENDING:
         raise InvalidStateTransitionError("Cannot unassign a completed opening")
-    if opening.assigned_to is None:
+    if opening.assigned_to_user_id is None:
         raise ValidationError("Opening is not assigned to anyone", field="assigned_to")
 
+    opening.assigned_to_user_id = None
     opening.assigned_to = None
     return opening
 
