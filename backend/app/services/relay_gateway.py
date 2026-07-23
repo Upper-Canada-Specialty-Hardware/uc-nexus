@@ -17,7 +17,7 @@ import uuid
 
 from fastapi import WebSocket
 
-from app.errors import RelayCallError, RelayTimeoutError, RelayUnavailableError
+from app.errors import RelayCallError, RelayOpUnsupportedError, RelayTimeoutError, RelayUnavailableError
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
 
@@ -34,6 +34,13 @@ class RelayGateway:
         self._socket: WebSocket | None = None
         self._company: str | None = None
         self._pending: dict[str, asyncio.Future] = {}
+        # Relay identity advertised on the connect `hello` frame (issue #315). `_build` is the relay's
+        # build tag (e.g. 'relay-v0.1.0-build.30'); `_ops` is its supported op-set. Both stay None for an
+        # older relay build that doesn't send a hello - in that case relay_call skips the proactive parity
+        # check and relies on the reactive `unknown_op` mapping, so an out-of-date relay still yields a
+        # clean RELAY_OP_UNSUPPORTED instead of a cryptic error.
+        self._build: str | None = None
+        self._ops: frozenset[str] | None = None
         # Heartbeat bookkeeping for the current connection (issue #277). `_unanswered_pings` counts pings
         # sent since the last pong; `_heartbeat_armed` only turns True after the relay answers its first
         # ping, so a relay build that doesn't speak the data heartbeat yet is never falsely reaped - it
@@ -51,6 +58,13 @@ class RelayGateway:
         Surfaced on RelayStatus so the PO/receive/adopt dialogs offer only that company (issue #202 #6)."""
         return self._company
 
+    @property
+    def build(self) -> str | None:
+        """The connected relay's build tag from its hello frame (issue #315), None when disconnected or
+        when an older relay that predates the hello frame is connected. Surfaced on RelayStatus so the
+        Admin -> Relay Installs page can show which build is live."""
+        return self._build
+
     def try_register(self, company: str, websocket: WebSocket) -> bool:
         """Called by the /relay-link route once a connecting socket has authenticated. Returns True and
         takes the single connection slot when it's free; returns False (route closes the socket) when a
@@ -59,6 +73,8 @@ class RelayGateway:
             return False
         self._socket = websocket
         self._company = company
+        self._build = None
+        self._ops = None
         self._unanswered_pings = 0
         self._heartbeat_armed = False
         return True
@@ -68,9 +84,20 @@ class RelayGateway:
         if self._socket is websocket:
             self._socket = None
             self._company = None
+            self._build = None
+            self._ops = None
             self._unanswered_pings = 0
             self._heartbeat_armed = False
             self._fail_all("relay disconnected")
+
+    def note_hello(self, build: str | None, ops: list[str] | None) -> None:
+        """Called by the route's read loop for the relay's one {"type": "hello", build, ops} frame,
+        sent right after it connects (issue #315). Records the build tag and op-set so relay_call can
+        reject an unsupported op before the round-trip and RelayStatus can report the live build. Only
+        honoured for the currently-registered socket."""
+        if self._socket is not None:
+            self._build = build
+            self._ops = frozenset(ops) if ops is not None else None
 
     def note_pong(self) -> None:
         """Called by the route's read loop for each {"type": "pong"} the relay sends. Clears the miss
@@ -104,11 +131,18 @@ class RelayGateway:
     ) -> dict | list | None:
         """Send {id, op, company, payload} to the connected relay and await its correlated reply.
         Raises RelayUnavailableError (no/wrong-company connection or send failure), RelayTimeoutError,
-        or RelayCallError (the relay itself answered ok=false)."""
+        RelayOpUnsupportedError (relay too old for this op, issue #315), or RelayCallError (the relay
+        itself answered ok=false)."""
         if self._socket is None:
             raise RelayUnavailableError()
         if self._company and company != self._company:
             raise RelayUnavailableError(f"connected relay is enrolled for {self._company}, not {company}")
+        # Proactive parity (issue #315): if the relay advertised its op-set on connect and this op isn't
+        # in it, fail fast with a clear 'update the relay' error rather than a 30s round-trip. Skipped when
+        # `_ops` is None (an older relay that sends no hello) - the reactive `unknown_op` mapping below
+        # still catches it.
+        if self._ops is not None and op not in self._ops:
+            raise RelayOpUnsupportedError(op)
 
         job_id = uuid.uuid4().hex
         future: asyncio.Future = asyncio.get_running_loop().create_future()
@@ -127,6 +161,12 @@ class RelayGateway:
 
         if not reply.get("ok"):
             error = reply.get("error") or {}
+            # Reactive parity (issue #315): an out-of-date relay answers a call for an op it lacks with
+            # `unknown_op`. Map that to the same clear 'update the relay' error the proactive check raises,
+            # so a relay that predates the hello frame still surfaces cleanly instead of as a raw
+            # `unknown op '...'` string.
+            if error.get("error") == "unknown_op":
+                raise RelayOpUnsupportedError(op, detail=error)
             raise RelayCallError(error.get("message") or f"{op} failed", detail=error)
         return reply.get("result")
 
