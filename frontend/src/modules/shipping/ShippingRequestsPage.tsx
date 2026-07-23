@@ -1,10 +1,25 @@
-import { Chip, Table, TableHead, TableBody, TableRow, TableCell, Typography, Alert, Link } from '@mui/material';
+import { useState } from 'react';
+import {
+  Alert,
+  Box,
+  Chip,
+  Link,
+  Table,
+  TableHead,
+  TableBody,
+  TableRow,
+  TableCell,
+  ToggleButton,
+  ToggleButtonGroup,
+  Typography,
+} from '@mui/material';
 import { Link as RouterLink } from 'react-router-dom';
 import { useQuery } from '@apollo/client/react';
 import {
   GET_SHIPPING_OUT_REQUESTS,
   ACCEPT_SHIPPING_OUT_REQUEST,
   REJECT_SHIPPING_OUT_REQUEST,
+  REOPEN_SHIPPING_OUT_REQUEST,
 } from '../../graphql/shipping';
 import RequestsReviewPage from '../../components/RequestsReviewPage';
 
@@ -33,62 +48,87 @@ interface Props {
 }
 
 export default function ShippingRequestsPage({ projectId }: Props) {
+  const [view, setView] = useState<'PENDING' | 'APPROVED'>('PENDING');
   const { data, loading, refetch } = useQuery<{ shippingOutRequests: ShippingOutRequest[] }>(
     GET_SHIPPING_OUT_REQUESTS,
-    { variables: { projectId: projectId ?? null, status: 'PENDING' }, fetchPolicy: 'cache-and-network' },
+    {
+      variables: { projectId: projectId ?? null, status: view, reopenableOnly: view === 'APPROVED' },
+      fetchPolicy: 'cache-and-network',
+    },
   );
 
   return (
-    <RequestsReviewPage<ShippingOutRequest>
-      title="Shipping Requests"
-      description="Pending requests from Start a Task. Accepting one creates the warehouse pull request."
-      emptyMessage="No pending shipping requests."
-      loading={loading}
-      loaded={data !== undefined}
-      requests={data?.shippingOutRequests ?? []}
-      acceptMutation={ACCEPT_SHIPPING_OUT_REQUEST}
-      rejectMutation={REJECT_SHIPPING_OUT_REQUEST}
-      onChanged={refetch}
-      note={
-        <Alert severity="info">
-          Accepting a request creates a warehouse pull request. Process it under{' '}
-          <Link component={RouterLink} to="/app/warehouse/pull-requests">
-            Warehouse → Pull Requests → Shipping Out
-          </Link>{' '}
-          (Approve and Start, then Mark as Pulled) to move items to ship-ready.
-        </Alert>
-      }
-      renderSummary={(req) => (
-        <Chip label={`${req.items.length} item(s)`} size="small" variant="outlined" />
-      )}
-      renderDetails={(req) =>
-        req.items.length > 0 ? (
-          <Table size="small">
-            <TableHead>
-              <TableRow>
-                <TableCell>Opening</TableCell>
-                <TableCell>Product Code</TableCell>
-                <TableCell>Hardware Category</TableCell>
-                <TableCell align="right">Quantity</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {req.items.map((item) => (
-                <TableRow key={item.id}>
-                  <TableCell>{item.openingNumber || '—'}</TableCell>
-                  <TableCell>{item.productCode || '—'}</TableCell>
-                  <TableCell>{item.hardwareCategory || '—'}</TableCell>
-                  <TableCell align="right">{item.requestedQuantity}</TableCell>
+    <Box>
+      <ToggleButtonGroup
+        size="small"
+        exclusive
+        value={view}
+        onChange={(_e, next) => next && setView(next)}
+        sx={{ mb: 2 }}
+      >
+        <ToggleButton value="PENDING">Pending</ToggleButton>
+        <ToggleButton value="APPROVED">Approved</ToggleButton>
+      </ToggleButtonGroup>
+
+      <RequestsReviewPage<ShippingOutRequest>
+        title="Shipping Requests"
+        description={
+          view === 'PENDING'
+            ? 'Pending requests from Start a Task. Accepting one creates the warehouse pull request.'
+            : 'Accepted requests whose warehouse pull has not started yet. Reopen one to undo the accept and send it back to Pending.'
+        }
+        emptyMessage={view === 'PENDING' ? 'No pending shipping requests.' : 'No shipping requests can be reopened.'}
+        loading={loading}
+        loaded={data !== undefined}
+        requests={data?.shippingOutRequests ?? []}
+        acceptMutation={ACCEPT_SHIPPING_OUT_REQUEST}
+        rejectMutation={REJECT_SHIPPING_OUT_REQUEST}
+        reopenMutation={REOPEN_SHIPPING_OUT_REQUEST}
+        mode={view === 'APPROVED' ? 'approved' : 'pending'}
+        onChanged={refetch}
+        note={
+          view === 'PENDING' ? (
+            <Alert severity="info">
+              Accepting a request creates a warehouse pull request. Process it under{' '}
+              <Link component={RouterLink} to="/app/warehouse/pull-requests">
+                Warehouse → Pull Requests → Shipping Out
+              </Link>{' '}
+              (Approve and Start, then Mark as Pulled) to move items to ship-ready.
+            </Alert>
+          ) : undefined
+        }
+        renderSummary={(req) => (
+          <Chip label={`${req.items.length} item(s)`} size="small" variant="outlined" />
+        )}
+        renderDetails={(req) =>
+          req.items.length > 0 ? (
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Opening</TableCell>
+                  <TableCell>Product Code</TableCell>
+                  <TableCell>Hardware Category</TableCell>
+                  <TableCell align="right">Quantity</TableCell>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        ) : (
-          <Typography variant="body2" color="text.secondary">
-            No items.
-          </Typography>
-        )
-      }
-    />
+              </TableHead>
+              <TableBody>
+                {req.items.map((item) => (
+                  <TableRow key={item.id}>
+                    <TableCell>{item.openingNumber || '—'}</TableCell>
+                    <TableCell>{item.productCode || '—'}</TableCell>
+                    <TableCell>{item.hardwareCategory || '—'}</TableCell>
+                    <TableCell align="right">{item.requestedQuantity}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          ) : (
+            <Typography variant="body2" color="text.secondary">
+              No items.
+            </Typography>
+          )
+        }
+      />
+    </Box>
   );
 }

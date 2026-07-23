@@ -13,10 +13,12 @@ import {
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import CheckIcon from '@mui/icons-material/Check';
 import CloseIcon from '@mui/icons-material/Close';
+import UndoIcon from '@mui/icons-material/Undo';
 import { useMutation } from '@apollo/client/react';
 import type { DocumentNode } from 'graphql';
 import { useToast } from './Toast';
 import { useIdentity } from '../hooks/useIdentity';
+import ConfirmDialog from './ConfirmDialog';
 
 interface ReviewableRequest {
   id: string;
@@ -29,7 +31,7 @@ interface RequestsReviewPageProps<TRequest extends ReviewableRequest> {
   title: string;
   /** One-line description under the heading. */
   description: string;
-  /** Alert text shown once loaded with no pending requests. */
+  /** Alert text shown once loaded with no requests. */
   emptyMessage: string;
   loading: boolean;
   /** True once the list query has returned at least once (data !== undefined). */
@@ -37,7 +39,14 @@ interface RequestsReviewPageProps<TRequest extends ReviewableRequest> {
   requests: TRequest[];
   acceptMutation: DocumentNode;
   rejectMutation: DocumentNode;
-  /** Re-run the list query after an accept/reject settles. */
+  /** Reverses an accept (#325). Required for `mode="approved"`; unused in the pending view. */
+  reopenMutation?: DocumentNode;
+  /**
+   * `pending` (default) shows Accept/Reject on each request. `approved` shows a single Reopen action
+   * that undoes the accept and sends the request back to Pending.
+   */
+  mode?: 'pending' | 'approved';
+  /** Re-run the list query after an accept/reject/reopen settles. */
   onChanged: () => void;
   /** Rendered right of the request number: the count chip (item(s) / opening(s)). */
   renderSummary: (req: TRequest) => ReactNode;
@@ -48,10 +57,11 @@ interface RequestsReviewPageProps<TRequest extends ReviewableRequest> {
 }
 
 /**
- * Shared accept/reject review page for the request -> accept -> pull gate (#293). Both the
- * shipping-out and shop-assembly request pages are this shell; they differ only in query, row
- * shape, and copy. Accepting mints the warehouse PullRequest, stamped with the caller's display
- * name; the warehouse handles any shortfall downstream.
+ * Shared accept/reject/reopen review page for the request -> accept -> pull gate (#293, #325). Both
+ * the shipping-out and shop-assembly request pages are this shell; they differ only in query, row
+ * shape, and copy. Accepting mints the warehouse PullRequest, stamped with the caller's display name;
+ * reopening (approved view) hard-deletes that PR and returns the request to Pending, allowed only
+ * while the warehouse has not started the pull (enforced server-side).
  */
 export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
   title,
@@ -62,6 +72,8 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
   requests,
   acceptMutation,
   rejectMutation,
+  reopenMutation,
+  mode = 'pending',
   onChanged,
   renderSummary,
   renderDetails,
@@ -69,9 +81,11 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
 }: RequestsReviewPageProps<TRequest>) {
   const { showToast } = useToast();
   const { displayName } = useIdentity();
-  // Which request is mid-flight, and which action - drives per-button spinners while both
-  // buttons on that request disable so accept and reject can't race each other.
-  const [pending, setPending] = useState<{ id: string; action: 'accept' | 'reject' } | null>(null);
+  // Which request is mid-flight, and which action - drives per-button spinners while every button on
+  // that request disables so the actions can't race each other.
+  const [pending, setPending] = useState<{ id: string; action: 'accept' | 'reject' | 'reopen' } | null>(null);
+  // Reopen undoes an accept, so it goes through a confirmation step. Holds the request id awaiting it.
+  const [confirmReopenId, setConfirmReopenId] = useState<string | null>(null);
 
   const settle = (message: string, severity: 'success' | 'error') => {
     showToast(message, severity);
@@ -89,6 +103,13 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
     onError: (e) => settle(e.message, 'error'),
   });
 
+  // Falls back to acceptMutation so the hook always has a valid document; only fired in approved mode,
+  // where reopenMutation is supplied.
+  const [reopenRequest] = useMutation(reopenMutation ?? acceptMutation, {
+    onCompleted: () => settle('Request reopened - back to pending', 'success'),
+    onError: (e) => settle(e.message, 'error'),
+  });
+
   const handleAccept = (id: string) => {
     setPending({ id, action: 'accept' });
     acceptRequest({ variables: { id, acceptedBy: displayName } });
@@ -97,6 +118,11 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
   const handleReject = (id: string) => {
     setPending({ id, action: 'reject' });
     rejectRequest({ variables: { id, rejectedBy: displayName, reason: null } });
+  };
+
+  const handleReopen = (id: string) => {
+    setPending({ id, action: 'reopen' });
+    reopenRequest({ variables: { id } });
   };
 
   return (
@@ -139,43 +165,76 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
               <Stack spacing={2}>
                 {renderDetails(req)}
 
-                <Stack direction="row" spacing={1}>
-                  <Button
-                    variant="contained"
-                    color="primary"
-                    startIcon={
-                      pending?.id === req.id && pending.action === 'accept' ? (
-                        <CircularProgress size={16} color="inherit" />
-                      ) : (
-                        <CheckIcon />
-                      )
-                    }
-                    disabled={pending?.id === req.id}
-                    onClick={() => handleAccept(req.id)}
-                  >
-                    Accept
-                  </Button>
-                  <Button
-                    variant="outlined"
-                    color="primary"
-                    startIcon={
-                      pending?.id === req.id && pending.action === 'reject' ? (
-                        <CircularProgress size={16} color="inherit" />
-                      ) : (
-                        <CloseIcon />
-                      )
-                    }
-                    disabled={pending?.id === req.id}
-                    onClick={() => handleReject(req.id)}
-                  >
-                    Reject
-                  </Button>
-                </Stack>
+                {mode === 'approved' ? (
+                  <Stack direction="row" spacing={1}>
+                    <Button
+                      variant="outlined"
+                      color="warning"
+                      startIcon={
+                        pending?.id === req.id && pending.action === 'reopen' ? (
+                          <CircularProgress size={16} color="inherit" />
+                        ) : (
+                          <UndoIcon />
+                        )
+                      }
+                      disabled={pending?.id === req.id}
+                      onClick={() => setConfirmReopenId(req.id)}
+                    >
+                      Reopen
+                    </Button>
+                  </Stack>
+                ) : (
+                  <Stack direction="row" spacing={1}>
+                    <Button
+                      variant="contained"
+                      color="primary"
+                      startIcon={
+                        pending?.id === req.id && pending.action === 'accept' ? (
+                          <CircularProgress size={16} color="inherit" />
+                        ) : (
+                          <CheckIcon />
+                        )
+                      }
+                      disabled={pending?.id === req.id}
+                      onClick={() => handleAccept(req.id)}
+                    >
+                      Accept
+                    </Button>
+                    <Button
+                      variant="outlined"
+                      color="primary"
+                      startIcon={
+                        pending?.id === req.id && pending.action === 'reject' ? (
+                          <CircularProgress size={16} color="inherit" />
+                        ) : (
+                          <CloseIcon />
+                        )
+                      }
+                      disabled={pending?.id === req.id}
+                      onClick={() => handleReject(req.id)}
+                    >
+                      Reject
+                    </Button>
+                  </Stack>
+                )}
               </Stack>
             </AccordionDetails>
           </Accordion>
         ))}
       </Stack>
+
+      <ConfirmDialog
+        open={confirmReopenId !== null}
+        title="Reopen this request?"
+        message="This undoes the accept: the request goes back to Pending and the warehouse pull request it created is removed. It only works if the warehouse has not started that pull yet."
+        confirmLabel="Reopen"
+        onConfirm={() => {
+          const id = confirmReopenId;
+          setConfirmReopenId(null);
+          if (id) handleReopen(id);
+        }}
+        onCancel={() => setConfirmReopenId(null)}
+      />
     </Box>
   );
 }

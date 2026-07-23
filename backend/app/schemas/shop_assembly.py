@@ -42,11 +42,14 @@ class ShopAssemblyQueries:
         self,
         project_id: strawberry.ID | None = None,
         status: ShopAssemblyRequestStatus | None = None,
+        reopenable_only: bool = False,
     ) -> list[ShopAssemblyRequest]:
-        """Accept UI (#293): shop-assembly requests for a project, PENDING by default."""
+        """Accept UI (#293): shop-assembly requests for a project, PENDING by default. reopenableOnly
+        (#325) keeps only requests whose minted pull request is still PENDING - the Approved/reopen
+        view uses it so it lists only requests Reopen can still act on."""
         with SessionLocal() as session:
             reqs = shop_assembly_repository.get_shop_assembly_requests(
-                session, uuid.UUID(str(project_id)) if project_id else None, status
+                session, uuid.UUID(str(project_id)) if project_id else None, status, reopenable_only
             )
             return [shop_assembly_request_to_type(r) for r in reqs]
 
@@ -92,6 +95,20 @@ class ShopAssemblyMutations:
         request_id = uuid.UUID(str(id))
         with SessionLocal() as session:
             shop_assembly_repository.reject_shop_assembly_request(session, request_id, rejected_by, reason)
+            session.commit()
+            refreshed = shop_assembly_repository.get_request_with_openings(session, request_id)
+            return shop_assembly_request_to_type(refreshed)
+
+    @strawberry.mutation
+    def reopen_shop_assembly_request(self, info: strawberry.Info, id: strawberry.ID) -> ShopAssemblyRequest:
+        """Reopen an APPROVED shop-assembly request back to PENDING (#325). Undoes an erroneous accept:
+        hard-deletes the warehouse PullRequest the accept minted, re-points the request's openings off
+        it, and flips the request to PENDING so it can be re-accepted or rejected. Refused if the
+        warehouse has already worked the pull. Open to any signed-in user."""
+        require_user(info)
+        request_id = uuid.UUID(str(id))
+        with SessionLocal() as session:
+            shop_assembly_repository.reopen_shop_assembly_request(session, request_id)
             session.commit()
             refreshed = shop_assembly_repository.get_request_with_openings(session, request_id)
             return shop_assembly_request_to_type(refreshed)

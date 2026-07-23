@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import InvalidStateTransitionError, NotFoundError
@@ -23,6 +23,7 @@ from app.models.enums import (
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.opening_item import OpeningItem as OpeningItemModel
 from app.models.pull_request import PullRequest as PullRequestModel
+from app.models.pull_request import PullRequestItem as PullRequestItemModel
 from app.models.shop_assembly import ShopAssemblyOpening
 from app.services import notification_service
 from app.services.locking import lock_rows
@@ -295,3 +296,28 @@ def complete_pull_request(session: Session, pr_id: uuid.UUID) -> PullRequestMode
             opening.pull_status = PullStatus.PULLED
 
     return pr
+
+
+def discard_pending_pull_request(session: Session, pr_id: uuid.UUID | None) -> None:
+    """Hard-delete a still-PENDING PullRequest (and its items) that an accept minted, for the request
+    reopen path (#325). Locks the PR to close the race with a concurrent approve, and refuses if it has
+    advanced past PENDING - by then inventory has been deducted (or the pull completed) and reopening
+    the request would leave the warehouse out of sync, so the caller is told to resolve it in the
+    warehouse first. A hard delete (not the soft deleted_at) is required because request_number is
+    unique: a later re-accept re-mints a PR with the same number. A null/missing PR id is a no-op (the
+    accept is already effectively undone)."""
+    if pr_id is None:
+        return
+    locked = lock_rows(session, PullRequestModel, [pr_id])
+    if not locked:
+        return
+    pr = locked[0]
+    if pr.status != PullRequestStatus.PENDING:
+        raise InvalidStateTransitionError(
+            f"Cannot reopen - the warehouse has already started this pull request ({pr.status.value}). "
+            "Resolve it in the warehouse first."
+        )
+    # Bulk-delete the items in one statement (rather than a load + per-row DELETE), then the PR itself.
+    session.execute(delete(PullRequestItemModel).where(PullRequestItemModel.pull_request_id == pr.id))
+    session.delete(pr)
+    session.flush()

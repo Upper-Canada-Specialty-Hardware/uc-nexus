@@ -336,9 +336,15 @@ def get_shop_assembly_requests(
     session: Session,
     project_id: uuid.UUID | None = None,
     status: ShopAssemblyRequestStatus | None = None,
+    reopenable_only: bool = False,
 ) -> list[ShopAssemblyRequest]:
     """List shop-assembly requests for the accept UI (#293). Defaults to PENDING when no status is
-    given. Openings + their items are eagerly loaded (shop_assembly_request_to_type walks both)."""
+    given. Openings + their items are eagerly loaded (shop_assembly_request_to_type walks both).
+
+    reopenable_only (#325): keep only requests still in the reopen window - their minted warehouse
+    PullRequest is still PENDING (the warehouse has not started the pull). The Approved view passes this
+    so it lists exactly the requests Reopen can act on, not every request ever accepted. The minted PR
+    carries the request's request_number (unique on pull_requests), so it is matched on that."""
     effective_status = status if status is not None else ShopAssemblyRequestStatus.PENDING
     stmt = (
         select(ShopAssemblyRequest)
@@ -348,6 +354,10 @@ def get_shop_assembly_requests(
     )
     if project_id is not None:
         stmt = stmt.where(ShopAssemblyRequest.project_id == project_id)
+    if reopenable_only:
+        stmt = stmt.join(PullRequestModel, ShopAssemblyRequest.request_number == PullRequestModel.request_number).where(
+            PullRequestModel.status == PullRequestStatus.PENDING
+        )
     return list(session.scalars(stmt).unique().all())
 
 
@@ -450,4 +460,48 @@ def reject_shop_assembly_request(
     sar.rejected_by = rejected_by
     sar.rejection_reason = (reason or "").strip() or None
     sar.rejected_at = datetime.utcnow()
+    return sar
+
+
+def reopen_shop_assembly_request(
+    session: Session,
+    request_id: uuid.UUID,
+) -> ShopAssemblyRequest:
+    """Reopen an APPROVED shop-assembly request back to PENDING (#325): undo an erroneous accept by
+    hard-deleting the warehouse PullRequest the accept minted (and its items), re-pointing the
+    request's openings off it, and flipping the request back to PENDING so it can be re-accepted or
+    rejected. The minted PR is found via the openings' pull_request_id (there is no direct link on the
+    request, mirroring accept). Only allowed while the PR is still PENDING - if the warehouse has
+    already approved/completed it, inventory has moved and the reopen is refused."""
+    from app.repositories import warehouse as warehouse_repository
+
+    stmt = (
+        select(ShopAssemblyRequest)
+        .options(selectinload(ShopAssemblyRequest.openings))
+        .where(ShopAssemblyRequest.id == request_id)
+    )
+    sar = session.scalars(stmt).unique().first()
+    if sar is None:
+        raise NotFoundError(f"Shop-assembly request {request_id} not found")
+    if sar.status != ShopAssemblyRequestStatus.APPROVED:
+        raise InvalidStateTransitionError(f"Shop-assembly request must be Approved to reopen, got {sar.status.value}")
+
+    # Find the minted PR by the stable request_number, not by deriving it from the openings'
+    # pull_request_id. accept mints the PR unconditionally (even a zero-opening request gets one), so an
+    # openings-derived lookup can miss it and leave a PENDING PR orphaned - and since request_number is
+    # unique, the next accept would then collide, re-creating the stuck state #325 removes. accept stamps
+    # the PR with request_number == sar.request_number, which is unique on pull_requests.
+    pr = session.scalar(select(PullRequestModel).where(PullRequestModel.request_number == sar.request_number))
+
+    # Re-point the openings + flip the request, then flush BEFORE discarding the PR, so deleting it does
+    # not trip the shop_assembly_openings.pull_request_id foreign key. discard_pending_pull_request still
+    # guards the PR is unworked (PENDING) and rolls the whole transaction back (nothing commits) if not.
+    for opening in sar.openings:
+        opening.pull_request_id = None
+    sar.status = ShopAssemblyRequestStatus.PENDING
+    sar.approved_by = None
+    sar.approved_at = None
+    session.flush()
+
+    warehouse_repository.discard_pending_pull_request(session, pr.id if pr is not None else None)
     return sar
