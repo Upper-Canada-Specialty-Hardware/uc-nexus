@@ -63,8 +63,8 @@ export const GET_SHOP_ASSEMBLY_STATS = gql`
 `;
 
 export const GET_SHOP_ASSEMBLY_REQUESTS = gql`
-  query GetShopAssemblyRequests($projectId: ID, $status: ShopAssemblyRequestStatus) {
-    shopAssemblyRequests(projectId: $projectId, status: $status) {
+  query GetShopAssemblyRequests($projectId: ID, $status: ShopAssemblyRequestStatus, $reopenableOnly: Boolean) {
+    shopAssemblyRequests(projectId: $projectId, status: $status, reopenableOnly: $reopenableOnly) {
       id
       requestNumber
       projectId
@@ -100,6 +100,15 @@ export const ACCEPT_SHOP_ASSEMBLY_REQUEST = gql`
 export const REJECT_SHOP_ASSEMBLY_REQUEST = gql`
   mutation RejectShopAssemblyRequest($id: ID!, $rejectedBy: String!, $reason: String) {
     rejectShopAssemblyRequest(id: $id, rejectedBy: $rejectedBy, reason: $reason) {
+      id
+      status
+    }
+  }
+`;
+
+export const REOPEN_SHOP_ASSEMBLY_REQUEST = gql`
+  mutation ReopenShopAssemblyRequest($id: ID!) {
+    reopenShopAssemblyRequest(id: $id) {
       id
       status
     }
