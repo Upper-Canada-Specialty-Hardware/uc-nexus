@@ -138,6 +138,10 @@ class RelayStatus:
     # dialogs drive their company selection from this so they never offer a company the live relay can't
     # serve - a mismatch would fail every gp_* read and reject a submit as RelayUnavailable (issue #202 #6).
     company: str | None = None
+    # The connected relay's build tag from its hello frame (issue #315), e.g. 'relay-v0.1.0-build.30'.
+    # Null when disconnected, or when an older relay that predates the hello frame is connected. Shown on
+    # the Admin -> Relay Installs page so an out-of-date relay is visible before an op fails.
+    build: str | None = None
 
 
 @strawberry.type

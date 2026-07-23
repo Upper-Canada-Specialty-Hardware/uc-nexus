@@ -173,3 +173,15 @@ def test_create_receipt_invalid_payload_translates_cleanly():
     reply = channel._dispatch("create_receipt", "TUBC", {"po_number": "PO1"})  # missing required lines
     assert reply["ok"] is False
     assert reply["error"]["error"] == "invalid_payload"
+
+
+def test_hello_frame_advertises_build_and_the_full_op_set():
+    # Issue #315: the relay's connect frame carries its build tag and exact op-set so the backend can gate
+    # a call for an op this build lacks. The op list must mirror channel._OPS - a new op added there is
+    # automatically advertised, closing the parity gap that stranded list_tax_details on an old build.
+    frame = channel._hello_frame()
+    assert frame["type"] == "hello"
+    assert frame["ops"] == sorted(channel._OPS)
+    assert "list_tax_details" in frame["ops"]
+    assert isinstance(frame["build"], str) and frame["build"]  # 'dev' in a checkout, a tag in a CI build
+    assert isinstance(frame["version"], str) and frame["version"]
