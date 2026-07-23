@@ -44,9 +44,19 @@ def test_latest_release_picks_highest_build_not_list_order(monkeypatch):
     # regression: GitHub's /releases list is NOT reliably newest-first. Pick by build number, not position.
     payload = [
         {"tag_name": "some-other-v1", "assets": []},
-        {"tag_name": "relay-v0.1.0-build.9", "assets": [{"name": "ucnexus-relay.zip", "browser_download_url": "https://x/b9.zip"}]},
-        {"tag_name": "relay-v0.1.0-build.8", "assets": [{"name": "ucnexus-relay.zip", "browser_download_url": "https://x/b8.zip"}]},
-        {"tag_name": "relay-v0.1.0-build.10", "assets": [{"name": "ucnexus-relay.zip", "browser_download_url": "https://x/b10.zip"}], "published_at": "t10"},
+        {
+            "tag_name": "relay-v0.1.0-build.9",
+            "assets": [{"name": "ucnexus-relay.zip", "browser_download_url": "https://x/b9.zip"}],
+        },
+        {
+            "tag_name": "relay-v0.1.0-build.8",
+            "assets": [{"name": "ucnexus-relay.zip", "browser_download_url": "https://x/b8.zip"}],
+        },
+        {
+            "tag_name": "relay-v0.1.0-build.10",
+            "assets": [{"name": "ucnexus-relay.zip", "browser_download_url": "https://x/b10.zip"}],
+            "published_at": "t10",
+        },
     ]
     monkeypatch.setattr(updater.urllib.request, "urlopen", lambda *a, **k: _Resp(payload))
     r = updater.latest_release()
@@ -56,7 +66,9 @@ def test_latest_release_picks_highest_build_not_list_order(monkeypatch):
 
 def test_latest_release_requires_the_zip_bundle(monkeypatch):
     # a release with only the old onefile exe asset (no zip bundle) does not count
-    payload = [{"tag_name": "relay-v0.1.0-build.9", "assets": [{"name": "ucnexus-relay.exe", "browser_download_url": "u"}]}]
+    payload = [
+        {"tag_name": "relay-v0.1.0-build.9", "assets": [{"name": "ucnexus-relay.exe", "browser_download_url": "u"}]}
+    ]
     monkeypatch.setattr(updater.urllib.request, "urlopen", lambda *a, **k: _Resp(payload))
     assert updater.latest_release() == {}
 
@@ -199,7 +211,9 @@ def test_apply_staged_update_circuit_breaker_gives_up(tmp_path, monkeypatch):
     _seed_staged(tmp_path, attempts=updater.MAX_ATTEMPTS)  # next run is attempt MAX+1
     monkeypatch.setattr(updater, "_update_logger", lambda d: _LOG)
     relaunches = []
-    monkeypatch.setattr(updater, "_relaunch_and_wait_healthy", lambda d, deadline, log, attempts=2: relaunches.append(attempts) or True)
+    monkeypatch.setattr(
+        updater, "_relaunch_and_wait_healthy", lambda d, deadline, log, attempts=2: relaunches.append(attempts) or True
+    )
 
     def _no_repoint(*a, **k):
         raise AssertionError("circuit breaker must trip before repointing")
@@ -234,7 +248,9 @@ def test_apply_staged_update_missing_staged_version(tmp_path, monkeypatch):
     _seed_staged(tmp_path, make_new=False)  # the ledger's target_dir doesn't exist
     monkeypatch.setattr(updater, "_update_logger", lambda d: _LOG)
     relaunches = []
-    monkeypatch.setattr(updater, "_relaunch_and_wait_healthy", lambda d, deadline, log, attempts=2: relaunches.append(1) or True)
+    monkeypatch.setattr(
+        updater, "_relaunch_and_wait_healthy", lambda d, deadline, log, attempts=2: relaunches.append(1) or True
+    )
 
     r = updater.apply_staged_update(4242, tmp_path)
 
@@ -253,13 +269,62 @@ def test_kill_relay_pids_uses_pid_not_image_name(tmp_path, monkeypatch):
     assert killed == [4242, 9001]  # app pid + serve pid, both by pid (never taskkill /im)
 
 
+# --- _wait_for_health ---------------------------------------------------------------------------------
+
+
+def test_wait_for_health_returns_true_on_ok(monkeypatch):
+    monkeypatch.setattr(updater.urllib.request, "urlopen", lambda *a, **k: _Resp({"status": "ok"}))
+    # drive _monotonic off a tick list that steps PAST the deadline (and no-op _sleep) so a regression that
+    # stops returning True times out to False instead of spinning forever on the real clock/sleep.
+    ticks = [0.0, 1.0, 2.0]
+    monkeypatch.setattr(updater, "_monotonic", lambda: ticks.pop(0) if ticks else 999.0)
+    monkeypatch.setattr(updater, "_sleep", lambda s: None)
+    assert updater._wait_for_health("http://127.0.0.1:7321/health", 5.0) is True
+
+
+def test_wait_for_health_logs_last_error_on_timeout(monkeypatch):
+    # a never-healthy probe must leave a diagnostic trail (the last swallowed error), not roll back in
+    # silence - otherwise the next codec/TLS/logic regression is invisible.
+    def _boom(*a, **k):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(updater.urllib.request, "urlopen", _boom)
+    monkeypatch.setattr(updater, "_sleep", lambda s: None)
+    ticks = [0.0, 1.0]
+    monkeypatch.setattr(updater, "_monotonic", lambda: ticks.pop(0) if ticks else 999.0)
+    warned = []
+
+    class _CapLog:
+        def warning(self, *args, **kwargs):
+            warned.append(args)
+
+    assert updater._wait_for_health("http://127.0.0.1:7321/health", 5.0, _CapLog()) is False
+    assert warned and "connection refused" in repr(warned[-1])
+
+
+def test_wait_for_health_swallows_a_probe_error_instead_of_crashing(monkeypatch):
+    # regression #318: a frozen build missing the `idna` text codec made getaddrinfo raise
+    # `LookupError: unknown encoding: idna`, which the probe did NOT catch (only OSError/JSONDecodeError),
+    # so it propagated out of the detached update helper as an unhandled traceback. ANY probe error must be
+    # treated as "not up yet" and time out to False - never crash the helper.
+    def _boom(*a, **k):
+        raise LookupError("unknown encoding: idna")
+
+    monkeypatch.setattr(updater.urllib.request, "urlopen", _boom)
+    monkeypatch.setattr(updater, "_sleep", lambda s: None)
+    ticks = [0.0, 1.0, 2.0]  # three probes, then the next monotonic check is past the deadline
+    monkeypatch.setattr(updater, "_monotonic", lambda: ticks.pop(0) if ticks else 999.0)
+
+    assert updater._wait_for_health("http://127.0.0.1:7321/health", 5.0) is False
+
+
 # --- _relaunch_and_wait_healthy -----------------------------------------------------------------------
 
 
 def test_relaunch_and_wait_healthy_stops_when_health_ok(tmp_path, monkeypatch):
     launches = []
     monkeypatch.setattr(single_instance, "launch_installed", lambda d: launches.append(1))
-    monkeypatch.setattr(updater, "_wait_for_health", lambda url, deadline: True)
+    monkeypatch.setattr(updater, "_wait_for_health", lambda url, deadline, log=None: True)
 
     assert updater._relaunch_and_wait_healthy(tmp_path, updater._monotonic() + 30, _LOG) is True
     assert launches == [1]  # one launch, healthy - no retry
@@ -269,7 +334,7 @@ def test_relaunch_and_wait_healthy_retries_then_gives_up(tmp_path, monkeypatch):
     launches = []
     monkeypatch.setattr(single_instance, "launch_installed", lambda d: launches.append(1))
     monkeypatch.setattr(updater, "_kill_relay_pids", lambda pid, d, log: None)
-    monkeypatch.setattr(updater, "_wait_for_health", lambda url, deadline: False)
+    monkeypatch.setattr(updater, "_wait_for_health", lambda url, deadline, log=None: False)
     monkeypatch.setattr(updater, "_sleep", lambda s: None)
 
     ok = updater._relaunch_and_wait_healthy(tmp_path, updater._monotonic() + 1000, _LOG, attempts=2)
@@ -284,7 +349,7 @@ def test_relaunch_and_wait_healthy_kills_the_launched_app_between_retries(tmp_pa
     monkeypatch.setattr(single_instance, "launch_installed", lambda d: next(pids))
     killed = []
     monkeypatch.setattr(updater, "_kill_relay_pids", lambda pid, d, log: killed.append(pid))
-    monkeypatch.setattr(updater, "_wait_for_health", lambda url, deadline: False)
+    monkeypatch.setattr(updater, "_wait_for_health", lambda url, deadline, log=None: False)
     monkeypatch.setattr(updater, "_sleep", lambda s: None)
 
     ok = updater._relaunch_and_wait_healthy(tmp_path, updater._monotonic() + 1000, _LOG, attempts=2)
@@ -312,7 +377,9 @@ def test_apply_staged_update_rolls_back_when_the_repoint_fails(tmp_path, monkeyp
 
     monkeypatch.setattr(layout, "repoint_current", _repoint)
     relaunched = []
-    monkeypatch.setattr(updater, "_relaunch_and_wait_healthy", lambda d, deadline, log, attempts=2: relaunched.append(1) or True)
+    monkeypatch.setattr(
+        updater, "_relaunch_and_wait_healthy", lambda d, deadline, log, attempts=2: relaunched.append(1) or True
+    )
 
     r = updater.apply_staged_update(4242, tmp_path)
 
