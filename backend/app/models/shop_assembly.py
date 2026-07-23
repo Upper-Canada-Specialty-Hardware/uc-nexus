@@ -75,6 +75,10 @@ class ShopAssemblyOpening(Base):
         Enum(PullStatus, name="pull_status", create_constraint=True),
         nullable=False,
     )
+    # Stable Clerk user id the opening is claimed by (#324): the identity myWork filters on, so a
+    # display-name change or a non-UI caller no longer detaches in-flight work. assigned_to below
+    # stays the human-readable name for display; both are set/cleared together.
+    assigned_to_user_id: Mapped[str | None] = mapped_column(String, nullable=True)
     assigned_to: Mapped[str | None] = mapped_column(String, nullable=True)
     assembly_status: Mapped[AssemblyStatus] = mapped_column(
         Enum(AssemblyStatus, name="assembly_status", create_constraint=True),
