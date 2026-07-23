@@ -59,3 +59,24 @@ export const ASSEMBLY_OPTIONS: ClassificationOption[] = [
   { value: 'SITE_HARDWARE', label: 'Site', color: 'success' },
   { value: 'SHOP_HARDWARE', label: 'Shop', color: 'info' },
 ];
+
+export interface ClassificationInputEntry {
+  hardwareCategory: string;
+  productCode: string;
+  unitCost: number;
+  classification: string;
+}
+
+// #321: project the shared classifications Map into finalize ClassificationInput entries, keeping
+// only real Site/Shop values. Re-imports seed the Map with BY_OTHERS (an ownership value, not a
+// Site/Shop one) from the exclusion table; those items are out of scope for shop assembly and the
+// Classification GraphQL enum only accepts SITE_HARDWARE/SHOP_HARDWARE, so they are dropped here.
+// Allow-listing the two valid values also drops any empty/unexpected value.
+export function toClassificationInputs(classifications: Map<string, string>): ClassificationInputEntry[] {
+  return Array.from(classifications.entries())
+    .filter(([, cls]) => cls === 'SITE_HARDWARE' || cls === 'SHOP_HARDWARE')
+    .map(([key, cls]) => {
+      const [hardwareCategory, productCode, unitCost] = key.split('|');
+      return { hardwareCategory, productCode, unitCost: parseFloat(unitCost), classification: cls };
+    });
+}
