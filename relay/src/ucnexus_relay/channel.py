@@ -25,6 +25,7 @@ import pyodbc
 import websockets
 from pydantic import ValidationError as PydanticValidationError
 
+from . import __version__ as VERSION
 from . import db, econnect, errors, models, ops
 from .config import get_settings
 from .logging_setup import get_logger
@@ -226,6 +227,17 @@ def _heartbeat_reply(message: object) -> dict | None:
     return None
 
 
+def _hello_frame() -> dict:
+    """The relay's identity frame, sent once right after the channel connects (issue #315). It carries
+    the build tag and the exact op-set this relay supports so the backend can reject a call for an op this
+    build lacks with a clear 'update the relay' error - proactively, and without a 30s round-trip - and
+    show the live build on Admin -> Relay Installs. `updater.current_build()` is 'dev' for a source
+    checkout, which is fine: the backend only compares the op-set, and reports the build verbatim."""
+    from . import updater  # lazy: keep channel import-light and avoid any package load-order coupling
+
+    return {"type": "hello", "build": updater.current_build(), "ops": sorted(_OPS), "version": VERSION}
+
+
 async def _run_once(url: str, secret: str, cfg) -> None:
     # websockets is pinned to ^13.0 (see pyproject); on 13.x the top-level websockets.connect is the
     # legacy client whose keyword is `extra_headers`. `additional_headers` is the 14.0+ name and raises
@@ -239,6 +251,11 @@ async def _run_once(url: str, secret: str, cfg) -> None:
     ) as ws:
         logger.info("channel connected", extra={"url": url})
         _mark_connected()
+
+        # Advertise this relay's build + op-set to the backend before anything else (issue #315). Sent
+        # directly here, ahead of the writer coroutine below, so it's the first frame on the wire - the
+        # backend records it and can then reject calls for ops this build lacks with a clear error.
+        await ws.send(json.dumps(_hello_frame()))
 
         # Dispatch each job as its own task so the read loop keeps pulling frames instead of blocking on
         # the current job's GP round-trip (issue #202 #5). The Create-PO page fires list_vendors +

@@ -265,3 +265,25 @@ def test_serve_relay_link_swallows_a_cancelled_reader():
             gateway.unregister(ws)
 
     asyncio.run(run())
+
+
+def test_read_loop_records_the_relay_hello_frame(monkeypatch):
+    # Issue #315: the relay's first frame advertises its build + op-set; the read loop must record it on
+    # the gateway (not treat it as a job reply) so relayStatus reports the build and relay_call can gate ops.
+    async def run():
+        ws = _FakeRelaySocket(
+            [
+                {"type": "hello", "build": "relay-v0.1.0-build.30", "ops": ["list_vendors", "list_tax_details"]},
+                WebSocketDisconnect(),
+            ]
+        )
+        gateway.try_register("TEST", ws)
+        try:
+            with pytest.raises(WebSocketDisconnect):
+                await main._relay_read_loop(ws)
+            assert gateway.build == "relay-v0.1.0-build.30"
+        finally:
+            gateway.unregister(ws)
+        assert gateway.build is None  # cleared on unregister
+
+    asyncio.run(run())

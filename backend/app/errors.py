@@ -66,3 +66,20 @@ class RelayCallError(AppError):
     def __init__(self, message: str, detail: dict | None = None):
         super().__init__(message, "RELAY_CALL_FAILED")
         self.detail = detail or {}
+
+
+class RelayOpUnsupportedError(AppError):
+    """The connected relay build doesn't support the requested op (issue #315). Raised either
+    proactively (the relay advertised its op-set on connect and this op isn't in it) or reactively
+    (the relay answered `unknown_op`). Distinct from RelayCallError so the frontend can show an
+    'update the relay' banner and auto-fall back (e.g. manual tax-detail entry) instead of the raw
+    `unknown op '...'` string. `detail` still carries the relay's own error body when there is one."""
+
+    def __init__(self, op: str, detail: dict | None = None):
+        message = (
+            f"The connected GP relay is out of date and does not support '{op}'. Update the relay "
+            f"(Relay app -> Updates -> Update) to the latest build, then retry."
+        )
+        super().__init__(message, "RELAY_OP_UNSUPPORTED")
+        self.op = op
+        self.detail = detail or {}
