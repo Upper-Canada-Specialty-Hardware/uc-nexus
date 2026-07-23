@@ -56,6 +56,7 @@ export const GET_RELAY_STATUS = gql`
     relayStatus {
       connected
       company
+      build
     }
   }
 `;

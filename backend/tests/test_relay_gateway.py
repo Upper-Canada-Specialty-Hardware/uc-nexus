@@ -7,7 +7,7 @@ import asyncio
 
 import pytest
 
-from app.errors import RelayCallError, RelayTimeoutError, RelayUnavailableError
+from app.errors import RelayCallError, RelayOpUnsupportedError, RelayTimeoutError, RelayUnavailableError
 from app.services.relay_gateway import RelayGateway
 
 
@@ -185,3 +185,93 @@ def test_try_register_resets_heartbeat_state_for_the_new_connection():
     gateway.try_register("TUBC", FakeWebSocket())
     assert gateway.register_ping_miss() is False  # not armed yet on the new connection
     assert gateway.register_ping_miss() is False
+
+
+# --- issue #315: op-parity guard (hello frame -> build/op-set, proactive + reactive) ---
+
+
+def test_note_hello_records_build_and_op_set():
+    gateway = RelayGateway()
+    gateway.try_register("TUBC", FakeWebSocket())
+    assert gateway.build is None  # nothing advertised yet
+    gateway.note_hello("relay-v0.1.0-build.30", ["list_vendors", "list_tax_details", "create_po"])
+    assert gateway.build == "relay-v0.1.0-build.30"
+
+
+def test_try_register_and_unregister_clear_the_advertised_build():
+    gateway = RelayGateway()
+    ws = FakeWebSocket()
+    gateway.try_register("TUBC", ws)
+    gateway.note_hello("relay-v0.1.0-build.30", ["list_vendors"])
+    gateway.unregister(ws)
+    assert gateway.build is None
+    # A new connection starts blank - it must not inherit the old relay's build/op-set.
+    gateway.try_register("TUBC", FakeWebSocket())
+    assert gateway.build is None
+
+
+def test_relay_call_rejects_an_op_outside_the_advertised_set_without_sending():
+    # Proactive parity: once the relay advertised its op-set, a call for an op it lacks fails fast with
+    # RELAY_OP_UNSUPPORTED and never hits the wire (no 30s round-trip).
+    async def run():
+        gateway = RelayGateway()
+        ws = FakeWebSocket()
+        gateway.try_register("TUBC", ws)
+        gateway.note_hello("relay-v0.1.0-build.28", ["list_vendors", "create_po"])  # no list_tax_details
+        with pytest.raises(RelayOpUnsupportedError) as exc_info:
+            await gateway.relay_call("TUBC", "list_tax_details", timeout=1)
+        assert exc_info.value.op == "list_tax_details"
+        assert exc_info.value.code == "RELAY_OP_UNSUPPORTED"
+        assert ws.sent == []  # never sent
+
+    asyncio.run(run())
+
+
+def test_relay_call_allows_an_advertised_op():
+    async def run():
+        gateway = RelayGateway()
+        ws = FakeWebSocket()
+        gateway.try_register("TUBC", ws)
+        gateway.note_hello("relay-v0.1.0-build.30", ["list_vendors", "list_tax_details"])
+
+        async def responder():
+            while not ws.sent:
+                await asyncio.sleep(0)
+            gateway.resolve({"id": ws.sent[0]["id"], "ok": True, "result": {"tax_details": []}})
+
+        responder_task = asyncio.create_task(responder())
+        result = await gateway.relay_call("TUBC", "list_tax_details", timeout=1)
+        await responder_task
+        assert result == {"tax_details": []}
+
+    asyncio.run(run())
+
+
+def test_relay_call_maps_an_unknown_op_reply_to_op_unsupported():
+    # Reactive parity: an older relay that sends no hello (op-set unknown) skips the proactive check, so a
+    # call for a missing op reaches it and comes back `unknown_op` - which must still surface as the clean
+    # RELAY_OP_UNSUPPORTED, not a raw RelayCallError.
+    async def run():
+        gateway = RelayGateway()
+        ws = FakeWebSocket()
+        gateway.try_register("TUBC", ws)  # no note_hello -> op-set unknown
+
+        async def responder():
+            while not ws.sent:
+                await asyncio.sleep(0)
+            gateway.resolve(
+                {
+                    "id": ws.sent[0]["id"],
+                    "ok": False,
+                    "error": {"error": "unknown_op", "message": "unknown op 'list_tax_details'", "context": {}},
+                }
+            )
+
+        responder_task = asyncio.create_task(responder())
+        with pytest.raises(RelayOpUnsupportedError) as exc_info:
+            await gateway.relay_call("TUBC", "list_tax_details", timeout=1)
+        await responder_task
+        assert exc_info.value.op == "list_tax_details"
+        assert exc_info.value.detail["error"] == "unknown_op"
+
+    asyncio.run(run())

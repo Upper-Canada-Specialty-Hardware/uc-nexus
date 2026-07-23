@@ -155,6 +155,12 @@ export default function RelayInstallsPage() {
         </Box>
         <Stack direction="row" spacing={2} alignItems="center">
           <RelayStatusChip connected={relay.connected} />
+          {/* Issue #315: show the live relay build so an out-of-date relay is visible at a glance. A
+              connected relay too old to advertise its build (pre-hello-frame) reports null -> 'build
+              unknown', itself a signal it needs updating. */}
+          {relay.connected && (
+            <Chip size="small" variant="outlined" label={relay.build ? `build: ${relay.build}` : 'build unknown'} />
+          )}
           <Button variant="contained" onClick={() => setProvisionOpen(true)}>
             Provision install
           </Button>
