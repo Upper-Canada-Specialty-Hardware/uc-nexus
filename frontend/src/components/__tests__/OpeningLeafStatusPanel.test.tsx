@@ -83,6 +83,26 @@ describe('OpeningLeafStatusPanel', () => {
     expect(screen.getByText('Opening 101: 0 of 2 leaves assembled')).toBeInTheDocument();
   });
 
+  it('keeps same-named projects separate by id in the global view', async () => {
+    const mocks = [
+      statusMock(null, [
+        row('p1', 'Same', '101', [leaf(1, 'SHIPPED_OUT'), leaf(2, 'SHIPPED_OUT')]),
+        row('p2', 'Same', '101', [leaf(1, 'NOT_ASSEMBLED'), leaf(2, 'NOT_ASSEMBLED')]),
+      ]),
+    ];
+    render(
+      <MockedProvider mocks={mocks}>
+        <OpeningLeafStatusPanel mode="assembly" grouped />
+      </MockedProvider>,
+    );
+
+    // Two projects share the description "Same" but have distinct ids. Grouping by projectId keeps
+    // them as two subheaders (two "Same"), not one merged group that re-collides opening 101.
+    await screen.findByText('Opening 101: 2 of 2 leaves assembled', undefined, SLOW);
+    expect(screen.getByText('Opening 101: 0 of 2 leaves assembled')).toBeInTheDocument();
+    expect(screen.getAllByText('Same')).toHaveLength(2);
+  });
+
   it('renders nothing when there are no pair openings', async () => {
     const mocks = [statusMock('p1', [])];
     const { container } = render(

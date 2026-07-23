@@ -191,8 +191,9 @@ class WarehouseQueries:
             pid = uuid.UUID(str(project_id)) if project_id else None
             ois = warehouse_repository.get_opening_items(session, pid)
             # leaf_count (#311) is the "N of M leaves shipped" denominator; one grouped query,
-            # attached per item so OpeningItemsTab can roll up by opening without an N+1.
-            leaf_counts = warehouse_repository.get_opening_leaf_counts(session, pid) if pid else {}
+            # attached per item so consumers can roll up by opening without an N+1. Computed for the
+            # global view too (pid=None) so leafCount isn't null everywhere when project_id is omitted.
+            leaf_counts = warehouse_repository.get_opening_leaf_counts(session, pid)
             return [opening_item_to_type(oi, leaf_count=leaf_counts.get(oi.opening_number)) for oi in ois]
 
     @strawberry.field

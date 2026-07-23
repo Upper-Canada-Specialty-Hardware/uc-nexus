@@ -96,16 +96,22 @@ export default function OpeningLeafStatusPanel({
 
   const rows = useMemo(() => data?.openingLeafStatus ?? [], [data]);
 
-  // Group by project only when asked (global view). Rows arrive sorted by project name then opening.
+  // Group by project only when asked (global view). Key on projectId, not projectName - two projects
+  // can share a description, and the backend carries project_id precisely so their same-numbered
+  // openings don't collide under one subheader. Rows arrive sorted by project name then opening.
   const groups = useMemo(() => {
-    if (!grouped) return [{ projectName: '', rows }];
-    const byProject = new Map<string, OpeningLeafStatusRow[]>();
+    if (!grouped) return [{ projectId: '', projectName: '', rows }];
+    const byProject = new Map<string, { projectName: string; rows: OpeningLeafStatusRow[] }>();
     for (const r of rows) {
-      const list = byProject.get(r.projectName) ?? [];
-      list.push(r);
-      byProject.set(r.projectName, list);
+      const g = byProject.get(r.projectId) ?? { projectName: r.projectName, rows: [] };
+      g.rows.push(r);
+      byProject.set(r.projectId, g);
     }
-    return Array.from(byProject.entries()).map(([projectName, groupRows]) => ({ projectName, rows: groupRows }));
+    return Array.from(byProject.entries()).map(([projectId, g]) => ({
+      projectId,
+      projectName: g.projectName,
+      rows: g.rows,
+    }));
   }, [rows, grouped]);
 
   if (loading && !data) {
@@ -129,7 +135,7 @@ export default function OpeningLeafStatusPanel({
       </Typography>
       <Stack spacing={grouped ? 1.5 : 0.5}>
         {groups.map((group) => (
-          <Box key={group.projectName || 'all'}>
+          <Box key={group.projectId || 'all'}>
             {grouped && group.projectName && (
               <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5 }}>
                 {group.projectName}

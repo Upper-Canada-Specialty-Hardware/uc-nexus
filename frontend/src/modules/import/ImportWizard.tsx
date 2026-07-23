@@ -762,6 +762,20 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
                   });
                 }
               }
+              // #311: a null-leaf bucket is legitimate for a single door (every item is leaf-null ->
+              // one work unit). On a pair (resolved leaves present) a null-leaf item would otherwise
+              // spawn a spurious third work unit; fold it into the lowest resolved leaf instead.
+              const resolvedLeaves = [...byLeaf.keys()].filter((k): k is number => k !== null);
+              const nullBucket = byLeaf.get(null);
+              if (nullBucket && resolvedLeaves.length > 0) {
+                const targetMap = byLeaf.get(Math.min(...resolvedLeaves))!;
+                for (const [key, agg] of nullBucket) {
+                  const existing = targetMap.get(key);
+                  if (existing) existing.quantity += agg.quantity;
+                  else targetMap.set(key, agg);
+                }
+                byLeaf.delete(null);
+              }
               return Array.from(byLeaf.entries()).map(([leaf, aggMap]) => ({
                 openingNumber: opening.opening_number,
                 leaf,

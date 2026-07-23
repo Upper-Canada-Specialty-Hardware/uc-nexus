@@ -779,6 +779,31 @@ describe('parseHardwareSchedule - opening leaf_count', () => {
     const result = parseHardwareSchedule(xml);
     expect(result.openings.find((o) => o.opening_number === 'FR')?.leaf_count).toBe(1);
   });
+
+  // A single opening carrying its own Single_Pair / Door_Type attributes (buildXml above omits them).
+  function xmlOneOpening(openingChildren: string, leafAttr: string | null, mid: string): string {
+    const leaf = leafAttr !== null ? `<Attribute Code="Leaf"><Value>${leafAttr}</Value></Attribute>` : '';
+    return (
+      `<?xml version="1.0"?><Contract Description="T"><Fields><Project_ID>P1</Project_ID></Fields>` +
+      `<Assignments><Assignment_Level_3 Code="OP">${openingChildren}</Assignment_Level_3></Assignments>` +
+      `<Detail><Material_List Description="P"><Material_List_Fields><Product_Description>Cat</Product_Description></Material_List_Fields>` +
+      `<Attributes><Attribute Code="Degrees"><Value>90</Value></Attribute>${leaf}</Attributes>` +
+      `<Assignments><Assignment Code="OP"><Material_ID>${mid}</Material_ID><Qty_Per>1</Qty_Per></Assignment></Assignments>` +
+      `</Material_List></Detail></Contract>`
+    );
+  }
+
+  it('pair by Single_Pair with no Leaf-2 hardware -> leaf_count 2', () => {
+    const xml = xmlOneOpening('<Single_Pair>Pair</Single_Pair><Door_Type>Flush</Door_Type>', 'Leaf 1', 'OP DOOR 1');
+    const result = parseHardwareSchedule(xml);
+    expect(result.openings[0].leaf_count).toBe(2);
+  });
+
+  it('marked Pair but frame-only (no Door_Type) -> leaf_count 1', () => {
+    const xml = xmlOneOpening('<Single_Pair>Pair</Single_Pair>', null, '0019-EX');
+    const result = parseHardwareSchedule(xml);
+    expect(result.openings[0].leaf_count).toBe(1);
+  });
 });
 
 // ---------------------------------------------------------------------------

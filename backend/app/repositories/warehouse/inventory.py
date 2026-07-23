@@ -252,12 +252,15 @@ def get_opening_items(session: Session, project_id: uuid.UUID | None = None) -> 
     return list(session.scalars(stmt).unique().all())
 
 
-def get_opening_leaf_counts(session: Session, project_id: uuid.UUID) -> dict[str, int | None]:
-    """Map opening_number -> Opening.leaf_count for a project (#311). This is the "N of M leaves
-    shipped" denominator M; a single query keeps the openingItems list resolver free of N+1s."""
-    rows = session.execute(
-        select(OpeningModel.opening_number, OpeningModel.leaf_count).where(OpeningModel.project_id == project_id)
-    ).all()
+def get_opening_leaf_counts(session: Session, project_id: uuid.UUID | None = None) -> dict[str, int | None]:
+    """Map opening_number -> Opening.leaf_count (#311). This is the "N of M leaves shipped" denominator
+    M; a single query keeps the openingItems list resolver free of N+1s. project_id scopes to one
+    project; omit it for the global openingItems view (opening_number then keys across projects, which
+    is acceptable - the global view is not project-disambiguated)."""
+    stmt = select(OpeningModel.opening_number, OpeningModel.leaf_count)
+    if project_id is not None:
+        stmt = stmt.where(OpeningModel.project_id == project_id)
+    rows = session.execute(stmt).all()
     return {opening_number: leaf_count for opening_number, leaf_count in rows}
 
 
@@ -284,15 +287,21 @@ def get_opening_leaf_status(session: Session, project_id: uuid.UUID | None = Non
     if not openings:
         return []
 
-    # Furthest-along OpeningItem state per (project_id, opening_number, leaf).
+    # Furthest-along OpeningItem state per (project_id, opening_number, leaf). Scope to the pair
+    # openings found above so the global path (project_id=None) never scans the whole opening_items
+    # table - only rows for openings we actually roll up. `openings` is non-empty here (guarded above);
+    # the (project_id, opening_number, leaf) key lookup below filters the cross-product precisely.
+    pair_project_ids = {pid for pid, _, _ in openings}
+    pair_opening_numbers = {opening_number for _, opening_number, _ in openings}
     oi_stmt = select(
         OpeningItemModel.project_id,
         OpeningItemModel.opening_number,
         OpeningItemModel.leaf,
         OpeningItemModel.state,
+    ).where(
+        OpeningItemModel.project_id.in_(pair_project_ids),
+        OpeningItemModel.opening_number.in_(pair_opening_numbers),
     )
-    if project_id is not None:
-        oi_stmt = oi_stmt.where(OpeningItemModel.project_id == project_id)
     leaf_state: dict[tuple[uuid.UUID, str, int], str] = {}
     for pid, opening_number, leaf, state in session.execute(oi_stmt).all():
         if leaf is None:

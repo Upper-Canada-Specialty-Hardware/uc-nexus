@@ -418,15 +418,19 @@ export function parseHardwareSchedule(
 
   onProgress?.(100, 'Complete');
 
-  // Door-leaf count per opening (#311): an opening is a pair (leaf_count 2) if any of its hardware
-  // resolved to Leaf 2, else a single (1). Frame-only openings have no leaf-bearing items and keep
-  // the default 1. This is the immutable "N of M leaves shipped" denominator.
+  // Door-leaf count per opening (#311): the immutable "N of M leaves shipped" denominator. An opening
+  // is a pair (leaf_count 2) when TITAN's authoritative Single_Pair attribute says "Pair", OR when any
+  // of its hardware resolved to Leaf 2 (belt-and-suspenders for schedules that omit/misfill
+  // Single_Pair). Deriving from hardware alone missed a pair whose Leaf 2 has no resolved hardware.
+  // Frame-only openings (no Door_Type) stay 1 even if marked Pair - they carry no leaves to ship.
   const openingsWithLeaf2 = new Set<string>();
   for (const item of hardwareResult.hardwareItems) {
     if (item.leaf === 2) openingsWithLeaf2.add(item.opening_number);
   }
   for (const opening of openingsResult.openings) {
-    opening.leaf_count = openingsWithLeaf2.has(opening.opening_number) ? 2 : 1;
+    const markedPair =
+      opening.door_type != null && (opening.single_pair?.toLowerCase().includes('pair') ?? false);
+    opening.leaf_count = openingsWithLeaf2.has(opening.opening_number) || markedPair ? 2 : 1;
   }
 
   // Assemble validation summary
