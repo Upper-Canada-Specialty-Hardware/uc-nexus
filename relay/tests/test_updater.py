@@ -274,8 +274,32 @@ def test_kill_relay_pids_uses_pid_not_image_name(tmp_path, monkeypatch):
 
 def test_wait_for_health_returns_true_on_ok(monkeypatch):
     monkeypatch.setattr(updater.urllib.request, "urlopen", lambda *a, **k: _Resp({"status": "ok"}))
-    monkeypatch.setattr(updater, "_monotonic", lambda: 0.0)  # always before the deadline
+    # drive _monotonic off a tick list that steps PAST the deadline (and no-op _sleep) so a regression that
+    # stops returning True times out to False instead of spinning forever on the real clock/sleep.
+    ticks = [0.0, 1.0, 2.0]
+    monkeypatch.setattr(updater, "_monotonic", lambda: ticks.pop(0) if ticks else 999.0)
+    monkeypatch.setattr(updater, "_sleep", lambda s: None)
     assert updater._wait_for_health("http://127.0.0.1:7321/health", 5.0) is True
+
+
+def test_wait_for_health_logs_last_error_on_timeout(monkeypatch):
+    # a never-healthy probe must leave a diagnostic trail (the last swallowed error), not roll back in
+    # silence - otherwise the next codec/TLS/logic regression is invisible.
+    def _boom(*a, **k):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(updater.urllib.request, "urlopen", _boom)
+    monkeypatch.setattr(updater, "_sleep", lambda s: None)
+    ticks = [0.0, 1.0]
+    monkeypatch.setattr(updater, "_monotonic", lambda: ticks.pop(0) if ticks else 999.0)
+    warned = []
+
+    class _CapLog:
+        def warning(self, *args, **kwargs):
+            warned.append(args)
+
+    assert updater._wait_for_health("http://127.0.0.1:7321/health", 5.0, _CapLog()) is False
+    assert warned and "connection refused" in repr(warned[-1])
 
 
 def test_wait_for_health_swallows_a_probe_error_instead_of_crashing(monkeypatch):
@@ -300,7 +324,7 @@ def test_wait_for_health_swallows_a_probe_error_instead_of_crashing(monkeypatch)
 def test_relaunch_and_wait_healthy_stops_when_health_ok(tmp_path, monkeypatch):
     launches = []
     monkeypatch.setattr(single_instance, "launch_installed", lambda d: launches.append(1))
-    monkeypatch.setattr(updater, "_wait_for_health", lambda url, deadline: True)
+    monkeypatch.setattr(updater, "_wait_for_health", lambda url, deadline, log=None: True)
 
     assert updater._relaunch_and_wait_healthy(tmp_path, updater._monotonic() + 30, _LOG) is True
     assert launches == [1]  # one launch, healthy - no retry
@@ -310,7 +334,7 @@ def test_relaunch_and_wait_healthy_retries_then_gives_up(tmp_path, monkeypatch):
     launches = []
     monkeypatch.setattr(single_instance, "launch_installed", lambda d: launches.append(1))
     monkeypatch.setattr(updater, "_kill_relay_pids", lambda pid, d, log: None)
-    monkeypatch.setattr(updater, "_wait_for_health", lambda url, deadline: False)
+    monkeypatch.setattr(updater, "_wait_for_health", lambda url, deadline, log=None: False)
     monkeypatch.setattr(updater, "_sleep", lambda s: None)
 
     ok = updater._relaunch_and_wait_healthy(tmp_path, updater._monotonic() + 1000, _LOG, attempts=2)
@@ -325,7 +349,7 @@ def test_relaunch_and_wait_healthy_kills_the_launched_app_between_retries(tmp_pa
     monkeypatch.setattr(single_instance, "launch_installed", lambda d: next(pids))
     killed = []
     monkeypatch.setattr(updater, "_kill_relay_pids", lambda pid, d, log: killed.append(pid))
-    monkeypatch.setattr(updater, "_wait_for_health", lambda url, deadline: False)
+    monkeypatch.setattr(updater, "_wait_for_health", lambda url, deadline, log=None: False)
     monkeypatch.setattr(updater, "_sleep", lambda s: None)
 
     ok = updater._relaunch_and_wait_healthy(tmp_path, updater._monotonic() + 1000, _LOG, attempts=2)

@@ -298,18 +298,23 @@ def _health_url(install_dir: Path) -> str:
         return "http://127.0.0.1:7321/health"
 
 
-def _wait_for_health(url: str, deadline: float) -> bool:
+def _wait_for_health(url: str, deadline: float, log: logging.Logger | None = None) -> bool:
+    last_err: Exception | None = None
     while _monotonic() < deadline:
         try:
             with urllib.request.urlopen(url, timeout=2) as r:  # noqa: S310 (localhost health URL)
                 if json.loads(r.read().decode()).get("status") == "ok":
                     return True
-        except Exception:  # noqa: BLE001 - the probe's ONLY job is "is it up yet?"; ANY failure (connection
-            # refused, a partial body, or a missing text codec like #318's `LookupError: unknown encoding:
-            # idna`) means not-up-yet. Swallow it and retry within the deadline rather than letting it
-            # propagate out of the detached update helper as an unhandled traceback (the #318 crash).
-            pass
+        except Exception as e:  # noqa: BLE001 - the probe's ONLY job is "is it up yet?"; ANY failure
+            # (connection refused, a partial body, or a missing text codec like #318's
+            # `LookupError: unknown encoding: idna`) means not-up-yet. Swallow it and retry within the
+            # deadline rather than letting it propagate out of the detached update helper as an unhandled
+            # traceback (the #318 crash). Keep the last one so a never-healthy timeout still leaves a
+            # diagnostic trail instead of a silent rollback with no signal.
+            last_err = e
         _sleep(2.0)
+    if log is not None and last_err is not None:
+        log.warning("health probe %s never returned ok before the deadline; last error: %r", url, last_err)
     return False
 
 
@@ -327,7 +332,7 @@ def _relaunch_and_wait_healthy(install_dir: Path, deadline: float, log: logging.
             break
         app_pid = single_instance.launch_installed(install_dir)
         log.info("relaunch attempt %d of %d (pid %s)", i, attempts, app_pid)
-        if _wait_for_health(url, min(deadline, _monotonic() + _HEALTH_WAIT_PER_ATTEMPT)):
+        if _wait_for_health(url, min(deadline, _monotonic() + _HEALTH_WAIT_PER_ATTEMPT), log):
             log.info("relay healthy after relaunch")
             return True
         _kill_relay_pids(app_pid, install_dir, log)  # clear the crashed/hung app + serve before retrying
