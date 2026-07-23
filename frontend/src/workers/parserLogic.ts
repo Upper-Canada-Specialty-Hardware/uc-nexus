@@ -76,6 +76,56 @@ export function parseIntOrNull(value: unknown): {
 }
 
 // ---------------------------------------------------------------------------
+// Door-leaf helpers (#311)
+// ---------------------------------------------------------------------------
+
+/**
+ * Normalize a TITAN Leaf attribute value ("Leaf 1" / "Leaf 2") to 1 or 2.
+ * Returns null for anything that doesn't resolve to a known leaf number.
+ */
+export function normalizeLeaf(value: unknown): number | null {
+  const s = textOrNull(value);
+  if (s === null) return null;
+  const m = s.match(/(\d+)\s*$/);
+  if (!m) return null;
+  const n = parseInt(m[1], 10);
+  return n === 1 || n === 2 ? n : null;
+}
+
+/**
+ * Leaf number from a Material_ID's trailing space-separated token
+ * ("0019-EX DOOR 1" -> 1, "0019-EX HI-2 2" -> 2). Frames are single-token opening
+ * codes ("0019-EX", "1032.1") whose last token is never a bare 1/2, so they -> null.
+ */
+export function leafFromMaterialId(materialId: string | null): number | null {
+  if (!materialId) return null;
+  const token = materialId.trim().split(/\s+/).pop();
+  if (token === '1') return 1;
+  if (token === '2') return 2;
+  return null;
+}
+
+/**
+ * Read the Material_List-level <Attribute Code="Leaf"> value. The <Attributes> block is a
+ * sibling of <Assignments>; its Attribute children are an array when there are several (the
+ * common case) or a single object when there's one. Returns null when the ML has no Leaf
+ * attribute (frames carry none).
+ */
+export function extractMlLeaf(ml: XmlNode): number | null {
+  const attributes = ml.Attributes as XmlNode | undefined;
+  if (!attributes) return null;
+  const raw = attributes.Attribute as XmlNode | XmlNode[] | undefined;
+  if (!raw) return null;
+  const list: XmlNode[] = Array.isArray(raw) ? raw : [raw];
+  for (const attr of list) {
+    if (textOrNull(attr['@_Code']) === 'Leaf') {
+      return normalizeLeaf(attr.Value);
+    }
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // extractProject
 // ---------------------------------------------------------------------------
 
@@ -160,6 +210,9 @@ export function extractOpenings(
       heading_no: textOrNull(opening.Heading_No),
       single_pair: textOrNull(opening.Single_Pair),
       assignment_multiplier: textOrNull(opening.Assignment_Multiplier),
+      // Default single-leaf (#311); parseHardwareSchedule bumps to 2 for openings whose hardware
+      // spans Leaf 2. Frame-only openings keep 1.
+      leaf_count: 1,
     });
 
     if (onProgress && (i + 1) % 500 === 0) {
@@ -235,6 +288,9 @@ export function extractHardwareItems(
     const itemCategoryCode = textOrNull(mlf?.Item_Category_Code);
     const productGroupCode = textOrNull(mlf?.Product_Group_Code);
     const submittalId = textOrNull(mlf?.Submittal_ID);
+    // Door leaf (#311): read once per Material_List from the ML-level <Attribute Code="Leaf">.
+    // Null for frames (they carry no Leaf attribute); applied to every assignment below.
+    const mlLeaf = extractMlLeaf(ml);
 
     for (const assignment of assignments) {
       processedCount++;
@@ -274,10 +330,28 @@ export function extractHardwareItems(
 
       const phaseCode = textOrNull(assignment.Phase_Code);
 
+      // Door leaf (#311): the ML-level attribute is authoritative. When present, cross-check the
+      // Material_ID trailing token and warn on disagreement (attribute wins). When the ML has no
+      // attribute (frames), fall back to the token so a non-frame ML missing the attribute still
+      // resolves; a genuine frame's Material_ID has no 1/2 token, so it stays null.
+      const tokenLeaf = leafFromMaterialId(materialId);
+      let leaf: number | null;
+      if (mlLeaf !== null) {
+        leaf = mlLeaf;
+        if (tokenLeaf !== null && tokenLeaf !== mlLeaf) {
+          warnings.push(
+            `Leaf mismatch for Product_Code: ${productCode}, Opening: ${assignOpeningNumber}, Material_ID: ${materialId} (attribute: ${mlLeaf}, token: ${tokenLeaf}) — using attribute`,
+          );
+        }
+      } else {
+        leaf = tokenLeaf;
+      }
+
       hardwareItems.push({
         opening_number: assignOpeningNumber,
         product_code: productCode,
         material_id: materialId,
+        leaf,
         hardware_category: hardwareCategory,
         item_quantity: itemQtyResult.value,
         unit_cost: unitCost,
@@ -343,6 +417,21 @@ export function parseHardwareSchedule(
   });
 
   onProgress?.(100, 'Complete');
+
+  // Door-leaf count per opening (#311): the immutable "N of M leaves shipped" denominator. An opening
+  // is a pair (leaf_count 2) when TITAN's authoritative Single_Pair attribute says "Pair", OR when any
+  // of its hardware resolved to Leaf 2 (belt-and-suspenders for schedules that omit/misfill
+  // Single_Pair). Deriving from hardware alone missed a pair whose Leaf 2 has no resolved hardware.
+  // Frame-only openings (no Door_Type) stay 1 even if marked Pair - they carry no leaves to ship.
+  const openingsWithLeaf2 = new Set<string>();
+  for (const item of hardwareResult.hardwareItems) {
+    if (item.leaf === 2) openingsWithLeaf2.add(item.opening_number);
+  }
+  for (const opening of openingsResult.openings) {
+    const markedPair =
+      opening.door_type != null && (opening.single_pair?.toLowerCase().includes('pair') ?? false);
+    opening.leaf_count = openingsWithLeaf2.has(opening.opening_number) || markedPair ? 2 : 1;
+  }
 
   // Assemble validation summary
   const allSkippedRows = [

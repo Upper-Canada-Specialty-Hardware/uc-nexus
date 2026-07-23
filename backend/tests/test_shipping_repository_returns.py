@@ -7,8 +7,9 @@ import pytest
 from sqlalchemy import select
 
 from app.errors import ValidationError
-from app.models.enums import PullRequestItemType, ReturnDisposition
+from app.models.enums import OpeningItemState, PullRequestItemType, ReturnDisposition
 from app.models.inventory import InventoryLocation
+from app.models.opening_item import OpeningItem
 from app.models.project import Project
 from app.models.shipping import PackingSlip, PackingSlipItem
 from app.models.stock_item import StockItem
@@ -231,3 +232,37 @@ def test_returnable_lines_tracks_returned_and_excludes_openings(db_session):
     assert line["shipped_quantity"] == 5
     assert line["returned_quantity"] == 2
     assert line["returnable_quantity"] == 3
+
+
+def test_confirm_shipment_stamps_leaf_on_opening_item_line(db_session):
+    """confirm_shipment snapshots the assembled unit's door leaf onto the PackingSlipItem (#311)."""
+    project = _make_project(db_session)
+    oi = OpeningItem(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        opening_id=uuid.uuid4(),
+        warehouse_id=_wh(db_session),
+        opening_number="PR1",
+        leaf=2,
+        quantity=1,
+        assembly_completed_at=datetime.utcnow(),
+        state=OpeningItemState.SHIP_READY,
+    )
+    db_session.add(oi)
+    db_session.flush()
+
+    slip = shipping_repository.confirm_shipment(
+        db_session,
+        project_id=project.id,
+        packing_slip_number=f"PS-{uuid.uuid4().hex[:8]}",
+        shipped_by="shipper",
+        items=[{"item_type": PullRequestItemType.OPENING_ITEM, "opening_item_id": oi.id, "quantity": 1}],
+    )
+    db_session.flush()
+
+    psi = db_session.scalar(select(PackingSlipItem).where(PackingSlipItem.packing_slip_id == slip.id))
+    assert psi.item_type == PullRequestItemType.OPENING_ITEM
+    assert psi.leaf == 2
+
+    db_session.refresh(oi)
+    assert oi.state == OpeningItemState.SHIPPED_OUT

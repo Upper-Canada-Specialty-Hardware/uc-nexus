@@ -75,6 +75,7 @@ def get_project_hardware_schedule(
                 "opening_number": opening_number_by_id.get(hi.opening_id, ""),
                 "product_code": hi.product_code,
                 "material_id": hi.material_id or str(hi.id),
+                "leaf": hi.leaf,
                 "hardware_category": hi.hardware_category,
                 "item_quantity": hi.item_quantity,
                 "unit_cost": float(hi.unit_cost) if hi.unit_cost is not None else None,
@@ -327,6 +328,8 @@ def _apply_opening_fields(opening: OpeningModel, opening_input: dict) -> None:
     opening.heading_no = opening_input.get("heading_no")
     opening.single_pair = opening_input.get("single_pair")
     opening.assignment_multiplier = opening_input.get("assignment_multiplier")
+    # Door-leaf count (#311): 1 (single) or 2 (pair), captured at import.
+    opening.leaf_count = opening_input.get("leaf_count")
 
 
 def finalize_import_session(
@@ -406,8 +409,10 @@ def finalize_import_session(
     # Track existing IN_PO HardwareItem keys so we don't re-create them as AVAILABLE.
     # (After the AVAILABLE wipe above and the optional full wipe under replace_schedule,
     # any remaining rows are IN_PO from prior sessions.)
-    existing_in_po_keys: set[tuple[uuid.UUID, str, str]] = {
-        (hi.opening_id, hi.product_code, hi.hardware_category)
+    # Leaf is part of the key (#311): a pair's leaf-1 and leaf-2 rows for the same product are
+    # distinct HardwareItems, so the dedup must not collapse them.
+    existing_in_po_keys: set[tuple[uuid.UUID, str, str, int | None]] = {
+        (hi.opening_id, hi.product_code, hi.hardware_category, hi.leaf)
         for hi in session.scalars(select(HardwareItemModel).where(HardwareItemModel.project_id == project.id)).all()
     }
 
@@ -455,11 +460,13 @@ def finalize_import_session(
     # 4. PO creation
     created_pos: list[POModel] = []
     if po_drafts:
-        # Build hardware items lookup: (opening_number, product_code, hardware_category) -> hardware item data
-        hw_items_lookup: dict[tuple[str, str, str], dict] = {}
+        # Build hardware items lookup: (opening_number, product_code, hardware_category) -> list of
+        # hardware item data. A leaf-agnostic PO ref matches every leaf row for that combo (#311),
+        # so a pair's leaf-1 and leaf-2 rows both attach to the same PO line.
+        hw_items_lookup: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
         for hi in hardware_items_input:
             key = (hi["opening_number"], hi["product_code"], hi["hardware_category"])
-            hw_items_lookup[key] = hi
+            hw_items_lookup[key].append(hi)
 
         # Generate request_number sequence for new POs
         from app.repositories.po_repository import generate_next_request_number
@@ -520,51 +527,54 @@ def finalize_import_session(
 
             for ref in po_draft.get("hardware_item_refs", []):
                 ref_key = (ref["opening_number"], ref["product_code"], ref["hardware_category"])
-                hi_data = hw_items_lookup.get(ref_key)
-                if hi_data is None:
+                matched_rows = hw_items_lookup.get(ref_key)
+                if not matched_rows:
                     raise NotFoundError(f"Hardware item not found: {ref_key}")
 
                 opening_id = opening_map.get(ref["opening_number"])
                 if opening_id is None:
                     raise NotFoundError(f"Opening {ref['opening_number']} not found in project")
 
-                unit_cost = hi_data.get("unit_cost") or 0.0
-                class_key = (hi_data["hardware_category"], hi_data["product_code"], unit_cost)
-                classification = classification_map.get(class_key)
+                # One HardwareItem per matched leaf row (#311). Every leaf row rolls into the same PO
+                # line via the unchanged agg key, so the line's ordered_quantity sums across leaves.
+                for hi_data in matched_rows:
+                    unit_cost = hi_data.get("unit_cost") or 0.0
+                    class_key = (hi_data["hardware_category"], hi_data["product_code"], unit_cost)
+                    classification = classification_map.get(class_key)
 
-                # Create HardwareItem
-                hw_item = HardwareItemModel(
-                    id=uuid.uuid4(),
-                    project_id=project.id,
-                    opening_id=opening_id,
-                    hardware_category=hi_data["hardware_category"],
-                    product_code=hi_data["product_code"],
-                    item_quantity=hi_data["item_quantity"],
-                    unit_cost=Decimal(str(unit_cost)) if unit_cost else None,
-                    unit_price=Decimal(str(hi_data["unit_price"])) if hi_data.get("unit_price") else None,
-                    list_price=Decimal(str(hi_data["list_price"])) if hi_data.get("list_price") else None,
-                    vendor_discount=(
-                        Decimal(str(hi_data["vendor_discount"])) if hi_data.get("vendor_discount") else None
-                    ),
-                    markup_pct=Decimal(str(hi_data["markup_pct"])) if hi_data.get("markup_pct") else None,
-                    vendor_no=hi_data.get("vendor_no"),
-                    manufacturer=hi_data.get("manufacturer"),
-                    phase_code=hi_data.get("phase_code"),
-                    item_category_code=hi_data.get("item_category_code"),
-                    product_group_code=hi_data.get("product_group_code"),
-                    submittal_id=hi_data.get("submittal_id"),
-                    classification=classification,
-                    state=HardwareItemState.IN_PO,
-                )
-                session.add(hw_item)
+                    hw_item = HardwareItemModel(
+                        id=uuid.uuid4(),
+                        project_id=project.id,
+                        opening_id=opening_id,
+                        hardware_category=hi_data["hardware_category"],
+                        product_code=hi_data["product_code"],
+                        leaf=hi_data.get("leaf"),
+                        item_quantity=hi_data["item_quantity"],
+                        unit_cost=Decimal(str(unit_cost)) if unit_cost else None,
+                        unit_price=Decimal(str(hi_data["unit_price"])) if hi_data.get("unit_price") else None,
+                        list_price=Decimal(str(hi_data["list_price"])) if hi_data.get("list_price") else None,
+                        vendor_discount=(
+                            Decimal(str(hi_data["vendor_discount"])) if hi_data.get("vendor_discount") else None
+                        ),
+                        markup_pct=Decimal(str(hi_data["markup_pct"])) if hi_data.get("markup_pct") else None,
+                        vendor_no=hi_data.get("vendor_no"),
+                        manufacturer=hi_data.get("manufacturer"),
+                        phase_code=hi_data.get("phase_code"),
+                        item_category_code=hi_data.get("item_category_code"),
+                        product_group_code=hi_data.get("product_group_code"),
+                        submittal_id=hi_data.get("submittal_id"),
+                        classification=classification,
+                        state=HardwareItemState.IN_PO,
+                    )
+                    session.add(hw_item)
 
-                agg_key = (
-                    hi_data["hardware_category"],
-                    hi_data["product_code"],
-                    unit_cost,
-                    classification,
-                )
-                line_item_agg[agg_key].append(hw_item)
+                    agg_key = (
+                        hi_data["hardware_category"],
+                        hi_data["product_code"],
+                        unit_cost,
+                        classification,
+                    )
+                    line_item_agg[agg_key].append(hw_item)
 
             session.flush()
 
@@ -600,15 +610,17 @@ def finalize_import_session(
     # 5. Persist remaining hardware items as AVAILABLE (everything in input not claimed by a PO).
     #    Skips items whose (opening_id, product, category) tuple already exists as IN_PO from
     #    a prior session, to avoid duplicating rows.
-    available_keys_seen: set[tuple[uuid.UUID, str, str]] = set()
+    available_keys_seen: set[tuple[uuid.UUID, str, str, int | None]] = set()
     for hi in hardware_items_input:
+        # po_ref_keys stays leaf-agnostic (a PO ref names opening/product/category); it claims every
+        # leaf row for that combo, so the AVAILABLE step below skips all of them.
         ref_key = (hi["opening_number"], hi["product_code"], hi["hardware_category"])
         if ref_key in po_ref_keys:
             continue
         opening_id = opening_map.get(hi["opening_number"])
         if opening_id is None:
             continue
-        key_with_id = (opening_id, hi["product_code"], hi["hardware_category"])
+        key_with_id = (opening_id, hi["product_code"], hi["hardware_category"], hi.get("leaf"))
         if key_with_id in existing_in_po_keys or key_with_id in available_keys_seen:
             continue
         available_keys_seen.add(key_with_id)
@@ -625,6 +637,7 @@ def finalize_import_session(
                 hardware_category=hi["hardware_category"],
                 product_code=hi["product_code"],
                 material_id=hi.get("material_id"),
+                leaf=hi.get("leaf"),
                 item_quantity=hi["item_quantity"],
                 unit_cost=Decimal(str(unit_cost_val)) if unit_cost_val else None,
                 unit_price=Decimal(str(hi["unit_price"])) if hi.get("unit_price") else None,
@@ -708,19 +721,23 @@ def finalize_import_session(
         from app.repositories import shop_assembly_repository
 
         opening_id_by_number: dict[str, uuid.UUID] = {}
+        # Guard per (opening, leaf) (#311): assembling Leaf 1 must not block sending Leaf 2.
+        opening_leaf_specs: list[tuple[str, uuid.UUID, int | None]] = []
         for sa_opening_input in sar_openings_input:
             opening_number = sa_opening_input["opening_number"]
             opening_id = opening_map.get(opening_number)
             if opening_id is None:
                 raise NotFoundError(f"Opening {opening_number} not found in project")
             opening_id_by_number[opening_number] = opening_id
+            opening_leaf_specs.append((opening_number, opening_id, sa_opening_input.get("leaf")))
 
         already_assembled = shop_assembly_repository.find_already_assembled_openings(
-            session, project.id, opening_id_by_number
+            session, project.id, opening_leaf_specs
         )
         if already_assembled:
+            labels = ", ".join(f"{num} Leaf {leaf}" if leaf is not None else num for num, leaf in already_assembled)
             raise ValidationError(
-                f"Opening {', '.join(already_assembled)} is already assembled and cannot be sent to shop assembly.",
+                f"Opening {labels} is already assembled and cannot be sent to shop assembly.",
                 field="shop_assembly_openings",
             )
 
@@ -745,6 +762,7 @@ def finalize_import_session(
                 pull_request_id=None,
                 opening_id=opening_id,
                 opening_number=opening_number,
+                leaf=sa_opening_input.get("leaf"),
                 building=opening_row.building if opening_row else None,
                 floor=opening_row.floor if opening_row else None,
                 location=opening_row.location if opening_row else None,

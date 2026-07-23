@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, Enum, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import CheckConstraint, Enum, ForeignKey, Index, Integer, SmallInteger, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from . import Base
@@ -41,6 +41,9 @@ class PackingSlipItem(Base):
     )
     opening_item_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("opening_items.id"), nullable=True)
     opening_number: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Door leaf this shipped line is for (#311): OPENING_ITEM rows stamp from the OpeningItem.leaf.
+    # Immutable record on the slip. Null = legacy / loose.
+    leaf: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     product_code: Mapped[str] = mapped_column(String, nullable=False)
     hardware_category: Mapped[str] = mapped_column(String, nullable=False)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)

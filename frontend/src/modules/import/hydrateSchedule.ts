@@ -41,12 +41,14 @@ export interface ProjectHardwareScheduleOpeningResponse {
   headingNo: string | null;
   singlePair: string | null;
   assignmentMultiplier: string | null;
+  leafCount: number | null;
 }
 
 export interface ProjectHardwareScheduleHardwareItemResponse {
   openingNumber: string;
   productCode: string;
   materialId: string;
+  leaf: number | null;
   hardwareCategory: string;
   itemQuantity: number;
   unitCost: number | null;
@@ -107,6 +109,8 @@ function mapOpening(o: ProjectHardwareScheduleOpeningResponse): ParsedOpening {
     heading_no: o.headingNo,
     single_pair: o.singlePair,
     assignment_multiplier: o.assignmentMultiplier,
+    // Legacy openings persisted before #311 have null leaf_count; treat as single-leaf.
+    leaf_count: o.leafCount ?? 1,
   };
 }
 
@@ -115,6 +119,7 @@ function mapHardwareItem(hi: ProjectHardwareScheduleHardwareItemResponse): Parse
     opening_number: hi.openingNumber,
     product_code: hi.productCode,
     material_id: hi.materialId,
+    leaf: hi.leaf,
     hardware_category: hi.hardwareCategory,
     item_quantity: hi.itemQuantity,
     unit_cost: hi.unitCost,

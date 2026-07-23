@@ -242,6 +242,8 @@ def confirm_shipment(
             item_type=PullRequestItemType.OPENING_ITEM,
             opening_item_id=item["opening_item_id"],
             opening_number=oi.opening_number if oi else None,
+            # Snapshot the door leaf (#311): the slip is an immutable record of which leaf shipped.
+            leaf=oi.leaf if oi else None,
             product_code=oi.installed_hardware[0].product_code if oi and oi.installed_hardware else "",
             hardware_category=oi.installed_hardware[0].hardware_category if oi and oi.installed_hardware else "",
             quantity=1,

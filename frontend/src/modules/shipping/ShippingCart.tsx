@@ -7,6 +7,7 @@ import DeleteIcon from '@mui/icons-material/Delete';
 import ShoppingCartIcon from '@mui/icons-material/ShoppingCart';
 import { useCart } from '../../contexts/CartContext';
 import PackingSlipForm from './PackingSlipForm';
+import { leafSuffix } from '../../utils/leaf';
 
 interface ShippingCartProps {
   open: boolean;
@@ -55,7 +56,7 @@ export default function ShippingCart({ open, onClose, projectId, projectName }: 
                       {openingItems.map((item) => (
                         <ListItem key={item.id}>
                           <ListItemText
-                            primary={`Opening ${item.openingNumber}`}
+                            primary={`Opening ${item.openingNumber}${leafSuffix(item.leaf)}`}
                             secondary="Assembled Opening"
                           />
                           <ListItemSecondaryAction>

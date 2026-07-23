@@ -17,6 +17,8 @@ import {
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import { useQuery } from '@apollo/client/react';
 import { GET_ASSEMBLE_LIST } from '../../graphql/shop-assembly';
+import { leafSuffix } from '../../utils/leaf';
+import OpeningLeafStatusPanel from '../../components/OpeningLeafStatusPanel';
 
 // --- Types ---
 
@@ -36,6 +38,7 @@ interface AssembleOpening {
   assignedTo: string | null;
   assemblyStatus: string;
   completedAt: string | null;
+  leaf: number | null;
   items: AssembleOpeningItem[];
 }
 
@@ -91,6 +94,8 @@ export default function AssembleListPage() {
         Assemble List
       </Typography>
 
+      <OpeningLeafStatusPanel mode="assembly" grouped title="Door leaves assembled (by project)" />
+
       {loading && !data && (
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
           Loading...
@@ -129,7 +134,10 @@ export default function AssembleListPage() {
                   <Accordion key={opening.id} variant="outlined" sx={{ mb: 1 }}>
                     <AccordionSummary expandIcon={<ExpandMoreIcon />}>
                       <Stack direction="row" spacing={2} alignItems="center">
-                        <Typography fontWeight="bold">Opening: {opening.openingId}</Typography>
+                        <Typography fontWeight="bold">
+                          Opening: {opening.openingId}
+                          {leafSuffix(opening.leaf)}
+                        </Typography>
                         <Chip
                           label={formatPullStatus(opening.pullStatus)}
                           color={section.badgeColor}

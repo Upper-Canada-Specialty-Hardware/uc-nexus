@@ -1,4 +1,5 @@
 import { Document, Page, Text, View, StyleSheet } from '@react-pdf/renderer';
+import { leafLabel } from '../../utils/leaf';
 
 const styles = StyleSheet.create({
   page: { fontFamily: 'Helvetica', fontSize: 11, padding: 40, color: '#333' },
@@ -24,6 +25,7 @@ export interface PackingSlipData {
   shippedAt: string;
   openingItems: Array<{
     openingNumber: string;
+    leaf?: number | null;
     building?: string;
     floor?: string;
     location?: string;
@@ -64,20 +66,22 @@ export default function PackingSlipDocument({
             </Text>
             <View style={styles.table}>
               <View style={styles.tableHeaderRow}>
-                <Text style={[styles.th, { width: '25%' }]}>Opening #</Text>
-                <Text style={[styles.th, { width: '25%' }]}>Building</Text>
-                <Text style={[styles.th, { width: '25%' }]}>Floor</Text>
-                <Text style={[styles.th, { width: '25%' }]}>Location</Text>
+                <Text style={[styles.th, { width: '22%' }]}>Opening #</Text>
+                <Text style={[styles.th, { width: '14%' }]}>Leaf</Text>
+                <Text style={[styles.th, { width: '22%' }]}>Building</Text>
+                <Text style={[styles.th, { width: '20%' }]}>Floor</Text>
+                <Text style={[styles.th, { width: '22%' }]}>Location</Text>
               </View>
               {openingItems.map((item, i) => (
                 <View
                   key={i}
                   style={[styles.tableRow, i % 2 === 1 ? styles.tableRowEven : {}]}
                 >
-                  <Text style={[styles.td, { width: '25%' }]}>{item.openingNumber}</Text>
-                  <Text style={[styles.td, { width: '25%' }]}>{item.building || '-'}</Text>
-                  <Text style={[styles.td, { width: '25%' }]}>{item.floor || '-'}</Text>
-                  <Text style={[styles.td, { width: '25%' }]}>{item.location || '-'}</Text>
+                  <Text style={[styles.td, { width: '22%' }]}>{item.openingNumber}</Text>
+                  <Text style={[styles.td, { width: '14%' }]}>{leafLabel(item.leaf) || '-'}</Text>
+                  <Text style={[styles.td, { width: '22%' }]}>{item.building || '-'}</Text>
+                  <Text style={[styles.td, { width: '20%' }]}>{item.floor || '-'}</Text>
+                  <Text style={[styles.td, { width: '22%' }]}>{item.location || '-'}</Text>
                 </View>
               ))}
             </View>

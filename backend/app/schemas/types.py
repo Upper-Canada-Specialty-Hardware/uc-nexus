@@ -11,6 +11,7 @@ from .enums import (
     DeficiencyResolution,
     DeficientItemSource,
     HardwareItemState,
+    LeafStatus,
     NotificationType,
     OpeningItemState,
     PODocumentType,
@@ -48,6 +49,8 @@ class Opening:
     heading_no: str | None
     single_pair: str | None
     assignment_multiplier: str | None
+    # Door-leaf count (#311): 1 (single) or 2 (pair). The "N of M leaves shipped" denominator.
+    leaf_count: int | None
     created_at: datetime
     updated_at: datetime
 
@@ -66,6 +69,8 @@ class HardwareItem:
     hardware_category: str
     product_code: str
     material_id: str | None
+    # Door leaf this item belongs to (#311): 1 or 2, or null for frames.
+    leaf: int | None
     item_quantity: int
     unit_cost: float | None
     unit_price: float | None
@@ -385,6 +390,8 @@ class ProjectScheduleHardwareItem:
     opening_number: str
     product_code: str
     material_id: str
+    # Door leaf this item belongs to (#311): 1 or 2, or null for frames.
+    leaf: int | None
     hardware_category: str
     item_quantity: int
     unit_cost: float | None
@@ -447,6 +454,11 @@ class OpeningItem:
     building: str | None
     floor: str | None
     location: str | None
+    # Door leaf this assembled unit is (#311): 1 or 2, or null (legacy whole-opening unit).
+    leaf: int | None
+    # The opening's total door-leaf count (#311), the "N of M leaves shipped" denominator. Only
+    # populated by the openingItems list resolver; null elsewhere.
+    leaf_count: int | None
     quantity: int
     assembly_completed_at: datetime
     state: OpeningItemState
@@ -465,6 +477,8 @@ class PullRequestItem:
     item_type: PullRequestItemType
     opening_number: str
     opening_item_id: strawberry.ID | None
+    # Door leaf this pull line is for (#311): 1 or 2, or null (legacy / leaf-agnostic).
+    leaf: int | None
     hardware_category: str | None
     product_code: str | None
     requested_quantity: int
@@ -508,6 +522,8 @@ class ShopAssemblyOpening:
     assembly_status: AssemblyStatus
     completed_at: datetime | None
     items: list[ShopAssemblyOpeningItem]
+    # Door leaf this assembly work unit is for (#311): 1 or 2, or null (legacy whole-opening).
+    leaf: int | None = None
     # Resolved from Opening table (populated by myWork and assembleList queries)
     opening_number: str | None = None
     building: str | None = None
@@ -566,6 +582,8 @@ class PackingSlipItem:
     item_type: PullRequestItemType
     opening_item_id: strawberry.ID | None
     opening_number: str | None
+    # Door leaf this shipped line was for (#311): 1 or 2, or null (loose / legacy).
+    leaf: int | None
     product_code: str
     hardware_category: str
     quantity: int
@@ -752,6 +770,27 @@ class OpeningHardwareStatus:
     floor: str | None
     location: str | None
     items: list[OpeningHardwareStatusItem]
+
+
+@strawberry.type
+class OpeningLeafState:
+    """One door leaf's status in the per-opening leaf-status rollup (#313)."""
+
+    leaf: int
+    status: LeafStatus
+
+
+@strawberry.type
+class OpeningLeafStatus:
+    """Per-opening door-leaf rollup (#313): every leaf 1..leaf_count and its status. project_id /
+    project_name are carried so the global (no-projectId) shop-assembly view disambiguates opening
+    numbers that collide across projects."""
+
+    project_id: strawberry.ID
+    project_name: str
+    opening_number: str
+    leaf_count: int
+    leaves: list[OpeningLeafState]
 
 
 @strawberry.type

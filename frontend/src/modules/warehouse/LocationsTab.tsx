@@ -31,6 +31,7 @@ import LocationActionDialog, {
 } from './LocationActionDialog';
 import LocationAuditStrip from './LocationAuditStrip';
 import TransferDialog, { type TransferSource } from './TransferDialog';
+import { leafSuffix } from '../../utils/leaf';
 
 interface LocationEntry {
   warehouseId: string | null;
@@ -72,6 +73,7 @@ interface ContentsOpeningItem {
   openingNumber: string;
   building: string | null;
   floor: string | null;
+  leaf: number | null;
   state: string;
   quantity: number;
   aisle: string | null;
@@ -502,7 +504,7 @@ function ContentsPanel({
                     onChange={() => toggleSelect(oi.id)}
                   />
                   <Box sx={{ flex: 1, minWidth: 0 }}>
-                    <Typography variant="body2" noWrap>{oi.openingNumber}</Typography>
+                    <Typography variant="body2" noWrap>{oi.openingNumber}{leafSuffix(oi.leaf)}</Typography>
                     <Typography variant="caption" color="text.secondary">
                       Qty {oi.quantity} · {oi.building ?? ''} {oi.floor ?? ''}
                     </Typography>

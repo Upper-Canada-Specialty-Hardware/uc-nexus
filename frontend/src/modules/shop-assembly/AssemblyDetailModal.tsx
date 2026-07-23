@@ -17,6 +17,7 @@ import { COMPLETE_OPENING } from '../../graphql/shop-assembly';
 import Modal from '../../components/Modal';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import { useToast } from '../../components/Toast';
+import { leafSuffix } from '../../utils/leaf';
 
 interface OpeningItem {
   id: string;
@@ -31,6 +32,7 @@ interface MyWorkOpening {
   openingNumber: string | null;
   building: string | null;
   floor: string | null;
+  leaf: number | null;
   items: OpeningItem[];
 }
 
@@ -133,7 +135,7 @@ export default function AssemblyDetailModal({
       <Modal
         open={open}
         onClose={onClose}
-        title={`Assembly: ${opening.openingNumber || 'Opening'}`}
+        title={`Assembly: ${opening.openingNumber || 'Opening'}${leafSuffix(opening.leaf)}`}
         actions={
           <Stack direction='row' spacing={1}>
             <Button onClick={onClose}>Cancel</Button>

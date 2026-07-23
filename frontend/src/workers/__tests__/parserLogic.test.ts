@@ -6,6 +6,9 @@ import {
   extractOpenings,
   extractHardwareItems,
   parseHardwareSchedule,
+  normalizeLeaf,
+  leafFromMaterialId,
+  extractMlLeaf,
 } from '../parserLogic';
 
 // ---------------------------------------------------------------------------
@@ -603,6 +606,203 @@ describe('extractHardwareItems', () => {
     expect(result.hardwareItems).toHaveLength(0);
     expect(result.skippedRows).toHaveLength(0);
     expect(result.warnings).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Door-leaf awareness (#311)
+// ---------------------------------------------------------------------------
+
+describe('normalizeLeaf', () => {
+  it('maps "Leaf 1" / "Leaf 2" to 1 / 2', () => {
+    expect(normalizeLeaf('Leaf 1')).toBe(1);
+    expect(normalizeLeaf('Leaf 2')).toBe(2);
+  });
+
+  it('returns null for empty / missing / non-leaf values', () => {
+    expect(normalizeLeaf(null)).toBeNull();
+    expect(normalizeLeaf(undefined)).toBeNull();
+    expect(normalizeLeaf('')).toBeNull();
+    expect(normalizeLeaf('Leaf 3')).toBeNull();
+    expect(normalizeLeaf('no number')).toBeNull();
+  });
+});
+
+describe('leafFromMaterialId', () => {
+  it('reads the trailing token of a door Material_ID', () => {
+    expect(leafFromMaterialId('0019-EX DOOR 1')).toBe(1);
+    expect(leafFromMaterialId('0019-EX DOOR 2')).toBe(2);
+  });
+
+  it('reads the trailing token of a hardware Material_ID', () => {
+    expect(leafFromMaterialId('0019-EX HI-2 1')).toBe(1);
+    expect(leafFromMaterialId('0019-EX EC-20 2')).toBe(2);
+  });
+
+  it('returns null for frame-style single-token ids (never a bare 1/2)', () => {
+    expect(leafFromMaterialId('0019-EX')).toBeNull();
+    expect(leafFromMaterialId('1032.1')).toBeNull();
+    expect(leafFromMaterialId('0001-a-EX')).toBeNull();
+  });
+
+  it('returns null for null/empty and non-1/2 trailing tokens', () => {
+    expect(leafFromMaterialId(null)).toBeNull();
+    expect(leafFromMaterialId('')).toBeNull();
+    expect(leafFromMaterialId('0019-EX DOOR 3')).toBeNull();
+  });
+});
+
+describe('extractMlLeaf', () => {
+  it('finds the Leaf attribute in an Attribute array', () => {
+    const ml = {
+      Attributes: {
+        Attribute: [
+          { '@_Code': 'Door Thickness', Value: '45mm' },
+          { '@_Code': 'Leaf', Value: 'Leaf 2' },
+        ],
+      },
+    };
+    expect(extractMlLeaf(ml)).toBe(2);
+  });
+
+  it('handles a single Attribute object (not array)', () => {
+    const ml = { Attributes: { Attribute: { '@_Code': 'Leaf', Value: 'Leaf 1' } } };
+    expect(extractMlLeaf(ml)).toBe(1);
+  });
+
+  it('returns null when there is no Attributes block (frames)', () => {
+    expect(extractMlLeaf({})).toBeNull();
+    expect(extractMlLeaf({ Attributes: {} })).toBeNull();
+  });
+
+  it('returns null when the block has attributes but no Leaf', () => {
+    const ml = { Attributes: { Attribute: [{ '@_Code': 'Degrees', Value: '90' }] } };
+    expect(extractMlLeaf(ml)).toBeNull();
+  });
+});
+
+describe('extractHardwareItems - door leaf', () => {
+  function mlWithLeafAttr(leafValue: string | null, assignments: object[]) {
+    const attribute: object[] = [{ '@_Code': 'Degrees', Value: '90' }];
+    if (leafValue !== null) attribute.push({ '@_Code': 'Leaf', Value: leafValue });
+    return {
+      Detail: {
+        Material_List: [
+          {
+            '@_Description': 'DOOR-100',
+            Material_List_Fields: { Product_Description: 'Door' },
+            Attributes: { Attribute: attribute },
+            Assignments: { Assignment: assignments },
+          },
+        ],
+      },
+    };
+  }
+
+  it('stamps the ML-level Leaf attribute onto every assignment', () => {
+    const contract = mlWithLeafAttr('Leaf 2', [
+      { '@_Code': 'D101', Material_ID: 'D101 DOOR 2', Qty_Per: '1' },
+      { '@_Code': 'D102', Material_ID: 'D102 DOOR 2', Qty_Per: '1' },
+    ]);
+    const result = extractHardwareItems(contract);
+    expect(result.hardwareItems.map((h) => h.leaf)).toEqual([2, 2]);
+  });
+
+  it('leaves frame items (no Leaf attribute, single-token Material_ID) null', () => {
+    const contract = mlWithLeafAttr(null, [
+      { '@_Code': 'D101', Material_ID: '0019-EX', Qty_Per: '1' },
+    ]);
+    const result = extractHardwareItems(contract);
+    expect(result.hardwareItems).toHaveLength(1);
+    expect(result.hardwareItems[0].leaf).toBeNull();
+    expect(result.warnings).toHaveLength(0);
+  });
+
+  it('falls back to the Material_ID token when the ML has no Leaf attribute', () => {
+    const contract = mlWithLeafAttr(null, [
+      { '@_Code': 'D101', Material_ID: '0019-EX DOOR 1', Qty_Per: '1' },
+      { '@_Code': 'D101', Material_ID: '0019-EX DOOR 2', Qty_Per: '1' },
+    ]);
+    const result = extractHardwareItems(contract);
+    expect(result.hardwareItems.map((h) => h.leaf)).toEqual([1, 2]);
+  });
+
+  it('warns when the Material_ID token disagrees with the attribute (attribute wins)', () => {
+    const contract = mlWithLeafAttr('Leaf 1', [
+      { '@_Code': 'D101', Material_ID: 'D101 DOOR 2', Qty_Per: '1' },
+    ]);
+    const result = extractHardwareItems(contract);
+    expect(result.hardwareItems[0].leaf).toBe(1);
+    expect(result.warnings.some((w) => w.includes('Leaf mismatch'))).toBe(true);
+  });
+});
+
+describe('parseHardwareSchedule - opening leaf_count', () => {
+  function buildXml(assignmentsByOpening: Record<string, { leafAttr: string | null; mid: string }[]>): string {
+    const openingCodes = Object.keys(assignmentsByOpening);
+    const openingsXml = openingCodes
+      .map((code) => `<Assignment_Level_3 Code="${code}"><Building>B1</Building></Assignment_Level_3>`)
+      .join('');
+    // One Material_List per (opening, assignment) so each can carry its own Leaf attribute.
+    let mlIndex = 0;
+    let materialsXml = '';
+    for (const code of openingCodes) {
+      for (const a of assignmentsByOpening[code]) {
+        const leafAttr =
+          a.leafAttr !== null ? `<Attribute Code="Leaf"><Value>${a.leafAttr}</Value></Attribute>` : '';
+        materialsXml += `<Material_List Description="P-${mlIndex}"><Material_List_Fields><Product_Description>Cat</Product_Description></Material_List_Fields><Attributes><Attribute Code="Degrees"><Value>90</Value></Attribute>${leafAttr}</Attributes><Assignments><Assignment Code="${code}"><Material_ID>${a.mid}</Material_ID><Qty_Per>1</Qty_Per></Assignment></Assignments></Material_List>`;
+        mlIndex++;
+      }
+    }
+    return `<?xml version="1.0"?><Contract Description="T"><Fields><Project_ID>P1</Project_ID></Fields><Assignments>${openingsXml}</Assignments><Detail>${materialsXml}</Detail></Contract>`;
+  }
+
+  it('single-leaf opening -> leaf_count 1', () => {
+    const xml = buildXml({ SGL: [{ leafAttr: 'Leaf 1', mid: 'SGL DOOR 1' }] });
+    const result = parseHardwareSchedule(xml);
+    expect(result.openings.find((o) => o.opening_number === 'SGL')?.leaf_count).toBe(1);
+  });
+
+  it('pair opening (hardware on both leaves) -> leaf_count 2', () => {
+    const xml = buildXml({
+      PR: [
+        { leafAttr: 'Leaf 1', mid: 'PR DOOR 1' },
+        { leafAttr: 'Leaf 2', mid: 'PR DOOR 2' },
+      ],
+    });
+    const result = parseHardwareSchedule(xml);
+    expect(result.openings.find((o) => o.opening_number === 'PR')?.leaf_count).toBe(2);
+  });
+
+  it('frame-only opening (no leaf-bearing hardware) -> leaf_count 1', () => {
+    const xml = buildXml({ FR: [{ leafAttr: null, mid: '0019-EX' }] });
+    const result = parseHardwareSchedule(xml);
+    expect(result.openings.find((o) => o.opening_number === 'FR')?.leaf_count).toBe(1);
+  });
+
+  // A single opening carrying its own Single_Pair / Door_Type attributes (buildXml above omits them).
+  function xmlOneOpening(openingChildren: string, leafAttr: string | null, mid: string): string {
+    const leaf = leafAttr !== null ? `<Attribute Code="Leaf"><Value>${leafAttr}</Value></Attribute>` : '';
+    return (
+      `<?xml version="1.0"?><Contract Description="T"><Fields><Project_ID>P1</Project_ID></Fields>` +
+      `<Assignments><Assignment_Level_3 Code="OP">${openingChildren}</Assignment_Level_3></Assignments>` +
+      `<Detail><Material_List Description="P"><Material_List_Fields><Product_Description>Cat</Product_Description></Material_List_Fields>` +
+      `<Attributes><Attribute Code="Degrees"><Value>90</Value></Attribute>${leaf}</Attributes>` +
+      `<Assignments><Assignment Code="OP"><Material_ID>${mid}</Material_ID><Qty_Per>1</Qty_Per></Assignment></Assignments>` +
+      `</Material_List></Detail></Contract>`
+    );
+  }
+
+  it('pair by Single_Pair with no Leaf-2 hardware -> leaf_count 2', () => {
+    const xml = xmlOneOpening('<Single_Pair>Pair</Single_Pair><Door_Type>Flush</Door_Type>', 'Leaf 1', 'OP DOOR 1');
+    const result = parseHardwareSchedule(xml);
+    expect(result.openings[0].leaf_count).toBe(2);
+  });
+
+  it('marked Pair but frame-only (no Door_Type) -> leaf_count 1', () => {
+    const xml = xmlOneOpening('<Single_Pair>Pair</Single_Pair>', null, '0019-EX');
+    const result = parseHardwareSchedule(xml);
+    expect(result.openings[0].leaf_count).toBe(1);
   });
 });
 
