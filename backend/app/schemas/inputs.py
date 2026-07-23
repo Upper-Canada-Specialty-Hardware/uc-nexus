@@ -60,6 +60,8 @@ class OpeningInput:
     heading_no: str | None = None
     single_pair: str | None = None
     assignment_multiplier: str | None = None
+    # Door-leaf count (#311): 1 (single) or 2 (pair), from the distinct parsed leaves.
+    leaf_count: int | None = None
 
 
 @strawberry.input
@@ -68,6 +70,8 @@ class HardwareItemInput:
     product_code: str
     hardware_category: str
     item_quantity: int
+    # Door leaf this item belongs to (#311): 1 or 2, or null for frames.
+    leaf: int | None = None
     unit_cost: float | None = None
     unit_price: float | None = None
     list_price: float | None = None
@@ -141,6 +145,8 @@ class SAROpeningItemInput:
 @strawberry.input
 class SAROpeningInput:
     opening_number: str
+    # Door leaf this assembly work unit is for (#311): 1 or 2, or null (frame / legacy).
+    leaf: int | None = None
     items: list[SAROpeningItemInput] = strawberry.field(default_factory=list)
 
 

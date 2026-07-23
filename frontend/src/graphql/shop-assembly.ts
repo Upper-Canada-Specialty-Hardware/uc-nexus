@@ -14,6 +14,7 @@ export const GET_ASSEMBLE_LIST = gql`
       openingNumber
       building
       floor
+      leaf
       items {
         id
         shopAssemblyOpeningId
@@ -39,6 +40,7 @@ export const GET_MY_WORK = gql`
       openingNumber
       building
       floor
+      leaf
       items {
         id
         shopAssemblyOpeningId
@@ -72,6 +74,7 @@ export const GET_SHOP_ASSEMBLY_REQUESTS = gql`
         openingNumber
         building
         floor
+        leaf
         items {
           id
           hardwareCategory
@@ -114,6 +117,7 @@ export const ASSIGN_OPENINGS = gql`
       openingNumber
       building
       floor
+      leaf
       items {
         id
         shopAssemblyOpeningId
@@ -138,6 +142,7 @@ export const REMOVE_OPENING_FROM_USER = gql`
       openingNumber
       building
       floor
+      leaf
       items {
         id
         shopAssemblyOpeningId
@@ -159,6 +164,7 @@ export const COMPLETE_OPENING = gql`
       building
       floor
       location
+      leaf
       quantity
       assemblyCompletedAt
       state

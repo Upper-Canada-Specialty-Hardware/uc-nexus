@@ -107,6 +107,7 @@ class ImportMutations:
                     "heading_no": o.heading_no,
                     "single_pair": o.single_pair,
                     "assignment_multiplier": o.assignment_multiplier,
+                    "leaf_count": o.leaf_count,
                 }
                 for o in input.openings
             ],
@@ -115,6 +116,7 @@ class ImportMutations:
                     "opening_number": hi.opening_number,
                     "product_code": hi.product_code,
                     "hardware_category": hi.hardware_category,
+                    "leaf": hi.leaf,
                     "item_quantity": hi.item_quantity,
                     "unit_cost": hi.unit_cost,
                     "unit_price": hi.unit_price,
@@ -204,6 +206,7 @@ class ImportMutations:
             "shop_assembly_openings": [
                 {
                     "opening_number": sa.opening_number,
+                    "leaf": sa.leaf,
                     "items": [
                         {
                             "hardware_category": item.hardware_category,

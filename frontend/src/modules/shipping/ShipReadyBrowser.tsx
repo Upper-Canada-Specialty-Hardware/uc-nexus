@@ -6,6 +6,8 @@ import { useQuery } from '@apollo/client/react';
 import { useCart } from '../../contexts/CartContext';
 import { useToast } from '../../components/Toast';
 import { GET_SHIP_READY_ITEMS } from '../../graphql/shipping';
+import { leafLabel, leafSuffix } from '../../utils/leaf';
+import OpeningLeafStatusPanel from '../../components/OpeningLeafStatusPanel';
 
 interface InstalledHardware {
   id: string;
@@ -23,6 +25,7 @@ interface OpeningItem {
   building: string;
   floor: string;
   location: string;
+  leaf: number | null;
   quantity: number;
   assemblyCompletedAt: string | null;
   state: string;
@@ -77,12 +80,13 @@ export default function ShipReadyBrowser({ projectId }: ShipReadyBrowserProps) {
         itemType: 'Opening_Item',
         openingItemId: oi.id,
         openingNumber: oi.openingNumber,
+        leaf: oi.leaf,
         quantity: 1,
         building: oi.building,
         floor: oi.floor,
         location: oi.location,
       });
-      showToast(`Opening ${oi.openingNumber} added to cart`, 'success');
+      showToast(`Opening ${oi.openingNumber}${leafSuffix(oi.leaf)} added to cart`, 'success');
     },
     [addItem, showToast],
   );
@@ -116,6 +120,12 @@ export default function ShipReadyBrowser({ projectId }: ShipReadyBrowserProps) {
   const openingColumns = useMemo<GridColDef[]>(
     () => [
       { field: 'openingNumber', headerName: 'Opening #', flex: 1 },
+      {
+        field: 'leaf',
+        headerName: 'Leaf',
+        flex: 0.6,
+        valueGetter: (_value: unknown, row: OpeningItem) => leafLabel(row.leaf) ?? '—',
+      },
       { field: 'building', headerName: 'Building', flex: 1 },
       { field: 'floor', headerName: 'Floor', flex: 0.7 },
       { field: 'location', headerName: 'Location', flex: 1 },
@@ -210,6 +220,12 @@ export default function ShipReadyBrowser({ projectId }: ShipReadyBrowserProps) {
 
   return (
     <Box>
+      <OpeningLeafStatusPanel
+        projectId={projectId}
+        mode="shipping"
+        grouped={!projectId}
+        title="Door leaves shipped"
+      />
       <Tabs value={tabIndex} onChange={(_, v) => setTabIndex(v)} sx={{ mb: 2 }}>
         <Tab label="Opening Items" />
         <Tab label="Loose Hardware" />

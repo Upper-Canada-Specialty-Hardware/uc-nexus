@@ -321,6 +321,7 @@ def project_to_type(
                 interior_exterior=o.interior_exterior,
                 keying=o.keying,
                 heading_no=o.heading_no,
+                leaf_count=o.leaf_count,
                 single_pair=o.single_pair,
                 assignment_multiplier=o.assignment_multiplier,
                 created_at=o.created_at,
@@ -367,6 +368,7 @@ def project_schedule_hardware_item_to_type(hi: dict) -> ProjectScheduleHardwareI
         opening_number=hi["opening_number"],
         product_code=hi["product_code"],
         material_id=hi["material_id"],
+        leaf=hi.get("leaf"),
         hardware_category=hi["hardware_category"],
         item_quantity=hi["item_quantity"],
         unit_cost=hi["unit_cost"],
@@ -426,7 +428,7 @@ def opening_item_hardware_to_type(oih) -> OpeningItemHardware:
     )
 
 
-def opening_item_to_type(oi) -> OpeningItem:
+def opening_item_to_type(oi, *, leaf_count: int | None = None) -> OpeningItem:
     return OpeningItem(
         id=strawberry.ID(str(oi.id)),
         project_id=strawberry.ID(str(oi.project_id)),
@@ -436,6 +438,8 @@ def opening_item_to_type(oi) -> OpeningItem:
         building=oi.building,
         floor=oi.floor,
         location=oi.location,
+        leaf=oi.leaf,
+        leaf_count=leaf_count,
         quantity=oi.quantity,
         assembly_completed_at=oi.assembly_completed_at,
         state=oi.state,
@@ -471,6 +475,7 @@ def shop_assembly_opening_to_type(opening) -> ShopAssemblyOpening:
         assembly_status=opening.assembly_status,
         completed_at=opening.completed_at,
         items=[shop_assembly_opening_item_to_type(i) for i in opening.items],
+        leaf=opening.leaf,
         opening_number=opening.opening_number,
         building=opening.building,
         floor=opening.floor,
@@ -532,6 +537,7 @@ def pull_request_item_to_type(item) -> PullRequestItem:
         item_type=item.item_type,
         opening_number=item.opening_number,
         opening_item_id=strawberry.ID(str(item.opening_item_id)) if item.opening_item_id else None,
+        leaf=item.leaf,
         hardware_category=item.hardware_category,
         product_code=item.product_code,
         requested_quantity=item.requested_quantity,
@@ -575,6 +581,7 @@ def packing_slip_item_to_type(psi) -> PackingSlipItem:
         item_type=psi.item_type,
         opening_item_id=strawberry.ID(str(psi.opening_item_id)) if psi.opening_item_id else None,
         opening_number=psi.opening_number,
+        leaf=psi.leaf,
         product_code=psi.product_code,
         hardware_category=psi.hardware_category,
         quantity=psi.quantity,

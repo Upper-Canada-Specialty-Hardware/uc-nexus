@@ -23,7 +23,7 @@ from .converters import (
     stock_item_to_type,
     warehouse_to_type,
 )
-from .enums import ApproveOutcome, AuditEntityType, PullRequestSource, PullRequestStatus
+from .enums import ApproveOutcome, AuditEntityType, LeafStatus, PullRequestSource, PullRequestStatus
 from .inputs import CreateReceiveInput, CreateWarehouseInput, OverrideInventoryQuantityInput, UpdateWarehouseInput
 from .types import (
     ApproveResult,
@@ -41,6 +41,8 @@ from .types import (
     LocationVariant,
     OpeningItem,
     OpeningItemDetail,
+    OpeningLeafState,
+    OpeningLeafStatus,
     ProductCodeNode,
     ProjectProgressByProduct,
     PullRequest,
@@ -186,8 +188,31 @@ class WarehouseQueries:
     @strawberry.field
     def opening_items(self, project_id: strawberry.ID | None = None) -> list[OpeningItem]:
         with SessionLocal() as session:
-            ois = warehouse_repository.get_opening_items(session, uuid.UUID(str(project_id)) if project_id else None)
-            return [opening_item_to_type(oi) for oi in ois]
+            pid = uuid.UUID(str(project_id)) if project_id else None
+            ois = warehouse_repository.get_opening_items(session, pid)
+            # leaf_count (#311) is the "N of M leaves shipped" denominator; one grouped query,
+            # attached per item so consumers can roll up by opening without an N+1. Computed for the
+            # global view too (pid=None) so leafCount isn't null everywhere when project_id is omitted.
+            leaf_counts = warehouse_repository.get_opening_leaf_counts(session, pid)
+            return [opening_item_to_type(oi, leaf_count=leaf_counts.get(oi.opening_number)) for oi in ois]
+
+    @strawberry.field
+    def opening_leaf_status(self, project_id: strawberry.ID | None = None) -> list[OpeningLeafStatus]:
+        """Per-opening door-leaf rollup (#313). project_id scopes to one project (shipping view);
+        omit it for the global shop-assembly view (rows carry project identity to group by)."""
+        with SessionLocal() as session:
+            pid = uuid.UUID(str(project_id)) if project_id else None
+            rows = warehouse_repository.get_opening_leaf_status(session, pid)
+            return [
+                OpeningLeafStatus(
+                    project_id=strawberry.ID(str(r["project_id"])),
+                    project_name=r["project_name"],
+                    opening_number=r["opening_number"],
+                    leaf_count=r["leaf_count"],
+                    leaves=[OpeningLeafState(leaf=s["leaf"], status=LeafStatus(s["status"])) for s in r["leaves"]],
+                )
+                for r in rows
+            ]
 
     @strawberry.field
     def opening_item_details(self, id: strawberry.ID) -> OpeningItemDetail:

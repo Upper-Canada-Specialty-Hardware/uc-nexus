@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import CheckConstraint, Enum, ForeignKey, Index, Integer, Numeric, String
+from sqlalchemy import CheckConstraint, Enum, ForeignKey, Index, Integer, Numeric, SmallInteger, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from . import Base
@@ -29,6 +29,8 @@ class HardwareItem(Base):
     hardware_category: Mapped[str] = mapped_column(String, nullable=False)
     product_code: Mapped[str] = mapped_column(String, nullable=False)
     material_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Door leaf this item belongs to (#311): 1 or 2. Null = frame / legacy / unknown.
+    leaf: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     item_quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     unit_cost: Mapped[Decimal | None] = mapped_column(Numeric(10, 4), nullable=True)
     unit_price: Mapped[Decimal | None] = mapped_column(Numeric(10, 4), nullable=True)

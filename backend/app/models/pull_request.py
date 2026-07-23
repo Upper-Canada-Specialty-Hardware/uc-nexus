@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, Enum, ForeignKey, Index, Integer, String
+from sqlalchemy import CheckConstraint, Enum, ForeignKey, Index, Integer, SmallInteger, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from . import Base
@@ -64,6 +64,10 @@ class PullRequestItem(Base):
     )
     opening_number: Mapped[str] = mapped_column(String, nullable=False)
     opening_item_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("opening_items.id"), nullable=True)
+    # Door leaf this pull line is for (#311): SHOP_ASSEMBLY LOOSE from ShopAssemblyOpening.leaf,
+    # SHIPPING_OUT OPENING_ITEM from OpeningItem.leaf. Snapshot so a leaf-1 pull reads distinct from
+    # a leaf-2 pull. Null = legacy / leaf-agnostic.
+    leaf: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     hardware_category: Mapped[str | None] = mapped_column(String, nullable=True)
     product_code: Mapped[str | None] = mapped_column(String, nullable=True)
     requested_quantity: Mapped[int] = mapped_column(Integer, nullable=False)

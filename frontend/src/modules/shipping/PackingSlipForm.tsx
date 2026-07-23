@@ -123,6 +123,7 @@ export default function PackingSlipForm({ open, onClose, onShipped, projectId, p
         .filter((i) => i.itemType === 'Opening_Item')
         .map((i) => ({
           openingNumber: i.openingNumber ?? '',
+          leaf: i.leaf ?? null,
           building: i.building,
           floor: i.floor,
           location: i.location,

@@ -109,3 +109,15 @@ class ApproveOutcome(enum.Enum):
 class TransferSourceType(enum.Enum):
     INVENTORY_LOCATION = "INVENTORY_LOCATION"
     STOCK_ITEM = "STOCK_ITEM"
+
+
+@strawberry.enum
+class LeafStatus(enum.Enum):
+    """Per-leaf status in the per-opening leaf-status rollup (#313). The first three mirror
+    OpeningItemState; NOT_ASSEMBLED is synthetic - a leaf the schedule expects (1..leaf_count) that
+    has no OpeningItem yet."""
+
+    NOT_ASSEMBLED = "NOT_ASSEMBLED"
+    IN_INVENTORY = "IN_INVENTORY"
+    SHIP_READY = "SHIP_READY"
+    SHIPPED_OUT = "SHIPPED_OUT"

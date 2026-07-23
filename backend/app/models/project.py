@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, ForeignKey, Index, Integer, String, UniqueConstraint, false
+from sqlalchemy import Boolean, ForeignKey, Index, Integer, SmallInteger, String, UniqueConstraint, false
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from . import Base
@@ -63,6 +63,9 @@ class Opening(Base):
     heading_no: Mapped[str | None] = mapped_column(String, nullable=True)
     single_pair: Mapped[str | None] = mapped_column(String, nullable=True)
     assignment_multiplier: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Number of door leaves (#311): 1 (single) or 2 (pair), captured at import from the distinct
+    # parsed Leaf attributes. The immutable "N of M leaves shipped" denominator. Null = legacy.
+    leaf_count: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 

@@ -624,7 +624,9 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
     // become AVAILABLE so the persisted schedule is byte-equivalent to a fresh XML upload.
     const fullScheduleAggMap = new Map<string, AggregatedHardwareItem>();
     for (const hi of parsed.hardwareItems) {
-      const aggKey = `${hi.opening_number}|${hi.hardware_category}|${hi.product_code}`;
+      // Leaf is part of the key (#311): a pair's leaf-1 and leaf-2 rows for the same product must
+      // persist as separate HardwareItems, not collapse into one. `rest` below keeps `leaf`.
+      const aggKey = `${hi.opening_number}|${hi.hardware_category}|${hi.product_code}|${hi.leaf}`;
       const existing = fullScheduleAggMap.get(aggKey);
       if (existing) {
         existing.item_quantity += hi.item_quantity;
@@ -729,16 +731,25 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
       shopAssemblyOpenings: purpose === 'assembly'
         ? parsed.openings
             .filter((o) => selectedOpenings.has(o.opening_number))
-            .map((opening) => {
+            .flatMap((opening) => {
               const shopItems = filteredHardwareItems.filter((hi) => {
                 if (hi.opening_number !== opening.opening_number) return false;
                 const ck = classificationKey(hi);
                 return classifications.get(ck) === 'SHOP_HARDWARE';
               });
-              if (shopItems.length === 0) return null;
-              // Aggregate by (product_code, hardware_category) to avoid duplicates from multiple material_ids
-              const aggMap = new Map<string, { hardwareCategory: string; productCode: string; quantity: number }>();
+              if (shopItems.length === 0) return [];
+              // One SAR opening per door leaf (#311): group SHOP_HARDWARE by leaf, then aggregate
+              // each leaf's items by (product_code, hardware_category). A pair yields two work units.
+              const byLeaf = new Map<
+                number | null,
+                Map<string, { hardwareCategory: string; productCode: string; quantity: number }>
+              >();
               for (const hi of shopItems) {
+                let aggMap = byLeaf.get(hi.leaf);
+                if (!aggMap) {
+                  aggMap = new Map();
+                  byLeaf.set(hi.leaf, aggMap);
+                }
                 const key = `${hi.product_code}|${hi.hardware_category}`;
                 const existing = aggMap.get(key);
                 if (existing) {
@@ -751,12 +762,26 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
                   });
                 }
               }
-              return {
+              // #311: a null-leaf bucket is legitimate for a single door (every item is leaf-null ->
+              // one work unit). On a pair (resolved leaves present) a null-leaf item would otherwise
+              // spawn a spurious third work unit; fold it into the lowest resolved leaf instead.
+              const resolvedLeaves = [...byLeaf.keys()].filter((k): k is number => k !== null);
+              const nullBucket = byLeaf.get(null);
+              if (nullBucket && resolvedLeaves.length > 0) {
+                const targetMap = byLeaf.get(Math.min(...resolvedLeaves))!;
+                for (const [key, agg] of nullBucket) {
+                  const existing = targetMap.get(key);
+                  if (existing) existing.quantity += agg.quantity;
+                  else targetMap.set(key, agg);
+                }
+                byLeaf.delete(null);
+              }
+              return Array.from(byLeaf.entries()).map(([leaf, aggMap]) => ({
                 openingNumber: opening.opening_number,
+                leaf,
                 items: Array.from(aggMap.values()),
-              };
+              }));
             })
-            .filter(Boolean)
         : null,
     };
   }, [parsed, project.id, selectedOpenings, purpose, vendorGroups, vendorPOInfo, selectedVendors, unitCostOverrides, orderAsValues, classifications, siteShopClassifications, shippingPRDrafts, sarRequestNumber, canStartFromLatest, hydratedFromPersisted]);

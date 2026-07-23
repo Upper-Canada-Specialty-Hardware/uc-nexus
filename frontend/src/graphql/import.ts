@@ -38,11 +38,13 @@ export const GET_PROJECT_HARDWARE_SCHEDULE = gql`
         headingNo
         singlePair
         assignmentMultiplier
+        leafCount
       }
       hardwareItems {
         openingNumber
         productCode
         materialId
+        leaf
         hardwareCategory
         itemQuantity
         unitCost

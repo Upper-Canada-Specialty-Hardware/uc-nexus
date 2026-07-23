@@ -59,12 +59,16 @@ export interface ParsedOpening {
   heading_no: string | null;
   single_pair: string | null;
   assignment_multiplier: string | null;
+  // Number of door leaves (#311): 1 (single) or 2 (pair). The "N of M leaves shipped" denominator.
+  leaf_count: number;
 }
 
 export interface ParsedHardwareItem {
   opening_number: string;
   product_code: string;
   material_id: string;
+  // Door leaf this item belongs to (#311): 1 or 2, or null for frames / unknown.
+  leaf: number | null;
   hardware_category: string;
   item_quantity: number;
   unit_cost: number | null;

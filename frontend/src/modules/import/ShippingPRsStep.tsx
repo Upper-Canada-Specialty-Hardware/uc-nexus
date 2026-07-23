@@ -108,6 +108,8 @@ export default function ShippingPRsStep({
                   }
                   label={
                     <Typography variant="body2">
+                      {/* No leaf label: loose PR items are aggregated leaf-agnostically (leaf-collapsed,
+                          first-wins), so a shown leaf would misrepresent qty spanning both leaves. */}
                       Opening: {hi.opening_number} | Product: {hi.product_code} | Category:{' '}
                       {hi.hardware_category} | Qty: {hi.item_quantity}
                     </Typography>
