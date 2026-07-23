@@ -548,9 +548,14 @@ def get_shipping_out_requests(
     session: Session,
     project_id: uuid.UUID | None = None,
     status: ShippingOutRequestStatus | None = None,
+    reopenable_only: bool = False,
 ) -> list[ShippingOutRequest]:
     """List shipping-out requests for the accept UI (#293). Defaults to PENDING when no status is
-    given. Items are eagerly loaded (shipping_out_request_to_type walks them)."""
+    given. Items are eagerly loaded (shipping_out_request_to_type walks them).
+
+    reopenable_only (#325): keep only requests still in the reopen window - their minted warehouse
+    PullRequest is still PENDING (the warehouse has not started the pull). The Approved view passes this
+    so it lists exactly the requests Reopen can act on, not every request ever accepted."""
     effective_status = status if status is not None else ShippingOutRequestStatus.PENDING
     stmt = (
         select(ShippingOutRequest)
@@ -560,6 +565,10 @@ def get_shipping_out_requests(
     )
     if project_id is not None:
         stmt = stmt.where(ShippingOutRequest.project_id == project_id)
+    if reopenable_only:
+        stmt = stmt.join(PullRequestModel, ShippingOutRequest.pull_request_id == PullRequestModel.id).where(
+            PullRequestModel.status == PullRequestStatus.PENDING
+        )
     return list(session.scalars(stmt).unique().all())
 
 
@@ -638,4 +647,35 @@ def reject_shipping_out_request(
     req.rejected_by = rejected_by
     req.rejection_reason = (reason or "").strip() or None
     req.rejected_at = datetime.utcnow()
+    return req
+
+
+def reopen_shipping_out_request(
+    session: Session,
+    request_id: uuid.UUID,
+) -> ShippingOutRequest:
+    """Reopen an APPROVED shipping-out request back to PENDING (#325): undo an erroneous accept by
+    hard-deleting the warehouse PullRequest the accept minted (and its items), unlinking it, and
+    flipping the request back to PENDING so it can be re-accepted or rejected. Only allowed while the
+    minted PR is still PENDING - if the warehouse has already approved/completed it, inventory has
+    moved and the reopen is refused (see discard_pending_pull_request)."""
+    from app.repositories import warehouse as warehouse_repository
+
+    req = session.scalars(select(ShippingOutRequest).where(ShippingOutRequest.id == request_id)).first()
+    if req is None:
+        raise NotFoundError(f"Shipping-out request {request_id} not found")
+    if req.status != ShippingOutRequestStatus.APPROVED:
+        raise InvalidStateTransitionError(f"Shipping-out request must be Approved to reopen, got {req.status.value}")
+
+    # Unlink the request and flush BEFORE discarding the PR, so deleting it does not trip the
+    # shipping_out_requests.pull_request_id foreign key. discard_pending_pull_request still guards that
+    # the PR is unworked (PENDING) and rolls the whole transaction back (nothing commits) if not.
+    pr_id = req.pull_request_id
+    req.status = ShippingOutRequestStatus.PENDING
+    req.approved_by = None
+    req.approved_at = None
+    req.pull_request_id = None
+    session.flush()
+
+    warehouse_repository.discard_pending_pull_request(session, pr_id)
     return req

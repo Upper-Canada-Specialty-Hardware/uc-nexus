@@ -75,8 +75,8 @@ export const CONFIRM_SHIPMENT = gql`
 `;
 
 export const GET_SHIPPING_OUT_REQUESTS = gql`
-  query GetShippingOutRequests($projectId: ID, $status: ShippingOutRequestStatus) {
-    shippingOutRequests(projectId: $projectId, status: $status) {
+  query GetShippingOutRequests($projectId: ID, $status: ShippingOutRequestStatus, $reopenableOnly: Boolean) {
+    shippingOutRequests(projectId: $projectId, status: $status, reopenableOnly: $reopenableOnly) {
       id
       requestNumber
       projectId
@@ -107,6 +107,15 @@ export const ACCEPT_SHIPPING_OUT_REQUEST = gql`
 export const REJECT_SHIPPING_OUT_REQUEST = gql`
   mutation RejectShippingOutRequest($id: ID!, $rejectedBy: String!, $reason: String) {
     rejectShippingOutRequest(id: $id, rejectedBy: $rejectedBy, reason: $reason) {
+      id
+      status
+    }
+  }
+`;
+
+export const REOPEN_SHIPPING_OUT_REQUEST = gql`
+  mutation ReopenShippingOutRequest($id: ID!) {
+    reopenShippingOutRequest(id: $id) {
       id
       status
     }
