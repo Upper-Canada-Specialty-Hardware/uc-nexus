@@ -47,6 +47,7 @@ from .pull_requests import (
     approve_pull_request,
     check_inventory_sufficiency,
     complete_pull_request,
+    discard_pending_pull_request,
     get_pull_request_details,
     get_pull_requests,
 )
@@ -72,6 +73,7 @@ __all__ = [
     "check_inventory_sufficiency",
     "complete_pull_request",
     "create_receive",
+    "discard_pending_pull_request",
     "get_audit_log",
     "get_back_ordered_items",
     "get_distinct_location_values",
