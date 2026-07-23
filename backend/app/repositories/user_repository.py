@@ -7,6 +7,10 @@ from app.errors import AppError
 
 CLERK_API_BASE = "https://api.clerk.com/v1"
 
+# Roles that make a user a shop-assembly team member (#330): assignable work in the shop-assembly
+# module. A manager can assign to a plain user or to another manager.
+SHOP_ASSEMBLY_ROLES = ("Shop Assembly User", "Shop Assembly Manager")
+
 _client = httpx.Client(base_url=CLERK_API_BASE, timeout=30.0)
 
 
@@ -78,6 +82,14 @@ def list_users() -> list[dict]:
         offset += limit
 
     return users
+
+
+def list_shop_assembly_members() -> list[dict]:
+    """Shop-assembly team members (#330): the subset of Clerk users holding a shop-assembly role,
+    for the manager assignment picker. Reuses list_users() and filters client-side to keep one
+    source of the user summary shape."""
+    members = set(SHOP_ASSEMBLY_ROLES)
+    return [u for u in list_users() if members.intersection(u["roles"])]
 
 
 def get_user(user_id: str) -> dict:

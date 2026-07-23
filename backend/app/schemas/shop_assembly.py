@@ -4,21 +4,22 @@ import uuid
 
 import strawberry
 
-from app.auth import require_user
+from app.auth import SHOP_ASSEMBLY_MANAGER_ROLE, require_role, require_user
 from app.database import SessionLocal
 from app.errors import InventoryShortfallError
-from app.repositories import shop_assembly_repository
+from app.repositories import shop_assembly_repository, user_repository
 from app.repositories import warehouse as warehouse_repository
 from app.services import notification_service
 
 from .converters import (
+    clerk_user_to_type,
     opening_item_to_type,
     shop_assembly_opening_to_type,
     shop_assembly_request_to_type,
 )
 from .enums import ShopAssemblyRequestStatus
 from .inputs import AssignOpeningsInput, CompleteOpeningInput
-from .types import OpeningItem, ShopAssemblyOpening, ShopAssemblyRequest
+from .types import ClerkUser, OpeningItem, ShopAssemblyOpening, ShopAssemblyRequest
 
 
 @strawberry.type
@@ -49,6 +50,13 @@ class ShopAssemblyQueries:
                 session, uuid.UUID(str(project_id)) if project_id else None, status
             )
             return [shop_assembly_request_to_type(r) for r in reqs]
+
+    @strawberry.field
+    def shop_assembly_members(self, info: strawberry.Info) -> list[ClerkUser]:
+        """Shop-assembly team members for the manager assignment picker (#330). Manager-gated: only
+        a Shop Assembly Manager may enumerate members and assign pulled openings to them."""
+        require_role(info, SHOP_ASSEMBLY_MANAGER_ROLE)
+        return [clerk_user_to_type(u) for u in user_repository.list_shop_assembly_members()]
 
 
 @strawberry.type

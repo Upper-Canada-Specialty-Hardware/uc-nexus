@@ -20,6 +20,7 @@ from app.errors import AppError
 from app.repositories import user_repository
 
 ADMIN_ROLE = "Admin/Manager"
+SHOP_ASSEMBLY_MANAGER_ROLE = "Shop Assembly Manager"
 
 _CLERK_JWKS_URL = "https://api.clerk.com/v1/jwks"
 _JWKS_TTL_SECONDS = 3600.0
@@ -146,4 +147,24 @@ def require_admin(info) -> dict:
     roles = user_repository.get_user_roles(user_id)
     if ADMIN_ROLE not in roles:
         raise ForbiddenError("Admin/Manager role required")
+    return {"user_id": user_id, "roles": roles}
+
+
+def require_role(info, role: str) -> dict:
+    """Enforce that the caller holds a specific role (looked up via the Clerk Backend API, like
+    require_admin). Returns {user_id, roles}. Use for role-gated resolvers other than Admin/Manager,
+    e.g. the shop-assembly manager assignment tools (#330)."""
+    request = info.context["request"]
+    token = _bearer_token(request)
+    if not token:
+        raise AuthError("Authentication required")
+
+    claims = verify_clerk_token(token)
+    user_id = claims.get("sub")
+    if not user_id:
+        raise AuthError("Authentication token has no subject")
+
+    roles = user_repository.get_user_roles(user_id)
+    if role not in roles:
+        raise ForbiddenError(f"{role} role required")
     return {"user_id": user_id, "roles": roles}
