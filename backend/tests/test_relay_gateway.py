@@ -198,6 +198,32 @@ def test_note_hello_records_build_and_op_set():
     assert gateway.build == "relay-v0.1.0-build.30"
 
 
+def test_note_hello_ignores_a_malformed_frame_without_raising():
+    # The hello frame is untrusted wire input. A non-str build is dropped; a non-list op-set (or one with
+    # non-str entries) is treated as 'unknown' rather than turned into a set of characters - otherwise
+    # ops='list_vendors' would become {'l','i',...} and proactively reject every real op. It must not raise.
+    async def run():
+        gateway = RelayGateway()
+        ws = FakeWebSocket()
+        gateway.try_register("TUBC", ws)
+        gateway.note_hello(123, "list_vendors")  # build is an int, ops is a bare string
+        assert gateway.build is None  # non-str build dropped
+
+        # op-set unknown -> proactive check skipped, so a real op is NOT rejected outright; it reaches
+        # the wire and the relay answers it (proving _ops is not a set of characters).
+        async def responder():
+            while not ws.sent:
+                await asyncio.sleep(0)
+            gateway.resolve({"id": ws.sent[0]["id"], "ok": True, "result": {"vendors": []}})
+
+        responder_task = asyncio.create_task(responder())
+        result = await gateway.relay_call("TUBC", "list_vendors", timeout=1)
+        await responder_task
+        assert result == {"vendors": []}
+
+    asyncio.run(run())
+
+
 def test_try_register_and_unregister_clear_the_advertised_build():
     gateway = RelayGateway()
     ws = FakeWebSocket()

@@ -90,14 +90,19 @@ class RelayGateway:
             self._heartbeat_armed = False
             self._fail_all("relay disconnected")
 
-    def note_hello(self, build: str | None, ops: list[str] | None) -> None:
+    def note_hello(self, build: object, ops: object) -> None:
         """Called by the route's read loop for the relay's one {"type": "hello", build, ops} frame,
         sent right after it connects (issue #315). Records the build tag and op-set so relay_call can
         reject an unsupported op before the round-trip and RelayStatus can report the live build. Only
-        honoured for the currently-registered socket."""
+        honoured for the currently-registered socket.
+
+        The frame is untrusted wire input, so both fields are shape-checked: only a str build and a
+        list-of-str op-set are accepted. A malformed op-set (a bare string would otherwise become a set
+        of characters and reject every real op; a non-iterable would raise inside the read loop) is
+        treated as 'unknown' (None), so relay_call falls back to the reactive unknown_op mapping."""
         if self._socket is not None:
-            self._build = build
-            self._ops = frozenset(ops) if ops is not None else None
+            self._build = build if isinstance(build, str) else None
+            self._ops = frozenset(ops) if isinstance(ops, list) and all(isinstance(o, str) for o in ops) else None
 
     def note_pong(self) -> None:
         """Called by the route's read loop for each {"type": "pong"} the relay sends. Clears the miss
