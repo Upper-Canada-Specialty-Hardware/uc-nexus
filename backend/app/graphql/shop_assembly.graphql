@@ -80,6 +80,8 @@ type Query {
   myWork(assignedToUserId: String!): [ShopAssemblyOpening!]!
   # Accept UI (#293): shop-assembly requests, PENDING by default.
   shopAssemblyRequests(projectId: ID, status: ShopAssemblyRequestStatus): [ShopAssemblyRequest!]!
+  # Manager assignment picker (#330). Manager-gated (Shop Assembly Manager). ClerkUser in user.graphql.
+  shopAssemblyMembers: [ClerkUser!]!
 }
 
 type Mutation {

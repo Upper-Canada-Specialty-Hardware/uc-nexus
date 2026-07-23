@@ -26,6 +26,7 @@ import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
 import { leafSuffix } from '../../utils/leaf';
 import AssemblyDetailModal from './AssemblyDetailModal';
+import ManagerAssignPanel from './ManagerAssignPanel';
 
 interface OpeningItem {
   id: string;
@@ -158,7 +159,8 @@ function DroppablePanel({
 }
 export default function AssignmentBoard() {
   const { showToast } = useToast();
-  const { displayName, userId } = useIdentity();
+  const { displayName, userId, hasRole } = useIdentity();
+  const isManager = hasRole('Shop Assembly Manager');
   const [activeOpening, setActiveOpening] = useState<AssembleOpening | null>(null);
   // Opening whose completion modal is open (reuses the same checklist modal as My Work).
   const [completing, setCompleting] = useState<AssembleOpening | null>(null);
@@ -273,6 +275,8 @@ export default function AssignmentBoard() {
       <Typography variant='body2' color='text.secondary' sx={{ mb: 2 }}>
         Claim a pulled opening with "Assign to me" (or drag it across), then complete its assembly here or from My Work.
       </Typography>
+
+      {isManager && <ManagerAssignPanel />}
 
       <DndContext
         sensors={sensors}
