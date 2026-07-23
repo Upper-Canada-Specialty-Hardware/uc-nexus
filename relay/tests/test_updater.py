@@ -44,9 +44,19 @@ def test_latest_release_picks_highest_build_not_list_order(monkeypatch):
     # regression: GitHub's /releases list is NOT reliably newest-first. Pick by build number, not position.
     payload = [
         {"tag_name": "some-other-v1", "assets": []},
-        {"tag_name": "relay-v0.1.0-build.9", "assets": [{"name": "ucnexus-relay.zip", "browser_download_url": "https://x/b9.zip"}]},
-        {"tag_name": "relay-v0.1.0-build.8", "assets": [{"name": "ucnexus-relay.zip", "browser_download_url": "https://x/b8.zip"}]},
-        {"tag_name": "relay-v0.1.0-build.10", "assets": [{"name": "ucnexus-relay.zip", "browser_download_url": "https://x/b10.zip"}], "published_at": "t10"},
+        {
+            "tag_name": "relay-v0.1.0-build.9",
+            "assets": [{"name": "ucnexus-relay.zip", "browser_download_url": "https://x/b9.zip"}],
+        },
+        {
+            "tag_name": "relay-v0.1.0-build.8",
+            "assets": [{"name": "ucnexus-relay.zip", "browser_download_url": "https://x/b8.zip"}],
+        },
+        {
+            "tag_name": "relay-v0.1.0-build.10",
+            "assets": [{"name": "ucnexus-relay.zip", "browser_download_url": "https://x/b10.zip"}],
+            "published_at": "t10",
+        },
     ]
     monkeypatch.setattr(updater.urllib.request, "urlopen", lambda *a, **k: _Resp(payload))
     r = updater.latest_release()
@@ -56,7 +66,9 @@ def test_latest_release_picks_highest_build_not_list_order(monkeypatch):
 
 def test_latest_release_requires_the_zip_bundle(monkeypatch):
     # a release with only the old onefile exe asset (no zip bundle) does not count
-    payload = [{"tag_name": "relay-v0.1.0-build.9", "assets": [{"name": "ucnexus-relay.exe", "browser_download_url": "u"}]}]
+    payload = [
+        {"tag_name": "relay-v0.1.0-build.9", "assets": [{"name": "ucnexus-relay.exe", "browser_download_url": "u"}]}
+    ]
     monkeypatch.setattr(updater.urllib.request, "urlopen", lambda *a, **k: _Resp(payload))
     assert updater.latest_release() == {}
 
@@ -199,7 +211,9 @@ def test_apply_staged_update_circuit_breaker_gives_up(tmp_path, monkeypatch):
     _seed_staged(tmp_path, attempts=updater.MAX_ATTEMPTS)  # next run is attempt MAX+1
     monkeypatch.setattr(updater, "_update_logger", lambda d: _LOG)
     relaunches = []
-    monkeypatch.setattr(updater, "_relaunch_and_wait_healthy", lambda d, deadline, log, attempts=2: relaunches.append(attempts) or True)
+    monkeypatch.setattr(
+        updater, "_relaunch_and_wait_healthy", lambda d, deadline, log, attempts=2: relaunches.append(attempts) or True
+    )
 
     def _no_repoint(*a, **k):
         raise AssertionError("circuit breaker must trip before repointing")
@@ -234,7 +248,9 @@ def test_apply_staged_update_missing_staged_version(tmp_path, monkeypatch):
     _seed_staged(tmp_path, make_new=False)  # the ledger's target_dir doesn't exist
     monkeypatch.setattr(updater, "_update_logger", lambda d: _LOG)
     relaunches = []
-    monkeypatch.setattr(updater, "_relaunch_and_wait_healthy", lambda d, deadline, log, attempts=2: relaunches.append(1) or True)
+    monkeypatch.setattr(
+        updater, "_relaunch_and_wait_healthy", lambda d, deadline, log, attempts=2: relaunches.append(1) or True
+    )
 
     r = updater.apply_staged_update(4242, tmp_path)
 
@@ -251,6 +267,31 @@ def test_kill_relay_pids_uses_pid_not_image_name(tmp_path, monkeypatch):
     updater._kill_relay_pids(4242, tmp_path, _LOG)
 
     assert killed == [4242, 9001]  # app pid + serve pid, both by pid (never taskkill /im)
+
+
+# --- _wait_for_health ---------------------------------------------------------------------------------
+
+
+def test_wait_for_health_returns_true_on_ok(monkeypatch):
+    monkeypatch.setattr(updater.urllib.request, "urlopen", lambda *a, **k: _Resp({"status": "ok"}))
+    monkeypatch.setattr(updater, "_monotonic", lambda: 0.0)  # always before the deadline
+    assert updater._wait_for_health("http://127.0.0.1:7321/health", 5.0) is True
+
+
+def test_wait_for_health_swallows_a_probe_error_instead_of_crashing(monkeypatch):
+    # regression #318: a frozen build missing the `idna` text codec made getaddrinfo raise
+    # `LookupError: unknown encoding: idna`, which the probe did NOT catch (only OSError/JSONDecodeError),
+    # so it propagated out of the detached update helper as an unhandled traceback. ANY probe error must be
+    # treated as "not up yet" and time out to False - never crash the helper.
+    def _boom(*a, **k):
+        raise LookupError("unknown encoding: idna")
+
+    monkeypatch.setattr(updater.urllib.request, "urlopen", _boom)
+    monkeypatch.setattr(updater, "_sleep", lambda s: None)
+    ticks = [0.0, 1.0, 2.0]  # three probes, then the next monotonic check is past the deadline
+    monkeypatch.setattr(updater, "_monotonic", lambda: ticks.pop(0) if ticks else 999.0)
+
+    assert updater._wait_for_health("http://127.0.0.1:7321/health", 5.0) is False
 
 
 # --- _relaunch_and_wait_healthy -----------------------------------------------------------------------
@@ -312,7 +353,9 @@ def test_apply_staged_update_rolls_back_when_the_repoint_fails(tmp_path, monkeyp
 
     monkeypatch.setattr(layout, "repoint_current", _repoint)
     relaunched = []
-    monkeypatch.setattr(updater, "_relaunch_and_wait_healthy", lambda d, deadline, log, attempts=2: relaunched.append(1) or True)
+    monkeypatch.setattr(
+        updater, "_relaunch_and_wait_healthy", lambda d, deadline, log, attempts=2: relaunched.append(1) or True
+    )
 
     r = updater.apply_staged_update(4242, tmp_path)
 

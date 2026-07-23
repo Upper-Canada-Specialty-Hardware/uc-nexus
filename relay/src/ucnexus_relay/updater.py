@@ -39,13 +39,13 @@ _MIN_EXE_BYTES = 5_000_000  # the extracted exe
 
 # --- self-update helper bounds ------------------------------------------------------------------------
 _STATE_FILE = "update-state.json"  # the attempt ledger the helper reads/writes and the UI surfaces
-_CANCEL_FLAG = "update-cancel"     # touched by a user-initiated shutdown to abort an in-flight update
-_UPDATE_LOG = "update.log"         # the helper's own log, next to config.toml
+_CANCEL_FLAG = "update-cancel"  # touched by a user-initiated shutdown to abort an in-flight update
+_UPDATE_LOG = "update.log"  # the helper's own log, next to config.toml
 _DOWNLOAD_NAME = "ucnexus-relay-download.zip"
-MAX_ATTEMPTS = 3                   # circuit breaker: give up on a target build after this many helper runs
-_GLOBAL_DEADLINE_SECONDS = 90.0    # hard wall-clock cap on the whole sequence
-_APP_EXIT_WAIT_SECONDS = 20.0      # how long to wait for the app to exit on its own before force-killing
-_HEALTH_WAIT_PER_ATTEMPT = 25.0    # per relaunch attempt, how long to wait for /health before retrying
+MAX_ATTEMPTS = 3  # circuit breaker: give up on a target build after this many helper runs
+_GLOBAL_DEADLINE_SECONDS = 90.0  # hard wall-clock cap on the whole sequence
+_APP_EXIT_WAIT_SECONDS = 20.0  # how long to wait for the app to exit on its own before force-killing
+_HEALTH_WAIT_PER_ATTEMPT = 25.0  # per relaunch attempt, how long to wait for /health before retrying
 _POLL_SECONDS = 0.5
 
 _DETACHED_PROCESS = 0x00000008  # DETACHED alone (never paired with CREATE_NO_WINDOW - see stage/_spawn)
@@ -304,7 +304,10 @@ def _wait_for_health(url: str, deadline: float) -> bool:
             with urllib.request.urlopen(url, timeout=2) as r:  # noqa: S310 (localhost health URL)
                 if json.loads(r.read().decode()).get("status") == "ok":
                     return True
-        except (OSError, json.JSONDecodeError):
+        except Exception:  # noqa: BLE001 - the probe's ONLY job is "is it up yet?"; ANY failure (connection
+            # refused, a partial body, or a missing text codec like #318's `LookupError: unknown encoding:
+            # idna`) means not-up-yet. Swallow it and retry within the deadline rather than letting it
+            # propagate out of the detached update helper as an unhandled traceback (the #318 crash).
             pass
         _sleep(2.0)
     return False
@@ -418,7 +421,9 @@ def apply_staged_update(app_pid, install_dir: str | Path) -> dict:
     log.info("update-apply start: target=%s attempt=%s app_pid=%s", target, attempts, app_pid)
 
     if attempts > MAX_ATTEMPTS:
-        return _give_up(install_dir, log, f"gave up after {MAX_ATTEMPTS} attempts to update to {target}; reboot and retry")
+        return _give_up(
+            install_dir, log, f"gave up after {MAX_ATTEMPTS} attempts to update to {target}; reboot and retry"
+        )
 
     if _cancel_requested(install_dir):
         log.info("cancel requested before apply; aborting without relaunch")

@@ -14,6 +14,13 @@ hiddenimports = collect_submodules("uvicorn") + [
     "pythonjsonlogger",
     "pythonjsonlogger.jsonlogger",
     "clr",  # pythonnet's runtime import name (the `ui` window loads the WebView2 backend through it)
+    # The `idna` text codec is loaded LAZILY by the codec registry the first time socket.getaddrinfo()
+    # has to encode a hostname that isn't compact-ASCII. Static analysis can't see that lazy codec import,
+    # so it was left out of the bundle and the self-update health probe crashed the detached update helper
+    # with `LookupError: unknown encoding: idna` (issue #318). Name it explicitly; PyInstaller then follows
+    # its stringprep/unicodedata deps. Listed alongside stringprep as belt-and-braces.
+    "encodings.idna",
+    "stringprep",
 ]
 
 # The `ui` subcommand's native window (pywebview) reaches the Edge WebView2 backend through pythonnet/clr.
