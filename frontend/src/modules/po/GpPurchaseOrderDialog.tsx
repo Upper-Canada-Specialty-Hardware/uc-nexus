@@ -235,11 +235,15 @@ export default function GpPurchaseOrderDialog({
   const gpVendorCurrency = gpVendors.find((v) => v.vendorId === gpVendorId)?.currency ?? 'CAD';
   const isForeignCurrency = isRegister && !!gpVendorId && gpVendorCurrency !== 'CAD';
 
-  // Issue #315: the live tax-detail dropdown fails when the connected relay is too old to serve
-  // list_tax_details (RELAY_OP_UNSUPPORTED). Rather than leave the dropdown silently disabled, auto-fall
-  // back to manual entry of the GP tax detail id. Also fall back when GP simply returns no purchase tax
-  // details (empty list, once the query has settled), so a CAD PO is never hard-blocked by relay state.
+  // Issue #315: the live tax-detail list can fail to load - the relay is too old to serve
+  // list_tax_details (RELAY_OP_UNSUPPORTED), or it timed out / dropped / errored mid-query. Rather than
+  // leave the dropdown silently disabled, auto-fall back to manual entry of the GP tax detail id.
+  // `taxDetailsFailed` is ANY load error: it's the signal that an empty list can't be trusted to mean
+  // "this company has no purchase tax", so for CAD the manual id becomes REQUIRED (not merely offered) -
+  // otherwise a transient error would let a CAD PO register with no tax. A settled, error-free empty list
+  // is the only case where the tax detail stays optional (that company genuinely defines none).
   const taxDetailsOpUnsupported = isRelayOpUnsupported(gpTaxDetailsError);
+  const taxDetailsFailed = !!gpTaxDetailsError;
   const useManualTaxEntry =
     isRegister && !isForeignCurrency && relayConnected && !gpTaxDetailsLoading && gpTaxDetails.length === 0;
 
@@ -483,13 +487,16 @@ export default function GpPurchaseOrderDialog({
       // PO carries none (the relay blanks the schedule), so require it for CAD only. Only enforce it when
       // the company actually defines purchase tax details - a company with none would otherwise be
       // hard-blocked, since the dropdown is disabled/empty when gpTaxDetails is empty.
-      // Issue #315: when the live list couldn't load because the relay is out of date, require the
-      // manually-entered id instead so the CAD PO still carries tax. A genuinely empty list (no error)
-      // stays optional - that company may simply have no purchase tax details.
-      if (!isForeignCurrency && gpVendorId && !taxDetailId) {
+      // Issue #315: when the live list couldn't load (any error), require the manually-entered id instead
+      // so the CAD PO still carries tax. Trim so a whitespace-only entry doesn't pass here yet submit as
+      // null (handleSubmit trims too). A genuinely empty list (no error) stays optional - that company
+      // may simply have no purchase tax details.
+      if (!isForeignCurrency && gpVendorId && !taxDetailId.trim()) {
         if (gpTaxDetails.length > 0) errs.taxDetail = 'Select a tax detail';
-        else if (taxDetailsOpUnsupported)
-          errs.taxDetail = 'Enter the GP tax detail id - the relay is out of date, so the list could not load';
+        else if (taxDetailsFailed)
+          errs.taxDetail = taxDetailsOpUnsupported
+            ? 'Enter the GP tax detail id - the relay is out of date, so the list could not load'
+            : 'Enter the GP tax detail id - the live list could not load';
       }
     }
     // Issue #156: optional, but a non-empty entry must be a valid non-negative dollar value.
@@ -504,7 +511,7 @@ export default function GpPurchaseOrderDialog({
       errs.tradeDiscount = 'Must be >= 0';
     setErrors(errs);
     return Object.keys(errs).length === 0;
-  }, [lineItems, relayConnected, gpVendorId, isRegister, vendorConfirmed, gpBuyerId, registerProjectAllowed, isJob, costCode, shippingCost, tariffAmount, isForeignCurrency, taxDetailId, gpTaxDetails.length, taxDetailsOpUnsupported, miscellaneous, tradeDiscount]);
+  }, [lineItems, relayConnected, gpVendorId, isRegister, vendorConfirmed, gpBuyerId, registerProjectAllowed, isJob, costCode, shippingCost, tariffAmount, isForeignCurrency, taxDetailId, gpTaxDetails.length, taxDetailsOpUnsupported, taxDetailsFailed, miscellaneous, tradeDiscount]);
 
   const handleSubmit = useCallback(async () => {
     if (!validate()) return;
@@ -880,13 +887,15 @@ export default function GpPurchaseOrderDialog({
             </IconButton>
           </Box>
         </Stack>
-        {/* Issue #315: the connected relay is too old to serve the live tax-detail list. Make it visible
-            (and screenshot-friendly) and point at the fix, while the manual id field below keeps CAD
-            registration unblocked. */}
-        {taxDetailsOpUnsupported && !isForeignCurrency && (
+        {/* Issue #315: the live tax-detail list failed to load. Make it visible (and screenshot-friendly)
+            and point at the fix, while the manual id field below keeps CAD registration unblocked. Gated
+            on useManualTaxEntry so the banner never points at a field that isn't rendered (e.g. after the
+            relay disconnects, which reverts the row to the disabled dropdown). */}
+        {useManualTaxEntry && taxDetailsFailed && (
           <Alert severity="warning" sx={{ mt: 2 }}>
-            The GP relay is out of date and can't load live tax details. Update it (an Admin can check its
-            build under Admin → Relay Installs), or enter the GP tax detail id manually below.
+            {taxDetailsOpUnsupported
+              ? "The GP relay is out of date and can't load live tax details. Update it (an Admin can check its build under Admin → Relay Installs), or enter the GP tax detail id manually below."
+              : 'The live GP tax detail list could not load. Enter the GP tax detail id manually below, or retry.'}
           </Alert>
         )}
         {/* Issue #257: GP currency (read-only, from the vendor), the CAD-only tax detail, and the
@@ -903,9 +912,9 @@ export default function GpPurchaseOrderDialog({
           {/* Issue #315: auto-switch to manual entry when the live dropdown can't serve (relay out of
               date, or GP returned no purchase tax details). The typed id is validated GP-side by the
               relay's create_po (get_tax_detail_percent -> tax_detail_not_found on a bad id). */}
-          {useManualTaxEntry && !isForeignCurrency ? (
+          {useManualTaxEntry ? (
             <TextField
-              label={taxDetailsOpUnsupported ? 'Tax detail id (required)' : 'Tax detail id (manual)'}
+              label={taxDetailsFailed ? 'Tax detail id (required)' : 'Tax detail id (manual)'}
               value={taxDetailId}
               onChange={(e) => setTaxDetailId(e.target.value)}
               size="small"
@@ -915,7 +924,9 @@ export default function GpPurchaseOrderDialog({
                 errors.taxDetail ||
                 (taxDetailsOpUnsupported
                   ? 'Relay out of date - enter the GP tax detail id (e.g. ON HST - P)'
-                  : 'No live GP tax details returned - enter the id manually if this company uses purchase tax')
+                  : taxDetailsFailed
+                    ? 'Live tax details could not load - enter the GP tax detail id (e.g. ON HST - P)'
+                    : 'No live GP tax details returned - enter the id manually if this company uses purchase tax')
               }
             />
           ) : (

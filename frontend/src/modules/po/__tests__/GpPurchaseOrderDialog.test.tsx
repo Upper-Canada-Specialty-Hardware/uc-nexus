@@ -548,6 +548,54 @@ describe('GpPurchaseOrderDialog', () => {
     expect(calls[0]).toMatchObject({ input: { taxDetailId: 'ON HST - P' } });
   });
 
+  it('requires manual tax entry when the live list fails for any reason, and rejects whitespace (issue #315)', async () => {
+    const calls: Record<string, unknown>[] = [];
+    const registerMock: MockedResponse = {
+      request: { query: REGISTER_PO_IN_GP, variables: () => true },
+      result: (vars) => {
+        calls.push(vars as Record<string, unknown>);
+        return { data: registerData() };
+      },
+    };
+    // A transient failure (timeout / dropped / sql_error) - NOT op-unsupported. An empty list here can't
+    // be trusted to mean "company has no purchase tax", so the manual id must be required, not optional.
+    const failedTaxMocks = baseMocks().map((m) =>
+      m.request.query === GET_GP_TAX_DETAILS
+        ? {
+            request: { query: GET_GP_TAX_DETAILS, variables: { company: 'UCS' } },
+            result: {
+              errors: [new GraphQLError('relay did not answer in time', { extensions: { code: 'RELAY_TIMEOUT' } })],
+            },
+            maxUsageCount: INFINITE,
+          }
+        : m,
+    );
+    const { onSubmitted } = renderDialog({ registerPo: stockDraft }, [...failedTaxMocks, registerMock]);
+    await waitForVendorPreselect();
+
+    // Generic (non-out-of-date) banner + a required manual field.
+    expect(await screen.findByText(/The live GP tax detail list could not load/)).toBeInTheDocument();
+    const manualField = screen.getByLabelText('Tax detail id (required)');
+
+    // Empty blocks.
+    fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+    expect(await screen.findByText(/the live list could not load/)).toBeInTheDocument();
+    expect(onSubmitted).not.toHaveBeenCalled();
+
+    // Whitespace-only must NOT slip through as a null tax detail.
+    fireEvent.change(manualField, { target: { value: '   ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+    expect(await screen.findByText(/the live list could not load/)).toBeInTheDocument();
+    expect(calls).toHaveLength(0);
+    expect(onSubmitted).not.toHaveBeenCalled();
+
+    // A real id registers.
+    fireEvent.change(manualField, { target: { value: 'PST 7%' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+    await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
+    expect(calls[0]).toMatchObject({ input: { taxDetailId: 'PST 7%' } });
+  });
+
   it('registers a USD vendor PO with no tax detail (foreign currency, issue #257)', async () => {
     const calls: Record<string, unknown>[] = [];
     const registerMock: MockedResponse = {
