@@ -542,13 +542,17 @@ def list_tax_details(conn) -> list[dict]:
     """Read-only: PURCHASE tax details (TX00201 WHERE TXDTLTYP = 2) for the register-PO tax-detail
     dropdown (issue #257). TXDTLTYP 1 = Sales, 2 = Purchases. TXDTLPCT is the percent the relay uses
     to compute the PO tax. GP-first: the options are whatever the company defines (e.g. BC HST P /
-    ON HST - P / PST 7% in production), never a hardcoded list."""
+    ON HST - P / PST 7% in production), never a hardcoded list.
+
+    The percent column is aliased AS pct, NOT `AS percent`: PERCENT is a reserved SQL Server keyword
+    (TOP n PERCENT), so a bare `AS percent` throws "Incorrect syntax near the keyword 'percent'" and the
+    dropdown never loads (issue #315 follow-up). Matches get_tax_detail_percent below, which aliases pct."""
     rows = conn.cursor().execute(
-        "SELECT RTRIM(TAXDTLID) AS tax_detail_id, RTRIM(TXDTLDSC) AS description, TXDTLPCT AS percent "
+        "SELECT RTRIM(TAXDTLID) AS tax_detail_id, RTRIM(TXDTLDSC) AS description, TXDTLPCT AS pct "
         "FROM dbo.TX00201 WHERE TXDTLTYP = 2 ORDER BY TAXDTLID"
     ).fetchall()
     return [
-        {"tax_detail_id": r.tax_detail_id, "description": r.description or None, "percent": float(r.percent)}
+        {"tax_detail_id": r.tax_detail_id, "description": r.description or None, "percent": float(r.pct)}
         for r in rows
     ]
 
