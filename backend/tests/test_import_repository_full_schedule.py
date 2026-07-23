@@ -442,7 +442,9 @@ def test_sar_queries_work_after_opening_deleted(db_session):
     pr.status = PullRequestStatus.COMPLETED
     sao = db_session.scalar(select(ShopAssemblyOpening).where(ShopAssemblyOpening.pull_request_id == pr.id))
     sao.pull_status = PullStatus.PULLED
-    sao.assigned_to = "tester"
+    # my_work keys on the stable user id (#324); assigned_to is the display name.
+    sao.assigned_to_user_id = "tester"
+    sao.assigned_to = "Tester Name"
     db_session.flush()
 
     # Re-upload removing A01
@@ -471,6 +473,67 @@ def test_sar_queries_work_after_opening_deleted(db_session):
     my_work_rows = shop_assembly_repository.get_my_work(db_session, "tester")
     assert len(my_work_rows) == 1
     assert my_work_rows[0].opening_number == "A01"
+
+
+def _pulled_opening(db_session, project, opening_number="A01"):
+    """Drive one shop-assembly opening to a PULLED, unassigned, PENDING state and return its row."""
+    req_number = f"SA-{uuid.uuid4().hex[:6]}"
+    result = import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening_input(opening_number)],
+            "hardware_items": [],
+            "include_shop_assembly_request": True,
+            "shop_assembly_request_number": req_number,
+            "shop_assembly_openings": [
+                {
+                    "opening_number": opening_number,
+                    "items": [{"hardware_category": "HINGE", "product_code": "HG-100", "quantity": 1}],
+                },
+            ],
+        },
+    )
+    db_session.flush()
+    shop_assembly_repository.accept_shop_assembly_request(db_session, result["shop_assembly_request"].id, "acceptor")
+    db_session.flush()
+    pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == req_number))
+    pr.status = PullRequestStatus.COMPLETED
+    sao = db_session.scalar(select(ShopAssemblyOpening).where(ShopAssemblyOpening.pull_request_id == pr.id))
+    sao.pull_status = PullStatus.PULLED
+    db_session.flush()
+    return sao
+
+
+def test_assign_and_my_work_key_on_stable_user_id(db_session):
+    """#324: assignment stores the stable user id + display name; my_work filters on the user id,
+    NOT the display name - the exact mismatch that broke the e2e when assigning by raw id."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, product_code="HG-100", quantity=1)
+    db_session.commit()
+
+    sao = _pulled_opening(db_session, project)
+
+    shop_assembly_repository.assign_openings(
+        db_session, [sao.id], assigned_to_user_id="user_clerk_123", assigned_to_name="Jane Doe"
+    )
+    db_session.flush()
+    db_session.refresh(sao)
+    assert sao.assigned_to_user_id == "user_clerk_123"
+    assert sao.assigned_to == "Jane Doe"
+
+    # my_work resolves by the stable id...
+    assert len(shop_assembly_repository.get_my_work(db_session, "user_clerk_123")) == 1
+    # ...and NOT by the display name (the pre-#324 key).
+    assert shop_assembly_repository.get_my_work(db_session, "Jane Doe") == []
+
+    # Returning it to the pool clears both fields, so it drops off my_work.
+    shop_assembly_repository.remove_opening_from_user(db_session, sao.id)
+    db_session.flush()
+    db_session.refresh(sao)
+    assert sao.assigned_to_user_id is None
+    assert sao.assigned_to is None
+    assert shop_assembly_repository.get_my_work(db_session, "user_clerk_123") == []
 
 
 def test_existing_openings_updated_on_replace(db_session):

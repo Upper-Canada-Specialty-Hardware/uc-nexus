@@ -21,6 +21,7 @@ interface MyWorkOpening {
   shopAssemblyRequestId: string;
   openingId: string;
   pullStatus: string;
+  assignedToUserId: string | null;
   assignedTo: string | null;
   assemblyStatus: string;
   completedAt: string | null;
@@ -50,11 +51,13 @@ const columns: GridColDef[] = [
 ];
 
 export default function MyWorkPage() {
-  const { displayName } = useIdentity();
+  const { displayName, userId } = useIdentity();
   const [selectedOpening, setSelectedOpening] = useState<MyWorkOpening | null>(null);
 
   const { data, loading, refetch } = useQuery<{ myWork: MyWorkOpening[] }>(GET_MY_WORK, {
-    variables: { assignedTo: displayName },
+    // Filter on the stable Clerk user id (#324); skip until Clerk has resolved it.
+    variables: { assignedToUserId: userId },
+    skip: !userId,
   });
 
   const rows = useMemo(() => data?.myWork ?? [], [data]);

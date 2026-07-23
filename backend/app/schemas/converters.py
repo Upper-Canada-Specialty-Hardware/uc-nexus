@@ -471,6 +471,7 @@ def shop_assembly_opening_to_type(opening) -> ShopAssemblyOpening:
         pull_request_id=(strawberry.ID(str(opening.pull_request_id)) if opening.pull_request_id else None),
         opening_id=strawberry.ID(str(opening.opening_id)),
         pull_status=opening.pull_status,
+        assigned_to_user_id=opening.assigned_to_user_id,
         assigned_to=opening.assigned_to,
         assembly_status=opening.assembly_status,
         completed_at=opening.completed_at,

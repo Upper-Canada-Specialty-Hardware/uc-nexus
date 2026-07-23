@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, type ReactNode } from 'react';
 import {
   Box,
   Typography,
@@ -6,6 +6,7 @@ import {
   Chip,
   Stack,
   Grid,
+  Button,
 } from '@mui/material';
 import {
   DndContext,
@@ -24,6 +25,7 @@ import { GET_ASSEMBLE_LIST, ASSIGN_OPENINGS, REMOVE_OPENING_FROM_USER } from '..
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
 import { leafSuffix } from '../../utils/leaf';
+import AssemblyDetailModal from './AssemblyDetailModal';
 
 interface OpeningItem {
   id: string;
@@ -38,6 +40,7 @@ interface AssembleOpening {
   shopAssemblyRequestId: string;
   openingId: string;
   pullStatus: string;
+  assignedToUserId: string | null;
   assignedTo: string | null;
   assemblyStatus: string;
   completedAt: string | null;
@@ -48,7 +51,15 @@ interface AssembleOpening {
   items: OpeningItem[];
 }
 
-function DraggableCard({ opening, isDragOverlay }: { opening: AssembleOpening; isDragOverlay?: boolean }) {
+function DraggableCard({
+  opening,
+  isDragOverlay,
+  actions,
+}: {
+  opening: AssembleOpening;
+  isDragOverlay?: boolean;
+  actions?: ReactNode;
+}) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: opening.id,
     data: { opening },
@@ -91,6 +102,12 @@ function DraggableCard({ opening, isDragOverlay }: { opening: AssembleOpening; i
             {[opening.building, opening.floor].filter(Boolean).join(' / ')}
           </Typography>
         )}
+        {!isDragOverlay && actions && (
+          // Stop pointer-down from reaching the drag sensor so buttons click instead of drag.
+          <Box sx={{ mt: 1 }} onPointerDown={(e) => e.stopPropagation()}>
+            {actions}
+          </Box>
+        )}
       </Paper>
     </Box>
   );
@@ -101,12 +118,14 @@ function DroppablePanel({
   openings,
   emptyText,
   color,
+  renderActions,
 }: {
   id: string;
   title: string;
   openings: AssembleOpening[];
   emptyText: string;
   color?: string;
+  renderActions?: (opening: AssembleOpening) => ReactNode;
 }) {
   const { isOver, setNodeRef } = useDroppable({ id });
 
@@ -131,7 +150,7 @@ function DroppablePanel({
         </Typography>
       ) : (
         openings.map((opening) => (
-          <DraggableCard key={opening.id} opening={opening} />
+          <DraggableCard key={opening.id} opening={opening} actions={renderActions?.(opening)} />
         ))
       )}
     </Paper>
@@ -139,8 +158,10 @@ function DroppablePanel({
 }
 export default function AssignmentBoard() {
   const { showToast } = useToast();
-  const { displayName } = useIdentity();
+  const { displayName, userId } = useIdentity();
   const [activeOpening, setActiveOpening] = useState<AssembleOpening | null>(null);
+  // Opening whose completion modal is open (reuses the same checklist modal as My Work).
+  const [completing, setCompleting] = useState<AssembleOpening | null>(null);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } })
@@ -178,21 +199,42 @@ export default function AssignmentBoard() {
       openings.filter(
         (o) =>
           o.pullStatus === 'PULLED' &&
-          o.assignedTo === null &&
+          o.assignedToUserId === null &&
           o.assemblyStatus === 'PENDING'
       ),
     [openings]
   );
 
+  // "Assigned" shows only what THIS user has claimed (keyed on the stable user id, #324),
+  // not everything assigned to anyone.
   const assigned = useMemo(
     () =>
       openings.filter(
         (o) =>
           o.pullStatus === 'PULLED' &&
-          o.assignedTo !== null &&
+          o.assignedToUserId === userId &&
           o.assemblyStatus === 'PENDING'
       ),
-    [openings]
+    [openings, userId]
+  );
+
+  const claim = useCallback(
+    (opening: AssembleOpening) => {
+      if (!userId) {
+        showToast('Still signing in - try again in a moment', 'error');
+        return;
+      }
+      assignOpenings({
+        variables: {
+          input: {
+            openingIds: [opening.id],
+            assignedToUserId: userId,
+            assignedTo: displayName,
+          },
+        },
+      });
+    },
+    [assignOpenings, userId, displayName, showToast]
   );
 
   const handleDragStart = useCallback((event: DragStartEvent) => {
@@ -210,30 +252,26 @@ export default function AssignmentBoard() {
       if (!opening) return;
 
       const droppedOn = over.id as string;
-      const isCurrentlyAssigned = opening.assignedTo !== null;
+      const isCurrentlyAssigned = opening.assignedToUserId !== null;
 
       if (droppedOn === 'assigned' && !isCurrentlyAssigned) {
-        assignOpenings({
-          variables: {
-            input: {
-              openingIds: [opening.id],
-              assignedTo: displayName,
-            },
-          },
-        });
+        claim(opening);
       } else if (droppedOn === 'available' && isCurrentlyAssigned) {
         removeOpening({
           variables: { openingId: opening.id },
         });
       }
     },
-    [assignOpenings, removeOpening, displayName]
+    [claim, removeOpening]
   );
 
   return (
     <Box>
       <Typography variant='h5' gutterBottom>
         Opening Assignment Board
+      </Typography>
+      <Typography variant='body2' color='text.secondary' sx={{ mb: 2 }}>
+        Claim a pulled opening with "Assign to me" (or drag it across), then complete its assembly here or from My Work.
       </Typography>
 
       <DndContext
@@ -248,6 +286,11 @@ export default function AssignmentBoard() {
               title='Available Openings (Pulled)'
               openings={available}
               emptyText='No unassigned openings available'
+              renderActions={(opening) => (
+                <Button size='small' variant='contained' onClick={() => claim(opening)}>
+                  Assign to me
+                </Button>
+              )}
             />
           </Grid>
           <Grid size={6}>
@@ -257,6 +300,20 @@ export default function AssignmentBoard() {
               openings={assigned}
               emptyText='Drop openings here to assign'
               color='action.hover'
+              renderActions={(opening) => (
+                <Stack direction='row' spacing={1}>
+                  <Button size='small' variant='contained' onClick={() => setCompleting(opening)}>
+                    Complete
+                  </Button>
+                  <Button
+                    size='small'
+                    variant='outlined'
+                    onClick={() => removeOpening({ variables: { openingId: opening.id } })}
+                  >
+                    Return
+                  </Button>
+                </Stack>
+              )}
             />
           </Grid>
         </Grid>
@@ -267,6 +324,19 @@ export default function AssignmentBoard() {
           ) : null}
         </DragOverlay>
       </DndContext>
+
+      {completing && (
+        <AssemblyDetailModal
+          open={!!completing}
+          opening={completing}
+          onClose={() => setCompleting(null)}
+          onCompleted={() => {
+            setCompleting(null);
+            refetch();
+          }}
+          completedBy={displayName}
+        />
+      )}
     </Box>
   );
 }

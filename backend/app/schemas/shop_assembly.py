@@ -32,9 +32,9 @@ class ShopAssemblyQueries:
             return [shop_assembly_opening_to_type(sao) for sao in saos]
 
     @strawberry.field
-    def my_work(self, assigned_to: str) -> list[ShopAssemblyOpening]:
+    def my_work(self, assigned_to_user_id: str) -> list[ShopAssemblyOpening]:
         with SessionLocal() as session:
-            saos = shop_assembly_repository.get_my_work(session, assigned_to)
+            saos = shop_assembly_repository.get_my_work(session, assigned_to_user_id)
             return [shop_assembly_opening_to_type(sao) for sao in saos]
 
     @strawberry.field
@@ -100,7 +100,9 @@ class ShopAssemblyMutations:
     def assign_openings(self, input: AssignOpeningsInput) -> list[ShopAssemblyOpening]:
         opening_ids = [uuid.UUID(str(oid)) for oid in input.opening_ids]
         with SessionLocal() as session:
-            result = shop_assembly_repository.assign_openings(session, opening_ids, input.assigned_to)
+            result = shop_assembly_repository.assign_openings(
+                session, opening_ids, input.assigned_to_user_id, input.assigned_to
+            )
             session.commit()
             saos = shop_assembly_repository.get_openings_with_items(session, [o.id for o in result])
             return [shop_assembly_opening_to_type(sao) for sao in saos]
