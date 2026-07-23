@@ -429,6 +429,9 @@ class CreateShipmentReturnInput:
 @strawberry.input
 class AssignOpeningsInput:
     opening_ids: list[strawberry.ID] = strawberry.field(default_factory=list)
+    # Stable Clerk user id the openings are claimed by (#324) - the key myWork filters on.
+    assigned_to_user_id: str = ""
+    # Human-readable display name stored alongside for the UI.
     assigned_to: str = ""
 
 

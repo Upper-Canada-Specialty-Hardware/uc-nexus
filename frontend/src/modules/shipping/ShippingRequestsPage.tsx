@@ -1,4 +1,5 @@
-import { Chip, Table, TableHead, TableBody, TableRow, TableCell, Typography } from '@mui/material';
+import { Chip, Table, TableHead, TableBody, TableRow, TableCell, Typography, Alert, Link } from '@mui/material';
+import { Link as RouterLink } from 'react-router-dom';
 import { useQuery } from '@apollo/client/react';
 import {
   GET_SHIPPING_OUT_REQUESTS,
@@ -48,6 +49,15 @@ export default function ShippingRequestsPage({ projectId }: Props) {
       acceptMutation={ACCEPT_SHIPPING_OUT_REQUEST}
       rejectMutation={REJECT_SHIPPING_OUT_REQUEST}
       onChanged={refetch}
+      note={
+        <Alert severity="info">
+          Accepting a request creates a warehouse pull request. Process it under{' '}
+          <Link component={RouterLink} to="/app/warehouse/pull-requests">
+            Warehouse → Pull Requests → Shipping Out
+          </Link>{' '}
+          (Approve and Start, then Mark as Pulled) to move items to ship-ready.
+        </Alert>
+      }
       renderSummary={(req) => (
         <Chip label={`${req.items.length} item(s)`} size="small" variant="outlined" />
       )}

@@ -43,6 +43,8 @@ interface RequestsReviewPageProps<TRequest extends ReviewableRequest> {
   renderSummary: (req: TRequest) => ReactNode;
   /** The expanded body: the request's items or openings. */
   renderDetails: (req: TRequest) => ReactNode;
+  /** Optional standing note under the description (e.g. where accepted requests get processed). */
+  note?: ReactNode;
 }
 
 /**
@@ -63,6 +65,7 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
   onChanged,
   renderSummary,
   renderDetails,
+  note,
 }: RequestsReviewPageProps<TRequest>) {
   const { showToast } = useToast();
   const { displayName } = useIdentity();
@@ -104,6 +107,8 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
         {description}
       </Typography>
+
+      {note && <Box sx={{ mb: 2 }}>{note}</Box>}
 
       {loading && !loaded && (
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
