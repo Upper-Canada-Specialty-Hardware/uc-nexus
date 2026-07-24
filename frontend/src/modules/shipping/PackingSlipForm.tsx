@@ -11,6 +11,7 @@ import { useToast } from '../../components/Toast';
 import { useNavigate } from 'react-router-dom';
 import { CONFIRM_SHIPMENT } from '../../graphql/shipping';
 import { SHIPPING_REFETCH_QUERIES, SHIPPING_STALE_ROOT_FIELDS } from '../../graphql/refetch';
+import { extractGpError } from '../../graphql/gpError';
 import PackingSlipDocument from './PackingSlipDocument';
 
 interface PackingSlipFormProps {
@@ -44,13 +45,23 @@ interface ShipmentResult {
 
 const SLIP_NUMBER_PATTERN = /^[a-zA-Z0-9_-]{1,50}$/;
 
-// The backend rejects an opening item that already shipped with an id-bearing state-transition
-// string ("Opening item <uuid> is not Ship_Ready (current: Shipped_Out)"). That only reaches a user
-// whose grid was stale, so pair the readable message with the refetch that unsticks them (#337).
-const STALE_SHIP_READY_ERROR = /not Ship_Ready/i;
-const STALE_SHIP_READY_MESSAGE =
-  'One or more items are no longer ship-ready - they may already have shipped. ' +
-  'The list has been refreshed; please review your cart.';
+// Both ways a confirm can fail because the grid the user acted on disagrees with the server (#337).
+// Keyed on extensions.code, not the message text: the backend wording carries a raw uuid and no test
+// pins it, so a reword would silently drop us back to showing that string.
+const STALE_CART_CODES = new Set(['INVALID_STATE_TRANSITION', 'VALIDATION_ERROR']);
+const REFRESHED_SUFFIX = ' The list has been refreshed - please review your cart.';
+
+// "Opening item <uuid> is not Ship_Ready (current: Shipped_Out)" says nothing to a shipper. The
+// insufficient-loose-hardware message does (it names the product and the counts), so that one is
+// kept and only annotated.
+function describeConfirmError(err: unknown): string {
+  const gp = extractGpError(err);
+  if (!gp) return 'Failed to confirm shipment';
+  if (gp.code === 'INVALID_STATE_TRANSITION') {
+    return `One or more items are no longer ship-ready - they may already have shipped.${REFRESHED_SUFFIX}`;
+  }
+  return STALE_CART_CODES.has(gp.code ?? '') ? `${gp.message}${REFRESHED_SUFFIX}` : gp.message;
+}
 
 export default function PackingSlipForm({ open, onClose, onShipped, projectId, projectName }: PackingSlipFormProps) {
   const { displayName } = useIdentity();
@@ -71,10 +82,15 @@ export default function PackingSlipForm({ open, onClose, onShipped, projectId, p
   const openingItemCount = items.filter((i) => i.itemType === 'Opening_Item').length;
   const looseItemCount = items.filter((i) => i.itemType === 'Loose').length;
 
-  // A shipment contradicts every cached read of ship-ready stock, the leaf rollup, the slip list and
-  // the warehouse opening-item states. Evict those root fields so routes that aren't mounted refetch
-  // on their next visit, and refetch the mounted ones before the success view replaces the form -
-  // otherwise the Ship view behind this dialog keeps offering the leaf that just left (#337).
+  // A shipment contradicts the cached ship-ready stock, the leaf rollup and the warehouse
+  // opening-item states, and none of those re-read on their own - which is why the Ship view behind
+  // this dialog kept offering the leaf that just left (#337).
+  //
+  // Not awaited. `awaitRefetchQueries` folds the refetches into the mutate promise
+  // (QueryInfo.markMutationResult -> Promise.all), so one slow or failed refetch would reject a
+  // shipment that already committed: no success view, no packing-slip PDF, and a retry that can only
+  // fail on the duplicate slip number. The shipment is the thing that must be reported truthfully;
+  // the grid behind the modal can catch up on its own.
   const [confirmShipment, { loading: confirming }] = useMutation<ShipmentResult>(CONFIRM_SHIPMENT, {
     update(cache) {
       for (const fieldName of SHIPPING_STALE_ROOT_FIELDS) {
@@ -83,7 +99,6 @@ export default function PackingSlipForm({ open, onClose, onShipped, projectId, p
       cache.gc();
     },
     refetchQueries: SHIPPING_REFETCH_QUERIES,
-    awaitRefetchQueries: true,
   });
 
   const handleConfirm = useCallback(async () => {
@@ -91,6 +106,14 @@ export default function PackingSlipForm({ open, onClose, onShipped, projectId, p
 
     if (!SLIP_NUMBER_PATTERN.test(packingSlipNumber)) {
       setError('Packing slip number must be 1-50 characters (alphanumeric, hyphens, underscores).');
+      return;
+    }
+
+    // ConfirmShipmentInput.projectId is ID! but the shipping module leaves it undefined in its
+    // "All Projects" mode, where the Ship view still lists items and lets them into the cart. Say so
+    // here rather than shipping an undefined variable and surfacing a coercion error.
+    if (!projectId) {
+      setError('Select a single project before shipping - "All Projects" cannot create a packing slip.');
       return;
     }
 
@@ -134,12 +157,18 @@ export default function PackingSlipForm({ open, onClose, onShipped, projectId, p
         showToast('Shipment confirmed successfully!', 'success');
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to confirm shipment';
-      const stale = STALE_SHIP_READY_ERROR.test(message);
-      setError(stale ? STALE_SHIP_READY_MESSAGE : message);
-      // A rejection means the view the user acted on disagrees with the server, so reconcile it here
-      // too - the mutation's own refetch never runs on the error path.
-      void client.refetchQueries({ include: SHIPPING_REFETCH_QUERIES });
+      // A rejection means the view the user acted on disagrees with the server, and the mutation's
+      // own invalidation never runs on the error path. Reconcile BEFORE showing the message, so the
+      // "list has been refreshed" it may carry is true by the time it is read. A refetch that fails
+      // in turn must not replace the error that actually explains the rejection.
+      try {
+        client.cache.evict({ id: 'ROOT_QUERY', fieldName: 'shipReadyItems' });
+        client.cache.gc();
+        await client.refetchQueries({ include: SHIPPING_REFETCH_QUERIES });
+      } catch {
+        /* keep the original failure */
+      }
+      setError(describeConfirmError(err));
     }
   }, [confirmShipment, items, packingSlipNumber, projectId, displayName, showToast, clearCart, client]);
 
@@ -187,24 +216,27 @@ export default function PackingSlipForm({ open, onClose, onShipped, projectId, p
     }
   }, [result, projectName, showToast]);
 
-  // Both exits from the success view only reset local form state - the cart was already emptied when
-  // the shipment succeeded, not deferred to whichever button the user happens to press.
+  // The cart is emptied the moment the shipment succeeds rather than here, so the Ship view never
+  // shows a shipped leaf as still carted. These calls stay as the backstop for any path that reaches
+  // the success view without that clear having run; clearCart is idempotent.
   const handleShipMore = useCallback(() => {
+    clearCart();
     setView('form');
     setPackingSlipNumber('');
     setError(null);
     setResult(null);
     onShipped();
-  }, [onShipped]);
+  }, [clearCart, onShipped]);
 
   const handleReturnHome = useCallback(() => {
+    clearCart();
     setView('form');
     setPackingSlipNumber('');
     setError(null);
     setResult(null);
     onClose();
     navigate('/app');
-  }, [navigate, onClose]);
+  }, [clearCart, navigate, onClose]);
 
   const handleClose = () => {
     if (view === 'form') {

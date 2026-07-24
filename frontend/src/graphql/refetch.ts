@@ -17,30 +17,24 @@ export const WAREHOUSE_REFETCH_QUERIES = [
   'GetProjectProgressByProduct',
 ];
 
-// Everything confirmShipment invalidates (#337). It flips OpeningItems to Shipped_Out and creates a
-// packing slip, which contradicts four cached reads. Two lists because they heal different things:
+// What confirmShipment invalidates (#337). The two lists are deliberately DISJOINT: evicting a root
+// field that a mounted query also refetches makes Apollo fire a repair fetch for the incomplete
+// cache diff on top of the explicit refetch, so the heaviest shipping resolvers would run twice
+// concurrently - the pool-starvation pattern the perf rules in CLAUDE.md warn about.
 //
-// - SHIPPING_REFETCH_QUERIES heals what is MOUNTED. Apollo's refetchQueries only touches active
-//   queries, which is what fixes the reported bug: the Ship view sits open behind the packing-slip
-//   dialog, so GetShipReadyItems (cache-first) and GetOpeningLeafStatus never re-run on their own
-//   and keep rendering the just-shipped leaf as Ship_Ready.
-// - SHIPPING_STALE_ROOT_FIELDS heals what is NOT. Warehouse Opening Items and the Returns tab live
-//   in other routes, so refetchQueries skips them and their next mount would serve a pre-shipment
-//   cache-first snapshot. Evicting the root fields forces that mount to go to the network.
-//
-// GetNotifications is deliberately absent: NotificationBell mounts two instances with different
-// variables and already polls every 30s, so listing it costs two round-trips per shipment for a
-// badge that self-corrects.
-export const SHIPPING_REFETCH_QUERIES = [
-  'GetShipReadyItems',
-  'GetOpeningLeafStatus',
-  'GetPackingSlips',
-  'GetOpeningItems',
-];
+// Refetched. GetOpeningLeafStatus is cache-and-network but stays mounted for the whole flow, so
+// nothing re-triggers it on its own and the rollup keeps its pre-shipment count.
+export const SHIPPING_REFETCH_QUERIES = ['GetOpeningLeafStatus'];
 
-export const SHIPPING_STALE_ROOT_FIELDS = [
-  'shipReadyItems',
-  'openingLeafStatus',
-  'packingSlips',
-  'openingItems',
-];
+// Evicted. Both are read cache-first by a query that may not be active when a shipment is confirmed,
+// which is precisely what refetchQueries cannot reach:
+// - shipReadyItems: the Ship view is usually mounted behind the dialog, and eviction makes its
+//   watcher re-run (an incomplete cache diff repairs itself by refetching). But the cart drawer is
+//   rendered outside <Routes>, so a shipment can also be confirmed from the Requests/Returns tab
+//   with the Ship view unmounted - refetchQueries would silently skip it there.
+// - openingItems: warehouse Opening Items is another module entirely, never active at ship time.
+//
+// Absent on purpose: packingSlips (ShipmentsList reads cache-and-network, so its next mount already
+// goes to the network) and notifications (NotificationBell polls every 30s and mounts two instances
+// with different variables, so listing it costs two round-trips for a badge that self-corrects).
+export const SHIPPING_STALE_ROOT_FIELDS = ['shipReadyItems', 'openingItems'];
