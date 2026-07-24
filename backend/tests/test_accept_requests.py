@@ -21,7 +21,7 @@ from app.models.enums import (
     ShopAssemblyRequestStatus,
 )
 from app.models.inventory import InventoryLocation
-from app.models.opening_item import OpeningItem
+from app.models.opening_item import OpeningItem, OpeningItemHardware
 from app.models.project import Opening, Project
 from app.models.pull_request import PullRequest, PullRequestItem
 from app.models.shop_assembly import ShopAssemblyOpening
@@ -88,6 +88,62 @@ def _finalize_shop_assembly(session, project, *, code="HG-100", qty=2, opening_n
                     "opening_number": opening_number,
                     "items": [{"hardware_category": "HINGE", "product_code": code, "quantity": qty}],
                 },
+            ],
+        },
+    )
+
+
+def _make_assembled_leaf(session, project, opening, *, leaf, code="HG-100", category="HINGE"):
+    """An assembled door leaf sitting in inventory: what shop assembly leaves behind (#311)."""
+    oi = OpeningItem(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        opening_id=opening.id,
+        warehouse_id=warehouse_admin_repository.get_primary_warehouse_id(session),
+        opening_number=opening.opening_number,
+        leaf=leaf,
+        quantity=1,
+        assembly_completed_at=datetime.utcnow(),
+        state=OpeningItemState.IN_INVENTORY,
+    )
+    session.add(oi)
+    session.flush()
+    session.add(
+        OpeningItemHardware(
+            id=uuid.uuid4(),
+            opening_item_id=oi.id,
+            product_code=code,
+            hardware_category=category,
+            quantity=1,
+        )
+    )
+    session.flush()
+    return oi
+
+
+def _finalize_shipping_leaves(session, project, opening_items, *, send_leaf=True):
+    """Finalize a shipping-out request made of OPENING_ITEM lines, one per assembled leaf (#335)."""
+    return import_repository.finalize_import_session(
+        session,
+        {
+            "project_id": str(project.id),
+            "openings": [],
+            "hardware_items": [],
+            "shipping_out_pr_drafts": [
+                {
+                    "request_number": f"SHIP-{uuid.uuid4().hex[:6]}",
+                    "requested_by": "importer",
+                    "items": [
+                        {
+                            "item_type": "OPENING_ITEM",
+                            "opening_number": oi.opening_number,
+                            "opening_item_id": str(oi.id),
+                            "leaf": oi.leaf if send_leaf else None,
+                            "requested_quantity": 1,
+                        }
+                        for oi in opening_items
+                    ],
+                }
             ],
         },
     )
@@ -332,6 +388,175 @@ def test_reject_shipping_out_request(db_session):
     assert returned.rejection_reason == "cancelled"  # trimmed
     assert returned.pull_request_id is None
     assert db_session.scalar(select(PullRequest).where(PullRequest.request_number == req_number)) is None
+
+
+# --- #335 assembled door leaves ship as OPENING_ITEM lines -----------------------------------
+
+
+def _seed_pair(session, *, opening_number="0019-EX"):
+    """A project whose opening_number is a pair with both leaves assembled and in inventory."""
+    project = _make_project(session)
+    session.flush()
+    import_repository.finalize_import_session(
+        session,
+        {
+            "project_id": str(project.id),
+            "openings": [{"opening_number": opening_number, "leaf_count": 2}],
+            "hardware_items": [],
+        },
+    )
+    session.flush()
+    opening = session.scalar(
+        select(Opening).where(Opening.project_id == project.id, Opening.opening_number == opening_number)
+    )
+    leaf1 = _make_assembled_leaf(session, project, opening, leaf=1)
+    leaf2 = _make_assembled_leaf(session, project, opening, leaf=2)
+    return project, leaf1, leaf2
+
+
+def test_accept_shipping_out_carries_leaf_onto_opening_item_pull_lines(db_session):
+    """A pair yields two distinguishable pull lines, each naming its own assembled leaf."""
+    project, leaf1, leaf2 = _seed_pair(db_session)
+    result = _finalize_shipping_leaves(db_session, project, [leaf1, leaf2])
+    req = result["shipping_out_requests"][0]
+    db_session.flush()
+
+    shipping_repository.accept_shipping_out_request(db_session, req.id, "acceptor")
+    db_session.flush()
+
+    pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == req.request_number))
+    assert pr.source == PullRequestSource.SHIPPING_OUT
+    pr_items = db_session.scalars(select(PullRequestItem).where(PullRequestItem.pull_request_id == pr.id)).all()
+    assert len(pr_items) == 2
+    assert {i.item_type for i in pr_items} == {PullRequestItemType.OPENING_ITEM}
+    # The OpeningItem id survives the hop: without it approve skips the line and complete never
+    # flips a leaf to SHIP_READY, which is the #335 dead end.
+    assert {i.opening_item_id for i in pr_items} == {leaf1.id, leaf2.id}
+    assert sorted(i.leaf for i in pr_items) == [1, 2]
+
+
+def test_accept_shipping_out_falls_back_to_opening_item_leaf(db_session):
+    """Requests written before shipping_out_request_items.leaf existed still label their leaves."""
+    project, leaf1, leaf2 = _seed_pair(db_session)
+    result = _finalize_shipping_leaves(db_session, project, [leaf1, leaf2], send_leaf=False)
+    req = result["shipping_out_requests"][0]
+    db_session.flush()
+    assert {i.leaf for i in req.items} == {None}
+
+    shipping_repository.accept_shipping_out_request(db_session, req.id, "acceptor")
+    db_session.flush()
+
+    pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == req.request_number))
+    pr_items = db_session.scalars(select(PullRequestItem).where(PullRequestItem.pull_request_id == pr.id)).all()
+    assert sorted(i.leaf for i in pr_items) == [1, 2]
+
+
+def test_opening_item_shipping_line_approves_and_pulls_leaves_to_ship_ready(db_session):
+    """The whole #335 chain: an assembled-leaf request approves with no loose stock and pulls."""
+    project, leaf1, leaf2 = _seed_pair(db_session)
+    result = _finalize_shipping_leaves(db_session, project, [leaf1, leaf2])
+    req = result["shipping_out_requests"][0]
+    db_session.flush()
+    shipping_repository.accept_shipping_out_request(db_session, req.id, "acceptor")
+    db_session.flush()
+    pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == req.request_number))
+
+    # No inventory was seeded: an OPENING_ITEM line claims nothing from fungible stock, so the
+    # sufficiency gate has nothing to fail on. A LOOSE line here would report INSUFFICIENT.
+    _, outcome, _, shortfalls = warehouse_repository.approve_pull_request(db_session, pr.id, "puller")
+    db_session.flush()
+    assert outcome == "APPROVED"
+    assert shortfalls == []
+    assert pr.status == PullRequestStatus.IN_PROGRESS
+
+    warehouse_repository.complete_pull_request(db_session, pr.id)
+    db_session.flush()
+    db_session.refresh(leaf1)
+    db_session.refresh(leaf2)
+    assert leaf1.state == OpeningItemState.SHIP_READY
+    assert leaf2.state == OpeningItemState.SHIP_READY
+
+
+def test_finalize_rejects_opening_item_line_without_an_opening_item(db_session):
+    """An OPENING_ITEM line with no OpeningItem is inert downstream, so it never gets persisted."""
+    project = _make_project(db_session)
+    db_session.flush()
+
+    with pytest.raises(ValidationError) as excinfo:
+        import_repository.finalize_import_session(
+            db_session,
+            {
+                "project_id": str(project.id),
+                "openings": [],
+                "hardware_items": [],
+                "shipping_out_pr_drafts": [
+                    {
+                        "request_number": f"SHIP-{uuid.uuid4().hex[:6]}",
+                        "requested_by": "importer",
+                        "items": [
+                            {
+                                "item_type": "OPENING_ITEM",
+                                "opening_number": "0019-EX",
+                                "opening_item_id": None,
+                                "requested_quantity": 1,
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+    assert excinfo.value.field == "opening_item_id"
+    assert "0019-EX" in excinfo.value.message
+
+
+def test_finalize_rejects_opening_item_from_another_project(db_session):
+    """The client sends the OpeningItem id, so the id is checked against the row, not trusted."""
+    _, other_leaf, _ = _seed_pair(db_session)
+    stranger = _make_project(db_session)
+    db_session.flush()
+
+    with pytest.raises(ValidationError) as excinfo:
+        _finalize_shipping_leaves(db_session, stranger, [other_leaf])
+    assert excinfo.value.field == "opening_item_id"
+    assert "does not belong to this project" in excinfo.value.message
+
+
+def test_finalize_rejects_a_leaf_that_is_no_longer_in_inventory(db_session):
+    """A leaf already pulled or shipped cannot be requested again by a stale wizard tab."""
+    project, leaf1, _ = _seed_pair(db_session)
+    leaf1.state = OpeningItemState.SHIPPED_OUT
+    db_session.flush()
+
+    with pytest.raises(ValidationError) as excinfo:
+        _finalize_shipping_leaves(db_session, project, [leaf1])
+    assert excinfo.value.field == "opening_item_id"
+    assert "Leaf 1" in excinfo.value.message
+    assert "SHIPPED_OUT" in excinfo.value.message
+
+
+def test_complete_never_walks_a_shipped_leaf_back_to_ship_ready(db_session):
+    """Completing a stale pull must not resurrect a leaf that has already gone out the door."""
+    project, leaf1, leaf2 = _seed_pair(db_session)
+    result = _finalize_shipping_leaves(db_session, project, [leaf1, leaf2])
+    req = result["shipping_out_requests"][0]
+    db_session.flush()
+    shipping_repository.accept_shipping_out_request(db_session, req.id, "acceptor")
+    db_session.flush()
+    pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == req.request_number))
+    warehouse_repository.approve_pull_request(db_session, pr.id, "puller")
+    db_session.flush()
+
+    # Leaf 1 ships out from an earlier slip while this pull is still open.
+    leaf1.state = OpeningItemState.SHIPPED_OUT
+    db_session.flush()
+
+    warehouse_repository.complete_pull_request(db_session, pr.id)
+    db_session.flush()
+    db_session.refresh(leaf1)
+    db_session.refresh(leaf2)
+    # Shipped leaf stays shipped; the untouched one still completes normally.
+    assert leaf1.state == OpeningItemState.SHIPPED_OUT
+    assert leaf2.state == OpeningItemState.SHIP_READY
 
 
 # --- shipping-out reopen (#325) --------------------------------------------------------------

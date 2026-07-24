@@ -7,7 +7,10 @@ import ImportWizard from '../ImportWizard';
 import {
   GET_PROJECT_EXCLUDED_ITEMS,
   GET_PROJECT_HARDWARE_SCHEDULE,
+  RECONCILE_SCHEDULE,
 } from '../../../graphql/import';
+import { GET_OPENING_ITEMS, GET_PULL_REQUESTS } from '../../../graphql/warehouse';
+import { GET_SHIPPING_OUT_REQUESTS } from '../../../graphql/shipping';
 import {
   useHardwareScheduleParser,
   type UseHardwareScheduleParserReturn,
@@ -160,7 +163,7 @@ const reimportProject: Project = { ...firstImportProject, openingCount: 5 };
 // A re-import project eagerly fetches the persisted schedule (null = nothing
 // persisted, so the upload step stays a plain dropzone) and, once parsed items
 // exist, the project's excluded-items list.
-const reimportMocks: MockedResponse[] = [
+const reimportBaseMocks: MockedResponse[] = [
   {
     request: {
       query: GET_PROJECT_HARDWARE_SCHEDULE,
@@ -176,6 +179,135 @@ const reimportMocks: MockedResponse[] = [
     result: { data: { projectExcludedItems: [] } },
   },
 ];
+
+// The shipping purpose reads the project's assembled units (#335). Empty by default so the
+// step-shape tests don't need to care; the shipping walk below swaps in real ones. MockedProvider
+// takes the first matching mock, so this must not be in the list when a populated one is wanted.
+const emptyOpeningItemsMock: MockedResponse = {
+  request: {
+    query: GET_OPENING_ITEMS,
+    variables: { projectId: 'proj-1' },
+  },
+  maxUsageCount: Number.POSITIVE_INFINITY,
+  result: { data: { openingItems: [] } },
+};
+
+// The shipping purpose also asks which leaves are already claimed by an open pull or a pending
+// request. Nothing claimed by default.
+function claimMocks(
+  pullRequests: object[] = [],
+  shippingOutRequests: object[] = [],
+): MockedResponse[] {
+  return [
+    {
+      request: {
+        query: GET_PULL_REQUESTS,
+        variables: { projectId: 'proj-1', source: 'SHIPPING_OUT' },
+      },
+      maxUsageCount: Number.POSITIVE_INFINITY,
+      result: { data: { pullRequests } },
+    },
+    {
+      request: {
+        query: GET_SHIPPING_OUT_REQUESTS,
+        variables: { projectId: 'proj-1', status: 'PENDING', reopenableOnly: false },
+      },
+      maxUsageCount: Number.POSITIVE_INFINITY,
+      result: { data: { shippingOutRequests } },
+    },
+  ];
+}
+
+const reimportMocks: MockedResponse[] = [...reimportBaseMocks, emptyOpeningItemsMock, ...claimMocks()];
+
+// --- Shipping-path fixtures (#335) ---
+
+// O-1's hinges were consumed into two assembled door leaves; O-2's lock is still loose stock.
+const shippingReconcileMock: MockedResponse = {
+  request: {
+    query: RECONCILE_SCHEDULE,
+    variables: {
+      projectId: 'proj-1',
+      items: [
+        { openingNumber: 'O-1', hardwareCategory: 'Hinges', productCode: 'HNG-100', quantityNeeded: 3 },
+        { openingNumber: 'O-2', hardwareCategory: 'Locks', productCode: 'LCK-200', quantityNeeded: 1 },
+      ],
+    },
+  },
+  result: {
+    data: {
+      reconcileSchedule: [
+        {
+          __typename: 'ReconciliationResult',
+          openingNumber: 'O-1',
+          hardwareCategory: 'Hinges',
+          productCode: 'HNG-100',
+          quantity: 3,
+          status: 'ASSEMBLED',
+        },
+        {
+          __typename: 'ReconciliationResult',
+          openingNumber: 'O-2',
+          hardwareCategory: 'Locks',
+          productCode: 'LCK-200',
+          quantity: 1,
+          status: 'RECEIVED',
+        },
+      ],
+    },
+  },
+};
+
+function makeOpeningItem(id: string, leaf: number | null, state = 'IN_INVENTORY') {
+  return {
+    __typename: 'OpeningItem',
+    id,
+    projectId: 'proj-1',
+    openingId: 'opening-1',
+    openingNumber: 'O-1',
+    building: null,
+    floor: null,
+    location: null,
+    leaf,
+    leafCount: 2,
+    quantity: 1,
+    assemblyCompletedAt: '2026-07-01T00:00:00',
+    state,
+    aisle: null,
+    row: null,
+    bay: null,
+    createdAt: '2026-07-01T00:00:00',
+    updatedAt: '2026-07-01T00:00:00',
+    installedHardware: [
+      {
+        __typename: 'OpeningItemHardware',
+        id: `${id}-hw`,
+        openingItemId: id,
+        productCode: 'HNG-100',
+        hardwareCategory: 'Hinges',
+        quantity: 3,
+      },
+    ],
+  };
+}
+
+const shippingOpeningItemsMock: MockedResponse = {
+  request: {
+    query: GET_OPENING_ITEMS,
+    variables: { projectId: 'proj-1' },
+  },
+  maxUsageCount: Number.POSITIVE_INFINITY,
+  result: {
+    data: {
+      openingItems: [
+        makeOpeningItem('oi-leaf-1', 1),
+        makeOpeningItem('oi-leaf-2', 2),
+        // Already pulled: it waits on the Ship tab, so the wizard must not offer it again.
+        makeOpeningItem('oi-leaf-shipready', 1, 'SHIP_READY'),
+      ],
+    },
+  },
+};
 
 // ---- Harness ----
 
@@ -318,6 +450,106 @@ describe('ImportWizard step transitions', () => {
     clickBack();
     expect(screen.getByRole('heading', { name: 'Hardware Schedule' })).toBeInTheDocument();
     expect(screen.getByText('File parsed successfully!')).toBeInTheDocument();
+  });
+
+  // #335: an assembled leaf ships as itself, not as a request for the loose hardware bolted onto it.
+  it('offers assembled door leaves per leaf and drops their hardware from the loose list', async () => {
+    renderWizard({
+      project: reimportProject,
+      mocks: [...reimportBaseMocks, shippingReconcileMock, shippingOpeningItemsMock, ...claimMocks()],
+    });
+    await flushApollo();
+    clickNext();
+
+    fireEvent.click(screen.getByRole('radio', { name: /Pull Request for Shipping Out/i }));
+    clickNext();
+    fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
+    clickNext();
+    await flushApollo();
+
+    expect(screen.getByRole('heading', { name: 'Reconciliation' })).toBeInTheDocument();
+    clickNext();
+
+    expect(screen.getByRole('heading', { name: 'Shipping Pull Requests' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Add Shipping PR/i }));
+
+    // One row per assembled leaf, and the SHIP_READY unit is not offered.
+    expect(screen.getByText('Opening O-1 - Leaf 1')).toBeInTheDocument();
+    expect(screen.getByText('Opening O-1 - Leaf 2')).toBeInTheDocument();
+    expect(screen.getAllByText(/Opening O-1 - Leaf/)).toHaveLength(2);
+
+    // The hinges live on those leaves now, so they are not offered as loose stock; the lock still is.
+    expect(screen.queryByText(/Product: HNG-100/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Product: LCK-200/)).toBeInTheDocument();
+
+    // Ticking a leaf records a selection on the draft.
+    const checkboxes = screen.getAllByRole('checkbox');
+    fireEvent.click(checkboxes[0]);
+    expect(screen.getByText('Select items (1 selected):')).toBeInTheDocument();
+    expect(nextButton()).toBeDisabled(); // still needs a PR number
+
+    fireEvent.change(screen.getByRole('textbox', { name: /PR Number/i }), {
+      target: { value: 'SHIP-0019' },
+    });
+    expect(nextButton()).toBeEnabled();
+  });
+
+  // A leaf stays IN_INVENTORY until its pull completes, so state alone would re-offer it and one
+  // physical leaf would be pulled twice.
+  it('hides an assembled leaf that is already on an open shipping pull', async () => {
+    renderWizard({
+      project: reimportProject,
+      mocks: [
+        ...reimportBaseMocks,
+        shippingReconcileMock,
+        shippingOpeningItemsMock,
+        ...claimMocks([
+          {
+            __typename: 'PullRequest',
+            id: 'pr-1',
+            requestNumber: 'SHIP-EXISTING',
+            projectId: 'proj-1',
+            source: 'SHIPPING_OUT',
+            status: 'IN_PROGRESS',
+            requestedBy: 'someone',
+            assignedTo: 'someone',
+            createdAt: '2026-07-02T00:00:00',
+            updatedAt: '2026-07-02T00:00:00',
+            approvedAt: null,
+            completedAt: null,
+            cancelledAt: null,
+            items: [
+              {
+                __typename: 'PullRequestItem',
+                id: 'pri-1',
+                pullRequestId: 'pr-1',
+                itemType: 'OPENING_ITEM',
+                openingNumber: 'O-1',
+                openingItemId: 'oi-leaf-1',
+                leaf: 1,
+                hardwareCategory: null,
+                productCode: null,
+                requestedQuantity: 1,
+              },
+            ],
+          },
+        ]),
+      ],
+    });
+    await flushApollo();
+    clickNext();
+
+    fireEvent.click(screen.getByRole('radio', { name: /Pull Request for Shipping Out/i }));
+    clickNext();
+    fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
+    clickNext();
+    await flushApollo();
+    clickNext();
+
+    fireEvent.click(screen.getByRole('button', { name: /Add Shipping PR/i }));
+
+    expect(screen.queryByText('Opening O-1 - Leaf 1')).not.toBeInTheDocument();
+    expect(screen.getByText('Opening O-1 - Leaf 2')).toBeInTheDocument();
   });
 
   it('walks the po path through Reconciliation to Classification and gates on unclassified items', () => {

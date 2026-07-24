@@ -280,11 +280,14 @@ def complete_pull_request(session: Session, pr_id: uuid.UUID) -> PullRequestMode
 
     # Source-specific side effects
     if pr.source == PullRequestSource.SHIPPING_OUT:
-        # For each Opening_Item item, set the OpeningItem state to Ship_Ready
+        # For each Opening_Item item, set the OpeningItem state to Ship_Ready.
+        # Only from IN_INVENTORY (#335): a leaf that already shipped must not be walked back to
+        # SHIP_READY by a duplicate or stale line, because get_ship_ready_items would list it again
+        # and confirm_shipment's SHIP_READY check would pass, shipping one physical leaf twice.
         for item in pr.items:
             if item.item_type == PullRequestItemType.OPENING_ITEM and item.opening_item_id is not None:
                 oi = session.get(OpeningItemModel, item.opening_item_id)
-                if oi is not None:
+                if oi is not None and oi.state == OpeningItemState.IN_INVENTORY:
                     oi.state = OpeningItemState.SHIP_READY
 
     elif pr.source == PullRequestSource.SHOP_ASSEMBLY:
