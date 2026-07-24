@@ -122,7 +122,13 @@ class ShopAssemblyMutations:
             return shop_assembly_request_to_type(refreshed)
 
     @strawberry.mutation
-    def assign_openings(self, input: AssignOpeningsInput) -> list[ShopAssemblyOpening]:
+    def assign_openings(self, info: strawberry.Info, input: AssignOpeningsInput) -> list[ShopAssemblyOpening]:
+        """Assign pulled openings to a user (#330). Any signed-in user may self-assign (the "Assign to
+        me" board); assigning to *another* user is Shop Assembly Manager-gated, so the manager-only
+        guarantee holds at the data layer, not just the UI."""
+        auth = require_user(info)
+        if input.assigned_to_user_id != auth["user_id"]:
+            require_role(info, SHOP_ASSEMBLY_MANAGER_ROLE)
         opening_ids = [uuid.UUID(str(oid)) for oid in input.opening_ids]
         with SessionLocal() as session:
             result = shop_assembly_repository.assign_openings(
