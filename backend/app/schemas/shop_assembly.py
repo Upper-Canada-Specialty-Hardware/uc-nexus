@@ -4,21 +4,22 @@ import uuid
 
 import strawberry
 
-from app.auth import require_user
+from app.auth import SHOP_ASSEMBLY_MANAGER_ROLE, require_role, require_user
 from app.database import SessionLocal
 from app.errors import InventoryShortfallError
-from app.repositories import shop_assembly_repository
+from app.repositories import shop_assembly_repository, user_repository
 from app.repositories import warehouse as warehouse_repository
 from app.services import notification_service
 
 from .converters import (
+    clerk_user_to_type,
     opening_item_to_type,
     shop_assembly_opening_to_type,
     shop_assembly_request_to_type,
 )
 from .enums import ShopAssemblyRequestStatus
 from .inputs import AssignOpeningsInput, CompleteOpeningInput
-from .types import OpeningItem, ShopAssemblyOpening, ShopAssemblyRequest
+from .types import ClerkUser, OpeningItem, ShopAssemblyOpening, ShopAssemblyRequest
 
 
 @strawberry.type
@@ -42,13 +43,23 @@ class ShopAssemblyQueries:
         self,
         project_id: strawberry.ID | None = None,
         status: ShopAssemblyRequestStatus | None = None,
+        reopenable_only: bool = False,
     ) -> list[ShopAssemblyRequest]:
-        """Accept UI (#293): shop-assembly requests for a project, PENDING by default."""
+        """Accept UI (#293): shop-assembly requests for a project, PENDING by default. reopenableOnly
+        (#325) keeps only requests whose minted pull request is still PENDING - the Approved/reopen
+        view uses it so it lists only requests Reopen can still act on."""
         with SessionLocal() as session:
             reqs = shop_assembly_repository.get_shop_assembly_requests(
-                session, uuid.UUID(str(project_id)) if project_id else None, status
+                session, uuid.UUID(str(project_id)) if project_id else None, status, reopenable_only
             )
             return [shop_assembly_request_to_type(r) for r in reqs]
+
+    @strawberry.field
+    def shop_assembly_members(self, info: strawberry.Info) -> list[ClerkUser]:
+        """Shop-assembly team members for the manager assignment picker (#330). Manager-gated: only
+        a Shop Assembly Manager may enumerate members and assign pulled openings to them."""
+        require_role(info, SHOP_ASSEMBLY_MANAGER_ROLE)
+        return [clerk_user_to_type(u) for u in user_repository.list_shop_assembly_members()]
 
 
 @strawberry.type
@@ -97,7 +108,27 @@ class ShopAssemblyMutations:
             return shop_assembly_request_to_type(refreshed)
 
     @strawberry.mutation
-    def assign_openings(self, input: AssignOpeningsInput) -> list[ShopAssemblyOpening]:
+    def reopen_shop_assembly_request(self, info: strawberry.Info, id: strawberry.ID) -> ShopAssemblyRequest:
+        """Reopen an APPROVED shop-assembly request back to PENDING (#325). Undoes an erroneous accept:
+        hard-deletes the warehouse PullRequest the accept minted, re-points the request's openings off
+        it, and flips the request to PENDING so it can be re-accepted or rejected. Refused if the
+        warehouse has already worked the pull. Open to any signed-in user."""
+        require_user(info)
+        request_id = uuid.UUID(str(id))
+        with SessionLocal() as session:
+            shop_assembly_repository.reopen_shop_assembly_request(session, request_id)
+            session.commit()
+            refreshed = shop_assembly_repository.get_request_with_openings(session, request_id)
+            return shop_assembly_request_to_type(refreshed)
+
+    @strawberry.mutation
+    def assign_openings(self, info: strawberry.Info, input: AssignOpeningsInput) -> list[ShopAssemblyOpening]:
+        """Assign pulled openings to a user (#330). Any signed-in user may self-assign (the "Assign to
+        me" board); assigning to *another* user is Shop Assembly Manager-gated, so the manager-only
+        guarantee holds at the data layer, not just the UI."""
+        auth = require_user(info)
+        if input.assigned_to_user_id != auth["user_id"]:
+            require_role(info, SHOP_ASSEMBLY_MANAGER_ROLE)
         opening_ids = [uuid.UUID(str(oid)) for oid in input.opening_ids]
         with SessionLocal() as session:
             result = shop_assembly_repository.assign_openings(

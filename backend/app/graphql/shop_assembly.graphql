@@ -78,8 +78,10 @@ input CompleteOpeningInput {
 type Query {
   assembleList(projectId: ID!): [ShopAssemblyOpening!]!
   myWork(assignedToUserId: String!): [ShopAssemblyOpening!]!
-  # Accept UI (#293): shop-assembly requests, PENDING by default.
-  shopAssemblyRequests(projectId: ID, status: ShopAssemblyRequestStatus): [ShopAssemblyRequest!]!
+  # reopenableOnly (#325): keep only requests whose minted PR is still PENDING (the Approved/reopen view).
+  shopAssemblyRequests(projectId: ID, status: ShopAssemblyRequestStatus, reopenableOnly: Boolean! = false): [ShopAssemblyRequest!]!
+  # Manager assignment picker (#330). Manager-gated (Shop Assembly Manager). ClerkUser in user.graphql.
+  shopAssemblyMembers: [ClerkUser!]!
 }
 
 type Mutation {
@@ -90,4 +92,7 @@ type Mutation {
   # display name. Accept re-checks inventory sufficiency and mints the warehouse PullRequest.
   acceptShopAssemblyRequest(id: ID!, acceptedBy: String!): ShopAssemblyRequest!
   rejectShopAssemblyRequest(id: ID!, rejectedBy: String!, reason: String): ShopAssemblyRequest!
+  # Reopen (#325). Undoes an erroneous accept: APPROVED -> PENDING, hard-deletes the minted
+  # PullRequest and re-points the openings off it. Refused if the warehouse has already worked the pull.
+  reopenShopAssemblyRequest(id: ID!): ShopAssemblyRequest!
 }

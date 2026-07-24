@@ -55,7 +55,7 @@ export default function ShippingModule() {
             exclusive
             value={view}
             onChange={(_, v) => {
-              if (v) navigate(v === 'ship' ? 'browse' : v);
+              if (v) navigate(`/app/shipping/${v === 'ship' ? 'browse' : v}`);
             }}
           >
             <ToggleButton value="requests">Requests</ToggleButton>

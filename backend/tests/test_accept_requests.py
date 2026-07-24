@@ -11,7 +11,7 @@ from datetime import datetime
 import pytest
 from sqlalchemy import select
 
-from app.errors import InventoryShortfallError, ValidationError
+from app.errors import InvalidStateTransitionError, InventoryShortfallError, ValidationError
 from app.models.enums import (
     OpeningItemState,
     PullRequestItemType,
@@ -247,6 +247,100 @@ def test_reject_shop_assembly_request(db_session):
     assert db_session.scalar(select(PullRequest).where(PullRequest.request_number == sar.request_number)) is None
 
 
+# --- shop-assembly reopen (#325) -------------------------------------------------------------
+
+
+def test_reopen_shop_assembly_reverts_to_pending_and_deletes_pr(db_session):
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=5)
+    result = _finalize_shop_assembly(db_session, project, qty=2)
+    sar = result["shop_assembly_request"]
+    db_session.flush()
+
+    shop_assembly_repository.accept_shop_assembly_request(db_session, sar.id, "acceptor")
+    db_session.flush()
+    pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == sar.request_number))
+    assert pr is not None
+
+    returned = shop_assembly_repository.reopen_shop_assembly_request(db_session, sar.id)
+    db_session.flush()
+
+    # Request is back to PENDING with the approve stamps cleared.
+    assert returned.status == ShopAssemblyRequestStatus.PENDING
+    assert returned.approved_by is None
+    assert returned.approved_at is None
+
+    # The minted PR and its items are hard-deleted, and the openings no longer point at it.
+    assert db_session.scalar(select(PullRequest).where(PullRequest.request_number == sar.request_number)) is None
+    assert db_session.scalars(select(PullRequestItem).where(PullRequestItem.pull_request_id == pr.id)).all() == []
+    openings = db_session.scalars(
+        select(ShopAssemblyOpening).where(ShopAssemblyOpening.shop_assembly_request_id == sar.id)
+    ).all()
+    assert openings
+    assert all(o.pull_request_id is None for o in openings)
+
+    # From PENDING the existing reject flow works (the recovery path the issue wants).
+    rejected = shop_assembly_repository.reject_shop_assembly_request(db_session, sar.id, "rejector", "mistake")
+    db_session.flush()
+    assert rejected.status == ShopAssemblyRequestStatus.REJECTED
+
+
+def test_reopen_shop_assembly_blocked_when_pr_already_worked(db_session):
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=5)
+    result = _finalize_shop_assembly(db_session, project, qty=2)
+    sar = result["shop_assembly_request"]
+    db_session.flush()
+
+    shop_assembly_repository.accept_shop_assembly_request(db_session, sar.id, "acceptor")
+    db_session.flush()
+    pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == sar.request_number))
+
+    # Warehouse approves the pull (deducts inventory, PR -> IN_PROGRESS). Reopen must now refuse.
+    warehouse_repository.approve_pull_request(db_session, pr.id, "warehouse")
+    db_session.flush()
+
+    with pytest.raises(InvalidStateTransitionError):
+        shop_assembly_repository.reopen_shop_assembly_request(db_session, sar.id)
+
+
+def test_reopen_shop_assembly_requires_approved(db_session):
+    project = _make_project(db_session)
+    result = _finalize_shop_assembly(db_session, project, qty=2)
+    sar = result["shop_assembly_request"]  # PENDING, never accepted
+    db_session.flush()
+
+    with pytest.raises(InvalidStateTransitionError):
+        shop_assembly_repository.reopen_shop_assembly_request(db_session, sar.id)
+
+
+def test_reopen_shop_assembly_discards_pr_when_openings_do_not_reference_it(db_session):
+    """Regression: reopen must find the minted PR by request_number, not by the openings'
+    pull_request_id. accept mints the PR unconditionally, so an openings-derived lookup would leave it
+    orphaned (and the next accept would collide on the unique request_number)."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=5)
+    result = _finalize_shop_assembly(db_session, project, qty=2)
+    sar = result["shop_assembly_request"]
+    db_session.flush()
+
+    shop_assembly_repository.accept_shop_assembly_request(db_session, sar.id, "acceptor")
+    db_session.flush()
+
+    # Simulate the orphan case: the openings no longer point at the minted PR, so a lookup that derived
+    # the PR from them would find nothing and skip the delete.
+    for opening in db_session.scalars(
+        select(ShopAssemblyOpening).where(ShopAssemblyOpening.shop_assembly_request_id == sar.id)
+    ).all():
+        opening.pull_request_id = None
+    db_session.flush()
+
+    shop_assembly_repository.reopen_shop_assembly_request(db_session, sar.id)
+    db_session.flush()
+
+    assert db_session.scalar(select(PullRequest).where(PullRequest.request_number == sar.request_number)) is None
+
+
 # --- shipping-out accept / reject ------------------------------------------------------------
 
 
@@ -413,6 +507,129 @@ def test_finalize_rejects_opening_item_line_without_an_opening_item(db_session):
         )
     assert excinfo.value.field == "opening_item_id"
     assert "0019-EX" in excinfo.value.message
+
+
+# --- shipping-out reopen (#325) --------------------------------------------------------------
+
+
+def test_reopen_shipping_out_reverts_to_pending_and_deletes_pr(db_session):
+    project = _make_project(db_session)
+    result = _finalize_shipping(db_session, project, qty=2)
+    req = result["shipping_out_requests"][0]
+    req_number = req.request_number
+    db_session.flush()
+
+    shipping_repository.accept_shipping_out_request(db_session, req.id, "acceptor")
+    db_session.flush()
+    pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == req_number))
+    assert pr is not None
+
+    returned = shipping_repository.reopen_shipping_out_request(db_session, req.id)
+    db_session.flush()
+
+    # Request is back to PENDING, unlinked, with the approve stamps cleared.
+    assert returned.status == ShippingOutRequestStatus.PENDING
+    assert returned.approved_by is None
+    assert returned.approved_at is None
+    assert returned.pull_request_id is None
+
+    # The minted PR and its items are hard-deleted.
+    assert db_session.scalar(select(PullRequest).where(PullRequest.request_number == req_number)) is None
+    assert db_session.scalars(select(PullRequestItem).where(PullRequestItem.pull_request_id == pr.id)).all() == []
+
+    # From PENDING the existing reject flow works (the recovery path the issue wants).
+    rejected = shipping_repository.reject_shipping_out_request(db_session, req.id, "rejector", "mistake")
+    db_session.flush()
+    assert rejected.status == ShippingOutRequestStatus.REJECTED
+
+
+def test_reopen_shipping_out_blocked_when_pr_already_worked(db_session):
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=5)
+    result = _finalize_shipping(db_session, project, qty=2)
+    req = result["shipping_out_requests"][0]
+    db_session.flush()
+
+    shipping_repository.accept_shipping_out_request(db_session, req.id, "acceptor")
+    db_session.flush()
+    pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == req.request_number))
+
+    # Warehouse approves the pull (deducts inventory, PR -> IN_PROGRESS). Reopen must now refuse.
+    warehouse_repository.approve_pull_request(db_session, pr.id, "warehouse")
+    db_session.flush()
+
+    with pytest.raises(InvalidStateTransitionError):
+        shipping_repository.reopen_shipping_out_request(db_session, req.id)
+
+
+def test_reopen_shipping_out_requires_approved(db_session):
+    project = _make_project(db_session)
+    result = _finalize_shipping(db_session, project, qty=2)
+    req = result["shipping_out_requests"][0]  # PENDING, never accepted
+    db_session.flush()
+
+    with pytest.raises(InvalidStateTransitionError):
+        shipping_repository.reopen_shipping_out_request(db_session, req.id)
+
+
+# --- reopenable_only filter for the Approved view (#325) --------------------------------------
+
+
+def test_reopenable_only_excludes_worked_shipping_requests(db_session):
+    """The Approved/reopen view passes reopenable_only so it lists only requests still in the reopen
+    window (minted PR still PENDING), not every request ever accepted."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=10)
+    worked = _finalize_shipping(db_session, project, qty=2, opening_number="A01")["shipping_out_requests"][0]
+    fresh = _finalize_shipping(db_session, project, qty=2, opening_number="A02")["shipping_out_requests"][0]
+    db_session.flush()
+
+    shipping_repository.accept_shipping_out_request(db_session, worked.id, "acceptor")
+    shipping_repository.accept_shipping_out_request(db_session, fresh.id, "acceptor")
+    db_session.flush()
+
+    # The warehouse starts the pull on one of them (PR -> IN_PROGRESS): it drops out of the reopen window.
+    worked_pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == worked.request_number))
+    warehouse_repository.approve_pull_request(db_session, worked_pr.id, "warehouse")
+    db_session.flush()
+
+    reopenable = shipping_repository.get_shipping_out_requests(
+        db_session, project.id, ShippingOutRequestStatus.APPROVED, reopenable_only=True
+    )
+    ids = {r.id for r in reopenable}
+    assert fresh.id in ids
+    assert worked.id not in ids
+    # Without the filter both APPROVED requests still show.
+    all_approved = {
+        r.id
+        for r in shipping_repository.get_shipping_out_requests(
+            db_session, project.id, ShippingOutRequestStatus.APPROVED
+        )
+    }
+    assert {worked.id, fresh.id} <= all_approved
+
+
+def test_reopenable_only_excludes_worked_shop_assembly_requests(db_session):
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=10)
+    worked = _finalize_shop_assembly(db_session, project, qty=2, opening_number="A01")["shop_assembly_request"]
+    fresh = _finalize_shop_assembly(db_session, project, qty=2, opening_number="A02")["shop_assembly_request"]
+    db_session.flush()
+
+    shop_assembly_repository.accept_shop_assembly_request(db_session, worked.id, "acceptor")
+    shop_assembly_repository.accept_shop_assembly_request(db_session, fresh.id, "acceptor")
+    db_session.flush()
+
+    worked_pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == worked.request_number))
+    warehouse_repository.approve_pull_request(db_session, worked_pr.id, "warehouse")
+    db_session.flush()
+
+    reopenable = shop_assembly_repository.get_shop_assembly_requests(
+        db_session, project.id, ShopAssemblyRequestStatus.APPROVED, reopenable_only=True
+    )
+    ids = {r.id for r in reopenable}
+    assert fresh.id in ids
+    assert worked.id not in ids
 
 
 # --- REQ-5 assembled-opening guard -----------------------------------------------------------

@@ -56,11 +56,14 @@ class ShippingQueries:
         self,
         project_id: strawberry.ID | None = None,
         status: ShippingOutRequestStatus | None = None,
+        reopenable_only: bool = False,
     ) -> list[ShippingOutRequest]:
-        """Accept UI (#293): shipping-out requests for a project, PENDING by default."""
+        """Accept UI (#293): shipping-out requests for a project, PENDING by default. reopenableOnly
+        (#325) keeps only requests whose minted pull request is still PENDING - the Approved/reopen
+        view uses it so it lists only requests Reopen can still act on."""
         with SessionLocal() as session:
             reqs = shipping_repository.get_shipping_out_requests(
-                session, uuid.UUID(str(project_id)) if project_id else None, status
+                session, uuid.UUID(str(project_id)) if project_id else None, status, reopenable_only
             )
             return [shipping_out_request_to_type(r) for r in reqs]
 
@@ -108,6 +111,20 @@ class ShippingMutations:
         request_id = uuid.UUID(str(id))
         with SessionLocal() as session:
             shipping_repository.reject_shipping_out_request(session, request_id, rejected_by, reason)
+            session.commit()
+            refreshed = shipping_repository.get_shipping_out_request(session, request_id)
+            return shipping_out_request_to_type(refreshed)
+
+    @strawberry.mutation
+    def reopen_shipping_out_request(self, info: strawberry.Info, id: strawberry.ID) -> ShippingOutRequest:
+        """Reopen an APPROVED shipping-out request back to PENDING (#325). Undoes an erroneous accept:
+        hard-deletes the warehouse PullRequest the accept minted and flips the request to PENDING so it
+        can be re-accepted or rejected. Refused if the warehouse has already worked the pull. Open to
+        any signed-in user."""
+        require_user(info)
+        request_id = uuid.UUID(str(id))
+        with SessionLocal() as session:
+            shipping_repository.reopen_shipping_out_request(session, request_id)
             session.commit()
             refreshed = shipping_repository.get_shipping_out_request(session, request_id)
             return shipping_out_request_to_type(refreshed)
