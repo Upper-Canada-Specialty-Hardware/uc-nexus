@@ -4,12 +4,15 @@ Covers the repository role filter, the resolver's dict->ClerkUser mapping, and t
 that restricts the query to a Shop Assembly Manager. Resolver is exercised directly against a
 ShopAssemblyQueries instance (matches test_gp_relay_reads.py)."""
 
+import uuid
+
 import pytest
 
 from app.auth import SHOP_ASSEMBLY_MANAGER_ROLE, ForbiddenError, require_role
-from app.repositories import user_repository
+from app.repositories import shop_assembly_repository, user_repository
 from app.schemas import shop_assembly as shop_assembly_module
-from app.schemas.shop_assembly import ShopAssemblyQueries
+from app.schemas.inputs import AssignOpeningsInput
+from app.schemas.shop_assembly import ShopAssemblyMutations, ShopAssemblyQueries
 
 
 def _summary(uid, roles):
@@ -82,3 +85,51 @@ def test_require_role_allows_when_role_present(monkeypatch):
 
     assert result["user_id"] == "u1"
     assert SHOP_ASSEMBLY_MANAGER_ROLE in result["roles"]
+
+
+class _FakeSession:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def commit(self):
+        pass
+
+
+def _bypass_assign_db(monkeypatch):
+    """Stub out the DB layer of assign_openings so tests exercise only its authorization branch."""
+    monkeypatch.setattr(shop_assembly_module, "SessionLocal", lambda: _FakeSession())
+    monkeypatch.setattr(shop_assembly_repository, "assign_openings", lambda *a, **k: [])
+    monkeypatch.setattr(shop_assembly_repository, "get_openings_with_items", lambda *a, **k: [])
+
+
+def _assign_input(assigned_to_user_id):
+    return AssignOpeningsInput(
+        opening_ids=[str(uuid.uuid4())],
+        assigned_to_user_id=assigned_to_user_id,
+        assigned_to="Someone",
+    )
+
+
+def test_assign_openings_self_assign_skips_manager_gate(monkeypatch):
+    role_calls = []
+    monkeypatch.setattr(shop_assembly_module, "require_user", lambda info: {"user_id": "caller"})
+    monkeypatch.setattr(shop_assembly_module, "require_role", lambda info, role: role_calls.append(role))
+    _bypass_assign_db(monkeypatch)
+
+    ShopAssemblyMutations().assign_openings(FakeInfo(), _assign_input("caller"))
+
+    assert role_calls == []
+
+
+def test_assign_openings_to_other_requires_manager_role(monkeypatch):
+    role_calls = []
+    monkeypatch.setattr(shop_assembly_module, "require_user", lambda info: {"user_id": "caller"})
+    monkeypatch.setattr(shop_assembly_module, "require_role", lambda info, role: role_calls.append(role))
+    _bypass_assign_db(monkeypatch)
+
+    ShopAssemblyMutations().assign_openings(FakeInfo(), _assign_input("other"))
+
+    assert role_calls == [SHOP_ASSEMBLY_MANAGER_ROLE]

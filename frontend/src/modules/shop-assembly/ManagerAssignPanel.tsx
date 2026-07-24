@@ -26,6 +26,7 @@ import {
 } from '../../graphql/shop-assembly';
 import { leafSuffix } from '../../utils/leaf';
 import { useToast } from '../../components/Toast';
+import { isAvailableForAssignment } from './openingFilters';
 
 interface AssembleOpening {
   id: string;
@@ -72,25 +73,18 @@ export default function ManagerAssignPanel() {
   const openings = listData?.assembleList ?? [];
   const members = memberData?.shopAssemblyMembers ?? [];
 
-  const available = useMemo(
-    () =>
-      openings.filter(
-        (o) =>
-          o.pullStatus === 'PULLED' &&
-          o.assignedToUserId === null &&
-          o.assemblyStatus === 'PENDING'
-      ),
-    [openings]
-  );
+  const available = useMemo(() => openings.filter(isAvailableForAssignment), [openings]);
 
   // Current load per member: pending pulled openings already assigned to someone.
   const loadByMember = useMemo(() => {
-    const counts = new Map<string, { name: string; count: number }>();
+    const counts = new Map<string, { id: string; name: string; count: number }>();
     for (const o of openings) {
       if (o.pullStatus === 'PULLED' && o.assemblyStatus === 'PENDING' && o.assignedToUserId) {
-        const prev = counts.get(o.assignedToUserId);
-        counts.set(o.assignedToUserId, {
-          name: o.assignedTo || prev?.name || o.assignedToUserId,
+        const id = o.assignedToUserId;
+        const prev = counts.get(id);
+        counts.set(id, {
+          id,
+          name: o.assignedTo || prev?.name || id,
           count: (prev?.count ?? 0) + 1,
         });
       }
@@ -204,7 +198,7 @@ export default function ManagerAssignPanel() {
             Current load:
           </Typography>
           {loadByMember.map((l) => (
-            <Chip key={l.name} size="small" variant="outlined" label={`${l.name}: ${l.count}`} />
+            <Chip key={l.id} size="small" variant="outlined" label={`${l.name}: ${l.count}`} />
           ))}
         </Stack>
       )}
