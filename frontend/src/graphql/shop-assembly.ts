@@ -1,5 +1,19 @@
 import { gql } from '@apollo/client/core';
 
+// Shop-assembly team members for the manager assignment picker (#330). Manager-gated backend query.
+export const GET_SHOP_ASSEMBLY_MEMBERS = gql`
+  query GetShopAssemblyMembers {
+    shopAssemblyMembers {
+      id
+      firstName
+      lastName
+      email
+      roles
+      imageUrl
+    }
+  }
+`;
+
 export const GET_ASSEMBLE_LIST = gql`
   query GetAssembleList($projectId: ID) {
     assembleList(projectId: $projectId) {
