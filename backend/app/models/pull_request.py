@@ -45,6 +45,15 @@ class PullRequest(Base):
 
 
 class PullRequestItem(Base):
+    """One tag: this quantity of this product now belongs to this door leaf of this opening.
+
+    This row is where hardware regains the opening identity that receiving dropped (inventory is
+    fungible - see docs/HARDWARE_IDENTITY_LIFECYCLE.md). The two item types tag differently:
+    LOOSE claims fungible stock, so approval deducts inventory FIFO and is gated on sufficiency;
+    OPENING_ITEM moves an assembled leaf that was already tagged at shop assembly, so approval
+    deducts nothing and only locks the OpeningItem row.
+    """
+
     __tablename__ = "pull_request_items"
     __table_args__ = (
         Index("ix_pull_request_items_pull_request", "pull_request_id"),

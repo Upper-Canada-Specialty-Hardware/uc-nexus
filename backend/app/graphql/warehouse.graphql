@@ -108,6 +108,8 @@ type PullRequestItem {
   item_type: PullRequestItemType!
   opening_number: String!
   opening_item_id: ID
+  # Door leaf this pull line is for (#311). Null = legacy / leaf-agnostic.
+  leaf: Int
   hardware_category: String
   product_code: String
   requested_quantity: Int!

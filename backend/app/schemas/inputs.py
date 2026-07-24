@@ -123,6 +123,8 @@ class ShippingOutPRDraftItemInput:
     item_type: PullRequestItemType
     opening_number: str
     opening_item_id: strawberry.ID | None = None
+    # Door leaf (#335): set on OPENING_ITEM lines from the assembled OpeningItem. Null on LOOSE.
+    leaf: int | None = None
     hardware_category: str | None = None
     product_code: str | None = None
     requested_quantity: int = 1

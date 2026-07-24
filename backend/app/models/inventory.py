@@ -8,6 +8,14 @@ from . import Base
 
 
 class InventoryLocation(Base):
+    """A quantity of one product sitting in one warehouse location.
+
+    Note what is NOT here: no opening, no door leaf. Hardware is procured per opening, but receiving
+    deliberately drops that identity and inventory becomes fungible - a hinge is a hinge. Identity is
+    re-attached later, by the pull request that tags a quantity onto a specific leaf of a specific
+    opening. See docs/HARDWARE_IDENTITY_LIFECYCLE.md before adding an opening or leaf column here.
+    """
+
     __tablename__ = "inventory_locations"
     __table_args__ = (
         Index(

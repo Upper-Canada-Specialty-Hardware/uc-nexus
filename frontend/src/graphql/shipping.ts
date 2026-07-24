@@ -87,6 +87,8 @@ export const GET_SHIPPING_OUT_REQUESTS = gql`
         id
         itemType
         openingNumber
+        openingItemId
+        leaf
         hardwareCategory
         productCode
         requestedQuantity

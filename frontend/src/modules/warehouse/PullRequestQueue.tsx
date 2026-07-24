@@ -15,6 +15,8 @@ export interface PullRequestItem {
   itemType: string;
   openingNumber: string;
   openingItemId: string | null;
+  /** Door leaf this pull line is for (#311): 1 or 2, or null for legacy / leaf-agnostic lines. */
+  leaf: number | null;
   hardwareCategory: string | null;
   productCode: string | null;
   requestedQuantity: number;

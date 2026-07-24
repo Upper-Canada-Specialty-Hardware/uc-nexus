@@ -507,6 +507,7 @@ def shipping_out_request_item_to_type(item) -> ShippingOutRequestItem:
         item_type=item.item_type,
         opening_number=item.opening_number,
         opening_item_id=strawberry.ID(str(item.opening_item_id)) if item.opening_item_id else None,
+        leaf=item.leaf,
         hardware_category=item.hardware_category,
         product_code=item.product_code,
         requested_quantity=item.requested_quantity,

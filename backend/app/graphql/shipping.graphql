@@ -17,6 +17,8 @@ type ShippingOutRequestItem {
   itemType: PullRequestItemType!
   openingNumber: String!
   openingItemId: ID
+  # Door leaf (#335): set on OPENING_ITEM lines from the assembled OpeningItem, null on LOOSE.
+  leaf: Int
   hardwareCategory: String
   productCode: String
   requestedQuantity: Int!

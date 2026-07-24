@@ -13,3 +13,8 @@ monorepo layout
 - docs/ - design docs
 
 frontend and backend talk through a single /graphql endpoint.
+
+core domain rule: hardware is procured per opening, loses that identity when it is received into
+fungible inventory, and gets it back when a pull request tags it onto a specific door leaf of a
+specific opening. read docs/HARDWARE_IDENTITY_LIFECYCLE.md before working on receiving, pull
+requests, shop assembly or shipping out.
