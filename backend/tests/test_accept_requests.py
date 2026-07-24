@@ -509,6 +509,56 @@ def test_finalize_rejects_opening_item_line_without_an_opening_item(db_session):
     assert "0019-EX" in excinfo.value.message
 
 
+def test_finalize_rejects_opening_item_from_another_project(db_session):
+    """The client sends the OpeningItem id, so the id is checked against the row, not trusted."""
+    _, other_leaf, _ = _seed_pair(db_session)
+    stranger = _make_project(db_session)
+    db_session.flush()
+
+    with pytest.raises(ValidationError) as excinfo:
+        _finalize_shipping_leaves(db_session, stranger, [other_leaf])
+    assert excinfo.value.field == "opening_item_id"
+    assert "does not belong to this project" in excinfo.value.message
+
+
+def test_finalize_rejects_a_leaf_that_is_no_longer_in_inventory(db_session):
+    """A leaf already pulled or shipped cannot be requested again by a stale wizard tab."""
+    project, leaf1, _ = _seed_pair(db_session)
+    leaf1.state = OpeningItemState.SHIPPED_OUT
+    db_session.flush()
+
+    with pytest.raises(ValidationError) as excinfo:
+        _finalize_shipping_leaves(db_session, project, [leaf1])
+    assert excinfo.value.field == "opening_item_id"
+    assert "Leaf 1" in excinfo.value.message
+    assert "SHIPPED_OUT" in excinfo.value.message
+
+
+def test_complete_never_walks_a_shipped_leaf_back_to_ship_ready(db_session):
+    """Completing a stale pull must not resurrect a leaf that has already gone out the door."""
+    project, leaf1, leaf2 = _seed_pair(db_session)
+    result = _finalize_shipping_leaves(db_session, project, [leaf1, leaf2])
+    req = result["shipping_out_requests"][0]
+    db_session.flush()
+    shipping_repository.accept_shipping_out_request(db_session, req.id, "acceptor")
+    db_session.flush()
+    pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == req.request_number))
+    warehouse_repository.approve_pull_request(db_session, pr.id, "puller")
+    db_session.flush()
+
+    # Leaf 1 ships out from an earlier slip while this pull is still open.
+    leaf1.state = OpeningItemState.SHIPPED_OUT
+    db_session.flush()
+
+    warehouse_repository.complete_pull_request(db_session, pr.id)
+    db_session.flush()
+    db_session.refresh(leaf1)
+    db_session.refresh(leaf2)
+    # Shipped leaf stays shipped; the untouched one still completes normally.
+    assert leaf1.state == OpeningItemState.SHIPPED_OUT
+    assert leaf2.state == OpeningItemState.SHIP_READY
+
+
 # --- shipping-out reopen (#325) --------------------------------------------------------------
 
 

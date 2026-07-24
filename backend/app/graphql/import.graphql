@@ -93,7 +93,10 @@ input ShippingOutPRDraftInput {
 input ShippingOutPRDraftItemInput {
   item_type: PullRequestItemType!
   opening_number: String!
+  # Required on OPENING_ITEM lines (#335): must name an IN_INVENTORY OpeningItem of this project.
   opening_item_id: ID
+  # Door leaf the OPENING_ITEM line ships (#335). Null on LOOSE.
+  leaf: Int
   hardware_category: String
   product_code: String
   requested_quantity: Int!

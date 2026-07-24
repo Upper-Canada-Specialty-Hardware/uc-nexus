@@ -309,6 +309,11 @@ def reconcile_schedule(
     return results
 
 
+def _leaf_label(oi: OpeningItemModel) -> str:
+    """ "Opening 0019-EX Leaf 2", or just the opening number for a legacy whole-opening unit."""
+    return f"Opening {oi.opening_number} Leaf {oi.leaf}" if oi.leaf is not None else f"Opening {oi.opening_number}"
+
+
 def _apply_opening_fields(opening: OpeningModel, opening_input: dict) -> None:
     """Copy mutable fields from input dict onto an Opening model."""
     opening.building = opening_input.get("building")
@@ -660,6 +665,24 @@ def finalize_import_session(
     # PullRequest. A signed-in user accepts it later, which mints the warehouse PullRequest.
     created_shipping_requests: list[ShippingOutRequestModel] = []
     if shipping_pr_drafts:
+        # #335: pre-load every OpeningItem an OPENING_ITEM line points at, so each line can be
+        # checked against the real row rather than trusting the id the client sent. One query for
+        # the whole finalize.
+        referenced_oi_ids = {
+            uuid.UUID(str(item["opening_item_id"]))
+            for pr_draft in shipping_pr_drafts
+            for item in pr_draft.get("items", [])
+            if item.get("opening_item_id")
+        }
+        opening_items_by_id: dict[uuid.UUID, OpeningItemModel] = {}
+        if referenced_oi_ids:
+            opening_items_by_id = {
+                oi.id: oi
+                for oi in session.scalars(
+                    select(OpeningItemModel).where(OpeningItemModel.id.in_(referenced_oi_ids))
+                ).all()
+            }
+
         for pr_draft in shipping_pr_drafts:
             # Validate uniqueness against the request entity's own number space.
             existing_req = session.scalars(
@@ -686,15 +709,29 @@ def finalize_import_session(
             for item_input in pr_draft.get("items", []):
                 item_type = PullRequestItemType(item_input["item_type"])
                 opening_item_id = item_input.get("opening_item_id")
-                # #335: an OPENING_ITEM line ships an already-assembled leaf, so it MUST name the
-                # OpeningItem. Without one the line is inert - approve skips it and complete never
-                # flips a leaf to SHIP_READY - so reject it here instead of minting a dead request.
-                if item_type == PullRequestItemType.OPENING_ITEM and not opening_item_id:
-                    raise ValidationError(
-                        f"Shipping-out request {pr_draft['request_number']}: an assembled-opening line "
-                        f"for opening {item_input['opening_number']} must reference an opening item",
-                        field="opening_item_id",
-                    )
+                # #335: an OPENING_ITEM line ships an already-assembled leaf, so it MUST name a real
+                # OpeningItem of this project that is still in inventory. An id that is missing,
+                # foreign, or already pulled/shipped would mint a line that either does nothing
+                # (approve skips it, complete never flips a leaf) or moves someone else's leaf.
+                if item_type == PullRequestItemType.OPENING_ITEM:
+                    label = f"Shipping-out request {pr_draft['request_number']}, opening {item_input['opening_number']}"
+                    if not opening_item_id:
+                        raise ValidationError(
+                            f"{label}: an assembled-opening line must reference an opening item",
+                            field="opening_item_id",
+                        )
+                    oi = opening_items_by_id.get(uuid.UUID(str(opening_item_id)))
+                    if oi is None or oi.project_id != project.id:
+                        raise ValidationError(
+                            f"{label}: opening item {opening_item_id} does not belong to this project",
+                            field="opening_item_id",
+                        )
+                    if oi.state != OpeningItemState.IN_INVENTORY:
+                        raise ValidationError(
+                            f"{label}: {_leaf_label(oi)} is {oi.state.value}, not in inventory, so it "
+                            f"cannot be requested for shipping",
+                            field="opening_item_id",
+                        )
                 req_item = ShippingOutRequestItemModel(
                     id=uuid.uuid4(),
                     shipping_out_request_id=req.id,

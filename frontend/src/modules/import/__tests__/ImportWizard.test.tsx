@@ -9,7 +9,8 @@ import {
   GET_PROJECT_HARDWARE_SCHEDULE,
   RECONCILE_SCHEDULE,
 } from '../../../graphql/import';
-import { GET_OPENING_ITEMS } from '../../../graphql/warehouse';
+import { GET_OPENING_ITEMS, GET_PULL_REQUESTS } from '../../../graphql/warehouse';
+import { GET_SHIPPING_OUT_REQUESTS } from '../../../graphql/shipping';
 import {
   useHardwareScheduleParser,
   type UseHardwareScheduleParserReturn,
@@ -191,7 +192,33 @@ const emptyOpeningItemsMock: MockedResponse = {
   result: { data: { openingItems: [] } },
 };
 
-const reimportMocks: MockedResponse[] = [...reimportBaseMocks, emptyOpeningItemsMock];
+// The shipping purpose also asks which leaves are already claimed by an open pull or a pending
+// request. Nothing claimed by default.
+function claimMocks(
+  pullRequests: object[] = [],
+  shippingOutRequests: object[] = [],
+): MockedResponse[] {
+  return [
+    {
+      request: {
+        query: GET_PULL_REQUESTS,
+        variables: { projectId: 'proj-1', source: 'SHIPPING_OUT' },
+      },
+      maxUsageCount: Number.POSITIVE_INFINITY,
+      result: { data: { pullRequests } },
+    },
+    {
+      request: {
+        query: GET_SHIPPING_OUT_REQUESTS,
+        variables: { projectId: 'proj-1', status: 'PENDING', reopenableOnly: false },
+      },
+      maxUsageCount: Number.POSITIVE_INFINITY,
+      result: { data: { shippingOutRequests } },
+    },
+  ];
+}
+
+const reimportMocks: MockedResponse[] = [...reimportBaseMocks, emptyOpeningItemsMock, ...claimMocks()];
 
 // --- Shipping-path fixtures (#335) ---
 
@@ -429,7 +456,7 @@ describe('ImportWizard step transitions', () => {
   it('offers assembled door leaves per leaf and drops their hardware from the loose list', async () => {
     renderWizard({
       project: reimportProject,
-      mocks: [...reimportBaseMocks, shippingReconcileMock, shippingOpeningItemsMock],
+      mocks: [...reimportBaseMocks, shippingReconcileMock, shippingOpeningItemsMock, ...claimMocks()],
     });
     await flushApollo();
     clickNext();
@@ -465,6 +492,64 @@ describe('ImportWizard step transitions', () => {
       target: { value: 'SHIP-0019' },
     });
     expect(nextButton()).toBeEnabled();
+  });
+
+  // A leaf stays IN_INVENTORY until its pull completes, so state alone would re-offer it and one
+  // physical leaf would be pulled twice.
+  it('hides an assembled leaf that is already on an open shipping pull', async () => {
+    renderWizard({
+      project: reimportProject,
+      mocks: [
+        ...reimportBaseMocks,
+        shippingReconcileMock,
+        shippingOpeningItemsMock,
+        ...claimMocks([
+          {
+            __typename: 'PullRequest',
+            id: 'pr-1',
+            requestNumber: 'SHIP-EXISTING',
+            projectId: 'proj-1',
+            source: 'SHIPPING_OUT',
+            status: 'IN_PROGRESS',
+            requestedBy: 'someone',
+            assignedTo: 'someone',
+            createdAt: '2026-07-02T00:00:00',
+            updatedAt: '2026-07-02T00:00:00',
+            approvedAt: null,
+            completedAt: null,
+            cancelledAt: null,
+            items: [
+              {
+                __typename: 'PullRequestItem',
+                id: 'pri-1',
+                pullRequestId: 'pr-1',
+                itemType: 'OPENING_ITEM',
+                openingNumber: 'O-1',
+                openingItemId: 'oi-leaf-1',
+                leaf: 1,
+                hardwareCategory: null,
+                productCode: null,
+                requestedQuantity: 1,
+              },
+            ],
+          },
+        ]),
+      ],
+    });
+    await flushApollo();
+    clickNext();
+
+    fireEvent.click(screen.getByRole('radio', { name: /Pull Request for Shipping Out/i }));
+    clickNext();
+    fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
+    clickNext();
+    await flushApollo();
+    clickNext();
+
+    fireEvent.click(screen.getByRole('button', { name: /Add Shipping PR/i }));
+
+    expect(screen.queryByText('Opening O-1 - Leaf 1')).not.toBeInTheDocument();
+    expect(screen.getByText('Opening O-1 - Leaf 2')).toBeInTheDocument();
   });
 
   it('walks the po path through Reconciliation to Classification and gates on unclassified items', () => {

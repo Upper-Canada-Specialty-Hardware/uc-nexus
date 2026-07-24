@@ -34,7 +34,8 @@ import { useHardwareScheduleParser } from '../../hooks/useHardwareScheduleParser
 import { useNavigate } from 'react-router-dom';
 import { GET_PROJECT_EXCLUDED_ITEMS, GET_PROJECT_HARDWARE_SCHEDULE, RECONCILE_SCHEDULE, FINALIZE_IMPORT_SESSION } from '../../graphql/import';
 import { GET_PROJECTS } from '../../graphql/shared';
-import { GET_OPENING_ITEMS } from '../../graphql/warehouse';
+import { GET_OPENING_ITEMS, GET_PULL_REQUESTS } from '../../graphql/warehouse';
+import { GET_SHIPPING_OUT_REQUESTS } from '../../graphql/shipping';
 import type { ClassificationRow } from './ClassificationGrid';
 import type {
   AggregatedHardwareItem,
@@ -72,8 +73,22 @@ interface OpeningItemResponse {
   openingNumber: string;
   leaf: number | null;
   state: string;
-  assemblyCompletedAt: string;
-  installedHardware: Array<{ productCode: string; hardwareCategory: string; quantity: number }>;
+  installedHardware: Array<{ productCode: string; quantity: number }>;
+}
+
+/** The slices used to find leaves already claimed by an open request or pull (#335). */
+interface ShippingLineSummary {
+  itemType: string;
+  openingItemId: string | null;
+}
+
+interface PullRequestSummary {
+  status: string;
+  items: ShippingLineSummary[];
+}
+
+interface ShippingRequestSummary {
+  items: ShippingLineSummary[];
 }
 
 // ---- Helpers ----
@@ -199,9 +214,32 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
   // Assembled units for the shipping purpose (#335). A door leaf only exists once shop assembly has
   // built one, and it lives as an OpeningItem - the hardware schedule cannot supply it. Shipping an
   // assembled leaf means naming that row, so read it from the warehouse's own list.
-  const { data: openingItemsData } = useQuery<{ openingItems: OpeningItemResponse[] }>(GET_OPENING_ITEMS, {
+  const shippingStepActive = open && purpose === 'shipping';
+  const {
+    data: openingItemsData,
+    loading: openingItemsLoading,
+    error: openingItemsError,
+  } = useQuery<{ openingItems: OpeningItemResponse[] }>(GET_OPENING_ITEMS, {
     variables: { projectId: existingProjectId },
-    skip: !open || purpose !== 'shipping',
+    skip: !shippingStepActive,
+    fetchPolicy: 'cache-and-network',
+  });
+
+  // Leaves already spoken for. A leaf stays IN_INVENTORY for the whole life of an open shipping
+  // pull - its state only flips at complete - so state alone would re-offer a leaf that someone has
+  // already requested, and one physical leaf would be pulled twice. Loose lines need no equivalent:
+  // reconcile_schedule already moves quantity on an open SHIPPING_OUT pull out of the RECEIVED
+  // bucket, so it never reaches the loose list.
+  const { data: shippingPullsData } = useQuery<{ pullRequests: PullRequestSummary[] }>(GET_PULL_REQUESTS, {
+    variables: { projectId: existingProjectId, source: 'SHIPPING_OUT' },
+    skip: !shippingStepActive,
+    fetchPolicy: 'cache-and-network',
+  });
+  const { data: pendingShippingRequestsData } = useQuery<{
+    shippingOutRequests: ShippingRequestSummary[];
+  }>(GET_SHIPPING_OUT_REQUESTS, {
+    variables: { projectId: existingProjectId, status: 'PENDING', reopenableOnly: false },
+    skip: !shippingStepActive,
     fetchPolicy: 'cache-and-network',
   });
 
@@ -293,6 +331,20 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
     return raw.map((r, i) => ({ ...r, id: `recon-${i}` }));
   }, [reconcileData]);
 
+  // Received-and-unpulled quantity per aggregation key. Both request purposes pull from it, and the
+  // shipping loose list also clamps its requested quantity to it, so it is indexed once.
+  // reconcile_schedule has already moved anything sitting on an open pull into its own bucket, so a
+  // RECEIVED row is genuinely available loose stock.
+  const receivedQtyByKey = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const row of reconciliationRows) {
+      if (row.status !== 'RECEIVED' || row.quantity <= 0) continue;
+      const key = `${row.openingNumber}|${row.productCode}|${row.hardwareCategory}`;
+      map.set(key, (map.get(key) ?? 0) + row.quantity);
+    }
+    return map;
+  }, [reconciliationRows]);
+
   // Filter items based on reconciliation data per purpose
   const reconFilteredHardwareItems = useMemo(() => {
     if (!isReimport) return selectedHardwareItems;
@@ -301,33 +353,16 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
       return selectedHardwareItems.filter((hi) => selectedReconItems.has(aggregationKey(hi)));
     }
 
-    if (purpose === 'assembly') {
-      // SAR: only items that have RECEIVED quantity in reconciliation
-      const eligibleKeys = new Set<string>();
-      for (const row of reconciliationRows) {
-        if (row.status === 'RECEIVED' && row.quantity > 0) {
-          eligibleKeys.add(`${row.openingNumber}|${row.productCode}|${row.hardwareCategory}`);
-        }
-      }
-      return selectedHardwareItems.filter((hi) => eligibleKeys.has(aggregationKey(hi)));
-    }
-
-    if (purpose === 'shipping') {
-      // SOR loose lines: RECEIVED quantity only (#335). ASSEMBLED quantity is no longer loose stock -
-      // it was tagged onto a door leaf at shop assembly and now ships as that leaf, selected from
-      // assembledLeafCandidates below. Offering it here too is what made the PR ask the warehouse for
-      // hardware that had already left inventory.
-      const eligibleKeys = new Set<string>();
-      for (const row of reconciliationRows) {
-        if (row.status === 'RECEIVED' && row.quantity > 0) {
-          eligibleKeys.add(`${row.openingNumber}|${row.productCode}|${row.hardwareCategory}`);
-        }
-      }
-      return selectedHardwareItems.filter((hi) => eligibleKeys.has(aggregationKey(hi)));
+    // SAR, and SOR loose lines: received stock only. For shipping (#335) that means ASSEMBLED
+    // quantity is excluded - it was tagged onto a door leaf at shop assembly and now ships as that
+    // leaf, from assembledLeafCandidates below. Offering it here too is what made the pull request
+    // ask the warehouse for hardware that had already left inventory.
+    if (purpose === 'assembly' || purpose === 'shipping') {
+      return selectedHardwareItems.filter((hi) => receivedQtyByKey.has(aggregationKey(hi)));
     }
 
     return selectedHardwareItems;
-  }, [selectedHardwareItems, selectedReconItems, purpose, isReimport, reconciliationRows]);
+  }, [selectedHardwareItems, selectedReconItems, purpose, isReimport, receivedQtyByKey]);
 
   const aggregatedHardwareItems = useMemo<AggregatedHardwareItem[]>(() => {
     const map = new Map<string, AggregatedHardwareItem>();
@@ -347,44 +382,95 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
 
   // ---- Shipping selection candidates (#335) ----
 
+  // OpeningItems already named by a pending shipping request or an unfinished shipping pull. One
+  // physical leaf can only be pulled once, so these drop out of the offer list.
+  const claimedOpeningItemIds = useMemo(() => {
+    const claimed = new Set<string>();
+    const collect = (lines: ShippingLineSummary[]) => {
+      for (const line of lines) {
+        if (line.itemType === 'OPENING_ITEM' && line.openingItemId) claimed.add(line.openingItemId);
+      }
+    };
+    for (const pr of shippingPullsData?.pullRequests ?? []) {
+      if (pr.status === 'PENDING' || pr.status === 'IN_PROGRESS') collect(pr.items);
+    }
+    for (const req of pendingShippingRequestsData?.shippingOutRequests ?? []) collect(req.items);
+    return claimed;
+  }, [shippingPullsData, pendingShippingRequestsData]);
+
   // Assembled door leaves the user can ship: one per OpeningItem still sitting IN_INVENTORY on a
-  // selected opening. SHIP_READY units are deliberately absent - they have already been pulled and
-  // are waiting on the Ship tab, so re-requesting them would be a second pull of the same leaf.
+  // selected opening and not already claimed. SHIP_READY units are deliberately absent - they have
+  // already been pulled and are waiting on the Ship tab.
   const assembledLeafCandidates = useMemo<AssembledLeafCandidate[]>(() => {
     if (purpose !== 'shipping') return [];
     return (openingItemsData?.openingItems ?? [])
-      .filter((oi) => oi.state === 'IN_INVENTORY' && selectedOpenings.has(oi.openingNumber))
+      .filter(
+        (oi) =>
+          oi.state === 'IN_INVENTORY' &&
+          selectedOpenings.has(oi.openingNumber) &&
+          !claimedOpeningItemIds.has(oi.id),
+      )
       .map((oi) => ({
         id: oi.id,
         openingNumber: oi.openingNumber,
         leaf: oi.leaf,
-        assemblyCompletedAt: oi.assemblyCompletedAt,
         installedHardware: oi.installedHardware ?? [],
       }))
-      .sort(
-        (a, b) =>
-          a.openingNumber.localeCompare(b.openingNumber) || (a.leaf ?? 0) - (b.leaf ?? 0),
-      );
-  }, [purpose, openingItemsData, selectedOpenings]);
+      .sort((a, b) => a.openingNumber.localeCompare(b.openingNumber) || (a.leaf ?? 0) - (b.leaf ?? 0));
+  }, [purpose, openingItemsData, selectedOpenings, claimedOpeningItemIds]);
 
   // Loose hardware the user can ship, quantity clamped to what reconciliation says is actually
   // received and unpulled. Without the clamp a partly-received product would request its full
   // schedule quantity and short the pull.
   const looseShippingCandidates = useMemo<AggregatedHardwareItem[]>(() => {
     if (purpose !== 'shipping' || !isReimport) return aggregatedHardwareItems;
-    const receivedByKey = new Map<string, number>();
-    for (const row of reconciliationRows) {
-      if (row.status !== 'RECEIVED' || row.quantity <= 0) continue;
-      const key = `${row.openingNumber}|${row.productCode}|${row.hardwareCategory}`;
-      receivedByKey.set(key, (receivedByKey.get(key) ?? 0) + row.quantity);
-    }
     return aggregatedHardwareItems
-      .map((hi) => {
-        const received = receivedByKey.get(aggregationKey(hi)) ?? 0;
-        return { ...hi, item_quantity: Math.min(hi.item_quantity, received) };
-      })
+      .map((hi) => ({
+        ...hi,
+        item_quantity: Math.min(hi.item_quantity, receivedQtyByKey.get(aggregationKey(hi)) ?? 0),
+      }))
       .filter((hi) => hi.item_quantity > 0);
-  }, [purpose, isReimport, aggregatedHardwareItems, reconciliationRows]);
+  }, [purpose, isReimport, aggregatedHardwareItems, receivedQtyByKey]);
+
+  // Every line the shipping step can currently offer, keyed the same way draft lines are.
+  const shippingCandidateKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const leaf of assembledLeafCandidates) {
+      keys.add(
+        shippingPRItemKey({
+          itemType: 'OPENING_ITEM',
+          openingNumber: leaf.openingNumber,
+          openingItemId: leaf.id,
+          requestedQuantity: 1,
+        }),
+      );
+    }
+    for (const hi of looseShippingCandidates) {
+      keys.add(
+        shippingPRItemKey({
+          itemType: 'LOOSE',
+          openingNumber: hi.opening_number,
+          hardwareCategory: hi.hardware_category,
+          productCode: hi.product_code,
+          requestedQuantity: hi.item_quantity,
+        }),
+      );
+    }
+    return keys;
+  }, [assembledLeafCandidates, looseShippingCandidates]);
+
+  // What the shipping step shows and what finalize submits: draft lines whose candidate is still on
+  // offer. A line can stop being offered because the user stepped back and de-selected its opening,
+  // or because someone else claimed the leaf; it then has no checkbox left to untick, so without
+  // this it would sit invisible on the draft and still be submitted. Derived rather than pruned in
+  // an effect, so re-selecting the opening brings the user's tick back.
+  const effectiveShippingPRDrafts = useMemo(() => {
+    if (purpose !== 'shipping') return shippingPRDrafts;
+    return shippingPRDrafts.map((draft) => {
+      const kept = draft.items.filter((item) => shippingCandidateKeys.has(shippingPRItemKey(item)));
+      return kept.length === draft.items.length ? draft : { ...draft, items: kept };
+    });
+  }, [purpose, shippingPRDrafts, shippingCandidateKeys]);
 
   // Classification rows for DataGrid (one row per aggregated hardware item)
   const classificationRows = useMemo<ClassificationRow[]>(() => {
@@ -763,7 +849,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
               })
           : null,
       shippingOutPrDrafts: purpose === 'shipping'
-        ? shippingPRDrafts.map((pr) => ({
+        ? effectiveShippingPRDrafts.map((pr) => ({
             requestNumber: pr.requestNumber,
             requestedBy: pr.requestedBy,
             items: pr.items.map((item) => ({
@@ -839,7 +925,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
             })
         : null,
     };
-  }, [parsed, project.id, selectedOpenings, purpose, vendorGroups, vendorPOInfo, selectedVendors, unitCostOverrides, orderAsValues, classifications, siteShopClassifications, shippingPRDrafts, sarRequestNumber, canStartFromLatest, hydratedFromPersisted]);
+  }, [parsed, project.id, selectedOpenings, purpose, vendorGroups, vendorPOInfo, selectedVendors, unitCostOverrides, orderAsValues, classifications, siteShopClassifications, effectiveShippingPRDrafts, sarRequestNumber, canStartFromLatest, hydratedFromPersisted]);
 
   const handleFinalize = useCallback(async () => {
     setConfirmOpen(false);
@@ -1252,9 +1338,11 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
           {/* ============ Step: Shipping PRs ============ */}
           {effectiveStepId === 'shipping-prs' && (
             <ShippingPRsStep
-              shippingPRDrafts={shippingPRDrafts}
+              shippingPRDrafts={effectiveShippingPRDrafts}
               assembledLeaves={assembledLeafCandidates}
               looseItems={looseShippingCandidates}
+              leavesLoading={openingItemsLoading}
+              leavesError={openingItemsError !== undefined}
               onAddPR={addShippingPR}
               onRemovePR={removeShippingPR}
               onUpdatePR={updateShippingPR}
@@ -1296,7 +1384,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
                 {purpose === 'shipping' && (
                   <Box sx={{ mb: 1 }}>
                     <Typography variant="body1">
-                      {shippingPRDrafts.filter((d) => d.requestNumber.trim() !== '').length} Shipping
+                      {effectiveShippingPRDrafts.filter((d) => d.requestNumber.trim() !== '').length} Shipping
                       Out Pull Request(s)
                     </Typography>
                   </Box>

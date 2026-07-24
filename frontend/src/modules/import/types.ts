@@ -45,8 +45,7 @@ export interface AssembledLeafCandidate {
   id: string;
   openingNumber: string;
   leaf: number | null;
-  assemblyCompletedAt: string;
-  installedHardware: Array<{ productCode: string; hardwareCategory: string; quantity: number }>;
+  installedHardware: Array<{ productCode: string; quantity: number }>;
 }
 
 export function hardwareItemKey(hi: ParsedHardwareItem) {

@@ -28,7 +28,6 @@ interface ShippingRequestItem {
   id: string;
   itemType: string;
   openingNumber: string | null;
-  openingItemId: string | null;
   /** Door leaf (#335): set on assembled-leaf lines, null on loose hardware. */
   leaf: number | null;
   hardwareCategory: string | null;
@@ -121,12 +120,12 @@ export default function ShippingRequestsPage({ projectId }: Props) {
               <TableBody>
                 {req.items.map((item) => (
                   <TableRow key={item.id}>
-                    <TableCell>{item.openingNumber || '—'}</TableCell>
-                    <TableCell>{leafLabel(item.leaf) ?? '—'}</TableCell>
+                    <TableCell>{item.openingNumber || '-'}</TableCell>
+                    <TableCell>{leafLabel(item.leaf) ?? '-'}</TableCell>
                     <TableCell>
-                      {item.itemType === 'OPENING_ITEM' ? 'Assembled door leaf' : item.productCode || '—'}
+                      {item.itemType === 'OPENING_ITEM' ? 'Assembled door leaf' : item.productCode || '-'}
                     </TableCell>
-                    <TableCell>{item.hardwareCategory || '—'}</TableCell>
+                    <TableCell>{item.hardwareCategory || '-'}</TableCell>
                     <TableCell align="right">{item.requestedQuantity}</TableCell>
                   </TableRow>
                 ))}

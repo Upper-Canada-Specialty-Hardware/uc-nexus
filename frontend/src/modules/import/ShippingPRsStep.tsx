@@ -22,6 +22,10 @@ interface ShippingPRsStepProps {
   assembledLeaves: AssembledLeafCandidate[];
   /** Loose hardware still in inventory for the selected openings. */
   looseItems: AggregatedHardwareItem[];
+  /** The assembled-unit lookup is still in flight, so an empty list means nothing yet. */
+  leavesLoading: boolean;
+  /** The assembled-unit lookup failed; an empty list here is not a real "nothing to ship". */
+  leavesError: boolean;
   onAddPR: () => void;
   onRemovePR: (index: number) => void;
   onUpdatePR: (index: number, field: 'requestNumber' | 'requestedBy', value: string) => void;
@@ -30,18 +34,26 @@ interface ShippingPRsStepProps {
   onBack: () => void;
 }
 
-/** "SG 56 AD8410, HNG-100 +2 more" - what is bolted onto this leaf, for recognising it at a glance. */
+/** "SG 56 AD8410 x2, HNG-100" - what is bolted onto this leaf, for recognising it at a glance. */
 function installedSummary(leaf: AssembledLeafCandidate): string {
-  const codes = leaf.installedHardware.map((h) => h.productCode);
-  if (codes.length === 0) return 'No hardware recorded';
-  const shown = codes.slice(0, 3).join(', ');
-  return codes.length > 3 ? `${shown} +${codes.length - 3} more` : shown;
+  if (leaf.installedHardware.length === 0) return 'No hardware recorded';
+  // Sum per product code: a leaf routinely carries several rows of the same item, and
+  // "HNG-100, HNG-100, HNG-100" tells the user nothing.
+  const byCode = new Map<string, number>();
+  for (const h of leaf.installedHardware) {
+    byCode.set(h.productCode, (byCode.get(h.productCode) ?? 0) + (h.quantity ?? 1));
+  }
+  const parts = Array.from(byCode.entries()).map(([code, qty]) => (qty > 1 ? `${code} x${qty}` : code));
+  const shown = parts.slice(0, 3).join(', ');
+  return parts.length > 3 ? `${shown} +${parts.length - 3} more` : shown;
 }
 
 export default function ShippingPRsStep({
   shippingPRDrafts,
   assembledLeaves,
   looseItems,
+  leavesLoading,
+  leavesError,
   onAddPR,
   onRemovePR,
   onUpdatePR,
@@ -57,13 +69,40 @@ export default function ShippingPRsStep({
     [shippingPRDrafts],
   );
 
-  const nothingToShip = assembledLeaves.length === 0 && looseItems.length === 0;
+  // An assembled leaf is one physical object, so it can sit on exactly one request. Loose hardware
+  // is fungible and is not restricted this way.
+  const leafKeysByDraft = useMemo(
+    () =>
+      shippingPRDrafts.map(
+        (d) => new Set(d.items.filter((i) => i.itemType === 'OPENING_ITEM').map(shippingPRItemKey)),
+      ),
+    [shippingPRDrafts],
+  );
+
+  const nothingToShip =
+    !leavesLoading && !leavesError && assembledLeaves.length === 0 && looseItems.length === 0;
 
   return (
     <Box>
       <Typography variant="h6" sx={{ mb: 2 }}>
         Shipping Pull Requests
       </Typography>
+
+      {/* An empty list has three very different causes, and the failure case must not read as
+          "nothing to ship" - that is the dead end #335 was about. */}
+      {leavesError && (
+        <Alert severity="error" sx={{ mb: 2 }}>
+          Could not load this project's assembled door leaves. Any leaf that is ready to ship is
+          missing from the list below, so go back and retry before creating a request.
+        </Alert>
+      )}
+
+      {nothingToShip && (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          Nothing on the selected openings is in a shippable state. Assembled leaves already on
+          another shipping request are not listed.
+        </Alert>
+      )}
 
       {shippingPRDrafts.length === 0 && (
         <Alert severity="info" sx={{ mb: 2 }}>
@@ -106,12 +145,6 @@ export default function ShippingPRsStep({
               Select items ({draft.items.length} selected):
             </Typography>
 
-            {nothingToShip && (
-              <Alert severity="warning" sx={{ mb: 1 }}>
-                Nothing on the selected openings is in a shippable state.
-              </Alert>
-            )}
-
             <Box sx={{ maxHeight: 320, overflowY: 'auto' }}>
               {/* Assembled door leaves (#335). Each one ships as itself: the hardware was tagged onto
                   it at shop assembly and left loose inventory then, so this is a move, not a pull
@@ -129,13 +162,16 @@ export default function ShippingPRsStep({
                       leaf: leaf.leaf,
                       requestedQuantity: 1,
                     };
+                    const key = shippingPRItemKey(item);
+                    const onAnotherDraft = leafKeysByDraft.some((keys, i) => i !== prIdx && keys.has(key));
                     return (
                       <FormControlLabel
                         key={leaf.id}
+                        disabled={onAnotherDraft}
                         control={
                           <Checkbox
                             size="small"
-                            checked={selectedKeys.has(shippingPRItemKey(item))}
+                            checked={selectedKeys.has(key)}
                             onChange={() => onTogglePRItem(prIdx, item)}
                           />
                         }
@@ -147,7 +183,9 @@ export default function ShippingPRsStep({
                               {leaf.leaf == null && ' (assembled unit)'}
                             </Typography>
                             <Typography variant="caption" color="text.secondary">
-                              {installedSummary(leaf)}
+                              {onAnotherDraft
+                                ? 'Already on another shipping PR in this session'
+                                : installedSummary(leaf)}
                             </Typography>
                           </Box>
                         }

@@ -369,6 +369,9 @@ export default function PullRequestDetailModal({
                       <TableCell>Product Code</TableCell>
                       <TableCell>Hardware Category</TableCell>
                       <TableCell>Opening Number</TableCell>
+                      {/* Shop-assembly pulls are per leaf too (#311), so a pair's two lines read
+                          identically without this. */}
+                      <TableCell>Leaf</TableCell>
                       <TableCell align="right">Requested Qty</TableCell>
                       {isPending && <TableCell align="right">Available Qty</TableCell>}
                       {isPending && <TableCell align="center">Status</TableCell>}
@@ -383,6 +386,7 @@ export default function PullRequestDetailModal({
                           <TableCell>{item.productCode ?? '-'}</TableCell>
                           <TableCell>{item.hardwareCategory ?? '-'}</TableCell>
                           <TableCell>{item.openingNumber}</TableCell>
+                          <TableCell>{leafLabel(item.leaf) ?? '-'}</TableCell>
                           <TableCell align="right">{item.requestedQuantity}</TableCell>
                           {isPending && <TableCell align="right">{availableQty}</TableCell>}
                           {isPending && (
