@@ -3,13 +3,14 @@ import {
   Dialog, DialogTitle, DialogContent, DialogActions, Button, TextField,
   Typography, Box, CircularProgress, Alert, List, ListItem, ListItemText,
 } from '@mui/material';
-import { useMutation } from '@apollo/client/react';
+import { useMutation, useApolloClient } from '@apollo/client/react';
 import { pdf } from '@react-pdf/renderer';
 import { useIdentity } from '../../hooks/useIdentity';
 import { useCart, type CartItem } from '../../contexts/CartContext';
 import { useToast } from '../../components/Toast';
 import { useNavigate } from 'react-router-dom';
 import { CONFIRM_SHIPMENT } from '../../graphql/shipping';
+import { SHIPPING_REFETCH_QUERIES, SHIPPING_STALE_ROOT_FIELDS } from '../../graphql/refetch';
 import PackingSlipDocument from './PackingSlipDocument';
 
 interface PackingSlipFormProps {
@@ -43,11 +44,20 @@ interface ShipmentResult {
 
 const SLIP_NUMBER_PATTERN = /^[a-zA-Z0-9_-]{1,50}$/;
 
+// The backend rejects an opening item that already shipped with an id-bearing state-transition
+// string ("Opening item <uuid> is not Ship_Ready (current: Shipped_Out)"). That only reaches a user
+// whose grid was stale, so pair the readable message with the refetch that unsticks them (#337).
+const STALE_SHIP_READY_ERROR = /not Ship_Ready/i;
+const STALE_SHIP_READY_MESSAGE =
+  'One or more items are no longer ship-ready - they may already have shipped. ' +
+  'The list has been refreshed; please review your cart.';
+
 export default function PackingSlipForm({ open, onClose, onShipped, projectId, projectName }: PackingSlipFormProps) {
   const { displayName } = useIdentity();
   const { items, clearCart } = useCart();
   const { showToast } = useToast();
   const navigate = useNavigate();
+  const client = useApolloClient();
 
   const [view, setView] = useState<'form' | 'success'>('form');
   const [packingSlipNumber, setPackingSlipNumber] = useState('');
@@ -61,7 +71,20 @@ export default function PackingSlipForm({ open, onClose, onShipped, projectId, p
   const openingItemCount = items.filter((i) => i.itemType === 'Opening_Item').length;
   const looseItemCount = items.filter((i) => i.itemType === 'Loose').length;
 
-  const [confirmShipment, { loading: confirming }] = useMutation<ShipmentResult>(CONFIRM_SHIPMENT);
+  // A shipment contradicts every cached read of ship-ready stock, the leaf rollup, the slip list and
+  // the warehouse opening-item states. Evict those root fields so routes that aren't mounted refetch
+  // on their next visit, and refetch the mounted ones before the success view replaces the form -
+  // otherwise the Ship view behind this dialog keeps offering the leaf that just left (#337).
+  const [confirmShipment, { loading: confirming }] = useMutation<ShipmentResult>(CONFIRM_SHIPMENT, {
+    update(cache) {
+      for (const fieldName of SHIPPING_STALE_ROOT_FIELDS) {
+        cache.evict({ id: 'ROOT_QUERY', fieldName });
+      }
+      cache.gc();
+    },
+    refetchQueries: SHIPPING_REFETCH_QUERIES,
+    awaitRefetchQueries: true,
+  });
 
   const handleConfirm = useCallback(async () => {
     setError(null);
@@ -106,12 +129,19 @@ export default function PackingSlipForm({ open, onClose, onShipped, projectId, p
       if (data?.confirmShipment) {
         setResult(data.confirmShipment);
         setView('success');
+        // These items have shipped - the cart must not still hold them behind the success view.
+        clearCart();
         showToast('Shipment confirmed successfully!', 'success');
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to confirm shipment');
+      const message = err instanceof Error ? err.message : 'Failed to confirm shipment';
+      const stale = STALE_SHIP_READY_ERROR.test(message);
+      setError(stale ? STALE_SHIP_READY_MESSAGE : message);
+      // A rejection means the view the user acted on disagrees with the server, so reconcile it here
+      // too - the mutation's own refetch never runs on the error path.
+      void client.refetchQueries({ include: SHIPPING_REFETCH_QUERIES });
     }
-  }, [confirmShipment, items, packingSlipNumber, projectId, displayName, showToast]);
+  }, [confirmShipment, items, packingSlipNumber, projectId, displayName, showToast, clearCart, client]);
 
   const handleViewPdf = useCallback(async () => {
     if (!result) return;
@@ -157,24 +187,24 @@ export default function PackingSlipForm({ open, onClose, onShipped, projectId, p
     }
   }, [result, projectName, showToast]);
 
+  // Both exits from the success view only reset local form state - the cart was already emptied when
+  // the shipment succeeded, not deferred to whichever button the user happens to press.
   const handleShipMore = useCallback(() => {
-    clearCart();
     setView('form');
     setPackingSlipNumber('');
     setError(null);
     setResult(null);
     onShipped();
-  }, [clearCart, onShipped]);
+  }, [onShipped]);
 
   const handleReturnHome = useCallback(() => {
-    clearCart();
     setView('form');
     setPackingSlipNumber('');
     setError(null);
     setResult(null);
     onClose();
     navigate('/app');
-  }, [clearCart, navigate, onClose]);
+  }, [navigate, onClose]);
 
   const handleClose = () => {
     if (view === 'form') {
