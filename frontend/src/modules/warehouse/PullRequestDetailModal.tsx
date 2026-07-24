@@ -22,6 +22,7 @@ import { useToast } from '../../components/Toast';
 import Modal from '../../components/Modal';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import type { PullRequest, PullRequestItem } from './PullRequestQueue';
+import { leafLabel } from '../../utils/leaf';
 
 // --- Status config ---
 
@@ -412,6 +413,8 @@ export default function PullRequestDetailModal({
                     <TableRow>
                       <TableCell>Type</TableCell>
                       <TableCell>Opening Number</TableCell>
+                      {/* #335: a pair ships as two lines. Without the leaf they read identically. */}
+                      <TableCell>Leaf</TableCell>
                       <TableCell align="right">Requested Qty</TableCell>
                     </TableRow>
                   </TableHead>
@@ -420,6 +423,7 @@ export default function PullRequestDetailModal({
                       <TableRow key={item.id}>
                         <TableCell>Assembled Opening</TableCell>
                         <TableCell>{item.openingNumber}</TableCell>
+                        <TableCell>{leafLabel(item.leaf) ?? '-'}</TableCell>
                         <TableCell align="right">{item.requestedQuantity}</TableCell>
                       </TableRow>
                     ))}

@@ -213,6 +213,7 @@ export const GET_PULL_REQUESTS = gql`
         itemType
         openingNumber
         openingItemId
+        leaf
         hardwareCategory
         productCode
         requestedQuantity
@@ -508,7 +509,7 @@ export const APPROVE_PULL_REQUEST = gql`
       pullRequest {
         id requestNumber projectId source status requestedBy assignedTo
         createdAt updatedAt approvedAt completedAt cancelledAt
-        items { id pullRequestId itemType openingNumber openingItemId hardwareCategory productCode requestedQuantity }
+        items { id pullRequestId itemType openingNumber openingItemId leaf hardwareCategory productCode requestedQuantity }
       }
       outcome
       notification {
@@ -526,7 +527,7 @@ export const COMPLETE_PULL_REQUEST = gql`
     completePullRequest(id: $id) {
       id requestNumber projectId source status requestedBy assignedTo
       createdAt updatedAt approvedAt completedAt cancelledAt
-      items { id pullRequestId itemType openingNumber openingItemId hardwareCategory productCode requestedQuantity }
+      items { id pullRequestId itemType openingNumber openingItemId leaf hardwareCategory productCode requestedQuantity }
     }
   }
 `;

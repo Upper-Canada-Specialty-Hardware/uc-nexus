@@ -559,6 +559,8 @@ class ShippingOutRequestItem:
     item_type: PullRequestItemType
     opening_number: str
     opening_item_id: strawberry.ID | None
+    # Door leaf this request line is for (#335): 1 or 2 on an OPENING_ITEM line, null on LOOSE.
+    leaf: int | None
     hardware_category: str | None
     product_code: str | None
     requested_quantity: int

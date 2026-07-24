@@ -24,7 +24,7 @@ import CloseIcon from '@mui/icons-material/Close';
 import UploadFileIcon from '@mui/icons-material/UploadFile';
 import CloudUploadIcon from '@mui/icons-material/CloudUpload';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
-import { useLazyQuery, useMutation } from '@apollo/client/react';
+import { useLazyQuery, useMutation, useQuery } from '@apollo/client/react';
 import { useWizard } from '../../contexts/WizardContext';
 import { useToast } from '../../components/Toast';
 import ConfirmDialog from '../../components/ConfirmDialog';
@@ -34,9 +34,17 @@ import { useHardwareScheduleParser } from '../../hooks/useHardwareScheduleParser
 import { useNavigate } from 'react-router-dom';
 import { GET_PROJECT_EXCLUDED_ITEMS, GET_PROJECT_HARDWARE_SCHEDULE, RECONCILE_SCHEDULE, FINALIZE_IMPORT_SESSION } from '../../graphql/import';
 import { GET_PROJECTS } from '../../graphql/shared';
+import { GET_OPENING_ITEMS } from '../../graphql/warehouse';
 import type { ClassificationRow } from './ClassificationGrid';
-import type { AggregatedHardwareItem, ImportPurpose, ReconciliationRow, ShippingPRDraft } from './types';
-import { aggregationKey, classificationKey, toClassificationInputs } from './types';
+import type {
+  AggregatedHardwareItem,
+  AssembledLeafCandidate,
+  ImportPurpose,
+  ReconciliationRow,
+  ShippingPRDraft,
+  ShippingPRItem,
+} from './types';
+import { aggregationKey, classificationKey, shippingPRItemKey, toClassificationInputs } from './types';
 import type { Project } from '../../types/project';
 import type { ProjectHardwareScheduleResponse } from './hydrateSchedule';
 import { mapScheduleResponseToParseResult } from './hydrateSchedule';
@@ -56,6 +64,16 @@ type StepId = 'upload' | 'purpose' | 'openings' | 'reconciliation'
 interface StepDescriptor {
   id: StepId;
   label: string;
+}
+
+/** The slice of GET_OPENING_ITEMS the shipping purpose reads (#335). */
+interface OpeningItemResponse {
+  id: string;
+  openingNumber: string;
+  leaf: number | null;
+  state: string;
+  assemblyCompletedAt: string;
+  installedHardware: Array<{ productCode: string; hardwareCategory: string; quantity: number }>;
 }
 
 // ---- Helpers ----
@@ -178,6 +196,15 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
     projectHardwareSchedule: ProjectHardwareScheduleResponse | null;
   }>(GET_PROJECT_HARDWARE_SCHEDULE, { fetchPolicy: 'network-only' });
 
+  // Assembled units for the shipping purpose (#335). A door leaf only exists once shop assembly has
+  // built one, and it lives as an OpeningItem - the hardware schedule cannot supply it. Shipping an
+  // assembled leaf means naming that row, so read it from the warehouse's own list.
+  const { data: openingItemsData } = useQuery<{ openingItems: OpeningItemResponse[] }>(GET_OPENING_ITEMS, {
+    variables: { projectId: existingProjectId },
+    skip: !open || purpose !== 'shipping',
+    fetchPolicy: 'cache-and-network',
+  });
+
   // Eagerly fetch the persisted schedule on wizard open for re-import projects so the
   // upload step can show the "use last uploaded" picker (gated on hardware-item presence).
   useEffect(() => {
@@ -286,10 +313,13 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
     }
 
     if (purpose === 'shipping') {
-      // SOR: only items that have RECEIVED or ASSEMBLED quantity
+      // SOR loose lines: RECEIVED quantity only (#335). ASSEMBLED quantity is no longer loose stock -
+      // it was tagged onto a door leaf at shop assembly and now ships as that leaf, selected from
+      // assembledLeafCandidates below. Offering it here too is what made the PR ask the warehouse for
+      // hardware that had already left inventory.
       const eligibleKeys = new Set<string>();
       for (const row of reconciliationRows) {
-        if ((row.status === 'RECEIVED' || row.status === 'ASSEMBLED') && row.quantity > 0) {
+        if (row.status === 'RECEIVED' && row.quantity > 0) {
           eligibleKeys.add(`${row.openingNumber}|${row.productCode}|${row.hardwareCategory}`);
         }
       }
@@ -314,6 +344,47 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
     }
     return Array.from(map.values());
   }, [reconFilteredHardwareItems]);
+
+  // ---- Shipping selection candidates (#335) ----
+
+  // Assembled door leaves the user can ship: one per OpeningItem still sitting IN_INVENTORY on a
+  // selected opening. SHIP_READY units are deliberately absent - they have already been pulled and
+  // are waiting on the Ship tab, so re-requesting them would be a second pull of the same leaf.
+  const assembledLeafCandidates = useMemo<AssembledLeafCandidate[]>(() => {
+    if (purpose !== 'shipping') return [];
+    return (openingItemsData?.openingItems ?? [])
+      .filter((oi) => oi.state === 'IN_INVENTORY' && selectedOpenings.has(oi.openingNumber))
+      .map((oi) => ({
+        id: oi.id,
+        openingNumber: oi.openingNumber,
+        leaf: oi.leaf,
+        assemblyCompletedAt: oi.assemblyCompletedAt,
+        installedHardware: oi.installedHardware ?? [],
+      }))
+      .sort(
+        (a, b) =>
+          a.openingNumber.localeCompare(b.openingNumber) || (a.leaf ?? 0) - (b.leaf ?? 0),
+      );
+  }, [purpose, openingItemsData, selectedOpenings]);
+
+  // Loose hardware the user can ship, quantity clamped to what reconciliation says is actually
+  // received and unpulled. Without the clamp a partly-received product would request its full
+  // schedule quantity and short the pull.
+  const looseShippingCandidates = useMemo<AggregatedHardwareItem[]>(() => {
+    if (purpose !== 'shipping' || !isReimport) return aggregatedHardwareItems;
+    const receivedByKey = new Map<string, number>();
+    for (const row of reconciliationRows) {
+      if (row.status !== 'RECEIVED' || row.quantity <= 0) continue;
+      const key = `${row.openingNumber}|${row.productCode}|${row.hardwareCategory}`;
+      receivedByKey.set(key, (receivedByKey.get(key) ?? 0) + row.quantity);
+    }
+    return aggregatedHardwareItems
+      .map((hi) => {
+        const received = receivedByKey.get(aggregationKey(hi)) ?? 0;
+        return { ...hi, item_quantity: Math.min(hi.item_quantity, received) };
+      })
+      .filter((hi) => hi.item_quantity > 0);
+  }, [purpose, isReimport, aggregatedHardwareItems, reconciliationRows]);
 
   // Classification rows for DataGrid (one row per aggregated hardware item)
   const classificationRows = useMemo<ClassificationRow[]>(() => {
@@ -547,38 +618,21 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
     [],
   );
 
-  const toggleShippingPRItem = useCallback(
-    (prIndex: number, hi: AggregatedHardwareItem) => {
-      setShippingPRDrafts((prev) =>
-        prev.map((draft, i) => {
-          if (i !== prIndex) return draft;
-          const existingIdx = draft.items.findIndex(
-            (item) =>
-              item.openingNumber === hi.opening_number &&
-              item.productCode === hi.product_code &&
-              item.hardwareCategory === hi.hardware_category,
-          );
-          if (existingIdx >= 0) {
-            return { ...draft, items: draft.items.filter((_, idx) => idx !== existingIdx) };
-          }
-          return {
-            ...draft,
-            items: [
-              ...draft.items,
-              {
-                itemType: 'LOOSE' as const,
-                openingNumber: hi.opening_number,
-                hardwareCategory: hi.hardware_category,
-                productCode: hi.product_code,
-                requestedQuantity: hi.item_quantity,
-              },
-            ],
-          };
-        }),
-      );
-    },
-    [],
-  );
+  // Add or remove one already-built line on a draft (#335). The step decides what kind of line it
+  // is - an assembled leaf or loose hardware - so this no longer hard-codes LOOSE.
+  const toggleShippingPRItem = useCallback((prIndex: number, item: ShippingPRItem) => {
+    const key = shippingPRItemKey(item);
+    setShippingPRDrafts((prev) =>
+      prev.map((draft, i) => {
+        if (i !== prIndex) return draft;
+        const existingIdx = draft.items.findIndex((existing) => shippingPRItemKey(existing) === key);
+        if (existingIdx >= 0) {
+          return { ...draft, items: draft.items.filter((_, idx) => idx !== existingIdx) };
+        }
+        return { ...draft, items: [...draft.items, item] };
+      }),
+    );
+  }, []);
 
   // ---- Finalize ----
 
@@ -716,6 +770,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
               itemType: item.itemType,
               openingNumber: item.openingNumber,
               openingItemId: item.openingItemId || null,
+              leaf: item.leaf ?? null,
               hardwareCategory: item.hardwareCategory || null,
               productCode: item.productCode || null,
               requestedQuantity: item.requestedQuantity,
@@ -1198,7 +1253,8 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
           {effectiveStepId === 'shipping-prs' && (
             <ShippingPRsStep
               shippingPRDrafts={shippingPRDrafts}
-              selectedHardwareItems={aggregatedHardwareItems}
+              assembledLeaves={assembledLeafCandidates}
+              looseItems={looseShippingCandidates}
               onAddPR={addShippingPR}
               onRemovePR={removeShippingPR}
               onUpdatePR={updateShippingPR}

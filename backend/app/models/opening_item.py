@@ -9,6 +9,15 @@ from .enums import OpeningItemState
 
 
 class OpeningItem(Base):
+    """An assembled door leaf sitting in the warehouse: the pull request's tag made physical.
+
+    Shop assembly completing a work unit turns tagged quantities into one of these per leaf, with
+    OpeningItemHardware recording what actually went on. From here the leaf is its own object with
+    its own state and location, and it ships as itself - an OPENING_ITEM pull line naming this row,
+    never as loose hardware, because its hardware left fungible inventory at assembly.
+    See docs/HARDWARE_IDENTITY_LIFECYCLE.md.
+    """
+
     __tablename__ = "opening_items"
     __table_args__ = (
         Index("ix_opening_items_project_state", "project_id", "state"),

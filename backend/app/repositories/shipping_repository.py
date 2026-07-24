@@ -595,6 +595,17 @@ def accept_shipping_out_request(
     session.add(pr)
     session.flush()
 
+    # Leaf fallback (#335): requests written before shipping_out_request_items.leaf existed carry a
+    # null leaf, so read it off the OpeningItem they point at. One grouped query, not one per line.
+    unleafed_oi_ids = {i.opening_item_id for i in req.items if i.opening_item_id is not None and i.leaf is None}
+    leaf_by_opening_item: dict[uuid.UUID, int | None] = {}
+    if unleafed_oi_ids:
+        leaf_by_opening_item = dict(
+            session.execute(
+                select(OpeningItemModel.id, OpeningItemModel.leaf).where(OpeningItemModel.id.in_(unleafed_oi_ids))
+            ).all()
+        )
+
     for item in req.items:
         session.add(
             PullRequestItemModel(
@@ -603,6 +614,9 @@ def accept_shipping_out_request(
                 item_type=item.item_type,
                 opening_number=item.opening_number,
                 opening_item_id=item.opening_item_id,
+                # Snapshot the door leaf (#311/#335) so a leaf-1 pull reads distinct from a leaf-2 pull,
+                # mirroring what the shop-assembly accept does with ShopAssemblyOpening.leaf.
+                leaf=item.leaf if item.leaf is not None else leaf_by_opening_item.get(item.opening_item_id),
                 hardware_category=item.hardware_category,
                 product_code=item.product_code,
                 requested_quantity=item.requested_quantity,

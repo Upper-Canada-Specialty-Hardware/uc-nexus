@@ -685,14 +685,23 @@ def finalize_import_session(
 
             for item_input in pr_draft.get("items", []):
                 item_type = PullRequestItemType(item_input["item_type"])
+                opening_item_id = item_input.get("opening_item_id")
+                # #335: an OPENING_ITEM line ships an already-assembled leaf, so it MUST name the
+                # OpeningItem. Without one the line is inert - approve skips it and complete never
+                # flips a leaf to SHIP_READY - so reject it here instead of minting a dead request.
+                if item_type == PullRequestItemType.OPENING_ITEM and not opening_item_id:
+                    raise ValidationError(
+                        f"Shipping-out request {pr_draft['request_number']}: an assembled-opening line "
+                        f"for opening {item_input['opening_number']} must reference an opening item",
+                        field="opening_item_id",
+                    )
                 req_item = ShippingOutRequestItemModel(
                     id=uuid.uuid4(),
                     shipping_out_request_id=req.id,
                     item_type=item_type,
                     opening_number=item_input["opening_number"],
-                    opening_item_id=(
-                        uuid.UUID(str(item_input["opening_item_id"])) if item_input.get("opening_item_id") else None
-                    ),
+                    opening_item_id=(uuid.UUID(str(opening_item_id)) if opening_item_id else None),
+                    leaf=item_input.get("leaf"),
                     hardware_category=item_input.get("hardware_category"),
                     product_code=item_input.get("product_code"),
                     requested_quantity=item_input.get("requested_quantity", 1),

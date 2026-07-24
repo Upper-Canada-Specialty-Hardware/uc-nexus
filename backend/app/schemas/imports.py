@@ -190,6 +190,7 @@ class ImportMutations:
                             "item_type": item.item_type.value,
                             "opening_number": item.opening_number,
                             "opening_item_id": str(item.opening_item_id) if item.opening_item_id else None,
+                            "leaf": item.leaf,
                             "hardware_category": item.hardware_category,
                             "product_code": item.product_code,
                             "requested_quantity": item.requested_quantity,

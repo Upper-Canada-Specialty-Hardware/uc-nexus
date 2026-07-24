@@ -7,11 +7,15 @@ import {
   REJECT_SHIPPING_OUT_REQUEST,
 } from '../../graphql/shipping';
 import RequestsReviewPage from '../../components/RequestsReviewPage';
+import { leafLabel } from '../../utils/leaf';
 
 interface ShippingRequestItem {
   id: string;
   itemType: string;
   openingNumber: string | null;
+  openingItemId: string | null;
+  /** Door leaf (#335): set on assembled-leaf lines, null on loose hardware. */
+  leaf: number | null;
   hardwareCategory: string | null;
   productCode: string | null;
   requestedQuantity: number;
@@ -67,6 +71,9 @@ export default function ShippingRequestsPage({ projectId }: Props) {
             <TableHead>
               <TableRow>
                 <TableCell>Opening</TableCell>
+                {/* #335: an assembled-leaf line names no product, so the leaf is the only thing that
+                    tells a pair's two lines apart before the request is accepted. */}
+                <TableCell>Leaf</TableCell>
                 <TableCell>Product Code</TableCell>
                 <TableCell>Hardware Category</TableCell>
                 <TableCell align="right">Quantity</TableCell>
@@ -76,7 +83,10 @@ export default function ShippingRequestsPage({ projectId }: Props) {
               {req.items.map((item) => (
                 <TableRow key={item.id}>
                   <TableCell>{item.openingNumber || '—'}</TableCell>
-                  <TableCell>{item.productCode || '—'}</TableCell>
+                  <TableCell>{leafLabel(item.leaf) ?? '—'}</TableCell>
+                  <TableCell>
+                    {item.itemType === 'OPENING_ITEM' ? 'Assembled door leaf' : item.productCode || '—'}
+                  </TableCell>
                   <TableCell>{item.hardwareCategory || '—'}</TableCell>
                   <TableCell align="right">{item.requestedQuantity}</TableCell>
                 </TableRow>

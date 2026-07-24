@@ -8,19 +8,45 @@ export function aggregationKey(hi: { opening_number: string; product_code: strin
 
 export type ImportPurpose = 'po' | 'assembly' | 'shipping';
 
+// A line on a shipping pull request draft. The two item types are not variants of the same thing
+// (#335): OPENING_ITEM moves an assembled door leaf that hardware was already tagged onto at shop
+// assembly, so it names an OpeningItem and never touches loose stock. LOOSE tags fungible inventory
+// onto an opening for the first time. See docs/HARDWARE_IDENTITY_LIFECYCLE.md.
 export interface ShippingPRItem {
   itemType: 'OPENING_ITEM' | 'LOOSE';
   openingNumber: string;
   openingItemId?: string;
+  /** Door leaf (#311): set on OPENING_ITEM lines from the assembled unit. Null/absent on LOOSE. */
+  leaf?: number | null;
   hardwareCategory?: string;
   productCode?: string;
   requestedQuantity: number;
+}
+
+/**
+ * Identity of a draft line, for add/remove toggling and checkbox state. An assembled leaf is its
+ * OpeningItem; a loose line is its (opening, category, product) triple, which is leaf-agnostic
+ * because loose stock is fungible.
+ */
+export function shippingPRItemKey(item: ShippingPRItem): string {
+  return item.itemType === 'OPENING_ITEM'
+    ? `OI|${item.openingItemId}`
+    : `LOOSE|${item.openingNumber}|${item.hardwareCategory}|${item.productCode}`;
 }
 
 export interface ShippingPRDraft {
   requestNumber: string;
   requestedBy: string;
   items: ShippingPRItem[];
+}
+
+/** An assembled door leaf (or legacy whole-opening unit) offered for shipping selection (#335). */
+export interface AssembledLeafCandidate {
+  id: string;
+  openingNumber: string;
+  leaf: number | null;
+  assemblyCompletedAt: string;
+  installedHardware: Array<{ productCode: string; hardwareCategory: string; quantity: number }>;
 }
 
 export function hardwareItemKey(hi: ParsedHardwareItem) {
