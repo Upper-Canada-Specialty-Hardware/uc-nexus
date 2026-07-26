@@ -36,6 +36,8 @@ export const GET_ASSEMBLE_LIST = gql`
         hardwareCategory
         productCode
         quantity
+        installedQuantity
+        deficientQuantity
       }
     }
   }
@@ -63,6 +65,8 @@ export const GET_MY_WORK = gql`
         hardwareCategory
         productCode
         quantity
+        installedQuantity
+        deficientQuantity
       }
     }
   }
@@ -150,6 +154,8 @@ export const ASSIGN_OPENINGS = gql`
         hardwareCategory
         productCode
         quantity
+        installedQuantity
+        deficientQuantity
       }
     }
   }
@@ -176,11 +182,47 @@ export const REMOVE_OPENING_FROM_USER = gql`
         hardwareCategory
         productCode
         quantity
+        installedQuantity
+        deficientQuantity
       }
     }
   }
 `;
 
+// Save partial assembly progress without finishing the leaf (#340). Returns the opening so the modal
+// can re-hydrate from what the server actually stored - installedQuantity is absolute, and a
+// flagDeficientQuantity line has already minted a replacement pull by the time this resolves.
+export const RECORD_ASSEMBLY_PROGRESS = gql`
+  mutation RecordAssemblyProgress($input: RecordAssemblyProgressInput!) {
+    recordAssemblyProgress(input: $input) {
+      id
+      shopAssemblyRequestId
+      pullRequestId
+      openingId
+      pullStatus
+      assignedToUserId
+      assignedTo
+      assemblyStatus
+      completedAt
+      openingNumber
+      building
+      floor
+      leaf
+      items {
+        id
+        shopAssemblyOpeningId
+        hardwareCategory
+        productCode
+        quantity
+        installedQuantity
+        deficientQuantity
+      }
+    }
+  }
+`;
+
+// CompleteOpeningInput has no itemResults since #340 - completion reads the persisted per-item
+// progress, so the client no longer restates what was installed at the moment it finishes.
 export const COMPLETE_OPENING = gql`
   mutation CompleteOpening($input: CompleteOpeningInput!) {
     completeOpening(input: $input) {

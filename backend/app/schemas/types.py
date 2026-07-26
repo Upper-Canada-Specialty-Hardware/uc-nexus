@@ -514,6 +514,12 @@ class ShopAssemblyOpeningItem:
     hardware_category: str
     product_code: str
     quantity: int
+    # Persisted assembly progress (#340). installed_quantity is what the assembler has recorded
+    # fitting to the leaf; deficient_quantity is what has already been condemned and replaced.
+    # Remaining is quantity - installed - deficient, derived on the client - completion is refused
+    # while any line still has remaining > 0.
+    installed_quantity: int = 0
+    deficient_quantity: int = 0
 
 
 @strawberry.type

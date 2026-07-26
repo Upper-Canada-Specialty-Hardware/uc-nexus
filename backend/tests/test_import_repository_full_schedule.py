@@ -859,6 +859,9 @@ def test_complete_opening_stamps_leaf(db_session):
     sao = db_session.scalar(select(ShopAssemblyOpening).where(ShopAssemblyOpening.pull_request_id == pr.id))
     sao.pull_status = PullStatus.PULLED
     sao.assigned_to = "tester"
+    # Every unit has to be dispositioned before completion is allowed (#340).
+    for item in sao.items:
+        item.installed_quantity = item.quantity
     db_session.flush()
 
     opening_item = shop_assembly_repository.complete_opening(db_session, sao.id, "A", "1", "1", completed_by="tester")

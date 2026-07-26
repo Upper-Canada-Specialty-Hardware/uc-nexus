@@ -18,7 +18,7 @@ from .converters import (
     shop_assembly_request_to_type,
 )
 from .enums import ShopAssemblyRequestStatus
-from .inputs import AssignOpeningsInput, CompleteOpeningInput
+from .inputs import AssignOpeningsInput, CompleteOpeningInput, RecordAssemblyProgressInput
 from .types import ClerkUser, OpeningItem, ShopAssemblyOpening, ShopAssemblyRequest
 
 
@@ -38,7 +38,8 @@ class ShopAssemblyQueries:
 
     @strawberry.field
     def my_work(self, info: strawberry.Info, assigned_to_user_id: str) -> list[ShopAssemblyOpening]:
-        """An assembler's claimed, still-pending openings. Open to any signed-in user."""
+        """An assembler's claimed, unfinished openings - PENDING or IN_PROGRESS (#340), so a leaf with
+        saved partial progress stays reachable. Open to any signed-in user."""
         require_user(info)
         with SessionLocal() as session:
             saos = shop_assembly_repository.get_my_work(session, assigned_to_user_id)
@@ -133,14 +134,28 @@ class ShopAssemblyMutations:
     def assign_openings(self, info: strawberry.Info, input: AssignOpeningsInput) -> list[ShopAssemblyOpening]:
         """Assign pulled openings to a user (#330). Any signed-in user may self-assign (the "Assign to
         me" board); assigning to *another* user is Shop Assembly Manager-gated, so the manager-only
-        guarantee holds at the data layer, not just the UI."""
+        guarantee holds at the data layer, not just the UI.
+
+        Reassignment (#340) rides on that same distinction. Progress is persisted per item now, so
+        handing a half-built leaf to someone else loses nothing - but only the manager branch may take
+        an opening off whoever is holding it, so allow_reassign is passed exactly when the caller has
+        already been through require_role. A self-claim can never steal: it takes the is_self branch,
+        which passes allow_reassign=False, and the repository refuses on a conflicting holder. That
+        also means a manager claiming work *for themselves* must unassign it first - the safer read of
+        an ambiguous action, and one keystroke, not a hole.
+        """
         auth = require_user(info)
-        if input.assigned_to_user_id != auth["user_id"]:
+        is_self = input.assigned_to_user_id == auth["user_id"]
+        if not is_self:
             require_role(info, SHOP_ASSEMBLY_MANAGER_ROLE)
         opening_ids = [uuid.UUID(str(oid)) for oid in input.opening_ids]
         with SessionLocal() as session:
             result = shop_assembly_repository.assign_openings(
-                session, opening_ids, input.assigned_to_user_id, input.assigned_to
+                session,
+                opening_ids,
+                input.assigned_to_user_id,
+                input.assigned_to,
+                allow_reassign=not is_self,
             )
             session.commit()
             saos = shop_assembly_repository.get_openings_with_items(session, [o.id for o in result])
@@ -148,7 +163,9 @@ class ShopAssemblyMutations:
 
     @strawberry.mutation
     def remove_opening_from_user(self, info: strawberry.Info, opening_id: strawberry.ID) -> ShopAssemblyOpening:
-        """Unassign a pending opening. Open to any signed-in user (the board's Unassign action)."""
+        """Unassign an unfinished opening. Allowed while it is PENDING or IN_PROGRESS (#340) - saved
+        progress lives on the item rows, so returning a half-built leaf to the pool loses nothing.
+        Open to any signed-in user (the board's Unassign action)."""
         require_user(info)
         with SessionLocal() as session:
             result = shop_assembly_repository.remove_opening_from_user(session, uuid.UUID(str(opening_id)))
@@ -157,26 +174,52 @@ class ShopAssemblyMutations:
             return shop_assembly_opening_to_type(refreshed)
 
     @strawberry.mutation
+    def record_assembly_progress(
+        self, info: strawberry.Info, input: RecordAssemblyProgressInput
+    ) -> ShopAssemblyOpening:
+        """Save what an assembler has fitted to a leaf so far (#340), without finishing it.
+
+        This is what makes assembly resumable: the counts land on the ShopAssemblyOpeningItem rows,
+        the opening flips to IN_PROGRESS on the first save and stays in the assembler's My Work, and
+        any units flagged deficient are returned to inventory and given a replacement pull line
+        immediately rather than waiting for completion. Open to any signed-in user - it moves
+        inventory when a deficiency is flagged, so it must not be reachable anonymously."""
+        require_user(info)
+        updates = [
+            shop_assembly_repository.AssemblyProgressUpdate(
+                shop_assembly_opening_item_id=uuid.UUID(str(item.shop_assembly_opening_item_id)),
+                installed_quantity=item.installed_quantity,
+                flag_deficient_quantity=item.flag_deficient_quantity,
+                deficient_reason=item.deficient_reason,
+            )
+            for item in input.items
+        ]
+        with SessionLocal() as session:
+            result = shop_assembly_repository.record_assembly_progress(
+                session,
+                uuid.UUID(str(input.opening_id)),
+                updates,
+                performed_by=input.performed_by,
+            )
+            session.commit()
+            refreshed = shop_assembly_repository.get_openings_with_items(session, [result.id])[0]
+            return shop_assembly_opening_to_type(refreshed)
+
+    @strawberry.mutation
     def complete_opening(self, info: strawberry.Info, input: CompleteOpeningInput) -> OpeningItem:
         """Complete an opening's assembly, materializing the assembled leaf as an OpeningItem (#339).
-        Open to any signed-in user - it writes inventory, so it must not be reachable anonymously."""
+
+        Takes no checklist (#340): completion reads the per-item counts recordAssemblyProgress has
+        been persisting, and is refused while any unit is still unaccounted for. Open to any signed-in
+        user - it writes inventory, so it must not be reachable anonymously."""
         require_user(info)
         with SessionLocal() as session:
-            item_results = [
-                shop_assembly_repository.OpeningItemResult(
-                    shop_assembly_opening_item_id=uuid.UUID(str(r.shop_assembly_opening_item_id)),
-                    installed=r.installed,
-                    deficient_reason=r.deficient_reason,
-                )
-                for r in input.item_results
-            ]
             result = shop_assembly_repository.complete_opening(
                 session,
                 uuid.UUID(str(input.opening_id)),
                 input.aisle,
                 input.row,
                 input.bay,
-                item_results=item_results,
                 completed_by=input.completed_by,
             )
             session.commit()

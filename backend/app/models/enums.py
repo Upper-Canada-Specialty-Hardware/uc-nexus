@@ -65,6 +65,10 @@ class PullStatus(str, enum.Enum):
 
 class AssemblyStatus(str, enum.Enum):
     PENDING = "PENDING"
+    # Some hardware has been recorded against the leaf but it is not fully dispositioned yet (#340).
+    # An IN_PROGRESS opening is still the assembler's work: it stays in My Work and can be handed to
+    # someone else by a manager, because every unit counted so far is persisted on the item rows.
+    IN_PROGRESS = "IN_PROGRESS"
     COMPLETED = "COMPLETED"
 
 
@@ -89,6 +93,9 @@ class AuditEntityType(str, enum.Enum):
     INVENTORY_LOCATION = "INVENTORY_LOCATION"
     OPENING_ITEM = "OPENING_ITEM"
     STOCK_ITEM = "STOCK_ITEM"
+    # The assembly work unit (one door leaf) an INSTALL_PROGRESS event is recorded against (#340).
+    # Progress happens before any OpeningItem exists, so it cannot hang off OPENING_ITEM.
+    SHOP_ASSEMBLY_OPENING = "SHOP_ASSEMBLY_OPENING"
 
 
 class AuditAction(str, enum.Enum):
@@ -106,6 +113,11 @@ class AuditAction(str, enum.Enum):
     RESOLVE_DEFICIENT = "RESOLVE_DEFICIENT"
     TRANSFER = "TRANSFER"
     RETURN = "RETURN"
+    # An assembler recorded how many units of a checklist line are installed on a leaf (#340).
+    INSTALL_PROGRESS = "INSTALL_PROGRESS"
+    # The leaf was called finished and materialized as an OpeningItem (#340). Progress saves are no
+    # longer the same call as completion, so the two moments need distinct audit records.
+    ASSEMBLY_COMPLETE = "ASSEMBLY_COMPLETE"
 
 
 class ReturnDisposition(str, enum.Enum):

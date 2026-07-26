@@ -459,6 +459,9 @@ def shop_assembly_opening_item_to_type(item) -> ShopAssemblyOpeningItem:
         hardware_category=item.hardware_category,
         product_code=item.product_code,
         quantity=item.quantity,
+        # Plain columns on the row the caller already loaded (#340) - reading them triggers no load.
+        installed_quantity=item.installed_quantity,
+        deficient_quantity=item.deficient_quantity,
     )
 
 

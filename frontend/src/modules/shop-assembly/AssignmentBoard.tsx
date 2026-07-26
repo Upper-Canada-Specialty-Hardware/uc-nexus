@@ -35,6 +35,8 @@ interface OpeningItem {
   hardwareCategory: string;
   productCode: string;
   quantity: number;
+  installedQuantity: number;
+  deficientQuantity: number;
 }
 
 interface AssembleOpening {
@@ -164,7 +166,9 @@ export default function AssignmentBoard() {
   const isManager = hasRole('Shop Assembly Manager');
   const [activeOpening, setActiveOpening] = useState<AssembleOpening | null>(null);
   // Opening whose completion modal is open (reuses the same checklist modal as My Work).
-  const [completing, setCompleting] = useState<AssembleOpening | null>(null);
+  // The id, not the row: the modal saves progress and this board re-reads, and holding the object
+  // would pin the modal to the pre-save snapshot (#340).
+  const [completingId, setCompletingId] = useState<string | null>(null);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } })
@@ -195,19 +199,26 @@ export default function AssignmentBoard() {
     },
   });
 
-  const openings = data?.assembleList ?? [];
+  // Memoized so the three derived lists below don't recompute on every render off a fresh [] literal.
+  const openings = useMemo(() => data?.assembleList ?? [], [data]);
 
   const available = useMemo(() => openings.filter(isAvailableForAssignment), [openings]);
 
+  const completing = useMemo(
+    () => openings.find((o) => o.id === completingId) ?? null,
+    [openings, completingId]
+  );
+
   // "Assigned" shows only what THIS user has claimed (keyed on the stable user id, #324),
-  // not everything assigned to anyone.
+  // not everything assigned to anyone. Unfinished, not "pending": a leaf with saved progress is
+  // IN_PROGRESS and is precisely the work the board should still be showing (#340).
   const assigned = useMemo(
     () =>
       openings.filter(
         (o) =>
           o.pullStatus === 'PULLED' &&
           o.assignedToUserId === userId &&
-          o.assemblyStatus === 'PENDING'
+          o.assemblyStatus !== 'COMPLETED'
       ),
     [openings, userId]
   );
@@ -298,7 +309,7 @@ export default function AssignmentBoard() {
               color='action.hover'
               renderActions={(opening) => (
                 <Stack direction='row' spacing={1}>
-                  <Button size='small' variant='contained' onClick={() => setCompleting(opening)}>
+                  <Button size='small' variant='contained' onClick={() => setCompletingId(opening.id)}>
                     Complete
                   </Button>
                   <Button
@@ -323,11 +334,13 @@ export default function AssignmentBoard() {
 
       {completing && (
         <AssemblyDetailModal
+          // Keyed on the leaf so switching openings remounts and re-seeds the draft counts.
+          key={completing.id}
           open={!!completing}
           opening={completing}
-          onClose={() => setCompleting(null)}
+          onClose={() => setCompletingId(null)}
           onCompleted={() => {
-            setCompleting(null);
+            setCompletingId(null);
             refetch();
           }}
           completedBy={displayName}

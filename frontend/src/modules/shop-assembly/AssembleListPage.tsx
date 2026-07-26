@@ -23,6 +23,7 @@ import OpeningLeafStatusPanel from '../../components/OpeningLeafStatusPanel';
 import { useIdentity } from '../../hooks/useIdentity';
 import { useToast } from '../../components/Toast';
 import AssemblyDetailModal from './AssemblyDetailModal';
+import { assemblyProgress, assemblyStatusLabel } from './openingFilters';
 
 // --- Types ---
 
@@ -32,6 +33,8 @@ interface AssembleOpeningItem {
   hardwareCategory: string;
   productCode: string;
   quantity: number;
+  installedQuantity: number;
+  deficientQuantity: number;
 }
 
 interface AssembleOpening {
@@ -70,7 +73,9 @@ const PULL_STATUS_SECTIONS: PullStatusSection[] = [
 export default function AssembleListPage() {
   const { displayName, userId } = useIdentity();
   const { showToast } = useToast();
-  const [completing, setCompleting] = useState<AssembleOpening | null>(null);
+  // The id, not the row: the modal saves progress and this list re-reads, and holding the object
+  // would pin the modal to the pre-save snapshot (#340).
+  const [completingId, setCompletingId] = useState<string | null>(null);
 
   const {
     data,
@@ -78,7 +83,11 @@ export default function AssembleListPage() {
     refetch,
   } = useQuery<{ assembleList: AssembleOpening[] }>(GET_ASSEMBLE_LIST);
 
-  const openings = data?.assembleList ?? [];
+  const openings = useMemo(() => data?.assembleList ?? [], [data]);
+  const completing = useMemo(
+    () => openings.find((o) => o.id === completingId) ?? null,
+    [openings, completingId]
+  );
 
   const [assignOpenings] = useMutation(ASSIGN_OPENINGS, {
     onCompleted: () => {
@@ -129,8 +138,8 @@ export default function AssembleListPage() {
       if (opening.assignedToUserId === userId) {
         return (
           <Stack direction="row" spacing={1}>
-            <Button size="small" variant="contained" onClick={() => setCompleting(opening)}>
-              Complete assembly
+            <Button size="small" variant="contained" onClick={() => setCompletingId(opening.id)}>
+              {opening.assemblyStatus === 'IN_PROGRESS' ? 'Continue assembly' : 'Start assembly'}
             </Button>
             <Button
               size="small"
@@ -216,10 +225,11 @@ export default function AssembleListPage() {
               ) : (
                 sectionOpenings.map((opening) => {
                   const actions = renderActions(opening);
+                  const progress = assemblyProgress(opening.items ?? []);
                   return (
                     <Accordion key={opening.id} variant="outlined" sx={{ mb: 1 }}>
                       <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                        <Stack direction="row" spacing={2} alignItems="center">
+                        <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap">
                           <Typography fontWeight="bold">
                             Opening: {opening.openingNumber || opening.openingId}
                             {leafSuffix(opening.leaf)}
@@ -230,6 +240,17 @@ export default function AssembleListPage() {
                             size="small"
                             variant="outlined"
                           />
+                          {/* Assembly state is separate from pull state - a leaf can be fully pulled
+                              and half built (#340). */}
+                          <Chip
+                            label={assemblyStatusLabel(opening.assemblyStatus)}
+                            color={opening.assemblyStatus === 'IN_PROGRESS' ? 'info' : 'default'}
+                            size="small"
+                            variant="outlined"
+                          />
+                          <Typography variant="body2" color="text.secondary">
+                            {progress.installed + progress.deficient}/{progress.planned} units
+                          </Typography>
                         </Stack>
                       </AccordionSummary>
                       <AccordionDetails>
@@ -240,7 +261,9 @@ export default function AssembleListPage() {
                               <TableRow>
                                 <TableCell>Product Code</TableCell>
                                 <TableCell>Hardware Category</TableCell>
-                                <TableCell align="right">Quantity</TableCell>
+                                <TableCell align="right">Pulled</TableCell>
+                                <TableCell align="right">Installed</TableCell>
+                                <TableCell align="right">Deficient</TableCell>
                               </TableRow>
                             </TableHead>
                             <TableBody>
@@ -249,6 +272,8 @@ export default function AssembleListPage() {
                                   <TableCell>{item.productCode}</TableCell>
                                   <TableCell>{item.hardwareCategory}</TableCell>
                                   <TableCell align="right">{item.quantity}</TableCell>
+                                  <TableCell align="right">{item.installedQuantity}</TableCell>
+                                  <TableCell align="right">{item.deficientQuantity}</TableCell>
                                 </TableRow>
                               ))}
                             </TableBody>
@@ -270,11 +295,13 @@ export default function AssembleListPage() {
 
       {completing && (
         <AssemblyDetailModal
+          // Keyed on the leaf so switching openings remounts and re-seeds the draft counts.
+          key={completing.id}
           open={!!completing}
           opening={completing}
-          onClose={() => setCompleting(null)}
+          onClose={() => setCompletingId(null)}
           onCompleted={() => {
-            setCompleting(null);
+            setCompletingId(null);
             refetch();
           }}
           completedBy={displayName}

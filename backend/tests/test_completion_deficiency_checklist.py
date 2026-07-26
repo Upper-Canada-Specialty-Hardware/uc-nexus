@@ -1,9 +1,13 @@
-"""Tests for the completion-time deficiency checklist (#225).
+"""Tests for the assembly deficiency path (#225, reworked for #340).
 
-complete_opening snapshots only INSTALLED checklist items as OpeningItemHardware. Items flagged
-not-installed are returned to project inventory flagged deficient (quantity AND deficient_quantity
-both bumped on an existing row) and get a PR-REPL replacement pull appended. An empty checklist
-snapshots every item (pre-checklist behaviour). The assembled opening returns to inventory.
+Flagging a deficient unit used to be an argument to complete_opening. It is now its own act, recorded
+through record_assembly_progress the moment the defect is found at the bench: the unit is returned to
+project inventory flagged deficient (quantity AND deficient_quantity both bumped on an existing row)
+and a PR-REPL replacement pull is appended straight away, so the warehouse can start sourcing the
+replacement while the leaf is still being built.
+
+Completion then only snapshots what was actually installed. These tests cover the deficiency half of
+that split; the progress and gating half is in test_assembly_progress.py.
 """
 
 import uuid
@@ -31,6 +35,8 @@ from app.repositories import shop_assembly_repository, warehouse_admin_repositor
 
 INSTALLED = ("HINGE", "HG-INST")
 DEFICIENT = ("LOCK", "LK-DEF")
+
+Update = shop_assembly_repository.AssemblyProgressUpdate
 
 
 def _make_project(session) -> Project:
@@ -77,7 +83,7 @@ def _make_pulled_opening(session, project_id, *, request_number, items):
     """A completed SHOP_ASSEMBLY PR with a single PULLED opening (assembly PENDING, assigned).
 
     `items` is a list of (category, code, qty). Mirrors the import: one LOOSE PR item and one
-    ShopAssemblyOpeningItem per line. Returns (pr, opening, {code: ShopAssemblyOpeningItem}).
+    ShopAssemblyOpeningItem per line, all at zero recorded progress. Returns (pr, opening, {code: item}).
     """
     pr = PullRequest(
         id=uuid.uuid4(),
@@ -101,6 +107,7 @@ def _make_pulled_opening(session, project_id, *, request_number, items):
         location="L1",
         pull_status=PullStatus.PULLED,
         assigned_to="assembler",
+        assigned_to_user_id="user_1",
         assembly_status=AssemblyStatus.PENDING,
     )
     session.add(opening)
@@ -138,7 +145,7 @@ def _installed_hardware(session, opening_item_id):
     )
 
 
-def test_completion_snapshots_only_installed_and_flags_deficient(db_session):
+def test_deficiency_returns_unit_and_mints_replacement_before_completion(db_session):
     project = _make_project(db_session)
     # Row for the deficient product is at quantity 0, i.e. fully pulled - the deficient unit still
     # has an existing row to be returned onto.
@@ -150,31 +157,19 @@ def test_completion_snapshots_only_installed_and_flags_deficient(db_session):
         items=[(*INSTALLED, 1), (*DEFICIENT, 1)],
     )
 
-    result = shop_assembly_repository.complete_opening(
+    shop_assembly_repository.record_assembly_progress(
         db_session,
         opening.id,
-        "A",
-        "2",
-        "3",
-        item_results=[
-            shop_assembly_repository.OpeningItemResult(sao[INSTALLED[1]].id, installed=True),
-            shop_assembly_repository.OpeningItemResult(
-                sao[DEFICIENT[1]].id, installed=False, deficient_reason="bent tab"
-            ),
+        [
+            Update(sao[INSTALLED[1]].id, installed_quantity=1),
+            Update(sao[DEFICIENT[1]].id, flag_deficient_quantity=1, deficient_reason="bent tab"),
         ],
-        completed_by="assembler",
+        performed_by="assembler",
     )
     db_session.flush()
 
-    # Assembled opening returns to inventory.
-    assert result.state == OpeningItemState.IN_INVENTORY
-    assert result.aisle == "A" and result.row == "2" and result.bay == "3"
-
-    # Only the installed item is snapshotted as hardware.
-    hw = _installed_hardware(db_session, result.id)
-    assert {h.product_code for h in hw} == {INSTALLED[1]}
-
-    # The deficient unit is returned to inventory flagged deficient (both counts bumped together).
+    # The deficient unit is returned to inventory flagged deficient (both counts bumped together),
+    # and the replacement pull exists BEFORE the leaf is finished - the point of moving it here.
     def_il = db_session.scalars(
         select(InventoryLocation).where(
             InventoryLocation.project_id == project.id,
@@ -184,7 +179,6 @@ def test_completion_snapshots_only_installed_and_flags_deficient(db_session):
     assert def_il.quantity == 1
     assert def_il.deficient_quantity == 1
 
-    # A replacement pull was appended for the deficient product.
     repl = db_session.scalars(select(PullRequest).where(PullRequest.request_number == "PR-REPL-PR-SA-CHK1")).first()
     assert repl is not None
     assert repl.status == PullRequestStatus.PENDING
@@ -196,33 +190,53 @@ def test_completion_snapshots_only_installed_and_flags_deficient(db_session):
     assert repl_items[0].requested_quantity == 1
     assert repl_items[0].opening_number == "A01"
 
-    # Opening is marked completed.
+    # ...and the opening is now in progress, not pending.
+    assert opening.assembly_status == AssemblyStatus.IN_PROGRESS
+
+    result = shop_assembly_repository.complete_opening(db_session, opening.id, "A", "2", "3", completed_by="assembler")
+    db_session.flush()
+
+    # Assembled leaf returns to inventory carrying only what was installed.
+    assert result.state == OpeningItemState.IN_INVENTORY
+    assert result.aisle == "A" and result.row == "2" and result.bay == "3"
+    hw = _installed_hardware(db_session, result.id)
+    assert {h.product_code for h in hw} == {INSTALLED[1]}
+
     db_session.refresh(opening)
     assert opening.assembly_status == AssemblyStatus.COMPLETED
     assert opening.completed_at is not None
 
 
-def test_empty_checklist_snapshots_all_items(db_session):
+def test_no_deficiency_means_no_replacement_pull(db_session):
+    """Installing everything mints nothing extra - a replacement PR only exists if a defect is found."""
     project = _make_project(db_session)
-    _, opening, _sao = _make_pulled_opening(
+    _, opening, sao = _make_pulled_opening(
         db_session,
         project.id,
         request_number="PR-SA-CHK2",
         items=[(*INSTALLED, 2), (*DEFICIENT, 1)],
     )
 
+    shop_assembly_repository.record_assembly_progress(
+        db_session,
+        opening.id,
+        [
+            Update(sao[INSTALLED[1]].id, installed_quantity=2),
+            Update(sao[DEFICIENT[1]].id, installed_quantity=1),
+        ],
+        performed_by="assembler",
+    )
     result = shop_assembly_repository.complete_opening(db_session, opening.id, None, None, None)
     db_session.flush()
 
     hw = _installed_hardware(db_session, result.id)
-    assert {h.product_code for h in hw} == {INSTALLED[1], DEFICIENT[1]}
+    assert {h.product_code: h.quantity for h in hw} == {INSTALLED[1]: 2, DEFICIENT[1]: 1}
 
-    # No replacement pull created when nothing is flagged deficient.
     repl = db_session.scalars(select(PullRequest).where(PullRequest.request_number == "PR-REPL-PR-SA-CHK2")).first()
     assert repl is None
 
 
-def test_checklist_item_must_belong_to_opening(db_session):
+def test_progress_item_must_belong_to_opening(db_session):
     project = _make_project(db_session)
     _, opening, _sao = _make_pulled_opening(
         db_session,
@@ -232,24 +246,19 @@ def test_checklist_item_must_belong_to_opening(db_session):
     )
 
     with pytest.raises(ValidationError):
-        shop_assembly_repository.complete_opening(
+        shop_assembly_repository.record_assembly_progress(
             db_session,
             opening.id,
-            None,
-            None,
-            None,
-            item_results=[
-                shop_assembly_repository.OpeningItemResult(uuid.uuid4(), installed=False, deficient_reason="x")
-            ],
+            [Update(uuid.uuid4(), flag_deficient_quantity=1, deficient_reason="x")],
         )
 
 
-def test_completion_creates_inventory_row_when_deleted(db_session):
-    """#227(2): a deficient flag still completes when the source inventory row was hard-deleted.
+def test_deficiency_creates_inventory_row_when_deleted(db_session):
+    """#227(2): a deficient flag still lands when the source inventory row was hard-deleted.
 
     Simulates a replace-schedule re-upload that removed the InventoryLocation row after the unit
     was pulled. report_deficiency_at_assembly re-materializes the row instead of aborting, so the
-    installed items' snapshots are preserved.
+    rest of the leaf can still be built and completed.
     """
     project = _make_project(db_session)
     il = _seed_inventory(db_session, project.id, category=DEFICIENT[0], code=DEFICIENT[1], quantity=0)
@@ -263,20 +272,16 @@ def test_completion_creates_inventory_row_when_deleted(db_session):
         items=[(*INSTALLED, 1), (*DEFICIENT, 1)],
     )
 
-    result = shop_assembly_repository.complete_opening(
+    shop_assembly_repository.record_assembly_progress(
         db_session,
         opening.id,
-        "A",
-        "2",
-        "3",
-        item_results=[
-            shop_assembly_repository.OpeningItemResult(sao[INSTALLED[1]].id, installed=True),
-            shop_assembly_repository.OpeningItemResult(
-                sao[DEFICIENT[1]].id, installed=False, deficient_reason="bent tab"
-            ),
+        [
+            Update(sao[INSTALLED[1]].id, installed_quantity=1),
+            Update(sao[DEFICIENT[1]].id, flag_deficient_quantity=1, deficient_reason="bent tab"),
         ],
-        completed_by="assembler",
+        performed_by="assembler",
     )
+    result = shop_assembly_repository.complete_opening(db_session, opening.id, "A", "2", "3", completed_by="assembler")
     db_session.flush()
 
     # Installed item is still snapshotted despite the missing deficient-product row.
@@ -295,14 +300,13 @@ def test_completion_creates_inventory_row_when_deleted(db_session):
     assert def_il.deficient_quantity == 1
     assert def_il.stock_item_id is not None
 
-    # Replacement pull is still appended.
     repl = db_session.scalars(select(PullRequest).where(PullRequest.request_number == "PR-REPL-PR-SA-CHK4")).first()
     assert repl is not None
     assert opening.assembly_status == AssemblyStatus.COMPLETED
 
 
 def test_deficient_item_requires_reason(db_session):
-    """#227(3): complete_opening rejects a not-installed item with a missing/blank reason."""
+    """#227(3): a flagged unit with a missing/blank reason is rejected."""
     project = _make_project(db_session)
     _, opening, sao = _make_pulled_opening(
         db_session,
@@ -313,22 +317,15 @@ def test_deficient_item_requires_reason(db_session):
 
     for bad_reason in (None, "   "):
         with pytest.raises(ValidationError):
-            shop_assembly_repository.complete_opening(
+            shop_assembly_repository.record_assembly_progress(
                 db_session,
                 opening.id,
-                None,
-                None,
-                None,
-                item_results=[
-                    shop_assembly_repository.OpeningItemResult(
-                        sao[DEFICIENT[1]].id, installed=False, deficient_reason=bad_reason
-                    )
-                ],
+                [Update(sao[DEFICIENT[1]].id, flag_deficient_quantity=1, deficient_reason=bad_reason)],
             )
 
 
 def test_deficient_reason_length_capped(db_session):
-    """#227(3): complete_opening rejects a deficiency reason over 500 characters."""
+    """#227(3): a deficiency reason over 500 characters is rejected."""
     project = _make_project(db_session)
     _, opening, sao = _make_pulled_opening(
         db_session,
@@ -338,15 +335,8 @@ def test_deficient_reason_length_capped(db_session):
     )
 
     with pytest.raises(ValidationError):
-        shop_assembly_repository.complete_opening(
+        shop_assembly_repository.record_assembly_progress(
             db_session,
             opening.id,
-            None,
-            None,
-            None,
-            item_results=[
-                shop_assembly_repository.OpeningItemResult(
-                    sao[DEFICIENT[1]].id, installed=False, deficient_reason="x" * 501
-                )
-            ],
+            [Update(sao[DEFICIENT[1]].id, flag_deficient_quantity=1, deficient_reason="x" * 501)],
         )

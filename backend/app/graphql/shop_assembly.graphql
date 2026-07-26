@@ -43,6 +43,8 @@ enum PullStatus {
 
 enum AssemblyStatus {
   PENDING
+  # Some hardware is recorded against the leaf but it is not fully dispositioned yet (#340).
+  IN_PROGRESS
   COMPLETED
 }
 
@@ -51,7 +53,12 @@ type ShopAssemblyOpeningItem {
   shop_assembly_opening_id: ID!
   hardware_category: String!
   product_code: String!
+  # Units pulled for this leaf - the plan.
   quantity: Int!
+  # Persisted assembly progress (#340). Remaining = quantity - installed - deficient, derived on the
+  # client; completion is refused while any line still has remaining > 0.
+  installed_quantity: Int!
+  deficient_quantity: Int!
 }
 
 input AssignOpeningsInput {
@@ -60,18 +67,30 @@ input AssignOpeningsInput {
   assigned_to: String!
 }
 
-input CompleteOpeningItemResultInput {
+input AssemblyProgressItemInput {
   shop_assembly_opening_item_id: ID!
-  installed: Boolean! = true
+  # ABSOLUTE running total of units fitted to the leaf; omit to leave the line's count alone.
+  # Re-sending the same value is a no-op, so a retried save cannot double-count.
+  installed_quantity: Int
+  # INCREMENTAL - units condemned now, on top of any already flagged. Each is returned to inventory
+  # flagged deficient and given a PR-REPL replacement line immediately, so it is one-way and a
+  # deficient_reason is required with it.
+  flag_deficient_quantity: Int
   deficient_reason: String
 }
 
+input RecordAssemblyProgressInput {
+  opening_id: ID!
+  items: [AssemblyProgressItemInput!]
+  performed_by: String
+}
+
+# No item_results since #340: completion reads the persisted per-item progress instead.
 input CompleteOpeningInput {
   opening_id: ID!
   aisle: String
   row: String
   bay: String
-  item_results: [CompleteOpeningItemResultInput!]
   completed_by: String
 }
 
@@ -89,11 +108,20 @@ type Query {
 type Mutation {
   # Self-assignment is open to any signed-in user; assigning to *another* user additionally
   # requires the Shop Assembly Manager role (#330).
+  # A manager (the require_role branch) may reassign an opening someone else is holding, including an
+  # IN_PROGRESS one - progress is persisted, so the handoff is lossless (#340). A self-claim never
+  # can: it takes the is-self branch, which does not pass allow_reassign.
   assignOpenings(input: AssignOpeningsInput!): [ShopAssemblyOpening!]!
+  # PENDING or IN_PROGRESS only (#340); a completed opening cannot be unassigned.
   removeOpeningFromUser(openingId: ID!): ShopAssemblyOpening!
-  # Refuses (#339) if a live OpeningItem already exists for this (opening, leaf) - CONFLICT - or if
-  # every checklist item is flagged deficient, which would mint an empty assembled leaf -
-  # VALIDATION_ERROR. Neither case records any deficiency; the opening stays pending.
+  # Save partial assembly progress without finishing (#340). Requires the opening to be PULLED,
+  # assigned, and not completed. First save flips it PENDING -> IN_PROGRESS. Flagged units are
+  # returned to inventory flagged deficient and given a PR-REPL replacement line immediately.
+  recordAssemblyProgress(input: RecordAssemblyProgressInput!): ShopAssemblyOpening!
+  # Refuses (#339) if a live OpeningItem already exists for this (opening, leaf) - CONFLICT.
+  # Refuses (#340) with VALIDATION_ERROR while any unit is still unaccounted for
+  # (installed + deficient < quantity on some line), or if nothing at all was installed, which would
+  # mint an empty assembled leaf. OpeningItemHardware quantities are the recorded installed counts.
   completeOpening(input: CompleteOpeningInput!): OpeningItem!
   # Accept gate (#293). Any signed-in user (require_user). acceptedBy/rejectedBy is the caller's
   # display name. Accept re-checks inventory sufficiency and mints the warehouse PullRequest.

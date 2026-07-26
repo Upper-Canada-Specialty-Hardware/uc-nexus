@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import {
   Box,
   Typography,
@@ -10,14 +10,24 @@ import {
   TableCell,
   Button,
   Stack,
-  Checkbox,
+  Chip,
+  Alert,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
 } from '@mui/material';
 import { useMutation } from '@apollo/client/react';
-import { COMPLETE_OPENING } from '../../graphql/shop-assembly';
+import { COMPLETE_OPENING, RECORD_ASSEMBLY_PROGRESS } from '../../graphql/shop-assembly';
+import {
+  ASSEMBLY_PROGRESS_REFETCH_QUERIES,
+  ASSEMBLY_PROGRESS_STALE_ROOT_FIELDS,
+} from '../../graphql/refetch';
 import Modal from '../../components/Modal';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import { useToast } from '../../components/Toast';
 import { leafSuffix } from '../../utils/leaf';
+import { assemblyProgress } from './openingFilters';
 
 interface OpeningItem {
   id: string;
@@ -25,6 +35,8 @@ interface OpeningItem {
   hardwareCategory: string;
   productCode: string;
   quantity: number;
+  installedQuantity: number;
+  deficientQuantity: number;
 }
 
 interface MyWorkOpening {
@@ -40,11 +52,14 @@ interface AssemblyDetailModalProps {
   open: boolean;
   opening: MyWorkOpening;
   onClose: () => void;
+  // Called once the leaf is finished and minted as an OpeningItem - the caller closes and refetches.
   onCompleted: () => void;
-  // The logged-in assembler; recorded as the performer on the completion and on any
-  // deficiency return so the audit trail names a real user, not the generic "Assembler".
+  // The logged-in assembler; recorded as the performer on progress saves, on the completion, and on
+  // any deficiency return so the audit trail names a real user, not the generic "Assembler".
   completedBy?: string;
 }
+
+const MAX_REASON_LENGTH = 500;
 
 export default function AssemblyDetailModal({
   open,
@@ -58,24 +73,41 @@ export default function AssemblyDetailModal({
   const [row, setRow] = useState('');
   const [bay, setBay] = useState('');
   const [confirmOpen, setConfirmOpen] = useState(false);
-  // Per-item checklist. Missing key -> installed (default). Reasons keyed by item id.
-  const [installed, setInstalled] = useState<Record<string, boolean>>({});
-  const [reasons, setReasons] = useState<Record<string, string>>({});
 
-  const isInstalled = (id: string): boolean => installed[id] ?? true;
-  const reasonFor = (id: string): string => reasons[id] ?? '';
+  // Draft installed counts, keyed by item id, held as strings so a half-typed field is not coerced to
+  // 0 under the assembler's fingers. Seeded once, on mount, from what the server has stored - which
+  // is what makes a half-built leaf resumable (#340). Both callers mount this modal only while an
+  // opening is selected and key it on that opening's id, so opening a different leaf remounts and
+  // re-seeds; there is no re-seeding effect to fight with, and a save that replaces the item objects
+  // therefore cannot stomp on whatever else the assembler is part-way through typing.
+  //
+  // Deficient counts are deliberately NOT drafted: flagging is immediate and irreversible, so it is
+  // always read straight off the server.
+  const [draftInstalled, setDraftInstalled] = useState<Record<string, string>>(() =>
+    Object.fromEntries(opening.items.map((item) => [item.id, String(item.installedQuantity)]))
+  );
+  // The line a deficiency is being reported against, if the flag dialog is open.
+  const [flagging, setFlagging] = useState<OpeningItem | null>(null);
+  const [flagQuantity, setFlagQuantity] = useState('1');
+  const [flagReason, setFlagReason] = useState('');
 
-  const [completeOpening, { loading }] = useMutation(COMPLETE_OPENING, {
+  const [recordProgress, { loading: saving }] = useMutation(RECORD_ASSEMBLY_PROGRESS, {
+    update(cache) {
+      for (const fieldName of ASSEMBLY_PROGRESS_STALE_ROOT_FIELDS) {
+        cache.evict({ id: 'ROOT_QUERY', fieldName });
+      }
+      cache.gc();
+    },
+    refetchQueries: ASSEMBLY_PROGRESS_REFETCH_QUERIES,
+    onError: (err) => showToast(err.message, 'error'),
+  });
+
+  const [completeOpening, { loading: completing }] = useMutation(COMPLETE_OPENING, {
     onCompleted: () => {
-      showToast(
-        `Opening ${opening.openingNumber || 'item'} marked complete`,
-        'success'
-      );
+      showToast(`Opening ${opening.openingNumber || 'item'} marked complete`, 'success');
       onCompleted();
     },
-    onError: (err) => {
-      showToast(err.message, 'error');
-    },
+    onError: (err) => showToast(err.message, 'error'),
   });
 
   const validateField = (value: string): boolean => {
@@ -83,33 +115,86 @@ export default function AssemblyDetailModal({
     return value.length >= 1 && value.length <= 20;
   };
 
-  // Every not-installed item must carry a deficiency reason before completion.
-  const deficientMissingReason = opening.items.some(
-    (item) => !isInstalled(item.id) && reasonFor(item.id).trim() === ''
+  // The most a line can be marked installed: everything not already condemned.
+  const maxInstalled = (item: OpeningItem): number => item.quantity - item.deficientQuantity;
+
+  const draftFor = (item: OpeningItem): string =>
+    draftInstalled[item.id] ?? String(item.installedQuantity);
+
+  // null means "not a usable number yet" - blank, non-integer, or out of range.
+  const parsedDraft = (item: OpeningItem): number | null => {
+    const raw = draftFor(item).trim();
+    if (raw === '') return null;
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < 0 || n > maxInstalled(item)) return null;
+    return n;
+  };
+
+  const allDraftsValid = opening.items.every((item) => parsedDraft(item) !== null);
+
+  // Progress as the assembler currently has it on screen: server-stored deficient counts plus the
+  // draft installed counts. Mark Complete is gated on this rather than on the stored values so the
+  // button turns on the moment the last unit is typed; the save that precedes completion is what
+  // then makes it true on the server.
+  const draftProgress = useMemo(
+    () =>
+      assemblyProgress(
+        opening.items.map((item) => ({
+          quantity: item.quantity,
+          installedQuantity: parsedDraft(item) ?? item.installedQuantity,
+          deficientQuantity: item.deficientQuantity,
+        }))
+      ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [opening.items, draftInstalled]
   );
-  const deficientCount = opening.items.filter(
-    (item) => !isInstalled(item.id)
-  ).length;
 
-  const isValid =
-    validateField(aisle) &&
-    validateField(row) &&
-    validateField(bay) &&
-    !deficientMissingReason;
+  const dirty = opening.items.some((item) => parsedDraft(item) !== item.installedQuantity);
+  const locationValid = validateField(aisle) && validateField(row) && validateField(bay);
+  const busy = saving || completing;
 
-  const toggleInstalled = (id: string, checked: boolean) => {
-    setInstalled((prev) => ({ ...prev, [id]: checked }));
-  };
-  const setReason = (id: string, value: string) => {
-    setReasons((prev) => ({ ...prev, [id]: value }));
-  };
+  // Mirrors the backend's completion gate exactly - every unit installed or condemned, and at least
+  // one actually installed - so the button explains itself instead of failing on submit.
+  const canComplete =
+    allDraftsValid && draftProgress.complete && draftProgress.installed > 0 && locationValid;
 
-  const handleMarkComplete = useCallback(() => {
-    setConfirmOpen(true);
-  }, []);
+  const progressPayload = useCallback(
+    () =>
+      opening.items
+        .filter((item) => parsedDraft(item) !== item.installedQuantity)
+        .map((item) => ({
+          shopAssemblyOpeningItemId: item.id,
+          installedQuantity: parsedDraft(item),
+        })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [opening.items, draftInstalled]
+  );
 
-  const handleConfirm = useCallback(() => {
+  const handleSaveProgress = useCallback(async () => {
+    const items = progressPayload();
+    if (items.length === 0) {
+      showToast('No changes to save', 'info');
+      return;
+    }
+    const result = await recordProgress({
+      variables: { input: { openingId: opening.id, items, performedBy: completedBy || null } },
+    });
+    if (result.data) showToast('Progress saved', 'success');
+    // The modal deliberately stays open: a save is a checkpoint mid-job, not the end of it, and the
+    // leaf stays in My Work as In Progress.
+  }, [progressPayload, recordProgress, opening.id, completedBy, showToast]);
+
+  const handleConfirmComplete = useCallback(async () => {
     setConfirmOpen(false);
+    // Completion reads persisted state, so anything still in the draft has to land first. One save,
+    // then complete - if the save fails its error surfaces and nothing is completed on stale counts.
+    const items = progressPayload();
+    if (items.length > 0) {
+      const saved = await recordProgress({
+        variables: { input: { openingId: opening.id, items, performedBy: completedBy || null } },
+      });
+      if (!saved.data) return;
+    }
     completeOpening({
       variables: {
         input: {
@@ -117,19 +202,58 @@ export default function AssemblyDetailModal({
           aisle: aisle || null,
           row: row || null,
           bay: bay || null,
-          itemResults: opening.items.map((item) => ({
-            shopAssemblyOpeningItemId: item.id,
-            installed: isInstalled(item.id),
-            deficientReason: isInstalled(item.id)
-              ? null
-              : reasonFor(item.id).trim(),
-          })),
           completedBy: completedBy || null,
         },
       },
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [completeOpening, opening.id, opening.items, aisle, row, bay, installed, reasons, completedBy]);
+  }, [progressPayload, recordProgress, completeOpening, opening.id, aisle, row, bay, completedBy]);
+
+  // --- deficiency flagging -------------------------------------------------------------------
+
+  const openFlagDialog = (item: OpeningItem) => {
+    setFlagging(item);
+    setFlagQuantity('1');
+    setFlagReason('');
+  };
+
+  const flagRemaining = flagging
+    ? flagging.quantity - flagging.installedQuantity - flagging.deficientQuantity
+    : 0;
+  const flagQuantityValue = Number(flagQuantity);
+  const flagQuantityValid =
+    Number.isInteger(flagQuantityValue) &&
+    flagQuantityValue >= 1 &&
+    flagQuantityValue <= flagRemaining;
+  const flagReasonValid =
+    flagReason.trim().length > 0 && flagReason.trim().length <= MAX_REASON_LENGTH;
+
+  const handleFlagDeficient = useCallback(async () => {
+    if (!flagging) return;
+    const item = flagging;
+    const result = await recordProgress({
+      variables: {
+        input: {
+          openingId: opening.id,
+          items: [
+            {
+              shopAssemblyOpeningItemId: item.id,
+              flagDeficientQuantity: Number(flagQuantity),
+              deficientReason: flagReason.trim(),
+            },
+          ],
+          performedBy: completedBy || null,
+        },
+      },
+    });
+    if (result.data) {
+      setFlagging(null);
+      showToast(
+        `${flagQuantity} x ${item.productCode} flagged deficient - replacement pull requested`,
+        'success'
+      );
+    }
+  }, [flagging, recordProgress, opening.id, flagQuantity, flagReason, completedBy, showToast]);
+
   return (
     <>
       <Modal
@@ -137,89 +261,116 @@ export default function AssemblyDetailModal({
         onClose={onClose}
         title={`Assembly: ${opening.openingNumber || 'Opening'}${leafSuffix(opening.leaf)}`}
         actions={
-          <Stack direction='row' spacing={1}>
-            <Button onClick={onClose}>Cancel</Button>
+          <Stack direction="row" spacing={1}>
+            <Button onClick={onClose}>Close</Button>
             <Button
-              variant='contained'
-              onClick={handleMarkComplete}
-              disabled={!isValid || loading}
+              variant="outlined"
+              onClick={handleSaveProgress}
+              disabled={!allDraftsValid || !dirty || busy}
             >
-              {loading ? 'Completing...' : 'Mark Complete'}
+              {saving ? 'Saving...' : 'Save Progress'}
+            </Button>
+            <Button
+              variant="contained"
+              onClick={() => setConfirmOpen(true)}
+              disabled={!canComplete || busy}
+            >
+              {completing ? 'Completing...' : 'Mark Complete'}
             </Button>
           </Stack>
         }
       >
         <Box>
-          <Stack direction='row' spacing={2} sx={{ mb: 2 }}>
+          <Stack direction="row" spacing={2} sx={{ mb: 2 }} alignItems="center" flexWrap="wrap">
             {opening.building && (
-              <Typography variant='body2' color='text.secondary'>
+              <Typography variant="body2" color="text.secondary">
                 Building: {opening.building}
               </Typography>
             )}
             {opening.floor && (
-              <Typography variant='body2' color='text.secondary'>
+              <Typography variant="body2" color="text.secondary">
                 Floor: {opening.floor}
               </Typography>
             )}
+            <Chip
+              size="small"
+              variant="outlined"
+              label={`${draftProgress.installed + draftProgress.deficient}/${draftProgress.planned} units accounted for`}
+            />
           </Stack>
 
-          <Typography variant='subtitle1' sx={{ mb: 0.5, fontWeight: 'bold' }}>
+          <Typography variant="subtitle1" sx={{ mb: 0.5, fontWeight: 'bold' }}>
             Shop Hardware Checklist
           </Typography>
-          <Typography
-            variant='caption'
-            color='text.secondary'
-            sx={{ mb: 1, display: 'block' }}
-          >
-            Uncheck any item not installed to flag it deficient - a reason is
-            required. Only installed items are recorded on the assembled opening.
+          <Typography variant="caption" color="text.secondary" sx={{ mb: 1, display: 'block' }}>
+            Enter how many units of each line you have fitted. Save Progress as often as you like -
+            the leaf stays in My Work until you mark it complete. Every unit has to be either
+            installed or flagged deficient before the leaf can be completed.
           </Typography>
 
           {opening.items.length > 0 ? (
-            <Table size='small' sx={{ mb: 3 }}>
+            <Table size="small" sx={{ mb: 3 }}>
               <TableHead>
                 <TableRow>
-                  <TableCell padding='checkbox'>Installed</TableCell>
                   <TableCell>Product Code</TableCell>
                   <TableCell>Hardware Category</TableCell>
-                  <TableCell align='right'>Quantity</TableCell>
-                  <TableCell>Deficiency reason</TableCell>
+                  <TableCell align="right">Pulled</TableCell>
+                  <TableCell align="right">Installed</TableCell>
+                  <TableCell align="right">Deficient</TableCell>
+                  <TableCell align="right">Remaining</TableCell>
+                  <TableCell align="right">Action</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
                 {opening.items.map((item) => {
-                  const installedNow = isInstalled(item.id);
+                  const parsed = parsedDraft(item);
+                  const storedRemaining =
+                    item.quantity - item.installedQuantity - item.deficientQuantity;
+                  const remaining =
+                    parsed === null ? storedRemaining : item.quantity - parsed - item.deficientQuantity;
                   return (
                     <TableRow key={item.id}>
-                      <TableCell padding='checkbox'>
-                        <Checkbox
-                          checked={installedNow}
+                      <TableCell>{item.productCode}</TableCell>
+                      <TableCell>{item.hardwareCategory}</TableCell>
+                      <TableCell align="right">{item.quantity}</TableCell>
+                      <TableCell align="right">
+                        <TextField
+                          size="small"
+                          type="number"
+                          value={draftFor(item)}
                           onChange={(e) =>
-                            toggleInstalled(item.id, e.target.checked)
+                            setDraftInstalled((prev) => ({ ...prev, [item.id]: e.target.value }))
                           }
+                          error={parsed === null}
+                          disabled={busy}
                           inputProps={{
-                            'aria-label': `Installed: ${item.productCode}`,
+                            min: 0,
+                            max: maxInstalled(item),
+                            step: 1,
+                            'aria-label': `Installed units: ${item.productCode}`,
+                            style: { textAlign: 'right', width: '4rem' },
                           }}
                         />
                       </TableCell>
-                      <TableCell>{item.productCode}</TableCell>
-                      <TableCell>{item.hardwareCategory}</TableCell>
-                      <TableCell align='right'>{item.quantity}</TableCell>
-                      <TableCell>
-                        <TextField
-                          size='small'
-                          fullWidth
-                          placeholder={
-                            installedNow ? '-' : 'Reason (required)'
-                          }
-                          value={reasonFor(item.id)}
-                          onChange={(e) => setReason(item.id, e.target.value)}
-                          disabled={installedNow}
-                          error={
-                            !installedNow && reasonFor(item.id).trim() === ''
-                          }
-                          inputProps={{ maxLength: 500 }}
-                        />
+                      <TableCell align="right">{item.deficientQuantity}</TableCell>
+                      <TableCell align="right">
+                        {parsed !== null && remaining === 0 ? (
+                          <Chip size="small" label="Done" variant="outlined" />
+                        ) : (
+                          <Typography variant="body2" color="text.secondary">
+                            {parsed === null ? '-' : remaining}
+                          </Typography>
+                        )}
+                      </TableCell>
+                      <TableCell align="right">
+                        <Button
+                          size="small"
+                          variant="text"
+                          disabled={busy || storedRemaining <= 0}
+                          onClick={() => openFlagDialog(item)}
+                        >
+                          Flag deficient
+                        </Button>
                       </TableCell>
                     </TableRow>
                   );
@@ -227,22 +378,22 @@ export default function AssemblyDetailModal({
               </TableBody>
             </Table>
           ) : (
-            <Typography variant='body2' color='text.secondary' sx={{ mb: 3 }}>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
               No hardware items.
             </Typography>
           )}
 
-          <Typography variant='subtitle1' sx={{ mb: 1, fontWeight: 'bold' }}>
+          <Typography variant="subtitle1" sx={{ mb: 1, fontWeight: 'bold' }}>
             Store completed Opening Item at:
           </Typography>
-          <Typography variant='caption' color='text.secondary' sx={{ mb: 2, display: 'block' }}>
+          <Typography variant="caption" color="text.secondary" sx={{ mb: 2, display: 'block' }}>
             Leave blank for Unlocated
           </Typography>
 
-          <Stack direction='row' spacing={2}>
+          <Stack direction="row" spacing={2}>
             <TextField
-              label='Aisle'
-              size='small'
+              label="Aisle"
+              size="small"
               value={aisle}
               onChange={(e) => setAisle(e.target.value)}
               error={!validateField(aisle)}
@@ -250,8 +401,8 @@ export default function AssemblyDetailModal({
               inputProps={{ maxLength: 20 }}
             />
             <TextField
-              label='Row'
-              size='small'
+              label="Row"
+              size="small"
               value={row}
               onChange={(e) => setRow(e.target.value)}
               error={!validateField(row)}
@@ -259,8 +410,8 @@ export default function AssemblyDetailModal({
               inputProps={{ maxLength: 20 }}
             />
             <TextField
-              label='Bay'
-              size='small'
+              label="Bay"
+              size="small"
               value={bay}
               onChange={(e) => setBay(e.target.value)}
               error={!validateField(bay)}
@@ -268,19 +419,81 @@ export default function AssemblyDetailModal({
               inputProps={{ maxLength: 20 }}
             />
           </Stack>
+
+          {opening.items.length > 0 && !draftProgress.complete && (
+            <Typography variant="caption" color="text.secondary" sx={{ mt: 2, display: 'block' }}>
+              {draftProgress.remaining} unit(s) still unaccounted for - Mark Complete stays disabled
+              until every unit is installed or flagged deficient.
+            </Typography>
+          )}
+          {opening.items.length > 0 && draftProgress.complete && draftProgress.installed === 0 && (
+            <Typography variant="caption" color="text.secondary" sx={{ mt: 2, display: 'block' }}>
+              Every unit was flagged deficient, so there is nothing assembled to complete. The leaf
+              stays open until replacement hardware arrives and is installed.
+            </Typography>
+          )}
         </Box>
       </Modal>
 
+      {/* Flagging is irreversible from the bench and moves inventory the moment it is confirmed, so
+          it gets its own dialog and its own confirm rather than an inline control. */}
+      <Dialog open={flagging !== null} onClose={() => setFlagging(null)} maxWidth="xs" fullWidth>
+        <DialogTitle>Flag deficient: {flagging?.productCode}</DialogTitle>
+        <DialogContent>
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            This cannot be undone here. The units are returned to inventory flagged deficient and a
+            replacement pull is requested immediately - reversing it is a deficiency review.
+          </Alert>
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            <TextField
+              label="Units deficient"
+              size="small"
+              type="number"
+              value={flagQuantity}
+              onChange={(e) => setFlagQuantity(e.target.value)}
+              error={!flagQuantityValid}
+              helperText={
+                flagQuantityValid ? `${flagRemaining} unrecorded` : `Enter 1 to ${flagRemaining}`
+              }
+              inputProps={{ min: 1, max: flagRemaining, step: 1, 'aria-label': 'Units deficient' }}
+            />
+            <TextField
+              label="Reason"
+              size="small"
+              fullWidth
+              multiline
+              minRows={2}
+              value={flagReason}
+              onChange={(e) => setFlagReason(e.target.value)}
+              error={flagReason.length > 0 && !flagReasonValid}
+              helperText="Required - what is wrong with the hardware"
+              inputProps={{ maxLength: MAX_REASON_LENGTH, 'aria-label': 'Deficiency reason' }}
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setFlagging(null)}>Cancel</Button>
+          <Button
+            color="error"
+            variant="contained"
+            onClick={handleFlagDeficient}
+            disabled={!flagQuantityValid || !flagReasonValid || busy}
+          >
+            Flag deficient
+          </Button>
+        </DialogActions>
+      </Dialog>
+
       <ConfirmDialog
         open={confirmOpen}
-        title='Complete Assembly'
+        title="Complete Assembly"
         message={
-          deficientCount > 0
-            ? `Mark opening ${opening.openingNumber || 'item'} as assembled? ${deficientCount} item(s) will be flagged deficient and a replacement pull requested. This action cannot be undone.`
-            : `Mark opening ${opening.openingNumber || 'item'} as assembled? This action cannot be undone.`
+          draftProgress.deficient > 0
+            ? `Mark opening ${opening.openingNumber || 'item'} as assembled with ${draftProgress.installed} unit(s) installed? ${draftProgress.deficient} unit(s) were flagged deficient and already have a replacement pull. This action cannot be undone.`
+            : `Mark opening ${opening.openingNumber || 'item'} as assembled with ${draftProgress.installed} unit(s) installed? This action cannot be undone.`
         }
-        confirmLabel='Mark Complete'
-        onConfirm={handleConfirm}
+        confirmLabel="Mark Complete"
+        onConfirm={handleConfirmComplete}
         onCancel={() => setConfirmOpen(false)}
       />
     </>
