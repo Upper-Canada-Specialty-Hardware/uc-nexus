@@ -246,6 +246,13 @@ def report_deficiency_at_assembly(
         pull_request_id=replacement_pr.id,
         item_type=PullRequestItemType.LOOSE,
         opening_number=opening_number,
+        # Restore the identity the replacement is owed to (#339). Without these the replacement was
+        # a bare (opening, product) line: the warehouse could not tell a pair's leaf-1 replacement
+        # from its leaf-2 one, and nothing tied the pulled unit back to the checklist item that
+        # failed. leaf comes from the ShopAssemblyOpening (the assembly work unit is one leaf);
+        # sa_opening_item_id is the direct link the replacement-loop closure reads.
+        leaf=sa_opening.leaf,
+        sa_opening_item_id=sa_oi.id,
         hardware_category=il.hardware_category,
         product_code=il.product_code,
         requested_quantity=quantity,

@@ -75,6 +75,8 @@ input CompleteOpeningInput {
   completed_by: String
 }
 
+# Every field below is gated on an authenticated caller (require_user, #339) except where a
+# stronger role gate is noted. Adding the gate did not change any field's arguments.
 type Query {
   assembleList(projectId: ID!): [ShopAssemblyOpening!]!
   myWork(assignedToUserId: String!): [ShopAssemblyOpening!]!
@@ -85,8 +87,13 @@ type Query {
 }
 
 type Mutation {
+  # Self-assignment is open to any signed-in user; assigning to *another* user additionally
+  # requires the Shop Assembly Manager role (#330).
   assignOpenings(input: AssignOpeningsInput!): [ShopAssemblyOpening!]!
   removeOpeningFromUser(openingId: ID!): ShopAssemblyOpening!
+  # Refuses (#339) if a live OpeningItem already exists for this (opening, leaf) - CONFLICT - or if
+  # every checklist item is flagged deficient, which would mint an empty assembled leaf -
+  # VALIDATION_ERROR. Neither case records any deficiency; the opening stays pending.
   completeOpening(input: CompleteOpeningInput!): OpeningItem!
   # Accept gate (#293). Any signed-in user (require_user). acceptedBy/rejectedBy is the caller's
   # display name. Accept re-checks inventory sufficiency and mints the warehouse PullRequest.

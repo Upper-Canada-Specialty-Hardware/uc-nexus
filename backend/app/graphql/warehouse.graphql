@@ -108,6 +108,9 @@ type PullRequestItem {
   item_type: PullRequestItemType!
   opening_number: String!
   opening_item_id: ID
+  # Deficient ShopAssemblyOpeningItem this line replaces (#339). Set only on PR-REPL replacement
+  # lines minted at assembly completion; null on every other line.
+  sa_opening_item_id: ID
   # Door leaf this pull line is for (#311). Null = legacy / leaf-agnostic.
   leaf: Int
   hardware_category: String
