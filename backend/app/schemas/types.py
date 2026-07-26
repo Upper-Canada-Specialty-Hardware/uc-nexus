@@ -597,6 +597,10 @@ class ShopAssemblyRequest:
     created_at: datetime
     approved_at: datetime | None
     rejected_at: datetime | None
+    # Something happened to this request after it was created that the acceptor has to know about
+    # (#342): a schedule re-upload landed under it, or the reservations backfill could not cover it.
+    # Null means nothing has.
+    integrity_note: str | None
     openings: list[ShopAssemblyOpening]
 
 
@@ -627,6 +631,8 @@ class ShippingOutRequest:
     created_at: datetime
     approved_at: datetime | None
     rejected_at: datetime | None
+    # See ShopAssemblyRequest.integrity_note (#342).
+    integrity_note: str | None
     pull_request_id: strawberry.ID | None
     items: list[ShippingOutRequestItem]
 
@@ -783,13 +789,37 @@ class OpeningItemDetail:
 @strawberry.type
 class InventoryShortfall:
     """One shorted (hardware_category, product_code) combo surfaced by an inventory-sufficiency
-    gate (#224): requested vs available (quantity - deficient_quantity), and the gap."""
+    gate (#224): requested vs available, and the gap.
+
+    Since #342 `available` is net of other requests' reservations as well as deficient units, so a
+    zero can mean "the stock is here but claimed". `reserved` carries that separately - it is the
+    difference between "order more" and "release or refine another request"."""
 
     hardware_category: str
     product_code: str
     requested: int
     available: int
     short: int
+    reserved: int = 0
+
+
+@strawberry.type
+class InventoryAvailability:
+    """What one (hardware_category, product_code) in a project can still be claimed for (#342).
+
+    `available = on_hand - deficient - reserved`, floored at 0 - the exact number the Start-a-Task
+    creation gate applies, so the wizard can block an over-selection before submission instead of
+    letting the user find out from a rejected finalize. Note this is deliberately NOT the same as
+    the warehouse inventory view's "available", which is on-hand minus deficient: that view answers
+    "what is physically unspoken-for in the building", this one answers "what may I claim".
+    """
+
+    hardware_category: str
+    product_code: str
+    on_hand_quantity: int
+    deficient_quantity: int
+    reserved_quantity: int
+    available_quantity: int
 
 
 @strawberry.type

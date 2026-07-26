@@ -9,7 +9,11 @@ import {
   GET_PROJECT_HARDWARE_SCHEDULE,
   RECONCILE_SCHEDULE,
 } from '../../../graphql/import';
-import { GET_OPENING_ITEMS, GET_PULL_REQUESTS } from '../../../graphql/warehouse';
+import {
+  GET_OPENING_ITEMS,
+  GET_PROJECT_INVENTORY_AVAILABILITY,
+  GET_PULL_REQUESTS,
+} from '../../../graphql/warehouse';
 import { GET_SHIPPING_OUT_REQUESTS } from '../../../graphql/shipping';
 import {
   useHardwareScheduleParser,
@@ -163,7 +167,41 @@ const reimportProject: Project = { ...firstImportProject, openingCount: 5 };
 // A re-import project eagerly fetches the persisted schedule (null = nothing
 // persisted, so the upload step stays a plain dropzone) and, once parsed items
 // exist, the project's excluded-items list.
+// Both request purposes read reservation-aware availability (#342) so the wizard can block an
+// over-selection before submission. Generous by default: these tests are about step shape, and a
+// shortfall would disable Next for a reason none of them is asserting.
+const availabilityMock: MockedResponse = {
+  request: {
+    query: GET_PROJECT_INVENTORY_AVAILABILITY,
+    variables: { projectId: 'proj-1' },
+  },
+  maxUsageCount: Number.POSITIVE_INFINITY,
+  result: {
+    data: {
+      projectInventoryAvailability: [
+        {
+          hardwareCategory: 'Hinges',
+          productCode: 'HNG-100',
+          onHandQuantity: 99,
+          deficientQuantity: 0,
+          reservedQuantity: 0,
+          availableQuantity: 99,
+        },
+        {
+          hardwareCategory: 'Locks',
+          productCode: 'LCK-200',
+          onHandQuantity: 99,
+          deficientQuantity: 0,
+          reservedQuantity: 0,
+          availableQuantity: 99,
+        },
+      ],
+    },
+  },
+};
+
 const reimportBaseMocks: MockedResponse[] = [
+  availabilityMock,
   {
     request: {
       query: GET_PROJECT_HARDWARE_SCHEDULE,

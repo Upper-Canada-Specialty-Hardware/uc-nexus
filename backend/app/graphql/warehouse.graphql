@@ -141,8 +141,23 @@ type InventoryShortfall {
   hardware_category: String!
   product_code: String!
   requested: Int!
+  # available = on-hand - deficient - OTHER requests' reservations (#342), so a zero here can mean
+  # "the stock is present but claimed". `reserved` is that number, separately.
   available: Int!
   short: Int!
+  reserved: Int!
+}
+
+# What one product in a project can still be CLAIMED for (#342): available = on_hand - deficient -
+# reserved. Distinct from InventoryHierarchyNode's availability (on-hand minus deficient), which
+# answers "what is physically unspoken-for in the building".
+type InventoryAvailability {
+  hardware_category: String!
+  product_code: String!
+  on_hand_quantity: Int!
+  deficient_quantity: Int!
+  reserved_quantity: Int!
+  available_quantity: Int!
 }
 
 type ShipReadyItems {
@@ -302,6 +317,7 @@ type ProjectProgressByProduct {
 type Query {
   openPOs(projectId: ID): [PurchaseOrder!]!
   poReceivingDetails(poId: ID!): PurchaseOrder!
+  projectInventoryAvailability(projectId: ID!): [InventoryAvailability!]!
   inventoryHierarchy(projectId: ID!): [InventoryHierarchyNode!]!
   inventoryItems(projectId: ID!, category: String!, productCode: String!): [InventoryItemDetail!]!
   unlocatedInventory(projectId: ID): [InventoryItemDetail!]!

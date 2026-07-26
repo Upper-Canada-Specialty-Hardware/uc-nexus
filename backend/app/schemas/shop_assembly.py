@@ -6,10 +6,8 @@ import strawberry
 
 from app.auth import SHOP_ASSEMBLY_MANAGER_ROLE, require_role, require_user
 from app.database import SessionLocal
-from app.errors import InventoryShortfallError
 from app.repositories import shop_assembly_repository, user_repository
 from app.repositories import warehouse as warehouse_repository
-from app.services import notification_service
 
 from .converters import (
     clerk_user_to_type,
@@ -113,29 +111,17 @@ class ShopAssemblyMutations:
     def accept_shop_assembly_request(
         self, info: strawberry.Info, id: strawberry.ID, accepted_by: str
     ) -> ShopAssemblyRequest:
-        """Accept a PENDING shop-assembly request (#293). Open to any signed-in user. Re-checks
-        inventory sufficiency; if short, notifies the PO for backfill and raises the shortfall inline
-        without minting the PR. If covered, mints the warehouse PullRequest and approves the request."""
+        """Accept a PENDING shop-assembly request (#293). Open to any signed-in user.
+
+        A pure human approval gate since #342: it mints the warehouse PullRequest and approves the
+        request, and re-checks nothing. The hardware was reserved when the request was created, so
+        it already belongs to this request - there is no shortfall left for the acceptor to be shown
+        and nothing they could do about one if there were."""
         require_user(info)
         request_id = uuid.UUID(str(id))
         with SessionLocal() as session:
-            try:
-                shop_assembly_repository.accept_shop_assembly_request(session, request_id, accepted_by)
-                session.commit()
-            except InventoryShortfallError as e:
-                # Roll the mint back so no PR/partial state survives, then notify the PO for backfill
-                # in a fresh session so it outlives the rollback, and re-raise so the shortfall
-                # reaches the caller inline.
-                session.rollback()
-                with SessionLocal() as notif_session:
-                    notification_service.notify_po_shortfall(
-                        notif_session,
-                        project_id=e.project_id,
-                        request_number=e.request_number,
-                        shortfalls=e.shortfalls,
-                    )
-                    notif_session.commit()
-                raise
+            shop_assembly_repository.accept_shop_assembly_request(session, request_id, accepted_by)
+            session.commit()
             refreshed = shop_assembly_repository.get_request_with_openings(session, request_id)
             return shop_assembly_request_to_type(refreshed)
 

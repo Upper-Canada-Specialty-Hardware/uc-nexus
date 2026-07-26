@@ -359,8 +359,9 @@ def test_replace_schedule_preserves_inventory(db_session):
 def test_shop_assembly_request_created_pending(db_session):
     """finalize mints a PENDING ShopAssemblyRequest (#293): NO PullRequest yet, openings hang off the
     SAR via shop_assembly_request_id with pull_request_id NULL, items + snapshot identity captured.
-    No inventory-sufficiency gate at import - it moved to accept."""
+    Creation gates on available inventory and reserves it (#342), so the stock has to be there."""
     project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=10)
     db_session.commit()
 
     req_number = f"SA-{uuid.uuid4().hex[:6]}"
@@ -724,6 +725,7 @@ def test_leaf_po_ref_attaches_both_leaf_rows_to_one_line(db_session):
 def test_sar_created_per_leaf(db_session):
     """A pair produces one ShopAssemblyOpening per door leaf, each stamped with its leaf."""
     project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=10)
     db_session.commit()
 
     req_number = f"SA-{uuid.uuid4().hex[:6]}"

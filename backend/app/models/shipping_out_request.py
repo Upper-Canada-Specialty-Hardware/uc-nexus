@@ -32,6 +32,9 @@ class ShippingOutRequest(Base):
     approved_by: Mapped[str | None] = mapped_column(String, nullable=True)
     rejected_by: Mapped[str | None] = mapped_column(String, nullable=True)
     rejection_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # See ShopAssemblyRequest.integrity_note (#342): a schedule re-upload landed under this request,
+    # or the reservations backfill could not cover it. Null = nothing has happened to it.
+    integrity_note: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
     approved_at: Mapped[datetime | None] = mapped_column(nullable=True)
     rejected_at: Mapped[datetime | None] = mapped_column(nullable=True)

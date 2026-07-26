@@ -20,15 +20,19 @@ from app.models.enums import (
     PullRequestSource,
     PullRequestStatus,
     PullStatus,
+    ReservationSource,
 )
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.opening_item import OpeningItem as OpeningItemModel
 from app.models.pull_request import PullRequest as PullRequestModel
 from app.models.pull_request import PullRequestItem as PullRequestItemModel
+from app.models.shipping_out_request import ShippingOutRequest as ShippingOutRequestModel
 from app.models.shop_assembly import ShopAssemblyOpening
+from app.models.shop_assembly import ShopAssemblyRequest as ShopAssemblyRequestModel
 from app.services import notification_service
 from app.services.locking import lock_rows
 
+from . import reservations
 from .audit import _log_audit_event
 
 
@@ -82,14 +86,19 @@ def get_pull_request_details(session: Session, pr_id: uuid.UUID) -> PullRequestM
 @dataclass(frozen=True)
 class Shortfall:
     """One shorted (hardware_category, product_code) combo: how much was requested, how much is
-    available (quantity - deficient_quantity), and the gap. Emitted by the shared sufficiency gate
-    and surfaced verbatim to the creator/approver and to the PO backfill notification."""
+    available, and the gap. Emitted by the shared sufficiency gate and surfaced verbatim to the
+    creator/approver and to the PO backfill notification.
+
+    Since #342 `available` is net of other requests' reservations as well as deficient units, so
+    "available: 0" can mean "the stock is here but spoken for". `reserved` carries that number
+    separately, which is the difference between "order more" and "release or refine a request"."""
 
     hardware_category: str
     product_code: str
     requested: int
     available: int
     short: int
+    reserved: int = 0
 
 
 @dataclass
@@ -112,13 +121,32 @@ def check_inventory_sufficiency(
     needs: Iterable[tuple[str, str, int]],
     *,
     lock: bool = False,
+    reservation_aware: bool = False,
+    exclude_reservations_of: tuple[ReservationSource, uuid.UUID] | None = None,
 ) -> SufficiencyResult:
-    """Shared hard inventory-sufficiency gate (#224). Aggregates `needs` (an iterable of
-    (hardware_category, product_code, quantity)) by combo, compares each against available
-    inventory in the project, and returns a Shortfall per combo that can't be fully covered - no
-    partial fulfilment. available = quantity - deficient_quantity, the same rule
-    approve_pull_request deducts under. With lock=True the inventory rows are SELECT ... FOR UPDATE
-    and returned grouped by combo so the caller can pull FIFO against exactly what was checked."""
+    """Shared hard inventory-sufficiency gate (#224, reservation-aware since #342).
+
+    Aggregates `needs` (an iterable of (hardware_category, product_code, quantity)) by combo,
+    compares each against available inventory in the project, and returns a Shortfall per combo
+    that can't be fully covered - no partial fulfilment.
+
+    - Base availability is `quantity - deficient_quantity`, the same rule approve_pull_request
+      deducts under. A deficiency reported at the bench bumps the inventory row's `quantity` and
+      `deficient_quantity` together, so it nets to zero here - a condemned unit is back in the
+      building but is not available, and it is not double-counted against anything.
+    - `reservation_aware=True` also subtracts active reservations, giving
+      `available = on-hand - deficient - reservations`. This is what request creation gates on and
+      what pull approval re-checks: stock another request has already claimed is not free.
+    - `exclude_reservations_of=(source, request_id)` is **self-coverage**. Approving request R's
+      pull spends R's own reservations, so R's claim must not be counted against R - otherwise a
+      request that reserved exactly what it needs could never be approved. Everyone else's claims
+      still count, which is what stops a PR-REPL replacement pull (which holds no reservations of
+      its own, because a deficiency cannot be foreseen) from eating stock somebody reserved.
+
+    With lock=True the inventory rows are SELECT ... FOR UPDATE and returned grouped by combo so the
+    caller can pull FIFO against exactly what was checked. Creation locks too: two creators racing
+    for the last hinge serialise on those rows, so the second one sees the first one's reservation.
+    """
     needed_combos: dict[tuple[str, str], int] = defaultdict(int)
     for cat, code, qty in needs:
         needed_combos[(cat, code)] += qty
@@ -145,14 +173,59 @@ def check_inventory_sufficiency(
         for il in session.scalars(stmt).all():
             inv_by_combo[(il.hardware_category, il.product_code)].append(il)
 
+    reserved_by_combo: dict[tuple[str, str], int] = {}
+    if reservation_aware and needed_combos:
+        exclude_source, exclude_request_id = exclude_reservations_of or (None, None)
+        reserved_by_combo = reservations.get_reserved_quantities(
+            session,
+            project_id,
+            needed_combos.keys(),
+            exclude_source=exclude_source,
+            exclude_request_id=exclude_request_id,
+        )
+
     shortfalls: list[Shortfall] = []
     for (cat, code), requested in needed_combos.items():
-        available = sum(il.quantity - (il.deficient_quantity or 0) for il in inv_by_combo.get((cat, code), []))
+        on_hand = sum(il.quantity - (il.deficient_quantity or 0) for il in inv_by_combo.get((cat, code), []))
+        reserved = reserved_by_combo.get((cat, code), 0)
+        available = max(0, on_hand - reserved)
         if available < requested:
-            shortfalls.append(Shortfall(cat, code, requested, available, requested - available))
+            shortfalls.append(Shortfall(cat, code, requested, available, requested - available, reserved))
     shortfalls.sort(key=lambda s: (s.hardware_category, s.product_code))
 
     return SufficiencyResult(shortfalls=shortfalls, inventory_by_combo=dict(inv_by_combo))
+
+
+def find_reservation_holder(session: Session, pr: PullRequestModel) -> tuple[ReservationSource, uuid.UUID] | None:
+    """The request whose reservations this pull is going to spend, or None if it has none (#342).
+
+    A shop-assembly accept stamps the minted PR with the request's own `request_number` (unique on
+    both tables), and a shipping-out accept stamps `pull_request_id` on the request - so each hop
+    is a single indexed lookup, no string parsing.
+
+    None is the honest answer for three real cases, and they all behave identically downstream (the
+    pull is checked against on-hand minus *everyone's* reservations, and consumes nothing):
+
+    - a **PR-REPL replacement pull**. Nobody can reserve for a deficiency that has not happened yet,
+      so a replacement genuinely holds no claim; it keeps the reactive check and the PO-backfill
+      loop, and it must not be able to eat stock other requests have reserved.
+    - a pull whose source request was **rejected/reopened** after the accept - the claim is gone by
+      design.
+    - a **legacy pull** minted before this table existed, or one created directly by a non-UI caller.
+    """
+    if pr.source == PullRequestSource.SHOP_ASSEMBLY:
+        sar_id = session.scalar(
+            select(ShopAssemblyRequestModel.id).where(ShopAssemblyRequestModel.request_number == pr.request_number)
+        )
+        if sar_id is not None:
+            return (ReservationSource.SHOP_ASSEMBLY_REQUEST, sar_id)
+    elif pr.source == PullRequestSource.SHIPPING_OUT:
+        sor_id = session.scalar(
+            select(ShippingOutRequestModel.id).where(ShippingOutRequestModel.pull_request_id == pr.id)
+        )
+        if sor_id is not None:
+            return (ReservationSource.SHIPPING_OUT_REQUEST, sor_id)
+    return None
 
 
 def approve_pull_request(session: Session, pr_id: uuid.UUID, approved_by: str) -> tuple:
@@ -163,6 +236,21 @@ def approve_pull_request(session: Session, pr_id: uuid.UUID, approved_by: str) -
     where outcome_string is "APPROVED" or "INSUFFICIENT". On INSUFFICIENT the PR is left PENDING
     (the pull is blocked, not cancelled - #224), `notification_or_none` is the PO backfill signal,
     and `shortfalls` lists the shorted combos. On APPROVED `shortfalls` is empty.
+
+    Since #342 this is where a request's reservation is **consumed**: the claim it has held since
+    creation turns into the actual FIFO deduction, atomically, under the same row locks. Two rules
+    make that safe:
+
+    - **Self-coverage.** The availability check excludes this request's own reservations. They are
+      what backs the deduction; counting them as competing demand would make a correctly-reserved
+      request permanently unapprovable.
+    - **Consume only on success.** A pull that comes up short keeps its claim and stays PENDING, so
+      the blocked request does not quietly hand its hardware to whoever asks next.
+
+    A shortfall on a pull that *did* hold reservations is not normal flow - it means stock vanished
+    under a live claim (an admin write-off or quantity override). It is reported the same way so the
+    approver and the PO see it, but it is additionally recorded as an integrity event, because the
+    reserved path is supposed to be un-shortfallable.
     """
     # 1. Lock PR
     locked_prs = lock_rows(session, PullRequestModel, [pr_id])
@@ -186,10 +274,21 @@ def approve_pull_request(session: Session, pr_id: uuid.UUID, approved_by: str) -
 
     now = datetime.utcnow()
 
-    # 3. Re-run the shared sufficiency gate, locking the rows we'd pull from.
-    result = check_inventory_sufficiency(session, pr.project_id, needs, lock=True)
+    # 3. Re-run the shared sufficiency gate, locking the rows we'd pull from. Reservation-aware, with
+    #    this request's own claim excluded (self-coverage) - so it pulls from
+    #    on-hand - deficient - *other* requests' reservations, plus whatever it reserved itself.
+    holder = find_reservation_holder(session, pr)
+    result = check_inventory_sufficiency(
+        session,
+        pr.project_id,
+        needs,
+        lock=True,
+        reservation_aware=True,
+        exclude_reservations_of=holder,
+    )
 
-    # 4. If short: leave the PR PENDING (blocked, not cancelled) and notify the PO for backfill.
+    # 4. If short: leave the PR PENDING (blocked, not cancelled), keep the reservations (the claim
+    #    outlives the blocked attempt), and notify the PO for backfill.
     if not result.sufficient:
         notif = notification_service.notify_po_shortfall(
             session,
@@ -197,9 +296,42 @@ def approve_pull_request(session: Session, pr_id: uuid.UUID, approved_by: str) -
             request_number=pr.request_number,
             shortfalls=result.shortfalls,
         )
+        if holder is not None:
+            # The reserved path is not supposed to be able to come up short. Record it against the
+            # pull so the discrepancy is investigable rather than indistinguishable from the normal
+            # PR-REPL / legacy shortfall the approver sees.
+            _log_audit_event(
+                session,
+                project_id=pr.project_id,
+                entity_type=AuditEntityType.INVENTORY_LOCATION,
+                entity_id=pr.id,
+                action=AuditAction.PULL_DEDUCTION,
+                performed_by=approved_by,
+                detail={
+                    "integrityError": "RESERVED_PULL_SHORT",
+                    "pullRequestNumber": pr.request_number,
+                    "reservationSource": holder[0].value,
+                    "reservationRequestId": str(holder[1]),
+                    "shortfalls": [
+                        {
+                            "hardwareCategory": s.hardware_category,
+                            "productCode": s.product_code,
+                            "requested": s.requested,
+                            "available": s.available,
+                            "short": s.short,
+                        }
+                        for s in result.shortfalls
+                    ],
+                },
+            )
         return (pr, "INSUFFICIENT", notif, result.shortfalls)
 
-    # 5. If sufficient: approve and deduct FIFO
+    # 5. If sufficient: consume the source request's claim and deduct FIFO, in this transaction.
+    #    Consumption happens before the deduction so the two can never be observed apart: a reader
+    #    between them would otherwise see the units both reserved and already gone.
+    if holder is not None:
+        reservations.release_reservations(session, holder[0], holder[1])
+
     pr.status = PullRequestStatus.IN_PROGRESS
     pr.assigned_to = approved_by
     pr.approved_at = now

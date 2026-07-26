@@ -19,11 +19,18 @@ import type { DocumentNode } from 'graphql';
 import { useToast } from './Toast';
 import { useIdentity } from '../hooks/useIdentity';
 import ConfirmDialog from './ConfirmDialog';
+import { RESERVATION_STALE_ROOT_FIELDS } from '../graphql/refetch';
 
 interface ReviewableRequest {
   id: string;
   requestNumber: string;
   createdBy: string;
+  /**
+   * Something happened to this request after it was created that the reviewer has to know about
+   * (#342) - a schedule re-upload landed under it, or it holds no inventory reservation. Null on a
+   * healthy request, which is the overwhelming majority, so it renders nothing at all.
+   */
+  integrityNote?: string | null;
 }
 
 interface RequestsReviewPageProps<TRequest extends ReviewableRequest> {
@@ -98,7 +105,16 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
     onError: (e) => settle(e.message, 'error'),
   });
 
+  // Rejecting RELEASES the request's inventory reservation (#342), so the project's availability
+  // changes for everyone. The reader is the Start a Task wizard in another module, never mounted
+  // here, which is exactly what an eviction reaches and refetchQueries does not.
   const [rejectRequest] = useMutation(rejectMutation, {
+    update(cache) {
+      for (const fieldName of RESERVATION_STALE_ROOT_FIELDS) {
+        cache.evict({ id: 'ROOT_QUERY', fieldName });
+      }
+      cache.gc();
+    },
     onCompleted: () => settle('Request rejected', 'success'),
     onError: (e) => settle(e.message, 'error'),
   });
@@ -163,6 +179,10 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
             </AccordionSummary>
             <AccordionDetails>
               <Stack spacing={2}>
+                {/* Real system state about this specific request (#342), so it earns a status
+                    colour and sits above the detail rather than in a tooltip - it changes what
+                    accepting means. */}
+                {req.integrityNote && <Alert severity="warning">{req.integrityNote}</Alert>}
                 {renderDetails(req)}
 
                 {mode === 'approved' ? (
@@ -226,7 +246,7 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
       <ConfirmDialog
         open={confirmReopenId !== null}
         title="Reopen this request?"
-        message="This undoes the accept: the request goes back to Pending and the warehouse pull request it created is removed. It only works if the warehouse has not started that pull yet."
+        message="This undoes the accept: the request goes back to Pending and the warehouse pull request it created is removed. It only works if the warehouse has not started that pull yet. The request keeps its claim on the hardware it reserved - reject it to release that."
         confirmLabel="Reopen"
         onConfirm={() => {
           const id = confirmReopenId;

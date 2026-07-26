@@ -157,7 +157,48 @@ DRAFT -> ORDERED -> VENDOR_CONFIRMED -> PARTIALLY_RECEIVED -> CLOSED
 
 **Result**: Creates a project (or updates existing), openings, hardware items, and the selected output (POs, SAR, shipping PRs).
 
+**Creating a request RESERVES inventory (#342).** This is the single biggest behavioural change to
+the wizard, and it changes what "it worked" looks like at every downstream step.
+
+- The Shop Assembly and Shipping PRs steps both read `projectInventoryAvailability`, where
+  `availableQuantity = onHandQuantity - deficientQuantity - reservedQuantity`. **Next is disabled**
+  while the selection asks for more than that, and a red alert lists every short combo as
+  `<CATEGORY> <CODE>: need N, M available (R reserved by other requests) - short S`.
+- The Shop Assembly step now also renders a "Hardware this request would reserve" table (Needed /
+  Available / Reserved elsewhere per product), and refuses to proceed at all when no item was
+  classified as Shop Hardware.
+- The Shipping PRs step shows "<n> available" under each **loose** line only. Assembled door leaves
+  never show one and are never gated - their hardware left fungible inventory at assembly.
+- Next is also disabled while the availability lookup is in flight or has failed. An unknown count is
+  not treated as "fine", so a mocked/blocked GraphQL call reads as a blocked wizard, not a bug.
+- Driving `finalizeImportSession` directly past the UI gate gets an `INSUFFICIENT_INVENTORY` error
+  naming every short combo, and **nothing at all is created** - no request, no reservations, no
+  openings. Useful for exercising the gate without walking the wizard.
+- To make a shortfall on demand: create one request that claims most of a product, then start a
+  second Start a Task for the same product. The second one is short *even though the shelf count is
+  unchanged* - that is the reservation working, and `reserved by other requests` in the message is
+  how to tell it from genuinely absent stock.
+- Other creation-time refusals (all `VALIDATION_ERROR`): a request with zero openings; an opening
+  with zero items; a shipping request with zero lines; a leaf already inside a live shop-assembly
+  request; a leaf already on a live shipping-out request; a leaf claimed by the *other* request type.
+- **Re-upload with `replaceSchedule: true`** is never blocked. Live PENDING requests are rewritten to
+  the openings that survived (their reservations rebuilt from what is left), a request that loses
+  everything is auto-REJECTED by "Hardware Schedule Import", accepted requests are left alone, and
+  every live request gets an `integrityNote` that shows as an amber alert on the accept screen.
+
 ### Warehouse Module
+
+**Two different "available" numbers, and they are supposed to differ (#342).** The Inventory view's
+availability is `on-hand - deficient`: what is physically unspoken-for in the building. The Start a
+Task wizard's is `on-hand - deficient - reservations`: what may still be *claimed*. A product can
+read 10 available in the warehouse and 0 available in the wizard; that is not a bug, it means live
+requests are holding it.
+
+**Approving a pull request consumes its source request's reservation.** A pull whose request reserved
+exactly what it needs still approves - the check excludes the request's own claim (self-coverage). A
+`PR-REPL-*` replacement pull holds no reservation at all, so it keeps the old reactive behaviour: it
+can come up INSUFFICIENT and notify the PO, and it can only draw from what nobody else has claimed.
+
 
 **Entry**: `/app/warehouse` -> Warehouse landing page with stat cards and "Go to" card buttons for: Inventory, Locations, Deliveries, Receiving, Put Away, Pull Requests, Stock Pool, Deficient Items, Shipments. (No longer "three tabs" - this has evolved to a full landing page.)
 
@@ -222,6 +263,19 @@ Both entry points open a "Transfer <productCode>" MUI dialog with: an "X availab
 - Manager creates/approves Shop Assembly Requests (SARs)
 - Approved SARs generate pull requests for warehouse
 - Users get assigned openings, pull hardware, assemble, mark complete
+
+**Accept is a pure human gate since #342.** There is no inventory check on Accept any more and no
+shortfall can surface there - the hardware was reserved when the request was created. Accepting
+neither spends nor releases that claim; approving the warehouse pull spends it; **rejecting** is the
+only thing that releases it.
+
+- **Reopen (#325) deliberately does NOT release.** A reopened request goes back to Pending still
+  holding its hardware, so a second request for the same product stays short until you *reject* the
+  reopened one. The reopen confirm dialog says so. If a colleague reports "I released it but the
+  stock is still claimed", they reopened instead of rejecting.
+- An amber alert at the top of an expanded request is its `integrityNote`: either a schedule
+  re-upload landed under it, or the reservations backfill could not cover it (that second one only
+  appears on data that predates #342).
 
 **Assembly modal is a progress editor, not a one-shot checklist (#340).** Clicking a row in My Work
 (or "Start assembly" / "Continue assembly" on the Assemble List) opens it. Per line it shows Pulled /

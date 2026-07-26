@@ -36,6 +36,9 @@ function renderStep(leaves: AssembledLeafCandidate[], overrides: Record<string, 
       onRemovePR={vi.fn()}
       onUpdatePR={vi.fn()}
       onTogglePRItem={onTogglePRItem}
+      availabilityByCombo={new Map()}
+      availabilityShortfalls={[]}
+      availabilityError={false}
       onAcknowledgeIncompleteLeaf={onAcknowledgeIncompleteLeaf}
       onNext={vi.fn()}
       onBack={vi.fn()}

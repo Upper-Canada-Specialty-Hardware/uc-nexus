@@ -1,8 +1,12 @@
-"""Tests for the two hard inventory-sufficiency gates and the shared helper (#224 / #293).
+"""Tests for the hard inventory-sufficiency gates and the shared helper (#224 / #293 / #342).
 
-Gate 1: accepting a shop-assembly request refuses to mint the PR when short (#293 moved this gate
-        from import "Start a Task" to the accept step).
-Gate 2: warehouse approve_pull_request leaves the PR PENDING (not cancelled) when short.
+Gate 1 moved twice. It started at import "Start a Task", moved to accept in #293, and moved back to
+creation in #342 - this time as a *reservation*: creating a request gates on
+`on-hand - deficient - other requests' reservations` and writes its own claim. Accept is now a pure
+human gate that re-checks nothing, because the hardware is already this request's.
+
+Gate 2: warehouse approve_pull_request leaves the PR PENDING (not cancelled) when short. It still
+exists, and it is still what a PR-REPL replacement pull (which can hold no reservation) runs into.
 Both notify the PO with an INVENTORY_SHORTFALL signal carrying the shortfall detail.
 """
 
@@ -18,9 +22,11 @@ from app.models.enums import (
     PullRequestItemType,
     PullRequestSource,
     PullRequestStatus,
+    ReservationSource,
     ShopAssemblyRequestStatus,
 )
 from app.models.inventory import InventoryLocation
+from app.models.inventory_reservation import InventoryReservation
 from app.models.notification import Notification
 from app.models.project import Project
 from app.models.pull_request import PullRequest, PullRequestItem
@@ -148,7 +154,7 @@ def test_helper_aggregates_duplicate_combos(db_session):
     assert result.shortfalls[0].short == 1
 
 
-# --- gate 1: accepting a shop-assembly request (#293) ----------------------------------------
+# --- gate 1: creating a shop-assembly request (#342) -----------------------------------------
 
 
 def _finalize_shop_assembly(session, project, *, code, qty):
@@ -191,58 +197,79 @@ def _finalize_shop_assembly(session, project, *, code, qty):
     )
 
 
-def test_gate1_import_always_creates_pending_request_even_when_short(db_session):
-    """#293: import no longer gates on inventory - it always mints a PENDING request. Sufficiency is
-    enforced at accept, not here."""
+def test_gate1_creation_refuses_when_short_and_creates_nothing(db_session):
+    """#342: the gate is at creation. A selection that does not fit available inventory is refused
+    whole, naming the shorted combo, and nothing at all is written - the creator refines the
+    selection, which is the only point in the flow where that is still cheap."""
     project = _make_project(db_session)
-    _seed_inventory(db_session, project.id, quantity=1)  # need 3, only 1 available
+    project_id = project.id
+    _seed_inventory(db_session, project_id, quantity=1)  # need 3, only 1 available
     db_session.commit()
 
-    result = _finalize_shop_assembly(db_session, project, code="HG-100", qty=3)
-    db_session.flush()
+    with pytest.raises(InventoryShortfallError) as excinfo:
+        _finalize_shop_assembly(db_session, project, code="HG-100", qty=3)
 
-    sar = result["shop_assembly_request"]
-    assert sar is not None
-    assert sar.status == ShopAssemblyRequestStatus.PENDING
-    # No PR minted at import.
+    err = excinfo.value
+    assert err.project_id == project_id
+    assert len(err.shortfalls) == 1
+    assert (err.shortfalls[0].requested, err.shortfalls[0].available, err.shortfalls[0].short) == (3, 1, 2)
+
+    db_session.rollback()
     assert (
-        db_session.scalars(
-            select(PullRequest).where(
-                PullRequest.project_id == project.id,
-                PullRequest.source == PullRequestSource.SHOP_ASSEMBLY,
-            )
-        ).all()
+        db_session.scalars(select(ShopAssemblyRequest).where(ShopAssemblyRequest.project_id == project_id)).all() == []
+    )
+    assert (
+        db_session.scalars(select(InventoryReservation).where(InventoryReservation.project_id == project_id)).all()
         == []
     )
 
 
-def test_gate1_accept_refuses_when_short_and_creates_no_pr(db_session):
+def test_gate1_creation_reserves_what_it_takes(db_session):
+    """A covered creation writes the claim, and the claim is what later readers see as unavailable."""
     project = _make_project(db_session)
-    project_id = project.id  # stable id for asserts after the refused accept
-    _seed_inventory(db_session, project_id, quantity=1)  # need 3, only 1 available
+    _seed_inventory(db_session, project.id, quantity=5)
+    result = _finalize_shop_assembly(db_session, project, code="HG-100", qty=3)
+    db_session.flush()
+
+    reservations = db_session.scalars(
+        select(InventoryReservation).where(InventoryReservation.project_id == project.id)
+    ).all()
+    assert len(reservations) == 1
+    assert reservations[0].quantity == 3
+    assert reservations[0].source == ReservationSource.SHOP_ASSEMBLY_REQUEST
+    assert reservations[0].shop_assembly_request_id == result["shop_assembly_request"].id
+
+    # 5 on hand, 3 claimed -> 2 left for anyone else.
+    check = warehouse_repository.check_inventory_sufficiency(
+        db_session, project.id, [("HINGE", "HG-100", 3)], reservation_aware=True
+    )
+    assert not check.sufficient
+    assert (check.shortfalls[0].available, check.shortfalls[0].reserved) == (2, 3)
+
+
+def test_gate1_accept_no_longer_rechecks_inventory(db_session):
+    """Accept is a pure human gate (#342). Even if stock is written off after creation, the accept
+    still mints the PR - the request holds a reservation, and the place that decision was made was
+    creation. (The warehouse approve is what would then surface the discrepancy.)"""
+    project = _make_project(db_session)
+    il = _seed_inventory(db_session, project.id, quantity=3)
     result = _finalize_shop_assembly(db_session, project, code="HG-100", qty=3)
     sar_id = result["shop_assembly_request"].id
     db_session.flush()
 
-    with pytest.raises(InventoryShortfallError) as excinfo:
-        shop_assembly_repository.accept_shop_assembly_request(db_session, sar_id, "acceptor")
+    il.quantity = 0  # an admin write-off under a live claim
+    db_session.flush()
 
-    # The refusal carries the shortfall detail for the acceptor and the PO notification.
-    err = excinfo.value
-    assert err.project_id == project_id
-    assert len(err.shortfalls) == 1
-    assert err.shortfalls[0].short == 2
+    sar = shop_assembly_repository.accept_shop_assembly_request(db_session, sar_id, "acceptor")
+    db_session.flush()
 
-    # Accept re-checks sufficiency before mutating, so a shortfall raises without touching
-    # anything: no shop-assembly PR is minted and the request stays PENDING.
-    prs = db_session.scalars(
-        select(PullRequest).where(
-            PullRequest.project_id == project_id,
-            PullRequest.source == PullRequestSource.SHOP_ASSEMBLY,
-        )
-    ).all()
-    assert prs == []
-    assert db_session.get(ShopAssemblyRequest, sar_id).status == ShopAssemblyRequestStatus.PENDING
+    assert sar.status == ShopAssemblyRequestStatus.APPROVED
+    assert db_session.scalar(select(PullRequest).where(PullRequest.request_number == sar.request_number)) is not None
+    # Accepting neither spends nor releases the claim.
+    assert (
+        len(db_session.scalars(select(InventoryReservation).where(InventoryReservation.project_id == project.id)).all())
+        == 1
+    )
 
 
 def test_gate1_accept_mints_pr_when_covered(db_session):
