@@ -4,6 +4,7 @@ import { Box } from '@mui/material';
 import AssembleListPage from './AssembleListPage';
 import AssignmentBoard from './AssignmentBoard';
 import MyWorkPage from './MyWorkPage';
+import PipelinePage from './PipelinePage';
 import ShopAssemblyLanding from './ShopAssemblyLanding';
 import ShopAssemblyRequestsPage from './ShopAssemblyRequestsPage';
 import BackToModule from '../../components/BackToModule';
@@ -25,6 +26,7 @@ export default function ShopAssemblyModule() {
       <Route path="assemble" element={<ShopAssemblySubLayout><AssembleListPage /></ShopAssemblySubLayout>} />
       <Route path="assign" element={<ShopAssemblySubLayout><AssignmentBoard /></ShopAssemblySubLayout>} />
       <Route path="my-work" element={<ShopAssemblySubLayout><MyWorkPage /></ShopAssemblySubLayout>} />
+      <Route path="pipeline" element={<ShopAssemblySubLayout><PipelinePage /></ShopAssemblySubLayout>} />
       <Route path="*" element={<Navigate to="" replace />} />
     </Routes>
   );

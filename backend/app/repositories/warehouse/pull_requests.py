@@ -39,6 +39,11 @@ from .audit import _log_audit_event
 
 MAX_CANCELLATION_REASON_LENGTH = 500
 
+# How many openings a "work is available" notification names before it starts counting instead
+# (#344). A staging confirmation can cover a whole pull, and a bell entry listing forty openings is
+# not a notification, it is a report.
+_MAX_NAMED_OPENINGS_IN_MESSAGE = 5
+
 
 def get_pull_requests(
     session: Session,
@@ -448,15 +453,17 @@ def _apply_replacement_arrivals(session: Session, pr: PullRequestModel) -> None:
         item.deficient_quantity -= restored
         leaf_completed = opening.assembly_status == AssemblyStatus.COMPLETED
         opening_item = None
+        leaf_label = f"Opening {opening.opening_number}"
+        if opening.leaf is not None:
+            leaf_label += f" Leaf {opening.leaf}"
+        shipped = False
         if leaf_completed:
             item.replacement_pending_quantity += restored
             opening_item = shop_assembly_repository.find_assembled_leaf(
                 session, pr.project_id, opening.opening_id, opening.leaf
             )
-            if opening_item is not None and opening_item.state == OpeningItemState.SHIPPED_OUT:
-                leaf_label = f"Opening {opening.opening_number}"
-                if opening.leaf is not None:
-                    leaf_label += f" Leaf {opening.leaf}"
+            shipped = opening_item is not None and opening_item.state == OpeningItemState.SHIPPED_OUT
+            if shipped:
                 notification_service.create_notification(
                     session,
                     project_id=pr.project_id,
@@ -467,7 +474,35 @@ def _apply_replacement_arrivals(session: Session, pr: PullRequestModel) -> None:
                         f"{leaf_label}, which has already shipped. Route it through reallocation or a "
                         f"site shipment."
                     ),
+                    pull_request_id=pr.id,
                 )
+
+        # The ordinary case, which #341 left silent (#344). The shipped branch above told *shipping*
+        # that a leaf that had left the building was owed something; nothing told the person actually
+        # holding the leaf that the hardware they were waiting for had turned up. Addressed to the
+        # assembler's stable Clerk user id - the ShopAssemblyOpening keeps the assignment it was
+        # completed under, so on a finished leaf this is exactly who owns the replacement install.
+        #
+        # Skipped when nobody is holding the opening: an unassigned leaf's replacement is picked up
+        # by whoever claims it, and a notification with no addressee is noise. It is also skipped for
+        # the shipped case, which is not this person's problem any more.
+        if not shipped and opening.assigned_to_user_id:
+            where_it_lands = (
+                "It is waiting as a replacement install on the finished leaf."
+                if leaf_completed
+                else "It is back on the leaf's checklist as remaining work."
+            )
+            notification_service.create_notification(
+                session,
+                project_id=pr.project_id,
+                recipient_role=opening.assigned_to_user_id,
+                notification_type=NotificationType.REPLACEMENT_ARRIVED,
+                message=(
+                    f"{restored} x {item.product_code} replacement arrived on {pr.request_number} for "
+                    f"{leaf_label}. {where_it_lands}"
+                ),
+                pull_request_id=pr.id,
+            )
 
         _log_audit_event(
             session,
@@ -529,6 +564,7 @@ def complete_pull_request(session: Session, pr_id: uuid.UUID, completed_by: str 
         recipient_role=pr.requested_by,
         notification_type=NotificationType.PULL_REQUEST_COMPLETED,
         message=f"Pull Request {pr.request_number} has been fulfilled.",
+        pull_request_id=pr.id,
     )
 
     # Replacement lines (#341) are keyed on the checklist line they are owed to, not on the PR's
@@ -553,6 +589,7 @@ def complete_pull_request(session: Session, pr_id: uuid.UUID, completed_by: str 
         openings = session.scalars(
             select(ShopAssemblyOpening).where(ShopAssemblyOpening.pull_request_id == pr.id)
         ).all()
+        flipped: list[ShopAssemblyOpening] = []
         for opening in openings:
             # Idempotent for an opening already staged individually (#343): its own staged_at/by
             # stamp is the truth about when that cart was built and must not be overwritten by the
@@ -562,8 +599,55 @@ def complete_pull_request(session: Session, pr_id: uuid.UUID, completed_by: str 
             opening.pull_status = PullStatus.PULLED
             opening.staged_at = now
             opening.staged_by = completed_by or pr.assigned_to or pr.requested_by
+            flipped.append(opening)
+        # Only the openings this call actually made workable (#344). That set is empty when staging
+        # completed the pull - `stage_pull_openings` has already flipped every one of them and raised
+        # its own notification - so the manager audience gets exactly one signal per real event, with
+        # no dedupe logic needed anywhere: the fact that governs is "did anything become workable
+        # here", and it is already computed.
+        notify_assembly_work_available(session, pr, flipped, completed_pull=True)
 
     return pr
+
+
+def notify_assembly_work_available(
+    session: Session,
+    pr: PullRequestModel,
+    openings: list[ShopAssemblyOpening],
+    *,
+    completed_pull: bool,
+) -> None:
+    """Tell the shop-assembly manager audience that openings just became workable (#344).
+
+    Before this, a cart staged at 9am (#343) made its opening assignable immediately and nothing said
+    so - the assignment board found out when somebody happened to reload it, which is the same
+    problem per-opening staging was meant to solve one layer down.
+
+    One notification per *confirmation*, not per opening: the warehouse stages a batch of carts in
+    one action, and N rows in the bell for one trip to the shelf is how a bell stops being read. The
+    openings are named up to a limit and then counted, so the message stays a message.
+
+    A no-op when nothing became workable, which is what keeps `complete_pull_request` from
+    double-announcing a pull that `stage_pull_openings` has already finished.
+    """
+    if not openings:
+        return
+    labels = sorted(f"{o.opening_number}" + (f" leaf {o.leaf}" if o.leaf is not None else "") for o in openings)
+    shown = ", ".join(labels[:_MAX_NAMED_OPENINGS_IN_MESSAGE])
+    if len(labels) > _MAX_NAMED_OPENINGS_IN_MESSAGE:
+        shown += f" and {len(labels) - _MAX_NAMED_OPENINGS_IN_MESSAGE} more"
+    tail = " That was the last of the pull." if completed_pull else " The rest of the pull is still being picked."
+    notification_service.create_notification(
+        session,
+        project_id=pr.project_id,
+        recipient_role=notification_service.SHOP_ASSEMBLY_MANAGER_RECIPIENT_ROLE,
+        notification_type=NotificationType.ASSEMBLY_WORK_AVAILABLE,
+        message=(
+            f"{len(labels)} opening(s) on Pull Request {pr.request_number} are staged and ready to "
+            f"assemble: {shown}.{tail}"
+        ),
+        pull_request_id=pr.id,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -738,6 +822,16 @@ def stage_pull_openings(
     completed = summary.total_opening_count > 0 and summary.staged_opening_count >= summary.total_opening_count
     if completed:
         complete_pull_request(session, pr.id, completed_by=staged_by)
+
+    # Raised here rather than inside the loop so a batch confirmation is one signal (#344), and after
+    # the completion call so `completed_pull` is a fact and not a prediction. `complete_pull_request`
+    # finds nothing left to flip in this path, so it stays silent and there is no double-announce.
+    notify_assembly_work_available(
+        session,
+        pr,
+        [o for o in openings if o.id in set(newly_staged)],
+        completed_pull=completed,
+    )
 
     return StageResult(
         pull_request=pr,
@@ -1075,6 +1169,7 @@ def cancel_pull_request(
             + (f": {reason}" if reason else ".")
             + (" The hardware has been returned to inventory." if restocked else "")
         ),
+        pull_request_id=pr.id,
     )
 
     return CancelResult(

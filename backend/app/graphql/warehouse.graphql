@@ -23,11 +23,22 @@ type ReceiveLineItem {
 type InventoryLocation {
   id: ID!
   project_id: ID!
-  po_line_item_id: ID!
-  receive_line_item_id: ID!
+  # Null on a row that did not come from a receive: an allocation out of the stock pool, or a row
+  # re-materialized by a deficiency return (#225) or a pull restock (#343).
+  po_line_item_id: ID
+  receive_line_item_id: ID
+  stock_item_id: ID
+  warehouse_id: ID
   hardware_category: String!
   product_code: String!
   quantity: Int!
+  # Units on this row condemned and awaiting deficiency review. Both counts move together when a unit
+  # is condemned, so `available` below is unchanged and the unit cannot be re-pulled.
+  deficient_quantity: Int!
+  # quantity - deficient_quantity. NOT the same "available" as projectInventoryAvailability's, which
+  # also subtracts reservations (#342): this one answers "what is physically unspoken-for in the
+  # building", that one answers "what may I claim".
+  available: Int!
   aisle: String
   row: String
   bay: String
@@ -40,28 +51,42 @@ type InventoryHierarchyNode {
   hardware_category: String!
   product_codes: [ProductCodeNode!]!
   total_quantity: Int!
+  total_available_quantity: Int!
+  total_value: Float!
 }
 
 type ProductCodeNode {
   product_code: String!
   items: [InventoryLocation!]!
   total_quantity: Int!
+  # Computed on both hierarchies since #344 reconciliation; the by-vendor one supplies 0.
+  total_available_quantity: Int!
+  total_value: Float!
 }
 
 type InventoryItemDetail {
   inventory_location: InventoryLocation!
-  po_number: String!
-  classification: Classification!
+  # Both null for a row with no originating PO line (see InventoryLocation.po_line_item_id).
+  po_number: String
+  classification: Classification
+  unit_cost: Float
 }
 
 type OpeningItem {
   id: ID!
   project_id: ID!
   opening_id: ID!
+  warehouse_id: ID
   opening_number: String!
   building: String
   floor: String
   location: String
+  # Door leaf this assembled unit is (#311): 1 or 2, or null for a legacy whole-opening unit. One
+  # OpeningItem per leaf, so a pair ships as two independently-located units.
+  leaf: Int
+  # The opening's total leaf count, the "N of M leaves shipped" denominator. Populated only by the
+  # openingItems list resolver; null elsewhere.
+  leaf_count: Int
   quantity: Int!
   assembly_completed_at: DateTime!
   state: OpeningItemState!
@@ -184,9 +209,13 @@ type ApproveResult {
   shortfalls: [InventoryShortfall!]!
 }
 
+# Two values, because approve_pull_request returns exactly two outcome strings. A third,
+# CANCELLED, was removed as dead state in #344: it dated from the pre-#224 behaviour where an approve
+# that found insufficient stock cancelled the pull, and since #224 such an approve leaves the PR
+# PENDING and returns INSUFFICIENT. GraphQL-only and never persisted, so no migration was needed - a
+# *cancelled pull* is PullRequestStatus.CANCELLED, which is a different enum on a real column.
 enum ApproveOutcome {
   APPROVED
-  CANCELLED
   INSUFFICIENT
 }
 
@@ -241,6 +270,8 @@ type PackingSlipItem {
   item_type: PullRequestItemType!
   opening_item_id: ID
   opening_number: String
+  # Door leaf (#335), snapshotted from the shipped OpeningItem. Null on a LOOSE line.
+  leaf: Int
   product_code: String!
   hardware_category: String!
   quantity: Int!
@@ -292,6 +323,9 @@ type ShipmentReturn {
 type Notification {
   id: ID!
   project_id: ID!
+  # An audience tag, not access control: the bell queries with no recipient filter, so everyone sees
+  # everything and this says who a signal is *for*. Named audiences (PO, SHIPPING,
+  # SHOP_ASSEMBLY_MANAGER, WAREHOUSE) plus, for REPLACEMENT_ARRIVED, one assembler's Clerk user id.
   recipient_role: String!
   type: NotificationType!
   message: String!
@@ -299,10 +333,34 @@ type Notification {
   created_at: DateTime!
 }
 
+# Written by every signal in the system. The three added in #344 close gaps slices 1-5 left:
+enum NotificationType {
+  PULL_REQUEST_CANCELLED
+  PULL_REQUEST_COMPLETED
+  SHIPMENT_COMPLETED
+  # PO backfill signal from the inventory-sufficiency gates (#224).
+  INVENTORY_SHORTFALL
+  # A PR-REPL pull completed for a leaf that had already shipped (#341) -> SHIPPING.
+  REPLACEMENT_AFTER_SHIPMENT
+  # Openings became workable: the warehouse staged carts, or completed a pull that still had
+  # un-staged openings (#344) -> SHOP_ASSEMBLY_MANAGER. One per staging confirmation, never per
+  # opening, and silent when nothing actually became workable.
+  ASSEMBLY_WORK_AVAILABLE
+  # A replacement arrived for a leaf that has NOT shipped (#344) -> the assembler holding it.
+  REPLACEMENT_ARRIVED
+  # A blocked PR-REPL pull became coverable because a receive landed the stock it wanted (#344) ->
+  # WAREHOUSE. Deduped to one *unread* notification per pull; see notification_service.
+  PULL_UNBLOCKED
+}
+
+# received_by is NOT an input (#199): the backend stamps the Clerk-authenticated caller's display
+# name, so a receive records the person and not the relay's Windows account.
 input CreateReceiveInput {
   po_id: ID!
-  received_by: String!
   line_items: [ReceiveLineItemInput!]!
+  warehouse_id: ID
+  # Short-circuits a retried receive against the same GP receipt (services/gp_idempotency.py).
+  idempotency_key: String! = ""
 }
 
 input ReceiveLineItemInput {
@@ -316,6 +374,8 @@ input LocationInput {
   row: String!
   bay: String!
   quantity: Int!
+  # Units of this location's quantity arriving already damaged; 0 <= deficient_quantity <= quantity.
+  deficient_quantity: Int! = 0
 }
 
 input ConfirmShipmentInput {
@@ -371,24 +431,24 @@ type Query {
   openPOs(projectId: ID): [PurchaseOrder!]!
   poReceivingDetails(poId: ID!): PurchaseOrder!
   projectInventoryAvailability(projectId: ID!): [InventoryAvailability!]!
-  inventoryHierarchy(projectId: ID!): [InventoryHierarchyNode!]!
-  inventoryItems(projectId: ID!, category: String!, productCode: String!): [InventoryItemDetail!]!
+  inventoryHierarchy(projectId: ID, warehouseId: ID): [InventoryHierarchyNode!]!
+  inventoryItems(projectId: ID, category: String!, productCode: String!): [InventoryItemDetail!]!
   unlocatedInventory(projectId: ID): [InventoryItemDetail!]!
-  recentReceiveRecords(limit: Int = 10): [RecentReceiveRecord!]!
-  openingItems(projectId: ID!): [OpeningItem!]!
+  recentReceiveRecords(limit: Int! = 10): [RecentReceiveRecord!]!
+  openingItems(projectId: ID): [OpeningItem!]!
   openingItemDetails(id: ID!): OpeningItemDetail!
-  pullRequests(projectId: ID!, source: PullRequestSource, status: PullRequestStatus): [PullRequest!]!
+  pullRequests(projectId: ID, source: PullRequestSource, status: PullRequestStatus): [PullRequest!]!
   pullRequestDetails(id: ID!): PullRequest!
   # The shop-assembly openings a pull covers, with their hardware lines, for the warehouse's
   # per-opening staging checklist (#343). Deliberately a separate query rather than a field on
   # PullRequest: a resolver field would run once per row of the pull-request queue, which never
   # needs it. Empty for a shipping-out / PR-REPL / legacy pull.
   pullRequestOpenings(pullRequestId: ID!): [ShopAssemblyOpening!]!
-  shipReadyItems(projectId: ID!): ShipReadyItems!
+  shipReadyItems(projectId: ID): ShipReadyItems!
   projectProgressByProduct(projectId: ID!): [ProjectProgressByProduct!]!
   packingSlips(projectId: ID): [PackingSlip!]!
   returnableLines(packingSlipId: ID!): [ReturnableLine!]!
-  notifications(projectId: ID!, recipientRole: String!, unreadOnly: Boolean, limit: Int = 5): [Notification!]!
+  notifications(projectId: ID, recipientRole: String!, unreadOnly: Boolean, limit: Int! = 5): [Notification!]!
 }
 
 type Mutation {
@@ -412,7 +472,7 @@ type Mutation {
   moveInventoryLocation(inventoryLocationId: ID!, newAisle: String!, newRow: String!, newBay: String!): InventoryLocation!
   markInventoryUnlocated(inventoryLocationId: ID!): InventoryLocation!
   assignInventoryLocation(inventoryLocationId: ID!, aisle: String!, row: String!, bay: String!): InventoryLocation!
-  moveOpeningItemLocation(openingItemId: ID!, aisle: String!, row: String!, bay: String!): OpeningItem!
+  moveOpeningItemLocation(openingItemId: ID!, aisle: String!, row: String!, bay: String!, warehouseId: ID): OpeningItem!
   markOpeningItemUnlocated(openingItemId: ID!): OpeningItem!
   assignOpeningItemLocation(openingItemId: ID!, aisle: String!, row: String!, bay: String!): OpeningItem!
   markNotificationAsRead(id: ID!): Notification!

@@ -18,6 +18,7 @@ import {
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import { useQuery, useMutation } from '@apollo/client/react';
 import { GET_ASSEMBLE_LIST, ASSIGN_OPENINGS, REMOVE_OPENING_FROM_USER } from '../../graphql/shop-assembly';
+import { ASSIGNMENT_STALE_ROOT_FIELDS } from '../../graphql/refetch';
 import { leafSuffix } from '../../utils/leaf';
 import OpeningLeafStatusPanel from '../../components/OpeningLeafStatusPanel';
 import { useIdentity } from '../../hooks/useIdentity';
@@ -90,6 +91,15 @@ export default function AssembleListPage() {
   );
 
   const [assignOpenings] = useMutation(ASSIGN_OPENINGS, {
+    // Eviction only; `assembleList` is absent because this page refetches it itself in the
+    // callbacks below (see refetch.ts). What that cannot reach is the assembler's own board and the
+    // pipeline, both on other routes.
+    update(cache) {
+      for (const fieldName of ASSIGNMENT_STALE_ROOT_FIELDS) {
+        cache.evict({ id: 'ROOT_QUERY', fieldName });
+      }
+      cache.gc();
+    },
     onCompleted: () => {
       showToast('Assigned to you', 'success');
       refetch();
@@ -98,6 +108,15 @@ export default function AssembleListPage() {
   });
 
   const [removeOpening] = useMutation(REMOVE_OPENING_FROM_USER, {
+    // Eviction only; `assembleList` is absent because this page refetches it itself in the
+    // callbacks below (see refetch.ts). What that cannot reach is the assembler's own board and the
+    // pipeline, both on other routes.
+    update(cache) {
+      for (const fieldName of ASSIGNMENT_STALE_ROOT_FIELDS) {
+        cache.evict({ id: 'ROOT_QUERY', fieldName });
+      }
+      cache.gc();
+    },
     onCompleted: () => {
       showToast('Opening returned to available pool', 'success');
       refetch();

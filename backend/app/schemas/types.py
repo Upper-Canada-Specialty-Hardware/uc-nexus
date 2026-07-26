@@ -14,6 +14,7 @@ from .enums import (
     LeafStatus,
     NotificationType,
     OpeningItemState,
+    PipelineStage,
     PODocumentType,
     POStatus,
     PullRequestItemType,
@@ -600,6 +601,106 @@ class ShopAssemblyOpening:
     # on openings staged before per-opening staging existed (they were staged wholesale).
     staged_at: datetime | None = None
     staged_by: str | None = None
+
+
+@strawberry.type
+class PipelineOpening:
+    """Where one door leaf is in shop assembly, and what it is still owed (#344).
+
+    Every field is derived from state slices 1-5 already persist; nothing here is stored. The raw
+    facts sit next to the derived `stage` on purpose - a screen that wants to phrase the journey
+    differently should not have to reverse-engineer the ladder.
+    """
+
+    shop_assembly_opening_id: strawberry.ID
+    opening_number: str
+    leaf: int | None
+    building: str | None
+    floor: str | None
+    location: str | None
+    stage: PipelineStage
+    pull_status: PullStatus
+    staged_at: datetime | None
+    staged_by: str | None
+    assigned_to_user_id: str | None
+    assigned_to: str | None
+    assembly_status: AssemblyStatus
+    completed_at: datetime | None
+    planned_unit_count: int
+    installed_unit_count: int
+    deficient_unit_count: int
+    replacement_pending_unit_count: int
+    # Units still owed to this leaf: condemned-and-unreplaced plus arrived-but-not-fitted (#341).
+    awaiting_replacement_unit_count: int
+    # Replacement hardware is sitting for a leaf that has already left the building (#341).
+    # installReplacement refuses it; it belongs to reallocation.
+    replacement_arrived_after_ship: bool
+    opening_item_id: strawberry.ID | None
+    opening_item_state: OpeningItemState | None
+    # Where the assembled leaf physically is - the "completed (location)" rung.
+    assembled_location: str | None
+
+
+@strawberry.type
+class AssemblyPipelineSummary:
+    """One shop-assembly request's journey in counts (#344).
+
+    Listable at All-Projects scale: every count comes from a grouped aggregate over the whole result
+    set, so the resolver's statement count is fixed however many requests come back.
+    """
+
+    request_id: strawberry.ID
+    request_number: str
+    project_id: strawberry.ID
+    # Which project, without a second lookup, for the All-Projects view: project_code is the human
+    # job number and project_name its description.
+    project_code: str | None
+    project_name: str | None
+    request_status: ShopAssemblyRequestStatus
+    created_by: str
+    created_at: datetime
+    accepted_by: str | None
+    accepted_at: datetime | None
+    rejected_by: str | None
+    rejected_at: datetime | None
+    # The same #342 note the accept screen shows as an amber alert.
+    integrity_note: str | None
+    # The live pull, never a cancelled one (#343 made request_number unique among live pulls only).
+    pull_request_id: strawberry.ID | None
+    pull_request_status: PullRequestStatus | None
+    pull_approved_at: datetime | None
+    pull_completed_at: datetime | None
+    # Derived staging rollup - the same reading PullRequest.stagingStatus gives (#343). Null when the
+    # request has no openings, which reads as "not applicable", never "nothing staged".
+    staging_status: PullStatus | None
+    # Cancellation history (#343): a cancelled pull keeps its number and hands its openings back to a
+    # PENDING request, so without this the request would read as never having been accepted.
+    cancelled_pull_count: int
+    last_cancelled_at: datetime | None
+    last_cancelled_by: str | None
+    last_cancellation_reason: str | None
+    opening_count: int
+    staged_opening_count: int
+    assigned_opening_count: int
+    in_progress_opening_count: int
+    completed_opening_count: int
+    shipped_opening_count: int
+    planned_unit_count: int
+    installed_unit_count: int
+    deficient_unit_count: int
+    replacement_pending_unit_count: int
+    awaiting_replacement_opening_count: int
+    replacement_after_ship_opening_count: int
+    # The stage of the least-advanced opening: what the request is waiting on, not its best news.
+    stage: PipelineStage
+
+
+@strawberry.type
+class AssemblyPipeline:
+    """A request's summary plus a row per door leaf (#344) - the detail view."""
+
+    summary: AssemblyPipelineSummary
+    openings: list[PipelineOpening]
 
 
 @strawberry.type

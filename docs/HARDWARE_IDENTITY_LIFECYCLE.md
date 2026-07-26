@@ -209,6 +209,60 @@ is allowed and sometimes right - reallocation exists for exactly that - but the 
 path refuses a flagged leaf unless the caller passes an explicit acknowledgment. Warn and confirm,
 never silent, never a hard block.
 
+### 5. Reading the lifecycle back
+
+Every stage above is written by a different screen, and until #344 it could only be *read* from the
+screen that wrote it. A request holds a reservation (§3a), its pull is part-staged (§3b), one leaf is
+half-built (§4), another is finished but owed a replacement (§4b) - and answering **"where is opening
+A01 leaf 2?"** meant opening four views and joining them by eye.
+
+The pipeline is that join, done once and **derived from the same state**. There is deliberately no
+`pipeline_stage` column: a denormalised stage would be a fifth thing that can disagree with the four
+above, and this whole slice exists because the four already disagreed on screen.
+
+The ladder is per door leaf, and the stage of a *request* is the stage of its **least-advanced**
+opening - what is holding it up, not its best news:
+
+    REQUESTED -> ACCEPTED -> PULLING -> STAGED -> ASSIGNED -> IN_PROGRESS -> COMPLETED -> SHIPPED
+
+`REJECTED` and `CANCELLED` sit off the ladder rather than at the end of it. They are the two ways a
+leaf leaves the pipeline unassembled, and reading them as "further along than IN_PROGRESS" would be
+nonsense. `CANCELLED` is also how a cancelled pull stays visible at all: cancellation detaches the
+openings and returns the request to PENDING (§3c), so without the cancelled pull in view the request
+would read as though it had never been accepted.
+
+Two constraints shaped the implementation, both from CLAUDE.md's performance rules:
+
+- **Scalar aggregates only.** Every count is `count`/`sum` with `FILTER`, grouped by request, one
+  statement for the whole result set. `get_assembly_pipeline_summaries` runs a fixed **five**
+  statements whether it covers one project or all of them; `get_assembly_pipeline` a fixed **eight**
+  however many openings a request has. Both numbers are asserted by tests, because a per-row lookup
+  here is exactly what an innocent-looking edit reaches for.
+- **One implementation per reading.** The request's stage is derived from the aggregates (the list
+  needs it on every row); each leaf's stage from its own columns. A test pins them together by
+  asserting the first equals the minimum of the second.
+
+The same view is where the flags earlier slices introduced finally meet the eye: the `integrity_note`
+from §3a, `deficient + replacement_pending` from §4b as "awaiting replacement", and the
+arrived-after-shipping case that `install_replacement` refuses.
+
+### 5a. Being told, rather than looking
+
+Three states slices 1-5 created had nobody watching them, and #344 gave each one a signal:
+
+| Event | Audience | Why it could not be inferred |
+| --- | --- | --- |
+| Openings became workable - carts staged (§3b), or a pull completed with openings still un-staged | Shop-assembly manager | Per-opening staging made an opening assignable the moment its cart was built; the assignment board only found out when somebody reloaded it |
+| A replacement arrived for a leaf that has **not** shipped (§4b) | The assembler holding the leaf | #341 notified only the *shipped* case. The ordinary case - the one somebody can act on - was silent |
+| A blocked PR-REPL pull became coverable because a receive landed the stock | Warehouse | A replacement pull holds **no reservation** by design (§3a), so nothing was tracking its demand. The approver saw INSUFFICIENT, the PO backfilled, and nothing said the retry would now succeed |
+
+The staged/completed pair needs no dedupe logic at all, because each call announces only the openings
+*it* made workable: staging the last cart calls `complete_pull_request`, which then finds nothing left
+to flip and stays silent. The unblocked signal does need one, and it is three rules - only pulls
+wanting a combo this receive landed; only when coverage crosses from insufficient to sufficient; and
+only one **unread** notification per pull, keyed on `notifications.pull_request_id` rather than on
+text inside the message.
+
 ## Corollary: LOOSE vs OPENING_ITEM pull lines
 
 Both pull request sources use `pull_request_items`, but the two `item_type` values do fundamentally
@@ -263,3 +317,10 @@ leaf until a pull tags it onto one).
 | Shipping a short leaf takes a decision | `backend/app/repositories/import_repository.py` (`finalize_import_session`, `acknowledge_incomplete_leaves`) |
 | Replacement stranded after shipment | `backend/app/repositories/warehouse/pull_requests.py` (`REPLACEMENT_AFTER_SHIPMENT` notification) |
 | Tag shipped | `backend/app/repositories/shipping_repository.py` (`confirm_shipment` -> `PackingSlipItem.leaf`) |
+| Lifecycle read back, per request | `backend/app/repositories/shop_assembly_repository.py` (`get_assembly_pipeline_summaries`, fixed five statements at any scale) |
+| Lifecycle read back, per door leaf | `backend/app/repositories/shop_assembly_repository.py` (`get_assembly_pipeline` + `_opening_stage`, fixed eight statements however many openings) |
+| Stage derived, never stored | `backend/app/repositories/shop_assembly_repository.py` (`PIPELINE_STAGE_RANK`, `_opening_stage`, `_request_stage`; `app/schemas/enums.PipelineStage`) |
+| Board told there is work | `backend/app/repositories/warehouse/pull_requests.py` (`notify_assembly_work_available`, called with only the openings that call made workable) |
+| Assembler told a replacement landed | `backend/app/repositories/warehouse/pull_requests.py` (`_apply_replacement_arrivals` -> `REPLACEMENT_ARRIVED`, addressed to `assigned_to_user_id`) |
+| Warehouse told a blocked replacement is coverable | `backend/app/repositories/warehouse/receiving.py` (`notify_unblocked_replacement_pulls` -> `find_pending_replacement_pulls`, structural `sa_opening_item_id` test) |
+| Notification dedupe key | `backend/app/models/notification.py` (`pull_request_id` + partial unread index) / `app/services/notification_service.has_unread_notification_for_pull` |

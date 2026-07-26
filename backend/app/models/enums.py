@@ -109,6 +109,20 @@ class NotificationType(str, enum.Enum):
     # is real and is owed to an opening that is no longer in the building, so it must not be left to
     # sit silently in the shop - this is the signal that routes it into reallocation/site shipment.
     REPLACEMENT_AFTER_SHIPMENT = "REPLACEMENT_AFTER_SHIPMENT"
+    # Openings became workable on the assembly floor (#344): the warehouse staged one or more carts,
+    # or completed a pull that still had un-staged openings on it. Addressed to the shop-assembly
+    # manager audience, because the actionable consequence is that the assignment board has work in
+    # it that nobody is holding yet. Raised once per staging confirmation, never per opening.
+    ASSEMBLY_WORK_AVAILABLE = "ASSEMBLY_WORK_AVAILABLE"
+    # Replacement hardware arrived for a leaf that has NOT shipped (#344), addressed to the
+    # assembler holding it. The shipped case has its own type above, because it is somebody else's
+    # problem entirely; this one is "go and fit it", and it is the missing half of the #341 loop.
+    REPLACEMENT_ARRIVED = "REPLACEMENT_ARRIVED"
+    # A PENDING replacement (PR-REPL) pull that could not be covered is now coverable, because a
+    # receive landed the stock it was waiting on (#344). Addressed to the warehouse: a replacement
+    # pull holds no reservation (a deficiency cannot be foreseen), so nothing else was going to tell
+    # anybody it had become approvable. Deduped to one *unread* notification per pull.
+    PULL_UNBLOCKED = "PULL_UNBLOCKED"
 
 
 class AuditEntityType(str, enum.Enum):

@@ -8,7 +8,10 @@ import strawberry
 
 from app.models.project import Project as ProjectModel
 
+from .enums import PipelineStage
 from .types import (
+    AssemblyPipeline,
+    AssemblyPipelineSummary,
     BuyerAssignment,
     BuyerAssignmentProject,
     ClerkUser,
@@ -25,6 +28,7 @@ from .types import (
     OpeningItemHardware,
     PackingSlip,
     PackingSlipItem,
+    PipelineOpening,
     PODocumentData,
     PODocumentInfo,
     PODocumentSettings,
@@ -513,6 +517,90 @@ def shop_assembly_opening_to_type(opening) -> ShopAssemblyOpening:
         floor=opening.floor,
         staged_at=opening.staged_at,
         staged_by=opening.staged_by,
+    )
+
+
+def assembly_pipeline_summary_to_type(row) -> AssemblyPipelineSummary:
+    """A repository AssemblyPipelineSummary dataclass -> the GraphQL type (#344).
+
+    The dataclass is flat scalars the repository computed with grouped aggregates, so there is
+    nothing here that could trigger a load - which is the whole point of the resolver handing this
+    converter finished counts rather than an ORM row to walk.
+    """
+    return AssemblyPipelineSummary(
+        request_id=strawberry.ID(str(row.request_id)),
+        request_number=row.request_number,
+        project_id=strawberry.ID(str(row.project_id)),
+        project_code=row.project_code,
+        project_name=row.project_name,
+        request_status=row.request_status,
+        created_by=row.created_by,
+        created_at=row.created_at,
+        accepted_by=row.accepted_by,
+        accepted_at=row.accepted_at,
+        rejected_by=row.rejected_by,
+        rejected_at=row.rejected_at,
+        integrity_note=row.integrity_note,
+        pull_request_id=(strawberry.ID(str(row.pull_request_id)) if row.pull_request_id else None),
+        pull_request_status=row.pull_request_status,
+        pull_approved_at=row.pull_approved_at,
+        pull_completed_at=row.pull_completed_at,
+        staging_status=row.staging_status,
+        cancelled_pull_count=row.cancelled_pull_count,
+        last_cancelled_at=row.last_cancelled_at,
+        last_cancelled_by=row.last_cancelled_by,
+        last_cancellation_reason=row.last_cancellation_reason,
+        opening_count=row.opening_count,
+        staged_opening_count=row.staged_opening_count,
+        assigned_opening_count=row.assigned_opening_count,
+        in_progress_opening_count=row.in_progress_opening_count,
+        completed_opening_count=row.completed_opening_count,
+        shipped_opening_count=row.shipped_opening_count,
+        planned_unit_count=row.planned_unit_count,
+        installed_unit_count=row.installed_unit_count,
+        deficient_unit_count=row.deficient_unit_count,
+        replacement_pending_unit_count=row.replacement_pending_unit_count,
+        awaiting_replacement_opening_count=row.awaiting_replacement_opening_count,
+        replacement_after_ship_opening_count=row.replacement_after_ship_opening_count,
+        stage=PipelineStage(row.stage),
+    )
+
+
+def pipeline_opening_to_type(row) -> PipelineOpening:
+    """A repository PipelineOpening dataclass -> the GraphQL type (#344). Flat scalars throughout;
+    the two derived readings are the dataclass's own properties, so the ladder and the flags are
+    defined once, in the repository."""
+    return PipelineOpening(
+        shop_assembly_opening_id=strawberry.ID(str(row.shop_assembly_opening_id)),
+        opening_number=row.opening_number,
+        leaf=row.leaf,
+        building=row.building,
+        floor=row.floor,
+        location=row.location,
+        stage=PipelineStage(row.stage),
+        pull_status=row.pull_status,
+        staged_at=row.staged_at,
+        staged_by=row.staged_by,
+        assigned_to_user_id=row.assigned_to_user_id,
+        assigned_to=row.assigned_to,
+        assembly_status=row.assembly_status,
+        completed_at=row.completed_at,
+        planned_unit_count=row.planned_unit_count,
+        installed_unit_count=row.installed_unit_count,
+        deficient_unit_count=row.deficient_unit_count,
+        replacement_pending_unit_count=row.replacement_pending_unit_count,
+        awaiting_replacement_unit_count=row.awaiting_replacement_unit_count,
+        replacement_arrived_after_ship=row.replacement_arrived_after_ship,
+        opening_item_id=(strawberry.ID(str(row.opening_item_id)) if row.opening_item_id else None),
+        opening_item_state=row.opening_item_state,
+        assembled_location=row.assembled_location,
+    )
+
+
+def assembly_pipeline_to_type(pipeline) -> AssemblyPipeline:
+    return AssemblyPipeline(
+        summary=assembly_pipeline_summary_to_type(pipeline.summary),
+        openings=[pipeline_opening_to_type(o) for o in pipeline.openings],
     )
 
 

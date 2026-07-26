@@ -5,6 +5,7 @@ import HowToRegIcon from '@mui/icons-material/HowToReg';
 import PersonIcon from '@mui/icons-material/Person';
 import LocalShippingIcon from '@mui/icons-material/LocalShipping';
 import AssignmentTurnedInIcon from '@mui/icons-material/AssignmentTurnedIn';
+import TimelineIcon from '@mui/icons-material/Timeline';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@apollo/client/react';
 import { StatCard, StatCardSkeleton } from '../../components/StatCard';
@@ -40,6 +41,8 @@ const SUB_ROUTES = [
   { label: 'Assemble List', path: '/app/shop-assembly/assemble', icon: <BuildIcon fontSize="large" /> },
   { label: 'Assignments', path: '/app/shop-assembly/assign', icon: <HowToRegIcon fontSize="large" /> },
   { label: 'My Work', path: '/app/shop-assembly/my-work', icon: <PersonIcon fontSize="large" /> },
+  // Where every request has got to (#344) - the read-only join across the states slices 1-5 added.
+  { label: 'Pipeline', path: '/app/shop-assembly/pipeline', icon: <TimelineIcon fontSize="large" /> },
 ];
 
 export default function ShopAssemblyLanding() {

@@ -85,10 +85,45 @@ This is a tester's knowledge journal for UC Nexus. It documents how the app work
 /app/warehouse/stock-pool  -> Stock Pool (non-project stock items)
 /app/warehouse/deficient-items -> Deficient Items Review
 /app/warehouse/shipments   -> Shipments (global packing slip list + return dialog)
-/app/shop-assembly         -> Shop Assembly (manager vs user views)
+/app/shop-assembly         -> Shop Assembly landing (stat card + Go-to cards)
+/app/shop-assembly/requests  -> Accept / reject / reopen shop-assembly requests
+/app/shop-assembly/assemble  -> Assemble List (all openings on approved pulls)
+/app/shop-assembly/assign    -> Assignment Board (manager)
+/app/shop-assembly/my-work   -> My Work (+ Replacement Installs)
+/app/shop-assembly/pipeline  -> Pipeline (read-only; where every request and leaf has got to)
 /app/shipping              -> Shipping Out (ship-ready items, packing slips)
 /app/admin                 -> Admin (reports, vendors, projects, users, cleanup)
 ```
+
+---
+
+## The shop-assembly lifecycle, end to end
+
+The module guides below are organised by *screen*, which is the wrong shape for a first read: one
+door leaf's journey crosses four of them. This is that journey once, with the screen that owns each
+step. Everything in it is exercisable against Railway.
+
+| # | What happens | Where you do it | What changes underneath |
+| --- | --- | --- | --- |
+| 1 | **Request** a leaf for shop assembly | Import -> Start a Task | A PENDING `ShopAssemblyRequest`, and the hardware is **reserved** on the spot (#342). Creating over-subscribed is refused whole, naming every short combo |
+| 2 | **Accept** it | Shop Assembly -> Requests | A PENDING warehouse pull. A pure human gate - nothing is re-checked, nothing is spent. Rejecting instead is what releases the claim |
+| 3 | **Approve** the pull | Warehouse -> Pull Requests | Stock is deducted FIFO and the claim is consumed, atomically. This is the only moment inventory moves |
+| 4 | **Stage** each opening's cart | Warehouse -> Pull Requests -> Staging panel | One `pull_status` flips to PULLED per opening (#343). That leaf is assignable *immediately*, while the rest of the pull is still being picked. Nothing moves in inventory |
+| 5 | **Claim** the leaf | Shop Assembly -> Assemble List / Assignment Board | An assignment. A manager may take one off somebody; a self-claim may not |
+| 6 | **Build** it, unit by unit | Shop Assembly -> My Work -> the modal | `installed_quantity` per line, saved as you go (#340). A defect flagged here goes back to inventory *now* and mints a `PR-REPL-*` pull immediately |
+| 7 | **Finish** it | Same modal -> Mark Complete | An `OpeningItem` per leaf, carrying what was actually installed. Refused while any unit is unaccounted for, or if nothing at all was installed |
+| 8 | **Replacement arrives** | Warehouse -> Pull Requests -> approve+complete the `PR-REPL-*` pull | The leaf gets its expectation back (#341). Still on the bench: it becomes Remaining again. Already finished: a Replacement Install card on My Work. Already shipped: a warning, and reallocation's problem |
+| 9 | **Ship** it | Shipping Out | `SHIP_READY`, then a packing slip. A leaf still owed hardware is flagged and takes an explicit "Ship it short" |
+| - | **Undo the pull** at any point before assembly starts | Warehouse -> Pull Requests -> Cancel Pull | Stock restocked, openings released, request back to Pending (#343). Refused, naming blockers, once any opening is IN_PROGRESS or COMPLETED |
+| - | **See all of it at once** | Shop Assembly -> Pipeline | Read-only (#344). Answers "where is opening A01 leaf 2?" without opening the other four screens |
+
+Two things a fresh reader gets wrong every time:
+
+- **"Pulled" is per opening, not per pull.** Since #343 a leaf can be workable while its own sibling
+  on the same pull is still on the shelf. A row with no buttons on the Assemble List is not broken;
+  its cart is not built yet.
+- **Reserved is not deducted.** Between steps 1 and 3 the hardware is claimed but still on the shelf,
+  so the Warehouse inventory number and the Start-a-Task availability number legitimately disagree.
 
 ---
 
@@ -361,6 +396,41 @@ replacement pull is *completed* in the warehouse for a leaf the assembler alread
 - A card whose leaf already shipped shows a "Leaf already shipped" chip and a warning alert instead
   of the button - it cannot be installed, only reallocated. A `REPLACEMENT_AFTER_SHIPMENT`
   notification was also raised for the SHIPPING role when the pull completed.
+
+**Pipeline page (#344)**, `/app/shop-assembly/pipeline`, reachable from the landing "Pipeline" card.
+It is **read-only on purpose** - every state it shows already has a screen that owns changing it, and
+a second place to act on them would be a second place for the rules to live.
+
+- The grid is one row per shop-assembly request across **all** projects by default, with a
+  Pending / Approved / Rejected / All toggle. Columns: Request, Project, Stage, Staged (`2 of 4`),
+  Progress (`6/16 units`), Assembled, Shipped, Flags.
+- **Stage is the request's least-advanced opening**, not its best news. A request with one finished
+  leaf and one that has not been staged reads "Awaiting pull". That is the intended reading: the
+  question is what is holding it up. The ladder is Requested -> Accepted -> Awaiting pull -> Staged ->
+  Assigned -> In progress -> Assembled -> Shipped, plus Rejected and "Pull cancelled" off the end.
+- The Staged / Assembled / Shipped columns are **blank** on a request with no openings, the same rule
+  the pull queue's staging chip follows - "0 of 0" would read as "nothing done".
+- Flags appear only when something is wrong: "Needs review" (the `integrityNote`), "N awaiting
+  replacement", "N arrived after shipping". A clean row shows no chips at all.
+- Clicking a row opens the detail modal: the alerts first (integrity note, cancellation history,
+  replacement-after-shipping), then a chip row and a progress rail, then **one table row per door
+  leaf** - stage, when and by whom it was staged, who holds it, units, the assembled leaf's warehouse
+  location, and what it is still owed.
+- Good end-to-end exercise: stage one leaf of a pair, and watch the pair's two rows in the detail sit
+  at "Staged" and "Awaiting pull" while the request itself reads "Awaiting pull".
+- A **cancelled** pull is the case worth checking deliberately. Cancelling detaches the openings and
+  puts the request back to Pending, so without this view the request looks as though it was never
+  accepted; here it reads "Pull cancelled" with an alert naming who cancelled it and why.
+
+**Notifications raised by this module (#344)**, all visible in the bell (which shows every audience,
+so you will see all of them regardless of your role):
+
+| Type | Fires when | Watch out for |
+| --- | --- | --- |
+| `ASSEMBLY_WORK_AVAILABLE` | You confirm a staging batch, or complete a pull that still had un-staged openings | **One per confirmation, not per opening.** Staging three carts in one action gives one notification naming them. Re-staging an already-staged opening gives none |
+| `REPLACEMENT_ARRIVED` | A `PR-REPL-*` pull completes for a leaf that has **not** shipped | Addressed to the assembler's Clerk user id, so `recipientRole` looks like `user_2ab...`. None is raised if nobody is holding the leaf |
+| `REPLACEMENT_AFTER_SHIPMENT` | Same, but the leaf has already shipped | Exactly one of these two fires, never both |
+| `PULL_UNBLOCKED` | A receive lands stock that makes a blocked `PR-REPL-*` pull fully coverable | Deduped three ways: only pulls wanting a combo you actually received; only when the shortfall is *closed*, not narrowed; and only one **unread** one per pull. Mark it read and receive again to get a second |
 
 ### Shipping Module
 

@@ -28,6 +28,7 @@ from app.models.enums import (
 )
 from app.models.opening_item import OpeningItem as OpeningItemModel
 from app.models.opening_item import OpeningItemHardware as OIHModel
+from app.models.project import Project
 from app.models.pull_request import (
     PullRequest as PullRequestModel,
 )
@@ -1143,3 +1144,669 @@ def reopen_shop_assembly_request(
 
     warehouse_repository.discard_pending_pull_request(session, pr.id if pr is not None else None)
     return sar
+
+
+# ---------------------------------------------------------------------------
+# Pipeline observability (#344)
+# ---------------------------------------------------------------------------
+#
+# Slices 1-5 each added a state, and each one is legible only from the screen that writes it. A
+# request holds a reservation (#342), its pull is part-staged (#343), one leaf is half-built (#340),
+# another is finished but owed a replacement (#341) - and answering "where is opening A01 leaf 2?"
+# meant opening four views and joining them up by eye.
+#
+# Nothing below stores anything. Every value is derived from state slices 1-5 already persist, which
+# is deliberate: a denormalised `pipeline_stage` column would be a fifth thing that can disagree with
+# the other four, and this slice exists because the four already disagree on screen.
+#
+# **Everything is a scalar aggregate.** The rollups are `count`/`sum` with `FILTER`, grouped by
+# request, one statement each for the entire result set - never a `len()` over loaded openings
+# (CLAUDE.md perf rules). `get_assembly_pipeline_summaries` runs a fixed FIVE statements whether it
+# is scoped to one project or to all of them, and `get_assembly_pipeline` runs a fixed EIGHT however
+# many openings a request has. That flatness is what the tests assert, because it is the property
+# that makes the All-Projects view survivable.
+
+# Order of the ladder. The stage of a *request* is the stage of its least-advanced opening: what a
+# pipeline is asked is "what is holding this up", not "what is the best news in it". REJECTED sits
+# below everything because it is not a point on the journey but leaving it, and CANCELLED shares the
+# floor with REQUESTED because that is literally where a cancelled pull puts its openings back
+# (#343: the request returns to PENDING for re-acceptance).
+PIPELINE_STAGE_RANK = {
+    "REJECTED": -1,
+    "CANCELLED": 0,
+    "REQUESTED": 0,
+    "ACCEPTED": 1,
+    "PULLING": 2,
+    "STAGED": 3,
+    "ASSIGNED": 4,
+    "IN_PROGRESS": 5,
+    "COMPLETED": 6,
+    "SHIPPED": 7,
+}
+
+
+@dataclass(frozen=True)
+class PipelineOpening:
+    """Where one door leaf is, and what it is carrying (#344).
+
+    `stage` is the derived ladder position; every raw fact it was derived from is on the row too, so
+    a caller that reads the situation differently can show its own reading rather than be stuck with
+    this one.
+    """
+
+    shop_assembly_opening_id: uuid.UUID
+    opening_number: str
+    leaf: int | None
+    building: str | None
+    floor: str | None
+    location: str | None
+    stage: str
+    pull_status: PullStatus
+    staged_at: datetime | None
+    staged_by: str | None
+    assigned_to_user_id: str | None
+    assigned_to: str | None
+    assembly_status: AssemblyStatus
+    completed_at: datetime | None
+    planned_unit_count: int
+    installed_unit_count: int
+    deficient_unit_count: int
+    replacement_pending_unit_count: int
+    opening_item_id: uuid.UUID | None
+    opening_item_state: OpeningItemState | None
+    # Where the assembled leaf physically is, once there is one - the "completed (location)" rung.
+    assembled_location: str | None
+
+    @property
+    def awaiting_replacement_unit_count(self) -> int:
+        """Units this leaf is still owed: condemned-and-unreplaced plus arrived-but-not-fitted. The
+        same reading `get_awaiting_replacement_quantities` gives the shipping guard (#341), taken
+        here from counts the row already carries."""
+        return self.deficient_unit_count + self.replacement_pending_unit_count
+
+    @property
+    def replacement_arrived_after_ship(self) -> bool:
+        """Replacement hardware is sitting for a leaf that has already left the building (#341).
+        `installReplacement` refuses it and it needs reallocation, so it is the one flag on this row
+        that is somebody else's job entirely."""
+        return self.replacement_pending_unit_count > 0 and self.opening_item_state == OpeningItemState.SHIPPED_OUT
+
+
+@dataclass(frozen=True)
+class AssemblyPipelineSummary:
+    """One shop-assembly request's whole journey, in counts (#344).
+
+    Safe to list at All-Projects scale: every field comes from a grouped aggregate over the whole
+    result set, so adding requests adds rows to five queries rather than adding queries.
+    """
+
+    request_id: uuid.UUID
+    request_number: str
+    project_id: uuid.UUID
+    # The project this request belongs to, so the All-Projects list can say which one without a
+    # second lookup: `project_code` is the human job number, `project_name` its description.
+    project_code: str | None
+    project_name: str | None
+    request_status: ShopAssemblyRequestStatus
+    created_by: str
+    created_at: datetime
+    accepted_by: str | None
+    accepted_at: datetime | None
+    rejected_by: str | None
+    rejected_at: datetime | None
+    # The #342 flag the accept screen already shows as an amber alert - carried here too, so the
+    # pipeline does not quietly become a second, more trusting view of the same request.
+    integrity_note: str | None
+
+    # The live pull (the one a re-accept minted, never a cancelled one - #343 made request_number
+    # unique only among live pulls).
+    pull_request_id: uuid.UUID | None
+    pull_request_status: PullRequestStatus | None
+    pull_approved_at: datetime | None
+    pull_completed_at: datetime | None
+    # Derived staging rollup, the same reading PullRequest.stagingStatus gives (#343).
+    staging_status: PullStatus | None
+
+    # Cancellation history. A cancelled pull keeps its number and its openings go back to a PENDING
+    # request, so without this a cancelled-and-returned request would read as never having been
+    # accepted at all.
+    cancelled_pull_count: int
+    last_cancelled_at: datetime | None
+    last_cancelled_by: str | None
+    last_cancellation_reason: str | None
+
+    opening_count: int
+    staged_opening_count: int
+    assigned_opening_count: int
+    in_progress_opening_count: int
+    completed_opening_count: int
+    shipped_opening_count: int
+
+    planned_unit_count: int
+    installed_unit_count: int
+    deficient_unit_count: int
+    replacement_pending_unit_count: int
+
+    # Openings with something still owed to them, and the subset whose leaf has already shipped.
+    awaiting_replacement_opening_count: int
+    replacement_after_ship_opening_count: int
+
+    stage: str
+
+
+@dataclass(frozen=True)
+class AssemblyPipeline:
+    """A request's summary plus a row per door leaf - the detail view (#344)."""
+
+    summary: AssemblyPipelineSummary
+    openings: list[PipelineOpening]
+
+
+def _opening_stage(
+    *,
+    request_status: ShopAssemblyRequestStatus,
+    pull_request_id: uuid.UUID | None,
+    pull_status: PullStatus,
+    assembly_status: AssemblyStatus,
+    assigned_to_user_id: str | None,
+    opening_item_state: OpeningItemState | None,
+    live_pull_status: PullRequestStatus | None,
+    had_cancelled_pull: bool,
+) -> str:
+    """The furthest rung one opening has provably reached (#344).
+
+    Read top-down; the first true statement wins, so a completed leaf that has shipped reports
+    SHIPPED rather than COMPLETED. The two facts that are *not* about this opening - the request
+    being rejected, and the pull being cancelled - are checked at the ends rather than the middle: a
+    rejection kills the whole request however far any leaf got, and a cancellation is only reachable
+    once the opening has been detached from its pull.
+    """
+    if request_status == ShopAssemblyRequestStatus.REJECTED:
+        return "REJECTED"
+    if opening_item_state == OpeningItemState.SHIPPED_OUT:
+        return "SHIPPED"
+    if assembly_status == AssemblyStatus.COMPLETED:
+        return "COMPLETED"
+    if assembly_status == AssemblyStatus.IN_PROGRESS:
+        return "IN_PROGRESS"
+    if pull_status == PullStatus.PULLED:
+        return "ASSIGNED" if assigned_to_user_id else "STAGED"
+    if pull_request_id is None:
+        # Detached: either the accept has not happened yet, or a cancellation released it (#343),
+        # which also put the request back to PENDING. The cancelled pull is the only way to tell
+        # those two apart, and telling them apart is the whole point of showing a cancellation.
+        return "CANCELLED" if had_cancelled_pull else "REQUESTED"
+    if live_pull_status == PullRequestStatus.PENDING:
+        return "ACCEPTED"
+    if live_pull_status == PullRequestStatus.CANCELLED:
+        return "CANCELLED"
+    # The pull is approved and stock has left inventory, but this opening's own cart is not built.
+    return "PULLING"
+
+
+def _request_stage(counts: dict, unstaged_stage: str, request_status: ShopAssemblyRequestStatus) -> str:
+    """The stage of a request's least-advanced opening - what the request is waiting on - derived
+    from the **counts alone**, never from loaded opening rows.
+
+    This is the one place the ladder is collapsed for a whole request, and it is written against
+    aggregates on purpose: the All-Projects list needs it on every row, and the detail view uses the
+    very same summary rather than a second implementation, so the number under the header and the
+    rows beneath it cannot disagree. A test pins the two together by asserting that this equals the
+    minimum of the per-opening stages `_opening_stage` produces.
+
+    `unstaged_stage` is what an opening of this request that is *not yet staged* reads as - REQUESTED,
+    ACCEPTED, PULLING or CANCELLED. It is a property of the request's pull, not of any one opening,
+    which is why it can be passed in: every opening of a request shares one `pull_request_id` (accept
+    links them all, reopen and cancel detach them all).
+    """
+    if request_status == ShopAssemblyRequestStatus.REJECTED:
+        return "REJECTED"
+    total = counts["opening_count"]
+    if total == 0:
+        # #342 refuses to create a request with no openings, but legacy rows exist and must not take
+        # the list down.
+        return unstaged_stage
+    if total - counts["staged_opening_count"] > 0:
+        return unstaged_stage
+    if counts["staged_unassigned_pending_count"] > 0:
+        return "STAGED"
+    if counts["staged_assigned_pending_count"] > 0:
+        return "ASSIGNED"
+    if counts["in_progress_opening_count"] > 0:
+        return "IN_PROGRESS"
+    if counts["completed_opening_count"] > counts["shipped_opening_count"]:
+        return "COMPLETED"
+    return "SHIPPED"
+
+
+def _pull_rows_by_request_number(session: Session, request_numbers: list[str]) -> dict[str, list[PullRequestModel]]:
+    """Every pull ever minted for these request numbers, live and cancelled, oldest first.
+
+    One statement for the whole page. A cancelled pull keeps its number (#343 replaced the global
+    unique constraint with one that excludes CANCELLED), so a request that has been through a
+    cancel/re-accept cycle legitimately has several - and the cancelled ones are exactly the history
+    the pipeline exists to surface.
+    """
+    if not request_numbers:
+        return {}
+    rows = session.scalars(
+        select(PullRequestModel)
+        .where(
+            PullRequestModel.request_number.in_(request_numbers),
+            PullRequestModel.source == PullRequestSource.SHOP_ASSEMBLY,
+            PullRequestModel.deleted_at.is_(None),
+        )
+        .order_by(PullRequestModel.created_at.asc())
+    ).all()
+    grouped: dict[str, list[PullRequestModel]] = {}
+    for pr in rows:
+        grouped.setdefault(pr.request_number, []).append(pr)
+    return grouped
+
+
+def _opening_stage_counts(session: Session, request_ids: list[uuid.UUID]) -> dict[uuid.UUID, dict]:
+    """Per-request opening counts, in ONE grouped aggregate over every request given.
+
+    `count(*) FILTER (...)` rather than four queries, and rather than a Python pass over loaded rows:
+    these are the fields the All-Projects list renders on every row.
+    """
+    if not request_ids:
+        return {}
+    in_progress = ShopAssemblyOpening.assembly_status == AssemblyStatus.IN_PROGRESS
+    completed = ShopAssemblyOpening.assembly_status == AssemblyStatus.COMPLETED
+    staged = ShopAssemblyOpening.pull_status == PullStatus.PULLED
+    held = ShopAssemblyOpening.assigned_to_user_id.is_not(None)
+    # Staged-and-untouched, split by whether anybody is holding it: the STAGED and ASSIGNED rungs.
+    # They cannot be reconstructed from the other four counts, because `remove_opening_from_user`
+    # (#340) allows unassigning an IN_PROGRESS leaf, so "assigned" and "started" are independent.
+    untouched = and_(staged, ShopAssemblyOpening.assembly_status == AssemblyStatus.PENDING)
+    rows = session.execute(
+        select(
+            ShopAssemblyOpening.shop_assembly_request_id.label("request_id"),
+            func.count(1).label("total"),
+            func.count(1).filter(staged).label("staged"),
+            func.count(1).filter(held).label("assigned"),
+            func.count(1).filter(in_progress).label("in_progress"),
+            func.count(1).filter(completed).label("completed"),
+            func.count(1).filter(and_(untouched, held)).label("staged_assigned_pending"),
+            func.count(1)
+            .filter(and_(untouched, ShopAssemblyOpening.assigned_to_user_id.is_(None)))
+            .label("staged_unassigned_pending"),
+        )
+        .where(ShopAssemblyOpening.shop_assembly_request_id.in_(request_ids))
+        .group_by(ShopAssemblyOpening.shop_assembly_request_id)
+    ).all()
+    return {
+        row.request_id: {
+            "opening_count": int(row.total),
+            "staged_opening_count": int(row.staged),
+            "assigned_opening_count": int(row.assigned),
+            "in_progress_opening_count": int(row.in_progress),
+            "completed_opening_count": int(row.completed),
+            "staged_assigned_pending_count": int(row.staged_assigned_pending),
+            "staged_unassigned_pending_count": int(row.staged_unassigned_pending),
+        }
+        for row in rows
+    }
+
+
+def _unit_counts(session: Session, request_ids: list[uuid.UUID]) -> dict[uuid.UUID, dict]:
+    """Per-request unit rollups, in ONE statement: the progress counters summed, plus how many
+    openings have something outstanding.
+
+    The "how many openings" part is why this is a two-level aggregate rather than a flat one -
+    "openings with anything owed" counts groups that satisfy a predicate on their own sum, so the
+    per-opening sums are computed in a subquery and rolled up in the outer select. Still one
+    round-trip, still no rows loaded.
+    """
+    if not request_ids:
+        return {}
+    per_opening = (
+        select(
+            ShopAssemblyOpening.shop_assembly_request_id.label("request_id"),
+            ShopAssemblyOpening.id.label("opening_id"),
+            func.coalesce(func.sum(ShopAssemblyOpeningItem.quantity), 0).label("planned"),
+            func.coalesce(func.sum(ShopAssemblyOpeningItem.installed_quantity), 0).label("installed"),
+            func.coalesce(func.sum(ShopAssemblyOpeningItem.deficient_quantity), 0).label("deficient"),
+            func.coalesce(func.sum(ShopAssemblyOpeningItem.replacement_pending_quantity), 0).label("pending"),
+        )
+        .join(
+            ShopAssemblyOpeningItem,
+            ShopAssemblyOpeningItem.shop_assembly_opening_id == ShopAssemblyOpening.id,
+        )
+        .where(ShopAssemblyOpening.shop_assembly_request_id.in_(request_ids))
+        .group_by(ShopAssemblyOpening.shop_assembly_request_id, ShopAssemblyOpening.id)
+        .subquery()
+    )
+    outstanding = per_opening.c.deficient + per_opening.c.pending
+    rows = session.execute(
+        select(
+            per_opening.c.request_id,
+            func.coalesce(func.sum(per_opening.c.planned), 0).label("planned"),
+            func.coalesce(func.sum(per_opening.c.installed), 0).label("installed"),
+            func.coalesce(func.sum(per_opening.c.deficient), 0).label("deficient"),
+            func.coalesce(func.sum(per_opening.c.pending), 0).label("pending"),
+            func.count(1).filter(outstanding > 0).label("awaiting_openings"),
+        ).group_by(per_opening.c.request_id)
+    ).all()
+    return {
+        row.request_id: {
+            "planned_unit_count": int(row.planned),
+            "installed_unit_count": int(row.installed),
+            "deficient_unit_count": int(row.deficient),
+            "replacement_pending_unit_count": int(row.pending),
+            "awaiting_replacement_opening_count": int(row.awaiting_openings),
+        }
+        for row in rows
+    }
+
+
+def _shipped_counts(session: Session, request_ids: list[uuid.UUID]) -> dict[uuid.UUID, dict]:
+    """Per-request shipped-leaf counts, in ONE statement.
+
+    There is no FK from a ShopAssemblyOpening to the leaf it produced, so this joins the way
+    `find_assembled_leaf` keys it - (project, opening_id, leaf), a legacy null leaf matching only a
+    null leaf - and scopes the join to the request's own project, because `opening_id` is a
+    historical stamp that a re-upload can reissue.
+
+    `count(DISTINCT opening)` because the item join fans the rows out, and because a leaf that
+    shipped and was then re-assembled by a correction has more than one OpeningItem. Counting an
+    opening as shipped when *any* of its rows shipped is the conservative reading for a rollup; the
+    per-leaf detail view resolves that ambiguity properly, live row winning, exactly as
+    `find_assembled_leaf` does.
+    """
+    if not request_ids:
+        return {}
+    shipped = OpeningItemModel.state == OpeningItemState.SHIPPED_OUT
+    rows = session.execute(
+        select(
+            ShopAssemblyOpening.shop_assembly_request_id.label("request_id"),
+            func.count(func.distinct(ShopAssemblyOpening.id)).filter(shipped).label("shipped"),
+            func.count(func.distinct(ShopAssemblyOpening.id))
+            .filter(and_(shipped, ShopAssemblyOpeningItem.replacement_pending_quantity > 0))
+            .label("after_ship"),
+        )
+        .select_from(ShopAssemblyOpening)
+        .join(ShopAssemblyRequest, ShopAssemblyRequest.id == ShopAssemblyOpening.shop_assembly_request_id)
+        .join(
+            OpeningItemModel,
+            and_(
+                OpeningItemModel.opening_id == ShopAssemblyOpening.opening_id,
+                OpeningItemModel.leaf.is_not_distinct_from(ShopAssemblyOpening.leaf),
+                OpeningItemModel.project_id == ShopAssemblyRequest.project_id,
+            ),
+        )
+        .outerjoin(
+            ShopAssemblyOpeningItem,
+            ShopAssemblyOpeningItem.shop_assembly_opening_id == ShopAssemblyOpening.id,
+        )
+        .where(ShopAssemblyOpening.shop_assembly_request_id.in_(request_ids))
+        .group_by(ShopAssemblyOpening.shop_assembly_request_id)
+    ).all()
+    return {
+        row.request_id: {
+            "shipped_opening_count": int(row.shipped),
+            "replacement_after_ship_opening_count": int(row.after_ship),
+        }
+        for row in rows
+    }
+
+
+_EMPTY_OPENING_COUNTS = {
+    "opening_count": 0,
+    "staged_opening_count": 0,
+    "assigned_opening_count": 0,
+    "in_progress_opening_count": 0,
+    "completed_opening_count": 0,
+    "staged_assigned_pending_count": 0,
+    "staged_unassigned_pending_count": 0,
+}
+_EMPTY_UNIT_COUNTS = {
+    "planned_unit_count": 0,
+    "installed_unit_count": 0,
+    "deficient_unit_count": 0,
+    "replacement_pending_unit_count": 0,
+    "awaiting_replacement_opening_count": 0,
+}
+_EMPTY_SHIPPED_COUNTS = {"shipped_opening_count": 0, "replacement_after_ship_opening_count": 0}
+
+
+def get_assembly_pipeline_summaries(
+    session: Session,
+    project_id: uuid.UUID | None = None,
+    status: ShopAssemblyRequestStatus | None = None,
+    request_ids: list[uuid.UUID] | None = None,
+) -> list[AssemblyPipelineSummary]:
+    """Every shop-assembly request's journey, in counts (#344). FIVE statements, always.
+
+    The statement count does not depend on how many requests come back or how many openings they
+    have, which is the requirement: with `project_id` omitted this is the All-Projects view, and a
+    per-request follow-up query here would be the pattern CLAUDE.md's perf rules exist to prevent.
+    The five are: the requests (with their project name), every pull ever minted for them, and the
+    three grouped aggregates - opening stages, unit progress, shipped leaves.
+
+    Legacy #222 openings that hang straight off a PullRequest with no ShopAssemblyRequest are not
+    covered, because there is no request for them to be a pipeline *of*. They remain visible in the
+    Assemble List and the pull queue, which is where they always were.
+    """
+    # Local, matching the rest of this module: `warehouse.pull_requests` imports back into here at
+    # call time for the replacement-arrival path, so the two packages stay uncoupled at import time.
+    from app.repositories.warehouse import StagingSummary as warehouse_staging_summary
+
+    stmt = (
+        select(ShopAssemblyRequest, Project.project_id, Project.description)
+        .outerjoin(Project, Project.id == ShopAssemblyRequest.project_id)
+        .order_by(ShopAssemblyRequest.created_at.desc())
+    )
+    if project_id is not None:
+        stmt = stmt.where(ShopAssemblyRequest.project_id == project_id)
+    if status is not None:
+        stmt = stmt.where(ShopAssemblyRequest.status == status)
+    if request_ids is not None:
+        if not request_ids:
+            return []
+        stmt = stmt.where(ShopAssemblyRequest.id.in_(request_ids))
+    rows = session.execute(stmt).all()
+    if not rows:
+        return []
+
+    ids = [sar.id for sar, _code, _name in rows]
+    pulls_by_number = _pull_rows_by_request_number(session, [sar.request_number for sar, _c, _n in rows])
+    opening_counts = _opening_stage_counts(session, ids)
+    unit_counts = _unit_counts(session, ids)
+    shipped_counts = _shipped_counts(session, ids)
+
+    summaries: list[AssemblyPipelineSummary] = []
+    for sar, project_code, project_name in rows:
+        pulls = pulls_by_number.get(sar.request_number, [])
+        cancelled = [p for p in pulls if p.status == PullRequestStatus.CANCELLED]
+        live = next((p for p in reversed(pulls) if p.status != PullRequestStatus.CANCELLED), None)
+        counts = {
+            **_EMPTY_OPENING_COUNTS,
+            **opening_counts.get(sar.id, {}),
+            **_EMPTY_UNIT_COUNTS,
+            **unit_counts.get(sar.id, {}),
+            **_EMPTY_SHIPPED_COUNTS,
+            **shipped_counts.get(sar.id, {}),
+        }
+        # What an un-staged opening of this request reads as. A property of the pull, not of any one
+        # opening, so it is computed once here with a placeholder opening.
+        unstaged_stage = _opening_stage(
+            request_status=sar.status,
+            pull_request_id=live.id if live is not None else None,
+            pull_status=PullStatus.NOT_PULLED,
+            assembly_status=AssemblyStatus.PENDING,
+            assigned_to_user_id=None,
+            opening_item_state=None,
+            live_pull_status=live.status if live is not None else None,
+            had_cancelled_pull=bool(cancelled),
+        )
+        staging_status = None
+        if counts["opening_count"] > 0:
+            # Reuse #343's derivation rather than restate it: PARTIAL is the aggregate reading over a
+            # set of openings, and there must be exactly one place that decides what it means.
+            staging_status = warehouse_staging_summary(
+                staged_opening_count=counts["staged_opening_count"],
+                total_opening_count=counts["opening_count"],
+            ).status
+        summaries.append(
+            AssemblyPipelineSummary(
+                request_id=sar.id,
+                request_number=sar.request_number,
+                project_id=sar.project_id,
+                project_code=project_code,
+                project_name=project_name,
+                request_status=sar.status,
+                created_by=sar.created_by,
+                created_at=sar.created_at,
+                accepted_by=sar.approved_by,
+                accepted_at=sar.approved_at,
+                rejected_by=sar.rejected_by,
+                rejected_at=sar.rejected_at,
+                integrity_note=sar.integrity_note,
+                pull_request_id=live.id if live is not None else None,
+                pull_request_status=live.status if live is not None else None,
+                pull_approved_at=live.approved_at if live is not None else None,
+                pull_completed_at=live.completed_at if live is not None else None,
+                staging_status=staging_status,
+                cancelled_pull_count=len(cancelled),
+                last_cancelled_at=cancelled[-1].cancelled_at if cancelled else None,
+                last_cancelled_by=cancelled[-1].cancelled_by if cancelled else None,
+                last_cancellation_reason=cancelled[-1].cancellation_reason if cancelled else None,
+                opening_count=counts["opening_count"],
+                staged_opening_count=counts["staged_opening_count"],
+                assigned_opening_count=counts["assigned_opening_count"],
+                in_progress_opening_count=counts["in_progress_opening_count"],
+                completed_opening_count=counts["completed_opening_count"],
+                shipped_opening_count=counts["shipped_opening_count"],
+                planned_unit_count=counts["planned_unit_count"],
+                installed_unit_count=counts["installed_unit_count"],
+                deficient_unit_count=counts["deficient_unit_count"],
+                replacement_pending_unit_count=counts["replacement_pending_unit_count"],
+                awaiting_replacement_opening_count=counts["awaiting_replacement_opening_count"],
+                replacement_after_ship_opening_count=counts["replacement_after_ship_opening_count"],
+                stage=_request_stage(counts, unstaged_stage, sar.status),
+            )
+        )
+    return summaries
+
+
+def get_assembly_pipeline(session: Session, request_id: uuid.UUID) -> AssemblyPipeline:
+    """One request's pipeline: the summary, plus a row per door leaf (#344). EIGHT statements,
+    however many openings the request has.
+
+    The summary comes from `get_assembly_pipeline_summaries` rather than from the opening rows loaded
+    below, and that is worth three extra aggregate queries on a single request: it means the header
+    numbers on this screen are *by construction* the same numbers as the row for this request in the
+    list, and it keeps the aggregate rule honest rather than "honest except on the detail page".
+
+    The three statements this adds are the opening rows themselves, one grouped aggregate of their
+    hardware lines, and one fetch of the assembled leaves. That is flat in the number of openings,
+    which is what `test_pipeline_detail_query_count_is_flat_as_openings_grow` pins down.
+    """
+    summaries = get_assembly_pipeline_summaries(session, request_ids=[request_id])
+    if not summaries:
+        raise NotFoundError(f"Shop-assembly request {request_id} not found")
+    summary = summaries[0]
+
+    openings = list(
+        session.scalars(
+            select(ShopAssemblyOpening)
+            .where(ShopAssemblyOpening.shop_assembly_request_id == request_id)
+            .order_by(ShopAssemblyOpening.opening_number.asc(), ShopAssemblyOpening.leaf.asc())
+        ).all()
+    )
+    if not openings:
+        return AssemblyPipeline(summary=summary, openings=[])
+
+    opening_ids = [o.id for o in openings]
+    # One grouped aggregate for every opening's hardware lines - not a selectinload plus a Python
+    # sum, because the four counters are all this view wants and summing them in the database is
+    # both the rule and the cheaper read.
+    sums_by_opening = {
+        row.opening_id: row
+        for row in session.execute(
+            select(
+                ShopAssemblyOpeningItem.shop_assembly_opening_id.label("opening_id"),
+                func.coalesce(func.sum(ShopAssemblyOpeningItem.quantity), 0).label("planned"),
+                func.coalesce(func.sum(ShopAssemblyOpeningItem.installed_quantity), 0).label("installed"),
+                func.coalesce(func.sum(ShopAssemblyOpeningItem.deficient_quantity), 0).label("deficient"),
+                func.coalesce(func.sum(ShopAssemblyOpeningItem.replacement_pending_quantity), 0).label("pending"),
+            )
+            .where(ShopAssemblyOpeningItem.shop_assembly_opening_id.in_(opening_ids))
+            .group_by(ShopAssemblyOpeningItem.shop_assembly_opening_id)
+        ).all()
+    }
+
+    # The assembled leaves, in one fetch for the whole request rather than a find_assembled_leaf call
+    # per opening. The live-wins-over-shipped and latest-wins tie-breaks are applied here in exactly
+    # the order that function documents, so a leaf that shipped and was re-assembled resolves the
+    # same way in both places.
+    leaves: dict[tuple[uuid.UUID, int | None], OpeningItemModel] = {}
+    for oi in session.scalars(
+        select(OpeningItemModel).where(
+            OpeningItemModel.project_id == summary.project_id,
+            OpeningItemModel.opening_id.in_({o.opening_id for o in openings}),
+        )
+    ).all():
+        key = (oi.opening_id, oi.leaf)
+        incumbent = leaves.get(key)
+        if incumbent is None or _leaf_wins(oi, incumbent):
+            leaves[key] = oi
+
+    rows: list[PipelineOpening] = []
+    for opening in openings:
+        sums = sums_by_opening.get(opening.id)
+        leaf_row = leaves.get((opening.opening_id, opening.leaf))
+        rows.append(
+            PipelineOpening(
+                shop_assembly_opening_id=opening.id,
+                opening_number=opening.opening_number,
+                leaf=opening.leaf,
+                building=opening.building,
+                floor=opening.floor,
+                location=opening.location,
+                stage=_opening_stage(
+                    request_status=summary.request_status,
+                    pull_request_id=opening.pull_request_id,
+                    pull_status=opening.pull_status,
+                    assembly_status=opening.assembly_status,
+                    assigned_to_user_id=opening.assigned_to_user_id,
+                    opening_item_state=leaf_row.state if leaf_row is not None else None,
+                    live_pull_status=summary.pull_request_status,
+                    had_cancelled_pull=summary.cancelled_pull_count > 0,
+                ),
+                pull_status=opening.pull_status,
+                staged_at=opening.staged_at,
+                staged_by=opening.staged_by,
+                assigned_to_user_id=opening.assigned_to_user_id,
+                assigned_to=opening.assigned_to,
+                assembly_status=opening.assembly_status,
+                completed_at=opening.completed_at,
+                planned_unit_count=int(sums.planned) if sums is not None else 0,
+                installed_unit_count=int(sums.installed) if sums is not None else 0,
+                deficient_unit_count=int(sums.deficient) if sums is not None else 0,
+                replacement_pending_unit_count=int(sums.pending) if sums is not None else 0,
+                opening_item_id=leaf_row.id if leaf_row is not None else None,
+                opening_item_state=leaf_row.state if leaf_row is not None else None,
+                assembled_location=_format_location(leaf_row) if leaf_row is not None else None,
+            )
+        )
+    return AssemblyPipeline(summary=summary, openings=rows)
+
+
+def _leaf_wins(candidate: OpeningItemModel, incumbent: OpeningItemModel) -> bool:
+    """`find_assembled_leaf`'s tie-break, applied to a batch: a live row beats a shipped one, and
+    among equals the most recently assembled wins."""
+    candidate_live = candidate.state != OpeningItemState.SHIPPED_OUT
+    incumbent_live = incumbent.state != OpeningItemState.SHIPPED_OUT
+    if candidate_live != incumbent_live:
+        return candidate_live
+    return candidate.assembly_completed_at > incumbent.assembly_completed_at
+
+
+def _format_location(oi: OpeningItemModel) -> str | None:
+    """The assembled leaf's warehouse address, or None when it has not been put away. Joined here
+    rather than on the client so the pipeline and the warehouse views read the same."""
+    parts = [p for p in (oi.aisle, oi.row, oi.bay) if p]
+    return "-".join(parts) if parts else None

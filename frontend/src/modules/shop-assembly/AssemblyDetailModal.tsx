@@ -20,6 +20,7 @@ import {
 import { useMutation } from '@apollo/client/react';
 import { COMPLETE_OPENING, RECORD_ASSEMBLY_PROGRESS } from '../../graphql/shop-assembly';
 import {
+  ASSEMBLY_COMPLETE_STALE_ROOT_FIELDS,
   ASSEMBLY_PROGRESS_REFETCH_QUERIES,
   ASSEMBLY_PROGRESS_STALE_ROOT_FIELDS,
 } from '../../graphql/refetch';
@@ -103,6 +104,16 @@ export default function AssemblyDetailModal({
   });
 
   const [completeOpening, { loading: completing }] = useMutation(COMPLETE_OPENING, {
+    // Eviction only, and `assembleList`/`myWork` are deliberately not in the list: onCompleted below
+    // calls back into whichever page opened this modal, and that page refetches its own query. What
+    // it cannot reach is the warehouse's assembled-leaf grid, the shipping wizard's ship-ready list
+    // and the pipeline - all in modules that are not mounted at the bench. See refetch.ts.
+    update(cache) {
+      for (const fieldName of ASSEMBLY_COMPLETE_STALE_ROOT_FIELDS) {
+        cache.evict({ id: 'ROOT_QUERY', fieldName });
+      }
+      cache.gc();
+    },
     onCompleted: () => {
       showToast(`Opening ${opening.openingNumber || 'item'} marked complete`, 'success');
       onCompleted();
