@@ -1,10 +1,11 @@
 """Repository for shop assembly data access."""
 
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import (
@@ -35,6 +36,7 @@ from app.models.pull_request import (
 )
 from app.models.shop_assembly import (
     ShopAssemblyOpening,
+    ShopAssemblyOpeningItem,
     ShopAssemblyRequest,
 )
 from app.repositories.stock.common import _log_audit_event
@@ -145,10 +147,27 @@ def assign_openings(
         missing = [str(oid) for oid in opening_ids if oid not in found_ids]
         raise NotFoundError(f"ShopAssemblyOpenings not found: {missing}")
 
+    # A COMPLETED opening is assignable only while it has replacement installs outstanding (#341) -
+    # that is the "reassignable" half of the replacement work item, and it rides the existing manager
+    # flow rather than a second assignment system. One scalar aggregate for the whole batch.
+    completed_ids = {o.id for o in locked if o.assembly_status == AssemblyStatus.COMPLETED}
+    with_pending_replacements: set[uuid.UUID] = set()
+    if completed_ids:
+        with_pending_replacements = set(
+            session.scalars(
+                select(ShopAssemblyOpeningItem.shop_assembly_opening_id)
+                .where(
+                    ShopAssemblyOpeningItem.shop_assembly_opening_id.in_(completed_ids),
+                    ShopAssemblyOpeningItem.replacement_pending_quantity > 0,
+                )
+                .group_by(ShopAssemblyOpeningItem.shop_assembly_opening_id)
+            ).all()
+        )
+
     for opening in locked:
         if opening.pull_status != PullStatus.PULLED:
             raise InvalidStateTransitionError("Opening is not ready for assignment - hardware has not been pulled")
-        if opening.assembly_status not in _WORKABLE_ASSEMBLY_STATUSES:
+        if opening.assembly_status not in _WORKABLE_ASSEMBLY_STATUSES and opening.id not in with_pending_replacements:
             raise InvalidStateTransitionError("Opening assembly is already completed")
         already_held_by_someone_else = (
             opening.assigned_to_user_id is not None and opening.assigned_to_user_id != assigned_to_user_id
@@ -534,6 +553,290 @@ def complete_opening(
         },
     )
 
+    return opening_item
+
+
+def find_assembled_leaf(
+    session: Session,
+    project_id: uuid.UUID,
+    opening_id: uuid.UUID,
+    leaf: int | None,
+) -> OpeningItemModel | None:
+    """The OpeningItem a completed shop-assembly work unit materialized as (#341).
+
+    There is no FK from a ShopAssemblyOpening to the leaf it produced, so this keys it exactly the
+    way find_already_assembled_openings does: (project, opening_id, leaf), with a legacy null leaf
+    matching only a null leaf. A leaf can end up with more than one row over its life (it shipped,
+    then a correction minted another), so a live row wins over a shipped one and the most recently
+    assembled wins among equals - a shipped row is returned only when it is all there is, which is
+    precisely the "replacement arrived after the leaf shipped" case.
+    """
+    rows = list(
+        session.scalars(
+            select(OpeningItemModel).where(
+                OpeningItemModel.project_id == project_id,
+                OpeningItemModel.opening_id == opening_id,
+                OpeningItemModel.leaf.is_not_distinct_from(leaf),
+            )
+        ).all()
+    )
+    if not rows:
+        return None
+    live = [oi for oi in rows if oi.state != OpeningItemState.SHIPPED_OUT]
+    return sorted(live or rows, key=lambda oi: oi.assembly_completed_at)[-1]
+
+
+def get_awaiting_replacement_quantities(
+    session: Session,
+    opening_item_ids: Iterable[uuid.UUID],
+) -> dict[uuid.UUID, int]:
+    """Per assembled leaf, how many units of its hardware are still owed (#341): units condemned and
+    not yet replaced, plus units whose replacement has arrived but is not fitted yet.
+
+    This is the shipping deficiency flag. A leaf with a non-zero count is physically short of what
+    its checklist says it carries, so shipping it is a decision, not an accident - the wizard flags
+    it and the shipping-out creation path refuses it without an explicit acknowledgment.
+
+    One grouped scalar aggregate over the whole id set, never a len() over loaded collections
+    (CLAUDE.md perf rules): the shipping selection lists every assembled leaf in a project, and a
+    per-leaf query here would be an N+1 on the heaviest list in the module. Only non-zero entries are
+    returned, so callers can treat a missing key as "nothing outstanding".
+    """
+    ids = list(opening_item_ids)
+    if not ids:
+        return {}
+    outstanding = func.sum(
+        ShopAssemblyOpeningItem.deficient_quantity + ShopAssemblyOpeningItem.replacement_pending_quantity
+    )
+    stmt = (
+        select(OpeningItemModel.id, outstanding.label("outstanding"))
+        .select_from(OpeningItemModel)
+        .join(
+            ShopAssemblyOpening,
+            and_(
+                ShopAssemblyOpening.opening_id == OpeningItemModel.opening_id,
+                ShopAssemblyOpening.leaf.is_not_distinct_from(OpeningItemModel.leaf),
+                ShopAssemblyOpening.assembly_status == AssemblyStatus.COMPLETED,
+            ),
+        )
+        .join(PullRequestModel, PullRequestModel.id == ShopAssemblyOpening.pull_request_id)
+        .join(
+            ShopAssemblyOpeningItem,
+            ShopAssemblyOpeningItem.shop_assembly_opening_id == ShopAssemblyOpening.id,
+        )
+        .where(
+            OpeningItemModel.id.in_(ids),
+            # Scope the join to the leaf's own project: opening_id is a historical stamp, not an FK,
+            # and a re-upload can reissue it.
+            PullRequestModel.project_id == OpeningItemModel.project_id,
+        )
+        .group_by(OpeningItemModel.id)
+        .having(outstanding > 0)
+    )
+    return {row.id: int(row.outstanding) for row in session.execute(stmt).all()}
+
+
+@dataclass(frozen=True)
+class ReplacementWorkItem:
+    """One outstanding replacement install on an already-completed leaf (#341).
+
+    It is deliberately not a ShopAssemblyOpening: the opening is COMPLETED and must stay that way,
+    so this cannot ride in My Work's normal list without either lying about the leaf's status or
+    reopening a finished work unit. It is a separate, narrower unit of work - "fit these N units of
+    this product to a leaf that is otherwise done".
+    """
+
+    shop_assembly_opening_item_id: uuid.UUID
+    shop_assembly_opening_id: uuid.UUID
+    project_id: uuid.UUID
+    opening_number: str
+    leaf: int | None
+    building: str | None
+    floor: str | None
+    hardware_category: str
+    product_code: str
+    pending_quantity: int
+    assigned_to_user_id: str | None
+    assigned_to: str | None
+    opening_item_id: uuid.UUID | None
+    opening_item_state: OpeningItemState | None
+
+
+def get_replacement_work(
+    session: Session,
+    assigned_to_user_id: str | None = None,
+    project_id: uuid.UUID | None = None,
+) -> list[ReplacementWorkItem]:
+    """Outstanding replacement installs (#341), optionally scoped to one assembler.
+
+    The natural assignee is the leaf's last assembler - the ShopAssemblyOpening keeps the assignment
+    it was completed under - so filtering on assigned_to_user_id puts the work in that person's My
+    Work with no new assignment system. A manager can still move it with the existing assign_openings
+    mutation, which allows a COMPLETED opening exactly while it has pending replacements.
+
+    Rows whose leaf has already SHIPPED_OUT are included on purpose: item 4 of #341 is that such a
+    replacement must stay visible rather than be silently stranded. The caller can tell from
+    opening_item_state that it cannot be installed and needs reallocation instead.
+    """
+    stmt = (
+        select(ShopAssemblyOpeningItem, ShopAssemblyOpening, PullRequestModel.project_id)
+        .join(
+            ShopAssemblyOpening,
+            ShopAssemblyOpening.id == ShopAssemblyOpeningItem.shop_assembly_opening_id,
+        )
+        .join(PullRequestModel, PullRequestModel.id == ShopAssemblyOpening.pull_request_id)
+        .where(ShopAssemblyOpeningItem.replacement_pending_quantity > 0)
+        .order_by(ShopAssemblyOpening.opening_number.asc(), ShopAssemblyOpeningItem.product_code.asc())
+    )
+    if assigned_to_user_id is not None:
+        stmt = stmt.where(ShopAssemblyOpening.assigned_to_user_id == assigned_to_user_id)
+    if project_id is not None:
+        stmt = stmt.where(PullRequestModel.project_id == project_id)
+    rows = session.execute(stmt).all()
+    if not rows:
+        return []
+
+    # One batched lookup of the assembled leaves rather than one per row: the pending set is small,
+    # but "small today" is how N+1s get written.
+    leaf_by_key: dict[tuple[uuid.UUID, uuid.UUID, int | None], OpeningItemModel] = {}
+    for _item, opening, proj_id in rows:
+        key = (proj_id, opening.opening_id, opening.leaf)
+        if key not in leaf_by_key:
+            found = find_assembled_leaf(session, proj_id, opening.opening_id, opening.leaf)
+            if found is not None:
+                leaf_by_key[key] = found
+
+    result: list[ReplacementWorkItem] = []
+    for item, opening, proj_id in rows:
+        leaf_row = leaf_by_key.get((proj_id, opening.opening_id, opening.leaf))
+        result.append(
+            ReplacementWorkItem(
+                shop_assembly_opening_item_id=item.id,
+                shop_assembly_opening_id=opening.id,
+                project_id=proj_id,
+                opening_number=opening.opening_number,
+                leaf=opening.leaf,
+                building=opening.building,
+                floor=opening.floor,
+                hardware_category=item.hardware_category,
+                product_code=item.product_code,
+                pending_quantity=item.replacement_pending_quantity,
+                assigned_to_user_id=opening.assigned_to_user_id,
+                assigned_to=opening.assigned_to,
+                opening_item_id=leaf_row.id if leaf_row is not None else None,
+                opening_item_state=leaf_row.state if leaf_row is not None else None,
+            )
+        )
+    return result
+
+
+def install_replacement(
+    session: Session,
+    sa_opening_item_id: uuid.UUID,
+    quantity: int,
+    performed_by: str | None = None,
+) -> OpeningItemModel:
+    """Fit arrived replacement hardware to an already-completed door leaf (#341).
+
+    This is the one legitimate write to an assembled leaf's hardware after completion, and it is
+    narrow on purpose: it can only consume units the replacement pull actually delivered
+    (`replacement_pending_quantity`), so it cannot be used to inflate a leaf.
+
+    The unit moves `replacement_pending -> installed` on the checklist line, which leaves
+    `installed + deficient + replacement_pending == quantity` intact, and the leaf's
+    `OpeningItemHardware` row for that (product_code, hardware_category) is incremented - or created,
+    if the line had nothing installed at completion time. Both cases are real: #339 refuses a
+    completion where *nothing at all* was installed, but a line that was entirely deficient while
+    other lines were fine contributes no row, so the leaf may or may not already carry the product.
+
+    Refused if the leaf has shipped: the hardware cannot be fitted to something that has left the
+    building, and quietly recording it as installed would make the packing slip a lie. That case is
+    already flagged and notified at pull completion, and belongs to reallocation.
+    """
+    if quantity < 1:
+        raise ValidationError("quantity must be >= 1", field="quantity")
+
+    item = session.get(ShopAssemblyOpeningItem, sa_opening_item_id)
+    if item is None:
+        raise NotFoundError(f"ShopAssemblyOpeningItem {sa_opening_item_id} not found")
+
+    # Lock the work unit, then re-read the line under that lock so two installers cannot both spend
+    # the same pending unit.
+    if not lock_rows(session, ShopAssemblyOpening, [item.shop_assembly_opening_id]):
+        raise NotFoundError(f"ShopAssemblyOpening {item.shop_assembly_opening_id} not found")
+    opening = session.get(ShopAssemblyOpening, item.shop_assembly_opening_id)
+    session.refresh(item)
+
+    if opening.assembly_status != AssemblyStatus.COMPLETED:
+        raise InvalidStateTransitionError(
+            "This leaf is still on the bench - record the replacement as installed progress instead"
+        )
+    if item.replacement_pending_quantity < quantity:
+        raise ValidationError(
+            f"Only {item.replacement_pending_quantity} replacement unit(s) of {item.product_code} have "
+            f"arrived for this leaf; cannot install {quantity}",
+            field="quantity",
+        )
+
+    project_id = _opening_project_id(session, opening)
+    if project_id is None:
+        raise NotFoundError(f"ShopAssemblyOpening {opening.id} is not linked to a pull request")
+
+    opening_item = find_assembled_leaf(session, project_id, opening.opening_id, opening.leaf)
+    if opening_item is None:
+        raise NotFoundError(f"No assembled unit found for opening {opening.opening_number}")
+    if opening_item.state == OpeningItemState.SHIPPED_OUT:
+        raise InvalidStateTransitionError(
+            f"Opening {opening.opening_number} has already shipped - this replacement has to be "
+            "routed through reallocation or a site shipment, not installed here"
+        )
+
+    oih = session.scalars(
+        select(OIHModel).where(
+            OIHModel.opening_item_id == opening_item.id,
+            OIHModel.product_code == item.product_code,
+            OIHModel.hardware_category == item.hardware_category,
+        )
+    ).first()
+    previous_installed_on_leaf = oih.quantity if oih is not None else 0
+    if oih is None:
+        # The line was fully deficient when the leaf was completed, so it contributed no row.
+        oih = OIHModel(
+            id=uuid.uuid4(),
+            opening_item_id=opening_item.id,
+            product_code=item.product_code,
+            hardware_category=item.hardware_category,
+            quantity=quantity,
+        )
+        session.add(oih)
+    else:
+        oih.quantity += quantity
+
+    item.replacement_pending_quantity -= quantity
+    item.installed_quantity += quantity
+    opening_item.updated_at = datetime.utcnow()
+
+    _log_audit_event(
+        session,
+        project_id=project_id,
+        entity_type=AuditEntityType.OPENING_ITEM,
+        entity_id=opening_item.id,
+        action=AuditAction.REPLACEMENT_INSTALL,
+        performed_by=performed_by or opening.assigned_to or "Assembler",
+        detail={
+            "shopAssemblyOpeningId": str(opening.id),
+            "shopAssemblyOpeningItemId": str(item.id),
+            "openingNumber": opening.opening_number,
+            "leaf": opening.leaf,
+            "hardwareCategory": item.hardware_category,
+            "productCode": item.product_code,
+            "installedQuantity": quantity,
+            "previousQuantityOnLeaf": previous_installed_on_leaf,
+            "newQuantityOnLeaf": oih.quantity,
+            "remainingPendingQuantity": item.replacement_pending_quantity,
+        },
+    )
+    session.flush()
     return opening_item
 
 

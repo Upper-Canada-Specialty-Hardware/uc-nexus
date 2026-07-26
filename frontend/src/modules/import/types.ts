@@ -46,6 +46,12 @@ export interface AssembledLeafCandidate {
   openingNumber: string;
   leaf: number | null;
   installedHardware: Array<{ productCode: string; quantity: number }>;
+  /**
+   * Units of this leaf's hardware still owed to it (#341): condemned and not yet replaced, plus
+   * replacements that have arrived but are not fitted. > 0 means the leaf is physically short of the
+   * hardware list it would ship under, so it is flagged and takes an explicit confirm.
+   */
+  awaitingReplacementQuantity: number;
 }
 
 export function hardwareItemKey(hi: ParsedHardwareItem) {

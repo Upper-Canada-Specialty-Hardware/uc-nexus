@@ -38,6 +38,7 @@ export const GET_ASSEMBLE_LIST = gql`
         quantity
         installedQuantity
         deficientQuantity
+        replacementPendingQuantity
       }
     }
   }
@@ -67,6 +68,55 @@ export const GET_MY_WORK = gql`
         quantity
         installedQuantity
         deficientQuantity
+        replacementPendingQuantity
+      }
+    }
+  }
+`;
+
+// Replacement installs outstanding on already-completed leaves (#341). Scoped to one assembler so it
+// lands in the My Work board of whoever last held the leaf - the opening keeps its assignment through
+// completion, so this needs no new assignment concept. Rows whose openingItemState is SHIPPED_OUT are
+// listed deliberately: that replacement must stay visible rather than be stranded, even though it
+// cannot be installed.
+export const GET_REPLACEMENT_WORK = gql`
+  query GetReplacementWork($assignedToUserId: String, $projectId: ID) {
+    replacementWork(assignedToUserId: $assignedToUserId, projectId: $projectId) {
+      shopAssemblyOpeningItemId
+      shopAssemblyOpeningId
+      projectId
+      openingNumber
+      leaf
+      building
+      floor
+      hardwareCategory
+      productCode
+      pendingQuantity
+      assignedToUserId
+      assignedTo
+      openingItemId
+      openingItemState
+    }
+  }
+`;
+
+// Fit arrived replacement hardware to a finished leaf (#341) - the one legitimate write to an
+// assembled leaf's hardware after completion. Returns the leaf so the caller can see its updated
+// installedHardware and whether anything is still owed to it.
+export const INSTALL_REPLACEMENT = gql`
+  mutation InstallReplacement($input: InstallReplacementInput!) {
+    installReplacement(input: $input) {
+      id
+      openingNumber
+      leaf
+      state
+      awaitingReplacementQuantity
+      installedHardware {
+        id
+        openingItemId
+        productCode
+        hardwareCategory
+        quantity
       }
     }
   }
@@ -156,6 +206,7 @@ export const ASSIGN_OPENINGS = gql`
         quantity
         installedQuantity
         deficientQuantity
+        replacementPendingQuantity
       }
     }
   }
@@ -184,6 +235,7 @@ export const REMOVE_OPENING_FROM_USER = gql`
         quantity
         installedQuantity
         deficientQuantity
+        replacementPendingQuantity
       }
     }
   }
@@ -216,6 +268,7 @@ export const RECORD_ASSEMBLY_PROGRESS = gql`
         quantity
         installedQuantity
         deficientQuantity
+        replacementPendingQuantity
       }
     }
   }
