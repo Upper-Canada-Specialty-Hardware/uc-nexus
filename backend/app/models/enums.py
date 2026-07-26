@@ -67,6 +67,15 @@ class ReservationSource(str, enum.Enum):
 
 
 class PullStatus(str, enum.Enum):
+    """How much of something has been staged by the warehouse.
+
+    Persisted per `ShopAssemblyOpening`, where only NOT_PULLED and PULLED are ever written: one
+    opening is a cart, and a cart is either built or it is not. PARTIAL is the *aggregate* reading
+    over a set of openings - "some of this pull is staged, some is not" - and since #343 it is
+    derived for a whole PullRequest rather than stored (see
+    `warehouse.get_pull_staging_summaries`). Keeping it out of the opening column is what stops a
+    half-truth being persisted about a single cart."""
+
     NOT_PULLED = "NOT_PULLED"
     PARTIAL = "PARTIAL"
     PULLED = "PULLED"
@@ -109,6 +118,10 @@ class AuditEntityType(str, enum.Enum):
     # The assembly work unit (one door leaf) an INSTALL_PROGRESS event is recorded against (#340).
     # Progress happens before any OpeningItem exists, so it cannot hang off OPENING_ITEM.
     SHOP_ASSEMBLY_OPENING = "SHOP_ASSEMBLY_OPENING"
+    # The pull itself (#343). A cancellation is an event about the *pull*, not about any one
+    # inventory row it happened to touch, so it needs an entity of its own rather than being
+    # smuggled onto an INVENTORY_LOCATION row.
+    PULL_REQUEST = "PULL_REQUEST"
 
 
 class AuditAction(str, enum.Enum):
@@ -138,6 +151,18 @@ class AuditAction(str, enum.Enum):
     # Replacement hardware was fitted to an already-completed leaf (#341) - the one legitimate write
     # to an OpeningItem's installed hardware after assembly finished.
     REPLACEMENT_INSTALL = "REPLACEMENT_INSTALL"
+    # One opening of a shop-assembly pull was confirmed staged - its cart is built (#343). Recorded
+    # against the SHOP_ASSEMBLY_OPENING, because staging is per opening and the pull as a whole may
+    # still be part-way through.
+    PULL_STAGED = "PULL_STAGED"
+    # The inverse of PULL_DEDUCTION (#343): a cancelled pull put its hardware back on the shelf.
+    # Distinct from RETURN (a shipment coming back from site) so a restock is never mistaken for
+    # inventory arriving from outside the building.
+    PULL_RESTOCK = "PULL_RESTOCK"
+    # A pull was cancelled after approval (#343). One row per cancellation against the PULL_REQUEST,
+    # carrying what was restocked, which openings were released, and what happened to the source
+    # request - the PULL_RESTOCK rows above are the per-inventory-row detail of the same event.
+    PULL_CANCELLED = "PULL_CANCELLED"
 
 
 class ReturnDisposition(str, enum.Enum):

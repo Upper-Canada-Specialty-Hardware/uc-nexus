@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, Enum, ForeignKey, Index, Integer, SmallInteger, String
+from sqlalchemy import CheckConstraint, Enum, ForeignKey, Index, Integer, SmallInteger, String, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from . import Base
@@ -19,10 +19,21 @@ class PullRequest(Base):
         ),
         Index("ix_pull_requests_assigned_to", "assigned_to"),
         Index("ix_pull_requests_created_at", "created_at"),
+        # The pull number identifies the *live* pull for a request, not every pull that request has
+        # ever had (#343). A cancelled pull keeps its number for the record, and re-accepting the
+        # source request mints a fresh pull carrying the same number - so the uniqueness that makes
+        # the number a usable key has to exclude cancelled rows, or the second accept would collide
+        # exactly the way #325's reopen path had to hard-delete the PR to avoid.
+        Index(
+            "uq_pull_requests_request_number_live",
+            "request_number",
+            unique=True,
+            postgresql_where=text("status <> 'CANCELLED'"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    request_number: Mapped[str] = mapped_column(String(50), nullable=False, unique=True)
+    request_number: Mapped[str] = mapped_column(String(50), nullable=False)
     project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
     source: Mapped[PullRequestSource] = mapped_column(
         Enum(PullRequestSource, name="pull_request_source", create_constraint=True),
@@ -39,6 +50,11 @@ class PullRequest(Base):
     approved_at: Mapped[datetime | None] = mapped_column(nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(nullable=True)
     cancelled_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    # Who cancelled the pull and why (#343). Cancellation returns real hardware to the shelf and
+    # sends the source request back for re-acceptance, so - like a request rejection - it carries
+    # its actor and its reason on the row, not only in the audit log.
+    cancelled_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    cancellation_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(nullable=True)
 
     items: Mapped[list["PullRequestItem"]] = relationship(back_populates="pull_request")

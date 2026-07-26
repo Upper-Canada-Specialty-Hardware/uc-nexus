@@ -6,10 +6,10 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from sqlalchemy import and_, delete, or_, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.errors import InvalidStateTransitionError, NotFoundError
+from app.errors import ConflictError, InvalidStateTransitionError, NotFoundError, ValidationError
 from app.models.enums import (
     AssemblyStatus,
     AuditAction,
@@ -21,6 +21,8 @@ from app.models.enums import (
     PullRequestStatus,
     PullStatus,
     ReservationSource,
+    ShippingOutRequestStatus,
+    ShopAssemblyRequestStatus,
 )
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.opening_item import OpeningItem as OpeningItemModel
@@ -34,6 +36,8 @@ from app.services.locking import lock_rows
 
 from . import reservations
 from .audit import _log_audit_event
+
+MAX_CANCELLATION_REASON_LENGTH = 500
 
 
 def get_pull_requests(
@@ -490,7 +494,7 @@ def _apply_replacement_arrivals(session: Session, pr: PullRequestModel) -> None:
         )
 
 
-def complete_pull_request(session: Session, pr_id: uuid.UUID) -> PullRequestModel:
+def complete_pull_request(session: Session, pr_id: uuid.UUID, completed_by: str | None = None) -> PullRequestModel:
     """
     Complete a pull request:
     1. Validate status == In_Progress
@@ -499,6 +503,12 @@ def complete_pull_request(session: Session, pr_id: uuid.UUID) -> PullRequestMode
     4. Restore any leaf expectations the pull's replacement lines are owed to (#341)
     5. If Shipping_Out source: set Opening_Item states to Ship_Ready
     6. If Shop_Assembly source: update SAR openings pull_status to Pulled
+
+    Since #343 a shop-assembly pull is normally *completed by its last staging* - `stage_pull_openings`
+    calls straight into here once every opening is staged, so the notification and the replacement
+    arrivals still fire exactly once, from one place. Calling it directly stays supported and means
+    "stage whatever is left and close the pull": step 6 flips any remaining opening to PULLED and
+    stamps its staging, which is a no-op for openings already staged individually.
     """
     stmt = select(PullRequestModel).options(selectinload(PullRequestModel.items)).where(PullRequestModel.id == pr_id)
     pr = session.scalars(stmt).unique().first()
@@ -544,9 +554,585 @@ def complete_pull_request(session: Session, pr_id: uuid.UUID) -> PullRequestMode
             select(ShopAssemblyOpening).where(ShopAssemblyOpening.pull_request_id == pr.id)
         ).all()
         for opening in openings:
+            # Idempotent for an opening already staged individually (#343): its own staged_at/by
+            # stamp is the truth about when that cart was built and must not be overwritten by the
+            # moment the *last* cart happened to be finished.
+            if opening.pull_status == PullStatus.PULLED:
+                continue
             opening.pull_status = PullStatus.PULLED
+            opening.staged_at = now
+            opening.staged_by = completed_by or pr.assigned_to or pr.requested_by
 
     return pr
+
+
+# ---------------------------------------------------------------------------
+# Per-opening staging (#343)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class StagingSummary:
+    """How far along a shop-assembly pull's staging is, derived - never stored.
+
+    `status` is a `PullStatus` read over the *set* of openings: NOT_PULLED when none is staged,
+    PARTIAL when some are, PULLED when all are. That is the reading the dead `PullStatus.PARTIAL`
+    value was always for, and deriving it is what keeps the persisted state machine honest: the
+    opening column stays a two-valued fact about one cart, and `PullRequestStatus` stays
+    PENDING -> IN_PROGRESS -> COMPLETED/CANCELLED with no half-state wedged into it. A pull whose
+    every opening is staged *is* COMPLETED, so PULLED here is never observed without it.
+    """
+
+    staged_opening_count: int
+    total_opening_count: int
+
+    @property
+    def status(self) -> PullStatus:
+        if self.staged_opening_count == 0:
+            return PullStatus.NOT_PULLED
+        if self.staged_opening_count >= self.total_opening_count:
+            return PullStatus.PULLED
+        return PullStatus.PARTIAL
+
+
+def get_pull_staging_summaries(session: Session, pr_ids: Iterable[uuid.UUID]) -> dict[uuid.UUID, StagingSummary]:
+    """Staged/total opening counts per pull, for every pull id given, in **one grouped aggregate**.
+
+    The pull-request list resolver renders a staging chip per row, so this must never become a
+    per-row query (CLAUDE.md perf rules) - it is `count(*)` and a filtered `count(*)`, grouped by
+    pull, not a `len()` over loaded openings. Pulls with no openings at all (shipping-out, PR-REPL,
+    legacy) are simply absent from the result: staging does not apply to them, and a caller must
+    render nothing rather than "0 of 0 staged".
+    """
+    ids = [pid for pid in pr_ids if pid is not None]
+    if not ids:
+        return {}
+    staged = func.count(1).filter(ShopAssemblyOpening.pull_status == PullStatus.PULLED)
+    rows = session.execute(
+        select(
+            ShopAssemblyOpening.pull_request_id,
+            func.count(1).label("total"),
+            staged.label("staged"),
+        )
+        .where(ShopAssemblyOpening.pull_request_id.in_(ids))
+        .group_by(ShopAssemblyOpening.pull_request_id)
+    ).all()
+    return {
+        row.pull_request_id: StagingSummary(staged_opening_count=int(row.staged), total_opening_count=int(row.total))
+        for row in rows
+    }
+
+
+def get_pull_request_openings(session: Session, pr_id: uuid.UUID) -> list[ShopAssemblyOpening]:
+    """The shop-assembly openings a pull covers, items eager-loaded, for the staging checklist (#343).
+
+    Ordered by opening number then leaf so the checklist reads the way the carts are laid out.
+    Empty for a shipping-out pull, a PR-REPL replacement pull, or a legacy pull.
+    """
+    stmt = (
+        select(ShopAssemblyOpening)
+        .options(selectinload(ShopAssemblyOpening.items))
+        .where(ShopAssemblyOpening.pull_request_id == pr_id)
+        .order_by(ShopAssemblyOpening.opening_number.asc(), ShopAssemblyOpening.leaf.asc())
+    )
+    return list(session.scalars(stmt).unique().all())
+
+
+@dataclass
+class StageResult:
+    """Outcome of one staging confirmation."""
+
+    pull_request: PullRequestModel
+    openings: list[ShopAssemblyOpening]
+    newly_staged_ids: list[uuid.UUID]
+    summary: StagingSummary
+    completed: bool
+
+
+def stage_pull_openings(
+    session: Session,
+    pr_id: uuid.UUID,
+    opening_ids: Iterable[uuid.UUID],
+    staged_by: str,
+) -> StageResult:
+    """Confirm that the cart(s) for these openings of an approved shop-assembly pull are built (#343).
+
+    The warehouse stages a pull opening by opening; before this, `pull_status` was flipped for every
+    opening at once when the whole pull was marked pulled, so an opening picked first thing in the
+    morning was not assignable until the last one was picked. Each confirmed opening flips to PULLED
+    on its own and becomes assignable and workable immediately - `assign_openings`,
+    `record_assembly_progress` and `complete_opening` all gate on the opening's own `pull_status`,
+    so nothing else has to change for the assembly floor to see it.
+
+    **Nothing moves in inventory here.** The FIFO deduction and the consumption of the source
+    request's reservation both happen at approval and stay there (see `approve_pull_request`).
+    Approval is the moment the pull is committed: the reservation the request has held since creation
+    becomes the deduction, atomically, under one set of row locks. Deducting per opening instead
+    would mean an approved-but-unstaged opening held neither a reservation nor a deduction - its
+    hardware would read as free and could be claimed by the next request, which is the exact hole
+    #342 closed - and it would reintroduce a shortfall at staging time, where the only recovery is a
+    half-deducted pull. Staging is progress tracking; `cancel_pull_request` is what reverses stock.
+
+    Staging the last opening completes the pull, by calling `complete_pull_request` rather than
+    reimplementing it, so the completion notification and the replacement-arrival application fire
+    exactly once and from one place. Already-staged openings are skipped rather than refused, so a
+    double-click or a stale checklist is a no-op instead of an error.
+    """
+    ids = list(dict.fromkeys(opening_ids))
+    if not ids:
+        raise ValidationError("opening_ids must not be empty", field="opening_ids")
+
+    locked_prs = lock_rows(session, PullRequestModel, [pr_id])
+    if not locked_prs:
+        raise NotFoundError(f"Pull request {pr_id} not found")
+    pr = locked_prs[0]
+
+    if pr.source != PullRequestSource.SHOP_ASSEMBLY:
+        raise InvalidStateTransitionError(
+            "Per-opening staging applies to shop-assembly pulls only - a shipping-out pull is completed as a whole."
+        )
+    if pr.status != PullRequestStatus.IN_PROGRESS:
+        raise InvalidStateTransitionError(f"Pull request must be In_Progress to stage openings, got {pr.status.value}")
+
+    openings = lock_rows(session, ShopAssemblyOpening, ids)
+    by_id = {o.id: o for o in openings}
+    missing = [str(oid) for oid in ids if oid not in by_id]
+    if missing:
+        raise NotFoundError(f"ShopAssemblyOpenings not found: {missing}")
+    foreign = [str(o.id) for o in openings if o.pull_request_id != pr.id]
+    if foreign:
+        raise ValidationError(
+            f"Openings do not belong to pull request {pr.request_number}: {foreign}",
+            field="opening_ids",
+        )
+
+    now = datetime.utcnow()
+    newly_staged: list[uuid.UUID] = []
+    for opening in openings:
+        if opening.pull_status == PullStatus.PULLED:
+            continue
+        opening.pull_status = PullStatus.PULLED
+        opening.staged_at = now
+        opening.staged_by = staged_by
+        newly_staged.append(opening.id)
+        _log_audit_event(
+            session,
+            project_id=pr.project_id,
+            entity_type=AuditEntityType.SHOP_ASSEMBLY_OPENING,
+            entity_id=opening.id,
+            action=AuditAction.PULL_STAGED,
+            performed_by=staged_by,
+            detail={
+                "pullRequestId": str(pr.id),
+                "pullRequestNumber": pr.request_number,
+                "openingNumber": opening.opening_number,
+                "leaf": opening.leaf,
+                "stagedAt": now.isoformat(),
+            },
+        )
+    session.flush()
+
+    summary = get_pull_staging_summaries(session, [pr.id]).get(
+        pr.id, StagingSummary(staged_opening_count=0, total_opening_count=0)
+    )
+    completed = summary.total_opening_count > 0 and summary.staged_opening_count >= summary.total_opening_count
+    if completed:
+        complete_pull_request(session, pr.id, completed_by=staged_by)
+
+    return StageResult(
+        pull_request=pr,
+        openings=openings,
+        newly_staged_ids=newly_staged,
+        summary=summary,
+        completed=completed,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Cancel / restock (#343)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CancelBlocker:
+    """One opening that stops a pull being cancelled: work has already started on its leaf."""
+
+    opening_id: uuid.UUID
+    opening_number: str
+    leaf: int | None
+    assembly_status: str
+    assigned_to: str | None
+
+    @property
+    def label(self) -> str:
+        leaf_suffix = f" leaf {self.leaf}" if self.leaf is not None else ""
+        holder = f", {self.assigned_to}" if self.assigned_to else ""
+        return f"{self.opening_number}{leaf_suffix} ({self.assembly_status.lower().replace('_', ' ')}{holder})"
+
+
+@dataclass(frozen=True)
+class RestockedLine:
+    hardware_category: str
+    product_code: str
+    quantity: int
+
+
+@dataclass
+class CancelResult:
+    pull_request: PullRequestModel
+    restocked: list[RestockedLine]
+    released_opening_ids: list[uuid.UUID]
+    source_request_returned_to_pending: bool
+    reservations_recreated: bool
+    integrity_note: str | None
+
+
+def _return_units_to_project_inventory(
+    session: Session,
+    project_id: uuid.UUID,
+    hardware_category: str,
+    product_code: str,
+    quantity: int,
+) -> InventoryLocationModel:
+    """Put `quantity` units of one combo back into project inventory as available stock.
+
+    This is the inverse of the FIFO deduction, and it deliberately does **not** try to reverse it row
+    by row. The deduction spread across whichever `InventoryLocation` rows were oldest; which row a
+    hinge sits on carries no identity (docs/HARDWARE_IDENTITY_LIFECYCLE.md - inventory is fungible),
+    so reconstructing the original split from the audit log would be fragile bookkeeping in service
+    of a distinction the domain does not make. The units land on the project's most recently received
+    row for the combo, exactly the way `report_deficiency_at_assembly` returns a condemned unit, and
+    a row is re-materialized if a schedule re-upload deleted the last one. Landing on the *newest*
+    row is also the conservative choice for future FIFO: older stock still goes out first.
+    """
+    from app.repositories import warehouse_admin_repository
+    from app.repositories.stock.common import _find_or_create_stock_row
+
+    il = session.scalars(
+        select(InventoryLocationModel)
+        .where(
+            InventoryLocationModel.project_id == project_id,
+            InventoryLocationModel.hardware_category == hardware_category,
+            InventoryLocationModel.product_code == product_code,
+        )
+        .order_by(InventoryLocationModel.received_at.desc())
+    ).first()
+    if il is None:
+        now = datetime.utcnow()
+        warehouse_id = warehouse_admin_repository.get_primary_warehouse_id(session)
+        stock_row = _find_or_create_stock_row(
+            session,
+            warehouse_id=warehouse_id,
+            hardware_category=hardware_category,
+            product_code=product_code,
+            aisle=None,
+            row=None,
+            bay=None,
+            received_at=now,
+        )
+        il = InventoryLocationModel(
+            project_id=project_id,
+            stock_item_id=stock_row.id,
+            warehouse_id=warehouse_id,
+            hardware_category=hardware_category,
+            product_code=product_code,
+            quantity=0,
+            deficient_quantity=0,
+            received_at=now,
+        )
+        session.add(il)
+        session.flush()
+    il.quantity += quantity
+    return il
+
+
+def cancel_pull_request(
+    session: Session,
+    pr_id: uuid.UUID,
+    cancelled_by: str,
+    reason: str | None = None,
+) -> CancelResult:
+    """Cancel an approved pull, put its hardware back on the shelf, and hand the source request back
+    for re-acceptance (#343).
+
+    Before this there was no way out of an approved pull: inventory had been deducted and
+    `PullRequestStatus.CANCELLED` was an enum value nothing ever set, so a pull raised against the
+    wrong project or superseded by a schedule revision could only be walked forward.
+
+    **All-or-nothing, per pull.** Partial cancellation - keeping the worked openings and releasing
+    the rest - is deliberately not supported, because there is nowhere honest to put the released
+    ones: `PullStatus` has no cancelled value, and `complete_pull_request` flips *every* opening of a
+    pull to PULLED, so a half-cancelled pull would resurrect its released openings the moment the
+    rest was staged. Expressing it properly needs an opening-level cancelled state, which is a
+    different change; until then the refusal names the blockers so the warehouse knows exactly what
+    to finish first.
+
+    **What blocks it**: any opening whose assembly has started (IN_PROGRESS) or finished (COMPLETED).
+    That is where the hardware stops being retrievable - it is on a leaf, and some of it may already
+    have been condemned and replaced. Everything short of that is cancellable, *including openings
+    already staged*: their hardware is on a cart in the shop, which is exactly as retrievable as
+    hardware still on the shelf, and restocking only the un-staged part would leave the staged part
+    deducted with no leaf to show for it. Assignments on released openings are cleared, because there
+    is no longer any work to hold.
+
+    **Which statuses can be cancelled**: IN_PROGRESS always. A COMPLETED pull additionally, but only
+    when it is a shop-assembly pull with openings - since staging is per opening, "completed" there
+    now means no more than "every cart is built", which is not a point of no return. A completed
+    shipping-out pull has already flipped its leaves to SHIP_READY and a completed PR-REPL pull has
+    already given leaves their expectation back; unwinding those is not this function's job.
+
+    **The source request goes back to PENDING**, with its reservation re-created from the returned
+    quantities and re-checked against availability first. The claim was consumed at approval, so
+    re-creating it is a new claim competing with everyone else's: if stock was written off or
+    condemned under it in the meantime the re-check comes up short, and rather than write a partial
+    claim that reads as covered, the request is left unreserved and flagged via `integrity_note` -
+    the same honest-and-flagged shape the #342 backfill uses.
+
+    **A PR-REPL replacement pull has no source request**, so cancelling one restocks and re-creates
+    nothing: it never held a reservation (a deficiency cannot be foreseen, so nobody could have
+    claimed for it). The leaf's `deficient_quantity` is untouched and the expectation stays on the
+    checklist line - the replacement simply has to be requested again.
+    """
+    if not cancelled_by:
+        raise ValidationError("cancelled_by is required", field="cancelled_by")
+    reason = (reason or "").strip() or None
+    if reason is not None and len(reason) > MAX_CANCELLATION_REASON_LENGTH:
+        raise ValidationError(
+            f"Cancellation reason must be {MAX_CANCELLATION_REASON_LENGTH} characters or fewer",
+            field="reason",
+        )
+
+    locked_prs = lock_rows(session, PullRequestModel, [pr_id])
+    if not locked_prs:
+        raise NotFoundError(f"Pull request {pr_id} not found")
+    pr = locked_prs[0]
+    if pr.deleted_at is not None:
+        raise NotFoundError(f"Pull request {pr_id} not found")
+
+    items = list(
+        session.scalars(select(PullRequestItemModel).where(PullRequestItemModel.pull_request_id == pr.id)).all()
+    )
+    openings = list(
+        session.scalars(
+            select(ShopAssemblyOpening)
+            .where(ShopAssemblyOpening.pull_request_id == pr.id)
+            .order_by(ShopAssemblyOpening.opening_number.asc())
+        ).all()
+    )
+
+    cancellable_from_completed = pr.source == PullRequestSource.SHOP_ASSEMBLY and bool(openings)
+    if pr.status == PullRequestStatus.PENDING:
+        raise InvalidStateTransitionError(
+            "This pull has not been approved yet, so nothing has left inventory. Reopen or reject "
+            "the source request instead."
+        )
+    if pr.status == PullRequestStatus.CANCELLED:
+        raise InvalidStateTransitionError("Pull request is already cancelled")
+    if pr.status == PullRequestStatus.COMPLETED and not cancellable_from_completed:
+        raise InvalidStateTransitionError(
+            "This pull is already complete and its hardware has been handed over - it can no longer be cancelled."
+        )
+
+    blockers = [
+        CancelBlocker(
+            opening_id=o.id,
+            opening_number=o.opening_number,
+            leaf=o.leaf,
+            assembly_status=o.assembly_status.value,
+            assigned_to=o.assigned_to,
+        )
+        for o in openings
+        if o.assembly_status != AssemblyStatus.PENDING
+    ]
+    if blockers:
+        raise ConflictError(
+            "Cannot cancel this pull - assembly has already started on "
+            f"{len(blockers)} of its openings: {', '.join(b.label for b in blockers)}. "
+            "Finish or unwind that work first; cancelling is all-or-nothing.",
+            field="opening_ids",
+        )
+
+    now = datetime.utcnow()
+
+    # 1. Inverse inventory write. Only LOOSE lines ever left inventory; an OPENING_ITEM line moves an
+    #    assembled leaf, which approval only locked.
+    needs_by_combo: dict[tuple[str, str], int] = defaultdict(int)
+    for item in items:
+        if item.item_type != PullRequestItemType.LOOSE:
+            continue
+        if not item.hardware_category or not item.product_code or item.requested_quantity <= 0:
+            continue
+        needs_by_combo[(item.hardware_category, item.product_code)] += item.requested_quantity
+
+    restocked: list[RestockedLine] = []
+    for (cat, code), qty in sorted(needs_by_combo.items()):
+        il = _return_units_to_project_inventory(session, pr.project_id, cat, code, qty)
+        restocked.append(RestockedLine(hardware_category=cat, product_code=code, quantity=qty))
+        _log_audit_event(
+            session,
+            project_id=pr.project_id,
+            entity_type=AuditEntityType.INVENTORY_LOCATION,
+            entity_id=il.id,
+            action=AuditAction.PULL_RESTOCK,
+            performed_by=cancelled_by,
+            detail={
+                "pullRequestId": str(pr.id),
+                "pullRequestNumber": pr.request_number,
+                "restockedQuantity": qty,
+                "newQuantity": il.quantity,
+                "hardwareCategory": cat,
+                "productCode": code,
+                "reasonText": reason,
+            },
+        )
+
+    # 2. Release the openings: back to NOT_PULLED, unstaged, unassigned, and off the cancelled pull so
+    #    a re-accept re-links them the way the accept path already does.
+    released_ids: list[uuid.UUID] = []
+    for opening in openings:
+        opening.pull_status = PullStatus.NOT_PULLED
+        opening.staged_at = None
+        opening.staged_by = None
+        opening.assigned_to = None
+        opening.assigned_to_user_id = None
+        opening.pull_request_id = None
+        released_ids.append(opening.id)
+
+    # 3. The pull itself.
+    pr.status = PullRequestStatus.CANCELLED
+    pr.cancelled_at = now
+    pr.cancelled_by = cancelled_by
+    pr.cancellation_reason = reason
+    session.flush()
+
+    # 4. Hand the source request back, and re-claim the returned hardware for it if it is still free.
+    #    The availability check runs *after* the restock, so the units just returned count towards it.
+    source_request, source_reservation = _find_source_request(session, pr)
+    returned_to_pending = False
+    reservations_recreated = False
+    integrity_note: str | None = None
+    if source_request is not None:
+        returned_to_pending = _return_source_request_to_pending(session, pr, source_request)
+        if needs_by_combo:
+            result = check_inventory_sufficiency(
+                session,
+                pr.project_id,
+                [(cat, code, qty) for (cat, code), qty in needs_by_combo.items()],
+                lock=True,
+                reservation_aware=True,
+            )
+            if result.sufficient:
+                reservations.create_reservations(
+                    session,
+                    pr.project_id,
+                    source_reservation,
+                    source_request.id,
+                    [(cat, code, qty) for (cat, code), qty in needs_by_combo.items()],
+                )
+                reservations_recreated = True
+            else:
+                short = ", ".join(
+                    f"{s.hardware_category} {s.product_code} (short {s.short})" for s in result.shortfalls
+                )
+                integrity_note = (
+                    f"Pull {pr.request_number} was cancelled and this request returned to Pending, but its "
+                    f"hardware could not be re-reserved - {short}. It holds no claim on inventory, so the "
+                    "pull can come up short."
+                )[:500]
+                source_request.integrity_note = integrity_note
+
+    _log_audit_event(
+        session,
+        project_id=pr.project_id,
+        entity_type=AuditEntityType.PULL_REQUEST,
+        entity_id=pr.id,
+        action=AuditAction.PULL_CANCELLED,
+        performed_by=cancelled_by,
+        detail={
+            "pullRequestNumber": pr.request_number,
+            "source": pr.source.value,
+            "reasonText": reason,
+            "restocked": [
+                {"hardwareCategory": r.hardware_category, "productCode": r.product_code, "quantity": r.quantity}
+                for r in restocked
+            ],
+            "releasedOpeningIds": [str(oid) for oid in released_ids],
+            "sourceRequestId": str(source_request.id) if source_request is not None else None,
+            "sourceRequestReturnedToPending": returned_to_pending,
+            "reservationsRecreated": reservations_recreated,
+            "integrityNote": integrity_note,
+            "cancelledAt": now.isoformat(),
+        },
+    )
+
+    notification_service.create_notification(
+        session,
+        project_id=pr.project_id,
+        recipient_role=pr.requested_by,
+        notification_type=NotificationType.PULL_REQUEST_CANCELLED,
+        message=(
+            f"Pull Request {pr.request_number} was cancelled by {cancelled_by}"
+            + (f": {reason}" if reason else ".")
+            + (" The hardware has been returned to inventory." if restocked else "")
+        ),
+    )
+
+    return CancelResult(
+        pull_request=pr,
+        restocked=restocked,
+        released_opening_ids=released_ids,
+        source_request_returned_to_pending=returned_to_pending,
+        reservations_recreated=reservations_recreated,
+        integrity_note=integrity_note,
+    )
+
+
+def _find_source_request(session: Session, pr: PullRequestModel):
+    """The request this pull was minted from, and the reservation discriminator it claims under.
+
+    The same two hops `find_reservation_holder` uses, returning the row rather than its id because
+    cancellation has to write to it. `(None, None)` for a PR-REPL replacement pull (its
+    `PR-REPL-...` number matches no request), a legacy pull, or one whose request was already
+    rejected.
+    """
+    if pr.source == PullRequestSource.SHOP_ASSEMBLY:
+        sar = session.scalar(
+            select(ShopAssemblyRequestModel).where(ShopAssemblyRequestModel.request_number == pr.request_number)
+        )
+        if sar is not None:
+            return (sar, ReservationSource.SHOP_ASSEMBLY_REQUEST)
+    elif pr.source == PullRequestSource.SHIPPING_OUT:
+        sor = session.scalar(select(ShippingOutRequestModel).where(ShippingOutRequestModel.pull_request_id == pr.id))
+        if sor is not None:
+            return (sor, ReservationSource.SHIPPING_OUT_REQUEST)
+    return (None, None)
+
+
+def _return_source_request_to_pending(session: Session, pr: PullRequestModel, source_request) -> bool:
+    """Undo the accept on the cancelled pull's source request so it can be re-accepted or rejected.
+
+    Deliberately PENDING and not REJECTED: cancelling a pull says the *pull* was wrong, not that the
+    hardware is no longer wanted, and the request is the record of a decision somebody made. Sending
+    it back to the queue is also what gives the re-created reservation something to hang off. A
+    request that is not APPROVED (already rejected, or reopened by hand while the pull was live) is
+    left exactly as it is.
+    """
+    if isinstance(source_request, ShopAssemblyRequestModel):
+        if source_request.status != ShopAssemblyRequestStatus.APPROVED:
+            return False
+        source_request.status = ShopAssemblyRequestStatus.PENDING
+    else:
+        if source_request.status != ShippingOutRequestStatus.APPROVED:
+            return False
+        source_request.status = ShippingOutRequestStatus.PENDING
+    source_request.approved_by = None
+    source_request.approved_at = None
+    if pr.source == PullRequestSource.SHIPPING_OUT:
+        # A shipping-out request's only link to its pull is this column, and the pull it points at is
+        # dead. Clearing it is what lets a re-accept mint a fresh one (and keeps `reopenable_only`
+        # and the re-upload liveness queries from resolving through a cancelled pull).
+        source_request.pull_request_id = None
+    return True
 
 
 def discard_pending_pull_request(session: Session, pr_id: uuid.UUID | None) -> None:

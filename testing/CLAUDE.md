@@ -212,7 +212,46 @@ can come up INSUFFICIENT and notify the PO, and it can only draw from what nobod
 
 **Inventory**: Browse by hardware category and product code, see storage locations.
 
-**Pull Requests**: Queue of pull requests from shop assembly or shipping modules.
+**Pull Requests**: Queue of pull requests from shop assembly or shipping modules. Two tabs (Shop
+Assembly / Shipping Out); clicking a row opens the detail modal. The grid has a **Staging** column
+since #343 - a chip reading "4 of 8 staged" (grey at 0, amber part-staged, green all-staged). It is
+**blank** on shipping-out and `PR-REPL-*` pulls: those have no openings, so staging does not apply
+and the UI deliberately shows nothing rather than "0 of 0".
+
+**Per-opening staging (#343)** is the shop-assembly pull's execution view, inside the detail modal
+between the header and the Items table, headed `Staging (N of M openings)`.
+
+- One row per opening, showing its leaf, location and its own hardware lines (`3 x HG-100 (HINGE)`).
+- Confirming is **two-step**: tick the checkboxes (`Stage <opening> - Leaf N`), press
+  `Confirm N staged`, then confirm the dialog. A tick alone writes nothing - staging is a claim that
+  hardware is physically on a cart. `Select all remaining` ticks every un-staged row.
+- Each confirmed opening is **immediately** assignable/workable in Shop Assembly, while the rest of
+  the pull is still un-staged. This is the thing to exercise: stage one leaf of a pair, then go to
+  `/app/shop-assembly/assemble` and claim it while its sibling still shows as waiting.
+- An already-staged row has a disabled checkbox and a green "Staged" chip with who staged it and when.
+- Staging the **last** opening completes the pull (toast: "All openings staged - <PR> is complete.").
+  The panel then renders read-only, so the record of who staged what survives.
+- `Mark as Pulled` still exists and now means "stage everything remaining and finish"; its confirm
+  dialog says so.
+- Nothing moves in inventory at staging. Stock was deducted when the pull was **approved**.
+
+**Cancel Pull (#343)**: an outlined red button in the modal's action bar on any IN_PROGRESS pull, and
+on a COMPLETED *shop-assembly* pull (there "completed" only means every cart is built). Absent on a
+PENDING pull - reopen or reject the source request instead - and on a completed shipping-out pull.
+
+- It opens its own modal (not the standard ConfirmDialog) with a warning alert, an optional Reason
+  textarea, `Keep pull` and `Cancel pull and restock`.
+- Success toast names the units returned and whether the claim was re-created. If the returned
+  hardware could **not** be re-reserved you get a *warning* toast carrying the request's new
+  `integrityNote` instead - that is a real state, not a failure.
+- **Refusal keeps the dialog open** and renders the server's message in a red alert
+  (`data-testid="cancel-blocked"`) listing every opening whose assembly has started. Cancelling is
+  all-or-nothing; finish or unwind those leaves first.
+- After a cancel: stock is back in project inventory, the pull's openings are NOT_PULLED and
+  unassigned (they vanish from the Assemble List), and the source request is back in the
+  Shop Assembly / Shipping accept queue as Pending. Re-accepting it mints a **new** pull with the
+  **same request number** - so a search by number can legitimately return a cancelled row and a live
+  one.
 
 **Stock Pool** (`/app/warehouse/stock-pool`): Shows stock items not tied to a project. Has a "Warehouse" filter dropdown in the filter row with options "All warehouses", "Warden (WRD)", "VP (VP)". Grid has a "Warehouse" column (visible when data rows exist). Empty state shows "Nothing in the stock pool yet" message.
 
@@ -263,6 +302,13 @@ Both entry points open a "Transfer <productCode>" MUI dialog with: an "X availab
 - Manager creates/approves Shop Assembly Requests (SARs)
 - Approved SARs generate pull requests for warehouse
 - Users get assigned openings, pull hardware, assemble, mark complete
+
+**The Assemble List fills incrementally since #343.** It now lists the openings of any *approved*
+pull, not only completed ones, and groups them by the opening's own pull status: Pulled ("Ready"),
+Partial ("Waiting"), Not Pulled ("Pending"). Only a **Pulled** row offers "Assign to me" / "Start
+assembly" - an un-staged row is visible but inert, which is deliberate (the floor can see what is
+coming). If a leaf you expect is missing entirely, its pull is still PENDING in the warehouse or was
+cancelled; if it is present but has no buttons, the warehouse has not staged that opening yet.
 
 **Accept is a pure human gate since #342.** There is no inventory check on Accept any more and no
 shortfall can surface there - the hardware was reserved when the request was created. Accepting
