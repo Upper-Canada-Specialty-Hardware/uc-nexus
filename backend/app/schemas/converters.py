@@ -539,6 +539,7 @@ def pull_request_item_to_type(item) -> PullRequestItem:
         item_type=item.item_type,
         opening_number=item.opening_number,
         opening_item_id=strawberry.ID(str(item.opening_item_id)) if item.opening_item_id else None,
+        sa_opening_item_id=(strawberry.ID(str(item.sa_opening_item_id)) if item.sa_opening_item_id else None),
         leaf=item.leaf,
         hardware_category=item.hardware_category,
         product_code=item.product_code,

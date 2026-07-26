@@ -481,6 +481,8 @@ class PullRequestItem:
     item_type: PullRequestItemType
     opening_number: str
     opening_item_id: strawberry.ID | None
+    # Deficient shop-assembly checklist item this line replaces (#339). Set only on PR-REPL lines.
+    sa_opening_item_id: strawberry.ID | None
     # Door leaf this pull line is for (#311): 1 or 2, or null (legacy / leaf-agnostic).
     leaf: int | None
     hardware_category: str | None

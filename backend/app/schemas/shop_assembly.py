@@ -25,7 +25,11 @@ from .types import ClerkUser, OpeningItem, ShopAssemblyOpening, ShopAssemblyRequ
 @strawberry.type
 class ShopAssemblyQueries:
     @strawberry.field
-    def assemble_list(self, project_id: strawberry.ID | None = None) -> list[ShopAssemblyOpening]:
+    def assemble_list(
+        self, info: strawberry.Info, project_id: strawberry.ID | None = None
+    ) -> list[ShopAssemblyOpening]:
+        """Openings whose shop-assembly pull is complete (#222). Open to any signed-in user."""
+        require_user(info)
         with SessionLocal() as session:
             saos = shop_assembly_repository.get_assemble_list(
                 session, uuid.UUID(str(project_id)) if project_id else None
@@ -33,7 +37,9 @@ class ShopAssemblyQueries:
             return [shop_assembly_opening_to_type(sao) for sao in saos]
 
     @strawberry.field
-    def my_work(self, assigned_to_user_id: str) -> list[ShopAssemblyOpening]:
+    def my_work(self, info: strawberry.Info, assigned_to_user_id: str) -> list[ShopAssemblyOpening]:
+        """An assembler's claimed, still-pending openings. Open to any signed-in user."""
+        require_user(info)
         with SessionLocal() as session:
             saos = shop_assembly_repository.get_my_work(session, assigned_to_user_id)
             return [shop_assembly_opening_to_type(sao) for sao in saos]
@@ -41,13 +47,15 @@ class ShopAssemblyQueries:
     @strawberry.field
     def shop_assembly_requests(
         self,
+        info: strawberry.Info,
         project_id: strawberry.ID | None = None,
         status: ShopAssemblyRequestStatus | None = None,
         reopenable_only: bool = False,
     ) -> list[ShopAssemblyRequest]:
         """Accept UI (#293): shop-assembly requests for a project, PENDING by default. reopenableOnly
         (#325) keeps only requests whose minted pull request is still PENDING - the Approved/reopen
-        view uses it so it lists only requests Reopen can still act on."""
+        view uses it so it lists only requests Reopen can still act on. Open to any signed-in user."""
+        require_user(info)
         with SessionLocal() as session:
             reqs = shop_assembly_repository.get_shop_assembly_requests(
                 session, uuid.UUID(str(project_id)) if project_id else None, status, reopenable_only
@@ -139,7 +147,9 @@ class ShopAssemblyMutations:
             return [shop_assembly_opening_to_type(sao) for sao in saos]
 
     @strawberry.mutation
-    def remove_opening_from_user(self, opening_id: strawberry.ID) -> ShopAssemblyOpening:
+    def remove_opening_from_user(self, info: strawberry.Info, opening_id: strawberry.ID) -> ShopAssemblyOpening:
+        """Unassign a pending opening. Open to any signed-in user (the board's Unassign action)."""
+        require_user(info)
         with SessionLocal() as session:
             result = shop_assembly_repository.remove_opening_from_user(session, uuid.UUID(str(opening_id)))
             session.commit()
@@ -147,7 +157,10 @@ class ShopAssemblyMutations:
             return shop_assembly_opening_to_type(refreshed)
 
     @strawberry.mutation
-    def complete_opening(self, input: CompleteOpeningInput) -> OpeningItem:
+    def complete_opening(self, info: strawberry.Info, input: CompleteOpeningInput) -> OpeningItem:
+        """Complete an opening's assembly, materializing the assembled leaf as an OpeningItem (#339).
+        Open to any signed-in user - it writes inventory, so it must not be reachable anonymously."""
+        require_user(info)
         with SessionLocal() as session:
             item_results = [
                 shop_assembly_repository.OpeningItemResult(

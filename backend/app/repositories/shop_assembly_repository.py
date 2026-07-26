@@ -206,6 +206,23 @@ def complete_opening(
     if pr is None:
         raise NotFoundError(f"Completed shop-assembly pull request for opening {opening_id} not found")
 
+    # 3. Duplicate-completion guard (#339). Two shop-assembly openings can name the same
+    #    (opening_id, leaf) - e.g. a request was reopened and re-imported, or the same leaf was sent
+    #    to the shop twice - and completing both would mint a second assembled unit for one physical
+    #    door leaf, double-counting inventory and letting the same leaf ship twice. Refuse if a live
+    #    OpeningItem already exists for this leaf, using exactly the keying the pre-request REQ-5
+    #    guard uses (find_already_assembled_openings: any state except SHIPPED_OUT, and a legacy
+    #    null-leaf unit matches only a null-leaf spec).
+    if find_already_assembled_openings(
+        session, pr.project_id, [(sa_opening.opening_number, sa_opening.opening_id, sa_opening.leaf)]
+    ):
+        leaf_suffix = f" leaf {sa_opening.leaf}" if sa_opening.leaf is not None else ""
+        raise ConflictError(
+            f"Opening {sa_opening.opening_number}{leaf_suffix} has already been assembled - "
+            "an assembled unit for it is still in the system",
+            field="opening_id",
+        )
+
     # 4. Resolve the per-item installed/deficient checklist (#225). The checklist is keyed on
     #    ShopAssemblyOpeningItem ids (what the assembler sees in the modal). Any item without a
     #    result row defaults to installed, so an empty checklist preserves the old snapshot-all path.
@@ -230,6 +247,20 @@ def complete_opening(
                     field="deficient_reason",
                 )
             deficient_reason_by_id[res.shop_assembly_opening_item_id] = reason
+
+    # 4b. Refuse an all-deficient completion (#339). If every checklist item is flagged deficient the
+    #     OpeningItem would be minted with zero OpeningItemHardware rows - an "assembled" leaf that
+    #     had nothing installed on it, which then reads as ship-ready inventory. Nothing was
+    #     assembled, so the opening stays PENDING and no deficiency is recorded: the caller's
+    #     transaction is abandoned whole, so the flagged units are neither returned to inventory nor
+    #     given a PR-REPL line. Report the deficiencies through the warehouse deficiency flow, or
+    #     re-complete once at least one item is installed.
+    if sa_opening.items and all(item.id in deficient_reason_by_id for item in sa_opening.items):
+        raise ValidationError(
+            "Cannot complete an opening with every item flagged deficient - nothing would be "
+            "assembled. Leave the opening pending and report the deficiencies instead.",
+            field="item_results",
+        )
 
     # 5. Create OpeningItem (snapshot opening identity from the ShopAssemblyOpening row)
     now = datetime.utcnow()
