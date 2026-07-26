@@ -58,6 +58,7 @@ class PullRequestItem(Base):
     __table_args__ = (
         Index("ix_pull_request_items_pull_request", "pull_request_id"),
         Index("ix_pull_request_items_opening_item", "opening_item_id"),
+        Index("ix_pull_request_items_sa_opening_item", "sa_opening_item_id"),
         CheckConstraint("requested_quantity >= 1", name="ck_pull_request_items_requested_quantity_positive"),
     )
 
@@ -73,6 +74,12 @@ class PullRequestItem(Base):
     )
     opening_number: Mapped[str] = mapped_column(String, nullable=False)
     opening_item_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("opening_items.id"), nullable=True)
+    # The deficient shop-assembly checklist item this line replaces (#339). Set only on PR-REPL
+    # replacement lines minted by report_deficiency_at_assembly, so a replacement pull can be traced
+    # back to the exact ShopAssemblyOpeningItem that failed at the bench. Null on every other line.
+    sa_opening_item_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("shop_assembly_opening_items.id"), nullable=True
+    )
     # Door leaf this pull line is for (#311): SHOP_ASSEMBLY LOOSE from ShopAssemblyOpening.leaf,
     # SHIPPING_OUT OPENING_ITEM from OpeningItem.leaf. Snapshot so a leaf-1 pull reads distinct from
     # a leaf-2 pull. Null = legacy / leaf-agnostic.
