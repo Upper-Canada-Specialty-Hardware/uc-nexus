@@ -76,6 +76,7 @@ from .reservations import (
     create_reservations,
     get_project_availability,
     get_reserved_quantities,
+    get_reserved_total,
     release_reservations,
 )
 
@@ -126,6 +127,7 @@ __all__ = [
     "get_pull_staging_summaries",
     "get_recent_receive_records",
     "get_reserved_quantities",
+    "get_reserved_total",
     "get_unlocated_inventory",
     "get_warehouse_dashboard",
     "mark_inventory_unlocated",

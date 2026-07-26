@@ -40,8 +40,9 @@ interface ReplacementWorkPanelProps {
  * to a leaf that is otherwise done" - so it gets its own section rather than reopening a finished
  * work unit or pretending the leaf is in progress.
  *
- * A row whose leaf has already shipped is still listed, because the hardware is real and must not be
- * silently stranded; it just cannot be installed from here.
+ * A row whose leaf has already shipped, or is staged at the dock for a confirmed shipment, is still
+ * listed, because the hardware is real and must not be silently stranded; it just cannot be
+ * installed from here.
  */
 export default function ReplacementWorkPanel({ assignedToUserId, performedBy }: ReplacementWorkPanelProps) {
   const { showToast } = useToast();
@@ -102,6 +103,14 @@ export default function ReplacementWorkPanel({ assignedToUserId, performedBy }: 
       <Stack spacing={1.5}>
         {rows.map((row) => {
           const shipped = row.openingItemState === 'SHIPPED_OUT';
+          // SHIP_READY is the same refusal one step earlier, and the backend enforces it: the leaf is
+          // picked and staged against a confirmed shipping-out pull, and `confirm_shipment` snapshots
+          // its hardware onto the packing slip. Hardware added now would land on a slip for a unit
+          // that was checked without it. Unlike the shipped case it is still recoverable - unwind the
+          // shipping-out request and the button comes back - so it says so rather than reading as
+          // terminal.
+          const shipReady = row.openingItemState === 'SHIP_READY';
+          const blocked = shipped || shipReady;
           return (
             <Paper key={row.shopAssemblyOpeningItemId} variant='outlined' sx={{ p: 2 }}>
               <Box
@@ -124,8 +133,13 @@ export default function ReplacementWorkPanel({ assignedToUserId, performedBy }: 
                 </Box>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                   <Chip size='small' variant='outlined' label={`${row.pendingQuantity} awaiting install`} />
-                  {shipped ? (
-                    <Chip size='small' variant='outlined' color='warning' label='Leaf already shipped' />
+                  {blocked ? (
+                    <Chip
+                      size='small'
+                      variant='outlined'
+                      color='warning'
+                      label={shipped ? 'Leaf already shipped' : 'Leaf staged for shipment'}
+                    />
                   ) : (
                     <Button
                       size='small'
@@ -142,6 +156,13 @@ export default function ReplacementWorkPanel({ assignedToUserId, performedBy }: 
                 <Alert severity='warning' sx={{ mt: 1.5 }}>
                   This leaf shipped before the replacement arrived, so the hardware cannot go on it
                   here. It needs a reallocation or a site shipment.
+                </Alert>
+              )}
+              {shipReady && (
+                <Alert severity='warning' sx={{ mt: 1.5 }}>
+                  This leaf is staged for shipment, and its packing slip is built from what is on it
+                  now. Unwind the shipping-out request first if the replacement has to go on before
+                  it leaves; otherwise it needs a reallocation or a site shipment.
                 </Alert>
               )}
             </Paper>

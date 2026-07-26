@@ -341,7 +341,10 @@ def test_progress_refused_when_hardware_is_not_pulled(db_session):
         project.id,
         request_number="PR-SA-P10",
         items=[(*HINGE, 2)],
-        pull_status=PullStatus.PARTIAL,
+        # NOT_PULLED, not PARTIAL: since #345 the column carries a CHECK saying an opening's
+        # pull_status is binary. PARTIAL is the derived reading over a *set* of openings and is not
+        # storable on one of them, so "this cart is not built" is spelled NOT_PULLED.
+        pull_status=PullStatus.NOT_PULLED,
     )
     with pytest.raises(InvalidStateTransitionError):
         shop_assembly_repository.record_assembly_progress(

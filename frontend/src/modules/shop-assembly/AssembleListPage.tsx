@@ -36,6 +36,9 @@ interface AssembleOpeningItem {
   quantity: number;
   installedQuantity: number;
   deficientQuantity: number;
+  // Arrived-but-not-yet-fitted replacement units (#341): the third bucket a line is partitioned
+  // into, and part of the progress rollup's `remaining`.
+  replacementPendingQuantity: number;
 }
 
 interface AssembleOpening {
@@ -268,7 +271,7 @@ export default function AssembleListPage() {
                             variant="outlined"
                           />
                           <Typography variant="body2" color="text.secondary">
-                            {progress.installed + progress.deficient}/{progress.planned} units
+                            {progress.planned - progress.remaining}/{progress.planned} units
                           </Typography>
                         </Stack>
                       </AccordionSummary>

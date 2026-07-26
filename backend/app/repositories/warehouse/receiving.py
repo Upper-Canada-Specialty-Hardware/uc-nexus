@@ -25,6 +25,7 @@ from app.models.receiving import ReceiveLineItem as ReceiveLineItemModel
 from app.models.receiving import ReceiveRecord as ReceiveRecordModel
 from app.models.vendor import Vendor as VendorModel
 from app.services import notification_service
+from app.services.locking import lock_rows
 
 from .audit import _log_audit_event
 from .locations import _normalize_and_validate_location_fields
@@ -323,9 +324,11 @@ def create_receive(
     elif any_received and po.status not in (POStatus.PARTIALLY_RECEIVED, POStatus.CLOSED):
         po.status = POStatus.PARTIALLY_RECEIVED
 
-    # The backfill retry loop for replacement pulls (#344). Stock arriving is the only thing that can
-    # unblock one, and until now nothing was watching. Stock-pool POs are skipped: a replacement pull
-    # draws on *project* inventory, and allocating from the pool is a separate deliberate act.
+    # The backfill retry loop for replacement pulls (#344). A receive is the *usual* way one becomes
+    # coverable and the one this module can see; other paths exist (a cancelled pull restocking, an
+    # allocation from the pool, a deficiency resolved back to available) and simply do not raise this
+    # signal today. Stock-pool POs are skipped: a replacement pull draws on *project* inventory, and
+    # allocating from the pool is a separate deliberate act.
     if not is_stock_po:
         session.flush()
         notify_unblocked_replacement_pulls(
@@ -413,14 +416,21 @@ def notify_unblocked_replacement_pulls(
 
     1. *Relevance.* Only pulls that wanted one of the combos this receive actually landed are
        considered. A receive of door closers cannot change whether a hinge replacement is coverable.
-    2. *Transition.* The pull must now be **fully** coverable, under the same reservation-aware
+    2. *Coverability.* The pull must now be **fully** coverable, under the same reservation-aware
        availability the approver will apply (`on-hand - deficient - everyone's reservations`, with no
        self-exclusion, because a replacement pull holds nothing of its own to exclude). A receive that
        narrows the gap without closing it changes nothing the warehouse can act on, so it says
-       nothing. This is the "insufficient -> sufficient" edge.
+       nothing. Note this is the state *after* the receive only - the prior state is not re-derived,
+       so a pull that was already coverable and gets more stock still qualifies here; what actually
+       stops it being announced twice is rule 3.
     3. *Open signal.* One **unread** notification per pull. If the last one has not been read yet,
        the warehouse already knows; raising a second is noise. Once it has been read the signal has
        done its job, so a pull that goes short again and is later covered again gets a fresh one.
+
+    Rule 3 is a check followed by an insert, so it needs the pull's row lock to mean anything: two
+    receives landing the same combo concurrently would both find no unread notification and both
+    write one. The lock is taken per pull, after the pull is known to be relevant and coverable, so a
+    receive that changes nothing takes no locks at all.
 
     Returns the notifications raised, so callers and tests can assert on them.
     """
@@ -438,6 +448,8 @@ def notify_unblocked_replacement_pulls(
         if not needs:
             continue
         if not check_inventory_sufficiency(session, project_id, needs, reservation_aware=True).sufficient:
+            continue
+        if not lock_rows(session, PullRequestModel, [pr.id]):
             continue
         if notification_service.has_unread_notification_for_pull(session, pr.id, NotificationType.PULL_UNBLOCKED):
             continue

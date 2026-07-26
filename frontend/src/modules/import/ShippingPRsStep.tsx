@@ -47,6 +47,8 @@ interface ShippingPRsStepProps {
   availabilityByCombo: Map<string, InventoryAvailabilityRow>;
   /** Combos the current selection would over-claim. Non-empty blocks the step. */
   availabilityShortfalls: AvailabilityShortfall[];
+  /** The availability lookup has not answered yet, so the counts below are not final. */
+  availabilityLoading: boolean;
   /** The availability lookup failed; the counts are unknown, not zero. */
   availabilityError: boolean;
   /**
@@ -84,6 +86,7 @@ export default function ShippingPRsStep({
   onTogglePRItem,
   availabilityByCombo,
   availabilityShortfalls,
+  availabilityLoading,
   availabilityError,
   onAcknowledgeIncompleteLeaf,
   onNext,
@@ -119,13 +122,17 @@ export default function ShippingPRsStep({
 
   // Creating the request RESERVES what its LOOSE lines ask for (#342), so an over-selection is
   // blocked here rather than bouncing the whole finalize. A failed availability lookup blocks
-  // too: an unknown count must not read as "fine".
+  // too: an unknown count must not read as "fine" - and neither must an unfinished one, which is
+  // why `availabilityLoading` blocks as well, exactly as it does on the shop-assembly step. Before
+  // the lookup answers every combo reads as 0 available, so an unblocked Next would let a valid
+  // selection through on numbers that were never real.
   const canProceed = useMemo(
     () =>
       shippingPRDrafts.some((d) => d.requestNumber.trim() !== '' && d.items.length > 0) &&
       availabilityShortfalls.length === 0 &&
+      !availabilityLoading &&
       !availabilityError,
-    [shippingPRDrafts, availabilityShortfalls, availabilityError],
+    [shippingPRDrafts, availabilityShortfalls, availabilityLoading, availabilityError],
   );
 
   // An assembled leaf is one physical object, so it can sit on exactly one request. Loose hardware
@@ -173,6 +180,12 @@ export default function ShippingPRsStep({
         <Alert severity="error" sx={{ mb: 2 }}>
           Could not read this project&apos;s available inventory, so the loose-hardware counts below
           are unknown rather than zero. Go back and retry before creating a request.
+        </Alert>
+      )}
+
+      {availabilityLoading && !availabilityError && (
+        <Alert severity="info" sx={{ mb: 2 }}>
+          Checking available inventory...
         </Alert>
       )}
 
@@ -323,7 +336,11 @@ export default function ShippingPRsStep({
                     const availability = availabilityByCombo.get(itemGroupKey(hi));
                     const available = availability?.availableQuantity ?? 0;
                     const reserved = availability?.reservedQuantity ?? 0;
-                    const overClaimed = !availabilityError && hi.item_quantity > available;
+                    // Not over-claimed until the numbers are real: while the lookup is in flight
+                    // every combo reads 0 available, and a row of red "0 available" captions on a
+                    // perfectly valid selection is a false alarm the user cannot act on.
+                    const overClaimed =
+                      !availabilityError && !availabilityLoading && hi.item_quantity > available;
                     return (
                       <FormControlLabel
                         key={aggregationKey(hi)}
@@ -348,8 +365,12 @@ export default function ShippingPRsStep({
                             >
                               {availabilityError
                                 ? 'Availability unknown'
-                                : `${available} available` +
-                                  (reserved > 0 ? ` (${reserved} reserved by other requests)` : '')}
+                                : availabilityLoading
+                                  ? 'Checking availability...'
+                                  : `${available} available` +
+                                    (reserved > 0
+                                      ? ` (${reserved} reserved by other requests)`
+                                      : '')}
                             </Typography>
                           </Box>
                         }

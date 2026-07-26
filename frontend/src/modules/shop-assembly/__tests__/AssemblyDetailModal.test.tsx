@@ -18,6 +18,7 @@ function item(overrides: Record<string, unknown> = {}) {
     quantity: 4,
     installedQuantity: 0,
     deficientQuantity: 0,
+    replacementPendingQuantity: 0,
     ...overrides,
   };
 }
@@ -85,6 +86,31 @@ describe('AssemblyDetailModal progress editor', () => {
 
     expect(screen.getByRole('button', { name: /mark complete/i })).toBeDisabled();
     expect(screen.getByText(/nothing assembled to complete/i)).toBeInTheDocument();
+  });
+
+  it('lets an opening with no hardware lines at all be completed', () => {
+    // The backend's all-deficient refusal is `if items and all(installed == 0)`, so an opening with
+    // no lines is completable there. Requiring `installed > 0` here blocked it permanently, with no
+    // action available to the assembler that could ever unblock it.
+    renderModal([]);
+
+    expect(screen.getByRole('button', { name: /mark complete/i })).toBeEnabled();
+    expect(screen.getByText(/no hardware items/i)).toBeInTheDocument();
+    // ...and none of the "unaccounted for" / "nothing assembled" captions apply to it.
+    expect(screen.queryByText(/unaccounted for/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/nothing assembled to complete/i)).not.toBeInTheDocument();
+  });
+
+  it('counts arrived-but-unfitted replacement units as accounted for', () => {
+    // A finished 4-unit leaf whose replacement has landed: 3 installed, 1 waiting to be fitted. The
+    // line is fully dispositioned - installed + deficient + replacementPending == quantity - so it
+    // must not read as 3/4 with a unit still owed.
+    renderModal([
+      item({ quantity: 4, installedQuantity: 3, deficientQuantity: 0, replacementPendingQuantity: 1 }),
+    ]);
+
+    expect(screen.getByText('4/4 units accounted for')).toBeInTheDocument();
+    expect(screen.queryByText(/unaccounted for/i)).not.toBeInTheDocument();
   });
 
   it('rejects an installed count above what is left after deficiencies', () => {

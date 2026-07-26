@@ -20,6 +20,45 @@ from app.models.stock_item import StockItem
 from .common import _find_or_create_stock_row, _log_audit_event
 from .items import get_stock_item
 
+# `pull_requests.request_number` is varchar(50), and it is unique among live (non-cancelled) pulls.
+# Every replacement number this module mints has to fit inside that, suffix included.
+_MAX_REQUEST_NUMBER_LENGTH = 50
+_REPLACEMENT_NUMBER_PREFIX = "PR-REPL-"
+# The widest disambiguating suffix we will mint ("-999"). Reserved when searching for the family so
+# one prefix query finds every member, whatever its stem was truncated to.
+_MAX_REPLACEMENT_SUFFIX_LENGTH = 4
+_MAX_REPLACEMENT_ATTEMPTS = 999
+
+
+def _replacement_number(basis: str, n: int) -> str:
+    """The nth replacement-pull number for a source pull number.
+
+    n == 1 is the plain `PR-REPL-{basis}` the module has always minted, kept for continuity so the
+    ordinary one-replacement-pull-per-pull case reads exactly as before. n >= 2 appends `-{n}`,
+    truncating the *basis* portion rather than the suffix so the result always fits varchar(50) and
+    the suffix - the part that makes it unique - is never the thing that gets cut.
+    """
+    full = f"{_REPLACEMENT_NUMBER_PREFIX}{basis}"
+    if n <= 1:
+        return full[:_MAX_REQUEST_NUMBER_LENGTH]
+    suffix = f"-{n}"
+    return full[: _MAX_REQUEST_NUMBER_LENGTH - len(suffix)] + suffix
+
+
+def _is_replacement_number(number: str, basis: str) -> bool:
+    """Is `number` one of the numbers `_replacement_number(basis, n)` can produce?
+
+    Used to narrow a prefix query down to the exact family, so a basis that happens to be a prefix of
+    another basis ("PR-SA-1" vs "PR-SA-12") never has its pulls confused with its neighbour's.
+    """
+    full = f"{_REPLACEMENT_NUMBER_PREFIX}{basis}"
+    if number == full[:_MAX_REQUEST_NUMBER_LENGTH]:
+        return True
+    stem, sep, tail = number.rpartition("-")
+    if not sep or not tail.isdigit() or tail.startswith("0"):
+        return False
+    return stem == full[: _MAX_REQUEST_NUMBER_LENGTH - (len(tail) + 1)]
+
 
 def report_inventory_deficiency(
     session: Session,
@@ -119,7 +158,9 @@ def report_deficiency_at_assembly(
     available (= quantity - deficient) is unchanged, so the returned unit can't be re-pulled.
 
     The replacement pull request is derived from the opening's shop-assembly PullRequest
-    (#222 re-parenting); the retired SAR link is only a fallback for legacy rows.
+    (#222 re-parenting); the retired SAR link is only a fallback for legacy rows. It is reused only
+    while it is still PENDING - see the comment at the mint site - and a repeated flag against the
+    same checklist line and product increments that pull's existing line rather than adding another.
 
     Returns (inventory_location, replacement_pull_request_item).
     """
@@ -220,14 +261,46 @@ def report_deficiency_at_assembly(
     )
 
     # Find or create an open replacement pull request for this opening's shop-assembly PR.
-    replacement_request_number = f"PR-REPL-{replacement_basis}"
-    existing_pr_stmt = select(PullRequestModel).where(
-        PullRequestModel.request_number == replacement_request_number,
-        PullRequestModel.deleted_at.is_(None),
-        PullRequestModel.status.in_([PullRequestStatus.PENDING, PullRequestStatus.IN_PROGRESS]),
+    #
+    # **Only a PENDING replacement pull is reusable.** A pull that has been approved (IN_PROGRESS)
+    # has already had its stock deducted and its sufficiency checked line by line; a line appended
+    # after that point is never deducted and never checked, yet `_apply_replacement_arrivals` counts
+    # it as delivered at completion and `cancel_pull_request` restocks it as if it had been. And once
+    # a replacement pull has COMPLETED, reusing its number is not even possible - the partial unique
+    # index on live pulls would reject the insert. So the second deficiency on the same source pull
+    # gets a pull of its own, numbered `PR-REPL-{basis}-2`, `-3`, and so on.
+    family_prefix = f"{_REPLACEMENT_NUMBER_PREFIX}{replacement_basis}"[
+        : _MAX_REQUEST_NUMBER_LENGTH - _MAX_REPLACEMENT_SUFFIX_LENGTH
+    ]
+    # Soft-deleted rows are included deliberately: `uq_pull_requests_request_number_live` excludes
+    # only CANCELLED, so a soft-deleted pull still owns its number and minting it again would be an
+    # IntegrityError. They are excluded from *reuse* below.
+    family = [
+        p
+        for p in session.scalars(
+            select(PullRequestModel)
+            .where(PullRequestModel.request_number.startswith(family_prefix, autoescape=True))
+            .order_by(PullRequestModel.created_at.asc())
+        ).all()
+        if _is_replacement_number(p.request_number, replacement_basis)
+    ]
+    replacement_pr = next(
+        (p for p in family if p.status == PullRequestStatus.PENDING and p.deleted_at is None),
+        None,
     )
-    existing_pr = session.scalars(existing_pr_stmt).first()
-    if existing_pr is None:
+    if replacement_pr is None:
+        taken = {p.request_number for p in family}
+        replacement_request_number = None
+        for n in range(1, _MAX_REPLACEMENT_ATTEMPTS + 1):
+            candidate = _replacement_number(replacement_basis, n)
+            if candidate not in taken:
+                replacement_request_number = candidate
+                break
+        if replacement_request_number is None:
+            raise ValidationError(
+                f"Too many replacement pull requests already exist for {replacement_basis}",
+                field="shop_assembly_opening_item_id",
+            )
         replacement_pr = PullRequestModel(
             request_number=replacement_request_number,
             project_id=il.project_id,
@@ -237,27 +310,42 @@ def report_deficiency_at_assembly(
         )
         session.add(replacement_pr)
         session.flush()
-    else:
-        replacement_pr = existing_pr
 
     opening_number = sa_opening.opening_number or "REPLACEMENT"
 
-    pri = PullRequestItemModel(
-        pull_request_id=replacement_pr.id,
-        item_type=PullRequestItemType.LOOSE,
-        opening_number=opening_number,
-        # Restore the identity the replacement is owed to (#339). Without these the replacement was
-        # a bare (opening, product) line: the warehouse could not tell a pair's leaf-1 replacement
-        # from its leaf-2 one, and nothing tied the pulled unit back to the checklist item that
-        # failed. leaf comes from the ShopAssemblyOpening (the assembly work unit is one leaf);
-        # sa_opening_item_id is the direct link the replacement-loop closure reads.
-        leaf=sa_opening.leaf,
-        sa_opening_item_id=sa_oi.id,
-        hardware_category=il.hardware_category,
-        product_code=il.product_code,
-        requested_quantity=quantity,
-    )
-    session.add(pri)
+    # Repeated flags against the same checklist line and product belong on **one** line, not on a
+    # growing stack of one-unit rows: the pull sheet reads as a quantity to pick, and every consumer
+    # of these lines (`_apply_replacement_arrivals`, the cancel restock, the sufficiency gate) has to
+    # re-aggregate them anyway. Only reachable on a reused PENDING pull - a freshly minted one has no
+    # lines - which is exactly the window in which merging is still safe.
+    pri = session.scalars(
+        select(PullRequestItemModel).where(
+            PullRequestItemModel.pull_request_id == replacement_pr.id,
+            PullRequestItemModel.sa_opening_item_id == sa_oi.id,
+            PullRequestItemModel.item_type == PullRequestItemType.LOOSE,
+            PullRequestItemModel.hardware_category == il.hardware_category,
+            PullRequestItemModel.product_code == il.product_code,
+        )
+    ).first()
+    if pri is not None:
+        pri.requested_quantity += quantity
+    else:
+        pri = PullRequestItemModel(
+            pull_request_id=replacement_pr.id,
+            item_type=PullRequestItemType.LOOSE,
+            opening_number=opening_number,
+            # Restore the identity the replacement is owed to (#339). Without these the replacement
+            # was a bare (opening, product) line: the warehouse could not tell a pair's leaf-1
+            # replacement from its leaf-2 one, and nothing tied the pulled unit back to the checklist
+            # item that failed. leaf comes from the ShopAssemblyOpening (the assembly work unit is
+            # one leaf); sa_opening_item_id is the direct link the replacement-loop closure reads.
+            leaf=sa_opening.leaf,
+            sa_opening_item_id=sa_oi.id,
+            hardware_category=il.hardware_category,
+            product_code=il.product_code,
+            requested_quantity=quantity,
+        )
+        session.add(pri)
     session.flush()
 
     return (il, pri)

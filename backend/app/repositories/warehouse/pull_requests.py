@@ -305,7 +305,13 @@ def approve_pull_request(session: Session, pr_id: uuid.UUID, approved_by: str) -
             request_number=pr.request_number,
             shortfalls=result.shortfalls,
         )
-        if holder is not None:
+        # The audit below is an *integrity* signal, so it has to fire only for a pull that genuinely
+        # held a claim. Having a source request is not the same as holding reservations: the #342
+        # backfill deliberately left the whole pre-existing in-flight population unreserved and
+        # flagged rather than inventing claims for it, and a cancel that could not re-reserve leaves a
+        # live request in the same state. Those are the *expected* shortfall population - flagging
+        # every one of them as an integrity error is exactly how a real one gets missed.
+        if holder is not None and reservations.get_reserved_total(session, holder[0], holder[1]) > 0:
             # The reserved path is not supposed to be able to come up short. Record it against the
             # pull so the discrepancy is investigable rather than indistinguishable from the normal
             # PR-REPL / legacy shortfall the approver sees.
@@ -428,17 +434,30 @@ def _apply_replacement_arrivals(session: Session, pr: PullRequestModel) -> None:
     if not by_item:
         return
 
-    items = list(session.scalars(select(SAOpeningItemModel).where(SAOpeningItemModel.id.in_(by_item.keys()))).all())
+    # Lock the owning work units before touching their checklist lines. `deficient_quantity` /
+    # `replacement_pending_quantity` are guarded by the ShopAssemblyOpening lock everywhere else -
+    # `record_assembly_progress`, `complete_opening` and `install_replacement` all take it - and
+    # writing them from here without it is a lost update against a concurrent install, or a breach of
+    # the `installed + deficient + replacement_pending <= quantity` constraint. The opening ids come
+    # from an id-only pass so the lock is taken *before* the rows it protects are read.
+    opening_ids = set(
+        session.scalars(
+            select(SAOpeningItemModel.shop_assembly_opening_id).where(SAOpeningItemModel.id.in_(by_item.keys()))
+        ).all()
+    )
+    if not opening_ids:
+        return
+    openings = {o.id: o for o in lock_rows(session, ShopAssemblyOpening, sorted(opening_ids))}
+
+    items = list(
+        session.scalars(
+            select(SAOpeningItemModel)
+            .where(SAOpeningItemModel.id.in_(by_item.keys()))
+            .execution_options(populate_existing=True)
+        ).all()
+    )
     if not items:
         return
-    openings = {
-        o.id: o
-        for o in session.scalars(
-            select(ShopAssemblyOpening).where(
-                ShopAssemblyOpening.id.in_({item.shop_assembly_opening_id for item in items})
-            )
-        ).all()
-    }
 
     for item in items:
         arrived = by_item[item.id]
@@ -545,6 +564,14 @@ def complete_pull_request(session: Session, pr_id: uuid.UUID, completed_by: str 
     "stage whatever is left and close the pull": step 6 flips any remaining opening to PULLED and
     stamps its staging, which is a no-op for openings already staged individually.
     """
+    # Take the pull's row lock before reading its status. Completion has two entry points since
+    # #343 - the explicit "mark pulled" action and the last staging confirmation - so two callers can
+    # arrive at an IN_PROGRESS pull at once, both pass the status check, and both run the completion
+    # side effects: two PULL_REQUEST_COMPLETED notifications, and `_apply_replacement_arrivals`
+    # applied twice. Re-locking inside `stage_pull_openings`' transaction (which already holds this
+    # row) is a no-op.
+    if not lock_rows(session, PullRequestModel, [pr_id]):
+        raise NotFoundError(f"Pull request {pr_id} not found")
     stmt = select(PullRequestModel).options(selectinload(PullRequestModel.items)).where(PullRequestModel.id == pr_id)
     pr = session.scalars(stmt).unique().first()
     if pr is None:
@@ -1006,12 +1033,19 @@ def cancel_pull_request(
     items = list(
         session.scalars(select(PullRequestItemModel).where(PullRequestItemModel.pull_request_id == pr.id)).all()
     )
-    openings = list(
-        session.scalars(
-            select(ShopAssemblyOpening)
-            .where(ShopAssemblyOpening.pull_request_id == pr.id)
-            .order_by(ShopAssemblyOpening.opening_number.asc())
-        ).all()
+    # Lock the openings, do not merely read them. The blocker check below is what makes cancellation
+    # all-or-nothing, and every other mutator of these rows (`stage_pull_openings`, `assign_openings`,
+    # `record_assembly_progress`, `complete_opening`) takes this lock first. Reading them unlocked let
+    # a concurrent `complete_opening` slip between the check and the release: its hardware would end
+    # up both on a finished leaf and back on the shelf, and the opening would be left COMPLETED with
+    # `pull_request_id` NULL. Lock order is pull-then-openings, the same order `stage_pull_openings`
+    # takes them in, so this introduces no new cycle.
+    opening_ids = list(
+        session.scalars(select(ShopAssemblyOpening.id).where(ShopAssemblyOpening.pull_request_id == pr.id)).all()
+    )
+    openings = sorted(
+        lock_rows(session, ShopAssemblyOpening, opening_ids),
+        key=lambda o: (o.opening_number or "", o.leaf if o.leaf is not None else -1),
     )
 
     cancellable_from_completed = pr.source == PullRequestSource.SHOP_ASSEMBLY and bool(openings)

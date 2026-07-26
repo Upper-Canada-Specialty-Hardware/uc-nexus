@@ -59,12 +59,29 @@ class ShopAssemblyOpening(Base):
             "opening_id",
             "pull_status",
         ),
+        # One opening is one cart, and a cart is either built or it is not (#343). `PullStatus`
+        # keeps a PARTIAL label because the *aggregate* reading over a set of openings needs it, and
+        # that reading is derived per pull (`get_pull_staging_summaries`), never stored. The check is
+        # what makes "PARTIAL is never persisted here" structural rather than a comment.
+        CheckConstraint(
+            "pull_status IN ('NOT_PULLED', 'PULLED')",
+            name="ck_shop_assembly_openings_pull_status_binary",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    # Legacy parent, nullable since #222 and now unused for new rows: openings created from
-    # Start a Task hang off a PullRequest (pull_request_id below), not a SAR. The SAR approval
-    # flow that used to set this was retired in #223; the column is kept for existing rows.
+    # The request this opening was imported under. Nullable since #222, when the *operational*
+    # parent became the shop-assembly PullRequest below - `pull_request_id` is what the assembly
+    # floor, staging and cancellation all key on, and the SAR approval flow that used to drive
+    # `pull_status` from here was retired in #223.
+    #
+    # It is **not** dead weight and it is **not** unset on new rows: `finalize_import_session` stamps
+    # it at creation, and the whole pipeline (#344) groups on it - `_opening_stage_counts`,
+    # `_unit_counts`, `_shipped_counts` and `get_assembly_pipeline` all read a request's openings
+    # through this column, because it is the only link that survives a pull being cancelled
+    # (cancellation nulls `pull_request_id`). Null means a legacy #222-era opening that hangs off a
+    # PullRequest alone; those are invisible to the pipeline, which is why it has no request to be a
+    # pipeline of.
     shop_assembly_request_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("shop_assembly_requests.id"), nullable=True
     )

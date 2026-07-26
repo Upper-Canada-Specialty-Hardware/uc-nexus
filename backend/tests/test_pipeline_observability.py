@@ -1027,3 +1027,100 @@ def test_assembly_status_values_are_all_reachable(db_session):
     shop_assembly_repository.complete_opening(db_session, opening.id, "B", "2", "3", completed_by="Ana")
     db_session.flush()
     assert opening.assembly_status == AssemblyStatus.COMPLETED
+
+
+# --- lineage: a re-requested leaf is not the leaf that already shipped (#350 review) -------------
+
+
+def _build_and_complete(db_session, sar, *, assign_to=("user_1", "Ana")):
+    """Walk one single-leaf request all the way to an assembled OpeningItem."""
+    pr = _accept(db_session, sar)
+    warehouse_repository.approve_pull_request(db_session, pr.id, "picker")
+    db_session.flush()
+    opening = _openings(db_session, pr)[0]
+    warehouse_repository.stage_pull_openings(db_session, pr.id, [opening.id], "picker")
+    shop_assembly_repository.assign_openings(db_session, [opening.id], *assign_to)
+    db_session.flush()
+    item = db_session.scalar(
+        select(ShopAssemblyOpeningItem).where(ShopAssemblyOpeningItem.shop_assembly_opening_id == opening.id)
+    )
+    shop_assembly_repository.record_assembly_progress(
+        db_session,
+        opening.id,
+        [shop_assembly_repository.AssemblyProgressUpdate(item.id, installed_quantity=item.quantity)],
+        performed_by=assign_to[1],
+    )
+    db_session.flush()
+    leaf = shop_assembly_repository.complete_opening(db_session, opening.id, "B", "2", "3", completed_by=assign_to[1])
+    db_session.flush()
+    return pr, opening, leaf
+
+
+def test_a_re_requested_leaf_does_not_inherit_the_shipment_of_the_previous_one(db_session):
+    """(opening_id, leaf) carries no request lineage, so a leaf that shipped under request 1 matched
+    request 2's opening for the same leaf as well. Three things read wrong at once: the new
+    request's shipped count, its after-ship count, and the leaf's stage - which jumped straight to
+    SHIPPED before anybody had picked its cart."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=40)
+
+    first = _request(db_session, project, leaves=(1,), qty=2, opening_number="A01")
+    _pr1, first_opening, leaf = _build_and_complete(db_session, first)
+    leaf.state = OpeningItemState.SHIPPED_OUT
+    db_session.flush()
+    assert _summary(db_session, first).shipped_opening_count == 1
+
+    # The same physical leaf is sent back to the shop under a brand new request.
+    second = _request(db_session, project, leaves=(1,), qty=2, opening_number="A01")
+    pr2 = _accept(db_session, second)
+    second_opening = _openings(db_session, pr2)[0]
+    second_opening.opening_id = first_opening.opening_id
+    db_session.flush()
+
+    summary = _summary(db_session, second)
+    assert summary.shipped_opening_count == 0
+    assert summary.replacement_after_ship_opening_count == 0
+
+    detail = shop_assembly_repository.get_assembly_pipeline(db_session, second.id)
+    row = detail.openings[0]
+    assert row.stage != PipelineStage.SHIPPED.value
+    assert row.opening_item_id is None
+    assert row.opening_item_state is None
+
+    # The request that really did ship it still says so.
+    assert _summary(db_session, first).shipped_opening_count == 1
+
+
+def test_the_re_assembled_leaf_reads_as_its_own_unit_in_the_detail(db_session):
+    """The other side of the same filter: scoping to COMPLETED openings must not stop a request from
+    reading its own leaf - only from reading somebody else's.
+
+    Once *both* requests have finished a unit for the same leaf key, the rollup is deliberately
+    conservative (`_shipped_counts` counts an opening as shipped when any of its matched rows
+    shipped, and says so). The per-leaf detail is where that ambiguity is resolved properly, live row
+    winning, exactly as `find_assembled_leaf` resolves it."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=40)
+
+    first = _request(db_session, project, leaves=(1,), qty=2, opening_number="A01")
+    _pr1, first_opening, leaf = _build_and_complete(db_session, first)
+    leaf.state = OpeningItemState.SHIPPED_OUT
+    db_session.flush()
+
+    second = _request(db_session, project, leaves=(1,), qty=2, opening_number="A01")
+    _pr2, second_opening, second_leaf = _build_and_complete(db_session, second)
+    second_opening.opening_id = first_opening.opening_id
+    second_leaf.opening_id = first_opening.opening_id
+    db_session.flush()
+
+    row = shop_assembly_repository.get_assembly_pipeline(db_session, second.id).openings[0]
+    assert row.opening_item_id == second_leaf.id
+    assert row.opening_item_state == OpeningItemState.IN_INVENTORY
+    assert row.stage == PipelineStage.COMPLETED.value
+
+    second_leaf.state = OpeningItemState.SHIPPED_OUT
+    db_session.flush()
+    assert _summary(db_session, second).shipped_opening_count == 1
+    assert shop_assembly_repository.get_assembly_pipeline(db_session, second.id).openings[0].stage == (
+        PipelineStage.SHIPPED.value
+    )

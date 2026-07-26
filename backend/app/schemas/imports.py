@@ -1,6 +1,7 @@
 """Hardware-schedule import queries + mutations (module name avoids the `import` keyword)."""
 
 import uuid
+from dataclasses import replace
 
 import strawberry
 
@@ -240,7 +241,15 @@ class ImportMutations:
                 # a backfill notification for it would send someone to order stock that already
                 # exists. The refusal reaches the creator inline either way.
                 session.rollback()
-                unstocked = [s for s in e.shortfalls if s.short > s.reserved]
+                # ...and for those combos, tell the PO only about the part that is genuinely absent.
+                # `short` is measured against *available* (= on-hand - deficient - reservations), so
+                # forwarding it verbatim asks purchasing to buy the reserved units a second time.
+                # `short - reserved` is what the shelf is actually missing; floored at 0 because a
+                # combo whose whole shortfall is other people's claims is not a purchasing problem at
+                # all, and it has already been filtered out above.
+                unstocked = [
+                    replace(s, short=max(0, s.short - s.reserved)) for s in e.shortfalls if s.short > s.reserved
+                ]
                 if unstocked:
                     with SessionLocal() as notif_session:
                         notification_service.notify_po_shortfall(

@@ -235,17 +235,25 @@ export default function PipelinePage() {
 }
 
 function PipelineDetailModal({ requestId, onClose }: { requestId: string; onClose: () => void }) {
-  const { data, loading } = useQuery<{
+  const { data, loading, error } = useQuery<{
     assemblyPipeline: { summary: PipelineSummary; openings: PipelineOpeningRow[] };
   }>(GET_ASSEMBLY_PIPELINE, { variables: { requestId }, fetchPolicy: 'cache-and-network' });
 
-  const summary = data?.assemblyPipeline.summary;
-  const openings = data?.assemblyPipeline.openings ?? [];
+  const summary = data?.assemblyPipeline?.summary;
+  const openings = data?.assemblyPipeline?.openings ?? [];
   const progress = summary ? stageProgress(summary.stage) : null;
 
   return (
     <Modal open title={summary ? `Pipeline - ${summary.requestNumber}` : 'Pipeline'} onClose={onClose}>
-      {loading && !summary && <LinearProgress />}
+      {loading && !summary && !error && <LinearProgress />}
+      {/* Without this the resolver failing left an empty dialog: no spinner (loading is false), no
+          body (summary is undefined), and nothing saying why. A request deleted under the list, or a
+          pipeline query that timed out, both land here. */}
+      {error && !summary && (
+        <Alert severity='error'>
+          Could not load this request's pipeline. {error.message}
+        </Alert>
+      )}
       {summary && (
         <Box>
           {/* The request-level doubt (#342) comes first, above everything it casts doubt on. */}
