@@ -36,6 +36,8 @@ type ShippingOutRequest {
   createdAt: DateTime!
   approvedAt: DateTime
   rejectedAt: DateTime
+  # See ShopAssemblyRequest.integrity_note (#342).
+  integrityNote: String
   pullRequestId: ID
   items: [ShippingOutRequestItem!]!
 }

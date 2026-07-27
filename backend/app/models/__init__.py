@@ -12,6 +12,7 @@ from .deficiency_review import DeficiencyReview  # noqa: E402, F401
 from .gp_write import GpWriteIdempotency  # noqa: E402, F401
 from .hardware import HardwareItem  # noqa: E402, F401
 from .inventory import InventoryLocation  # noqa: E402, F401
+from .inventory_reservation import InventoryReservation  # noqa: E402, F401
 from .manufacturer_vendor_map import ManufacturerVendorMap  # noqa: E402, F401
 from .notification import Notification  # noqa: E402, F401
 from .opening_item import OpeningItem, OpeningItemHardware  # noqa: E402, F401

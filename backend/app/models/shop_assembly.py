@@ -27,6 +27,15 @@ class ShopAssemblyRequest(Base):
     approved_by: Mapped[str | None] = mapped_column(String, nullable=True)
     rejected_by: Mapped[str | None] = mapped_column(String, nullable=True)
     rejection_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # Something happened to this request after it was created that the acceptor has to know about
+    # before they act on it (#342). Two writers, one field, because the acceptor's question is the
+    # same either way - "can I still trust this request?":
+    #   - a `replace_schedule=True` re-upload landed while the request was in flight, so its bill of
+    #     hardware may no longer match the schedule (and any openings that vanished were dropped);
+    #   - the reservations backfill could not cover it, so it holds no claim on inventory and the
+    #     pull can still come up short.
+    # Null means nothing has happened to it. Surfaced as `integrityNote` on the accept UI.
+    integrity_note: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
     approved_at: Mapped[datetime | None] = mapped_column(nullable=True)
     rejected_at: Mapped[datetime | None] = mapped_column(nullable=True)

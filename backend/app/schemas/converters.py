@@ -527,6 +527,7 @@ def shop_assembly_request_to_type(sar) -> ShopAssemblyRequest:
         created_at=sar.created_at,
         approved_at=sar.approved_at,
         rejected_at=sar.rejected_at,
+        integrity_note=sar.integrity_note,
         openings=[shop_assembly_opening_to_type(o) for o in sar.openings],
     )
 
@@ -558,6 +559,7 @@ def shipping_out_request_to_type(req) -> ShippingOutRequest:
         created_at=req.created_at,
         approved_at=req.approved_at,
         rejected_at=req.rejected_at,
+        integrity_note=req.integrity_note,
         pull_request_id=strawberry.ID(str(req.pull_request_id)) if req.pull_request_id else None,
         items=[shipping_out_request_item_to_type(i) for i in req.items],
     )

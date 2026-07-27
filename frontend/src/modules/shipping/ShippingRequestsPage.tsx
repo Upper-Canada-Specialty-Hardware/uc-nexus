@@ -42,6 +42,8 @@ interface ShippingOutRequest {
   status: string;
   createdBy: string;
   createdAt: string;
+  /** Set when a schedule re-upload landed under this request, or it holds no reservation (#342). */
+  integrityNote: string | null;
   items: ShippingRequestItem[];
 }
 
@@ -77,7 +79,7 @@ export default function ShippingRequestsPage({ projectId }: Props) {
         title="Shipping Requests"
         description={
           view === 'PENDING'
-            ? 'Pending requests from Start a Task. Accepting one creates the warehouse pull request.'
+            ? 'Pending requests from Start a Task. Loose hardware was reserved when the request was created, so accepting is purely your approval: it creates the warehouse pull request. Rejecting releases the reservation.'
             : 'Accepted requests whose warehouse pull has not started yet. Reopen one to undo the accept and send it back to Pending.'
         }
         emptyMessage={view === 'PENDING' ? 'No pending shipping requests.' : 'No shipping requests can be reopened.'}

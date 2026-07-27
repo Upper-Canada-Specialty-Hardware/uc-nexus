@@ -4,7 +4,7 @@ import uuid
 from collections import defaultdict
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import ConflictError, InvalidStateTransitionError, NotFoundError, ValidationError
@@ -16,6 +16,7 @@ from app.models.enums import (
     PullRequestItemType,
     PullRequestSource,
     PullRequestStatus,
+    ReservationSource,
     ReturnDisposition,
     ShippingOutRequestStatus,
 )
@@ -35,6 +36,7 @@ from app.models.shipping import (
 )
 from app.models.shipping_out_request import (
     ShippingOutRequest,
+    ShippingOutRequestItem,
 )
 from app.models.warehouse import Warehouse
 from app.repositories.stock import _find_or_create_stock_row, _log_audit_event
@@ -572,6 +574,67 @@ def get_shipping_out_requests(
     return list(session.scalars(stmt).unique().all())
 
 
+def find_live_shipping_claims(
+    session: Session,
+    project_id: uuid.UUID,
+    *,
+    opening_item_ids: list[uuid.UUID] | None = None,
+    opening_leaf_specs: list[tuple[str, int | None]] | None = None,
+) -> dict:
+    """Assembled leaves a still-live shipping-out request has already claimed (#342).
+
+    Returns `{"by_opening_item": {opening_item_id: request_number},
+              "by_opening_leaf": {(opening_number, leaf): request_number}}` - the first for the
+    "this leaf is already on a shipping request" duplicate guard, the second for the cross-type
+    conflict a shop-assembly creation has to see (the same physical leaf cannot be both on its way
+    out the door and back on the assembly bench).
+
+    Live is defined by the *pull*, not by the request status, because a shipping-out request stays
+    APPROVED forever once accepted: PENDING, or APPROVED while its minted PullRequest is still
+    PENDING/IN_PROGRESS. A request whose pull has completed has shipped its leaves, which is a
+    different state that the OpeningItem's own `state` already refuses. One query, outer-joined to
+    the pull so an APPROVED request whose PR was discarded by a reopen still reads as live (it is
+    back to PENDING and still holding).
+    """
+    result: dict = {"by_opening_item": {}, "by_opening_leaf": {}}
+    if not opening_item_ids and not opening_leaf_specs:
+        return result
+
+    live_request = or_(
+        ShippingOutRequest.status == ShippingOutRequestStatus.PENDING,
+        and_(
+            ShippingOutRequest.status == ShippingOutRequestStatus.APPROVED,
+            or_(
+                PullRequestModel.id.is_(None),
+                PullRequestModel.status.in_([PullRequestStatus.PENDING, PullRequestStatus.IN_PROGRESS]),
+            ),
+        ),
+    )
+    stmt = (
+        select(
+            ShippingOutRequestItem.opening_item_id,
+            ShippingOutRequestItem.opening_number,
+            ShippingOutRequestItem.leaf,
+            ShippingOutRequest.request_number,
+        )
+        .join(ShippingOutRequest, ShippingOutRequestItem.shipping_out_request_id == ShippingOutRequest.id)
+        .outerjoin(PullRequestModel, ShippingOutRequest.pull_request_id == PullRequestModel.id)
+        .where(
+            ShippingOutRequest.project_id == project_id,
+            ShippingOutRequestItem.item_type == PullRequestItemType.OPENING_ITEM,
+            live_request,
+        )
+    )
+    wanted_items = set(opening_item_ids or [])
+    wanted_leaves = set(opening_leaf_specs or [])
+    for opening_item_id, opening_number, leaf, request_number in session.execute(stmt).all():
+        if opening_item_id is not None and opening_item_id in wanted_items:
+            result["by_opening_item"][opening_item_id] = request_number
+        if (opening_number, leaf) in wanted_leaves:
+            result["by_opening_leaf"][(opening_number, leaf)] = request_number
+    return result
+
+
 def accept_shipping_out_request(
     session: Session,
     request_id: uuid.UUID,
@@ -579,8 +642,12 @@ def accept_shipping_out_request(
 ) -> ShippingOutRequest:
     """Accept a PENDING shipping-out request (#293): mint the warehouse PullRequest (SHIPPING_OUT,
     PENDING) copying this request's items into PullRequestItems, flip the request to APPROVED, and
-    stamp pull_request_id. No sufficiency gate here - the warehouse approve handles shortfalls for
-    the shipping path (it re-checks and leaves the PR PENDING if short, #224)."""
+    stamp pull_request_id.
+
+    A pure human approval gate (#342), like its shop-assembly twin: the request's LOOSE lines
+    reserved their hardware when the request was created and still hold that claim, so there is
+    nothing to re-check here and nothing to release. The claim is spent when the warehouse approves
+    the pull."""
     stmt = (
         select(ShippingOutRequest)
         .options(selectinload(ShippingOutRequest.items))
@@ -645,7 +712,14 @@ def reject_shipping_out_request(
     rejected_by: str,
     reason: str | None,
 ) -> ShippingOutRequest:
-    """Reject a PENDING shipping-out request (#293). Mints no PullRequest."""
+    """Reject a PENDING shipping-out request (#293). Mints no PullRequest, and **releases the
+    request's inventory reservations** (#342): its LOOSE lines have been holding a claim on loose
+    stock since creation, and a dead request must not keep it. OPENING_ITEM lines never reserved
+    anything (an assembled leaf left fungible inventory at assembly), so there is nothing of theirs
+    to release. Also the recovery path after a reopen - a reopened request is PENDING and still
+    holding, and this is what finally lets go."""
+    from app.repositories import warehouse as warehouse_repository
+
     stmt = (
         select(ShippingOutRequest)
         .options(selectinload(ShippingOutRequest.items))
@@ -661,6 +735,7 @@ def reject_shipping_out_request(
     req.rejected_by = rejected_by
     req.rejection_reason = (reason or "").strip() or None
     req.rejected_at = datetime.utcnow()
+    warehouse_repository.release_reservations(session, ReservationSource.SHIPPING_OUT_REQUEST, req.id)
     return req
 
 

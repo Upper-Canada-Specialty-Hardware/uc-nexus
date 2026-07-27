@@ -5,6 +5,7 @@ import uuid
 import strawberry
 
 from app.database import SessionLocal
+from app.errors import InventoryShortfallError
 from app.repositories import (
     import_repository,
     po_repository,
@@ -12,6 +13,7 @@ from app.repositories import (
     shipping_repository,
     shop_assembly_repository,
 )
+from app.services import notification_service
 
 from .converters import (
     po_to_type,
@@ -226,10 +228,29 @@ class ImportMutations:
         }
 
         with SessionLocal() as session:
-            # #293: Start a Task no longer mints PullRequests, so there is no inventory-sufficiency
-            # gate here - a request may be created even if inventory is short. Sufficiency is enforced
-            # when a signed-in user ACCEPTS the shop-assembly request (see accept mutation).
-            result = import_repository.finalize_import_session(session, input_data)
+            # #342: creating a shop-assembly or shipping-out request gates on available inventory
+            # (on-hand - deficient - other requests' reservations) and reserves what it takes. A
+            # short selection raises InventoryShortfallError and nothing is written, so the creator
+            # refines the selection here rather than the acceptor discovering it later.
+            try:
+                result = import_repository.finalize_import_session(session, input_data)
+            except InventoryShortfallError as e:
+                # Notify the PO only for combos that are genuinely *not in the building* - a combo
+                # short only because another request has claimed it is not a purchasing problem, and
+                # a backfill notification for it would send someone to order stock that already
+                # exists. The refusal reaches the creator inline either way.
+                session.rollback()
+                unstocked = [s for s in e.shortfalls if s.short > s.reserved]
+                if unstocked:
+                    with SessionLocal() as notif_session:
+                        notification_service.notify_po_shortfall(
+                            notif_session,
+                            project_id=e.project_id,
+                            request_number=e.request_number,
+                            shortfalls=unstocked,
+                        )
+                        notif_session.commit()
+                raise
             session.commit()
 
             # Re-load everything with the relationships the response types walk

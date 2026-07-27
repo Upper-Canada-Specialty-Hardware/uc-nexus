@@ -21,6 +21,7 @@ from app.models.enums import (
     ShopAssemblyRequestStatus,
 )
 from app.models.inventory import InventoryLocation
+from app.models.inventory_reservation import InventoryReservation
 from app.models.opening_item import OpeningItem, OpeningItemHardware
 from app.models.project import Opening, Project
 from app.models.pull_request import PullRequest, PullRequestItem
@@ -72,6 +73,13 @@ def _seed_inventory(session, project_id, *, category="HINGE", code="HG-100", qua
     session.add(il)
     session.flush()
     return il
+
+
+def _reservations(session, project_id):
+    """Every live reservation in a project (#342) - the claim requests hold on loose stock."""
+    return list(
+        session.scalars(select(InventoryReservation).where(InventoryReservation.project_id == project_id)).all()
+    )
 
 
 def _finalize_shop_assembly(session, project, *, code="HG-100", qty=2, opening_number="A01"):
@@ -213,18 +221,16 @@ def test_accept_shop_assembly_mints_pr_and_repoints_openings(db_session):
     assert pr_items[0].requested_quantity == 2
 
 
-def test_accept_shop_assembly_blocks_on_shortfall(db_session):
+def test_creating_a_shop_assembly_request_blocks_on_shortfall(db_session):
+    """#342 moved this gate from accept to creation: a selection that does not fit available
+    inventory is refused before anything exists, so there is no request for anyone to accept."""
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=1)  # need 2
-    result = _finalize_shop_assembly(db_session, project, qty=2)
-    sar_id = result["shop_assembly_request"].id
-    db_session.flush()
 
     with pytest.raises(InventoryShortfallError):
-        shop_assembly_repository.accept_shop_assembly_request(db_session, sar_id, "acceptor")
+        _finalize_shop_assembly(db_session, project, qty=2)
 
     db_session.rollback()
-    # No PR minted.
     assert (
         db_session.scalars(select(PullRequest).where(PullRequest.source == PullRequestSource.SHOP_ASSEMBLY)).all() == []
     )
@@ -232,9 +238,11 @@ def test_accept_shop_assembly_blocks_on_shortfall(db_session):
 
 def test_reject_shop_assembly_request(db_session):
     project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=5)
     result = _finalize_shop_assembly(db_session, project, qty=2)
     sar = result["shop_assembly_request"]
     db_session.flush()
+    assert _reservations(db_session, project.id)  # it was created holding a claim
 
     returned = shop_assembly_repository.reject_shop_assembly_request(db_session, sar.id, "rejector", "not needed")
     db_session.flush()
@@ -245,6 +253,8 @@ def test_reject_shop_assembly_request(db_session):
     assert returned.rejected_at is not None
     # No PR minted on reject.
     assert db_session.scalar(select(PullRequest).where(PullRequest.request_number == sar.request_number)) is None
+    # The dead request lets go of the hardware it was holding (#342).
+    assert _reservations(db_session, project.id) == []
 
 
 # --- shop-assembly reopen (#325) -------------------------------------------------------------
@@ -306,6 +316,7 @@ def test_reopen_shop_assembly_blocked_when_pr_already_worked(db_session):
 
 def test_reopen_shop_assembly_requires_approved(db_session):
     project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=5)
     result = _finalize_shop_assembly(db_session, project, qty=2)
     sar = result["shop_assembly_request"]  # PENDING, never accepted
     db_session.flush()
@@ -346,6 +357,7 @@ def test_reopen_shop_assembly_discards_pr_when_openings_do_not_reference_it(db_s
 
 def test_accept_shipping_out_mints_pr_and_copies_items(db_session):
     project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=5)
     result = _finalize_shipping(db_session, project, qty=2)
     req = result["shipping_out_requests"][0]
     req_number = req.request_number
@@ -375,13 +387,16 @@ def test_accept_shipping_out_mints_pr_and_copies_items(db_session):
 
 def test_reject_shipping_out_request(db_session):
     project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=5)
     result = _finalize_shipping(db_session, project, qty=2)
     req = result["shipping_out_requests"][0]
     req_number = req.request_number
     db_session.flush()
+    assert _reservations(db_session, project.id)  # the LOOSE line reserved at creation
 
     returned = shipping_repository.reject_shipping_out_request(db_session, req.id, "rejector", "  cancelled  ")
     db_session.flush()
+    assert _reservations(db_session, project.id) == []
 
     assert returned.status == ShippingOutRequestStatus.REJECTED
     assert returned.rejected_by == "rejector"
@@ -564,6 +579,7 @@ def test_complete_never_walks_a_shipped_leaf_back_to_ship_ready(db_session):
 
 def test_reopen_shipping_out_reverts_to_pending_and_deletes_pr(db_session):
     project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=5)
     result = _finalize_shipping(db_session, project, qty=2)
     req = result["shipping_out_requests"][0]
     req_number = req.request_number
@@ -614,6 +630,7 @@ def test_reopen_shipping_out_blocked_when_pr_already_worked(db_session):
 
 def test_reopen_shipping_out_requires_approved(db_session):
     project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=5)
     result = _finalize_shipping(db_session, project, qty=2)
     req = result["shipping_out_requests"][0]  # PENDING, never accepted
     db_session.flush()

@@ -13,6 +13,9 @@ type ShopAssemblyRequest {
   created_at: DateTime!
   approved_at: DateTime
   rejected_at: DateTime
+  # Something happened to this request after it was created that the acceptor must know about
+  # (#342): a schedule re-upload landed under it, or the reservations backfill could not cover it.
+  integrity_note: String
   openings: [ShopAssemblyOpening!]!
 }
 

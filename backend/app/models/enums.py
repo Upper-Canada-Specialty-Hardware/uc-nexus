@@ -57,6 +57,15 @@ class ShippingOutRequestStatus(str, enum.Enum):
     REJECTED = "REJECTED"
 
 
+class ReservationSource(str, enum.Enum):
+    """Which kind of request an InventoryReservation is held for (#342). The discriminator is
+    explicit rather than inferred from whichever FK is populated, so a query can filter on it
+    without an OR over nullable columns."""
+
+    SHOP_ASSEMBLY_REQUEST = "SHOP_ASSEMBLY_REQUEST"
+    SHIPPING_OUT_REQUEST = "SHIPPING_OUT_REQUEST"
+
+
 class PullStatus(str, enum.Enum):
     NOT_PULLED = "NOT_PULLED"
     PARTIAL = "PARTIAL"
