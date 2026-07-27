@@ -27,6 +27,19 @@ DEFAULT_TIMEOUT_SECONDS = 30.0
 # (relay channel.py). Detection is up to HEARTBEAT_INTERVAL_SECONDS * HEARTBEAT_MAX_MISSED (~40s here).
 HEARTBEAT_INTERVAL_SECONDS = 20.0
 HEARTBEAT_MAX_MISSED = 2
+# Limit for a connection that has NEVER answered a ping (#353 PR F). The original conservatism -
+# never reaping an unarmed connection - existed to protect relay builds that predated the data
+# heartbeat (issue #277). Every shipped build answers it now, and the asymmetry of being wrong is
+# stark: reaping a hypothetical old relay costs one automatic reconnect, while NOT reaping a relay
+# that connected and then went silent wedges the single connection slot for the ~hour the platform
+# takes to reap the dead TCP socket - during which no other relay can take the slot and every GP
+# write fails. A longer limit than the armed one still gives a slow starter room.
+HEARTBEAT_MAX_MISSED_UNARMED = 4
+
+# RFC 6455 close code 1012, "Service Restart". Sent on a graceful backend shutdown so the relay can
+# tell a deploy from a network blip and reconnect immediately instead of backing off (#353 PR F).
+SERVICE_RESTART_CLOSE_CODE = 1012
+_SHUTDOWN_TIMEOUT_SECONDS = 2.0
 
 
 class RelayGateway:
@@ -112,12 +125,42 @@ class RelayGateway:
             self._heartbeat_armed = True
 
     def register_ping_miss(self) -> bool:
-        """Called by the route's heartbeat once per interval, just before it sends the next ping. Counts
-        the pings the relay hasn't answered yet and returns True when it has gone quiet long enough to
-        reap (HEARTBEAT_MAX_MISSED unanswered pings) - but only once armed, so a relay that never answers
-        a ping is left to the disconnect-on-read path rather than being killed on a false positive."""
+        """Called by the route's heartbeat once per interval, just before it sends the next ping.
+        Counts the pings the relay hasn't answered yet and returns True once it has gone quiet long
+        enough to reap.
+
+        Two limits (#353 PR F). An ARMED connection - one that has answered at least one ping - is
+        reaped after HEARTBEAT_MAX_MISSED (~40s), as before. An UNARMED one, which previously could
+        never be reaped at all, is reaped after the longer HEARTBEAT_MAX_MISSED_UNARMED (~80s): a
+        relay that connects, takes the single slot and never pongs used to hold that slot until the
+        platform reaped the dead TCP connection about an hour later, blocking every other relay
+        (try_register -> close 4409) and failing every GP write for the duration."""
         self._unanswered_pings += 1
-        return self._heartbeat_armed and self._unanswered_pings >= HEARTBEAT_MAX_MISSED
+        limit = HEARTBEAT_MAX_MISSED if self._heartbeat_armed else HEARTBEAT_MAX_MISSED_UNARMED
+        return self._unanswered_pings >= limit
+
+    async def close_for_shutdown(self) -> None:
+        """Say goodbye to the relay before the process goes (#353 PR F).
+
+        A container restart otherwise just drops the TCP connection, and the relay treats that like
+        any other drop: it grows its exponential backoff and can sit out the first 30s of the new
+        deployment for no reason. A `going_away` frame plus close code 1012 (Service Restart) tells
+        it this is a restart, so a relay carrying the matching client change reconnects immediately.
+
+        Best-effort throughout, with a short timeout: a half-dead socket must not hold up shutdown,
+        and the relay reconnects either way."""
+        socket = self._socket
+        if socket is None:
+            return
+        try:
+            await asyncio.wait_for(socket.send_json({"type": "going_away"}), timeout=_SHUTDOWN_TIMEOUT_SECONDS)
+        except Exception:
+            pass
+        try:
+            await asyncio.wait_for(socket.close(code=SERVICE_RESTART_CLOSE_CODE), timeout=_SHUTDOWN_TIMEOUT_SECONDS)
+        except Exception:
+            pass
+        self.unregister(socket)
 
     def _fail_all(self, message: str) -> None:
         # dispatched=True: every job in `_pending` was already sent to the relay, so GP may have run

@@ -77,3 +77,18 @@ def test_channel_state_snapshot_reports_gp_jobs_in_flight():
     assert finished["jobs_in_flight"] == 0
     assert 0 <= finished["last_job_finished_ago"] < 5
     channel._LAST_JOB_AT = None
+
+
+def test_close_code_1012_is_classified_as_a_server_restart():
+    # #353 PR F: the backend's graceful shutdown closes with 1012 (Service Restart). That is a deploy,
+    # not a fault - the relay must recognise it so it can dial again immediately.
+    exc = ConnectionClosedError(Close(1012, "going away"), None)
+    category, message = channel._classify_connect_failure(exc)
+    assert category == "server_restarting"
+    assert "restarting" in message.lower()
+
+
+def test_a_generic_close_is_still_a_plain_drop():
+    # The 1012 case must not swallow ordinary drops, which still deserve a growing backoff.
+    exc = ConnectionClosedError(Close(1006, ""), None)
+    assert channel._classify_connect_failure(exc)[0] == "dropped"
