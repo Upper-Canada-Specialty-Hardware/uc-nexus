@@ -27,3 +27,9 @@ class RelayInstall(Base):
     enrolled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Durable audit of an admin-armed adopt window being used against this install (#353 PR B).
+    # Adoption rebinds the credential from an unauthenticated connection, so "was this install ever
+    # adopted, by whom, when" has to survive on the row - the window itself is in-memory and gone on
+    # the next deploy. Rendered in the admin grid.
+    adopted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    adopted_by: Mapped[str | None] = mapped_column(String, nullable=True)  # Clerk user id of the arming admin

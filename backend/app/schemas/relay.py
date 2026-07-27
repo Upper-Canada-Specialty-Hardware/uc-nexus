@@ -1,10 +1,15 @@
 """Relay installs + live GP reads via the connected relay."""
 
+import uuid
+
 import strawberry
 
 from app.auth import require_admin, require_user
 from app.database import SessionLocal
+from app.errors import NotFoundError
+from app.models.relay_install import RelayInstall
 from app.repositories import relay_repository
+from app.services import relay_adopt
 from app.services.relay_gateway import gateway as relay_gateway
 
 from .converters import (
@@ -21,6 +26,7 @@ from .types import (
     GpPoTotals,
     GpTaxDetail,
     GpVendor,
+    RelayAdoptWindow,
     RelayEnrollResult,
     RelayInstallInfo,
     RelayInstallProvision,
@@ -37,6 +43,22 @@ class RelayQueries:
         require_admin(info)
         with SessionLocal() as session:
             return [relay_install_to_type(ri) for ri in relay_repository.list_installs(session)]
+
+    @strawberry.field
+    def relay_adopt_window(self, info: strawberry.Info) -> RelayAdoptWindow | None:
+        """The currently armed adopt window, or null. Admin-only, and polled by the Relay Installs page
+        so the warning banner and its countdown reflect the real (single-replica, in-memory) state
+        rather than what the browser that armed it happens to remember."""
+        require_admin(info)
+        window = relay_adopt.peek()
+        if window is None:
+            return None
+        return RelayAdoptWindow(
+            install_id=strawberry.ID(str(window.install_id)),
+            label=window.label,
+            expires_at=window.expires_at,
+            armed_by=window.armed_by,
+        )
 
     @strawberry.field
     def relay_status(self, info: strawberry.Info) -> RelayStatus:
@@ -164,6 +186,35 @@ class RelayMutations:
                 enrollment_token=token,
                 enrollment_token_expires_at=install.enrollment_token_expires_at,
             )
+
+    @strawberry.mutation
+    def arm_relay_adopt(self, info: strawberry.Info, install_id: strawberry.ID) -> RelayAdoptWindow:
+        """Admin: open a 5-minute, single-use window in which the next relay connection is accepted
+        with WHATEVER secret it presents and bound to this install (#353 PR B).
+
+        This deliberately weakens the /relay-link auth boundary while it is open. It exists because a
+        relay whose in-memory secret has drifted from the stored one cannot be recovered any other way
+        without physical access to the workstation - and the relay binds localhost, so there is no
+        remote restart. Arm it only when a relay you own is dialling in, and disarm as soon as it
+        reconnects."""
+        identity = require_admin(info)
+        with SessionLocal() as session:
+            install = session.get(RelayInstall, uuid.UUID(str(install_id)))
+            if install is None:
+                raise NotFoundError("Relay install not found", field="install_id")
+            window = relay_adopt.arm(install_id=install.id, label=install.label, armed_by=identity["user_id"])
+        return RelayAdoptWindow(
+            install_id=strawberry.ID(str(window.install_id)),
+            label=window.label,
+            expires_at=window.expires_at,
+            armed_by=window.armed_by,
+        )
+
+    @strawberry.mutation
+    def disarm_relay_adopt(self, info: strawberry.Info) -> bool:
+        """Admin: close an open adopt window early. Returns whether one was open."""
+        require_admin(info)
+        return relay_adopt.disarm()
 
     @strawberry.mutation
     def enroll_relay_install(self, input: EnrollRelayInstallInput) -> RelayEnrollResult:

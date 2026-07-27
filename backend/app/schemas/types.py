@@ -130,6 +130,22 @@ class RelayInstallInfo:
     enrolled_at: datetime | None
     last_seen_at: datetime | None
     created_at: datetime
+    # Stamped when an admin-armed adopt window rebound this install's credential (#353 PR B). Kept on
+    # the row (and shown in the grid) because adoption accepts a connection that could not otherwise
+    # authenticate - that has to stay visible long after the in-memory window is gone.
+    adopted_at: datetime | None = None
+    adopted_by: str | None = None
+
+
+@strawberry.type
+class RelayAdoptWindow:
+    """An open "adopt the next relay connection" window. While one is armed, the first /relay-link
+    handshake presenting ANY secret is bound to this install."""
+
+    install_id: strawberry.ID
+    label: str
+    expires_at: datetime
+    armed_by: str
 
 
 @strawberry.type

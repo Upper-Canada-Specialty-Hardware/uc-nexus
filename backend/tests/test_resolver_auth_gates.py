@@ -19,6 +19,7 @@ import uuid
 
 import pytest
 
+from app.schemas import relay as relay_module
 from app.schemas import shop_assembly as shop_assembly_module
 from app.schemas import stock as stock_module
 from app.schemas.enums import DeficiencyResolution
@@ -32,6 +33,7 @@ from app.schemas.inputs import (
     ReportStockDeficiencyInput,
     ResolveDeficiencyInput,
 )
+from app.schemas.relay import RelayMutations, RelayQueries
 from app.schemas.shop_assembly import ShopAssemblyMutations, ShopAssemblyQueries
 from app.schemas.stock import StockMutations
 
@@ -153,12 +155,32 @@ _USER_GATED = [
 ]
 
 
+# Admin-only resolvers. The adopt window (#353 PR B) deliberately weakens the /relay-link auth
+# boundary while it is open, so "is this actually admin-gated" is a security property, not a nicety.
+_ADMIN_GATED = [
+    ("relayAdoptWindow", relay_module, lambda: RelayQueries().relay_adopt_window(FakeInfo())),
+    ("armRelayAdopt", relay_module, lambda: RelayMutations().arm_relay_adopt(FakeInfo(), _id())),
+    ("disarmRelayAdopt", relay_module, lambda: RelayMutations().disarm_relay_adopt(FakeInfo())),
+]
+
+
 @pytest.mark.parametrize("label, module, call", _USER_GATED, ids=[row[0] for row in _USER_GATED])
 def test_resolver_requires_a_signed_in_user(label, module, call, monkeypatch):
     def _gate(info):
         raise _GateReached(label)
 
     monkeypatch.setattr(module, "require_user", _gate)
+
+    with pytest.raises(_GateReached):
+        call()
+
+
+@pytest.mark.parametrize("label, module, call", _ADMIN_GATED, ids=[row[0] for row in _ADMIN_GATED])
+def test_resolver_requires_an_admin(label, module, call, monkeypatch):
+    def _gate(info):
+        raise _GateReached(label)
+
+    monkeypatch.setattr(module, "require_admin", _gate)
 
     with pytest.raises(_GateReached):
         call()
