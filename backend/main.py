@@ -255,6 +255,8 @@ async def relay_link(websocket: WebSocket):
         # websocket.accept(), the exception tore down every already-accepted relay socket, so no relay
         # could ever register (relayStatus stayed false).
         company = install.company if install is not None else None
+        # Same rule for the id (#366): read it here, beside company, while the row is still attached.
+        install_id = install.id if install is not None else None
         session.commit()
     if company is None:
         await websocket.close(code=4401)
@@ -264,7 +266,7 @@ async def relay_link(websocket: WebSocket):
     # POC scope: one relay at a time, incumbent wins (issue #202 #6). If a relay is already connected,
     # reject this one rather than superseding - superseding could drop an in-flight reply for a GP write
     # that committed, and two enrolled relays would otherwise thrash by force-closing each other.
-    if not relay_gateway.try_register(company, websocket):
+    if not relay_gateway.try_register(company, websocket, install_id):
         await websocket.close(code=4409)
         return
     # A relay just came back: drain anything that queued while it was gone, now, rather than up to a

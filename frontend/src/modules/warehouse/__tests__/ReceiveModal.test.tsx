@@ -26,7 +26,17 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 function relayMock(): MockedResponse {
   return {
     request: { query: GET_RELAY_STATUS },
-    result: { data: { relayStatus: { __typename: 'RelayStatus', connected: true, company: 'UCSH' } } },
+    result: {
+      data: {
+        relayStatus: {
+          __typename: 'RelayStatus',
+          connected: true,
+          company: 'UCSH',
+          build: null,
+          installId: null,
+        },
+      },
+    },
     maxUsageCount: Number.POSITIVE_INFINITY,
   };
 }
