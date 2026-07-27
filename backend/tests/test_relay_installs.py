@@ -15,6 +15,7 @@ from app.repositories import relay_repository  # noqa: E402
 def test_provision_returns_token_and_stores_hash_only(db_session):
     install, token = relay_repository.provision_install(db_session, label="Tagging3W10", company="TUBC")
     assert token
+    assert install.secret_hash is None  # no relay credential exists until the relay enrolls
     assert install.secret_encrypted is None
     assert install.enrollment_token_hash and install.enrollment_token_hash != token  # hashed, not raw
 
