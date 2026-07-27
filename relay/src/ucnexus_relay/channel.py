@@ -74,7 +74,8 @@ def _classify_connect_failure(exc: Exception) -> tuple[str, str]:
         return (
             "secret_rejected",
             "backend rejected the relay secret - this relay likely needs re-enrollment: provision a new "
-            "token in UC Nexus admin, then re-run `ucnexus-relay enroll` and restart the relay. still retrying.",
+            "token in UC Nexus admin, then re-run `ucnexus-relay enroll`. the new secret is picked up "
+            "automatically on the next reconnect - no restart required. still retrying.",
         )
     rcvd = getattr(exc, "rcvd", None)  # websockets ConnectionClosed: the close frame we received
     close_code = getattr(rcvd, "code", None) if rcvd is not None else getattr(exc, "code", None)
@@ -304,15 +305,22 @@ async def run_forever(stop_event: asyncio.Event | None = None) -> None:
     """Dial the backend channel, reconnecting with exponential backoff on drop. Intended to run as a
     background asyncio task alongside the relay's existing HTTP server (see cli.py). A blank
     [channel].backend_url disables it entirely - the relay just runs the HTTP server, as before."""
-    cfg = get_settings().channel
-    if not cfg.backend_url:
-        logger.info("channel disabled (no [channel] backend_url configured)")
-        return
-
-    secret = get_settings().auth.shared_secret
-    backoff = cfg.reconnect_min_seconds
+    backoff = get_settings().channel.reconnect_min_seconds
     prev_category: str | None = None
     while stop_event is None or not stop_event.is_set():
+        # Re-read config on EVERY attempt, dropping the lru_cache first. Reading the secret once before
+        # the loop meant a re-enrolment could never take effect in a running process: `enroll` rewrites
+        # [auth] shared_secret in config.toml, but this task kept dialling with the stale value forever,
+        # so the backend 403'd every handshake until someone restarted the service by hand - on a
+        # workstation that may be nowhere near whoever is debugging. Now a re-enrolment self-heals on
+        # the next retry. Cost is one small TOML parse per reconnect attempt.
+        get_settings.cache_clear()
+        settings = get_settings()
+        secret = settings.auth.shared_secret
+        cfg = settings.channel
+        if not cfg.backend_url:
+            logger.info("channel disabled (no [channel] backend_url configured)")
+            return
         try:
             await _run_once(cfg.backend_url, secret, cfg)
             backoff = cfg.reconnect_min_seconds  # clean run - reset backoff before the next attempt
@@ -322,10 +330,11 @@ async def run_forever(stop_event: asyncio.Event | None = None) -> None:
             raise
         except Exception as e:
             category, message = _classify_connect_failure(e)
-            # A rejected/orphaned secret can't self-heal until re-enrollment (which restarts serve), so a
-            # de-enrolled relay would otherwise log the same WARNING every ~30s forever. Log it loudly once
-            # on the transition into that state, then at DEBUG. Transient drops and slot-busy stay at
-            # WARNING - each is a real, distinct reconnect event.
+            # A rejected/orphaned secret can't self-heal until someone re-enrols, so a de-enrolled relay
+            # would otherwise log the same WARNING every ~30s forever. Log it loudly once on the
+            # transition into that state, then at DEBUG. Transient drops and slot-busy stay at WARNING -
+            # each is a real, distinct reconnect event. (The re-enrolment itself is now picked up
+            # automatically at the top of this loop; no restart needed.)
             quiet_repeat = category == "secret_rejected" and prev_category == "secret_rejected"
             logger.log(
                 logging.DEBUG if quiet_repeat else logging.WARNING,

@@ -4,13 +4,14 @@ from collections.abc import Callable
 from typing import Any
 
 import strawberry
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from graphql import GraphQLError, GraphQLResolveInfo
 from strawberry.extensions import SchemaExtension
 from strawberry.fastapi import GraphQLRouter
 
-from app.auth import get_context
+from app.auth import get_context, require_admin_request
 from app.database import SessionLocal
 from app.errors import AppError
 from app.repositories import relay_repository
@@ -193,15 +194,52 @@ async def relay_link(websocket: WebSocket):
 
 
 @app.post("/admin/reset-data")
-def reset_data():
-    """Drop and rebuild the entire public schema via alembic. Dev use only."""
+def reset_data(request: Request):
+    """Drop and rebuild the entire public schema via alembic. Dev use only.
+
+    Gated twice on purpose. This endpoint is total data loss on one unauthenticated POST, and it was
+    previously reachable by anyone who knew the URL on a public Railway domain - no auth, no
+    environment check. TESTING_ENABLED keeps it off any deployment that isn't a test target, and
+    require_admin_request means it is not enough to merely reach the box.
+
+    It also PRESERVES relay_installs across the rebuild. Dropping those rows silently orphans the
+    on-prem relay: its enrolled secret no longer matches any row, so /relay-link refuses every
+    handshake and all GP writes fail until someone re-enrols on the workstation. A dev-convenience
+    reset must not take GP down as a side effect."""
     from alembic.config import Config
+    from sqlalchemy import inspect as sa_inspect
     from sqlalchemy import text
 
     from alembic import command
+    from app.config import TESTING_ENABLED
     from app.database import engine
 
-    # Drop and recreate schema
+    if not TESTING_ENABLED:
+        return JSONResponse(status_code=403, content={"error": "Data reset is not enabled on this deployment"})
+
+    try:
+        require_admin_request(request)
+    except AppError as e:
+        status = 403 if e.code == "FORBIDDEN" else 401
+        return JSONResponse(status_code=status, content={"error": str(e), "code": e.code})
+
+    # Snapshot the relay enrolments before the schema goes. Read as plain mappings: the ORM model is
+    # about to have its table dropped and recreated, so nothing here may hold a live identity-mapped
+    # instance. The table is absent on a fresh or half-migrated database, which must not block a reset -
+    # that is exactly the state a reset exists to clear.
+    relay_rows: list[dict] = []
+    with engine.connect() as conn:
+        if sa_inspect(conn).has_table("relay_installs"):
+            relay_rows = [
+                dict(r)
+                for r in conn.execute(
+                    text(
+                        "SELECT id, label, company, hostname, secret_encrypted, enrollment_token_hash, "
+                        "enrollment_token_expires_at, enrolled_at, last_seen_at, created_at FROM relay_installs"
+                    )
+                ).mappings()
+            ]
+
     with engine.connect() as conn:
         conn.execute(text("DROP SCHEMA public CASCADE"))
         conn.execute(text("CREATE SCHEMA public"))
@@ -211,14 +249,31 @@ def reset_data():
     alembic_cfg = Config("alembic.ini")
     command.upgrade(alembic_cfg, "head")
 
-    return {"status": "ok", "message": "Schema dropped and rebuilt"}
+    with engine.connect() as conn:
+        for row in relay_rows:
+            conn.execute(
+                text(
+                    "INSERT INTO relay_installs (id, label, company, hostname, secret_encrypted, "
+                    "enrollment_token_hash, enrollment_token_expires_at, enrolled_at, last_seen_at, "
+                    "created_at) VALUES (:id, :label, :company, :hostname, :secret_encrypted, "
+                    ":enrollment_token_hash, :enrollment_token_expires_at, :enrolled_at, :last_seen_at, "
+                    ":created_at)"
+                ),
+                row,
+            )
+        conn.commit()
+
+    return {
+        "status": "ok",
+        "message": "Schema dropped and rebuilt",
+        "relay_installs_preserved": len(relay_rows),
+    }
 
 
 @app.get("/testing/clerk-sign-in")
 def get_clerk_sign_in_token(email: str = "jayp@ucsh.com"):
     """Create a Clerk sign-in token for E2E testing. Only available when TESTING_ENABLED=true."""
     import httpx
-    from fastapi.responses import JSONResponse
 
     from app.config import CLERK_SECRET_KEY, TESTING_ENABLED
 
