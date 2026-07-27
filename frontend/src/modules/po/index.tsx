@@ -3,6 +3,7 @@ import {
   Box,
   Typography,
   Card,
+  CardActionArea,
   CardContent,
   Grid,
   Chip,
@@ -43,6 +44,7 @@ import RelayStatusChip from '../../relay/RelayStatusChip';
 import { useRelayStatus } from '../../relay/useRelayStatus';
 import { poVendorName } from './poVendorName';
 import { PO_STATUS_VALUES, formatPoStatus, poStatusChipColor } from './poStatus';
+import { isStatusCardActive, toggleStatusCard } from './statusCardFilter';
 import { Routes, Route, useNavigate } from 'react-router-dom';
 import SettingsIcon from '@mui/icons-material/Settings';
 import { useIdentity } from '../../hooks/useIdentity';
@@ -161,16 +163,19 @@ interface POStatistics {
 }
 
 
-// --- Stat card config (display-only) ---
+// --- Stat card config ---
 
-const STAT_CARDS: { label: string; key: keyof POStatistics }[] = [
-  { label: 'Total', key: 'total' },
-  { label: 'Draft', key: 'draft' },
-  { label: 'GP-Registered', key: 'gpRegistered' },
-  { label: 'Vendor Confirmed', key: 'vendorConfirmed' },
-  { label: 'Partially Received', key: 'partiallyReceived' },
-  { label: 'Closed', key: 'closed' },
-  { label: 'Cancelled', key: 'cancelled' },
+// `status` is the po_status the card filters the table down to when clicked (#316); null on Total,
+// which clears the status filter instead. Clicking the already-active card clears it too, so the card
+// row doubles as the status filter and never traps you in a filtered view with no way back.
+const STAT_CARDS: { label: string; key: keyof POStatistics; status: string | null }[] = [
+  { label: 'Total', key: 'total', status: null },
+  { label: 'Draft', key: 'draft', status: 'DRAFT' },
+  { label: 'GP-Registered', key: 'gpRegistered', status: 'GP_REGISTERED' },
+  { label: 'Vendor Confirmed', key: 'vendorConfirmed', status: 'VENDOR_CONFIRMED' },
+  { label: 'Partially Received', key: 'partiallyReceived', status: 'PARTIALLY_RECEIVED' },
+  { label: 'Closed', key: 'closed', status: 'CLOSED' },
+  { label: 'Cancelled', key: 'cancelled', status: 'CANCELLED' },
 ];
 
 // --- Sort + filter state ---
@@ -544,8 +549,6 @@ interface POTableRowProps {
   expanded: boolean;
   onToggle: () => void;
   onOpen: () => void;
-  onRegister: () => void;
-  relayConnected: boolean;
   // #353 PR E: this PO has a GP write sitting on the outbox. Passed down rather than resolved per
   // row: a field on PurchaseOrder would make the All-Projects list an N+1.
   gpWriteQueued: boolean;
@@ -558,8 +561,6 @@ function POTableRow({
   expanded,
   onToggle,
   onOpen,
-  onRegister,
-  relayConnected,
   gpWriteQueued,
 }: POTableRowProps) {
   const dataCellSx = { cursor: 'pointer' };
@@ -617,27 +618,10 @@ function POTableRow({
                 <Chip label="GP registration queued" color="warning" size="small" variant="outlined" />
               </Tooltip>
             )}
-            {po.status === 'DRAFT' && !gpWriteQueued && (
-              <Tooltip
-                title={relayConnected ? '' : 'GP relay not detected on this machine - it must be running to register a PO'}
-                arrow
-              >
-                <span>
-                  <Button
-                    size="small"
-                    variant="outlined"
-                    disabled={!relayConnected}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onRegister();
-                    }}
-                    sx={{ py: 0, minHeight: 24, fontSize: '0.7rem' }}
-                  >
-                    Register in GP
-                  </Button>
-                </span>
-              </Tooltip>
-            )}
+            {/* #316: no Register in GP action here. A button sitting beside the status chip read as a
+                second status ("why do Draft POs also have a Register in GP status?"). Registering is a
+                deliberate act with a whole dialog behind it, so it lives on the PO itself - open the PO
+                and register from there. */}
           </Box>
         </TableCell>
         <TableCell sx={dataCellSx} onClick={onOpen}>
@@ -680,7 +664,6 @@ function POListPage() {
   const [selectedPOId, setSelectedPOId] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
-  const [registerPO, setRegisterPO] = useState<PurchaseOrder | null>(null);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [filterState, setFilterState] = useState<FilterState>(EMPTY_FILTER_STATE);
   const [sortState, setSortState] = useState<SortState>({ field: null, direction: 'asc' });
@@ -826,22 +809,33 @@ function POListPage() {
         </Button>
       </Box>
 
-      {/* Statistics Cards (display-only) */}
+      {/* Statistics cards. Clicking one filters the table to that status (#316) - the count and the
+          list it describes are the same thing, so reading one and then hunting the filter row for the
+          other was busywork. */}
       <Grid container spacing={2} sx={{ mb: 3 }}>
-        {STAT_CARDS.map((card) => (
-          <Grid key={card.key} size={{ xs: 6, sm: 4, md: 2 }}>
-            <Card>
-              <CardContent sx={{ textAlign: 'center', py: 2 }}>
-                <Typography variant="h4" color="primary">
-                  {statsLoading ? '-' : (stats?.[card.key] ?? 0)}
-                </Typography>
-                <Typography variant="body2" color="text.secondary">
-                  {card.label}
-                </Typography>
-              </CardContent>
-            </Card>
-          </Grid>
-        ))}
+        {STAT_CARDS.map((card) => {
+          const active = isStatusCardActive(filterState, card.status);
+          return (
+            <Grid key={card.key} size={{ xs: 6, sm: 4, md: 2 }}>
+              <Card variant={active ? 'elevation' : 'outlined'} sx={{ borderColor: active ? 'primary.main' : undefined }}>
+                <CardActionArea
+                  onClick={() => setFilterState((f) => toggleStatusCard(f, card.status))}
+                  aria-pressed={active}
+                  aria-label={`Filter by ${card.label}`}
+                >
+                  <CardContent sx={{ textAlign: 'center', py: 2 }}>
+                    <Typography variant="h4" color="primary">
+                      {statsLoading ? '-' : (stats?.[card.key] ?? 0)}
+                    </Typography>
+                    <Typography variant="body2" color={active ? 'primary' : 'text.secondary'}>
+                      {card.label}
+                    </Typography>
+                  </CardContent>
+                </CardActionArea>
+              </Card>
+            </Grid>
+          );
+        })}
       </Grid>
 
       {/* Expand / Collapse controls */}
@@ -949,8 +943,6 @@ function POListPage() {
                   expanded={expandedIds.has(po.id)}
                   onToggle={() => toggleExpand(po.id)}
                   onOpen={() => handleOpenPO(po.id)}
-                  onRegister={() => setRegisterPO(po)}
-                  relayConnected={relayConnected === true}
                   gpWriteQueued={queuedPoIds.has(po.id)}
                 />
               ))}
@@ -979,18 +971,8 @@ function POListPage() {
         }}
         relayConnected={relayConnected}
       />
-
-      {/* Register PO Dialog (registers an imported Draft into GP) */}
-      <GpPurchaseOrderDialog
-        open={!!registerPO}
-        registerPo={registerPO}
-        onClose={() => setRegisterPO(null)}
-        onSubmitted={() => {
-          setRegisterPO(null);
-          handleRefetch();
-        }}
-        relayConnected={relayConnected}
-      />
+      {/* The register-a-Draft dialog is not mounted here any more (#316). It lives on PODetailModal,
+          which is now the only way to reach it. */}
     </Box>
   );
 }

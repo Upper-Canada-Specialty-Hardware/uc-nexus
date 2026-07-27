@@ -521,3 +521,88 @@ def test_prepare_register_po_disagreeing_items_take_first_non_null_and_log(monke
 
     assert payload["lines"][0]["manufacturer"] == "SCHLAGE"
     assert any("manufacturer disagreement" in r.message for r in caplog.records)
+
+
+# --- adopting a project at register time (#316) --------------------------------------------------------
+# Project used to be locked for every registration, which left a manually created stock PO
+# (create_draft_po takes an optional project_id) with no way to ever gain one - the register dialog was
+# the only place the field appeared. It may now be set, but only onto a draft that has none.
+
+
+def _stock_draft_po(session) -> PurchaseOrder:
+    """A manually created PO with no project - the case the lock stranded. This is the same call the
+    create_draft_po resolver makes (#256), which is where a stock PO comes from."""
+    return po_repository.create_po(
+        session,
+        line_items=[
+            {
+                "hardware_category": "HINGE",
+                "product_code": "HG-100",
+                "ordered_quantity": 2,
+                "unit_cost": 10.0,
+                "classification": None,
+                "order_as": "ALIAS-100",
+            }
+        ],
+        project_id=None,
+    )
+
+
+def _register(session, po, **overrides):
+    kwargs = {
+        "gp_vendor_id": "GPV1",
+        "vendor_name_snapshot": "GP Vendor",
+        "po_number": f"PO{uuid.uuid4().hex[:8].upper()}",
+        "gp_company": "TUBC",
+        "line_items": [
+            {
+                "id": str(li.id),
+                "hardware_category": li.hardware_category,
+                "product_code": li.product_code,
+                "ordered_quantity": li.ordered_quantity,
+                "unit_cost": float(li.unit_cost),
+                "classification": None,
+                "order_as": li.order_as or "ALIAS",
+            }
+            for li in po.line_items
+        ],
+    }
+    kwargs.update(overrides)
+    return po_repository.register_po_in_gp(session, po.id, **kwargs)
+
+
+def test_register_adopts_a_project_onto_a_draft_that_has_none(db_session):
+    project = _make_project(db_session)
+    po = _stock_draft_po(db_session)
+    assert po.project_id is None
+
+    _register(db_session, po, project_id=project.id)
+
+    assert po_repository.reload_po(db_session, po.id).project_id == project.id
+
+
+def test_register_ignores_a_project_override_on_a_po_that_already_has_one(db_session):
+    # The lines were imported against the original project's hardware schedule; re-pointing the header
+    # would leave them describing hardware for a different job. Enforced here, not only in the dialog,
+    # so a direct GraphQL call gets the same guarantee.
+    original = _make_project(db_session)
+    other = _make_project(db_session)
+    po = _import_draft_po(db_session, original, _make_vendor(db_session, "Imported"))
+
+    _register(db_session, po, project_id=other.id)
+
+    assert po_repository.reload_po(db_session, po.id).project_id == original.id
+
+
+def test_register_rejects_a_project_that_does_not_exist(db_session):
+    from app.errors import NotFoundError
+
+    po = _stock_draft_po(db_session)
+    with pytest.raises(NotFoundError):
+        _register(db_session, po, project_id=uuid.uuid4())
+
+
+def test_register_without_a_project_override_leaves_a_stock_po_unattached(db_session):
+    po = _stock_draft_po(db_session)
+    _register(db_session, po)
+    assert po_repository.reload_po(db_session, po.id).project_id is None
