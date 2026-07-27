@@ -230,6 +230,12 @@ export const GET_PULL_REQUESTS = gql`
       approvedAt
       completedAt
       cancelledAt
+      cancelledBy
+      cancellationReason
+      # Derived per-opening staging rollup (#343). Null on pulls that have no openings.
+      stagingStatus
+      stagedOpeningCount
+      totalOpeningCount
       items {
         id
         pullRequestId
@@ -526,14 +532,25 @@ export const CREATE_RECEIVE = gql`
   }
 `;
 
+// Shared shape so a pull read from a mutation result is cache-identical to one read from the queue.
+const PULL_REQUEST_FIELDS = `
+  id requestNumber projectId source status requestedBy assignedTo
+  createdAt updatedAt approvedAt completedAt cancelledAt cancelledBy cancellationReason
+  stagingStatus stagedOpeningCount totalOpeningCount
+  items { id pullRequestId itemType openingNumber openingItemId leaf hardwareCategory productCode requestedQuantity }
+`;
+
+// One opening of a shop-assembly pull, with the hardware lines that make up its cart (#343).
+const PULL_STAGING_OPENING_FIELDS = `
+  id pullRequestId openingId openingNumber leaf building floor
+  pullStatus assemblyStatus assignedToUserId assignedTo stagedAt stagedBy
+  items { id shopAssemblyOpeningId hardwareCategory productCode quantity }
+`;
+
 export const APPROVE_PULL_REQUEST = gql`
   mutation ApprovePullRequest($id: ID!, $approvedBy: String!) {
     approvePullRequest(id: $id, approvedBy: $approvedBy) {
-      pullRequest {
-        id requestNumber projectId source status requestedBy assignedTo
-        createdAt updatedAt approvedAt completedAt cancelledAt
-        items { id pullRequestId itemType openingNumber openingItemId leaf hardwareCategory productCode requestedQuantity }
-      }
+      pullRequest { ${PULL_REQUEST_FIELDS} }
       outcome
       notification {
         id projectId recipientRole type message isRead createdAt
@@ -546,11 +563,37 @@ export const APPROVE_PULL_REQUEST = gql`
 `;
 
 export const COMPLETE_PULL_REQUEST = gql`
-  mutation CompletePullRequest($id: ID!) {
-    completePullRequest(id: $id) {
-      id requestNumber projectId source status requestedBy assignedTo
-      createdAt updatedAt approvedAt completedAt cancelledAt
-      items { id pullRequestId itemType openingNumber openingItemId leaf hardwareCategory productCode requestedQuantity }
+  mutation CompletePullRequest($id: ID!, $completedBy: String) {
+    completePullRequest(id: $id, completedBy: $completedBy) { ${PULL_REQUEST_FIELDS} }
+  }
+`;
+
+export const GET_PULL_REQUEST_OPENINGS = gql`
+  query GetPullRequestOpenings($pullRequestId: ID!) {
+    pullRequestOpenings(pullRequestId: $pullRequestId) { ${PULL_STAGING_OPENING_FIELDS} }
+  }
+`;
+
+export const STAGE_PULL_OPENINGS = gql`
+  mutation StagePullOpenings($input: StagePullOpeningsInput!) {
+    stagePullOpenings(input: $input) {
+      pullRequest { ${PULL_REQUEST_FIELDS} }
+      openings { ${PULL_STAGING_OPENING_FIELDS} }
+      newlyStagedOpeningIds
+      completed
+    }
+  }
+`;
+
+export const CANCEL_PULL_REQUEST = gql`
+  mutation CancelPullRequest($input: CancelPullRequestInput!) {
+    cancelPullRequest(input: $input) {
+      pullRequest { ${PULL_REQUEST_FIELDS} }
+      restocked { hardwareCategory productCode quantity }
+      releasedOpeningIds
+      sourceRequestReturnedToPending
+      reservationsRecreated
+      integrityNote
     }
   }
 `;

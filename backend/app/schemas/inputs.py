@@ -480,6 +480,30 @@ class InstallReplacementInput:
 
 
 @strawberry.input
+class StagePullOpeningsInput:
+    """Confirm that the cart(s) for these openings of an approved shop-assembly pull are built (#343).
+
+    Openings already staged are skipped, not refused, so a double-click or a stale checklist is a
+    no-op. Staging the last one completes the pull."""
+
+    pull_request_id: strawberry.ID
+    opening_ids: list[strawberry.ID]
+    staged_by: str
+
+
+@strawberry.input
+class CancelPullRequestInput:
+    """Cancel an approved pull and return its hardware to inventory (#343).
+
+    All-or-nothing: an opening whose assembly has started or finished blocks the whole cancellation,
+    and the refusal names them. `reason` is optional but shown to whoever raised the pull."""
+
+    id: strawberry.ID
+    cancelled_by: str
+    reason: str | None = None
+
+
+@strawberry.input
 class CompleteOpeningInput:
     opening_id: strawberry.ID
     aisle: str | None = None

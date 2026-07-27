@@ -511,6 +511,8 @@ def shop_assembly_opening_to_type(opening) -> ShopAssemblyOpening:
         opening_number=opening.opening_number,
         building=opening.building,
         floor=opening.floor,
+        staged_at=opening.staged_at,
+        staged_by=opening.staged_by,
     )
 
 
@@ -580,7 +582,15 @@ def pull_request_item_to_type(item) -> PullRequestItem:
     )
 
 
-def pull_request_to_type(pr) -> PullRequest:
+def pull_request_to_type(pr, staging=None) -> PullRequest:
+    """Model -> type. `staging` is a `warehouse.StagingSummary` the *caller* computed (#343).
+
+    It is passed in rather than derived here because deriving it needs a query, and a converter that
+    queries is an N+1 waiting to happen on the pull-request list (CLAUDE.md perf rules): the resolver
+    fetches the counts for the whole page in one grouped aggregate and hands each row its own. None
+    leaves the three staging fields null, which reads as "not applicable / not evaluated" - never as
+    "nothing staged".
+    """
     return PullRequest(
         id=strawberry.ID(str(pr.id)),
         request_number=pr.request_number,
@@ -594,7 +604,12 @@ def pull_request_to_type(pr) -> PullRequest:
         approved_at=pr.approved_at,
         completed_at=pr.completed_at,
         cancelled_at=pr.cancelled_at,
+        cancelled_by=pr.cancelled_by,
+        cancellation_reason=pr.cancellation_reason,
         items=[pull_request_item_to_type(i) for i in pr.items],
+        staging_status=staging.status if staging is not None else None,
+        staged_opening_count=staging.staged_opening_count if staging is not None else None,
+        total_opening_count=staging.total_opening_count if staging is not None else None,
     )
 
 

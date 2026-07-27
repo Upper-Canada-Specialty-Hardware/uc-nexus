@@ -47,6 +47,18 @@ MAX_DEFICIENT_REASON_LENGTH = 500
 # Assembly statuses an opening can still be worked in (#340). COMPLETED is terminal.
 _WORKABLE_ASSEMBLY_STATUSES = (AssemblyStatus.PENDING, AssemblyStatus.IN_PROGRESS)
 
+# Pull-request statuses under which an opening's own pull_status is meaningful (#343).
+#
+# This used to be `== COMPLETED` in three places, on the assumption that a pull is staged as one
+# thing, so "the pull is done" and "this opening's hardware is on a cart" were the same fact. Since
+# staging is per opening they are not: an opening staged first thing in the morning is workable
+# while the rest of the pull is still being picked, and the pull only reaches COMPLETED when the
+# last cart is built. Every one of those checks is now keyed on `ShopAssemblyOpening.pull_status ==
+# PULLED` - the fact that actually governs - with the pull-status filter kept only to exclude a pull
+# that never got off the ground (PENDING, nothing deducted) or was cancelled (hardware restocked;
+# cancellation also detaches its openings, so this is belt-and-braces).
+_APPROVED_PULL_STATUSES = (PullRequestStatus.IN_PROGRESS, PullRequestStatus.COMPLETED)
+
 
 @dataclass
 class AssemblyProgressUpdate:
@@ -72,7 +84,18 @@ def get_assemble_list(
     session: Session,
     project_id: uuid.UUID | None = None,
 ) -> list[ShopAssemblyOpening]:
-    """Query ShopAssemblyOpenings whose shop-assembly PullRequest has been pulled (#222)."""
+    """Query ShopAssemblyOpenings on an approved shop-assembly PullRequest (#222, re-keyed in #343).
+
+    Approved, not completed. The pull is staged opening by opening now, so this list fills
+    incrementally: an opening the warehouse has confirmed comes back PULLED and is workable straight
+    away, while its neighbours on the same pull are still NOT_PULLED. The page groups on exactly that
+    column, so the un-staged openings render as "waiting" rather than being invisible until the whole
+    pull is picked - which is what the assembly floor wants to see coming.
+
+    Workability is *not* decided here: `assign_openings`, `record_assembly_progress` and
+    `complete_opening` each gate on the opening's own `pull_status`, so a NOT_PULLED row in this list
+    can be looked at and not acted on.
+    """
     stmt = (
         select(ShopAssemblyOpening)
         .join(
@@ -82,7 +105,7 @@ def get_assemble_list(
         .options(selectinload(ShopAssemblyOpening.items))
         .where(
             PullRequestModel.source == PullRequestSource.SHOP_ASSEMBLY,
-            PullRequestModel.status == PullRequestStatus.COMPLETED,
+            PullRequestModel.status.in_(_APPROVED_PULL_STATUSES),
         )
     )
     if project_id is not None:
@@ -96,7 +119,13 @@ def get_my_work(
 ) -> list[ShopAssemblyOpening]:
     """Query ShopAssemblyOpenings claimed by a user (by stable Clerk user id, #324) that are still
     unfinished - PENDING or, since progress is persisted (#340), IN_PROGRESS. A leaf the assembler
-    saved partial progress on has to stay in My Work or the work would be unreachable."""
+    saved partial progress on has to stay in My Work or the work would be unreachable.
+
+    Keyed on the *opening's* pull_status since #343: My Work is the list of leaves somebody can
+    actually go and build, and a staged opening is buildable whether or not the rest of its pull has
+    been picked. The old `PullRequest.status == COMPLETED` filter would have held a claimed,
+    fully-staged leaf out of its own assembler's board until the last cart on the pull was finished.
+    """
     stmt = (
         select(ShopAssemblyOpening)
         .join(
@@ -107,8 +136,9 @@ def get_my_work(
         .where(
             ShopAssemblyOpening.assigned_to_user_id == assigned_to_user_id,
             ShopAssemblyOpening.assembly_status.in_(_WORKABLE_ASSEMBLY_STATUSES),
+            ShopAssemblyOpening.pull_status == PullStatus.PULLED,
             PullRequestModel.source == PullRequestSource.SHOP_ASSEMBLY,
-            PullRequestModel.status == PullRequestStatus.COMPLETED,
+            PullRequestModel.status.in_(_APPROVED_PULL_STATUSES),
         )
         .order_by(ShopAssemblyOpening.opening_number.asc())
     )
@@ -407,6 +437,12 @@ def complete_opening(
 
     if sa_opening.assembly_status not in _WORKABLE_ASSEMBLY_STATUSES:
         raise InvalidStateTransitionError("Opening assembly is already completed")
+    # This opening's own hardware has to be on a cart (#343). Until staging was per opening, the
+    # `PullRequest.status == COMPLETED` lookup below carried this check implicitly; now that a pull
+    # can be part-staged, the fact that governs is the opening's own pull_status, and it is checked
+    # explicitly - the same gate record_assembly_progress and assign_openings already use.
+    if sa_opening.pull_status != PullStatus.PULLED:
+        raise InvalidStateTransitionError("Opening hardware has not been pulled - there is nothing to assemble yet")
     if sa_opening.assigned_to is None:
         raise ValidationError(
             "Opening must be assigned before it can be completed",
@@ -423,11 +459,11 @@ def complete_opening(
     pr_stmt = select(PullRequestModel).where(
         PullRequestModel.id == sa_opening.pull_request_id,
         PullRequestModel.source == PullRequestSource.SHOP_ASSEMBLY,
-        PullRequestModel.status == PullRequestStatus.COMPLETED,
+        PullRequestModel.status.in_(_APPROVED_PULL_STATUSES),
     )
     pr = session.scalars(pr_stmt).first()
     if pr is None:
-        raise NotFoundError(f"Completed shop-assembly pull request for opening {opening_id} not found")
+        raise NotFoundError(f"Approved shop-assembly pull request for opening {opening_id} not found")
 
     # 3. Duplicate-completion guard (#339). Two shop-assembly openings can name the same
     #    (opening_id, leaf) - e.g. a request was reopened and re-imported, or the same leaf was sent
@@ -1084,8 +1120,16 @@ def reopen_shop_assembly_request(
     # pull_request_id. accept mints the PR unconditionally (even a zero-opening request gets one), so an
     # openings-derived lookup can miss it and leave a PENDING PR orphaned - and since request_number is
     # unique, the next accept would then collide, re-creating the stuck state #325 removes. accept stamps
-    # the PR with request_number == sar.request_number, which is unique on pull_requests.
-    pr = session.scalar(select(PullRequestModel).where(PullRequestModel.request_number == sar.request_number))
+    # the PR with request_number == sar.request_number, which is unique among *live* pull requests
+    # (#343 made that uniqueness partial: a cancelled pull keeps its number, and re-accepting mints a
+    # new pull carrying the same one). Excluding CANCELLED is therefore what keeps this a single-row
+    # lookup after a cancel-then-re-accept cycle.
+    pr = session.scalar(
+        select(PullRequestModel).where(
+            PullRequestModel.request_number == sar.request_number,
+            PullRequestModel.status != PullRequestStatus.CANCELLED,
+        )
+    )
 
     # Re-point the openings + flip the request, then flush BEFORE discarding the PR, so deleting it does
     # not trip the shop_assembly_openings.pull_request_id foreign key. discard_pending_pull_request still

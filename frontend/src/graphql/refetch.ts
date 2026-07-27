@@ -75,3 +75,35 @@ export const REPLACEMENT_INSTALL_STALE_ROOT_FIELDS = ['openingItems'];
 // stops the next wizard session from opening on the cache-first half of its cache-and-network read
 // and gating a selection against pre-reservation numbers for a beat.
 export const RESERVATION_STALE_ROOT_FIELDS = ['projectInventoryAvailability'];
+
+// What confirming a batch of openings as staged invalidates (#343). Same disjointness rule as above.
+//
+// Refetched. GetPullRequests is the queue the staging modal was opened from and is mounted by
+// definition, so refetchQueries reaches it; its staging chip goes from "3 of 8" to "4 of 8", and the
+// pull's own status flips when the last opening lands. The panel refetches its own
+// GetPullRequestOpenings in onCompleted, so that one is deliberately not listed here.
+export const PULL_STAGING_REFETCH_QUERIES = ['GetPullRequests'];
+
+// Evicted. Newly staged openings become assignable and workable at once, and both readers live in
+// the shop-assembly module - a different route that is by definition not mounted while a warehouse
+// user is picking, which is exactly what refetchQueries cannot reach.
+export const PULL_STAGING_STALE_ROOT_FIELDS = ['assembleList', 'myWork'];
+
+// What cancelling a pull invalidates (#343). It is the widest blast radius in the warehouse: stock
+// goes back on the shelf, the source request returns to the accept queue, its claim is re-created,
+// and the openings leave the assembly floor.
+//
+// Refetched. GetPullRequests is the queue the cancel was launched from (the row must show
+// Cancelled), and the warehouse inventory summaries are the ones a mounted warehouse view is
+// showing while the restock happens.
+export const PULL_CANCEL_REFETCH_QUERIES = ['GetPullRequests', ...WAREHOUSE_REFETCH_QUERIES];
+
+// Evicted. All three are read by modules that are not mounted at cancel time: the assembly floor's
+// two work lists, the Start-a-Task wizard's availability (the re-created reservation changes what
+// may be claimed), and the accept queue that the source request has just rejoined.
+export const PULL_CANCEL_STALE_ROOT_FIELDS = [
+  'assembleList',
+  'myWork',
+  'projectInventoryAvailability',
+  'shopAssemblyRequests',
+];

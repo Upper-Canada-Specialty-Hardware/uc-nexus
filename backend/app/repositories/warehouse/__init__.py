@@ -42,15 +42,24 @@ from .progress import (
     get_warehouse_dashboard,
 )
 from .pull_requests import (
+    CancelBlocker,
+    CancelResult,
+    RestockedLine,
     Shortfall,
+    StageResult,
+    StagingSummary,
     SufficiencyResult,
     approve_pull_request,
+    cancel_pull_request,
     check_inventory_sufficiency,
     complete_pull_request,
     discard_pending_pull_request,
     find_reservation_holder,
     get_pull_request_details,
+    get_pull_request_openings,
     get_pull_requests,
+    get_pull_staging_summaries,
+    stage_pull_openings,
 )
 from .receiving import (
     create_receive,
@@ -69,7 +78,12 @@ from .reservations import (
 
 __all__ = [
     "PLACED_PO_STATUSES",
+    "CancelBlocker",
+    "CancelResult",
+    "RestockedLine",
     "Shortfall",
+    "StageResult",
+    "StagingSummary",
     "SufficiencyResult",
     "_log_audit_event",
     "_normalize_and_validate_location_fields",
@@ -77,6 +91,7 @@ __all__ = [
     "approve_pull_request",
     "assign_inventory_location",
     "assign_opening_item_location",
+    "cancel_pull_request",
     "check_inventory_sufficiency",
     "complete_pull_request",
     "create_receive",
@@ -102,7 +117,9 @@ __all__ = [
     "get_project_availability",
     "get_project_progress_by_product",
     "get_pull_request_details",
+    "get_pull_request_openings",
     "get_pull_requests",
+    "get_pull_staging_summaries",
     "get_recent_receive_records",
     "get_reserved_quantities",
     "get_unlocated_inventory",
@@ -115,5 +132,6 @@ __all__ = [
     "normalize_location_value",
     "override_inventory_quantity",
     "release_reservations",
+    "stage_pull_openings",
     "validate_receive_eligibility",
 ]

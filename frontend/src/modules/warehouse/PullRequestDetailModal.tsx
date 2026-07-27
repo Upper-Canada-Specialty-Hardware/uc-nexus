@@ -11,16 +11,28 @@ import {
   TableBody,
   TableRow,
   TableCell,
+  TextField,
   Divider,
 } from '@mui/material';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import CancelIcon from '@mui/icons-material/Cancel';
 import { useMutation, useQuery } from '@apollo/client/react';
-import { APPROVE_PULL_REQUEST, COMPLETE_PULL_REQUEST, GET_INVENTORY_HIERARCHY } from '../../graphql/warehouse';
+import {
+  APPROVE_PULL_REQUEST,
+  CANCEL_PULL_REQUEST,
+  COMPLETE_PULL_REQUEST,
+  GET_INVENTORY_HIERARCHY,
+} from '../../graphql/warehouse';
+import {
+  PULL_CANCEL_REFETCH_QUERIES,
+  PULL_CANCEL_STALE_ROOT_FIELDS,
+} from '../../graphql/refetch';
 import { useIdentity } from '../../hooks/useIdentity';
 import { useToast } from '../../components/Toast';
 import Modal from '../../components/Modal';
 import ConfirmDialog from '../../components/ConfirmDialog';
+import PullStagingPanel from './PullStagingPanel';
+import { isCancellable, stagingChipColor, stagingChipLabel } from './pullStaging';
 import type { PullRequest, PullRequestItem } from './PullRequestQueue';
 import { leafLabel } from '../../utils/leaf';
 
@@ -116,6 +128,12 @@ export default function PullRequestDetailModal({
   // Confirm dialog state
   const [confirmApproveOpen, setConfirmApproveOpen] = useState(false);
   const [confirmCompleteOpen, setConfirmCompleteOpen] = useState(false);
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const [cancelReason, setCancelReason] = useState('');
+  // #343: a cancel refused because assembly has already started. The server names every blocker in
+  // one message, so it is shown verbatim and the dialog stays open - the user is being told what to
+  // go and finish, not just that it failed.
+  const [cancelBlockedMessage, setCancelBlockedMessage] = useState<string | null>(null);
 
   // #224 gate 2: the shortfall the server returned when an approve was blocked for insufficient
   // inventory. The PR is left PENDING; we show this inline instead of cancelling.
@@ -202,6 +220,46 @@ export default function PullRequestDetailModal({
     },
   });
 
+  const [cancelPR, { loading: cancelLoading }] = useMutation(CANCEL_PULL_REQUEST, {
+    refetchQueries: PULL_CANCEL_REFETCH_QUERIES,
+    update(cache) {
+      // Disjoint from the refetch list (see refetch.ts).
+      for (const field of PULL_CANCEL_STALE_ROOT_FIELDS) {
+        cache.evict({ id: 'ROOT_QUERY', fieldName: field });
+      }
+      cache.gc();
+    },
+    onCompleted: (data) => {
+      const result = (
+        data as {
+          cancelPullRequest?: {
+            restocked?: { quantity: number }[];
+            reservationsRecreated?: boolean;
+            integrityNote?: string | null;
+          };
+        }
+      )?.cancelPullRequest;
+      const units = (result?.restocked ?? []).reduce((sum, r) => sum + r.quantity, 0);
+      setCancelOpen(false);
+      setCancelBlockedMessage(null);
+      if (result?.integrityNote) {
+        // The hardware came back but could not be re-claimed for the request. That is a real state
+        // the acceptor has to know about, so it is a warning, not a success.
+        showToast(result.integrityNote, 'warning');
+      } else {
+        showToast(
+          `Pull cancelled. ${units} unit(s) returned to inventory` +
+            (result?.reservationsRecreated ? ' and reserved for the request again.' : '.'),
+          'success',
+        );
+      }
+      onRefetch();
+    },
+    onError: (error) => {
+      setCancelBlockedMessage(error.message);
+    },
+  });
+
   // --- Handlers ---
 
   const handleApprove = () => {
@@ -210,7 +268,16 @@ export default function PullRequestDetailModal({
   };
 
   const handleComplete = () => {
-    completePR({ variables: { id: pr.id } });
+    completePR({ variables: { id: pr.id, completedBy: displayName } });
+  };
+
+  const handleCancel = () => {
+    setCancelBlockedMessage(null);
+    cancelPR({
+      variables: {
+        input: { id: pr.id, cancelledBy: displayName, reason: cancelReason.trim() || null },
+      },
+    });
   };
 
   // --- Visibility rules ---
@@ -223,7 +290,20 @@ export default function PullRequestDetailModal({
   const isAssignedToCurrentUser = isInProgress && pr.assignedTo === displayName;
   const isLockedToOtherUser = isInProgress && pr.assignedTo !== displayName;
 
+  // #343: the staging checklist is the shop-assembly pull's execution view. It is shown from
+  // approval onwards - including after completion, read-only, so the record of who staged what
+  // survives the pull being finished.
+  const showStaging = pr.source === 'SHOP_ASSEMBLY' && (isInProgress || isCompleted);
+  const canCancel = isCancellable(pr);
+  const stagingLabel = stagingChipLabel(pr);
+
   // --- Action buttons ---
+
+  const cancelButton = canCancel ? (
+    <Button variant="outlined" color="error" onClick={() => setCancelOpen(true)} disabled={cancelLoading}>
+      Cancel Pull
+    </Button>
+  ) : null;
 
   let actionButtons: React.ReactNode | undefined;
 
@@ -243,6 +323,7 @@ export default function PullRequestDetailModal({
   } else if (isAssignedToCurrentUser) {
     actionButtons = (
       <Stack direction="row" spacing={1}>
+        {cancelButton}
         <Button
           variant="contained"
           color="primary"
@@ -253,6 +334,8 @@ export default function PullRequestDetailModal({
         </Button>
       </Stack>
     );
+  } else if (canCancel) {
+    actionButtons = <Stack direction="row" spacing={1}>{cancelButton}</Stack>;
   }
 
   // --- Render ---
@@ -279,6 +362,9 @@ export default function PullRequestDetailModal({
               color={STATUS_CHIP_COLOR[pr.status] ?? 'default'}
               size="medium"
             />
+            {stagingLabel && (
+              <Chip label={stagingLabel} color={stagingChipColor(pr)} size="medium" variant="outlined" />
+            )}
           </Stack>
           <InfoRow label="Request #" value={pr.requestNumber} />
           <InfoRow label="Created Date" value={formatDate(pr.createdAt)} />
@@ -299,7 +385,10 @@ export default function PullRequestDetailModal({
         {isCancelled && (
           <Box sx={{ mb: 2 }}>
             <Alert severity="error">
-              This Pull Request was cancelled at {formatDateTime(pr.cancelledAt)}.
+              This Pull Request was cancelled at {formatDateTime(pr.cancelledAt)}
+              {pr.cancelledBy ? ` by ${pr.cancelledBy}` : ''}
+              {pr.cancellationReason ? `: ${pr.cancellationReason}` : '.'}
+              {' '}Its hardware was returned to inventory and the source request went back to Pending.
             </Alert>
           </Box>
         )}
@@ -345,6 +434,21 @@ export default function PullRequestDetailModal({
         )}
 
         <Divider sx={{ mb: 2 }} />
+
+        {/* Per-opening staging checklist (#343). Read-only once the pull is complete. */}
+        {showStaging && (
+          <>
+            <PullStagingPanel
+              pullRequestId={pr.id}
+              pullRequestNumber={pr.requestNumber}
+              editable={isInProgress}
+              onStaged={(completed) => {
+                if (completed) onRefetch();
+              }}
+            />
+            <Divider sx={{ mb: 2 }} />
+          </>
+        )}
 
         {/* Items table */}
         <Typography variant="h6" gutterBottom>
@@ -454,12 +558,53 @@ export default function PullRequestDetailModal({
       <ConfirmDialog
         open={confirmCompleteOpen}
         title="Complete Pull Request"
-        message={`Mark Pull Request ${pr.requestNumber} as pulled? This action cannot be undone.`}
+        message={
+          showStaging
+            ? `Mark Pull Request ${pr.requestNumber} as pulled? Any opening not yet confirmed will be staged as well.`
+            : `Mark Pull Request ${pr.requestNumber} as pulled? This action cannot be undone.`
+        }
         confirmLabel="Mark as Pulled"
         cancelLabel="Cancel"
         onConfirm={handleComplete}
         onCancel={() => setConfirmCompleteOpen(false)}
       />
+
+      {/* Cancel: its own dialog rather than ConfirmDialog, because it takes a reason and has to be
+          able to show the server's blocker list without closing. */}
+      <Modal
+        open={cancelOpen}
+        title={`Cancel ${pr.requestNumber}`}
+        onClose={() => setCancelOpen(false)}
+        maxWidth="sm"
+        actions={
+          <Stack direction="row" spacing={1}>
+            <Button onClick={() => setCancelOpen(false)}>Keep pull</Button>
+            <Button variant="contained" color="error" onClick={handleCancel} disabled={cancelLoading}>
+              {cancelLoading ? 'Cancelling...' : 'Cancel pull and restock'}
+            </Button>
+          </Stack>
+        }
+      >
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          Every unit this pull took will go back into project inventory, its openings return to the
+          not-pulled state, and the request that raised it goes back to Pending for re-acceptance.
+          Openings whose assembly has already started will block the cancellation.
+        </Alert>
+        {cancelBlockedMessage && (
+          <Alert severity="error" sx={{ mb: 2 }} data-testid="cancel-blocked">
+            {cancelBlockedMessage}
+          </Alert>
+        )}
+        <TextField
+          label="Reason (optional)"
+          value={cancelReason}
+          onChange={(e) => setCancelReason(e.target.value)}
+          fullWidth
+          multiline
+          minRows={2}
+          slotProps={{ htmlInput: { maxLength: 500 } }}
+        />
+      </Modal>
     </>
   );
 }

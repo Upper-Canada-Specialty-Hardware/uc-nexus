@@ -106,6 +106,54 @@ them: `report_deficiency_at_assembly` raises the inventory row's `quantity` and 
 together, so the pair nets to zero in `on-hand - deficient`. The unit is back in the building and is
 not available - which is the truth.
 
+#### 3b. Staging: the tag moves onto a cart, opening by opening
+
+Approving the pull is one decision; *executing* it is a shift's work. The warehouse picks a pull cart
+by cart, and before #343 the system only knew "pulled" or "not pulled" for the whole request, so an
+opening whose hardware was on a cart at 9am was not assignable until the last opening was picked at
+4pm.
+
+**Staging is per opening.** `stage_pull_openings` flips one `ShopAssemblyOpening.pull_status` to
+`PULLED` at a time, stamping `staged_at` / `staged_by`, and that opening becomes assignable and
+workable immediately. Staging the last one calls `complete_pull_request`, so the completion
+notification and the replacement-arrival application still fire exactly once, from one place.
+
+Two state facts, deliberately kept apart:
+
+- `ShopAssemblyOpening.pull_status` is only ever `NOT_PULLED` or `PULLED`. One cart is built or it is
+  not; persisting a half-truth about a single cart would be a lie.
+- `PullStatus.PARTIAL` is the **aggregate** reading over a set of openings, and it is **derived, not
+  stored** (`warehouse.get_pull_staging_summaries`, one grouped aggregate for a whole page).
+  `PullRequestStatus` therefore stays `PENDING -> IN_PROGRESS -> COMPLETED/CANCELLED` with no
+  half-state wedged into it.
+
+**Deduction timing does not move.** FIFO deduction and consumption of the source request's
+reservation both stay at approval. Approval is where the pull is committed, and per-opening deduction
+would break two things at once: an approved-but-unstaged opening would hold neither a reservation nor
+a deduction, so its hardware would read as free to the next request (the hole §3a closed); and a
+shortfall could then surface at staging time, where the only recovery is a half-deducted pull.
+Staging is progress tracking. Cancellation is what reverses stock.
+
+#### 3c. Cancelling a pull: the tag comes off
+
+Once a pull was approved there was no way back - stock was deducted and `PullRequestStatus.CANCELLED`
+was an enum value nothing ever set. `cancel_pull_request` is the way back, and it is
+**all-or-nothing per pull**:
+
+| Rule | Why |
+| --- | --- |
+| Blocked by any opening whose assembly is IN_PROGRESS or COMPLETED, naming every blocker | That is where the hardware stops being retrievable - it is on a leaf, and some of it may already have been condemned and replaced |
+| Staged-but-unassembled openings **do** come back | Their hardware is on a cart in the shop, exactly as retrievable as hardware on the shelf. Restocking only the un-staged part would leave the staged part deducted with no leaf to show for it |
+| No partial cancel | `PullStatus` has no cancelled value, and `complete_pull_request` flips *every* opening of a pull to PULLED - so a half-cancelled pull would resurrect its released openings the moment the rest was staged. Expressing it properly needs an opening-level cancelled state |
+| Cancellable from IN_PROGRESS, and from COMPLETED for a shop-assembly pull with openings | Since staging is per opening, COMPLETED there means no more than "every cart is built". A completed shipping-out pull has already flipped leaves to SHIP_READY, and a completed PR-REPL pull has already restored expectations |
+| Restock lands on the project's newest `InventoryLocation` row for the combo, not a row-by-row reversal | Which row a hinge sits on carries no identity (the rule at the top of this document). Landing on the newest row is also conservative for future FIFO: older stock still goes out first |
+| Source request returns to **PENDING**, and its reservation is re-created after the restock, availability re-checked | The claim was consumed at approval, so re-creating it is a new claim competing with everyone else's. If it cannot be covered, the request is left **unreserved and flagged** via `integrity_note` rather than half-claimed - the same honest-and-flagged shape the #342 backfill uses |
+| A PR-REPL replacement pull restocks and re-creates nothing | It never held a reservation. The leaf's `deficient_quantity` is untouched: the expectation stays on the checklist line and the replacement has to be requested again |
+
+Cancelling keeps the pull row, which is why `pull_requests.request_number` is unique only among
+**live** pulls (a partial unique index excluding `CANCELLED`): re-accepting the returned request
+mints a fresh pull carrying the same number.
+
 ### 4. The tag materializes
 
 The tag does not become physical all at once. Assembly happens over a shift, unit by unit, and since
@@ -200,6 +248,12 @@ leaf until a pull tags it onto one).
 | Tag written, shop assembly | `backend/app/repositories/shop_assembly_repository.py` (`accept_shop_assembly_request`) |
 | Tag written, shipping out | `backend/app/repositories/shipping_repository.py` (`accept_shipping_out_request`) |
 | Tag consumes stock | `backend/app/repositories/warehouse/pull_requests.py` (`approve_pull_request`, FIFO deduction) |
+| Tag staged, opening by opening | `backend/app/repositories/warehouse/pull_requests.py` (`stage_pull_openings` -> one `ShopAssemblyOpening.pull_status`, `staged_at` / `staged_by`; last one calls `complete_pull_request`) |
+| PARTIAL derived, never stored | `backend/app/repositories/warehouse/pull_requests.py` (`get_pull_staging_summaries` / `StagingSummary.status`, one grouped aggregate per page) |
+| Workability keyed on the opening, not the pull | `backend/app/repositories/shop_assembly_repository.py` (`_APPROVED_PULL_STATUSES` + `pull_status == PULLED` in `get_assemble_list`, `get_my_work`, `assign_openings`, `record_assembly_progress`, `complete_opening`) |
+| Tag comes off, stock returned | `backend/app/repositories/warehouse/pull_requests.py` (`cancel_pull_request` -> `_return_units_to_project_inventory`, all-or-nothing, blockers named) |
+| Claim re-created after a cancel | `backend/app/repositories/warehouse/pull_requests.py` (`cancel_pull_request` -> availability re-check then `create_reservations`, else `integrity_note`) |
+| Pull number unique among live pulls only | `backend/app/models/pull_request.py` (`uq_pull_requests_request_number_live`, partial index excluding CANCELLED) |
 | Tag worked, incrementally | `backend/app/repositories/shop_assembly_repository.py` (`record_assembly_progress` -> `installed_quantity` / `deficient_quantity`) |
 | Deficient unit returned + replaced | `backend/app/repositories/stock/deficiency.py` (`report_deficiency_at_assembly` -> PR-REPL line) |
 | Tag materialized | `backend/app/repositories/shop_assembly_repository.py` (`complete_opening` -> `OpeningItem`, quantities = installed) |

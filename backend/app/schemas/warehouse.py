@@ -20,15 +20,24 @@ from .converters import (
     po_to_type,
     pull_request_to_type,
     receive_record_to_type,
+    shop_assembly_opening_to_type,
     stock_item_to_type,
     warehouse_to_type,
 )
 from .enums import ApproveOutcome, AuditEntityType, LeafStatus, PullRequestSource, PullRequestStatus
-from .inputs import CreateReceiveInput, CreateWarehouseInput, OverrideInventoryQuantityInput, UpdateWarehouseInput
+from .inputs import (
+    CancelPullRequestInput,
+    CreateReceiveInput,
+    CreateWarehouseInput,
+    OverrideInventoryQuantityInput,
+    StagePullOpeningsInput,
+    UpdateWarehouseInput,
+)
 from .types import (
     ApproveResult,
     AuditLogEntry,
     BackOrderedItem,
+    CancelPullRequestResult,
     InventoryAvailability,
     InventoryHierarchyNode,
     InventoryItemDetail,
@@ -50,6 +59,9 @@ from .types import (
     PurchaseOrder,
     ReceiveRecord,
     RecentReceiveRecord,
+    RestockedLine,
+    ShopAssemblyOpening,
+    StagePullOpeningsResult,
     VendorInventoryNode,
     Warehouse,
     WarehouseDashboard,
@@ -276,13 +288,31 @@ class WarehouseQueries:
             prs = warehouse_repository.get_pull_requests(
                 session, uuid.UUID(str(project_id)) if project_id else None, source, status
             )
-            return [pull_request_to_type(pr) for pr in prs]
+            # One grouped aggregate for the whole page, not one query per row (#343 / CLAUDE.md perf
+            # rules): the queue renders a staging chip on every shop-assembly row.
+            staging = warehouse_repository.get_pull_staging_summaries(session, [pr.id for pr in prs])
+            return [pull_request_to_type(pr, staging.get(pr.id)) for pr in prs]
 
     @strawberry.field
     def pull_request_details(self, id: strawberry.ID) -> PullRequest:
         with SessionLocal() as session:
             pr = warehouse_repository.get_pull_request_details(session, uuid.UUID(str(id)))
-            return pull_request_to_type(pr)
+            staging = warehouse_repository.get_pull_staging_summaries(session, [pr.id])
+            return pull_request_to_type(pr, staging.get(pr.id))
+
+    @strawberry.field
+    def pull_request_openings(self, info: strawberry.Info, pull_request_id: strawberry.ID) -> list[ShopAssemblyOpening]:
+        """The shop-assembly openings a pull covers, with their hardware lines, for the warehouse's
+        per-opening staging checklist (#343).
+
+        Deliberately a separate query rather than a field on `PullRequest`: a resolver field would
+        run once per row of the pull-request queue, and the queue never needs it - only the detail
+        view does. Returns an empty list for a shipping-out pull, a PR-REPL replacement pull, or a
+        legacy pull, none of which have openings. Open to any signed-in user."""
+        require_user(info)
+        with SessionLocal() as session:
+            openings = warehouse_repository.get_pull_request_openings(session, uuid.UUID(str(pull_request_id)))
+            return [shop_assembly_opening_to_type(o) for o in openings]
 
     @strawberry.field
     def expected_deliveries(self, project_id: strawberry.ID | None = None) -> list[PurchaseOrder]:
@@ -576,9 +606,10 @@ class WarehouseMutations:
             )
             session.commit()
             pr = warehouse_repository.get_pull_request_details(session, pr.id)
+            staging = warehouse_repository.get_pull_staging_summaries(session, [pr.id])
 
             return ApproveResult(
-                pull_request=pull_request_to_type(pr),
+                pull_request=pull_request_to_type(pr, staging.get(pr.id)),
                 outcome=ApproveOutcome.APPROVED if outcome == "APPROVED" else ApproveOutcome.INSUFFICIENT,
                 notification=notification_to_type(notification) if notification else None,
                 shortfalls=[
@@ -595,12 +626,88 @@ class WarehouseMutations:
             )
 
     @strawberry.mutation
-    def complete_pull_request(self, id: strawberry.ID) -> PullRequest:
+    def complete_pull_request(self, id: strawberry.ID, completed_by: str | None = None) -> PullRequest:
+        """Close the whole pull in one go. Since #343 this reads as "stage everything still
+        outstanding and finish": any opening not yet confirmed individually is flipped to PULLED and
+        stamped here. `completedBy` is optional and additive - it only names the actor on those
+        stamps, so existing callers are unaffected."""
         with SessionLocal() as session:
-            pr = warehouse_repository.complete_pull_request(session, uuid.UUID(str(id)))
+            pr = warehouse_repository.complete_pull_request(session, uuid.UUID(str(id)), completed_by=completed_by)
             session.commit()
             pr = warehouse_repository.get_pull_request_details(session, pr.id)
-            return pull_request_to_type(pr)
+            staging = warehouse_repository.get_pull_staging_summaries(session, [pr.id])
+            return pull_request_to_type(pr, staging.get(pr.id))
+
+    @strawberry.mutation
+    def stage_pull_openings(self, info: strawberry.Info, input: StagePullOpeningsInput) -> StagePullOpeningsResult:
+        """Confirm that the carts for these openings of an approved shop-assembly pull are built (#343).
+
+        Each confirmed opening flips to PULLED on its own and becomes assignable and workable
+        immediately, so the assignment board fills as the warehouse picks rather than all at once at
+        the end. Nothing moves in inventory: the FIFO deduction and the source request's reservation
+        were both spent at approval, and staging is progress tracking. Staging the last opening
+        completes the pull through the ordinary completion path, so its notification and any
+        replacement-arrival application still happen exactly once.
+
+        Open to any signed-in user - it makes hardware workable, so it must not be reachable
+        anonymously."""
+        require_user(info)
+        with SessionLocal() as session:
+            result = warehouse_repository.stage_pull_openings(
+                session,
+                uuid.UUID(str(input.pull_request_id)),
+                [uuid.UUID(str(oid)) for oid in input.opening_ids],
+                input.staged_by,
+            )
+            session.commit()
+            pr = warehouse_repository.get_pull_request_details(session, result.pull_request.id)
+            staging = warehouse_repository.get_pull_staging_summaries(session, [pr.id])
+            openings = warehouse_repository.get_pull_request_openings(session, pr.id)
+            return StagePullOpeningsResult(
+                pull_request=pull_request_to_type(pr, staging.get(pr.id)),
+                openings=[shop_assembly_opening_to_type(o) for o in openings],
+                newly_staged_opening_ids=[strawberry.ID(str(oid)) for oid in result.newly_staged_ids],
+                completed=result.completed,
+            )
+
+    @strawberry.mutation
+    def cancel_pull_request(self, info: strawberry.Info, input: CancelPullRequestInput) -> CancelPullRequestResult:
+        """Cancel an approved pull, return its hardware to inventory, and hand the source request
+        back for re-acceptance (#343).
+
+        All-or-nothing: any opening whose assembly has started or finished refuses the whole
+        cancellation with a CONFLICT naming the blockers, because there is nowhere honest to park a
+        half-cancelled pull. Everything short of that comes back, staged openings included - their
+        hardware is on a cart in the shop, not on a leaf. The source request returns to PENDING and
+        its claim is re-created from the returned quantities if availability still allows; if it does
+        not, the request is left unreserved and flagged rather than half-claimed.
+
+        Open to any signed-in user - it writes inventory, so it must not be reachable anonymously."""
+        require_user(info)
+        with SessionLocal() as session:
+            result = warehouse_repository.cancel_pull_request(
+                session,
+                uuid.UUID(str(input.id)),
+                input.cancelled_by,
+                input.reason,
+            )
+            session.commit()
+            pr = warehouse_repository.get_pull_request_details(session, result.pull_request.id)
+            return CancelPullRequestResult(
+                pull_request=pull_request_to_type(pr),
+                restocked=[
+                    RestockedLine(
+                        hardware_category=r.hardware_category,
+                        product_code=r.product_code,
+                        quantity=r.quantity,
+                    )
+                    for r in result.restocked
+                ],
+                released_opening_ids=[strawberry.ID(str(oid)) for oid in result.released_opening_ids],
+                source_request_returned_to_pending=result.source_request_returned_to_pending,
+                reservations_recreated=result.reservations_recreated,
+                integrity_note=result.integrity_note,
+            )
 
     # Admin Corrections
     @strawberry.mutation

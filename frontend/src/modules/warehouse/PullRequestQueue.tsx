@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Box, Typography, Chip } from '@mui/material';
 import { useQuery } from '@apollo/client/react';
 import type { GridColDef, GridRowParams } from '@mui/x-data-grid';
@@ -6,6 +6,7 @@ import { GET_PULL_REQUESTS } from '../../graphql/warehouse';
 import DataTable from '../../components/DataTable';
 import Tabs from '../../components/Tabs';
 import PullRequestDetailModal from './PullRequestDetailModal';
+import { stagingChipColor, stagingChipLabel } from './pullStaging';
 
 // --- Types ---
 
@@ -35,6 +36,13 @@ export interface PullRequest {
   approvedAt: string | null;
   completedAt: string | null;
   cancelledAt: string | null;
+  cancelledBy: string | null;
+  cancellationReason: string | null;
+  /** Derived per-opening staging rollup (#343): NOT_PULLED / PARTIAL / PULLED over this pull's
+   *  shop-assembly openings. Null when the pull has none (shipping-out, PR-REPL, legacy). */
+  stagingStatus: string | null;
+  stagedOpeningCount: number | null;
+  totalOpeningCount: number | null;
   items: PullRequestItem[];
 }
 
@@ -102,78 +110,74 @@ const columns: GridColDef[] = [
       />
     ),
   },
+  {
+    // #343: how far the warehouse has got picking this pull, opening by opening. Blank rather than
+    // a zeroed chip on a pull with no openings - staging does not apply there.
+    field: 'staging',
+    headerName: 'Staging',
+    flex: 1,
+    minWidth: 140,
+    sortable: false,
+    valueGetter: (_value: unknown, row: PullRequest) => stagingChipLabel(row) ?? '',
+    renderCell: (params) => {
+      const label = stagingChipLabel(params.row as PullRequest);
+      if (!label) return null;
+      return <Chip label={label} color={stagingChipColor(params.row as PullRequest)} size="small" />;
+    },
+  },
 ];
 
 // --- Tab content component ---
 
 interface PullRequestTabProps {
   source: string;
-  onRowClick: (pr: PullRequest) => void;
 }
 
-function PullRequestTab({ source, onRowClick }: PullRequestTabProps) {
+function PullRequestTab({ source }: PullRequestTabProps) {
+  // The id, not the row (#343). The modal stages openings and cancels the pull, both of which
+  // refetch this list; holding the object would pin the modal's staging chip to the pre-staging
+  // snapshot - the same trap #340 fixed in the assembly views.
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+
   const { data, loading } = useQuery<{ pullRequests: PullRequest[] }>(GET_PULL_REQUESTS, {
     variables: { source },
   });
 
-  const requests = data?.pullRequests ?? [];
+  const requests = useMemo(() => data?.pullRequests ?? [], [data]);
+  const selected = useMemo(() => requests.find((pr) => pr.id === selectedId) ?? null, [requests, selectedId]);
 
   const handleRowClick = (params: GridRowParams<PullRequest>) => {
-    onRowClick(params.row);
+    setSelectedId(params.row.id);
   };
 
   return (
-    <DataTable
-      columns={columns}
-      rows={requests}
-      loading={loading}
-      onRowClick={handleRowClick}
-      sx={{ cursor: 'pointer' }}
-      getRowId={(row) => row.id}
-    />
+    <>
+      <DataTable
+        columns={columns}
+        rows={requests}
+        loading={loading}
+        onRowClick={handleRowClick}
+        sx={{ cursor: 'pointer' }}
+        getRowId={(row) => row.id}
+      />
+      {selected && (
+        <PullRequestDetailModal
+          open
+          pr={selected}
+          onClose={() => setSelectedId(null)}
+          onRefetch={() => setSelectedId(null)}
+        />
+      )}
+    </>
   );
 }
 
 // --- Main component ---
 
 export default function PullRequestQueue() {
-  const [selectedPR, setSelectedPR] = useState<PullRequest | null>(null);
-  const [modalOpen, setModalOpen] = useState(false);
-
-  const handleRowClick = (pr: PullRequest) => {
-    setSelectedPR(pr);
-    setModalOpen(true);
-  };
-
-  const handleCloseModal = () => {
-    setModalOpen(false);
-    setSelectedPR(null);
-  };
-
-  const handleRefetch = () => {
-    setModalOpen(false);
-    setSelectedPR(null);
-  };
-
   const tabs = [
-    {
-      label: 'Shop Assembly',
-      content: (
-        <PullRequestTab
-          source="SHOP_ASSEMBLY"
-          onRowClick={handleRowClick}
-        />
-      ),
-    },
-    {
-      label: 'Shipping Out',
-      content: (
-        <PullRequestTab
-          source="SHIPPING_OUT"
-          onRowClick={handleRowClick}
-        />
-      ),
-    },
+    { label: 'Shop Assembly', content: <PullRequestTab source="SHOP_ASSEMBLY" /> },
+    { label: 'Shipping Out', content: <PullRequestTab source="SHIPPING_OUT" /> },
   ];
 
   return (
@@ -183,15 +187,6 @@ export default function PullRequestQueue() {
       </Typography>
 
       <Tabs tabs={tabs} defaultTab={0} />
-
-      {selectedPR && (
-        <PullRequestDetailModal
-          open={modalOpen}
-          pr={selectedPR}
-          onClose={handleCloseModal}
-          onRefetch={handleRefetch}
-        />
-      )}
     </Box>
   );
 }
