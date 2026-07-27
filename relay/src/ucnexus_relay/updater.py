@@ -189,6 +189,13 @@ def _cancel_requested(install_dir: Path) -> bool:
     return (install_dir / _CANCEL_FLAG).exists()
 
 
+def cancel_requested(install_dir: str | Path) -> bool:
+    """Public read of the cancel flag, for callers outside this module. The update poller honours it:
+    a user who closed the relay mid-update asked for the update to stop, and a background poller that
+    re-staged it 15 minutes later would quietly overrule them."""
+    return _cancel_requested(Path(install_dir))
+
+
 def _clear_cancel(install_dir: Path) -> None:
     _unlink_quietly(install_dir / _CANCEL_FLAG)
 

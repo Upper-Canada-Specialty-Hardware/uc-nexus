@@ -320,28 +320,9 @@ class Api:
                 # standalone (not the desktop app): the hardened in-process swap
                 return updater.apply_update(url.strip(), DEFAULT_CONFIG_PATH.parent)
             # desktop app: stage the update, then shut ourselves down so the helper can swap the now-
-            # unlocked exe and relaunch - no renaming of a running exe.
-            import os
-
-            result = updater.stage_update(
-                url.strip(), DEFAULT_CONFIG_PATH.parent, os.getpid(), target_build=(build or "").strip() or None
-            )
-            if result.get("ok"):
-                # mark this teardown as the update handoff so it's NOT treated as a user cancel
-                # (RelayApp.user_shutdown writes the cancel flag only when _updating is False).
-                running._updating = True
-                running.shutdown()
-                # Make sure this process actually exits so the helper's swap can proceed promptly.
-                # shutdown() stopped serve + tray and asked the window to close, but destroy() runs from
-                # this pywebview API worker thread and doesn't always tear down webview.start(); a daemon
-                # timer hard-exits as a fallback (it's killed with the process if we exit cleanly first,
-                # so it only fires when the GUI loop is stuck).
-                import threading
-
-                timer = threading.Timer(2.0, lambda: os._exit(0))
-                timer.daemon = True
-                timer.start()
-            return result
+            # unlocked exe and relaunch - no renaming of a running exe. The app owns that sequence
+            # (RelayApp.begin_update) because the background update poller has to run the same one.
+            return running.begin_update(url, build)
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "error": str(e)}
 
