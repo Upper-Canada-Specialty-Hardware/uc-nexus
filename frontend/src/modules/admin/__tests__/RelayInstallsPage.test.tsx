@@ -7,6 +7,22 @@ import { GET_RELAY_STATUS } from '../../../graphql/shared';
 
 vi.setConfig({ testTimeout: 30_000 });
 
+// jsdom reports every element as 0x0, and MUI's DataGrid sizes itself from a measured container: at
+// zero width it lays every column out at `width: 0px` and the row cells - including the per-row
+// recovery action this file asserts on - never make it into the accessibility tree. That made the
+// first test pass locally and fail intermittently in CI. Give the grid real dimensions to measure so
+// the assertion is about the component, not about jsdom's layout engine.
+beforeAll(() => {
+  for (const [prop, value] of [
+    ['clientWidth', 1200],
+    ['clientHeight', 800],
+    ['offsetWidth', 1200],
+    ['offsetHeight', 800],
+  ] as const) {
+    Object.defineProperty(HTMLElement.prototype, prop, { configurable: true, value });
+  }
+});
+
 vi.mock('../../../hooks/useIdentity', () => ({
   useIdentity: () => ({
     displayName: 'Admin',
