@@ -10,6 +10,8 @@ from app.repositories import shop_assembly_repository, user_repository
 from app.repositories import warehouse as warehouse_repository
 
 from .converters import (
+    assembly_pipeline_summary_to_type,
+    assembly_pipeline_to_type,
     clerk_user_to_type,
     opening_item_to_type,
     replacement_work_item_to_type,
@@ -24,6 +26,8 @@ from .inputs import (
     RecordAssemblyProgressInput,
 )
 from .types import (
+    AssemblyPipeline,
+    AssemblyPipelineSummary,
     ClerkUser,
     OpeningItem,
     ReplacementWorkItem,
@@ -96,6 +100,48 @@ class ShopAssemblyQueries:
                 session, uuid.UUID(str(project_id)) if project_id else None, status, reopenable_only
             )
             return [shop_assembly_request_to_type(r) for r in reqs]
+
+    @strawberry.field
+    def assembly_pipeline_summaries(
+        self,
+        info: strawberry.Info,
+        project_id: strawberry.ID | None = None,
+        status: ShopAssemblyRequestStatus | None = None,
+    ) -> list[AssemblyPipelineSummary]:
+        """Where every shop-assembly request has got to (#344), newest first.
+
+        One row per request, carrying the whole ladder as counts: requested -> accepted -> staged x/y
+        (or cancelled) -> assigned -> in progress n/m units -> completed -> shipped, plus the three
+        flags earlier slices introduced (the #342 integrity note, units awaiting replacement, and
+        replacements that arrived after their leaf shipped).
+
+        Omit projectId for the All-Projects view. That is safe here by construction: the repository
+        runs a fixed five statements - the requests, their pulls, and three grouped aggregates -
+        however many requests come back, so the cost of this resolver grows with rows returned and
+        not with queries issued. Open to any signed-in user."""
+        require_user(info)
+        with SessionLocal() as session:
+            rows = shop_assembly_repository.get_assembly_pipeline_summaries(
+                session,
+                project_id=uuid.UUID(str(project_id)) if project_id else None,
+                status=status,
+            )
+            return [assembly_pipeline_summary_to_type(r) for r in rows]
+
+    @strawberry.field
+    def assembly_pipeline(self, info: strawberry.Info, request_id: strawberry.ID) -> AssemblyPipeline:
+        """One request's pipeline, down to the individual door leaf (#344).
+
+        This is the view that answers "where is opening A01 leaf 2?" in one place instead of four:
+        each leaf's rung on the ladder, who is holding it, how many of its units are fitted, where
+        the assembled unit was put away, and what it is still owed. The header counts come from the
+        same aggregates the list uses, so this screen and that one cannot disagree.
+
+        Open to any signed-in user."""
+        require_user(info)
+        with SessionLocal() as session:
+            pipeline = shop_assembly_repository.get_assembly_pipeline(session, uuid.UUID(str(request_id)))
+            return assembly_pipeline_to_type(pipeline)
 
     @strawberry.field
     def shop_assembly_members(self, info: strawberry.Info) -> list[ClerkUser]:

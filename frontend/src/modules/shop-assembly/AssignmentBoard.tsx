@@ -22,6 +22,7 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { useQuery, useMutation } from '@apollo/client/react';
 import { GET_ASSEMBLE_LIST, ASSIGN_OPENINGS, REMOVE_OPENING_FROM_USER } from '../../graphql/shop-assembly';
+import { ASSIGNMENT_STALE_ROOT_FIELDS } from '../../graphql/refetch';
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
 import { leafSuffix } from '../../utils/leaf';
@@ -177,6 +178,15 @@ export default function AssignmentBoard() {
   const { data, refetch } = useQuery<{ assembleList: AssembleOpening[] }>(GET_ASSEMBLE_LIST);
 
   const [assignOpenings] = useMutation(ASSIGN_OPENINGS, {
+    // Eviction only; `assembleList` is absent because this page refetches it itself in the
+    // callbacks below (see refetch.ts). What that cannot reach is the assembler's own board and the
+    // pipeline, both on other routes.
+    update(cache) {
+      for (const fieldName of ASSIGNMENT_STALE_ROOT_FIELDS) {
+        cache.evict({ id: 'ROOT_QUERY', fieldName });
+      }
+      cache.gc();
+    },
     onCompleted: (data) => {
       const count = (data as { assignOpenings: unknown[] }).assignOpenings.length;
       showToast(`${count} opening(s) assigned`, 'success');
@@ -189,6 +199,15 @@ export default function AssignmentBoard() {
   });
 
   const [removeOpening] = useMutation(REMOVE_OPENING_FROM_USER, {
+    // Eviction only; `assembleList` is absent because this page refetches it itself in the
+    // callbacks below (see refetch.ts). What that cannot reach is the assembler's own board and the
+    // pipeline, both on other routes.
+    update(cache) {
+      for (const fieldName of ASSIGNMENT_STALE_ROOT_FIELDS) {
+        cache.evict({ id: 'ROOT_QUERY', fieldName });
+      }
+      cache.gc();
+    },
     onCompleted: () => {
       showToast('Opening returned to available pool', 'success');
       refetch();

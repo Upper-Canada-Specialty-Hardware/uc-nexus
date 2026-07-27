@@ -122,6 +122,93 @@ export const INSTALL_REPLACEMENT = gql`
   }
 `;
 
+// The pipeline rollup, one row per shop-assembly request (#344). Answers "how far has this request
+// got" for a project, or for every project when projectId is omitted - the backend runs a fixed five
+// statements either way, so the All-Projects view is a normal read rather than a special case.
+const PIPELINE_SUMMARY_FIELDS = `
+  requestId
+  requestNumber
+  projectId
+  projectCode
+  projectName
+  requestStatus
+  createdBy
+  createdAt
+  acceptedBy
+  acceptedAt
+  rejectedBy
+  rejectedAt
+  integrityNote
+  pullRequestId
+  pullRequestStatus
+  pullApprovedAt
+  pullCompletedAt
+  stagingStatus
+  cancelledPullCount
+  lastCancelledAt
+  lastCancelledBy
+  lastCancellationReason
+  openingCount
+  stagedOpeningCount
+  assignedOpeningCount
+  inProgressOpeningCount
+  completedOpeningCount
+  shippedOpeningCount
+  plannedUnitCount
+  installedUnitCount
+  deficientUnitCount
+  replacementPendingUnitCount
+  awaitingReplacementOpeningCount
+  replacementAfterShipOpeningCount
+  stage
+`;
+
+export const GET_ASSEMBLY_PIPELINE_SUMMARIES = gql`
+  query GetAssemblyPipelineSummaries($projectId: ID, $status: ShopAssemblyRequestStatus) {
+    assemblyPipelineSummaries(projectId: $projectId, status: $status) {
+      ${PIPELINE_SUMMARY_FIELDS}
+    }
+  }
+`;
+
+// One request down to the individual door leaf: the query that answers "where is opening A01 leaf 2?"
+// in one place instead of four. The header counts are the same aggregates the list above uses, so the
+// two screens cannot disagree.
+export const GET_ASSEMBLY_PIPELINE = gql`
+  query GetAssemblyPipeline($requestId: ID!) {
+    assemblyPipeline(requestId: $requestId) {
+      summary {
+        ${PIPELINE_SUMMARY_FIELDS}
+      }
+      openings {
+        shopAssemblyOpeningId
+        openingNumber
+        leaf
+        building
+        floor
+        location
+        stage
+        pullStatus
+        stagedAt
+        stagedBy
+        assignedToUserId
+        assignedTo
+        assemblyStatus
+        completedAt
+        plannedUnitCount
+        installedUnitCount
+        deficientUnitCount
+        replacementPendingUnitCount
+        awaitingReplacementUnitCount
+        replacementArrivedAfterShip
+        openingItemId
+        openingItemState
+        assembledLocation
+      }
+    }
+  }
+`;
+
 export const GET_SHOP_ASSEMBLY_STATS = gql`
   query GetShopAssemblyStats {
     shopAssemblyStats {

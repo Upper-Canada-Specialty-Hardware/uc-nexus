@@ -27,8 +27,21 @@ enum ShopAssemblyRequestStatus {
 
 type ShopAssemblyOpening {
   id: ID!
-  shop_assembly_request_id: ID!
+  # Legacy SAR parent, nullable since #222 - openings created from Start a Task hang off the
+  # PullRequest below. Still written for new rows (import stamps both), which is what lets a request's
+  # openings be found after a cancellation nulls pull_request_id (#343).
+  shop_assembly_request_id: ID
+  # The shop-assembly PullRequest this opening was created under. Null before the request is accepted,
+  # and again after its pull is cancelled.
+  pull_request_id: ID
   opening_id: ID!
+  # Resolved from the source Opening at request time; populated by myWork, assembleList and
+  # pullRequestOpenings.
+  opening_number: String
+  building: String
+  floor: String
+  # Door leaf this assembly work unit is for (#311): 1 or 2, or null (legacy whole-opening unit).
+  leaf: Int
   # NOT_PULLED until the warehouse confirms this opening's cart is built, then PULLED (#343). Never
   # PARTIAL: one cart cannot be half-built.
   pull_status: PullStatus!
@@ -126,8 +139,107 @@ input AssemblyProgressItemInput {
 
 input RecordAssemblyProgressInput {
   opening_id: ID!
-  items: [AssemblyProgressItemInput!]
+  items: [AssemblyProgressItemInput!]!
   performed_by: String
+}
+
+# --- Pipeline observability (#344) ---
+# Derived, never stored. Every count below comes from a grouped scalar aggregate, so the summary list
+# costs a fixed five statements whether it is scoped to one project or to all of them.
+
+# How far one door leaf has travelled. The stage of a *request* is the stage of its least-advanced
+# opening - what is holding it up, not its best news. REJECTED and CANCELLED are off the ladder
+# rather than at the end of it: they are the two ways a leaf leaves the pipeline unassembled.
+enum PipelineStage {
+  REQUESTED    # the request exists; no pull minted
+  ACCEPTED     # the pull exists but is not approved, so nothing has been picked
+  PULLING      # the pull is approved and stock deducted; this cart is not built
+  STAGED       # this cart is built (#343) and nobody is holding it
+  ASSIGNED     # claimed by an assembler, nothing recorded yet
+  IN_PROGRESS  # hardware recorded onto the leaf, not fully dispositioned (#340)
+  COMPLETED    # an OpeningItem exists for the leaf
+  SHIPPED      # the assembled leaf has left the building
+  REJECTED     # the source request was rejected, releasing its claim (#342)
+  CANCELLED    # the pull was cancelled and restocked (#343); the request is back at PENDING
+}
+
+type PipelineOpening {
+  shop_assembly_opening_id: ID!
+  opening_number: String!
+  leaf: Int
+  building: String
+  floor: String
+  location: String
+  stage: PipelineStage!
+  pull_status: PullStatus!
+  staged_at: DateTime
+  staged_by: String
+  assigned_to_user_id: String
+  assigned_to: String
+  assembly_status: AssemblyStatus!
+  completed_at: DateTime
+  planned_unit_count: Int!
+  installed_unit_count: Int!
+  deficient_unit_count: Int!
+  replacement_pending_unit_count: Int!
+  # Units still owed to this leaf: condemned-and-unreplaced plus arrived-but-not-fitted (#341).
+  awaiting_replacement_unit_count: Int!
+  # Replacement hardware is sitting for a leaf that has already shipped (#341). installReplacement
+  # refuses it; it belongs to reallocation.
+  replacement_arrived_after_ship: Boolean!
+  opening_item_id: ID
+  opening_item_state: OpeningItemState
+  # Where the assembled leaf was put away, "aisle-row-bay", or null if it has not been located.
+  assembled_location: String
+}
+
+type AssemblyPipelineSummary {
+  request_id: ID!
+  request_number: String!
+  project_id: ID!
+  project_code: String
+  project_name: String
+  request_status: ShopAssemblyRequestStatus!
+  created_by: String!
+  created_at: DateTime!
+  accepted_by: String
+  accepted_at: DateTime
+  rejected_by: String
+  rejected_at: DateTime
+  # The same #342 note the accept screen shows as an amber alert.
+  integrity_note: String
+  # The live pull, never a cancelled one (#343 made request_number unique among live pulls only).
+  pull_request_id: ID
+  pull_request_status: PullRequestStatus
+  pull_approved_at: DateTime
+  pull_completed_at: DateTime
+  # Derived staging rollup - the same reading PullRequest.staging_status gives (#343). Null when the
+  # request has no openings, which is "not applicable", never "nothing staged".
+  staging_status: PullStatus
+  # Cancellation history: a cancelled pull keeps its number and hands its openings back to a PENDING
+  # request, so without this the request would read as never having been accepted.
+  cancelled_pull_count: Int!
+  last_cancelled_at: DateTime
+  last_cancelled_by: String
+  last_cancellation_reason: String
+  opening_count: Int!
+  staged_opening_count: Int!
+  assigned_opening_count: Int!
+  in_progress_opening_count: Int!
+  completed_opening_count: Int!
+  shipped_opening_count: Int!
+  planned_unit_count: Int!
+  installed_unit_count: Int!
+  deficient_unit_count: Int!
+  replacement_pending_unit_count: Int!
+  awaiting_replacement_opening_count: Int!
+  replacement_after_ship_opening_count: Int!
+  stage: PipelineStage!
+}
+
+type AssemblyPipeline {
+  summary: AssemblyPipelineSummary!
+  openings: [PipelineOpening!]!
 }
 
 # No item_results since #340: completion reads the persisted per-item progress instead.
@@ -142,15 +254,22 @@ input CompleteOpeningInput {
 # Every field below is gated on an authenticated caller (require_user, #339) except where a
 # stronger role gate is noted. Adding the gate did not change any field's arguments.
 type Query {
-  assembleList(projectId: ID!): [ShopAssemblyOpening!]!
+  # projectId is optional; omit it for the cross-project view.
+  assembleList(projectId: ID): [ShopAssemblyOpening!]!
   myWork(assignedToUserId: String!): [ShopAssemblyOpening!]!
+  # Where every shop-assembly request has got to (#344), newest first. Omit projectId for the
+  # All-Projects view - the repository runs a fixed five statements either way.
+  assemblyPipelineSummaries(projectId: ID, status: ShopAssemblyRequestStatus): [AssemblyPipelineSummary!]!
+  # One request down to the individual door leaf. The header counts come from the same aggregates the
+  # list above uses, so the two screens cannot disagree. NOT_FOUND if the request does not exist.
+  assemblyPipeline(requestId: ID!): AssemblyPipeline!
   # Replacement installs outstanding on already-completed leaves (#341). assignedToUserId scopes it
   # to one assembler's My Work - the opening keeps the assignment it was completed under, so this
   # needs no new assignment concept. Rows whose leaf has shipped are included on purpose.
   replacementWork(assignedToUserId: String, projectId: ID): [ReplacementWorkItem!]!
   # reopenableOnly (#325): keep only requests whose minted PR is still PENDING (the Approved/reopen view).
   shopAssemblyRequests(projectId: ID, status: ShopAssemblyRequestStatus, reopenableOnly: Boolean! = false): [ShopAssemblyRequest!]!
-  # Manager assignment picker (#330). Manager-gated (Shop Assembly Manager). ClerkUser in user.graphql.
+  # Manager assignment picker (#330). Manager-gated (Shop Assembly Manager). ClerkUser is in user.graphql.
   shopAssemblyMembers: [ClerkUser!]!
 }
 
@@ -179,7 +298,9 @@ type Mutation {
   # bench (record it as progress instead) or has already shipped (that is reallocation's problem).
   installReplacement(input: InstallReplacementInput!): OpeningItem!
   # Accept gate (#293). Any signed-in user (require_user). acceptedBy/rejectedBy is the caller's
-  # display name. Accept re-checks inventory sufficiency and mints the warehouse PullRequest.
+  # display name. Accept mints the warehouse PullRequest and is a **pure human gate** since #342: the
+  # hardware was reserved when the request was created, so nothing is re-checked here. Reject is what
+  # releases that reservation.
   acceptShopAssemblyRequest(id: ID!, acceptedBy: String!): ShopAssemblyRequest!
   rejectShopAssemblyRequest(id: ID!, rejectedBy: String!, reason: String): ShopAssemblyRequest!
   # Reopen (#325). Undoes an erroneous accept: APPROVED -> PENDING, hard-deletes the minted

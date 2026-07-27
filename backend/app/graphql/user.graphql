@@ -1,0 +1,40 @@
+# User Module SDL Reference
+# Source of truth: Strawberry resolvers in app/schemas/user.py
+#
+# Users do not live in Postgres. They live in Clerk, and `app/repositories/user_repository.py` talks
+# to the Clerk Backend API - which is why roles are not a database enum and why `require_admin` /
+# `require_role` cost a network call while `require_user` does not (app/auth.py).
+#
+# This file existed only as a cross-reference from shop_assembly.graphql ("ClerkUser is in
+# user.graphql") until #344; the reference was dangling. It is written now so the pointer resolves.
+
+# One Clerk account as the app sees it. `roles` comes from Clerk publicMetadata, not from the session
+# token, so it is fetched rather than decoded.
+type ClerkUser {
+  id: String!
+  first_name: String!
+  last_name: String!
+  email: String!
+  # Known values: "Admin/Manager" (app/auth.ADMIN_ROLE) and "Shop Assembly Manager"
+  # (app/auth.SHOP_ASSEMBLY_MANAGER_ROLE). Free-form in Clerk, so this is not an enum.
+  roles: [String!]!
+  # The GP BUYERID this account acts as (#216). Null until an admin links it; createPo and
+  # registerPoInGp enforce that the caller has one.
+  gp_buyer_id: String
+  image_url: String!
+}
+
+type Query {
+  users: [ClerkUser!]!
+  # Shop-assembly team members for the manager assignment picker (#330), defined in
+  # shop_assembly.graphql because that is the module that consumes it. Manager-gated.
+  # shopAssemblyMembers: [ClerkUser!]!
+}
+
+type Mutation {
+  updateUserRoles(userId: String!, roles: [String!]!): ClerkUser!
+  # Admin-driven display-name change (#240).
+  updateUserName(userId: String!, firstName: String!, lastName: String!): ClerkUser!
+  # Link a UC Nexus account to the GP BUYERID it acts as (#216); null clears it.
+  updateUserGpBuyerId(userId: String!, gpBuyerId: String): ClerkUser!
+}

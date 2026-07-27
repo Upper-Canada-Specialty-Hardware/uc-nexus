@@ -98,11 +98,58 @@ class ReconciliationStatus(enum.Enum):
 
 @strawberry.enum
 class ApproveOutcome(enum.Enum):
+    """What `approvePullRequest` did. Two values, because `approve_pull_request` returns exactly two
+    outcome strings.
+
+    A third value, CANCELLED, was removed in #344 as dead state. It dated from the pre-#224
+    behaviour where an approve that found insufficient stock *cancelled* the pull; since #224 such
+    an approve leaves the PR PENDING (blocked, not cancelled) and returns INSUFFICIENT with the
+    shortfall detail, so no code path could produce it and no client branched on it. It is safe to
+    delete without a migration: ApproveOutcome is a GraphQL-only enum and was never persisted -
+    a *cancelled pull* is `PullRequestStatus.CANCELLED`, which is a different enum on a real column
+    and is very much alive since #343."""
+
     APPROVED = "approved"
-    CANCELLED = "cancelled"
     # #224: an approve blocked by insufficient inventory leaves the PR PENDING (not cancelled) and
     # returns the shortfall to the approver; the PO is notified for backfill.
     INSUFFICIENT = "insufficient"
+
+
+@strawberry.enum
+class PipelineStage(enum.Enum):
+    """How far one door leaf has travelled through shop assembly (#344), derived from existing
+    state - no column stores it.
+
+    The ladder is the one the floor actually asks about: *where is opening A01 leaf 2?* Each value
+    is the furthest point the leaf has provably reached, so the stage of a whole request is the
+    stage of its least-advanced opening - what is holding it up.
+
+    REJECTED and CANCELLED are off the ladder rather than on the end of it: they are the two ways a
+    leaf leaves the pipeline without being assembled, and reading them as "further along than
+    IN_PROGRESS" would be nonsense.
+    """
+
+    # The request exists and is waiting for a human to accept it. No pull has been minted.
+    REQUESTED = "REQUESTED"
+    # Accepted: the warehouse pull exists but has not been approved, so nothing has been picked.
+    ACCEPTED = "ACCEPTED"
+    # The pull is approved and stock is deducted, but this opening's own cart is not built yet.
+    PULLING = "PULLING"
+    # This opening's cart is staged (#343) and nobody is holding it - it is on the assignment board.
+    STAGED = "STAGED"
+    # Claimed by an assembler, with nothing recorded against it yet.
+    ASSIGNED = "ASSIGNED"
+    # Hardware has been recorded onto the leaf but it is not fully dispositioned (#340).
+    IN_PROGRESS = "IN_PROGRESS"
+    # Assembled: an OpeningItem exists for the leaf and it is in (or ready to leave) inventory.
+    COMPLETED = "COMPLETED"
+    # The assembled leaf has left the building.
+    SHIPPED = "SHIPPED"
+    # The source request was rejected, which released its claim on inventory.
+    REJECTED = "REJECTED"
+    # The pull this opening was on was cancelled and its hardware restocked (#343). The opening is
+    # back on a PENDING request awaiting re-acceptance, so this is a state the *history* is in.
+    CANCELLED = "CANCELLED"
 
 
 @strawberry.enum
