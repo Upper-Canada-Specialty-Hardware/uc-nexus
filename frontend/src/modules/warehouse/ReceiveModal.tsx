@@ -111,6 +111,9 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
   // after receiveQuantities is cleared (so a committed PO can't be re-posted), which would otherwise make
   // the live totalItemsToReceive read 0.
   const [receivedCount, setReceivedCount] = useState(0);
+  // How many POs' receipts went onto the GP outbox instead of posting (#353 PR E). Drives the amber
+  // success copy: the work is accepted and must not be redone, but nothing is in inventory yet.
+  const [queuedCount, setQueuedCount] = useState(0);
   const [mutationError, setMutationError] = useState<string | null>(null);
   // Structured GP/eConnect detail for a failed receipt, shown persistently (issue #187) so the user can
   // screenshot it; mutationError carries the which-PO + retry-safe context line.
@@ -123,7 +126,11 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
   const [lineLocations, setLineLocations] = useState<Record<string, LocationDraft[]>>({});
   const [submitting, setSubmitting] = useState(false);
 
-  const [createReceive] = useMutation(CREATE_RECEIVE);
+  // #353 PR E: `queued` true means the GP relay was unreachable and the receipt is on the durable
+  // outbox; `receiveRecord` is null because the UC Nexus receive is persisted with the GP write.
+  const [createReceive] = useMutation<{
+    createReceive: { queued: boolean; outboxEntryId: string | null; receiveRecord: { id: string } | null };
+  }>(CREATE_RECEIVE);
 
   // One idempotency key per PO, reused across retries so re-posting a PO that already committed in GP is
   // a no-op (no duplicate receipt). Cleared per-PO on success; a failed PO keeps its key for the retry.
@@ -380,6 +387,9 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
     // dropped from the form and a refetch runs regardless, so the user sees what landed and can't
     // re-post them.
     const completed: string[] = [];
+    // POs whose receipt was accepted but is waiting on the GP relay (#353 PR E). Tracked separately
+    // from `completed` because nothing has been persisted for these yet - no inventory, no refetch.
+    const queued: string[] = [];
     let failureMessage: string | null = null;
     let capturedGpError: GpError | null = null;
 
@@ -422,7 +432,15 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
         };
 
         try {
-          await createReceive({ variables: { input } });
+          const res = await createReceive({ variables: { input } });
+          if (res.data?.createReceive?.queued) {
+            // #353 PR E: the GP relay was unreachable, so the receipt is on the durable outbox and
+            // will post itself. Deliberately do NOT delete this PO's idempotency key - the outbox row
+            // now owns it, and reusing it on a resubmit is what makes that resubmit a no-op instead
+            // of a second queued receipt. Nothing is in inventory yet, so no refetch either.
+            queued.push(poId);
+            continue;
+          }
         } catch (err: unknown) {
           // Keep this PO's key so the retry reuses it - the GP receipt may have committed even if the
           // mutation reported failure, and reusing the key makes the retry safe.
@@ -470,7 +488,15 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
     }
 
     setReceivedCount(totalItemsToReceive);
-    showToast(`Receive completed successfully. ${totalItemsToReceive} items added to inventory.`, 'success');
+    setQueuedCount(queued.length);
+    if (queued.length > 0) {
+      showToast(
+        `Queued — the GP relay is offline. ${queued.length === 1 ? 'This receipt' : 'These receipts'} will post automatically when it reconnects.`,
+        'info',
+      );
+    } else {
+      showToast(`Receive completed successfully. ${totalItemsToReceive} items added to inventory.`, 'success');
+    }
     setSucceeded(true);
   }, [
     poIds,
@@ -694,7 +720,14 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
             Error loading PO details: {poDetailsError}
           </Alert>
         )}
-        {succeeded && (
+        {succeeded && queuedCount > 0 && (
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            Queued — the GP relay is offline. {queuedCount === 1 ? 'This receipt' : `These ${queuedCount} receipts`} will
+            post automatically when it reconnects; you don't need to redo it. The hardware will appear in inventory
+            once it posts.
+          </Alert>
+        )}
+        {succeeded && queuedCount === 0 && (
           <Alert severity="success" sx={{ mb: 2 }}>
             Receive completed successfully! {receivedCount} items added to inventory.
           </Alert>

@@ -9,9 +9,9 @@ import strawberry
 
 from app.auth import require_admin, require_user
 from app.database import SessionLocal
-from app.errors import InvalidStateTransitionError, NotFoundError, ValidationError
+from app.errors import InvalidStateTransitionError, NotFoundError, RelayUnavailableError, ValidationError
 from app.repositories import buyer_repository, po_document_settings_repository, po_repository, user_repository
-from app.services import gp_idempotency, gp_po
+from app.services import gp_idempotency, gp_outbox_enqueue, gp_po
 from app.services.relay_gateway import gateway as relay_gateway
 
 from .converters import (
@@ -29,6 +29,7 @@ from .types import (
     POStatistics,
     PriorOrderAsForProduct,
     PurchaseOrder,
+    RegisterPOResult,
 )
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,24 @@ logger = logging.getLogger(__name__)
 def _load_po_type(po_id: uuid.UUID) -> PurchaseOrder:
     with SessionLocal() as session:
         return po_to_type(po_repository.reload_po(session, po_id))
+
+
+def _po_outbox_identity(po_id: uuid.UUID) -> tuple[uuid.UUID | None, str]:
+    """(project_id, label) for a queued register-PO write (#353 PR E).
+
+    project_id routes a terminal failure to a notification; a PO with no project yields None and the
+    worker falls back to the queue UI rather than inventing a placeholder project. The label is the
+    human line in that queue - a DRAFT being registered has no GP number yet (GP assigns it), so the
+    PO's own number, or its id, is the only stable handle. One row, two scalars, one round trip."""
+    from sqlalchemy import select
+
+    from app.models.purchase_order import PurchaseOrder as POModel
+
+    with SessionLocal() as session:
+        row = session.execute(select(POModel.project_id, POModel.po_number).where(POModel.id == po_id)).first()
+    project_id = row.project_id if row is not None else None
+    number = row.po_number if row is not None else None
+    return project_id, f"Register PO {number or po_id} in GP"
 
 
 def _resolve_line_manufacturers(session, project_id, line_items_data) -> list[str | None]:
@@ -315,7 +334,7 @@ class POMutations:
             return po_to_type(po_repository.reload_po(session, po.id))
 
     @strawberry.mutation
-    async def register_po_in_gp(self, info: strawberry.Info, input: RegisterPOInput) -> PurchaseOrder:
+    async def register_po_in_gp(self, info: strawberry.Info, input: RegisterPOInput) -> RegisterPOResult:
         """Register an imported DRAFT PO into GP (issue #175, the import-acceptance path; brokered
         server-side as of issue #199). Pushes the PO to GP via relay_call (create_po) BEFORE persisting
         anything, then maps the PO to the chosen GP vendor + cost code, replaces the draft's line items
@@ -350,7 +369,8 @@ class POMutations:
 
         state = await asyncio.to_thread(gp_idempotency.load, key)
         if state is not None and state.result_id is not None:
-            return await asyncio.to_thread(_load_po_type, uuid.UUID(state.result_id))
+            po = await asyncio.to_thread(_load_po_type, uuid.UUID(state.result_id))
+            return RegisterPOResult(queued=False, outbox_entry_id=None, purchase_order=po)
 
         payload = await asyncio.to_thread(
             _prepare_register_po,
@@ -366,13 +386,50 @@ class POMutations:
             trade_discount=input.trade_discount,
         )
 
+        persist_context = {
+            "po_id": str(pid),
+            "gp_vendor_id": input.gp_vendor_id,
+            "vendor_name_snapshot": input.gp_vendor_name,
+            "line_items_data": line_items_data,
+            "vendor_id": str(vendor_id) if vendor_id else None,
+            "cost_code": input.cost_code,
+            "buyer_id": input.buyer_id,
+            "shipping_cost": input.shipping_cost,
+            "tariff_amount": input.tariff_amount,
+        }
+
         if state is not None and state.relay_result is not None:
             gp_result = state.relay_result
         else:
-            gp_result = await relay_gateway.relay_call(input.gp_company, "create_po", payload)
+            try:
+                gp_result = await relay_gateway.relay_call(input.gp_company, "create_po", payload)
+            except RelayUnavailableError as e:
+                # #353 PR E: the relay is unreachable but the job never left the backend, so GP cannot
+                # have run it - queue it and tell the user it will post itself. A DISPATCHED failure
+                # is re-raised: GP may hold the write, and a blind retry would reserve a second PO
+                # number.
+                if not gp_outbox_enqueue.may_enqueue(e):
+                    raise
+                project_id, label = await asyncio.to_thread(_po_outbox_identity, pid)
+                entry_id = await asyncio.to_thread(
+                    gp_outbox_enqueue.enqueue,
+                    idempotency_key=key,
+                    op="register_po_in_gp",
+                    relay_op="create_po",
+                    company=input.gp_company,
+                    payload=payload,
+                    persist_context=persist_context,
+                    entity_key=f"po:{pid}",
+                    label=label,
+                    project_id=project_id,
+                    requested_by=auth["user_id"],
+                )
+                # The PO is still DRAFT; the list shows it as queued until the worker drains it.
+                po = await asyncio.to_thread(_load_po_type, pid)
+                return RegisterPOResult(queued=True, outbox_entry_id=strawberry.ID(entry_id), purchase_order=po)
             await asyncio.to_thread(gp_idempotency.record_relay_result, key, "register_po_in_gp", gp_result)
 
-        return await asyncio.to_thread(
+        po = await asyncio.to_thread(
             _persist_register_po,
             key=key,
             po_id=pid,
@@ -386,6 +443,7 @@ class POMutations:
             shipping_cost=input.shipping_cost,
             tariff_amount=input.tariff_amount,
         )
+        return RegisterPOResult(queued=False, outbox_entry_id=None, purchase_order=po)
 
     @strawberry.mutation
     def update_po(

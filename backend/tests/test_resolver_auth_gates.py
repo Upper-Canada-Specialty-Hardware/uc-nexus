@@ -19,10 +19,12 @@ import uuid
 
 import pytest
 
+from app.schemas import gp_outbox as gp_outbox_module
 from app.schemas import relay as relay_module
 from app.schemas import shop_assembly as shop_assembly_module
 from app.schemas import stock as stock_module
 from app.schemas.enums import DeficiencyResolution
+from app.schemas.gp_outbox import GpOutboxMutations, GpOutboxQueries
 from app.schemas.inputs import (
     AssignOpeningsInput,
     CompleteOpeningInput,
@@ -161,6 +163,24 @@ _ADMIN_GATED = [
     ("relayAdoptWindow", relay_module, lambda: RelayQueries().relay_adopt_window(FakeInfo())),
     ("armRelayAdopt", relay_module, lambda: RelayMutations().arm_relay_adopt(FakeInfo(), _id())),
     ("disarmRelayAdopt", relay_module, lambda: RelayMutations().disarm_relay_adopt(FakeInfo())),
+    # #353 PR E: retrying an `ambiguous` queued write can duplicate a GP posting, and cancelling one
+    # abandons work somebody has already done. Both are admin-only.
+    (
+        "retryGpOutboxEntry",
+        gp_outbox_module,
+        lambda: GpOutboxMutations().retry_gp_outbox_entry(FakeInfo(), _id()),
+    ),
+    (
+        "cancelGpOutboxEntry",
+        gp_outbox_module,
+        lambda: GpOutboxMutations().cancel_gp_outbox_entry(FakeInfo(), _id()),
+    ),
+]
+
+# Any signed-in user; the PO and receiving lists read the queue to show pending chips.
+_OUTBOX_USER_GATED = [
+    ("gpOutboxSummary", gp_outbox_module, lambda: GpOutboxQueries().gp_outbox_summary(FakeInfo())),
+    ("gpOutbox", gp_outbox_module, lambda: GpOutboxQueries().gp_outbox(FakeInfo())),
 ]
 
 
@@ -181,6 +201,17 @@ def test_resolver_requires_an_admin(label, module, call, monkeypatch):
         raise _GateReached(label)
 
     monkeypatch.setattr(module, "require_admin", _gate)
+
+    with pytest.raises(_GateReached):
+        call()
+
+
+@pytest.mark.parametrize("label, module, call", _OUTBOX_USER_GATED, ids=[row[0] for row in _OUTBOX_USER_GATED])
+def test_outbox_read_requires_a_signed_in_user(label, module, call, monkeypatch):
+    def _gate(info):
+        raise _GateReached(label)
+
+    monkeypatch.setattr(module, "require_user", _gate)
 
     with pytest.raises(_GateReached):
         call()

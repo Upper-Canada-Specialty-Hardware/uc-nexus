@@ -511,22 +511,29 @@ export const ADJUST_INVENTORY_QUANTITY = gql`
   }
 `;
 
+// #353 PR E: the result is now a wrapper. `queued` true means the GP relay was unreachable and the
+// receipt is on the durable outbox - `receiveRecord` is null because the UC Nexus receive is
+// persisted together with the GP write, so nothing is in inventory yet.
 export const CREATE_RECEIVE = gql`
   mutation CreateReceive($input: CreateReceiveInput!) {
     createReceive(input: $input) {
-      id
-      poId
-      receivedAt
-      receivedBy
-      createdAt
-      lineItems {
+      queued
+      outboxEntryId
+      receiveRecord {
         id
-        receiveRecordId
-        poLineItemId
-        hardwareCategory
-        productCode
-        quantityReceived
+        poId
+        receivedAt
+        receivedBy
         createdAt
+        lineItems {
+          id
+          receiveRecordId
+          poLineItemId
+          hardwareCategory
+          productCode
+          quantityReceived
+          createdAt
+        }
       }
     }
   }

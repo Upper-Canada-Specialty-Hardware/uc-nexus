@@ -110,27 +110,34 @@ function poDetailsMock(overrides: Record<string, unknown> = {}): MockedResponse 
   };
 }
 
+// #353 PR E: createReceive returns a wrapper. `queued` false is the online path - the receipt
+// reached GP and the UC Nexus receive was persisted with it.
 function createReceiveData(quantityReceived: number) {
   return {
     createReceive: {
-      __typename: 'ReceiveRecord',
-      id: 'rr-1',
-      poId: 'po-1',
-      receivedAt: '2026-07-16T10:00:00Z',
-      receivedBy: 'Warehouse',
-      createdAt: '2026-07-16T10:00:00Z',
-      lineItems: [
-        {
-          __typename: 'ReceiveLineItem',
-          id: 'rli-1',
-          receiveRecordId: 'rr-1',
-          poLineItemId: 'li-1',
-          hardwareCategory: 'Hinges',
-          productCode: 'HG-100',
-          quantityReceived,
-          createdAt: '2026-07-16T10:00:00Z',
-        },
-      ],
+      __typename: 'CreateReceiveResult',
+      queued: false,
+      outboxEntryId: null,
+      receiveRecord: {
+        __typename: 'ReceiveRecord',
+        id: 'rr-1',
+        poId: 'po-1',
+        receivedAt: '2026-07-16T10:00:00Z',
+        receivedBy: 'Warehouse',
+        createdAt: '2026-07-16T10:00:00Z',
+        lineItems: [
+          {
+            __typename: 'ReceiveLineItem',
+            id: 'rli-1',
+            receiveRecordId: 'rr-1',
+            poLineItemId: 'li-1',
+            hardwareCategory: 'Hinges',
+            productCode: 'HG-100',
+            quantityReceived,
+            createdAt: '2026-07-16T10:00:00Z',
+          },
+        ],
+      },
     },
   };
 }
@@ -345,6 +352,41 @@ describe('ReceiveModal', () => {
     expect(keys).toHaveLength(2);
     expect(keys[0]).toMatch(UUID_RE);
     expect(keys[1]).toBe(keys[0]);
+  });
+
+  it('shows the queued outcome and keeps the idempotency key when the GP relay is offline', async () => {
+    // #353 PR E: an offline relay no longer fails the receive - it is accepted onto the outbox. The
+    // key must NOT be cleared: the outbox row owns it, and reusing it is what makes a resubmit return
+    // the same queued entry instead of queueing a second receipt.
+    const keys: string[] = [];
+    const queuedMock: MockedResponse<Record<string, unknown>, CreateReceiveVars> = {
+      request: { query: CREATE_RECEIVE, variables: () => true },
+      maxUsageCount: 2,
+      result: (vars) => {
+        keys.push(vars.input.idempotencyKey);
+        return {
+          data: {
+            createReceive: {
+              __typename: 'CreateReceiveResult',
+              queued: true,
+              outboxEntryId: 'outbox-1',
+              receiveRecord: null,
+            },
+          },
+        };
+      },
+    };
+    await openModal([poDetailsMock(), queuedMock]);
+
+    setReceiveQty('3');
+    fillLocation(0, 'A1', 'B2', 'C3');
+    await submitViaConfirm();
+
+    await screen.findByText(/Queued — the GP relay is offline/, undefined, SLOW);
+    // Not an inventory claim: nothing has been persisted yet.
+    expect(screen.queryByText(/items added to inventory/)).toBeNull();
+    expect(keys).toHaveLength(1);
+    expect(keys[0]).toMatch(UUID_RE);
   });
 
   it('blocks receiving a PO that is not GP-registered', async () => {

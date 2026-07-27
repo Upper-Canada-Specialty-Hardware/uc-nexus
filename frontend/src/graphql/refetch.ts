@@ -179,3 +179,27 @@ export const PULL_CANCEL_STALE_ROOT_FIELDS = [
   // its history (#344), which is the reading that stops it looking like it was never accepted.
   ...PIPELINE_STALE_ROOT_FIELDS,
 ];
+
+// What a background GP-outbox drain invalidates (#353 PR E). A queued receive or PO registration
+// lands minutes or hours after the user submitted it, while the browser is sitting on an arbitrary
+// route - which is precisely the case `refetchQueries` cannot reach, since it only touches mounted
+// instances of queries it can name.
+//
+// Eviction-only, and deliberately nothing paired to refetch by name: pairing an evict with a refetch
+// is the double-run this whole file exists to prevent (see the disjointness note above). The
+// GpOutboxWatcher evicts these when `lastDrainedAt` advances, and whichever watchers are mounted
+// repair their own incomplete cache diffs.
+//
+// The set is "everything a receive or a PO registration changes": the PO lists and the PO's own
+// detail/receiving view (status moves DRAFT -> GP_REGISTERED, received quantities move), the recent
+// receives feed, and the warehouse inventory reads that a drained receipt has just added stock to.
+export const GP_OUTBOX_DRAINED_STALE_ROOT_FIELDS = [
+  'purchaseOrders',
+  'purchaseOrder',
+  'poReceivingDetails',
+  'recentReceiveRecords',
+  'warehouseDashboard',
+  'inventoryHierarchy',
+  'inventoryByVendor',
+  'projectInventoryAvailability',
+];

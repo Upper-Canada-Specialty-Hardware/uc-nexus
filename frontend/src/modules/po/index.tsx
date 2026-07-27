@@ -34,6 +34,7 @@ import UnfoldMoreIcon from '@mui/icons-material/UnfoldMore';
 import UnfoldLessIcon from '@mui/icons-material/UnfoldLess';
 import { useQuery } from '@apollo/client/react';
 import { GET_PURCHASE_ORDERS, GET_PO_STATISTICS } from '../../graphql/po';
+import { GET_GP_OUTBOX } from '../../graphql/shared';
 import { GET_PROJECTS } from '../../graphql/shared';
 import type { Project } from '../../types/project';
 import PODetailModal from './PODetailModal';
@@ -545,6 +546,9 @@ interface POTableRowProps {
   onOpen: () => void;
   onRegister: () => void;
   relayConnected: boolean;
+  // #353 PR E: this PO has a GP write sitting on the outbox. Passed down rather than resolved per
+  // row: a field on PurchaseOrder would make the All-Projects list an N+1.
+  gpWriteQueued: boolean;
 }
 
 function POTableRow({
@@ -556,6 +560,7 @@ function POTableRow({
   onOpen,
   onRegister,
   relayConnected,
+  gpWriteQueued,
 }: POTableRowProps) {
   const dataCellSx = { cursor: 'pointer' };
   return (
@@ -605,7 +610,14 @@ function POTableRow({
               color={poStatusChipColor(po.status)}
               size="small"
             />
-            {po.status === 'DRAFT' && (
+            {/* #353 PR E: the registration was accepted but has not reached GP yet, so the PO is
+                still DRAFT. Saying so stops it reading as "nobody has done this". */}
+            {gpWriteQueued && (
+              <Tooltip title="Waiting for the GP relay. This will post automatically when it reconnects." arrow>
+                <Chip label="GP registration queued" color="warning" size="small" variant="outlined" />
+              </Tooltip>
+            )}
+            {po.status === 'DRAFT' && !gpWriteQueued && (
               <Tooltip
                 title={relayConnected ? '' : 'GP relay not detected on this machine - it must be running to register a PO'}
                 arrow
@@ -678,6 +690,22 @@ function POListPage() {
   // This is the main PO page, so it polls continuously (no skip) - it's the single relay poller the
   // detail/create/register dialogs read through their relayConnected prop.
   const { connected: relayConnected } = useRelayStatus();
+
+  // #353 PR E: which POs have a GP write still on the outbox. Read as ONE list query and joined onto
+  // rows client-side on `entityKey` (`po:<id>`), deliberately not as a field on PurchaseOrder - a
+  // per-row resolver would be an N+1 on this all-projects list, and converters must not query.
+  const { data: outboxData } = useQuery<{ gpOutbox: { id: string; entityKey: string; status: string }[] }>(
+    GET_GP_OUTBOX,
+    { variables: { limit: 200 }, fetchPolicy: 'cache-and-network', pollInterval: 15_000 },
+  );
+  const queuedPoIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const entry of outboxData?.gpOutbox ?? []) {
+      if (entry.status !== 'PENDING' && entry.status !== 'IN_FLIGHT') continue;
+      if (entry.entityKey?.startsWith('po:')) ids.add(entry.entityKey.slice(3));
+    }
+    return ids;
+  }, [outboxData]);
 
   const toggleExpand = (id: string) => {
     setExpandedIds((prev) => {
@@ -923,6 +951,7 @@ function POListPage() {
                   onOpen={() => handleOpenPO(po.id)}
                   onRegister={() => setRegisterPO(po)}
                   relayConnected={relayConnected === true}
+                  gpWriteQueued={queuedPoIds.has(po.id)}
                 />
               ))}
           </TableBody>

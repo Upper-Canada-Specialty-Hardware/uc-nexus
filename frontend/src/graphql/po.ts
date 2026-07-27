@@ -314,19 +314,26 @@ export const CANCEL_PO = gql`
 // Register an imported Draft PO into GP (issue #175). Called only after the relay /po push succeeds:
 // stamps GP's PO number + company, maps the chosen GP vendor + cost code, replaces the line items with
 // the pushed set, and advances Draft -> GP-Registered.
+// #353 PR E: the result is now a wrapper. `queued` true means the GP relay was unreachable and the
+// registration is on the durable outbox - the PO comes back still DRAFT and advances itself when the
+// queue drains, so the caller must not treat it as registered.
 export const REGISTER_PO_IN_GP = gql`
   mutation RegisterPoInGp($input: RegisterPOInput!) {
     registerPoInGp(input: $input) {
-      id
-      poNumber
-      status
-      gpCompany
-      costCode
-      gpVendorId
-      vendorNameSnapshot
-      vendor {
+      queued
+      outboxEntryId
+      purchaseOrder {
         id
-        name
+        poNumber
+        status
+        gpCompany
+        costCode
+        gpVendorId
+        vendorNameSnapshot
+        vendor {
+          id
+          name
+        }
       }
     }
   }

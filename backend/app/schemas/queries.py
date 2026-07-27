@@ -9,6 +9,7 @@ import strawberry
 from .admin import AdminQueries
 from .buyer import BuyerQueries
 from .dashboard import DashboardQueries
+from .gp_outbox import GpOutboxQueries
 from .imports import ImportQueries
 from .notification import NotificationQueries
 from .po import POQueries
@@ -27,6 +28,7 @@ class Query(
     AdminQueries,
     BuyerQueries,
     DashboardQueries,
+    GpOutboxQueries,
     ImportQueries,
     NotificationQueries,
     POQueries,
