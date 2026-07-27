@@ -24,6 +24,7 @@ import {
   GET_SHOP_ASSEMBLY_MEMBERS,
   ASSIGN_OPENINGS,
 } from '../../graphql/shop-assembly';
+import { ASSIGNMENT_STALE_ROOT_FIELDS } from '../../graphql/refetch';
 import { leafSuffix } from '../../utils/leaf';
 import { useToast } from '../../components/Toast';
 import { isAvailableForAssignment } from './openingFilters';
@@ -93,6 +94,15 @@ export default function ManagerAssignPanel() {
   }, [openings]);
 
   const [assignOpenings, { loading: assigning }] = useMutation(ASSIGN_OPENINGS, {
+    // Eviction only; `assembleList` is absent because this page refetches it itself in the
+    // callbacks below (see refetch.ts). What that cannot reach is the assembler's own board and the
+    // pipeline, both on other routes.
+    update(cache) {
+      for (const fieldName of ASSIGNMENT_STALE_ROOT_FIELDS) {
+        cache.evict({ id: 'ROOT_QUERY', fieldName });
+      }
+      cache.gc();
+    },
     onCompleted: (data) => {
       const count = (data as { assignOpenings: unknown[] }).assignOpenings.length;
       const member = members.find((m) => m.id === memberId);

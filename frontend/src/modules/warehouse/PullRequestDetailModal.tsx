@@ -26,6 +26,7 @@ import {
 import {
   PULL_CANCEL_REFETCH_QUERIES,
   PULL_CANCEL_STALE_ROOT_FIELDS,
+  PULL_LIFECYCLE_STALE_ROOT_FIELDS,
 } from '../../graphql/refetch';
 import { useIdentity } from '../../hooks/useIdentity';
 import { useToast } from '../../components/Toast';
@@ -183,7 +184,19 @@ export default function PullRequestDetailModal({
 
   // --- Mutations ---
 
+  // Eviction only, disjoint from the queue refetch the parent does in onRefetch (see refetch.ts).
+  // #343 re-keyed workability from "the pull is COMPLETED" to "this opening is PULLED", so approving
+  // and completing both change what the assembly floor can see - and the assembly floor is a
+  // different module, never mounted while a warehouse user is working the pull.
+  const evictPullLifecycleFields = (cache: { evict: (o: { id: string; fieldName: string }) => void; gc: () => void }) => {
+    for (const fieldName of PULL_LIFECYCLE_STALE_ROOT_FIELDS) {
+      cache.evict({ id: 'ROOT_QUERY', fieldName });
+    }
+    cache.gc();
+  };
+
   const [approvePR, { loading: approveLoading }] = useMutation(APPROVE_PULL_REQUEST, {
+    update: evictPullLifecycleFields,
     onCompleted: (data) => {
       const approveResult = (
         data as { approvePullRequest?: { outcome?: string; shortfalls?: InventoryShortfall[] } }
@@ -209,6 +222,7 @@ export default function PullRequestDetailModal({
   });
 
   const [completePR, { loading: completeLoading }] = useMutation(COMPLETE_PULL_REQUEST, {
+    update: evictPullLifecycleFields,
     onCompleted: () => {
       setConfirmCompleteOpen(false);
       showToast('Pull Request completed successfully', 'success');
