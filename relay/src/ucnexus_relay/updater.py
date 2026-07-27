@@ -44,6 +44,12 @@ _UPDATE_LOG = "update.log"  # the helper's own log, next to config.toml
 _DOWNLOAD_NAME = "ucnexus-relay-download.zip"
 MAX_ATTEMPTS = 3  # circuit breaker: give up on a target build after this many helper runs
 _GLOBAL_DEADLINE_SECONDS = 90.0  # hard wall-clock cap on the whole sequence
+# How long a staging/applying ledger may sit untouched before it is read as abandoned rather than
+# in-flight (#369). The helper's WHOLE sequence is bounded by _GLOBAL_DEADLINE_SECONDS, so 10x that is
+# far past any real run and cannot race one. Without this, a helper that dies before writing its
+# terminal status - crash, taskkill, power loss, logoff mid-update - leaves the ledger pinned at
+# "applying" and update_poller.should_stage refuses to stage anything ever again.
+ABANDONED_AFTER_SECONDS = 900.0
 _APP_EXIT_WAIT_SECONDS = 20.0  # how long to wait for the app to exit on its own before force-killing
 _HEALTH_WAIT_PER_ATTEMPT = 25.0  # per relaunch attempt, how long to wait for /health before retrying
 _POLL_SECONDS = 0.5
@@ -171,6 +177,69 @@ def _finish_ledger(install_dir: Path, status: str, error: str | None) -> None:
     ledger["last_error"] = error
     ledger["updated_at"] = _now_iso()
     _write_ledger(install_dir, ledger)
+
+
+def ledger_age_seconds(ledger: dict) -> float | None:
+    """Seconds since the ledger was last written, or None if it carries no readable `updated_at`.
+    None means "cannot tell", and every caller must treat that as in-flight rather than abandoned -
+    guessing the other way would let a real helper be raced."""
+    raw = ledger.get("updated_at")
+    if not isinstance(raw, str):
+        return None
+    try:
+        stamped = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if stamped.tzinfo is None:
+        stamped = stamped.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - stamped).total_seconds()
+
+
+def ledger_is_abandoned(ledger: dict, now_seconds: float = ABANDONED_AFTER_SECONDS) -> bool:
+    """Whether a staging/applying ledger has sat untouched long enough to be a dead helper's leftovers
+    rather than a live update (#369)."""
+    if ledger.get("status") not in ("staging", "applying"):
+        return False
+    age = ledger_age_seconds(ledger)
+    return age is not None and age >= now_seconds
+
+
+def reconcile_ledger(install_dir: str | Path, log: logging.Logger | None = None) -> str | None:
+    """Resolve a ledger left mid-flight by a helper that never wrote its terminal status (#369). Called
+    at app startup, BEFORE the update poller starts, because `should_stage` reads staging/applying as
+    "an update is already in progress" and would otherwise never stage again on this machine.
+
+    The running build is the evidence: if it already equals the stuck target, the update actually landed
+    and only the bookkeeping was lost, so record the success. Otherwise the attempt genuinely failed, and
+    recording that keeps the MAX_ATTEMPTS circuit breaker honest instead of silently forgiving a build
+    that cannot install. A ledger younger than the abandonment threshold is left alone: it may be a
+    helper still working, and this runs in the newly relaunched app while that helper is health-probing it.
+
+    Returns the status it stamped, or None if it left the ledger as it found it."""
+    install_dir = Path(install_dir)
+    ledger = read_ledger(install_dir)
+    if not ledger_is_abandoned(ledger):
+        return None
+
+    target = ledger.get("target_build") or ""
+    if target and target == current_build():
+        _finish_ledger(install_dir, "success", None)
+        if log is not None:
+            log.info("recovered a stuck update ledger: already running %s, marking it applied", target)
+        return "success"
+
+    _finish_ledger(
+        install_dir,
+        "failed",
+        "the update helper exited without recording a result; recovered on the next start",
+    )
+    if log is not None:
+        log.warning(
+            "recovered a stuck update ledger: helper for %s never finished and this build is %s",
+            target or "(unknown)",
+            current_build(),
+        )
+    return "failed"
 
 
 # --- cancel flag --------------------------------------------------------------------------------------
