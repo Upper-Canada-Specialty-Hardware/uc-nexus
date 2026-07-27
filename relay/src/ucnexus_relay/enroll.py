@@ -6,8 +6,13 @@ Run during setup with an enrollment token minted in UC Nexus (admin -> provision
 
 The relay generates its OWN long-lived Bearer secret, registers it with the UC Nexus backend using the
 one-time token (the backend can't reach the relay, but the relay can reach the backend), and writes that
-secret into this install's config.toml [auth] shared_secret. Restart the relay afterwards. Nothing
-long-lived is ever hand-copied - only the throwaway enrollment token is carried from UC Nexus to here.
+secret into this install's config.toml [auth] shared_secret. Nothing long-lived is ever hand-copied -
+only the throwaway enrollment token is carried from UC Nexus to here.
+
+A relay that is already running does NOT need restarting: channel.run_forever re-reads config.toml on
+every reconnect attempt, so it picks the new secret up within one backoff interval. That used to be a
+manual step, and forgetting it stranded the relay in a permanent 403 loop with a valid enrolment row
+in the database.
 """
 
 import argparse
@@ -127,7 +132,8 @@ def main(argv: list[str] | None = None) -> int:
 
     print(
         f"enrolled install {r['install_id']} as host {r['hostname']} (company {r['company']}); "
-        f"secret written {r['how']} to {args.config}. restart the relay."
+        f"secret written {r['how']} to {args.config}. a running relay picks this up on its next "
+        f"reconnect (within ~30s) - no restart needed."
     )
     return 0
 

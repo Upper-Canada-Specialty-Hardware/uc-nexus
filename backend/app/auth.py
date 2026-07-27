@@ -132,9 +132,11 @@ def resolve_display_name(user_id: str) -> str:
     return full_name or profile["email"] or user_id
 
 
-def require_admin(info) -> dict:
-    """Enforce that the caller holds the Admin/Manager role. Returns {user_id, roles}."""
-    request = info.context["request"]
+def require_admin_request(request) -> dict:
+    """Enforce Admin/Manager on a bare FastAPI Request, for the plain HTTP routes in main.py that have
+    no Strawberry `info` to unwrap. Same verification as require_admin - identity from the Clerk JWT,
+    roles from the Clerk Backend API - so a route and a resolver cannot drift apart on what "admin"
+    means. Returns {user_id, roles}."""
     token = _bearer_token(request)
     if not token:
         raise AuthError("Authentication required")
@@ -148,6 +150,11 @@ def require_admin(info) -> dict:
     if ADMIN_ROLE not in roles:
         raise ForbiddenError("Admin/Manager role required")
     return {"user_id": user_id, "roles": roles}
+
+
+def require_admin(info) -> dict:
+    """Enforce that the caller holds the Admin/Manager role. Returns {user_id, roles}."""
+    return require_admin_request(info.context["request"])
 
 
 def require_role(info, role: str) -> dict:

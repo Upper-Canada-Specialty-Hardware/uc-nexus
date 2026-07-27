@@ -5,6 +5,7 @@ the relay CAN reach the backend. So provisioning mints a one-time enrollment tok
 UC Nexus admin UI); the relay, during its one-time setup, generates its OWN long-lived Bearer secret and
 registers it here with that token. Nothing long-lived is ever hand-copied."""
 
+import logging
 import secrets
 import uuid
 from datetime import datetime, timedelta
@@ -15,6 +16,8 @@ from sqlalchemy.orm import Session
 from app.crypto import decrypt_secret, encrypt_secret, hash_token
 from app.errors import ConflictError, ValidationError
 from app.models.relay_install import RelayInstall
+
+logger = logging.getLogger(__name__)
 
 _ENROLLMENT_TTL = timedelta(hours=24)
 
@@ -86,13 +89,42 @@ def authenticate_secret(session: Session, secret: str) -> RelayInstall | None:
     if not secret:
         return None
     installs = session.scalars(select(RelayInstall).where(RelayInstall.secret_encrypted.is_not(None))).all()
+    undecryptable = 0
     for install in installs:
         try:
             candidate = decrypt_secret(install.secret_encrypted)
         except Exception:
+            # A row whose stored secret will not decrypt is NOT a wrong-secret case: it means
+            # RELAY_SECRET_ENC_KEY is missing or has been rotated since enrolment. Swallowing that
+            # silently makes a config error indistinguishable from a stale relay secret - both just
+            # 403 the handshake forever with nothing in the log. Count it and say so below.
+            undecryptable += 1
+            logger.warning(
+                "relay install secret failed to decrypt - RELAY_SECRET_ENC_KEY is missing or was rotated "
+                "since this install enrolled; re-enrolment will not fix it until the key is restored",
+                extra={"install_id": str(install.id), "label": install.label, "hostname": install.hostname},
+            )
             continue
         if secrets.compare_digest(candidate, secret):
             install.last_seen_at = datetime.utcnow()
             session.flush()
             return install
+
+    # Never log the presented secret. The counts alone separate the three real causes: no enrolled
+    # installs at all (wiped DB), all undecryptable (key problem), or a genuine mismatch (the relay is
+    # holding a secret from before it was re-enrolled - it needs a restart, not another enrolment).
+    logger.warning(
+        "relay handshake rejected",
+        extra={
+            "enrolled_installs": len(installs),
+            "undecryptable": undecryptable,
+            "cause": (
+                "no enrolled installs"
+                if not installs
+                else "encryption key mismatch"
+                if undecryptable == len(installs)
+                else "secret mismatch - relay is presenting a stale secret"
+            ),
+        },
+    )
     return None
