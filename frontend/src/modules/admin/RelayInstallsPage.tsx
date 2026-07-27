@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import {
   Box,
   Button,
@@ -19,7 +19,14 @@ import {
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import { useQuery, useMutation } from '@apollo/client/react';
-import { RELAY_INSTALLS, PROVISION_RELAY_INSTALL } from '../../graphql/admin';
+import {
+  RELAY_INSTALLS,
+  PROVISION_RELAY_INSTALL,
+  RELAY_ADOPT_WINDOW,
+  ARM_RELAY_ADOPT,
+  DISARM_RELAY_ADOPT,
+} from '../../graphql/admin';
+import ConfirmDialog from '../../components/ConfirmDialog';
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
 import { useRelayStatus } from '../../relay/useRelayStatus';
@@ -38,6 +45,8 @@ interface RelayInstall {
   enrolledAt: string | null;
   lastSeenAt: string | null;
   createdAt: string;
+  adoptedAt: string | null;
+  adoptedBy: string | null;
 }
 
 interface Provisioned {
@@ -48,9 +57,28 @@ interface Provisioned {
   enrollmentTokenExpiresAt: string;
 }
 
+interface AdoptWindow {
+  installId: string;
+  label: string;
+  expiresAt: string;
+  armedBy: string;
+}
+
 function fmtDate(v: string | null | undefined): string {
   return v ? new Date(v).toLocaleString() : '—';
 }
+
+function fmtCountdown(expiresAt: string): string {
+  const ms = new Date(expiresAt).getTime() - Date.now();
+  if (ms <= 0) return 'expired';
+  const total = Math.floor(ms / 1000);
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+}
+
+const ADOPT_WARNING =
+  'For the next 5 minutes, the first relay that connects presenting any secret will be bound to this ' +
+  'install and accepted. Only do this when a relay you own is dialling in with a secret the backend has ' +
+  'lost. Cancel the window as soon as the relay reconnects.';
 
 export default function RelayInstallsPage() {
   const { isAdmin } = useIdentity();
@@ -78,6 +106,49 @@ export default function RelayInstallsPage() {
         setLabel('');
         showToast('Enrollment token created', 'success');
       },
+      onError: (err) => showToast(err.message, 'error'),
+    },
+  );
+
+  // The window lives in the backend's memory (single replica), not in this component: another admin's
+  // arming, an expiry, and a consumption by a reconnecting relay all have to show up here. Poll only
+  // while one is open - there is nothing to watch otherwise.
+  const { data: windowData, refetch: refetchWindow } = useQuery<{ relayAdoptWindow: AdoptWindow | null }>(
+    RELAY_ADOPT_WINDOW,
+    { skip: !isAdmin, fetchPolicy: 'cache-and-network' },
+  );
+  const adoptWindow = windowData?.relayAdoptWindow ?? null;
+  const [adoptTarget, setAdoptTarget] = useState<RelayInstall | null>(null);
+  const [, setTick] = useState(0);
+
+  useEffect(() => {
+    if (!adoptWindow) return;
+    // One timer drives both the countdown and the re-poll: when the window is consumed by the relay
+    // reconnecting (the expected ending) only the server knows, so the banner must not outlive it.
+    const id = setInterval(() => {
+      setTick((t) => t + 1);
+      refetchWindow();
+    }, 5000);
+    return () => clearInterval(id);
+  }, [adoptWindow, refetchWindow]);
+
+  const [armAdopt, { loading: arming }] = useMutation<{ armRelayAdopt: AdoptWindow }>(ARM_RELAY_ADOPT, {
+    refetchQueries: [{ query: RELAY_ADOPT_WINDOW }, { query: RELAY_INSTALLS }],
+    onCompleted: (d) => {
+      setAdoptTarget(null);
+      showToast(`Adopt window open for ${d.armRelayAdopt.label} — 5 minutes`, 'success');
+    },
+    onError: (err) => {
+      setAdoptTarget(null);
+      showToast(err.message, 'error');
+    },
+  });
+
+  const [disarmAdopt, { loading: disarming }] = useMutation<{ disarmRelayAdopt: boolean }>(
+    DISARM_RELAY_ADOPT,
+    {
+      refetchQueries: [{ query: RELAY_ADOPT_WINDOW }],
+      onCompleted: () => showToast('Adopt window closed', 'success'),
       onError: (err) => showToast(err.message, 'error'),
     },
   );
@@ -134,6 +205,32 @@ export default function RelayInstallsPage() {
       { field: 'enrolledAt', headerName: 'Enrolled at', flex: 1, minWidth: 160, valueFormatter: (v: string | null) => fmtDate(v) },
       { field: 'lastSeenAt', headerName: 'Last seen', flex: 1, minWidth: 160, valueFormatter: (v: string | null) => fmtDate(v) },
       { field: 'createdAt', headerName: 'Created', flex: 1, minWidth: 160, valueFormatter: (v: string) => fmtDate(v) },
+      {
+        field: 'adoptedAt',
+        headerName: 'Adopted at',
+        flex: 1,
+        minWidth: 160,
+        valueFormatter: (v: string | null) => fmtDate(v),
+      },
+      {
+        field: 'adoptedBy',
+        headerName: 'Adopted by',
+        flex: 1,
+        minWidth: 140,
+        valueFormatter: (v: string | null) => v ?? '—',
+      },
+      {
+        field: 'adopt',
+        headerName: 'Recovery',
+        width: 190,
+        sortable: false,
+        filterable: false,
+        renderCell: (p) => (
+          <Button size="small" variant="outlined" onClick={() => setAdoptTarget(p.row as RelayInstall)}>
+            Adopt next connection
+          </Button>
+        ),
+      },
     ],
     [],
   );
@@ -166,6 +263,26 @@ export default function RelayInstallsPage() {
           </Button>
         </Stack>
       </Stack>
+
+      {/* An open adopt window is real system state with a real security cost, which DESIGN.md reserves
+          status colour for: it stays loud until it is consumed or cancelled. */}
+      {adoptWindow && (
+        <Alert
+          severity="warning"
+          sx={{ mb: 2 }}
+          action={
+            <Button color="inherit" size="small" onClick={() => disarmAdopt()} disabled={disarming}>
+              Cancel window
+            </Button>
+          }
+        >
+          <AlertTitle>Adopt window open — {adoptWindow.label}</AlertTitle>
+          <Typography variant="body2">
+            The next relay connection presenting any secret will be bound to this install. Closes in{' '}
+            <strong>{fmtCountdown(adoptWindow.expiresAt)}</strong>. Armed by {adoptWindow.armedBy}.
+          </Typography>
+        </Alert>
+      )}
 
       {provisioned && (
         <Alert severity="success" onClose={() => setProvisioned(null)} sx={{ mb: 2 }}>
@@ -232,6 +349,17 @@ export default function RelayInstallsPage() {
         disableRowSelectionOnClick
         pageSizeOptions={[10, 25, 50]}
         initialState={{ pagination: { paginationModel: { pageSize: 10 } } }}
+      />
+
+      <ConfirmDialog
+        open={adoptTarget !== null}
+        title={`Adopt the next relay connection as ${adoptTarget?.label ?? ''}?`}
+        message={ADOPT_WARNING}
+        confirmLabel={arming ? 'Arming…' : 'Open 5-minute window'}
+        onConfirm={() => {
+          if (adoptTarget) armAdopt({ variables: { installId: adoptTarget.id } });
+        }}
+        onCancel={() => setAdoptTarget(null)}
       />
 
       <Dialog open={provisionOpen} onClose={() => setProvisionOpen(false)} maxWidth="xs" fullWidth>

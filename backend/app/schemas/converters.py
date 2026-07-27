@@ -149,6 +149,8 @@ def relay_install_to_type(ri) -> RelayInstallInfo:
         enrolled_at=ri.enrolled_at,
         last_seen_at=ri.last_seen_at,
         created_at=ri.created_at,
+        adopted_at=ri.adopted_at,
+        adopted_by=ri.adopted_by,
     )
 
 

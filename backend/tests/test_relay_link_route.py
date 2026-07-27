@@ -26,6 +26,7 @@ import main  # noqa: E402
 from app.database import SessionLocal  # noqa: E402
 from app.models.relay_install import RelayInstall  # noqa: E402
 from app.repositories import relay_repository  # noqa: E402
+from app.services import relay_adopt  # noqa: E402
 from app.services.relay_gateway import gateway  # noqa: E402
 from main import app  # noqa: E402
 
@@ -261,6 +262,98 @@ def test_serve_relay_link_swallows_a_cancelled_reader():
         gateway.try_register("TEST", ws)
         try:
             await main._serve_relay_link(ws)  # must not raise
+        finally:
+            gateway.unregister(ws)
+
+    asyncio.run(run())
+
+
+def _read_install(install_id):
+    with SessionLocal() as session:
+        return session.get(RelayInstall, install_id)
+
+
+def test_relay_link_adopts_an_unknown_secret_while_a_window_is_armed(_migrate_database):
+    # #353 PR B: the live recovery path. The install's stored secret does NOT match what the relay is
+    # dialling with; with a window armed, that connection is accepted and the presented secret is bound.
+    relay_adopt.disarm()
+    install_id = _enroll_committed("WS-ADOPT", "TUBC", "the-secret-the-backend-has")
+    try:
+        relay_adopt.arm(install_id, "WS-ADOPT", "user_admin")
+        with TestClient(app) as client:
+            headers = {"Authorization": "Bearer what-the-relay-is-actually-presenting"}
+            with client.websocket_connect("/relay-link", headers=headers) as ws:
+                # An adopted socket must prove it speaks the relay protocol before it is trusted.
+                ws.send_json({"type": "hello", "build": "relay-v0.1.0-build.42", "ops": ["list_vendors"]})
+                _wait_until(lambda: gateway.connected)
+                assert gateway.connected is True
+                assert gateway.company == "TUBC"
+                _wait_until(lambda: gateway.build == "relay-v0.1.0-build.42")
+                assert gateway.build == "relay-v0.1.0-build.42"
+                ws.close()
+                _wait_until(lambda: not gateway.connected)
+
+        # The adoption is durable on the row, and the window is spent.
+        row = _read_install(install_id)
+        assert row.adopted_at is not None
+        assert row.adopted_by == "user_admin"
+        assert relay_adopt.peek() is None
+
+        # A second unknown secret is refused now that the flag is consumed.
+        with TestClient(app) as client:
+            try:
+                with client.websocket_connect("/relay-link", headers={"Authorization": "Bearer another-one"}):
+                    pass
+            except WebSocketDisconnect:
+                pass
+        assert gateway.connected is False
+    finally:
+        relay_adopt.disarm()
+        _delete_install(install_id)
+
+
+def test_relay_link_still_rejects_an_unknown_secret_with_no_window_armed(_migrate_database):
+    # The gate only opens when an admin opens it: no window means the pre-adopt behaviour, verbatim.
+    relay_adopt.disarm()
+    install_id = _enroll_committed("WS-NO-ADOPT", "TUBC", "stored-secret")
+    try:
+        with TestClient(app) as client:
+            try:
+                with client.websocket_connect("/relay-link", headers={"Authorization": "Bearer drifted"}):
+                    pass
+            except WebSocketDisconnect:
+                pass
+        assert gateway.connected is False
+        row = _read_install(install_id)
+        assert row.adopted_at is None
+    finally:
+        _delete_install(install_id)
+
+
+def test_serve_relay_link_closes_an_adopted_socket_that_does_not_say_hello():
+    # The hello gate: an adopted connection that is not a relay gets 4403 and never reaches the read loop.
+    async def run():
+        ws = _FakeRelaySocket([{"id": "1", "ok": True, "result": {}}])
+        await main._serve_relay_link(ws, require_hello=True)
+        assert ws.closed_code == 4403
+
+    asyncio.run(run())
+
+
+def test_serve_relay_link_accepts_an_adopted_socket_that_says_hello():
+    async def run():
+        ws = _FakeRelaySocket(
+            [
+                {"type": "hello", "build": "relay-v0.1.0-build.42", "ops": ["list_vendors"]},
+                WebSocketDisconnect(),
+            ]
+        )
+        gateway.try_register("TEST", ws)
+        try:
+            with pytest.raises(WebSocketDisconnect):
+                await main._serve_relay_link(ws, require_hello=True)
+            assert gateway.build == "relay-v0.1.0-build.42"
+            assert ws.closed_code is None
         finally:
             gateway.unregister(ws)
 
