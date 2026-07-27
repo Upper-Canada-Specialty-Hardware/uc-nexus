@@ -7,11 +7,15 @@ import { GET_RELAY_STATUS } from '../../../graphql/shared';
 
 vi.setConfig({ testTimeout: 30_000 });
 
+// Testing Library's 1s default is not enough for a DataGrid row to mount once vitest is running test
+// files in parallel workers: this file passed on its own and failed whenever anything ran alongside
+// it. The waits below are for the row cells, so give them room rather than asserting on a race.
+const GRID_TIMEOUT = { timeout: 15_000 };
+
 // jsdom reports every element as 0x0, and MUI's DataGrid sizes itself from a measured container: at
-// zero width it lays every column out at `width: 0px` and the row cells - including the per-row
-// recovery action this file asserts on - never make it into the accessibility tree. That made the
-// first test pass locally and fail intermittently in CI. Give the grid real dimensions to measure so
-// the assertion is about the component, not about jsdom's layout engine.
+// zero width it lays every column out at `width: 0px`, so the row cells - including the per-row
+// recovery action this file asserts on - never reach the accessibility tree. Give the grid real
+// dimensions so the assertions are about the component, not about jsdom's layout engine.
 beforeAll(() => {
   for (const [prop, value] of [
     ['clientWidth', 1200],
@@ -101,15 +105,17 @@ it('requires the confirm dialog before arming an adopt window', async () => {
 
   renderPage([statusMock, installsMock, windowMock(null), armMock]);
 
-  const trigger = await screen.findByRole('button', { name: /adopt next connection/i });
+  const trigger = await screen.findByRole('button', { name: /adopt next connection/i }, GRID_TIMEOUT);
   fireEvent.click(trigger);
   expect(armed).toBe(false);
 
   // The dialog states what the window actually does before anything is armed.
-  expect(await screen.findByText(/presenting any secret will be bound to this install/i)).toBeTruthy();
+  expect(
+    await screen.findByText(/presenting any secret will be bound to this install/i, {}, GRID_TIMEOUT),
+  ).toBeTruthy();
 
   fireEvent.click(screen.getByRole('button', { name: /open 5-minute window/i }));
-  await waitFor(() => expect(armed).toBe(true));
+  await waitFor(() => expect(armed).toBe(true), GRID_TIMEOUT);
 });
 
 it('renders the armed banner with the install it is armed on', async () => {
@@ -124,12 +130,12 @@ it('renders the armed banner with the install it is armed on', async () => {
     }),
   ]);
 
-  expect(await screen.findByText(/adopt window open — TAGGING3W10/i)).toBeTruthy();
+  expect(await screen.findByText(/adopt window open — TAGGING3W10/i, {}, GRID_TIMEOUT)).toBeTruthy();
   expect(screen.getByRole('button', { name: /cancel window/i })).toBeTruthy();
 });
 
 it('shows no armed banner when no window is open', async () => {
   renderPage([statusMock, installsMock, windowMock(null)]);
-  await screen.findByRole('button', { name: /adopt next connection/i });
+  await screen.findByRole('button', { name: /adopt next connection/i }, GRID_TIMEOUT);
   expect(screen.queryByText(/adopt window open/i)).toBeNull();
 });
