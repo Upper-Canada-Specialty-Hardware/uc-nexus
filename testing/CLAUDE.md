@@ -223,6 +223,29 @@ Both entry points open a "Transfer <productCode>" MUI dialog with: an "X availab
 - Approved SARs generate pull requests for warehouse
 - Users get assigned openings, pull hardware, assemble, mark complete
 
+**Assembly modal is a progress editor, not a one-shot checklist (#340).** Clicking a row in My Work
+(or "Start assembly" / "Continue assembly" on the Assemble List) opens it. Per line it shows Pulled /
+Installed / Deficient / Remaining, with the Installed cell an editable number spinbutton labelled
+`Installed units: <productCode>`.
+
+- **Save Progress** persists the counts and leaves the modal open; the leaf stays in My Work and its
+  status chip flips Pending -> In Progress. Reopening rehydrates from the saved counts, so this is the
+  thing to exercise when checking resumability.
+- **Mark Complete** stays disabled until every unit on every line is either installed or flagged
+  deficient (the modal spells out how many are unaccounted for underneath the location fields), and
+  also stays disabled if everything was flagged deficient. It saves any outstanding draft first, then
+  completes, so pressing it fires *two* mutations.
+- **Flag deficient** opens a nested dialog (quantity + reason, both required) with a warning alert.
+  Confirming it is irreversible from this screen: the units go back to inventory flagged deficient and
+  a PR-REPL replacement pull is minted immediately, before the leaf is finished. Watch for the
+  spinbutton-append gotcha on the quantity field - clear it before typing.
+- Both number inputs are MUI spinbuttons, so the usual "fill appends to the existing value" trap
+  applies; the deficiency quantity is capped at the line's remaining units and the flag button stays
+  disabled if you exceed it.
+- Assignment: a manager may reassign an In Progress leaf to someone else (progress travels with it);
+  a plain user self-claiming cannot take one that is already held - that returns a CONFLICT toast.
+  Unassigning an In Progress leaf is allowed and puts it back in the pool with its counts intact.
+
 ### Shipping Module
 
 **Entry**: `/app/shipping` -> Project landing page -> ship-ready items browser

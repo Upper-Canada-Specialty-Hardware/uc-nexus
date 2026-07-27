@@ -38,3 +38,18 @@ export const SHIPPING_REFETCH_QUERIES = ['GetOpeningLeafStatus'];
 // goes to the network) and notifications (NotificationBell polls every 30s and mounts two instances
 // with different variables, so listing it costs two round-trips for a badge that self-corrects).
 export const SHIPPING_STALE_ROOT_FIELDS = ['shipReadyItems', 'openingItems'];
+
+// What a shop-assembly progress save invalidates (#340). Same disjointness rule as above: a root
+// field that is evicted must not also be refetched by name, or Apollo fires a repair fetch for the
+// incomplete cache diff on top of the explicit refetch.
+//
+// Refetched. GetMyWork is the assembler's own board and is mounted whenever they are saving from My
+// Work; refetchQueries reaches only mounted instances, so this is a no-op when the save came from
+// the Assemble List instead. Note that recordAssemblyProgress already returns the updated opening
+// with its items, so the modal itself needs neither of these - these lists exist for the *lists*
+// behind it, whose status chip and "5/8 units" column would otherwise sit stale.
+export const ASSEMBLY_PROGRESS_REFETCH_QUERIES = ['GetMyWork'];
+
+// Evicted. assembleList is read by the other entry point into the same modal, and the two views are
+// never mounted together (separate routes), so whichever one is live repairs its own diff.
+export const ASSEMBLY_PROGRESS_STALE_ROOT_FIELDS = ['assembleList'];

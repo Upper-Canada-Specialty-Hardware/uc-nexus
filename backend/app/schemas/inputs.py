@@ -438,14 +438,30 @@ class AssignOpeningsInput:
 
 
 @strawberry.input
-class CompleteOpeningItemResultInput:
-    """One line of the completion-time deficiency checklist (#225). Identifies a
-    ShopAssemblyOpeningItem and whether the assembler installed it. Not-installed lines
-    are flagged deficient with an optional reason."""
+class AssemblyProgressItemInput:
+    """One line of a progress save (#340).
+
+    installed_quantity is the ABSOLUTE running total of units fitted to the leaf, so re-sending it is
+    a no-op and a miscount can be corrected in either direction until the opening is completed. Omit
+    it to leave the line's installed count alone.
+
+    flag_deficient_quantity is INCREMENTAL - units being condemned now, on top of any already flagged.
+    Each one is immediately returned to inventory flagged deficient and given a PR-REPL replacement
+    pull line, which is why it is one-way and why a reason is required with it.
+    """
 
     shop_assembly_opening_item_id: strawberry.ID
-    installed: bool = True
+    installed_quantity: int | None = None
+    flag_deficient_quantity: int | None = None
     deficient_reason: str | None = None
+
+
+@strawberry.input
+class RecordAssemblyProgressInput:
+    opening_id: strawberry.ID
+    items: list[AssemblyProgressItemInput] = strawberry.field(default_factory=list)
+    # The assembler; recorded as the actor on the progress audit rows and on any deficiency return.
+    performed_by: str | None = None
 
 
 @strawberry.input
@@ -454,10 +470,6 @@ class CompleteOpeningInput:
     aisle: str | None = None
     row: str | None = None
     bay: str | None = None
-    # Per-item installed/deficient checklist (#225). Empty -> every item treated as installed
-    # (preserves pre-checklist behaviour). Only installed items are snapshotted as
-    # OpeningItemHardware; deficient items are returned to inventory flagged deficient.
-    item_results: list[CompleteOpeningItemResultInput] = strawberry.field(default_factory=list)
     completed_by: str | None = None
 
 
