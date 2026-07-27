@@ -43,6 +43,12 @@ desktop.ini
 # Alembic
 backend/alembic/versions/__pycache__/
 
+# Relay runtime output. The relay writes relay.log next to wherever it is run from, so a dev run
+# started at the repo root leaves one there; the packaged install writes to %LOCALAPPDATA% instead.
+# dist/ and build/ above already cover the PyInstaller output under relay/.
+relay.log
+relay/relay.log
+
 # Dev Planning (not tracked)
 Dev Planning/
 
