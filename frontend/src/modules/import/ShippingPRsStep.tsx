@@ -14,8 +14,15 @@ import {
 import AddIcon from '@mui/icons-material/Add';
 import DeleteIcon from '@mui/icons-material/Delete';
 import ConfirmDialog from '../../components/ConfirmDialog';
-import type { AggregatedHardwareItem, AssembledLeafCandidate, ShippingPRDraft, ShippingPRItem } from './types';
-import { aggregationKey, shippingPRItemKey } from './types';
+import type {
+  AggregatedHardwareItem,
+  AssembledLeafCandidate,
+  AvailabilityShortfall,
+  InventoryAvailabilityRow,
+  ShippingPRDraft,
+  ShippingPRItem,
+} from './types';
+import { aggregationKey, itemGroupKey, shippingPRItemKey } from './types';
 import { leafSuffix } from '../../utils/leaf';
 
 interface ShippingPRsStepProps {
@@ -32,6 +39,16 @@ interface ShippingPRsStepProps {
   onRemovePR: (index: number) => void;
   onUpdatePR: (index: number, field: 'requestNumber' | 'requestedBy', value: string) => void;
   onTogglePRItem: (prIndex: number, item: ShippingPRItem) => void;
+  /**
+   * Reservation-aware availability per (category|product) for this project (#342). A LOOSE line
+   * claims fungible stock, so it can only be ticked while the claim fits; an assembled leaf
+   * claimed its hardware at shop assembly and reserves nothing, so leaf selection is unaffected.
+   */
+  availabilityByCombo: Map<string, InventoryAvailabilityRow>;
+  /** Combos the current selection would over-claim. Non-empty blocks the step. */
+  availabilityShortfalls: AvailabilityShortfall[];
+  /** The availability lookup failed; the counts are unknown, not zero. */
+  availabilityError: boolean;
   /**
    * The user confirmed shipping a leaf that is still awaiting replacement hardware (#341). The
    * wizard passes this to the backend as the explicit acknowledgment the creation path requires.
@@ -65,6 +82,9 @@ export default function ShippingPRsStep({
   onRemovePR,
   onUpdatePR,
   onTogglePRItem,
+  availabilityByCombo,
+  availabilityShortfalls,
+  availabilityError,
   onAcknowledgeIncompleteLeaf,
   onNext,
   onBack,
@@ -97,12 +117,15 @@ export default function ShippingPRsStep({
     setPendingIncomplete(null);
   }, [pendingIncomplete, onTogglePRItem, onAcknowledgeIncompleteLeaf]);
 
+  // Creating the request RESERVES what its LOOSE lines ask for (#342), so an over-selection is
+  // blocked here rather than bouncing the whole finalize. A failed availability lookup blocks
+  // too: an unknown count must not read as "fine".
   const canProceed = useMemo(
     () =>
-      shippingPRDrafts.some(
-        (d) => d.requestNumber.trim() !== '' && d.items.length > 0,
-      ),
-    [shippingPRDrafts],
+      shippingPRDrafts.some((d) => d.requestNumber.trim() !== '' && d.items.length > 0) &&
+      availabilityShortfalls.length === 0 &&
+      !availabilityError,
+    [shippingPRDrafts, availabilityShortfalls, availabilityError],
   );
 
   // An assembled leaf is one physical object, so it can sit on exactly one request. Loose hardware
@@ -143,6 +166,31 @@ export default function ShippingPRsStep({
       {shippingPRDrafts.length === 0 && (
         <Alert severity="info" sx={{ mb: 2 }}>
           No shipping pull requests yet. Add one below.
+        </Alert>
+      )}
+
+      {availabilityError && (
+        <Alert severity="error" sx={{ mb: 2 }}>
+          Could not read this project&apos;s available inventory, so the loose-hardware counts below
+          are unknown rather than zero. Go back and retry before creating a request.
+        </Alert>
+      )}
+
+      {availabilityShortfalls.length > 0 && (
+        <Alert severity="error" sx={{ mb: 2 }}>
+          The loose hardware selected here asks for more than is available. Available means on hand,
+          minus units flagged deficient, minus what other open requests have already reserved - so a
+          shortfall can mean the stock is here but spoken for. Assembled door leaves are unaffected:
+          their hardware left loose inventory when they were built.
+          <Box component="ul" sx={{ mt: 1, mb: 0, pl: 3 }}>
+            {availabilityShortfalls.map((s) => (
+              <li key={`${s.hardwareCategory}|${s.productCode}`}>
+                {s.hardwareCategory} {s.productCode}: need {s.requested}, {s.available} available
+                {s.reserved > 0 ? ` (${s.reserved} reserved by other requests)` : ''} - short{' '}
+                {s.short}
+              </li>
+            ))}
+          </Box>
         </Alert>
       )}
 
@@ -272,6 +320,10 @@ export default function ShippingPRsStep({
                       productCode: hi.product_code,
                       requestedQuantity: hi.item_quantity,
                     };
+                    const availability = availabilityByCombo.get(itemGroupKey(hi));
+                    const available = availability?.availableQuantity ?? 0;
+                    const reserved = availability?.reservedQuantity ?? 0;
+                    const overClaimed = !availabilityError && hi.item_quantity > available;
                     return (
                       <FormControlLabel
                         key={aggregationKey(hi)}
@@ -283,12 +335,25 @@ export default function ShippingPRsStep({
                           />
                         }
                         label={
-                          <Typography variant="body2">
-                            Opening: {hi.opening_number} | Product: {hi.product_code} | Category:{' '}
-                            {hi.hardware_category} | Qty: {hi.item_quantity}
-                          </Typography>
+                          <Box>
+                            <Typography variant="body2">
+                              Opening: {hi.opening_number} | Product: {hi.product_code} | Category:{' '}
+                              {hi.hardware_category} | Qty: {hi.item_quantity}
+                            </Typography>
+                            {/* Reservation-aware availability (#342), per line, so an over-selection
+                                is visible at the checkbox and not only in the summary alert. */}
+                            <Typography
+                              variant="caption"
+                              color={overClaimed ? 'error.main' : 'text.secondary'}
+                            >
+                              {availabilityError
+                                ? 'Availability unknown'
+                                : `${available} available` +
+                                  (reserved > 0 ? ` (${reserved} reserved by other requests)` : '')}
+                            </Typography>
+                          </Box>
                         }
-                        sx={{ display: 'block' }}
+                        sx={{ display: 'flex', alignItems: 'flex-start', mb: 0.5 }}
                       />
                     );
                   })}

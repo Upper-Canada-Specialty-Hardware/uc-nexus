@@ -5,13 +5,12 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import (
     ConflictError,
     InvalidStateTransitionError,
-    InventoryShortfallError,
     NotFoundError,
     ValidationError,
 )
@@ -24,6 +23,7 @@ from app.models.enums import (
     PullRequestSource,
     PullRequestStatus,
     PullStatus,
+    ReservationSource,
     ShopAssemblyRequestStatus,
 )
 from app.models.opening_item import OpeningItem as OpeningItemModel
@@ -884,6 +884,52 @@ def find_already_assembled_openings(
     return [(num, leaf) for num, oid, leaf in opening_leaf_specs if (oid, leaf) in assembled]
 
 
+def find_in_flight_assembly_leaves(
+    session: Session,
+    opening_leaf_specs: list[tuple[str, uuid.UUID, int | None]],
+) -> list[tuple[str, int | None, str | None]]:
+    """Duplicate in-flight guard (#342): the (opening_number, leaf, request_number) triples whose
+    leaf is already inside a **live** shop-assembly work unit.
+
+    `find_already_assembled_openings` catches the leaf that has already been *built*. This catches
+    the one that is on its way there - requested, accepted, pulled, or half-assembled on somebody's
+    bench - which the pre-#342 creation path let through: two requests for the same leaf both
+    reserved and both pulled hardware, and the second one had nowhere to put it.
+
+    Live means the work unit is not finished and its request is not dead:
+
+    - `assembly_status != COMPLETED` (a completed leaf is the already-assembled guard's business,
+      and re-requesting it is legitimate only after the assembled unit ships);
+    - the parent ShopAssemblyRequest is not REJECTED - or there is no parent at all, which is the
+      legacy #222 shape where the opening hangs straight off a PullRequest.
+
+    Scoping is by `opening_id`, which is a project's own Opening UUID, so this is project-scoped by
+    construction without joining a table whose rows a re-upload may have deleted. One query, and the
+    request_number comes back with the row so the refusal can name what is holding the leaf.
+    """
+    if not opening_leaf_specs:
+        return []
+    opening_ids = [oid for _, oid, _ in opening_leaf_specs]
+    rows = session.execute(
+        select(
+            ShopAssemblyOpening.opening_id,
+            ShopAssemblyOpening.leaf,
+            ShopAssemblyRequest.request_number,
+        )
+        .outerjoin(ShopAssemblyRequest, ShopAssemblyOpening.shop_assembly_request_id == ShopAssemblyRequest.id)
+        .where(
+            ShopAssemblyOpening.opening_id.in_(opening_ids),
+            ShopAssemblyOpening.assembly_status != AssemblyStatus.COMPLETED,
+            or_(
+                ShopAssemblyRequest.id.is_(None),
+                ShopAssemblyRequest.status != ShopAssemblyRequestStatus.REJECTED,
+            ),
+        )
+    ).all()
+    claimed = {(opening_id, leaf): request_number for opening_id, leaf, request_number in rows}
+    return [(num, leaf, claimed[(oid, leaf)]) for num, oid, leaf in opening_leaf_specs if (oid, leaf) in claimed]
+
+
 def get_shop_assembly_requests(
     session: Session,
     project_id: uuid.UUID | None = None,
@@ -918,18 +964,19 @@ def accept_shop_assembly_request(
     request_id: uuid.UUID,
     accepted_by: str,
 ) -> ShopAssemblyRequest:
-    """Accept a PENDING shop-assembly request (#293).
+    """Accept a PENDING shop-assembly request (#293). Since #342 this is a **pure human approval
+    gate**: it flips the request to APPROVED and mints the warehouse PullRequest (SHOP_ASSEMBLY,
+    PENDING) with one LOOSE item per opening item, then repoints the request's ShopAssemblyOpenings
+    at that PR (pull_request_id) so the unchanged warehouse pull/complete flow works as before.
 
-    Re-runs the shared inventory-sufficiency gate over the request's openings' items. If short,
-    raises InventoryShortfallError WITHOUT minting anything - the resolver rolls back, notifies the
-    PO in a fresh session, and re-raises so the shortfall reaches the caller inline. If covered,
-    flips the request to APPROVED and mints the warehouse PullRequest (SHOP_ASSEMBLY, PENDING) with
-    one LOOSE item per opening item, then repoints the request's ShopAssemblyOpenings at that PR
-    (pull_request_id) so the unchanged warehouse pull/complete flow works exactly as before.
+    The reactive inventory-sufficiency re-check that used to live here is gone. The hardware was
+    reserved when the request was created, so it is already this request's; re-checking at accept
+    could only ever fail for stock that was never free to begin with, and it made the accept step a
+    second place a shortfall could surface - with no action the acceptor could take about it. The
+    check now happens once, at creation (where the creator can still refine the selection), and the
+    claim is spent at pull approval. Accepting does not touch the reservations: the request keeps
+    holding them, exactly as it did while PENDING.
     """
-    from app.repositories import warehouse as warehouse_repository
-    from app.services import notification_service
-
     stmt = (
         select(ShopAssemblyRequest)
         .options(selectinload(ShopAssemblyRequest.openings).selectinload(ShopAssemblyOpening.items))
@@ -940,19 +987,6 @@ def accept_shop_assembly_request(
         raise NotFoundError(f"Shop-assembly request {request_id} not found")
     if sar.status != ShopAssemblyRequestStatus.PENDING:
         raise InvalidStateTransitionError(f"Shop-assembly request must be Pending to accept, got {sar.status.value}")
-
-    needs = [
-        (item.hardware_category, item.product_code, item.quantity) for opening in sar.openings for item in opening.items
-    ]
-    sufficiency = warehouse_repository.check_inventory_sufficiency(session, sar.project_id, needs)
-    if not sufficiency.sufficient:
-        raise InventoryShortfallError(
-            "Cannot accept shop-assembly request - insufficient inventory. "
-            + notification_service.format_shortfall_lines(sufficiency.shortfalls),
-            shortfalls=sufficiency.shortfalls,
-            project_id=sar.project_id,
-            request_number=sar.request_number,
-        )
 
     now = datetime.utcnow()
     sar.status = ShopAssemblyRequestStatus.APPROVED
@@ -996,7 +1030,14 @@ def reject_shop_assembly_request(
     rejected_by: str,
     reason: str | None,
 ) -> ShopAssemblyRequest:
-    """Reject a PENDING shop-assembly request (#293). Mints no PullRequest."""
+    """Reject a PENDING shop-assembly request (#293). Mints no PullRequest, and **releases the
+    request's inventory reservations** (#342) - the request is dead, so the hardware it has been
+    holding since creation goes back to the available pool for whoever asks next.
+
+    This is also the recovery path for a reopened request: reopen returns it to PENDING still
+    holding its claim, and rejecting it from there runs exactly this code."""
+    from app.repositories import warehouse as warehouse_repository
+
     stmt = (
         select(ShopAssemblyRequest)
         .options(selectinload(ShopAssemblyRequest.openings).selectinload(ShopAssemblyOpening.items))
@@ -1012,6 +1053,7 @@ def reject_shop_assembly_request(
     sar.rejected_by = rejected_by
     sar.rejection_reason = (reason or "").strip() or None
     sar.rejected_at = datetime.utcnow()
+    warehouse_repository.release_reservations(session, ReservationSource.SHOP_ASSEMBLY_REQUEST, sar.id)
     return sar
 
 

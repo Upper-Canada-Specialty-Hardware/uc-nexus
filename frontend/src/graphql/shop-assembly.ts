@@ -139,6 +139,7 @@ export const GET_SHOP_ASSEMBLY_REQUESTS = gql`
       status
       createdBy
       createdAt
+      integrityNote
       openings {
         id
         openingNumber

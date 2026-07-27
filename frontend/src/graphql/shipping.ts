@@ -83,6 +83,7 @@ export const GET_SHIPPING_OUT_REQUESTS = gql`
       status
       createdBy
       createdAt
+      integrityNote
       items {
         id
         itemType

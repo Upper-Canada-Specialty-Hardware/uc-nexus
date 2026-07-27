@@ -1,5 +1,27 @@
 import { gql } from '@apollo/client/core';
 
+/**
+ * What each product in a project can still be CLAIMED for (#342):
+ * `availableQuantity = onHandQuantity - deficientQuantity - reservedQuantity`.
+ *
+ * This is the exact number the Start-a-Task creation gate applies server-side, so the wizard can
+ * block an over-selection with per-combo detail before submission instead of bouncing the whole
+ * finalize. Deliberately NOT the same as `inventoryHierarchy`'s availability (on-hand minus
+ * deficient), which answers "what is physically unspoken-for in the building".
+ */
+export const GET_PROJECT_INVENTORY_AVAILABILITY = gql`
+  query GetProjectInventoryAvailability($projectId: ID!) {
+    projectInventoryAvailability(projectId: $projectId) {
+      hardwareCategory
+      productCode
+      onHandQuantity
+      deficientQuantity
+      reservedQuantity
+      availableQuantity
+    }
+  }
+`;
+
 export const GET_INVENTORY_HIERARCHY = gql`
   query GetInventoryHierarchy($projectId: ID, $warehouseId: ID) {
     inventoryHierarchy(projectId: $projectId, warehouseId: $warehouseId) {

@@ -54,6 +54,67 @@ export interface AssembledLeafCandidate {
   awaitingReplacementQuantity: number;
 }
 
+/**
+ * One (hardware_category, product_code) row of `projectInventoryAvailability` (#342):
+ * `availableQuantity = onHandQuantity - deficientQuantity - reservedQuantity`, the number the
+ * server's creation gate applies.
+ */
+export interface InventoryAvailabilityRow {
+  hardwareCategory: string;
+  productCode: string;
+  onHandQuantity: number;
+  deficientQuantity: number;
+  reservedQuantity: number;
+  availableQuantity: number;
+}
+
+/**
+ * One combo the current selection would claim more of than is available (#342). Computed in the
+ * browser from the same numbers the server gates on, so the wizard can refuse to submit a selection
+ * that cannot fit - the creator refines it here rather than having the whole finalize bounce.
+ */
+export interface AvailabilityShortfall {
+  hardwareCategory: string;
+  productCode: string;
+  requested: number;
+  available: number;
+  reserved: number;
+  short: number;
+}
+
+/**
+ * Compare a per-combo demand against a per-combo availability lookup. `demand` is keyed by
+ * `itemGroupKey` (category|product); combos with no availability row at all count as zero
+ * available, which is exactly how the server treats a product the project has never received.
+ */
+export function computeAvailabilityShortfalls(
+  demand: Map<string, number>,
+  availability: Map<string, InventoryAvailabilityRow>,
+): AvailabilityShortfall[] {
+  const rows: AvailabilityShortfall[] = [];
+  for (const [key, requested] of demand) {
+    if (requested <= 0) continue;
+    const row = availability.get(key);
+    const available = row?.availableQuantity ?? 0;
+    if (requested > available) {
+      const [hardwareCategory, productCode] = key.split('|');
+      rows.push({
+        hardwareCategory,
+        productCode,
+        requested,
+        available,
+        reserved: row?.reservedQuantity ?? 0,
+        short: requested - available,
+      });
+    }
+  }
+  rows.sort(
+    (a, b) =>
+      a.hardwareCategory.localeCompare(b.hardwareCategory) || a.productCode.localeCompare(b.productCode),
+  );
+  return rows;
+}
+
 export function hardwareItemKey(hi: ParsedHardwareItem) {
   return `${hi.opening_number}|${hi.product_code}|${hi.material_id}`;
 }

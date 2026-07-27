@@ -56,6 +56,56 @@ This is why both request types are created from the hardware schedule through **
 schedule is the only thing that knows which leaf of which opening a quantity is owed to. Inventory
 cannot answer that question, because it deliberately forgot.
 
+#### 3a. The reservation: the tag's claim before the pull
+
+The tag is written when the request is created, but the stock is not deducted until the warehouse
+approves the pull - and that gap used to be a hole. Two requests could each be created against the
+same hinges, both pass an accept-time check, and the second pull would then find the shelf empty.
+
+Since #342 **creating a request reserves what it claims.** An `inventory_reservations` row is written
+in the same transaction, and availability everywhere becomes
+
+    available = on-hand - deficient - active reservations
+
+A reservation is the claim half of the tag: it says "these units are spoken for by this request"
+without yet saying *which* units, which is exactly right for fungible stock. Note what the table
+deliberately does not have, for the same reason `InventoryLocation` does not have it:
+
+- **no opening, no leaf** - a hinge is still a hinge; the reservation is aggregate, per
+  `(project, hardware_category, product_code)`;
+- **no `inventory_location_id`** - pinning a claim to specific rows would fight FIFO. The reservation
+  governs *how much* is free, never *which* row. FIFO deduction at approval is unchanged.
+
+The lifecycle of that claim, end to end:
+
+| Path | Effect on the claim |
+| --- | --- |
+| Create a shop-assembly request | **Reserve** every checklist line, aggregated per combo |
+| Create a shipping-out request, LOOSE line | **Reserve** - it claims fungible stock |
+| Create a shipping-out request, OPENING_ITEM line | **Nothing** - the leaf claimed its hardware at assembly and ships as itself |
+| Creation would exceed available | **Refused whole** - typed `InventoryShortfallError` naming every short combo; nothing is written and the creator refines the selection |
+| Accept (either type) | **No change** - accept is a pure human gate and re-checks nothing |
+| Reject (either type) | **Release** - the request is dead, the hardware goes back to the pool |
+| Reopen an accepted request (#325) | **No change** - reopen undoes the *accept*, not the creation; the request returns to PENDING still holding its claim |
+| Reject after a reopen | **Release** - the same reject path, and the only thing that finally lets go |
+| Pull approval, sufficient | **Consume** - the claim becomes the FIFO deduction, atomically, under the same row locks |
+| Pull approval, short | **No change** - the pull stays PENDING and keeps holding, so a blocked request does not hand its hardware to whoever asks next |
+| PR-REPL replacement pull | **Never reserves** - a deficiency cannot be foreseen, so it keeps the reactive check and the PO-backfill loop. It still draws only from on-hand minus deficient minus *others'* reservations |
+| Re-upload drops a PENDING request's openings | **Rebuilt** from what survived, which releases exactly what the vanished openings held |
+| Re-upload empties a PENDING request | **Auto-reject**, which releases |
+
+**Self-coverage** is the one subtlety worth naming. When the warehouse approves request R's pull, R's
+own reservations are precisely what backs the deduction, so the availability check on that path
+excludes them (`exclude_reservations_of`). Without the exclusion a request that reserved exactly what
+it needs would read as competing with itself and could never be approved. Everyone else's claims
+still count - which is also what stops an unreserved PR-REPL pull from eating stock another request
+is holding.
+
+A **deficiency reported at the bench** does not touch reservations, and cannot double-count against
+them: `report_deficiency_at_assembly` raises the inventory row's `quantity` and `deficient_quantity`
+together, so the pair nets to zero in `on-hand - deficient`. The unit is back in the building and is
+not available - which is the truth.
+
 ### 4. The tag materializes
 
 The tag does not become physical all at once. Assembly happens over a shift, unit by unit, and since
@@ -117,10 +167,11 @@ Both pull request sources use `pull_request_items`, but the two `item_type` valu
 different things:
 
 - `LOOSE` - tags fungible inventory onto a leaf for the first time. Approving it deducts stock, so it
-  is gated on inventory sufficiency.
+  is gated on inventory sufficiency - and since #342 it is also what *reserves* stock when the
+  request is created.
 - `OPENING_ITEM` - moves a leaf that was **already tagged** at shop assembly. The hardware left
   fungible inventory when it was installed. Approving it deducts nothing and locks the `OpeningItem`
-  row instead; there is no stock to check.
+  row instead; there is no stock to check, and nothing to reserve either.
 
 Confusing the two is issue #335: the Shipping Out import emitted `LOOSE` lines for hardware that had
 already been assembled onto a leaf, so the warehouse pull asked general inventory for hardware that
@@ -138,6 +189,14 @@ leaf until a pull tags it onto one).
 | --- | --- |
 | Leaf parsed from TITAN | `frontend/src/workers/parserLogic.ts` (`leafFromMaterialId`, ML-level `Leaf` attribute) |
 | Identity dropped | `backend/app/models/inventory.py` (`InventoryLocation`, no opening/leaf column) |
+| Claim written at creation | `backend/app/repositories/import_repository.py` (`finalize_import_session` -> `_gate_on_available_inventory` + `create_reservations`) |
+| Claim modelled | `backend/app/models/inventory_reservation.py` (aggregate; no opening, no leaf, no location) |
+| Availability arithmetic | `backend/app/repositories/warehouse/reservations.py` (`get_reserved_quantities`, `get_project_availability`, grouped aggregates) |
+| Claim respected / self-covered | `backend/app/repositories/warehouse/pull_requests.py` (`check_inventory_sufficiency`, `reservation_aware` + `exclude_reservations_of`) |
+| Claim consumed at the pull | `backend/app/repositories/warehouse/pull_requests.py` (`approve_pull_request` -> `release_reservations` then FIFO deduction) |
+| Claim released | `shop_assembly_repository.reject_shop_assembly_request` / `shipping_repository.reject_shipping_out_request` (reject only - reopen deliberately holds) |
+| Duplicate / cross-type leaf guard | `shop_assembly_repository.find_in_flight_assembly_leaves`, `shipping_repository.find_live_shipping_claims` |
+| Re-upload reconciliation | `backend/app/repositories/import_repository.py` (`_handle_schedule_replacement` -> rebuild, auto-reject, `integrity_note`) |
 | Tag written, shop assembly | `backend/app/repositories/shop_assembly_repository.py` (`accept_shop_assembly_request`) |
 | Tag written, shipping out | `backend/app/repositories/shipping_repository.py` (`accept_shipping_out_request`) |
 | Tag consumes stock | `backend/app/repositories/warehouse/pull_requests.py` (`approve_pull_request`, FIFO deduction) |

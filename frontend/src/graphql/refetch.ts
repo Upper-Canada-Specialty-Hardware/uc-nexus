@@ -64,3 +64,14 @@ export const REPLACEMENT_INSTALL_REFETCH_QUERIES = ['GetReplacementWork'];
 // decide whether a leaf is flagged - and the wizard is a different module that is never mounted
 // while an assembler is installing, which is exactly what refetchQueries cannot reach.
 export const REPLACEMENT_INSTALL_STALE_ROOT_FIELDS = ['openingItems'];
+
+// What creating, accepting, rejecting or reopening a request invalidates (#342). Creating a request
+// RESERVES inventory, so every one of these moments changes `available = on-hand - deficient -
+// reservations` for the whole project.
+//
+// Evicted, not refetched, and there is nothing paired to refetch by name: the reader is the Start a
+// Task wizard, which is a full-screen dialog in another module and is by definition NOT mounted when
+// a request is accepted or rejected - exactly the case refetchQueries cannot reach. Eviction is what
+// stops the next wizard session from opening on the cache-first half of its cache-and-network read
+// and gating a selection against pre-reservation numbers for a beat.
+export const RESERVATION_STALE_ROOT_FIELDS = ['projectInventoryAvailability'];

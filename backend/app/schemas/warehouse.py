@@ -29,6 +29,7 @@ from .types import (
     ApproveResult,
     AuditLogEntry,
     BackOrderedItem,
+    InventoryAvailability,
     InventoryHierarchyNode,
     InventoryItemDetail,
     InventoryLocation,
@@ -107,6 +108,30 @@ class WarehouseQueries:
         with SessionLocal() as session:
             po, receive_records = warehouse_repository.get_po_receiving_details(session, uuid.UUID(str(po_id)))
             return po_to_type(po, receive_records)
+
+    @strawberry.field
+    def project_inventory_availability(self, project_id: strawberry.ID) -> list[InventoryAvailability]:
+        """What each product in a project can still be claimed for (#342):
+        `available = on_hand - deficient - reserved`.
+
+        This is the number the Start-a-Task creation gate applies, exposed so the wizard can block an
+        over-selection with per-combo detail *before* submission rather than bouncing the whole
+        finalize. Deliberately distinct from `inventoryHierarchy`'s availability, which is on-hand
+        minus deficient: that answers "what is physically unspoken-for in the building", this
+        answers "what may I claim". Two grouped scalar aggregates, no per-row work."""
+        with SessionLocal() as session:
+            rows = warehouse_repository.get_project_availability(session, uuid.UUID(str(project_id)))
+            return [
+                InventoryAvailability(
+                    hardware_category=row["hardware_category"],
+                    product_code=row["product_code"],
+                    on_hand_quantity=row["on_hand_quantity"],
+                    deficient_quantity=row["deficient_quantity"],
+                    reserved_quantity=row["reserved_quantity"],
+                    available_quantity=row["available_quantity"],
+                )
+                for row in rows
+            ]
 
     @strawberry.field
     def inventory_hierarchy(
@@ -563,6 +588,7 @@ class WarehouseMutations:
                         requested=s.requested,
                         available=s.available,
                         short=s.short,
+                        reserved=s.reserved,
                     )
                     for s in shortfalls
                 ],

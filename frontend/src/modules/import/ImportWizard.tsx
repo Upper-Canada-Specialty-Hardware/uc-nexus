@@ -34,18 +34,27 @@ import { useHardwareScheduleParser } from '../../hooks/useHardwareScheduleParser
 import { useNavigate } from 'react-router-dom';
 import { GET_PROJECT_EXCLUDED_ITEMS, GET_PROJECT_HARDWARE_SCHEDULE, RECONCILE_SCHEDULE, FINALIZE_IMPORT_SESSION } from '../../graphql/import';
 import { GET_PROJECTS } from '../../graphql/shared';
-import { GET_OPENING_ITEMS, GET_PULL_REQUESTS } from '../../graphql/warehouse';
+import { GET_OPENING_ITEMS, GET_PROJECT_INVENTORY_AVAILABILITY, GET_PULL_REQUESTS } from '../../graphql/warehouse';
 import { GET_SHIPPING_OUT_REQUESTS } from '../../graphql/shipping';
+import { RESERVATION_STALE_ROOT_FIELDS } from '../../graphql/refetch';
 import type { ClassificationRow } from './ClassificationGrid';
 import type {
   AggregatedHardwareItem,
   AssembledLeafCandidate,
   ImportPurpose,
+  InventoryAvailabilityRow,
   ReconciliationRow,
   ShippingPRDraft,
   ShippingPRItem,
 } from './types';
-import { aggregationKey, classificationKey, shippingPRItemKey, toClassificationInputs } from './types';
+import {
+  aggregationKey,
+  classificationKey,
+  computeAvailabilityShortfalls,
+  itemGroupKey,
+  shippingPRItemKey,
+  toClassificationInputs,
+} from './types';
 import type { Project } from '../../types/project';
 import type { ProjectHardwareScheduleResponse } from './hydrateSchedule';
 import { mapScheduleResponseToParseResult } from './hydrateSchedule';
@@ -269,6 +278,16 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
       shopAssemblyRequest: { id: string; requestNumber: string; status: string } | null;
     };
   }>(FINALIZE_IMPORT_SESSION, {
+    // The request this creates RESERVES inventory (#342), so the availability the wizard gates on
+    // is stale the moment it succeeds. Evicted rather than refetched: a second Start a Task in the
+    // same session would otherwise open on the cache-first half of its cache-and-network read and
+    // let a selection through against pre-reservation numbers.
+    update(cache) {
+      for (const fieldName of RESERVATION_STALE_ROOT_FIELDS) {
+        cache.evict({ id: 'ROOT_QUERY', fieldName });
+      }
+      cache.gc();
+    },
     refetchQueries: [{ query: GET_PROJECTS }],
   });
 
@@ -478,6 +497,129 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
       return kept.length === draft.items.length ? draft : { ...draft, items: kept };
     });
   }, [purpose, shippingPRDrafts, shippingCandidateKeys]);
+
+  // ---- Reservation-aware availability (#342) ----
+
+  // Creating a request RESERVES the hardware it needs, and the server gates creation on
+  // `on-hand - deficient - other requests' reservations`. Read the same numbers here so the wizard
+  // can refuse an over-selection with per-combo detail instead of letting the whole finalize bounce.
+  const requestPurposeActive = open && (purpose === 'assembly' || purpose === 'shipping');
+  const {
+    data: availabilityData,
+    loading: availabilityLoading,
+    error: availabilityError,
+  } = useQuery<{ projectInventoryAvailability: InventoryAvailabilityRow[] }>(
+    GET_PROJECT_INVENTORY_AVAILABILITY,
+    {
+      variables: { projectId: existingProjectId },
+      skip: !requestPurposeActive,
+      fetchPolicy: 'cache-and-network',
+    },
+  );
+
+  const availabilityByCombo = useMemo(() => {
+    const map = new Map<string, InventoryAvailabilityRow>();
+    for (const row of availabilityData?.projectInventoryAvailability ?? []) {
+      map.set(itemGroupKey({ hardware_category: row.hardwareCategory, product_code: row.productCode }), row);
+    }
+    return map;
+  }, [availabilityData]);
+
+  // The shop-assembly work units this wizard would submit: one per (opening, leaf) with its
+  // SHOP_HARDWARE items aggregated. Derived once and used by BOTH the availability gate and
+  // buildFinalizeInput, so the numbers the user is held to are by construction the numbers that get
+  // sent - a second, parallel calculation here would be a bug waiting to diverge.
+  const shopAssemblyOpeningDrafts = useMemo(() => {
+    if (purpose !== 'assembly' || !parsed) return [];
+    const selectedItems = parsed.hardwareItems.filter((hi) => selectedOpenings.has(hi.opening_number));
+    return parsed.openings
+      .filter((o) => selectedOpenings.has(o.opening_number))
+      .flatMap((opening) => {
+        const shopItems = selectedItems.filter((hi) => {
+          if (hi.opening_number !== opening.opening_number) return false;
+          return classifications.get(classificationKey(hi)) === 'SHOP_HARDWARE';
+        });
+        if (shopItems.length === 0) return [];
+        // One SAR opening per door leaf (#311): group SHOP_HARDWARE by leaf, then aggregate each
+        // leaf's items by (product_code, hardware_category). A pair yields two work units.
+        const byLeaf = new Map<
+          number | null,
+          Map<string, { hardwareCategory: string; productCode: string; quantity: number }>
+        >();
+        for (const hi of shopItems) {
+          let aggMap = byLeaf.get(hi.leaf);
+          if (!aggMap) {
+            aggMap = new Map();
+            byLeaf.set(hi.leaf, aggMap);
+          }
+          const key = `${hi.product_code}|${hi.hardware_category}`;
+          const existing = aggMap.get(key);
+          if (existing) {
+            existing.quantity += hi.item_quantity;
+          } else {
+            aggMap.set(key, {
+              hardwareCategory: hi.hardware_category,
+              productCode: hi.product_code,
+              quantity: hi.item_quantity,
+            });
+          }
+        }
+        // #311: a null-leaf bucket is legitimate for a single door (every item is leaf-null -> one
+        // work unit). On a pair (resolved leaves present) a null-leaf item would otherwise spawn a
+        // spurious third work unit; fold it into the lowest resolved leaf instead.
+        const resolvedLeaves = [...byLeaf.keys()].filter((k): k is number => k !== null);
+        const nullBucket = byLeaf.get(null);
+        if (nullBucket && resolvedLeaves.length > 0) {
+          const targetMap = byLeaf.get(Math.min(...resolvedLeaves))!;
+          for (const [key, agg] of nullBucket) {
+            const existing = targetMap.get(key);
+            if (existing) existing.quantity += agg.quantity;
+            else targetMap.set(key, agg);
+          }
+          byLeaf.delete(null);
+        }
+        return Array.from(byLeaf.entries()).map(([leaf, aggMap]) => ({
+          openingNumber: opening.opening_number,
+          leaf,
+          items: Array.from(aggMap.values()),
+        }));
+      });
+  }, [purpose, parsed, selectedOpenings, classifications]);
+
+  // What this wizard is about to claim, per combo. Shop assembly claims every checklist line;
+  // shipping claims only its LOOSE lines - an assembled leaf left fungible inventory when it was
+  // built and ships as itself (docs/HARDWARE_IDENTITY_LIFECYCLE.md), so it reserves nothing.
+  const requestedByCombo = useMemo(() => {
+    const map = new Map<string, number>();
+    if (purpose === 'assembly') {
+      for (const draft of shopAssemblyOpeningDrafts) {
+        for (const item of draft.items) {
+          const key = itemGroupKey({ hardware_category: item.hardwareCategory, product_code: item.productCode });
+          map.set(key, (map.get(key) ?? 0) + item.quantity);
+        }
+      }
+    } else if (purpose === 'shipping') {
+      for (const draft of effectiveShippingPRDrafts) {
+        for (const item of draft.items) {
+          if (item.itemType !== 'LOOSE' || !item.hardwareCategory || !item.productCode) continue;
+          const key = itemGroupKey({ hardware_category: item.hardwareCategory, product_code: item.productCode });
+          map.set(key, (map.get(key) ?? 0) + item.requestedQuantity);
+        }
+      }
+    }
+    return map;
+  }, [purpose, shopAssemblyOpeningDrafts, effectiveShippingPRDrafts]);
+
+  const availabilityShortfalls = useMemo(
+    // While the lookup is still in flight an empty map would read as "nothing available" and block
+    // everything, so hold off until it has answered. A failed lookup is handled in the steps: they
+    // say so rather than silently letting an over-selection through as if it were fine.
+    () =>
+      availabilityData === undefined
+        ? []
+        : computeAvailabilityShortfalls(requestedByCombo, availabilityByCombo),
+    [availabilityData, requestedByCombo, availabilityByCombo],
+  );
 
   // Classification rows for DataGrid (one row per aggregated hardware item)
   const classificationRows = useMemo<ClassificationRow[]>(() => {
@@ -738,9 +880,6 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
 
   const buildFinalizeInput = useCallback(() => {
     if (!parsed) return null;
-    const filteredHardwareItems = parsed.hardwareItems.filter(
-      (hi) => selectedOpenings.has(hi.opening_number),
-    );
 
     // Build set of BY_OTHERS classificationKeys for PO filtering
     const byOthersKeys = new Set<string>();
@@ -878,63 +1017,10 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
       replaceSchedule: canStartFromLatest && !hydratedFromPersisted,
       // Only ever true after the user confirmed the warning dialog on a flagged leaf (#341).
       acknowledgeIncompleteLeaves: acknowledgedIncompleteLeaves,
-      shopAssemblyOpenings: purpose === 'assembly'
-        ? parsed.openings
-            .filter((o) => selectedOpenings.has(o.opening_number))
-            .flatMap((opening) => {
-              const shopItems = filteredHardwareItems.filter((hi) => {
-                if (hi.opening_number !== opening.opening_number) return false;
-                const ck = classificationKey(hi);
-                return classifications.get(ck) === 'SHOP_HARDWARE';
-              });
-              if (shopItems.length === 0) return [];
-              // One SAR opening per door leaf (#311): group SHOP_HARDWARE by leaf, then aggregate
-              // each leaf's items by (product_code, hardware_category). A pair yields two work units.
-              const byLeaf = new Map<
-                number | null,
-                Map<string, { hardwareCategory: string; productCode: string; quantity: number }>
-              >();
-              for (const hi of shopItems) {
-                let aggMap = byLeaf.get(hi.leaf);
-                if (!aggMap) {
-                  aggMap = new Map();
-                  byLeaf.set(hi.leaf, aggMap);
-                }
-                const key = `${hi.product_code}|${hi.hardware_category}`;
-                const existing = aggMap.get(key);
-                if (existing) {
-                  existing.quantity += hi.item_quantity;
-                } else {
-                  aggMap.set(key, {
-                    hardwareCategory: hi.hardware_category,
-                    productCode: hi.product_code,
-                    quantity: hi.item_quantity,
-                  });
-                }
-              }
-              // #311: a null-leaf bucket is legitimate for a single door (every item is leaf-null ->
-              // one work unit). On a pair (resolved leaves present) a null-leaf item would otherwise
-              // spawn a spurious third work unit; fold it into the lowest resolved leaf instead.
-              const resolvedLeaves = [...byLeaf.keys()].filter((k): k is number => k !== null);
-              const nullBucket = byLeaf.get(null);
-              if (nullBucket && resolvedLeaves.length > 0) {
-                const targetMap = byLeaf.get(Math.min(...resolvedLeaves))!;
-                for (const [key, agg] of nullBucket) {
-                  const existing = targetMap.get(key);
-                  if (existing) existing.quantity += agg.quantity;
-                  else targetMap.set(key, agg);
-                }
-                byLeaf.delete(null);
-              }
-              return Array.from(byLeaf.entries()).map(([leaf, aggMap]) => ({
-                openingNumber: opening.opening_number,
-                leaf,
-                items: Array.from(aggMap.values()),
-              }));
-            })
-        : null,
+      // The exact work units the wizard gated on (#342), not a second derivation of them.
+      shopAssemblyOpenings: purpose === 'assembly' ? shopAssemblyOpeningDrafts : null,
     };
-  }, [parsed, project.id, selectedOpenings, purpose, vendorGroups, vendorPOInfo, selectedVendors, unitCostOverrides, orderAsValues, classifications, siteShopClassifications, effectiveShippingPRDrafts, sarRequestNumber, canStartFromLatest, hydratedFromPersisted, acknowledgedIncompleteLeaves]);
+  }, [parsed, project.id, purpose, vendorGroups, vendorPOInfo, selectedVendors, unitCostOverrides, orderAsValues, classifications, siteShopClassifications, effectiveShippingPRDrafts, shopAssemblyOpeningDrafts, sarRequestNumber, canStartFromLatest, hydratedFromPersisted, acknowledgedIncompleteLeaves]);
 
   const handleFinalize = useCallback(async () => {
     setConfirmOpen(false);
@@ -1335,10 +1421,12 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
             <ShopAssemblyStep
               sarRequestNumber={sarRequestNumber}
               onSarNumberChange={setSarRequestNumber}
-              openings={openings}
-              selectedOpenings={selectedOpenings}
-              selectedHardwareItems={aggregatedHardwareItems}
-              classifications={classifications}
+              openingDrafts={shopAssemblyOpeningDrafts}
+              requestedByCombo={requestedByCombo}
+              availabilityByCombo={availabilityByCombo}
+              availabilityShortfalls={availabilityShortfalls}
+              availabilityLoading={availabilityLoading && availabilityData === undefined}
+              availabilityError={availabilityError !== undefined}
               onNext={handleNext}
               onBack={handleBack}
             />
@@ -1356,6 +1444,9 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
               onRemovePR={removeShippingPR}
               onUpdatePR={updateShippingPR}
               onTogglePRItem={toggleShippingPRItem}
+              availabilityByCombo={availabilityByCombo}
+              availabilityShortfalls={availabilityShortfalls}
+              availabilityError={availabilityError !== undefined}
               onAcknowledgeIncompleteLeaf={() => setAcknowledgedIncompleteLeaves(true)}
               onNext={handleNext}
               onBack={handleBack}

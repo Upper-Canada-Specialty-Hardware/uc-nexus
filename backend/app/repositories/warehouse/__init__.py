@@ -1,6 +1,6 @@
 """Warehouse repository package - split by sub-domain (#265).
 
-Sub-modules: receiving, locations, inventory, pull_requests, audit, progress.
+Sub-modules: receiving, locations, inventory, reservations, pull_requests, audit, progress.
 The package re-exports the full public API so callers keep a single import surface.
 """
 
@@ -48,6 +48,7 @@ from .pull_requests import (
     check_inventory_sufficiency,
     complete_pull_request,
     discard_pending_pull_request,
+    find_reservation_holder,
     get_pull_request_details,
     get_pull_requests,
 )
@@ -58,6 +59,12 @@ from .receiving import (
     get_po_receiving_details,
     get_recent_receive_records,
     validate_receive_eligibility,
+)
+from .reservations import (
+    create_reservations,
+    get_project_availability,
+    get_reserved_quantities,
+    release_reservations,
 )
 
 __all__ = [
@@ -73,7 +80,9 @@ __all__ = [
     "check_inventory_sufficiency",
     "complete_pull_request",
     "create_receive",
+    "create_reservations",
     "discard_pending_pull_request",
+    "find_reservation_holder",
     "get_audit_log",
     "get_back_ordered_items",
     "get_distinct_location_values",
@@ -90,10 +99,12 @@ __all__ = [
     "get_opening_leaf_counts",
     "get_opening_leaf_status",
     "get_po_receiving_details",
+    "get_project_availability",
     "get_project_progress_by_product",
     "get_pull_request_details",
     "get_pull_requests",
     "get_recent_receive_records",
+    "get_reserved_quantities",
     "get_unlocated_inventory",
     "get_warehouse_dashboard",
     "mark_inventory_unlocated",
@@ -103,5 +114,6 @@ __all__ = [
     "move_opening_item_location",
     "normalize_location_value",
     "override_inventory_quantity",
+    "release_reservations",
     "validate_receive_eligibility",
 ]
