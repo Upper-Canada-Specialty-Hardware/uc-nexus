@@ -57,6 +57,7 @@ export const GET_RELAY_STATUS = gql`
       connected
       company
       build
+      installId
     }
   }
 `;
