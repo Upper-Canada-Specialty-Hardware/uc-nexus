@@ -4,6 +4,7 @@ zip-download + junction-repoint self-update. No network (urlopen/urlretrieve moc
 import json
 import logging
 import zipfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from ucnexus_relay import layout, single_instance, updater
@@ -387,3 +388,70 @@ def test_apply_staged_update_rolls_back_when_the_repoint_fails(tmp_path, monkeyp
     assert repoints == [ver, old]  # tried the new version, then rolled the junction back to the old one
     assert relaunched == [1]  # relaunched the rolled-back (previous) version so the relay stays up
     assert updater.read_ledger(tmp_path)["status"] == "failed"
+
+
+# --- stuck-ledger reconciliation (#369) ---------------------------------------------------------------
+# A helper that dies before writing its terminal status leaves the ledger on staging/applying forever,
+# and update_poller.should_stage reads that as "an update is already in progress" - so the relay stops
+# updating and nobody finds out. These pin the recovery, including the case that actually happened:
+# the update LANDED and only the bookkeeping was lost.
+
+
+def _aged_ledger(seconds_ago: float, **overrides) -> dict:
+    stamped = datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)
+    led = {
+        "status": "applying",
+        "target_build": "relay-v0.1.0-build.36",
+        "attempts": 1,
+        "last_error": None,
+        "updated_at": stamped.isoformat(timespec="seconds"),
+    }
+    led.update(overrides)
+    return led
+
+
+def test_reconcile_marks_a_stuck_ledger_applied_when_that_build_is_already_running(tmp_path, monkeypatch):
+    monkeypatch.setattr(updater, "current_build", lambda: "relay-v0.1.0-build.36")
+    updater._write_ledger(tmp_path, _aged_ledger(updater.ABANDONED_AFTER_SECONDS + 60))
+
+    assert updater.reconcile_ledger(tmp_path) == "success"
+    assert updater.read_ledger(tmp_path)["status"] == "success"
+
+
+def test_reconcile_marks_a_stuck_ledger_failed_when_the_build_never_took(tmp_path, monkeypatch):
+    # The attempt genuinely failed, so it has to be recorded as such - forgiving it would hide a build
+    # that cannot install from the MAX_ATTEMPTS circuit breaker.
+    monkeypatch.setattr(updater, "current_build", lambda: "relay-v0.1.0-build.32")
+    updater._write_ledger(tmp_path, _aged_ledger(updater.ABANDONED_AFTER_SECONDS + 60))
+
+    assert updater.reconcile_ledger(tmp_path) == "failed"
+    led = updater.read_ledger(tmp_path)
+    assert led["status"] == "failed"
+    assert led["attempts"] == 1  # untouched, so the breaker still counts this attempt
+    assert "without recording a result" in led["last_error"]
+
+
+def test_reconcile_leaves_a_genuinely_in_flight_ledger_alone(tmp_path, monkeypatch):
+    # This runs in the newly relaunched app while the helper that launched it is still health-probing.
+    monkeypatch.setattr(updater, "current_build", lambda: "relay-v0.1.0-build.36")
+    updater._write_ledger(tmp_path, _aged_ledger(5))
+
+    assert updater.reconcile_ledger(tmp_path) is None
+    assert updater.read_ledger(tmp_path)["status"] == "applying"
+
+
+def test_reconcile_ignores_settled_and_missing_ledgers(tmp_path, monkeypatch):
+    monkeypatch.setattr(updater, "current_build", lambda: "relay-v0.1.0-build.36")
+    assert updater.reconcile_ledger(tmp_path) is None  # no file at all
+
+    for status in ("success", "failed", "cancelled"):
+        updater._write_ledger(tmp_path, _aged_ledger(updater.ABANDONED_AFTER_SECONDS + 60, status=status))
+        assert updater.reconcile_ledger(tmp_path) is None, status
+        assert updater.read_ledger(tmp_path)["status"] == status
+
+
+def test_a_ledger_with_no_readable_timestamp_is_never_abandoned(tmp_path):
+    # "Cannot tell how old it is" must read as in-flight; the other way round races a live helper.
+    assert updater.ledger_is_abandoned({"status": "applying"}) is False
+    assert updater.ledger_is_abandoned({"status": "applying", "updated_at": "not-a-date"}) is False
+    assert updater.ledger_age_seconds({"updated_at": "not-a-date"}) is None

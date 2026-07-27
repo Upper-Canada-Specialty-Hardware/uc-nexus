@@ -138,6 +138,7 @@ def _prepare_register_po(
     shipping_cost=None,
     miscellaneous=None,
     trade_discount=None,
+    project_id=None,
 ) -> dict:
     """Read-only pre-flight for register_po_in_gp: confirm the PO is a registerable DRAFT, resolve the
     job number, pre-validate, and build the relay create_po payload (po_number=None; GP assigns it).
@@ -161,17 +162,24 @@ def _prepare_register_po(
             if vendor is None:
                 raise NotFoundError(f"Vendor {vendor_id} not found")
 
+        # #316: a draft with no project may be given one here, and it has to take effect BEFORE the
+        # payload is built - the GP job number and the issue #216 buyer gating both key off it, so
+        # validating against the old (absent) project would push the PO to GP under the wrong job.
+        # An override is ignored once the PO has a project; the repository enforces the same rule at
+        # write time, so the two cannot disagree.
+        effective_project_id = po.project_id if po.project_id is not None else project_id
+
         job_number = None
-        if po.project_id is not None:
-            project = session.get(ProjectModel, po.project_id)
+        if effective_project_id is not None:
+            project = session.get(ProjectModel, effective_project_id)
             if project is None:
-                raise NotFoundError(f"Project {po.project_id} not found")
+                raise NotFoundError(f"Project {effective_project_id} not found")
             job_number = project.project_id
 
         # Issue #216: registering a draft is the ordering action - same strict buyer gating.
-        buyer_repository.validate_buyer_can_order(session, buyer_id, po.project_id, cost_code)
+        buyer_repository.validate_buyer_can_order(session, buyer_id, effective_project_id, cost_code)
 
-        manufacturers = _resolve_line_manufacturers(session, po.project_id, line_items_data)
+        manufacturers = _resolve_line_manufacturers(session, effective_project_id, line_items_data)
 
     gp_po.validate_create_po_inputs(
         job_number=job_number, cost_code=cost_code, po_number=None, line_items=line_items_data
@@ -210,6 +218,7 @@ def _persist_register_po(
     buyer_id,
     shipping_cost,
     tariff_amount,
+    project_id=None,
 ) -> PurchaseOrder:
     with SessionLocal() as session:
         po_repository.register_po_in_gp(
@@ -225,6 +234,7 @@ def _persist_register_po(
             buyer_id=buyer_id,
             shipping_cost=shipping_cost,
             tariff_amount=tariff_amount,
+            project_id=project_id,
         )
         gp_idempotency.stamp_result_id(session, key, "register_po_in_gp", gp_result, str(po_id))
         session.commit()
@@ -383,6 +393,8 @@ class POMutations:
 
         pid = uuid.UUID(str(input.po_id))
         vendor_id = uuid.UUID(str(input.vendor_id)) if input.vendor_id else None
+        # #316: only meaningful for a draft that has no project; the repository ignores it otherwise.
+        register_project_id = uuid.UUID(str(input.project_id)) if input.project_id else None
         line_items_data = [
             {
                 "id": str(li.id) if li.id else None,
@@ -413,6 +425,7 @@ class POMutations:
             shipping_cost=input.shipping_cost,
             miscellaneous=input.miscellaneous,
             trade_discount=input.trade_discount,
+            project_id=register_project_id,
         )
 
         persist_context = {
@@ -425,6 +438,7 @@ class POMutations:
             "buyer_id": input.buyer_id,
             "shipping_cost": input.shipping_cost,
             "tariff_amount": input.tariff_amount,
+            "project_id": str(register_project_id) if register_project_id else None,
         }
 
         if state is not None and state.relay_result is not None:

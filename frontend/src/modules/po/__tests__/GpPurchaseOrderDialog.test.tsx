@@ -118,6 +118,7 @@ function baseMocks(
             connected,
             company: connected ? 'UCS' : null,
             build: connected ? 'relay-v0.1.0-build.30' : null,
+            installId: connected ? 'install-1' : null,
             __typename: 'RelayStatus',
           },
         },
@@ -465,6 +466,9 @@ describe('GpPurchaseOrderDialog', () => {
         gpVendorName: 'Ace Hardware Co',
         buyerId: 'JSMITH',
         gpCompany: 'UCS',
+        // #316: null because this draft already has a project - the field is locked and the backend
+        // ignores an override on a PO that has one anyway.
+        projectId: null,
         costCode: '310-000-3',
         shippingCost: 25,
         tariffAmount: null,
@@ -830,4 +834,36 @@ describe('GpPurchaseOrderDialog', () => {
     ).toBeInTheDocument();
     expect(onSubmitted).not.toHaveBeenCalled();
   });
+});
+
+// --- Project at register time (#316) -----------------------------------------------------------------
+// Project was locked for EVERY registration, which left a manually created stock PO with no way to ever
+// gain one: create_draft_po takes an optional project_id and this dialog is the only place the field
+// appears afterwards. It is now editable exactly when the draft has no project (or no lines).
+
+it('lets a stock draft with no project pick one at register time', async () => {
+  renderDialog({ registerPo: stockDraft });
+
+  const project = await screen.findByLabelText(/^Project/i);
+  expect(project).not.toBeDisabled();
+  expect(screen.getByText(/this draft has no project yet/i)).toBeTruthy();
+});
+
+it('keeps Project locked on a draft imported against a project, and says why', async () => {
+  // The lines came from that project's hardware schedule; re-pointing the header would leave them
+  // describing hardware for a different job.
+  renderDialog({ registerPo: projectDraft }, [...baseMocks(), costCodesMock()]);
+
+  expect(
+    await screen.findByText(/line items were imported against this project/i),
+  ).toBeInTheDocument();
+});
+
+it('says the relay is down rather than leaving the GP dropdowns silently dead', async () => {
+  // Disabled with no explanation read as a half-built form denying the PO user fields they control.
+  // relayConnected is a PROP here, not read from the mocked query, so it has to be passed.
+  renderDialog({ registerPo: projectDraft, relayConnected: false }, baseMocks(false));
+
+  const notices = await screen.findAllByText(/GP relay not connected/i);
+  expect(notices.length).toBeGreaterThan(0);
 });

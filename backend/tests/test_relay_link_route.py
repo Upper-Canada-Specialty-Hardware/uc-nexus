@@ -380,3 +380,74 @@ def test_read_loop_records_the_relay_hello_frame(monkeypatch):
         assert gateway.build is None  # cleared on unregister
 
     asyncio.run(run())
+
+
+# --- deleting an install while a relay is live (#366) --------------------------------------------------
+
+
+class _FakeInfo:
+    """A resolver `info` with no real request. require_admin is patched out per test - what is under
+    test here is the connected-install guard, not the auth gate (that lives in
+    test_resolver_auth_gates)."""
+
+    context = {"request": None}
+
+
+def _as_admin(monkeypatch):
+    from app.schemas import relay as relay_module
+
+    monkeypatch.setattr(relay_module, "require_admin", lambda info: {"user_id": "user_admin", "roles": ["Admin"]})
+
+
+def test_delete_refuses_the_install_holding_the_live_connection(_migrate_database, monkeypatch):
+    """Revoking the secret under a running relay would take GP down mid-write, so the resolver refuses
+    it. This drives the real route because the id it compares against is set by the route - reading
+    install.id in the same pre-commit block as install.company, per the DetachedInstanceError rule."""
+    from app.errors import ConflictError
+    from app.schemas.relay import RelayMutations
+
+    _as_admin(monkeypatch)
+    secret = "relay-link-delete-guard-secret"
+    install_id = _enroll_committed("WS-DELETE-GUARD", "TUBC", secret)
+    try:
+        with TestClient(app) as client:
+            with client.websocket_connect("/relay-link", headers={"Authorization": f"Bearer {secret}"}) as ws:
+                _wait_until(lambda: gateway.connected)
+                assert gateway.install_id == install_id  # the route recorded WHICH row authenticated
+
+                with pytest.raises(ConflictError):
+                    RelayMutations().delete_relay_install(_FakeInfo(), str(install_id))
+
+                ws.close()
+                _wait_until(lambda: not gateway.connected)
+        # Refused, not half-done: the row and its credential are still there.
+        with SessionLocal() as session:
+            assert session.get(RelayInstall, install_id) is not None
+    finally:
+        _delete_install(install_id)
+
+
+def test_delete_allows_a_different_disconnected_install_while_one_is_live(_migrate_database, monkeypatch):
+    # Retiring a workstation is the normal case and must not be blocked by an unrelated relay being up.
+    from app.schemas.relay import RelayMutations
+
+    _as_admin(monkeypatch)
+    live_secret = "relay-link-delete-live-secret"
+    live_id = _enroll_committed("WS-DELETE-LIVE", "TUBC", live_secret)
+    other_id = _enroll_committed("WS-DELETE-OTHER", "TUBC", "relay-link-delete-other-secret")
+    try:
+        with TestClient(app) as client:
+            with client.websocket_connect("/relay-link", headers={"Authorization": f"Bearer {live_secret}"}) as ws:
+                _wait_until(lambda: gateway.connected)
+
+                assert RelayMutations().delete_relay_install(_FakeInfo(), str(other_id)) is True
+
+                assert gateway.connected is True  # the live relay is undisturbed
+                assert gateway.install_id == live_id
+                ws.close()
+                _wait_until(lambda: not gateway.connected)
+        with SessionLocal() as session:
+            assert session.get(RelayInstall, other_id) is None
+    finally:
+        _delete_install(live_id)
+        _delete_install(other_id)

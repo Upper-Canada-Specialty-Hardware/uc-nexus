@@ -163,6 +163,9 @@ _ADMIN_GATED = [
     ("relayAdoptWindow", relay_module, lambda: RelayQueries().relay_adopt_window(FakeInfo())),
     ("armRelayAdopt", relay_module, lambda: RelayMutations().arm_relay_adopt(FakeInfo(), _id())),
     ("disarmRelayAdopt", relay_module, lambda: RelayMutations().disarm_relay_adopt(FakeInfo())),
+    # #366: deleting an install revokes a relay credential outright, so the gate is the whole
+    # protection - there is nothing downstream to catch a non-admin caller.
+    ("deleteRelayInstall", relay_module, lambda: RelayMutations().delete_relay_install(FakeInfo(), _id())),
     # #353 PR E: retrying an `ambiguous` queued write can duplicate a GP posting, and cancelling one
     # abandons work somebody has already done. Both are admin-only.
     (

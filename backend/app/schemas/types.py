@@ -160,6 +160,10 @@ class RelayStatus:
     # Null when disconnected, or when an older relay that predates the hello frame is connected. Shown on
     # the Admin -> Relay Installs page so an out-of-date relay is visible before an op fails.
     build: str | None = None
+    # Which relay_installs row is holding the live connection (#366). The Relay Installs grid used to
+    # infer this from company + last_seen_at; now it can say so outright, and it is what disables Remove
+    # on the connected row.
+    install_id: strawberry.ID | None = None
 
 
 @strawberry.type
