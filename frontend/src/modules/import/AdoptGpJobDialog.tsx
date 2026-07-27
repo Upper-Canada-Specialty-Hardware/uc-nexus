@@ -95,11 +95,15 @@ export default function AdoptGpJobDialog({ open, onClose }: AdoptGpJobDialogProp
       handleClose();
     } catch (err) {
       if (CombinedGraphQLErrors.is(err)) {
-        const conflict = err.errors.find(
-          (e) => (e.extensions as { code?: string } | undefined)?.code === 'CONFLICT',
-        );
-        if (conflict) {
-          setJobError(conflict.message);
+        // Both land on the job field: already-adopted (CONFLICT) and, since #314, "GP has no such
+        // job" - the backend now verifies the number against the live job master rather than
+        // trusting what the client posted, so a stale picker or a direct call is rejected here.
+        const onJobField = err.errors.find((e) => {
+          const ext = e.extensions as { code?: string; field?: string } | undefined;
+          return ext?.code === 'CONFLICT' || (ext?.code === 'VALIDATION_ERROR' && ext?.field === 'job_number');
+        });
+        if (onJobField) {
+          setJobError(onJobField.message);
           return;
         }
       }
