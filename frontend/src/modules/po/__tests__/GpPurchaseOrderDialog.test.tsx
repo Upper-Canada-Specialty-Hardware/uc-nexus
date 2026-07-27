@@ -118,6 +118,7 @@ function baseMocks(
             connected,
             company: connected ? 'UCS' : null,
             build: connected ? 'relay-v0.1.0-build.30' : null,
+            installId: connected ? 'install-1' : null,
             __typename: 'RelayStatus',
           },
         },

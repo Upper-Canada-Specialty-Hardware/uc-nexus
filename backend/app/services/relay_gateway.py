@@ -46,6 +46,10 @@ class RelayGateway:
     def __init__(self) -> None:
         self._socket: WebSocket | None = None
         self._company: str | None = None
+        # Which relay_installs row authenticated the live connection (#366). Without it the backend knows
+        # a relay is connected but not WHICH install it is, so delete_relay_install cannot refuse to
+        # revoke the credential currently holding the connection.
+        self._install_id: uuid.UUID | None = None
         self._pending: dict[str, asyncio.Future] = {}
         # Relay identity advertised on the connect `hello` frame (issue #315). `_build` is the relay's
         # build tag (e.g. 'relay-v0.1.0-build.30'); `_ops` is its supported op-set. Both stay None for an
@@ -72,13 +76,20 @@ class RelayGateway:
         return self._company
 
     @property
+    def install_id(self) -> uuid.UUID | None:
+        """The relay_installs row backing the live connection (None when disconnected). Lets
+        delete_relay_install refuse to revoke the credential that is currently holding the connection,
+        and lets RelayStatus name which install is live instead of the grid inferring it (#366)."""
+        return self._install_id
+
+    @property
     def build(self) -> str | None:
         """The connected relay's build tag from its hello frame (issue #315), None when disconnected or
         when an older relay that predates the hello frame is connected. Surfaced on RelayStatus so the
         Admin -> Relay Installs page can show which build is live."""
         return self._build
 
-    def try_register(self, company: str, websocket: WebSocket) -> bool:
+    def try_register(self, company: str, websocket: WebSocket, install_id: uuid.UUID | None = None) -> bool:
         """Called by the /relay-link route once a connecting socket has authenticated. Returns True and
         takes the single connection slot when it's free; returns False (route closes the socket) when a
         relay is already connected, so the incumbent's in-flight calls are never disturbed."""
@@ -86,6 +97,7 @@ class RelayGateway:
             return False
         self._socket = websocket
         self._company = company
+        self._install_id = install_id
         self._build = None
         self._ops = None
         self._unanswered_pings = 0
@@ -97,6 +109,7 @@ class RelayGateway:
         if self._socket is websocket:
             self._socket = None
             self._company = None
+            self._install_id = None
             self._build = None
             self._ops = None
             self._unanswered_pings = 0

@@ -109,6 +109,14 @@ export const DISARM_RELAY_ADOPT = gql`
   }
 `;
 
+// Removing an install deletes the row and revokes its secret (#366). Refused by the backend for the
+// install currently holding the connection; the UI disables it there rather than letting it fail.
+export const DELETE_RELAY_INSTALL = gql`
+  mutation DeleteRelayInstall($installId: ID!) {
+    deleteRelayInstall(installId: $installId)
+  }
+`;
+
 export const GET_LOCATION_DUPLICATES = gql`
   query GetLocationDuplicates {
     locationDuplicates {
