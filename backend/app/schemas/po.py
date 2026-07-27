@@ -26,6 +26,8 @@ from .types import (
     PODocumentInfo,
     PODocumentSettings,
     POLineItem,
+    POOpening,
+    POOpeningItem,
     POStatistics,
     PriorOrderAsForProduct,
     PurchaseOrder,
@@ -266,6 +268,33 @@ class POQueries:
                 return None
             receive_records = po_repository.get_receive_records_for_po(session, po.id)
             return po_to_type(po, receive_records)
+
+    @strawberry.field
+    def po_openings(self, info: strawberry.Info, po_id: strawberry.ID) -> list[POOpening]:
+        """Which door openings and leaves this PO's hardware was bought for (#302).
+
+        Its own field rather than a list on PurchaseOrder: the PO list renders dozens of POs and must
+        never pay for this join, and the detail modal is the only place it is read."""
+        require_user(info)
+        with SessionLocal() as session:
+            return [
+                POOpening(
+                    opening_number=row["opening_number"],
+                    leaf=row["leaf"],
+                    building=row["building"],
+                    floor=row["floor"],
+                    location=row["location"],
+                    items=[
+                        POOpeningItem(
+                            hardware_category=i["hardware_category"],
+                            product_code=i["product_code"],
+                            quantity=i["quantity"],
+                        )
+                        for i in row["items"]
+                    ],
+                )
+                for row in po_repository.get_po_openings(session, uuid.UUID(str(po_id)))
+            ]
 
     @strawberry.field
     def prior_order_as_values(

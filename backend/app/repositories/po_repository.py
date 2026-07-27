@@ -954,3 +954,79 @@ def upsert_po_document_data(session: Session, po_id: uuid.UUID, **fields) -> POD
 
     session.flush()
     return data
+
+
+def get_po_openings(session: Session, po_id: uuid.UUID) -> list[dict]:
+    """Which door openings (and leaves) this PO's hardware was bought for (#302).
+
+    The PO user orders off the hardware schedule but the PO itself only carries fungible
+    (category, product) lines, so by the time they are registering it into GP there is nothing on
+    screen saying which doors the order is FOR. The link survives on HardwareItem, which the import
+    path stamps with po_line_item_id: opening_id -> Opening, plus the #311 leaf.
+
+    ONE grouped query, joined and aggregated in the database, returning plain dicts. A relationship
+    walk here would be the classic resolver N+1 (see CLAUDE.md): a PO with 40 lines would issue 40
+    SELECTs against Railway's managed Postgres and read as a frozen page.
+
+    Rows come back ordered by opening then leaf, already summed per (opening, leaf, category, code),
+    so the resolver only has to group consecutive rows - no second pass over the whole set.
+    """
+    from app.models.hardware import HardwareItem
+    from app.models.project import Opening
+
+    rows = session.execute(
+        select(
+            Opening.opening_number,
+            Opening.building,
+            Opening.floor,
+            Opening.location,
+            HardwareItem.leaf,
+            HardwareItem.hardware_category,
+            HardwareItem.product_code,
+            func.sum(HardwareItem.item_quantity).label("quantity"),
+        )
+        .join(Opening, Opening.id == HardwareItem.opening_id)
+        .join(POLineItem, POLineItem.id == HardwareItem.po_line_item_id)
+        .where(POLineItem.po_id == po_id)
+        .group_by(
+            Opening.opening_number,
+            Opening.building,
+            Opening.floor,
+            Opening.location,
+            HardwareItem.leaf,
+            HardwareItem.hardware_category,
+            HardwareItem.product_code,
+        )
+        # NULLS FIRST is not portable enough to rely on and a frame's leaf IS null, so sort the null
+        # leaf explicitly to the front rather than letting the backend decide where frames land.
+        .order_by(
+            Opening.opening_number,
+            HardwareItem.leaf.is_(None).desc(),
+            HardwareItem.leaf,
+            HardwareItem.hardware_category,
+            HardwareItem.product_code,
+        )
+    ).all()
+
+    grouped: list[dict] = []
+    for r in rows:
+        key = (r.opening_number, r.leaf)
+        if not grouped or (grouped[-1]["opening_number"], grouped[-1]["leaf"]) != key:
+            grouped.append(
+                {
+                    "opening_number": r.opening_number,
+                    "leaf": r.leaf,
+                    "building": r.building,
+                    "floor": r.floor,
+                    "location": r.location,
+                    "items": [],
+                }
+            )
+        grouped[-1]["items"].append(
+            {
+                "hardware_category": r.hardware_category,
+                "product_code": r.product_code,
+                "quantity": int(r.quantity or 0),
+            }
+        )
+    return grouped
