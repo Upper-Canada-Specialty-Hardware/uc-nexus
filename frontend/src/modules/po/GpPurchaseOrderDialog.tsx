@@ -236,6 +236,18 @@ export default function GpPurchaseOrderDialog({
   // hidden for it. Freight/misc/trade discount still apply (in the PO's currency).
   const gpVendorCurrency = gpVendors.find((v) => v.vendorId === gpVendorId)?.currency ?? 'CAD';
   const isForeignCurrency = isRegister && !!gpVendorId && gpVendorCurrency !== 'CAD';
+  // Whether Project is locked at register time (#316). It used to be locked for EVERY registration,
+  // which left a manually created stock PO - `create_draft_po` takes an optional project_id and the
+  // dialog offers "No Project" - with no way to ever gain one, since the register dialog was the only
+  // place the field appeared. It stays locked once the draft actually has a project AND lines, because
+  // those lines were imported against that project's hardware schedule and re-pointing the header
+  // would leave them describing hardware for a different job. No project, or no lines, is safe.
+  const projectLocked = isRegister && !!registerPo?.projectId && (registerPo?.lineItems?.length ?? 0) > 0;
+
+  // The SELECTED vendor's name, for the currency field's "where this came from" text (#316). Derived
+  // from gpVendors like the currency is, not from the gpVendorName state, which only ever holds the
+  // manufacturer hint's suggestion and goes stale the moment the user picks a different vendor.
+  const selectedGpVendorName = gpVendors.find((v) => v.vendorId === gpVendorId)?.vendorName ?? null;
 
   // Issue #315: the live tax-detail list can fail to load - the relay is too old to serve
   // list_tax_details (RELAY_OP_UNSUPPORTED), or it timed out / dropped / errored mid-query. Rather than
@@ -559,6 +571,9 @@ export default function GpPurchaseOrderDialog({
               gpVendorName,
               buyerId: gpBuyerId,
               gpCompany: company,
+              // #316: only sent when the field was editable (a draft with no project). The backend
+              // ignores it once the PO has one, so a stale value here can't re-point an imported PO.
+              projectId: projectLocked ? null : projectId || null,
               costCode: gpCostCode,
               shippingCost: shippingCostValue,
               tariffAmount: tariffAmountValue,
@@ -661,10 +676,16 @@ export default function GpPurchaseOrderDialog({
   const submitIdleLabel = isRegister ? 'Register in GP' : 'Create Draft';
   const submitBusyLabel = isRegister ? (gpBusy ? 'Pushing to GP…' : 'Registering…') : 'Saving…';
 
+  // #316: say WHY these dropdowns are dead. They are all live GP reads, so they disable themselves
+  // whenever the relay is down - which, with no explanation, reads as a half-built form denying the PO
+  // user fields they should control, rather than as a relay that needs starting.
+  const RELAY_DOWN_HELPER = 'GP relay not connected - start it to choose from GP';
+
   // Status line under the cost-code dropdown (an explicit validation error takes precedence).
-  const costCodeHelper =
-    !isJob || !relayConnected
-      ? ''
+  const costCodeHelper = !isJob
+    ? ''
+    : !relayConnected
+      ? RELAY_DOWN_HELPER
       : costCodesLoading
         ? 'Loading cost codes from GP…'
         : costCodes.length === 0
@@ -674,6 +695,7 @@ export default function GpPurchaseOrderDialog({
   const importedVendorName = registerPo ? poVendorName(registerPo) || null : null;
   const vendorHelper =
     errors.vendor ||
+    (isRegister && !relayConnected ? RELAY_DOWN_HELPER : '') ||
     (isRegister && importedVendorName ? `Imported as: ${importedVendorName} - confirm the GP vendor` : '');
 
   // Issue #232: the manufacturer-driven vendor suggestion, shown under the vendor picker once every
@@ -745,7 +767,14 @@ export default function GpPurchaseOrderDialog({
           onChange={(e) => setProjectId(e.target.value)}
           size="small"
           fullWidth
-          disabled={isRegister}
+          disabled={projectLocked}
+          helperText={
+            projectLocked
+              ? "Locked: the line items were imported against this project's hardware schedule"
+              : isRegister
+                ? 'This draft has no project yet - set it before registering, or leave it as a stock PO'
+                : ' '
+          }
         >
           <MenuItem value="">No Project (stock PO)</MenuItem>
           {projects.map((p) => (
@@ -921,13 +950,23 @@ export default function GpPurchaseOrderDialog({
         {/* Issue #257: GP currency (read-only, from the vendor), the CAD-only tax detail, and the
             Miscellaneous / Trade discount charges. Freight is the "Shipping costs" field above. */}
         <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap alignItems="flex-start" sx={{ mt: 2 }}>
+          {/* #316: read-only, but it now SAYS where it comes from. Nothing is locked in at draft time -
+              the PO carries no currency - so this is a live readout of the selected GP vendor's PM00200
+              currency. Changing it means changing the vendor, and that field is right above. Without the
+              helper text it read as an unfinished field the PO user was being denied. */}
           <TextField
             label="Currency"
             value={gpVendorId ? gpVendorCurrency : '-'}
             size="small"
-            sx={{ minWidth: 120 }}
+            sx={{ minWidth: 200 }}
             disabled
-            helperText={isForeignCurrency ? `${gpVendorCurrency}: no tax schedule, GP rate applied` : ' '}
+            helperText={
+              !gpVendorId
+                ? 'Set by the GP vendor you select'
+                : isForeignCurrency
+                  ? `From ${selectedGpVendorName || 'the GP vendor'} in GP. No tax schedule, GP rate applied.`
+                  : `From ${selectedGpVendorName || 'the GP vendor'} in GP`
+            }
           />
           {/* Issue #315: auto-switch to manual entry when the live dropdown can't serve (relay out of
               date, or GP returned no purchase tax details). The typed id is validated GP-side by the
@@ -959,7 +998,14 @@ export default function GpPurchaseOrderDialog({
               sx={{ minWidth: 260 }}
               disabled={!relayConnected || isForeignCurrency || gpTaxDetails.length === 0}
               error={!!errors.taxDetail}
-              helperText={errors.taxDetail || (isForeignCurrency ? 'Not applicable for a foreign-currency PO' : '')}
+              helperText={
+                errors.taxDetail ||
+                (isForeignCurrency
+                  ? 'Not applicable for a foreign-currency PO'
+                  : !relayConnected
+                    ? RELAY_DOWN_HELPER
+                    : '')
+              }
             >
               {gpTaxDetails.map((t) => (
                 <MenuItem key={t.taxDetailId} value={t.taxDetailId}>

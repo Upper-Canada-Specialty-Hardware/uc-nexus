@@ -63,6 +63,9 @@ def _persist_register_po_from_context(context: dict, relay_result: dict, key: st
         buyer_id=context.get("buyer_id"),
         shipping_cost=context.get("shipping_cost"),
         tariff_amount=context.get("tariff_amount"),
+        # #316. .get() so rows queued before this key existed replay as "no project override", which is
+        # the pre-#316 behaviour.
+        project_id=uuid.UUID(context["project_id"]) if context.get("project_id") else None,
     )
 
 
