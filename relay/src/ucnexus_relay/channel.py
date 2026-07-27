@@ -66,6 +66,11 @@ def _mark_disconnected(state: str = "disconnected") -> None:
 # client sees it as a close frame - distinct from a secret rejection, which is refused pre-accept.
 _SLOT_BUSY_CLOSE_CODE = 4409
 
+# RFC 6455 1012 "Service Restart", sent by the backend's graceful shutdown (#353 PR F). It means the
+# backend is coming straight back, so growing the reconnect backoff is exactly wrong - the socket
+# should be re-established immediately rather than after up to reconnect_max_seconds of waiting.
+_SERVICE_RESTART_CLOSE_CODE = 1012
+
 
 def _classify_connect_failure(exc: Exception) -> tuple[str, str]:
     """Map a failed/dropped channel connection to a (category, operator_message) so the log says WHY,
@@ -95,6 +100,8 @@ def _classify_connect_failure(exc: Exception) -> tuple[str, str]:
             "slot_busy",
             "another relay already holds the backend connection for this company; standing by. still retrying.",
         )
+    if close_code == _SERVICE_RESTART_CLOSE_CODE:
+        return ("server_restarting", "backend is restarting; reconnecting immediately")
     return ("dropped", "channel connection dropped, retrying")
 
 
@@ -362,6 +369,12 @@ async def run_forever(stop_event: asyncio.Event | None = None) -> None:
                 extra={"category": category, "error": str(e), "backoff": backoff},
             )
             _mark_disconnected(category if category in ("secret_rejected", "slot_busy") else "disconnected")
-            backoff = min(backoff * 2, cfg.reconnect_max_seconds)
+            if category == "server_restarting":
+                # A deploy, not a fault: the backend told us it is coming straight back, so dial again
+                # at the minimum interval rather than growing the backoff and sitting out the first
+                # half-minute of the new deployment (#353 PR F).
+                backoff = cfg.reconnect_min_seconds
+            else:
+                backoff = min(backoff * 2, cfg.reconnect_max_seconds)
             prev_category = category
         await asyncio.sleep(backoff)

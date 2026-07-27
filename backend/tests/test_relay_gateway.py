@@ -146,14 +146,18 @@ def test_unregister_fails_any_pending_calls():
     asyncio.run(run())
 
 
-def test_register_ping_miss_does_not_reap_before_the_first_pong():
-    # issue #277: a relay build that doesn't answer the data heartbeat yet must never be reaped on a
-    # false positive - missed pings only count once the relay has proven it speaks the protocol.
+def test_register_ping_miss_gives_an_unarmed_connection_longer_before_reaping():
+    # #353 PR F. issue #277 originally refused to reap an unarmed connection at all, to protect relay
+    # builds predating the data heartbeat. That left a real gap: a relay that connects, takes the
+    # single slot and never pongs held the slot until the platform reaped the dead TCP socket ~an
+    # hour later, blocking every other relay and failing every GP write. The unarmed limit is longer
+    # than the armed one, not absent.
     gateway = RelayGateway()
     gateway.try_register("TUBC", FakeWebSocket())
-    assert gateway.register_ping_miss() is False
-    assert gateway.register_ping_miss() is False
-    assert gateway.register_ping_miss() is False
+    assert gateway.register_ping_miss() is False  # 1
+    assert gateway.register_ping_miss() is False  # 2 - would already reap an ARMED connection
+    assert gateway.register_ping_miss() is False  # 3
+    assert gateway.register_ping_miss() is True  # 4 (~80s) -> reap, freeing the slot
 
 
 def test_register_ping_miss_reaps_after_two_misses_once_armed():
@@ -162,6 +166,60 @@ def test_register_ping_miss_reaps_after_two_misses_once_armed():
     gateway.note_pong()  # the first pong arms the reaper
     assert gateway.register_ping_miss() is False  # 1 unanswered ping
     assert gateway.register_ping_miss() is True  # 2 unanswered pings -> reap
+
+
+def test_a_pong_tightens_the_limit_from_unarmed_to_armed():
+    # Answering once proves the relay speaks the heartbeat, so from then on silence is reaped at the
+    # tighter armed limit rather than the unarmed one.
+    gateway = RelayGateway()
+    gateway.try_register("TUBC", FakeWebSocket())
+    gateway.register_ping_miss()
+    gateway.note_pong()  # arms and resets
+    assert gateway.register_ping_miss() is False
+    assert gateway.register_ping_miss() is True  # two misses is enough once armed
+
+
+def test_close_for_shutdown_says_going_away_and_closes_1012():
+    # #353 PR F: a deploy must tell the relay it is a restart, so the relay reconnects at once instead
+    # of growing its backoff and sitting out the start of the new deployment.
+    async def run():
+        gateway = RelayGateway()
+        ws = FakeWebSocket()
+        gateway.try_register("TUBC", ws)
+        await gateway.close_for_shutdown()
+        assert ws.sent == [{"type": "going_away"}]
+        assert ws.closed_code == 1012
+        assert gateway.connected is False
+
+    asyncio.run(run())
+
+
+def test_close_for_shutdown_is_a_no_op_with_no_relay_connected():
+    async def run():
+        gateway = RelayGateway()
+        await gateway.close_for_shutdown()  # must not raise
+        assert gateway.connected is False
+
+    asyncio.run(run())
+
+
+def test_close_for_shutdown_survives_a_socket_that_will_not_close():
+    # A half-dead socket must not hold up process shutdown; the relay reconnects either way.
+    async def run():
+        class _Stuck(FakeWebSocket):
+            async def send_json(self, data: dict) -> None:
+                raise RuntimeError("socket is gone")
+
+            async def close(self, code: int = 1000) -> None:
+                raise RuntimeError("socket is gone")
+
+        gateway = RelayGateway()
+        ws = _Stuck()
+        gateway.try_register("TUBC", ws)
+        await gateway.close_for_shutdown()  # must not raise
+        assert gateway.connected is False
+
+    asyncio.run(run())
 
 
 def test_note_pong_resets_the_miss_counter():

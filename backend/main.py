@@ -92,6 +92,10 @@ async def lifespan(_app: FastAPI):
     try:
         yield
     finally:
+        # Close the relay socket cleanly BEFORE stopping the worker (#353 PR F). The relay then knows
+        # this is a restart rather than a blip and reconnects at once; anything it was about to send
+        # will queue on the outbox and drain when it does.
+        await relay_gateway.close_for_shutdown()
         if worker is not None:
             worker.cancel()
             with contextlib.suppress(asyncio.CancelledError):
