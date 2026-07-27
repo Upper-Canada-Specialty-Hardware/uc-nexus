@@ -72,7 +72,40 @@ export const RELAY_INSTALLS = gql`
       enrolledAt
       lastSeenAt
       createdAt
+      adoptedAt
+      adoptedBy
     }
+  }
+`;
+
+// The admin-armed "adopt next relay connection" window (#353). While one is open, the next relay to
+// dial /relay-link is accepted with whatever secret it presents - the only way to recover a relay
+// whose in-memory secret has drifted when nobody can reach the workstation.
+export const RELAY_ADOPT_WINDOW = gql`
+  query RelayAdoptWindow {
+    relayAdoptWindow {
+      installId
+      label
+      expiresAt
+      armedBy
+    }
+  }
+`;
+
+export const ARM_RELAY_ADOPT = gql`
+  mutation ArmRelayAdopt($installId: ID!) {
+    armRelayAdopt(installId: $installId) {
+      installId
+      label
+      expiresAt
+      armedBy
+    }
+  }
+`;
+
+export const DISARM_RELAY_ADOPT = gql`
+  mutation DisarmRelayAdopt {
+    disarmRelayAdopt
   }
 `;
 

@@ -1,5 +1,6 @@
 import asyncio
 import inspect
+import logging
 from collections.abc import Callable
 from typing import Any
 
@@ -17,8 +18,16 @@ from app.errors import AppError
 from app.repositories import relay_repository
 from app.schemas.mutations import Mutation
 from app.schemas.queries import Query
+from app.services import relay_adopt
 from app.services.relay_gateway import HEARTBEAT_INTERVAL_SECONDS
 from app.services.relay_gateway import gateway as relay_gateway
+
+logger = logging.getLogger(__name__)
+
+# An adopted socket has to prove it is a relay before it is trusted with the connection slot: a
+# legitimate relay always sends {"type": "hello"} as its first frame (channel.py `_run_once` sends it
+# before entering the read loop), so a short wait for one costs a real relay nothing.
+ADOPT_HELLO_TIMEOUT_SECONDS = 5.0
 
 
 class ErrorHandlerExtension(SchemaExtension):
@@ -121,10 +130,37 @@ async def _relay_heartbeat_loop(websocket: WebSocket) -> None:
             return
 
 
-async def _serve_relay_link(websocket: WebSocket) -> None:
+async def _await_hello(websocket: WebSocket) -> bool:
+    """Read one frame and require it to be the relay's hello. Used only for connections accepted
+    through an adopt window (#353 PR B), where the presented secret was unknown until an admin armed
+    the window - so the socket must still show it speaks the relay protocol before it is trusted with
+    the single connection slot. The hello is fed to the gateway exactly as the read loop would, so an
+    adopted relay reports its build like any other. Returns False (socket closed 4403) on a timeout or
+    a first frame that is not a hello."""
+    try:
+        message = await asyncio.wait_for(websocket.receive_json(), timeout=ADOPT_HELLO_TIMEOUT_SECONDS)
+    except Exception:
+        message = None
+    if not isinstance(message, dict) or message.get("type") != "hello":
+        logger.warning("relay adopt: connection did not send a hello frame; closing")
+        try:
+            await websocket.close(code=4403)
+        except Exception:
+            pass
+        return False
+    relay_gateway.note_hello(message.get("build"), message.get("ops"))
+    return True
+
+
+async def _serve_relay_link(websocket: WebSocket, require_hello: bool = False) -> None:
     """Run the relay read loop and the heartbeat concurrently. Whichever finishes first (a disconnect,
     or the heartbeat reaping a silent relay) cancels the other; a read-loop disconnect is re-raised so
-    the route's `except WebSocketDisconnect` handles it exactly as before the heartbeat existed."""
+    the route's `except WebSocketDisconnect` handles it exactly as before the heartbeat existed.
+
+    `require_hello` gates an adopted connection on a hello frame first; it is never set for a normally
+    authenticated relay, so the ordinary handshake cannot regress."""
+    if require_hello and not await _await_hello(websocket):
+        return
     reader = asyncio.create_task(_relay_read_loop(websocket))
     heartbeat = asyncio.create_task(_relay_heartbeat_loop(websocket))
     try:
@@ -160,8 +196,33 @@ async def relay_link(websocket: WebSocket):
         await websocket.close(code=4401)
         return
 
+    adopted = False
     with SessionLocal() as session:
         install = relay_repository.authenticate_secret(session, secret.strip())
+        if install is None:
+            # No install matched. If an admin has armed an adopt window, bind the presented secret to
+            # that install instead of refusing (#353 PR B): this is the only recovery path for a relay
+            # whose stored secret has drifted from the one it is dialling with, when nobody can reach
+            # the workstation to restart it. Adoption is consumed here, single-use.
+            window = relay_adopt.peek()
+            if window is not None:
+                install = relay_repository.adopt_secret(session, window.install_id, secret.strip(), window.armed_by)
+                if install is not None and relay_adopt.consume(window.install_id):
+                    adopted = True
+                    logger.warning(
+                        "relay adopt: presented secret bound to install",
+                        extra={
+                            "install_id": str(window.install_id),
+                            "label": window.label,
+                            "hostname": install.hostname,
+                            "armed_by": window.armed_by,
+                        },
+                    )
+                else:
+                    # The window was consumed by a racing connection (or the row vanished): fall back
+                    # to a plain rejection and let the rebind roll back with the session.
+                    install = None
+                    session.rollback()
         # Read the company while the row is still bound to the session. session.commit() below expires
         # every attribute (expire_on_commit), and leaving the `with` block detaches `install` - so any
         # later install.company access raises DetachedInstanceError. Because that access sat AFTER
@@ -181,7 +242,7 @@ async def relay_link(websocket: WebSocket):
         await websocket.close(code=4409)
         return
     try:
-        await _serve_relay_link(websocket)
+        await _serve_relay_link(websocket, require_hello=adopted)
     except WebSocketDisconnect:
         pass
     except asyncio.CancelledError:
@@ -235,7 +296,8 @@ def reset_data(request: Request):
                 for r in conn.execute(
                     text(
                         "SELECT id, label, company, hostname, secret_encrypted, enrollment_token_hash, "
-                        "enrollment_token_expires_at, enrolled_at, last_seen_at, created_at FROM relay_installs"
+                        "enrollment_token_expires_at, enrolled_at, last_seen_at, created_at, "
+                        "adopted_at, adopted_by FROM relay_installs"
                     )
                 ).mappings()
             ]
@@ -255,9 +317,9 @@ def reset_data(request: Request):
                 text(
                     "INSERT INTO relay_installs (id, label, company, hostname, secret_encrypted, "
                     "enrollment_token_hash, enrollment_token_expires_at, enrolled_at, last_seen_at, "
-                    "created_at) VALUES (:id, :label, :company, :hostname, :secret_encrypted, "
-                    ":enrollment_token_hash, :enrollment_token_expires_at, :enrolled_at, :last_seen_at, "
-                    ":created_at)"
+                    "created_at, adopted_at, adopted_by) VALUES (:id, :label, :company, :hostname, "
+                    ":secret_encrypted, :enrollment_token_hash, :enrollment_token_expires_at, "
+                    ":enrolled_at, :last_seen_at, :created_at, :adopted_at, :adopted_by)"
                 ),
                 row,
             )

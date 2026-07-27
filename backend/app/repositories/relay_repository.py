@@ -49,6 +49,13 @@ def provision_install(session: Session, label: str, company: str) -> tuple[Relay
     return install, token
 
 
+def set_install_secret(session: Session, install: RelayInstall, secret: str) -> None:
+    """The SINGLE writer of a relay's long-lived credential. Enrollment and adoption both go through
+    here so there is exactly one place that decides how the secret is stored at rest - changing that
+    representation (encrypted today) is a change to this function body and nothing else."""
+    install.secret_encrypted = encrypt_secret(secret)
+
+
 def enroll_install(session: Session, enrollment_token: str, hostname: str, secret: str) -> RelayInstall:
     """Called by the relay (authenticated by the enrollment token, not Clerk). Stores the relay's
     self-generated secret encrypted; the token is single-use (a second attempt is rejected as
@@ -69,12 +76,34 @@ def enroll_install(session: Session, enrollment_token: str, hostname: str, secre
 
     now = datetime.utcnow()
     install.hostname = (hostname or "").strip() or None
-    install.secret_encrypted = encrypt_secret(secret)
+    set_install_secret(session, install, secret)
     install.enrolled_at = now
     install.last_seen_at = now
     # single use is enforced by the enrolled_at guard above: a second attempt with the same token finds
     # this now-enrolled row and is rejected as already-used. (Keeping the hash makes that a clear error
     # rather than a generic "invalid token".)
+    session.flush()
+    return install
+
+
+def adopt_secret(session: Session, install_id: uuid.UUID, secret: str, adopted_by: str) -> RelayInstall | None:
+    """Bind a presented (otherwise unrecognised) secret to an install, under an admin-armed adopt
+    window. Called from the /relay-link route ONLY after relay_adopt.peek() returned a window for
+    this install - this function does not itself decide whether adoption is allowed.
+
+    Sets enrolled_at when it is still null so a never-enrolled row does not stay "pending" forever
+    after a relay has in fact paired with it. Returns None if the row has been deleted since the
+    window was armed."""
+    install = session.get(RelayInstall, install_id)
+    if install is None:
+        return None
+    now = datetime.utcnow()
+    set_install_secret(session, install, secret)
+    if install.enrolled_at is None:
+        install.enrolled_at = now
+    install.adopted_at = now
+    install.adopted_by = adopted_by
+    install.last_seen_at = now
     session.flush()
     return install
 
