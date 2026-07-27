@@ -346,6 +346,10 @@ export default function RelayInstallsPage() {
         columns={columns}
         loading={loading}
         autoHeight
+        // A handful of rows, ever - one per relay workstation. Virtualization buys nothing here and
+        // costs something real: at a narrow (or zero, under jsdom) measured width the grid renders no
+        // cells at all, which silently hides the per-row recovery action.
+        disableVirtualization
         disableRowSelectionOnClick
         pageSizeOptions={[10, 25, 50]}
         initialState={{ pagination: { paginationModel: { pageSize: 10 } } }}
