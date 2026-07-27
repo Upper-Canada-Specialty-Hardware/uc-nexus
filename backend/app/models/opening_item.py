@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, Enum, ForeignKey, Index, Integer, SmallInteger, String
+from sqlalchemy import CheckConstraint, Enum, ForeignKey, Index, Integer, SmallInteger, String, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from . import Base
@@ -24,6 +24,21 @@ class OpeningItem(Base):
         Index("ix_opening_items_opening_id", "opening_id"),
         Index("ix_opening_items_warehouse", "warehouse_id", "aisle", "row", "bay"),
         CheckConstraint("quantity >= 1", name="ck_opening_items_quantity_positive"),
+        # One live assembled unit per door leaf (#345). `complete_opening`'s duplicate-completion
+        # guard is a read-then-write and two assemblers finishing two ShopAssemblyOpenings that name
+        # the same leaf can both pass it; this is the same rule as an invariant. `coalesce(leaf, 0)`
+        # because NULLs do not collide in a unique index and a legacy whole-opening unit is exactly
+        # as singular as leaf 1. Shipped units are excluded: the leaf has left the building, and a
+        # correction is allowed to assemble another one - the same carve-out
+        # `find_already_assembled_openings` and `find_assembled_leaf` already make.
+        Index(
+            "uq_opening_items_live_leaf",
+            "project_id",
+            "opening_id",
+            text("coalesce(leaf, 0)"),
+            unique=True,
+            postgresql_where=text("state <> 'SHIPPED_OUT'"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)

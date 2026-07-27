@@ -76,11 +76,14 @@ export default function ManagerAssignPanel() {
 
   const available = useMemo(() => openings.filter(isAvailableForAssignment), [openings]);
 
-  // Current load per member: pending pulled openings already assigned to someone.
+  // Current load per member: pulled openings already assigned to someone and not yet finished.
+  // Unfinished, not PENDING - the same rule `isAvailableForAssignment` uses. A leaf someone is
+  // half-way through is the most load they can be carrying, and counting only PENDING made a member
+  // whose whole queue was IN_PROGRESS vanish from the table entirely, reading as free.
   const loadByMember = useMemo(() => {
     const counts = new Map<string, { id: string; name: string; count: number }>();
     for (const o of openings) {
-      if (o.pullStatus === 'PULLED' && o.assemblyStatus === 'PENDING' && o.assignedToUserId) {
+      if (o.pullStatus === 'PULLED' && o.assemblyStatus !== 'COMPLETED' && o.assignedToUserId) {
         const id = o.assignedToUserId;
         const prev = counts.get(id);
         counts.set(id, {

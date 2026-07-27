@@ -17,7 +17,7 @@ them in Python (CLAUDE.md perf rules).
 import uuid
 from collections.abc import Iterable
 
-from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import and_, delete, func, not_, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.enums import ReservationSource
@@ -82,9 +82,39 @@ def get_reserved_quantities(
     if combo_clause is not None:
         stmt = stmt.where(combo_clause)
     if exclude_source is not None and exclude_request_id is not None:
-        stmt = stmt.where(_SOURCE_COLUMN[exclude_source] != exclude_request_id)
+        # Exclude exactly one row set: the given request's own claims. It has to be written as a
+        # negated conjunction, not as `column != id`, because that column is NULL on every row of the
+        # *other* source - a shipping-out reservation has no `shop_assembly_request_id` - and
+        # `NULL != <id>` is NULL, which SQL drops. Written the naive way this silently subtracted
+        # every opposite-source claim in the project from the aggregate, so the cross-type guarantee
+        # the reservation table exists for was void on the one path that matters (pull approval).
+        stmt = stmt.where(
+            not_(
+                and_(
+                    InventoryReservationModel.source == exclude_source,
+                    _SOURCE_COLUMN[exclude_source] == exclude_request_id,
+                )
+            )
+        )
 
     return {(cat, code): int(total or 0) for cat, code, total in session.execute(stmt).all()}
+
+
+def get_reserved_total(session: Session, source: ReservationSource, request_id: uuid.UUID) -> int:
+    """How much stock one request currently holds, summed across every combo. One scalar aggregate.
+
+    The question this answers is "does this request hold a claim at all", which is not the same as
+    "was this request created after #342": the backfill deliberately left the pre-existing in-flight
+    population *unreserved and flagged* rather than inventing claims for it, and a re-upload or a
+    cancelled-and-not-re-reservable pull can strip a claim from a live request too.
+    """
+    total = session.scalar(
+        select(func.coalesce(func.sum(InventoryReservationModel.quantity), 0)).where(
+            InventoryReservationModel.source == source,
+            _SOURCE_COLUMN[source] == request_id,
+        )
+    )
+    return int(total or 0)
 
 
 def get_project_availability(session: Session, project_id: uuid.UUID) -> list[dict]:

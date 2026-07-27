@@ -230,7 +230,18 @@ it('offers cancel on an approved pull, and on a fully staged shop-assembly one',
   expect(isCancellable({ status: 'IN_PROGRESS', source: 'SHOP_ASSEMBLY' })).toBe(true);
   expect(isCancellable({ status: 'IN_PROGRESS', source: 'SHIPPING_OUT' })).toBe(true);
   // "Completed" for a shop-assembly pull now means only "every cart is built".
-  expect(isCancellable({ status: 'COMPLETED', source: 'SHOP_ASSEMBLY' })).toBe(true);
+  expect(isCancellable({ status: 'COMPLETED', source: 'SHOP_ASSEMBLY', totalOpeningCount: 2 })).toBe(
+    true,
+  );
+  // ...but only if it has carts at all. A completed PR-REPL pull is a SHOP_ASSEMBLY pull with no
+  // openings, and the server refuses it every time, so the button must not be offered.
+  expect(isCancellable({ status: 'COMPLETED', source: 'SHOP_ASSEMBLY', totalOpeningCount: 0 })).toBe(
+    false,
+  );
+  expect(isCancellable({ status: 'COMPLETED', source: 'SHOP_ASSEMBLY', totalOpeningCount: null })).toBe(
+    false,
+  );
+  expect(isCancellable({ status: 'COMPLETED', source: 'SHOP_ASSEMBLY' })).toBe(false);
   // A completed shipping-out pull has already flipped its leaves to ship-ready.
   expect(isCancellable({ status: 'COMPLETED', source: 'SHIPPING_OUT' })).toBe(false);
   expect(isCancellable({ status: 'CANCELLED', source: 'SHOP_ASSEMBLY' })).toBe(false);

@@ -357,8 +357,10 @@ enum NotificationType {
 # name, so a receive records the person and not the relay's Windows account.
 input CreateReceiveInput {
   po_id: ID!
-  line_items: [ReceiveLineItemInput!]!
-  warehouse_id: ID
+  warehouse_id: ID = null
+  # Defaulted, not required: an empty receive is a legal (if pointless) call, and the resolver -
+  # not the schema - is what refuses one with a typed error naming the reason.
+  line_items: [ReceiveLineItemInput!]! = []
   # Short-circuits a retried receive against the same GP receipt (services/gp_idempotency.py).
   idempotency_key: String! = ""
 }
@@ -448,7 +450,9 @@ type Query {
   projectProgressByProduct(projectId: ID!): [ProjectProgressByProduct!]!
   packingSlips(projectId: ID): [PackingSlip!]!
   returnableLines(packingSlipId: ID!): [ReturnableLine!]!
-  notifications(projectId: ID, recipientRole: String!, unreadOnly: Boolean, limit: Int! = 5): [Notification!]!
+  # recipientRole defaults to "" and that default is load-bearing: empty means "every audience",
+  # which is what the bell asks for. Passing a role narrows to that audience.
+  notifications(projectId: ID = null, recipientRole: String! = "", unreadOnly: Boolean = null, limit: Int! = 5): [Notification!]!
 }
 
 type Mutation {

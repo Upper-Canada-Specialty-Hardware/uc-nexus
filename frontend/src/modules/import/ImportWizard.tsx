@@ -1446,6 +1446,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
               onTogglePRItem={toggleShippingPRItem}
               availabilityByCombo={availabilityByCombo}
               availabilityShortfalls={availabilityShortfalls}
+              availabilityLoading={availabilityLoading && availabilityData === undefined}
               availabilityError={availabilityError !== undefined}
               onAcknowledgeIncompleteLeaf={() => setAcknowledgedIncompleteLeaves(true)}
               onNext={handleNext}

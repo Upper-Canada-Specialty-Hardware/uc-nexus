@@ -829,3 +829,71 @@ def test_assemble_list_excludes_a_cancelled_pulls_openings(db_session):
     warehouse_repository.cancel_pull_request(db_session, pr.id, "warehouse", None)
     db_session.flush()
     assert shop_assembly_repository.get_assemble_list(db_session, project.id) == []
+
+
+# --- grouping: one aggregate really does cover several pulls (#343 review) -----------------------
+
+
+def test_staging_summaries_group_correctly_across_several_pulls(db_session):
+    """The resolver asks for a whole page of pulls in one call, so the grouping - not just the
+    arithmetic - has to be right. Three pulls at three different stages, one statement."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=60)
+
+    _sar_a, pr_a, openings_a = _approved_pull(db_session, project, opening_number="A01")
+    _sar_b, pr_b, openings_b = _approved_pull(db_session, project, opening_number="B01")
+    _sar_c, pr_c, _openings_c = _approved_pull(db_session, project, opening_number="C01")
+
+    # A: nothing staged. B: one of two. C: both, which completes it.
+    warehouse_repository.stage_pull_openings(db_session, pr_b.id, [openings_b[0].id], "picker")
+    warehouse_repository.stage_pull_openings(db_session, pr_c.id, [o.id for o in _openings_c], "picker")
+    db_session.flush()
+
+    # A pull with no openings at all rides along and must simply be absent from the result.
+    empty = PullRequest(
+        id=uuid.uuid4(),
+        request_number=f"PR-REPL-{uuid.uuid4().hex[:6]}",
+        project_id=project.id,
+        source=PullRequestSource.SHOP_ASSEMBLY,
+        status=PullRequestStatus.IN_PROGRESS,
+        requested_by="tester",
+    )
+    db_session.add(empty)
+    db_session.flush()
+
+    summaries = warehouse_repository.get_pull_staging_summaries(db_session, [pr_a.id, pr_b.id, pr_c.id, empty.id])
+
+    assert set(summaries) == {pr_a.id, pr_b.id, pr_c.id}
+    assert (summaries[pr_a.id].staged_opening_count, summaries[pr_a.id].total_opening_count) == (0, 2)
+    assert (summaries[pr_b.id].staged_opening_count, summaries[pr_b.id].total_opening_count) == (1, 2)
+    assert (summaries[pr_c.id].staged_opening_count, summaries[pr_c.id].total_opening_count) == (2, 2)
+    assert summaries[pr_a.id].status == PullStatus.NOT_PULLED
+    assert summaries[pr_b.id].status == PullStatus.PARTIAL
+    assert summaries[pr_c.id].status == PullStatus.PULLED
+    # Openings of one pull never leak into another's count.
+    assert {o.pull_request_id for o in openings_a} == {pr_a.id}
+
+
+def test_completing_a_pull_twice_is_refused_rather_than_double_announced(db_session):
+    """Staging gave completion a second entry point. The pull's own row lock plus the status check
+    is what keeps the completion notification and the replacement arrivals to exactly one run."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=20)
+    _sar, pr, openings = _approved_pull(db_session, project)
+
+    warehouse_repository.stage_pull_openings(db_session, pr.id, [o.id for o in openings], "picker")
+    db_session.flush()
+    assert pr.status == PullRequestStatus.COMPLETED
+
+    with pytest.raises(InvalidStateTransitionError):
+        warehouse_repository.complete_pull_request(db_session, pr.id, completed_by="picker")
+
+    completions = list(
+        db_session.scalars(
+            select(Notification).where(
+                Notification.pull_request_id == pr.id,
+                Notification.type == NotificationType.PULL_REQUEST_COMPLETED,
+            )
+        ).all()
+    )
+    assert len(completions) == 1
