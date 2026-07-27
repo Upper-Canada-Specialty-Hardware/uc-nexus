@@ -20,6 +20,7 @@ within ~a minute (issue #277) - the websockets client auto-answers protocol ping
 import asyncio
 import json
 import logging
+import time
 
 import pyodbc
 import websockets
@@ -37,9 +38,19 @@ logger = get_logger()
 # disconnect line, so the log's last event goes stale). `state` mirrors _classify_connect_failure.
 _STATE: dict = {"connected": False, "state": "unknown"}
 
+# GP jobs currently being dispatched, and when the last one finished. The `jobs` task set below is
+# per-connection and lives in the SERVE child; the auto-update poller lives in the desktop app PARENT
+# and has no way to see it. These module-level counters ride out on /health (the parent already polls
+# it) so the poller can refuse to swap the exe out from under an in-flight GP write.
+_INFLIGHT = 0
+_LAST_JOB_AT: float | None = None
+
 
 def channel_state_snapshot() -> dict:
-    return dict(_STATE)
+    snapshot = dict(_STATE)
+    snapshot["jobs_in_flight"] = _INFLIGHT
+    snapshot["last_job_finished_ago"] = None if _LAST_JOB_AT is None else time.monotonic() - _LAST_JOB_AT
+    return snapshot
 
 
 def _mark_connected() -> None:
@@ -275,8 +286,17 @@ async def _run_once(url: str, secret: str, cfg) -> None:
                     send_queue.task_done()
 
         async def _dispatch_job(job: dict) -> None:
-            reply = await _handle_job(job)
-            await send_queue.put(reply)
+            # try/finally so a crashing or cancelled job cannot leak the counter: a stuck _INFLIGHT
+            # would wedge the update poller into deferring forever, which looks exactly like "updates
+            # silently stopped working".
+            global _INFLIGHT, _LAST_JOB_AT
+            _INFLIGHT += 1
+            try:
+                reply = await _handle_job(job)
+                await send_queue.put(reply)
+            finally:
+                _INFLIGHT -= 1
+                _LAST_JOB_AT = time.monotonic()
 
         writer_task = asyncio.create_task(_writer())
         try:

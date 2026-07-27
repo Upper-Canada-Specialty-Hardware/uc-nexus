@@ -71,6 +71,30 @@ jobs:
       - name: Validate migrations
         run: poetry run alembic upgrade head
 
+  relay:
+    name: Relay
+    # Windows because the relay is a Windows-only deployable and its tests touch DPAPI, the HKCU
+    # autostart key, and the single-instance mutex. Health + auth + pure logic only - never GP.
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: relay
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6.3.0
+        with:
+          python-version: "3.11"
+
+      - run: pip install poetry
+      - run: poetry install --no-interaction --with dev
+
+      - name: Ruff lint
+        run: poetry run ruff check src tests
+
+      - name: Run tests
+        run: poetry run pytest
+
   migration-integrity:
     name: Migration Integrity
     runs-on: ubuntu-latest
