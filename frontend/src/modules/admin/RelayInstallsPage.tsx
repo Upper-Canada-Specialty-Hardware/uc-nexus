@@ -27,6 +27,7 @@ import {
   DISARM_RELAY_ADOPT,
 } from '../../graphql/admin';
 import ConfirmDialog from '../../components/ConfirmDialog';
+import GpWriteQueuePanel from './GpWriteQueuePanel';
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
 import { useRelayStatus } from '../../relay/useRelayStatus';
@@ -354,6 +355,10 @@ export default function RelayInstallsPage() {
         pageSizeOptions={[10, 25, 50]}
         initialState={{ pagination: { paginationModel: { pageSize: 10 } } }}
       />
+
+      {/* #353 PR E: the GP writes that were accepted while the relay was down live here, next to the
+          relay whose absence queued them. */}
+      <GpWriteQueuePanel />
 
       <ConfirmDialog
         open={adoptTarget !== null}

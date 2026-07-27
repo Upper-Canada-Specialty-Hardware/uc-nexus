@@ -168,3 +168,15 @@ class LeafStatus(enum.Enum):
     IN_INVENTORY = "IN_INVENTORY"
     SHIP_READY = "SHIP_READY"
     SHIPPED_OUT = "SHIPPED_OUT"
+
+
+@strawberry.enum
+class GpOutboxStatus(enum.Enum):
+    """Where a queued GP write has got to (#353 PR E). Stored as a String + CHECK rather than a PG
+    enum (precedent: migration 065), so this list can grow without an ALTER TYPE."""
+
+    PENDING = "PENDING"
+    IN_FLIGHT = "IN_FLIGHT"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"

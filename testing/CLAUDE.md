@@ -51,13 +51,47 @@ with `relayInstalls { label enrolled enrolledAt lastSeenAt }` and the Railway ba
   proves `RELAY_SECRET_ENC_KEY` was valid at that moment; if auth still 403s seconds later, the
   mismatch is in the secret, not the key. Usual cause: enrolment rewrote `[auth] shared_secret` in
   `config.toml` while the **already-running relay service kept dialling with its old in-memory
-  secret**. It needs a *restart*, not another enrol. Only reachable on the workstation - the relay's
-  inbound server is bound to `127.0.0.1:7321`, so there is no remote restart.
-- Beware the silent path: `authenticate_secret` decrypts inside a bare `except Exception: continue`
-  (`:92-93`), so a genuinely rotated `RELAY_SECRET_ENC_KEY` fails **identically and logs nothing**.
-  Distinguish the two with the enrolment-timing argument above rather than by reading the key.
-- `POST /admin/reset-data` drops the `relay_installs` rows along with everything else, so a schema
-  rebuild orphans the on-prem relay every time.
+  secret**. It needs a *restart*, not another enrol. The relay's inbound server is bound to
+  `127.0.0.1:7321`, so there is no remote restart — **but since #353 PR B there is a remote fix.**
+  Admin → Relay Installs → **Adopt next connection** on that install opens a 5-minute, single-use
+  window in which the relay's next dial is accepted with whatever secret it is already presenting,
+  and the secret is rebound. Watch for `relay adopt: presented secret bound to install` at WARNING,
+  then an accepted `/relay-link`. The adoption is stamped on the row as `adoptedAt` / `adoptedBy`.
+- The silent-decrypt path is gone (#352 logs the cause; #353 PR C removed the key from the
+  authentication path entirely). Since migration `067` the relay secret is a SHA-256 hash, so a
+  rotated or missing `RELAY_SECRET_ENC_KEY` can no longer orphan a relay — if you still see a
+  `relay handshake rejected` line, read its `hash_rows` / `legacy_rows` / `encryption_key_present`
+  fields, which name the actual cause.
+- `POST /admin/reset-data` **preserves** the `relay_installs` rows across the rebuild (#352), so a
+  schema reset no longer orphans the on-prem relay.
+
+### A queued GP write is not a failed one
+
+Since #353 PR E, a `createReceive` or `registerPoInGp` submitted while the relay is unreachable is
+**accepted onto a durable outbox** instead of failing. Recognise it before you conclude anything
+about GP:
+
+- The receive modal shows an amber *"Queued — the GP relay is offline"* panel, not the green
+  "items added to inventory" one, and **nothing is in inventory yet** — the UC Nexus persist is
+  deferred along with the GP write.
+- A queued-writes chip appears in the app bar. Read the queue with:
+
+```
+{ gpOutboxSummary { pending inFlight failed oldestPendingAt lastDrainedAt } }
+{ gpOutbox(limit: 20) { label op status attempts failureKind lastError } }
+```
+
+- **Bring the relay back and it drains itself** within about a second of `/relay-link` accepting
+  (the route wakes the worker). `pending` goes to 0, `lastDrainedAt` advances, and the browser
+  refreshes the affected lists on its own. Do not re-submit — the idempotency key belongs to the
+  queued row, so a resubmit returns the same entry rather than posting twice.
+- A `FAILED` entry is the one that needs a person: Admin → Relay Installs → **GP write queue**.
+  `failureKind` says which kind of trouble it is — `gp_rejected` (eConnect said no; fix the input),
+  `persist_failed` (GP committed but UC Nexus refused the state change), `exhausted` (retry budget
+  gone), and `ambiguous`, which means the job reached the relay and **GP may already hold the
+  write** — check GP before retrying, because a retry there can genuinely duplicate a receipt.
+- If a scenario needs inventory *now* and the queue is stuck, the blocker is still the relay: seeding
+  stock has no non-relay path. Re-scope the session rather than improvising.
 
 Verified in this state on 2026-07-26: install `TAGGING3W10 (re-enroll after schema rebuild)` (company
 TUBC), one row, enrolled 7/24 22:54:27.662369Z with `lastSeenAt` byte-identical to `enrolledAt`. The

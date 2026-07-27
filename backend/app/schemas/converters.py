@@ -8,7 +8,7 @@ import strawberry
 
 from app.models.project import Project as ProjectModel
 
-from .enums import PipelineStage
+from .enums import GpOutboxStatus, PipelineStage
 from .types import (
     AssemblyPipeline,
     AssemblyPipelineSummary,
@@ -19,6 +19,8 @@ from .types import (
     DeficientItemRow,
     GpCostCode,
     GpJob,
+    GpOutboxEntry,
+    GpOutboxSummary,
     GpTaxDetail,
     GpVendor,
     InventoryLocation,
@@ -826,4 +828,32 @@ def deficient_item_row_to_type(row: dict) -> DeficientItemRow:
         aisle=row["aisle"],
         row=row["row"],
         bay=row["bay"],
+    )
+
+
+def gp_outbox_entry_to_type(row) -> GpOutboxEntry:
+    """Reads only the row's own scalar columns - no relationships, so nothing here can trigger a
+    lazy load (see the GraphQL/SQLAlchemy rules in CLAUDE.md)."""
+    return GpOutboxEntry(
+        id=strawberry.ID(str(row.id)),
+        label=row.label,
+        op=row.op,
+        company=row.company,
+        status=GpOutboxStatus(row.status),
+        attempts=row.attempts,
+        next_attempt_at=row.next_attempt_at,
+        created_at=row.created_at,
+        entity_key=row.entity_key,
+        last_error=row.last_error,
+        failure_kind=row.failure_kind,
+    )
+
+
+def gp_outbox_summary_to_type(data: dict) -> GpOutboxSummary:
+    return GpOutboxSummary(
+        pending=data["pending"],
+        in_flight=data["in_flight"],
+        failed=data["failed"],
+        oldest_pending_at=data["oldest_pending_at"],
+        last_drained_at=data["last_drained_at"],
     )

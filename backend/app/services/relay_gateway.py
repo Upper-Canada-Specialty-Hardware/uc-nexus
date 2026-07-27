@@ -120,10 +120,13 @@ class RelayGateway:
         return self._heartbeat_armed and self._unanswered_pings >= HEARTBEAT_MAX_MISSED
 
     def _fail_all(self, message: str) -> None:
+        # dispatched=True: every job in `_pending` was already sent to the relay, so GP may have run
+        # it and the reply was lost with the socket. The outbox (#353 PR E) must NOT queue these - a
+        # blind retry would post a second receipt or reserve a second PO number.
         pending, self._pending = self._pending, {}
         for future in pending.values():
             if not future.done():
-                future.set_exception(RelayUnavailableError(message))
+                future.set_exception(RelayUnavailableError(message, dispatched=True))
 
     def resolve(self, reply: dict) -> None:
         """Called by the /relay-link route's read loop with each {id, ok, result|error} reply."""

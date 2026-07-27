@@ -10,6 +10,7 @@ from .enums import (
     Classification,
     DeficiencyResolution,
     DeficientItemSource,
+    GpOutboxStatus,
     HardwareItemState,
     LeafStatus,
     NotificationType,
@@ -1285,3 +1286,60 @@ class AdminStats:
     user_count: int
     hardware_item_count: int
     opening_count: int
+
+
+# --- GP write outbox (#353 PR E) ----------------------------------------------------------------------
+
+
+@strawberry.type
+class GpOutboxEntry:
+    """One queued GP write, for the admin queue and the pending chips on the PO lists."""
+
+    id: strawberry.ID
+    label: str
+    op: str
+    company: str
+    status: GpOutboxStatus
+    attempts: int
+    next_attempt_at: datetime
+    created_at: datetime
+    # Which PO this write is against, as `po:<uuid>` - the lists join on it client-side rather than
+    # exposing a per-row field on PurchaseOrder, which would be an N+1 on the All-Projects list.
+    entity_key: str
+    last_error: str | None = None
+    failure_kind: str | None = None
+
+
+@strawberry.type
+class GpOutboxSummary:
+    """Counts for the queue chip. Scalar aggregates only - this is polled by every open browser."""
+
+    pending: int
+    in_flight: int
+    failed: int
+    oldest_pending_at: datetime | None = None
+    # The most recent successful drain. The browser watches this to know a background drain changed
+    # data underneath whatever route it happens to be on.
+    last_drained_at: datetime | None = None
+
+
+@strawberry.type
+class RegisterPOResult:
+    """#353 PR E: registering a PO can now be ACCEPTED without reaching GP.
+
+    `queued` true means the relay was unreachable and the write is on the outbox; the returned PO is
+    still DRAFT and will advance itself when the queue drains. False is the old behaviour verbatim."""
+
+    queued: bool
+    purchase_order: PurchaseOrder
+    outbox_entry_id: strawberry.ID | None = None
+
+
+@strawberry.type
+class CreateReceiveResult:
+    """#353 PR E. `receiveRecord` is null when `queued` - the UC Nexus receive is persisted with the
+    GP write, so nothing is in inventory yet."""
+
+    queued: bool
+    receive_record: ReceiveRecord | None = None
+    outbox_entry_id: strawberry.ID | None = None

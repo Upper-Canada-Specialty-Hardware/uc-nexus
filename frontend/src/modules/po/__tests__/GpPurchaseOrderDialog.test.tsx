@@ -240,18 +240,47 @@ function costCodesMock(): MockedResponse {
   };
 }
 
+// #353 PR E: registerPoInGp returns a wrapper. `queued` false is the online path - the PO reached
+// GP and came back GP_REGISTERED.
 function registerData() {
   return {
     registerPoInGp: {
-      __typename: 'PurchaseOrder',
-      id: 'po-1',
-      poNumber: 'PO-2001',
-      status: 'GP_REGISTERED',
-      gpCompany: 'UCS',
-      costCode: '310-000-3',
-      gpVendorId: 'V-ACE',
-      vendorNameSnapshot: 'Ace Hardware Co',
-      vendor: null,
+      __typename: 'RegisterPOResult',
+      queued: false,
+      outboxEntryId: null,
+      purchaseOrder: {
+        __typename: 'PurchaseOrder',
+        id: 'po-1',
+        poNumber: 'PO-2001',
+        status: 'GP_REGISTERED',
+        gpCompany: 'UCS',
+        costCode: '310-000-3',
+        gpVendorId: 'V-ACE',
+        vendorNameSnapshot: 'Ace Hardware Co',
+        vendor: null,
+      },
+    },
+  };
+}
+
+// The offline path: accepted onto the durable outbox, PO still DRAFT.
+function queuedRegisterData() {
+  return {
+    registerPoInGp: {
+      __typename: 'RegisterPOResult',
+      queued: true,
+      outboxEntryId: 'outbox-1',
+      purchaseOrder: {
+        __typename: 'PurchaseOrder',
+        id: 'po-1',
+        poNumber: null,
+        status: 'DRAFT',
+        gpCompany: null,
+        costCode: '310-000-3',
+        gpVendorId: 'V-ACE',
+        vendorNameSnapshot: 'Ace Hardware Co',
+        vendor: null,
+      },
     },
   };
 }
@@ -755,6 +784,35 @@ describe('GpPurchaseOrderDialog', () => {
     const retryKey = (calls[1].input as Record<string, unknown>).idempotencyKey;
     expect(firstKey).toMatch(UUID_RE);
     expect(retryKey).toBe(firstKey);
+  });
+
+  it('keeps the idempotency key when the registration is queued on the GP outbox', async () => {
+    // #353 PR E: a queued registration is accepted, not failed - but the outbox row now owns the
+    // idempotency key. Clearing it would make a resubmit mint a new key and queue the PO twice, so
+    // a second submit must carry the same key.
+    const calls: Record<string, unknown>[] = [];
+    const queuedMock: MockedResponse = {
+      request: { query: REGISTER_PO_IN_GP, variables: () => true },
+      maxUsageCount: 2,
+      result: (vars) => {
+        calls.push(vars as Record<string, unknown>);
+        return { data: queuedRegisterData() };
+      },
+    };
+    const { onSubmitted } = renderDialog({ registerPo: stockDraft }, [...baseMocks(), queuedMock]);
+    await waitForVendorPreselect();
+    await selectTaxDetail();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+    await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+    await waitFor(() => expect(calls).toHaveLength(2));
+
+    const firstKey = (calls[0].input as Record<string, unknown>).idempotencyKey;
+    const secondKey = (calls[1].input as Record<string, unknown>).idempotencyKey;
+    expect(firstKey).toMatch(UUID_RE);
+    expect(secondKey).toBe(firstKey);
   });
 
   it('blocks submission entirely while the GP relay is down', async () => {

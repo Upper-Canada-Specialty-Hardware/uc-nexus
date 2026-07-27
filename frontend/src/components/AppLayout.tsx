@@ -20,6 +20,8 @@ import { useColorScheme } from '@mui/material/styles';
 import { UserButton } from '@clerk/clerk-react';
 import { useCart } from '../contexts/CartContext';
 import NotificationBell from './NotificationBell';
+import GpQueueChip from '../relay/GpQueueChip';
+import GpOutboxWatcher from '../relay/GpOutboxWatcher';
 import ConfirmDialog from './ConfirmDialog';
 import Sidebar from './Sidebar';
 
@@ -97,6 +99,12 @@ export default function AppLayout() {
             </IconButton>
           )}
 
+          {/* #353 PR E: only renders when the GP write queue is non-empty, so the bar is unchanged
+              in the normal case. */}
+          <Box sx={{ mr: 1 }}>
+            <GpQueueChip />
+          </Box>
+
           <NotificationBell />
 
           <IconButton
@@ -148,6 +156,10 @@ export default function AppLayout() {
           </Breadcrumbs>
         </Box>
       )}
+
+      {/* Renders nothing; watches for a background GP-outbox drain and evicts what it invalidates,
+          which is the browser's only signal that a queued write posted itself (#353 PR E). */}
+      <GpOutboxWatcher />
 
       <Box component="main" sx={{ flexGrow: 1, p: 3 }}>
         <Outlet />
