@@ -10,10 +10,10 @@ import secrets
 import uuid
 from datetime import datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.crypto import decrypt_secret, encrypt_secret, hash_token
+from app.crypto import decrypt_secret, has_encryption_key, hash_secret, hash_token
 from app.errors import ConflictError, ValidationError
 from app.models.relay_install import RelayInstall
 
@@ -51,14 +51,19 @@ def provision_install(session: Session, label: str, company: str) -> tuple[Relay
 
 def set_install_secret(session: Session, install: RelayInstall, secret: str) -> None:
     """The SINGLE writer of a relay's long-lived credential. Enrollment and adoption both go through
-    here so there is exactly one place that decides how the secret is stored at rest - changing that
-    representation (encrypted today) is a change to this function body and nothing else."""
-    install.secret_encrypted = encrypt_secret(secret)
+    here, so how the secret is stored at rest is decided in exactly one place.
+
+    Writes the hash and NULLs any legacy ciphertext. Nulling rather than keeping both: leftover
+    ciphertext means RELAY_SECRET_ENC_KEY still matters, so a later key rotation would turn those rows
+    into "undecryptable" - which authenticate_secret correctly reports as a key problem, raising a
+    false alarm about a relay that is in fact perfectly healthy."""
+    install.secret_hash = hash_secret(secret)
+    install.secret_encrypted = None
 
 
 def enroll_install(session: Session, enrollment_token: str, hostname: str, secret: str) -> RelayInstall:
-    """Called by the relay (authenticated by the enrollment token, not Clerk). Stores the relay's
-    self-generated secret encrypted; the token is single-use (a second attempt is rejected as
+    """Called by the relay (authenticated by the enrollment token, not Clerk). Stores the hash of the
+    relay's self-generated secret; the token is single-use (a second attempt is rejected as
     already-used via the enrolled_at guard)."""
     secret = (secret or "").strip()
     if not secret:
@@ -110,48 +115,83 @@ def adopt_secret(session: Session, install_id: uuid.UUID, secret: str, adopted_b
 
 def authenticate_secret(session: Session, secret: str) -> RelayInstall | None:
     """Verify a Bearer secret presented on the outbound WS channel's connect handshake against the
-    enrolled installs. Secrets are Fernet-encrypted (reversible, not hashed), so this decrypts each
-    enrolled install's secret and compares in constant time. POC scale (a handful
-    of installs) makes the linear scan fine. Returns None on no match instead of raising - the caller
-    (the /relay-link route) treats that as a clean close, same as a bad token anywhere else here."""
+    enrolled installs.
+
+    Dual-read. The hash path is the normal one: an indexed equality lookup on the SHA-256 digest, then
+    `compare_digest` as the constant-time confirm. The legacy path reads pre-067 `secret_encrypted`
+    rows and, on a match, UPGRADES the row in place - so a live relay migrates itself on its next
+    reconnect (~30s) with nobody doing anything, and no plaintext ever has to be recovered at
+    migration time.
+
+    A missing RELAY_SECRET_ENC_KEY is no longer fatal: the legacy scan is skipped entirely and logged
+    once. Returns None on no match instead of raising - the caller (the /relay-link route) treats that
+    as a clean close, same as a bad token anywhere else here."""
     secret = (secret or "").strip()
     if not secret:
         return None
-    installs = session.scalars(select(RelayInstall).where(RelayInstall.secret_encrypted.is_not(None))).all()
-    undecryptable = 0
-    for install in installs:
-        try:
-            candidate = decrypt_secret(install.secret_encrypted)
-        except Exception:
-            # A row whose stored secret will not decrypt is NOT a wrong-secret case: it means
-            # RELAY_SECRET_ENC_KEY is missing or has been rotated since enrolment. Swallowing that
-            # silently makes a config error indistinguishable from a stale relay secret - both just
-            # 403 the handshake forever with nothing in the log. Count it and say so below.
-            undecryptable += 1
-            logger.warning(
-                "relay install secret failed to decrypt - RELAY_SECRET_ENC_KEY is missing or was rotated "
-                "since this install enrolled; re-enrolment will not fix it until the key is restored",
-                extra={"install_id": str(install.id), "label": install.label, "hostname": install.hostname},
-            )
-            continue
-        if secrets.compare_digest(candidate, secret):
-            install.last_seen_at = datetime.utcnow()
-            session.flush()
-            return install
 
-    # Never log the presented secret. The counts alone separate the three real causes: no enrolled
-    # installs at all (wiped DB), all undecryptable (key problem), or a genuine mismatch (the relay is
-    # holding a secret from before it was re-enrolled - it needs a restart, not another enrolment).
+    digest = hash_secret(secret)
+    install = session.scalars(select(RelayInstall).where(RelayInstall.secret_hash == digest)).first()
+    if install is not None and secrets.compare_digest(install.secret_hash, digest):
+        install.last_seen_at = datetime.utcnow()
+        session.flush()
+        return install
+
+    legacy = session.scalars(select(RelayInstall).where(RelayInstall.secret_encrypted.is_not(None))).all()
+    key_present = has_encryption_key()
+    undecryptable = 0
+    if legacy and key_present:
+        for candidate_install in legacy:
+            try:
+                candidate = decrypt_secret(candidate_install.secret_encrypted)
+            except Exception:
+                # A row whose stored secret will not decrypt is NOT a wrong-secret case: the key has
+                # been rotated since enrolment. Swallowing that silently makes a config error
+                # indistinguishable from a stale relay secret - both just 403 forever with nothing in
+                # the log. Count it and say so below.
+                undecryptable += 1
+                logger.warning(
+                    "relay install secret failed to decrypt - RELAY_SECRET_ENC_KEY was rotated since "
+                    "this install enrolled; arm an adopt window (or re-enrol) to rebind it",
+                    extra={
+                        "install_id": str(candidate_install.id),
+                        "label": candidate_install.label,
+                        "hostname": candidate_install.hostname,
+                    },
+                )
+                continue
+            if secrets.compare_digest(candidate, secret):
+                # Upgrade in place: this is the whole migration path for pre-067 rows.
+                set_install_secret(session, candidate_install, secret)
+                candidate_install.last_seen_at = datetime.utcnow()
+                session.flush()
+                logger.info(
+                    "relay install upgraded to hashed secret",
+                    extra={"install_id": str(candidate_install.id), "label": candidate_install.label},
+                )
+                return candidate_install
+
+    hash_rows = session.scalar(
+        select(func.count()).select_from(RelayInstall).where(RelayInstall.secret_hash.is_not(None))
+    )
+    # Never log the presented secret. The counts alone separate the real causes: no enrolled installs
+    # at all (wiped DB), legacy rows with the key gone or rotated (a config problem), or a genuine
+    # mismatch (the relay holds a secret from before it was re-enrolled - it needs a restart, or an
+    # admin-armed adopt window, not another enrolment).
     logger.warning(
         "relay handshake rejected",
         extra={
-            "enrolled_installs": len(installs),
+            "hash_rows": hash_rows,
+            "legacy_rows": len(legacy),
+            "encryption_key_present": key_present,
             "undecryptable": undecryptable,
             "cause": (
                 "no enrolled installs"
-                if not installs
+                if not hash_rows and not legacy
+                else "legacy rows present but RELAY_SECRET_ENC_KEY is unset"
+                if legacy and not key_present
                 else "encryption key mismatch"
-                if undecryptable == len(installs)
+                if legacy and undecryptable == len(legacy)
                 else "secret mismatch - relay is presenting a stale secret"
             ),
         },

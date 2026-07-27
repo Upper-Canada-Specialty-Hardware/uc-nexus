@@ -19,7 +19,12 @@ class RelayInstall(Base):
     label: Mapped[str] = mapped_column(String, nullable=False)
     company: Mapped[str] = mapped_column(String, nullable=False)
     hostname: Mapped[str | None] = mapped_column(String, nullable=True)  # filled by the relay at enrollment
-    # long-lived relay Bearer secret, Fernet-encrypted at rest. NULL until the relay enrolls.
+    # SHA-256 hex of the relay's long-lived Bearer secret - the sole credential for any install
+    # enrolled or adopted from migration 067 on. Indexed so a handshake is a single row fetch rather
+    # than a scan. NULL until the relay enrolls.
+    secret_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    # LEGACY: the same secret Fernet-encrypted, for rows that predate 067. authenticate_secret upgrades
+    # such a row to secret_hash (and NULLs this) on its next handshake; nothing writes it any more.
     secret_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     # one-time enrollment token: only the SHA-256 hash is stored (it's a credential, shown once at provision).
     enrollment_token_hash: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
