@@ -295,9 +295,9 @@ def reset_data(request: Request):
                 dict(r)
                 for r in conn.execute(
                     text(
-                        "SELECT id, label, company, hostname, secret_encrypted, enrollment_token_hash, "
-                        "enrollment_token_expires_at, enrolled_at, last_seen_at, created_at, "
-                        "adopted_at, adopted_by FROM relay_installs"
+                        "SELECT id, label, company, hostname, secret_hash, secret_encrypted, "
+                        "enrollment_token_hash, enrollment_token_expires_at, enrolled_at, last_seen_at, "
+                        "created_at, adopted_at, adopted_by FROM relay_installs"
                     )
                 ).mappings()
             ]
@@ -315,11 +315,12 @@ def reset_data(request: Request):
         for row in relay_rows:
             conn.execute(
                 text(
-                    "INSERT INTO relay_installs (id, label, company, hostname, secret_encrypted, "
-                    "enrollment_token_hash, enrollment_token_expires_at, enrolled_at, last_seen_at, "
-                    "created_at, adopted_at, adopted_by) VALUES (:id, :label, :company, :hostname, "
-                    ":secret_encrypted, :enrollment_token_hash, :enrollment_token_expires_at, "
-                    ":enrolled_at, :last_seen_at, :created_at, :adopted_at, :adopted_by)"
+                    "INSERT INTO relay_installs (id, label, company, hostname, secret_hash, "
+                    "secret_encrypted, enrollment_token_hash, enrollment_token_expires_at, enrolled_at, "
+                    "last_seen_at, created_at, adopted_at, adopted_by) VALUES (:id, :label, :company, "
+                    ":hostname, :secret_hash, :secret_encrypted, :enrollment_token_hash, "
+                    ":enrollment_token_expires_at, :enrolled_at, :last_seen_at, :created_at, "
+                    ":adopted_at, :adopted_by)"
                 ),
                 row,
             )
