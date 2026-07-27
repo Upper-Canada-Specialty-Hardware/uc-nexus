@@ -40,6 +40,7 @@ import { GET_PRIOR_ORDER_AS_VALUES } from '../../graphql/shared';
 import type { PurchaseOrder } from './index';
 import GpPurchaseOrderDialog from './GpPurchaseOrderDialog';
 import POGenerateDialog from './POGenerateDialog';
+import POOpeningsSection from './POOpeningsSection';
 import { poVendorName } from './poVendorName';
 import { formatPoStatus, poStatusChipColor } from './poStatus';
 
@@ -677,6 +678,12 @@ export default function PODetailModal({
             No line items.
           </Typography>
         )}
+
+        {/* Which doors this PO is for (#302). Below the line items, which are the product view of the
+            same hardware - this is the opening view the buyer works from on the schedule. Renders
+            nothing at all for a stock PO, which has no hardware schedule behind it. */}
+        <Divider sx={{ my: 2 }} />
+        <POOpeningsSection poId={po.id} />
 
         {/* Documents Section */}
         <Divider sx={{ my: 2 }} />
