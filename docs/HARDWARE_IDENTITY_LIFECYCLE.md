@@ -58,9 +58,26 @@ cannot answer that question, because it deliberately forgot.
 
 ### 4. The tag materializes
 
-- **Shop assembly complete** - the tag becomes physical. An `OpeningItem` row is created per leaf
-  (`opening_items.leaf`), with `OpeningItemHardware` recording what was actually installed on it.
-  From here the leaf is a real object with its own state and warehouse location.
+The tag does not become physical all at once. Assembly happens over a shift, unit by unit, and since
+#340 the system records it that way.
+
+- **Assembly progress** - `shop_assembly_opening_items.installed_quantity` / `deficient_quantity`
+  count what the assembler has actually fitted and what has been condemned. This is *work-tracking on
+  the tag*, not a materialization: no `OpeningItem` exists yet, nothing has left or entered fungible
+  inventory (the hardware was deducted when the pull was approved), and the leaf can be handed to
+  another assembler without losing a unit of it. The opening sits at `IN_PROGRESS` while this is
+  happening. Remaining is `quantity - installed - deficient`, derived, never stored.
+- **A unit found defective** goes back the moment it is found, not at completion:
+  `report_deficiency_at_assembly` returns it to project inventory flagged deficient and appends a
+  PR-REPL replacement pull line carrying the leaf and the source `ShopAssemblyOpeningItem`. That is
+  the identity round-trip in miniature - the unit loses its leaf on the way back into inventory, and
+  the replacement line is what re-tags a fresh one.
+- **Shop assembly complete** - *this* is where the tag becomes physical. An `OpeningItem` row is
+  created per leaf (`opening_items.leaf`), with one `OpeningItemHardware` row per line that had units
+  installed, at the **installed** quantity, not the planned one. Completion is refused while any unit
+  is still unaccounted for (`installed + deficient < quantity`), and refused if nothing at all was
+  installed - an assembled leaf with no hardware on it would read as ship-ready inventory. From here
+  the leaf is a real object with its own state and warehouse location.
 - **Shipping out complete** - the leaf moves to `SHIP_READY`, then a confirmed shipment writes a
   `PackingSlipItem` that snapshots the leaf permanently.
 
@@ -94,5 +111,7 @@ leaf until a pull tags it onto one).
 | Tag written, shop assembly | `backend/app/repositories/shop_assembly_repository.py` (`accept_shop_assembly_request`) |
 | Tag written, shipping out | `backend/app/repositories/shipping_repository.py` (`accept_shipping_out_request`) |
 | Tag consumes stock | `backend/app/repositories/warehouse/pull_requests.py` (`approve_pull_request`, FIFO deduction) |
-| Tag materialized | `backend/app/repositories/shop_assembly_repository.py` (`complete_opening` -> `OpeningItem`) |
+| Tag worked, incrementally | `backend/app/repositories/shop_assembly_repository.py` (`record_assembly_progress` -> `installed_quantity` / `deficient_quantity`) |
+| Deficient unit returned + replaced | `backend/app/repositories/stock/deficiency.py` (`report_deficiency_at_assembly` -> PR-REPL line) |
+| Tag materialized | `backend/app/repositories/shop_assembly_repository.py` (`complete_opening` -> `OpeningItem`, quantities = installed) |
 | Tag shipped | `backend/app/repositories/shipping_repository.py` (`confirm_shipment` -> `PackingSlipItem.leaf`) |

@@ -26,7 +26,7 @@ from app.models.enums import (
     PullStatus,
 )
 from app.models.inventory import InventoryLocation
-from app.models.opening_item import OpeningItem
+from app.models.opening_item import OpeningItem, OpeningItemHardware
 from app.models.project import Project
 from app.models.pull_request import PullRequest, PullRequestItem
 from app.models.shop_assembly import ShopAssemblyOpening, ShopAssemblyOpeningItem
@@ -73,10 +73,15 @@ def _seed_inventory(session, project_id, *, category, code, quantity=0):
     return il
 
 
-def _make_pulled_opening(session, project_id, *, request_number, items, leaf=None, opening_id=None):
+def _make_pulled_opening(session, project_id, *, request_number, items, leaf=None, opening_id=None, install_all=True):
     """A COMPLETED SHOP_ASSEMBLY pull request with one PULLED, assigned, still-pending opening.
 
     `items` is a list of (category, code, qty). Returns (opening, {code: ShopAssemblyOpeningItem}).
+
+    install_all seeds every line as fully installed, the state persisted progress would be in by the
+    time an assembler presses Mark Complete (#340). These tests are about the *other* completion
+    guards, so they want a leaf that is otherwise completable; the disposition gate itself is covered
+    in test_assembly_progress.py.
     """
     pr = PullRequest(
         id=uuid.uuid4(),
@@ -112,6 +117,7 @@ def _make_pulled_opening(session, project_id, *, request_number, items, leaf=Non
             hardware_category=category,
             product_code=code,
             quantity=qty,
+            installed_quantity=qty if install_all else 0,
         )
         session.add(sao_item)
         sao_items[code] = sao_item
@@ -254,51 +260,63 @@ def test_duplicate_guard_is_project_scoped(db_session):
 # --- 2. all-deficient completion ---------------------------------------------------------------
 
 
+def _flag_all_deficient(session, opening, sao_items):
+    """Condemn every unit of every line through the progress path (#340)."""
+    shop_assembly_repository.record_assembly_progress(
+        session,
+        opening.id,
+        [
+            shop_assembly_repository.AssemblyProgressUpdate(
+                shop_assembly_opening_item_id=item.id,
+                installed_quantity=0,
+                flag_deficient_quantity=item.quantity,
+                deficient_reason="bent",
+            )
+            for item in sao_items.values()
+        ],
+        performed_by="assembler",
+    )
+    session.flush()
+
+
 def test_all_deficient_completion_is_refused(db_session):
-    """Every item flagged deficient would mint an empty assembled leaf - refuse the whole call."""
+    """Every unit flagged deficient would mint an empty assembled leaf - refuse to call it complete.
+
+    Since #340 the deficiencies themselves were recorded when they were found, so unlike the #339
+    version of this guard they are NOT rolled back - the units are already in the deficiency queue
+    with a replacement pull against them, which is the correct state. What is refused is the claim
+    that the leaf is assembled.
+    """
     project = _make_project(db_session)
-    il = _seed_inventory(db_session, project.id, category=HINGE[0], code=HINGE[1])
+    _seed_inventory(db_session, project.id, category=HINGE[0], code=HINGE[1])
+    _seed_inventory(db_session, project.id, category=LOCK[0], code=LOCK[1])
     opening, sao = _make_pulled_opening(
         db_session,
         project.id,
         request_number="PR-SA-ALLDEF",
         items=[(*HINGE, 1), (*LOCK, 1)],
         leaf=1,
+        install_all=False,
     )
+    _flag_all_deficient(db_session, opening, sao)
 
     with pytest.raises(ValidationError):
-        shop_assembly_repository.complete_opening(
-            db_session,
-            opening.id,
-            None,
-            None,
-            None,
-            item_results=[
-                shop_assembly_repository.OpeningItemResult(sao[HINGE[1]].id, installed=False, deficient_reason="bent"),
-                shop_assembly_repository.OpeningItemResult(sao[LOCK[1]].id, installed=False, deficient_reason="seized"),
-            ],
-            completed_by="assembler",
-        )
+        shop_assembly_repository.complete_opening(db_session, opening.id, None, None, None, completed_by="assembler")
     db_session.flush()
 
-    # The opening stays pending, no assembled unit exists...
-    assert opening.assembly_status == AssemblyStatus.PENDING
+    # No assembled unit exists and the leaf stays open (IN_PROGRESS - it has recorded work on it).
+    assert opening.assembly_status == AssemblyStatus.IN_PROGRESS
     assert opening.completed_at is None
     assert db_session.scalars(select(OpeningItem).where(OpeningItem.opening_id == opening.opening_id)).first() is None
 
-    # ...and no deficiency was recorded: the refusal happens before any unit is returned to
-    # inventory or any PR-REPL line is appended, so the call fails whole.
-    assert (
-        db_session.scalars(select(PullRequest).where(PullRequest.request_number == "PR-REPL-PR-SA-ALLDEF")).first()
-        is None
-    )
-    db_session.refresh(il)
-    assert il.quantity == 0
-    assert il.deficient_quantity == 0
+    # The deficiencies stand: they were reported at the bench, not at completion.
+    repl = db_session.scalars(select(PullRequest).where(PullRequest.request_number == "PR-REPL-PR-SA-ALLDEF")).first()
+    assert repl is not None
+    assert len(list(db_session.scalars(select(PullRequestItem).where(PullRequestItem.pull_request_id == repl.id)))) == 2
 
 
 def test_partially_deficient_completion_still_succeeds(db_session):
-    """One installed item is enough - the guard only fires when nothing at all is installed."""
+    """One installed unit is enough - the guard only fires when nothing at all was installed."""
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, category=LOCK[0], code=LOCK[1])
     opening, sao = _make_pulled_opening(
@@ -307,22 +325,31 @@ def test_partially_deficient_completion_still_succeeds(db_session):
         request_number="PR-SA-PARTDEF",
         items=[(*HINGE, 1), (*LOCK, 1)],
         leaf=1,
+        install_all=False,
     )
-
-    result = shop_assembly_repository.complete_opening(
+    shop_assembly_repository.record_assembly_progress(
         db_session,
         opening.id,
-        None,
-        None,
-        None,
-        item_results=[
-            shop_assembly_repository.OpeningItemResult(sao[HINGE[1]].id, installed=True),
-            shop_assembly_repository.OpeningItemResult(sao[LOCK[1]].id, installed=False, deficient_reason="seized"),
+        [
+            shop_assembly_repository.AssemblyProgressUpdate(sao[HINGE[1]].id, installed_quantity=1),
+            shop_assembly_repository.AssemblyProgressUpdate(
+                sao[LOCK[1]].id, flag_deficient_quantity=1, deficient_reason="seized"
+            ),
         ],
-        completed_by="assembler",
+        performed_by="assembler",
+    )
+    db_session.flush()
+
+    result = shop_assembly_repository.complete_opening(
+        db_session, opening.id, None, None, None, completed_by="assembler"
     )
     db_session.flush()
     assert result.state == OpeningItemState.IN_INVENTORY
+    # Only the installed line is snapshotted onto the leaf.
+    hw = list(
+        db_session.scalars(select(OpeningItemHardware).where(OpeningItemHardware.opening_item_id == result.id)).all()
+    )
+    assert {h.product_code: h.quantity for h in hw} == {HINGE[1]: 1}
 
 
 def test_opening_with_no_items_still_completes(db_session):
@@ -346,7 +373,10 @@ def test_opening_with_no_items_still_completes(db_session):
 
 
 def test_replacement_pull_line_carries_leaf_and_source_item(db_session):
-    """#339: the PR-REPL line is stamped with the leaf and the deficient ShopAssemblyOpeningItem."""
+    """#339: the PR-REPL line is stamped with the leaf and the deficient ShopAssemblyOpeningItem.
+
+    Minted at the moment the defect is flagged since #340, not at completion.
+    """
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, category=LOCK[0], code=LOCK[1])
     opening, sao = _make_pulled_opening(
@@ -355,19 +385,19 @@ def test_replacement_pull_line_carries_leaf_and_source_item(db_session):
         request_number="PR-SA-REPL",
         items=[(*HINGE, 1), (*LOCK, 1)],
         leaf=2,
+        install_all=False,
     )
 
-    shop_assembly_repository.complete_opening(
+    shop_assembly_repository.record_assembly_progress(
         db_session,
         opening.id,
-        None,
-        None,
-        None,
-        item_results=[
-            shop_assembly_repository.OpeningItemResult(sao[HINGE[1]].id, installed=True),
-            shop_assembly_repository.OpeningItemResult(sao[LOCK[1]].id, installed=False, deficient_reason="seized"),
+        [
+            shop_assembly_repository.AssemblyProgressUpdate(sao[HINGE[1]].id, installed_quantity=1),
+            shop_assembly_repository.AssemblyProgressUpdate(
+                sao[LOCK[1]].id, flag_deficient_quantity=1, deficient_reason="seized"
+            ),
         ],
-        completed_by="assembler",
+        performed_by="assembler",
     )
     db_session.flush()
 

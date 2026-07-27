@@ -16,6 +16,8 @@ from app.errors import (
 )
 from app.models.enums import (
     AssemblyStatus,
+    AuditAction,
+    AuditEntityType,
     OpeningItemState,
     PullRequestItemType,
     PullRequestSource,
@@ -35,15 +37,32 @@ from app.models.shop_assembly import (
     ShopAssemblyOpening,
     ShopAssemblyRequest,
 )
+from app.repositories.stock.common import _log_audit_event
 from app.services.locking import lock_rows
+
+MAX_DEFICIENT_REASON_LENGTH = 500
+
+# Assembly statuses an opening can still be worked in (#340). COMPLETED is terminal.
+_WORKABLE_ASSEMBLY_STATUSES = (AssemblyStatus.PENDING, AssemblyStatus.IN_PROGRESS)
 
 
 @dataclass
-class OpeningItemResult:
-    """One line of the completion-time deficiency checklist (#225)."""
+class AssemblyProgressUpdate:
+    """One line of a progress save (#340).
+
+    installed_quantity is ABSOLUTE - the total number of units of this line now fitted to the leaf.
+    Sending the same value twice is a no-op, so a retried save cannot double-count, and a miscount can
+    be corrected downward right up until the opening is completed. None leaves it untouched.
+
+    flag_deficient_quantity is INCREMENTAL - units being condemned *now*, on top of whatever was
+    already flagged. It is not absolute because flagging is not a state the assembler owns: each unit
+    is immediately returned to inventory flagged deficient and given a PR-REPL replacement line, and
+    unwinding that is deficiency review's job. A reason is required with it.
+    """
 
     shop_assembly_opening_item_id: uuid.UUID
-    installed: bool = True
+    installed_quantity: int | None = None
+    flag_deficient_quantity: int | None = None
     deficient_reason: str | None = None
 
 
@@ -73,8 +92,9 @@ def get_my_work(
     session: Session,
     assigned_to_user_id: str,
 ) -> list[ShopAssemblyOpening]:
-    """Query ShopAssemblyOpenings claimed by a user (by stable Clerk user id, #324) with Pending
-    assembly_status."""
+    """Query ShopAssemblyOpenings claimed by a user (by stable Clerk user id, #324) that are still
+    unfinished - PENDING or, since progress is persisted (#340), IN_PROGRESS. A leaf the assembler
+    saved partial progress on has to stay in My Work or the work would be unreachable."""
     stmt = (
         select(ShopAssemblyOpening)
         .join(
@@ -84,7 +104,7 @@ def get_my_work(
         .options(selectinload(ShopAssemblyOpening.items))
         .where(
             ShopAssemblyOpening.assigned_to_user_id == assigned_to_user_id,
-            ShopAssemblyOpening.assembly_status == AssemblyStatus.PENDING,
+            ShopAssemblyOpening.assembly_status.in_(_WORKABLE_ASSEMBLY_STATUSES),
             PullRequestModel.source == PullRequestSource.SHOP_ASSEMBLY,
             PullRequestModel.status == PullRequestStatus.COMPLETED,
         )
@@ -98,9 +118,19 @@ def assign_openings(
     opening_ids: list[uuid.UUID],
     assigned_to_user_id: str,
     assigned_to_name: str,
+    allow_reassign: bool = False,
 ) -> list[ShopAssemblyOpening]:
     """Assign ShopAssemblyOpenings to a user with pessimistic locking. Keyed on the stable Clerk
-    user id (#324); assigned_to_name is the display name stored alongside for the UI."""
+    user id (#324); assigned_to_name is the display name stored alongside for the UI.
+
+    allow_reassign (#340) is the data-layer half of the reassignment rule. Progress is persisted on
+    the item rows now, so moving a half-built leaf to another assembler is safe - the new owner opens
+    it and sees exactly what the last one recorded - but "safe" is not "anyone's to take". Only the
+    manager branch of the resolver passes allow_reassign=True; a self-claim never does, so a user
+    cannot take an opening off the person holding it by claiming it themselves. Re-claiming an
+    opening already assigned to the same user stays a no-op either way (it only refreshes the display
+    name), so a stale UI does not turn a double-click into an error.
+    """
     if not opening_ids:
         raise ValidationError("opening_ids must not be empty", field="opening_ids")
     if not assigned_to_user_id:
@@ -118,9 +148,12 @@ def assign_openings(
     for opening in locked:
         if opening.pull_status != PullStatus.PULLED:
             raise InvalidStateTransitionError("Opening is not ready for assignment - hardware has not been pulled")
-        if opening.assembly_status != AssemblyStatus.PENDING:
+        if opening.assembly_status not in _WORKABLE_ASSEMBLY_STATUSES:
             raise InvalidStateTransitionError("Opening assembly is already completed")
-        if opening.assigned_to_user_id is not None:
+        already_held_by_someone_else = (
+            opening.assigned_to_user_id is not None and opening.assigned_to_user_id != assigned_to_user_id
+        )
+        if already_held_by_someone_else and not allow_reassign:
             raise ConflictError(f"Opening already assigned to {opening.assigned_to}")
         opening.assigned_to_user_id = assigned_to_user_id
         opening.assigned_to = assigned_to_name
@@ -132,7 +165,12 @@ def remove_opening_from_user(
     session: Session,
     opening_id: uuid.UUID,
 ) -> ShopAssemblyOpening:
-    """Unassign a ShopAssemblyOpening."""
+    """Unassign a ShopAssemblyOpening.
+
+    Allowed while the opening is PENDING or IN_PROGRESS (#340): saved progress lives on the item rows,
+    not on the assignment, so returning a half-built leaf to the pool loses nothing - the next person
+    to claim it picks up where the last one stopped. COMPLETED is terminal and refused.
+    """
     stmt = (
         select(ShopAssemblyOpening)
         .options(selectinload(ShopAssemblyOpening.items))
@@ -142,7 +180,7 @@ def remove_opening_from_user(
     if opening is None:
         raise NotFoundError(f"ShopAssemblyOpening {opening_id} not found")
 
-    if opening.assembly_status != AssemblyStatus.PENDING:
+    if opening.assembly_status not in _WORKABLE_ASSEMBLY_STATUSES:
         raise InvalidStateTransitionError("Cannot unassign a completed opening")
     if opening.assigned_to_user_id is None:
         raise ValidationError("Opening is not assigned to anyone", field="assigned_to_user_id")
@@ -152,37 +190,203 @@ def remove_opening_from_user(
     return opening
 
 
+def _load_workable_opening(session: Session, opening_id: uuid.UUID) -> ShopAssemblyOpening:
+    """Lock a ShopAssemblyOpening and re-read it with its items eager-loaded.
+
+    lock_rows takes the row lock; the second read is what populates `items` (SELECT ... FOR UPDATE
+    cannot be combined with the selectinload without locking the child rows too, which nothing here
+    needs). Both statements hit the same identity map, so this is one row, locked.
+    """
+    if not lock_rows(session, ShopAssemblyOpening, [opening_id]):
+        raise NotFoundError(f"ShopAssemblyOpening {opening_id} not found")
+    stmt = (
+        select(ShopAssemblyOpening)
+        .options(selectinload(ShopAssemblyOpening.items))
+        .where(ShopAssemblyOpening.id == opening_id)
+    )
+    return session.scalars(stmt).unique().first()
+
+
+def _opening_project_id(session: Session, sa_opening: ShopAssemblyOpening) -> uuid.UUID | None:
+    """The project an opening belongs to, via its shop-assembly PullRequest. Audit rows want it and
+    a legacy opening may not have a PR yet, so this returns None rather than raising."""
+    if sa_opening.pull_request_id is None:
+        return None
+    return session.scalar(select(PullRequestModel.project_id).where(PullRequestModel.id == sa_opening.pull_request_id))
+
+
+def record_assembly_progress(
+    session: Session,
+    opening_id: uuid.UUID,
+    updates: list[AssemblyProgressUpdate],
+    performed_by: str | None = None,
+) -> ShopAssemblyOpening:
+    """Record what an assembler has actually fitted to a door leaf so far (#340).
+
+    This is the write that makes assembly resumable. Before it, the checklist existed only in the
+    browser until Mark Complete posted it, so a leaf half-built at the end of a shift lost everything
+    and a defect found at 9am was not visible to the warehouse until the leaf was finished.
+
+    Two kinds of update, deliberately asymmetric (see AssemblyProgressUpdate):
+
+    - installed_quantity is set absolutely, so a save is idempotent and a miscount stays correctable
+      in both directions right up until completion. Nothing leaves inventory here: the hardware was
+      already deducted when the pull was approved, so counting it onto the leaf is work-tracking, not
+      a stock movement.
+    - flag_deficient_quantity condemns units immediately - report_deficiency_at_assembly returns them
+      to project inventory flagged deficient and appends a PR-REPL replacement line the moment the
+      defect is found, not at completion. That is the whole point of moving it here: the warehouse can
+      start sourcing the replacement while the leaf is still on the bench. It is one-way from the
+      assembler's side; deficiency review owns the undo.
+
+    Nothing else is decremented for a deficient unit - deficient_quantity on the item is the record
+    that those units are spoken for, and the remaining-must-be-zero gate at completion is what makes
+    that count load-bearing.
+
+    The first save flips the opening PENDING -> IN_PROGRESS. Returns the opening with items loaded.
+    """
+    if not updates:
+        raise ValidationError("updates must not be empty", field="updates")
+
+    sa_opening = _load_workable_opening(session, opening_id)
+
+    if sa_opening.pull_status != PullStatus.PULLED:
+        raise InvalidStateTransitionError("Opening hardware has not been pulled - there is nothing to assemble yet")
+    if sa_opening.assembly_status not in _WORKABLE_ASSEMBLY_STATUSES:
+        raise InvalidStateTransitionError("Opening assembly is already completed")
+    if sa_opening.assigned_to_user_id is None:
+        raise ValidationError(
+            "Opening must be assigned before progress can be recorded",
+            field="assigned_to_user_id",
+        )
+
+    item_by_id = {item.id: item for item in sa_opening.items}
+    seen: set[uuid.UUID] = set()
+    for update in updates:
+        if update.shop_assembly_opening_item_id not in item_by_id:
+            raise ValidationError(
+                f"Item {update.shop_assembly_opening_item_id} does not belong to opening {opening_id}",
+                field="shop_assembly_opening_item_id",
+            )
+        # Two updates for one line would make the absolute installed_quantity order-dependent, which
+        # is exactly the ambiguity "absolute" is meant to remove. Refuse rather than pick a winner.
+        if update.shop_assembly_opening_item_id in seen:
+            raise ValidationError(
+                f"Item {update.shop_assembly_opening_item_id} appears more than once in one save",
+                field="shop_assembly_opening_item_id",
+            )
+        seen.add(update.shop_assembly_opening_item_id)
+
+    from app.repositories import stock as stock_repository
+
+    actor = performed_by or "Assembler"
+    project_id = _opening_project_id(session, sa_opening)
+    now = datetime.utcnow()
+
+    # Validate every line before writing any of them, so a bad line at the end cannot leave the first
+    # few lines applied (and, worse, their deficiencies already returned to inventory).
+    planned: list[tuple] = []
+    for update in updates:
+        item = item_by_id[update.shop_assembly_opening_item_id]
+        flagged = update.flag_deficient_quantity or 0
+        reason: str | None = None
+        if flagged:
+            if flagged < 1:
+                raise ValidationError("flag_deficient_quantity must be >= 1", field="flag_deficient_quantity")
+            reason = (update.deficient_reason or "").strip()
+            if not reason:
+                raise ValidationError(
+                    "A deficiency reason is required when flagging units deficient",
+                    field="deficient_reason",
+                )
+            if len(reason) > MAX_DEFICIENT_REASON_LENGTH:
+                raise ValidationError(
+                    f"Deficiency reason must be {MAX_DEFICIENT_REASON_LENGTH} characters or fewer",
+                    field="deficient_reason",
+                )
+
+        new_installed = item.installed_quantity if update.installed_quantity is None else update.installed_quantity
+        new_deficient = item.deficient_quantity + flagged
+        if new_installed < 0:
+            raise ValidationError("installed_quantity must be >= 0", field="installed_quantity")
+        if new_installed + new_deficient > item.quantity:
+            raise ValidationError(
+                f"{item.product_code}: {new_installed} installed + {new_deficient} deficient exceeds the "
+                f"{item.quantity} unit(s) pulled for this leaf",
+                field="installed_quantity",
+            )
+        planned.append((item, new_installed, new_deficient, flagged, reason))
+
+    changed = False
+    for item, new_installed, new_deficient, flagged, reason in planned:
+        previous_installed = item.installed_quantity
+        if new_installed == previous_installed and not flagged:
+            continue
+        changed = True
+        item.installed_quantity = new_installed
+        item.deficient_quantity = new_deficient
+
+        if flagged:
+            # Immediate, not deferred to completion: the unit goes back to inventory flagged deficient
+            # and the replacement pull is minted now.
+            stock_repository.report_deficiency_at_assembly(
+                session,
+                sa_opening_item_id=item.id,
+                quantity=flagged,
+                reason_text=reason,
+                performed_by=actor,
+            )
+
+        _log_audit_event(
+            session,
+            project_id=project_id,
+            entity_type=AuditEntityType.SHOP_ASSEMBLY_OPENING,
+            entity_id=sa_opening.id,
+            action=AuditAction.INSTALL_PROGRESS,
+            performed_by=actor,
+            detail={
+                "shopAssemblyOpeningItemId": str(item.id),
+                "hardwareCategory": item.hardware_category,
+                "productCode": item.product_code,
+                "plannedQuantity": item.quantity,
+                "previousInstalledQuantity": previous_installed,
+                "installedQuantity": new_installed,
+                "flaggedDeficientQuantity": flagged,
+                "deficientQuantity": new_deficient,
+                "remainingQuantity": item.quantity - new_installed - new_deficient,
+                "reasonText": reason,
+                "openingNumber": sa_opening.opening_number,
+                "leaf": sa_opening.leaf,
+                "recordedAt": now.isoformat(),
+            },
+        )
+
+    if changed and sa_opening.assembly_status == AssemblyStatus.PENDING:
+        sa_opening.assembly_status = AssemblyStatus.IN_PROGRESS
+
+    return sa_opening
+
+
 def complete_opening(
     session: Session,
     opening_id: uuid.UUID,
     aisle: str | None,
     row: str | None,
     bay: str | None,
-    item_results: list[OpeningItemResult] | None = None,
     completed_by: str | None = None,
 ) -> OpeningItemModel:
     """Mark an opening's assembly as complete. Creates OpeningItem + OpeningItemHardware records.
 
-    Completion-time deficiency checklist (#225): only items marked installed are snapshotted as
-    OpeningItemHardware. Items marked not-installed are flagged deficient - the unit is returned to
-    inventory flagged deficient and a PR-REPL replacement pull is appended (via
-    stock_repository.report_deficiency_at_assembly). An empty/omitted item_results treats every
-    item as installed, preserving pre-checklist behaviour.
+    Completion takes no checklist any more (#340). It reads the per-item counters
+    record_assembly_progress has been persisting, so what is snapshotted onto the assembled leaf is
+    what the assembler actually recorded fitting, unit by unit - not a claim made in the same call.
+    Deficiencies were already returned to inventory and replaced when they were flagged, so this
+    function no longer writes any of that.
     """
     # 1. Load and validate ShopAssemblyOpening (with pessimistic lock)
-    locked = lock_rows(session, ShopAssemblyOpening, [opening_id])
-    if not locked:
-        raise NotFoundError(f"ShopAssemblyOpening {opening_id} not found")
-    sa_opening = locked[0]
-    # Eager-load items
-    stmt = (
-        select(ShopAssemblyOpening)
-        .options(selectinload(ShopAssemblyOpening.items))
-        .where(ShopAssemblyOpening.id == opening_id)
-    )
-    sa_opening = session.scalars(stmt).unique().first()
+    sa_opening = _load_workable_opening(session, opening_id)
 
-    if sa_opening.assembly_status != AssemblyStatus.PENDING:
+    if sa_opening.assembly_status not in _WORKABLE_ASSEMBLY_STATUSES:
         raise InvalidStateTransitionError("Opening assembly is already completed")
     if sa_opening.assigned_to is None:
         raise ValidationError(
@@ -223,43 +427,34 @@ def complete_opening(
             field="opening_id",
         )
 
-    # 4. Resolve the per-item installed/deficient checklist (#225). The checklist is keyed on
-    #    ShopAssemblyOpeningItem ids (what the assembler sees in the modal). Any item without a
-    #    result row defaults to installed, so an empty checklist preserves the old snapshot-all path.
-    item_by_id = {item.id: item for item in sa_opening.items}
-    deficient_reason_by_id: dict[uuid.UUID, str | None] = {}
-    for res in item_results or []:
-        if res.shop_assembly_opening_item_id not in item_by_id:
-            raise ValidationError(
-                f"Checklist item {res.shop_assembly_opening_item_id} does not belong to opening {opening_id}",
-                field="item_results",
-            )
-        if not res.installed:
-            reason = (res.deficient_reason or "").strip()
-            if not reason:
-                raise ValidationError(
-                    "A deficiency reason is required for items not installed",
-                    field="deficient_reason",
-                )
-            if len(reason) > 500:
-                raise ValidationError(
-                    "Deficiency reason must be 500 characters or fewer",
-                    field="deficient_reason",
-                )
-            deficient_reason_by_id[res.shop_assembly_opening_item_id] = reason
-
-    # 4b. Refuse an all-deficient completion (#339). If every checklist item is flagged deficient the
-    #     OpeningItem would be minted with zero OpeningItemHardware rows - an "assembled" leaf that
-    #     had nothing installed on it, which then reads as ship-ready inventory. Nothing was
-    #     assembled, so the opening stays PENDING and no deficiency is recorded: the caller's
-    #     transaction is abandoned whole, so the flagged units are neither returned to inventory nor
-    #     given a PR-REPL line. Report the deficiencies through the warehouse deficiency flow, or
-    #     re-complete once at least one item is installed.
-    if sa_opening.items and all(item.id in deficient_reason_by_id for item in sa_opening.items):
+    # 4. Every unit must be accounted for (#340). Business decision: block, never auto-default. An
+    #    unrecorded unit is an unanswered question - was it fitted, is it still on the cart, is it
+    #    missing? - and silently treating it as installed is what would put hardware on a leaf that
+    #    was never there, while silently treating it as deficient would mint replacement pulls nobody
+    #    asked for. Name the lines so the assembler knows exactly which ones to go finish.
+    undispositioned = [
+        f"{item.product_code} ({item.quantity - item.installed_quantity - item.deficient_quantity} of "
+        f"{item.quantity} unrecorded)"
+        for item in sa_opening.items
+        if item.installed_quantity + item.deficient_quantity != item.quantity
+    ]
+    if undispositioned:
         raise ValidationError(
-            "Cannot complete an opening with every item flagged deficient - nothing would be "
-            "assembled. Leave the opening pending and report the deficiencies instead.",
-            field="item_results",
+            "Cannot complete assembly while hardware is unaccounted for. Record each unit as "
+            "installed or flag it deficient first: " + ", ".join(undispositioned),
+            field="items",
+        )
+
+    # 4b. Refuse an all-deficient completion (#339). If every unit was flagged deficient the
+    #     OpeningItem would be minted with zero OpeningItemHardware rows - an "assembled" leaf that
+    #     had nothing installed on it, which then reads as ship-ready inventory. The deficiencies
+    #     themselves stand (they were recorded when they were found, #340); what is refused is calling
+    #     the leaf assembled. It stays IN_PROGRESS until at least one unit is installed on it.
+    if sa_opening.items and all(item.installed_quantity == 0 for item in sa_opening.items):
+        raise ValidationError(
+            "Cannot complete an opening with every unit flagged deficient - nothing would be "
+            "assembled. Leave the opening open until replacement hardware is installed.",
+            field="items",
         )
 
     # 5. Create OpeningItem (snapshot opening identity from the ShopAssemblyOpening row)
@@ -288,33 +483,56 @@ def complete_opening(
     session.add(opening_item)
     session.flush()  # Get opening_item.id for OpeningItemHardware FK
 
-    # 6. Snapshot only INSTALLED items as OpeningItemHardware; flag the rest deficient.
-    from app.repositories import stock as stock_repository
-
-    performed_by = completed_by or "Assembler"
+    # 6. Snapshot what was actually installed (#340): the recorded installed_quantity, not the
+    #    planned quantity. A line whose units were all flagged deficient contributes no row at all -
+    #    the leaf must not claim hardware that is sitting in the deficiency queue awaiting a
+    #    replacement pull.
     for item in sa_opening.items:
-        if item.id in deficient_reason_by_id:
-            # Not installed -> return the unit to inventory flagged deficient + append PR-REPL pull.
-            stock_repository.report_deficiency_at_assembly(
-                session,
-                sa_opening_item_id=item.id,
-                quantity=item.quantity,
-                reason_text=deficient_reason_by_id[item.id],
-                performed_by=performed_by,
-            )
+        if item.installed_quantity <= 0:
             continue
         oih = OIHModel(
             id=uuid.uuid4(),
             opening_item_id=opening_item.id,
             product_code=item.product_code,
             hardware_category=item.hardware_category,
-            quantity=item.quantity,
+            quantity=item.installed_quantity,
         )
         session.add(oih)
 
     # 7. Mark ShopAssemblyOpening as Completed
     sa_opening.assembly_status = AssemblyStatus.COMPLETED
     sa_opening.completed_at = now
+
+    # 8. Record the moment the tag became physical (#340). Progress saves and completion are separate
+    #    calls now, so completion needs its own audit row - and it is the only place completed_by is
+    #    written down, the assignment holding the name of whoever claimed the leaf, not who finished it.
+    _log_audit_event(
+        session,
+        project_id=pr.project_id,
+        entity_type=AuditEntityType.OPENING_ITEM,
+        entity_id=opening_item.id,
+        action=AuditAction.ASSEMBLY_COMPLETE,
+        performed_by=completed_by or sa_opening.assigned_to or "Assembler",
+        detail={
+            "shopAssemblyOpeningId": str(sa_opening.id),
+            "openingNumber": sa_opening.opening_number,
+            "leaf": sa_opening.leaf,
+            "assignedTo": sa_opening.assigned_to,
+            "installedHardware": [
+                {
+                    "productCode": item.product_code,
+                    "hardwareCategory": item.hardware_category,
+                    "plannedQuantity": item.quantity,
+                    "installedQuantity": item.installed_quantity,
+                    "deficientQuantity": item.deficient_quantity,
+                }
+                for item in sa_opening.items
+            ],
+            "aisle": aisle,
+            "row": row,
+            "bay": bay,
+        },
+    )
 
     return opening_item
 

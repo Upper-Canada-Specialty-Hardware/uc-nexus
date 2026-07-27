@@ -98,6 +98,12 @@ class ShopAssemblyOpeningItem(Base):
             "shop_assembly_opening_id",
         ),
         CheckConstraint("quantity >= 1", name="ck_shop_assembly_opening_items_quantity_positive"),
+        # Progress can never exceed the planned quantity, and neither count can go negative (#340).
+        CheckConstraint(
+            "installed_quantity >= 0 AND deficient_quantity >= 0 "
+            "AND installed_quantity + deficient_quantity <= quantity",
+            name="ck_shop_assembly_opening_items_progress_within_quantity",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
@@ -105,5 +111,16 @@ class ShopAssemblyOpeningItem(Base):
     hardware_category: Mapped[str] = mapped_column(String, nullable=False)
     product_code: Mapped[str] = mapped_column(String, nullable=False)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Per-item assembly progress (#340). The assembler records these incrementally at the bench;
+    # completion reads them rather than taking an ephemeral checklist as input.
+    #   installed_quantity - units physically fitted to the leaf. Absolute, editable both directions
+    #     until the opening is completed, then frozen as the OpeningItemHardware quantity.
+    #   deficient_quantity - units found defective and already handed to the deficiency flow
+    #     (returned to inventory flagged deficient + a PR-REPL replacement line). Only ever grows;
+    #     undoing a deficiency is deficiency review's job, not the assembler's.
+    # Remaining (quantity - installed - deficient) is derived, never stored; completion is refused
+    # while any line still has remaining > 0.
+    installed_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    deficient_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
     shop_assembly_opening: Mapped["ShopAssemblyOpening"] = relationship(back_populates="items")
