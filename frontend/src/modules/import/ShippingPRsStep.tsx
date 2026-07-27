@@ -1,9 +1,10 @@
-import { useMemo } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import {
   Alert,
   Box,
   Button,
   Checkbox,
+  Chip,
   FormControlLabel,
   IconButton,
   Paper,
@@ -12,6 +13,7 @@ import {
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import DeleteIcon from '@mui/icons-material/Delete';
+import ConfirmDialog from '../../components/ConfirmDialog';
 import type { AggregatedHardwareItem, AssembledLeafCandidate, ShippingPRDraft, ShippingPRItem } from './types';
 import { aggregationKey, shippingPRItemKey } from './types';
 import { leafSuffix } from '../../utils/leaf';
@@ -30,6 +32,11 @@ interface ShippingPRsStepProps {
   onRemovePR: (index: number) => void;
   onUpdatePR: (index: number, field: 'requestNumber' | 'requestedBy', value: string) => void;
   onTogglePRItem: (prIndex: number, item: ShippingPRItem) => void;
+  /**
+   * The user confirmed shipping a leaf that is still awaiting replacement hardware (#341). The
+   * wizard passes this to the backend as the explicit acknowledgment the creation path requires.
+   */
+  onAcknowledgeIncompleteLeaf: () => void;
   onNext: () => void;
   onBack: () => void;
 }
@@ -58,9 +65,38 @@ export default function ShippingPRsStep({
   onRemovePR,
   onUpdatePR,
   onTogglePRItem,
+  onAcknowledgeIncompleteLeaf,
   onNext,
   onBack,
 }: ShippingPRsStepProps) {
+  // Selecting a flagged leaf is gated on a confirm rather than blocked: short-shipping on purpose is
+  // a real workflow (reallocation exists for it), it just must not happen by accident. Held until the
+  // dialog resolves so the checkbox only flips on an actual decision.
+  const [pendingIncomplete, setPendingIncomplete] = useState<{
+    prIndex: number;
+    item: ShippingPRItem;
+    leaf: AssembledLeafCandidate;
+  } | null>(null);
+
+  const handleToggleLeaf = useCallback(
+    (prIndex: number, item: ShippingPRItem, leaf: AssembledLeafCandidate, isSelected: boolean) => {
+      // Only adding a flagged leaf needs a decision. Removing one always just removes it.
+      if (!isSelected && leaf.awaitingReplacementQuantity > 0) {
+        setPendingIncomplete({ prIndex, item, leaf });
+        return;
+      }
+      onTogglePRItem(prIndex, item);
+    },
+    [onTogglePRItem],
+  );
+
+  const confirmIncomplete = useCallback(() => {
+    if (!pendingIncomplete) return;
+    onTogglePRItem(pendingIncomplete.prIndex, pendingIncomplete.item);
+    onAcknowledgeIncompleteLeaf();
+    setPendingIncomplete(null);
+  }, [pendingIncomplete, onTogglePRItem, onAcknowledgeIncompleteLeaf]);
+
   const canProceed = useMemo(
     () =>
       shippingPRDrafts.some(
@@ -164,6 +200,8 @@ export default function ShippingPRsStep({
                     };
                     const key = shippingPRItemKey(item);
                     const onAnotherDraft = leafKeysByDraft.some((keys, i) => i !== prIdx && keys.has(key));
+                    const isSelected = selectedKeys.has(key);
+                    const incomplete = leaf.awaitingReplacementQuantity > 0;
                     return (
                       <FormControlLabel
                         key={leaf.id}
@@ -171,22 +209,40 @@ export default function ShippingPRsStep({
                         control={
                           <Checkbox
                             size="small"
-                            checked={selectedKeys.has(key)}
-                            onChange={() => onTogglePRItem(prIdx, item)}
+                            checked={isSelected}
+                            onChange={() => handleToggleLeaf(prIdx, item, leaf, isSelected)}
                           />
                         }
                         label={
                           <Box>
-                            <Typography variant="body2">
-                              Opening {leaf.openingNumber}
-                              {leafSuffix(leaf.leaf)}
-                              {leaf.leaf == null && ' (assembled unit)'}
-                            </Typography>
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                              <Typography variant="body2">
+                                Opening {leaf.openingNumber}
+                                {leafSuffix(leaf.leaf)}
+                                {leaf.leaf == null && ' (assembled unit)'}
+                              </Typography>
+                              {/* Real system state - the leaf is physically short of its own
+                                  hardware list - so it earns a status colour (#341). */}
+                              {incomplete && (
+                                <Chip
+                                  size="small"
+                                  variant="outlined"
+                                  color="warning"
+                                  label="Incomplete - awaiting replacement"
+                                />
+                              )}
+                            </Box>
                             <Typography variant="caption" color="text.secondary">
                               {onAnotherDraft
                                 ? 'Already on another shipping PR in this session'
                                 : installedSummary(leaf)}
                             </Typography>
+                            {incomplete && (
+                              <Typography variant="caption" color="warning.main" sx={{ display: 'block' }}>
+                                {leaf.awaitingReplacementQuantity} unit(s) still awaiting replacement
+                                hardware
+                              </Typography>
+                            )}
                           </Box>
                         }
                         sx={{ display: 'flex', alignItems: 'flex-start', mb: 0.5 }}
@@ -246,6 +302,23 @@ export default function ShippingPRsStep({
       <Button startIcon={<AddIcon />} onClick={onAddPR}>
         Add Shipping PR
       </Button>
+
+      <ConfirmDialog
+        open={pendingIncomplete !== null}
+        title="Ship an incomplete leaf?"
+        message={
+          pendingIncomplete
+            ? `Opening ${pendingIncomplete.leaf.openingNumber}${leafSuffix(pendingIncomplete.leaf.leaf)} is ` +
+              `still awaiting replacement hardware for ${pendingIncomplete.leaf.awaitingReplacementQuantity} ` +
+              `unit(s). Shipping it now sends it short of the hardware its list says it carries. ` +
+              `Reallocation can fill the gap later, but the shortfall goes to site either way.`
+            : ''
+        }
+        confirmLabel="Ship it short"
+        cancelLabel="Leave it here"
+        onConfirm={confirmIncomplete}
+        onCancel={() => setPendingIncomplete(null)}
+      />
 
       <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 3 }}>
         <Button onClick={onBack}>Back</Button>

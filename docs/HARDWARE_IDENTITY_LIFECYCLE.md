@@ -81,6 +81,36 @@ The tag does not become physical all at once. Assembly happens over a shift, uni
 - **Shipping out complete** - the leaf moves to `SHIP_READY`, then a confirmed shipment writes a
   `PackingSlipItem` that snapshots the leaf permanently.
 
+### 4b. The replacement loop closes
+
+Since #341 the round-trip a deficiency starts actually finishes. When the PR-REPL pull completes,
+`complete_pull_request` reads each line's `sa_opening_item_id` and gives the leaf its expectation
+back - floored at what is genuinely still outstanding, so an over-delivery restores nothing extra.
+Where the freed unit lands depends on whether the tag is still being worked:
+
+- **Leaf still PENDING / IN_PROGRESS** - `deficient_quantity` simply drops, `remaining` goes back up,
+  and the unit reappears as work in My Work. Completion stays blocked until somebody fits it.
+- **Leaf already COMPLETED** - the unit moves into `replacement_pending_quantity`. This is the third
+  bucket the line is partitioned into, and it exists because the alternative corrupts the model:
+  lowering `deficient_quantity` alone would make a finished leaf read as un-dispositioned
+  (`installed + deficient < quantity`). Moving it keeps the sum at `quantity` - the leaf is complete,
+  with a known unit of work outstanding - and the check constraint
+  `installed + deficient + replacement_pending <= quantity` is what makes that enforceable rather
+  than merely intended. `install_replacement` then moves it `replacement_pending -> installed` and
+  appends or increments the leaf's `OpeningItemHardware` row: **the one legitimate write to an
+  assembled leaf's hardware after completion**, bounded by what the pull actually delivered.
+- **Leaf already SHIPPED_OUT** - the hardware cannot be fitted to something that has left the
+  building. The pending state is still recorded, so the unit stays queryable rather than silently
+  stranded, and a `REPLACEMENT_AFTER_SHIPMENT` notification hands it to the reallocation /
+  site-shipment world. `install_replacement` refuses it.
+
+**A leaf with anything in `deficient_quantity` or `replacement_pending_quantity` is physically short
+of the hardware list it would ship under.** That sum is `OpeningItem.awaiting_replacement_quantity`,
+and it is what the shipping wizard flags as "incomplete - awaiting replacement". Shipping it anyway
+is allowed and sometimes right - reallocation exists for exactly that - but the shipping-out creation
+path refuses a flagged leaf unless the caller passes an explicit acknowledgment. Warn and confirm,
+never silent, never a hard block.
+
 ## Corollary: LOOSE vs OPENING_ITEM pull lines
 
 Both pull request sources use `pull_request_items`, but the two `item_type` values do fundamentally
@@ -114,4 +144,9 @@ leaf until a pull tags it onto one).
 | Tag worked, incrementally | `backend/app/repositories/shop_assembly_repository.py` (`record_assembly_progress` -> `installed_quantity` / `deficient_quantity`) |
 | Deficient unit returned + replaced | `backend/app/repositories/stock/deficiency.py` (`report_deficiency_at_assembly` -> PR-REPL line) |
 | Tag materialized | `backend/app/repositories/shop_assembly_repository.py` (`complete_opening` -> `OpeningItem`, quantities = installed) |
+| Replacement arrives, expectation restored | `backend/app/repositories/warehouse/pull_requests.py` (`_apply_replacement_arrivals` -> `deficient_quantity` down, `replacement_pending_quantity` up on a completed leaf) |
+| Replacement fitted to a finished leaf | `backend/app/repositories/shop_assembly_repository.py` (`install_replacement` -> `OpeningItemHardware`) |
+| Leaf is short of its own list | `backend/app/repositories/shop_assembly_repository.py` (`get_awaiting_replacement_quantities`, one grouped aggregate) |
+| Shipping a short leaf takes a decision | `backend/app/repositories/import_repository.py` (`finalize_import_session`, `acknowledge_incomplete_leaves`) |
+| Replacement stranded after shipment | `backend/app/repositories/warehouse/pull_requests.py` (`REPLACEMENT_AFTER_SHIPMENT` notification) |
 | Tag shipped | `backend/app/repositories/shipping_repository.py` (`confirm_shipment` -> `PackingSlipItem.leaf`) |

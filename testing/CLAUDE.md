@@ -246,12 +246,41 @@ Installed / Deficient / Remaining, with the Installed cell an editable number sp
   a plain user self-claiming cannot take one that is already held - that returns a CONFLICT toast.
   Unassigning an In Progress leaf is allowed and puts it back in the pool with its counts intact.
 
+**Replacement Installs section on My Work (#341).** Below the My Work grid, and only rendered when
+there is something in it, so an empty shop shows nothing at all. It appears when a PR-REPL
+replacement pull is *completed* in the warehouse for a leaf the assembler already finished.
+
+- To produce one end to end: flag a unit deficient in the assembly modal, finish the leaf, then go to
+  Warehouse -> Pull Requests, approve the `PR-REPL-<original PR number>` request and complete it. The
+  card shows up on the assembler's My Work on the next fetch.
+- If the leaf is *not* finished yet, completing the same replacement pull produces **no card** - the
+  unit just goes back to being Remaining in the assembly modal and Mark Complete is blocked again.
+  That is the intended behaviour, not a missing feature.
+- "Mark Installed" is confirm-gated and installs the whole arrived quantity at once. Afterwards the
+  leaf's `installedHardware` carries the extra units; the card disappears.
+- A card whose leaf already shipped shows a "Leaf already shipped" chip and a warning alert instead
+  of the button - it cannot be installed, only reallocated. A `REPLACEMENT_AFTER_SHIPMENT`
+  notification was also raised for the SHIPPING role when the pull completed.
+
 ### Shipping Module
 
 **Entry**: `/app/shipping` -> Project landing page -> ship-ready items browser
 
 - Shows opening items and loose items ready to ship
 - Create packing slips, confirm shipments
+
+**Incomplete-leaf guard in the Start-a-Task shipping wizard (#341).** On the Shipping PRs step, an
+assembled leaf that is still owed hardware carries an amber "Incomplete - awaiting replacement" chip
+and a "<n> unit(s) still awaiting replacement" caption.
+
+- Ticking its checkbox does **not** select it - it opens a "Ship an incomplete leaf?" dialog first.
+  "Ship it short" selects it and records the acknowledgment; "Leave it here" leaves the checkbox
+  clear. Unticking an already-selected flagged leaf never asks.
+- Without that confirmation the finalize is refused by the backend with a VALIDATION_ERROR naming
+  every flagged leaf, so driving the mutation directly (without `acknowledgeIncompleteLeaves: true`)
+  is the way to exercise the guard from GraphQL.
+- The flag is `openingItems { awaitingReplacementQuantity }` - condemned-and-unreplaced plus
+  arrived-but-not-fitted. It only drops to 0 once the replacement is actually installed on the leaf.
 
 ### Admin Module
 

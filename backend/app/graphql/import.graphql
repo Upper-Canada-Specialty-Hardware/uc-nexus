@@ -123,6 +123,12 @@ input FinalizeImportSessionInput {
   include_shop_assembly_request: Boolean!
   shop_assembly_request_number: String
   shop_assembly_openings: [SAROpeningInput!]
+  # Shipping deficiency guard (#341). An OPENING_ITEM line naming a leaf whose source shop-assembly
+  # checklist still has units awaiting a replacement is refused with a VALIDATION_ERROR naming every
+  # flagged leaf, unless this is true. Warn + confirm, never silent and never a hard block:
+  # deliberate short-shipping is a real workflow, it just has to be a decision someone made. The
+  # wizard sets it from its "Ship it short" confirmation.
+  acknowledge_incomplete_leaves: Boolean! = false
 }
 
 input ReconciliationItemInput {

@@ -472,6 +472,12 @@ class OpeningItem:
     created_at: datetime
     updated_at: datetime
     installed_hardware: list[OpeningItemHardware]
+    # Units this leaf is still owed (#341): condemned-and-unreplaced plus arrived-but-not-fitted,
+    # summed from its source shop-assembly checklist lines. > 0 means the leaf is physically short of
+    # what its hardware list claims, so the shipping wizard flags it and shipping it takes an explicit
+    # acknowledgment. Only populated by the resolvers that ask for it (the openingItems list and the
+    # detail view); null everywhere else, which reads as "not evaluated", not as "nothing owed".
+    awaiting_replacement_quantity: int | None = None
 
 
 @strawberry.type
@@ -520,6 +526,40 @@ class ShopAssemblyOpeningItem:
     # while any line still has remaining > 0.
     installed_quantity: int = 0
     deficient_quantity: int = 0
+    # Units whose replacement has arrived but is not on the leaf yet (#341). Non-zero only on a
+    # COMPLETED opening - before completion an arrived replacement just goes back to being remaining
+    # work. installed + deficient + replacement_pending never exceeds quantity.
+    replacement_pending_quantity: int = 0
+
+
+@strawberry.type
+class ReplacementWorkItem:
+    """One outstanding replacement install on an already-completed door leaf (#341).
+
+    Deliberately not a ShopAssemblyOpening: the opening is COMPLETED and stays that way, so this
+    cannot ride in myWork's normal list without either lying about the leaf's status or reopening a
+    finished work unit. It is the narrower unit "fit these N units of this product to a leaf that is
+    otherwise done", assigned to whoever last held the leaf.
+
+    opening_item_state is SHIPPED_OUT when the replacement arrived after the leaf left the building.
+    Those rows are listed on purpose - the hardware is real and must not be silently stranded - but
+    installReplacement refuses them; they belong to reallocation.
+    """
+
+    shop_assembly_opening_item_id: strawberry.ID
+    shop_assembly_opening_id: strawberry.ID
+    project_id: strawberry.ID
+    opening_number: str
+    leaf: int | None
+    building: str | None
+    floor: str | None
+    hardware_category: str
+    product_code: str
+    pending_quantity: int
+    assigned_to_user_id: str | None
+    assigned_to: str | None
+    opening_item_id: strawberry.ID | None
+    opening_item_state: OpeningItemState | None
 
 
 @strawberry.type

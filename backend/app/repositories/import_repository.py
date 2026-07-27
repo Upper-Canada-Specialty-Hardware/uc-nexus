@@ -353,6 +353,7 @@ def finalize_import_session(
     sar_request_number = input_data.get("shop_assembly_request_number")
     sar_openings_input = input_data.get("shop_assembly_openings") or []
     replace_schedule = bool(input_data.get("replace_schedule", False))
+    acknowledge_incomplete_leaves = bool(input_data.get("acknowledge_incomplete_leaves", False))
 
     # 1. Project lookup (must already exist)
     project_stmt = (
@@ -682,6 +683,37 @@ def finalize_import_session(
                     select(OpeningItemModel).where(OpeningItemModel.id.in_(referenced_oi_ids))
                 ).all()
             }
+
+        # Deficiency guard (#341). A leaf whose source checklist still has condemned-and-unreplaced
+        # units - or units whose replacement has arrived but is not fitted yet - is physically short
+        # of the hardware list it ships under. The business decision is warn + confirm, never silent
+        # and never a hard block: deliberate short-shipping is a real workflow (reallocation exists
+        # for it), but it has to be a decision someone made. So it is refused here unless the caller
+        # says explicitly that it knows, and the wizard's confirm is what sets that flag.
+        #
+        # One grouped scalar aggregate for every referenced leaf, not a per-line count.
+        if referenced_oi_ids and not acknowledge_incomplete_leaves:
+            from app.repositories import shop_assembly_repository
+
+            flagged_leaves = shop_assembly_repository.get_awaiting_replacement_quantities(
+                session, list(referenced_oi_ids)
+            )
+            if flagged_leaves:
+                # Name every flagged leaf, not just the first: the user is being asked to make a
+                # decision, and they can only make it once if they can see the whole list.
+                detail = ", ".join(
+                    sorted(
+                        f"{_leaf_label(opening_items_by_id[oi_id])} ({qty} unit(s) awaiting replacement)"
+                        for oi_id, qty in flagged_leaves.items()
+                        if oi_id in opening_items_by_id
+                    )
+                )
+                raise ValidationError(
+                    "These assembled leaves are incomplete - hardware on them is still awaiting a "
+                    f"replacement: {detail}. Confirm you want to ship them short, or wait for the "
+                    "replacements to be installed.",
+                    field="opening_item_id",
+                )
 
         for pr_draft in shipping_pr_drafts:
             # Validate uniqueness against the request entity's own number space.

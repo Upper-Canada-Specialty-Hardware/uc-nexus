@@ -71,6 +71,12 @@ type OpeningItem {
   created_at: DateTime!
   updated_at: DateTime!
   installed_hardware: [OpeningItemHardware!]!
+  # Units this leaf is still owed (#341): condemned-and-unreplaced plus arrived-but-not-fitted,
+  # summed from its source shop-assembly checklist lines. > 0 means the leaf is physically short of
+  # what its hardware list claims, so the shipping wizard flags it and shipping it takes an explicit
+  # acknowledgment. Populated only by openingItems / openingItemDetails / installReplacement; null
+  # elsewhere, which reads as "not evaluated", never as "nothing owed".
+  awaiting_replacement_quantity: Int
 }
 
 type OpeningItemHardware {

@@ -74,6 +74,8 @@ interface OpeningItemResponse {
   leaf: number | null;
   state: string;
   installedHardware: Array<{ productCode: string; quantity: number }>;
+  /** Units still awaiting a replacement (#341); null on a server that predates the field. */
+  awaitingReplacementQuantity: number | null;
 }
 
 /** The slices used to find leaves already claimed by an open request or pull (#335). */
@@ -145,6 +147,10 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
   const [orderAsValues, setOrderAsValues] = useState<Map<string, string>>(new Map());
   const [sarRequestNumber, setSarRequestNumber] = useState('');
   const [shippingPRDrafts, setShippingPRDrafts] = useState<ShippingPRDraft[]>([]);
+  // The user has been shown the "incomplete - awaiting replacement" warning on a leaf and chose to
+  // ship it anyway (#341). The backend refuses a flagged leaf without this, so the flag is the
+  // record that a decision was actually made rather than a default that got carried along.
+  const [acknowledgedIncompleteLeaves, setAcknowledgedIncompleteLeaves] = useState(false);
   const [selectedReconItems, setSelectedReconItems] = useState<Set<string>>(new Set());
 
   // Finalize state
@@ -415,6 +421,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
         openingNumber: oi.openingNumber,
         leaf: oi.leaf,
         installedHardware: oi.installedHardware ?? [],
+        awaitingReplacementQuantity: oi.awaitingReplacementQuantity ?? 0,
       }))
       .sort((a, b) => a.openingNumber.localeCompare(b.openingNumber) || (a.leaf ?? 0) - (b.leaf ?? 0));
   }, [purpose, openingItemsData, selectedOpenings, claimedOpeningItemIds]);
@@ -869,6 +876,8 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
       // schedule (i.e., they did not pick "Use last uploaded schedule"). The backend wipes all
       // existing HardwareItems and openings absent from the new input.
       replaceSchedule: canStartFromLatest && !hydratedFromPersisted,
+      // Only ever true after the user confirmed the warning dialog on a flagged leaf (#341).
+      acknowledgeIncompleteLeaves: acknowledgedIncompleteLeaves,
       shopAssemblyOpenings: purpose === 'assembly'
         ? parsed.openings
             .filter((o) => selectedOpenings.has(o.opening_number))
@@ -925,7 +934,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
             })
         : null,
     };
-  }, [parsed, project.id, selectedOpenings, purpose, vendorGroups, vendorPOInfo, selectedVendors, unitCostOverrides, orderAsValues, classifications, siteShopClassifications, effectiveShippingPRDrafts, sarRequestNumber, canStartFromLatest, hydratedFromPersisted]);
+  }, [parsed, project.id, selectedOpenings, purpose, vendorGroups, vendorPOInfo, selectedVendors, unitCostOverrides, orderAsValues, classifications, siteShopClassifications, effectiveShippingPRDrafts, sarRequestNumber, canStartFromLatest, hydratedFromPersisted, acknowledgedIncompleteLeaves]);
 
   const handleFinalize = useCallback(async () => {
     setConfirmOpen(false);
@@ -1347,6 +1356,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
               onRemovePR={removeShippingPR}
               onUpdatePR={updateShippingPR}
               onTogglePRItem={toggleShippingPRItem}
+              onAcknowledgeIncompleteLeaf={() => setAcknowledgedIncompleteLeaves(true)}
               onNext={handleNext}
               onBack={handleBack}
             />

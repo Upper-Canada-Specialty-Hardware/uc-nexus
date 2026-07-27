@@ -194,7 +194,20 @@ class WarehouseQueries:
             # attached per item so consumers can roll up by opening without an N+1. Computed for the
             # global view too (pid=None) so leafCount isn't null everywhere when project_id is omitted.
             leaf_counts = warehouse_repository.get_opening_leaf_counts(session, pid)
-            return [opening_item_to_type(oi, leaf_count=leaf_counts.get(oi.opening_number)) for oi in ois]
+            # Shipping deficiency flag (#341): one grouped scalar aggregate for the whole list, the
+            # same shape as leaf_counts above - a per-row lookup here would be an N+1 over every
+            # assembled leaf in the project.
+            from app.repositories import shop_assembly_repository
+
+            awaiting = shop_assembly_repository.get_awaiting_replacement_quantities(session, [oi.id for oi in ois])
+            return [
+                opening_item_to_type(
+                    oi,
+                    leaf_count=leaf_counts.get(oi.opening_number),
+                    awaiting_replacement_quantity=awaiting.get(oi.id, 0),
+                )
+                for oi in ois
+            ]
 
     @strawberry.field
     def opening_leaf_status(self, project_id: strawberry.ID | None = None) -> list[OpeningLeafStatus]:
@@ -217,8 +230,11 @@ class WarehouseQueries:
     @strawberry.field
     def opening_item_details(self, id: strawberry.ID) -> OpeningItemDetail:
         with SessionLocal() as session:
+            from app.repositories import shop_assembly_repository
+
             oi = warehouse_repository.get_opening_item_details(session, uuid.UUID(str(id)))
-            opening_item = opening_item_to_type(oi)
+            awaiting = shop_assembly_repository.get_awaiting_replacement_quantities(session, [oi.id])
+            opening_item = opening_item_to_type(oi, awaiting_replacement_quantity=awaiting.get(oi.id, 0))
             return OpeningItemDetail(
                 opening_item=opening_item,
                 installed_hardware=[opening_item_hardware_to_type(h) for h in oi.installed_hardware],
