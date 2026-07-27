@@ -351,6 +351,27 @@ class ProjectShipTo:
 
 
 @strawberry.type
+class POOpeningItem:
+    hardware_category: str
+    product_code: str
+    quantity: int
+
+
+@strawberry.type
+class POOpening:
+    """One (opening, leaf) this PO's hardware was bought for (#302). The PO carries only fungible
+    (category, product) lines, so this is the only place the buyer can see which doors the order is
+    for. leaf is null for a frame or a legacy item that predates #311."""
+
+    opening_number: str
+    leaf: int | None
+    building: str | None
+    floor: str | None
+    location: str | None
+    items: list[POOpeningItem]
+
+
+@strawberry.type
 class PurchaseOrder:
     id: strawberry.ID
     po_number: str | None
