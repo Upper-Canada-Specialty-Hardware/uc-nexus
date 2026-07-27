@@ -2,6 +2,8 @@
 verified from the frozen exe; here we cover the serve supervision, the shutdown sequence, the X-close
 decision, and the Api methods that reach the app."""
 
+import threading
+
 from ucnexus_relay import app as appmod
 from ucnexus_relay import setup, ui
 
@@ -88,6 +90,9 @@ def test_api_apply_update_stages_then_shuts_down_in_app_mode(monkeypatch):
     monkeypatch.setattr(a, "shutdown", lambda: shut.append(True))
     monkeypatch.setattr(appmod, "_APP", a)
     monkeypatch.setattr(ui, "_frozen", lambda: True)
+    # The staging sequence now lives in RelayApp.begin_update (the update poller runs the same one),
+    # so the frozen guard is checked there too.
+    monkeypatch.setattr(appmod.sys, "frozen", True, raising=False)
     monkeypatch.setattr(os, "_exit", lambda code: None)  # neutralize the hard-exit fallback timer
     passed = {}
     monkeypatch.setattr(
@@ -108,6 +113,7 @@ def test_api_apply_update_does_not_shut_down_on_a_failed_stage(monkeypatch):
     monkeypatch.setattr(a, "shutdown", lambda: shut.append(True))
     monkeypatch.setattr(appmod, "_APP", a)
     monkeypatch.setattr(ui, "_frozen", lambda: True)
+    monkeypatch.setattr(appmod.sys, "frozen", True, raising=False)
     monkeypatch.setattr(
         updater, "stage_update", lambda url, d, pid, target_build=None: {"ok": False, "error": "download failed"}
     )
@@ -115,6 +121,29 @@ def test_api_apply_update_does_not_shut_down_on_a_failed_stage(monkeypatch):
     assert r["ok"] is False
     assert shut == []  # a failed stage must NOT close the app
     assert a._updating is False  # not marked updating, so a later user shutdown still cancels normally
+
+
+def test_begin_update_refuses_outside_a_frozen_build(monkeypatch):
+    # A dev checkout has no exe to swap; the poller and the UI both reach this guard.
+    a = appmod.RelayApp()
+    monkeypatch.setattr(appmod.sys, "frozen", False, raising=False)
+    r = a.begin_update("https://x/e.exe", "relay-v0.1.0-build.11")
+    assert r["ok"] is False
+    assert "packaged exe" in r["error"]
+
+
+def test_stop_relay_and_tray_stops_the_update_poller_first(monkeypatch):
+    # Ordering matters: a poll that began staging during teardown would hand this process off to the
+    # apply helper while it is already on its way down.
+    a = appmod.RelayApp()
+    order = []
+    stop = threading.Event()
+    monkeypatch.setattr(stop, "set", lambda: order.append("poller"))
+    a._update_poller_stop = stop
+    monkeypatch.setattr(setup, "stop_serve", lambda d: order.append("serve"))
+    monkeypatch.setattr(a, "_release_single_instance", lambda: None)
+    a._stop_relay_and_tray()
+    assert order == ["poller", "serve"]
 
 
 def test_user_shutdown_cancels_a_pending_update(monkeypatch, tmp_path):

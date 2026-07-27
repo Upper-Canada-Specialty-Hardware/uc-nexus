@@ -20,7 +20,7 @@ import sys
 import threading
 import time
 
-from . import setup, single_instance
+from . import setup, single_instance, update_poller
 from .config import DEFAULT_CONFIG_PATH
 from .logging_setup import get_logger
 from .ui import Api, _HTML, config_summary, relay_health
@@ -43,6 +43,7 @@ class RelayApp:
         self._updating = False  # set while an update handoff is in progress, so user_shutdown doesn't cancel it
         self._mutex = None  # single_instance.MutexResult while we own the app slot
         self._control = None  # single_instance.ControlServer answering ping / show / quit_for_upgrade
+        self._update_poller_stop = None  # threading.Event stopping the background update poll
 
     # --- serve child supervision ----------------------------------------------------------------------
 
@@ -70,6 +71,13 @@ class RelayApp:
     # --- lifecycle ------------------------------------------------------------------------------------
 
     def _stop_relay_and_tray(self) -> None:
+        # Stop the update poller FIRST: a poll that started staging mid-teardown would hand this
+        # process off to the apply helper while it is already on its way down.
+        try:
+            if self._update_poller_stop is not None:
+                self._update_poller_stop.set()
+        except Exception:
+            logger.exception("error stopping the update poller")
         try:
             setup.stop_serve(self._install_dir())
         except Exception:
@@ -119,6 +127,36 @@ class RelayApp:
         of relaunching, so closing the relay mid-update is respected."""
         self._cancel_update_if_pending()
         self.shutdown()
+
+    def begin_update(self, url: str, build: str | None = None) -> dict:
+        """Stage an update and hand this process off to the detached apply helper.
+
+        Lives here rather than in the UI layer because it is app-lifecycle logic: `stage_update` needs
+        the APP's pid (the helper waits on it before repointing the `current` junction), and only the
+        app can then shut itself down so the exe unlocks. Both entry points - the Updates tab button
+        and the background poller - call this, so there is exactly one staging path."""
+        if not getattr(sys, "frozen", False):
+            return {"ok": False, "error": "updates can only be applied to the packaged exe"}
+        if not (url or "").strip():
+            return {"ok": False, "error": "no download URL"}
+        from . import updater
+
+        result = updater.stage_update(
+            url.strip(), self._install_dir(), os.getpid(), target_build=(build or "").strip() or None
+        )
+        if result.get("ok"):
+            # Mark this teardown as the update handoff so it is NOT treated as a user cancel
+            # (user_shutdown writes the cancel flag only when _updating is False).
+            self._updating = True
+            self.shutdown()
+            # Guarantee the process exits so the helper's swap can proceed promptly. shutdown() stopped
+            # serve + tray and asked the window to close, but destroy() runs off the GUI thread and does
+            # not always tear down webview.start(); this daemon timer is the fallback (it dies with the
+            # process if we exit cleanly first, so it only ever fires when the GUI loop is stuck).
+            timer = threading.Timer(2.0, lambda: os._exit(0))
+            timer.daemon = True
+            timer.start()
+        return result
 
     def _cancel_update_if_pending(self) -> None:
         if self._updating:
@@ -268,6 +306,9 @@ class RelayApp:
                 return 0
             self._cleanup_old_versions()
         self.ensure_serve()
+        # Auto-update polling (#353 PR D): without it, every relay-side fix needs someone physically at
+        # the workstation to press Update now.
+        self._update_poller_stop = update_poller.start(self)
         self._window = webview.create_window(
             "UC Nexus Relay",
             html=_HTML,

@@ -3,6 +3,8 @@
 every failure to a generic "retrying". Uses the real websockets exception types so an upgrade that
 renames the attributes the classifier reads is caught here."""
 
+import time
+
 from websockets.datastructures import Headers
 from websockets.exceptions import ConnectionClosedError, InvalidStatusCode
 from websockets.frames import Close
@@ -46,10 +48,32 @@ def test_normal_close_is_generic_retry():
 def test_channel_state_snapshot_reflects_the_mark_helpers():
     # the live state run_forever maintains + /health exposes (so the UI shows the REAL channel state)
     channel._mark_connected()
-    assert channel.channel_state_snapshot() == {"connected": True, "state": "connected"}
+    snap = channel.channel_state_snapshot()
+    assert snap["connected"] is True
+    assert snap["state"] == "connected"
     channel._mark_disconnected("secret_rejected")
     snap = channel.channel_state_snapshot()
     assert snap["connected"] is False
     assert snap["state"] == "secret_rejected"
     channel._mark_disconnected()
     assert channel.channel_state_snapshot()["state"] == "disconnected"
+
+
+def test_channel_state_snapshot_reports_gp_jobs_in_flight():
+    # #353 PR D: the update poller lives in the app PARENT and the job set lives in the serve CHILD, so
+    # /health is the only place it can learn "a GP write is running - do not swap the exe right now".
+    channel._INFLIGHT = 0
+    channel._LAST_JOB_AT = None
+    idle = channel.channel_state_snapshot()
+    assert idle["jobs_in_flight"] == 0
+    assert idle["last_job_finished_ago"] is None
+
+    channel._INFLIGHT = 2
+    assert channel.channel_state_snapshot()["jobs_in_flight"] == 2
+
+    channel._INFLIGHT = 0
+    channel._LAST_JOB_AT = time.monotonic()
+    finished = channel.channel_state_snapshot()
+    assert finished["jobs_in_flight"] == 0
+    assert 0 <= finished["last_job_finished_ago"] < 5
+    channel._LAST_JOB_AT = None
