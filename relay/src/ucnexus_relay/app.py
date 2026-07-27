@@ -158,6 +158,16 @@ class RelayApp:
             timer.start()
         return result
 
+    def _reconcile_update_ledger(self) -> None:
+        """Clear a stuck update-state.json at startup (#369). Never fatal: a relay that cannot read its
+        own ledger must still come up and serve GP, so the worst case is the pre-#369 behaviour."""
+        try:
+            from . import updater
+
+            updater.reconcile_ledger(self._install_dir(), logger)
+        except Exception:
+            logger.exception("error reconciling the update ledger on startup")
+
     def _cancel_update_if_pending(self) -> None:
         if self._updating:
             return  # this teardown IS the update handoff, not a user cancel
@@ -306,6 +316,9 @@ class RelayApp:
                 return 0
             self._cleanup_old_versions()
         self.ensure_serve()
+        # Settle a ledger a dead helper left mid-flight (#369) BEFORE the poller reads it - should_stage
+        # treats staging/applying as "already in progress", so a stuck one silently ends auto-updates.
+        self._reconcile_update_ledger()
         # Auto-update polling (#353 PR D): without it, every relay-side fix needs someone physically at
         # the workstation to press Update now.
         self._update_poller_stop = update_poller.start(self)
