@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import {
   Box,
   Typography,
@@ -135,6 +135,10 @@ export default function PullRequestDetailModal({
   // one message, so it is shown verbatim and the dialog stays open - the user is being told what to
   // go and finish, not just that it failed.
   const [cancelBlockedMessage, setCancelBlockedMessage] = useState<string | null>(null);
+  const closeCancelDialog = useCallback(() => {
+    setCancelOpen(false);
+    setCancelBlockedMessage(null);
+  }, []);
 
   // #224 gate 2: the shortfall the server returned when an approve was blocked for insufficient
   // inventory. The PR is left PENDING; we show this inline instead of cancelling.
@@ -584,15 +588,17 @@ export default function PullRequestDetailModal({
       />
 
       {/* Cancel: its own dialog rather than ConfirmDialog, because it takes a reason and has to be
-          able to show the server's blocker list without closing. */}
+          able to show the server's blocker list without closing. Closing clears that blocker list:
+          it names openings as they were at the moment of the refusal, and re-opening the dialog
+          after somebody has gone and finished them would otherwise re-assert a stale accusation. */}
       <Modal
         open={cancelOpen}
         title={`Cancel ${pr.requestNumber}`}
-        onClose={() => setCancelOpen(false)}
+        onClose={closeCancelDialog}
         maxWidth="sm"
         actions={
           <Stack direction="row" spacing={1}>
-            <Button onClick={() => setCancelOpen(false)}>Keep pull</Button>
+            <Button onClick={closeCancelDialog}>Keep pull</Button>
             <Button variant="contained" color="error" onClick={handleCancel} disabled={cancelLoading}>
               {cancelLoading ? 'Cancelling...' : 'Cancel pull and restock'}
             </Button>

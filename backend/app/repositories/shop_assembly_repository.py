@@ -5,7 +5,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, true, tuple_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import (
@@ -537,7 +538,22 @@ def complete_opening(
         bay=bay,
     )
     session.add(opening_item)
-    session.flush()  # Get opening_item.id for OpeningItemHardware FK
+    try:
+        session.flush()  # Get opening_item.id for OpeningItemHardware FK
+    except IntegrityError as exc:
+        # `uq_opening_items_live_leaf` (#345) is step 3's guard as a database invariant, and it is
+        # what actually holds when two assemblers finish two ShopAssemblyOpenings naming the same
+        # leaf at once: step 3 is a read-then-write, and both readers can see nothing. Translate it
+        # into the same typed conflict the guard raises so the loser gets the identical message
+        # rather than a 500.
+        if "uq_opening_items_live_leaf" not in str(getattr(exc, "orig", exc)):
+            raise
+        leaf_suffix = f" leaf {sa_opening.leaf}" if sa_opening.leaf is not None else ""
+        raise ConflictError(
+            f"Opening {sa_opening.opening_number}{leaf_suffix} has already been assembled - "
+            "an assembled unit for it is still in the system",
+            field="opening_id",
+        ) from exc
 
     # 6. Snapshot what was actually installed (#340): the recorded installed_quantity, not the
     #    planned quantity. A line whose units were all flagged deficient contributes no row at all -
@@ -638,35 +654,55 @@ def get_awaiting_replacement_quantities(
     (CLAUDE.md perf rules): the shipping selection lists every assembled leaf in a project, and a
     per-leaf query here would be an N+1 on the heaviest list in the module. Only non-zero entries are
     returned, so callers can treat a missing key as "nothing outstanding".
+
+    **Exactly one assembly per leaf is counted: the one that produced that leaf.** A leaf can be sent
+    to the shop more than once - it shipped and a correction re-assembled it, or a request was
+    reopened and re-imported - and (opening_id, leaf) alone matches every one of those work units. A
+    plain join therefore made the newly assembled leaf inherit the *previous* assembly's outstanding
+    units and read as "awaiting replacement" the moment it was built. The lateral resolves it the way
+    `find_assembled_leaf` resolves the other direction: latest completion wins, bounded by the leaf's
+    own `assembly_completed_at` so each assembled unit reads its own work unit and not a later one.
     """
     ids = list(opening_item_ids)
     if not ids:
         return {}
+    # Scope the correlation to the leaf's own project: opening_id is a historical stamp, not an FK,
+    # and a re-upload can reissue it.
+    latest_assembly = (
+        select(ShopAssemblyOpening.id.label("sa_opening_id"))
+        .join(PullRequestModel, PullRequestModel.id == ShopAssemblyOpening.pull_request_id)
+        .where(
+            ShopAssemblyOpening.opening_id == OpeningItemModel.opening_id,
+            ShopAssemblyOpening.leaf.is_not_distinct_from(OpeningItemModel.leaf),
+            ShopAssemblyOpening.assembly_status == AssemblyStatus.COMPLETED,
+            PullRequestModel.project_id == OpeningItemModel.project_id,
+            # The work unit that produced *this* leaf finished no later than the leaf did -
+            # `complete_opening` stamps both from the same `now`. A legacy row with no completion
+            # stamp is allowed through and ordered last, so it is picked only when nothing else fits.
+            or_(
+                ShopAssemblyOpening.completed_at.is_(None),
+                ShopAssemblyOpening.completed_at <= OpeningItemModel.assembly_completed_at,
+            ),
+        )
+        .order_by(
+            ShopAssemblyOpening.completed_at.desc().nulls_last(),
+            ShopAssemblyOpening.id.desc(),
+        )
+        .limit(1)
+        .lateral("latest_assembly")
+    )
     outstanding = func.sum(
         ShopAssemblyOpeningItem.deficient_quantity + ShopAssemblyOpeningItem.replacement_pending_quantity
     )
     stmt = (
         select(OpeningItemModel.id, outstanding.label("outstanding"))
         .select_from(OpeningItemModel)
-        .join(
-            ShopAssemblyOpening,
-            and_(
-                ShopAssemblyOpening.opening_id == OpeningItemModel.opening_id,
-                ShopAssemblyOpening.leaf.is_not_distinct_from(OpeningItemModel.leaf),
-                ShopAssemblyOpening.assembly_status == AssemblyStatus.COMPLETED,
-            ),
-        )
-        .join(PullRequestModel, PullRequestModel.id == ShopAssemblyOpening.pull_request_id)
+        .join(latest_assembly, true())
         .join(
             ShopAssemblyOpeningItem,
-            ShopAssemblyOpeningItem.shop_assembly_opening_id == ShopAssemblyOpening.id,
+            ShopAssemblyOpeningItem.shop_assembly_opening_id == latest_assembly.c.sa_opening_id,
         )
-        .where(
-            OpeningItemModel.id.in_(ids),
-            # Scope the join to the leaf's own project: opening_id is a historical stamp, not an FK,
-            # and a re-upload can reissue it.
-            PullRequestModel.project_id == OpeningItemModel.project_id,
-        )
+        .where(OpeningItemModel.id.in_(ids))
         .group_by(OpeningItemModel.id)
         .having(outstanding > 0)
     )
@@ -734,14 +770,20 @@ def get_replacement_work(
         return []
 
     # One batched lookup of the assembled leaves rather than one per row: the pending set is small,
-    # but "small today" is how N+1s get written.
+    # but "small today" is how N+1s get written. Keyed on (project, opening) rather than on the leaf
+    # as well, because a legacy null leaf has to match only a null leaf and SQL's `IN` over tuples
+    # cannot express that - the leaf match and `find_assembled_leaf`'s tie-break (a live row beats a
+    # shipped one, latest assembly wins among equals, via `_leaf_wins`) are applied in Python below,
+    # so both call sites resolve a re-assembled leaf identically.
+    keys = {(proj_id, opening.opening_id) for _item, opening, proj_id in rows}
     leaf_by_key: dict[tuple[uuid.UUID, uuid.UUID, int | None], OpeningItemModel] = {}
-    for _item, opening, proj_id in rows:
-        key = (proj_id, opening.opening_id, opening.leaf)
-        if key not in leaf_by_key:
-            found = find_assembled_leaf(session, proj_id, opening.opening_id, opening.leaf)
-            if found is not None:
-                leaf_by_key[key] = found
+    for oi in session.scalars(
+        select(OpeningItemModel).where(tuple_(OpeningItemModel.project_id, OpeningItemModel.opening_id).in_(keys))
+    ).all():
+        key = (oi.project_id, oi.opening_id, oi.leaf)
+        incumbent = leaf_by_key.get(key)
+        if incumbent is None or _leaf_wins(oi, incumbent):
+            leaf_by_key[key] = oi
 
     result: list[ReplacementWorkItem] = []
     for item, opening, proj_id in rows:
@@ -826,6 +868,17 @@ def install_replacement(
         raise InvalidStateTransitionError(
             f"Opening {opening.opening_number} has already shipped - this replacement has to be "
             "routed through reallocation or a site shipment, not installed here"
+        )
+    # SHIP_READY is the same problem one step earlier. The leaf is staged at the dock against a
+    # confirmed pull, and `confirm_shipment` snapshots its hardware onto the PackingSlipItem from
+    # whatever the leaf carries at that moment - so hardware added here lands on a packing slip for a
+    # unit that was picked and checked without it. The unit stays in replacement_pending and stays
+    # queryable; unwinding the shipment (or reallocation) is the route, not a quiet late write.
+    if opening_item.state == OpeningItemState.SHIP_READY:
+        raise InvalidStateTransitionError(
+            f"Opening {opening.opening_number} is staged for shipment - the packing slip is already "
+            "built against what is on the leaf. Unwind the shipping-out request first, or route this "
+            "replacement through reallocation"
         )
 
     oih = session.scalars(
@@ -1514,6 +1567,13 @@ def _shipped_counts(session: Session, request_ids: list[uuid.UUID]) -> dict[uuid
     opening as shipped when *any* of its rows shipped is the conservative reading for a rollup; the
     per-leaf detail view resolves that ambiguity properly, live row winning, exactly as
     `find_assembled_leaf` does.
+
+    **Only COMPLETED openings can be shipped.** (opening_id, leaf) is not scoped to a request, so a
+    leaf that shipped under an earlier request and was then re-requested matches the *new* request's
+    opening too - and without this filter the new request read as already SHIPPED before anybody had
+    picked its cart, taking its pipeline stage, its shipped count and its after-ship count with it.
+    An opening that has not been assembled cannot have produced the leaf that shipped, so requiring
+    COMPLETED is both the fix and the honest statement of the join.
     """
     if not request_ids:
         return {}
@@ -1534,6 +1594,7 @@ def _shipped_counts(session: Session, request_ids: list[uuid.UUID]) -> dict[uuid
                 OpeningItemModel.opening_id == ShopAssemblyOpening.opening_id,
                 OpeningItemModel.leaf.is_not_distinct_from(ShopAssemblyOpening.leaf),
                 OpeningItemModel.project_id == ShopAssemblyRequest.project_id,
+                ShopAssemblyOpening.assembly_status == AssemblyStatus.COMPLETED,
             ),
         )
         .outerjoin(
@@ -1741,7 +1802,9 @@ def get_assembly_pipeline(session: Session, request_id: uuid.UUID) -> AssemblyPi
     # The assembled leaves, in one fetch for the whole request rather than a find_assembled_leaf call
     # per opening. The live-wins-over-shipped and latest-wins tie-breaks are applied here in exactly
     # the order that function documents, so a leaf that shipped and was re-assembled resolves the
-    # same way in both places.
+    # same way in both places. The match is only *used* for an opening this request actually finished
+    # (see below): (opening_id, leaf) carries no request lineage, so a re-requested leaf would
+    # otherwise read the previous request's shipped unit as its own.
     leaves: dict[tuple[uuid.UUID, int | None], OpeningItemModel] = {}
     for oi in session.scalars(
         select(OpeningItemModel).where(
@@ -1757,7 +1820,13 @@ def get_assembly_pipeline(session: Session, request_id: uuid.UUID) -> AssemblyPi
     rows: list[PipelineOpening] = []
     for opening in openings:
         sums = sums_by_opening.get(opening.id)
-        leaf_row = leaves.get((opening.opening_id, opening.leaf))
+        # An opening that has not been completed has not produced a leaf, whatever else in the
+        # project happens to carry the same (opening_id, leaf).
+        leaf_row = (
+            leaves.get((opening.opening_id, opening.leaf))
+            if opening.assembly_status == AssemblyStatus.COMPLETED
+            else None
+        )
         rows.append(
             PipelineOpening(
                 shop_assembly_opening_id=opening.id,

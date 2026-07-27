@@ -64,8 +64,19 @@ export function isStageable(opening: PullStagingOpening): boolean {
  * A pull that has not been approved has moved no inventory (reopen or reject the source request
  * instead), and a cancelled one is terminal. A COMPLETED shop-assembly pull *is* cancellable, since
  * per-opening staging means "completed" there is no more than "every cart is built" - the backend
- * still refuses if assembly has started on any opening, and names which ones. */
-export function isCancellable(pr: { status: string; source: string }): boolean {
+ * still refuses if assembly has started on any opening, and names which ones.
+ *
+ * The completed case additionally requires the pull to *have* openings, because that is the whole
+ * reason it is allowed: the backend's rule is `SHOP_ASSEMBLY and bool(openings)`, so on a completed
+ * PR-REPL or otherwise opening-less pull the button was offered and the server always said no. A
+ * control that cannot succeed is worse than an absent one. */
+export function isCancellable(pr: {
+  status: string;
+  source: string;
+  totalOpeningCount?: number | null;
+}): boolean {
   if (pr.status === 'IN_PROGRESS') return true;
-  return pr.status === 'COMPLETED' && pr.source === 'SHOP_ASSEMBLY';
+  return (
+    pr.status === 'COMPLETED' && pr.source === 'SHOP_ASSEMBLY' && (pr.totalOpeningCount ?? 0) > 0
+  );
 }

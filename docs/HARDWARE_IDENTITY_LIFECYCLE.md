@@ -121,7 +121,8 @@ notification and the replacement-arrival application still fire exactly once, fr
 Two state facts, deliberately kept apart:
 
 - `ShopAssemblyOpening.pull_status` is only ever `NOT_PULLED` or `PULLED`. One cart is built or it is
-  not; persisting a half-truth about a single cart would be a lie.
+  not; persisting a half-truth about a single cart would be a lie. Since #345 that is a CHECK
+  constraint on the column rather than a convention, so a bad write cannot express it either.
 - `PullStatus.PARTIAL` is the **aggregate** reading over a set of openings, and it is **derived, not
   stored** (`warehouse.get_pull_staging_summaries`, one grouped aggregate for a whole page).
   `PullRequestStatus` therefore stays `PENDING -> IN_PROGRESS -> COMPLETED/CANCELLED` with no
@@ -170,6 +171,17 @@ The tag does not become physical all at once. Assembly happens over a shift, uni
   PR-REPL replacement pull line carrying the leaf and the source `ShopAssemblyOpeningItem`. That is
   the identity round-trip in miniature - the unit loses its leaf on the way back into inventory, and
   the replacement line is what re-tags a fresh one.
+
+  **One replacement pull per open round of deficiencies**, numbered `PR-REPL-{source pull number}`,
+  then `-2`, `-3` on collision (truncating the basis, never the suffix, to stay inside
+  `request_number`'s varchar(50)). A flag reuses the existing replacement pull only while it is
+  **PENDING**, and merges into that pull's existing line for the same checklist item and product
+  rather than stacking one-unit rows. Once the pull is approved it is closed to new lines, and the
+  reason is the same rule the rest of this document is about: approval is where the claim on stock
+  is settled. A line appended afterwards was never sufficiency-checked and never deducted, yet
+  `_apply_replacement_arrivals` would count it as delivered and `cancel_pull_request` would restock
+  it - inventory conjured from a row that had no hardware behind it. The next deficiency therefore
+  starts a pull of its own.
 - **Shop assembly complete** - *this* is where the tag becomes physical. An `OpeningItem` row is
   created per leaf (`opening_items.leaf`), with one `OpeningItemHardware` row per line that had units
   installed, at the **installed** quantity, not the planned one. Completion is refused while any unit
@@ -197,10 +209,13 @@ Where the freed unit lands depends on whether the tag is still being worked:
   than merely intended. `install_replacement` then moves it `replacement_pending -> installed` and
   appends or increments the leaf's `OpeningItemHardware` row: **the one legitimate write to an
   assembled leaf's hardware after completion**, bounded by what the pull actually delivered.
-- **Leaf already SHIPPED_OUT** - the hardware cannot be fitted to something that has left the
-  building. The pending state is still recorded, so the unit stays queryable rather than silently
-  stranded, and a `REPLACEMENT_AFTER_SHIPMENT` notification hands it to the reallocation /
-  site-shipment world. `install_replacement` refuses it.
+- **Leaf already SHIPPED_OUT, or staged at the dock as SHIP_READY** - the hardware cannot be fitted.
+  A shipped leaf has left the building; a SHIP_READY one has been picked and checked against a
+  confirmed pull, and `confirm_shipment` snapshots its hardware onto the `PackingSlipItem`, so a late
+  write here would put hardware on a packing slip for a unit that shipped without it. The pending
+  state is still recorded in both cases, so the unit stays queryable rather than silently stranded,
+  and for the shipped case a `REPLACEMENT_AFTER_SHIPMENT` notification hands it to the reallocation /
+  site-shipment world. `install_replacement` refuses both.
 
 **A leaf with anything in `deficient_quantity` or `replacement_pending_quantity` is physically short
 of the hardware list it would ship under.** That sum is `OpeningItem.awaiting_replacement_quantity`,
@@ -311,6 +326,8 @@ leaf until a pull tags it onto one).
 | Tag worked, incrementally | `backend/app/repositories/shop_assembly_repository.py` (`record_assembly_progress` -> `installed_quantity` / `deficient_quantity`) |
 | Deficient unit returned + replaced | `backend/app/repositories/stock/deficiency.py` (`report_deficiency_at_assembly` -> PR-REPL line) |
 | Tag materialized | `backend/app/repositories/shop_assembly_repository.py` (`complete_opening` -> `OpeningItem`, quantities = installed) |
+| One live assembled unit per leaf | `backend/app/models/opening_item.py` (`uq_opening_items_live_leaf`, partial unique index on `(project, opening, coalesce(leaf,0))` excluding shipped units); `complete_opening` translates the violation into the same `ConflictError` its read-then-write guard raises |
+| Replacement pull numbering | `backend/app/repositories/stock/deficiency.py` (`_replacement_number` / `_is_replacement_number`: reuse only a PENDING pull, otherwise mint `PR-REPL-{basis}-{n}`) |
 | Replacement arrives, expectation restored | `backend/app/repositories/warehouse/pull_requests.py` (`_apply_replacement_arrivals` -> `deficient_quantity` down, `replacement_pending_quantity` up on a completed leaf) |
 | Replacement fitted to a finished leaf | `backend/app/repositories/shop_assembly_repository.py` (`install_replacement` -> `OpeningItemHardware`) |
 | Leaf is short of its own list | `backend/app/repositories/shop_assembly_repository.py` (`get_awaiting_replacement_quantities`, one grouped aggregate) |

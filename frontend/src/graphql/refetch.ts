@@ -54,16 +54,27 @@ export const PIPELINE_STALE_ROOT_FIELDS = ['assemblyPipelineSummaries', 'assembl
 // field that is evicted must not also be refetched by name, or Apollo fires a repair fetch for the
 // incomplete cache diff on top of the explicit refetch.
 //
-// Refetched. GetMyWork is the assembler's own board and is mounted whenever they are saving from My
-// Work; refetchQueries reaches only mounted instances, so this is a no-op when the save came from
-// the Assemble List instead. Note that recordAssemblyProgress already returns the updated opening
-// with its items, so the modal itself needs neither of these - these lists exist for the *lists*
-// behind it, whose status chip and "5/8 units" column would otherwise sit stale.
-export const ASSEMBLY_PROGRESS_REFETCH_QUERIES = ['GetMyWork'];
+// Refetched, and `assembleList` is refetched here rather than evicted. Both lists behind this modal
+// are refetched by name: GetMyWork is the assembler's own board, GetAssembleList is the other entry
+// point into the same modal. refetchQueries reaches only mounted instances, so naming both is a
+// no-op for whichever one is not live.
+//
+// `assembleList` used to be evicted instead, on the belief that the two views are never mounted
+// together. They are: ManagerAssignPanel runs GET_ASSEMBLE_LIST from inside AssignmentBoard, and the
+// Assemble List page opens this modal over its own grid. Eviction transiently empties `assembleList`
+// for every mounted watcher, so the row this modal is rendered from disappears and the modal
+// unmounts mid-save - the assembler loses the leaf they were working on. A refetch swaps the data in
+// without ever passing through empty.
+//
+// Note that recordAssemblyProgress already returns the updated opening with its items, so the modal
+// itself needs neither of these - these lists exist for the *lists* behind it, whose status chip and
+// "5/8 units" column would otherwise sit stale.
+export const ASSEMBLY_PROGRESS_REFETCH_QUERIES = ['GetMyWork', 'GetAssembleList'];
 
-// Evicted. assembleList is read by the other entry point into the same modal, and the two views are
-// never mounted together (separate routes), so whichever one is live repairs its own diff.
-export const ASSEMBLY_PROGRESS_STALE_ROOT_FIELDS = ['assembleList', ...PIPELINE_STALE_ROOT_FIELDS];
+// There is deliberately no ASSEMBLY_PROGRESS_STALE_ROOT_FIELDS any more. Everything a progress save
+// invalidates and can reach is refetched above; the only thing left to evict is the pipeline, and
+// the call site evicts PIPELINE_STALE_ROOT_FIELDS directly so the disjointness of the two lists is
+// visible at a glance rather than hidden behind a name that once meant something wider.
 
 // What installing a replacement onto a finished leaf invalidates (#341). Same disjointness rule.
 //
@@ -161,6 +172,9 @@ export const PULL_CANCEL_STALE_ROOT_FIELDS = [
   'myWork',
   'projectInventoryAvailability',
   'shopAssemblyRequests',
+  // Cancelling a shipping-out pull returns its request to PENDING too, and that queue lives on
+  // another route entirely - so like shopAssemblyRequests it has to be evicted, not refetched.
+  'shippingOutRequests',
   // A cancellation puts the request back at the start of the ladder and leaves a cancelled pull in
   // its history (#344), which is the reading that stops it looking like it was never accepted.
   ...PIPELINE_STALE_ROOT_FIELDS,

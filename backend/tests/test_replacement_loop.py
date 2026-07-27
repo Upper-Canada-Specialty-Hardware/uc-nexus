@@ -668,3 +668,201 @@ def test_shipping_out_creation_is_untouched_for_a_whole_leaf(db_session):
     result = _shipping_finalize(db_session, project, leaf, request_number="SOR-R3")
     db_session.flush()
     assert len(result["shipping_out_requests"]) == 1
+
+
+# --- 6. replacement pull identity: one PENDING pull, then a fresh one (#345-#350 review) ---------
+
+
+def _repl_pulls_for(session, sao_item) -> list[PullRequest]:
+    """Every PR-REPL pull carrying a line for this checklist item, oldest first."""
+    ids = list(
+        session.scalars(
+            select(PullRequestItem.pull_request_id).where(PullRequestItem.sa_opening_item_id == sao_item.id)
+        ).all()
+    )
+    pulls = [session.get(PullRequest, pid) for pid in dict.fromkeys(ids)]
+    return sorted(pulls, key=lambda p: p.created_at)
+
+
+def test_repeated_flags_on_one_line_increment_a_single_replacement_line(db_session):
+    """Two flags against the same checklist line and product are one line to pick, not two rows the
+    replacement loop has to re-aggregate."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, category=HINGE[0], code=HINGE[1], quantity=10)
+    opening, sao = _make_pulled_opening(db_session, project.id, request_number="PR-SA-RN1", items=[(*HINGE, 4)])
+    item = sao[HINGE[1]]
+
+    _flag_deficient(db_session, opening, item, 1)
+    _flag_deficient(db_session, opening, item, 2)
+
+    lines = list(db_session.scalars(select(PullRequestItem).where(PullRequestItem.sa_opening_item_id == item.id)).all())
+    assert len(lines) == 1
+    assert lines[0].requested_quantity == 3
+    assert len(_repl_pulls_for(db_session, item)) == 1
+
+
+def test_a_second_deficiency_after_the_replacement_completed_mints_a_new_pull(db_session):
+    """The crash regression. `PR-REPL-{basis}` is unique among live pulls, so once the first
+    replacement pull has completed the next deficiency on the same source pull cannot reuse its
+    number - it gets `-2` instead of an IntegrityError."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, category=HINGE[0], code=HINGE[1], quantity=10)
+    opening, sao = _make_pulled_opening(db_session, project.id, request_number="PR-SA-RN2", items=[(*HINGE, 4)])
+    item = sao[HINGE[1]]
+
+    _flag_deficient(db_session, opening, item, 1)
+    first = _repl_pull_for(db_session, item)
+    assert first.request_number == "PR-REPL-PR-SA-RN2"
+
+    _work_the_pull(db_session, first)
+    warehouse_repository.complete_pull_request(db_session, first.id)
+    db_session.flush()
+    assert first.status == PullRequestStatus.COMPLETED
+
+    # The second flag must not try to write the same number again.
+    _flag_deficient(db_session, opening, item, 1)
+    db_session.flush()
+
+    pulls = _repl_pulls_for(db_session, item)
+    assert [p.request_number for p in pulls] == ["PR-REPL-PR-SA-RN2", "PR-REPL-PR-SA-RN2-2"]
+    assert pulls[1].status == PullRequestStatus.PENDING
+    # And the new pull carries its own line, at the newly flagged quantity only.
+    new_lines = [line for line in pulls[1].items if line.sa_opening_item_id == item.id]
+    assert [line.requested_quantity for line in new_lines] == [1]
+
+
+def test_a_deficiency_during_an_approved_replacement_pull_starts_a_fresh_pull(db_session):
+    """An IN_PROGRESS pull has already been deducted and sufficiency-checked line by line. Appending
+    to it would deliver a unit nothing paid for - and restock one on cancel that never left."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, category=HINGE[0], code=HINGE[1], quantity=10)
+    opening, sao = _make_pulled_opening(db_session, project.id, request_number="PR-SA-RN3", items=[(*HINGE, 4)])
+    item = sao[HINGE[1]]
+
+    _flag_deficient(db_session, opening, item, 1)
+    first = _repl_pull_for(db_session, item)
+    warehouse_repository.approve_pull_request(db_session, first.id, "warehouse")
+    db_session.flush()
+    assert first.status == PullRequestStatus.IN_PROGRESS
+
+    _flag_deficient(db_session, opening, item, 1)
+    db_session.flush()
+
+    pulls = _repl_pulls_for(db_session, item)
+    assert len(pulls) == 2
+    assert pulls[1].request_number == "PR-REPL-PR-SA-RN3-2"
+    assert [line.requested_quantity for line in first.items] == [1]
+
+
+def test_a_long_source_number_keeps_the_suffix_and_stays_inside_varchar_50(db_session):
+    """`request_number` is varchar(50). When the basis is long enough that the suffix would not fit,
+    the *basis* is what gets truncated - the suffix is the part that makes the number unique."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, category=HINGE[0], code=HINGE[1], quantity=10)
+    long_number = "PR-SA-" + "L" * 40  # 46 chars; "PR-REPL-" + this is 54
+    opening, sao = _make_pulled_opening(db_session, project.id, request_number=long_number, items=[(*HINGE, 4)])
+    item = sao[HINGE[1]]
+
+    _flag_deficient(db_session, opening, item, 1)
+    first = _repl_pull_for(db_session, item)
+    _work_the_pull(db_session, first)
+    warehouse_repository.complete_pull_request(db_session, first.id)
+    db_session.flush()
+
+    _flag_deficient(db_session, opening, item, 1)
+    db_session.flush()
+
+    numbers = [p.request_number for p in _repl_pulls_for(db_session, item)]
+    assert all(len(n) <= 50 for n in numbers)
+    assert numbers[0] != numbers[1]
+    assert numbers[1].endswith("-2")
+
+
+def test_cancelling_a_replacement_pull_restocks_exactly_what_it_deducted(db_session):
+    """A multi-line PR-REPL pull, approved and then cancelled, returns precisely the units approval
+    took - and nothing belonging to the deficiency flagged after it was approved."""
+    project = _make_project(db_session)
+    hinges = _seed_inventory(db_session, project.id, category=HINGE[0], code=HINGE[1], quantity=10)
+    locks = _seed_inventory(db_session, project.id, category=LOCK[0], code=LOCK[1], quantity=10)
+    opening, sao = _make_pulled_opening(
+        db_session, project.id, request_number="PR-SA-RN4", items=[(*HINGE, 4), (*LOCK, 4)]
+    )
+
+    _flag_deficient(db_session, opening, sao[HINGE[1]], 2)
+    _flag_deficient(db_session, opening, sao[LOCK[1]], 1)
+    repl = _repl_pull_for(db_session, sao[HINGE[1]])
+    assert {line.product_code for line in repl.items} == {HINGE[1], LOCK[1]}
+
+    before_hinges, before_locks = hinges.quantity, locks.quantity
+    warehouse_repository.approve_pull_request(db_session, repl.id, "warehouse")
+    db_session.flush()
+    assert hinges.quantity == before_hinges - 2
+    assert locks.quantity == before_locks - 1
+
+    # A third flag lands on a *new* pull, so it must not be restocked by this cancellation.
+    _flag_deficient(db_session, opening, sao[HINGE[1]], 1)
+    db_session.flush()
+    after_third_flag = hinges.quantity
+
+    result = warehouse_repository.cancel_pull_request(db_session, repl.id, "warehouse", reason="wrong pull")
+    db_session.flush()
+
+    assert {(r.product_code, r.quantity) for r in result.restocked} == {(HINGE[1], 2), (LOCK[1], 1)}
+    assert hinges.quantity == after_third_flag + 2
+    assert locks.quantity == before_locks
+
+
+def test_install_is_refused_while_the_leaf_is_staged_for_shipment(db_session):
+    """SHIP_READY is the shipped problem one step earlier: the packing slip is built from what the
+    leaf carries, so a late write here lands hardware on a slip that was picked without it."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, category=HINGE[0], code=HINGE[1], quantity=10)
+    opening, sao = _make_pulled_opening(db_session, project.id, request_number="PR-SA-RN5", items=[(*HINGE, 4)])
+    item = sao[HINGE[1]]
+    _flag_deficient(db_session, opening, item, 2)
+    leaf = _complete(db_session, opening, sao)
+
+    repl = _work_the_pull(db_session, _repl_pull_for(db_session, item))
+    warehouse_repository.complete_pull_request(db_session, repl.id)
+    db_session.flush()
+    assert item.replacement_pending_quantity == 2
+
+    leaf.state = OpeningItemState.SHIP_READY
+    db_session.flush()
+
+    with pytest.raises(InvalidStateTransitionError) as exc:
+        shop_assembly_repository.install_replacement(db_session, item.id, 1)
+    assert "staged for shipment" in str(exc.value)
+    # It stays queryable rather than being silently dropped.
+    work = shop_assembly_repository.get_replacement_work(db_session)
+    assert [w.opening_item_state for w in work] == [OpeningItemState.SHIP_READY]
+
+
+def test_awaiting_replacement_reads_only_the_latest_assembly_of_a_leaf(db_session):
+    """A leaf shipped short and was re-assembled. The new unit is whole; the old work unit's
+    outstanding units belong to the shipped one and must not follow the leaf into the shop again."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, category=HINGE[0], code=HINGE[1], quantity=20)
+    first_opening, first_items = _make_pulled_opening(
+        db_session, project.id, request_number="PR-SA-RN6", items=[(*HINGE, 4)]
+    )
+    _flag_deficient(db_session, first_opening, first_items[HINGE[1]], 1)
+    shipped_leaf = _complete(db_session, first_opening, first_items)
+    shipped_leaf.state = OpeningItemState.SHIPPED_OUT
+    db_session.flush()
+
+    # The same physical leaf comes back through the shop under a second pull, this time whole.
+    second_opening, second_items = _make_pulled_opening(
+        db_session, project.id, request_number="PR-SA-RN7", items=[(*HINGE, 4)]
+    )
+    second_opening.opening_id = first_opening.opening_id
+    second_opening.opening_number = first_opening.opening_number
+    db_session.flush()
+    fresh_leaf = _complete(db_session, second_opening, second_items)
+    db_session.flush()
+
+    awaiting = shop_assembly_repository.get_awaiting_replacement_quantities(
+        db_session, [shipped_leaf.id, fresh_leaf.id]
+    )
+    assert awaiting.get(fresh_leaf.id, 0) == 0
+    assert awaiting.get(shipped_leaf.id, 0) == 1

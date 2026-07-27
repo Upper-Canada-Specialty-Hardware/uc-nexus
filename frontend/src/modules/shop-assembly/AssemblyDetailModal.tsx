@@ -22,7 +22,7 @@ import { COMPLETE_OPENING, RECORD_ASSEMBLY_PROGRESS } from '../../graphql/shop-a
 import {
   ASSEMBLY_COMPLETE_STALE_ROOT_FIELDS,
   ASSEMBLY_PROGRESS_REFETCH_QUERIES,
-  ASSEMBLY_PROGRESS_STALE_ROOT_FIELDS,
+  PIPELINE_STALE_ROOT_FIELDS,
 } from '../../graphql/refetch';
 import Modal from '../../components/Modal';
 import ConfirmDialog from '../../components/ConfirmDialog';
@@ -38,6 +38,10 @@ interface OpeningItem {
   quantity: number;
   installedQuantity: number;
   deficientQuantity: number;
+  // Units whose replacement has arrived but has not been fitted yet (#341). Zero while the leaf is
+  // on the bench; carried here so the progress rollup partitions the line the same three ways the
+  // backend does.
+  replacementPendingQuantity: number;
 }
 
 interface MyWorkOpening {
@@ -87,14 +91,21 @@ export default function AssemblyDetailModal({
   const [draftInstalled, setDraftInstalled] = useState<Record<string, string>>(() =>
     Object.fromEntries(opening.items.map((item) => [item.id, String(item.installedQuantity)]))
   );
-  // The line a deficiency is being reported against, if the flag dialog is open.
-  const [flagging, setFlagging] = useState<OpeningItem | null>(null);
+  // The line a deficiency is being reported against, if the flag dialog is open. Held as an id and
+  // resolved against the current props on every render, never captured as an object: flagging writes
+  // inventory, so the dialog has to be reasoning about what the server says now, not about a
+  // snapshot taken when it was opened.
+  const [flaggingId, setFlaggingId] = useState<string | null>(null);
   const [flagQuantity, setFlagQuantity] = useState('1');
   const [flagReason, setFlagReason] = useState('');
 
   const [recordProgress, { loading: saving }] = useMutation(RECORD_ASSEMBLY_PROGRESS, {
+    // Evict the pipeline only - a route of its own, never mounted at the bench. `assembleList` is
+    // deliberately NOT evicted: this modal is rendered from a row of that list (and of the manager
+    // board, which reads the same query), so emptying the field would unmount the modal mid-save.
+    // It is refetched by name instead, which swaps the data in without ever passing through empty.
     update(cache) {
-      for (const fieldName of ASSEMBLY_PROGRESS_STALE_ROOT_FIELDS) {
+      for (const fieldName of PIPELINE_STALE_ROOT_FIELDS) {
         cache.evict({ id: 'ROOT_QUERY', fieldName });
       }
       cache.gc();
@@ -127,7 +138,8 @@ export default function AssemblyDetailModal({
   };
 
   // The most a line can be marked installed: everything not already condemned.
-  const maxInstalled = (item: OpeningItem): number => item.quantity - item.deficientQuantity;
+  const maxInstalled = (item: OpeningItem): number =>
+    item.quantity - item.deficientQuantity - item.replacementPendingQuantity;
 
   const draftFor = (item: OpeningItem): string =>
     draftInstalled[item.id] ?? String(item.installedQuantity);
@@ -154,6 +166,7 @@ export default function AssemblyDetailModal({
           quantity: item.quantity,
           installedQuantity: parsedDraft(item) ?? item.installedQuantity,
           deficientQuantity: item.deficientQuantity,
+          replacementPendingQuantity: item.replacementPendingQuantity,
         }))
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -165,9 +178,15 @@ export default function AssemblyDetailModal({
   const busy = saving || completing;
 
   // Mirrors the backend's completion gate exactly - every unit installed or condemned, and at least
-  // one actually installed - so the button explains itself instead of failing on submit.
+  // one actually installed - so the button explains itself instead of failing on submit. The
+  // all-deficient refusal is scoped to openings that *have* lines: the backend's guard is
+  // `if items and all(installed == 0)`, so an opening with no hardware at all is completable and
+  // requiring `installed > 0` here blocked it permanently with no way out.
   const canComplete =
-    allDraftsValid && draftProgress.complete && draftProgress.installed > 0 && locationValid;
+    allDraftsValid &&
+    draftProgress.complete &&
+    (draftProgress.installed > 0 || opening.items.length === 0) &&
+    locationValid;
 
   const progressPayload = useCallback(
     () =>
@@ -222,13 +241,24 @@ export default function AssemblyDetailModal({
   // --- deficiency flagging -------------------------------------------------------------------
 
   const openFlagDialog = (item: OpeningItem) => {
-    setFlagging(item);
+    setFlaggingId(item.id);
     setFlagQuantity('1');
     setFlagReason('');
   };
 
+  const flagging = flaggingId
+    ? (opening.items.find((item) => item.id === flaggingId) ?? null)
+    : null;
+
+  // What is left to condemn, measured against the count the assembler currently has typed rather
+  // than the last saved one. Flagging N units lowers the line's ceiling to `quantity - deficient`,
+  // so allowing a flag that the unsaved draft has already spoken for would leave the draft above its
+  // own maximum the moment the flag lands - the field turns red and Save Progress refuses it.
   const flagRemaining = flagging
-    ? flagging.quantity - flagging.installedQuantity - flagging.deficientQuantity
+    ? flagging.quantity -
+      (parsedDraft(flagging) ?? flagging.installedQuantity) -
+      flagging.deficientQuantity -
+      flagging.replacementPendingQuantity
     : 0;
   const flagQuantityValue = Number(flagQuantity);
   const flagQuantityValid =
@@ -256,8 +286,13 @@ export default function AssemblyDetailModal({
         },
       },
     });
+    // Close either way. On success that is the obvious thing; on failure it is the safe one. A flag
+    // moves inventory and mints a replacement pull, and a request that errored on the way back may
+    // well have committed - leaving the dialog open with the same quantity still in it invites a
+    // second submit that condemns the units twice. The mutation's refetchQueries have already gone
+    // out, so re-opening the dialog reads the persisted counts rather than the pre-flag ones.
+    setFlaggingId(null);
     if (result.data) {
-      setFlagging(null);
       showToast(
         `${flagQuantity} x ${item.productCode} flagged deficient - replacement pull requested`,
         'success'
@@ -306,7 +341,7 @@ export default function AssemblyDetailModal({
             <Chip
               size="small"
               variant="outlined"
-              label={`${draftProgress.installed + draftProgress.deficient}/${draftProgress.planned} units accounted for`}
+              label={`${draftProgress.planned - draftProgress.remaining}/${draftProgress.planned} units accounted for`}
             />
           </Stack>
 
@@ -336,9 +371,17 @@ export default function AssemblyDetailModal({
                 {opening.items.map((item) => {
                   const parsed = parsedDraft(item);
                   const storedRemaining =
-                    item.quantity - item.installedQuantity - item.deficientQuantity;
+                    item.quantity -
+                    item.installedQuantity -
+                    item.deficientQuantity -
+                    item.replacementPendingQuantity;
                   const remaining =
-                    parsed === null ? storedRemaining : item.quantity - parsed - item.deficientQuantity;
+                    parsed === null
+                      ? storedRemaining
+                      : item.quantity -
+                        parsed -
+                        item.deficientQuantity -
+                        item.replacementPendingQuantity;
                   return (
                     <TableRow key={item.id}>
                       <TableCell>{item.productCode}</TableCell>
@@ -377,7 +420,10 @@ export default function AssemblyDetailModal({
                         <Button
                           size="small"
                           variant="text"
-                          disabled={busy || storedRemaining <= 0}
+                          // Gated on the drafted remaining, the same number the dialog validates
+                          // against: offering the action when there is nothing left to condemn would
+                          // open a dialog whose only possible input is out of range.
+                          disabled={busy || remaining <= 0}
                           onClick={() => openFlagDialog(item)}
                         >
                           Flag deficient
@@ -448,7 +494,7 @@ export default function AssemblyDetailModal({
 
       {/* Flagging is irreversible from the bench and moves inventory the moment it is confirmed, so
           it gets its own dialog and its own confirm rather than an inline control. */}
-      <Dialog open={flagging !== null} onClose={() => setFlagging(null)} maxWidth="xs" fullWidth>
+      <Dialog open={flagging !== null} onClose={() => setFlaggingId(null)} maxWidth="xs" fullWidth>
         <DialogTitle>Flag deficient: {flagging?.productCode}</DialogTitle>
         <DialogContent>
           <Alert severity="warning" sx={{ mb: 2 }}>
@@ -483,9 +529,11 @@ export default function AssemblyDetailModal({
           </Stack>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setFlagging(null)}>Cancel</Button>
+          <Button onClick={() => setFlaggingId(null)}>Cancel</Button>
+          {/* Default emphasis, not `color="error"`: DESIGN.md reserves the status palette for
+              real system state, and a confirm button is an action, not a state. The warning Alert
+              above is what carries the weight here. */}
           <Button
-            color="error"
             variant="contained"
             onClick={handleFlagDeficient}
             disabled={!flagQuantityValid || !flagReasonValid || busy}

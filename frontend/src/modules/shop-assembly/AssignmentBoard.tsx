@@ -38,6 +38,9 @@ interface OpeningItem {
   quantity: number;
   installedQuantity: number;
   deficientQuantity: number;
+  // Arrived-but-not-yet-fitted replacement units (#341): the third bucket a line is partitioned
+  // into, and part of the progress rollup's `remaining`.
+  replacementPendingQuantity: number;
 }
 
 interface AssembleOpening {

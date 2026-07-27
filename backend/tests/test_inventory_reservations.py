@@ -897,3 +897,121 @@ def test_shop_assembly_openings_still_reach_the_bench_after_a_reserved_pull(db_s
     sao = db_session.scalar(select(ShopAssemblyOpening).where(ShopAssemblyOpening.shop_assembly_request_id == sar.id))
     assert sao.pull_status == PullStatus.PULLED
     assert _reserved_total(db_session, project.id) == 0
+
+
+# --- 8. self-coverage excludes ONE request, not one whole source (#348 review) -------------------
+
+
+def test_self_coverage_excludes_only_that_request_not_the_other_source(db_session):
+    """`exclude_reservations_of` names a single request. Written as `column != id` it silently
+    dropped every row of the *opposite* source too, because that column is NULL on those rows and
+    `NULL != id` is NULL - so the cross-type guarantee the table exists for was void."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=5)
+    sar = _finalize_sar(db_session, project, qty=3)["shop_assembly_request"]
+    sor = _finalize_shipping_loose(db_session, project, qty=2)["shipping_out_requests"][0]
+    db_session.flush()
+
+    assert _reserved_total(db_session, project.id) == 5
+
+    # Excluding the shop-assembly request must leave the shipping-out claim standing, and vice versa.
+    assert warehouse_repository.get_reserved_quantities(
+        db_session,
+        project.id,
+        [("HINGE", "HG-100")],
+        exclude_source=ReservationSource.SHOP_ASSEMBLY_REQUEST,
+        exclude_request_id=sar.id,
+    ) == {("HINGE", "HG-100"): 2}
+    assert warehouse_repository.get_reserved_quantities(
+        db_session,
+        project.id,
+        [("HINGE", "HG-100")],
+        exclude_source=ReservationSource.SHIPPING_OUT_REQUEST,
+        exclude_request_id=sor.id,
+    ) == {("HINGE", "HG-100"): 3}
+
+
+def test_a_pull_is_refused_when_the_other_request_type_is_holding_the_stock(db_session):
+    """End to end: a shop-assembly pull approved while a shipping-out request holds part of the
+    shelf. With the exclusion written correctly the pull sees only what is genuinely free."""
+    project = _make_project(db_session)
+    il = _seed_inventory(db_session, project.id, quantity=5)
+    sar = _finalize_sar(db_session, project, qty=3)["shop_assembly_request"]
+    _finalize_shipping_loose(db_session, project, qty=2)
+    db_session.flush()
+
+    # A unit is condemned under the two live claims, so 4 are on hand and 2 are spoken for.
+    il.deficient_quantity = 1
+    db_session.flush()
+
+    shop_assembly_repository.accept_shop_assembly_request(db_session, sar.id, "acceptor")
+    db_session.flush()
+    pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == sar.request_number))
+
+    _, outcome, _, shortfalls = warehouse_repository.approve_pull_request(db_session, pr.id, "warehouse")
+    db_session.flush()
+
+    assert outcome == "INSUFFICIENT"
+    assert [(s.product_code, s.available, s.short, s.reserved) for s in shortfalls] == [("HG-100", 2, 1, 2)]
+    assert il.quantity == 5  # nothing deducted
+
+
+def test_an_unreserved_holder_that_comes_up_short_is_not_an_integrity_error(db_session):
+    """The #342 backfill deliberately left the pre-existing in-flight population unreserved and
+    flagged. Those requests are the *expected* shortfall case; auditing every one of them as
+    RESERVED_PULL_SHORT is how a real one would get missed."""
+    from app.models.audit_log import InventoryAuditLog
+
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=3)
+    sar = _finalize_sar(db_session, project, qty=3)["shop_assembly_request"]
+    db_session.flush()
+    # Strip the claim, exactly as a backfill-era request holds none.
+    warehouse_repository.release_reservations(db_session, ReservationSource.SHOP_ASSEMBLY_REQUEST, sar.id)
+    shop_assembly_repository.accept_shop_assembly_request(db_session, sar.id, "acceptor")
+    db_session.flush()
+
+    # Now the stock goes away under it.
+    il = db_session.scalar(select(InventoryLocation).where(InventoryLocation.project_id == project.id))
+    il.quantity = 1
+    db_session.flush()
+
+    pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == sar.request_number))
+    _, outcome, _, _ = warehouse_repository.approve_pull_request(db_session, pr.id, "warehouse")
+    db_session.flush()
+
+    assert outcome == "INSUFFICIENT"
+    integrity_rows = [
+        row
+        for row in db_session.scalars(select(InventoryAuditLog).where(InventoryAuditLog.entity_id == pr.id)).all()
+        if (row.detail or {}).get("integrityError") == "RESERVED_PULL_SHORT"
+    ]
+    assert integrity_rows == []
+
+
+def test_a_holder_that_really_does_hold_a_claim_still_records_the_integrity_error(db_session):
+    """The other half: a request that *is* reserved is not supposed to be able to come up short, so
+    when it does the discrepancy stays investigable."""
+    from app.models.audit_log import InventoryAuditLog
+
+    project = _make_project(db_session)
+    il = _seed_inventory(db_session, project.id, quantity=3)
+    sar = _finalize_sar(db_session, project, qty=3)["shop_assembly_request"]
+    db_session.flush()
+    shop_assembly_repository.accept_shop_assembly_request(db_session, sar.id, "acceptor")
+    db_session.flush()
+
+    il.quantity = 1  # written off under a live claim
+    db_session.flush()
+
+    pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == sar.request_number))
+    _, outcome, _, _ = warehouse_repository.approve_pull_request(db_session, pr.id, "warehouse")
+    db_session.flush()
+
+    assert outcome == "INSUFFICIENT"
+    integrity_rows = [
+        row
+        for row in db_session.scalars(select(InventoryAuditLog).where(InventoryAuditLog.entity_id == pr.id)).all()
+        if (row.detail or {}).get("integrityError") == "RESERVED_PULL_SHORT"
+    ]
+    assert len(integrity_rows) == 1

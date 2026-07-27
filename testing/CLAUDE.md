@@ -373,7 +373,14 @@ Installed / Deficient / Remaining, with the Installed cell an editable number sp
 - **Flag deficient** opens a nested dialog (quantity + reason, both required) with a warning alert.
   Confirming it is irreversible from this screen: the units go back to inventory flagged deficient and
   a PR-REPL replacement pull is minted immediately, before the leaf is finished. Watch for the
-  spinbutton-append gotcha on the quantity field - clear it before typing.
+  spinbutton-append gotcha on the quantity field - clear it before typing. The dialog closes on
+  failure as well as on success, deliberately: a flag that errored may still have committed, so it
+  makes you re-open and re-read rather than offering you the same submit twice.
+- **Replacement pull numbers.** The first replacement pull for a source pull is
+  `PR-REPL-<source pull number>`. Flag again while that pull is still **Pending** and the units are
+  added to its existing line - same pull, bigger quantity. Flag again after it has been approved or
+  completed and you get a **second** pull, `PR-REPL-<source pull number>-2` (then `-3`, ...). Do not
+  read the missing `-1` as a bug; do expect to search for the suffixed number in the pull queue.
 - Both number inputs are MUI spinbuttons, so the usual "fill appends to the existing value" trap
   applies; the deficiency quantity is capped at the line's remaining units and the flag button stays
   disabled if you exceed it.
@@ -393,6 +400,10 @@ replacement pull is *completed* in the warehouse for a leaf the assembler alread
   That is the intended behaviour, not a missing feature.
 - "Mark Installed" is confirm-gated and installs the whole arrived quantity at once. Afterwards the
   leaf's `installedHardware` carries the extra units; the card disappears.
+- A leaf that has **shipped** shows a "Leaf already shipped" chip and no button; one that is
+  **SHIP_READY** (staged at the dock by a completed shipping-out pull) shows "Leaf staged for
+  shipment" and no button either. The second case is recoverable - unwind the shipping-out request
+  and the button comes back - which the caption says. The backend refuses both.
 - A card whose leaf already shipped shows a "Leaf already shipped" chip and a warning alert instead
   of the button - it cannot be installed, only reallocated. A `REPLACEMENT_AFTER_SHIPMENT`
   notification was also raised for the SHIPPING role when the pull completed.
@@ -430,7 +441,7 @@ so you will see all of them regardless of your role):
 | `ASSEMBLY_WORK_AVAILABLE` | You confirm a staging batch, or complete a pull that still had un-staged openings | **One per confirmation, not per opening.** Staging three carts in one action gives one notification naming them. Re-staging an already-staged opening gives none |
 | `REPLACEMENT_ARRIVED` | A `PR-REPL-*` pull completes for a leaf that has **not** shipped | Addressed to the assembler's Clerk user id, so `recipientRole` looks like `user_2ab...`. None is raised if nobody is holding the leaf |
 | `REPLACEMENT_AFTER_SHIPMENT` | Same, but the leaf has already shipped | Exactly one of these two fires, never both |
-| `PULL_UNBLOCKED` | A receive lands stock that makes a blocked `PR-REPL-*` pull fully coverable | Deduped three ways: only pulls wanting a combo you actually received; only when the shortfall is *closed*, not narrowed; and only one **unread** one per pull. Mark it read and receive again to get a second |
+| `PULL_UNBLOCKED` | A receive lands stock that makes a blocked `PR-REPL-*` pull fully coverable | Deduped three ways: only pulls wanting a combo you actually received; only if the pull is coverable *after* the receive; and only one **unread** one per pull. Mark it read and receive again to get a second. A receive is the only path that raises it - a cancel-restock can also make a pull coverable and stays silent |
 
 ### Shipping Module
 

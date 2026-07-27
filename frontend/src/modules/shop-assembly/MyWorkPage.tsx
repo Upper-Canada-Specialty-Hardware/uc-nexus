@@ -18,6 +18,9 @@ interface OpeningItem {
   quantity: number;
   installedQuantity: number;
   deficientQuantity: number;
+  // Arrived-but-not-yet-fitted replacement units (#341): the third bucket a line is partitioned
+  // into, and part of the progress rollup's `remaining`.
+  replacementPendingQuantity: number;
 }
 
 interface MyWorkOpening {
@@ -68,8 +71,11 @@ const columns: GridColDef[] = [
     // Units, not lines: a line of 8 hinges with 5 fitted is most of the job, and a line count would
     // report it as untouched.
     valueGetter: (_value: unknown, row: MyWorkOpening) => {
-      const { installed, deficient, planned } = assemblyProgress(row.items ?? []);
-      return `${installed + deficient}/${planned} units`;
+      // Accounted-for is planned minus remaining, so the three buckets a line is partitioned into
+      // (installed, condemned, replacement arrived but not yet fitted) all count - a finished leaf
+      // never reads as 3/4 because its replacement turned up.
+      const { planned, remaining } = assemblyProgress(row.items ?? []);
+      return `${planned - remaining}/${planned} units`;
     },
   },
   {

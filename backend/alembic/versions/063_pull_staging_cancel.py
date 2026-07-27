@@ -100,11 +100,12 @@ def downgrade() -> None:
     # A cancelled pull may legitimately share its number with the live pull a re-accept minted -
     # that is the whole point of the partial index. Global uniqueness cannot express it, so retire
     # the cancelled row's number rather than lose the row. Deterministic and self-describing, so the
-    # history stays readable.
+    # history stays readable. The 40 + 2 + 8 split is deliberate: `request_number` is varchar(50) and
+    # a longer suffix would fail the downgrade on any number already near the limit.
     op.execute(
         """
         UPDATE pull_requests p
-           SET request_number = left(p.request_number, 41) || '-X' || left(replace(p.id::text, '-', ''), 8)
+           SET request_number = left(p.request_number, 40) || '-X' || left(replace(p.id::text, '-', ''), 8)
          WHERE p.status = 'CANCELLED'
            AND EXISTS (
                  SELECT 1 FROM pull_requests q

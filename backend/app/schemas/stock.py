@@ -4,6 +4,7 @@ import uuid
 
 import strawberry
 
+from app.auth import require_user
 from app.database import SessionLocal
 from app.repositories import stock as stock_repository
 
@@ -250,7 +251,12 @@ class StockMutations:
             )
 
     @strawberry.mutation
-    def report_inventory_deficiency(self, input: ReportInventoryDeficiencyInput) -> InventoryLocation:
+    def report_inventory_deficiency(
+        self, info: strawberry.Info, input: ReportInventoryDeficiencyInput
+    ) -> InventoryLocation:
+        """Condemn units on a project inventory row. Open to any signed-in user - it makes stock
+        unavailable to every other request in the project, so it must not be reachable anonymously."""
+        require_user(info)
         with SessionLocal() as session:
             il = stock_repository.report_inventory_deficiency(
                 session,
@@ -264,7 +270,10 @@ class StockMutations:
             return inventory_location_to_type(il)
 
     @strawberry.mutation
-    def report_stock_deficiency(self, input: ReportStockDeficiencyInput) -> StockItem:
+    def report_stock_deficiency(self, info: strawberry.Info, input: ReportStockDeficiencyInput) -> StockItem:
+        """Condemn units on a stock-pool row. Open to any signed-in user - same reasoning as
+        reportInventoryDeficiency: it takes stock out of circulation."""
+        require_user(info)
         with SessionLocal() as session:
             si = stock_repository.report_stock_deficiency(
                 session,
@@ -278,7 +287,12 @@ class StockMutations:
             return stock_item_to_type(si)
 
     @strawberry.mutation
-    def report_deficiency_at_assembly(self, input: ReportDeficiencyAtAssemblyInput) -> SAReplacementResult:
+    def report_deficiency_at_assembly(
+        self, info: strawberry.Info, input: ReportDeficiencyAtAssemblyInput
+    ) -> SAReplacementResult:
+        """Flag a unit deficient at the bench. Open to any signed-in user - it writes project
+        inventory and mints a replacement pull request, so it must not be reachable anonymously."""
+        require_user(info)
         with SessionLocal() as session:
             il, pri = stock_repository.report_deficiency_at_assembly(
                 session,
@@ -296,7 +310,10 @@ class StockMutations:
             )
 
     @strawberry.mutation
-    def resolve_deficiency(self, input: ResolveDeficiencyInput) -> DeficiencyReview:
+    def resolve_deficiency(self, info: strawberry.Info, input: ResolveDeficiencyInput) -> DeficiencyReview:
+        """Disposition a condemned batch (scrap, repair, RMA, destock). Open to any signed-in user -
+        it moves or writes off real stock, so it must not be reachable anonymously."""
+        require_user(info)
         with SessionLocal() as session:
             review = stock_repository.resolve_deficiency(
                 session,
