@@ -87,6 +87,10 @@ class NotificationType(str, enum.Enum):
     # PO "couldn't be fulfilled - backfill needed" signal from the inventory-sufficiency gates (#224).
     # Carries the per-combo shortfall detail in its message.
     INVENTORY_SHORTFALL = "INVENTORY_SHORTFALL"
+    # A PR-REPL replacement pull completed for a leaf that had already shipped (#341). The hardware
+    # is real and is owed to an opening that is no longer in the building, so it must not be left to
+    # sit silently in the shop - this is the signal that routes it into reallocation/site shipment.
+    REPLACEMENT_AFTER_SHIPMENT = "REPLACEMENT_AFTER_SHIPMENT"
 
 
 class AuditEntityType(str, enum.Enum):
@@ -118,6 +122,13 @@ class AuditAction(str, enum.Enum):
     # The leaf was called finished and materialized as an OpeningItem (#340). Progress saves are no
     # longer the same call as completion, so the two moments need distinct audit records.
     ASSEMBLY_COMPLETE = "ASSEMBLY_COMPLETE"
+    # A PR-REPL replacement pull completed and gave the leaf its expectation back (#341): the units
+    # left deficient_quantity, either as remaining work (leaf still open) or as
+    # replacement_pending_quantity (leaf already completed).
+    REPLACEMENT_RECEIVED = "REPLACEMENT_RECEIVED"
+    # Replacement hardware was fitted to an already-completed leaf (#341) - the one legitimate write
+    # to an OpeningItem's installed hardware after assembly finished.
+    REPLACEMENT_INSTALL = "REPLACEMENT_INSTALL"
 
 
 class ReturnDisposition(str, enum.Enum):

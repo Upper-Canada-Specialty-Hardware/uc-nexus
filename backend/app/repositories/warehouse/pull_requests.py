@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.errors import InvalidStateTransitionError, NotFoundError
 from app.models.enums import (
+    AssemblyStatus,
     AuditAction,
     AuditEntityType,
     NotificationType,
@@ -248,14 +249,124 @@ def approve_pull_request(session: Session, pr_id: uuid.UUID, approved_by: str) -
     return (pr, "APPROVED", None, [])
 
 
+def _apply_replacement_arrivals(session: Session, pr: PullRequestModel) -> None:
+    """Give a door leaf its expectation back when the replacement hardware for a deficient unit
+    actually arrives (#341).
+
+    A PR-REPL pull line carries `sa_opening_item_id` (#339), so completing the pull can find the
+    exact checklist line the unit is owed to. Until now nothing did: the PR-REPL pull is a
+    SHOP_ASSEMBLY pull with no ShopAssemblyOpenings hanging off it, so its completion flipped nothing
+    and the replacement dead-ended in inventory.
+
+    Per line, the arrived quantity is floored at what is genuinely still outstanding
+    (`deficient_quantity`), so an over-delivery - a warehouse operator pulling 3 against a 2-unit
+    line, or a duplicate line - cannot drive the counter negative or breach the progress constraint.
+    Where the freed unit lands depends on whether the leaf is still on the bench:
+
+    - PENDING / IN_PROGRESS: nowhere. `deficient_quantity` simply drops, so
+      `remaining = quantity - installed - deficient` goes back up and the unit reappears as work in
+      My Work. Completion stays blocked until the assembler actually fits it, which is the point.
+    - COMPLETED: the unit moves into `replacement_pending_quantity`. Lowering `deficient_quantity`
+      alone would make a finished leaf read as un-dispositioned (installed + deficient < quantity)
+      and corrupt the completion invariant; moving it keeps the sum at `quantity` while recording
+      that a known unit of work is outstanding on an otherwise-complete leaf.
+
+    If that completed leaf has already SHIPPED_OUT, the replacement cannot be fitted to it at all.
+    The pending state is still recorded (so the unit stays queryable rather than silently stranded)
+    and a notification is raised for the reallocation / site-shipment world to pick up.
+    """
+    # Local import: shop_assembly_repository imports this package's aggregate at call time, so a
+    # module-level import here would close the cycle.
+    from app.models.shop_assembly import ShopAssemblyOpeningItem as SAOpeningItemModel
+    from app.repositories import shop_assembly_repository
+
+    by_item: dict[uuid.UUID, int] = defaultdict(int)
+    for line in pr.items:
+        if line.sa_opening_item_id is not None:
+            by_item[line.sa_opening_item_id] += line.requested_quantity
+    if not by_item:
+        return
+
+    items = list(session.scalars(select(SAOpeningItemModel).where(SAOpeningItemModel.id.in_(by_item.keys()))).all())
+    if not items:
+        return
+    openings = {
+        o.id: o
+        for o in session.scalars(
+            select(ShopAssemblyOpening).where(
+                ShopAssemblyOpening.id.in_({item.shop_assembly_opening_id for item in items})
+            )
+        ).all()
+    }
+
+    for item in items:
+        arrived = by_item[item.id]
+        # Floor at what is actually outstanding: over-delivery restores nothing extra.
+        restored = min(arrived, item.deficient_quantity)
+        if restored <= 0:
+            continue
+        opening = openings.get(item.shop_assembly_opening_id)
+        if opening is None:
+            continue
+
+        item.deficient_quantity -= restored
+        leaf_completed = opening.assembly_status == AssemblyStatus.COMPLETED
+        opening_item = None
+        if leaf_completed:
+            item.replacement_pending_quantity += restored
+            opening_item = shop_assembly_repository.find_assembled_leaf(
+                session, pr.project_id, opening.opening_id, opening.leaf
+            )
+            if opening_item is not None and opening_item.state == OpeningItemState.SHIPPED_OUT:
+                leaf_label = f"Opening {opening.opening_number}"
+                if opening.leaf is not None:
+                    leaf_label += f" Leaf {opening.leaf}"
+                notification_service.create_notification(
+                    session,
+                    project_id=pr.project_id,
+                    recipient_role=notification_service.SHIPPING_RECIPIENT_ROLE,
+                    notification_type=NotificationType.REPLACEMENT_AFTER_SHIPMENT,
+                    message=(
+                        f"{restored} x {item.product_code} replacement arrived on {pr.request_number} for "
+                        f"{leaf_label}, which has already shipped. Route it through reallocation or a "
+                        f"site shipment."
+                    ),
+                )
+
+        _log_audit_event(
+            session,
+            project_id=pr.project_id,
+            entity_type=AuditEntityType.SHOP_ASSEMBLY_OPENING,
+            entity_id=opening.id,
+            action=AuditAction.REPLACEMENT_RECEIVED,
+            performed_by=pr.assigned_to or pr.requested_by or "Warehouse",
+            detail={
+                "pullRequestNumber": pr.request_number,
+                "shopAssemblyOpeningItemId": str(item.id),
+                "hardwareCategory": item.hardware_category,
+                "productCode": item.product_code,
+                "arrivedQuantity": arrived,
+                "restoredQuantity": restored,
+                "deficientQuantity": item.deficient_quantity,
+                "replacementPendingQuantity": item.replacement_pending_quantity,
+                "openingNumber": opening.opening_number,
+                "leaf": opening.leaf,
+                "assemblyStatus": opening.assembly_status.value,
+                "openingItemId": str(opening_item.id) if opening_item is not None else None,
+                "openingItemState": opening_item.state.value if opening_item is not None else None,
+            },
+        )
+
+
 def complete_pull_request(session: Session, pr_id: uuid.UUID) -> PullRequestModel:
     """
     Complete a pull request:
     1. Validate status == In_Progress
     2. Set status=Completed, completed_at=now()
     3. Create notification
-    4. If Shipping_Out source: set Opening_Item states to Ship_Ready
-    5. If Shop_Assembly source: update SAR openings pull_status to Pulled
+    4. Restore any leaf expectations the pull's replacement lines are owed to (#341)
+    5. If Shipping_Out source: set Opening_Item states to Ship_Ready
+    6. If Shop_Assembly source: update SAR openings pull_status to Pulled
     """
     stmt = select(PullRequestModel).options(selectinload(PullRequestModel.items)).where(PullRequestModel.id == pr_id)
     pr = session.scalars(stmt).unique().first()
@@ -277,6 +388,11 @@ def complete_pull_request(session: Session, pr_id: uuid.UUID) -> PullRequestMode
         notification_type=NotificationType.PULL_REQUEST_COMPLETED,
         message=f"Pull Request {pr.request_number} has been fulfilled.",
     )
+
+    # Replacement lines (#341) are keyed on the checklist line they are owed to, not on the PR's
+    # source, so this runs before the source dispatch below. A PR-REPL pull is a SHOP_ASSEMBLY pull
+    # with nothing hanging off it, which is why the SHOP_ASSEMBLY branch alone left it a no-op.
+    _apply_replacement_arrivals(session, pr)
 
     # Source-specific side effects
     if pr.source == PullRequestSource.SHIPPING_OUT:

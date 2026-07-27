@@ -59,6 +59,40 @@ type ShopAssemblyOpeningItem {
   # client; completion is refused while any line still has remaining > 0.
   installed_quantity: Int!
   deficient_quantity: Int!
+  # Units whose replacement pull has completed but which are not on the leaf yet (#341). Non-zero
+  # only on a COMPLETED opening: while the leaf is still on the bench an arrived replacement just
+  # lowers deficient_quantity and becomes remaining work again. On a finished leaf that would break
+  # the completion invariant, so the unit moves deficient -> replacement_pending instead and
+  # installed + deficient + replacement_pending stays equal to quantity.
+  replacement_pending_quantity: Int!
+}
+
+# One outstanding replacement install on an already-completed leaf (#341). Not a
+# ShopAssemblyOpening: the opening is COMPLETED and stays that way.
+type ReplacementWorkItem {
+  shop_assembly_opening_item_id: ID!
+  shop_assembly_opening_id: ID!
+  project_id: ID!
+  opening_number: String!
+  leaf: Int
+  building: String
+  floor: String
+  hardware_category: String!
+  product_code: String!
+  pending_quantity: Int!
+  assigned_to_user_id: String
+  assigned_to: String
+  opening_item_id: ID
+  # SHIPPED_OUT means the replacement arrived after the leaf left the building: still listed so the
+  # hardware is not silently stranded, but installReplacement refuses it - it needs reallocation.
+  opening_item_state: OpeningItemState
+}
+
+input InstallReplacementInput {
+  shop_assembly_opening_item_id: ID!
+  # Bounded by replacement_pending_quantity, so this can never inflate a leaf.
+  quantity: Int!
+  performed_by: String
 }
 
 input AssignOpeningsInput {
@@ -99,6 +133,10 @@ input CompleteOpeningInput {
 type Query {
   assembleList(projectId: ID!): [ShopAssemblyOpening!]!
   myWork(assignedToUserId: String!): [ShopAssemblyOpening!]!
+  # Replacement installs outstanding on already-completed leaves (#341). assignedToUserId scopes it
+  # to one assembler's My Work - the opening keeps the assignment it was completed under, so this
+  # needs no new assignment concept. Rows whose leaf has shipped are included on purpose.
+  replacementWork(assignedToUserId: String, projectId: ID): [ReplacementWorkItem!]!
   # reopenableOnly (#325): keep only requests whose minted PR is still PENDING (the Approved/reopen view).
   shopAssemblyRequests(projectId: ID, status: ShopAssemblyRequestStatus, reopenableOnly: Boolean! = false): [ShopAssemblyRequest!]!
   # Manager assignment picker (#330). Manager-gated (Shop Assembly Manager). ClerkUser in user.graphql.
@@ -123,6 +161,12 @@ type Mutation {
   # (installed + deficient < quantity on some line), or if nothing at all was installed, which would
   # mint an empty assembled leaf. OpeningItemHardware quantities are the recorded installed counts.
   completeOpening(input: CompleteOpeningInput!): OpeningItem!
+  # Fit arrived replacement hardware to a finished leaf (#341) - the one legitimate write to an
+  # assembled leaf's hardware after completion. Appends or increments the leaf's OpeningItemHardware
+  # row for that product and moves the units replacement_pending -> installed on the source line.
+  # VALIDATION_ERROR if more than has arrived; INVALID_STATE_TRANSITION if the leaf is still on the
+  # bench (record it as progress instead) or has already shipped (that is reallocation's problem).
+  installReplacement(input: InstallReplacementInput!): OpeningItem!
   # Accept gate (#293). Any signed-in user (require_user). acceptedBy/rejectedBy is the caller's
   # display name. Accept re-checks inventory sufficiency and mints the warehouse PullRequest.
   acceptShopAssemblyRequest(id: ID!, acceptedBy: String!): ShopAssemblyRequest!

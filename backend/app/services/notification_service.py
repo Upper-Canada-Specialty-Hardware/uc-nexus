@@ -30,6 +30,10 @@ def create_notification(
 # Recipient role for the purchasing officer who backfills short inventory (#224).
 PO_RECIPIENT_ROLE = "PO"
 
+# Recipient role for shipping/reallocation signals (#341): hardware that arrived for a leaf which has
+# already left the building is a shipping problem, not a purchasing one.
+SHIPPING_RECIPIENT_ROLE = "SHIPPING"
+
 
 def format_shortfall_lines(shortfalls) -> str:
     """One human-readable clause per shorted combo, joined by '; '. `shortfalls` is any iterable of

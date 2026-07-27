@@ -222,6 +222,7 @@ class ImportMutations:
             if input.shop_assembly_openings
             else None,
             "replace_schedule": input.replace_schedule,
+            "acknowledge_incomplete_leaves": input.acknowledge_incomplete_leaves,
         }
 
         with SessionLocal() as session:

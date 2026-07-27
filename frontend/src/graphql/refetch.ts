@@ -53,3 +53,14 @@ export const ASSEMBLY_PROGRESS_REFETCH_QUERIES = ['GetMyWork'];
 // Evicted. assembleList is read by the other entry point into the same modal, and the two views are
 // never mounted together (separate routes), so whichever one is live repairs its own diff.
 export const ASSEMBLY_PROGRESS_STALE_ROOT_FIELDS = ['assembleList'];
+
+// What installing a replacement onto a finished leaf invalidates (#341). Same disjointness rule.
+//
+// Refetched. GetReplacementWork is the list the install was launched from and is mounted by
+// definition, so refetchQueries reaches it; the row either drops out or its pendingQuantity falls.
+export const REPLACEMENT_INSTALL_REFETCH_QUERIES = ['GetReplacementWork'];
+
+// Evicted. openingItems carries awaitingReplacementQuantity, which the shipping wizard reads to
+// decide whether a leaf is flagged - and the wizard is a different module that is never mounted
+// while an assembler is installing, which is exactly what refetchQueries cannot reach.
+export const REPLACEMENT_INSTALL_STALE_ROOT_FIELDS = ['openingItems'];

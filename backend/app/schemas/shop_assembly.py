@@ -14,12 +14,24 @@ from app.services import notification_service
 from .converters import (
     clerk_user_to_type,
     opening_item_to_type,
+    replacement_work_item_to_type,
     shop_assembly_opening_to_type,
     shop_assembly_request_to_type,
 )
 from .enums import ShopAssemblyRequestStatus
-from .inputs import AssignOpeningsInput, CompleteOpeningInput, RecordAssemblyProgressInput
-from .types import ClerkUser, OpeningItem, ShopAssemblyOpening, ShopAssemblyRequest
+from .inputs import (
+    AssignOpeningsInput,
+    CompleteOpeningInput,
+    InstallReplacementInput,
+    RecordAssemblyProgressInput,
+)
+from .types import (
+    ClerkUser,
+    OpeningItem,
+    ReplacementWorkItem,
+    ShopAssemblyOpening,
+    ShopAssemblyRequest,
+)
 
 
 @strawberry.type
@@ -44,6 +56,30 @@ class ShopAssemblyQueries:
         with SessionLocal() as session:
             saos = shop_assembly_repository.get_my_work(session, assigned_to_user_id)
             return [shop_assembly_opening_to_type(sao) for sao in saos]
+
+    @strawberry.field
+    def replacement_work(
+        self,
+        info: strawberry.Info,
+        assigned_to_user_id: str | None = None,
+        project_id: strawberry.ID | None = None,
+    ) -> list[ReplacementWorkItem]:
+        """Replacement installs outstanding on already-completed leaves (#341).
+
+        Scoped to one assembler by assignedToUserId, which is what puts the work in the My Work board
+        of whoever last held the leaf - the ShopAssemblyOpening keeps its assignment through
+        completion, so no new assignment concept is needed. Rows whose leaf has already shipped are
+        included deliberately: that replacement must stay visible rather than be stranded, and the
+        caller can tell from openingItemState that it needs reallocation instead of an install. Open
+        to any signed-in user."""
+        require_user(info)
+        with SessionLocal() as session:
+            rows = shop_assembly_repository.get_replacement_work(
+                session,
+                assigned_to_user_id=assigned_to_user_id,
+                project_id=uuid.UUID(str(project_id)) if project_id else None,
+            )
+            return [replacement_work_item_to_type(r) for r in rows]
 
     @strawberry.field
     def shop_assembly_requests(
@@ -204,6 +240,29 @@ class ShopAssemblyMutations:
             session.commit()
             refreshed = shop_assembly_repository.get_openings_with_items(session, [result.id])[0]
             return shop_assembly_opening_to_type(refreshed)
+
+    @strawberry.mutation
+    def install_replacement(self, info: strawberry.Info, input: InstallReplacementInput) -> OpeningItem:
+        """Fit arrived replacement hardware to an already-completed door leaf (#341).
+
+        The one legitimate write to an assembled leaf's hardware after completion: it appends or
+        increments the leaf's OpeningItemHardware row for that product and moves the units from
+        replacement_pending to installed on the source checklist line, so the completion invariant
+        holds throughout. It can only spend units the replacement pull actually delivered, and it
+        refuses a leaf that has already shipped. Open to any signed-in user - it changes what an
+        assembled leaf is recorded as carrying, so it must not be reachable anonymously."""
+        require_user(info)
+        with SessionLocal() as session:
+            result = shop_assembly_repository.install_replacement(
+                session,
+                uuid.UUID(str(input.shop_assembly_opening_item_id)),
+                input.quantity,
+                performed_by=input.performed_by,
+            )
+            session.commit()
+            refreshed = warehouse_repository.get_opening_item_details(session, result.id)
+            awaiting = shop_assembly_repository.get_awaiting_replacement_quantities(session, [refreshed.id])
+            return opening_item_to_type(refreshed, awaiting_replacement_quantity=awaiting.get(refreshed.id, 0))
 
     @strawberry.mutation
     def complete_opening(self, info: strawberry.Info, input: CompleteOpeningInput) -> OpeningItem:

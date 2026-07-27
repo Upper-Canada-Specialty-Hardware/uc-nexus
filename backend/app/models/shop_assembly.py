@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, Enum, ForeignKey, Index, Integer, SmallInteger, String
+from sqlalchemy import CheckConstraint, Enum, ForeignKey, Index, Integer, SmallInteger, String, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from . import Base
@@ -98,11 +98,22 @@ class ShopAssemblyOpeningItem(Base):
             "shop_assembly_opening_id",
         ),
         CheckConstraint("quantity >= 1", name="ck_shop_assembly_opening_items_quantity_positive"),
-        # Progress can never exceed the planned quantity, and neither count can go negative (#340).
+        # Progress can never exceed the planned quantity, and no count can go negative (#340/#341).
+        # The three buckets partition the line: installed + deficient + replacement_pending <=
+        # quantity, and completion requires equality. That is what lets a replacement arriving on an
+        # already-completed leaf move a unit out of `deficient` without the leaf reading as
+        # un-dispositioned - the unit lands in replacement_pending, and the sum is unchanged.
         CheckConstraint(
-            "installed_quantity >= 0 AND deficient_quantity >= 0 "
-            "AND installed_quantity + deficient_quantity <= quantity",
+            "installed_quantity >= 0 AND deficient_quantity >= 0 AND replacement_pending_quantity >= 0 "
+            "AND installed_quantity + deficient_quantity + replacement_pending_quantity <= quantity",
             name="ck_shop_assembly_opening_items_progress_within_quantity",
+        ),
+        # The replacement-install work queue and the shipping deficiency guard both scan for lines
+        # with something outstanding; a partial index keeps that off a full table scan.
+        Index(
+            "ix_shop_assembly_opening_items_replacement_pending",
+            "shop_assembly_opening_id",
+            postgresql_where=text("replacement_pending_quantity > 0"),
         ),
     )
 
@@ -122,5 +133,15 @@ class ShopAssemblyOpeningItem(Base):
     # while any line still has remaining > 0.
     installed_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     deficient_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    # Units whose replacement hardware has arrived but is not on the leaf yet (#341). Only ever
+    # non-zero on a COMPLETED opening: while the leaf is still on the bench a completed PR-REPL pull
+    # simply decrements deficient_quantity, and the unit reappears as remaining work in My Work.
+    # Once the leaf is finished that would break the completion invariant
+    # (installed + deficient == quantity), so the unit moves deficient -> replacement_pending
+    # instead: the sum is unchanged, the leaf stays legitimately complete, and the outstanding unit
+    # stays visible as a replacement-install work item and as the shipping "awaiting replacement"
+    # flag. Installing it moves replacement_pending -> installed and appends/increments the
+    # OpeningItemHardware row - the one legitimate post-completion write.
+    replacement_pending_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
     shop_assembly_opening: Mapped["ShopAssemblyOpening"] = relationship(back_populates="items")

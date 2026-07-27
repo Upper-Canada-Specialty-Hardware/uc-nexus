@@ -38,6 +38,7 @@ from .types import (
     ReceiveLineItem,
     ReceiveRecord,
     RelayInstallInfo,
+    ReplacementWorkItem,
     ShipmentReturn,
     ShipmentReturnItem,
     ShippingOutRequest,
@@ -428,7 +429,9 @@ def opening_item_hardware_to_type(oih) -> OpeningItemHardware:
     )
 
 
-def opening_item_to_type(oi, *, leaf_count: int | None = None) -> OpeningItem:
+def opening_item_to_type(
+    oi, *, leaf_count: int | None = None, awaiting_replacement_quantity: int | None = None
+) -> OpeningItem:
     return OpeningItem(
         id=strawberry.ID(str(oi.id)),
         project_id=strawberry.ID(str(oi.project_id)),
@@ -449,6 +452,9 @@ def opening_item_to_type(oi, *, leaf_count: int | None = None) -> OpeningItem:
         created_at=oi.created_at,
         updated_at=oi.updated_at,
         installed_hardware=[opening_item_hardware_to_type(h) for h in oi.installed_hardware],
+        # Computed by the caller from one grouped aggregate over the whole list (#341), never
+        # per-row here - this converter runs once per assembled leaf in a project.
+        awaiting_replacement_quantity=awaiting_replacement_quantity,
     )
 
 
@@ -462,6 +468,28 @@ def shop_assembly_opening_item_to_type(item) -> ShopAssemblyOpeningItem:
         # Plain columns on the row the caller already loaded (#340) - reading them triggers no load.
         installed_quantity=item.installed_quantity,
         deficient_quantity=item.deficient_quantity,
+        replacement_pending_quantity=item.replacement_pending_quantity,
+    )
+
+
+def replacement_work_item_to_type(row) -> ReplacementWorkItem:
+    """A repository ReplacementWorkItem dataclass -> the GraphQL type (#341). The dataclass is
+    already flat, so nothing here can trigger a load."""
+    return ReplacementWorkItem(
+        shop_assembly_opening_item_id=strawberry.ID(str(row.shop_assembly_opening_item_id)),
+        shop_assembly_opening_id=strawberry.ID(str(row.shop_assembly_opening_id)),
+        project_id=strawberry.ID(str(row.project_id)),
+        opening_number=row.opening_number,
+        leaf=row.leaf,
+        building=row.building,
+        floor=row.floor,
+        hardware_category=row.hardware_category,
+        product_code=row.product_code,
+        pending_quantity=row.pending_quantity,
+        assigned_to_user_id=row.assigned_to_user_id,
+        assigned_to=row.assigned_to,
+        opening_item_id=(strawberry.ID(str(row.opening_item_id)) if row.opening_item_id else None),
+        opening_item_state=row.opening_item_state,
     )
 
 

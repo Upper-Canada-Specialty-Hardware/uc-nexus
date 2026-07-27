@@ -5,6 +5,7 @@ import { GET_MY_WORK } from '../../graphql/shop-assembly';
 import { useIdentity } from '../../hooks/useIdentity';
 import DataTable from '../../components/DataTable';
 import AssemblyDetailModal from './AssemblyDetailModal';
+import ReplacementWorkPanel from './ReplacementWorkPanel';
 import { assemblyProgress, assemblyStatusLabel } from './openingFilters';
 import { leafLabel } from '../../utils/leaf';
 import type { GridColDef } from '@mui/x-data-grid';
@@ -120,6 +121,11 @@ export default function MyWorkPage() {
         onRowClick={handleRowClick}
         getRowId={(row: MyWorkOpening) => row.id}
       />
+
+      {/* Leaves this assembler already finished that are owed replacement hardware (#341). Kept out
+          of the grid above because those rows are unfinished openings and these are complete ones -
+          folding them in would mean either reopening a finished work unit or mislabelling it. */}
+      <ReplacementWorkPanel assignedToUserId={userId} performedBy={displayName} />
 
       {selectedOpening && (
         <AssemblyDetailModal

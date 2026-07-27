@@ -174,6 +174,11 @@ class FinalizeImportSessionInput:
     # rows are wiped (including IN_PO ones) and openings absent from the new input
     # are deleted. Downstream POs/receiving/SAR/inventory aggregates are preserved.
     replace_schedule: bool = False
+    # The caller has seen the "incomplete - awaiting replacement" flag on the assembled leaves it is
+    # shipping and wants them on the request anyway (#341). Without it, a flagged leaf is refused
+    # with a VALIDATION_ERROR naming every flagged leaf. Warn + confirm, never silent, never a hard
+    # block - deliberate short-shipping is a real workflow, it just has to be a decision.
+    acknowledge_incomplete_leaves: bool = False
 
 
 @strawberry.input
@@ -461,6 +466,16 @@ class RecordAssemblyProgressInput:
     opening_id: strawberry.ID
     items: list[AssemblyProgressItemInput] = strawberry.field(default_factory=list)
     # The assembler; recorded as the actor on the progress audit rows and on any deficiency return.
+    performed_by: str | None = None
+
+
+@strawberry.input
+class InstallReplacementInput:
+    """Fit arrived replacement hardware to an already-completed leaf (#341). The quantity can only
+    come out of what the replacement pull actually delivered, so this cannot inflate a leaf."""
+
+    shop_assembly_opening_item_id: strawberry.ID
+    quantity: int
     performed_by: str | None = None
 
 
