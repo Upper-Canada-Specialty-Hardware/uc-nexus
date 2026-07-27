@@ -25,6 +25,7 @@ import {
   RELAY_ADOPT_WINDOW,
   ARM_RELAY_ADOPT,
   DISARM_RELAY_ADOPT,
+  DELETE_RELAY_INSTALL,
 } from '../../graphql/admin';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import GpWriteQueuePanel from './GpWriteQueuePanel';
@@ -81,6 +82,10 @@ const ADOPT_WARNING =
   'install and accepted. Only do this when a relay you own is dialling in with a secret the backend has ' +
   'lost. Cancel the window as soon as the relay reconnects.';
 
+const DELETE_WARNING =
+  'This permanently deletes the install row and revokes its secret. If that relay is still running it ' +
+  'will be refused on every reconnect until it is re-enrolled with a new token. This cannot be undone.';
+
 export default function RelayInstallsPage() {
   const { isAdmin } = useIdentity();
   const { showToast } = useToast();
@@ -120,6 +125,8 @@ export default function RelayInstallsPage() {
   );
   const adoptWindow = windowData?.relayAdoptWindow ?? null;
   const [adoptTarget, setAdoptTarget] = useState<RelayInstall | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<RelayInstall | null>(null);
+  const liveInstallId = relay.installId;
   const [, setTick] = useState(0);
 
   useEffect(() => {
@@ -151,6 +158,21 @@ export default function RelayInstallsPage() {
       refetchQueries: [{ query: RELAY_ADOPT_WINDOW }],
       onCompleted: () => showToast('Adopt window closed', 'success'),
       onError: (err) => showToast(err.message, 'error'),
+    },
+  );
+
+  const [deleteInstall, { loading: deleting }] = useMutation<{ deleteRelayInstall: boolean }>(
+    DELETE_RELAY_INSTALL,
+    {
+      refetchQueries: [{ query: RELAY_INSTALLS }, { query: RELAY_ADOPT_WINDOW }],
+      onCompleted: () => {
+        setDeleteTarget(null);
+        showToast('Relay install removed', 'success');
+      },
+      onError: (err) => {
+        setDeleteTarget(null);
+        showToast(err.message, 'error');
+      },
     },
   );
 
@@ -223,17 +245,38 @@ export default function RelayInstallsPage() {
       {
         field: 'adopt',
         headerName: 'Recovery',
-        width: 190,
+        width: 300,
         sortable: false,
         filterable: false,
-        renderCell: (p) => (
-          <Button size="small" variant="outlined" onClick={() => setAdoptTarget(p.row as RelayInstall)}>
-            Adopt next connection
-          </Button>
-        ),
+        renderCell: (p) => {
+          const isLive = liveInstallId != null && p.row.id === liveInstallId;
+          return (
+            <Stack direction="row" spacing={1}>
+              <Button size="small" variant="outlined" onClick={() => setAdoptTarget(p.row as RelayInstall)}>
+                Adopt next connection
+              </Button>
+              {/* Deleting the row revokes its secret, so doing it to the install currently holding the
+                  connection would take GP down mid-write. The backend refuses it too (#366); this only
+                  saves the admin from an error they can't act on. */}
+              <Tooltip title={isLive ? 'This relay is connected right now. Disconnect it first.' : ''} arrow>
+                <span>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    color="error"
+                    disabled={isLive}
+                    onClick={() => setDeleteTarget(p.row as RelayInstall)}
+                  >
+                    Remove
+                  </Button>
+                </span>
+              </Tooltip>
+            </Stack>
+          );
+        },
       },
     ],
-    [],
+    [liveInstallId],
   );
 
   if (!isAdmin) {
@@ -369,6 +412,17 @@ export default function RelayInstallsPage() {
           if (adoptTarget) armAdopt({ variables: { installId: adoptTarget.id } });
         }}
         onCancel={() => setAdoptTarget(null)}
+      />
+
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title={`Remove ${deleteTarget?.label ?? ''}?`}
+        message={DELETE_WARNING}
+        confirmLabel={deleting ? 'Removing…' : 'Remove install'}
+        onConfirm={() => {
+          if (deleteTarget) deleteInstall({ variables: { installId: deleteTarget.id } });
+        }}
+        onCancel={() => setDeleteTarget(null)}
       />
 
       <Dialog open={provisionOpen} onClose={() => setProvisionOpen(false)} maxWidth="xs" fullWidth>

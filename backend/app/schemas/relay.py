@@ -1,12 +1,13 @@
 """Relay installs + live GP reads via the connected relay."""
 
+import logging
 import uuid
 
 import strawberry
 
 from app.auth import require_admin, require_user
 from app.database import SessionLocal
-from app.errors import NotFoundError
+from app.errors import ConflictError, NotFoundError
 from app.models.relay_install import RelayInstall
 from app.repositories import relay_repository
 from app.services import relay_adopt
@@ -34,6 +35,8 @@ from .types import (
     VendorCandidate,
     VendorSuggestion,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @strawberry.type
@@ -65,7 +68,13 @@ class RelayQueries:
         """Whether the outbound relay WS channel is currently connected (and, if so, the GP company it is
         enrolled for), for the relay status chip and the company-aware PO/receive/adopt dialogs."""
         require_user(info)
-        return RelayStatus(connected=relay_gateway.connected, company=relay_gateway.company, build=relay_gateway.build)
+        live_install = relay_gateway.install_id
+        return RelayStatus(
+            connected=relay_gateway.connected,
+            company=relay_gateway.company,
+            build=relay_gateway.build,
+            install_id=strawberry.ID(str(live_install)) if live_install else None,
+        )
 
     @strawberry.field
     async def gp_jobs(self, info: strawberry.Info, company: str) -> list[GpJob]:
@@ -209,6 +218,42 @@ class RelayMutations:
             expires_at=window.expires_at,
             armed_by=window.armed_by,
         )
+
+    @strawberry.mutation
+    def delete_relay_install(self, info: strawberry.Info, install_id: strawberry.ID) -> bool:
+        """Admin: remove a relay install row and revoke its secret (#366).
+
+        Rows pile up from every abandoned provisioning attempt - a token minted and never used, a
+        re-enrolment that superseded an earlier row, a retired workstation - and until now the only way
+        to remove one was hand-written SQL against Railway Postgres. Two things made that worse than
+        clutter: a stale pre-067 row keeps `secret_encrypted` forever, so the count that gates retiring
+        RELAY_SECRET_ENC_KEY never reaches 0; and the row is a live credential `authenticate_secret`
+        would still accept.
+
+        Refuses the install currently holding the connection - revoking the credential under a live relay
+        would take GP down. A merely switched-off relay deletes fine; that is the retire-a-workstation
+        case, and the confirm dialog carries the warning."""
+        identity = require_admin(info)
+        target = uuid.UUID(str(install_id))
+        if relay_gateway.install_id == target:
+            raise ConflictError("That relay is currently connected. Disconnect it before removing the install.")
+        with SessionLocal() as session:
+            snapshot = relay_repository.delete_install(session, target)
+            if snapshot is None:
+                raise NotFoundError("Relay install not found", field="install_id")
+            session.commit()
+        # The row is gone, so this log is the only remaining record of it - and revoking a relay
+        # credential is exactly the kind of act worth being able to grep for afterwards.
+        logger.warning(
+            "relay install deleted: %s (label=%s company=%s hostname=%s enrolled_at=%s) by %s",
+            snapshot["id"],
+            snapshot["label"],
+            snapshot["company"],
+            snapshot["hostname"],
+            snapshot["enrolled_at"],
+            identity["user_id"],
+        )
+        return True
 
     @strawberry.mutation
     def disarm_relay_adopt(self, info: strawberry.Info) -> bool:

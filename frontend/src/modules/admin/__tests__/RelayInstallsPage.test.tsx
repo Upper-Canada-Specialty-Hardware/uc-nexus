@@ -2,7 +2,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
 import { ToastProvider } from '../../../components/Toast';
 import RelayInstallsPage from '../RelayInstallsPage';
-import { RELAY_INSTALLS, RELAY_ADOPT_WINDOW, ARM_RELAY_ADOPT } from '../../../graphql/admin';
+import { RELAY_INSTALLS, RELAY_ADOPT_WINDOW, ARM_RELAY_ADOPT, DELETE_RELAY_INSTALL } from '../../../graphql/admin';
 import { GET_RELAY_STATUS } from '../../../graphql/shared';
 
 vi.setConfig({ testTimeout: 30_000 });
@@ -54,7 +54,18 @@ const INSTALL = {
 
 const statusMock: MockedResponse = {
   request: { query: GET_RELAY_STATUS },
-  result: { data: { relayStatus: { connected: false, company: null, build: null } } },
+  result: { data: { relayStatus: { connected: false, company: null, build: null, installId: null } } },
+  maxUsageCount: Number.POSITIVE_INFINITY,
+};
+
+// The same status, but with INSTALL holding the live connection (#366) - which is what disables Remove.
+const connectedStatusMock: MockedResponse = {
+  request: { query: GET_RELAY_STATUS },
+  result: {
+    data: {
+      relayStatus: { connected: true, company: 'TUBC', build: 'relay-v0.1.0-build.36', installId: 'install-1' },
+    },
+  },
   maxUsageCount: Number.POSITIVE_INFINITY,
 };
 
@@ -138,4 +149,43 @@ it('shows no armed banner when no window is open', async () => {
   renderPage([statusMock, installsMock, windowMock(null)]);
   await screen.findByRole('button', { name: /adopt next connection/i }, GRID_TIMEOUT);
   expect(screen.queryByText(/adopt window open/i)).toBeNull();
+});
+
+// --- removing an install (#366) ---------------------------------------------------------------------
+
+it('requires the confirm dialog before removing an install', async () => {
+  // Removing revokes the relay's credential permanently, so like arming, the one-click path must not
+  // exist: the warning has to be shown and accepted before the mutation fires.
+  let deleted = false;
+  const deleteMock: MockedResponse = {
+    request: { query: DELETE_RELAY_INSTALL, variables: { installId: 'install-1' } },
+    result: () => {
+      deleted = true;
+      return { data: { deleteRelayInstall: true } };
+    },
+  };
+
+  renderPage([statusMock, installsMock, windowMock(null), deleteMock]);
+
+  const trigger = await screen.findByRole('button', { name: /^remove$/i }, GRID_TIMEOUT);
+  fireEvent.click(trigger);
+  expect(deleted).toBe(false);
+
+  expect(
+    await screen.findByText(/permanently deletes the install row and revokes its secret/i, {}, GRID_TIMEOUT),
+  ).toBeTruthy();
+
+  fireEvent.click(screen.getByRole('button', { name: /remove install/i }));
+  await waitFor(() => expect(deleted).toBe(true), GRID_TIMEOUT);
+});
+
+it('disables Remove on the install that is currently connected', async () => {
+  // Deleting the live install would revoke the secret out from under a running relay and take GP down
+  // mid-write. The backend refuses it; the button must not offer it either.
+  renderPage([connectedStatusMock, installsMock, windowMock(null)]);
+
+  const remove = await screen.findByRole('button', { name: /^remove$/i }, GRID_TIMEOUT);
+  await waitFor(() => expect(remove).toBeDisabled(), GRID_TIMEOUT);
+  // The adopt action stays available - it is the recovery path, not a destructive one.
+  expect(screen.getByRole('button', { name: /adopt next connection/i })).not.toBeDisabled();
 });

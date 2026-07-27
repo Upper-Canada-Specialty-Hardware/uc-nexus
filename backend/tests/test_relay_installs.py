@@ -83,3 +83,41 @@ def test_a_rotated_encryption_key_no_longer_orphans_an_install(db_session, monke
     found = relay_repository.authenticate_secret(db_session, "valid-secret")
     assert found is not None
     assert found.label == "WS6"
+
+
+# --- deletion (#366) ----------------------------------------------------------------------------------
+# Rows accumulate from every abandoned provisioning attempt, and until this existed the only way to
+# remove one was hand-written SQL. Two properties matter: the credential is genuinely revoked (not just
+# hidden from the grid), and removing one install does not disturb the others.
+
+
+def test_delete_install_revokes_the_credential(db_session):
+    install, token = relay_repository.provision_install(db_session, label="Retired", company="TUBC")
+    relay_repository.enroll_install(db_session, token, hostname="RETIRED", secret="retired-secret")
+    assert relay_repository.authenticate_secret(db_session, "retired-secret") is not None
+
+    snapshot = relay_repository.delete_install(db_session, install.id)
+
+    assert snapshot["label"] == "Retired"
+    assert snapshot["hostname"] == "RETIRED"
+    # The point of a hard delete: the secret stops authenticating, rather than the row merely hiding.
+    assert relay_repository.authenticate_secret(db_session, "retired-secret") is None
+
+
+def test_delete_install_returns_none_for_a_row_that_is_already_gone(db_session):
+    import uuid as _uuid
+
+    assert relay_repository.delete_install(db_session, _uuid.uuid4()) is None
+
+
+def test_delete_install_leaves_the_other_installs_authenticating(db_session):
+    doomed, doomed_token = relay_repository.provision_install(db_session, label="Doomed", company="TUBC")
+    relay_repository.enroll_install(db_session, doomed_token, hostname="D", secret="doomed-secret")
+    _, keeper_token = relay_repository.provision_install(db_session, label="Keeper", company="TUBC")
+    keeper = relay_repository.enroll_install(db_session, keeper_token, hostname="K", secret="keeper-secret")
+
+    relay_repository.delete_install(db_session, doomed.id)
+
+    assert relay_repository.authenticate_secret(db_session, "doomed-secret") is None
+    still_there = relay_repository.authenticate_secret(db_session, "keeper-secret")
+    assert still_there is not None and still_there.id == keeper.id

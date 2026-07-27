@@ -113,6 +113,33 @@ def adopt_secret(session: Session, install_id: uuid.UUID, secret: str, adopted_b
     return install
 
 
+def delete_install(session: Session, install_id: uuid.UUID) -> dict | None:
+    """Remove a relay install row outright (#366). Returns a plain dict of the fields worth logging, or
+    None when the row is already gone (the resolver turns that into NotFoundError).
+
+    Hard delete, not a soft-delete flag. A flag would have to be honoured by `authenticate_secret` too or
+    the "deleted" install keeps authenticating - a new filter on the handshake hot path and a new way to
+    be silently wrong - and it would leave `secret_encrypted` populated, which is the very thing blocking
+    the RELAY_SECRET_ENC_KEY retirement (see app/config.py). Nothing references relay_installs by foreign
+    key, so this is a clean single-row delete.
+
+    The dict is built BEFORE the delete because the caller logs those values afterwards, and the instance
+    is unusable by then."""
+    install = session.get(RelayInstall, install_id)
+    if install is None:
+        return None
+    snapshot = {
+        "id": str(install.id),
+        "label": install.label,
+        "company": install.company,
+        "hostname": install.hostname,
+        "enrolled_at": install.enrolled_at.isoformat() if install.enrolled_at else None,
+    }
+    session.delete(install)
+    session.flush()
+    return snapshot
+
+
 def authenticate_secret(session: Session, secret: str) -> RelayInstall | None:
     """Verify a Bearer secret presented on the outbound WS channel's connect handshake against the
     enrolled installs.

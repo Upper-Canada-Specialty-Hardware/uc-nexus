@@ -359,3 +359,37 @@ def test_relay_call_maps_an_unknown_op_reply_to_op_unsupported():
         assert exc_info.value.detail["error"] == "unknown_op"
 
     asyncio.run(run())
+
+
+# --- which install is live (#366) ---------------------------------------------------------------------
+# The gateway knew a relay was connected but not WHICH install it was, so nothing could refuse to delete
+# the row backing the live connection - deleting it revokes the secret out from under a running relay.
+
+
+def test_try_register_records_the_install_backing_the_connection():
+    import uuid
+
+    gateway = RelayGateway()
+    assert gateway.install_id is None
+    install_id = uuid.uuid4()
+    assert gateway.try_register("TUBC", FakeWebSocket(), install_id) is True
+    assert gateway.install_id == install_id
+
+
+def test_unregister_clears_the_install_id():
+    import uuid
+
+    gateway = RelayGateway()
+    ws = FakeWebSocket()
+    gateway.try_register("TUBC", ws, uuid.uuid4())
+    gateway.unregister(ws)
+    assert gateway.install_id is None
+    assert gateway.connected is False
+
+
+def test_an_older_caller_that_omits_the_install_id_still_registers():
+    # try_register is also reached from tests and any path that has no row in hand; a missing id must
+    # read as "unknown", never block the connection.
+    gateway = RelayGateway()
+    assert gateway.try_register("TUBC", FakeWebSocket()) is True
+    assert gateway.install_id is None

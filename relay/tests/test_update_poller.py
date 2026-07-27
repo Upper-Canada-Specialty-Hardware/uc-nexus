@@ -7,6 +7,7 @@ both invisible until they bite somebody at a workstation nobody can reach."""
 
 import random
 import threading
+from datetime import datetime, timedelta, timezone
 
 from ucnexus_relay import update_poller, updater
 
@@ -214,3 +215,32 @@ def test_start_does_not_spawn_a_thread_outside_a_frozen_build(monkeypatch, tmp_p
     stop = update_poller.start(_FakeApp(tmp_path))
     assert spawned == []
     assert isinstance(stop, threading.Event)
+
+
+# --- the stuck-ledger backstop (#369) -----------------------------------------------------------------
+# Startup reconciliation normally clears an abandoned ledger, but a relay that stays up for weeks never
+# gets that chance, so should_stage has to be able to see past one on its own.
+
+
+def _applying_ledger(seconds_ago: float) -> dict:
+    stamped = datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)
+    return {
+        "status": "applying",
+        "target_build": "relay-v0.1.0-build.36",
+        "attempts": 1,
+        "updated_at": stamped.isoformat(timespec="seconds"),
+    }
+
+
+def test_stages_past_a_ledger_no_helper_could_still_be_working_on():
+    ledger = _applying_ledger(updater.ABANDONED_AFTER_SECONDS + 60)
+    stage, reason = update_poller.should_stage(_check(), ledger, cancel_requested=False)
+    assert stage is True
+    assert "build.41" in reason
+
+
+def test_still_refuses_while_a_helper_could_plausibly_be_running():
+    ledger = _applying_ledger(30)
+    stage, reason = update_poller.should_stage(_check(), ledger, cancel_requested=False)
+    assert stage is False
+    assert "already in progress" in reason
