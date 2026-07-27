@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Integer, String, Text, Uuid
+from sqlalchemy import JSON, DateTime, Index, Integer, String, Text, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from . import Base
@@ -36,6 +36,10 @@ class GpWriteOutbox(Base):
     same user action while it is queued returns the existing row rather than queueing it twice."""
 
     __tablename__ = "gp_write_outbox"
+    # The index the worker's claim query rides. Declared here (rather than `index=True` on `status`)
+    # so `alembic check` sees the same composite index migration 068 creates - the two must agree, or
+    # CI's migration-integrity job fails on a model/schema drift that would otherwise go unnoticed.
+    __table_args__ = (Index("ix_gp_write_outbox_claim", "status", "next_attempt_at"),)
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     idempotency_key: Mapped[str] = mapped_column(String, nullable=False, unique=True)
@@ -54,8 +58,9 @@ class GpWriteOutbox(Base):
     requested_by: Mapped[str | None] = mapped_column(String, nullable=True)  # Clerk user id
 
     # String + CHECK rather than a PG enum (precedent: migration 065): a CHECK is trivially
-    # reversible and this list will grow.
-    status: Mapped[str] = mapped_column(String, nullable=False, default="PENDING", index=True)
+    # reversible and this list will grow. Indexed by the composite claim index below, not on its own -
+    # every read of this column is together with next_attempt_at.
+    status: Mapped[str] = mapped_column(String, nullable=False, default="PENDING")
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     next_attempt_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
