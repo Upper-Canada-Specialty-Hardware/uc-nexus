@@ -80,10 +80,18 @@ class ShopAssemblyOpening(Base):
     # Door leaf this assembly work unit is for (#311): 1 or 2. A pair produces two rows sharing
     # opening_number, one per leaf. Null = legacy whole-opening unit.
     leaf: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    # NOT_PULLED until the warehouse confirms this opening's cart is built, then PULLED (#343).
+    # Only ever these two values: PARTIAL is an aggregate reading over a *set* of openings and is
+    # derived for the pull as a whole, never written here - one cart cannot be half-built.
     pull_status: Mapped[PullStatus] = mapped_column(
         Enum(PullStatus, name="pull_status", create_constraint=True),
         nullable=False,
     )
+    # When this opening was confirmed staged, and by whom (#343). Staging is per opening now, so the
+    # pull's own completed_at can no longer say when *this* cart became workable - which is the
+    # question the assembly floor asks when a leaf turns up late.
+    staged_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    staged_by: Mapped[str | None] = mapped_column(String, nullable=True)
     # Stable Clerk user id the opening is claimed by (#324): the identity myWork filters on, so a
     # display-name change or a non-UI caller no longer detaches in-flight work. assigned_to below
     # stays the human-readable name for display; both are set/cleared together.

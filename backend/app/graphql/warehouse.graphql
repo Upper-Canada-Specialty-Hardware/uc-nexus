@@ -105,6 +105,19 @@ type PullRequest {
   approved_at: DateTime
   completed_at: DateTime
   cancelled_at: DateTime
+  # Who cancelled the pull and why (#343). Null unless status is CANCELLED.
+  cancelled_by: String
+  cancellation_reason: String
+  # Per-opening staging rollup, DERIVED and never stored (#343): NOT_PULLED / PARTIAL / PULLED read
+  # over this pull's shop-assembly openings. PARTIAL is a statement about the *set* of openings, so
+  # it has no place on any single opening's own pull_status - one cart is built or it is not.
+  #
+  # Null = staging does not apply, or was not evaluated. A shipping-out pull, a PR-REPL replacement
+  # pull and a legacy pull all have no openings; resolvers that do not compute the rollup leave it
+  # null rather than implying "nothing staged".
+  staging_status: PullStatus
+  staged_opening_count: Int
+  total_opening_count: Int
   items: [PullRequestItem!]!
 }
 
@@ -122,6 +135,46 @@ type PullRequestItem {
   hardware_category: String
   product_code: String
   requested_quantity: Int!
+}
+
+input StagePullOpeningsInput {
+  pull_request_id: ID!
+  opening_ids: [ID!]!
+  staged_by: String!
+}
+
+type StagePullOpeningsResult {
+  pull_request: PullRequest!
+  openings: [ShopAssemblyOpening!]!
+  # Ids staged by *this* call - an opening already staged is skipped, not refused, so this is how a
+  # caller tells a real confirmation from a replayed one.
+  newly_staged_opening_ids: [ID!]!
+  completed: Boolean!
+}
+
+input CancelPullRequestInput {
+  id: ID!
+  cancelled_by: String!
+  reason: String
+}
+
+type RestockedLine {
+  hardware_category: String!
+  product_code: String!
+  quantity: Int!
+}
+
+type CancelPullRequestResult {
+  pull_request: PullRequest!
+  # The inverse inventory write, per combo. Empty for a pull with no LOOSE lines.
+  restocked: [RestockedLine!]!
+  released_opening_ids: [ID!]!
+  # False for a PR-REPL replacement pull or a legacy pull, which have no source request at all.
+  source_request_returned_to_pending: Boolean!
+  # False when the request holds no claim - no source request, or the availability re-check came up
+  # short, in which case integrity_note says so and the request carries the same message.
+  reservations_recreated: Boolean!
+  integrity_note: String
 }
 
 type ApproveResult {
@@ -326,6 +379,11 @@ type Query {
   openingItemDetails(id: ID!): OpeningItemDetail!
   pullRequests(projectId: ID!, source: PullRequestSource, status: PullRequestStatus): [PullRequest!]!
   pullRequestDetails(id: ID!): PullRequest!
+  # The shop-assembly openings a pull covers, with their hardware lines, for the warehouse's
+  # per-opening staging checklist (#343). Deliberately a separate query rather than a field on
+  # PullRequest: a resolver field would run once per row of the pull-request queue, which never
+  # needs it. Empty for a shipping-out / PR-REPL / legacy pull.
+  pullRequestOpenings(pullRequestId: ID!): [ShopAssemblyOpening!]!
   shipReadyItems(projectId: ID!): ShipReadyItems!
   projectProgressByProduct(projectId: ID!): [ProjectProgressByProduct!]!
   packingSlips(projectId: ID): [PackingSlip!]!
@@ -336,7 +394,18 @@ type Query {
 type Mutation {
   createReceive(input: CreateReceiveInput!): ReceiveRecord!
   approvePullRequest(id: ID!, approvedBy: String!): ApproveResult!
-  completePullRequest(id: ID!): PullRequest!
+  # Close the whole pull. Since #343 this reads as "stage everything still outstanding and finish":
+  # any opening not yet confirmed individually is flipped to PULLED and stamped with completedBy.
+  completePullRequest(id: ID!, completedBy: String): PullRequest!
+  # Confirm that the carts for these openings of an approved shop-assembly pull are built (#343).
+  # Each one becomes assignable and workable immediately; staging the last completes the pull.
+  # Nothing moves in inventory - the FIFO deduction and the source request's reservation were both
+  # spent at approval. Already-staged openings are skipped, not refused.
+  stagePullOpenings(input: StagePullOpeningsInput!): StagePullOpeningsResult!
+  # Cancel an approved pull, return its hardware to inventory, and hand the source request back to
+  # PENDING (#343). All-or-nothing: an opening whose assembly has started or finished refuses the
+  # whole cancellation with CONFLICT, naming every blocker.
+  cancelPullRequest(input: CancelPullRequestInput!): CancelPullRequestResult!
   confirmShipment(input: ConfirmShipmentInput!): PackingSlip!
   createShipmentReturn(input: CreateShipmentReturnInput!): ShipmentReturn!
   adjustInventoryQuantity(inventoryLocationId: ID!, adjustment: Int!, reason: String!): InventoryLocation!

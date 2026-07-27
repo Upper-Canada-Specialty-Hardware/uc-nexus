@@ -511,6 +511,20 @@ class PullRequest:
     completed_at: datetime | None
     cancelled_at: datetime | None
     items: list[PullRequestItem]
+    # Who cancelled the pull and why (#343). Null unless status is CANCELLED.
+    cancelled_by: str | None = None
+    cancellation_reason: str | None = None
+    # Per-opening staging progress, DERIVED, never stored (#343). NOT_PULLED / PARTIAL / PULLED read
+    # over the pull's shop-assembly openings - PARTIAL being "some carts built, some not", which is
+    # a statement about the set and so has no place on any single opening's own pull_status.
+    #
+    # Null means staging does not apply *or* was not evaluated: a shipping-out pull, a PR-REPL
+    # replacement pull, and a legacy pull all have no openings, and the resolvers that do not compute
+    # the rollup leave it null rather than implying "nothing staged". Populated by pullRequests,
+    # pullRequestDetails, and the staging/approve/complete/cancel mutation results.
+    staging_status: PullStatus | None = None
+    staged_opening_count: int | None = None
+    total_opening_count: int | None = None
 
 
 @strawberry.type
@@ -582,6 +596,10 @@ class ShopAssemblyOpening:
     opening_number: str | None = None
     building: str | None = None
     floor: str | None = None
+    # When this opening's cart was confirmed staged, and by whom (#343). Null while NOT_PULLED, and
+    # on openings staged before per-opening staging existed (they were staged wholesale).
+    staged_at: datetime | None = None
+    staged_by: str | None = None
 
 
 @strawberry.type
@@ -830,6 +848,47 @@ class ApproveResult:
     # Populated when outcome is INSUFFICIENT: the exact per-combo shortfall shown inline to the
     # approver. Empty on APPROVED.
     shortfalls: list[InventoryShortfall] = strawberry.field(default_factory=list)
+
+
+@strawberry.type
+class StagePullOpeningsResult:
+    """What one staging confirmation did (#343).
+
+    `openings` comes back so the checklist can re-render from the server's answer rather than an
+    optimistic guess, and `completed` says whether this confirmation was the one that finished the
+    pull - the client shows a different message for "3 of 8 staged" and "pull complete"."""
+
+    pull_request: PullRequest
+    openings: list[ShopAssemblyOpening]
+    # Ids staged by *this* call. An opening already staged is skipped, not refused, so this is how a
+    # caller tells a real confirmation from a replayed one.
+    newly_staged_opening_ids: list[strawberry.ID]
+    completed: bool
+
+
+@strawberry.type
+class RestockedLine:
+    hardware_category: str
+    product_code: str
+    quantity: int
+
+
+@strawberry.type
+class CancelPullRequestResult:
+    """What a cancellation put back and where the source request ended up (#343)."""
+
+    pull_request: PullRequest
+    # The inverse inventory write, per combo. Empty for a pull with no LOOSE lines.
+    restocked: list[RestockedLine]
+    released_opening_ids: list[strawberry.ID]
+    # The source request went back to PENDING for re-acceptance. False for a PR-REPL replacement
+    # pull or a legacy pull, which have no source request at all.
+    source_request_returned_to_pending: bool
+    # The returned hardware was re-claimed for that request. False when it holds no claim - either
+    # because there is no source request, or because the re-check came up short, in which case
+    # integrityNote says so and the request carries the same message.
+    reservations_recreated: bool
+    integrity_note: str | None = None
 
 
 @strawberry.type

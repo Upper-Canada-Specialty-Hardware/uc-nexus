@@ -29,7 +29,13 @@ type ShopAssemblyOpening {
   id: ID!
   shop_assembly_request_id: ID!
   opening_id: ID!
+  # NOT_PULLED until the warehouse confirms this opening's cart is built, then PULLED (#343). Never
+  # PARTIAL: one cart cannot be half-built.
   pull_status: PullStatus!
+  # When this opening's cart was confirmed staged, and by whom (#343). Null while NOT_PULLED, and on
+  # openings staged before per-opening staging existed (they were staged wholesale).
+  staged_at: DateTime
+  staged_by: String
   # Stable Clerk user id the opening is claimed by (#324); assigned_to is the display name.
   assigned_to_user_id: String
   assigned_to: String
@@ -40,6 +46,8 @@ type ShopAssemblyOpening {
 
 enum PullStatus {
   NOT_PULLED
+  # Only ever an aggregate reading over a *set* of openings - "some carts built, some not" (#343).
+  # Derived for a whole PullRequest (PullRequest.staging_status); never written to an opening.
   PARTIAL
   PULLED
 }
