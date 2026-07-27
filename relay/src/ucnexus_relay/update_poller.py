@@ -59,7 +59,12 @@ def should_stage(check: dict, ledger: dict, cancel_requested: bool) -> tuple[boo
 
     status = ledger.get("status")
     if status in ("staging", "applying"):
-        return False, f"an update is already in progress ({status})"
+        # ...unless nothing has touched it for far longer than a helper can legally run (#369). A helper
+        # that died before writing its terminal status would otherwise pin this branch forever and the
+        # relay would silently never update again. Startup reconciliation normally clears it first; this
+        # is the backstop for a relay that stays up for weeks.
+        if not updater.ledger_is_abandoned(ledger):
+            return False, f"an update is already in progress ({status})"
 
     latest = check.get("latest")
     if (
