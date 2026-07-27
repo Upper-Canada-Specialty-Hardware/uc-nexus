@@ -181,7 +181,9 @@ def test_a_po_with_no_hardware_behind_it_returns_nothing(db_session):
                 "ordered_quantity": 2,
                 "unit_cost": 10.0,
                 "classification": None,
-                "order_as": None,
+                # create_po requires an alias on every line; the value is irrelevant here, the point
+                # is that a manual PO has no HardwareItem behind it.
+                "order_as": "ALIAS-100",
             }
         ],
         project_id=None,
