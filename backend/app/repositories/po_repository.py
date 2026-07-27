@@ -276,6 +276,7 @@ def register_po_in_gp(
     buyer_id: str | None = None,
     shipping_cost: float | None = None,
     tariff_amount: float | None = None,
+    project_id: uuid.UUID | None = None,
 ) -> PurchaseOrder:
     """Register an imported DRAFT PO into GP (the import-acceptance path, issue #175).
 
@@ -289,6 +290,12 @@ def register_po_in_gp(
     gp_vendor_id/vendor_name_snapshot are the GP vendor picked live from gpVendors at push time (issue
     #200 - there is no local vendor-to-GP mirror). vendor_id optionally links a UC Nexus vendor record
     (contact info) and, when given, must exist - it carries no GP-linkage meaning anymore.
+
+    project_id (#316) attaches a project to a draft that has none - a manually created stock PO, whose
+    only chance to gain one is here, since Project appears nowhere else after creation. It is IGNORED
+    when the PO already has a project: those line items were imported against that project's hardware
+    schedule, and re-pointing the header would leave them describing hardware for a different job. The
+    check lives here rather than only in the dialog so a direct GraphQL call gets the same guarantee.
     """
     from app.models.hardware import HardwareItem
 
@@ -305,6 +312,15 @@ def register_po_in_gp(
 
         if session.get(VendorModel, vendor_id) is None:
             raise NotFoundError(f"Vendor {vendor_id} not found")
+
+    # #316: adopt a project only onto a draft that has none. Assigned before the duplicate-PO-number
+    # check below, which scopes uniqueness by project.
+    if project_id is not None and po.project_id is None:
+        from app.models.project import Project as ProjectModel
+
+        if session.get(ProjectModel, project_id) is None:
+            raise NotFoundError(f"Project {project_id} not found")
+        po.project_id = project_id
 
     cleaned_gp_vendor_id = gp_vendor_id.strip() if gp_vendor_id else ""
     if not cleaned_gp_vendor_id:

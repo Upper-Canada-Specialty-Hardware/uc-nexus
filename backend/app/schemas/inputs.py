@@ -240,6 +240,10 @@ class RegisterPOInput:
     line_items: list[RegisterPOLineItemInput]
     # Optional link to a UC Nexus vendor record (contact info), independent of the GP vendor above.
     vendor_id: strawberry.ID | None = None
+    # #316: attach a project to a draft that has none - a manually created stock PO, whose only chance
+    # to gain one is here. Ignored when the PO already has a project (enforced in the repository, not
+    # just the dialog): its lines were imported against that project's hardware schedule.
+    project_id: strawberry.ID | None = None
     cost_code: str | None = None
     # Issue #156: optional order-time dollar costs. Null means "not entered"; 0 is a valid value.
     # shipping_cost also feeds GP's Freight (FRTAMNT) at push time (issue #257); tariff_amount stays
