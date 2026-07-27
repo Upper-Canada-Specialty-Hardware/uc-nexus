@@ -19,6 +19,53 @@ This is a tester's knowledge journal for UC Nexus. It documents how the app work
   - Tokens are one-time use; fetch a fresh one each session. Works on any runtime with the same Clerk dev instance.
 - **Test XML file**: `testing/fixtures/contracterp-74.xml` - TITAN hardware schedule export, use for Import wizard testing (upload via `upload_file`)
 
+### Inventory can only be seeded through the relay - check this first
+
+**Nothing puts new hardware into inventory except `createReceive`, and `createReceive` is
+unconditionally GP-first through the on-prem relay.** If the relay is down there is no supported way
+to seed stock, and every scenario downstream of "hardware exists" (approve a pull, stage a cart,
+assemble a leaf, flag a deficiency, ship) is unrunnable. Do not improvise a workaround - re-scope the
+session instead. Establish this in the first minute:
+
+```
+{ relayStatus { connected company build } }
+{ inventoryHierarchy { hardwareCategory totalQuantity } }
+```
+
+`connected: false` plus `inventoryHierarchy: []` is the signature. Confirm it from the backend side
+with `relayInstalls { label enrolled enrolledAt lastSeenAt }` and the Railway backend deploy log:
+
+- A relay that is **running but not trusted** logs `"WebSocket /relay-link" 403` every ~30s forever.
+  The workstation is dialling out fine; the backend is refusing the handshake.
+- **`lastSeenAt == enrolledAt` is suggestive, NOT proof.** `last_seen_at` is written in two places:
+  `enroll_install` (`relay_repository.py:70-71`) and `authenticate_secret` on a successful match
+  (`:95`, committed by `main.py:170`). But `authenticate_secret` runs *only on the connect handshake* -
+  the liveness heartbeat is an app-level ping/pong that never touches the DB. So a relay that connects
+  once and holds the socket open for two days also shows exactly one write. The timestamp alone cannot
+  tell "never authenticated" from "authenticated once at enrolment and still connected".
+- **The deploy log is what settles it.** A held-open socket silences the ~30s dial cadence for its
+  whole duration, so look for a *gap*: an unbroken 403 cadence with no `[accepted]` line means the
+  channel never came up. Read it across the whole life of the deployment, not a sample window.
+- **A 403 cadence that runs unbroken *through* the enrolment instant means a stale secret, and it
+  also exonerates the Fernet key.** `enroll_install` calls `encrypt_secret`, so a successful enrolment
+  proves `RELAY_SECRET_ENC_KEY` was valid at that moment; if auth still 403s seconds later, the
+  mismatch is in the secret, not the key. Usual cause: enrolment rewrote `[auth] shared_secret` in
+  `config.toml` while the **already-running relay service kept dialling with its old in-memory
+  secret**. It needs a *restart*, not another enrol. Only reachable on the workstation - the relay's
+  inbound server is bound to `127.0.0.1:7321`, so there is no remote restart.
+- Beware the silent path: `authenticate_secret` decrypts inside a bare `except Exception: continue`
+  (`:92-93`), so a genuinely rotated `RELAY_SECRET_ENC_KEY` fails **identically and logs nothing**.
+  Distinguish the two with the enrolment-timing argument above rather than by reading the key.
+- `POST /admin/reset-data` drops the `relay_installs` rows along with everything else, so a schema
+  rebuild orphans the on-prem relay every time.
+
+Verified in this state on 2026-07-26: install `TAGGING3W10 (re-enroll after schema rebuild)` (company
+TUBC), one row, enrolled 7/24 22:54:27.662369Z with `lastSeenAt` byte-identical to `enrolledAt`. The
+403 cadence runs unbroken from 22:53:14Z (i.e. *before* enrolment) through 23:12Z and was still going
+on 7/26, with no `[accepted]` line anywhere - so the WS channel has never once authenticated, while
+the HTTP enrolment plainly succeeded. "The relay was working yesterday" refers to the service being
+up and healthy on `127.0.0.1:7321`; that is independent of whether the backend trusts it.
+
 ## Getting Started (Every Session)
 
 1. **Sign in**: Use `evaluate_script` to fetch a sign-in token and navigate with it. Railway production (default):
@@ -192,6 +239,38 @@ DRAFT -> ORDERED -> VENDOR_CONFIRMED -> PARTIALLY_RECEIVED -> CLOSED
 
 **Result**: Creates a project (or updates existing), openings, hardware items, and the selected output (POs, SAR, shipping PRs).
 
+**You almost never need to upload the XML.** Step 1 offers two cards: "Upload new TITAN XML" and
+**"Use last uploaded hardware schedule"**, the second captioned with what is already persisted
+("1998 openings, 29126 hardware items"). It rebuilds the wizard's working set from
+`projectHardwareSchedule` - the openings and hardware items already in the DB - so every later step
+behaves identically without a multi-megabyte parse. Take it unless the thing under test *is* the
+parser. "Choose Different Source" on the loaded panel gets you back to the two cards.
+
+**Step count depends on the purpose**, and the stepper is the quickest way to tell which flow you are in:
+
+| Purpose | Steps |
+| --- | --- |
+| Create Purchase Orders | Upload File -> Purpose -> Select Openings -> Reconciliation -> Classification -> Purchase Orders -> Finalize (7) |
+| Pull Request for Shop Assembly | Upload File -> Purpose -> Select Openings -> Reconciliation -> Classification -> Shop Assembly -> Finalize (7) |
+| Pull Request for Shipping Out | Upload File -> Purpose -> Select Openings -> Reconciliation -> Shipping PRs -> Finalize (6) |
+
+**Reconciliation is a hard gate on the assembly flow, and it fires before the Shop Assembly step.**
+With nothing in inventory it shows a red alert - `No items have In Inventory status. There is nothing
+available to assemble.` - and **Next is disabled**, so the wizard stops at step 4. The per-combo detail
+is in the table underneath (Hardware Category / Product Code / Qty Needed / Qty Available / Lifecycle
+Breakdown, each short line chipped `Gap Remaining: N`), not in the alert text. Worth knowing because
+the slice-4 shortfall alert everyone quotes (`<CATEGORY> <CODE>: need N, M available (R reserved by
+other requests) - short S`) lives on the **Shop Assembly** step, which you cannot reach at all when
+availability is zero across the board. To exercise *that* message you need stock on the shelf and a
+competing reservation; a bare empty warehouse only ever gets you the Reconciliation gate.
+
+The same step on the **shipping** flow is advisory, not a gate: `Items that are In Inventory or Built
+onto Opening can be included in shipping pull requests. Items with zero availability are excluded. You
+may proceed with partial quantities if needed.` Next stays enabled. The gate for shipping is one step
+later - with nothing shippable, the Shipping PRs step shows `Nothing on the selected openings is in a
+shippable state. Assembled leaves already on another shipping request are not listed.`, an added
+"Shipping PR #1" card lists `Select items (0 selected):` with no rows, and Next is disabled.
+
 **Creating a request RESERVES inventory (#342).** This is the single biggest behavioural change to
 the wizard, and it changes what "it worked" looks like at every downstream step.
 
@@ -332,7 +411,8 @@ Both entry points open a "Transfer <productCode>" MUI dialog with: an "X availab
 
 ### Shop Assembly Module
 
-**Entry**: `/app/shop-assembly` -> Manager view (SAR list) or user view (my work)
+**Entry**: `/app/shop-assembly` -> landing page: one "Active Pull Requests" stat card plus five "Go to"
+cards - Requests, Assemble List, Assignments, My Work, Pipeline.
 
 - Manager creates/approves Shop Assembly Requests (SARs)
 - Approved SARs generate pull requests for warehouse
@@ -550,3 +630,19 @@ Inventory quantity corrections are NOT here — they live in the Warehouse modul
 - Locations page bin panel "Item actions" menu (stock rows): Move / Transfer / Adjust Qty / Unlocate. "Adjust Qty" opens the shared LocationActionDialog - Confirm stays disabled until a non-zero adjustment AND a reason are entered; the helper text under the adjustment shows the computed "New qty: N" and flags negatives. Verified live: adjustment writes an ADJUSTMENT audit row (`auditLog(limit: N)`) with performedBy "Admin/Manager".
 - Draft PO create (issue #256 dialog) works with the relay down end to end: the created draft's `preferredDeliveryDate` round-trips exactly (entered 2026-08-15 -> stored 2026-08-15 -> detail modal renders 8/15/2026, no UTC day shift). Cancelling a draft removes it from the `purchaseOrders` list entirely.
 - `inventoryHierarchy` returns `totalAvailableQuantity` at both category and product-code levels (issue #229): available = quantity - deficient, so a 10-qty row with 7 deficient shows total 10 / available 3. Cross-check against `deficientItems`.
+- `Notification` has no `kind` field - it is `type` (`{ notifications { id type message isRead createdAt recipientRole projectId } }`). Querying `kind` fails the whole document, so a mistyped notification field takes the relay/pull/request fields in the same query down with it.
+- The bell panel is a plain MUI Popover with a "Notifications" heading and one bold row per unread item; the app-bar badge count matches `notifications` where `isRead: false`. It renders every audience regardless of your role, so 4 in the badge means 4 rows in the panel.
+- **Pre-#346 completed leaves read as `0/N units` everywhere.** `installed_quantity` was added with `server_default "0"`, so leaves assembled before slice 2 landed have no per-line progress and `assemblyPipelineSummaries.installedUnitCount` comes back 0 even for openings that are `completedOpeningCount`/`shippedOpeningCount`. The Pipeline grid's Progress column and the detail modal's Units column both render that faithfully - a row reading "Shipped / 2 of 2 assembled / 0/2 units" is legacy data, not a bug. Current code cannot produce it: `complete_assembly` refuses a leaf where every line is `installed_quantity == 0`.
+- Same vintage: the Pipeline detail's per-leaf **Staged** column shows `-` while the pull's own staging panel shows a green "Staged" chip. The panel reads `pull_status`; the pipeline reads `staged_at`/`staged_by`, which the pre-#343 "Mark as Pulled" path never wrote. Not a contradiction, just two fields with different histories.
+- The Shipping browse page's "Door leaves shipped" is a **section label**, not a stat card - there is no count in it. The `0` that lands next to it in `document.body.innerText` on the All-Projects view is the **cart badge** from the app bar. Do not read it as "zero leaves shipped"; the per-opening chips below are the truth (a shipped opening renders as a filled green chip, `Opening 0019-EX: 2 of 2 leaves shipped`).
+- `shopAssemblyRequests` returning `[]` does **not** mean the pipeline is empty - it is the *pending accept queue*. `assemblyPipelineSummaries` covers every request in every state and is the right query for "what exists". A request whose pull is already approved shows up in the second and not the first.
+
+### Driving the app with the Chrome MCP tools
+
+- **`file_upload` caps at 10 MB and `contracterp-74.xml` is 11.5 MB**, so the real fixture cannot be uploaded through the tool at all. Either take the "Use last uploaded schedule" card (almost always right), or build a subset: keep everything up to `<Detail>` (that block holds all 1998 opening/assignment definitions, ~1.07 MB) then append `<Detail>` + the first N `</Material_List>`-delimited blocks + `</Detail></Contract>`. ~600 blocks lands at ~3.5 MB, parses clean, and yields "1998 openings parsed / 12746 hardware items parsed / 22 opening(s) had no hardware items assigned". Parsing is entirely client-side - nothing is persisted until Finalize - so uploading a trimmed file is safe on a database you are trying to preserve.
+- **`navigate` costs a full reload and wipes any instrumentation you injected.** React Router picks up `history.pushState(...)` + `window.dispatchEvent(new PopStateEvent('popstate'))`, so route sweeps can be done client-side with a `fetch` wrapper still installed. That wrapper is far better evidence than `read_network_requests`, which only starts recording when first called and misses everything before it, and it can see GraphQL errors - which come back **HTTP 200** with an `errors` array, so status-code filtering finds nothing.
+- **A `javascript_tool` call that hits the 45s CDP timeout keeps running in the page.** Its `await` chain continues after the tool has given up, so the next call races it and you get results tagged with the wrong route. Keep loops under ~8 route-hops, or step one route per call. If output ever looks mismatched, sleep ~6s and start over.
+- `computer screenshot` times out with "renderer may be frozen" while the Import wizard renders 1998 openings or 26k classification rows. It is not frozen - wait 10s and take it again. Same for the first paint after "Use last uploaded schedule".
+- The screenshot image is scaled down from the real viewport (1568px wide image for a 1918px window), so a card that looks cut off at the right edge usually is not. Check `document.documentElement.scrollWidth === clientWidth` before reporting a horizontal-overflow regression.
+- The Pull Request detail modal does **not** close on Escape. Its only text button is "Cancel Pull" - do not reach for that as a way out. Use the icon close button, or just route away.
+- MUI option cards (import Purpose, module "Go to" cards) are `useNavigate` buttons with no `href`, so there are no anchors to click and `find`'s ref sometimes lands on the inner text node rather than the clickable card. Setting the underlying `input[type=radio]`/`input[name=select_row]` via native `.click()` works reliably and does update React state.

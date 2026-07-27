@@ -61,3 +61,17 @@ def test_authenticate_secret_rejects_an_unknown_secret(db_session):
 
 def test_authenticate_secret_rejects_blank():
     assert relay_repository.authenticate_secret(None, "") is None
+
+
+def test_authenticate_secret_survives_a_rotated_encryption_key(db_session, monkeypatch):
+    """A rotated RELAY_SECRET_ENC_KEY makes every stored secret undecryptable. That must be a clean
+    rejection, not an exception escaping into the /relay-link route - and it is a *different* cause
+    from a wrong secret, which is why authenticate_secret logs the distinction (a silent `except:
+    continue` here once left an unexplained 403 loop as the only symptom)."""
+    _, token = relay_repository.provision_install(db_session, label="WS6", company="TUBC")
+    relay_repository.enroll_install(db_session, token, hostname="WS6", secret="valid-secret")
+
+    monkeypatch.setenv("RELAY_SECRET_ENC_KEY", Fernet.generate_key().decode())
+
+    # The secret the relay presents is correct; the backend simply can no longer read its stored copy.
+    assert relay_repository.authenticate_secret(db_session, "valid-secret") is None
