@@ -7,6 +7,7 @@ mirroring app/repositories/. DTO builders live in schemas/converters.py.
 import strawberry
 
 from .buyer import BuyerMutations
+from .gp_outbox import GpOutboxMutations
 from .imports import ImportMutations
 from .notification import NotificationMutations
 from .po import POMutations
@@ -23,6 +24,7 @@ from .warehouse import WarehouseMutations
 @strawberry.type
 class Mutation(
     BuyerMutations,
+    GpOutboxMutations,
     ImportMutations,
     NotificationMutations,
     POMutations,

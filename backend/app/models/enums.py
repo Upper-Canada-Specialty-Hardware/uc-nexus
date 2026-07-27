@@ -123,6 +123,11 @@ class NotificationType(str, enum.Enum):
     # pull holds no reservation (a deficiency cannot be foreseen), so nothing else was going to tell
     # anybody it had become approvable. Deduped to one *unread* notification per pull.
     PULL_UNBLOCKED = "PULL_UNBLOCKED"
+    # A queued GP write died for good (#353 PR E): GP rejected it, it is ambiguous (GP may hold it),
+    # the UC Nexus persist refused it after GP had already committed, or it exhausted its retries.
+    # The outbox absorbs an offline relay silently and by design, so this is the one outcome a human
+    # has to be told about - without it, "queued" and "quietly dead" look identical from the floor.
+    GP_WRITE_FAILED = "GP_WRITE_FAILED"
 
 
 class AuditEntityType(str, enum.Enum):

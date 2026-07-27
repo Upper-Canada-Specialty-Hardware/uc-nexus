@@ -61,6 +61,38 @@ export const GET_RELAY_STATUS = gql`
   }
 `;
 
+// The GP write queue (#353 PR E). The summary is polled by the queue chip; the list is read by the
+// admin queue table and by the PO lists, which join entries onto rows client-side on `entityKey`.
+export const GET_GP_OUTBOX_SUMMARY = gql`
+  query GetGpOutboxSummary {
+    gpOutboxSummary {
+      pending
+      inFlight
+      failed
+      oldestPendingAt
+      lastDrainedAt
+    }
+  }
+`;
+
+export const GET_GP_OUTBOX = gql`
+  query GetGpOutbox($status: GpOutboxStatus, $limit: Int) {
+    gpOutbox(status: $status, limit: $limit) {
+      id
+      label
+      op
+      company
+      status
+      attempts
+      nextAttemptAt
+      lastError
+      failureKind
+      entityKey
+      createdAt
+    }
+  }
+`;
+
 export const GET_WAREHOUSES = gql`
   query GetWarehouses($includeInactive: Boolean) {
     warehouses(includeInactive: $includeInactive) {

@@ -7,9 +7,10 @@ import strawberry
 
 from app.auth import require_user, resolve_display_name
 from app.database import SessionLocal
+from app.errors import RelayUnavailableError
 from app.repositories import warehouse as warehouse_repository
 from app.repositories import warehouse_admin_repository
-from app.services import gp_idempotency, gp_po
+from app.services import gp_idempotency, gp_outbox_enqueue, gp_po
 from app.services.relay_gateway import gateway as relay_gateway
 
 from .converters import (
@@ -38,6 +39,7 @@ from .types import (
     AuditLogEntry,
     BackOrderedItem,
     CancelPullRequestResult,
+    CreateReceiveResult,
     InventoryAvailability,
     InventoryHierarchyNode,
     InventoryItemDetail,
@@ -98,6 +100,21 @@ def _prepare_create_receive(*, po_id, received_by, line_items_data) -> tuple[str
         po_number=po_number, received_by=received_by, line_items=receipt_line_items
     )
     return gp_company, payload
+
+
+def _receive_outbox_identity(po_id: uuid.UUID) -> tuple[uuid.UUID | None, str]:
+    """(project_id, label) for a queued receive (#353 PR E). project_id routes a terminal failure to
+    a notification (None when the PO has no project - the worker then relies on the queue UI rather
+    than inventing a placeholder project); the label is the human line in that queue. One row."""
+    from sqlalchemy import select
+
+    from app.models.purchase_order import PurchaseOrder as POModel
+
+    with SessionLocal() as session:
+        row = session.execute(select(POModel.project_id, POModel.po_number).where(POModel.id == po_id)).first()
+    project_id = row.project_id if row is not None else None
+    number = row.po_number if row is not None else None
+    return project_id, f"Receive against PO {number or po_id}"
 
 
 def _persist_create_receive(*, key, po_id, received_by, line_items_data, warehouse_id, relay_result) -> ReceiveRecord:
@@ -540,7 +557,7 @@ class WarehouseQueries:
 class WarehouseMutations:
     # Receiving
     @strawberry.mutation
-    async def create_receive(self, info: strawberry.Info, input: CreateReceiveInput) -> ReceiveRecord:
+    async def create_receive(self, info: strawberry.Info, input: CreateReceiveInput) -> CreateReceiveResult:
         """Issue #199: GP-first, server-side. Posts the GP receipt via relay_call (create_receipt)
         BEFORE persisting the UC Nexus receive, and received_by is the acting UC Nexus user resolved
         from the Clerk token - not a client-supplied string, and not the relay's Windows account.
@@ -574,7 +591,8 @@ class WarehouseMutations:
 
         state = await asyncio.to_thread(gp_idempotency.load, key)
         if state is not None and state.result_id is not None:
-            return await asyncio.to_thread(_load_receive_type, uuid.UUID(state.result_id))
+            record = await asyncio.to_thread(_load_receive_type, uuid.UUID(state.result_id))
+            return CreateReceiveResult(queued=False, outbox_entry_id=None, receive_record=record)
 
         received_by = await asyncio.to_thread(resolve_display_name, user["user_id"])
         gp_company, payload = await asyncio.to_thread(
@@ -584,10 +602,48 @@ class WarehouseMutations:
         if state is not None and state.relay_result is not None:
             relay_result = state.relay_result
         else:
-            relay_result = await relay_gateway.relay_call(gp_company, "create_receipt", payload)
+            try:
+                relay_result = await relay_gateway.relay_call(gp_company, "create_receipt", payload)
+            except RelayUnavailableError as e:
+                # #353 PR E: the receipt never left the backend, so GP cannot have posted it - queue
+                # it rather than failing a warehouse user who has already counted the hardware. A
+                # DISPATCHED failure is re-raised: GP may hold the receipt, and a blind retry would
+                # double-count inventory.
+                if not gp_outbox_enqueue.may_enqueue(e):
+                    raise
+                project_id, label = await asyncio.to_thread(_receive_outbox_identity, po_id)
+                entry_id = await asyncio.to_thread(
+                    gp_outbox_enqueue.enqueue,
+                    idempotency_key=key,
+                    op="create_receive",
+                    relay_op="create_receipt",
+                    company=gp_company,
+                    payload=payload,
+                    persist_context={
+                        "po_id": str(po_id),
+                        "received_by": received_by,
+                        "warehouse_id": str(warehouse_id) if warehouse_id else None,
+                        "line_items_data": [
+                            {
+                                "po_line_item_id": str(li["po_line_item_id"]),
+                                "quantity_received": li["quantity_received"],
+                                "locations": li["locations"],
+                            }
+                            for li in line_items_data
+                        ],
+                    },
+                    # Same entity_key as register_po_in_gp so a receipt can never be drained ahead of
+                    # the registration of the PO it is against.
+                    entity_key=f"po:{po_id}",
+                    label=label,
+                    project_id=project_id,
+                    requested_by=user["user_id"],
+                )
+                # Nothing is in inventory yet - the persist is deferred with the GP write.
+                return CreateReceiveResult(queued=True, outbox_entry_id=strawberry.ID(entry_id), receive_record=None)
             await asyncio.to_thread(gp_idempotency.record_relay_result, key, "create_receive", relay_result)
 
-        return await asyncio.to_thread(
+        record = await asyncio.to_thread(
             _persist_create_receive,
             key=key,
             po_id=po_id,
@@ -596,6 +652,7 @@ class WarehouseMutations:
             warehouse_id=warehouse_id,
             relay_result=relay_result,
         )
+        return CreateReceiveResult(queued=False, outbox_entry_id=None, receive_record=record)
 
     # Pull Requests
     @strawberry.mutation

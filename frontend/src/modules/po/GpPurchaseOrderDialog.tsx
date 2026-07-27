@@ -161,9 +161,11 @@ export default function GpPurchaseOrderDialog({
   const [createDraftPo, { loading: createLoading }] = useMutation<{ createDraftPo: { requestNumber: string } }>(
     CREATE_DRAFT_PO,
   );
-  const [registerPoInGp, { loading: registerLoading }] = useMutation<{ registerPoInGp: { poNumber: string | null } }>(
-    REGISTER_PO_IN_GP,
-  );
+  const [registerPoInGp, { loading: registerLoading }] = useMutation<{
+    // #353 PR E: `queued` true means the GP relay was unreachable and the registration is on the
+    // durable outbox; the PO comes back still DRAFT.
+    registerPoInGp: { queued: boolean; outboxEntryId: string | null; purchaseOrder: { poNumber: string | null } };
+  }>(REGISTER_PO_IN_GP);
 
   // One idempotency key per user action (create or register), reused across retries so a retry is a
   // no-op in GP instead of a second PO. Reset on a fresh open and after a successful submit; kept on
@@ -543,6 +545,8 @@ export default function GpPurchaseOrderDialog({
 
     setGpError(null);
     setGpBusy(true);
+    // Set when the registration went onto the GP outbox instead of reaching GP (#353 PR E).
+    let queued = false;
     try {
       // GP-first, server-side (issue #199): the resolver pushes to GP via the relay before persisting
       // anything, so a GP rejection changes nothing in UC Nexus.
@@ -569,7 +573,19 @@ export default function GpPurchaseOrderDialog({
             },
           },
         });
-        showToast(`PO ${resp.data?.registerPoInGp?.poNumber} registered in GP`, 'success');
+        const result = resp.data?.registerPoInGp;
+        queued = Boolean(result?.queued);
+        if (queued) {
+          // #353 PR E: accepted but not in GP yet. The PO stays DRAFT and the list shows it as
+          // queued; the idempotency key is now owned by the outbox row, so a resubmit is a no-op
+          // rather than a second registration.
+          showToast(
+            "Queued — the GP relay is offline. This PO will register itself when it reconnects; you don't need to redo it.",
+            'info',
+          );
+        } else {
+          showToast(`PO ${result?.purchaseOrder?.poNumber} registered in GP`, 'success');
+        }
       } else {
         // Issue #256: manual creation lands as a plain DRAFT - no relay, no GP fields. Registering
         // it into GP is a separate, conscious action on the draft row.
@@ -589,8 +605,12 @@ export default function GpPurchaseOrderDialog({
         showToast(`PO request ${resp.data?.createDraftPo?.requestNumber} created as draft`, 'success');
       }
 
-      // Succeeded: clear the key so a later reopen starts a new action.
-      idempotencyKeyRef.current = null;
+      // Succeeded: clear the key so a later reopen starts a new action. NOT when the write was
+      // queued (#353 PR E) - the outbox row owns that key, and reusing it is exactly what makes a
+      // resubmit-while-queued return the same entry instead of registering the PO twice.
+      if (!queued) {
+        idempotencyKeyRef.current = null;
+      }
       onSubmitted();
     } catch (err: unknown) {
       // Keep idempotencyKeyRef so a retry reuses the same key - the GP write may have committed even if

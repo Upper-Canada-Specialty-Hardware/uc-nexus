@@ -373,3 +373,32 @@ export const DELETE_BUYER_ASSIGNMENT = gql`
     deleteBuyerAssignment(buyerId: $buyerId)
   }
 `;
+
+// GP write queue admin actions (#353 PR E). Both are admin-gated on the backend; retrying an
+// `ambiguous` entry is genuinely dangerous (GP may already hold the write), which is why the UI
+// puts it behind a ConfirmDialog that says to check GP first.
+export const RETRY_GP_OUTBOX_ENTRY = gql`
+  mutation RetryGpOutboxEntry($id: ID!) {
+    retryGpOutboxEntry(id: $id) {
+      id
+      status
+      attempts
+      failureKind
+      lastError
+      nextAttemptAt
+    }
+  }
+`;
+
+export const CANCEL_GP_OUTBOX_ENTRY = gql`
+  mutation CancelGpOutboxEntry($id: ID!) {
+    cancelGpOutboxEntry(id: $id) {
+      id
+      status
+      attempts
+      failureKind
+      lastError
+      nextAttemptAt
+    }
+  }
+`;
