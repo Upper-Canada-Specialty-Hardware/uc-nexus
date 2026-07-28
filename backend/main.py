@@ -20,7 +20,7 @@ from app.errors import AppError
 from app.repositories import relay_repository
 from app.schemas.mutations import Mutation
 from app.schemas.queries import Query
-from app.services import gp_outbox_worker, relay_adopt
+from app.services import gp_job_sync, gp_outbox_worker, relay_adopt
 from app.services.relay_gateway import HEARTBEAT_INTERVAL_SECONDS
 from app.services.relay_gateway import gateway as relay_gateway
 
@@ -81,25 +81,28 @@ graphql_app = GraphQLRouter(schema, context_getter=get_context)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """Own the background GP outbox drainer (#353 PR E).
+    """Own the background GP outbox drainer (#353 PR E) and the GP job sync (#380).
 
     Started here rather than lazily on first use so a queue that filled during a deploy starts
     draining as soon as the new container is up, with nobody having to visit a page. Under
-    TestClient(app) this runs too, and is harmless: with no relay registered the loop never queries."""
-    worker: asyncio.Task | None = None
+    TestClient(app) this runs too, and is harmless: with no relay registered neither loop queries."""
+    tasks: list[asyncio.Task] = []
     if gp_outbox_worker.enabled():
-        worker = asyncio.create_task(gp_outbox_worker.run_forever())
+        tasks.append(asyncio.create_task(gp_outbox_worker.run_forever()))
+    if gp_job_sync.enabled():
+        tasks.append(asyncio.create_task(gp_job_sync.run_forever()))
     try:
         yield
     finally:
-        # Close the relay socket cleanly BEFORE stopping the worker (#353 PR F). The relay then knows
+        # Close the relay socket cleanly BEFORE stopping the workers (#353 PR F). The relay then knows
         # this is a restart rather than a blip and reconnects at once; anything it was about to send
         # will queue on the outbox and drain when it does.
         await relay_gateway.close_for_shutdown()
-        if worker is not None:
-            worker.cancel()
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
             with contextlib.suppress(asyncio.CancelledError):
-                await worker
+                await task
 
 
 app = FastAPI(title="UC Nexus - Hardware Management System", lifespan=lifespan)
@@ -270,8 +273,9 @@ async def relay_link(websocket: WebSocket):
         await websocket.close(code=4409)
         return
     # A relay just came back: drain anything that queued while it was gone, now, rather than up to a
-    # poll interval later (#353 PR E).
+    # poll interval later (#353 PR E), and pick up any GP job created while it was away (#380).
     gp_outbox_worker.wake()
+    gp_job_sync.wake()
     try:
         await _serve_relay_link(websocket, require_hello=adopted)
     except WebSocketDisconnect:

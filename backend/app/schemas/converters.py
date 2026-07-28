@@ -18,10 +18,13 @@ from .types import (
     DeficiencyReview,
     DeficientItemRow,
     GpCostCode,
+    GpCustomer,
+    GpCustomerAddress,
     GpJob,
     GpOutboxEntry,
     GpOutboxSummary,
     GpTaxDetail,
+    GpTaxSchedule,
     GpVendor,
     InventoryLocation,
     Notification,
@@ -183,6 +186,23 @@ def gp_cost_code_to_type(c: dict) -> GpCostCode:
 
 def gp_tax_detail_to_type(t: dict) -> GpTaxDetail:
     return GpTaxDetail(tax_detail_id=t["tax_detail_id"], description=t.get("description"), percent=t["percent"])
+
+
+def gp_customer_to_type(c: dict) -> GpCustomer:
+    return GpCustomer(customer_number=c["customer_number"], customer_name=c.get("customer_name"))
+
+
+def gp_customer_address_to_type(a: dict) -> GpCustomerAddress:
+    return GpCustomerAddress(
+        address_code=a["address_code"],
+        address1=a.get("address1"),
+        city=a.get("city"),
+        state=a.get("state"),
+    )
+
+
+def gp_tax_schedule_to_type(s: dict) -> GpTaxSchedule:
+    return GpTaxSchedule(tax_schedule_id=s["tax_schedule_id"], description=s.get("description"))
 
 
 def warehouse_to_type(w) -> Warehouse:
