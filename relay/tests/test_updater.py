@@ -132,6 +132,34 @@ def test_stage_update_extracts_version_seeds_ledger_and_spawns_helper(tmp_path, 
     assert args == [str(helper_exe), "update-apply", "--pid", "4242"]  # helper runs from the CURRENT exe
 
 
+def test_stage_update_spawns_the_helper_from_the_resolved_real_folder(tmp_path, monkeypatch):
+    """The helper must not be launched through the `current` junction it is about to repoint.
+
+    A onedir process keeps loading out of the _internal/ beside the exe path it was launched from, so a
+    helper started as `current\\ucnexus-relay.exe` has its runtime rooted in a path it then moves. Lazy
+    imports after the repoint (the health probe's encodings.idna -> stringprep -> unicodedata) resolve
+    through the junction into the new version, or into nothing mid-swap; a lost race is cached by the
+    codec registry, every later probe reports `LookupError: unknown encoding: idna`, and a healthy new
+    version is rolled back. Seen on build.38 -> build.39 with a fully intact bundle.
+
+    The `..` segment here stands in for the junction: it is a path that only collapses if the code
+    resolves it, so dropping the resolve() call fails this test.
+    """
+    monkeypatch.setattr(updater.urllib.request, "urlretrieve", lambda url, dest: _bundle_zip(dest))
+    real = tmp_path / "app-old" / "ucnexus-relay.exe"
+    real.parent.mkdir(parents=True, exist_ok=True)
+    real.write_bytes(b"exe")
+    via_link = tmp_path / "current" / ".." / "app-old" / "ucnexus-relay.exe"
+    monkeypatch.setattr(single_instance, "installed_exe_path", lambda d: via_link)
+    calls = []
+    monkeypatch.setattr(updater, "_spawn_detached", lambda args, cwd: calls.append((args, cwd)))
+
+    updater.stage_update("u", tmp_path, 7, target_build="relay-v0.1.0-build.12")
+
+    assert calls[0][0][0] == str(real.resolve())
+    assert ".." not in calls[0][0][0]
+
+
 def test_stage_update_rejects_a_tiny_download_and_does_not_spawn(tmp_path, monkeypatch):
     monkeypatch.setattr(updater.urllib.request, "urlretrieve", lambda url, dest: Path(dest).write_bytes(b"tiny"))
 
