@@ -94,14 +94,26 @@ def test_adopts_only_the_jobs_that_are_missing(monkeypatch):
 
 
 def test_survives_a_job_it_cannot_adopt(monkeypatch):
-    # a job number too long for the column must not cost the good ones in the same pass
-    _relay(monkeypatch, jobs=[{"job_number": "SYNC-380-A", "job_name": "Fine"}, {"job_number": "X" * 400}])
+    """One unusable job must not cost the others in the same pass.
+
+    The failure is injected rather than provoked with bad data: project_id has no length cap, so an
+    absurd job number adopts perfectly well, and there is no input the sync can be handed that is
+    reliably rejected. What matters is the handling, so raise from the write itself."""
+    _relay(monkeypatch, jobs=[{"job_number": "SYNC-380-A", "job_name": "Fine"}, {"job_number": "SYNC-380-BAD"}])
+    real_adopt = project_repository.adopt_gp_job
+
+    def _explode(session, *, job_number, job_name):
+        if job_number == "SYNC-380-BAD":
+            raise RuntimeError("whatever the database refuses this row for")
+        return real_adopt(session, job_number=job_number, job_name=job_name)
+
+    monkeypatch.setattr(gp_job_sync.project_repository, "adopt_gp_job", _explode)
 
     total, adopted = asyncio.run(gp_job_sync.run_once())
 
-    assert total == 2
-    assert adopted == 1
+    assert (total, adopted) == (2, 1)
     assert "SYNC-380-A" in _projects()
+    assert "SYNC-380-BAD" not in _projects()
 
 
 def test_ignores_blank_and_duplicate_job_numbers(monkeypatch):
