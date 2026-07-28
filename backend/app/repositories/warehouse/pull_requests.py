@@ -422,6 +422,63 @@ def _loose_requirements(pr: PullRequestModel) -> dict[tuple[str, str], int]:
     return dict(required)
 
 
+def _claimable_by_combo(
+    session: Session,
+    pr: PullRequestModel,
+    combos: Iterable[tuple[str, str]],
+) -> dict[tuple[str, str], int]:
+    """What this pull may actually take of each combo: on-hand minus condemned minus *other*
+    requests' reservations, floored at 0 (#367).
+
+    Two grouped aggregates whatever the pull covers. This is the number `confirm_pick`'s third
+    ceiling enforces and `get_pick_sheet` puts on the screen, so both read it the same way - the
+    screen must never promise a quantity the confirm will refuse.
+    """
+    wanted = list(combos)
+    if not wanted:
+        return {}
+
+    on_hand = {
+        (cat, code): int(total or 0)
+        for cat, code, total in session.execute(
+            select(
+                InventoryLocationModel.hardware_category,
+                InventoryLocationModel.product_code,
+                func.coalesce(
+                    func.sum(
+                        InventoryLocationModel.quantity - func.coalesce(InventoryLocationModel.deficient_quantity, 0)
+                    ),
+                    0,
+                ),
+            )
+            .where(
+                InventoryLocationModel.project_id == pr.project_id,
+                or_(
+                    *[
+                        and_(
+                            InventoryLocationModel.hardware_category == cat,
+                            InventoryLocationModel.product_code == code,
+                        )
+                        for (cat, code) in wanted
+                    ]
+                ),
+            )
+            .group_by(InventoryLocationModel.hardware_category, InventoryLocationModel.product_code)
+        ).all()
+    }
+
+    holder = find_reservation_holder(session, pr)
+    exclude_source, exclude_request_id = holder or (None, None)
+    reserved = reservations.get_reserved_quantities(
+        session,
+        pr.project_id,
+        wanted,
+        exclude_source=exclude_source,
+        exclude_request_id=exclude_request_id,
+    )
+    return {combo: max(0, on_hand.get(combo, 0) - reserved.get(combo, 0)) for combo in wanted}
+
+
 def outstanding_loose_needs(session: Session, pr: PullRequestModel) -> dict[tuple[str, str], int]:
     """What a pull still has to pick, per combo: what it asked for minus what it has already picked.
 
@@ -851,15 +908,25 @@ def confirm_pick(
     already = _applied_by_combo(session, pr.id)
     now = datetime.utcnow()
 
-    # A confirmation with nothing entered is only meaningful on a pure fetch pull, where there is
-    # genuinely nothing to deduct. On a pull with loose lines it would deduct nothing, report the
-    # whole requirement as short, and raise a PO backfill signal for a walk nobody took - and then
-    # `has_unread_notification_for_pull` would suppress the *real* signal from the pick that
-    # follows. Refused rather than treated as a short pick.
-    if required and not entered:
+    # A confirmation with nothing entered has two very different meanings, and only one of them is a
+    # mistake.
+    #
+    # "I walked the racks and there was nothing there" is a **real outcome** and the honest way to
+    # record it: the pull is confirmed short of everything, and purchasing is told. That is the
+    # direct analogue of the old approve-time INSUFFICIENT, and refusing it would leave a picker who
+    # found an empty bin with no way to say so.
+    #
+    # "I submitted an empty sheet while the stock was sitting there" is a no-op that deducts nothing,
+    # reports the whole requirement as short, and raises a PO backfill signal for a walk nobody took
+    # - which `has_unread_notification_for_pull` would then let suppress the *real* signal from the
+    # pick that follows.
+    #
+    # The two are separated by whether there was anything to pick, so that is what is checked. One
+    # extra pair of aggregates, only on the empty-submission path.
+    if required and not entered and any(qty > 0 for qty in _claimable_by_combo(session, pr, required).values()):
         raise ValidationError(
-            "Nothing was entered. Record what came off each location before confirming, or cancel "
-            "the pull if none of it can be picked.",
+            "Nothing was entered, but there is stock available for this pull. Record what came off "
+            "each location before confirming.",
             field="lines",
         )
 

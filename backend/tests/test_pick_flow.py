@@ -582,10 +582,10 @@ def test_a_picked_pull_leaves_the_backfill_loop(db_session):
     assert pr.id not in {p.id for p in warehouse_repository.find_open_replacement_pulls(db_session, project.id)}
 
 
-def test_confirming_with_nothing_entered_is_refused_on_a_pull_with_loose_lines(db_session):
-    """It would deduct nothing, report the whole requirement short, and raise a PO backfill signal
-    for a walk nobody took - and then dedupe would suppress the real signal from the pick that
-    followed."""
+def test_confirming_with_nothing_entered_is_refused_while_stock_is_there(db_session):
+    """A no-op submission with the hardware sitting on the shelf. It would deduct nothing, report
+    the whole requirement short, and raise a PO backfill signal for a walk nobody took - and then
+    dedupe would let that suppress the real signal from the pick that followed."""
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=5)
     pr = _started_pull(db_session, project.id, needs=[(*HINGE, 4, 1)])
@@ -597,6 +597,24 @@ def test_confirming_with_nothing_entered_is_refused_on_a_pull_with_loose_lines(d
         db_session.scalar(select(func.count()).select_from(Notification).where(Notification.pull_request_id == pr.id))
         == 0
     )
+
+
+def test_confirming_with_nothing_entered_is_allowed_when_there_was_nothing_to_pick(db_session):
+    """The other reading of an empty sheet, and the one that must keep working: the picker walked
+    the racks and the bin was empty. That is a real outcome - the direct analogue of the old
+    approve-time INSUFFICIENT - so it confirms short of everything and purchasing is told."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=0)
+    pr = _started_pull(db_session, project.id, needs=[(*HINGE, 4, 1)])
+
+    result = warehouse_repository.confirm_pick(db_session, pr.id, [], "picker")
+    db_session.flush()
+
+    assert result.outcome == "SHORT"
+    assert result.applied_quantity == 0
+    assert pr.picked_at is None
+    assert [(s.product_code, s.short) for s in result.shortfalls] == [(HINGE[1], 4)]
+    assert result.notification is not None
 
 
 def test_a_soft_deleted_pull_cannot_be_started(db_session):
