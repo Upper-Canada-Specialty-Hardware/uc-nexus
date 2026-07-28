@@ -49,8 +49,9 @@ Creating a shop assembly request or a shipping out request is what re-attaches i
 - `hardware_category` + `product_code` + `requested_quantity` - what is being claimed from fungible
   stock.
 
-Approving the pull request deducts that quantity FIFO from `inventory_locations` rows. The physical
-hardware never changed; what changed is that it now belongs to a leaf.
+Confirming the pull's **pick** deducts that quantity from the `inventory_locations` rows the
+warehouse user names (§3b). The physical hardware never changed; what changed is that it now belongs
+to a leaf.
 
 This is why both request types are created from the hardware schedule through **Start a Task**. The
 schedule is the only thing that knows which leaf of which opening a quantity is owed to. Inventory
@@ -59,7 +60,7 @@ cannot answer that question, because it deliberately forgot.
 #### 3a. The reservation: the tag's claim before the pull
 
 The tag is written when the request is created, but the stock is not deducted until the warehouse
-approves the pull - and that gap used to be a hole. Two requests could each be created against the
+confirms the pick - and that gap used to be a hole. Two requests could each be created against the
 same hinges, both pass an accept-time check, and the second pull would then find the shelf empty.
 
 Since #342 **creating a request reserves what it claims.** An `inventory_reservations` row is written
@@ -73,8 +74,9 @@ deliberately does not have, for the same reason `InventoryLocation` does not hav
 
 - **no opening, no leaf** - a hinge is still a hinge; the reservation is aggregate, per
   `(project, hardware_category, product_code)`;
-- **no `inventory_location_id`** - pinning a claim to specific rows would fight FIFO. The reservation
-  governs *how much* is free, never *which* row. FIFO deduction at approval is unchanged.
+- **no `inventory_location_id`** - pinning a claim to specific rows would decide something the claim
+  has no business deciding. The reservation governs *how much* is free, never *which* row; which row
+  is the picker's call at confirm time (§3b).
 
 The lifecycle of that claim, end to end:
 
@@ -88,30 +90,80 @@ The lifecycle of that claim, end to end:
 | Reject (either type) | **Release** - the request is dead, the hardware goes back to the pool |
 | Reopen an accepted request (#325) | **No change** - reopen undoes the *accept*, not the creation; the request returns to PENDING still holding its claim |
 | Reject after a reopen | **Release** - the same reject path, and the only thing that finally lets go |
-| Pull approval, sufficient | **Consume** - the claim becomes the FIFO deduction, atomically, under the same row locks |
-| Pull approval, short | **No change** - the pull stays PENDING and keeps holding, so a blocked request does not hand its hardware to whoever asks next |
-| PR-REPL replacement pull | **Never reserves** - a deficiency cannot be foreseen, so it keeps the reactive check and the PO-backfill loop. It still draws only from on-hand minus deficient minus *others'* reservations |
+| Starting a pick | **No change** - opening a pull for picking moves nothing (§3b) |
+| Pick confirmed, covered | **Consume** - the claim becomes the deduction of the rows the picker named, atomically, under the same row locks |
+| Pick confirmed short | **Partial consume** - only what was picked comes off the book; the un-picked remainder stays claimed, so a part-filled request does not hand the rest to whoever asks next |
+| PR-REPL replacement pull | **Reserves what it can at flag time** - `min(free stock, condemned)`, topped up as stock arrives. Being partly covered is its normal resting state, which is why a short pick on one is not an integrity error |
 | Re-upload drops a PENDING request's openings | **Rebuilt** from what survived, which releases exactly what the vanished openings held |
 | Re-upload empties a PENDING request | **Auto-reject**, which releases |
 
-**Self-coverage** is the one subtlety worth naming. When the warehouse approves request R's pull, R's
-own reservations are precisely what backs the deduction, so the availability check on that path
-excludes them (`exclude_reservations_of`). Without the exclusion a request that reserved exactly what
-it needs would read as competing with itself and could never be approved. Everyone else's claims
-still count - which is also what stops an unreserved PR-REPL pull from eating stock another request
-is holding.
+**Self-coverage** is the one subtlety worth naming. When request R's claim is being spent, R's own
+reservations are precisely what backs the deduction, so any availability check on that path excludes
+them (`exclude_reservations_of`). Without the exclusion a request that reserved exactly what it needs
+would read as competing with itself and could never be satisfied. Everyone else's claims still count
+in the checks that remain, which since #367 means the creation gate and the cancel-time re-check -
+the pick itself is not gated on an aggregate at all (§3b).
 
 A **deficiency reported at the bench** does not touch reservations, and cannot double-count against
 them: `report_deficiency_at_assembly` raises the inventory row's `quantity` and `deficient_quantity`
 together, so the pair nets to zero in `on-hand - deficient`. The unit is back in the building and is
 not available - which is the truth.
 
-#### 3b. Staging: the tag moves onto a cart, opening by opening
+#### 3b. The pick: which units, chosen by the person who can see them
 
-Approving the pull is one decision; *executing* it is a shift's work. The warehouse picks a pull cart
-by cart, and before #343 the system only knew "pulled" or "not pulled" for the whole request, so an
-opening whose hardware was on a cart at 9am was not assignable until the last opening was picked at
-4pm.
+Until #367 approving a pull did everything at once - it checked sufficiency against a project-wide
+aggregate, deducted FIFO by `received_at`, consumed the claim, and recorded nothing about where the
+hardware physically came from. The warehouse user, the only person standing in front of the racks,
+never chose. Two consequences followed: the answer to "where did the hardware for pull X come from"
+existed only as a scatter of audit rows nobody could reassemble, and a pull was refused before
+anybody had looked at a shelf.
+
+The moment splits in two:
+
+| Step | What it does |
+| --- | --- |
+| `start_pull_request_pick` | Claims the pull for a picker and opens it: PENDING -> IN_PROGRESS, `assigned_to` and `approved_at` stamped. **Nothing moves in inventory, and there is no sufficiency gate.** |
+| `save_pick_draft` | Saves the half-keyed sheet as DRAFT `pull_pick_lines`. A note, not a claim: shape is validated, availability deliberately is not, and a save replaces the pull's whole draft set rather than merging - the paper sheet is the authority being transcribed |
+| `confirm_pick` | The atomic swap. Consumes the claim for what is being picked (per combo, partially) and deducts the exact rows named, in one transaction under the pull's lock and every named row's lock. Writes one APPLIED `pull_pick_lines` row and one `PULL_DEDUCTION` audit per row, and stamps `picked_at` / `picked_by` once every combo is covered |
+
+`pull_pick_lines` is the record the FIFO deduction never kept: `(pull, hardware_category,
+product_code, inventory_location_id, quantity, state)`. It is the one place a location and a leaf's
+hardware are recorded together, and it is not a violation of the rule at the top of this document -
+it is *history* ("these units came off that bin"), not identity ("this bin belongs to that leaf").
+The FK is `ON DELETE SET NULL`, so a location merged or deleted later degrades the row to "came from
+somewhere that no longer exists" rather than blocking the delete.
+
+Two ceilings, both hard and neither negotiable from the client: no row may give up more than its own
+`quantity - deficient_quantity`, and no product code may exceed what the pull asked for once what is
+already picked is counted. **No over-pull, ever.**
+
+**Short is a first-class outcome, not a failure.** A confirmation that does not cover everything
+deducts what was entered, leaves the pull IN_PROGRESS and un-picked, notifies purchasing once
+(deduped on `notifications.pull_request_id`), and lets a later confirmation enter the remainder. The
+alternative - refusing the whole confirmation - would mean a picker who found nine of twelve hinges
+has to put the nine back on the shelf. Nobody does that; they mark the pull complete anyway and the
+system starts lying.
+
+**Availability at confirm time is per row, not reservation-aware**, and that is a deliberate trade.
+The old approve compared an aggregate against on-hand minus *everyone else's* claims; here the picker
+is holding the hardware and the only question is whether that bin has the units. The consequence is
+that a pull holding no claim of its own - a replacement that could only partly reserve, or a request
+from the #342 backfill population - can pick into stock another request has reserved. That request
+discovers it as a short pick on its own pull, with the same PO backfill signal. Reservations still
+gate request *creation*, which is where competing demand belongs.
+
+An **OPENING_ITEM line is fetched, not picked**: the leaf was tagged at assembly and its hardware left
+fungible inventory then, so there is nothing to deduct - only to walk to the rack and collect it.
+`pull_request_items.fetched_at` / `fetched_by` persist that check-off so it survives a reload or a
+shift change, and a pull whose lines are all OPENING_ITEM is picked the moment it is confirmed with
+nothing entered.
+
+#### 3c. Staging: the tag moves onto a cart, opening by opening
+
+Confirming the pick is one decision; *executing* the rest is a shift's work. The warehouse builds a
+pull cart by cart, and before #343 the system only knew "pulled" or "not pulled" for the whole
+request, so an opening whose hardware was on a cart at 9am was not assignable until the last opening
+was picked at 4pm.
 
 **Staging is per opening.** `stage_pull_openings` flips one `ShopAssemblyOpening.pull_status` to
 `PULLED` at a time, stamping `staged_at` / `staged_by`, and that opening becomes assignable and
@@ -128,16 +180,21 @@ Two state facts, deliberately kept apart:
   `PullRequestStatus` therefore stays `PENDING -> IN_PROGRESS -> COMPLETED/CANCELLED` with no
   half-state wedged into it.
 
-**Deduction timing does not move.** FIFO deduction and consumption of the source request's
-reservation both stay at approval. Approval is where the pull is committed, and per-opening deduction
-would break two things at once: an approved-but-unstaged opening would hold neither a reservation nor
-a deduction, so its hardware would read as free to the next request (the hole §3a closed); and a
-shortfall could then surface at staging time, where the only recovery is a half-deducted pull.
-Staging is progress tracking. Cancellation is what reverses stock.
+**Deduction timing does not move to staging.** The deduction and the consumption of the source
+request's reservation both stay at the pick confirmation (§3b), which is where the pull is committed.
+Per-opening deduction would break two things at once: a picked-but-unstaged opening would hold
+neither a reservation nor a deduction, so its hardware would read as free to the next request (the
+hole §3a closed); and a shortfall could then surface at staging time, where the only recovery is a
+half-deducted pull. Staging is progress tracking. Cancellation is what reverses stock.
 
-#### 3c. Cancelling a pull: the tag comes off
+**Staging is gated on `picked_at`**, not on the pull merely being IN_PROGRESS. Since starting a pick
+no longer moves anything, without that gate a cart could be declared built - and its opening handed
+to the assembly floor - off hardware still sitting on the shelf. `complete_pull_request` gates the
+same way.
 
-Once a pull was approved there was no way back - stock was deducted and `PullRequestStatus.CANCELLED`
+#### 3d. Cancelling a pull: the tag comes off
+
+Once a pull was started there was no way back - stock was deducted and `PullRequestStatus.CANCELLED`
 was an enum value nothing ever set. `cancel_pull_request` is the way back, and it is
 **all-or-nothing per pull**:
 
@@ -147,9 +204,12 @@ was an enum value nothing ever set. `cancel_pull_request` is the way back, and i
 | Staged-but-unassembled openings **do** come back | Their hardware is on a cart in the shop, exactly as retrievable as hardware on the shelf. Restocking only the un-staged part would leave the staged part deducted with no leaf to show for it |
 | No partial cancel | `PullStatus` has no cancelled value, and `complete_pull_request` flips *every* opening of a pull to PULLED - so a half-cancelled pull would resurrect its released openings the moment the rest was staged. Expressing it properly needs an opening-level cancelled state |
 | Cancellable from IN_PROGRESS, and from COMPLETED for a shop-assembly pull with openings | Since staging is per opening, COMPLETED there means no more than "every cart is built". A completed shipping-out pull has already flipped leaves to SHIP_READY, and a completed PR-REPL pull has already restored expectations |
-| Restock lands on the project's newest `InventoryLocation` row for the combo, not a row-by-row reversal | Which row a hinge sits on carries no identity (the rule at the top of this document). Landing on the newest row is also conservative for future FIFO: older stock still goes out first |
-| Source request returns to **PENDING**, and its reservation is re-created after the restock, availability re-checked | The claim was consumed at approval, so re-creating it is a new claim competing with everyone else's. If it cannot be covered, the request is left **unreserved and flagged** via `integrity_note` rather than half-claimed - the same honest-and-flagged shape the #342 backfill uses |
-| A PR-REPL replacement pull restocks and re-creates nothing | It never held a reservation. The leaf's `deficient_quantity` is untouched: the expectation stays on the checklist line and the replacement has to be requested again |
+| How much comes back is how much went out | A fully picked pull returns everything; a short-picked one returns only what was picked; a pull cancelled before its pick returns nothing, because nothing left. Its drafts are discarded with it - a draft is a note about hardware, not a hold on it |
+| Restock returns each unit to the **exact `InventoryLocation` it came off**, from the APPLIED `pull_pick_lines` | The picker recorded where each handful came from (§3b), so there is nothing to guess: a bin that gave up twelve hinges gets twelve hinges back, which is what makes a physical recount agree with the system |
+| Two fallbacks to the old per-combo return | A pull picked under the pre-#367 model has no pick lines to reverse (the migration's backfill population), and a pick line whose location was deleted since has a null FK. Both land on the project's newest row for the combo - defensible because which row a hinge sits on carries no identity, and conservative for future FIFO |
+| Any claim the pull still holds is **released before** the request's is re-created | Since the claim is consumed *as the pick is confirmed*, a pull cancelled before its pick still holds all of it and a short-picked one holds the remainder. Re-creating the request's full need on top of either would double-claim the same units |
+| Source request returns to **PENDING**, and its reservation is re-created from what it will need on re-acceptance, availability re-checked after the restock | Re-creating it is a new claim competing with everyone else's. If it cannot be covered, the request is left **unreserved and flagged** via `integrity_note` rather than half-claimed - the same honest-and-flagged shape the #342 backfill uses |
+| A PR-REPL replacement pull restocks whatever it picked and re-creates nothing | It has no source request to hand back to. Its own claim is released, spent or not. The leaf's `deficient_quantity` is untouched: the expectation stays on the checklist line and the replacement has to be requested again |
 
 Cancelling keeps the pull row, which is why `pull_requests.request_number` is unique only among
 **live** pulls (a partial unique index excluding `CANCELLED`): re-accepting the returned request
@@ -163,7 +223,7 @@ The tag does not become physical all at once. Assembly happens over a shift, uni
 - **Assembly progress** - `shop_assembly_opening_items.installed_quantity` / `deficient_quantity`
   count what the assembler has actually fitted and what has been condemned. This is *work-tracking on
   the tag*, not a materialization: no `OpeningItem` exists yet, nothing has left or entered fungible
-  inventory (the hardware was deducted when the pull was approved), and the leaf can be handed to
+  inventory (the hardware was deducted when the pick was confirmed), and the leaf can be handed to
   another assembler without losing a unit of it. The opening sits at `IN_PROGRESS` while this is
   happening. Remaining is `quantity - installed - deficient`, derived, never stored.
 - **A unit found defective** goes back the moment it is found, not at completion:
@@ -176,9 +236,9 @@ The tag does not become physical all at once. Assembly happens over a shift, uni
   then `-2`, `-3` on collision (truncating the basis, never the suffix, to stay inside
   `request_number`'s varchar(50)). A flag reuses the existing replacement pull only while it is
   **PENDING**, and merges into that pull's existing line for the same checklist item and product
-  rather than stacking one-unit rows. Once the pull is approved it is closed to new lines, and the
-  reason is the same rule the rest of this document is about: approval is where the claim on stock
-  is settled. A line appended afterwards was never sufficiency-checked and never deducted, yet
+  rather than stacking one-unit rows. Once the pull has been started it is closed to new lines, and
+  the reason is the same rule the rest of this document is about: the pick is where the claim on
+  stock is settled. A line appended afterwards was never picked and never deducted, yet
   `_apply_replacement_arrivals` would count it as delivered and `cancel_pull_request` would restock
   it - inventory conjured from a row that had no hardware behind it. The next deficiency therefore
   starts a pull of its own.
@@ -227,7 +287,7 @@ never silent, never a hard block.
 ### 5. Reading the lifecycle back
 
 Every stage above is written by a different screen, and until #344 it could only be *read* from the
-screen that wrote it. A request holds a reservation (§3a), its pull is part-staged (§3b), one leaf is
+screen that wrote it. A request holds a reservation (§3a), its pull is part-staged (§3c), one leaf is
 half-built (§4), another is finished but owed a replacement (§4b) - and answering **"where is opening
 A01 leaf 2?"** meant opening four views and joining them by eye.
 
@@ -243,7 +303,7 @@ opening - what is holding it up, not its best news:
 `REJECTED` and `CANCELLED` sit off the ladder rather than at the end of it. They are the two ways a
 leaf leaves the pipeline unassembled, and reading them as "further along than IN_PROGRESS" would be
 nonsense. `CANCELLED` is also how a cancelled pull stays visible at all: cancellation detaches the
-openings and returns the request to PENDING (§3c), so without the cancelled pull in view the request
+openings and returns the request to PENDING (§3d), so without the cancelled pull in view the request
 would read as though it had never been accepted.
 
 Two constraints shaped the implementation, both from CLAUDE.md's performance rules:
@@ -267,9 +327,9 @@ Three states slices 1-5 created had nobody watching them, and #344 gave each one
 
 | Event | Audience | Why it could not be inferred |
 | --- | --- | --- |
-| Openings became workable - carts staged (§3b), or a pull completed with openings still un-staged | Shop-assembly manager | Per-opening staging made an opening assignable the moment its cart was built; the assignment board only found out when somebody reloaded it |
+| Openings became workable - carts staged (§3c), or a pull completed with openings still un-staged | Shop-assembly manager | Per-opening staging made an opening assignable the moment its cart was built; the assignment board only found out when somebody reloaded it |
 | A replacement arrived for a leaf that has **not** shipped (§4b) | The assembler holding the leaf | #341 notified only the *shipped* case. The ordinary case - the one somebody can act on - was silent |
-| A blocked PR-REPL pull became coverable because a receive landed the stock | Warehouse | A replacement pull holds **no reservation** by design (§3a), so nothing was tracking its demand. The approver saw INSUFFICIENT, the PO backfilled, and nothing said the retry would now succeed |
+| A blocked PR-REPL pull became coverable because a receive landed the stock | Warehouse | A replacement pull holds **no reservation** by design (§3a), so nothing was tracking its demand. The picker confirmed short, the PO backfilled, and nothing said the remainder could now be keyed in |
 
 The staged/completed pair needs no dedupe logic at all, because each call announces only the openings
 *it* made workable: staging the last cart calls `complete_pull_request`, which then finds nothing left
@@ -283,16 +343,16 @@ text inside the message.
 Both pull request sources use `pull_request_items`, but the two `item_type` values do fundamentally
 different things:
 
-- `LOOSE` - tags fungible inventory onto a leaf for the first time. Approving it deducts stock, so it
-  is gated on inventory sufficiency - and since #342 it is also what *reserves* stock when the
-  request is created.
+- `LOOSE` - tags fungible inventory onto a leaf for the first time. It is **picked**: the warehouse
+  user names a quantity per location and confirming that deducts stock (§3b). Since #342 it is also
+  what *reserves* stock when the request is created.
 - `OPENING_ITEM` - moves a leaf that was **already tagged** at shop assembly. The hardware left
-  fungible inventory when it was installed. Approving it deducts nothing and locks the `OpeningItem`
-  row instead; there is no stock to check, and nothing to reserve either.
+  fungible inventory when it was installed, so it is **fetched**, not picked: a check-off, no
+  quantity, nothing deducted, nothing to reserve.
 
 Confusing the two is issue #335: the Shipping Out import emitted `LOOSE` lines for hardware that had
 already been assembled onto a leaf, so the warehouse pull asked general inventory for hardware that
-had left it, found zero, and blocked approval forever. An assembled leaf ships as an `OPENING_ITEM`
+had left it, found zero, and could never be picked. An assembled leaf ships as an `OPENING_ITEM`
 line naming its `OpeningItem`, never as loose hardware.
 
 The same asymmetry explains the shipping wizard's selection UI: assembled leaves are listed per
@@ -310,17 +370,22 @@ leaf until a pull tags it onto one).
 | Claim modelled | `backend/app/models/inventory_reservation.py` (aggregate; no opening, no leaf, no location) |
 | Availability arithmetic | `backend/app/repositories/warehouse/reservations.py` (`get_reserved_quantities`, `get_project_availability`, grouped aggregates) |
 | Claim respected / self-covered | `backend/app/repositories/warehouse/pull_requests.py` (`check_inventory_sufficiency`, `reservation_aware` + `exclude_reservations_of`) |
-| Claim consumed at the pull | `backend/app/repositories/warehouse/pull_requests.py` (`approve_pull_request` -> `release_reservations` then FIFO deduction) |
+| Claim consumed at the pick | `backend/app/repositories/warehouse/pull_requests.py` (`confirm_pick` -> `reservations.consume_reservations` then the dictated deduction) |
 | Claim released | `shop_assembly_repository.reject_shop_assembly_request` / `shipping_repository.reject_shipping_out_request` (reject only - reopen deliberately holds) |
 | Duplicate / cross-type leaf guard | `shop_assembly_repository.find_in_flight_assembly_leaves`, `shipping_repository.find_live_shipping_claims` |
 | Re-upload reconciliation | `backend/app/repositories/import_repository.py` (`_handle_schedule_replacement` -> rebuild, auto-reject, `integrity_note`) |
 | Tag written, shop assembly | `backend/app/repositories/shop_assembly_repository.py` (`accept_shop_assembly_request`) |
 | Tag written, shipping out | `backend/app/repositories/shipping_repository.py` (`accept_shipping_out_request`) |
-| Tag consumes stock | `backend/app/repositories/warehouse/pull_requests.py` (`approve_pull_request`, FIFO deduction) |
+| Pull opened for picking, nothing moved | `backend/app/repositories/warehouse/pull_requests.py` (`start_pull_request_pick`) |
+| Pick sheet, fixed query count | `backend/app/repositories/warehouse/pull_requests.py` (`get_pick_sheet` -> sections, per-location rows, fetch list) |
+| Tag consumes stock, per location | `backend/app/repositories/warehouse/pull_requests.py` (`confirm_pick`; two hard ceilings - the row's available units, and what the pull asked for) |
+| Where each unit came off, recorded | `backend/app/models/pull_pick_line.py` (`PullPickLine`, DRAFT/APPLIED, `inventory_location_id` ON DELETE SET NULL) |
+| Assembled leaf fetched, not picked | `backend/app/repositories/warehouse/pull_requests.py` (`set_pull_item_fetched` -> `pull_request_items.fetched_at` / `fetched_by`) |
+| Staging and completion gated on the pick | `backend/app/repositories/warehouse/pull_requests.py` (`_require_picked`, called by `stage_pull_openings` and `complete_pull_request`) |
 | Tag staged, opening by opening | `backend/app/repositories/warehouse/pull_requests.py` (`stage_pull_openings` -> one `ShopAssemblyOpening.pull_status`, `staged_at` / `staged_by`; last one calls `complete_pull_request`) |
 | PARTIAL derived, never stored | `backend/app/repositories/warehouse/pull_requests.py` (`get_pull_staging_summaries` / `StagingSummary.status`, one grouped aggregate per page) |
 | Workability keyed on the opening, not the pull | `backend/app/repositories/shop_assembly_repository.py` (`_APPROVED_PULL_STATUSES` + `pull_status == PULLED` in `get_assemble_list`, `get_my_work`, `assign_openings`, `record_assembly_progress`, `complete_opening`) |
-| Tag comes off, stock returned | `backend/app/repositories/warehouse/pull_requests.py` (`cancel_pull_request` -> `_return_units_to_project_inventory`, all-or-nothing, blockers named) |
+| Tag comes off, stock returned to source rows | `backend/app/repositories/warehouse/pull_requests.py` (`cancel_pull_request` -> `_restock_cancelled_pull`; per-combo `_return_units_to_project_inventory` only as the legacy / null-FK fallback) |
 | Claim re-created after a cancel | `backend/app/repositories/warehouse/pull_requests.py` (`cancel_pull_request` -> availability re-check then `create_reservations`, else `integrity_note`) |
 | Pull number unique among live pulls only | `backend/app/models/pull_request.py` (`uq_pull_requests_request_number_live`, partial index excluding CANCELLED) |
 | Tag worked, incrementally | `backend/app/repositories/shop_assembly_repository.py` (`record_assembly_progress` -> `installed_quantity` / `deficient_quantity`) |
