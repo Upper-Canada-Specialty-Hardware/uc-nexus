@@ -31,6 +31,17 @@ from app.services.relay_gateway import gateway  # noqa: E402
 from main import app  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _no_job_sync(monkeypatch):
+    """Switch the GP job sync (#380) off for the lifespans these tests start.
+
+    The sync is woken by /relay-link registration, so it puts a list_jobs frame on the socket the
+    moment a relay connects - which is the point of it, but it lands on these tests' sockets ahead of
+    the heartbeat frames they assert on, and at a moment that depends on scheduling. These exercise
+    the route, not the sync, so the frame is pure noise here."""
+    monkeypatch.setenv("GP_JOB_SYNC_ENABLED", "false")
+
+
 def _enroll_committed(label: str, company: str, secret: str) -> str:
     """Enroll an install and COMMIT it: the route opens its own SessionLocal(), so it only sees
     committed rows, not this test's transaction. Returns the install id for cleanup."""

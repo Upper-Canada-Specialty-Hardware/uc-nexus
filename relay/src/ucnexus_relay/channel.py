@@ -166,6 +166,50 @@ def _run_create_po(company: str, payload: dict) -> dict:
             raise
 
 
+def _run_list_customers(company: str, payload: dict) -> dict:
+    ops.check_company_allowed(company)
+    with db.get_read_connection(company) as conn:
+        rows = econnect.list_customers(conn)
+    return {"company": company, "customers": rows}
+
+
+def _run_list_customer_addresses(company: str, payload: dict) -> dict:
+    ops.check_company_allowed(company)
+    customer = (payload.get("customer") or "").strip()
+    if not customer:
+        raise ops.RelayOpError("missing_customer", "customer is required")
+    with db.get_read_connection(company) as conn:
+        rows = econnect.list_customer_addresses(conn, customer)
+    return {"company": company, "customer": customer, "addresses": rows}
+
+
+def _run_list_tax_schedules(company: str, payload: dict) -> dict:
+    ops.check_company_allowed(company)
+    with db.get_read_connection(company) as conn:
+        rows = econnect.list_tax_schedules(conn)
+    return {"company": company, "tax_schedules": rows}
+
+
+def _run_list_divisions(company: str, payload: dict) -> dict:
+    ops.check_company_allowed(company)
+    with db.get_read_connection(company) as conn:
+        rows = econnect.list_divisions(conn)
+    return {"company": company, "divisions": rows}
+
+
+def _run_create_job(company: str, payload: dict) -> dict:
+    ops.check_company_allowed(company)
+    request = models.CreateJobRequest(company=company, **payload)
+    with db.get_connection(company) as conn:
+        try:
+            response = ops.create_job_op(conn, company=company, request=request)
+            conn.commit()
+            return response.model_dump(mode="json")
+        except Exception:
+            conn.rollback()
+            raise
+
+
 def _run_create_receipt(company: str, payload: dict) -> dict:
     ops.check_company_allowed(company)
     request = models.ReceiptRequest(company=company, **payload)
@@ -188,6 +232,12 @@ _OPS = {
     "read_po_totals": _run_read_po_totals,
     "create_po": _run_create_po,
     "create_receipt": _run_create_receipt,
+    # issue #380 - the create-job form's live reads, and the create itself.
+    "list_customers": _run_list_customers,
+    "list_customer_addresses": _run_list_customer_addresses,
+    "list_tax_schedules": _run_list_tax_schedules,
+    "list_divisions": _run_list_divisions,
+    "create_job": _run_create_job,
 }
 
 

@@ -1,15 +1,24 @@
 import { useState, useMemo, useCallback } from 'react';
-import { Alert, Box, Chip, Typography } from '@mui/material';
+import { Alert, Box, Button, Chip, Typography } from '@mui/material';
+import { RefreshCw } from 'lucide-react';
 import { DataGrid, type GridColDef, type GridRowParams } from '@mui/x-data-grid';
-import { useQuery } from '@apollo/client/react';
-import { GET_ADMIN_PROJECTS } from '../../graphql/admin';
+import { useMutation, useQuery } from '@apollo/client/react';
+import { GET_ADMIN_PROJECTS, SYNC_GP_JOBS } from '../../graphql/admin';
 import { useIdentity } from '../../hooks/useIdentity';
+import { useToast } from '../../components/Toast';
+import { extractGpError } from '../../graphql/gpError';
 import { monoSx } from '../../theme';
 import { FadeIn } from '../../motion';
 import ProjectEditDialog, { type ProjectFormValue } from './ProjectEditDialog';
 
+interface GpJobSyncResult {
+  total: number;
+  adopted: number;
+}
+
 export default function ProjectsPage() {
   const { isAdmin } = useIdentity();
+  const { showToast } = useToast();
   const [editing, setEditing] = useState<ProjectFormValue | null>(null);
   const [editOpen, setEditOpen] = useState(false);
 
@@ -17,6 +26,27 @@ export default function ProjectsPage() {
     skip: !isAdmin,
   });
   const projects = useMemo(() => data?.adminProjects ?? [], [data]);
+
+  // Issue #380: the sync already runs on a timer and on every relay reconnect, so this is only for
+  // seeing the result now - typically right after someone created a job directly in GP.
+  const [syncGpJobs, { loading: syncing }] = useMutation<{ syncGpJobs: GpJobSyncResult }>(SYNC_GP_JOBS, {
+    refetchQueries: [{ query: GET_ADMIN_PROJECTS }],
+  });
+
+  const handleSync = useCallback(async () => {
+    try {
+      const result = await syncGpJobs();
+      const { total = 0, adopted = 0 } = result.data?.syncGpJobs ?? {};
+      showToast(
+        adopted > 0
+          ? `Adopted ${adopted} new project${adopted === 1 ? '' : 's'} from ${total} GP job${total === 1 ? '' : 's'}.`
+          : `Already in sync - all ${total} GP job${total === 1 ? '' : 's'} have projects.`,
+        'success',
+      );
+    } catch (err) {
+      showToast(extractGpError(err)?.message ?? 'Could not sync jobs from GP.', 'error');
+    }
+  }, [syncGpJobs, showToast]);
 
   const handleRowClick = useCallback((params: GridRowParams<ProjectFormValue>) => {
     setEditing(params.row);
@@ -92,14 +122,26 @@ export default function ProjectsPage() {
   return (
     <Box>
       <FadeIn>
-        <Box sx={{ mb: 2 }}>
-          <Typography variant="h5" sx={{ mb: 0.25 }}>
-            Projects
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            Edit project details and the off-site storage agreement (OSSA) flag. Click a row to edit. Project number and
-            TITAN fields are read-only.
-          </Typography>
+        <Box sx={{ mb: 2, display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 2 }}>
+          <Box>
+            <Typography variant="h5" sx={{ mb: 0.25 }}>
+              Projects
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              Every job in GP becomes a project automatically. Edit project details and the off-site storage agreement
+              (OSSA) flag. Click a row to edit. Project number and TITAN fields are read-only.
+            </Typography>
+          </Box>
+          <Button
+            variant="outlined"
+            size="small"
+            startIcon={<RefreshCw size={16} strokeWidth={1.75} />}
+            onClick={handleSync}
+            disabled={syncing}
+            sx={{ flexShrink: 0 }}
+          >
+            {syncing ? 'Syncing…' : 'Sync from GP'}
+          </Button>
         </Box>
       </FadeIn>
 

@@ -191,6 +191,48 @@ class GpCostCode:
 
 
 @strawberry.type
+class GpCustomer:
+    """A GP customer (RM00101) read live via the relay, for the create-job customer picker (#380)."""
+
+    customer_number: str
+    customer_name: str | None
+
+
+@strawberry.type
+class GpCustomerAddress:
+    """One address code on a GP customer (RM00102), for the create-job job/bill-to address pickers
+    (#380). Scoped to a single customer: the job proc validates an address code against that
+    customer's addresses, so a code belonging to another customer is not a valid choice here.
+
+    The display fields exist because an address code on its own ('MAIN', 'PRIMARY', 'RIH') says
+    nothing about which site it is."""
+
+    address_code: str
+    address1: str | None
+    city: str | None
+    state: str | None
+
+
+@strawberry.type
+class GpTaxSchedule:
+    """A GP tax SCHEDULE (TX00101) read live via the relay, for the create-job tax-schedule and
+    use-tax-schedule pickers (#380). Distinct from GpTaxDetail, which is a TX00201 tax detail:
+    a schedule groups details, and the job proc takes the schedule."""
+
+    tax_schedule_id: str
+    description: str | None
+
+
+@strawberry.type
+class GpJobSyncResult:
+    """What one pass of the GP job sync did (#380). `total` is every job the relay reported;
+    `adopted` is how many of those did not yet exist as projects and were created."""
+
+    total: int
+    adopted: int
+
+
+@strawberry.type
 class GpTaxDetail:
     """A GP purchase tax detail (TX00201, TXDTLTYP=2) read live via the relay, for the register-PO
     tax-detail dropdown (issue #257). GP-first: the options are whatever the company defines
