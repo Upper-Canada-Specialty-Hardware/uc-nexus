@@ -216,6 +216,38 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
     )
 
 
+def create_job_op(conn, *, company: str, request: models.CreateJobRequest) -> models.CreateJobResponse:
+    """Create a GP job (issue #380): pre-check, dry run, real call. The caller commits.
+
+    1. job_exists pre-check. wsiJCJobMaster would fail on a duplicate anyway, but it does so from inside
+       the proc, and this turns that into a clean job_already_exists the dialog can show. It also makes a
+       retry after an ambiguous failure safe: if the first attempt actually committed and the reply was
+       lost, the retry says "already exists" instead of attempting a second create.
+    2. OnlyValidate=1. The proc validates everything - division accounts, customer, both address codes,
+       tax schedule, open fiscal period - and reports the FIRST problem in its own words. Running it
+       first means a rejected create fails having written nothing, and the user reads GP's actual
+       objection rather than a generic failure.
+    3. The real call, same parameters.
+
+    Both passes raise econnect.EConnectError carrying the proc's message (see econnect.create_job)."""
+    fields = request.model_dump(exclude={"company"})
+
+    if econnect.job_exists(conn, request.job_number):
+        raise RelayOpError(
+            "job_already_exists",
+            f"job '{request.job_number}' already exists in GP company {company} (JC00102)",
+        )
+
+    econnect.create_job(conn, only_validate=True, **fields)
+    econnect.create_job(conn, only_validate=False, **fields)
+
+    return models.CreateJobResponse(
+        job_number=request.job_number,
+        job_name=request.job_name,
+        company=company,
+    )
+
+
 def create_receipt_op(conn, *, company: str, request: models.ReceiptRequest) -> models.ReceiptResponse:
     """Receive against a PO. Reads the PO's lines from POP10110, then: taGetPurchReceiptNextNumber ->
     taPopRcptLineInsert x N -> taPopRcptHdrInsert, and (for companies with a paired custom DB) inserts

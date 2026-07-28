@@ -135,9 +135,47 @@ export const FINALIZE_IMPORT_SESSION = gql`
   }
 `;
 
-export const ADOPT_GP_JOB = gql`
-  mutation AdoptGpJob($input: AdoptGpJobInput!) {
-    adoptGpJob(input: $input) {
+// Issue #380: the create-job form's live GP reads. Nexus stores none of this - customer, address
+// codes, tax schedule and division all come from GP, which is why the form cannot be composed while
+// the relay is down.
+export const GET_GP_CUSTOMERS = gql`
+  query GetGpCustomers($company: String!) {
+    gpCustomers(company: $company) {
+      customerNumber
+      customerName
+    }
+  }
+`;
+
+export const GET_GP_CUSTOMER_ADDRESSES = gql`
+  query GetGpCustomerAddresses($company: String!, $customer: String!) {
+    gpCustomerAddresses(company: $company, customer: $customer) {
+      addressCode
+      address1
+      city
+      state
+    }
+  }
+`;
+
+export const GET_GP_TAX_SCHEDULES = gql`
+  query GetGpTaxSchedules($company: String!) {
+    gpTaxSchedules(company: $company) {
+      taxScheduleId
+      description
+    }
+  }
+`;
+
+export const GET_GP_DIVISIONS = gql`
+  query GetGpDivisions($company: String!) {
+    gpDivisions(company: $company)
+  }
+`;
+
+export const CREATE_GP_JOB = gql`
+  mutation CreateGpJob($input: CreateGpJobInput!) {
+    createGpJob(input: $input) {
       id
       projectId
       description

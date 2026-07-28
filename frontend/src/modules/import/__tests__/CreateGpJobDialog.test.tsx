@@ -1,0 +1,290 @@
+import { render, screen, fireEvent, waitFor, within, configure } from '@testing-library/react';
+import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
+import { GraphQLError } from 'graphql';
+import { ToastProvider } from '../../../components/Toast';
+import CreateGpJobDialog from '../CreateGpJobDialog';
+import {
+  CREATE_GP_JOB,
+  GET_GP_CUSTOMERS,
+  GET_GP_CUSTOMER_ADDRESSES,
+  GET_GP_DIVISIONS,
+  GET_GP_TAX_SCHEDULES,
+} from '../../../graphql/import';
+import { GET_PROJECTS, GET_RELAY_STATUS } from '../../../graphql/shared';
+
+vi.setConfig({ testTimeout: 30_000 });
+configure({ asyncUtilTimeout: 10_000 });
+
+const INFINITE = Number.POSITIVE_INFINITY;
+const COMPANY = 'TUBC';
+
+function relayStatusMock(connected: boolean): MockedResponse {
+  return {
+    request: { query: GET_RELAY_STATUS },
+    maxUsageCount: INFINITE,
+    result: {
+      data: {
+        relayStatus: {
+          connected,
+          company: connected ? COMPANY : null,
+          build: connected ? 'relay-v0.1.0-build.40' : null,
+          installId: connected ? 'install-1' : null,
+          __typename: 'RelayStatus',
+        },
+      },
+    },
+  };
+}
+
+const readMocks: MockedResponse[] = [
+  {
+    request: { query: GET_GP_CUSTOMERS, variables: { company: COMPANY } },
+    maxUsageCount: INFINITE,
+    result: {
+      data: {
+        gpCustomers: [
+          { customerNumber: 'ELL100', customerName: 'Ellis Don', __typename: 'GpCustomer' },
+          { customerNumber: 'SCO100', customerName: 'Scott Construction', __typename: 'GpCustomer' },
+        ],
+      },
+    },
+  },
+  {
+    request: { query: GET_GP_DIVISIONS, variables: { company: COMPANY } },
+    maxUsageCount: INFINITE,
+    result: { data: { gpDivisions: ['VANCOUVER'] } },
+  },
+  {
+    request: { query: GET_GP_TAX_SCHEDULES, variables: { company: COMPANY } },
+    maxUsageCount: INFINITE,
+    result: {
+      data: {
+        gpTaxSchedules: [
+          { taxScheduleId: 'GST 5%', description: 'Federal GST 5%', __typename: 'GpTaxSchedule' },
+          { taxScheduleId: 'BC HST', description: 'BC HST 12%', __typename: 'GpTaxSchedule' },
+        ],
+      },
+    },
+  },
+  {
+    request: { query: GET_GP_CUSTOMER_ADDRESSES, variables: { company: COMPANY, customer: 'ELL100' } },
+    maxUsageCount: INFINITE,
+    result: {
+      data: {
+        gpCustomerAddresses: [
+          {
+            addressCode: 'MAIN',
+            address1: '1 Main St',
+            city: 'Vancouver',
+            state: 'BC',
+            __typename: 'GpCustomerAddress',
+          },
+          {
+            addressCode: 'SITE2',
+            address1: '9 Site Rd',
+            city: 'Burnaby',
+            state: 'BC',
+            __typename: 'GpCustomerAddress',
+          },
+        ],
+      },
+    },
+  },
+  {
+    request: { query: GET_PROJECTS },
+    maxUsageCount: INFINITE,
+    result: { data: { projects: [] } },
+  },
+];
+
+function renderDialog(mocks: MockedResponse[] = [], { connected = true } = {}) {
+  return render(
+    <MockedProvider mocks={[relayStatusMock(connected), ...readMocks, ...mocks]}>
+      <ToastProvider>
+        <CreateGpJobDialog open onClose={() => {}} />
+      </ToastProvider>
+    </MockedProvider>,
+  );
+}
+
+/**
+ * MUI selects are comboboxes rendering their options into a portal listbox. Each one stays disabled
+ * until the GP read behind it resolves - and those reads only fire after the relay status lands, so
+ * every interaction here has to wait the field out rather than assume it is ready.
+ */
+async function pickFromSelect(name: RegExp, optionText: RegExp) {
+  const trigger = await screen.findByRole('combobox', { name });
+  await waitFor(() => expect(trigger).not.toHaveAttribute('aria-disabled', 'true'));
+  fireEvent.mouseDown(trigger);
+  const listbox = await screen.findByRole('listbox');
+  fireEvent.click(await within(listbox).findByText(optionText));
+}
+
+async function pickCustomer(name: RegExp) {
+  const input = await screen.findByRole('combobox', { name: /^Customer/ });
+  await waitFor(() => expect(input).toBeEnabled());
+  fireEvent.mouseDown(input);
+  fireEvent.change(input, { target: { value: 'E' } });
+  fireEvent.click(await screen.findByText(name));
+}
+
+function typeInto(label: RegExp, value: string) {
+  fireEvent.change(screen.getByLabelText(label), { target: { value } });
+}
+
+/** Everything the proc requires, in the order the form asks for it. */
+async function fillRequired() {
+  // Nothing is editable until the relay status resolves - the company it carries is what the GP
+  // reads are keyed on.
+  await waitFor(() => expect(screen.getByLabelText(/^Job number/)).toBeEnabled());
+
+  typeInto(/^Job number/, 'NEXUS-380-T1');
+  typeInto(/^Job name/, 'Test job');
+  await pickFromSelect(/^Division/, /VANCOUVER/);
+  await pickCustomer(/Ellis Don/);
+  await pickFromSelect(/^Job address/, /MAIN/);
+  await pickFromSelect(/^Bill-to address/, /MAIN/);
+  await pickFromSelect(/^Tax schedule/, /Federal GST 5%/);
+  typeInto(/^Created date/, '2025-09-15');
+}
+
+function createButton() {
+  return screen.getByRole('button', { name: /Create Job/i });
+}
+
+test('the create button stays disabled until every required field is filled', async () => {
+  renderDialog();
+  await screen.findByLabelText(/^Job number/);
+
+  expect(createButton()).toBeDisabled();
+
+  await fillRequired();
+
+  await waitFor(() => expect(createButton()).toBeEnabled());
+});
+
+test('the address selects are disabled until a customer is picked', async () => {
+  renderDialog();
+  await waitFor(() => expect(screen.getByLabelText(/^Job number/)).toBeEnabled());
+
+  // An address code is only valid under its own customer, so there is nothing to offer yet.
+  expect(screen.getByRole('combobox', { name: /^Job address/ })).toHaveAttribute('aria-disabled', 'true');
+  expect(screen.getByRole('combobox', { name: /^Bill-to address/ })).toHaveAttribute('aria-disabled', 'true');
+
+  await pickCustomer(/Ellis Don/);
+
+  await waitFor(() =>
+    expect(screen.getByRole('combobox', { name: /^Job address/ })).not.toHaveAttribute('aria-disabled', 'true'),
+  );
+  expect(screen.getByRole('combobox', { name: /^Bill-to address/ })).not.toHaveAttribute('aria-disabled', 'true');
+});
+
+test('the whole form is disabled while the relay is down', async () => {
+  renderDialog([], { connected: false });
+
+  expect(await screen.findByText(/GP relay is not connected/i)).toBeInTheDocument();
+  expect(screen.getByLabelText(/^Job number/)).toBeDisabled();
+  expect(createButton()).toBeDisabled();
+});
+
+test("a GP rejection is shown in the proc's own words and the dialog stays open", async () => {
+  const failure: MockedResponse = {
+    request: {
+      query: CREATE_GP_JOB,
+      variables: {
+        input: {
+          jobNumber: 'NEXUS-380-T1',
+          jobName: 'Test job',
+          division: 'VANCOUVER',
+          customerNumber: 'ELL100',
+          jobAddressCode: 'MAIN',
+          billtoAddressCode: 'MAIN',
+          taxScheduleId: 'GST 5%',
+          createdDate: '2025-09-15',
+          estimatorId: null,
+          wsManagerId: null,
+          wsProjectNumber: null,
+          billCustomerNumber: null,
+          useTaxSchedule: null,
+          scheduleStartDate: null,
+          scheduledCompletionDate: null,
+          bidDueDate: null,
+        },
+      },
+    },
+    result: {
+      errors: [
+        new GraphQLError('Job cannot be created within a closed period', {
+          extensions: { code: 'VALIDATION_ERROR' },
+        }),
+      ],
+    },
+  };
+
+  renderDialog([failure]);
+  await screen.findByLabelText(/^Job number/);
+  await fillRequired();
+  await waitFor(() => expect(createButton()).toBeEnabled());
+
+  fireEvent.click(createButton());
+
+  expect(await screen.findByText(/Job cannot be created within a closed period/)).toBeInTheDocument();
+  // still open, so the date can be corrected without re-entering the whole form
+  expect(screen.getByLabelText(/^Job number/)).toBeInTheDocument();
+});
+
+test('a successful submit sends only the optional fields that were filled in', async () => {
+  // The mock matches on exact variables, so this object IS the assertion on the payload: the two
+  // optional fields that were filled carry values, and the six that were not travel as null rather
+  // than as blank strings - GP keeps its own defaults for those. Any other shape fails to match and
+  // the submit errors instead of succeeding.
+  const success: MockedResponse = {
+    request: {
+      query: CREATE_GP_JOB,
+      variables: {
+        input: {
+          jobNumber: 'NEXUS-380-T1',
+          jobName: 'Test job',
+          division: 'VANCOUVER',
+          customerNumber: 'ELL100',
+          jobAddressCode: 'MAIN',
+          billtoAddressCode: 'MAIN',
+          taxScheduleId: 'GST 5%',
+          createdDate: '2025-09-15',
+          estimatorId: 'EST1',
+          scheduleStartDate: '2025-09-20',
+          wsManagerId: null,
+          wsProjectNumber: null,
+          billCustomerNumber: null,
+          useTaxSchedule: null,
+          scheduledCompletionDate: null,
+          bidDueDate: null,
+        },
+      },
+    },
+    result: {
+      data: {
+        createGpJob: {
+          id: 'project-1',
+          projectId: 'NEXUS-380-T1',
+          description: 'Test job',
+          client: null,
+          jobSiteName: null,
+          __typename: 'Project',
+        },
+      },
+    },
+  };
+
+  renderDialog([success]);
+  await fillRequired();
+
+  fireEvent.click(screen.getByRole('button', { name: /Show optional fields/i }));
+  typeInto(/^Estimator ID/, 'EST1');
+  typeInto(/^Scheduled start/, '2025-09-20');
+
+  await waitFor(() => expect(createButton()).toBeEnabled());
+  fireEvent.click(createButton());
+
+  expect(await screen.findByText(/Job NEXUS-380-T1 created in GP/)).toBeInTheDocument();
+});

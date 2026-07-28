@@ -1,19 +1,23 @@
 """Project queries + mutations."""
 
 import asyncio
+import logging
 import uuid
 
 import strawberry
 
-from app.auth import require_admin, require_user
+from app.auth import require_admin
 from app.database import SessionLocal
-from app.errors import RelayUnavailableError, ValidationError
+from app.errors import RelayCallError, RelayUnavailableError, ValidationError
 from app.repositories import project_repository
+from app.services import gp_job_sync
 from app.services.relay_gateway import gateway as relay_gateway
 
 from .converters import project_to_type
-from .inputs import AdoptGpJobInput, UpdateProjectInput
-from .types import Project, ProjectShipTo
+from .inputs import CreateGpJobInput, UpdateProjectInput
+from .types import GpJobSyncResult, Project, ProjectShipTo
+
+logger = logging.getLogger(__name__)
 
 
 @strawberry.type
@@ -62,64 +66,91 @@ class ProjectQueries:
 @strawberry.type
 class ProjectMutations:
     @strawberry.mutation
-    async def adopt_gp_job(self, info: strawberry.Info, input: AdoptGpJobInput) -> Project:
-        """Adopt a live GP job as a project (issue #198), verifying it against GP first (#314).
+    async def create_gp_job(self, info: strawberry.Info, input: CreateGpJobInput) -> Project:
+        """Originate a job in GP, then hold it as a UC Nexus project (#380).
 
-        GP owns jobs: a Nexus project that does not correspond to a real GP job is invalid state, and
-        POs, inventory, assembly and shipping all hang off it. This used to trust the caller
-        completely - no auth, no `info` parameter at all, and no GP check - so a direct GraphQL call
-        could adopt any string, including a fabricated job number, and get a Nexus-only project GP had
-        never heard of. The "Adopt GP Job" dialog only ever offered real jobs, but that was UI
-        convention, not a guarantee.
+        This replaces the old adopt_gp_job mutation. Adoption is no longer something a user does: the
+        gp_job_sync service creates a project for every job GP reports, so a manual adopt dialog could
+        only ever land on "already adopted". What was missing was the other direction - Nexus could
+        take a job GP already had, but could not originate one.
 
-        Verification goes through the connected relay's live job master rather than a client-supplied
-        company, so the caller cannot choose which GP to be checked against. It uses list_jobs, which
-        every shipped relay build already serves, so the guard is live on the installed relay instead
-        of waiting on a release (see the op-parity note in #315).
+        GP goes first and there is no outbox fallback, unlike the PO and receive writes. Two reasons:
+        the form cannot even be composed without live GP reads (customer, address codes, tax schedule
+        and division all come from GP, the same gating the register-PO dialog applies), so a queued
+        submit could never have been assembled while the relay was down; and a failed submit costs
+        nothing to retry from the still-open dialog. Queuing would buy latency tolerance nobody needs
+        and add an ambiguous-write class that does not otherwise exist here.
 
-        Refusing when the relay is down is the point, not a limitation: the check is the only thing
-        standing between a typo and an orphan project, and "we could not verify" must not mean
-        "assume it is fine". The open question of an offline path is recorded on #314.
+        Admin-only. Creating a job writes to the accounting system of record.
         """
-        require_user(info)
-        job_number = (input.job_number or "").strip()
-        if not job_number:
-            raise ValidationError("job_number is required", field="job_number")
+        require_admin(info)
 
         company = relay_gateway.company
         if not company:
             raise RelayUnavailableError(
-                "The GP relay is not connected, so this job cannot be verified against GP. "
-                "Start the relay and try again."
+                "The GP relay is not connected, so this job cannot be created in GP. Start the relay and try again."
             )
 
-        result = await relay_gateway.relay_call(company, "list_jobs")
-        jobs = (result or {}).get("jobs") or []
-        wanted = job_number.upper()
-        match = next((j for j in jobs if str(j.get("job_number") or "").strip().upper() == wanted), None)
-        if match is None:
-            raise ValidationError(
-                f"{job_number} is not a job in GP company {company}. Only an existing GP job can be adopted.",
-                field="job_number",
-            )
+        payload = {
+            "job_number": input.job_number,
+            "job_name": input.job_name,
+            "division": input.division,
+            "customer_number": input.customer_number,
+            "job_address_code": input.job_address_code,
+            "billto_address_code": input.billto_address_code,
+            "tax_schedule_id": input.tax_schedule_id,
+            "created_date": input.created_date.isoformat(),
+            "estimator_id": input.estimator_id,
+            "ws_manager_id": input.ws_manager_id,
+            "ws_project_number": input.ws_project_number,
+            "bill_customer_number": input.bill_customer_number,
+            "use_tax_schedule": input.use_tax_schedule,
+            "schedule_start_date": input.schedule_start_date.isoformat() if input.schedule_start_date else None,
+            "scheduled_completion_date": (
+                input.scheduled_completion_date.isoformat() if input.scheduled_completion_date else None
+            ),
+            "bid_due_date": input.bid_due_date.isoformat() if input.bid_due_date else None,
+        }
 
-        # GP's own name for the job, not the caller's. The client reads it from the same picker, but
-        # it is not the client's to assert - taking GP's keeps the snapshot honest for a direct call.
-        job_name = str(match.get("job_name") or "").strip() or input.job_name
+        try:
+            result = await relay_gateway.relay_call(company, "create_job", payload)
+        except RelayCallError as e:
+            # GP said no - a closed fiscal period, an address code that isn't on the customer, a
+            # division without accounts. The proc words those better than we could, so the message is
+            # passed through to the dialog rather than replaced with a generic failure.
+            raise ValidationError(str(e.message)) from e
+
+        # GP's own record of what it created, not the input echoed back.
+        job_number = str((result or {}).get("job_number") or input.job_number).strip()
+        job_name = str((result or {}).get("job_name") or input.job_name).strip() or None
 
         def _persist() -> Project:
             with SessionLocal() as session:
-                project = project_repository.adopt_gp_job(
-                    session,
-                    job_number=job_number,
-                    job_name=job_name,
-                )
+                project = project_repository.adopt_gp_job(session, job_number=job_number, job_name=job_name)
                 session.commit()
                 session.refresh(project)
                 return project_to_type(project)
 
-        # Off the event loop: the /relay-link read loop runs on it and must not block on Postgres.
-        return await asyncio.to_thread(_persist)
+        try:
+            # Off the event loop: the /relay-link read loop runs on it and must not block on Postgres.
+            return await asyncio.to_thread(_persist)
+        except Exception:
+            # The job EXISTS in GP at this point - that call already committed. Losing the Nexus row is
+            # therefore recoverable rather than fatal: the sync adopts it on its next pass. Still an
+            # error to the caller, because the project is not there yet when the dialog closes.
+            logger.exception("create_gp_job: GP created %s but the project persist failed", job_number)
+            raise
+
+    @strawberry.mutation
+    async def sync_gp_jobs(self, info: strawberry.Info) -> GpJobSyncResult:
+        """Admin: run one pass of the GP job sync now, instead of waiting out the poll interval.
+
+        The background service already does this on a timer and on every relay reconnect, so this is
+        for the case where someone wants to see the result immediately - after creating a job directly
+        in GP, or when checking whether the sync is working at all."""
+        require_admin(info)
+        total, adopted = await gp_job_sync.run_once()
+        return GpJobSyncResult(total=total, adopted=adopted)
 
     @strawberry.mutation
     def update_project(self, info: strawberry.Info, id: strawberry.ID, input: UpdateProjectInput) -> Project:

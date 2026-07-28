@@ -13,13 +13,36 @@ from .enums import (
 
 
 @strawberry.input
-class AdoptGpJobInput:
-    """Adopt a live GP job (JC00102) as a UC Nexus project. job_name is the display name the
-    frontend read from the live gpJobs picker at selection time, snapshotted onto the project -
-    it is not kept in sync with GP afterward."""
+class CreateGpJobInput:
+    """Originate a job in GP through the WennSoft job proc, which then becomes a UC Nexus project
+    (#380).
+
+    The eight required fields are exactly the eight wsiJCJobMaster demands - established by validating
+    a clean call and then dropping each field in turn. Everything else on that proc (215 inputs, all
+    defaulted) is left alone, except the eight below that the issue asks to expose.
+
+    None on an optional field means "not sent", so GP keeps its own default. That is deliberately
+    different from sending a blank string, which would overwrite it."""
 
     job_number: str
-    job_name: str | None = None
+    job_name: str
+    division: str
+    customer_number: str
+    job_address_code: str
+    billto_address_code: str
+    tax_schedule_id: str
+    # Checked against GP's fiscal calendar, not the clock: the proc reads this date and refuses a
+    # closed period. A sandbox whose calendar has lapsed rejects today's date - correctly.
+    created_date: date
+
+    estimator_id: str | None = None
+    ws_manager_id: str | None = None
+    ws_project_number: str | None = None
+    bill_customer_number: str | None = None
+    use_tax_schedule: str | None = None
+    schedule_start_date: date | None = None
+    scheduled_completion_date: date | None = None
+    bid_due_date: date | None = None
 
 
 @strawberry.input
