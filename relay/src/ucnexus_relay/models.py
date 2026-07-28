@@ -165,3 +165,122 @@ class CostCodesResponse(BaseModel):
     company: str
     job: str
     cost_codes: list[CostCodeOut]
+
+
+# --- create a GP job (issue #380) ---
+# The four reads that feed the create-job form's dropdowns, then the create request itself.
+
+class CustomerOut(BaseModel):
+    customer_number: str            # GP CUSTNMBR (RM00101)
+    customer_name: str | None = None  # GP CUSTNAME
+
+
+class CustomersResponse(BaseModel):
+    company: str
+    customers: list[CustomerOut]
+
+
+class CustomerAddressOut(BaseModel):
+    address_code: str               # GP ADRSCODE (RM00102, scoped to one customer)
+    address1: str | None = None
+    city: str | None = None
+    state: str | None = None
+
+
+class CustomerAddressesResponse(BaseModel):
+    company: str
+    customer: str
+    addresses: list[CustomerAddressOut]
+
+
+class TaxScheduleOut(BaseModel):
+    tax_schedule_id: str            # GP TAXSCHID (TX00101 - the SCHEDULE master, not TX00201 details)
+    description: str | None = None  # GP TXSCHDSC
+
+
+class TaxSchedulesResponse(BaseModel):
+    company: str
+    tax_schedules: list[TaxScheduleOut]
+
+
+class DivisionsResponse(BaseModel):
+    company: str
+    # WennSoft divisions with division accounts set up. Bare strings: neither JCDivisionSETP nor
+    # JCDivisionAccountsSETP has a description column, so the code is the only label there is.
+    divisions: list[str]
+
+
+# Module-level, not a class attribute: a leading underscore inside a pydantic model is a private
+# attribute, which is not what these are.
+_JOB_REQUIRED_STRINGS = (
+    "job_number",
+    "job_name",
+    "division",
+    "customer_number",
+    "job_address_code",
+    "billto_address_code",
+    "tax_schedule_id",
+)
+_JOB_OPTIONAL_STRINGS = (
+    "estimator_id",
+    "ws_manager_id",
+    "ws_project_number",
+    "bill_customer_number",
+    "use_tax_schedule",
+)
+
+
+class CreateJobRequest(BaseModel):
+    """The 8 fields wsiJCJobMaster actually requires, plus the 8 it accepts but does not demand.
+
+    Max lengths mirror the proc's own parameter widths (char(17) job/project number, char(31) job name,
+    char(15) for the rest), so an over-length value is rejected here with a field-precise message
+    instead of being silently truncated by SQL Server on the way into a char column.
+
+    An optional field left None is not sent to the proc at all - see econnect.create_job. That is the
+    difference between "leave GP's default" and "set this to blank", and only the former is meant."""
+
+    company: str
+
+    job_number: str = Field(..., max_length=17)
+    job_name: str = Field(..., max_length=31)
+    division: str = Field(..., max_length=15)
+    customer_number: str = Field(..., max_length=15)
+    job_address_code: str = Field(..., max_length=15)
+    billto_address_code: str = Field(..., max_length=15)
+    tax_schedule_id: str = Field(..., max_length=15)
+    # Validated against GP's fiscal calendar by the proc, NOT against the clock: the check reads this
+    # date, so a job can be created with any date that falls in an open period.
+    created_date: date
+
+    estimator_id: str | None = Field(default=None, max_length=15)
+    ws_manager_id: str | None = Field(default=None, max_length=15)
+    ws_project_number: str | None = Field(default=None, max_length=17)
+    bill_customer_number: str | None = Field(default=None, max_length=15)
+    use_tax_schedule: str | None = Field(default=None, max_length=15)
+    schedule_start_date: date | None = None
+    scheduled_completion_date: date | None = None
+    bid_due_date: date | None = None
+
+    @model_validator(mode="after")
+    def normalize(self):
+        """Trim every string, then reject a required one that trimmed to nothing. A whitespace-only job
+        number would otherwise reach GP as blank and fail deep inside the proc; an untrimmed one would
+        not match the job_exists pre-check that makes a retry safe. Optional fields that trim to blank
+        become None, i.e. not sent - a user who opened the optional section and typed nothing must not
+        thereby overwrite a GP default with an empty string."""
+        for name in _JOB_REQUIRED_STRINGS:
+            value = (getattr(self, name) or "").strip()
+            if not value:
+                raise ValueError(f"{name} is required")
+            setattr(self, name, value)
+        for name in _JOB_OPTIONAL_STRINGS:
+            value = (getattr(self, name) or "").strip()
+            setattr(self, name, value or None)
+        return self
+
+
+class CreateJobResponse(BaseModel):
+    job_number: str
+    job_name: str
+    company: str

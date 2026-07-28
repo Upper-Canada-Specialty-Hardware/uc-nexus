@@ -410,3 +410,15 @@ export const CANCEL_GP_OUTBOX_ENTRY = gql`
     }
   }
 `;
+
+// Issue #380: run one pass of the GP job sync now instead of waiting out the poll interval. The
+// background service already syncs on a timer and on every relay reconnect; this is the "show me now"
+// button on the admin Projects page.
+export const SYNC_GP_JOBS = gql`
+  mutation SyncGpJobs {
+    syncGpJobs {
+      total
+      adopted
+    }
+  }
+`;

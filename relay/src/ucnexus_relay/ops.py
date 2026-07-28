@@ -216,6 +216,50 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
     )
 
 
+def create_job_op(conn, *, company: str, request: models.CreateJobRequest) -> models.CreateJobResponse:
+    """Create a GP job (issue #380): pre-check, dry run, real call. The caller commits.
+
+    1. job_exists pre-check. wsiJCJobMaster would fail on a duplicate anyway, but it does so from inside
+       the proc, and this turns that into a clean job_already_exists the dialog can show. It also makes a
+       retry after an ambiguous failure safe: if the first attempt actually committed and the reply was
+       lost, the retry says "already exists" instead of attempting a second create.
+    2. OnlyValidate=1. The proc validates everything - division accounts, customer, both address codes,
+       tax schedule, open fiscal period - and reports the FIRST problem in its own words. Running it
+       first means a rejected create fails having written nothing, and the user reads GP's actual
+       objection rather than a generic failure.
+    3. The real call, same parameters.
+    4. Read the row back from JC00102 and answer with GP's stored job number and name, NOT the request
+       echoed back. The backend snapshots that name onto the project, and what GP kept is the honest
+       thing to snapshot - WS_Job_Name is char(31), so a longer name is truncated on write and the
+       request no longer describes the job. It also proves the row landed.
+
+    Both passes raise econnect.EConnectError carrying the proc's message (see econnect.create_job)."""
+    fields = request.model_dump(exclude={"company"})
+
+    if econnect.job_exists(conn, request.job_number):
+        raise RelayOpError(
+            "job_already_exists",
+            f"job '{request.job_number}' already exists in GP company {company} (JC00102)",
+        )
+
+    econnect.create_job(conn, only_validate=True, **fields)
+    econnect.create_job(conn, only_validate=False, **fields)
+
+    created = econnect.get_job(conn, request.job_number)
+    if created is None:
+        # err=0 with no row: the same silent-failure class create_po_line guards against.
+        raise econnect.EConnectError(
+            f"wsiJCJobMaster reported success but job {request.job_number} is not in JC00102",
+            proc="wsiJCJobMaster",
+        )
+
+    return models.CreateJobResponse(
+        job_number=created["job_number"],
+        job_name=created["job_name"] or request.job_name,
+        company=company,
+    )
+
+
 def create_receipt_op(conn, *, company: str, request: models.ReceiptRequest) -> models.ReceiptResponse:
     """Receive against a PO. Reads the PO's lines from POP10110, then: taGetPurchReceiptNextNumber ->
     taPopRcptLineInsert x N -> taPopRcptHdrInsert, and (for companies with a paired custom DB) inserts

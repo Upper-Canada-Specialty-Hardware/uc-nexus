@@ -15,17 +15,23 @@ from app.services.relay_gateway import gateway as relay_gateway
 
 from .converters import (
     gp_cost_code_to_type,
+    gp_customer_address_to_type,
+    gp_customer_to_type,
     gp_job_to_type,
     gp_tax_detail_to_type,
+    gp_tax_schedule_to_type,
     gp_vendor_to_type,
     relay_install_to_type,
 )
 from .inputs import EnrollRelayInstallInput
 from .types import (
     GpCostCode,
+    GpCustomer,
+    GpCustomerAddress,
     GpJob,
     GpPoTotals,
     GpTaxDetail,
+    GpTaxSchedule,
     GpVendor,
     RelayAdoptWindow,
     RelayEnrollResult,
@@ -111,6 +117,42 @@ class RelayQueries:
         require_user(info)
         result = await relay_gateway.relay_call(company, "list_tax_details")
         return [gp_tax_detail_to_type(t) for t in result["tax_details"]]
+
+    @strawberry.field
+    async def gp_customers(self, info: strawberry.Info, company: str) -> list[GpCustomer]:
+        """Live customer master (RM00101) via the connected relay, for the create-job customer picker
+        (#380)."""
+        require_user(info)
+        result = await relay_gateway.relay_call(company, "list_customers")
+        return [gp_customer_to_type(c) for c in result["customers"]]
+
+    @strawberry.field
+    async def gp_customer_addresses(
+        self, info: strawberry.Info, company: str, customer: str
+    ) -> list[GpCustomerAddress]:
+        """One customer's address codes (RM00102) via the connected relay, for the create-job job and
+        bill-to address pickers (#380). Scoped to the customer because the job proc validates the codes
+        against that customer's addresses."""
+        require_user(info)
+        result = await relay_gateway.relay_call(company, "list_customer_addresses", {"customer": customer})
+        return [gp_customer_address_to_type(a) for a in result["addresses"]]
+
+    @strawberry.field
+    async def gp_tax_schedules(self, info: strawberry.Info, company: str) -> list[GpTaxSchedule]:
+        """Live tax schedule master (TX00101) via the connected relay, for the create-job tax-schedule
+        and use-tax-schedule pickers (#380). Not gpTaxDetails, which reads TX00201 details."""
+        require_user(info)
+        result = await relay_gateway.relay_call(company, "list_tax_schedules")
+        return [gp_tax_schedule_to_type(s) for s in result["tax_schedules"]]
+
+    @strawberry.field
+    async def gp_divisions(self, info: strawberry.Info, company: str) -> list[str]:
+        """WennSoft divisions that have division accounts set up, via the connected relay, for the
+        create-job division picker (#380). Bare strings, like gpBuyers: the division code is the only
+        label GP has for it."""
+        require_user(info)
+        result = await relay_gateway.relay_call(company, "list_divisions")
+        return result["divisions"]
 
     @strawberry.field
     async def gp_po_totals(self, info: strawberry.Info, company: str, po_number: str) -> GpPoTotals | None:

@@ -19,10 +19,18 @@ _DB_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")  # custom_db comes from trusted con
 
 
 class EConnectError(Exception):
-    def __init__(self, message: str, proc: str, error_state: int = 0):
+    """proc_message: the proc's OWN error text (@oErrString), when that text is the thing the user needs
+    to read rather than a GP error-code description. errors.econnect_error_body normally resolves
+    error_state through DYNAMICS.taErrorCode and shows that description, which is right for the taXxx
+    procs whose states ARE taErrorCode entries. The WennSoft job proc numbers its states independently,
+    so a lookup there returns an unrelated GP description and buries the real reason ("Job cannot be
+    created within a closed period"). Setting this pins the proc's text as the surfaced message."""
+
+    def __init__(self, message: str, proc: str, error_state: int = 0, proc_message: str | None = None):
         super().__init__(message)
         self.proc = proc
         self.error_state = error_state
+        self.proc_message = proc_message
 
 
 def get_next_po_number(conn) -> str:
@@ -635,6 +643,184 @@ def list_cost_codes(conn, job_number: str) -> list[dict]:
         }
         for r in rows
     ]
+
+
+# --- create a GP job (issue #380) ------------------------------------------
+# Nexus can adopt an existing GP job as a project; these originate one. The create-job form cannot be
+# composed from anything Nexus stores - customer, address codes, tax schedule and division all live in
+# GP - so the four reads below feed its dropdowns and create_job runs the WennSoft job proc.
+
+
+def list_customers(conn, *, active_only: bool = True) -> list[dict]:
+    """Read-only: the customer master RM00101, for the create-job customer picker. GP-first, same as
+    every other picker in this file: the options are whatever the company has set up.
+
+    INACTIVE = 0 by default, mirroring list_vendors' VENDSTTS filter and list_divisions' accounts
+    filter: a dropdown must not offer a choice that can only produce a job nobody can invoice. TUBC
+    has no inactive customers, so this changes nothing in the sandbox and everything in production."""
+    sql = (
+        "SELECT RTRIM(CUSTNMBR) AS customer_number, RTRIM(CUSTNAME) AS customer_name FROM dbo.RM00101 "
+    )
+    if active_only:
+        sql += "WHERE INACTIVE = 0 "
+    sql += "ORDER BY CUSTNAME"
+    rows = conn.cursor().execute(sql).fetchall()
+    return [{"customer_number": r.customer_number, "customer_name": r.customer_name or None} for r in rows]
+
+
+def get_job(conn, job_number: str) -> dict | None:
+    """Read-only: one job's stored record from JC00102, or None. Used as the read-back after a create
+    (issue #380) so the response carries GP's OWN job number and name rather than the request echoed
+    back - WS_Job_Name is char(31), and what GP stored is the honest thing to snapshot onto the Nexus
+    project. Doubles as proof the row actually landed."""
+    row = conn.cursor().execute(
+        "SELECT RTRIM(WS_Job_Number) AS job_number, RTRIM(WS_Job_Name) AS job_name "
+        "FROM dbo.JC00102 WHERE RTRIM(WS_Job_Number) = ?",
+        job_number.strip(),
+    ).fetchone()
+    if row is None:
+        return None
+    return {"job_number": row.job_number, "job_name": row.job_name or None}
+
+
+def list_customer_addresses(conn, customer_number: str) -> list[dict]:
+    """Read-only: one customer's address codes from the customer address master RM00102, for the job
+    address / bill-to address pickers. wsiJCJobMaster validates both codes against this table FOR THAT
+    CUSTOMER, so the list is scoped to CUSTNMBR rather than offering every address in GP - an address
+    code that exists under a different customer is not valid on this job.
+
+    city/address1 ride along because an address code alone ('MAIN', 'PRIMARY', 'RIH') doesn't tell the
+    user which site it is."""
+    rows = conn.cursor().execute(
+        "SELECT RTRIM(ADRSCODE) AS address_code, RTRIM(ADDRESS1) AS address1, RTRIM(CITY) AS city, "
+        "RTRIM(STATE) AS state FROM dbo.RM00102 WHERE RTRIM(CUSTNMBR) = ? ORDER BY ADRSCODE",
+        customer_number.strip(),
+    ).fetchall()
+    return [
+        {
+            "address_code": r.address_code,
+            "address1": r.address1 or None,
+            "city": r.city or None,
+            "state": r.state or None,
+        }
+        for r in rows
+    ]
+
+
+def list_tax_schedules(conn) -> list[dict]:
+    """Read-only: the tax SCHEDULE master TX00101, for the create-job tax-schedule picker (and the
+    optional use-tax schedule, which is the same kind of id - JC00102.USETAXSCHID is char(15) like
+    TAXSCHID). Distinct from list_tax_details above, which reads the tax DETAIL table TX00201: a
+    schedule groups details, and wsiJCJobMaster wants the schedule."""
+    rows = conn.cursor().execute(
+        "SELECT RTRIM(TAXSCHID) AS tax_schedule_id, RTRIM(TXSCHDSC) AS description "
+        "FROM dbo.TX00101 ORDER BY TAXSCHID"
+    ).fetchall()
+    return [{"tax_schedule_id": r.tax_schedule_id, "description": r.description or None} for r in rows]
+
+
+def list_divisions(conn) -> list[str]:
+    """Read-only: WennSoft divisions that have division ACCOUNTS set up (JCDivisionSETP joined to
+    JCDivisionAccountsSETP), for the create-job division picker.
+
+    The accounts filter is the whole point: wsiJCJobMaster rejects a division with no division accounts
+    ("division accounts have not been set up"), so offering every JCDivisionSETP row would put choices in
+    the dropdown that can only ever fail validation. TUBC has exactly one qualifying division, VANCOUVER.
+    There is no description column on either table - the division code IS the label."""
+    rows = conn.cursor().execute(
+        "SELECT RTRIM(d.Divisions) AS division FROM dbo.JCDivisionSETP d "
+        "WHERE EXISTS (SELECT 1 FROM dbo.JCDivisionAccountsSETP a WHERE a.Divisions = d.Divisions) "
+        "ORDER BY d.Divisions"
+    ).fetchall()
+    return [r.division for r in rows]
+
+
+# request field -> wsiJCJobMaster parameter name (minus the @I_v prefix), in the order they're sent.
+# Required first, then the optional ones. Verified against sys.parameters on the live proc: char(17) for
+# the job/project numbers, char(31) for the job name, char(15) for the rest, datetime for the dates.
+_CREATE_JOB_PARAMS = (
+    ("job_number", "WSJobNumber"),
+    ("job_name", "WSJobName"),
+    ("division", "Divisions"),
+    ("customer_number", "CustomerNumber"),
+    ("job_address_code", "JobAddressCode"),
+    ("billto_address_code", "JobBilltoAddressCode"),
+    ("tax_schedule_id", "TaxScheduleID"),
+    ("created_date", "CreatedDate"),
+    ("estimator_id", "EstimatorID"),
+    ("ws_manager_id", "WSManagerID"),
+    ("ws_project_number", "WSProjectNumber"),
+    ("bill_customer_number", "BillCustomerNumber"),
+    ("use_tax_schedule", "UseTaxSchedule"),
+    ("schedule_start_date", "ScheduleStartDate"),
+    ("scheduled_completion_date", "ScheduledCompletionDate"),
+    ("bid_due_date", "BidDueDate"),
+)
+
+# The 8 the proc actually demands (established by validating clean, then dropping each in turn).
+_CREATE_JOB_REQUIRED = (
+    "job_number",
+    "job_name",
+    "division",
+    "customer_number",
+    "job_address_code",
+    "billto_address_code",
+    "tax_schedule_id",
+    "created_date",
+)
+
+
+def create_job(conn, *, only_validate: bool = False, **fields) -> None:
+    """Create a GP job through the WennSoft job proc wsiJCJobMaster. Same shape as
+    apply_wennsoft_integration: DECLARE the two OUTPUT locals, EXEC, then SELECT them back.
+
+    The proc takes 217 parameters and ALL 215 inputs carry defaults, so the EXEC is assembled from only
+    the fields the caller actually set - passing the other 199 as explicit NULLs is not the same thing as
+    leaving them defaulted, and there is no reason to find out which ones differ. Unset optional fields
+    are simply absent from the statement.
+
+    only_validate drives @I_vOnlyValidate, so the caller's dry run and the real create go through this one
+    function and cannot drift on how the parameters are built - the dry run has to exercise the exact
+    statement the real call will make, or it validates something else.
+
+    @I_vReturnErrorText=1 makes the proc fill @oErrString; that text is carried on the raised error as
+    proc_message so it survives to the user verbatim (see EConnectError)."""
+    unknown = set(fields) - {field for field, _ in _CREATE_JOB_PARAMS}
+    if unknown:
+        raise EConnectError(f"unknown create_job field(s): {sorted(unknown)}", proc="wsiJCJobMaster")
+    # A required field arriving as None would otherwise be quietly dropped from the EXEC and the proc
+    # would run on its own default for it - validating and then creating something other than what was
+    # asked for. CreateJobRequest already rejects these, so reaching here means a caller bypassed it.
+    missing = [field for field in _CREATE_JOB_REQUIRED if fields.get(field) is None]
+    if missing:
+        raise EConnectError(f"create_job is missing required field(s): {missing}", proc="wsiJCJobMaster")
+
+    # Non-empty by construction now that the required 8 are checked above, which is what keeps the
+    # f-string below from emitting `EXEC dbo.wsiJCJobMaster\n        ,\n ...` - a bare syntax error.
+    supplied = {param: fields[field] for field, param in _CREATE_JOB_PARAMS if fields.get(field) is not None}
+
+    assignments = ",\n        ".join(f"@I_v{param} = ?" for param in supplied)
+    sql = f"""
+    DECLARE @err int = 0;
+    DECLARE @err_str varchar(255) = '';
+    EXEC dbo.wsiJCJobMaster
+        {assignments},
+        @I_vOnlyValidate    = ?,
+        @I_vReturnErrorText = 1,
+        @O_iErrorState      = @err OUTPUT,
+        @oErrString         = @err_str OUTPUT;
+    SELECT @err AS error_state, @err_str AS err_string;
+    """
+    row = conn.cursor().execute(sql, *supplied.values(), 1 if only_validate else 0).fetchone()
+    if row.error_state != 0:
+        message = (row.err_string or "").strip()
+        pass_label = "validation" if only_validate else "create"
+        raise EConnectError(
+            f"wsiJCJobMaster {pass_label} failed for job {fields.get('job_number')}: {message}",
+            proc="wsiJCJobMaster",
+            error_state=row.error_state,
+            proc_message=message or None,
+        )
 
 
 def create_receipt_header(conn, *, receipt_number, po_number, vendor_id, receipt_date, batch_number, subtotal) -> None:
