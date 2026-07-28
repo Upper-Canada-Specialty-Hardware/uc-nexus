@@ -100,6 +100,39 @@ on 7/26, with no `[accepted]` line anywhere - so the WS channel has never once a
 the HTTP enrolment plainly succeeded. "The relay was working yesterday" refers to the service being
 up and healthy on `127.0.0.1:7321`; that is independent of whether the backend trusts it.
 
+**That outage is over - as of 2026-07-28 the same install authenticates normally** (`connected: true`,
+company TUBC, `relay-v0.1.0-build.40`), and a full `registerPoInGp` + `createReceive` round trip
+succeeds live with `gpOutboxSummary.pending` never leaving 0. Do not re-derive the 7/26 diagnosis from
+this section; re-check `relayStatus` first. Two things worth knowing from that session:
+
+- **The relay can drop mid-session and come back on its own.** The socket went away after ~30 minutes
+  (backend redeploy is the likely trigger), `relayStatus.connected` went false, and the Railway deploy
+  log showed *one* `"WebSocket /relay-link" [accepted]` and then nothing - no 403 cadence, no
+  disconnect line. It re-handshaked without intervention a few minutes later. A held-open socket logs
+  exactly one accept line for its whole life, so "one accept and silence" is ambiguous between healthy
+  and dead; only `relayStatus` settles it.
+- A `relay_status` traceback in the deploy log ending `jwt.exceptions.ExpiredSignatureError` /
+  `AuthError: Invalid or expired authentication token` is **your own browser token ageing out**, not a
+  relay fault. `relayStatus` is `require_user`-gated now, so a stale `getToken()` value in an injected
+  fetch helper logs a full stack trace server-side. Re-mint with `getToken({skipCache:true})`.
+
+### Seeding inventory: the PO must come from the wizard, not the Create PO dialog
+
+**A manually-created PO seeds inventory but cannot open the assembly Reconciliation gate.** This costs
+an hour if you learn it the hard way. The gate is `computeAvailableQty` in `ReconciliationStep.tsx`,
+which for `purpose === 'assembly'` returns `breakdown.get('RECEIVED')` - the *lifecycle status of the
+hardware-schedule item*, not live stock. Receiving against a PO built in the **Create PO dialog**
+produces real `InventoryLocation` rows (`projectInventoryAvailability` shows them, the allocator would
+happily reserve them) while every schedule row stays `Gap Remaining`, so Reconciliation still says
+`No items have In Inventory status` and Next stays disabled.
+
+To seed stock that *counts*, run the wizard with purpose **Create Purchase Orders** over the openings
+you intend to assemble, then register + receive that PO. Its lines are bound to the schedule items, so
+receiving flips them to `In Inventory: N` and the gate opens. Keep the GP footprint small by using the
+Reconciliation step's own checkboxes (PO purpose only): `Deselect All`, then tick just the one product
+you want, and at the PO step check a single manufacturer card. Fill **Order As** on that step - an
+import-created draft otherwise blocks the register dialog with per-line `Required` errors.
+
 ## Getting Started (Every Session)
 
 1. **Sign in**: Use `evaluate_script` to fetch a sign-in token and navigate with it. Railway production (default):
@@ -680,3 +713,8 @@ Inventory quantity corrections are NOT here — they live in the Warehouse modul
 - The screenshot image is scaled down from the real viewport (1568px wide image for a 1918px window), so a card that looks cut off at the right edge usually is not. Check `document.documentElement.scrollWidth === clientWidth` before reporting a horizontal-overflow regression.
 - The Pull Request detail modal does **not** close on Escape. Its only text button is "Cancel Pull" - do not reach for that as a way out. Use the icon close button, or just route away.
 - MUI option cards (import Purpose, module "Go to" cards) are `useNavigate` buttons with no `href`, so there are no anchors to click and `find`'s ref sometimes lands on the inner text node rather than the clickable card. Setting the underlying `input[type=radio]`/`input[name=select_row]` via native `.click()` works reliably and does update React state.
+- The import landing project card is a `MuiCardActionArea` **button** wrapping the `MuiPaper`. Coordinate clicks land on it only sometimes (it takes focus but does not activate, and Enter does not help either). Reliable: find the element whose `textContent` matches the project *and* whose `tagName === 'BUTTON'`, then `.focus()` + `.click()`.
+- **Select Openings is paginated at 50 rows/page, ordered by the schedule, not sorted**, and the "Filter" control is a Select (column filter), *not* a text search - there is no way to type an opening number. To enumerate or tick specific openings, scroll the `.MuiDataGrid-virtualScroller` in ~150px steps, and after each `scrollTop` assignment **dispatch a `scroll` event and wait ~450ms** or the virtualizer does not re-render and you silently collect only the first screenful (17 of 50). Keep the sweep under ~40s of `await` or the 45s CDP cap kills the call mid-loop - it leaves the page in a valid state (rows already ticked stay ticked), so just re-run and top up the selection.
+- The Receive modal has **two** confirmations: `Complete Receive` opens a nested `Confirm Receive` ("Receive N items across M PO into inventory?") whose button is just `Receive`. Scripting only the outer button looks like a silent no-op - inventory stays empty and the outbox stays at 0 because no mutation ever fired.
+- Receive modal quantity + location fields take a native value-setter + `input`/`change` event fine (no need for the ArrowUp trick), and the location block only appears once a Receive Now qty > 0. `all placed` chips per product gate `Complete Receive`.
+- Allocator step (#378) specifics: the summary table is `Owed / Available / Allocated / Left to assign / Short`; each leaf card carries a `Fully covered` / `Not covered - auto-dropped` chip, an `N of M allocated` caption and an include/exclude toggle; the steppers have `aria-label`s `Add one <productCode>` / `Remove one <productCode>` and the `+` disables at `allocated === owed`. Driving a leaf's only line to 0 flips it to auto-dropped, greys the card, drops it out of the `Door leaves (N of M being sent)` count, removes its owed units from the summary, and shows an amber `N short` chip - **and Next stays enabled**, which is the whole point of the change.
