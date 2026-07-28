@@ -237,6 +237,11 @@ export const GET_PULL_REQUESTS = gql`
       stagingStatus
       stagedOpeningCount
       totalOpeningCount
+      # The pick (#367). pickedAt is the moment stock left; partiallyPicked is "a short confirm is
+      # outstanding" and is only computed for un-picked pulls.
+      pickedAt
+      pickedBy
+      partiallyPicked
       items {
         id
         pullRequestId
@@ -247,6 +252,8 @@ export const GET_PULL_REQUESTS = gql`
         hardwareCategory
         productCode
         requestedQuantity
+        fetchedAt
+        fetchedBy
       }
     }
   }
@@ -545,7 +552,28 @@ const PULL_REQUEST_FIELDS = `
   id requestNumber projectId source status requestedBy assignedTo
   createdAt updatedAt approvedAt completedAt cancelledAt cancelledBy cancellationReason
   stagingStatus stagedOpeningCount totalOpeningCount
-  items { id pullRequestId itemType openingNumber openingItemId leaf hardwareCategory productCode requestedQuantity }
+  pickedAt pickedBy partiallyPicked
+  items {
+    id pullRequestId itemType openingNumber openingItemId leaf hardwareCategory productCode requestedQuantity
+    fetchedAt fetchedBy
+  }
+`;
+
+// The pick screen and the printed sheet (#367). Note what is absent: any suggested quantity. The
+// picker decides, and the sheet gives them received dates so they can rotate stock themselves.
+const PICK_SHEET_FIELDS = `
+  pullRequest { ${PULL_REQUEST_FIELDS} }
+  sections {
+    hardwareCategory productCode requiredQuantity appliedQuantity remainingQuantity
+    leaves { openingNumber leaf quantity }
+    locations {
+      inventoryLocationId warehouseId warehouseCode aisle row bay
+      available receivedAt draftQuantity appliedQuantity
+    }
+  }
+  fetchItems {
+    pullRequestItemId openingItemId openingNumber leaf aisle row bay state fetchedAt fetchedBy
+  }
 `;
 
 // One opening of a shop-assembly pull, with the hardware lines that make up its cart (#343).
@@ -555,17 +583,47 @@ const PULL_STAGING_OPENING_FIELDS = `
   items { id shopAssemblyOpeningId hardwareCategory productCode quantity allocatedQuantity }
 `;
 
-export const APPROVE_PULL_REQUEST = gql`
-  mutation ApprovePullRequest($id: ID!, $approvedBy: String!) {
-    approvePullRequest(id: $id, approvedBy: $approvedBy) {
+export const START_PULL_REQUEST_PICK = gql`
+  mutation StartPullRequestPick($id: ID!, $startedBy: String!) {
+    startPullRequestPick(id: $id, startedBy: $startedBy) { ${PULL_REQUEST_FIELDS} }
+  }
+`;
+
+export const GET_PULL_PICK_SHEET = gql`
+  query GetPullPickSheet($pullRequestId: ID!) {
+    pullPickSheet(pullRequestId: $pullRequestId) { ${PICK_SHEET_FIELDS} }
+  }
+`;
+
+export const SAVE_PICK_DRAFT = gql`
+  mutation SavePickDraft($pullRequestId: ID!, $lines: [PickLineInput!]!, $enteredBy: String!) {
+    savePickDraft(pullRequestId: $pullRequestId, lines: $lines, enteredBy: $enteredBy) {
+      ${PICK_SHEET_FIELDS}
+    }
+  }
+`;
+
+export const CONFIRM_PICK = gql`
+  mutation ConfirmPick($pullRequestId: ID!, $lines: [PickLineInput!]!, $pickedBy: String!) {
+    confirmPick(pullRequestId: $pullRequestId, lines: $lines, pickedBy: $pickedBy) {
       pullRequest { ${PULL_REQUEST_FIELDS} }
       outcome
+      appliedQuantity
       notification {
         id projectId recipientRole type message isRead createdAt
       }
       shortfalls {
-        hardwareCategory productCode requested available short
+        hardwareCategory productCode requested available short reserved
       }
+    }
+  }
+`;
+
+export const SET_PULL_ITEM_FETCHED = gql`
+  mutation SetPullItemFetched($itemId: ID!, $fetched: Boolean!, $fetchedBy: String!) {
+    setPullItemFetched(itemId: $itemId, fetched: $fetched, fetchedBy: $fetchedBy) {
+      id pullRequestId itemType openingNumber openingItemId leaf
+      hardwareCategory productCode requestedQuantity fetchedAt fetchedBy
     }
   }
 `;
