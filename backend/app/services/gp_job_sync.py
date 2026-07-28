@@ -21,7 +21,7 @@ import os
 from sqlalchemy import select
 
 from app.database import SessionLocal
-from app.errors import ConflictError, RelayUnavailableError
+from app.errors import ConflictError, RelayTimeoutError, RelayUnavailableError
 from app.models.project import Project as ProjectModel
 from app.repositories import project_repository
 from app.services.relay_gateway import gateway as relay_gateway
@@ -116,6 +116,11 @@ async def run_forever() -> None:
                     logger.info("gp job sync: adopted %s of %s GP jobs", adopted, total)
         except asyncio.CancelledError:
             raise
+        except (RelayUnavailableError, RelayTimeoutError) as e:
+            # The relay went away between the guard above and the call, or mid-pass. Routine - relays
+            # restart, get updated, and flap - and the next tick retries. Logging a traceback for every
+            # relay restart would bury a real fault in noise.
+            logger.info("gp job sync: relay unavailable this pass (%s); retrying later", e.message)
         except Exception:  # noqa: BLE001
             logger.exception("gp job sync iteration failed")
 

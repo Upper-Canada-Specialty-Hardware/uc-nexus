@@ -8,7 +8,7 @@ import strawberry
 
 from app.auth import require_admin
 from app.database import SessionLocal
-from app.errors import RelayCallError, RelayUnavailableError, ValidationError
+from app.errors import ConflictError, NotFoundError, RelayCallError, RelayUnavailableError, ValidationError
 from app.repositories import project_repository
 from app.services import gp_job_sync
 from app.services.relay_gateway import gateway as relay_gateway
@@ -18,6 +18,37 @@ from .inputs import CreateGpJobInput, UpdateProjectInput
 from .types import GpJobSyncResult, Project, ProjectShipTo
 
 logger = logging.getLogger(__name__)
+
+
+def _validation_error_from(e: RelayCallError) -> ValidationError:
+    """Turn a relay refusal into a ValidationError that still carries the relay's error body.
+
+    main.py's ErrorHandlerExtension publishes `extensions.relayError` from whatever `.detail` the
+    raised error has, and ValidationError has no such field - so converting the error plainly would
+    strip the GP proc, the error state and the taErrorCode description on the way to the browser, and
+    the dialog's GpErrorAlert would render an empty detail table. That table is the whole point of
+    #187: error screenshots are how these get reported."""
+    error = ValidationError(str(e.message))
+    error.detail = e.detail
+    return error
+
+
+def _load_project(job_number: str) -> Project:
+    with SessionLocal() as session:
+        project = project_repository.get_project_by_schedule_id(session, job_number)
+        if project is None:
+            raise NotFoundError(f"Project {job_number} not found")
+        return project_to_type(project)
+
+
+async def _adopt_existing(job_number: str) -> Project:
+    """Make sure a job GP already holds has its Nexus project, and return it.
+
+    Runs a full sync pass rather than adopting the one job: the pass reads GP's own job master, so the
+    project gets GP's name rather than whatever the caller typed, and it is the same code path that
+    would have created this project a few minutes later anyway."""
+    await gp_job_sync.run_once()
+    return await asyncio.to_thread(_load_project, job_number.strip())
 
 
 @strawberry.type
@@ -115,12 +146,21 @@ class ProjectMutations:
         try:
             result = await relay_gateway.relay_call(company, "create_job", payload)
         except RelayCallError as e:
+            if (e.detail or {}).get("error") == "job_already_exists":
+                # GP has the job but we were not the ones who put it there, OR we were and the reply
+                # was lost (a relay_call timeout after the proc committed). Either way the invariant
+                # this feature exists to hold - a job in GP is a project in Nexus - is satisfiable
+                # right now, so satisfy it instead of dead-ending the dialog on an error that no
+                # amount of retrying can clear.
+                logger.info("create_gp_job: %s already in GP; adopting instead", input.job_number)
+                return await _adopt_existing(input.job_number)
             # GP said no - a closed fiscal period, an address code that isn't on the customer, a
             # division without accounts. The proc words those better than we could, so the message is
             # passed through to the dialog rather than replaced with a generic failure.
-            raise ValidationError(str(e.message)) from e
+            raise _validation_error_from(e) from e
 
-        # GP's own record of what it created, not the input echoed back.
+        # GP's own record of what it created, read back from JC00102 by the relay - not the input
+        # echoed back (see ops.create_job_op).
         job_number = str((result or {}).get("job_number") or input.job_number).strip()
         job_name = str((result or {}).get("job_name") or input.job_name).strip() or None
 
@@ -134,10 +174,16 @@ class ProjectMutations:
         try:
             # Off the event loop: the /relay-link read loop runs on it and must not block on Postgres.
             return await asyncio.to_thread(_persist)
+        except ConflictError:
+            # The sync adopted this job between GP committing and us persisting. Benign race, same as
+            # the one _persist_missing swallows from the other side - the row we wanted exists.
+            logger.info("create_gp_job: %s was adopted by the sync first", job_number)
+            return await asyncio.to_thread(_load_project, job_number)
         except Exception:
             # The job EXISTS in GP at this point - that call already committed. Losing the Nexus row is
-            # therefore recoverable rather than fatal: the sync adopts it on its next pass. Still an
-            # error to the caller, because the project is not there yet when the dialog closes.
+            # recoverable rather than fatal: the sync adopts it on its next pass, and retrying the
+            # dialog now lands on the job_already_exists path above. Still an error to the caller,
+            # because the project is not there yet when the dialog closes.
             logger.exception("create_gp_job: GP created %s but the project persist failed", job_number)
             raise
 

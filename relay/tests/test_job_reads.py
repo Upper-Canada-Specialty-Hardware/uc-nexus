@@ -52,6 +52,22 @@ def test_list_customers_maps_a_blank_name_to_none():
     assert list_customers(conn)[0]["customer_name"] is None
 
 
+def test_list_customers_hides_inactive_customers_by_default():
+    # Same rule as list_vendors' VENDSTTS filter: the picker must not offer a customer that produces
+    # a job nobody can invoice.
+    Row = namedtuple("Row", "customer_number customer_name")
+    conn = _FakeConn([Row("ELL100", "Ellis Don")])
+    list_customers(conn)
+    assert "INACTIVE = 0" in conn.sql()
+
+
+def test_list_customers_can_include_inactive_on_request():
+    Row = namedtuple("Row", "customer_number customer_name")
+    conn = _FakeConn([Row("ELL100", "Ellis Don")])
+    list_customers(conn, active_only=False)
+    assert "INACTIVE" not in conn.sql()
+
+
 def test_list_customer_addresses_is_scoped_to_the_customer():
     Row = namedtuple("Row", "address_code address1 city state")
     conn = _FakeConn([Row("MAIN", "1 Main St", "Vancouver", "BC")])

@@ -11,9 +11,11 @@ import {
   Alert,
   MenuItem,
   Collapse,
+  IconButton,
   Link,
   Typography,
 } from '@mui/material';
+import { RefreshCw } from 'lucide-react';
 import { useMutation, useQuery } from '@apollo/client/react';
 import {
   CREATE_GP_JOB,
@@ -25,7 +27,7 @@ import {
 import { GET_PROJECTS } from '../../graphql/shared';
 import { useToast } from '../../components/Toast';
 import GpErrorAlert from '../../components/GpErrorAlert';
-import { extractGpError, type GpError } from '../../graphql/gpError';
+import { extractGpError, isRelayOpUnsupported, type GpError } from '../../graphql/gpError';
 import RelayStatusChip from '../../relay/RelayStatusChip';
 import { useRelayStatus } from '../../relay/useRelayStatus';
 import type { Project } from '../../types/project';
@@ -56,8 +58,16 @@ interface CreateGpJobDialogProps {
 /** GP column widths, so an over-length value is caught in the field rather than by the proc. */
 const MAX = { jobNumber: 17, jobName: 31, projectNumber: 17, id: 15 };
 
+/**
+ * Today in LOCAL time. Deliberately not toISOString().slice(0, 10), which is UTC: west of Greenwich
+ * that reads as tomorrow from late afternoon onward. Created date is the field GP validates against
+ * the open fiscal period, so an off-by-one here produces a closed-period rejection for a date the
+ * form itself presented as today.
+ */
 function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 }
 
 function addressLabel(a: GpCustomerAddressOption): string {
@@ -110,26 +120,60 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
 
   const readsSkipped = !open || !relayConnected || !company;
 
-  const { data: customersData, loading: customersLoading } = useQuery<{ gpCustomers: GpCustomerOption[] }>(
-    GET_GP_CUSTOMERS,
-    { variables: { company }, skip: readsSkipped, fetchPolicy: 'cache-first' },
-  );
-  const { data: divisionsData, loading: divisionsLoading } = useQuery<{ gpDivisions: string[] }>(GET_GP_DIVISIONS, {
+  const {
+    data: customersData,
+    loading: customersLoading,
+    error: customersError,
+    refetch: refetchCustomers,
+  } = useQuery<{ gpCustomers: GpCustomerOption[] }>(GET_GP_CUSTOMERS, {
     variables: { company },
     skip: readsSkipped,
     fetchPolicy: 'cache-first',
   });
-  const { data: taxSchedulesData, loading: taxSchedulesLoading } = useQuery<{
-    gpTaxSchedules: GpTaxScheduleOption[];
-  }>(GET_GP_TAX_SCHEDULES, { variables: { company }, skip: readsSkipped, fetchPolicy: 'cache-first' });
+  const {
+    data: divisionsData,
+    loading: divisionsLoading,
+    error: divisionsError,
+    refetch: refetchDivisions,
+  } = useQuery<{ gpDivisions: string[] }>(GET_GP_DIVISIONS, {
+    variables: { company },
+    skip: readsSkipped,
+    fetchPolicy: 'cache-first',
+  });
+  const {
+    data: taxSchedulesData,
+    loading: taxSchedulesLoading,
+    error: taxSchedulesError,
+    refetch: refetchTaxSchedules,
+  } = useQuery<{ gpTaxSchedules: GpTaxScheduleOption[] }>(GET_GP_TAX_SCHEDULES, {
+    variables: { company },
+    skip: readsSkipped,
+    fetchPolicy: 'cache-first',
+  });
 
   // Addresses are per-customer: the proc validates a code against THAT customer's addresses, so this
   // re-fetches on every customer change and the two address selects stay disabled until one is picked.
-  const { data: addressesData, loading: addressesLoading } = useQuery<{
-    gpCustomerAddresses: GpCustomerAddressOption[];
-  }>(GET_GP_CUSTOMER_ADDRESSES, {
+  const {
+    data: addressesData,
+    loading: addressesLoading,
+    error: addressesError,
+    refetch: refetchAddresses,
+  } = useQuery<{ gpCustomerAddresses: GpCustomerAddressOption[] }>(GET_GP_CUSTOMER_ADDRESSES, {
     variables: { company, customer: customer?.customerNumber ?? '' },
     skip: readsSkipped || !customer,
+    fetchPolicy: 'cache-first',
+  });
+
+  // The optional Bill-to customer has its own addresses. Without this the Bill-to address select
+  // would keep offering the JOB customer's codes, which the proc validates against the bill-to
+  // customer and rejects - the form could not express a valid pairing at all.
+  const billCustomerNumber = billCustomer?.customerNumber ?? null;
+  const billScopedToOwnCustomer = billCustomerNumber !== null && billCustomerNumber !== customer?.customerNumber;
+  const { data: billAddressesData, loading: billAddressesLoading } = useQuery<{
+    gpCustomerAddresses: GpCustomerAddressOption[];
+  }>(GET_GP_CUSTOMER_ADDRESSES, {
+    variables: { company, customer: billCustomerNumber ?? '' },
+    skip: readsSkipped || !billScopedToOwnCustomer,
     fetchPolicy: 'cache-first',
   });
 
@@ -137,6 +181,26 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
   const divisions = useMemo(() => divisionsData?.gpDivisions ?? [], [divisionsData]);
   const taxSchedules = useMemo(() => taxSchedulesData?.gpTaxSchedules ?? [], [taxSchedulesData]);
   const addresses = useMemo(() => addressesData?.gpCustomerAddresses ?? [], [addressesData]);
+  // Bill-to address options follow whichever customer will actually be billed.
+  const billAddresses = useMemo(
+    () => (billScopedToOwnCustomer ? (billAddressesData?.gpCustomerAddresses ?? []) : addresses),
+    [billScopedToOwnCustomer, billAddressesData, addresses],
+  );
+
+  // A failed read is NOT an empty list. Without this the deploy-before-relay-rebuild window (the four
+  // ops are not in an older relay's advertised op-set) renders a green relay chip over three empty
+  // required dropdowns and a button that can never enable, with nothing saying why.
+  const readError = customersError ?? divisionsError ?? taxSchedulesError ?? addressesError ?? null;
+  const readsUnsupported = [customersError, divisionsError, taxSchedulesError, addressesError].some((e) =>
+    isRelayOpUnsupported(e),
+  );
+
+  const refreshReads = useCallback(() => {
+    void refetchCustomers();
+    void refetchDivisions();
+    void refetchTaxSchedules();
+    if (customer) void refetchAddresses();
+  }, [refetchCustomers, refetchDivisions, refetchTaxSchedules, refetchAddresses, customer]);
 
   const [createGpJob, { loading }] = useMutation<{ createGpJob: Project }>(CREATE_GP_JOB, {
     refetchQueries: [{ query: GET_PROJECTS }],
@@ -185,6 +249,26 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
     setJobAddressCode('');
     setBilltoAddressCode('');
   }, []);
+
+  const handleBillCustomerChange = useCallback((value: GpCustomerOption | null) => {
+    setBillCustomer(value);
+    // The bill-to address select is about to be re-scoped to a different customer's codes, so the
+    // currently selected one is no longer necessarily in the list.
+    setBilltoAddressCode('');
+  }, []);
+
+  // Optional values survive collapsing the section (losing typed input to a stray click would be
+  // worse), so the count is what keeps "hidden" from reading as "not in play" - they are still sent.
+  const optionalSetCount = [
+    estimatorId.trim(),
+    wsManagerId.trim(),
+    wsProjectNumber.trim(),
+    billCustomer?.customerNumber ?? '',
+    useTaxSchedule,
+    scheduleStartDate,
+    scheduledCompletionDate,
+    bidDueDate,
+  ].filter(Boolean).length;
 
   const handleSubmit = useCallback(async () => {
     setGpError(null);
@@ -273,12 +357,34 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
               slotProps={{ input: { sx: monoSx } }}
             />
             <RelayStatusChip connected={relayConnected} />
+            <IconButton
+              size="small"
+              aria-label="Refresh GP data"
+              onClick={refreshReads}
+              disabled={!relayConnected || loading}
+              title="Re-read customers, divisions and tax schedules from GP"
+            >
+              <RefreshCw size={16} strokeWidth={1.75} />
+            </IconButton>
           </Stack>
 
           {!relayConnected && (
             <Alert severity="warning">
               The GP relay is not connected. A job can only be created against live GP data, so this form stays
               disabled until the relay is running.
+            </Alert>
+          )}
+
+          {relayConnected && readsUnsupported && (
+            <Alert severity="warning">
+              The connected relay is too old to create jobs. Update the relay on that workstation, then reopen this
+              form.
+            </Alert>
+          )}
+
+          {relayConnected && readError && !readsUnsupported && (
+            <Alert severity="error">
+              Could not read the job setup data from GP, so the fields below are incomplete. {readError.message}
             </Alert>
           )}
 
@@ -361,12 +467,18 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
               value={billtoAddressCode}
               onChange={(e) => setBilltoAddressCode(e.target.value)}
               required
-              disabled={disabled || !customer || addressesLoading}
+              disabled={disabled || !customer || addressesLoading || billAddressesLoading}
               size="small"
               sx={{ flex: 1 }}
-              helperText={!customer ? 'Pick a customer first' : ' '}
+              helperText={
+                !customer
+                  ? 'Pick a customer first'
+                  : billScopedToOwnCustomer
+                    ? `Addresses of ${billCustomerNumber} (the bill-to customer)`
+                    : ' '
+              }
             >
-              {addresses.map((a) => (
+              {billAddresses.map((a) => (
                 <MenuItem key={a.addressCode} value={a.addressCode}>
                   {addressLabel(a)}
                 </MenuItem>
@@ -413,6 +525,7 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
             sx={{ alignSelf: 'flex-start' }}
           >
             {optionalOpen ? 'Hide optional fields' : 'Show optional fields'}
+            {!optionalOpen && optionalSetCount > 0 ? ` (${optionalSetCount} set)` : ''}
           </Link>
 
           <Collapse in={optionalOpen} unmountOnExit>
@@ -453,7 +566,7 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
                 value={billCustomer}
                 getOptionLabel={(o) => (o.customerName ? `${o.customerNumber} - ${o.customerName}` : o.customerNumber)}
                 isOptionEqualToValue={(o, v) => o.customerNumber === v.customerNumber}
-                onChange={(_, value) => setBillCustomer(value)}
+                onChange={(_, value) => handleBillCustomerChange(value)}
                 disabled={disabled}
                 slotProps={{ listbox: { sx: monoSx } }}
                 renderInput={(params) => (

@@ -179,6 +179,51 @@ test('the address selects are disabled until a customer is picked', async () => 
   expect(screen.getByRole('combobox', { name: /^Bill-to address/ })).not.toHaveAttribute('aria-disabled', 'true');
 });
 
+test('a relay too old for the new ops says so instead of showing empty dropdowns', async () => {
+  // The deploy-before-relay-rebuild window: the four reads are not in the installed relay's
+  // advertised op-set. Without this the dialog renders a green relay chip over empty required
+  // dropdowns and a permanently disabled button, with nothing explaining why.
+  const unsupported: MockedResponse[] = [GET_GP_CUSTOMERS, GET_GP_DIVISIONS, GET_GP_TAX_SCHEDULES].map((query) => ({
+    request: { query, variables: { company: COMPANY } },
+    maxUsageCount: INFINITE,
+    result: {
+      errors: [
+        new GraphQLError('The connected relay does not support list_customers', {
+          extensions: { code: 'RELAY_OP_UNSUPPORTED' },
+        }),
+      ],
+    },
+  }));
+
+  render(
+    <MockedProvider mocks={[relayStatusMock(true), ...unsupported, readMocks[4]]}>
+      <ToastProvider>
+        <CreateGpJobDialog open onClose={() => {}} />
+      </ToastProvider>
+    </MockedProvider>,
+  );
+
+  expect(await screen.findByText(/relay is too old to create jobs/i)).toBeInTheDocument();
+});
+
+test('a failed GP read is reported rather than looking like an empty list', async () => {
+  const failing: MockedResponse[] = [GET_GP_CUSTOMERS, GET_GP_DIVISIONS, GET_GP_TAX_SCHEDULES].map((query) => ({
+    request: { query, variables: { company: COMPANY } },
+    maxUsageCount: INFINITE,
+    result: { errors: [new GraphQLError('relay timed out')] },
+  }));
+
+  render(
+    <MockedProvider mocks={[relayStatusMock(true), ...failing, readMocks[4]]}>
+      <ToastProvider>
+        <CreateGpJobDialog open onClose={() => {}} />
+      </ToastProvider>
+    </MockedProvider>,
+  );
+
+  expect(await screen.findByText(/Could not read the job setup data from GP/i)).toBeInTheDocument();
+});
+
 test('the whole form is disabled while the relay is down', async () => {
   renderDialog([], { connected: false });
 

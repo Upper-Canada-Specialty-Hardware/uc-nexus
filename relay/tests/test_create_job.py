@@ -133,6 +133,24 @@ def test_unknown_field_is_rejected_before_any_sql():
     assert conn.calls == []
 
 
+def test_a_required_field_arriving_as_none_is_rejected_not_dropped():
+    # Dropping it would leave the proc on its own default, i.e. validate and then create something
+    # other than what was asked for.
+    conn = _FakeConn()
+    with pytest.raises(EConnectError, match="missing required field"):
+        create_job(conn, **{**REQUIRED, "division": None})
+    assert conn.calls == []
+
+
+def test_a_bare_call_is_rejected_before_building_sql():
+    # Also covers the empty-parameter case: with no fields at all the required check fires, so the
+    # EXEC is never assembled from an empty map (which would be a bare syntax error).
+    conn = _FakeConn()
+    with pytest.raises(EConnectError, match="missing required field"):
+        create_job(conn)
+    assert conn.calls == []
+
+
 def test_proc_error_raises_with_the_procs_own_message():
     conn = _FakeConn(error_state=8000, err_string="Job cannot be created within a closed period")
     with pytest.raises(EConnectError) as exc:
@@ -157,11 +175,17 @@ def _request(**overrides):
     return models.CreateJobRequest(company="TUBC", **{**REQUIRED, **overrides})
 
 
+def _stub_read_back(monkeypatch, job_number="NEXUS-380-T1", job_name="Test job"):
+    """The op reads the created row back out of JC00102; give it something to find."""
+    monkeypatch.setattr(econnect, "get_job", lambda c, j: {"job_number": job_number, "job_name": job_name})
+
+
 def test_op_validates_before_creating(monkeypatch):
     conn = _FakeConn()
     seen: list[bool] = []
     monkeypatch.setattr(econnect, "job_exists", lambda c, j: False)
     monkeypatch.setattr(econnect, "create_job", lambda c, *, only_validate=False, **f: seen.append(only_validate))
+    _stub_read_back(monkeypatch)
 
     response = ops.create_job_op(conn, company="TUBC", request=_request())
 
@@ -170,11 +194,36 @@ def test_op_validates_before_creating(monkeypatch):
     assert response.company == "TUBC"
 
 
+def test_op_answers_with_gps_stored_job_not_the_request(monkeypatch):
+    # WS_Job_Name is char(31); what GP kept is what the backend snapshots onto the project, so the
+    # response must carry the read-back, not the request echoed straight back.
+    conn = _FakeConn()
+    monkeypatch.setattr(econnect, "job_exists", lambda c, j: False)
+    monkeypatch.setattr(econnect, "create_job", lambda c, **k: None)
+    _stub_read_back(monkeypatch, job_name="What GP Actually Kept")
+
+    response = ops.create_job_op(conn, company="TUBC", request=_request(job_name="What the caller typed"))
+
+    assert response.job_name == "What GP Actually Kept"
+
+
+def test_op_raises_when_the_proc_reports_success_but_no_row_landed(monkeypatch):
+    # taPoLine has a known err=0-but-no-row mode; guard the job proc the same way.
+    conn = _FakeConn()
+    monkeypatch.setattr(econnect, "job_exists", lambda c, j: False)
+    monkeypatch.setattr(econnect, "create_job", lambda c, **k: None)
+    monkeypatch.setattr(econnect, "get_job", lambda c, j: None)
+
+    with pytest.raises(EConnectError, match="not in JC00102"):
+        ops.create_job_op(conn, company="TUBC", request=_request())
+
+
 def test_op_sends_the_same_fields_on_both_passes(monkeypatch):
     conn = _FakeConn()
     passes: list[dict] = []
     monkeypatch.setattr(econnect, "job_exists", lambda c, j: False)
     monkeypatch.setattr(econnect, "create_job", lambda c, *, only_validate=False, **f: passes.append(f))
+    _stub_read_back(monkeypatch)
 
     ops.create_job_op(conn, company="TUBC", request=_request(estimator_id="EST1"))
 

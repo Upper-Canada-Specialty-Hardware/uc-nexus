@@ -95,15 +95,6 @@ export const RECONCILE_SCHEDULE = gql`
   }
 `;
 
-export const GET_GP_JOBS = gql`
-  query GetGpJobs($company: String!) {
-    gpJobs(company: $company) {
-      jobNumber
-      jobName
-    }
-  }
-`;
-
 export const FINALIZE_IMPORT_SESSION = gql`
   mutation FinalizeImportSession($input: FinalizeImportSessionInput!) {
     finalizeImportSession(input: $input) {

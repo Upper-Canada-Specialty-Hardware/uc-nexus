@@ -651,14 +651,36 @@ def list_cost_codes(conn, job_number: str) -> list[dict]:
 # GP - so the four reads below feed its dropdowns and create_job runs the WennSoft job proc.
 
 
-def list_customers(conn) -> list[dict]:
+def list_customers(conn, *, active_only: bool = True) -> list[dict]:
     """Read-only: the customer master RM00101, for the create-job customer picker. GP-first, same as
-    every other picker in this file: the options are whatever the company has set up."""
-    rows = conn.cursor().execute(
-        "SELECT RTRIM(CUSTNMBR) AS customer_number, RTRIM(CUSTNAME) AS customer_name "
-        "FROM dbo.RM00101 ORDER BY CUSTNAME"
-    ).fetchall()
+    every other picker in this file: the options are whatever the company has set up.
+
+    INACTIVE = 0 by default, mirroring list_vendors' VENDSTTS filter and list_divisions' accounts
+    filter: a dropdown must not offer a choice that can only produce a job nobody can invoice. TUBC
+    has no inactive customers, so this changes nothing in the sandbox and everything in production."""
+    sql = (
+        "SELECT RTRIM(CUSTNMBR) AS customer_number, RTRIM(CUSTNAME) AS customer_name FROM dbo.RM00101 "
+    )
+    if active_only:
+        sql += "WHERE INACTIVE = 0 "
+    sql += "ORDER BY CUSTNAME"
+    rows = conn.cursor().execute(sql).fetchall()
     return [{"customer_number": r.customer_number, "customer_name": r.customer_name or None} for r in rows]
+
+
+def get_job(conn, job_number: str) -> dict | None:
+    """Read-only: one job's stored record from JC00102, or None. Used as the read-back after a create
+    (issue #380) so the response carries GP's OWN job number and name rather than the request echoed
+    back - WS_Job_Name is char(31), and what GP stored is the honest thing to snapshot onto the Nexus
+    project. Doubles as proof the row actually landed."""
+    row = conn.cursor().execute(
+        "SELECT RTRIM(WS_Job_Number) AS job_number, RTRIM(WS_Job_Name) AS job_name "
+        "FROM dbo.JC00102 WHERE RTRIM(WS_Job_Number) = ?",
+        job_number.strip(),
+    ).fetchone()
+    if row is None:
+        return None
+    return {"job_number": row.job_number, "job_name": row.job_name or None}
 
 
 def list_customer_addresses(conn, customer_number: str) -> list[dict]:
@@ -735,6 +757,18 @@ _CREATE_JOB_PARAMS = (
     ("bid_due_date", "BidDueDate"),
 )
 
+# The 8 the proc actually demands (established by validating clean, then dropping each in turn).
+_CREATE_JOB_REQUIRED = (
+    "job_number",
+    "job_name",
+    "division",
+    "customer_number",
+    "job_address_code",
+    "billto_address_code",
+    "tax_schedule_id",
+    "created_date",
+)
+
 
 def create_job(conn, *, only_validate: bool = False, **fields) -> None:
     """Create a GP job through the WennSoft job proc wsiJCJobMaster. Same shape as
@@ -751,10 +785,19 @@ def create_job(conn, *, only_validate: bool = False, **fields) -> None:
 
     @I_vReturnErrorText=1 makes the proc fill @oErrString; that text is carried on the raised error as
     proc_message so it survives to the user verbatim (see EConnectError)."""
-    supplied = {param: fields[field] for field, param in _CREATE_JOB_PARAMS if fields.get(field) is not None}
     unknown = set(fields) - {field for field, _ in _CREATE_JOB_PARAMS}
     if unknown:
         raise EConnectError(f"unknown create_job field(s): {sorted(unknown)}", proc="wsiJCJobMaster")
+    # A required field arriving as None would otherwise be quietly dropped from the EXEC and the proc
+    # would run on its own default for it - validating and then creating something other than what was
+    # asked for. CreateJobRequest already rejects these, so reaching here means a caller bypassed it.
+    missing = [field for field in _CREATE_JOB_REQUIRED if fields.get(field) is None]
+    if missing:
+        raise EConnectError(f"create_job is missing required field(s): {missing}", proc="wsiJCJobMaster")
+
+    # Non-empty by construction now that the required 8 are checked above, which is what keeps the
+    # f-string below from emitting `EXEC dbo.wsiJCJobMaster\n        ,\n ...` - a bare syntax error.
+    supplied = {param: fields[field] for field, param in _CREATE_JOB_PARAMS if fields.get(field) is not None}
 
     assignments = ",\n        ".join(f"@I_v{param} = ?" for param in supplied)
     sql = f"""
