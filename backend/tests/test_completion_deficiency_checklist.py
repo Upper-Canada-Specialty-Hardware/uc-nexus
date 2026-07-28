@@ -114,7 +114,8 @@ def _make_pulled_opening(session, project_id, *, request_number, items):
     session.flush()
 
     sao_items = {}
-    for category, code, qty in items:
+    for category, code, qty, *rest in items:
+        allocated = rest[0] if rest else qty
         session.add(
             PullRequestItem(
                 id=uuid.uuid4(),
@@ -123,7 +124,7 @@ def _make_pulled_opening(session, project_id, *, request_number, items):
                 opening_number="A01",
                 hardware_category=category,
                 product_code=code,
-                requested_quantity=qty,
+                requested_quantity=allocated,
             )
         )
         sao_item = ShopAssemblyOpeningItem(
@@ -132,6 +133,7 @@ def _make_pulled_opening(session, project_id, *, request_number, items):
             hardware_category=category,
             product_code=code,
             quantity=qty,
+            allocated_quantity=allocated,
         )
         session.add(sao_item)
         sao_items[code] = sao_item

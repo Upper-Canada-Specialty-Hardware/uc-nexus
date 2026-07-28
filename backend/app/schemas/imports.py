@@ -216,6 +216,9 @@ class ImportMutations:
                             "hardware_category": item.hardware_category,
                             "product_code": item.product_code,
                             "quantity": item.quantity,
+                            # None is forwarded as-is; the repository resolves it to `quantity`
+                            # (fully allocated), which is the pre-allocator behaviour.
+                            "allocated_quantity": item.allocated_quantity,
                         }
                         for item in sa.items
                     ],

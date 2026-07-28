@@ -110,14 +110,19 @@ def _make_pulled_opening(session, project_id, *, request_number, items, leaf=Non
     session.flush()
 
     sao_items = {}
-    for category, code, qty in items:
+    # (category, code, owed) or (category, code, owed, allocated); omitting allocated means fully
+    # allocated. `install_all` installs everything that was *pulled* - a short unit never arrived, so
+    # there is nothing to install.
+    for category, code, qty, *rest in items:
+        allocated = rest[0] if rest else qty
         sao_item = ShopAssemblyOpeningItem(
             id=uuid.uuid4(),
             shop_assembly_opening_id=opening.id,
             hardware_category=category,
             product_code=code,
             quantity=qty,
-            installed_quantity=qty if install_all else 0,
+            allocated_quantity=allocated,
+            installed_quantity=allocated if install_all else 0,
         )
         session.add(sao_item)
         sao_items[code] = sao_item
@@ -350,6 +355,58 @@ def test_partially_deficient_completion_still_succeeds(db_session):
         db_session.scalars(select(OpeningItemHardware).where(OpeningItemHardware.opening_item_id == result.id)).all()
     )
     assert {h.product_code: h.quantity for h in hw} == {HINGE[1]: 1}
+
+
+def test_completion_excuses_units_that_were_never_pulled(db_session):
+    """A short unit cannot be dispositioned - nothing arrived for the assembler to install or
+    condemn - so holding the leaf open for it would strand it forever waiting on hardware nobody
+    ever requested. Accounting is against what was pulled; the gap stays recorded as
+    `quantity - allocated_quantity` and belongs to purchasing and reallocation."""
+    project = _make_project(db_session)
+    opening, sao = _make_pulled_opening(
+        db_session,
+        project.id,
+        request_number="PR-SA-SHORT1",
+        # Owed 4 hinges, 2 pulled and both fitted; the lock line got nothing at all.
+        items=[(*HINGE, 4, 2), (*LOCK, 1, 0)],
+        leaf=1,
+        install_all=True,
+    )
+
+    result = shop_assembly_repository.complete_opening(
+        db_session, opening.id, None, None, None, completed_by="assembler"
+    )
+    db_session.flush()
+
+    assert opening.assembly_status == AssemblyStatus.COMPLETED
+    assert result.state == OpeningItemState.IN_INVENTORY
+    # The leaf carries what actually went on it, not what the schedule said it should.
+    hw = list(
+        db_session.scalars(select(OpeningItemHardware).where(OpeningItemHardware.opening_item_id == result.id)).all()
+    )
+    assert {h.product_code: h.quantity for h in hw} == {HINGE[1]: 2}
+    # And the owed quantity is untouched, so the shortfall is still derivable afterwards.
+    assert (sao[HINGE[1]].quantity, sao[HINGE[1]].allocated_quantity) == (4, 2)
+
+
+def test_completion_still_refuses_a_leaf_that_was_entirely_short(db_session):
+    """The zero-installed guard covers this without knowing about allocation: an "assembled" leaf
+    with nothing on it would read as ship-ready inventory whether the cause was every unit being
+    condemned or every unit never arriving."""
+    project = _make_project(db_session)
+    opening, _ = _make_pulled_opening(
+        db_session,
+        project.id,
+        request_number="PR-SA-SHORT2",
+        items=[(*HINGE, 4, 0), (*LOCK, 1, 0)],
+        leaf=1,
+        install_all=True,
+    )
+
+    with pytest.raises(ValidationError) as excinfo:
+        shop_assembly_repository.complete_opening(db_session, opening.id, None, None, None)
+    assert "never pulled" in str(excinfo.value)
+    assert opening.completed_at is None
 
 
 def test_opening_with_no_items_still_completes(db_session):

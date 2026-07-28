@@ -221,6 +221,63 @@ def test_accept_shop_assembly_mints_pr_and_repoints_openings(db_session):
     assert pr_items[0].requested_quantity == 2
 
 
+def test_accept_mints_lines_only_for_what_was_allocated(db_session):
+    """The pull asks for the ALLOCATED quantity, and a line with nothing allocated mints no pull line
+    at all. That is what keeps the pull equal to the reservation, so `approve_pull_request` stays
+    all-or-nothing with no warehouse-side change - asking for the owed quantity instead would send
+    the warehouse after stock nobody claimed and leave the pull blocked."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=2)
+    _seed_inventory(db_session, project.id, category="CLOSER", code="CL-1", quantity=0)
+    result = import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [{"opening_number": "A01", "building": "B1", "floor": "F2", "location": "Lobby"}],
+            "hardware_items": [],
+            "include_shop_assembly_request": True,
+            "shop_assembly_request_number": f"SA-{uuid.uuid4().hex[:6]}",
+            "shop_assembly_openings": [
+                {
+                    "opening_number": "A01",
+                    "leaf": 1,
+                    "items": [
+                        {
+                            "hardware_category": "HINGE",
+                            "product_code": "HG-100",
+                            "quantity": 4,
+                            "allocated_quantity": 2,
+                        },
+                        {
+                            "hardware_category": "CLOSER",
+                            "product_code": "CL-1",
+                            "quantity": 1,
+                            "allocated_quantity": 0,
+                        },
+                    ],
+                },
+            ],
+        },
+    )
+    sar = result["shop_assembly_request"]
+    db_session.flush()
+
+    shop_assembly_repository.accept_shop_assembly_request(db_session, sar.id, "acceptor")
+    db_session.flush()
+
+    pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == sar.request_number))
+    pr_items = db_session.scalars(select(PullRequestItem).where(PullRequestItem.pull_request_id == pr.id)).all()
+    assert len(pr_items) == 1  # the fully-short closer line is not on the sheet
+    assert pr_items[0].product_code == "HG-100"
+    assert pr_items[0].requested_quantity == 2  # allocated, not the 4 owed
+
+    # The pull asks for exactly what is reserved, which is the invariant approval relies on.
+    reservations = db_session.scalars(
+        select(InventoryReservation).where(InventoryReservation.shop_assembly_request_id == sar.id)
+    ).all()
+    assert [(r.product_code, r.quantity) for r in reservations] == [("HG-100", 2)]
+
+
 def test_creating_a_shop_assembly_request_blocks_on_shortfall(db_session):
     """#342 moved this gate from accept to creation: a selection that does not fit available
     inventory is refused before anything exists, so there is no request for anyone to accept."""

@@ -204,7 +204,18 @@ export default function PullStagingPanel({
                     <Box component="ul" sx={{ m: 0, pl: 2 }}>
                       {opening.items.map((item) => (
                         <li key={item.id}>
-                          {item.quantity} x {item.productCode} ({item.hardwareCategory})
+                          {/* The pick count is the ALLOCATED quantity - that is what the pull line
+                              asks for and what was reserved. Owed is shown only when it differs, so
+                              the puller can see the cart is deliberately short rather than wondering
+                              whether they miscounted. */}
+                          {item.allocatedQuantity} x {item.productCode} ({item.hardwareCategory})
+                          {item.quantity > item.allocatedQuantity && (
+                            <Typography component="span" variant="caption" color="text.secondary">
+                              {' '}
+                              - {item.quantity - item.allocatedQuantity} of {item.quantity} owed
+                              never pulled
+                            </Typography>
+                          )}
                         </li>
                       ))}
                     </Box>

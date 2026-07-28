@@ -36,6 +36,7 @@ export const GET_ASSEMBLE_LIST = gql`
         hardwareCategory
         productCode
         quantity
+        allocatedQuantity
         installedQuantity
         deficientQuantity
         replacementPendingQuantity
@@ -66,6 +67,7 @@ export const GET_MY_WORK = gql`
         hardwareCategory
         productCode
         quantity
+        allocatedQuantity
         installedQuantity
         deficientQuantity
         replacementPendingQuantity
@@ -155,11 +157,14 @@ const PIPELINE_SUMMARY_FIELDS = `
   completedOpeningCount
   shippedOpeningCount
   plannedUnitCount
+  allocatedUnitCount
+  shortUnitCount
   installedUnitCount
   deficientUnitCount
   replacementPendingUnitCount
   awaitingReplacementOpeningCount
   replacementAfterShipOpeningCount
+  shortOpeningCount
   stage
 `;
 
@@ -196,6 +201,8 @@ export const GET_ASSEMBLY_PIPELINE = gql`
         assemblyStatus
         completedAt
         plannedUnitCount
+        allocatedUnitCount
+        shortUnitCount
         installedUnitCount
         deficientUnitCount
         replacementPendingUnitCount
@@ -238,6 +245,7 @@ export const GET_SHOP_ASSEMBLY_REQUESTS = gql`
           hardwareCategory
           productCode
           quantity
+          allocatedQuantity
         }
       }
     }
@@ -292,6 +300,7 @@ export const ASSIGN_OPENINGS = gql`
         hardwareCategory
         productCode
         quantity
+        allocatedQuantity
         installedQuantity
         deficientQuantity
         replacementPendingQuantity
@@ -321,6 +330,7 @@ export const REMOVE_OPENING_FROM_USER = gql`
         hardwareCategory
         productCode
         quantity
+        allocatedQuantity
         installedQuantity
         deficientQuantity
         replacementPendingQuantity
@@ -354,6 +364,7 @@ export const RECORD_ASSEMBLY_PROGRESS = gql`
         hardwareCategory
         productCode
         quantity
+        allocatedQuantity
         installedQuantity
         deficientQuantity
         replacementPendingQuantity

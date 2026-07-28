@@ -26,7 +26,10 @@ interface RequestOpeningItem {
   id: string;
   hardwareCategory: string;
   productCode: string;
+  /** Owed by the schedule. */
   quantity: number;
+  /** Claimed out of inventory when the request was sent - what the pull will actually ask for. */
+  allocatedQuantity: number;
 }
 
 interface RequestOpening {
@@ -88,9 +91,28 @@ export default function ShopAssemblyRequestsPage() {
         reopenMutation={REOPEN_SHOP_ASSEMBLY_REQUEST}
         mode={view === 'APPROVED' ? 'approved' : 'pending'}
         onChanged={refetch}
-        renderSummary={(req) => (
-          <Chip label={`${req.openings.length} opening(s)`} size="small" variant="outlined" />
-        )}
+        renderSummary={(req) => {
+          // The acceptor is approving a pull for the ALLOCATED quantities, so the short count has to
+          // be on the summary line, not buried in the per-leaf tables. Approving a request that is
+          // knowingly short is fine; approving one without knowing it is short is not.
+          const short = req.openings.reduce(
+            (sum, o) => sum + o.items.reduce((n, i) => n + (i.quantity - i.allocatedQuantity), 0),
+            0,
+          );
+          return (
+            <Stack direction="row" spacing={1}>
+              <Chip label={`${req.openings.length} opening(s)`} size="small" variant="outlined" />
+              {short > 0 && (
+                <Chip
+                  label={`${short} unit(s) short`}
+                  size="small"
+                  variant="outlined"
+                  color="warning"
+                />
+              )}
+            </Stack>
+          );
+        }}
         renderDetails={(req) =>
         req.openings.map((opening) => (
           <Box key={opening.id}>
@@ -110,7 +132,8 @@ export default function ShopAssemblyRequestsPage() {
                   <TableRow>
                     <TableCell>Product Code</TableCell>
                     <TableCell>Hardware Category</TableCell>
-                    <TableCell align="right">Quantity</TableCell>
+                    <TableCell align="right">Owed</TableCell>
+                    <TableCell align="right">Allocated</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
@@ -119,6 +142,18 @@ export default function ShopAssemblyRequestsPage() {
                       <TableCell>{item.productCode}</TableCell>
                       <TableCell>{item.hardwareCategory}</TableCell>
                       <TableCell align="right">{item.quantity}</TableCell>
+                      <TableCell align="right">
+                        {item.allocatedQuantity}
+                        {item.quantity > item.allocatedQuantity && (
+                          <Chip
+                            size="small"
+                            variant="outlined"
+                            color="warning"
+                            label={`${item.quantity - item.allocatedQuantity} short`}
+                            sx={{ ml: 0.5 }}
+                          />
+                        )}
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>

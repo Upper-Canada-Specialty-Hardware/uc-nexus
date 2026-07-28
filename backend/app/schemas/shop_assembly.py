@@ -293,8 +293,12 @@ class ShopAssemblyMutations:
             )
             session.commit()
             refreshed = warehouse_repository.get_opening_item_details(session, result.id)
-            awaiting = shop_assembly_repository.get_awaiting_replacement_quantities(session, [refreshed.id])
-            return opening_item_to_type(refreshed, awaiting_replacement_quantity=awaiting.get(refreshed.id, 0))
+            shortfall = shop_assembly_repository.get_leaf_shortfalls(session, [refreshed.id]).get(refreshed.id)
+            return opening_item_to_type(
+                refreshed,
+                awaiting_replacement_quantity=shortfall.awaiting_replacement if shortfall else 0,
+                never_pulled_quantity=shortfall.never_pulled if shortfall else 0,
+            )
 
     @strawberry.mutation
     def complete_opening(self, info: strawberry.Info, input: CompleteOpeningInput) -> OpeningItem:

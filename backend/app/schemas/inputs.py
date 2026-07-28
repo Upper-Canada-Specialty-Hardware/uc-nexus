@@ -141,7 +141,13 @@ class ShippingOutPRDraftInput:
 class SAROpeningItemInput:
     hardware_category: str
     product_code: str
+    # What the schedule says this leaf is owed. Never reduced by scarcity.
     quantity: int
+    # What the requester could actually claim out of available inventory, 0..quantity. The allocator
+    # step always sends it explicitly. **None means "fully allocated" (= quantity)**, which is what
+    # keeps every non-wizard caller - tests, scripts, a stale tab - on the pre-allocation behaviour:
+    # ask for the whole line, and fail the availability gate if it does not fit.
+    allocated_quantity: int | None = None
 
 
 @strawberry.input

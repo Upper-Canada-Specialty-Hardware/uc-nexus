@@ -47,6 +47,7 @@ function opening(overrides: Record<string, unknown> = {}) {
         hardwareCategory: 'HINGE',
         productCode: 'HG-100',
         quantity: 3,
+        allocatedQuantity: 3,
       },
     ],
     ...overrides,

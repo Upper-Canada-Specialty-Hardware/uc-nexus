@@ -16,6 +16,7 @@ function leaf(overrides: Partial<AssembledLeafCandidate> = {}): AssembledLeafCan
     leaf: 1,
     installedHardware: [{ productCode: 'HG-100', quantity: 3 }],
     awaitingReplacementQuantity: 0,
+    neverPulledQuantity: 0,
     ...overrides,
   };
 }
@@ -56,7 +57,22 @@ function leafCheckbox() {
 it('flags a leaf that is still awaiting replacement hardware', () => {
   renderStep([leaf({ awaitingReplacementQuantity: 2 })]);
   expect(screen.getByText(/Incomplete - awaiting replacement/i)).toBeInTheDocument();
-  expect(screen.getByText(/2 unit\(s\) still awaiting replacement/i)).toBeInTheDocument();
+  expect(screen.getByText(/awaiting replacement hardware for 2 unit\(s\)/i)).toBeInTheDocument();
+});
+
+it('flags a leaf that is merely short, with nothing condemned', () => {
+  // The other half of the same decision, and the one with no replacement coming. The server refuses
+  // it too, so without a confirm here the leaf could never be shipped at all.
+  renderStep([leaf({ neverPulledQuantity: 3 })]);
+  expect(screen.getByText(/Incomplete - never pulled/i)).toBeInTheDocument();
+  expect(screen.getByText(/missing 3 unit\(s\) that were never pulled/i)).toBeInTheDocument();
+});
+
+it('names both counts when a leaf is short in both ways', () => {
+  renderStep([leaf({ awaitingReplacementQuantity: 1, neverPulledQuantity: 2 })]);
+  expect(
+    screen.getByText(/awaiting replacement hardware for 1 unit\(s\), and missing 2 unit\(s\)/i),
+  ).toBeInTheDocument();
 });
 
 it('does not flag a whole leaf', () => {

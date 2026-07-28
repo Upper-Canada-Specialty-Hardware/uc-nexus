@@ -15,6 +15,7 @@ from app.models.enums import (
     PullRequestItemType,
     PullRequestSource,
     PullRequestStatus,
+    ReservationSource,
 )
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.pull_request import PullRequest as PullRequestModel
@@ -404,25 +405,34 @@ def notify_unblocked_replacement_pulls(
     project_id: uuid.UUID | None,
     received_combos: set[tuple[str, str]],
 ) -> list:
-    """Tell the warehouse that a blocked replacement pull can now be approved (#344).
+    """Claim what just landed for the replacements waiting on it, then tell the warehouse which of
+    them can now be approved (#344).
 
-    A PR-REPL pull is the one kind of pull that holds **no reservation** - nobody can claim stock for
-    a deficiency that has not happened yet (#342) - so it is also the only one whose demand nothing
-    was tracking. It sits PENDING, the approver sees INSUFFICIENT, the PO is told to backfill, and
-    when the backfill finally lands there is no signal that the pull is now approvable. Somebody has
-    to remember to go and retry it. This is that signal.
+    A PR-REPL pull sits PENDING, the approver sees INSUFFICIENT, the PO is told to backfill, and when
+    the backfill finally lands there is no signal that the pull is now approvable. Somebody has to
+    remember to go and retry it. This is that signal.
+
+    **The top-up runs first, and the order matters.** A replacement reserves what it can at flag time
+    and is usually short - that is why it is waiting. If this only announced the receive, the units
+    would stay free until somebody got round to approving, and any request created in the meantime
+    could take them: the pull would be announced as coverable and then come up short at approval,
+    which is exactly the loop the announcement exists to end. Claiming first makes the announcement
+    true when it is read.
 
     **Dedupe, in three parts, and each part is doing different work:**
 
     1. *Relevance.* Only pulls that wanted one of the combos this receive actually landed are
        considered. A receive of door closers cannot change whether a hinge replacement is coverable.
     2. *Coverability.* The pull must now be **fully** coverable, under the same reservation-aware
-       availability the approver will apply (`on-hand - deficient - everyone's reservations`, with no
-       self-exclusion, because a replacement pull holds nothing of its own to exclude). A receive that
-       narrows the gap without closing it changes nothing the warehouse can act on, so it says
-       nothing. Note this is the state *after* the receive only - the prior state is not re-derived,
-       so a pull that was already coverable and gets more stock still qualifies here; what actually
-       stops it being announced twice is rule 3.
+       availability the approver will apply - `on-hand - deficient - everyone's reservations`, with
+       **this pull's own claim excluded**. That exclusion is mandatory, not a refinement: the top-up
+       above has just reserved the received units *for this pull*, so counting them as competing
+       demand would make the pull read as insufficient forever and the notification would never fire
+       again. It is the same self-coverage rule `approve_pull_request` applies for the same reason.
+       A receive that narrows the gap without closing it changes nothing the warehouse can act on, so
+       it says nothing. Note this is the state *after* the receive only - the prior state is not
+       re-derived, so a pull that was already coverable and gets more stock still qualifies here;
+       what actually stops it being announced twice is rule 3.
     3. *Open signal.* One **unread** notification per pull. If the last one has not been read yet,
        the warehouse already knows; raising a second is noise. Once it has been read the signal has
        done its job, so a pull that goes short again and is later covered again gets a fresh one.
@@ -437,6 +447,9 @@ def notify_unblocked_replacement_pulls(
     if project_id is None or not received_combos:
         return []
     from .pull_requests import check_inventory_sufficiency
+    from .reservations import top_up_replacement_reservations
+
+    top_up_replacement_reservations(session, project_id, received_combos)
 
     raised = []
     for pr in find_pending_replacement_pulls(session, project_id, received_combos):
@@ -447,7 +460,13 @@ def notify_unblocked_replacement_pulls(
         ]
         if not needs:
             continue
-        if not check_inventory_sufficiency(session, project_id, needs, reservation_aware=True).sufficient:
+        if not check_inventory_sufficiency(
+            session,
+            project_id,
+            needs,
+            reservation_aware=True,
+            exclude_reservations_of=(ReservationSource.REPLACEMENT_PULL, pr.id),
+        ).sufficient:
             continue
         if not lock_rows(session, PullRequestModel, [pr.id]):
             continue

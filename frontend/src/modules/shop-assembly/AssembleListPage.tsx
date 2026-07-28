@@ -24,7 +24,7 @@ import OpeningLeafStatusPanel from '../../components/OpeningLeafStatusPanel';
 import { useIdentity } from '../../hooks/useIdentity';
 import { useToast } from '../../components/Toast';
 import AssemblyDetailModal from './AssemblyDetailModal';
-import { assemblyProgress, assemblyStatusLabel } from './openingFilters';
+import { assemblyProgress, assemblyStatusLabel, unitProgressLabel } from './openingFilters';
 
 // --- Types ---
 
@@ -33,7 +33,10 @@ interface AssembleOpeningItem {
   shopAssemblyOpeningId: string;
   hardwareCategory: string;
   productCode: string;
+  // Owed by the schedule vs pulled for the bench. The three progress buckets partition
+  // `allocatedQuantity`; `quantity - allocatedQuantity` was never pulled and is not outstanding work.
   quantity: number;
+  allocatedQuantity: number;
   installedQuantity: number;
   deficientQuantity: number;
   // Arrived-but-not-yet-fitted replacement units (#341): the third bucket a line is partitioned
@@ -271,8 +274,18 @@ export default function AssembleListPage() {
                             variant="outlined"
                           />
                           <Typography variant="body2" color="text.secondary">
-                            {progress.planned - progress.remaining}/{progress.planned} units
+                            {unitProgressLabel(opening.items ?? [])}
                           </Typography>
+                          {/* Owed but never pulled. Its own chip rather than part of the progress
+                              count: it is not outstanding work, and the leaf finishes without it. */}
+                          {progress.short > 0 && (
+                            <Chip
+                              label={`${progress.short} never pulled`}
+                              color="warning"
+                              size="small"
+                              variant="outlined"
+                            />
+                          )}
                         </Stack>
                       </AccordionSummary>
                       <AccordionDetails>
@@ -283,6 +296,7 @@ export default function AssembleListPage() {
                               <TableRow>
                                 <TableCell>Product Code</TableCell>
                                 <TableCell>Hardware Category</TableCell>
+                                <TableCell align="right">Owed</TableCell>
                                 <TableCell align="right">Pulled</TableCell>
                                 <TableCell align="right">Installed</TableCell>
                                 <TableCell align="right">Deficient</TableCell>
@@ -294,6 +308,18 @@ export default function AssembleListPage() {
                                   <TableCell>{item.productCode}</TableCell>
                                   <TableCell>{item.hardwareCategory}</TableCell>
                                   <TableCell align="right">{item.quantity}</TableCell>
+                                  <TableCell align="right">
+                                    {item.allocatedQuantity}
+                                    {item.quantity > item.allocatedQuantity && (
+                                      <Chip
+                                        size="small"
+                                        variant="outlined"
+                                        color="warning"
+                                        label={`${item.quantity - item.allocatedQuantity} never pulled`}
+                                        sx={{ ml: 0.5 }}
+                                      />
+                                    )}
+                                  </TableCell>
                                   <TableCell align="right">{item.installedQuantity}</TableCell>
                                   <TableCell align="right">{item.deficientQuantity}</TableCell>
                                 </TableRow>

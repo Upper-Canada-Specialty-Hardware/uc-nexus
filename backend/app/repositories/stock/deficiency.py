@@ -348,6 +348,23 @@ def report_deficiency_at_assembly(
         session.add(pri)
     session.flush()
 
+    # Claim replacement stock now, not at approval. A deficiency could not be foreseen, so nobody
+    # could reserve for it in advance - but the moment it is found the demand is real and dated, and
+    # leaving the replacement pull holding nothing meant every request created afterwards outranked
+    # it. It reserves min(free stock, what was just condemned); claiming less than that is expected
+    # (the shelf is often empty, which is why a replacement is needed at all) and
+    # `top_up_replacement_reservations` closes the gap when stock is received or a unit is repaired.
+    from app.repositories import warehouse as warehouse_repository
+
+    warehouse_repository.reserve_for_replacement_pull(
+        session,
+        replacement_pr.id,
+        il.project_id,
+        il.hardware_category,
+        il.product_code,
+        quantity,
+    )
+
     return (il, pri)
 
 
@@ -468,6 +485,24 @@ def resolve_deficiency(
     )
     session.add(review)
     session.flush()
+
+    # A REPAIR puts a condemned unit back into the available pool without anything being received,
+    # so it is the other moment project availability rises - and the replacement pull that unit was
+    # condemned *for* is usually the thing waiting on it. Claim it for the waiting replacements, in
+    # the order the defects were found, before a request created since can take it. No PR-REPL line
+    # unwinding is needed or wanted: the replacement pull can now simply pull the repaired unit as
+    # free stock, which is what it was always going to do.
+    #
+    # SEND_TO_STOCK moves the unit off the project onto the shared stock pool, so it does not raise
+    # *project* availability and nothing here can claim it. It is listed as a no-op rather than
+    # omitted silently, because "which resolutions free project stock" is the question this block
+    # answers.
+    if inventory_location_id is not None and resolution == DeficiencyResolution.REPAIR:
+        from app.repositories import warehouse as warehouse_repository
+
+        warehouse_repository.top_up_replacement_reservations(
+            session, project_for_audit, [(hardware_category, product_code)]
+        )
 
     detail = {
         "resolution": resolution.value,

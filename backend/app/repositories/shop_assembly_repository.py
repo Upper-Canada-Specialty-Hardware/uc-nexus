@@ -360,10 +360,18 @@ def record_assembly_progress(
         new_deficient = item.deficient_quantity + flagged
         if new_installed < 0:
             raise ValidationError("installed_quantity must be >= 0", field="installed_quantity")
-        if new_installed + new_deficient > item.quantity:
+        # The cap is what was **allocated**, not what the schedule owed. Short units never left
+        # inventory, so there is no unit on the cart for the assembler to install or condemn; letting
+        # progress run to `quantity` would mean recording hardware onto a leaf that never arrived.
+        if new_installed + new_deficient + item.replacement_pending_quantity > item.allocated_quantity:
+            short_note = (
+                f" ({item.quantity - item.allocated_quantity} of the {item.quantity} owed were never pulled)"
+                if item.allocated_quantity < item.quantity
+                else ""
+            )
             raise ValidationError(
                 f"{item.product_code}: {new_installed} installed + {new_deficient} deficient exceeds the "
-                f"{item.quantity} unit(s) pulled for this leaf",
+                f"{item.allocated_quantity} unit(s) pulled for this leaf{short_note}",
                 field="installed_quantity",
             )
         planned.append((item, new_installed, new_deficient, flagged, reason))
@@ -400,11 +408,12 @@ def record_assembly_progress(
                 "hardwareCategory": item.hardware_category,
                 "productCode": item.product_code,
                 "plannedQuantity": item.quantity,
+                "allocatedQuantity": item.allocated_quantity,
                 "previousInstalledQuantity": previous_installed,
                 "installedQuantity": new_installed,
                 "flaggedDeficientQuantity": flagged,
                 "deficientQuantity": new_deficient,
-                "remainingQuantity": item.quantity - new_installed - new_deficient,
+                "remainingQuantity": item.allocated_quantity - new_installed - new_deficient,
                 "reasonText": reason,
                 "openingNumber": sa_opening.opening_number,
                 "leaf": sa_opening.leaf,
@@ -484,16 +493,25 @@ def complete_opening(
             field="opening_id",
         )
 
-    # 4. Every unit must be accounted for (#340). Business decision: block, never auto-default. An
-    #    unrecorded unit is an unanswered question - was it fitted, is it still on the cart, is it
-    #    missing? - and silently treating it as installed is what would put hardware on a leaf that
-    #    was never there, while silently treating it as deficient would mint replacement pulls nobody
-    #    asked for. Name the lines so the assembler knows exactly which ones to go finish.
+    # 4. Every unit that arrived must be accounted for (#340). Business decision: block, never
+    #    auto-default. An unrecorded unit is an unanswered question - was it fitted, is it still on
+    #    the cart, is it missing? - and silently treating it as installed is what would put hardware
+    #    on a leaf that was never there, while silently treating it as deficient would mint
+    #    replacement pulls nobody asked for. Name the lines so the assembler knows which to finish.
+    #
+    #    Accounting is against `allocated_quantity`. **Short units are excused**: they were never
+    #    pulled, so no amount of work at the bench can disposition them, and holding the leaf open
+    #    for them would strand it forever waiting on hardware that was never requested. What is still
+    #    owed is recorded by `quantity - allocated_quantity` and is the reallocation module's
+    #    problem, not this assembler's.
+    def _dispositioned(item) -> int:
+        return item.installed_quantity + item.deficient_quantity + item.replacement_pending_quantity
+
     undispositioned = [
-        f"{item.product_code} ({item.quantity - item.installed_quantity - item.deficient_quantity} of "
-        f"{item.quantity} unrecorded)"
+        f"{item.product_code} ({item.allocated_quantity - _dispositioned(item)} of "
+        f"{item.allocated_quantity} unrecorded)"
         for item in sa_opening.items
-        if item.installed_quantity + item.deficient_quantity != item.quantity
+        if _dispositioned(item) != item.allocated_quantity
     ]
     if undispositioned:
         raise ValidationError(
@@ -502,15 +520,18 @@ def complete_opening(
             field="items",
         )
 
-    # 4b. Refuse an all-deficient completion (#339). If every unit was flagged deficient the
-    #     OpeningItem would be minted with zero OpeningItemHardware rows - an "assembled" leaf that
-    #     had nothing installed on it, which then reads as ship-ready inventory. The deficiencies
-    #     themselves stand (they were recorded when they were found, #340); what is refused is calling
-    #     the leaf assembled. It stays IN_PROGRESS until at least one unit is installed on it.
+    # 4b. Refuse a completion with nothing installed on it (#339). If every unit was flagged
+    #     deficient - or, since partial allocation, if nothing was ever pulled - the OpeningItem would
+    #     be minted with zero OpeningItemHardware rows: an "assembled" leaf that had nothing on it,
+    #     which then reads as ship-ready inventory. The deficiencies themselves stand (they were
+    #     recorded when they were found, #340) and so does the shortfall; what is refused is calling
+    #     the leaf assembled. One guard covers both causes, because the thing that makes it wrong is
+    #     the same either way - an empty leaf is not a leaf.
     if sa_opening.items and all(item.installed_quantity == 0 for item in sa_opening.items):
         raise ValidationError(
-            "Cannot complete an opening with every unit flagged deficient - nothing would be "
-            "assembled. Leave the opening open until replacement hardware is installed.",
+            "Cannot complete an opening with nothing installed on it - every unit was either flagged "
+            "deficient or never pulled, so nothing would be assembled. Leave the opening open until "
+            "hardware is installed on it.",
             field="items",
         )
 
@@ -595,8 +616,12 @@ def complete_opening(
                     "productCode": item.product_code,
                     "hardwareCategory": item.hardware_category,
                     "plannedQuantity": item.quantity,
+                    "allocatedQuantity": item.allocated_quantity,
                     "installedQuantity": item.installed_quantity,
                     "deficientQuantity": item.deficient_quantity,
+                    # What the schedule owed that this request never pulled. Recorded on the leaf's
+                    # completion event so the execution is auditable after the fact.
+                    "shortQuantity": item.quantity - item.allocated_quantity,
                 }
                 for item in sa_opening.items
             ],
@@ -639,36 +664,20 @@ def find_assembled_leaf(
     return sorted(live or rows, key=lambda oi: oi.assembly_completed_at)[-1]
 
 
-def get_awaiting_replacement_quantities(
-    session: Session,
-    opening_item_ids: Iterable[uuid.UUID],
-) -> dict[uuid.UUID, int]:
-    """Per assembled leaf, how many units of its hardware are still owed (#341): units condemned and
-    not yet replaced, plus units whose replacement has arrived but is not fitted yet.
+def _latest_assembly_lateral():
+    """The ShopAssemblyOpening that produced the correlated `OpeningItemModel` row.
 
-    This is the shipping deficiency flag. A leaf with a non-zero count is physically short of what
-    its checklist says it carries, so shipping it is a decision, not an accident - the wizard flags
-    it and the shipping-out creation path refuses it without an explicit acknowledgment.
+    **Exactly one assembly per leaf.** A leaf can be sent to the shop more than once - it shipped and
+    a correction re-assembled it, or a request was reopened and re-imported - and (opening_id, leaf)
+    alone matches every one of those work units. A plain join therefore made a newly assembled leaf
+    inherit the *previous* assembly's counters. This resolves it the way `find_assembled_leaf`
+    resolves the other direction: latest completion wins, bounded by the leaf's own
+    `assembly_completed_at` so each assembled unit reads its own work unit and not a later one.
 
-    One grouped scalar aggregate over the whole id set, never a len() over loaded collections
-    (CLAUDE.md perf rules): the shipping selection lists every assembled leaf in a project, and a
-    per-leaf query here would be an N+1 on the heaviest list in the module. Only non-zero entries are
-    returned, so callers can treat a missing key as "nothing outstanding".
-
-    **Exactly one assembly per leaf is counted: the one that produced that leaf.** A leaf can be sent
-    to the shop more than once - it shipped and a correction re-assembled it, or a request was
-    reopened and re-imported - and (opening_id, leaf) alone matches every one of those work units. A
-    plain join therefore made the newly assembled leaf inherit the *previous* assembly's outstanding
-    units and read as "awaiting replacement" the moment it was built. The lateral resolves it the way
-    `find_assembled_leaf` resolves the other direction: latest completion wins, bounded by the leaf's
-    own `assembly_completed_at` so each assembled unit reads its own work unit and not a later one.
+    Scoped to the leaf's own project, because `opening_id` is a historical stamp, not an FK, and a
+    re-upload can reissue it.
     """
-    ids = list(opening_item_ids)
-    if not ids:
-        return {}
-    # Scope the correlation to the leaf's own project: opening_id is a historical stamp, not an FK,
-    # and a re-upload can reissue it.
-    latest_assembly = (
+    return (
         select(ShopAssemblyOpening.id.label("sa_opening_id"))
         .join(PullRequestModel, PullRequestModel.id == ShopAssemblyOpening.pull_request_id)
         .where(
@@ -691,11 +700,56 @@ def get_awaiting_replacement_quantities(
         .limit(1)
         .lateral("latest_assembly")
     )
-    outstanding = func.sum(
+
+
+@dataclass(frozen=True)
+class LeafShortfall:
+    """The two ways an assembled leaf can be short of the bill of hardware it ships under (#341).
+
+    They are counted apart because the remedies are not the same, and a shipper deciding whether to
+    send a leaf needs to know which one they are looking at:
+
+    - `awaiting_replacement` - a unit arrived and failed. It was condemned, a PR-REPL pull already
+      exists for it, and waiting is a real option.
+    - `never_pulled` - a unit never arrived at all: the allocator could not claim it out of available
+      inventory when the request was sent, so nothing was ever pulled and nothing is in flight.
+      Waiting achieves nothing; that gap is closed by purchasing and, later, by reallocation.
+    """
+
+    awaiting_replacement: int
+    never_pulled: int
+
+    @property
+    def total(self) -> int:
+        return self.awaiting_replacement + self.never_pulled
+
+
+def get_leaf_shortfalls(
+    session: Session,
+    opening_item_ids: Iterable[uuid.UUID],
+) -> dict[uuid.UUID, LeafShortfall]:
+    """Both shortfall readings per assembled leaf, in ONE grouped aggregate.
+
+    Never a len() over loaded collections, and never one query per reading (CLAUDE.md perf rules):
+    the shipping selection lists every assembled leaf in a project, so a per-leaf query would be an
+    N+1 on the heaviest list in the module, and running the correlated lateral twice to get two sums
+    out of the same rows would double the cost of the heaviest query in it. Only leaves with
+    something outstanding are returned, so callers treat a missing key as "nothing outstanding".
+    """
+    ids = list(opening_item_ids)
+    if not ids:
+        return {}
+    latest_assembly = _latest_assembly_lateral()
+    awaiting = func.sum(
         ShopAssemblyOpeningItem.deficient_quantity + ShopAssemblyOpeningItem.replacement_pending_quantity
     )
+    never_pulled = func.sum(ShopAssemblyOpeningItem.quantity - ShopAssemblyOpeningItem.allocated_quantity)
     stmt = (
-        select(OpeningItemModel.id, outstanding.label("outstanding"))
+        select(
+            OpeningItemModel.id,
+            awaiting.label("awaiting"),
+            never_pulled.label("never_pulled"),
+        )
         .select_from(OpeningItemModel)
         .join(latest_assembly, true())
         .join(
@@ -704,9 +758,44 @@ def get_awaiting_replacement_quantities(
         )
         .where(OpeningItemModel.id.in_(ids))
         .group_by(OpeningItemModel.id)
-        .having(outstanding > 0)
+        .having(or_(awaiting > 0, never_pulled > 0))
     )
-    return {row.id: int(row.outstanding) for row in session.execute(stmt).all()}
+    return {
+        row.id: LeafShortfall(awaiting_replacement=int(row.awaiting), never_pulled=int(row.never_pulled))
+        for row in session.execute(stmt).all()
+    }
+
+
+def get_awaiting_replacement_quantities(
+    session: Session,
+    opening_item_ids: Iterable[uuid.UUID],
+) -> dict[uuid.UUID, int]:
+    """Per assembled leaf, how many units of its hardware are still owed *and were pulled* (#341):
+    units condemned and not yet replaced, plus units whose replacement has arrived but is not fitted
+    yet. Zero entries are dropped, so a missing key means "nothing outstanding".
+
+    A named reading of `get_leaf_shortfalls` for the callers that only surface this half.
+    """
+    return {
+        oi_id: shortfall.awaiting_replacement
+        for oi_id, shortfall in get_leaf_shortfalls(session, opening_item_ids).items()
+        if shortfall.awaiting_replacement > 0
+    }
+
+
+def get_never_pulled_quantities(
+    session: Session,
+    opening_item_ids: Iterable[uuid.UUID],
+) -> dict[uuid.UUID, int]:
+    """Per assembled leaf, how many units its schedule owed that the request never pulled.
+
+    A named reading of `get_leaf_shortfalls` for the callers that only surface this half.
+    """
+    return {
+        oi_id: shortfall.never_pulled
+        for oi_id, shortfall in get_leaf_shortfalls(session, opening_item_ids).items()
+        if shortfall.never_pulled > 0
+    }
 
 
 @dataclass(frozen=True)
@@ -1066,6 +1155,13 @@ def accept_shop_assembly_request(
     check now happens once, at creation (where the creator can still refine the selection), and the
     claim is spent at pull approval. Accepting does not touch the reservations: the request keeps
     holding them, exactly as it did while PENDING.
+
+    The pull asks for the **allocated** quantity, and a line with nothing allocated mints no pull
+    line at all. That is what keeps the pull equal to the reservation: the request reserved its
+    allocation at creation, so the pull it mints spends exactly that, and `approve_pull_request`
+    stays all-or-nothing by construction. Sending the owed quantity instead would ask the warehouse
+    for stock nobody claimed and the pull would sit blocked - which is the shortfall this whole slice
+    moves back to the requester.
     """
     stmt = (
         select(ShopAssemblyRequest)
@@ -1097,6 +1193,10 @@ def accept_shop_assembly_request(
     for opening in sar.openings:
         opening.pull_request_id = pr.id
         for item in opening.items:
+            if item.allocated_quantity <= 0:
+                # Fully short line: nothing was reserved for it and nothing is coming. A zero-quantity
+                # pull line would put a pick on the sheet the warehouse cannot fill.
+                continue
             session.add(
                 PullRequestItemModel(
                     id=uuid.uuid4(),
@@ -1107,7 +1207,7 @@ def accept_shop_assembly_request(
                     leaf=opening.leaf,
                     hardware_category=item.hardware_category,
                     product_code=item.product_code,
-                    requested_quantity=item.quantity,
+                    requested_quantity=item.allocated_quantity,
                 )
             )
 
@@ -1262,6 +1362,9 @@ class PipelineOpening:
     assembly_status: AssemblyStatus
     completed_at: datetime | None
     planned_unit_count: int
+    # What the request could actually claim for this leaf. The three progress counters partition
+    # this, not `planned_unit_count`; the difference was never pulled.
+    allocated_unit_count: int
     installed_unit_count: int
     deficient_unit_count: int
     replacement_pending_unit_count: int
@@ -1269,6 +1372,13 @@ class PipelineOpening:
     opening_item_state: OpeningItemState | None
     # Where the assembled leaf physically is, once there is one - the "completed (location)" rung.
     assembled_location: str | None
+
+    @property
+    def short_unit_count(self) -> int:
+        """Units the schedule owed this leaf that the request never pulled - it could not claim them
+        out of available inventory when it was sent. Not outstanding *work*: nothing arrived, so the
+        leaf completes without them and closing the gap belongs to purchasing and reallocation."""
+        return self.planned_unit_count - self.allocated_unit_count
 
     @property
     def awaiting_replacement_unit_count(self) -> int:
@@ -1336,6 +1446,11 @@ class AssemblyPipelineSummary:
     shipped_opening_count: int
 
     planned_unit_count: int
+    # Sent short: `planned - allocated` across the whole request. The number the pipeline exists to
+    # surface for this slice - a request can now be legitimately complete and still not have
+    # delivered its full bill of hardware, and nothing else on this row would say so.
+    allocated_unit_count: int
+    short_unit_count: int
     installed_unit_count: int
     deficient_unit_count: int
     replacement_pending_unit_count: int
@@ -1343,6 +1458,8 @@ class AssemblyPipelineSummary:
     # Openings with something still owed to them, and the subset whose leaf has already shipped.
     awaiting_replacement_opening_count: int
     replacement_after_ship_opening_count: int
+    # Openings carrying at least one line that was never fully pulled.
+    short_opening_count: int
 
     stage: str
 
@@ -1519,6 +1636,7 @@ def _unit_counts(session: Session, request_ids: list[uuid.UUID]) -> dict[uuid.UU
             ShopAssemblyOpening.shop_assembly_request_id.label("request_id"),
             ShopAssemblyOpening.id.label("opening_id"),
             func.coalesce(func.sum(ShopAssemblyOpeningItem.quantity), 0).label("planned"),
+            func.coalesce(func.sum(ShopAssemblyOpeningItem.allocated_quantity), 0).label("allocated"),
             func.coalesce(func.sum(ShopAssemblyOpeningItem.installed_quantity), 0).label("installed"),
             func.coalesce(func.sum(ShopAssemblyOpeningItem.deficient_quantity), 0).label("deficient"),
             func.coalesce(func.sum(ShopAssemblyOpeningItem.replacement_pending_quantity), 0).label("pending"),
@@ -1532,23 +1650,29 @@ def _unit_counts(session: Session, request_ids: list[uuid.UUID]) -> dict[uuid.UU
         .subquery()
     )
     outstanding = per_opening.c.deficient + per_opening.c.pending
+    short = per_opening.c.planned - per_opening.c.allocated
     rows = session.execute(
         select(
             per_opening.c.request_id,
             func.coalesce(func.sum(per_opening.c.planned), 0).label("planned"),
+            func.coalesce(func.sum(per_opening.c.allocated), 0).label("allocated"),
             func.coalesce(func.sum(per_opening.c.installed), 0).label("installed"),
             func.coalesce(func.sum(per_opening.c.deficient), 0).label("deficient"),
             func.coalesce(func.sum(per_opening.c.pending), 0).label("pending"),
             func.count(1).filter(outstanding > 0).label("awaiting_openings"),
+            func.count(1).filter(short > 0).label("short_openings"),
         ).group_by(per_opening.c.request_id)
     ).all()
     return {
         row.request_id: {
             "planned_unit_count": int(row.planned),
+            "allocated_unit_count": int(row.allocated),
+            "short_unit_count": int(row.planned) - int(row.allocated),
             "installed_unit_count": int(row.installed),
             "deficient_unit_count": int(row.deficient),
             "replacement_pending_unit_count": int(row.pending),
             "awaiting_replacement_opening_count": int(row.awaiting_openings),
+            "short_opening_count": int(row.short_openings),
         }
         for row in rows
     }
@@ -1624,10 +1748,13 @@ _EMPTY_OPENING_COUNTS = {
 }
 _EMPTY_UNIT_COUNTS = {
     "planned_unit_count": 0,
+    "allocated_unit_count": 0,
+    "short_unit_count": 0,
     "installed_unit_count": 0,
     "deficient_unit_count": 0,
     "replacement_pending_unit_count": 0,
     "awaiting_replacement_opening_count": 0,
+    "short_opening_count": 0,
 }
 _EMPTY_SHIPPED_COUNTS = {"shipped_opening_count": 0, "replacement_after_ship_opening_count": 0}
 
@@ -1741,11 +1868,14 @@ def get_assembly_pipeline_summaries(
                 completed_opening_count=counts["completed_opening_count"],
                 shipped_opening_count=counts["shipped_opening_count"],
                 planned_unit_count=counts["planned_unit_count"],
+                allocated_unit_count=counts["allocated_unit_count"],
+                short_unit_count=counts["short_unit_count"],
                 installed_unit_count=counts["installed_unit_count"],
                 deficient_unit_count=counts["deficient_unit_count"],
                 replacement_pending_unit_count=counts["replacement_pending_unit_count"],
                 awaiting_replacement_opening_count=counts["awaiting_replacement_opening_count"],
                 replacement_after_ship_opening_count=counts["replacement_after_ship_opening_count"],
+                short_opening_count=counts["short_opening_count"],
                 stage=_request_stage(counts, unstaged_stage, sar.status),
             )
         )
@@ -1790,6 +1920,7 @@ def get_assembly_pipeline(session: Session, request_id: uuid.UUID) -> AssemblyPi
             select(
                 ShopAssemblyOpeningItem.shop_assembly_opening_id.label("opening_id"),
                 func.coalesce(func.sum(ShopAssemblyOpeningItem.quantity), 0).label("planned"),
+                func.coalesce(func.sum(ShopAssemblyOpeningItem.allocated_quantity), 0).label("allocated"),
                 func.coalesce(func.sum(ShopAssemblyOpeningItem.installed_quantity), 0).label("installed"),
                 func.coalesce(func.sum(ShopAssemblyOpeningItem.deficient_quantity), 0).label("deficient"),
                 func.coalesce(func.sum(ShopAssemblyOpeningItem.replacement_pending_quantity), 0).label("pending"),
@@ -1853,6 +1984,7 @@ def get_assembly_pipeline(session: Session, request_id: uuid.UUID) -> AssemblyPi
                 assembly_status=opening.assembly_status,
                 completed_at=opening.completed_at,
                 planned_unit_count=int(sums.planned) if sums is not None else 0,
+                allocated_unit_count=int(sums.allocated) if sums is not None else 0,
                 installed_unit_count=int(sums.installed) if sums is not None else 0,
                 deficient_unit_count=int(sums.deficient) if sums is not None else 0,
                 replacement_pending_unit_count=int(sums.pending) if sums is not None else 0,

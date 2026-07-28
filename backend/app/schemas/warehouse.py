@@ -253,12 +253,15 @@ class WarehouseQueries:
             # assembled leaf in the project.
             from app.repositories import shop_assembly_repository
 
-            awaiting = shop_assembly_repository.get_awaiting_replacement_quantities(session, [oi.id for oi in ois])
+            shortfalls = shop_assembly_repository.get_leaf_shortfalls(session, [oi.id for oi in ois])
             return [
                 opening_item_to_type(
                     oi,
                     leaf_count=leaf_counts.get(oi.opening_number),
-                    awaiting_replacement_quantity=awaiting.get(oi.id, 0),
+                    awaiting_replacement_quantity=(
+                        shortfalls[oi.id].awaiting_replacement if oi.id in shortfalls else 0
+                    ),
+                    never_pulled_quantity=(shortfalls[oi.id].never_pulled if oi.id in shortfalls else 0),
                 )
                 for oi in ois
             ]
@@ -287,8 +290,13 @@ class WarehouseQueries:
             from app.repositories import shop_assembly_repository
 
             oi = warehouse_repository.get_opening_item_details(session, uuid.UUID(str(id)))
-            awaiting = shop_assembly_repository.get_awaiting_replacement_quantities(session, [oi.id])
-            opening_item = opening_item_to_type(oi, awaiting_replacement_quantity=awaiting.get(oi.id, 0))
+            shortfalls = shop_assembly_repository.get_leaf_shortfalls(session, [oi.id])
+            shortfall = shortfalls.get(oi.id)
+            opening_item = opening_item_to_type(
+                oi,
+                awaiting_replacement_quantity=shortfall.awaiting_replacement if shortfall else 0,
+                never_pulled_quantity=shortfall.never_pulled if shortfall else 0,
+            )
             return OpeningItemDetail(
                 opening_item=opening_item,
                 installed_hardware=[opening_item_hardware_to_type(h) for h in oi.installed_hardware],
