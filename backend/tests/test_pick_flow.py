@@ -21,7 +21,7 @@ from datetime import datetime, timedelta
 import pytest
 from sqlalchemy import select
 
-from app.errors import InvalidStateTransitionError, NotFoundError, ValidationError
+from app.errors import ConflictError, InvalidStateTransitionError, NotFoundError, ValidationError
 from app.models.audit_log import InventoryAuditLog
 from app.models.enums import (
     AuditAction,
@@ -464,6 +464,49 @@ def test_the_over_pull_ceiling_counts_what_is_already_picked(db_session):
 
     with pytest.raises(ValidationError, match="3 already picked"):
         warehouse_repository.confirm_pick(db_session, pr.id, [_line(row, 2)], "picker")
+
+
+def test_a_pull_cannot_pick_past_what_other_requests_have_left_free(db_session):
+    """The third ceiling. The units are on the shelf and reachable; they are somebody else's."""
+    project = _make_project(db_session)
+    row = _seed_inventory(db_session, project.id, quantity=10)
+    # A live claim on 8 of the 10, held by a request that is not this pull.
+    sar, _other_pull = _accepted_pull(db_session, project, qty=4)  # reserves 8 across two leaves
+    assert warehouse_repository.get_reserved_total(db_session, ReservationSource.SHOP_ASSEMBLY_REQUEST, sar.id) == 8
+
+    stranger = _started_pull(db_session, project.id, needs=[(*HINGE, 4, 1)])
+
+    with pytest.raises(ConflictError, match="already claimed this stock"):
+        warehouse_repository.confirm_pick(db_session, stranger.id, [_line(row, 4)], "picker")
+
+    assert row.quantity == 10
+
+
+def test_the_sheet_says_how_much_is_claimable_before_the_walk(db_session):
+    """A blocking gate the picker only meets after walking the racks is a trap. The number that
+    decides the refusal is on the sheet, so contention is visible up front."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=10)
+    sar, _other_pull = _accepted_pull(db_session, project, qty=4)  # claims 8
+    assert warehouse_repository.get_reserved_total(db_session, ReservationSource.SHOP_ASSEMBLY_REQUEST, sar.id) == 8
+    stranger = _started_pull(db_session, project.id, needs=[(*HINGE, 4, 1)])
+
+    section = warehouse_repository.get_pick_sheet(db_session, stranger.id).sections[0]
+
+    # Ten on the shelf, eight spoken for: two are claimable against the four this pull needs.
+    assert sum(loc.available for loc in section.locations) == 10
+    assert section.claimable_quantity == 2
+    assert section.claimable_shortfall == 2
+
+
+def test_claimable_quantity_is_the_whole_shelf_when_nothing_competes(db_session):
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=6)
+    pr = _started_pull(db_session, project.id, needs=[(*HINGE, 4, 1)])
+
+    section = warehouse_repository.get_pick_sheet(db_session, pr.id).sections[0]
+
+    assert (section.claimable_quantity, section.claimable_shortfall) == (6, 0)
 
 
 def test_a_confirmed_pick_cannot_be_confirmed_again(db_session):

@@ -16,7 +16,7 @@ from datetime import datetime
 import pytest
 from sqlalchemy import select
 
-from app.errors import InventoryShortfallError, ValidationError
+from app.errors import ConflictError, InventoryShortfallError, ValidationError
 from app.models.enums import (
     AssemblyStatus,
     OpeningItemState,
@@ -437,19 +437,18 @@ def test_a_short_pick_keeps_the_un_picked_part_of_the_claim(db_session):
     assert _reserved_total(db_session, project.id) == 2
 
 
-def test_a_pull_with_no_claim_picks_what_is_physically_there(db_session):
-    """The picker's count wins over the reservation book (#367), and this is the case where that is
-    visible.
+def test_a_pull_with_no_claim_cannot_pick_stock_somebody_else_reserved(db_session):
+    """The reservation book outranks what is physically reachable (#367), and this is the case that
+    proves it.
 
-    An unreserved pull - a PR-REPL replacement that could only partly reserve, or a pull from the
-    #342 backfill population - used to be refused at approve when the stock it wanted was claimed by
-    somebody else. The pick has no such gate: the ceiling is the row's own available units, because
-    the person confirming is holding the hardware and telling the system what left the shelf.
+    An unreserved pull - a PR-REPL replacement that could only partly reserve, or one from the #342
+    backfill population - is refused even though the units are sitting there and countable. That is
+    the whole point of the table: a claim that only holds until somebody physically gets to the shelf
+    first is not a claim, and the request that reserved these units would otherwise discover the loss
+    as a short pick on its own pull.
 
-    The consequence is deliberate and worth stating: the *other* request's claim can end up
-    over-committed, and that request discovers it as a short pick on its own pull, with the same PO
-    backfill signal. Reservations still gate request creation, which is where competing demand
-    belongs."""
+    The picker is not left guessing. The refusal names the combo and how much is claimable, and
+    `get_pick_sheet` puts the same number on the screen and the printed sheet before the walk."""
     project = _make_project(db_session)
     il = _seed_inventory(db_session, project.id, quantity=5)
     _finalize_sar(db_session, project, qty=4)  # claims 4 of the 5
@@ -480,17 +479,44 @@ def test_a_pull_with_no_claim_picks_what_is_physically_there(db_session):
 
     assert warehouse_repository.find_reservation_holder(db_session, repl) is None
 
-    result = pick_pull(db_session, repl.id, "warehouse")
+    # Only 1 of the 5 is genuinely free; the pull wants 2.
+    sheet = warehouse_repository.get_pick_sheet(db_session, repl.id)
+    assert sheet.sections[0].claimable_quantity == 1
+    assert sheet.sections[0].claimable_shortfall == 1
 
-    assert result.outcome == "PICKED"
-    assert il.quantity == 3
-    # The other request's claim rows are untouched - this pull holds none of its own to consume - so
-    # its 4 units are now claimed against 3 on the shelf. `get_project_availability` floors that at
-    # zero, the same way it already does for stock written off under a live claim.
+    with pytest.raises(ConflictError, match="already claimed this stock"):
+        pick_pull(db_session, repl.id, "warehouse")
+
+    # Nothing moved, and the other request still holds exactly what it reserved.
+    assert il.quantity == 5
     assert _reserved_total(db_session, project.id) == 4
 
 
-def test_a_replacement_pull_approves_out_of_what_is_genuinely_free(db_session):
+def test_the_gate_excludes_the_pulls_own_claim(db_session):
+    """Self-coverage, at the one moment it decides something. A request that reserved exactly what it
+    needs must still be able to pick it - counting its own claim as competing demand would make a
+    correctly-reserved request permanently unpickable, which is the failure the exclusion exists to
+    prevent."""
+    project = _make_project(db_session)
+    il = _seed_inventory(db_session, project.id, quantity=3)
+    sar = _finalize_sar(db_session, project, qty=3)["shop_assembly_request"]  # reserves all 3
+    db_session.flush()
+    shop_assembly_repository.accept_shop_assembly_request(db_session, sar.id, "acceptor")
+    db_session.flush()
+    pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == sar.request_number))
+
+    # Every unit on the shelf is claimed, but all of it is claimed by this very pull.
+    assert warehouse_repository.get_pick_sheet(db_session, pr.id).sections[0].claimable_quantity == 3
+
+    result = pick_pull(db_session, pr.id, "warehouse")
+
+    assert result.outcome == "PICKED"
+    assert il.quantity == 0
+
+
+def test_a_replacement_pull_picks_out_of_what_is_genuinely_free(db_session):
+    """Five on the shelf, three claimed by somebody else, two wanted: exactly at the #367 ceiling,
+    which is what the gate is supposed to let through."""
     project = _make_project(db_session)
     il = _seed_inventory(db_session, project.id, quantity=5)
     _finalize_sar(db_session, project, qty=3)

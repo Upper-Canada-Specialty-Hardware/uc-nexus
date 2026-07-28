@@ -1061,6 +1061,12 @@ class PickSheetSection:
     required_quantity: int
     applied_quantity: int
     remaining_quantity: int
+    # What this pull may actually take: on-hand minus condemned minus *other* requests' claims. The
+    # third ceiling `confirmPick` enforces, surfaced so contention shows up on the screen and the
+    # printed sheet rather than as a refusal after the picker has walked the racks.
+    claimable_quantity: int
+    # How far short of `remainingQuantity` that leaves this pull. Zero in the ordinary case.
+    claimable_shortfall: int
     leaves: list[PickSheetLeaf]
     locations: list[PickSheetLocation]
 

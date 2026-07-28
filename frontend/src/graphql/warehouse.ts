@@ -565,6 +565,7 @@ const PICK_SHEET_FIELDS = `
   pullRequest { ${PULL_REQUEST_FIELDS} }
   sections {
     hardwareCategory productCode requiredQuantity appliedQuantity remainingQuantity
+    claimableQuantity claimableShortfall
     leaves { openingNumber leaf quantity }
     locations {
       inventoryLocationId warehouseId warehouseCode aisle row bay

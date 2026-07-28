@@ -19,6 +19,7 @@ const styles = StyleSheet.create({
   sectionCode: { fontSize: 13, fontFamily: 'Helvetica-Bold' },
   sectionCounts: { fontSize: 10, color: '#555' },
   leaves: { fontSize: 9, color: '#555', marginBottom: 6 },
+  claimed: { fontSize: 9, color: '#333', marginBottom: 6, fontFamily: 'Helvetica-Bold' },
   tableHeaderRow: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: '#999', paddingBottom: 3 },
   tableRow: {
     flexDirection: 'row',
@@ -108,6 +109,14 @@ export default function PickSheetDocument({
             <Text style={styles.leaves}>
               Leaves: {section.leaves.map((l) => `${leafIdentity(l.openingNumber, l.leaf)} x${l.quantity}`).join(', ')}
             </Text>
+
+            {section.claimableShortfall > 0 && (
+              <Text style={styles.claimed}>
+                Another request has claimed some of this stock. This pull can take{' '}
+                {section.claimableQuantity} of the {section.remainingQuantity} still needed, whatever
+                the shelf shows.
+              </Text>
+            )}
 
             {section.locations.length === 0 ? (
               <Text style={styles.empty}>No inventory rows hold this product for this project.</Text>

@@ -100,9 +100,9 @@ The lifecycle of that claim, end to end:
 **Self-coverage** is the one subtlety worth naming. When request R's claim is being spent, R's own
 reservations are precisely what backs the deduction, so any availability check on that path excludes
 them (`exclude_reservations_of`). Without the exclusion a request that reserved exactly what it needs
-would read as competing with itself and could never be satisfied. Everyone else's claims still count
-in the checks that remain, which since #367 means the creation gate and the cancel-time re-check -
-the pick itself is not gated on an aggregate at all (§3b).
+would read as competing with itself and could never be satisfied. Everyone else's claims still count,
+and since #367 the exclusion decides something at three moments rather than two: the creation gate,
+the pick confirmation (§3b), and the cancel-time re-check.
 
 A **deficiency reported at the bench** does not touch reservations, and cannot double-count against
 them: `report_deficiency_at_assembly` raises the inventory row's `quantity` and `deficient_quantity`
@@ -133,9 +133,11 @@ it is *history* ("these units came off that bin"), not identity ("this bin belon
 The FK is `ON DELETE SET NULL`, so a location merged or deleted later degrades the row to "came from
 somewhere that no longer exists" rather than blocking the delete.
 
-Two ceilings, both hard and neither negotiable from the client: no row may give up more than its own
-`quantity - deficient_quantity`, and no product code may exceed what the pull asked for once what is
-already picked is counted. **No over-pull, ever.**
+Three ceilings, all hard and none negotiable from the client. No row may give up more than its own
+`quantity - deficient_quantity`; no product code may exceed what the pull asked for once what is
+already picked is counted; and no product code may exceed what is genuinely **free for this pull**,
+`on-hand - deficient - other requests' reservations`, with this pull's own holder excluded.
+**No over-pull, ever.**
 
 **Short is a first-class outcome, not a failure.** A confirmation that does not cover everything
 deducts what was entered, leaves the pull IN_PROGRESS and un-picked, notifies purchasing once
@@ -144,13 +146,17 @@ alternative - refusing the whole confirmation - would mean a picker who found ni
 has to put the nine back on the shelf. Nobody does that; they mark the pull complete anyway and the
 system starts lying.
 
-**Availability at confirm time is per row, not reservation-aware**, and that is a deliberate trade.
-The old approve compared an aggregate against on-hand minus *everyone else's* claims; here the picker
-is holding the hardware and the only question is whether that bin has the units. The consequence is
-that a pull holding no claim of its own - a replacement that could only partly reserve, or a request
-from the #342 backfill population - can pick into stock another request has reserved. That request
-discovers it as a short pick on its own pull, with the same PO backfill signal. Reservations still
-gate request *creation*, which is where competing demand belongs.
+**The third ceiling is what keeps §3a intact.** Without it a pull holding no claim of its own - a
+replacement that could only partly reserve, or a request from the #342 backfill population - could
+walk off with stock another request had already been promised, and that request would discover the
+loss as a short pick on its own pull. A claim that holds only until somebody physically reaches the
+shelf first is not a claim.
+
+It has a real cost: a picker can be refused with hardware in their hand, which the per-row Available
+column cannot explain. Two things make that survivable. The refusal is a `CONFLICT` naming the combo
+and how much is claimable, so it is actionable rather than mysterious; and the same number rides on
+the sheet as `PickSheetSection.claimable_quantity`, on screen and in print, so contention is visible
+*before* the walk rather than after it.
 
 An **OPENING_ITEM line is fetched, not picked**: the leaf was tagged at assembly and its hardware left
 fungible inventory then, so there is nothing to deduct - only to walk to the rack and collect it.

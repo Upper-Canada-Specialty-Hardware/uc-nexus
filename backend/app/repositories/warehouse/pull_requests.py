@@ -158,9 +158,10 @@ def check_inventory_sufficiency(
     caller can act against exactly what was checked. Creation locks too: two creators racing for the
     last hinge serialise on those rows, so the second one sees the first one's reservation.
 
-    Since #367 this is **no longer the warehouse-side gate**. A pull is not refused up front on an
-    aggregate any more; the picker sees real per-location availability and `confirm_pick` refuses to
-    over-pull any row. What remains here is the creation-time gate and the cancel-time re-check.
+    Since #367 the *warehouse* call site moved rather than disappearing. A pull is no longer refused
+    up front, when nobody has looked at a rack; the same arithmetic now runs inside `confirm_pick`,
+    against what the picker actually entered, as the third of its three ceilings. Callers are
+    therefore the creation gate, the pick confirmation, and the cancel-time re-check.
     """
     needed_combos: dict[tuple[str, str], int] = defaultdict(int)
     for cat, code, qty in needs:
@@ -294,12 +295,12 @@ def start_pull_request_pick(session: Session, pr_id: uuid.UUID, started_by: str)
     `confirm_pick` now, because until somebody has walked the racks and written numbers down, the
     system has no idea what was actually picked or from where.
 
-    Dropping the sufficiency gate here is deliberate and is not a hole. It never protected the
+    Dropping the sufficiency gate *here* is deliberate and is not a hole. It never protected the
     hardware - it protected the *approver* from starting a pull that could not be filled - and it did
-    so by refusing before the picker had looked. The pick screen shows real per-location availability
-    and the confirm refuses to over-pull any row, so scarcity is now discovered where it is visible
-    rather than asserted from an aggregate. A pull that genuinely cannot be filled comes back as a
-    short confirm, which raises the same PO backfill signal it always did.
+    so by refusing before the picker had looked. The check itself did not go away: `confirm_pick`
+    runs it against what was actually entered, so scarcity and contention are both discovered where
+    they are visible rather than asserted from an aggregate up front. A pull that genuinely cannot be
+    filled comes back as a short confirm, which raises the same PO backfill signal it always did.
 
     `approved_at` keeps its old name and its weaker meaning: the warehouse started on this pull. The
     moment stock left is `picked_at`, and that is what staging and completion gate on.
@@ -360,10 +361,21 @@ class PickSheetSection:
     applied_quantity: int
     leaves: list[PickSheetLeaf]
     locations: list[PickSheetLocation]
+    # What this pull may actually take: on-hand minus condemned minus *other* requests' claims. It is
+    # the third ceiling `confirm_pick` enforces, surfaced here so a picker learns about contention on
+    # the screen and the printed sheet rather than by being refused after walking the racks. Equal to
+    # the sum of the locations' `available` whenever nothing else has claimed the product, which is
+    # the ordinary case.
+    claimable_quantity: int = 0
 
     @property
     def remaining_quantity(self) -> int:
         return max(0, self.required_quantity - self.applied_quantity)
+
+    @property
+    def claimable_shortfall(self) -> int:
+        """How far short of what is still needed this pull's claimable stock falls. 0 when covered."""
+        return max(0, self.remaining_quantity - self.claimable_quantity)
 
 
 @dataclass(frozen=True)
@@ -432,10 +444,11 @@ def _applied_by_combo(session: Session, pr_id: uuid.UUID) -> dict[tuple[str, str
 def get_pick_sheet(session: Session, pr_id: uuid.UUID) -> PickSheet:
     """Everything the pick screen and the printed sheet need, in a fixed number of queries (#367).
 
-    Three reads regardless of how many product codes the pull covers, because a per-section query
-    over Railway's network hop is the N+1 that turns "fast on dev" into a frozen page (CLAUDE.md
-    perf rules): the pull with its items, every candidate inventory row for every combo at once, and
-    the assembled leaves behind the OPENING_ITEM lines.
+    A fixed handful of reads regardless of how many product codes the pull covers, because a
+    per-section query over Railway's network hop is the N+1 that turns "fast on dev" into a frozen
+    page (CLAUDE.md perf rules): the pull with its items, every candidate inventory row for every
+    combo at once, the assembled leaves behind the OPENING_ITEM lines, and two more for the
+    claimable-quantity arithmetic (the holder lookup and one grouped aggregate over reservations).
 
     A location is a candidate when it still has available units **or** when this pull has already
     named it. The second half matters: a row picked down to zero must stay on the sheet, or the row
@@ -515,6 +528,24 @@ def get_pick_sheet(session: Session, pr_id: uuid.UUID) -> PickSheet:
                 )
             )
 
+    # What this pull may actually claim per combo, net of everyone else's reservations and with its
+    # own holder excluded (self-coverage). Two queries for the whole sheet: the holder lookup and one
+    # grouped aggregate over the reservation table. On-hand comes free - it is the sum of the
+    # locations already read above, since a row with nothing available contributes nothing.
+    holder = find_reservation_holder(session, pr) if required else None
+    exclude_source, exclude_request_id = holder or (None, None)
+    reserved_by_others = (
+        reservations.get_reserved_quantities(
+            session,
+            pr.project_id,
+            list(required),
+            exclude_source=exclude_source,
+            exclude_request_id=exclude_request_id,
+        )
+        if required
+        else {}
+    )
+
     sections = [
         PickSheetSection(
             hardware_category=cat,
@@ -526,6 +557,11 @@ def get_pick_sheet(session: Session, pr_id: uuid.UUID) -> PickSheet:
                 key=lambda leaf: (leaf.opening_number or "", leaf.leaf if leaf.leaf is not None else -1),
             ),
             locations=locations_by_combo.get((cat, code), []),
+            claimable_quantity=max(
+                0,
+                sum(loc.available for loc in locations_by_combo.get((cat, code), []))
+                - reserved_by_others.get((cat, code), 0),
+            ),
         )
         for (cat, code), total in sorted(required.items())
     ]
@@ -752,17 +788,26 @@ def confirm_pick(
     Consumption happens before the deduction so the two can never be observed apart: a reader
     between them would otherwise see the units both reserved and already gone.
 
-    **Never over-pull.** Two independent ceilings, both hard: no row may give up more than its own
-    available units (`quantity - deficient_quantity`, so condemned stock stays put), and no combo may
-    exceed what the pull asked for once what is already picked is counted. Neither is negotiable
-    from the client.
+    **Never over-pull.** Three independent ceilings, all hard and none negotiable from the client:
 
-    **Availability is per row, not reservation-aware.** The old approve compared an aggregate against
-    on-hand-minus-everyone-else's-claims; here the picker is holding the hardware, and the question
-    is whether that specific bin has the units. Reservations still gate request *creation*, which is
-    where competing demand belongs; a pick that dips into stock another request has claimed leaves
-    that request short, and it comes back as a short confirm on its own pull with the same PO
-    backfill signal - which is a truer picture than refusing a picker who is looking at the units.
+    1. **The row.** No `InventoryLocation` may give up more than its own `quantity -
+       deficient_quantity`, so condemned stock stays put.
+    2. **The request.** No combo may exceed what the pull asked for, counting what is already picked.
+    3. **Everyone else's claims.** No combo may exceed what is genuinely free for *this* pull -
+       `on-hand - deficient - other requests' reservations` - with this pull's own holder excluded
+       (self-coverage), because its claim is exactly what backs the deduction.
+
+    The third ceiling is what keeps #342 intact. Without it a pull holding no claim of its own (a
+    replacement that could only partly reserve, a request from the #342 backfill population) could
+    walk off with stock another request had already been promised, and that request would discover it
+    as a short pick on its own pull. The reservation table exists precisely so that cannot happen, and
+    a claim that only holds until somebody physically reaches the shelf first is not a claim.
+
+    It is a genuine cost: a picker can be refused with hardware in their hand. Two things make that
+    the right trade. The refusal names the combo and how much is claimable, so it is actionable
+    rather than mysterious; and `get_pick_sheet` surfaces the same number as
+    `PickSheetSection.claimable_quantity`, so the constraint is visible on the screen and the printed
+    sheet *before* the walk rather than after it.
 
     **Short is a first-class outcome.** Deduct what was entered, leave the pull In Progress and
     un-picked, notify purchasing, and let a second confirmation cover the remainder. The alternative
@@ -792,6 +837,33 @@ def confirm_pick(
                 field="quantity",
             )
 
+    # Nor past what is free once everyone else's claims are counted. Deliberately run *before* the
+    # named rows are locked: this locks every row of every combo in play, a superset of them, in the
+    # same id order `lock_rows` uses - so the narrower lock below is already held and no two
+    # concurrent confirms can take the two sets in opposite orders.
+    holder = find_reservation_holder(session, pr)
+    if entered_by_combo:
+        contention = check_inventory_sufficiency(
+            session,
+            pr.project_id,
+            [(cat, code, qty) for (cat, code), qty in entered_by_combo.items()],
+            lock=True,
+            reservation_aware=True,
+            exclude_reservations_of=holder,
+        )
+        if not contention.sufficient:
+            blocked = "; ".join(
+                f"{s.hardware_category} {s.product_code}: {s.requested} entered but only {s.available} "
+                f"free for this pull ({s.reserved} claimed by other requests)"
+                for s in contention.shortfalls
+            )
+            raise ConflictError(
+                f"Another request has already claimed this stock - {blocked}. The units are on the "
+                "shelf but they are spoken for, so this pull cannot take them. Confirm what is "
+                "genuinely free and purchasing will be told about the rest.",
+                field="quantity",
+            )
+
     location_ids = sorted({loc_id for (_cat, _code, loc_id) in entered})
     rows = _load_pick_locations(session, pr, location_ids, entered, lock=True)
 
@@ -812,7 +884,6 @@ def confirm_pick(
 
     # 1. Consume the claim for what is about to leave. Partial by design: a short confirm keeps the
     #    remainder claimed, so the un-picked units are not quietly handed to whoever asks next.
-    holder = find_reservation_holder(session, pr)
     if holder is not None and entered_by_combo:
         reservations.consume_reservations(session, holder[0], holder[1], entered_by_combo)
 

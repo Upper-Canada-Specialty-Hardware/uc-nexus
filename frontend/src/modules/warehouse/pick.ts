@@ -34,6 +34,11 @@ export interface PickSheetSection {
   requiredQuantity: number;
   appliedQuantity: number;
   remainingQuantity: number;
+  /** What this pull may actually take: on-hand minus condemned minus other requests' claims. The
+   *  third ceiling confirmPick enforces, so the picker sees contention before walking the racks. */
+  claimableQuantity: number;
+  /** How far short of remainingQuantity that leaves this pull. Zero in the ordinary case. */
+  claimableShortfall: number;
   leaves: PickSheetLeaf[];
   locations: PickSheetLocation[];
 }

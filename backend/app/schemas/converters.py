@@ -746,6 +746,8 @@ def pick_sheet_to_type(sheet, staging=None, partially_picked=None) -> PickSheet:
                 required_quantity=section.required_quantity,
                 applied_quantity=section.applied_quantity,
                 remaining_quantity=section.remaining_quantity,
+                claimable_quantity=section.claimable_quantity,
+                claimable_shortfall=section.claimable_shortfall,
                 leaves=[
                     PickSheetLeaf(
                         opening_number=leaf.opening_number,

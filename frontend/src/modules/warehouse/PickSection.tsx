@@ -116,6 +116,23 @@ export default function PickSection({ section, entries, onChange, editable }: Pi
         </Stack>
       </Box>
 
+      {/* Contention, said before the walk rather than as a refusal after it. The units are on the
+          shelf and countable, so Available will not explain why the confirm stops short - only this
+          will. */}
+      {section.claimableShortfall > 0 && section.locations.length > 0 && (
+        <Typography variant="body2" color="warning.main" sx={{ mb: 1 }}>
+          Another request has claimed some of this stock. This pull can take{' '}
+          <Box component="span" sx={tabularSx}>
+            {section.claimableQuantity}
+          </Box>{' '}
+          of the{' '}
+          <Box component="span" sx={tabularSx}>
+            {section.remainingQuantity}
+          </Box>{' '}
+          still needed, whatever the shelf shows.
+        </Typography>
+      )}
+
       {section.locations.length === 0 ? (
         <Typography variant="body2" color="error.main">
           No inventory rows hold this product for this project. Confirm what you have and purchasing

@@ -30,6 +30,10 @@ function section(overrides: Partial<PickSheetSection> = {}): PickSheetSection {
     requiredQuantity: 4,
     appliedQuantity: 0,
     remainingQuantity: 4,
+    // The ordinary case: nothing else has claimed this product, so everything on the shelf is
+    // claimable and the contention warning stays out of the way.
+    claimableQuantity: 7,
+    claimableShortfall: 0,
     leaves: [
       { openingNumber: '101A', leaf: 1, quantity: 2 },
       { openingNumber: '101A', leaf: 2, quantity: 2 },
@@ -189,6 +193,20 @@ it('reads as balanced once the counts add up', () => {
 it('says when a code has nowhere to come from', () => {
   render(<Harness s={section({ locations: [] })} />);
   expect(screen.getByText(/No inventory rows hold this product/)).toBeInTheDocument();
+});
+
+it('warns about stock another request has claimed, before the walk rather than after it', () => {
+  // The units are on the shelf and countable, so Available cannot explain why the confirm will stop
+  // short. This line is the only thing that can.
+  render(<Harness s={section({ claimableQuantity: 1, claimableShortfall: 3 })} />);
+
+  expect(screen.getByText(/Another request has claimed some of this stock/)).toBeInTheDocument();
+  expect(screen.getByText(/whatever the shelf shows/)).toBeInTheDocument();
+});
+
+it('stays quiet when nothing else has claimed the product', () => {
+  render(<Harness />);
+  expect(screen.queryByText(/Another request has claimed/)).not.toBeInTheDocument();
 });
 
 // --- identity + phase --------------------------------------------------------------------------

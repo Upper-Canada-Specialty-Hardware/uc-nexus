@@ -211,6 +211,11 @@ type PickSheetSection {
   required_quantity: Int!
   applied_quantity: Int!
   remaining_quantity: Int!
+  # What this pull may actually take: on-hand minus condemned minus OTHER requests' claims. The
+  # third ceiling confirmPick enforces, surfaced so contention shows on the screen and the printed
+  # sheet rather than as a refusal after the picker has walked the racks.
+  claimable_quantity: Int!
+  claimable_shortfall: Int!
   # Every leaf, never truncated: the picker builds carts per leaf, so the list is the work.
   leaves: [PickSheetLeaf!]!
   locations: [PickSheetLocation!]!
@@ -549,8 +554,9 @@ type Mutation {
   # Save the half-keyed pick sheet (#367). Replace-all, not merge: the paper is the authority.
   # Shape is validated, availability deliberately is not - a draft is a note, not a claim.
   savePickDraft(pullRequestId: ID!, lines: [PickLineInput!]!, enteredBy: String!): PickSheet!
-  # Deduct exactly the rows the picker dictated and consume the claim behind them (#367). No row may
-  # give up more than its available units and no combo may exceed what the pull asked for. A
+  # Deduct exactly the rows the picker dictated and consume the claim behind them (#367). Three hard
+  # ceilings: the row's available units, what the pull asked for, and what is free once other
+  # requests' reservations are counted (CONFLICT when that one is hit, so #342 holds). A
   # confirmation that does not cover everything returns SHORT and is resumable.
   confirmPick(pullRequestId: ID!, lines: [PickLineInput!]!, pickedBy: String!): ConfirmPickResult!
   # Tick (or untick) one assembled leaf off a shipping pull's fetch list (#367). Nothing moves in
