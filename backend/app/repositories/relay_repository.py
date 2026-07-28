@@ -119,9 +119,10 @@ def delete_install(session: Session, install_id: uuid.UUID) -> dict | None:
 
     Hard delete, not a soft-delete flag. A flag would have to be honoured by `authenticate_secret` too or
     the "deleted" install keeps authenticating - a new filter on the handshake hot path and a new way to
-    be silently wrong - and it would leave `secret_encrypted` populated, which is the very thing that held
-    up the RELAY_SECRET_ENC_KEY retirement until #382 (see app/crypto.py). Nothing references
-    relay_installs by foreign key, so this is a clean single-row delete.
+    be silently wrong. (It would also have kept `secret_encrypted` populated, which is what held up the
+    RELAY_SECRET_ENC_KEY retirement - history now that #382 finished it, so the hot-path argument above
+    is the one that still carries this decision.) Nothing references relay_installs by foreign key, so
+    this is a clean single-row delete.
 
     The dict is built BEFORE the delete because the caller logs those values afterwards, and the instance
     is unusable by then."""

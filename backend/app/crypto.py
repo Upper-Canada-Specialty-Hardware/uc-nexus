@@ -12,11 +12,19 @@ environment any more - not on Railway, not in `.env.example`.
 
     SELECT count(*) FROM relay_installs WHERE secret_encrypted IS NOT NULL;  -- 0
 
-With no key present `has_encryption_key` is False and the legacy decrypt path is skipped outright, so
-in practice nothing below `hash_token` runs outside the tests. A legacy row also cannot come back:
-`set_install_secret` is the only writer of `secret_encrypted` and it NULLs the column on every enroll
-and adopt. These three functions are kept only so that a row restored from an old backup could still
-be read by setting the variable again - deleting them (and the column) is a separate job."""
+With no key present `has_encryption_key` is False, so `authenticate_secret` skips the legacy decrypt
+path and `_fernet` / `encrypt_secret` / `decrypt_secret` are reachable only from the tests.
+`has_encryption_key` itself is NOT dead with them: it still runs on every rejected handshake to fill
+the `encryption_key_present` log field.
+
+No new legacy row can appear. `set_install_secret` NULLs `secret_encrypted` on every enroll and adopt,
+and the only other statement naming the column is `/admin/reset-data` (main.py), which round-trips
+existing values across a schema rebuild - it can preserve a legacy row, never create one.
+
+Restoring one from an old backup would not help. Fernet needs the exact original key and no copy of it
+survives anywhere, so a recovered pre-067 row is simply unreadable; an orphaned relay is recovered
+through the admin-armed adopt window (066, #353 PR B) instead. Deleting these functions and dropping
+the column is a separate job, and it has to touch that reset-data SQL too."""
 
 import hashlib
 import os
