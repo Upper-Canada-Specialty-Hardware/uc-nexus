@@ -34,6 +34,7 @@ from app.repositories import (
     warehouse_admin_repository,
 )
 from app.repositories import warehouse as warehouse_repository
+from tests.pick_helpers import pick_pull
 
 
 def _make_project(session) -> Project:
@@ -223,9 +224,9 @@ def test_accept_shop_assembly_mints_pr_and_repoints_openings(db_session):
 
 def test_accept_mints_lines_only_for_what_was_allocated(db_session):
     """The pull asks for the ALLOCATED quantity, and a line with nothing allocated mints no pull line
-    at all. That is what keeps the pull equal to the reservation, so `approve_pull_request` stays
-    all-or-nothing with no warehouse-side change - asking for the owed quantity instead would send
-    the warehouse after stock nobody claimed and leave the pull blocked."""
+    at all. That is what keeps the pull equal to the reservation - asking for the owed quantity
+    instead would put a product code on the pick sheet that nobody claimed any stock for, so every
+    pick of it would confirm short."""
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=2)
     _seed_inventory(db_session, project.id, category="CLOSER", code="CL-1", quantity=0)
@@ -364,7 +365,7 @@ def test_reopen_shop_assembly_blocked_when_pr_already_worked(db_session):
     pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == sar.request_number))
 
     # Warehouse approves the pull (deducts inventory, PR -> IN_PROGRESS). Reopen must now refuse.
-    warehouse_repository.approve_pull_request(db_session, pr.id, "warehouse")
+    pick_pull(db_session, pr.id, "warehouse")
     db_session.flush()
 
     with pytest.raises(InvalidStateTransitionError):
@@ -533,13 +534,14 @@ def test_opening_item_shipping_line_approves_and_pulls_leaves_to_ship_ready(db_s
     db_session.flush()
     pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == req.request_number))
 
-    # No inventory was seeded: an OPENING_ITEM line claims nothing from fungible stock, so the
-    # sufficiency gate has nothing to fail on. A LOOSE line here would report INSUFFICIENT.
-    _, outcome, _, shortfalls = warehouse_repository.approve_pull_request(db_session, pr.id, "puller")
-    db_session.flush()
-    assert outcome == "APPROVED"
-    assert shortfalls == []
+    # No inventory was seeded: an OPENING_ITEM line claims nothing from fungible stock, so a pure
+    # fetch pull is picked the moment it is confirmed with nothing (#367).
+    result = pick_pull(db_session, pr.id, "puller")
+    assert result.outcome == "PICKED"
+    assert result.shortfalls == []
+    assert result.applied_quantity == 0
     assert pr.status == PullRequestStatus.IN_PROGRESS
+    assert pr.picked_at is not None
 
     warehouse_repository.complete_pull_request(db_session, pr.id)
     db_session.flush()
@@ -615,7 +617,7 @@ def test_complete_never_walks_a_shipped_leaf_back_to_ship_ready(db_session):
     shipping_repository.accept_shipping_out_request(db_session, req.id, "acceptor")
     db_session.flush()
     pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == req.request_number))
-    warehouse_repository.approve_pull_request(db_session, pr.id, "puller")
+    pick_pull(db_session, pr.id, "puller")
     db_session.flush()
 
     # Leaf 1 ships out from an earlier slip while this pull is still open.
@@ -678,7 +680,7 @@ def test_reopen_shipping_out_blocked_when_pr_already_worked(db_session):
     pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == req.request_number))
 
     # Warehouse approves the pull (deducts inventory, PR -> IN_PROGRESS). Reopen must now refuse.
-    warehouse_repository.approve_pull_request(db_session, pr.id, "warehouse")
+    pick_pull(db_session, pr.id, "warehouse")
     db_session.flush()
 
     with pytest.raises(InvalidStateTransitionError):
@@ -714,7 +716,7 @@ def test_reopenable_only_excludes_worked_shipping_requests(db_session):
 
     # The warehouse starts the pull on one of them (PR -> IN_PROGRESS): it drops out of the reopen window.
     worked_pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == worked.request_number))
-    warehouse_repository.approve_pull_request(db_session, worked_pr.id, "warehouse")
+    pick_pull(db_session, worked_pr.id, "warehouse")
     db_session.flush()
 
     reopenable = shipping_repository.get_shipping_out_requests(
@@ -745,7 +747,7 @@ def test_reopenable_only_excludes_worked_shop_assembly_requests(db_session):
     db_session.flush()
 
     worked_pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == worked.request_number))
-    warehouse_repository.approve_pull_request(db_session, worked_pr.id, "warehouse")
+    pick_pull(db_session, worked_pr.id, "warehouse")
     db_session.flush()
 
     reopenable = shop_assembly_repository.get_shop_assembly_requests(

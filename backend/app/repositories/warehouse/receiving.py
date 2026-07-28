@@ -12,7 +12,6 @@ from app.models.enums import (
     AuditEntityType,
     NotificationType,
     POStatus,
-    PullRequestItemType,
     PullRequestSource,
     PullRequestStatus,
     ReservationSource,
@@ -344,19 +343,30 @@ def create_receive(
     return receive_record
 
 
-def find_pending_replacement_pulls(
+def find_open_replacement_pulls(
     session: Session,
     project_id: uuid.UUID,
     combos: set[tuple[str, str]] | None = None,
 ) -> list[PullRequestModel]:
-    """PENDING replacement (PR-REPL) pulls in a project, optionally narrowed to those that want at
-    least one of `combos` (#344).
+    """Replacement (PR-REPL) pulls in a project that are **still owed hardware**, optionally narrowed
+    to those that want at least one of `combos` (#344).
 
     A replacement pull is identified **structurally** - a SHOP_ASSEMBLY pull at least one of whose
     lines carries `sa_opening_item_id` (#339), i.e. a line minted against a specific deficient
     checklist item - rather than by its `PR-REPL-` number prefix. The prefix is a display convention;
     the FK is the thing that makes the pull a replacement, and a structural test cannot be broken by
     renaming a request.
+
+    "Open" used to mean PENDING and nothing else, because before #367 that was the only state a pull
+    with hardware still outstanding could be in: approval either filled it completely or refused and
+    left it PENDING. A **short pick** breaks that. The pull is IN_PROGRESS, some units are off the
+    shelf and the rest are still owed, and on the old filter it vanished from both loops this feeds -
+    its claim was never topped up as stock arrived, so the units it was waiting for stayed free for
+    the next request to take, and nothing ever told the warehouse the remainder could be keyed in.
+
+    So the filter is the honest reading of the same question: PENDING, or IN_PROGRESS with no
+    `picked_at` stamp. A picked pull is finished asking for hardware; a cancelled or completed one is
+    not asking at all.
 
     Narrowing by combo is the first half of the dedupe: a receive that landed nothing this pull wants
     cannot have changed whether it is coverable, so there is no reason to look at it, let alone
@@ -377,7 +387,13 @@ def find_pending_replacement_pulls(
             PullRequestModel.project_id == project_id,
             PullRequestModel.deleted_at.is_(None),
             PullRequestModel.source == PullRequestSource.SHOP_ASSEMBLY,
-            PullRequestModel.status == PullRequestStatus.PENDING,
+            or_(
+                PullRequestModel.status == PullRequestStatus.PENDING,
+                and_(
+                    PullRequestModel.status == PullRequestStatus.IN_PROGRESS,
+                    PullRequestModel.picked_at.is_(None),
+                ),
+            ),
             is_replacement,
         )
     )
@@ -408,9 +424,9 @@ def notify_unblocked_replacement_pulls(
     """Claim what just landed for the replacements waiting on it, then tell the warehouse which of
     them can now be approved (#344).
 
-    A PR-REPL pull sits PENDING, the approver sees INSUFFICIENT, the PO is told to backfill, and when
-    the backfill finally lands there is no signal that the pull is now approvable. Somebody has to
-    remember to go and retry it. This is that signal.
+    A PR-REPL pull waits with hardware outstanding - PENDING, or IN_PROGRESS after a short pick
+    (#367) - the PO is told to backfill, and when the backfill finally lands there is no signal that
+    the pull can now be filled. Somebody has to remember to go and retry it. This is that signal.
 
     **The top-up runs first, and the order matters.** A replacement reserves what it can at flag time
     and is usually short - that is why it is waiting. If this only announced the receive, the units
@@ -428,7 +444,7 @@ def notify_unblocked_replacement_pulls(
        **this pull's own claim excluded**. That exclusion is mandatory, not a refinement: the top-up
        above has just reserved the received units *for this pull*, so counting them as competing
        demand would make the pull read as insufficient forever and the notification would never fire
-       again. It is the same self-coverage rule `approve_pull_request` applies for the same reason.
+       again. It is the same self-coverage rule `confirm_pick` applies for the same reason.
        A receive that narrows the gap without closing it changes nothing the warehouse can act on, so
        it says nothing. Note this is the state *after* the receive only - the prior state is not
        re-derived, so a pull that was already coverable and gets more stock still qualifies here;
@@ -446,18 +462,17 @@ def notify_unblocked_replacement_pulls(
     """
     if project_id is None or not received_combos:
         return []
-    from .pull_requests import check_inventory_sufficiency
+    from .pull_requests import check_inventory_sufficiency, outstanding_loose_needs
     from .reservations import top_up_replacement_reservations
 
     top_up_replacement_reservations(session, project_id, received_combos)
 
     raised = []
-    for pr in find_pending_replacement_pulls(session, project_id, received_combos):
-        needs = [
-            (item.hardware_category, item.product_code, item.requested_quantity)
-            for item in pr.items
-            if item.item_type == PullRequestItemType.LOOSE and item.hardware_category and item.product_code
-        ]
+    for pr in find_open_replacement_pulls(session, project_id, received_combos):
+        # What is *still* owed, not what the pull originally asked for (#367). A short-picked pull
+        # already has some of it on a cart; asking whether the original requirement is coverable
+        # would keep answering no long after the gap had closed, and the signal would never fire.
+        needs = [(cat, code, qty) for (cat, code), qty in outstanding_loose_needs(session, pr).items()]
         if not needs:
             continue
         if not check_inventory_sufficiency(
@@ -480,7 +495,7 @@ def notify_unblocked_replacement_pulls(
                 notification_type=NotificationType.PULL_UNBLOCKED,
                 message=(
                     f"Replacement Pull Request {pr.request_number} can now be fulfilled - the hardware "
-                    "it was waiting on has been received. Approve it to release the replacement."
+                    "it was waiting on has been received. Pick it to release the replacement."
                 ),
                 pull_request_id=pr.id,
             )

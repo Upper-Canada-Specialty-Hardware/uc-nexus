@@ -48,6 +48,12 @@ class PullRequest(Base):
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     approved_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    # When the pick was confirmed and by whom (#367). This - not approved_at - is the moment stock
+    # left inventory, so staging and completion gate on it. approved_at keeps its older, weaker
+    # meaning: the warehouse started on this pull. The two are equal on every pull that predates
+    # per-location picking, because approval was the deduction back then.
+    picked_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    picked_by: Mapped[str | None] = mapped_column(String, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(nullable=True)
     cancelled_at: Mapped[datetime | None] = mapped_column(nullable=True)
     # Who cancelled the pull and why (#343). Cancellation returns real hardware to the shelf and
@@ -103,5 +109,12 @@ class PullRequestItem(Base):
     hardware_category: Mapped[str | None] = mapped_column(String, nullable=True)
     product_code: Mapped[str | None] = mapped_column(String, nullable=True)
     requested_quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Fetch check-off for an OPENING_ITEM line (#367). The leaf was tagged at assembly and its
+    # hardware left fungible inventory then, so there is nothing here to deduct - only to walk to the
+    # rack and collect. Persisted rather than held in component state so a picker who reloads the
+    # sheet, or hands it to the next shift, does not lose what has already been collected. Always
+    # null on a LOOSE line, which is picked by quantity instead.
+    fetched_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    fetched_by: Mapped[str | None] = mapped_column(String, nullable=True)
 
     pull_request: Mapped["PullRequest"] = relationship(back_populates="items")

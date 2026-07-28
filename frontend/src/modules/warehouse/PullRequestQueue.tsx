@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Box, Typography, Chip } from '@mui/material';
+import { Box, Typography, Chip, Stack } from '@mui/material';
 import { ChevronRight } from 'lucide-react';
 import { useQuery } from '@apollo/client/react';
 import type { GridColDef, GridRowParams } from '@mui/x-data-grid';
@@ -7,8 +7,8 @@ import { GET_PULL_REQUESTS } from '../../graphql/warehouse';
 import DataTable from '../../components/DataTable';
 import Tabs from '../../components/Tabs';
 import PullRequestDetailModal from './PullRequestDetailModal';
-import { stagingChipColor, stagingChipLabel } from './pullStaging';
-import { monoSx } from '../../theme';
+import { pullPhase } from './pullStaging';
+import { monoSx, tabularSx } from '../../theme';
 
 // --- Types ---
 
@@ -23,6 +23,9 @@ export interface PullRequestItem {
   hardwareCategory: string | null;
   productCode: string | null;
   requestedQuantity: number;
+  /** Fetch check-off on an OPENING_ITEM line (#367). Always null on a LOOSE line. */
+  fetchedAt?: string | null;
+  fetchedBy?: string | null;
 }
 
 export interface PullRequest {
@@ -45,6 +48,12 @@ export interface PullRequest {
   stagingStatus: string | null;
   stagedOpeningCount: number | null;
   totalOpeningCount: number | null;
+  /** When the pick was confirmed and by whom (#367) - the moment stock left inventory. */
+  pickedAt: string | null;
+  pickedBy: string | null;
+  /** Stock is off the shelf for this pull but it is not fully picked: a short confirm is
+   *  outstanding. Only computed for un-picked pulls; null means "not evaluated". */
+  partiallyPicked: boolean | null;
   items: PullRequestItem[];
 }
 
@@ -118,18 +127,29 @@ const columns: GridColDef[] = [
     ),
   },
   {
-    // #343: how far the warehouse has got picking this pull, opening by opening. Blank rather than
-    // a zeroed chip on a pull with no openings - staging does not apply there.
-    field: 'staging',
-    headerName: 'Staging',
-    flex: 1,
-    minWidth: 140,
+    // Where the pull actually is (#367). Status alone stopped being enough once picking became its
+    // own phase: In Progress now covers "nothing off the shelf yet", "part-picked and short", and
+    // "picked, staging carts", which mean completely different things to whoever takes the row next.
+    field: 'phase',
+    headerName: 'Phase',
+    flex: 1.2,
+    minWidth: 180,
     sortable: false,
-    valueGetter: (_value: unknown, row: PullRequest) => stagingChipLabel(row) ?? '',
+    valueGetter: (_value: unknown, row: PullRequest) => pullPhase(row).label,
     renderCell: (params) => {
-      const label = stagingChipLabel(params.row as PullRequest);
-      if (!label) return null;
-      return <Chip label={label} color={stagingChipColor(params.row as PullRequest)} size="small" />;
+      const phase = pullPhase(params.row as PullRequest);
+      return (
+        <Stack spacing={0.25} sx={{ py: 0.5 }}>
+          <Box>
+            <Chip label={phase.label} color={phase.color} size="small" />
+          </Box>
+          {phase.detail && (
+            <Typography variant="caption" color="text.secondary" sx={tabularSx}>
+              {phase.detail}
+            </Typography>
+          )}
+        </Stack>
+      );
     },
   },
   {
@@ -178,6 +198,9 @@ function PullRequestTab({ source }: PullRequestTabProps) {
         rows={requests}
         loading={loading}
         onRowClick={handleRowClick}
+        // The phase cell is a tag over a line of detail (#367); the default 52px row clips it.
+        rowHeight={64}
+        height={520}
         sx={{
           cursor: 'pointer',
           '& .MuiDataGrid-row:hover [data-row-open]': { color: 'text.primary' },
@@ -210,7 +233,8 @@ export default function PullRequestQueue() {
         Pull Request Queue
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-        Every request to take hardware out of inventory. Open a row to approve, stage and complete it.
+        Every request to take hardware out of inventory. Open a row to start its pick, stage the
+        carts and complete it.
       </Typography>
 
       <Tabs tabs={tabs} defaultTab={0} />

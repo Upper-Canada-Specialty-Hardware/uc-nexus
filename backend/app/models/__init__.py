@@ -20,6 +20,7 @@ from .opening_item import OpeningItem, OpeningItemHardware  # noqa: E402, F401
 from .po_document_settings import PODocumentSettings  # noqa: E402, F401
 from .project import Opening, Project  # noqa: E402, F401
 from .project_excluded_item import ProjectExcludedItem  # noqa: E402, F401
+from .pull_pick_line import PullPickLine  # noqa: E402, F401
 from .pull_request import PullRequest, PullRequestItem  # noqa: E402, F401
 from .purchase_order import PODocument, PODocumentData, POLineItem, PurchaseOrder  # noqa: E402, F401
 from .receiving import ReceiveLineItem, ReceiveRecord  # noqa: E402, F401

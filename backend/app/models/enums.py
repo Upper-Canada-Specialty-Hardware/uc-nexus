@@ -39,6 +39,18 @@ class PullRequestItemType(str, enum.Enum):
     OPENING_ITEM = "OPENING_ITEM"
 
 
+class PullPickLineState(str, enum.Enum):
+    """Whether a dictated pick line has moved inventory yet (#367).
+
+    DRAFT is the sheet still being keyed in - saved so it survives a reload, deducting nothing, and
+    replaced wholesale by the next save. APPLIED is a confirmed pick: the units are off the shelf
+    and the row is history.
+    """
+
+    DRAFT = "DRAFT"
+    APPLIED = "APPLIED"
+
+
 class OpeningItemState(str, enum.Enum):
     IN_INVENTORY = "IN_INVENTORY"
     SHIP_READY = "SHIP_READY"

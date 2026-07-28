@@ -44,6 +44,7 @@ from app.models.shop_assembly import ShopAssemblyOpening, ShopAssemblyOpeningIte
 from app.models.stock_item import StockItem
 from app.repositories import import_repository, shop_assembly_repository, warehouse_admin_repository
 from app.repositories import warehouse as warehouse_repository
+from tests.pick_helpers import mark_picked, pick_pull
 
 HINGE = ("HINGE", "HG-R1")
 LOCK = ("LOCK", "LK-R1")
@@ -161,6 +162,12 @@ def _repl_pull_for(session, sao_item) -> PullRequest:
 
 
 def _work_the_pull(session, pr, *, status=PullRequestStatus.IN_PROGRESS):
+    """Shortcut the warehouse: put the pull where a confirmed pick would leave it (#367).
+
+    These tests are about the replacement loop, not the pick, and a replacement pull usually has no
+    pickable stock behind it - so `mark_picked` stamps the state rather than picking for real."""
+    if status is PullRequestStatus.IN_PROGRESS:
+        return mark_picked(session, pr)
     pr.status = status
     session.flush()
     return pr
@@ -285,8 +292,7 @@ def test_a_second_completed_repl_pull_restores_nothing_extra(db_session):
     db_session.flush()
     assert item.deficient_quantity == 0
 
-    repl.status = PullRequestStatus.IN_PROGRESS
-    db_session.flush()
+    mark_picked(db_session, repl)
     warehouse_repository.complete_pull_request(db_session, repl.id)
     db_session.flush()
     assert item.deficient_quantity == 0
@@ -750,7 +756,7 @@ def test_a_deficiency_during_an_approved_replacement_pull_starts_a_fresh_pull(db
 
     _flag_deficient(db_session, opening, item, 1)
     first = _repl_pull_for(db_session, item)
-    warehouse_repository.approve_pull_request(db_session, first.id, "warehouse")
+    pick_pull(db_session, first.id, "warehouse")
     db_session.flush()
     assert first.status == PullRequestStatus.IN_PROGRESS
 
@@ -803,7 +809,7 @@ def test_cancelling_a_replacement_pull_restocks_exactly_what_it_deducted(db_sess
     assert {line.product_code for line in repl.items} == {HINGE[1], LOCK[1]}
 
     before_hinges, before_locks = hinges.quantity, locks.quantity
-    warehouse_repository.approve_pull_request(db_session, repl.id, "warehouse")
+    pick_pull(db_session, repl.id, "warehouse")
     db_session.flush()
     assert hinges.quantity == before_hinges - 2
     assert locks.quantity == before_locks - 1
@@ -970,7 +976,7 @@ def test_the_replacement_pull_is_its_own_reservation_holder(db_session):
     )
 
 
-def test_approving_a_covered_replacement_spends_its_claim(db_session):
+def test_picking_a_covered_replacement_spends_its_claim(db_session):
     project = _make_project(db_session)
     il = _seed_inventory(db_session, project.id, category=HINGE[0], code=HINGE[1], quantity=5)
     opening, sao = _make_pulled_opening(db_session, project.id, request_number="PR-SA-RES6", items=[(*HINGE, 4)])
@@ -978,18 +984,18 @@ def test_approving_a_covered_replacement_spends_its_claim(db_session):
     repl = _repl_pull_for(db_session, sao[HINGE[1]])
     db_session.flush()
 
-    _pr, outcome, _notif, shortfalls = warehouse_repository.approve_pull_request(db_session, repl.id, "warehouse")
-    db_session.flush()
+    result = pick_pull(db_session, repl.id, "warehouse")
 
-    assert (outcome, shortfalls) == ("APPROVED", [])
+    assert (result.outcome, result.shortfalls) == ("PICKED", [])
     # The claim became the deduction: the two condemned units returned to the row, and two good ones
     # left it, so the row is back where it started with the condemned pair still flagged.
     assert (il.quantity, il.deficient_quantity) == (5, 2)
     assert _replacement_reservations(db_session, repl.id) == []
 
 
-def test_a_partly_reserved_replacement_stays_blocked_and_asks_the_po_to_backfill(db_session):
-    """Holding a claim is not the same as being covered. The PO loop is unchanged."""
+def test_a_partly_reserved_replacement_picks_short_and_asks_the_po_to_backfill(db_session):
+    """Holding a claim is not the same as being covered. The PO loop is unchanged; what changed in
+    #367 is that the pull is picked short rather than left blocked at PENDING."""
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, category=HINGE[0], code=HINGE[1], quantity=0)
     opening, sao = _make_pulled_opening(db_session, project.id, request_number="PR-SA-RES7", items=[(*HINGE, 4)])
@@ -997,13 +1003,14 @@ def test_a_partly_reserved_replacement_stays_blocked_and_asks_the_po_to_backfill
     repl = _repl_pull_for(db_session, sao[HINGE[1]])
     db_session.flush()
 
-    pr, outcome, notif, shortfalls = warehouse_repository.approve_pull_request(db_session, repl.id, "warehouse")
-    db_session.flush()
+    result = pick_pull(db_session, repl.id, "warehouse")
+    pr = result.pull_request
 
-    assert outcome == "INSUFFICIENT"
-    assert pr.status == PullRequestStatus.PENDING
-    assert notif is not None
-    assert shortfalls[0].short == 2
+    assert result.outcome == "SHORT"
+    assert pr.status == PullRequestStatus.IN_PROGRESS
+    assert pr.picked_at is None
+    assert result.notification is not None
+    assert result.shortfalls[0].short == 2
     # A partly-covered replacement is the EXPECTED shortfall population, so it must not be recorded
     # as an inventory integrity error - flagging every one of them is how a real one gets missed.
     integrity = [

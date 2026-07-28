@@ -100,17 +100,22 @@ def notify_po_shortfall(
     request_number: str | None,
     shortfalls,
     sent_short: bool = False,
+    pull_request_id: uuid.UUID | None = None,
 ) -> Notification:
     """PO backfill signal (#224), carrying the shortfall detail.
 
     Raised from three places, and the wording distinguishes the one that is not a failure:
 
-    - the creation gate refusing a request outright, and `approve_pull_request` finding a pull it
-      cannot fill - both are "couldn't be fulfilled";
+    - the creation gate refusing a request outright, and a pick confirmed short of what the pull
+      asked for (#367) - both are "couldn't be fulfilled";
     - a shop-assembly request that **was** created and deliberately sent short of what the schedule
       calls for (`sent_short=True`). Nothing failed there and nothing is blocked; purchasing is being
       told what the project is missing. Calling that "couldn't be fulfilled" would send somebody
       hunting for a stuck request that does not exist.
+
+    `pull_request_id` links the signal to the pull it came off, which is what makes
+    `has_unread_notification_for_pull` able to dedupe it (#367): a short pick is resumable, so the
+    same gap can be re-reported every time the picker keys in another handful.
     """
     label = f"Pull Request {request_number}" if request_number else "A shop-assembly task"
     headline = (
@@ -125,4 +130,5 @@ def notify_po_shortfall(
         recipient_role=PO_RECIPIENT_ROLE,
         notification_type=NotificationType.INVENTORY_SHORTFALL,
         message=message,
+        pull_request_id=pull_request_id,
     )
