@@ -19,9 +19,15 @@ import { ApolloClient, ApolloLink, InMemoryCache } from '@apollo/client/core';
  * - including the ones `MockedProvider` builds internally, which take no devtools option - finds
  * that flag already set.
  *
- * `window.top` is restored immediately, so nothing under test sees the frame-like window.
+ * `window.top` is restored from its own descriptor rather than reassigned, so nothing under test
+ * sees either the frame-like window or a property that has quietly become read-only.
+ *
+ * If Apollo ever changes that heuristic this stops having any effect - so the assertion in
+ * `__tests__/apolloDevtoolsTimer.test.ts` fails loudly instead of the flake creeping back.
  */
-const realTop = window.top;
+const topDescriptor = Object.getOwnPropertyDescriptor(window, 'top');
 Object.defineProperty(window, 'top', { configurable: true, value: null });
 void new ApolloClient({ cache: new InMemoryCache(), link: ApolloLink.empty() });
-Object.defineProperty(window, 'top', { configurable: true, value: realTop });
+if (topDescriptor) {
+  Object.defineProperty(window, 'top', topDescriptor);
+}

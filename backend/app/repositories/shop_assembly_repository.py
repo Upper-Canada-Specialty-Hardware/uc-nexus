@@ -702,31 +702,68 @@ def _latest_assembly_lateral():
     )
 
 
-def _sum_over_source_checklist(session: Session, opening_item_ids: list[uuid.UUID], expression):
-    """Sum `expression` over the checklist lines of each leaf's own source assembly.
+@dataclass(frozen=True)
+class LeafShortfall:
+    """The two ways an assembled leaf can be short of the bill of hardware it ships under (#341).
 
-    One grouped scalar aggregate over the whole id set, never a len() over loaded collections
-    (CLAUDE.md perf rules): the shipping selection lists every assembled leaf in a project, and a
-    per-leaf query here would be an N+1 on the heaviest list in the module. Only non-zero entries are
-    returned, so callers can treat a missing key as "nothing outstanding".
+    They are counted apart because the remedies are not the same, and a shipper deciding whether to
+    send a leaf needs to know which one they are looking at:
+
+    - `awaiting_replacement` - a unit arrived and failed. It was condemned, a PR-REPL pull already
+      exists for it, and waiting is a real option.
+    - `never_pulled` - a unit never arrived at all: the allocator could not claim it out of available
+      inventory when the request was sent, so nothing was ever pulled and nothing is in flight.
+      Waiting achieves nothing; that gap is closed by purchasing and, later, by reallocation.
     """
-    if not opening_item_ids:
+
+    awaiting_replacement: int
+    never_pulled: int
+
+    @property
+    def total(self) -> int:
+        return self.awaiting_replacement + self.never_pulled
+
+
+def get_leaf_shortfalls(
+    session: Session,
+    opening_item_ids: Iterable[uuid.UUID],
+) -> dict[uuid.UUID, LeafShortfall]:
+    """Both shortfall readings per assembled leaf, in ONE grouped aggregate.
+
+    Never a len() over loaded collections, and never one query per reading (CLAUDE.md perf rules):
+    the shipping selection lists every assembled leaf in a project, so a per-leaf query would be an
+    N+1 on the heaviest list in the module, and running the correlated lateral twice to get two sums
+    out of the same rows would double the cost of the heaviest query in it. Only leaves with
+    something outstanding are returned, so callers treat a missing key as "nothing outstanding".
+    """
+    ids = list(opening_item_ids)
+    if not ids:
         return {}
     latest_assembly = _latest_assembly_lateral()
-    total = func.sum(expression)
+    awaiting = func.sum(
+        ShopAssemblyOpeningItem.deficient_quantity + ShopAssemblyOpeningItem.replacement_pending_quantity
+    )
+    never_pulled = func.sum(ShopAssemblyOpeningItem.quantity - ShopAssemblyOpeningItem.allocated_quantity)
     stmt = (
-        select(OpeningItemModel.id, total.label("total"))
+        select(
+            OpeningItemModel.id,
+            awaiting.label("awaiting"),
+            never_pulled.label("never_pulled"),
+        )
         .select_from(OpeningItemModel)
         .join(latest_assembly, true())
         .join(
             ShopAssemblyOpeningItem,
             ShopAssemblyOpeningItem.shop_assembly_opening_id == latest_assembly.c.sa_opening_id,
         )
-        .where(OpeningItemModel.id.in_(opening_item_ids))
+        .where(OpeningItemModel.id.in_(ids))
         .group_by(OpeningItemModel.id)
-        .having(total > 0)
+        .having(or_(awaiting > 0, never_pulled > 0))
     )
-    return {row.id: int(row.total) for row in session.execute(stmt).all()}
+    return {
+        row.id: LeafShortfall(awaiting_replacement=int(row.awaiting), never_pulled=int(row.never_pulled))
+        for row in session.execute(stmt).all()
+    }
 
 
 def get_awaiting_replacement_quantities(
@@ -735,21 +772,15 @@ def get_awaiting_replacement_quantities(
 ) -> dict[uuid.UUID, int]:
     """Per assembled leaf, how many units of its hardware are still owed *and were pulled* (#341):
     units condemned and not yet replaced, plus units whose replacement has arrived but is not fitted
-    yet.
+    yet. Zero entries are dropped, so a missing key means "nothing outstanding".
 
-    This is the shipping deficiency flag. A leaf with a non-zero count is physically short of what
-    its checklist says it carries, so shipping it is a decision, not an accident - the wizard flags
-    it and the shipping-out creation path refuses it without an explicit acknowledgment.
-
-    Units that were **never pulled** are a different kind of short and are counted separately by
-    `get_never_pulled_quantities`: nothing was ever condemned, there is no replacement in flight, and
-    the hardware simply was not available when the leaf was sent to the bench.
+    A named reading of `get_leaf_shortfalls` for the callers that only surface this half.
     """
-    return _sum_over_source_checklist(
-        session,
-        list(opening_item_ids),
-        ShopAssemblyOpeningItem.deficient_quantity + ShopAssemblyOpeningItem.replacement_pending_quantity,
-    )
+    return {
+        oi_id: shortfall.awaiting_replacement
+        for oi_id, shortfall in get_leaf_shortfalls(session, opening_item_ids).items()
+        if shortfall.awaiting_replacement > 0
+    }
 
 
 def get_never_pulled_quantities(
@@ -758,17 +789,13 @@ def get_never_pulled_quantities(
 ) -> dict[uuid.UUID, int]:
     """Per assembled leaf, how many units its schedule owed that the request never pulled.
 
-    The other half of the shipping incomplete-leaf decision. `deficient` says a unit arrived and
-    failed; this says a unit never arrived at all, because the allocator could not claim it out of
-    available inventory when the request was sent. The leaf is legitimately complete either way - the
-    assembler had nothing left to do - but it is physically short of its bill of hardware, and
-    shipping it has to be a decision somebody made rather than something nobody noticed.
+    A named reading of `get_leaf_shortfalls` for the callers that only surface this half.
     """
-    return _sum_over_source_checklist(
-        session,
-        list(opening_item_ids),
-        ShopAssemblyOpeningItem.quantity - ShopAssemblyOpeningItem.allocated_quantity,
-    )
+    return {
+        oi_id: shortfall.never_pulled
+        for oi_id, shortfall in get_leaf_shortfalls(session, opening_item_ids).items()
+        if shortfall.never_pulled > 0
+    }
 
 
 @dataclass(frozen=True)

@@ -172,7 +172,13 @@ class ShopAssemblyOpeningItem(Base):
     #
     # 0 is legal: a line can be fully short on a leaf that other lines do cover. A leaf with *every*
     # line at 0 has an empty cart and is dropped before it reaches here.
-    allocated_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    #
+    # **No default, client-side or server-side.** Migration 070 uses a server default only to get the
+    # NOT NULL column onto a populated table and drops it in the same step, and mirroring a default
+    # here would put the footgun straight back: an insert that forgot this column would quietly write
+    # 0, pass the check constraint, and produce a line that reads as entirely short. Omitting it is
+    # meant to fail loudly.
+    allocated_quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     # Per-item assembly progress (#340). The assembler records these incrementally at the bench;
     # completion reads them rather than taking an ephemeral checklist as input.
     #   installed_quantity - units physically fitted to the leaf. Absolute, editable both directions

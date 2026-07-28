@@ -67,6 +67,7 @@ import ShopAssemblyStep from './ShopAssemblyStep';
 import {
   autoAssign,
   buildAllocatedDrafts,
+  draftsSignature,
   leafCoverage,
   leafKey,
   type Allocation,
@@ -104,6 +105,8 @@ interface OpeningItemResponse {
   installedHardware: Array<{ productCode: string; quantity: number }>;
   /** Units still awaiting a replacement (#341); null on a server that predates the field. */
   awaitingReplacementQuantity: number | null;
+  /** Units the schedule owed that the request never pulled; null on a server predating the field. */
+  neverPulledQuantity: number | null;
 }
 
 /** The slices used to find leaves already claimed by an open request or pull (#335). */
@@ -179,6 +182,10 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
   // forward does not silently re-run auto-assign over the user's manual moves.
   const [sarAllocation, setSarAllocation] = useState<Allocation>(new Map());
   const [includedLeafKeys, setIncludedLeafKeys] = useState<Set<string>>(new Set());
+  // The draft signature the allocation above was seeded from. Held here, not in the step, because
+  // the step unmounts whenever the user is on another step - a flag inside it would reset on the way
+  // back and auto-assign would overwrite whatever they had moved by hand.
+  const [seededSignature, setSeededSignature] = useState<string | null>(null);
   // The server refused the finalize because availability moved under the allocation (#342 race).
   // The step says so and shows the rebuilt numbers rather than letting the user resend the stale set.
   const [allocationStale, setAllocationStale] = useState(false);
@@ -468,6 +475,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
         leaf: oi.leaf,
         installedHardware: oi.installedHardware ?? [],
         awaitingReplacementQuantity: oi.awaitingReplacementQuantity ?? 0,
+        neverPulledQuantity: oi.neverPulledQuantity ?? 0,
       }))
       .sort((a, b) => a.openingNumber.localeCompare(b.openingNumber) || (a.leaf ?? 0) - (b.leaf ?? 0));
   }, [purpose, openingItemsData, selectedOpenings, claimedOpeningItemIds]);
@@ -625,30 +633,26 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
     [purpose, shopAssemblyOpeningDrafts, sarAllocation, includedLeafKeys],
   );
 
-  // What this wizard is about to claim, per combo. Shop assembly claims the ALLOCATED quantities -
-  // a short line reserves nothing, which is the whole point of the allocator. Shipping claims only
-  // its LOOSE lines: an assembled leaf left fungible inventory when it was built and ships as itself
+  // What the SHIPPING purpose is about to claim, per combo - only its LOOSE lines, because an
+  // assembled leaf left fungible inventory when it was built and ships as itself
   // (docs/HARDWARE_IDENTITY_LIFECYCLE.md), so it reserves nothing.
+  //
+  // Shop assembly is deliberately not here any more. Its step derives its own per-combo totals from
+  // the allocation (`comboSummary`), and it has to: the numbers on screen have to be the ones being
+  // submitted, and a second derivation living up here would be exactly the drift the allocated-drafts
+  // comment above warns about. Nothing downstream of this map reads it for the assembly purpose.
   const requestedByCombo = useMemo(() => {
     const map = new Map<string, number>();
-    if (purpose === 'assembly') {
-      for (const draft of allocatedShopAssemblyDrafts) {
-        for (const item of draft.items) {
-          const key = itemGroupKey({ hardware_category: item.hardwareCategory, product_code: item.productCode });
-          map.set(key, (map.get(key) ?? 0) + item.allocatedQuantity);
-        }
-      }
-    } else if (purpose === 'shipping') {
-      for (const draft of effectiveShippingPRDrafts) {
-        for (const item of draft.items) {
-          if (item.itemType !== 'LOOSE' || !item.hardwareCategory || !item.productCode) continue;
-          const key = itemGroupKey({ hardware_category: item.hardwareCategory, product_code: item.productCode });
-          map.set(key, (map.get(key) ?? 0) + item.requestedQuantity);
-        }
+    if (purpose !== 'shipping') return map;
+    for (const draft of effectiveShippingPRDrafts) {
+      for (const item of draft.items) {
+        if (item.itemType !== 'LOOSE' || !item.hardwareCategory || !item.productCode) continue;
+        const key = itemGroupKey({ hardware_category: item.hardwareCategory, product_code: item.productCode });
+        map.set(key, (map.get(key) ?? 0) + item.requestedQuantity);
       }
     }
     return map;
-  }, [purpose, allocatedShopAssemblyDrafts, effectiveShippingPRDrafts]);
+  }, [purpose, effectiveShippingPRDrafts]);
 
   const availabilityShortfalls = useMemo(
     // While the lookup is still in flight an empty map would read as "nothing available" and block
@@ -749,6 +753,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
     setSarRequestNumber('');
     setSarAllocation(new Map());
     setIncludedLeafKeys(new Set());
+    setSeededSignature(null);
     setAllocationStale(false);
     setShippingPRDrafts([]);
     setSelectedReconItems(new Set());
@@ -1094,9 +1099,16 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
       // user back to review - resending the stale allocation would just bounce again.
       if (purpose === 'assembly' && isInventoryShortfall(err)) {
         setAllocationStale(true);
+        setActiveStepId('shop-assembly');
         const refreshed = await refetchAvailability().catch(() => null);
+        const rows = refreshed?.data?.projectInventoryAvailability;
+        // A failed refetch means the numbers are unknown, not zero. Rebuilding from an empty map
+        // would allocate nothing to everything and read as "no stock anywhere", which is a worse lie
+        // than the stale allocation the user already has in front of them. Leave it alone and let
+        // the stale banner stand.
+        if (!rows) return;
         const fresh = new Map<string, number>();
-        for (const row of refreshed?.data?.projectInventoryAvailability ?? []) {
+        for (const row of rows) {
           fresh.set(
             itemGroupKey({ hardware_category: row.hardwareCategory, product_code: row.productCode }),
             row.availableQuantity,
@@ -1104,14 +1116,21 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
         }
         const next = autoAssign(shopAssemblyOpeningDrafts, fresh);
         setSarAllocation(next);
-        setIncludedLeafKeys(
-          new Set(
+        // Re-seeding must not silently put back a leaf the user chose to leave out. Only leaves that
+        // were in the request keep their place; the rest of the rebuild is the allocator's.
+        setIncludedLeafKeys((previous) => {
+          const seeded = previous.size === 0;
+          return new Set(
             shopAssemblyOpeningDrafts
-              .filter((draft) => leafCoverage(next, draft) !== 'NONE')
+              .filter(
+                (draft) =>
+                  leafCoverage(next, draft) !== 'NONE' &&
+                  (seeded || previous.has(leafKey(draft))),
+              )
               .map((draft) => leafKey(draft)),
-          ),
-        );
-        setActiveStepId('shop-assembly');
+          );
+        });
+        setSeededSignature(draftsSignature(shopAssemblyOpeningDrafts));
       }
     }
   }, [buildFinalizeInput, finalizeImport, showToast, purpose, refetchAvailability, shopAssemblyOpeningDrafts]);
@@ -1498,6 +1517,8 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
               onAllocationChange={setSarAllocation}
               includedLeafKeys={includedLeafKeys}
               onIncludedLeafKeysChange={setIncludedLeafKeys}
+              seededSignature={seededSignature}
+              onSeeded={setSeededSignature}
               availabilityLoading={availabilityLoading && availabilityData === undefined}
               availabilityError={availabilityError !== undefined}
               allocationStale={allocationStale}

@@ -32,6 +32,29 @@ export const leafKey = (draft: { openingNumber: string; leaf: number | null }) =
   `${draft.openingNumber}|${draft.leaf ?? 'none'}`;
 
 /**
+ * What the drafts *are*, as a comparable string: which leaves, and what each owes.
+ *
+ * The allocator seeds itself once and must not re-seed afterwards, or it would silently discard the
+ * user's manual moves. "Once" cannot be a flag inside the step, because the wizard mounts the step
+ * only while it is the active one - stepping Back and Next again remounts it and resets the flag.
+ * The wizard holds this signature instead: unchanged drafts mean the existing allocation still
+ * describes them and is left alone; changed drafts (different openings picked, different
+ * classification) mean it no longer does, and re-seeding is the correct answer rather than a loss.
+ */
+export function draftsSignature(drafts: ShopAssemblyOpeningDraft[]): string {
+  return drafts
+    .map(
+      (draft) =>
+        `${leafKey(draft)}:${draft.items
+          .map((item) => `${comboKey(item)}=${item.quantity}`)
+          .sort()
+          .join(',')}`,
+    )
+    .sort()
+    .join(';');
+}
+
+/**
  * Fill leaves from the available pool, in schedule order, until each combo's pool runs out.
  *
  * First-leaf-first rather than spreading thinly across every leaf. Half a leaf's hardware assembles
@@ -92,6 +115,27 @@ export function leafCoverage(allocation: Allocation, draft: ShopAssemblyOpeningD
   }
   if (allocated <= 0) return 'NONE';
   return allocated >= owed ? 'FULL' : 'PARTIAL';
+}
+
+/**
+ * The leaves actually going on the request: included by the user AND carrying something.
+ *
+ * A leaf the user steppered down to zero is greyed out and its toggle disabled, but its key is still
+ * in `includedLeafKeys` - so "included" alone over-counts. Every reading that has to agree with the
+ * payload uses this, because `buildAllocatedDrafts` drops those leaves and the server therefore
+ * never sees their owed quantities: counting them as short would report a shortfall to the user that
+ * purchasing is never told about.
+ */
+export function effectivelyIncluded(
+  drafts: ShopAssemblyOpeningDraft[],
+  allocation: Allocation,
+  includedLeafKeys: ReadonlySet<string>,
+): Set<string> {
+  return new Set(
+    drafts
+      .filter((draft) => includedLeafKeys.has(leafKey(draft)) && leafAllocatedTotal(allocation, draft) > 0)
+      .map((draft) => leafKey(draft)),
+  );
 }
 
 /**
@@ -175,8 +219,9 @@ export function comboSummary(
   includedLeafKeys: ReadonlySet<string>,
 ): ComboSummaryRow[] {
   const rows = new Map<string, ComboSummaryRow>();
+  const effective = effectivelyIncluded(drafts, allocation, includedLeafKeys);
   for (const draft of drafts) {
-    if (!includedLeafKeys.has(leafKey(draft))) continue;
+    if (!effective.has(leafKey(draft))) continue;
     for (const item of draft.items) {
       const key = comboKey(item);
       let row = rows.get(key);
@@ -233,8 +278,9 @@ export function buildAllocatedDrafts(
   allocation: Allocation,
   includedLeafKeys: ReadonlySet<string>,
 ): AllocatedOpeningDraft[] {
+  const effective = effectivelyIncluded(drafts, allocation, includedLeafKeys);
   return drafts
-    .filter((draft) => includedLeafKeys.has(leafKey(draft)) && leafAllocatedTotal(allocation, draft) > 0)
+    .filter((draft) => effective.has(leafKey(draft)))
     .map((draft) => ({
       openingNumber: draft.openingNumber,
       leaf: draft.leaf,

@@ -78,6 +78,7 @@ export const GET_OPENING_ITEMS = gql`
       aisle row bay
       createdAt updatedAt
       awaitingReplacementQuantity
+      neverPulledQuantity
       installedHardware {
         id openingItemId productCode hardwareCategory quantity
       }

@@ -6,7 +6,7 @@ import { useIdentity } from '../../hooks/useIdentity';
 import DataTable from '../../components/DataTable';
 import AssemblyDetailModal from './AssemblyDetailModal';
 import ReplacementWorkPanel from './ReplacementWorkPanel';
-import { assemblyProgress, assemblyStatusLabel } from './openingFilters';
+import { assemblyStatusLabel, unitProgressLabel } from './openingFilters';
 import { leafLabel } from '../../utils/leaf';
 import type { GridColDef } from '@mui/x-data-grid';
 
@@ -77,8 +77,7 @@ const columns: GridColDef[] = [
       // Accounted-for is planned minus remaining, so the three buckets a line is partitioned into
       // (installed, condemned, replacement arrived but not yet fitted) all count - a finished leaf
       // never reads as 3/4 because its replacement turned up.
-      const { planned, remaining } = assemblyProgress(row.items ?? []);
-      return `${planned - remaining}/${planned} units`;
+      return unitProgressLabel(row.items ?? []);
     },
   },
   {

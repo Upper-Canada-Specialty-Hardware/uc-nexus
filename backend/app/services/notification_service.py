@@ -99,11 +99,26 @@ def notify_po_shortfall(
     project_id: uuid.UUID,
     request_number: str | None,
     shortfalls,
+    sent_short: bool = False,
 ) -> Notification:
-    """PO "couldn't be fulfilled - backfill needed" signal (#224), carrying the shortfall detail.
-    Raised by both gates: import "Start a Task" (no PR yet) and warehouse approve_pull_request."""
+    """PO backfill signal (#224), carrying the shortfall detail.
+
+    Raised from three places, and the wording distinguishes the one that is not a failure:
+
+    - the creation gate refusing a request outright, and `approve_pull_request` finding a pull it
+      cannot fill - both are "couldn't be fulfilled";
+    - a shop-assembly request that **was** created and deliberately sent short of what the schedule
+      calls for (`sent_short=True`). Nothing failed there and nothing is blocked; purchasing is being
+      told what the project is missing. Calling that "couldn't be fulfilled" would send somebody
+      hunting for a stuck request that does not exist.
+    """
     label = f"Pull Request {request_number}" if request_number else "A shop-assembly task"
-    message = f"{label} couldn't be fulfilled - backfill needed. {format_shortfall_lines(shortfalls)}"
+    headline = (
+        f"{label} was sent short of what the schedule calls for - backfill needed."
+        if sent_short
+        else f"{label} couldn't be fulfilled - backfill needed."
+    )
+    message = f"{headline} {format_shortfall_lines(shortfalls)}"
     return create_notification(
         session,
         project_id=project_id,

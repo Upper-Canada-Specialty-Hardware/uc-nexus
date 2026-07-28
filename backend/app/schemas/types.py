@@ -521,6 +521,12 @@ class OpeningItem:
     # acknowledgment. Only populated by the resolvers that ask for it (the openingItems list and the
     # detail view); null everywhere else, which reads as "not evaluated", not as "nothing owed".
     awaiting_replacement_quantity: int | None = None
+    # Units this leaf was owed by the schedule that its request never pulled - they were not
+    # available to claim when it was sent, so nothing arrived and nothing is in flight. The other
+    # half of the same shipping decision as the field above, and deliberately separate: waiting fixes
+    # an awaiting-replacement unit and does nothing at all for one of these. Same null-means-not-
+    # evaluated convention.
+    never_pulled_quantity: int | None = None
 
 
 @strawberry.type

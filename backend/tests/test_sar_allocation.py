@@ -301,6 +301,10 @@ def test_a_successful_short_send_tells_purchasing_about_the_gap(db_session):
     assert len(notifs) == 1
     assert "SA-SHORT-1" in notifs[0].message
     assert "short 4" in notifs[0].message
+    # Not "couldn't be fulfilled": the request exists and nothing is blocked. Purchasing is being
+    # told what the project is missing, not sent hunting for a stuck request.
+    assert "was sent short" in notifs[0].message
+    assert "couldn't be fulfilled" not in notifs[0].message
 
 
 def test_a_fully_covered_send_tells_purchasing_nothing(db_session):
@@ -414,3 +418,51 @@ def test_reupload_of_a_fully_short_line_rebuilds_to_nothing_for_it(db_session):
     rows = _reservations(db_session, project.id)
     assert {(r.product_code, r.quantity) for r in rows} == {(HINGE[1], 4)}
     assert all(r.source is ReservationSource.SHOP_ASSEMBLY_REQUEST for r in rows)
+
+
+def test_the_purchasing_signal_totals_a_combo_across_every_line(db_session):
+    """Purchasing orders against the combo, so the numbers have to be what this request wanted of
+    that product against what it got. Counting only the short lines reported a request that took 4
+    hinges on one leaf and missed 3 on another as "need 4, 1 available", which is true of neither."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, category=HINGE[0], code=HINGE[1], quantity=5)
+
+    _finalize(
+        db_session,
+        project,
+        [("A01", 1, [(*HINGE, 4, 4)]), ("A02", 1, [(*HINGE, 4, 1)])],
+        request_number="SA-SHORT-3",
+    )
+    db_session.flush()
+
+    (notif,) = db_session.scalars(
+        select(Notification).where(
+            Notification.project_id == project.id,
+            Notification.type == NotificationType.INVENTORY_SHORTFALL,
+        )
+    ).all()
+    # 8 owed across the request, 5 claimed, 3 genuinely missing from the shelf.
+    assert "need 8, 5 available (short 3)" in notif.message
+
+
+def test_a_line_that_omits_the_allocation_is_still_counted_in_the_combo_total(db_session):
+    """The None default means fully allocated, so such a line contributes owed == allocated and must
+    not drag the combo's reported availability down."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, category=HINGE[0], code=HINGE[1], quantity=6)
+
+    _finalize(
+        db_session,
+        project,
+        [("A01", 1, [(*HINGE, 4, None)]), ("A02", 1, [(*HINGE, 4, 2)])],
+        request_number="SA-SHORT-4",
+    )
+    db_session.flush()
+
+    (notif,) = db_session.scalars(
+        select(Notification).where(
+            Notification.project_id == project.id,
+            Notification.type == NotificationType.INVENTORY_SHORTFALL,
+        )
+    ).all()
+    assert "need 8, 6 available (short 2)" in notif.message

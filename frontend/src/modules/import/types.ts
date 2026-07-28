@@ -52,6 +52,13 @@ export interface AssembledLeafCandidate {
    * hardware list it would ship under, so it is flagged and takes an explicit confirm.
    */
   awaitingReplacementQuantity: number;
+  /**
+   * Units the schedule owed this leaf that its shop-assembly request never pulled - they were not
+   * available to claim when it was sent. The other half of the same "this leaf is short" decision,
+   * and counted apart because the remedies differ: an awaiting-replacement unit has a pull in
+   * flight and waiting fixes it, while one of these needs purchasing and then reallocation.
+   */
+  neverPulledQuantity: number;
 }
 
 /**

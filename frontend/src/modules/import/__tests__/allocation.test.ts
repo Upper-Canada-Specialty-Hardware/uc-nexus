@@ -4,6 +4,7 @@ import {
   buildAllocatedDrafts,
   clampCeiling,
   comboSummary,
+  draftsSignature,
   leafAllocatedTotal,
   leafCoverage,
   leafKey,
@@ -221,5 +222,47 @@ describe('buildAllocatedDrafts', () => {
   it('drops a leaf the user excluded even though it is fully covered', () => {
     const drafts = [draft('A01', [['HINGE', 'HG-100', 4]])];
     expect(buildAllocatedDrafts(drafts, autoAssign(drafts, pool([['HINGE|HG-100', 4]])), new Set())).toEqual([]);
+  });
+});
+
+describe('comboSummary and buildAllocatedDrafts agree on what is being sent', () => {
+  it('does not count a leaf steppered down to zero as short', () => {
+    // Its toggle is disabled and buildAllocatedDrafts drops it, so the server never learns its owed
+    // quantities. Reporting them as short would show the user a shortfall purchasing is never told
+    // about - the two readings have to describe the same request.
+    const drafts = [draft('A01', [['HINGE', 'HG-100', 4]]), draft('A02', [['HINGE', 'HG-100', 4]])];
+    const available = pool([['HINGE|HG-100', 8]]);
+    let allocation = autoAssign(drafts, available);
+    allocation = setLineAllocation(allocation, drafts[1], drafts[1].items[0], 0, 4);
+
+    const rows = comboSummary(drafts, allocation, available, allKeys(drafts));
+    expect(rows[0]).toMatchObject({ owed: 4, allocated: 4, short: 0 });
+    expect(buildAllocatedDrafts(drafts, allocation, allKeys(drafts))).toHaveLength(1);
+  });
+});
+
+describe('draftsSignature', () => {
+  it('is stable across rebuilt draft objects, so stepping away and back does not re-seed', () => {
+    const first = [draft('A01', [['HINGE', 'HG-100', 4]])];
+    const second = [draft('A01', [['HINGE', 'HG-100', 4]])];
+    expect(draftsSignature(first)).toBe(draftsSignature(second));
+  });
+
+  it('changes when a leaf is added, so a new selection does get re-seeded', () => {
+    const before = [draft('A01', [['HINGE', 'HG-100', 4]])];
+    const after = [...before, draft('A02', [['HINGE', 'HG-100', 4]])];
+    expect(draftsSignature(before)).not.toBe(draftsSignature(after));
+  });
+
+  it('changes when an owed quantity changes', () => {
+    expect(draftsSignature([draft('A01', [['HINGE', 'HG-100', 4]])])).not.toBe(
+      draftsSignature([draft('A01', [['HINGE', 'HG-100', 5]])]),
+    );
+  });
+
+  it('does not depend on the order leaves arrive in', () => {
+    const a = draft('A01', [['HINGE', 'HG-100', 2]]);
+    const b = draft('A02', [['HINGE', 'HG-100', 2]]);
+    expect(draftsSignature([a, b])).toBe(draftsSignature([b, a]));
   });
 });

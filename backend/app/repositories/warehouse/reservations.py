@@ -388,6 +388,12 @@ def top_up_replacement_reservations(
     Oldest pull first is the queue the warehouse already works, and it is what makes the outcome
     deterministic when two replacements want the same scarce combo.
 
+    **Fixed query count, whatever the fan-out.** This runs inside the PO receive transaction, which
+    already holds inventory row locks, so it must not turn one receive into a round trip per (pull,
+    combo) against Railway's managed Postgres (CLAUDE.md perf rules). Availability for every wanted
+    combo is read once under lock, every candidate pull's existing claims are read in one query, the
+    allocation is decided in memory oldest-first, and only the rows that actually change are written.
+
     Returns {pull_request_id: units claimed}, for callers and tests to assert on.
     """
     from .receiving import find_pending_replacement_pulls
@@ -396,10 +402,26 @@ def top_up_replacement_reservations(
     if not wanted:
         return {}
 
-    claimed: dict[uuid.UUID, int] = {}
     pulls = sorted(find_pending_replacement_pulls(session, project_id, wanted), key=lambda p: p.created_at)
+    if not pulls:
+        return {}
+
+    # One locked availability read for every combo in play, and one pass over the existing claims of
+    # every candidate pull.
+    pool = get_available_quantities(session, project_id, sorted(wanted), lock=True)
+    held_rows = session.scalars(
+        select(InventoryReservationModel).where(
+            InventoryReservationModel.source == ReservationSource.REPLACEMENT_PULL,
+            InventoryReservationModel.pull_request_id.in_([p.id for p in pulls]),
+        )
+    ).all()
+    held: dict[tuple[uuid.UUID, str, str], InventoryReservationModel] = {
+        (row.pull_request_id, row.hardware_category, row.product_code): row for row in held_rows
+    }
+
+    claimed: dict[uuid.UUID, int] = {}
     for pr in pulls:
-        # What this pull still wants, per combo, net of what it already holds.
+        # What this pull wants of the combos that just became available, net of what it already holds.
         needs: dict[tuple[str, str], int] = {}
         for line in pr.items:
             if not line.hardware_category or not line.product_code or line.requested_quantity <= 0:
@@ -408,23 +430,24 @@ def top_up_replacement_reservations(
             if key not in wanted:
                 continue
             needs[key] = needs.get(key, 0) + line.requested_quantity
-        if not needs:
-            continue
 
-        held = {
-            (row.hardware_category, row.product_code): row.quantity
-            for row in session.scalars(
-                select(InventoryReservationModel).where(
-                    InventoryReservationModel.source == ReservationSource.REPLACEMENT_PULL,
-                    InventoryReservationModel.pull_request_id == pr.id,
-                )
-            ).all()
-        }
         for combo, need in sorted(needs.items()):
-            gap = need - held.get(combo, 0)
-            if gap <= 0:
+            existing = held.get((pr.id, *combo))
+            gap = need - (existing.quantity if existing is not None else 0)
+            take = min(gap, pool.get(combo, 0))
+            if take <= 0:
                 continue
-            got = reserve_for_replacement_pull(session, pr.id, project_id, combo[0], combo[1], gap)
-            if got:
-                claimed[pr.id] = claimed.get(pr.id, 0) + got
+            pool[combo] -= take
+            if existing is not None:
+                # One row per combo per holder, same as `create_reservations` - every availability sum
+                # is an aggregate, and a stack of one-unit rows would only make it add them back up.
+                existing.quantity += take
+            else:
+                row = _new_reservation(project_id, ReservationSource.REPLACEMENT_PULL, pr.id, combo[0], combo[1], take)
+                session.add(row)
+                held[(pr.id, *combo)] = row
+            claimed[pr.id] = claimed.get(pr.id, 0) + take
+
+    if claimed:
+        session.flush()
     return claimed

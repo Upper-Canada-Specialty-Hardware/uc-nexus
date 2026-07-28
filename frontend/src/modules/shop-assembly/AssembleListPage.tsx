@@ -24,7 +24,7 @@ import OpeningLeafStatusPanel from '../../components/OpeningLeafStatusPanel';
 import { useIdentity } from '../../hooks/useIdentity';
 import { useToast } from '../../components/Toast';
 import AssemblyDetailModal from './AssemblyDetailModal';
-import { assemblyProgress, assemblyStatusLabel } from './openingFilters';
+import { assemblyProgress, assemblyStatusLabel, unitProgressLabel } from './openingFilters';
 
 // --- Types ---
 
@@ -274,8 +274,18 @@ export default function AssembleListPage() {
                             variant="outlined"
                           />
                           <Typography variant="body2" color="text.secondary">
-                            {progress.planned - progress.remaining}/{progress.planned} units
+                            {unitProgressLabel(opening.items ?? [])}
                           </Typography>
+                          {/* Owed but never pulled. Its own chip rather than part of the progress
+                              count: it is not outstanding work, and the leaf finishes without it. */}
+                          {progress.short > 0 && (
+                            <Chip
+                              label={`${progress.short} never pulled`}
+                              color="warning"
+                              size="small"
+                              variant="outlined"
+                            />
+                          )}
                         </Stack>
                       </AccordionSummary>
                       <AccordionDetails>

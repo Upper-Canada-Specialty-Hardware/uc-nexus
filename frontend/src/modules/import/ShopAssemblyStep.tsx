@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import {
   Alert,
   Box,
@@ -28,6 +28,7 @@ import {
   clampCeiling,
   comboKey,
   comboSummary,
+  draftsSignature,
   leafAllocatedTotal,
   leafCoverage,
   leafKey,
@@ -51,6 +52,13 @@ interface ShopAssemblyStepProps {
   /** Leaves the user has kept in the request. Auto-dropped leaves are never in here. */
   includedLeafKeys: Set<string>;
   onIncludedLeafKeysChange: (next: Set<string>) => void;
+  /**
+   * The draft signature the current allocation was seeded from, or null if it never has been.
+   * Owned by the wizard because this step unmounts every time the user steps away from it - a flag
+   * held here would reset on the way back and auto-assign would wipe their manual moves.
+   */
+  seededSignature: string | null;
+  onSeeded: (signature: string) => void;
   /** The availability lookup has not answered yet, so the counts below are not final. */
   availabilityLoading: boolean;
   /** The availability lookup failed; the counts are unknown, not zero. */
@@ -73,6 +81,8 @@ export default function ShopAssemblyStep({
   onAllocationChange,
   includedLeafKeys,
   onIncludedLeafKeysChange,
+  seededSignature,
+  onSeeded,
   availabilityLoading,
   availabilityError,
   allocationStale,
@@ -97,17 +107,28 @@ export default function ShopAssemblyStep({
     );
   }, [openingDrafts, availableByCombo, onAllocationChange, onIncludedLeafKeysChange]);
 
-  // Auto-assign runs **once**, when the step first has real numbers to work with, and never again on
-  // its own. Re-running silently would throw away every manual move the moment an unrelated query
-  // refetched; the user re-runs it deliberately with the button, and a race refusal re-runs it while
-  // saying so. Waiting for the lookup to answer matters too - an empty availability map reads as
-  // "nothing available" and would allocate nothing to everything.
-  const seeded = useRef(false);
+  // Auto-assign seeds the allocation **once per set of drafts**, and never re-runs on its own after
+  // that. Re-running silently would throw away every manual move - on a refetch, or simply on the
+  // way back from the next step - so what it keys on is whether the drafts still describe what the
+  // current allocation was built from, not whether this component happens to be freshly mounted. The
+  // user re-runs it deliberately with the button, and a race refusal re-runs it while saying so.
+  // Waiting for the lookup to answer matters too: an empty availability map reads as "nothing
+  // available" and would allocate nothing to everything.
+  const signature = useMemo(() => draftsSignature(openingDrafts), [openingDrafts]);
   useEffect(() => {
-    if (seeded.current || availabilityLoading || availabilityError || openingDrafts.length === 0) return;
-    seeded.current = true;
+    if (availabilityLoading || availabilityError || openingDrafts.length === 0) return;
+    if (seededSignature === signature) return;
     runAutoAssign();
-  }, [availabilityLoading, availabilityError, openingDrafts, runAutoAssign]);
+    onSeeded(signature);
+  }, [
+    availabilityLoading,
+    availabilityError,
+    openingDrafts,
+    runAutoAssign,
+    seededSignature,
+    signature,
+    onSeeded,
+  ]);
 
   const pool = useMemo(
     () => remainingPool(openingDrafts, allocation, availableByCombo, includedLeafKeys),

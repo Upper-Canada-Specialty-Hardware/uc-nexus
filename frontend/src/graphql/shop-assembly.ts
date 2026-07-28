@@ -245,6 +245,7 @@ export const GET_SHOP_ASSEMBLY_REQUESTS = gql`
           hardwareCategory
           productCode
           quantity
+          allocatedQuantity
         }
       }
     }

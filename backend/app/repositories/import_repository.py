@@ -967,28 +967,27 @@ def finalize_import_session(
         # short-shipping is a real workflow, it just has to be a decision someone made. Refused here
         # unless the caller says explicitly that it knows, and the wizard's confirm sets that flag.
         #
-        # Two grouped scalar aggregates for every referenced leaf, not a per-line count.
+        # One grouped scalar aggregate for every referenced leaf, not a per-line count and not one
+        # query per reading.
         if referenced_oi_ids and not acknowledge_incomplete_leaves:
             from app.repositories import shop_assembly_repository
 
-            oi_ids = list(referenced_oi_ids)
-            flagged_leaves = shop_assembly_repository.get_awaiting_replacement_quantities(session, oi_ids)
-            never_pulled = shop_assembly_repository.get_never_pulled_quantities(session, oi_ids)
-            if flagged_leaves or never_pulled:
+            shortfalls = shop_assembly_repository.get_leaf_shortfalls(session, list(referenced_oi_ids))
+            if shortfalls:
                 # Name every flagged leaf, not just the first: the user is being asked to make a
                 # decision, and they can only make it once if they can see the whole list. Each leaf
                 # carries whichever of the two counts is non-zero, so "waiting will fix this" and
                 # "waiting will not" are distinguishable per leaf rather than lumped together.
                 labels = []
-                for oi_id in set(flagged_leaves) | set(never_pulled):
+                for oi_id, shortfall in shortfalls.items():
                     oi = opening_items_by_id.get(oi_id)
                     if oi is None:
                         continue
                     parts = []
-                    if oi_id in flagged_leaves:
-                        parts.append(f"{flagged_leaves[oi_id]} unit(s) awaiting replacement")
-                    if oi_id in never_pulled:
-                        parts.append(f"{never_pulled[oi_id]} unit(s) never pulled")
+                    if shortfall.awaiting_replacement:
+                        parts.append(f"{shortfall.awaiting_replacement} unit(s) awaiting replacement")
+                    if shortfall.never_pulled:
+                        parts.append(f"{shortfall.never_pulled} unit(s) never pulled")
                     labels.append(f"{_leaf_label(oi)} ({', '.join(parts)})")
                 detail = ", ".join(sorted(labels))
                 raise ValidationError(
@@ -1279,15 +1278,21 @@ def finalize_import_session(
         # that combo is exhausted - so this is always a genuine purchasing signal, not a claim
         # somebody else is holding. It fires *after* the request is created, unlike the refusal path
         # in app/schemas/imports.py, which stays for the race above.
-        sar_short_by_combo: dict[tuple[str, str], tuple[int, int]] = {}
+        #
+        # Totals are accumulated over EVERY line of a combo, not only the short ones. Purchasing acts
+        # on the combo, so the number it needs is what this request wanted of that product against
+        # what it got; counting only the short lines would report a request that took 4 hinges on one
+        # leaf and missed 3 on another as "need 4, 1 available", which is true of neither.
+        sar_totals_by_combo: dict[tuple[str, str], list[int]] = {}
         for sa_opening_input in sar_openings_input:
             for item in sa_opening_input.get("items", []):
-                short = item["quantity"] - _allocated_quantity(item)
-                if short <= 0:
-                    continue
                 key = (item["hardware_category"], item["product_code"])
-                owed, missing = sar_short_by_combo.get(key, (0, 0))
-                sar_short_by_combo[key] = (owed + item["quantity"], missing + short)
+                totals = sar_totals_by_combo.setdefault(key, [0, 0])
+                totals[0] += item["quantity"]
+                totals[1] += _allocated_quantity(item)
+        sar_short_by_combo = {
+            key: (owed, allocated) for key, (owed, allocated) in sar_totals_by_combo.items() if owed > allocated
+        }
 
         sar = SARModel(
             id=uuid.uuid4(),
@@ -1358,12 +1363,15 @@ def finalize_import_session(
                         hardware_category=cat,
                         product_code=code,
                         requested=owed,
-                        available=owed - missing,
-                        short=missing,
+                        available=allocated,
+                        short=owed - allocated,
                         reserved=0,
                     )
-                    for (cat, code), (owed, missing) in sorted(sar_short_by_combo.items())
+                    for (cat, code), (owed, allocated) in sorted(sar_short_by_combo.items())
                 ],
+                # The request exists and nothing is blocked - this is "here is what the project is
+                # missing", not "a request failed".
+                sent_short=True,
             )
 
     session.flush()

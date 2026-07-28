@@ -43,6 +43,7 @@ export function assemblyProgress(items: ProgressFields[]): {
   deficient: number;
   replacementPending: number;
   short: number;
+  dispositioned: number;
   remaining: number;
   complete: boolean;
 } {
@@ -61,9 +62,23 @@ export function assemblyProgress(items: ProgressFields[]): {
     deficient,
     replacementPending,
     short: planned - allocated,
+    dispositioned: installed + deficient + replacementPending,
     remaining,
     complete: remaining === 0,
   };
+}
+
+/** "5/8 units" - what the assembler has accounted for, out of what actually turned up.
+ *
+ * Both halves are measured against `allocated`. Rendering `planned - remaining` over `planned`
+ * instead - which is what every view did while the two numbers were the same - reads a leaf owed 4
+ * and allocated 2 with no work done as "2/4 units", and the same leaf fully built as "4/4 units"
+ * while it carries 2. One helper so the three views cannot drift apart again; the short units are
+ * surfaced separately, per line, where they can be labelled as never pulled.
+ */
+export function unitProgressLabel(items: ProgressFields[]): string {
+  const { dispositioned, allocated } = assemblyProgress(items);
+  return `${dispositioned}/${allocated} units`;
 }
 
 interface ProgressFields {

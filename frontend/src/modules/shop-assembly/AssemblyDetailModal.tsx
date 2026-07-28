@@ -347,7 +347,7 @@ export default function AssemblyDetailModal({
             <Chip
               size="small"
               variant="outlined"
-              label={`${draftProgress.planned - draftProgress.remaining}/${draftProgress.planned} units accounted for`}
+              label={`${draftProgress.dispositioned}/${draftProgress.allocated} units accounted for`}
             />
           </Stack>
 

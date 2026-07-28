@@ -438,7 +438,11 @@ def opening_item_hardware_to_type(oih) -> OpeningItemHardware:
 
 
 def opening_item_to_type(
-    oi, *, leaf_count: int | None = None, awaiting_replacement_quantity: int | None = None
+    oi,
+    *,
+    leaf_count: int | None = None,
+    awaiting_replacement_quantity: int | None = None,
+    never_pulled_quantity: int | None = None,
 ) -> OpeningItem:
     return OpeningItem(
         id=strawberry.ID(str(oi.id)),
@@ -463,6 +467,7 @@ def opening_item_to_type(
         # Computed by the caller from one grouped aggregate over the whole list (#341), never
         # per-row here - this converter runs once per assembled leaf in a project.
         awaiting_replacement_quantity=awaiting_replacement_quantity,
+        never_pulled_quantity=never_pulled_quantity,
     )
 
 

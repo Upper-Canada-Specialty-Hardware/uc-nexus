@@ -102,6 +102,11 @@ type OpeningItem {
   # acknowledgment. Populated only by openingItems / openingItemDetails / installReplacement; null
   # elsewhere, which reads as "not evaluated", never as "nothing owed".
   awaiting_replacement_quantity: Int
+  # Units the schedule owed this leaf that its request never pulled - not available to claim when it
+  # was sent, so nothing arrived and nothing is in flight. The other half of the same shipping
+  # decision, kept separate because waiting fixes an awaiting-replacement unit and does nothing for
+  # one of these. Same null-means-not-evaluated convention.
+  never_pulled_quantity: Int
 }
 
 type OpeningItemHardware {

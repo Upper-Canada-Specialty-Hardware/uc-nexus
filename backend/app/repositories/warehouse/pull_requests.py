@@ -1310,10 +1310,13 @@ def discard_pending_pull_request(session: Session, pr_id: uuid.UUID | None) -> N
     unique: a later re-accept re-mints a PR with the same number. A null/missing PR id is a no-op (the
     accept is already effectively undone).
 
-    A PENDING **replacement** pull reaches this the same way, and its own claim goes with it: the pull
-    is the holder, so hard-deleting it without releasing would strand a reservation with nothing left
-    that could ever spend or release it. The FK cascade would take the rows anyway; releasing
-    explicitly keeps the session's identity map honest and makes the intent readable."""
+    The REPLACEMENT_PULL release below is **defence, not a live path**. Both callers reopen a
+    shop-assembly or shipping-out request, so the pull they hand over always has a source request and
+    is never a PR-REPL; a replacement pull holding a claim has no discard route today, and holding it
+    until approval is the intended behaviour - the replacement is genuinely owed that stock. It is
+    written anyway because the alternative, should a discard path ever be added, is a claim stranded
+    with nothing left that could spend or release it. (The FK cascade would take the rows on delete;
+    releasing explicitly keeps the session's identity map honest and states the intent.)"""
     if pr_id is None:
         return
     locked = lock_rows(session, PullRequestModel, [pr_id])

@@ -88,6 +88,8 @@ const SA_DRAFTS = [
 function Harness({ drafts, ...props }: { drafts: typeof SA_DRAFTS } & Record<string, unknown>) {
   const [allocation, setAllocation] = useState<Allocation>(new Map());
   const [included, setIncluded] = useState<Set<string>>(new Set());
+  // The wizard owns this so the step can remount without re-seeding over the user's manual moves.
+  const [seededSignature, setSeededSignature] = useState<string | null>(null);
   return (
     <ShopAssemblyStep
       sarRequestNumber="SA-1"
@@ -98,6 +100,8 @@ function Harness({ drafts, ...props }: { drafts: typeof SA_DRAFTS } & Record<str
       onAllocationChange={setAllocation}
       includedLeafKeys={included}
       onIncludedLeafKeysChange={setIncluded}
+      seededSignature={seededSignature}
+      onSeeded={setSeededSignature}
       availabilityLoading={false}
       availabilityError={false}
       allocationStale={false}

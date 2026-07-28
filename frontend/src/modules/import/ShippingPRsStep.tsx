@@ -25,6 +25,26 @@ import type {
 import { aggregationKey, itemGroupKey, shippingPRItemKey } from './types';
 import { leafSuffix } from '../../utils/leaf';
 
+/** Units of a leaf's own hardware list that are not physically on it, however they went missing. */
+function incompleteUnits(leaf: AssembledLeafCandidate): number {
+  return leaf.awaitingReplacementQuantity + leaf.neverPulledQuantity;
+}
+
+/**
+ * Why a leaf is short, in the shipper's words. Both counts are named when both apply, because the
+ * remedies are different: a replacement is already on its way, and a never-pulled unit is not.
+ */
+function incompleteSummary(leaf: AssembledLeafCandidate): string {
+  const parts: string[] = [];
+  if (leaf.awaitingReplacementQuantity > 0) {
+    parts.push(`awaiting replacement hardware for ${leaf.awaitingReplacementQuantity} unit(s)`);
+  }
+  if (leaf.neverPulledQuantity > 0) {
+    parts.push(`missing ${leaf.neverPulledQuantity} unit(s) that were never pulled`);
+  }
+  return parts.join(', and ');
+}
+
 interface ShippingPRsStepProps {
   shippingPRDrafts: ShippingPRDraft[];
   /** Assembled door leaves (OpeningItems) on the selected openings, still in inventory (#335). */
@@ -104,7 +124,12 @@ export default function ShippingPRsStep({
   const handleToggleLeaf = useCallback(
     (prIndex: number, item: ShippingPRItem, leaf: AssembledLeafCandidate, isSelected: boolean) => {
       // Only adding a flagged leaf needs a decision. Removing one always just removes it.
-      if (!isSelected && leaf.awaitingReplacementQuantity > 0) {
+      //
+      // BOTH kinds of shortfall gate it, because the server refuses on both: a leaf that is merely
+      // short - owed hardware its request could never claim, with nothing condemned and nothing in
+      // flight - would otherwise offer no confirm anywhere, never set the acknowledgment, and be
+      // refused by finalize with no way for the user to say yes.
+      if (!isSelected && incompleteUnits(leaf) > 0) {
         setPendingIncomplete({ prIndex, item, leaf });
         return;
       }
@@ -262,7 +287,7 @@ export default function ShippingPRsStep({
                     const key = shippingPRItemKey(item);
                     const onAnotherDraft = leafKeysByDraft.some((keys, i) => i !== prIdx && keys.has(key));
                     const isSelected = selectedKeys.has(key);
-                    const incomplete = leaf.awaitingReplacementQuantity > 0;
+                    const incomplete = incompleteUnits(leaf) > 0;
                     return (
                       <FormControlLabel
                         key={leaf.id}
@@ -289,7 +314,11 @@ export default function ShippingPRsStep({
                                   size="small"
                                   variant="outlined"
                                   color="warning"
-                                  label="Incomplete - awaiting replacement"
+                                  label={
+                                    leaf.awaitingReplacementQuantity > 0
+                                      ? 'Incomplete - awaiting replacement'
+                                      : 'Incomplete - never pulled'
+                                  }
                                 />
                               )}
                             </Box>
@@ -300,8 +329,7 @@ export default function ShippingPRsStep({
                             </Typography>
                             {incomplete && (
                               <Typography variant="caption" color="warning.main" sx={{ display: 'block' }}>
-                                {leaf.awaitingReplacementQuantity} unit(s) still awaiting replacement
-                                hardware
+                                {incompleteSummary(leaf)}
                               </Typography>
                             )}
                           </Box>
@@ -395,9 +423,9 @@ export default function ShippingPRsStep({
         message={
           pendingIncomplete
             ? `Opening ${pendingIncomplete.leaf.openingNumber}${leafSuffix(pendingIncomplete.leaf.leaf)} is ` +
-              `still awaiting replacement hardware for ${pendingIncomplete.leaf.awaitingReplacementQuantity} ` +
-              `unit(s). Shipping it now sends it short of the hardware its list says it carries. ` +
-              `Reallocation can fill the gap later, but the shortfall goes to site either way.`
+              `${incompleteSummary(pendingIncomplete.leaf)}. Shipping it now sends it short of the ` +
+              `hardware its list says it carries. Reallocation can fill the gap later, but the ` +
+              `shortfall goes to site either way.`
             : ''
         }
         confirmLabel="Ship it short"

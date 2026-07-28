@@ -1132,3 +1132,59 @@ def test_two_replacements_are_topped_up_oldest_first(db_session):
 
     assert [r.quantity for r in _replacement_reservations(db_session, first_repl.id)] == [2]
     assert [r.quantity for r in _replacement_reservations(db_session, second_repl.id)] == [1]
+
+
+# --- 9. the shipping guard sees both kinds of short ----------------------------------------------
+
+
+def test_leaf_shortfalls_reports_both_halves_of_one_leaf(db_session):
+    """Condemned-and-unreplaced and never-pulled are counted apart because the remedies differ: a
+    replacement is already in flight for one and there is nothing coming for the other."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, category=HINGE[0], code=HINGE[1], quantity=20)
+    opening, sao = _make_pulled_opening(
+        db_session,
+        project.id,
+        request_number="PR-SA-SHORTFALL1",
+        # 4 hinges owed, 3 pulled; 2 locks owed, both pulled.
+        items=[(*HINGE, 4, 3), (*LOCK, 2, 2)],
+    )
+    _flag_deficient(db_session, opening, sao[LOCK[1]], 1)
+    leaf = _complete(db_session, opening, sao)
+    db_session.flush()
+
+    shortfalls = shop_assembly_repository.get_leaf_shortfalls(db_session, [leaf.id])
+    assert shortfalls[leaf.id].awaiting_replacement == 1
+    assert shortfalls[leaf.id].never_pulled == 1
+    assert shortfalls[leaf.id].total == 2
+
+    # The two named readings are views of the same row.
+    assert shop_assembly_repository.get_awaiting_replacement_quantities(db_session, [leaf.id]) == {leaf.id: 1}
+    assert shop_assembly_repository.get_never_pulled_quantities(db_session, [leaf.id]) == {leaf.id: 1}
+
+
+def test_a_leaf_that_is_only_short_is_still_flagged(db_session):
+    """Nothing was condemned, so the awaiting-replacement reading is silent - and the leaf is still
+    physically missing hardware its list claims, so shipping it has to be a decision."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, category=HINGE[0], code=HINGE[1], quantity=20)
+    opening, sao = _make_pulled_opening(
+        db_session, project.id, request_number="PR-SA-SHORTFALL2", items=[(*HINGE, 4, 2)]
+    )
+    leaf = _complete(db_session, opening, sao)
+    db_session.flush()
+
+    assert shop_assembly_repository.get_awaiting_replacement_quantities(db_session, [leaf.id]) == {}
+    shortfalls = shop_assembly_repository.get_leaf_shortfalls(db_session, [leaf.id])
+    assert shortfalls[leaf.id].never_pulled == 2
+
+
+def test_a_whole_leaf_reports_no_shortfall_at_all(db_session):
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, category=HINGE[0], code=HINGE[1], quantity=20)
+    opening, sao = _make_pulled_opening(db_session, project.id, request_number="PR-SA-SHORTFALL3", items=[(*HINGE, 4)])
+    leaf = _complete(db_session, opening, sao)
+    db_session.flush()
+
+    assert shop_assembly_repository.get_leaf_shortfalls(db_session, [leaf.id]) == {}
+    assert shop_assembly_repository.get_leaf_shortfalls(db_session, []) == {}
