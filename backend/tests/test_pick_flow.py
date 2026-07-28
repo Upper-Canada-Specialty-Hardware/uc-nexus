@@ -482,6 +482,20 @@ def test_a_pull_cannot_pick_past_what_other_requests_have_left_free(db_session):
     assert row.quantity == 10
 
 
+def test_a_plain_shortage_is_not_reported_as_contention(db_session):
+    """The combo ceiling runs before the row one, so it sees a plain over-entry first. It must not
+    describe that as another request's claim - there is no competing request to go and find, and the
+    useful answer is which bin came up short."""
+    project = _make_project(db_session)
+    row = _seed_inventory(db_session, project.id, quantity=3)
+    pr = _started_pull(db_session, project.id, needs=[(*HINGE, 4, 1)])
+
+    with pytest.raises(ValidationError, match="only 3 available"):
+        warehouse_repository.confirm_pick(db_session, pr.id, [_line(row, 4)], "picker")
+
+    assert row.quantity == 3
+
+
 def test_the_sheet_says_how_much_is_claimable_before_the_walk(db_session):
     """A blocking gate the picker only meets after walking the racks is a trap. The number that
     decides the refusal is on the sheet, so contention is visible up front."""

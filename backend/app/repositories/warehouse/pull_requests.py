@@ -795,7 +795,9 @@ def confirm_pick(
     2. **The request.** No combo may exceed what the pull asked for, counting what is already picked.
     3. **Everyone else's claims.** No combo may exceed what is genuinely free for *this* pull -
        `on-hand - deficient - other requests' reservations` - with this pull's own holder excluded
-       (self-coverage), because its claim is exactly what backs the deduction.
+       (self-coverage), because its claim is exactly what backs the deduction. This one raises
+       `ConflictError`, and only when reservations are genuinely the cause: a plain shortage is left
+       to ceiling 1, which names the bin instead of blaming a request that does not exist.
 
     The third ceiling is what keeps #342 intact. Without it a pull holding no claim of its own (a
     replacement that could only partly reserve, a request from the #342 backfill population) could
@@ -851,11 +853,21 @@ def confirm_pick(
             reservation_aware=True,
             exclude_reservations_of=holder,
         )
-        if not contention.sufficient:
+        # Only speak of contention when reservations are actually the cause. A combo can also come
+        # up short here simply because the project does not hold that much, and saying "another
+        # request has claimed this" with `reserved = 0` would send somebody hunting for a competing
+        # request that does not exist. That case falls through to the per-row check below, which
+        # names the bin and the number - the more useful answer, and the one the picker can act on.
+        #
+        # Falling through is safe rather than a hole: with no reservations, free is exactly on-hand,
+        # so entering more than the combo has means at least one row was entered past its own
+        # available units, which is precisely what that check catches.
+        contested = [s for s in contention.shortfalls if s.reserved > 0]
+        if contested:
             blocked = "; ".join(
                 f"{s.hardware_category} {s.product_code}: {s.requested} entered but only {s.available} "
                 f"free for this pull ({s.reserved} claimed by other requests)"
-                for s in contention.shortfalls
+                for s in contested
             )
             raise ConflictError(
                 f"Another request has already claimed this stock - {blocked}. The units are on the "
