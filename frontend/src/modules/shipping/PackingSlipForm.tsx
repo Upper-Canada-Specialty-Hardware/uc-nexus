@@ -1,8 +1,9 @@
 import { useState, useCallback, useRef } from 'react';
 import {
   Dialog, DialogTitle, DialogContent, DialogActions, Button, TextField,
-  Typography, Box, CircularProgress, Alert, List, ListItem, ListItemText,
+  Typography, Box, CircularProgress, Alert,
 } from '@mui/material';
+import { CheckCircle2 } from 'lucide-react';
 import { useMutation, useApolloClient } from '@apollo/client/react';
 import { pdf } from '@react-pdf/renderer';
 import { useIdentity } from '../../hooks/useIdentity';
@@ -13,6 +14,8 @@ import { CONFIRM_SHIPMENT } from '../../graphql/shipping';
 import { SHIPPING_REFETCH_QUERIES, SHIPPING_STALE_ROOT_FIELDS } from '../../graphql/refetch';
 import { extractGpError } from '../../graphql/gpError';
 import PackingSlipDocument from './PackingSlipDocument';
+import { monoSx, microLabelSx, tabularSx } from '../../theme';
+import { StaggerItem, StaggerList } from '../../motion';
 
 interface PackingSlipFormProps {
   open: boolean;
@@ -258,30 +261,40 @@ export default function PackingSlipForm({ open, onClose, onShipped, projectId, p
               margin="normal"
               helperText="1-50 characters: letters, numbers, hyphens, underscores"
               error={!!error && error.includes('Packing slip')}
+              slotProps={{ input: { sx: monoSx } }}
             />
 
             <Box sx={{ mt: 2 }}>
-              <Typography variant="subtitle2" gutterBottom>
+              <Typography sx={{ ...microLabelSx, pb: 0.5, borderBottom: '2px solid', borderColor: 'text.primary' }}>
                 Cart Summary
               </Typography>
-              <List dense>
-                <ListItem>
-                  <ListItemText
-                    primary={`Opening Items: ${openingItemCount}`}
-                  />
-                </ListItem>
-                <ListItem>
-                  <ListItemText
-                    primary={`Loose Items: ${looseItemCount}`}
-                  />
-                </ListItem>
-                <ListItem>
-                  <ListItemText
-                    primary={`Total Items: ${items.length}`}
-                    primaryTypographyProps={{ fontWeight: 'bold' }}
-                  />
-                </ListItem>
-              </List>
+              {[
+                { label: 'Opening Items', value: openingItemCount, strong: false },
+                { label: 'Loose Items', value: looseItemCount, strong: false },
+                { label: 'Total Items', value: items.length, strong: true },
+              ].map((line) => (
+                <Box
+                  key={line.label}
+                  sx={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'baseline',
+                    py: 0.75,
+                    borderBottom: '1px solid',
+                    borderColor: 'divider',
+                  }}
+                >
+                  <Typography variant="body2" sx={{ fontWeight: line.strong ? 700 : 400 }}>
+                    {line.label}
+                  </Typography>
+                  <Typography
+                    variant="body2"
+                    sx={{ ...tabularSx, fontWeight: line.strong ? 700 : 400 }}
+                  >
+                    {line.value}
+                  </Typography>
+                </Box>
+              ))}
             </Box>
 
             {error && (
@@ -308,14 +321,24 @@ export default function PackingSlipForm({ open, onClose, onShipped, projectId, p
         <>
           <DialogTitle>Shipment Confirmed</DialogTitle>
           <DialogContent>
-            <Alert severity="success" sx={{ mb: 2 }}>
-              Packing slip <strong>{result?.packingSlipNumber}</strong> has been created
-              successfully.
-            </Alert>
-
-            <Typography variant="body2" color="text.secondary">
-              {result?.items.length} item(s) shipped.
-            </Typography>
+            <StaggerList count={3}>
+              <StaggerItem>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.5, color: 'success.main' }}>
+                  <CheckCircle2 size={18} strokeWidth={1.75} />
+                  <Typography sx={microLabelSx}>Packing slip created</Typography>
+                </Box>
+              </StaggerItem>
+              <StaggerItem>
+                <Typography sx={{ ...monoSx, fontSize: '1.25rem', fontWeight: 600, mb: 1 }}>
+                  {result?.packingSlipNumber}
+                </Typography>
+              </StaggerItem>
+              <StaggerItem>
+                <Typography variant="body2" color="text.secondary" sx={tabularSx}>
+                  {result?.items.length} item(s) shipped.
+                </Typography>
+              </StaggerItem>
+            </StaggerList>
           </DialogContent>
           <DialogActions>
             <Button onClick={handleViewPdf} disabled={generatingPdf}>

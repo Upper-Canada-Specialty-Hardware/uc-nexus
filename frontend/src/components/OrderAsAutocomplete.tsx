@@ -1,4 +1,5 @@
 import { Autocomplete, TextField } from '@mui/material';
+import { monoSx } from '../theme';
 
 interface OrderAsAutocompleteProps {
   value: string;
@@ -36,12 +37,14 @@ export default function OrderAsAutocomplete({
         if (typeof newValue === 'string') onChange(newValue);
         else if (newValue == null) onChange('');
       }}
+      // "Order as" holds the vendor's product code - an identifier, so mono in field and list.
+      slotProps={{ listbox: { sx: { '& .MuiAutocomplete-option': monoSx } } }}
       renderInput={(params) => (
         <TextField
           {...params}
           variant={variant}
           placeholder={placeholder}
-          sx={{ '& .MuiInputBase-input': { fontSize: '0.875rem' } }}
+          sx={{ '& .MuiInputBase-input': monoSx }}
         />
       )}
     />

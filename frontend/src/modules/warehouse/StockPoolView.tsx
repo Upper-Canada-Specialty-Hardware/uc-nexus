@@ -18,12 +18,14 @@ import {
 } from '@mui/material';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useQuery } from '@apollo/client/react';
-import EditIcon from '@mui/icons-material/Edit';
-import OpenInFullIcon from '@mui/icons-material/OpenInFull';
-import CallSplitIcon from '@mui/icons-material/CallSplit';
-import LocationOnIcon from '@mui/icons-material/LocationOn';
-import SwapHorizIcon from '@mui/icons-material/SwapHoriz';
-import ReportProblemIcon from '@mui/icons-material/ReportProblem';
+import {
+  ArrowLeftRight,
+  Maximize2,
+  MapPin,
+  Pencil,
+  Split,
+  TriangleAlert,
+} from 'lucide-react';
 import TransferDialog from './TransferDialog';
 import { GET_WAREHOUSES } from '../../graphql/shared';
 import { GET_STOCK_ITEMS } from '../../graphql/warehouse';
@@ -32,6 +34,7 @@ import MoveStockLocationModal from './stock/MoveStockLocationModal';
 import ReclassifyStockModal from './stock/ReclassifyStockModal';
 import AllocateStockModal from './stock/AllocateStockModal';
 import ReportStockDeficiencyModal from './stock/ReportStockDeficiencyModal';
+import { microLabelSx, monoSx } from '../../theme';
 
 interface WarehouseOption {
   id: string;
@@ -102,7 +105,17 @@ export default function StockPoolView() {
 
   const columns: GridColDef<StockItem>[] = [
     { field: 'hardwareCategory', headerName: 'Category', flex: 1, minWidth: 140 },
-    { field: 'productCode', headerName: 'Product Code', flex: 1, minWidth: 140 },
+    {
+      field: 'productCode',
+      headerName: 'Product Code',
+      flex: 1,
+      minWidth: 140,
+      renderCell: ({ value }) => (
+        <Typography component="span" sx={monoSx}>
+          {value as string}
+        </Typography>
+      ),
+    },
     {
       field: 'quantity',
       headerName: 'Qty',
@@ -145,6 +158,11 @@ export default function StockPoolView() {
       minWidth: 160,
       valueGetter: (_value, row) =>
         [row.aisle, row.row, row.bay].filter(Boolean).join(' / ') || '— Unlocated —',
+      renderCell: ({ value }) => (
+        <Typography component="span" sx={monoSx}>
+          {value as string}
+        </Typography>
+      ),
     },
     {
       field: 'actions',
@@ -163,7 +181,7 @@ export default function StockPoolView() {
               }}
               disabled={row.available <= 0}
             >
-              <OpenInFullIcon fontSize="small" />
+              <Maximize2 size={18} strokeWidth={1.75} />
             </IconButton>
           </Tooltip>
           <Tooltip title="Adjust quantity">
@@ -174,7 +192,7 @@ export default function StockPoolView() {
                 setModal('adjust');
               }}
             >
-              <EditIcon fontSize="small" />
+              <Pencil size={18} strokeWidth={1.75} />
             </IconButton>
           </Tooltip>
           <Tooltip title="Move location">
@@ -185,7 +203,7 @@ export default function StockPoolView() {
                 setModal('move');
               }}
             >
-              <LocationOnIcon fontSize="small" />
+              <MapPin size={18} strokeWidth={1.75} />
             </IconButton>
           </Tooltip>
           <Tooltip title="Transfer (same or other warehouse)">
@@ -197,7 +215,7 @@ export default function StockPoolView() {
               }}
               disabled={row.available <= 0}
             >
-              <SwapHorizIcon fontSize="small" />
+              <ArrowLeftRight size={18} strokeWidth={1.75} />
             </IconButton>
           </Tooltip>
           <Tooltip title="Reclassify (split-capable)">
@@ -208,7 +226,7 @@ export default function StockPoolView() {
                 setModal('reclassify');
               }}
             >
-              <CallSplitIcon fontSize="small" />
+              <Split size={18} strokeWidth={1.75} />
             </IconButton>
           </Tooltip>
           <Tooltip title="Report deficient">
@@ -220,7 +238,7 @@ export default function StockPoolView() {
               }}
               disabled={row.available <= 0}
             >
-              <ReportProblemIcon fontSize="small" />
+              <TriangleAlert size={18} strokeWidth={1.75} />
             </IconButton>
           </Tooltip>
         </Stack>
@@ -230,12 +248,26 @@ export default function StockPoolView() {
 
   return (
     <Box>
-      <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 2 }}>
-        <Typography variant="h5">Stock Pool</Typography>
+      <Stack
+        direction="row"
+        alignItems="flex-end"
+        justifyContent="space-between"
+        gap={2}
+        flexWrap="wrap"
+        sx={{ mb: 2 }}
+      >
+        <Box sx={{ minWidth: 0 }}>
+          <Typography variant="h5" sx={{ mb: 0.5 }}>
+            Stock Pool
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            Fungible hardware with no project claim on it.
+          </Typography>
+        </Box>
+        {/* The screen's one amber: the filter that is currently switched on. */}
         <Button
           variant={onlyDeficient ? 'contained' : 'outlined'}
-          color="warning"
-          startIcon={<ReportProblemIcon />}
+          startIcon={<TriangleAlert size={18} strokeWidth={1.75} />}
           onClick={() => setOnlyDeficient((v) => !v)}
         >
           {onlyDeficient ? 'Showing deficient only' : 'Show deficient only'}
@@ -276,15 +308,20 @@ export default function StockPoolView() {
       {error && <Alert severity="error">{error.message}</Alert>}
 
       {rows.length === 0 && !loading ? (
-        <Card variant="outlined">
+        <Card variant="outlined" sx={{ maxWidth: 620 }}>
           <CardContent>
-            <Typography variant="h6">Nothing in the stock pool yet</Typography>
+            <Typography component="div" sx={microLabelSx}>
+              Empty
+            </Typography>
+            <Typography variant="h6" sx={{ mt: 0.25 }}>
+              Nothing in the stock pool yet
+            </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
               Items arrive in stock by being destocked from a project's inventory, by being received
               from a PO that has no project assignment, or as the outcome of a deficiency review
               that sent items here.
             </Typography>
-            <Stack direction="row" spacing={2} sx={{ mt: 2 }}>
+            <Stack direction="row" spacing={1} sx={{ mt: 2 }} flexWrap="wrap" useFlexGap>
               <Chip size="small" label="destock from project" />
               <Chip size="small" label="receive stock PO" />
               <Chip size="small" label="resolve deficient → stock" />

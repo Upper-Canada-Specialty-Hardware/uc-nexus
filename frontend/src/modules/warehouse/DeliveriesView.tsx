@@ -12,14 +12,15 @@ import {
   Alert,
   Button,
 } from '@mui/material';
-import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
-import ArrowBackIcon from '@mui/icons-material/ArrowBack';
+import { ChevronDown, LayoutGrid } from 'lucide-react';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useQuery } from '@apollo/client/react';
 import { GET_EXPECTED_DELIVERIES, GET_BACK_ORDERED_ITEMS } from '../../graphql/warehouse';
 import ProjectLandingPage from '../../components/ProjectLandingPage';
 import { poVendorName } from '../po/poVendorName';
 import type { Project } from '../../types/project';
+import { microLabelSx, monoSx, tabularSx } from '../../theme';
+import { FadeIn, StaggerItem, StaggerList } from '../../motion';
 
 interface POLineItem {
   id: string;
@@ -92,8 +93,31 @@ function getUrgencyLabel(dateStr: string | null): string {
   return '';
 }
 
+// Flat, hairline-bordered group. minWidth:0 keeps a long PO/vendor line from clipping.
+const ACCORDION_SX = {
+  border: '1px solid',
+  borderColor: 'divider',
+  borderRadius: 1,
+  mb: 1,
+  '&:before': { display: 'none' },
+  '& .MuiAccordionSummary-content': { minWidth: 0, alignItems: 'center' },
+} as const;
+
+function MonoCell({ value }: { value: string | null | undefined }) {
+  return (
+    <Typography component="span" sx={monoSx}>
+      {value == null || value === '' ? '—' : value}
+    </Typography>
+  );
+}
+
 const lineItemColumns: GridColDef[] = [
-  { field: 'productCode', headerName: 'Product Code', flex: 1 },
+  {
+    field: 'productCode',
+    headerName: 'Product Code',
+    flex: 1,
+    renderCell: (params) => <MonoCell value={params.value as string} />,
+  },
   { field: 'hardwareCategory', headerName: 'Category', flex: 1 },
   { field: 'orderedQuantity', headerName: 'Ordered', flex: 0.5, type: 'number' },
   { field: 'receivedQuantity', headerName: 'Received', flex: 0.5, type: 'number' },
@@ -114,10 +138,21 @@ const lineItemColumns: GridColDef[] = [
 ];
 
 const backOrderColumns: GridColDef[] = [
-  { field: 'productCode', headerName: 'Product Code', flex: 1 },
+  {
+    field: 'productCode',
+    headerName: 'Product Code',
+    flex: 1,
+    renderCell: (params) => <MonoCell value={params.value as string} />,
+  },
   { field: 'hardwareCategory', headerName: 'Category', flex: 1 },
   { field: 'vendorName', headerName: 'Vendor', flex: 1, valueFormatter: (v: string | null) => v ?? '—' },
-  { field: 'poNumber', headerName: 'PO #', flex: 0.7, valueFormatter: (v: string | null) => v ?? '—' },
+  {
+    field: 'poNumber',
+    headerName: 'PO #',
+    flex: 0.7,
+    valueFormatter: (v: string | null) => v ?? '—',
+    renderCell: (params) => <MonoCell value={params.value as string | null} />,
+  },
   { field: 'outstandingQuantity', headerName: 'Outstanding', flex: 0.6, type: 'number' },
   {
     field: 'expectedDeliveryDate',
@@ -154,43 +189,67 @@ function UpcomingView({ projectId }: { projectId: string }) {
 
   return (
     <Box>
-      {deliveries.map((po) => {
-        const urgency = getUrgencyColor(po.expectedDeliveryDate);
-        const urgencyLabel = getUrgencyLabel(po.expectedDeliveryDate);
-        const pendingItems = po.lineItems.filter((li) => li.orderedQuantity > li.receivedQuantity);
-        return (
-          <Accordion key={po.id}>
-            <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flex: 1, mr: 2 }}>
-                <Typography sx={{ fontWeight: 600 }}>{po.poNumber ?? po.requestNumber}</Typography>
-                <Typography variant="body2" color="text.secondary">
-                  {poVendorName(po) || 'No vendor'}
-                </Typography>
-                <Typography variant="body2" color="text.secondary" sx={{ ml: 'auto' }}>
-                  {formatDate(po.expectedDeliveryDate)}
-                </Typography>
-                {urgencyLabel && <Chip label={urgencyLabel} color={urgency} size="small" variant="outlined" />}
-              </Box>
-            </AccordionSummary>
-            <AccordionDetails>
-              {pendingItems.length > 0 ? (
-                <Box sx={{ height: 250, width: '100%' }}>
-                  <DataGrid
-                    rows={pendingItems}
-                    columns={lineItemColumns}
-                    pageSizeOptions={[5, 10]}
-                    initialState={{ pagination: { paginationModel: { pageSize: 5 } } }}
-                    disableRowSelectionOnClick
-                    density="compact"
-                  />
-                </Box>
-              ) : (
-                <Typography color="text.secondary">All items received</Typography>
-              )}
-            </AccordionDetails>
-          </Accordion>
-        );
-      })}
+      <StaggerList count={deliveries.length}>
+        {deliveries.map((po) => {
+          const urgency = getUrgencyColor(po.expectedDeliveryDate);
+          const urgencyLabel = getUrgencyLabel(po.expectedDeliveryDate);
+          const pendingItems = po.lineItems.filter((li) => li.orderedQuantity > li.receivedQuantity);
+          return (
+            <StaggerItem key={po.id}>
+              <Accordion disableGutters elevation={0} sx={ACCORDION_SX}>
+                <AccordionSummary expandIcon={<ChevronDown size={18} strokeWidth={1.75} />}>
+                  <Box
+                    sx={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 1.5,
+                      flex: 1,
+                      minWidth: 0,
+                      mr: 2,
+                      flexWrap: 'wrap',
+                    }}
+                  >
+                    <Typography sx={{ ...monoSx, fontWeight: 700 }}>
+                      {po.poNumber ?? po.requestNumber}
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary" noWrap sx={{ minWidth: 0 }}>
+                      {poVendorName(po) || 'No vendor'}
+                    </Typography>
+                    <Typography
+                      variant="body2"
+                      color="text.secondary"
+                      sx={{ ...tabularSx, ml: 'auto', flexShrink: 0 }}
+                    >
+                      {formatDate(po.expectedDeliveryDate)}
+                    </Typography>
+                    {urgencyLabel && (
+                      <Chip label={urgencyLabel} color={urgency} size="small" variant="outlined" />
+                    )}
+                  </Box>
+                </AccordionSummary>
+                <AccordionDetails>
+                  {pendingItems.length > 0 ? (
+                    <Box sx={{ height: 250, width: '100%' }}>
+                      <DataGrid
+                        rows={pendingItems}
+                        columns={lineItemColumns}
+                        pageSizeOptions={[5, 10]}
+                        initialState={{ pagination: { paginationModel: { pageSize: 5 } } }}
+                        disableRowSelectionOnClick
+                        density="compact"
+                      />
+                    </Box>
+                  ) : (
+                    <Typography variant="body2" color="text.secondary">
+                      All items received
+                    </Typography>
+                  )}
+                </AccordionDetails>
+              </Accordion>
+            </StaggerItem>
+          );
+        })}
+      </StaggerList>
     </Box>
   );
 }
@@ -238,11 +297,34 @@ export default function DeliveriesView() {
 
   return (
     <Box>
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
-        <Button size="small" startIcon={<ArrowBackIcon />} onClick={() => setSelectedProject(null)}>
+      {/* One affordance, not a stack of them: the shell's breadcrumbs cover the module, so the only
+          navigation here is the project switch. */}
+      <Box
+        sx={{
+          display: 'flex',
+          alignItems: 'flex-end',
+          justifyContent: 'space-between',
+          gap: 2,
+          flexWrap: 'wrap',
+          mb: 2,
+        }}
+      >
+        <Box sx={{ minWidth: 0 }}>
+          <Typography component="div" sx={microLabelSx}>
+            Deliveries
+          </Typography>
+          <Typography variant="h5" sx={{ lineHeight: 1.2 }}>
+            {projectLabel}
+          </Typography>
+        </Box>
+        <Button
+          size="small"
+          variant="outlined"
+          startIcon={<LayoutGrid size={18} strokeWidth={1.75} />}
+          onClick={() => setSelectedProject(null)}
+        >
           Projects
         </Button>
-        <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>{projectLabel}</Typography>
       </Box>
 
       <ToggleButtonGroup
@@ -256,11 +338,13 @@ export default function DeliveriesView() {
         <ToggleButton value="outstanding">Outstanding Items</ToggleButton>
       </ToggleButtonGroup>
 
-      {viewMode === 'upcoming' ? (
-        <UpcomingView projectId={projectId} />
-      ) : (
-        <OutstandingView projectId={projectId} />
-      )}
+      <FadeIn key={viewMode} y={8}>
+        {viewMode === 'upcoming' ? (
+          <UpcomingView projectId={projectId} />
+        ) : (
+          <OutstandingView projectId={projectId} />
+        )}
+      </FadeIn>
     </Box>
   );
 }

@@ -1,13 +1,16 @@
 import { useState, useMemo, useCallback } from 'react';
-import { Box, Typography, Chip } from '@mui/material';
+import { Box, Typography, Chip, LinearProgress } from '@mui/material';
+import { ChevronRight } from 'lucide-react';
 import { useQuery } from '@apollo/client/react';
 import { GET_MY_WORK } from '../../graphql/shop-assembly';
 import { useIdentity } from '../../hooks/useIdentity';
 import DataTable from '../../components/DataTable';
 import AssemblyDetailModal from './AssemblyDetailModal';
 import ReplacementWorkPanel from './ReplacementWorkPanel';
-import { assemblyStatusLabel, unitProgressLabel } from './openingFilters';
+import { assemblyProgress, assemblyStatusLabel, unitProgressLabel } from './openingFilters';
 import { leafLabel } from '../../utils/leaf';
+import { monoSx, tabularSx } from '../../theme';
+import { FadeIn } from '../../motion';
 import type { GridColDef } from '@mui/x-data-grid';
 
 interface OpeningItem {
@@ -42,26 +45,36 @@ interface MyWorkOpening {
   items: OpeningItem[];
 }
 
+// Widths, not flex: these are two-character values and short refs, and a flexed grid stretched them
+// across 250px of empty column each. Every column is sized to what it actually holds.
 const columns: GridColDef[] = [
-  { field: 'openingNumber', headerName: 'Opening Number', flex: 1 },
+  {
+    field: 'openingNumber',
+    headerName: 'Opening',
+    width: 130,
+    renderCell: (params) => (
+      <Box component="span" sx={monoSx}>
+        {params.row.openingNumber ?? '-'}
+      </Box>
+    ),
+  },
   {
     field: 'leaf',
     headerName: 'Leaf',
-    flex: 0.6,
+    width: 84,
     valueGetter: (_value: unknown, row: MyWorkOpening) => leafLabel(row.leaf) ?? '-',
   },
-  { field: 'building', headerName: 'Building', flex: 1 },
-  { field: 'floor', headerName: 'Floor', flex: 1 },
+  { field: 'building', headerName: 'Building', width: 110 },
+  { field: 'floor', headerName: 'Floor', width: 84 },
   {
     field: 'assemblyStatus',
     headerName: 'Status',
-    flex: 0.9,
+    width: 128,
     // Assembly status is real system state, so it earns a status chip. In Progress is the one that
     // matters here: it says the leaf has saved work on it and can be picked straight back up (#340).
     renderCell: (params) => (
       <Chip
         size='small'
-        variant='outlined'
         label={assemblyStatusLabel(params.row.assemblyStatus)}
         color={params.row.assemblyStatus === 'IN_PROGRESS' ? 'info' : 'default'}
       />
@@ -70,7 +83,7 @@ const columns: GridColDef[] = [
   {
     field: 'progress',
     headerName: 'Progress',
-    flex: 0.9,
+    width: 190,
     // Units, not lines: a line of 8 hinges with 5 fitted is most of the job, and a line count would
     // report it as untouched.
     valueGetter: (_value: unknown, row: MyWorkOpening) => {
@@ -79,12 +92,49 @@ const columns: GridColDef[] = [
       // never reads as 3/4 because its replacement turned up.
       return unitProgressLabel(row.items ?? []);
     },
+    renderCell: (params) => {
+      const items = (params.row as MyWorkOpening).items ?? [];
+      const { dispositioned, allocated } = assemblyProgress(items);
+      const pct = allocated > 0 ? (dispositioned / allocated) * 100 : 0;
+      return (
+        <Box sx={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 0.5, py: 1 }}>
+          <Typography variant='caption' color='text.secondary' sx={tabularSx}>
+            {unitProgressLabel(items)}
+          </Typography>
+          {/* The bar transitions to its value on mount and on every refetch, so a save reads as
+              movement rather than as a number that quietly changed. */}
+          <LinearProgress
+            variant='determinate'
+            value={pct}
+            color={pct >= 100 ? 'success' : 'primary'}
+            sx={{ height: 4, '& .MuiLinearProgress-bar': { transition: 'transform 0.45s ease' } }}
+          />
+        </Box>
+      );
+    },
   },
   {
     field: 'itemCount',
-    headerName: 'Hardware Items',
-    flex: 0.8,
+    headerName: 'Lines',
+    width: 84,
+    align: 'right',
+    headerAlign: 'right',
     valueGetter: (_value: unknown, row: MyWorkOpening) => row.items?.length ?? 0,
+  },
+  {
+    // The row is the click target; the chevron says so.
+    field: 'open',
+    headerName: '',
+    width: 44,
+    sortable: false,
+    filterable: false,
+    disableColumnMenu: true,
+    align: 'right',
+    renderCell: () => (
+      <Box sx={{ color: 'text.disabled', display: 'flex', alignItems: 'center', height: '100%' }}>
+        <ChevronRight size={18} strokeWidth={1.75} />
+      </Box>
+    ),
   },
 ];
 
@@ -118,17 +168,25 @@ export default function MyWorkPage() {
 
   return (
     <Box>
-      <Typography variant='h5' gutterBottom>
-        My Work
-      </Typography>
+      <FadeIn>
+        <Typography variant='h5' sx={{ mb: 0.5 }}>
+          My Work
+        </Typography>
+        <Typography variant='body2' color='text.secondary' sx={{ mb: 2 }}>
+          Door leaves assigned to you. Open one to record what you have fitted.
+        </Typography>
+      </FadeIn>
 
-      <DataTable
-        rows={rows}
-        columns={columns}
-        loading={loading}
-        onRowClick={handleRowClick}
-        getRowId={(row: MyWorkOpening) => row.id}
-      />
+      <FadeIn delay={0.08}>
+        <DataTable
+          rows={rows}
+          columns={columns}
+          loading={loading}
+          onRowClick={handleRowClick}
+          getRowId={(row: MyWorkOpening) => row.id}
+          rowHeight={56}
+        />
+      </FadeIn>
 
       {/* Leaves this assembler already finished that are owed replacement hardware (#341). Kept out
           of the grid above because those rows are unfinished openings and these are complete ones -

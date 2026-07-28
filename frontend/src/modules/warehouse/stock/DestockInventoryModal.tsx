@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import {
+  Box,
   Button,
   Stack,
   TextField,
@@ -15,6 +16,7 @@ import Modal from '../../../components/Modal';
 import { useToast } from '../../../components/Toast';
 import { DESTOCK_INVENTORY } from '../../../graphql/warehouse';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../../graphql/refetch';
+import { microLabelSx, monoSx } from '../../../theme';
 
 export interface DestockSource {
   id: string;
@@ -101,13 +103,17 @@ export default function DestockInventoryModal({ inventoryLocation, onClose, onSu
     >
       <Stack spacing={2}>
         {error && <Alert severity="error">{error.message}</Alert>}
-        <Typography variant="body2" color="text.secondary">
-          Source row: {inventoryLocation.hardwareCategory} / {inventoryLocation.productCode} at{' '}
-          {[inventoryLocation.aisle, inventoryLocation.row, inventoryLocation.bay]
-            .filter(Boolean)
-            .join(' / ') || 'unlocated'}{' '}
-          (qty {inventoryLocation.quantity})
-        </Typography>
+        <Box sx={{ pb: 1, borderBottom: '1px solid', borderColor: 'divider' }}>
+          <Typography component="div" sx={microLabelSx}>
+            Source row · qty {inventoryLocation.quantity}
+          </Typography>
+          <Typography sx={monoSx}>
+            {inventoryLocation.hardwareCategory} / {inventoryLocation.productCode} at{' '}
+            {[inventoryLocation.aisle, inventoryLocation.row, inventoryLocation.bay]
+              .filter(Boolean)
+              .join(' / ') || 'unlocated'}
+          </Typography>
+        </Box>
         <TextField
           label={`Quantity (max ${inventoryLocation.quantity})`}
           type="number"

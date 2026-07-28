@@ -1,5 +1,6 @@
 import { Stepper, Step, StepLabel, Button, Box } from '@mui/material';
 import type { ReactNode } from 'react';
+import { FadeIn } from '../motion';
 
 interface WizardStep {
   label: string;
@@ -40,9 +41,23 @@ export default function Wizard({
         ))}
       </Stepper>
 
-      <Box sx={{ mb: 3 }}>{steps[activeStep]?.content}</Box>
+      {/* Keyed by step so each panel rises in on its own; the step's own state is untouched because
+          only this wrapper remounts. */}
+      <FadeIn key={activeStep} y={8}>
+        <Box sx={{ mb: 3 }}>{steps[activeStep]?.content}</Box>
+      </FadeIn>
 
-      <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+      <Box
+        sx={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          gap: 1,
+          pt: 2,
+          borderTop: 1,
+          borderColor: 'divider',
+        }}
+      >
         <Button disabled={activeStep === 0} onClick={onBack}>
           Back
         </Button>

@@ -10,12 +10,18 @@ import {
   Badge,
   Breadcrumbs,
   Link,
+  Tooltip,
 } from '@mui/material';
-import ShoppingCartIcon from '@mui/icons-material/ShoppingCart';
-import NavigateNextIcon from '@mui/icons-material/NavigateNext';
-import DarkModeIcon from '@mui/icons-material/DarkMode';
-import LightModeIcon from '@mui/icons-material/LightMode';
-import MenuIcon from '@mui/icons-material/Menu';
+import { alpha } from '@mui/material/styles';
+import {
+  PanelLeftClose,
+  PanelLeftOpen,
+  Menu as MenuIcon,
+  ShoppingCart,
+  Moon,
+  Sun,
+  ChevronRight,
+} from 'lucide-react';
 import { useColorScheme } from '@mui/material/styles';
 import { UserButton } from '@clerk/clerk-react';
 import { useCart } from '../contexts/CartContext';
@@ -23,7 +29,16 @@ import NotificationBell from './NotificationBell';
 import GpQueueChip from '../relay/GpQueueChip';
 import GpOutboxWatcher from '../relay/GpOutboxWatcher';
 import ConfirmDialog from './ConfirmDialog';
-import Sidebar from './Sidebar';
+import Sidebar, { NavRail } from './Sidebar';
+import { PageTransition } from '../motion';
+
+/** Breadcrumb segments that the auto-capitalizer gets wrong. */
+const CRUMB_LABELS: Record<string, string> = {
+  po: 'Purchase Orders',
+  import: 'Start a Task',
+};
+
+const RAIL_COLLAPSED_KEY = 'uc-nexus-rail-collapsed';
 
 export default function AppLayout() {
   const { mode, setMode } = useColorScheme();
@@ -33,6 +48,16 @@ export default function AppLayout() {
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [railCollapsed, setRailCollapsed] = useState(
+    () => localStorage.getItem(RAIL_COLLAPSED_KEY) === '1',
+  );
+
+  const toggleRail = () => {
+    setRailCollapsed((prev) => {
+      localStorage.setItem(RAIL_COLLAPSED_KEY, prev ? '0' : '1');
+      return !prev;
+    });
+  };
 
   const handleResetSchema = async () => {
     setResetConfirmOpen(false);
@@ -57,26 +82,47 @@ export default function AppLayout() {
     .split('/')
     .filter(Boolean);
 
+  // Route entrances re-run when the module changes, not on every sub-route hop.
+  const moduleKey = pathSegments[0] ?? 'home';
+
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
-      <AppBar position="static">
-        <Toolbar>
+      <AppBar position="sticky" sx={{ zIndex: (t) => t.zIndex.drawer + 1 }}>
+        <Toolbar sx={{ gap: 0.5 }}>
+          {/* Mobile: opens the drawer. Desktop: collapses the rail. */}
           <IconButton
             color="inherit"
             edge="start"
             onClick={() => setDrawerOpen(true)}
-            sx={{ mr: 1 }}
+            sx={{ mr: 0.5, display: { xs: 'inline-flex', md: 'none' } }}
             aria-label="Open navigation"
           >
-            <MenuIcon />
+            <MenuIcon size={20} strokeWidth={1.75} />
           </IconButton>
+          <Tooltip title={railCollapsed ? 'Expand navigation' : 'Collapse navigation'}>
+            <IconButton
+              color="inherit"
+              edge="start"
+              onClick={toggleRail}
+              sx={{ mr: 0.5, display: { xs: 'none', md: 'inline-flex' } }}
+              aria-label={railCollapsed ? 'Expand navigation' : 'Collapse navigation'}
+            >
+              {railCollapsed ? (
+                <PanelLeftOpen size={20} strokeWidth={1.75} />
+              ) : (
+                <PanelLeftClose size={20} strokeWidth={1.75} />
+              )}
+            </IconButton>
+          </Tooltip>
           <Typography
             variant="h6"
-            sx={{ mr: 3, cursor: 'pointer' }}
+            sx={{ mr: 3, cursor: 'pointer', letterSpacing: '0.01em' }}
             onClick={() => navigate('/app')}
           >
             UC Nexus
           </Typography>
+
+          <Box sx={{ flexGrow: 1 }} />
 
           <Button
             variant="outlined"
@@ -84,24 +130,29 @@ export default function AppLayout() {
             size="small"
             disabled={resetting}
             onClick={() => setResetConfirmOpen(true)}
-            sx={{ mr: 2, textTransform: 'none' }}
+            sx={{
+              mr: 1.5,
+              textTransform: 'none',
+              fontSize: '0.75rem',
+              borderColor: alpha('#f6f3ec', 0.35),
+              color: alpha('#f6f3ec', 0.85),
+              '&:hover': { borderColor: '#f6f3ec', backgroundColor: alpha('#f6f3ec', 0.08) },
+            }}
           >
-            {resetting ? 'Resetting\u2026' : 'DevAction: drop and rebuild schema'}
+            {resetting ? 'Resetting…' : 'DevAction: drop and rebuild schema'}
           </Button>
 
-          <Box sx={{ flexGrow: 1 }} />
-
           {location.pathname.includes('/shipping') && itemCount > 0 && (
-            <IconButton color="inherit" sx={{ mr: 1 }}>
+            <IconButton color="inherit" sx={{ mr: 0.5 }} aria-label="Shipping cart">
               <Badge badgeContent={itemCount} color="error">
-                <ShoppingCartIcon />
+                <ShoppingCart size={20} strokeWidth={1.75} />
               </Badge>
             </IconButton>
           )}
 
           {/* #353 PR E: only renders when the GP write queue is non-empty, so the bar is unchanged
               in the normal case. */}
-          <Box sx={{ mr: 1 }}>
+          <Box sx={{ mr: 0.5 }}>
             <GpQueueChip />
           </Box>
 
@@ -111,58 +162,55 @@ export default function AppLayout() {
             color="inherit"
             onClick={() => setMode(mode === 'dark' ? 'light' : 'dark')}
             sx={{ mr: 1 }}
+            aria-label={mode === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
           >
-            {mode === 'dark' ? <LightModeIcon /> : <DarkModeIcon />}
+            {mode === 'dark' ? <Sun size={20} strokeWidth={1.75} /> : <Moon size={20} strokeWidth={1.75} />}
           </IconButton>
 
           <UserButton />
         </Toolbar>
       </AppBar>
 
-      {pathSegments.length > 0 && (
-        <Box sx={{ px: 3, pt: 2 }}>
-          <Breadcrumbs separator={<NavigateNextIcon fontSize="small" />}>
-            <Link
-              component={RouterLink}
-              to="/app"
-              underline="hover"
-              color="inherit"
-            >
-              Home
-            </Link>
-            {pathSegments.map((segment, index) => {
-              const path = `/app/${pathSegments.slice(0, index + 1).join('/')}`;
-              const label = segment
-                .replace(/-/g, ' ')
-                .replace(/\b\w/g, (c) => c.toUpperCase());
-              const isLast = index === pathSegments.length - 1;
-
-              return isLast ? (
-                <Typography key={path} color="text.primary">
-                  {label}
-                </Typography>
-              ) : (
-                <Link
-                  key={path}
-                  component={RouterLink}
-                  to={path}
-                  underline="hover"
-                  color="inherit"
-                >
-                  {label}
-                </Link>
-              );
-            })}
-          </Breadcrumbs>
-        </Box>
-      )}
-
       {/* Renders nothing; watches for a background GP-outbox drain and evicts what it invalidates,
           which is the browser's only signal that a queued write posted itself (#353 PR E). */}
       <GpOutboxWatcher />
 
-      <Box component="main" sx={{ flexGrow: 1, p: 3 }}>
-        <Outlet />
+      <Box sx={{ display: 'flex', flexGrow: 1, alignItems: 'stretch' }}>
+        <NavRail collapsed={railCollapsed} />
+
+        <Box component="main" sx={{ flexGrow: 1, minWidth: 0, p: 3, pt: 2 }}>
+          {pathSegments.length > 0 && (
+            <Breadcrumbs
+              separator={<ChevronRight size={14} strokeWidth={1.75} />}
+              sx={{ mb: 2 }}
+            >
+              <Link component={RouterLink} to="/app" underline="hover" color="inherit">
+                Home
+              </Link>
+              {pathSegments.map((segment, index) => {
+                const path = `/app/${pathSegments.slice(0, index + 1).join('/')}`;
+                const label =
+                  CRUMB_LABELS[segment] ??
+                  segment.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+                const isLast = index === pathSegments.length - 1;
+
+                return isLast ? (
+                  <Typography key={path} color="text.primary" sx={{ fontWeight: 600 }}>
+                    {label}
+                  </Typography>
+                ) : (
+                  <Link key={path} component={RouterLink} to={path} underline="hover" color="inherit">
+                    {label}
+                  </Link>
+                );
+              })}
+            </Breadcrumbs>
+          )}
+
+          <PageTransition transitionKey={moduleKey}>
+            <Outlet />
+          </PageTransition>
+        </Box>
       </Box>
 
       <Sidebar open={drawerOpen} onClose={() => setDrawerOpen(false)} />
@@ -172,6 +220,7 @@ export default function AppLayout() {
         title="Drop & Rebuild Schema?"
         message="This will DROP the entire public schema and rebuild it from migrations. All data will be lost."
         confirmLabel="Drop & Rebuild"
+        confirmColor="error"
         cancelLabel="Cancel"
         onConfirm={handleResetSchema}
         onCancel={() => setResetConfirmOpen(false)}

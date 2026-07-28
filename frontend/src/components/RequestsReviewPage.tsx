@@ -8,18 +8,18 @@ import {
   AccordionDetails,
   Stack,
   Button,
+  Chip,
   CircularProgress,
 } from '@mui/material';
-import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
-import CheckIcon from '@mui/icons-material/Check';
-import CloseIcon from '@mui/icons-material/Close';
-import UndoIcon from '@mui/icons-material/Undo';
+import { ChevronDown, Check, X, Undo2 } from 'lucide-react';
 import { useMutation } from '@apollo/client/react';
 import type { DocumentNode } from 'graphql';
 import { useToast } from './Toast';
 import { useIdentity } from '../hooks/useIdentity';
 import ConfirmDialog from './ConfirmDialog';
 import { RESERVATION_STALE_ROOT_FIELDS } from '../graphql/refetch';
+import { monoSx } from '../theme';
+import { FadeIn, StaggerList, StaggerItem } from '../motion';
 
 interface ReviewableRequest {
   id: string;
@@ -143,9 +143,12 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
 
   return (
     <Box>
-      <Typography variant="h5" gutterBottom>
-        {title}
-      </Typography>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 0.5 }}>
+        <Typography variant="h5">{title}</Typography>
+        {loaded && requests.length > 0 && (
+          <Chip size="small" label={`${requests.length} in queue`} />
+        )}
+      </Box>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
         {description}
       </Typography>
@@ -160,94 +163,117 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
 
       {loaded && requests.length === 0 && <Alert severity="info">{emptyMessage}</Alert>}
 
-      <Stack spacing={1}>
-        {requests.map((req) => (
-          <Accordion key={req.id} variant="outlined" defaultExpanded={requests.length === 1}>
-            <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-              <Stack
-                direction="row"
-                spacing={2}
-                alignItems="center"
-                sx={{ width: '100%', minWidth: 0, flexWrap: 'wrap' }}
+      <StaggerList count={requests.length}>
+        <Stack spacing={1}>
+          {requests.map((req) => (
+            <StaggerItem key={req.id}>
+              <Accordion
+                variant="outlined"
+                defaultExpanded={requests.length === 1}
+                sx={{
+                  transition: 'border-color 0.2s ease',
+                  '&:hover': { borderColor: 'text.secondary' },
+                  '& .MuiAccordionSummary-root': { minHeight: 52 },
+                  '&.Mui-expanded': { borderLeft: '3px solid', borderLeftColor: 'secondary.main' },
+                }}
               >
-                <Typography fontWeight="bold">{req.requestNumber}</Typography>
-                {renderSummary(req)}
-                <Typography variant="body2" color="text.secondary" sx={{ minWidth: 0 }}>
-                  by {req.createdBy}
-                </Typography>
-              </Stack>
-            </AccordionSummary>
-            <AccordionDetails>
-              <Stack spacing={2}>
-                {/* Real system state about this specific request (#342), so it earns a status
-                    colour and sits above the detail rather than in a tooltip - it changes what
-                    accepting means. */}
-                {req.integrityNote && <Alert severity="warning">{req.integrityNote}</Alert>}
-                {renderDetails(req)}
+                <AccordionSummary expandIcon={<ChevronDown size={18} strokeWidth={1.75} />}>
+                  <Stack
+                    direction="row"
+                    spacing={2}
+                    alignItems="center"
+                    sx={{ width: '100%', minWidth: 0, flexWrap: 'wrap' }}
+                  >
+                    <Typography component="span" sx={{ ...monoSx, fontWeight: 700 }}>
+                      {req.requestNumber}
+                    </Typography>
+                    {renderSummary(req)}
+                    <Typography
+                      component="span"
+                      variant="body2"
+                      color="text.secondary"
+                      sx={{ minWidth: 0 }}
+                    >
+                      by {req.createdBy}
+                    </Typography>
+                  </Stack>
+                </AccordionSummary>
+                <AccordionDetails>
+                  <FadeIn y={6}>
+                    <Stack spacing={2}>
+                      {/* Real system state about this specific request (#342), so it earns a status
+                          colour and sits above the detail rather than in a tooltip - it changes what
+                          accepting means. */}
+                      {req.integrityNote && <Alert severity="warning">{req.integrityNote}</Alert>}
+                      {renderDetails(req)}
 
-                {mode === 'approved' ? (
-                  <Stack direction="row" spacing={1}>
-                    <Button
-                      variant="outlined"
-                      color="warning"
-                      startIcon={
-                        pending?.id === req.id && pending.action === 'reopen' ? (
-                          <CircularProgress size={16} color="inherit" />
-                        ) : (
-                          <UndoIcon />
-                        )
-                      }
-                      disabled={pending?.id === req.id}
-                      onClick={() => setConfirmReopenId(req.id)}
-                    >
-                      Reopen
-                    </Button>
-                  </Stack>
-                ) : (
-                  <Stack direction="row" spacing={1}>
-                    <Button
-                      variant="contained"
-                      color="primary"
-                      startIcon={
-                        pending?.id === req.id && pending.action === 'accept' ? (
-                          <CircularProgress size={16} color="inherit" />
-                        ) : (
-                          <CheckIcon />
-                        )
-                      }
-                      disabled={pending?.id === req.id}
-                      onClick={() => handleAccept(req.id)}
-                    >
-                      Accept
-                    </Button>
-                    <Button
-                      variant="outlined"
-                      color="primary"
-                      startIcon={
-                        pending?.id === req.id && pending.action === 'reject' ? (
-                          <CircularProgress size={16} color="inherit" />
-                        ) : (
-                          <CloseIcon />
-                        )
-                      }
-                      disabled={pending?.id === req.id}
-                      onClick={() => handleReject(req.id)}
-                    >
-                      Reject
-                    </Button>
-                  </Stack>
-                )}
-              </Stack>
-            </AccordionDetails>
-          </Accordion>
-        ))}
-      </Stack>
+                      {mode === 'approved' ? (
+                        <Stack direction="row" spacing={1}>
+                          <Button
+                            variant="outlined"
+                            color="warning"
+                            startIcon={
+                              pending?.id === req.id && pending.action === 'reopen' ? (
+                                <CircularProgress size={16} color="inherit" />
+                              ) : (
+                                <Undo2 size={18} strokeWidth={1.75} />
+                              )
+                            }
+                            disabled={pending?.id === req.id}
+                            onClick={() => setConfirmReopenId(req.id)}
+                          >
+                            Reopen
+                          </Button>
+                        </Stack>
+                      ) : (
+                        <Stack direction="row" spacing={1}>
+                          <Button
+                            variant="contained"
+                            color="primary"
+                            startIcon={
+                              pending?.id === req.id && pending.action === 'accept' ? (
+                                <CircularProgress size={16} color="inherit" />
+                              ) : (
+                                <Check size={18} strokeWidth={1.75} />
+                              )
+                            }
+                            disabled={pending?.id === req.id}
+                            onClick={() => handleAccept(req.id)}
+                          >
+                            Accept
+                          </Button>
+                          <Button
+                            variant="outlined"
+                            color="primary"
+                            startIcon={
+                              pending?.id === req.id && pending.action === 'reject' ? (
+                                <CircularProgress size={16} color="inherit" />
+                              ) : (
+                                <X size={18} strokeWidth={1.75} />
+                              )
+                            }
+                            disabled={pending?.id === req.id}
+                            onClick={() => handleReject(req.id)}
+                          >
+                            Reject
+                          </Button>
+                        </Stack>
+                      )}
+                    </Stack>
+                  </FadeIn>
+                </AccordionDetails>
+              </Accordion>
+            </StaggerItem>
+          ))}
+        </Stack>
+      </StaggerList>
 
       <ConfirmDialog
         open={confirmReopenId !== null}
         title="Reopen this request?"
         message="This undoes the accept: the request goes back to Pending and the warehouse pull request it created is removed. It only works if the warehouse has not started that pull yet. The request keeps its claim on the hardware it reserved - reject it to release that."
         confirmLabel="Reopen"
+        confirmColor="warning"
         onConfirm={() => {
           const id = confirmReopenId;
           setConfirmReopenId(null);

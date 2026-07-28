@@ -5,14 +5,15 @@ import {
   Popover,
   List,
   ListItemButton,
-  ListItemText,
   Typography,
   Box,
+  Chip,
   Divider,
 } from '@mui/material';
-import NotificationsIcon from '@mui/icons-material/Notifications';
+import { Bell, BellOff } from 'lucide-react';
 import { useQuery, useMutation } from '@apollo/client/react';
 import { GET_NOTIFICATIONS, MARK_NOTIFICATION_AS_READ } from '../graphql/shared';
+import { microLabelSx } from '../theme';
 
 interface Notification {
   id: string;
@@ -91,9 +92,14 @@ export default function NotificationBell() {
 
   return (
     <>
-      <IconButton color="inherit" sx={{ mr: 1 }} onClick={handleClick}>
+      <IconButton
+        color="inherit"
+        sx={{ mr: 1 }}
+        onClick={handleClick}
+        aria-label={unreadCount > 0 ? `Notifications, ${unreadCount} unread` : 'Notifications'}
+      >
         <Badge badgeContent={unreadCount} color="error" invisible={unreadCount === 0}>
-          <NotificationsIcon />
+          <Bell size={20} strokeWidth={1.75} />
         </Badge>
       </IconButton>
       <Popover
@@ -102,46 +108,92 @@ export default function NotificationBell() {
         onClose={handleClose}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
         transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+        slotProps={{ paper: { variant: 'outlined', sx: { mt: 1, width: 380, maxWidth: '100vw' } } }}
       >
-        <Box sx={{ width: 360, maxHeight: 400 }}>
-          <Box sx={{ px: 2, py: 1.5 }}>
-            <Typography variant="subtitle1" fontWeight="bold">
-              Notifications
+        <Box
+          sx={{
+            px: 2,
+            py: 1.25,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 1,
+          }}
+        >
+          <Typography sx={{ ...microLabelSx, color: 'text.primary' }}>Notifications</Typography>
+          {unreadCount > 0 && <Chip size="small" color="secondary" label={`${unreadCount} new`} />}
+        </Box>
+        <Divider />
+
+        {notifications.length === 0 ? (
+          <Box
+            sx={{
+              px: 2,
+              py: 4,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              gap: 1,
+              color: 'text.secondary',
+            }}
+          >
+            <BellOff size={26} strokeWidth={1.75} />
+            <Typography variant="body2" color="text.secondary">
+              Nothing to review right now
             </Typography>
           </Box>
-          <Divider />
-          {notifications.length === 0 ? (
-            <Box sx={{ px: 2, py: 3, textAlign: 'center' }}>
-              <Typography variant="body2" color="text.secondary">
-                No notifications
-              </Typography>
-            </Box>
-          ) : (
-            <List disablePadding>
-              {notifications.map((n) => (
-                <ListItemButton
-                  key={n.id}
-                  onClick={() => handleNotificationClick(n)}
+        ) : (
+          <List disablePadding sx={{ maxHeight: 380, overflowY: 'auto' }}>
+            {notifications.map((n) => (
+              <ListItemButton
+                key={n.id}
+                onClick={() => handleNotificationClick(n)}
+                sx={{
+                  alignItems: 'flex-start',
+                  gap: 1.25,
+                  px: 2,
+                  py: 1.25,
+                  borderBottom: 1,
+                  borderColor: 'divider',
+                  '&:last-of-type': { borderBottom: 0 },
+                }}
+              >
+                {/* Unread marker: the one amber dot per row, so the eye lands on what is new
+                    without a full-row fill competing with the message text. */}
+                <Box
+                  aria-hidden
                   sx={{
-                    bgcolor: n.isRead ? 'transparent' : 'action.hover',
-                    borderLeft: n.isRead ? 'none' : '3px solid',
-                    borderLeftColor: 'primary.main',
+                    mt: '6px',
+                    width: 7,
+                    height: 7,
+                    borderRadius: '50%',
+                    flexShrink: 0,
+                    bgcolor: n.isRead ? 'transparent' : 'secondary.main',
                   }}
-                >
-                  <ListItemText
-                    primary={n.message}
-                    secondary={formatTimeAgo(n.createdAt)}
-                    primaryTypographyProps={{
-                      variant: 'body2',
-                      fontWeight: n.isRead ? 'normal' : 'bold',
+                />
+                <Box sx={{ minWidth: 0, flexGrow: 1 }}>
+                  <Typography
+                    variant="body2"
+                    sx={{
+                      fontWeight: n.isRead ? 400 : 600,
+                      color: n.isRead ? 'text.secondary' : 'text.primary',
+                      overflowWrap: 'anywhere',
                     }}
-                    secondaryTypographyProps={{ variant: 'caption' }}
-                  />
-                </ListItemButton>
-              ))}
-            </List>
-          )}
-        </Box>
+                  >
+                    {n.message}
+                  </Typography>
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    sx={{ display: 'block', mt: 0.25 }}
+                  >
+                    {formatTimeAgo(n.createdAt)}
+                  </Typography>
+                </Box>
+              </ListItemButton>
+            ))}
+          </List>
+        )}
       </Popover>
     </>
   );

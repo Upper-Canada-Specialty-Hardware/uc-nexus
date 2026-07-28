@@ -17,7 +17,7 @@ import {
   ToggleButton,
   ToggleButtonGroup,
 } from '@mui/material';
-import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import { ChevronDown } from 'lucide-react';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useQuery, useLazyQuery, useMutation } from '@apollo/client/react';
 import { GET_INVENTORY_HIERARCHY, GET_INVENTORY_ITEMS, GET_INVENTORY_BY_VENDOR, REPORT_INVENTORY_DEFICIENCY } from '../../graphql/warehouse';
@@ -27,6 +27,8 @@ import InventoryCorrectionModal from '../admin/InventoryCorrectionModal';
 import AuditHistoryDrawer from './AuditHistoryDrawer';
 import SpotCheckModal from './SpotCheckModal';
 import DestockInventoryModal from './stock/DestockInventoryModal';
+import { microLabelSx, monoSx, tabularSx } from '../../theme';
+import { AnimatedNumber } from '../../motion';
 
 interface InventoryItem {
   id: string;
@@ -98,8 +100,82 @@ function formatCurrency(value: number | null | undefined): string {
   return value.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
 }
 
+// Flat, hairline-bordered groups: the rules carry the hierarchy, not a raised surface.
+const ACCORDION_SX = {
+  border: '1px solid',
+  borderColor: 'divider',
+  borderRadius: 1,
+  mb: 1,
+  '&:before': { display: 'none' },
+  // AccordionSummary's content is a flex row whose children shrink by default, which is what
+  // clipped "Architectural Hardware" down to "Architectural H". minWidth:0 + the layout below
+  // give the name the room and let the figures keep their own column.
+  '& .MuiAccordionSummary-content': { minWidth: 0, alignItems: 'center' },
+} as const;
+
+function GroupSummary({
+  name,
+  mono,
+  quantityLabel,
+  totalQuantity,
+  totalValue,
+}: {
+  name: string;
+  mono?: boolean;
+  quantityLabel: string;
+  totalQuantity: number;
+  totalValue: number;
+}) {
+  return (
+    <Box
+      sx={{
+        display: 'flex',
+        alignItems: 'baseline',
+        gap: 2,
+        width: '100%',
+        minWidth: 0,
+        flexWrap: 'wrap',
+      }}
+    >
+      <Typography
+        title={name}
+        sx={{ fontWeight: 600, flex: 1, minWidth: 0, ...(mono ? monoSx : {}) }}
+      >
+        {name}
+      </Typography>
+      <Box sx={{ display: 'flex', gap: 3, flexShrink: 0, textAlign: 'right' }}>
+        <Box>
+          <Typography component="div" sx={microLabelSx}>
+            {quantityLabel}
+          </Typography>
+          <Typography component="div" sx={{ ...tabularSx, fontWeight: 600 }}>
+            {totalQuantity.toLocaleString()}
+          </Typography>
+        </Box>
+        <Box sx={{ minWidth: 96 }}>
+          <Typography component="div" sx={microLabelSx}>
+            Value
+          </Typography>
+          <Typography component="div" sx={{ ...tabularSx, fontWeight: 600 }}>
+            {formatCurrency(totalValue)}
+          </Typography>
+        </Box>
+      </Box>
+    </Box>
+  );
+}
+
 const baseDetailColumns: GridColDef[] = [
-  { field: 'productCode', headerName: 'Product Code', flex: 1 },
+  {
+    field: 'productCode',
+    headerName: 'Product Code',
+    flex: 1,
+    renderCell: (params) => (
+      <Typography component="span" sx={monoSx}>
+        {params.value as string}
+      </Typography>
+    ),
+  },
   { field: 'hardwareCategory', headerName: 'Hardware Category', flex: 1 },
   { field: 'quantity', headerName: 'Quantity', flex: 0.5, type: 'number' },
   {
@@ -141,8 +217,22 @@ const baseDetailColumns: GridColDef[] = [
         row.inventoryLocation.row,
         row.inventoryLocation.bay,
       ),
+    renderCell: (params) => (
+      <Typography component="span" sx={monoSx}>
+        {params.value as string}
+      </Typography>
+    ),
   },
-  { field: 'poNumber', headerName: 'PO Number', flex: 1 },
+  {
+    field: 'poNumber',
+    headerName: 'PO Number',
+    flex: 1,
+    renderCell: (params) => (
+      <Typography component="span" sx={monoSx}>
+        {(params.value as string | null) ?? '—'}
+      </Typography>
+    ),
+  },
   {
     field: 'receivedAt',
     headerName: 'Received Date',
@@ -358,14 +448,21 @@ function ProductCodeDetail({
 
   return (
     <>
-      <Accordion expanded={expanded} onChange={handleExpand} sx={{ ml: 2 }}>
-        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-          <Typography sx={{ fontWeight: 500 }}>
-            {productCode}
-          </Typography>
-          <Typography sx={{ ml: 2, color: 'text.secondary' }}>
-            — Qty: {totalQuantity} | Value: {formatCurrency(totalValue)}
-          </Typography>
+      <Accordion
+        expanded={expanded}
+        onChange={handleExpand}
+        disableGutters
+        elevation={0}
+        sx={{ ...ACCORDION_SX, ml: 2 }}
+      >
+        <AccordionSummary expandIcon={<ChevronDown size={18} strokeWidth={1.75} />}>
+          <GroupSummary
+            name={productCode}
+            mono
+            quantityLabel="Qty"
+            totalQuantity={totalQuantity}
+            totalValue={totalValue}
+          />
         </AccordionSummary>
         <AccordionDetails>
           {loading && !data && (
@@ -637,29 +734,44 @@ export default function HardwareItemsTab({ projectId }: HardwareItemsTabProps) {
         </FormControl>
       </Box>
 
-      {/* Grand total summary */}
+      {/* Grand total summary — a section header ruled off from the groups below it, rather than the
+          old solid ink bar that read as a title bar for the whole page. */}
       <Box
         sx={{
           display: 'flex',
           justifyContent: 'space-between',
-          alignItems: 'center',
-          p: 2,
+          alignItems: 'flex-end',
+          gap: 2,
+          flexWrap: 'wrap',
+          pb: 1,
           mb: 2,
-          bgcolor: 'primary.main',
-          color: 'primary.contrastText',
-          borderRadius: 1,
+          borderBottom: '2px solid',
+          borderColor: 'text.primary',
         }}
       >
-        <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+        <Typography component="div" sx={microLabelSx}>
           Inventory Summary
         </Typography>
-        <Box sx={{ display: 'flex', gap: 4 }}>
-          <Typography variant="subtitle1">
-            Total Items: {grandTotals.totalQty.toLocaleString()}
-          </Typography>
-          <Typography variant="subtitle1">
-            Total Value: {formatCurrency(grandTotals.totalVal)}
-          </Typography>
+        <Box sx={{ display: 'flex', gap: 4, textAlign: 'right' }}>
+          <Box>
+            <Typography component="div" sx={microLabelSx}>
+              Total Items
+            </Typography>
+            <Typography component="div" sx={{ ...tabularSx, fontWeight: 700, fontSize: '1.125rem' }}>
+              <AnimatedNumber
+                value={grandTotals.totalQty}
+                format={(n) => n.toLocaleString()}
+              />
+            </Typography>
+          </Box>
+          <Box>
+            <Typography component="div" sx={microLabelSx}>
+              Total Value
+            </Typography>
+            <Typography component="div" sx={{ ...tabularSx, fontWeight: 700, fontSize: '1.125rem' }}>
+              {formatCurrency(grandTotals.totalVal)}
+            </Typography>
+          </Box>
         </Box>
       </Box>
 
@@ -670,14 +782,14 @@ export default function HardwareItemsTab({ projectId }: HardwareItemsTabProps) {
 
       {/* Accordion hierarchy */}
       {filteredGroups.map((group) => (
-        <Accordion key={group.label}>
-          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-            <Typography sx={{ fontWeight: 600 }}>
-              {group.label}
-            </Typography>
-            <Typography sx={{ ml: 2, color: 'text.secondary' }}>
-              — Total: {group.totalQuantity} | Value: {formatCurrency(group.totalValue)}
-            </Typography>
+        <Accordion key={group.label} disableGutters elevation={0} sx={ACCORDION_SX}>
+          <AccordionSummary expandIcon={<ChevronDown size={18} strokeWidth={1.75} />}>
+            <GroupSummary
+              name={group.label}
+              quantityLabel="Total"
+              totalQuantity={group.totalQuantity}
+              totalValue={group.totalValue}
+            />
           </AccordionSummary>
           <AccordionDetails>
             {group.productCodes.map((pc) => (

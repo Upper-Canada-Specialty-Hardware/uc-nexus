@@ -100,6 +100,56 @@ on 7/26, with no `[accepted]` line anywhere - so the WS channel has never once a
 the HTTP enrolment plainly succeeded. "The relay was working yesterday" refers to the service being
 up and healthy on `127.0.0.1:7321`; that is independent of whether the backend trusts it.
 
+**That outage is over - as of 2026-07-28 the same install authenticates normally** (`connected: true`,
+company TUBC, `relay-v0.1.0-build.40`), and a full `registerPoInGp` + `createReceive` round trip
+succeeds live with `gpOutboxSummary.pending` never leaving 0. Do not re-derive the 7/26 diagnosis from
+this section; re-check `relayStatus` first. Two things worth knowing from that session:
+
+- **The relay can drop mid-session and come back on its own, and the backend cannot tell you why.**
+  Observed 2026-07-28: accepted 03:09:25Z, serving GP calls fine at ~03:40Z, `connected: false` by
+  03:42Z, re-accepted 03:45:59Z - a ~4-5 minute hole. **Do not blame a redeploy without checking**;
+  that was the first guess here and it was wrong. Rule-outs worth repeating:
+  - `list-deployments` showed no backend deploy anywhere near the drop (the only one that day
+    finished 03:09:22Z - which *caused* the 03:09:25 reconnect, 300ms after the old instance was
+    removed, and is a different event from the drop).
+  - `build.40` was already the newest relay tag and the relay was already running it, so there was no
+    pending self-update to restart the process.
+  - **An absent disconnect line means nothing.** `RelayGateway.unregister` logs *nothing*; the only
+    relay line uvicorn ever emits is the `"WebSocket /relay-link" [accepted]` access log. A held-open
+    socket therefore logs exactly one accept for its whole life, so "one accept and then silence" is
+    ambiguous between healthy and dead - only `relayStatus` settles it.
+  - What *is* signal: reconnect backoff is 1s doubling to a 30s ceiling, so 4-5 minutes of silence is
+    ~8-10 missed dials, not one blip. And a rejected handshake would have logged 403s; there were
+    none. So the relay either was not running or could not reach the backend at TCP/DNS level - both
+    invisible from Railway, because neither reaches the ASGI app.
+  - The answer lives in `relay.log` on the workstation (the file #370 gitignored). `_run_once`'s
+    reconnect handler logs every attempt with a `category` - `dropped` / `server_restarting` /
+    `unauthorized` / `conflict` - plus the error and current backoff. That log names the cause; the
+    backend never can.
+  - Reap timing for dating the drop: `HEARTBEAT_INTERVAL_SECONDS` 20s x `HEARTBEAT_MAX_MISSED` 2, so
+    an armed connection flips to disconnected ~40s after the relay actually goes quiet.
+- A `relay_status` traceback in the deploy log ending `jwt.exceptions.ExpiredSignatureError` /
+  `AuthError: Invalid or expired authentication token` is **your own browser token ageing out**, not a
+  relay fault. `relayStatus` is `require_user`-gated now, so a stale `getToken()` value in an injected
+  fetch helper logs a full stack trace server-side. Re-mint with `getToken({skipCache:true})`.
+
+### Seeding inventory: the PO must come from the wizard, not the Create PO dialog
+
+**A manually-created PO seeds inventory but cannot open the assembly Reconciliation gate.** This costs
+an hour if you learn it the hard way. The gate is `computeAvailableQty` in `ReconciliationStep.tsx`,
+which for `purpose === 'assembly'` returns `breakdown.get('RECEIVED')` - the *lifecycle status of the
+hardware-schedule item*, not live stock. Receiving against a PO built in the **Create PO dialog**
+produces real `InventoryLocation` rows (`projectInventoryAvailability` shows them, the allocator would
+happily reserve them) while every schedule row stays `Gap Remaining`, so Reconciliation still says
+`No items have In Inventory status` and Next stays disabled.
+
+To seed stock that *counts*, run the wizard with purpose **Create Purchase Orders** over the openings
+you intend to assemble, then register + receive that PO. Its lines are bound to the schedule items, so
+receiving flips them to `In Inventory: N` and the gate opens. Keep the GP footprint small by using the
+Reconciliation step's own checkboxes (PO purpose only): `Deselect All`, then tick just the one product
+you want, and at the PO step check a single manufacturer card. Fill **Order As** on that step - an
+import-created draft otherwise blocks the register dialog with per-line `Required` errors.
+
 ## Getting Started (Every Session)
 
 1. **Sign in**: Use `evaluate_script` to fetch a sign-in token and navigate with it. Railway production (default):
@@ -678,5 +728,48 @@ Inventory quantity corrections are NOT here — they live in the Warehouse modul
 - **A `javascript_tool` call that hits the 45s CDP timeout keeps running in the page.** Its `await` chain continues after the tool has given up, so the next call races it and you get results tagged with the wrong route. Keep loops under ~8 route-hops, or step one route per call. If output ever looks mismatched, sleep ~6s and start over.
 - `computer screenshot` times out with "renderer may be frozen" while the Import wizard renders 1998 openings or 26k classification rows. It is not frozen - wait 10s and take it again. Same for the first paint after "Use last uploaded schedule".
 - The screenshot image is scaled down from the real viewport (1568px wide image for a 1918px window), so a card that looks cut off at the right edge usually is not. Check `document.documentElement.scrollWidth === clientWidth` before reporting a horizontal-overflow regression.
-- The Pull Request detail modal does **not** close on Escape. Its only text button is "Cancel Pull" - do not reach for that as a way out. Use the icon close button, or just route away.
+- The Pull Request detail modal **closes on Escape since the 2026-07-28 UI revamp** (it used to swallow it). Its nested confirm dialogs are siblings, so an Escape inside a confirm closes only the confirm. "Cancel Pull" is still a real destructive action - never use it as a way out.
 - MUI option cards (import Purpose, module "Go to" cards) are `useNavigate` buttons with no `href`, so there are no anchors to click and `find`'s ref sometimes lands on the inner text node rather than the clickable card. Setting the underlying `input[type=radio]`/`input[name=select_row]` via native `.click()` works reliably and does update React state.
+- The import landing project card is a `MuiCardActionArea` **button** wrapping the `MuiPaper`. Coordinate clicks land on it only sometimes (it takes focus but does not activate, and Enter does not help either). Reliable: find the element whose `textContent` matches the project *and* whose `tagName === 'BUTTON'`, then `.focus()` + `.click()`.
+- **Select Openings is paginated at 50 rows/page, ordered by the schedule, not sorted**, and the "Filter" control is a Select (column filter), *not* a text search - there is no way to type an opening number. To enumerate or tick specific openings, scroll the `.MuiDataGrid-virtualScroller` in ~150px steps, and after each `scrollTop` assignment **dispatch a `scroll` event and wait ~450ms** or the virtualizer does not re-render and you silently collect only the first screenful (17 of 50). Keep the sweep under ~40s of `await` or the 45s CDP cap kills the call mid-loop - it leaves the page in a valid state (rows already ticked stay ticked), so just re-run and top up the selection.
+- The Receive modal has **two** confirmations: `Complete Receive` opens a nested `Confirm Receive` ("Receive N items across M PO into inventory?") whose button is just `Receive`. Scripting only the outer button looks like a silent no-op - inventory stays empty and the outbox stays at 0 because no mutation ever fired.
+- Receive modal quantity + location fields take a native value-setter + `input`/`change` event fine (no need for the ArrowUp trick), and the location block only appears once a Receive Now qty > 0. `all placed` chips per product gate `Complete Receive`.
+- Allocator step (#378) specifics: the summary table is `Owed / Available / Allocated / Left to assign / Short`; each leaf card carries a `Fully covered` / `Not covered - auto-dropped` chip, an `N of M allocated` caption and an include/exclude toggle; the steppers have `aria-label`s `Add one <productCode>` / `Remove one <productCode>` and the `+` disables at `allocated === owed`. Driving a leaf's only line to 0 flips it to auto-dropped, greys the card, drops it out of the `Door leaves (N of M being sent)` count, removes its owed units from the summary, and shows an amber `N short` chip - **and Next stays enabled**, which is the whole point of the change.
+
+## 2026-07-28 UI revamp - what changed for testers
+
+An experimental aesthetic+motion revamp landed on master (single revertable PR). Business logic,
+queries/mutations and every action are unchanged, but a lot of chrome moved:
+
+- **Navigation is a persistent left rail on desktop** (collapsible via the panel icon in the app
+  bar; state persists in localStorage `uc-nexus-rail-collapsed`). The hamburger-opens-drawer flow
+  now exists only below the `md` breakpoint. Sub-items (incl. the new Pipeline entry) expand under
+  the active module. The `<- Warehouse` / `<- Projects` back buttons are gone - breadcrumbs (now
+  labelled "Purchase Orders", "Start a Task") are the way back.
+- **Icons are lucide (stroke) not Material (filled)**; icon-only buttons gained aria-labels
+  (e.g. `Open <PO> details`). Snapshot selectors keyed on Material icon `data-testid`s will miss.
+- **Stat values animate** (count-up over ~0.5s on mount). A snapshot taken immediately after
+  render can catch a mid-flight number - `wait_for` the final value or re-snapshot. With
+  `prefers-reduced-motion`, values render instantly.
+- **PO list**: the 7 stat tiles are now one status strip; segments are still the same filters
+  (`aria-pressed`, `aria-label="Filter by <status>"`). The whole data row opens the detail modal;
+  the leading chevron cell only toggles the line-item expand. Empty modal fields render an em-dash
+  `—` (was `-`).
+- **Escape behavior changed on purpose**: Pull Request detail modal now closes on Escape;
+  Receive modal and Transfer dialog now *block* Escape once you have typed values into them
+  (they used to discard silently). The assembly modal's close semantics are unchanged.
+- **Shipping browse (Ship tab)** is no longer a chip wall: one row per opening (mono ref +
+  per-leaf tags), with a text search on opening # and an All / Shippable / Shipped / Not ready
+  filter. Long project groups window at 30 rows with a "Show N more of M" tail - enumerate via
+  the search box or expand the tail. Selection/cart semantics unchanged. (Shop-assembly screens
+  still use the old shared chip panel.)
+- **Import wizard**: step 1 shows a single success strip (the old second green alert is merged
+  in); Purpose options are cards now but the radio semantics and the exact label strings
+  ("Create Purchase Orders", "Pull Request for Shop Assembly", "Pull Request for Shipping Out")
+  are unchanged.
+- **Warehouse/Admin/Shop-Assembly landings**: the "Go to" cards now carry live counts (pending
+  pulls, unlocated, deficient, etc.), driven by the same queries as before.
+- **DevAction: drop and rebuild schema** is finally visible in light mode (it was ink-on-ink);
+  same label, now to the right of the bar spacer, and its confirm button is red.
+- Home's Recent Activity renders human sentences ("Staged door leaf ..."), never raw enums like
+  `INSTALL_PROGRESS SHOP_ASSEMBLY_OPENING`.

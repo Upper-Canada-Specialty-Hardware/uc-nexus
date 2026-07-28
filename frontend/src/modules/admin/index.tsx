@@ -1,6 +1,4 @@
-import type { ReactNode } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
-import { Box } from '@mui/material';
 import ProjectPurchasingProgressPage from './ProjectPurchasingProgressPage';
 import OpeningStatusTab from './OpeningStatusTab';
 import UserManagementPage from './UserManagementPage';
@@ -11,30 +9,22 @@ import ProjectsPage from './ProjectsPage';
 import LocationCleanupPage from './LocationCleanupPage';
 import RelayInstallsPage from './RelayInstallsPage';
 import AdminLanding from './AdminLanding';
-import BackToModule from '../../components/BackToModule';
 
-function AdminSubLayout({ children }: { children: ReactNode }) {
-  return (
-    <Box>
-      <BackToModule to="/app/admin" label="Admin" />
-      {children}
-    </Box>
-  );
-}
-
+// Navigation back out of a sub-page is carried by the persistent rail and the app-bar breadcrumbs,
+// so the pages render bare - no per-page back button competing with them.
 export default function AdminModule() {
   return (
     <Routes>
       <Route index element={<AdminLanding />} />
-      <Route path="project-purchasing-progress" element={<AdminSubLayout><ProjectPurchasingProgressPage /></AdminSubLayout>} />
-      <Route path="opening-status" element={<AdminSubLayout><OpeningStatusTab /></AdminSubLayout>} />
-      <Route path="vendors" element={<AdminSubLayout><VendorsPage /></AdminSubLayout>} />
-      <Route path="warehouses" element={<AdminSubLayout><WarehousesPage /></AdminSubLayout>} />
-      <Route path="projects" element={<AdminSubLayout><ProjectsPage /></AdminSubLayout>} />
-      <Route path="users" element={<AdminSubLayout><UserManagementPage /></AdminSubLayout>} />
-      <Route path="buyers" element={<AdminSubLayout><BuyersPage /></AdminSubLayout>} />
-      <Route path="relay-installs" element={<AdminSubLayout><RelayInstallsPage /></AdminSubLayout>} />
-      <Route path="location-cleanup" element={<AdminSubLayout><LocationCleanupPage /></AdminSubLayout>} />
+      <Route path="project-purchasing-progress" element={<ProjectPurchasingProgressPage />} />
+      <Route path="opening-status" element={<OpeningStatusTab />} />
+      <Route path="vendors" element={<VendorsPage />} />
+      <Route path="warehouses" element={<WarehousesPage />} />
+      <Route path="projects" element={<ProjectsPage />} />
+      <Route path="users" element={<UserManagementPage />} />
+      <Route path="buyers" element={<BuyersPage />} />
+      <Route path="relay-installs" element={<RelayInstallsPage />} />
+      <Route path="location-cleanup" element={<LocationCleanupPage />} />
       <Route path="*" element={<Navigate to="/app/admin" replace />} />
     </Routes>
   );

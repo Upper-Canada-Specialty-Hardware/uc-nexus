@@ -1,8 +1,7 @@
 import { useState } from 'react';
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import { Box, Typography, Badge, IconButton, Button, ToggleButton, ToggleButtonGroup } from '@mui/material';
-import ShoppingCartIcon from '@mui/icons-material/ShoppingCart';
-import ArrowBackIcon from '@mui/icons-material/ArrowBack';
+import { ArrowLeft, ShoppingCart } from 'lucide-react';
 import { useCart } from '../../contexts/CartContext';
 import ShipReadyBrowser from './ShipReadyBrowser';
 import ShipmentsList from './ShipmentsList';
@@ -42,7 +41,7 @@ export default function ShippingModule() {
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
           <Button
             size="small"
-            startIcon={<ArrowBackIcon />}
+            startIcon={<ArrowLeft size={18} strokeWidth={1.75} />}
             onClick={() => setSelectedProject(null)}
           >
             Projects
@@ -62,9 +61,9 @@ export default function ShippingModule() {
             <ToggleButton value="ship">Ship</ToggleButton>
             <ToggleButton value="returns">Returns</ToggleButton>
           </ToggleButtonGroup>
-          <IconButton onClick={() => setCartOpen(true)}>
+          <IconButton onClick={() => setCartOpen(true)} aria-label="Open shipping cart">
             <Badge badgeContent={itemCount} color="primary">
-              <ShoppingCartIcon />
+              <ShoppingCart size={18} strokeWidth={1.75} />
             </Badge>
           </IconButton>
         </Box>

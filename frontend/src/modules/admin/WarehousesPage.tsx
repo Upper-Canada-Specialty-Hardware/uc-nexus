@@ -12,12 +12,14 @@ import {
   DialogActions,
 } from '@mui/material';
 import { DataGrid, type GridColDef, type GridRowParams } from '@mui/x-data-grid';
-import DeleteIcon from '@mui/icons-material/Delete';
+import { Trash2 } from 'lucide-react';
 import { useQuery, useMutation } from '@apollo/client/react';
 import { DELETE_WAREHOUSE } from '../../graphql/admin';
 import { GET_WAREHOUSES } from '../../graphql/shared';
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
+import { monoSx } from '../../theme';
+import { FadeIn } from '../../motion';
 import WarehouseEditDialog, { type WarehouseFormValue } from './WarehouseEditDialog';
 
 interface Warehouse {
@@ -89,8 +91,27 @@ export default function WarehousesPage() {
 
   const columns: GridColDef[] = useMemo(() => {
     const cols: GridColDef[] = [
-      { field: 'name', headerName: 'Name', flex: 1.2, minWidth: 160 },
-      { field: 'code', headerName: 'Code', width: 100 },
+      {
+        field: 'name',
+        headerName: 'Name',
+        flex: 1.2,
+        minWidth: 160,
+        renderCell: (params) => (
+          <Box component="span" sx={{ fontWeight: 600 }}>
+            {params.row.name}
+          </Box>
+        ),
+      },
+      {
+        field: 'code',
+        headerName: 'Code',
+        width: 100,
+        renderCell: (params) => (
+          <Box component="span" sx={monoSx}>
+            {params.row.code}
+          </Box>
+        ),
+      },
       {
         field: 'city',
         headerName: 'Location',
@@ -100,21 +121,23 @@ export default function WarehousesPage() {
           [row.city, row.province].filter(Boolean).join(', ') || '—',
       },
       {
+        // A designation, not a system state - it gets an ink tag, not a status colour.
         field: 'isPrimary',
         headerName: 'Primary',
         width: 110,
         renderCell: (params) =>
-          params.row.isPrimary ? <Chip label="Primary" size="small" color="primary" /> : null,
+          params.row.isPrimary ? <Chip label="Primary" size="small" variant="outlined" /> : null,
       },
       {
+        // Inactive is the exceptional real state (nothing new lands there), so only it is coloured.
         field: 'isActive',
         headerName: 'Status',
         width: 110,
         renderCell: (params) =>
           params.row.isActive ? (
-            <Chip label="Active" size="small" color="success" variant="outlined" />
+            <Chip label="Active" size="small" variant="outlined" />
           ) : (
-            <Chip label="Inactive" size="small" variant="outlined" />
+            <Chip label="Inactive" size="small" color="warning" />
           ),
       },
     ];
@@ -135,7 +158,7 @@ export default function WarehousesPage() {
                 setPendingDelete(params.row as Warehouse);
               }}
             >
-              <DeleteIcon fontSize="small" />
+              <Trash2 size={18} strokeWidth={1.75} />
             </IconButton>
           ),
       });
@@ -145,19 +168,21 @@ export default function WarehousesPage() {
 
   return (
     <Box>
-      <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 2 }}>
-        <Box>
-          <Typography variant="h5" gutterBottom>
-            Warehouses
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            Physical buildings inventory lives in. Click a row to edit.
-          </Typography>
-        </Box>
-        <Button variant="contained" onClick={handleCreate}>
-          Create Warehouse
-        </Button>
-      </Stack>
+      <FadeIn>
+        <Stack direction="row" justifyContent="space-between" alignItems="flex-start" sx={{ mb: 2 }}>
+          <Box>
+            <Typography variant="h5" sx={{ mb: 0.25 }}>
+              Warehouses
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              Physical buildings inventory lives in. Click a row to edit.
+            </Typography>
+          </Box>
+          <Button variant="contained" onClick={handleCreate}>
+            Create Warehouse
+          </Button>
+        </Stack>
+      </FadeIn>
 
       <DataGrid
         rows={warehouses}
@@ -168,7 +193,7 @@ export default function WarehousesPage() {
         disableRowSelectionOnClick
         pageSizeOptions={[10, 25, 50]}
         initialState={{ pagination: { paginationModel: { pageSize: 10 } } }}
-        sx={{ cursor: 'pointer' }}
+        sx={{ '& .MuiDataGrid-row': { cursor: 'pointer' } }}
       />
 
       <WarehouseEditDialog open={editOpen} warehouse={editing} onClose={() => setEditOpen(false)} />

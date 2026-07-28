@@ -3,6 +3,7 @@ import {
   Box,
   Button,
   FormControl,
+  InputAdornment,
   InputLabel,
   MenuItem,
   Select,
@@ -10,12 +11,14 @@ import {
   TextField,
   Typography,
 } from '@mui/material';
-import KeyboardReturnIcon from '@mui/icons-material/KeyboardReturn';
+import { CornerUpLeft, Search } from 'lucide-react';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useQuery } from '@apollo/client/react';
 import { GET_PROJECTS } from '../../graphql/shared';
 import { GET_PACKING_SLIPS } from '../../graphql/shipping';
 import ReturnShipmentDialog, { type ReturnSlip } from './ReturnShipmentDialog';
+import { monoSx, tabularSx } from '../../theme';
+import { FadeIn } from '../../motion';
 
 interface PackingSlipItem {
   id: string;
@@ -107,7 +110,13 @@ export default function ShipmentsList({ projectId, heading }: Props) {
 
   const columns: GridColDef<ShipmentRow>[] = useMemo(() => {
     const cols: GridColDef<ShipmentRow>[] = [
-      { field: 'packingSlipNumber', headerName: 'Packing slip', flex: 1, minWidth: 150 },
+      {
+        field: 'packingSlipNumber',
+        headerName: 'Packing slip',
+        flex: 1,
+        minWidth: 150,
+        cellClassName: 'mono-cell',
+      },
     ];
     if (isGlobal) {
       cols.push({ field: 'projectName', headerName: 'Project', flex: 1, minWidth: 160 });
@@ -118,6 +127,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
         field: 'shippedAt',
         headerName: 'Shipped',
         width: 120,
+        cellClassName: 'tabular-cell',
         renderCell: ({ row }) => new Date(row.shippedAt).toLocaleDateString(),
       },
       { field: 'looseUnits', headerName: 'Loose units', width: 110, type: 'number' },
@@ -130,7 +140,8 @@ export default function ShipmentsList({ projectId, heading }: Props) {
         renderCell: ({ row }) => (
           <Button
             size="small"
-            startIcon={<KeyboardReturnIcon fontSize="small" />}
+            variant="outlined"
+            startIcon={<CornerUpLeft size={18} strokeWidth={1.75} />}
             disabled={row.looseUnits === 0}
             onClick={() =>
               setActiveSlip({
@@ -149,7 +160,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
   }, [isGlobal]);
 
   return (
-    <Box>
+    <FadeIn>
       {heading && (
         <Typography variant="h5" sx={{ mb: 2 }}>
           {heading}
@@ -163,6 +174,16 @@ export default function ShipmentsList({ projectId, heading }: Props) {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           sx={{ minWidth: 220 }}
+          slotProps={{
+            input: {
+              startAdornment: (
+                <InputAdornment position="start">
+                  <Search size={16} strokeWidth={1.75} />
+                </InputAdornment>
+              ),
+              sx: monoSx,
+            },
+          }}
         />
         {isGlobal && (
           <FormControl size="small" sx={{ minWidth: 220 }}>
@@ -185,8 +206,13 @@ export default function ShipmentsList({ projectId, heading }: Props) {
           columns={columns}
           loading={loading}
           disableRowSelectionOnClick
+          density="compact"
           pageSizeOptions={[25, 50, 100]}
           initialState={{ pagination: { paginationModel: { pageSize: 25 } } }}
+          sx={{
+            '& .mono-cell': { ...monoSx, fontWeight: 600 },
+            '& .tabular-cell': tabularSx,
+          }}
         />
       </Box>
 
@@ -200,6 +226,6 @@ export default function ShipmentsList({ projectId, heading }: Props) {
           }}
         />
       )}
-    </Box>
+    </FadeIn>
   );
 }

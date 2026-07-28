@@ -1,10 +1,11 @@
 import { useState, useCallback } from 'react';
-import { Button, Stack, TextField, FormControlLabel, Checkbox } from '@mui/material';
+import { Button, Stack, TextField, FormControlLabel, Checkbox, Typography } from '@mui/material';
 import { useMutation } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import { useToast } from '../../components/Toast';
 import { CREATE_WAREHOUSE, UPDATE_WAREHOUSE } from '../../graphql/admin';
 import { GET_WAREHOUSES } from '../../graphql/shared';
+import { FONT_MONO, microLabelSx } from '../../theme';
 
 export interface WarehouseFormValue {
   id?: string;
@@ -163,10 +164,13 @@ function WarehouseEditDialogContent({ initialWarehouse, onClose, onSaved }: Cont
             }}
             required
             size="small"
-            sx={{ width: 140 }}
+            sx={{ width: 140, '& .MuiInputBase-input': { fontFamily: FONT_MONO } }}
             inputProps={{ maxLength: 20 }}
           />
         </Stack>
+        <Typography component="div" sx={{ ...microLabelSx, pt: 0.5 }}>
+          Address
+        </Typography>
         <TextField
           label="Address"
           value={form.address ?? ''}
@@ -197,6 +201,9 @@ function WarehouseEditDialogContent({ initialWarehouse, onClose, onSaved }: Cont
             sx={{ width: 140 }}
           />
         </Stack>
+        <Typography component="div" sx={{ ...microLabelSx, pt: 0.5 }}>
+          Flags
+        </Typography>
         <Stack direction="row" spacing={2}>
           <FormControlLabel
             control={

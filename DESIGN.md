@@ -2,18 +2,18 @@
 name: UC Nexus
 description: Internal door-hardware fulfillment tool - one shared toolkit across import, PO, warehouse, shop, and shipping
 colors:
-  ink: "#212121"
-  ink-hover: "#424242"
-  ink-dark: "#e0e0e0"
-  paper: "#ffffff"
-  canvas: "#f5f5f5"
-  table-header: "#eeeeee"
+  ink: "#1d1b17"
+  ink-hover: "#3a362f"
+  ink-dark: "#e9e5dc"
+  paper: "#fdfcfa"
+  canvas: "#f2f0ea"
+  paper-dark: "#201e1b"
+  canvas-dark: "#161513"
+  text-secondary: "#5c564b"
+  text-secondary-dark: "#a49e91"
   shop-amber: "#ffca28"
   shop-amber-hover: "#ffb300"
   shop-amber-dark: "#ffd54f"
-  canvas-dark: "#121212"
-  paper-dark: "#1e1e1e"
-  table-header-dark: "#2a2a2a"
   status-success: "#2e7d32"
   status-warning: "#ed6c02"
   status-error: "#d32f2f"
@@ -24,7 +24,7 @@ typography:
     fontSize: "2.125rem"
     fontWeight: 700
     lineHeight: 1.235
-    letterSpacing: "normal"
+    letterSpacing: "-0.01em"
   headline:
     fontFamily: "Source Sans 3 Variable, Source Sans 3, Helvetica Neue, Arial, sans-serif"
     fontSize: "1.5rem"
@@ -45,10 +45,22 @@ typography:
     fontSize: "0.75rem"
     fontWeight: 500
     lineHeight: 1.66
+  micro-label:
+    fontFamily: "Source Sans 3 Variable, Source Sans 3, Helvetica Neue, Arial, sans-serif"
+    fontSize: "0.6875rem"
+    fontWeight: 700
+    letterSpacing: "0.08em"
+    textTransform: uppercase
+  identifier:
+    fontFamily: "IBM Plex Mono, Cascadia Code, Consolas, ui-monospace, monospace"
+    fontSize: "0.8125rem"
+    fontWeight: 400
 rounded:
-  sm: "4px"
-  md: "8px"
-  lg: "12px"
+  control: "3px"
+  tag: "3px"
+  input: "4px"
+  card: "6px"
+  dialog: "10px"
 spacing:
   xs: "4px"
   sm: "8px"
@@ -58,177 +70,226 @@ components:
   button-primary:
     backgroundColor: "{colors.ink}"
     textColor: "{colors.paper}"
-    rounded: "{rounded.md}"
+    rounded: "{rounded.control}"
     padding: "6px 20px"
-  button-primary-hover:
-    backgroundColor: "{colors.ink-hover}"
-    textColor: "{colors.paper}"
   button-secondary:
     backgroundColor: "{colors.shop-amber}"
     textColor: "{colors.ink}"
-    rounded: "{rounded.md}"
+    rounded: "{rounded.control}"
     padding: "6px 20px"
-  button-secondary-hover:
-    backgroundColor: "{colors.shop-amber-hover}"
-    textColor: "{colors.ink}"
   button-outlined:
     textColor: "{colors.ink}"
-    rounded: "{rounded.md}"
+    rounded: "{rounded.control}"
     padding: "6px 20px"
-  chip-primary:
-    backgroundColor: "{colors.ink}"
-    textColor: "{colors.paper}"
-  chip-secondary:
-    backgroundColor: "{colors.shop-amber}"
-    textColor: "{colors.ink}"
+  status-tag:
+    rounded: "{rounded.tag}"
+    fontSize: "0.6875rem"
+    fontWeight: 600
+    letterSpacing: "0.05em"
+    textTransform: uppercase
+    treatment: "tinted background at 12% of the status hue, 1px border at 55%, text in the status hue"
   card:
     backgroundColor: "{colors.paper}"
-    rounded: "{rounded.md}"
+    rounded: "{rounded.card}"
     padding: "16px"
   dialog:
     backgroundColor: "{colors.paper}"
-    rounded: "{rounded.lg}"
-  data-grid-header:
-    backgroundColor: "{colors.table-header}"
-    textColor: "{colors.ink}"
+    rounded: "{rounded.dialog}"
+  ledger-table-header:
+    backgroundColor: "transparent"
+    borderBottom: "2px solid {colors.ink}"
+    typography: micro-label
 ---
 
 # Design System: UC Nexus
 
 ## 1. Overview
 
-**Creative North Star: "One toolkit, many stations."**
+**Creative North Star: "Shop instrument, not admin template."**
 
-UC Nexus is one continuous lifecycle - TITAN import, purchase orders, warehouse receiving, shop assembly, shipping - and every module draws from a single MUI theme: one font, one palette, one 8px radius, one component set. The visual language never changes station to station. What changes is density and rhythm, and only that. This is deliberate: an operator who learns the vocabulary at the PO station reads the warehouse station without relearning anything.
+UC Nexus is one continuous lifecycle - TITAN import, purchase orders, warehouse receiving, shop
+assembly, shipping - and every module draws from a single MUI theme: one warm-neutral palette, two
+typographic voices, one 3px-edge accent motif, one component set. The visual language never changes
+station to station. What changes is density and rhythm, and only that.
 
-The character is efficient, precise, and industrial - a dependable shop tool, not a consumer app. Near-black ink carries structure and primary actions; a single Shop Amber accent marks the one thing that matters on a screen (the primary action, the current selection). Surfaces are flat and bordered, not shadowed. Type is a single humanist sans at a fixed rem scale. Nothing is decorative; every pixel either states information or affords an action. Components should feel solid and dependable - substantial, confident, built to take the same task performed dozens of times a day.
+The character is industrial and precise - a dependable shop tool. The neutrals are *warm* steel and
+kraft (never the stock Material grey ramp): ink `#1d1b17`, bone canvas, warm-white paper, and a
+night-shift warm charcoal in dark mode. Structure is carried by hairline borders and 2px ink rules,
+not shadows or tinted fills. A single Shop Amber accent marks the one thing that matters on a screen
+and doubles as the selection *edge*. Data speaks in its own voice: identifiers in a mono face,
+counts in tabular numerals, captions as stenciled micro-labels. Iconography is stroke-based
+(Lucide), never filled Material glyphs.
 
 Density flexes by station, within the one language:
 
-- **Dashboard (home):** the lowest density. Compact bordered stat tiles and a plain activity feed, sized to scan in one glance. Never a gradient hero-metric wall.
-- **Operational tables (PO, warehouse):** the workhorse and the highest density. The data grid IS the screen - inline filter row, grouped and expandable rows, status chips, a tinted sticky header. It should feel like a full instrument panel, not a sparse report.
-- **Guided wizard (import):** linear and calm. One step visible at a time via the MUI stepper; the operator makes one decision, then the next. Density drops so the current step is unambiguous.
-- **Master-detail (shop assembly, shipping):** a compact list rail plus a wide detail pane. The rail collapses to give the detail the room - the space-efficiency law made structural.
-- **Task modals (detail, edit, generate):** focused overlays for a single sub-task. Titled, dividered content, actions pinned to the bottom-right. Used when a task genuinely interrupts the flow, never as the first reach.
+- **Dashboard (home):** compact bordered gauges and a bounded activity feed, scannable in one glance.
+- **Operational tables (PO, warehouse):** the ledger is the screen - 2px header rule, mono
+  identifiers, right-aligned tabular counts, inline filters, status tags, row hover with a clear
+  affordance.
+- **Guided wizard (import / Start a Task):** linear and calm; one decision per step; step content
+  transitions quickly.
+- **Master-detail (shop assembly, shipping, locations):** compact list rail plus a wide detail pane;
+  the rail collapse is animated so the space handoff reads as physical.
+- **Task modals:** focused overlays; titled, section-ruled, actions bottom-right, destructive
+  actions in the error hue.
 
-This system explicitly rejects consumer / playful SaaS gloss, sprawly layouts that waste horizontal space, legacy-ERP gray-on-gray clutter, and flashy or heavy motion. If a screen looks like it belongs on a marketing site, or if a region renders mostly empty, it is wrong.
+This system explicitly rejects consumer SaaS gloss, sprawl (regions that don't earn their space),
+legacy-ERP gray-on-gray, and decorative motion. If a screen looks like a template, it is wrong.
 
 **Key Characteristics:**
 - One shared theme across every module; density varies, vocabulary does not.
-- Near-black ink + a single Shop Amber accent; accent on roughly 10% of a screen, never decoration.
-- Flat and bordered by default; elevation appears only as a response to state.
-- One humanist sans (Source Sans 3) at a fixed rem scale, bold headings, no display faces in UI.
+- Warm steel/kraft neutrals + a single Shop Amber accent spent as edge + primary action.
+- Flat and bordered at rest; elevation only as feedback (hover, dialogs).
+- Two type voices: Source Sans 3 for UI, IBM Plex Mono for identifiers; hierarchy from weight/size.
 - Every region earns its space; the viewport never scrolls sideways.
-- Full light and dark schemes, WCAG 2.1 AA.
+- Full light and dark schemes, WCAG 2.1 AA, `prefers-reduced-motion` respected.
 
 ## 2. Colors
 
-A restrained near-neutral system carried by ink and gray, with exactly one saturated accent. Two full schemes (light and dark) via MUI CSS variables; the accent shifts one step lighter in dark mode for contrast.
+A warm near-neutral system carried by ink and kraft tones, with exactly one saturated accent. Two
+full schemes via MUI CSS variables.
 
 ### Primary
-- **Ink** (`#212121`, dark scheme `#e0e0e0`): The structural color. Top app bar, primary buttons, primary chips, headings, and body text. In dark mode the roles invert - light-gray ink on near-black surfaces. Hover for ink buttons deepens to **Ink Soft** (`#424242`).
+- **Ink** (`#1d1b17`, dark scheme `#e9e5dc`): the structural color - app bar, primary buttons,
+  headings, body text, the ledger header rule. Hover deepens to `#3a362f` (dark: `#c9c4b8`).
 
 ### Secondary
-- **Shop Amber** (`#ffca28`, dark scheme `#ffd54f`): The single accent. Primary/default action buttons, the floating action button, selected toggle buttons, and current-selection highlights. Hover warms to `#ffb300`. This is the only saturated color in the system and it is spent carefully.
+- **Shop Amber** (`#ffca28`, dark `#ffd54f`): the single accent. The screen's primary action fill,
+  and the 3px edge that marks selection/current state (selected rows, active nav item, active
+  wizard step, attention gauges). Hover `#ffb300`. Spent on roughly 10% of a surface.
 
 ### Tertiary
-- **Status set** (success `#2e7d32`, warning `#ed6c02`, error `#d32f2f`, info `#0288d1`): Semantic only. Relay connectivity, GP-sync state, validation, and PO status. Never used decoratively or for emphasis - a red here always means a real error.
+- **Status set** (success `#2e7d32`, warning `#ed6c02`, error `#d32f2f`, info `#0288d1`): semantic
+  only - relay/GP state, lifecycle status, validation. Rendered as square stenciled tags (see
+  Components), never decoratively.
 
 ### Neutral
-- **Paper** (`#ffffff`, dark `#1e1e1e`): Cards, dialogs, table body, elevated surfaces.
-- **Canvas** (`#f5f5f5`, dark `#121212`): The page background behind cards and panels - a second, cooler layer that separates content from chrome.
-- **Table Header** (`#eeeeee`, dark `#2a2a2a`): The tinted sticky header row on data grids, distinguishing header from body without a border.
-- **Hairlines** (`rgba(0,0,0,0.08-0.16)`, dark `rgba(255,255,255,0.12-0.24)`): Card and panel borders; these carry structure in place of shadow.
+- **Paper** (`#fdfcfa`, dark `#201e1b`): cards, dialogs, table bodies, the nav rail.
+- **Canvas** (`#f2f0ea`, dark `#161513`): the page ground behind surfaces.
+- **Hairlines** (`rgba(29,27,23,0.14)`, dark `rgba(233,229,220,0.16)`): borders carry structure in
+  place of shadow.
 
 ### Named Rules
-**The One Accent Rule.** Shop Amber marks at most one primary thing per screen - the main action or the current selection. It appears on roughly 10% of a surface. If two amber elements compete, one is wrong. Its scarcity is what makes it read as "here."
+**The One Accent Rule.** Shop Amber marks at most one primary thing per screen, plus the selection
+edge. If two amber fills compete, one is wrong.
 
-**The Status-Only Color Rule.** Success/warning/error/info hues are reserved for real system state. Never reach for green because a thing is "good" or red for emphasis - color that can mean status must only ever mean status.
+**The Amber-Edge Rule.** Selection and "current" are expressed as a 3px amber left edge (rows, nav
+items, gauges, steps) - never as a full amber fill on content surfaces.
+
+**The Status-Only Color Rule.** Status hues mean real system state, exclusively.
+
+**The Warm-Neutral Rule.** No pure Material greys (`#f5f5f5`, `#eeeeee`, `#9e9e9e`...). Every
+neutral comes from the warm ramp above.
 
 ## 3. Typography
 
-**Display / Body / Label Font:** Source Sans 3 Variable (with Source Sans 3, Helvetica Neue, Arial, sans-serif fallback)
-
-**Character:** One humanist sans does the entire job - headings, buttons, labels, body, and dense table data. Humanist proportions keep long lists and numeric columns legible at small sizes; the variable weight axis supplies hierarchy without a second family. There is no display face anywhere in the UI.
+**UI voice:** Source Sans 3 Variable - headings, labels, buttons, prose.
+**Data voice:** IBM Plex Mono - identifiers and codes.
 
 ### Hierarchy
-- **Display** (700, 2.125rem / 34px, line-height 1.235): Page titles - "Purchase Orders", "Welcome back, [name]". One per screen.
-- **Headline** (600, 1.5rem / 24px): Section headers inside a page or modal.
-- **Title** (600, 1.25rem / 20px): Sub-section labels, stat-tile values, dialog titles.
-- **Body** (400, 0.875rem / 14px, line-height 1.43): The workhorse - table cells, form fields, descriptions. Compact by default because most screens are data. Prose blocks cap at 65-75ch; tables run denser.
-- **Label** (500, 0.75rem / 12px): Captions, stat-tile labels, helper text, breadcrumbs. Sentence case, not uppercase-tracked.
+- **Display** (700, 2.125rem, -0.01em): page titles. One per screen.
+- **Headline** (600, 1.5rem): section headers.
+- **Title** (600, 1.25rem): sub-sections, dialog titles, gauge values (gauges may go to 1.7rem/700).
+- **Body** (400, 0.875rem): the workhorse.
+- **Label** (500, 0.75rem): helper text, sentence case.
+- **Micro-label** (700, 0.6875rem, +0.08em, UPPERCASE): table headers, gauge captions, eyebrows,
+  status tags. This is the stencil voice - use it for labels-of-data, never for prose.
+- **Identifier** (mono, 0.8125rem): PO/request numbers, product codes, opening/leaf refs, bins,
+  packing slips. Never for prose.
 
-Buttons use body size at weight 600 with `text-transform: none` - shop tools spell words out, they don't SHOUT.
+Buttons: body size, weight 600, `text-transform: none`.
 
 ### Named Rules
-**The Fixed-Scale Rule.** Type sizes are fixed rem values, never `clamp()`/fluid. Operators work at a consistent DPI across desktop screens; a heading that shrinks inside a sidebar reads as broken, not responsive.
+**The Fixed-Scale Rule.** Fixed rem sizes, never fluid/clamp().
 
-**The One-Family Rule.** Source Sans 3 carries everything. No display or secondary family enters the UI - hierarchy comes from weight and size alone.
+**The Two-Voice Rule.** Source Sans 3 for UI, Plex Mono for identifiers - no third family, no
+display face. Anything that names a *thing in the system* (a PO, a code, a bin) is mono; anything
+that talks to the user is sans.
+
+**The Tabular Rule.** Any column of figures gets `font-variant-numeric: tabular-nums` and right
+alignment.
 
 ## 4. Elevation
 
-Flat by default. AppBar, Card, and Paper all ship at elevation 0; structure is carried by hairline borders and the canvas/paper tonal split, not by drop shadows. Depth appears only as a response to state - a card raises a soft shadow on hover, a dialog floats above a scrim. This keeps dense screens quiet: a table of 200 rows with no resting shadows reads as one calm plane.
+Flat by default; hairlines and the canvas/paper split carry structure. Depth only as feedback:
+- **Card hover** (`0 4px 14px rgba(29,27,23,0.09)`, dark `rgba(0,0,0,0.45)`) with a one-step border
+  darken and an optional 1px lift, 0.2s.
+- **Dialog** (MUI default + 1px hairline border).
 
-### Shadow Vocabulary
-- **Card hover** (`box-shadow: 0 4px 12px rgba(0,0,0,0.08)`, dark `rgba(0,0,0,0.4)`): The only ambient shadow, and only on interactive cards, only on hover. Paired with a one-step border darken over a 0.2s transition.
-- **Dialog** (MUI default dialog elevation): Structural - separates a focused task overlay from the scrimmed page beneath.
-
-### Named Rules
-**The Flat-At-Rest Rule.** Surfaces are flat when idle. A shadow is feedback, never decoration - if an element has a resting shadow for looks, remove it and let the border do the work.
+**The Flat-At-Rest Rule.** A resting shadow is a bug.
 
 ## 5. Components
 
-Buttons, cards, inputs, chips, and tables share one vocabulary across every module. Learn it once, read it everywhere. Every interactive component ships all of its states - default, hover, focus, active, disabled, loading - not half.
-
 ### Buttons
-- **Shape:** Gently rounded (8px radius), padding `6px 20px`, weight 600, `text-transform: none`, no elevation.
-- **Default / Secondary:** Shop Amber fill, ink text - the standard action ("Create PO"). Hover `#ffb300`.
-- **Primary:** Ink fill, white text - structural or confirm actions. Hover `#424242`.
-- **Outlined / Text:** Ink border and/or ink text on transparent - lower-priority actions ("Register in GP"), inline row actions.
-- **Hover / Focus:** Background shift on hover; keep the MUI focus ring visible - never remove focus without a replacement.
+- 3px radius, `6px 20px`, weight 600, no elevation, no uppercase.
+- **Secondary (default)**: amber fill, ink text - the screen's one primary action.
+- **Primary**: ink fill, paper text - structural/confirm.
+- **Outlined / Text**: quiet ink-on-transparent for lower-priority actions.
+- **Destructive**: `color="error"` outlined - cancelling a PO or pull IS real state.
+- Never hardcode a palette hex in a component override that must work on both light surfaces and
+  the ink app bar - use theme vars so `color="inherit"` survives.
 
-### Chips
-- **Style:** Weight 500. Primary chips are ink-on-white-text; secondary chips are Shop Amber with ink text.
-- **State:** Used as status markers (PO status like "GP-Registered", "Draft") and compact filters. Status chips inherit meaning from the status color set, not from the accent.
+### Status tags (formerly chips)
+Square (3px), uppercase micro-label type, tinted ground (12% of status hue) + 1px border (55%) +
+status-hue text. Meanings: success = done/staged/closed, warning = pending/attention, info =
+in-progress, error = failed/cancelled, ink = registered/structural, default = neutral (Draft).
 
-### Cards / Containers
-- **Corner Style:** 8px radius.
-- **Background:** Paper (`#ffffff` / dark `#1e1e1e`) on the canvas layer.
-- **Shadow Strategy:** Flat at rest; hover shadow only (see Elevation).
-- **Border:** 1px hairline (`rgba(0,0,0,0.08)`), darkening to `0.16` on hover.
-- **Internal Padding:** 16px (`spacing.md`); compact tiles use 12px vertical.
-- **Stat tiles:** `flex: 1 1 0; min-width: 140px` so tiles share width evenly and stay compact - never a gradient hero-metric block.
+### Cards / Gauges
+6px radius, paper on canvas, hairline border, hover feedback only. **Stat gauges**: value in
+1.5-1.7rem weight-700 tabular numerals (animated on mount), micro-label caption, compact padding,
+`flex: 1 1 0; min-width ~130px`; an optional 3px left edge carries meaning (amber = needs someone
+now, status hue = real state). Zero-value gauges render dimmed, never celebrated.
 
-### Inputs / Fields
-- **Style:** MUI outlined, `size="small"`, 8px radius, hairline stroke. The floating label doubles as the placeholder for an empty field.
-- **Focus:** Border shifts to the theme's focus treatment; label floats to the notch.
-- **Error / Disabled:** Error uses the status-error hue on border and helper text; disabled dims stroke and text. Helper text sits below the field in Label type.
+### Inputs
+MUI outlined, `size="small"`, 4px radius, real floating labels (placeholder-only labels are a bug).
 
 ### Navigation
-- **Top app bar:** Ink fill, white text, elevation 0 - a fixed anchor carrying the app name, mode toggle, notifications, and account.
-- **Sidebar:** The module switcher; the active module reads via ink/amber emphasis, not a heavy fill.
-- **Breadcrumbs:** 0.875rem, sentence case, for location within a module.
+- **App bar:** ink in both schemes, sticky, elevation 0.
+- **Nav rail:** persistent on desktop, collapsible to icon rail; active module carries the amber
+  edge; stroke icons; mobile falls back to a drawer.
+- **Breadcrumbs:** 0.875rem, human labels (never raw path segments).
 
-### Data Grid (signature component)
-The operational surface for PO and warehouse. Borderless (`border: none`, 8px outer radius), with a tinted sticky header row (`#eeeeee` / dark `#2a2a2a`, weight 600) so the header reads without a divider line. Supports an inline filter row, grouped and expandable rows, and status chips inline. This is where density is highest and where the "every region earns its space" law is enforced hardest.
+### The Ledger (signature component)
+Tables and DataGrids: transparent header with a **2px ink rule** underneath, micro-label header
+type, hairline row dividers, row hover, mono identifier columns, right-aligned tabular numeric
+columns, amber-edge selection. Density is highest here; sprawl is most forbidden here. A row that
+opens something shows a trailing chevron and pointer cursor, and the whole row is the target.
 
-## 6. Do's and Don'ts
+## 6. Motion
+
+Physical, quick, and state-bearing - the app should feel like a well-oiled machine, not a slideshow.
+One vocabulary (`src/motion`): springs at ~0.22s / ~0.34s / ~0.48s visual duration with minimal
+bounce.
+
+- **Entrances:** page content rises 12px on module change; card grids and gauge rows stagger in
+  (≤0.05s per item, total ≤0.45s); the dashboard may orchestrate greeting → gauges → feed within
+  0.6s.
+- **State:** chips/tags, staged rows, and progress bars transition when state changes; numbers
+  count via spring on mount and on change.
+- **Structure:** master-detail rail collapse and panel entrances use the slow spring; wizard steps
+  cross-fade+rise.
+- **Feedback:** hover lift 1px; toasts slide+fade with a status edge.
+- **Never:** decorative loops, heavy bounce/elastic, motion that delays an action, or animation
+  during cell editing/scrolling of large grids (transform/opacity only there).
+- `prefers-reduced-motion` collapses everything to opacity or nothing - enforced globally via
+  MotionConfig and a CSS media query.
+
+## 7. Do's and Don'ts
 
 ### Do:
-- **Do** keep one shared vocabulary across modules - the same button, chip, input, and table styles everywhere. If "Create PO" is an amber button here, the equivalent action is an amber button there.
-- **Do** spend Shop Amber on one thing per screen (the primary action or current selection), at roughly 10% coverage.
-- **Do** keep surfaces flat and bordered at rest; let shadow appear only on hover or in dialogs.
-- **Do** use fixed rem type sizes and the single Source Sans 3 family; build hierarchy from weight and size.
-- **Do** size every region to its content and let one flexible element absorb the slack - in master-detail, collapse the list to a rail and give the detail the width.
-- **Do** ship every interactive state (default, hover, focus, active, disabled, loading) and use skeletons for loading, not centered spinners.
-- **Do** reserve success/warning/error/info strictly for real system state (relay, GP sync, validation).
+- **Do** keep one vocabulary across modules; the same action looks the same everywhere.
+- **Do** spend amber on one primary thing per screen plus the selection edge.
+- **Do** put every identifier in mono and every figure column in tabular numerals.
+- **Do** size regions to content; let one flexible element absorb slack.
+- **Do** ship every interactive state, use skeletons over spinners, animate entrances once.
+- **Do** reserve status hues for real state and render them as tags.
 
 ### Don't:
-- **Don't** make it look like consumer / playful SaaS - no rounded-everything, no colorful marketing gloss, no oversized empty hero sections.
-- **Don't** sprawl - no short values stretched across empty columns, no panel sprawling vertically while starved horizontally. Every region must earn its space.
-- **Don't** slide into legacy enterprise clutter - no gray-on-gray, cramped, inconsistent old-ERP density with no hierarchy.
-- **Don't** add flashy or heavy motion - no gradients-as-decoration, no bounce or elastic, no orchestrated page-load sequences. Transitions are 150-250ms and convey state only.
-- **Don't** let the viewport scroll sideways - a component may scroll inside its own bounded container, but the page never widens (put `min-width: 0` on flex/grid children).
-- **Don't** build a gradient hero-metric tile; stat tiles stay compact, bordered, and flat.
-- **Don't** reach for a modal first - exhaust inline and progressive-disclosure alternatives before overlaying the flow.
-- **Don't** introduce a second font family or a display face into UI labels, buttons, or data.
+- **Don't** reintroduce Material greys, filled icons, pill chips, or tinted table-header fills.
+- **Don't** sprawl - no lone full-width cards, no 2-character values in 250px columns, no
+  stranded far-edge timestamps.
+- **Don't** let motion decorate: no gradients, no bounce, no load choreography beyond the one
+  entrance, nothing above ~0.6s.
+- **Don't** let the viewport scroll sideways (`min-width: 0` on flex/grid children).
+- **Don't** reach for a modal first; and never let Escape silently discard typed input.
+- **Don't** render raw enums, machine strings, or unpluralized counts to a human.

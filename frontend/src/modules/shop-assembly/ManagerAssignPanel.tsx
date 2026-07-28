@@ -28,6 +28,7 @@ import { ASSIGNMENT_STALE_ROOT_FIELDS } from '../../graphql/refetch';
 import { leafSuffix } from '../../utils/leaf';
 import { useToast } from '../../components/Toast';
 import { isAvailableForAssignment } from './openingFilters';
+import { microLabelSx, monoSx } from '../../theme';
 
 interface AssembleOpening {
   id: string;
@@ -164,10 +165,10 @@ export default function ManagerAssignPanel() {
 
   return (
     <Paper variant="outlined" sx={{ p: 2, mb: 3 }}>
-      <Typography variant="h6" gutterBottom>
+      <Typography component="div" sx={{ ...microLabelSx, color: 'text.primary', mb: 0.5 }}>
         Assign to Team Member
       </Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 2, maxWidth: 640 }}>
         Select pulled openings and assign them to a shop-assembly team member. Assigned work shows up
         in that member's My Work.
       </Typography>
@@ -207,8 +208,8 @@ export default function ManagerAssignPanel() {
 
       {loadByMember.length > 0 && (
         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
-          <Typography variant="caption" color="text.secondary" sx={{ alignSelf: 'center' }}>
-            Current load:
+          <Typography component="span" sx={{ ...microLabelSx, alignSelf: 'center' }}>
+            Current load
           </Typography>
           {loadByMember.map((l) => (
             <Chip key={l.id} size="small" variant="outlined" label={`${l.name}: ${l.count}`} />
@@ -241,7 +242,15 @@ export default function ManagerAssignPanel() {
             {available.map((o) => {
               const label = (o.openingNumber || o.openingId.slice(0, 8)) + leafSuffix(o.leaf);
               return (
-                <TableRow key={o.id} hover onClick={() => toggleOne(o.id)} sx={{ cursor: 'pointer' }}>
+                <TableRow
+                  key={o.id}
+                  hover
+                  // Selection is the screen's accent: the theme puts a 3px amber edge on a selected
+                  // row, so what is about to be assigned reads without counting checkboxes.
+                  selected={selectedIds.has(o.id)}
+                  onClick={() => toggleOne(o.id)}
+                  sx={{ cursor: 'pointer' }}
+                >
                   <TableCell padding="checkbox">
                     <Checkbox
                       checked={selectedIds.has(o.id)}
@@ -250,7 +259,7 @@ export default function ManagerAssignPanel() {
                       inputProps={{ 'aria-label': `select ${label}` }}
                     />
                   </TableCell>
-                  <TableCell>{label}</TableCell>
+                  <TableCell sx={monoSx}>{label}</TableCell>
                   <TableCell>
                     {[o.building, o.floor].filter(Boolean).join(' / ') || (
                       <Box component="span" sx={{ color: 'text.disabled' }}>

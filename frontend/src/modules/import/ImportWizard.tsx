@@ -20,10 +20,7 @@ import {
   Divider,
   Tooltip,
 } from '@mui/material';
-import CloseIcon from '@mui/icons-material/Close';
-import UploadFileIcon from '@mui/icons-material/UploadFile';
-import CloudUploadIcon from '@mui/icons-material/CloudUpload';
-import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
+import { CheckCircle2, CloudUpload, FileUp, History, Info, X } from 'lucide-react';
 import { useLazyQuery, useMutation, useQuery } from '@apollo/client/react';
 import { CombinedGraphQLErrors } from '@apollo/client/errors';
 import { useWizard } from '../../contexts/WizardContext';
@@ -57,6 +54,8 @@ import {
   toClassificationInputs,
 } from './types';
 import type { Project } from '../../types/project';
+import { monoSx, microLabelSx, tabularSx } from '../../theme';
+import { FadeIn, StaggerItem, StaggerList } from '../../motion';
 import type { ProjectHardwareScheduleResponse } from './hydrateSchedule';
 import { mapScheduleResponseToParseResult } from './hydrateSchedule';
 import SelectOpeningsStep from './SelectOpeningsStep';
@@ -84,6 +83,45 @@ interface StepDescriptor {
   id: StepId;
   label: string;
 }
+
+/**
+ * The three things an import can be for, as option cards. The `label` strings are what the user (and
+ * every flow that drives this screen) reads to tell them apart, so they are verbatim what the radios
+ * always carried; `subtitle` is the plain-language gloss that used to live only in the tooltip.
+ */
+const PURPOSE_OPTIONS: {
+  value: ImportPurpose;
+  label: string;
+  subtitle: string;
+  tooltip: string;
+  /** Pull requests need a project that already has received inventory. */
+  needsExisting: boolean;
+}[] = [
+  {
+    value: 'po',
+    label: 'Create Purchase Orders',
+    subtitle: 'Order hardware from vendors',
+    tooltip:
+      "What do I still need to order? Shows what's already committed (drafted, ordered, received) vs. what's not yet covered. Select which items to create POs for.",
+    needsExisting: false,
+  },
+  {
+    value: 'assembly',
+    label: 'Pull Request for Shop Assembly',
+    subtitle: 'Build door leaves in the shop',
+    tooltip:
+      'What can I pull from the warehouse to assemble? Creates a shop-assembly pull request. Only items with Received status can be included.',
+    needsExisting: true,
+  },
+  {
+    value: 'shipping',
+    label: 'Pull Request for Shipping Out',
+    subtitle: 'Stage assembled leaves for shipment',
+    tooltip:
+      'What can I ship out? Creates a shipping-out pull request. Only items that are Received or Assembled can be included.',
+    needsExisting: true,
+  },
+];
 
 /**
  * Did the finalize bounce because stock was not available? On a shop-assembly finalize that can only
@@ -1190,7 +1228,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
         <AppBar sx={{ position: 'relative' }}>
           <Toolbar>
             <IconButton edge="start" color="inherit" onClick={handleClose} aria-label="close">
-              <CloseIcon />
+              <X size={20} strokeWidth={1.75} />
             </IconButton>
             <Typography sx={{ ml: 2, flex: 1 }} variant="h6" component="div">
               Import Hardware Schedule
@@ -1207,6 +1245,9 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
             ))}
           </Stepper>
 
+          {/* One entrance per step. Keyed by the step id so stepping forward or back re-triggers it;
+              the step's own content and gating are untouched by the wrapper. */}
+          <FadeIn key={effectiveStepId}>
           {/* ============ Step: Upload File ============ */}
           {effectiveStepId === 'upload' && (
             <Box>
@@ -1234,11 +1275,12 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
                       gap: 1.5,
                     }}
                   >
+                    <History size={40} strokeWidth={1.5} />
                     <Typography variant="h6">Use last uploaded hardware schedule</Typography>
                     <Typography variant="body2" color="text.secondary">
                       Resume from this project's last uploaded schedule.
                     </Typography>
-                    <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                    <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, mb: 1 }}>
                       {persistedOpeningCount} openings, {persistedHardwareItemCount} hardware items.
                     </Typography>
                     <Button variant="contained" onClick={handleLoadFromLatest} sx={{ mt: 'auto' }}>
@@ -1273,7 +1315,9 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
                       hidden
                       onChange={handleFileInput}
                     />
-                    <CloudUploadIcon sx={{ fontSize: 56, color: 'action.disabled' }} />
+                    <Box sx={{ color: 'text.secondary', display: 'flex' }}>
+                      <CloudUpload size={40} strokeWidth={1.5} />
+                    </Box>
                     <Typography variant="h6" color="text.secondary">
                       Upload new TITAN XML
                     </Typography>
@@ -1306,7 +1350,9 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
                     hidden
                     onChange={handleFileInput}
                   />
-                  <CloudUploadIcon sx={{ fontSize: 64, color: 'action.disabled', mb: 2 }} />
+                  <Box sx={{ color: 'text.secondary', display: 'flex', justifyContent: 'center', mb: 2 }}>
+                    <CloudUpload size={48} strokeWidth={1.5} />
+                  </Box>
                   <Typography variant="h6" color="text.secondary">
                     Drag and drop an XML file here
                   </Typography>
@@ -1325,7 +1371,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
               {parser.state === 'error' && (
                 <Alert severity="error" sx={{ mt: 2 }}>
                   {parser.error}
-                  <Button size="small" onClick={handleResetSource} sx={{ ml: 2 }}>
+                  <Button size="small" variant="outlined" onClick={handleResetSource} sx={{ ml: 2 }}>
                     {hydratedFromPersisted || canStartFromLatest ? 'Choose Different Source' : 'Try Again'}
                   </Button>
                 </Alert>
@@ -1333,30 +1379,48 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
 
               {parser.state === 'done' && parsed && (
                 <Box sx={{ mt: 2 }}>
-                  <Alert severity="success" sx={{ mb: 2 }}>
-                    {hydratedFromPersisted ? 'Loaded last uploaded hardware schedule.' : 'File parsed successfully!'}
-                  </Alert>
-
-                  <Box sx={{ mb: 2, display: 'flex', gap: 1, alignItems: 'center' }}>
-                    <Typography variant="subtitle1">
-                      Project: {existingProjectName}
-                    </Typography>
-                    <Chip
-                      label={isReimport ? 'Existing schedule data' : 'First import'}
-                      color={isReimport ? 'info' : 'success'}
-                      size="small"
-                    />
-                  </Box>
+                  {/* One statement of the source, not two stacked green alerts: the outcome, what it
+                      was read from, and the way back out. The parse's own success/warning alert comes
+                      from ValidationSummaryDisplay below and is the only alert on this step. */}
+                  <Paper
+                    variant="outlined"
+                    sx={{
+                      p: 2,
+                      mb: 2,
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 1.5,
+                      flexWrap: 'wrap',
+                    }}
+                  >
+                    <Box sx={{ color: 'success.main', display: 'flex' }}>
+                      <CheckCircle2 size={20} strokeWidth={1.75} />
+                    </Box>
+                    <Box sx={{ minWidth: 0 }}>
+                      <Typography sx={{ fontWeight: 600 }}>
+                        {hydratedFromPersisted
+                          ? 'Loaded last uploaded hardware schedule.'
+                          : 'File parsed successfully!'}
+                      </Typography>
+                      <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', mt: 0.5 }}>
+                        <Typography sx={microLabelSx}>Project</Typography>
+                        <Typography variant="body2" sx={monoSx}>
+                          {existingProjectName}
+                        </Typography>
+                        <Chip
+                          label={isReimport ? 'Existing schedule data' : 'First import'}
+                          color={isReimport ? 'info' : 'success'}
+                          size="small"
+                        />
+                      </Box>
+                    </Box>
+                    <Box sx={{ flexGrow: 1 }} />
+                    <Button size="small" variant="outlined" onClick={handleResetSource}>
+                      {hydratedFromPersisted ? 'Choose Different Source' : 'Upload Different File'}
+                    </Button>
+                  </Paper>
 
                   <ValidationSummaryDisplay summary={parsed.validationSummary} />
-
-                  <Button
-                    size="small"
-                    onClick={handleResetSource}
-                    sx={{ mt: 2 }}
-                  >
-                    {hydratedFromPersisted ? 'Choose Different Source' : 'Upload Different File'}
-                  </Button>
                 </Box>
               )}
 
@@ -1382,48 +1446,56 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
                 value={purpose ?? ''}
                 onChange={(e) => setPurpose(e.target.value as ImportPurpose)}
               >
-                <FormControlLabel
-                  value="po"
-                  control={<Radio />}
-                  label={
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                      Create Purchase Orders
-                      <Tooltip arrow title="What do I still need to order? Shows what's already committed (drafted, ordered, received) vs. what's not yet covered. Select which items to create POs for.">
-                        <InfoOutlinedIcon fontSize="small" color="action" />
-                      </Tooltip>
-                    </Box>
-                  }
-                />
-                <FormControlLabel
-                  value="assembly"
-                  control={<Radio />}
-                  disabled={!isReimport}
-                  label={
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                      Pull Request for Shop Assembly
-                      <Tooltip arrow title="What can I pull from the warehouse to assemble? Creates a shop-assembly pull request. Only items with Received status can be included.">
-                        <InfoOutlinedIcon fontSize="small" color="action" />
-                      </Tooltip>
-                    </Box>
-                  }
-                />
-                <FormControlLabel
-                  value="shipping"
-                  control={<Radio />}
-                  disabled={!isReimport}
-                  label={
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                      Pull Request for Shipping Out
-                      <Tooltip arrow title="What can I ship out? Creates a shipping-out pull request. Only items that are Received or Assembled can be included.">
-                        <InfoOutlinedIcon fontSize="small" color="action" />
-                      </Tooltip>
-                    </Box>
-                  }
-                />
+                <StaggerList count={PURPOSE_OPTIONS.length}>
+                  {PURPOSE_OPTIONS.map((option) => {
+                    const disabled = option.needsExisting && !isReimport;
+                    const selected = purpose === option.value;
+                    return (
+                      <StaggerItem key={option.value}>
+                        <Paper
+                          variant="outlined"
+                          sx={{
+                            mb: 1.5,
+                            maxWidth: 640,
+                            opacity: disabled ? 0.55 : 1,
+                            borderColor: selected ? 'text.primary' : 'divider',
+                            boxShadow: selected ? (t) => `inset 3px 0 0 ${t.vars?.palette.secondary.main ?? t.palette.secondary.main}` : 'none',
+                            transition: 'border-color 0.2s ease, box-shadow 0.2s ease',
+                          }}
+                        >
+                          <FormControlLabel
+                            value={option.value}
+                            control={<Radio />}
+                            disabled={disabled}
+                            sx={{ m: 0, px: 1.5, py: 1.25, width: '100%', alignItems: 'flex-start' }}
+                            label={
+                              <Box sx={{ pt: 0.25 }}>
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                  <Typography sx={{ fontWeight: 600 }}>{option.label}</Typography>
+                                  <Tooltip arrow title={option.tooltip}>
+                                    <Box
+                                      component="span"
+                                      sx={{ display: 'inline-flex', color: 'text.secondary' }}
+                                    >
+                                      <Info size={16} strokeWidth={1.75} />
+                                    </Box>
+                                  </Tooltip>
+                                </Box>
+                                <Typography variant="body2" color="text.secondary">
+                                  {option.subtitle}
+                                </Typography>
+                              </Box>
+                            }
+                          />
+                        </Paper>
+                      </StaggerItem>
+                    );
+                  })}
+                </StaggerList>
               </RadioGroup>
 
               {!isReimport && (
-                <Typography variant="caption" color="text.secondary" sx={{ mt: 1, ml: 4, display: 'block' }}>
+                <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
                   Shop assembly and shipping-out pull requests require an existing project with received inventory.
                 </Typography>
               )}
@@ -1557,14 +1629,13 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
               </Typography>
 
               <Paper variant="outlined" sx={{ p: 3, mb: 3 }}>
-                <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 2 }}>
-                  Import Summary
-                </Typography>
+                <Typography sx={{ ...microLabelSx, mb: 1.5 }}>Import Summary</Typography>
 
-                <Typography variant="body1" sx={{ mb: 1 }}>
-                  Project: {existingProjectName}
+                <Typography sx={microLabelSx}>Project</Typography>
+                <Typography variant="body1" sx={{ mb: 1, ...monoSx, fontSize: '1rem' }}>
+                  {existingProjectName}
                 </Typography>
-                <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, mb: 2 }}>
                   {selectedOpenings.size} openings | {selectedHardwareItems.length} hardware items
                 </Typography>
 
@@ -1615,9 +1686,8 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
                 </Button>
                 <Button
                   variant="contained"
-                  color="primary"
                   size="large"
-                  startIcon={<UploadFileIcon />}
+                  startIcon={<FileUp size={18} strokeWidth={1.75} />}
                   disabled={finalizeLoading}
                   onClick={() => setConfirmOpen(true)}
                 >
@@ -1626,6 +1696,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
               </Box>
             </Box>
           )}
+          </FadeIn>
         </Box>
       </Dialog>
 
@@ -1646,30 +1717,46 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
       {/* Post-Success Dialog */}
       <Dialog open={postSuccessOpen} maxWidth="sm" fullWidth>
         <Box sx={{ p: 3 }}>
-          <Typography variant="h6" sx={{ mb: 2 }}>
-            Import session completed successfully!
-          </Typography>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+            <Box sx={{ color: 'success.main', display: 'flex' }}>
+              <CheckCircle2 size={20} strokeWidth={1.75} />
+            </Box>
+            <Typography variant="h6">Import session completed successfully!</Typography>
+          </Box>
 
           {finalizeResult && (
             <Box sx={{ mb: 3 }}>
-              <Typography variant="body2" color="text.secondary">
-                Project: {finalizeResult.project.description || finalizeResult.project.projectId}
-              </Typography>
-              {finalizeResult.purchaseOrders.length > 0 && (
-                <Typography variant="body2">
-                  {finalizeResult.purchaseOrders.length} PO(s) created
-                </Typography>
-              )}
-              {finalizeResult.shippingOutRequests.length > 0 && (
-                <Typography variant="body2">
-                  {finalizeResult.shippingOutRequests.length} Shipping request(s) created
-                </Typography>
-              )}
-              {finalizeResult.shopAssemblyRequest && (
-                <Typography variant="body2">
-                  Shop Assembly request #{finalizeResult.shopAssemblyRequest.requestNumber} created
-                </Typography>
-              )}
+              <StaggerList count={4}>
+                <StaggerItem>
+                  <Box sx={{ mb: 1 }}>
+                    <Typography sx={microLabelSx}>Project</Typography>
+                    <Typography variant="body2" sx={monoSx}>
+                      {finalizeResult.project.description || finalizeResult.project.projectId}
+                    </Typography>
+                  </Box>
+                </StaggerItem>
+                {finalizeResult.purchaseOrders.length > 0 && (
+                  <StaggerItem>
+                    <Typography variant="body2" sx={tabularSx}>
+                      {finalizeResult.purchaseOrders.length} PO(s) created
+                    </Typography>
+                  </StaggerItem>
+                )}
+                {finalizeResult.shippingOutRequests.length > 0 && (
+                  <StaggerItem>
+                    <Typography variant="body2" sx={tabularSx}>
+                      {finalizeResult.shippingOutRequests.length} Shipping request(s) created
+                    </Typography>
+                  </StaggerItem>
+                )}
+                {finalizeResult.shopAssemblyRequest && (
+                  <StaggerItem>
+                    <Typography variant="body2">
+                      Shop Assembly request #{finalizeResult.shopAssemblyRequest.requestNumber} created
+                    </Typography>
+                  </StaggerItem>
+                )}
+              </StaggerList>
             </Box>
           )}
 

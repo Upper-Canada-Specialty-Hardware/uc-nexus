@@ -15,8 +15,7 @@ import {
   Stack,
   IconButton,
 } from '@mui/material';
-import AddIcon from '@mui/icons-material/Add';
-import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
+import { Plus, Trash2 } from 'lucide-react';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useMutation, useQuery } from '@apollo/client/react';
 import { useApolloClient } from '@apollo/client/react';
@@ -31,6 +30,7 @@ import { useRelayStatus } from '../../relay/useRelayStatus';
 import { poVendorName } from '../po/poVendorName';
 import GpErrorAlert from '../../components/GpErrorAlert';
 import { extractGpError, type GpError } from '../../graphql/gpError';
+import { microLabelSx, monoSx } from '../../theme';
 
 // ---- Types ----
 
@@ -321,12 +321,25 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
 
   const quantityColumns: GridColDef[] = useMemo(
     () => [
-      { field: 'productCode', headerName: 'Product Code', flex: 1 },
+      {
+        field: 'productCode',
+        headerName: 'Product Code',
+        flex: 1,
+        renderCell: (params) => (
+          <Typography component="span" sx={monoSx}>
+            {params.value as string}
+          </Typography>
+        ),
+      },
       {
         field: 'orderAs',
         headerName: 'Ordered As',
         flex: 0.8,
-        renderCell: (params) => params.value || '—',
+        renderCell: (params) => (
+          <Typography component="span" sx={monoSx}>
+            {(params.value as string | null) || '—'}
+          </Typography>
+        ),
       },
       { field: 'hardwareCategory', headerName: 'Hardware Category', flex: 1 },
       { field: 'orderedQuantity', headerName: 'Ordered Qty', flex: 0.7, type: 'number' },
@@ -355,7 +368,14 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
               error={hasError}
               helperText={hasError ? `Max: ${pending}` : undefined}
               slotProps={{
-                htmlInput: { min: 0, max: pending, style: { width: '70px' } },
+                htmlInput: {
+                  min: 0,
+                  max: pending,
+                  style: { width: '70px' },
+                  // The column header is out of the accessibility tree for this cell input, so the
+                  // field names itself and the PO line it belongs to.
+                  'aria-label': `Receive now — ${params.row.productCode as string} (max ${pending})`,
+                },
               }}
               onClick={(e) => e.stopPropagation()}
               onChange={(e) => {
@@ -554,7 +574,7 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
     return (
       <Paper key={poId} variant={showHeader ? 'outlined' : 'elevation'} elevation={0} sx={{ p: showHeader ? 2 : 0, mb: 2 }}>
         {showHeader && (
-          <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: details.notes ? 0.5 : 1 }}>
+          <Typography variant="subtitle1" sx={{ ...monoSx, fontWeight: 700, fontSize: '0.9375rem', mb: details.notes ? 0.5 : 1 }}>
             {details.poNumber ?? 'Unknown PO'}
             {poVendorName(details) ? ` — ${poVendorName(details)}` : ''}
           </Typography>
@@ -598,11 +618,25 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
     const remaining = receiveNow - placed;
     return (
       <Paper key={li.id} variant="outlined" sx={{ p: 1.5 }}>
-        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', mb: 1, gap: 1 }}>
-          <Typography variant="body2" sx={{ fontWeight: 600 }}>
+        <Box
+          sx={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'baseline',
+            mb: 1,
+            gap: 1,
+            pb: 0.75,
+            borderBottom: '1px solid',
+            borderColor: 'divider',
+          }}
+        >
+          <Typography variant="body2" sx={{ ...monoSx, fontWeight: 600 }}>
             {li.productCode} · {li.hardwareCategory} (placing {receiveNow})
           </Typography>
-          <Typography variant="caption" color={remaining === 0 ? 'success.main' : 'error.main'}>
+          <Typography
+            variant="caption"
+            sx={{ ...microLabelSx, color: remaining === 0 ? 'success.main' : 'error.main' }}
+          >
             {remaining === 0 ? 'all placed' : `${remaining} unplaced`}
           </Typography>
         </Box>
@@ -660,14 +694,14 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
                   onClick={() => removeLocation(li.id, receiveNow, idx)}
                   sx={{ mt: 0.5 }}
                 >
-                  <DeleteOutlineIcon fontSize="small" />
+                  <Trash2 size={18} strokeWidth={1.75} />
                 </IconButton>
               </Stack>
             );
           })}
           <Button
             size="small"
-            startIcon={<AddIcon />}
+            startIcon={<Plus size={18} strokeWidth={1.75} />}
             onClick={() => addLocation(li.id, receiveNow)}
             sx={{ alignSelf: 'flex-start' }}
           >
@@ -709,9 +743,21 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
     </>
   );
 
+  // Escape is a dismissal, not a discard: once counts or rack rows have been typed in, the key is
+  // swallowed and the user has to use Cancel. Nothing here is recoverable once handleClose resets it.
+  const hasUnsavedEntry =
+    !succeeded && (hasAnyReceiveQuantity || Object.keys(lineLocations).length > 0);
+
   return (
     <>
-      <Modal open={open} onClose={handleClose} title={title} actions={actions} maxWidth="lg">
+      <Modal
+        open={open}
+        onClose={handleClose}
+        title={title}
+        actions={actions}
+        maxWidth="lg"
+        disableEscapeKeyDown={hasUnsavedEntry}
+      >
         {poDetailsLoading && (
           <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
             <CircularProgress />
@@ -797,10 +843,18 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
 
         {!poDetailsLoading && !poDetailsError && !succeeded && hasAnyReceiveQuantity && (
           <Box sx={{ mt: 1 }}>
-            <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+            <Typography
+              component="div"
+              sx={{
+                ...microLabelSx,
+                pb: 0.75,
+                borderBottom: '2px solid',
+                borderColor: 'text.primary',
+              }}
+            >
               Assign locations & flag deficient units
             </Typography>
-            <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+            <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1, mb: 1 }}>
               Place every received unit in a row (the GP receipt records a rack location per line) and
               optionally record how many of each arrived deficient.
             </Typography>

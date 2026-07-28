@@ -1,10 +1,11 @@
 import { useState, useCallback } from 'react';
-import { Button, Stack, TextField } from '@mui/material';
+import { Button, Stack, TextField, Typography } from '@mui/material';
 import { useMutation } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import { useToast } from '../../components/Toast';
 import { CREATE_VENDOR, UPDATE_VENDOR } from '../../graphql/admin';
 import { GET_VENDORS } from '../../graphql/shared';
+import { microLabelSx } from '../../theme';
 
 export interface VendorFormValue {
   id?: string;
@@ -146,6 +147,9 @@ function VendorEditDialogContent({ initialVendor, onClose, onSaved }: ContentPro
           error={!!nameError}
           helperText={nameError}
         />
+        <Typography component="div" sx={{ ...microLabelSx, pt: 0.5 }}>
+          Contact
+        </Typography>
         <TextField
           label="Contact Name"
           value={form.contactName ?? ''}

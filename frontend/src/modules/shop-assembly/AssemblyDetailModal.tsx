@@ -17,6 +17,7 @@ import {
   DialogContent,
   DialogActions,
 } from '@mui/material';
+import { motion } from 'motion/react';
 import { useMutation } from '@apollo/client/react';
 import { COMPLETE_OPENING, RECORD_ASSEMBLY_PROGRESS } from '../../graphql/shop-assembly';
 import {
@@ -29,6 +30,8 @@ import ConfirmDialog from '../../components/ConfirmDialog';
 import { useToast } from '../../components/Toast';
 import { leafSuffix } from '../../utils/leaf';
 import { assemblyProgress } from './openingFilters';
+import { microLabelSx, monoSx } from '../../theme';
+import { springs } from '../../motion';
 
 interface OpeningItem {
   id: string;
@@ -314,7 +317,9 @@ export default function AssemblyDetailModal({
         title={`Assembly: ${opening.openingNumber || 'Opening'}${leafSuffix(opening.leaf)}`}
         actions={
           <Stack direction="row" spacing={1}>
-            <Button onClick={onClose}>Close</Button>
+            <Button variant="text" onClick={onClose}>
+              Close
+            </Button>
             <Button
               variant="outlined"
               onClick={handleSaveProgress}
@@ -322,8 +327,11 @@ export default function AssemblyDetailModal({
             >
               {saving ? 'Saving...' : 'Save Progress'}
             </Button>
+            {/* The screen's one amber fill: finishing the leaf is the primary action, and it is
+                filled only once it is actually available. */}
             <Button
               variant="contained"
+              color="secondary"
               onClick={() => setConfirmOpen(true)}
               disabled={!canComplete || busy}
             >
@@ -333,7 +341,7 @@ export default function AssemblyDetailModal({
         }
       >
         <Box>
-          <Stack direction="row" spacing={2} sx={{ mb: 2 }} alignItems="center" flexWrap="wrap">
+          <Stack direction="row" spacing={2} sx={{ mb: 1 }} alignItems="center" flexWrap="wrap">
             {opening.building && (
               <Typography variant="body2" color="text.secondary">
                 Building: {opening.building}
@@ -347,11 +355,41 @@ export default function AssemblyDetailModal({
             <Chip
               size="small"
               variant="outlined"
+              color={draftProgress.complete ? 'success' : 'default'}
               label={`${draftProgress.dispositioned}/${draftProgress.allocated} units accounted for`}
             />
           </Stack>
 
-          <Typography variant="subtitle1" sx={{ mb: 0.5, fontWeight: 'bold' }}>
+          {/* The same reading as the chip, as a rail: the bar springs to the new fraction the moment
+              a count is typed, so the leaf's state is legible without reading the figures. */}
+          <Box
+            sx={{
+              height: 6,
+              borderRadius: 1,
+              bgcolor: 'action.hover',
+              overflow: 'hidden',
+              mb: 2.5,
+            }}
+          >
+            <motion.div
+              animate={{
+                width: `${
+                  draftProgress.allocated > 0
+                    ? (draftProgress.dispositioned / draftProgress.allocated) * 100
+                    : 0
+                }%`,
+              }}
+              transition={springs.base}
+              style={{
+                height: '100%',
+                background: draftProgress.complete
+                  ? 'var(--mui-palette-success-main)'
+                  : 'var(--mui-palette-text-primary)',
+              }}
+            />
+          </Box>
+
+          <Typography component="div" sx={{ ...microLabelSx, color: 'text.primary', mb: 0.5 }}>
             Shop Hardware Checklist
           </Typography>
           <Typography variant="caption" color="text.secondary" sx={{ mb: 1, display: 'block' }}>
@@ -394,8 +432,8 @@ export default function AssemblyDetailModal({
                   // this assembler's outstanding work, and the leaf completes without it.
                   const short = item.quantity - item.allocatedQuantity;
                   return (
-                    <TableRow key={item.id}>
-                      <TableCell>{item.productCode}</TableCell>
+                    <TableRow key={item.id} hover>
+                      <TableCell sx={monoSx}>{item.productCode}</TableCell>
                       <TableCell>{item.hardwareCategory}</TableCell>
                       <TableCell align="right">{item.quantity}</TableCell>
                       <TableCell align="right">
@@ -432,7 +470,7 @@ export default function AssemblyDetailModal({
                       <TableCell align="right">{item.deficientQuantity}</TableCell>
                       <TableCell align="right">
                         {parsed !== null && remaining === 0 ? (
-                          <Chip size="small" label="Done" variant="outlined" />
+                          <Chip size="small" label="Done" color="success" />
                         ) : (
                           <Typography variant="body2" color="text.secondary">
                             {parsed === null ? '-' : remaining}
@@ -442,7 +480,10 @@ export default function AssemblyDetailModal({
                       <TableCell align="right">
                         <Button
                           size="small"
-                          variant="text"
+                          variant="outlined"
+                          // Condemning hardware is the one destructive thing on this surface, so it
+                          // reads as destructive rather than as another way to record work.
+                          color="error"
                           // Gated on the drafted remaining, the same number the dialog validates
                           // against: offering the action when there is nothing left to condemn would
                           // open a dialog whose only possible input is out of range.
@@ -463,10 +504,10 @@ export default function AssemblyDetailModal({
             </Typography>
           )}
 
-          <Typography variant="subtitle1" sx={{ mb: 1, fontWeight: 'bold' }}>
-            Store completed Opening Item at:
+          <Typography component="div" sx={{ ...microLabelSx, color: 'text.primary', mb: 0.5 }}>
+            Store completed Opening Item at
           </Typography>
-          <Typography variant="caption" color="text.secondary" sx={{ mb: 2, display: 'block' }}>
+          <Typography variant="caption" color="text.secondary" sx={{ mb: 1.5, display: 'block' }}>
             Leave blank for Unlocated
           </Typography>
 
@@ -474,6 +515,7 @@ export default function AssemblyDetailModal({
             <TextField
               label="Aisle"
               size="small"
+              sx={{ width: 128 }}
               value={aisle}
               onChange={(e) => setAisle(e.target.value)}
               error={!validateField(aisle)}
@@ -483,6 +525,7 @@ export default function AssemblyDetailModal({
             <TextField
               label="Row"
               size="small"
+              sx={{ width: 128 }}
               value={row}
               onChange={(e) => setRow(e.target.value)}
               error={!validateField(row)}
@@ -492,6 +535,7 @@ export default function AssemblyDetailModal({
             <TextField
               label="Bay"
               size="small"
+              sx={{ width: 128 }}
               value={bay}
               onChange={(e) => setBay(e.target.value)}
               error={!validateField(bay)}

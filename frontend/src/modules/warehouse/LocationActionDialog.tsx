@@ -17,6 +17,7 @@ import LocationAutocomplete from '../../components/LocationAutocomplete';
 import { useToast } from '../../components/Toast';
 import { GET_WAREHOUSES, MOVE_INVENTORY_LOCATION, MARK_INVENTORY_UNLOCATED, MOVE_OPENING_ITEM_LOCATION, MARK_OPENING_ITEM_UNLOCATED } from '../../graphql/shared';
 import { ADJUST_INVENTORY_QUANTITY, MOVE_STOCK_LOCATION, MARK_STOCK_ITEM_UNLOCATED, ADJUST_STOCK_QUANTITY } from '../../graphql/warehouse';
+import { microLabelSx, monoSx } from '../../theme';
 
 export type LocationActionTarget = {
   id: string;
@@ -245,12 +246,20 @@ export default function LocationActionDialog({
   return (
     <Modal title={title} open={open} onClose={onClose} actions={actions}>
       {targets.length > 0 && (
-        <Box sx={{ mb: 2, p: 1.5, bgcolor: 'grey.50', borderRadius: 1 }}>
-          <Typography variant="caption" color="text.secondary">
+        <Box
+          sx={{
+            mb: 2,
+            p: 1.5,
+            border: '1px solid',
+            borderColor: 'divider',
+            borderRadius: 1,
+          }}
+        >
+          <Typography component="div" sx={{ ...microLabelSx, mb: 0.5 }}>
             {targets.length === 1 ? 'Item' : `${targets.length} items`}
           </Typography>
           {targets.slice(0, 5).map((t) => (
-            <Typography key={t.id} variant="body2">
+            <Typography key={t.id} sx={monoSx}>
               {t.productCode} — qty {t.quantity} — at {formatLocation(t)} ({t.kind})
             </Typography>
           ))}

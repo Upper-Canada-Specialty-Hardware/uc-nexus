@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import { Tabs as MuiTabs, Tab, Box } from '@mui/material';
+import { FadeIn } from '../motion';
 
 interface TabItem {
   label: string;
@@ -16,12 +17,19 @@ export default function Tabs({ tabs, defaultTab = 0 }: TabsProps) {
 
   return (
     <Box>
-      <MuiTabs value={value} onChange={(_, newValue) => setValue(newValue)}>
+      <MuiTabs
+        value={value}
+        onChange={(_, newValue) => setValue(newValue)}
+        sx={{ borderBottom: 1, borderColor: 'divider', minHeight: 42 }}
+      >
         {tabs.map((tab, index) => (
-          <Tab key={index} label={tab.label} />
+          <Tab key={index} label={tab.label} sx={{ minHeight: 42, px: 2 }} />
         ))}
       </MuiTabs>
-      <Box sx={{ pt: 2 }}>{tabs[value]?.content}</Box>
+      {/* Keyed by tab so the panel swaps with a short rise instead of a hard cut. */}
+      <FadeIn key={value} y={6}>
+        <Box sx={{ pt: 2 }}>{tabs[value]?.content}</Box>
+      </FadeIn>
     </Box>
   );
 }

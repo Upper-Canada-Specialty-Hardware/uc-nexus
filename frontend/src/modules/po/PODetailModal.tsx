@@ -1,11 +1,10 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, type ReactNode } from 'react';
 import {
   Box,
   Typography,
   Chip,
   Button,
   TextField,
-  Divider,
   Stack,
   List,
   ListItem,
@@ -22,10 +21,7 @@ import {
   CircularProgress,
   Tooltip,
 } from '@mui/material';
-import DeleteIcon from '@mui/icons-material/Delete';
-import DownloadIcon from '@mui/icons-material/Download';
-import UploadFileIcon from '@mui/icons-material/UploadFile';
-import DescriptionIcon from '@mui/icons-material/Description';
+import { Trash2, Download, Upload, FileText } from 'lucide-react';
 import { useMutation, useQuery } from '@apollo/client/react';
 import { CombinedGraphQLErrors } from '@apollo/client/errors';
 import type { GridColDef } from '@mui/x-data-grid';
@@ -43,6 +39,13 @@ import POGenerateDialog from './POGenerateDialog';
 import POOpeningsSection from './POOpeningsSection';
 import { poVendorName } from './poVendorName';
 import { formatPoStatus, poStatusChipColor } from './poStatus';
+import { monoSx, tabularSx, microLabelSx } from '../../theme';
+import { FadeIn } from '../../motion';
+
+const ICON = { size: 18, strokeWidth: 1.75 } as const;
+
+/** An absent value. Rendered dimmed, so a blank field reads as "nothing here" rather than as data. */
+const EMPTY = '—';
 
 const DOC_TYPE_LABELS: Record<string, string> = {
   PO_DOCUMENT: 'PO Document',
@@ -52,16 +55,16 @@ const DOC_TYPE_LABELS: Record<string, string> = {
 };
 
 function formatDate(dateStr: string | null | undefined): string {
-  if (!dateStr) return '-';
+  if (!dateStr) return EMPTY;
   // Parse a date-only string (YYYY-MM-DD) as LOCAL midnight, not UTC, so it displays as entered
   // (same #238 fix as the PO-document code - `new Date('2026-08-01')` renders 7/31 behind UTC).
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr);
   const d = m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(dateStr);
-  return isNaN(d.getTime()) ? '-' : d.toLocaleDateString();
+  return isNaN(d.getTime()) ? EMPTY : d.toLocaleDateString();
 }
 
 function formatDateTime(dateStr: string | null | undefined): string {
-  if (!dateStr) return '-';
+  if (!dateStr) return EMPTY;
   return new Date(dateStr).toLocaleString();
 }
 
@@ -309,14 +312,33 @@ export default function PODetailModal({
 
   const lineItemColumns = useMemo<GridColDef[]>(() => {
     const allCols: GridColDef[] = [
-      { field: 'productCode', headerName: 'Product Code', flex: 1, minWidth: 130 },
+      {
+        field: 'productCode',
+        headerName: 'Product Code',
+        flex: 1,
+        minWidth: 130,
+        renderCell: (params) => (
+          <Box component="span" sx={monoSx}>
+            {params.value}
+          </Box>
+        ),
+      },
       { field: 'hardwareCategory', headerName: 'Hardware Category', flex: 1, minWidth: 150 },
       {
         field: 'orderAs',
         headerName: 'Order As',
         flex: 1,
         minWidth: 130,
-        renderCell: (params) => params.value || '—',
+        renderCell: (params) =>
+          params.value ? (
+            <Box component="span" sx={monoSx}>
+              {params.value}
+            </Box>
+          ) : (
+            <Box component="span" sx={{ color: 'text.disabled' }}>
+              {EMPTY}
+            </Box>
+          ),
       },
       {
         field: 'orderedQuantity',
@@ -355,6 +377,14 @@ export default function PODetailModal({
       ? allCols
       : allCols.filter((c) => c.field !== 'receivedQuantity');
   }, [po.receiveRecords.length]);
+
+  // Size the grid to its rows rather than a fixed 300px well - a two-line PO was drawing a tall empty
+  // box under its last line. Column header + rows (+ the pager, only when there is more than one page).
+  const lineItemGridHeight = useMemo(() => {
+    const visibleRows = Math.min(po.lineItems.length, 10);
+    const paged = po.lineItems.length > 10;
+    return 57 + visibleRows * 52 + (paged ? 53 : 0);
+  }, [po.lineItems.length]);
 
   // --- Edit-mode line item columns (with editable Order As + unit cost) ---
 
@@ -450,10 +480,15 @@ export default function PODetailModal({
 
   // --- Action buttons ---
 
+  // Exactly one filled button on the bar, and it is the action that moves the PO forward: Register in
+  // GP where that exists, otherwise Edit. Destructive Cancel PO sits on the far left, away from it.
+  const primaryIsRegister = canRegisterInGp;
+
   const actionButtons = (
-    <Stack direction="row" spacing={1}>
+    <Stack direction="row" spacing={1} sx={{ width: '100%', alignItems: 'center' }}>
       {editing ? (
         <>
+          <Box sx={{ flex: 1 }} />
           <Button onClick={handleCancelEdit} disabled={updateLoading}>
             Cancel
           </Button>
@@ -467,11 +502,17 @@ export default function PODetailModal({
         </>
       ) : (
         <>
-          {canEdit && (
-            <Button variant="outlined" onClick={handleStartEdit}>
-              Edit
+          {canCancel && (
+            <Button
+              variant="outlined"
+              color="error"
+              onClick={() => setConfirmCancelOpen(true)}
+              disabled={cancelLoading}
+            >
+              Cancel PO
             </Button>
           )}
+          <Box sx={{ flex: 1 }} />
           {canGenerate && (
             <Tooltip
               title={relayConnected ? '' : 'GP relay not detected on this machine - it must be running to generate a PO document (buyer + GP totals are read live)'}
@@ -480,7 +521,7 @@ export default function PODetailModal({
               <span>
                 <Button
                   variant="outlined"
-                  startIcon={<DescriptionIcon />}
+                  startIcon={<FileText {...ICON} />}
                   onClick={() => setGenerateOpen(true)}
                   disabled={!relayConnected}
                 >
@@ -488,6 +529,11 @@ export default function PODetailModal({
                 </Button>
               </span>
             </Tooltip>
+          )}
+          {canEdit && (
+            <Button variant={primaryIsRegister ? 'outlined' : 'contained'} onClick={handleStartEdit}>
+              Edit
+            </Button>
           )}
           {/* Stays gated on the relay, unlike the receive modal (#376). Registering needs LIVE GP reads
               to compose at all - the company comes from the connected relay, and the vendor list, tax
@@ -502,7 +548,6 @@ export default function PODetailModal({
               <span>
                 <Button
                   variant="contained"
-                  color="primary"
                   onClick={() => setRegisterOpen(true)}
                   disabled={!relayConnected}
                 >
@@ -510,16 +555,6 @@ export default function PODetailModal({
                 </Button>
               </span>
             </Tooltip>
-          )}
-          {canCancel && (
-            <Button
-              variant="outlined"
-              color="error"
-              onClick={() => setConfirmCancelOpen(true)}
-              disabled={cancelLoading}
-            >
-              Cancel PO
-            </Button>
           )}
         </>
       )}
@@ -537,17 +572,22 @@ export default function PODetailModal({
         actions={actionButtons}
         maxWidth="lg"
       >
-        {/* Header: Status + Request Number */}
-        <Box sx={{ mb: 3, display: 'flex', alignItems: 'center', gap: 2 }}>
+        {/* Header: status tag + the request number the PO was raised from. */}
+        <Box sx={{ mb: 2.5, display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}>
           <Chip
             label={formatPoStatus(po.status)}
             color={poStatusChipColor(po.status)}
-            size="medium"
+            size="small"
           />
           {po.poNumber && (
-            <Typography variant="body2" color="text.secondary">
-              Request #: {po.requestNumber}
-            </Typography>
+            <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 0.75 }}>
+              <Typography component="span" sx={microLabelSx}>
+                Request #
+              </Typography>
+              <Box component="span" sx={{ ...monoSx, color: 'text.secondary' }}>
+                {po.requestNumber}
+              </Box>
+            </Box>
           )}
         </Box>
 
@@ -637,44 +677,57 @@ export default function PODetailModal({
             />
           </Stack>
         ) : (
-          <Box sx={{ mb: 3 }}>
-            <InfoRow label="PO Number" value={po.poNumber || '(Not assigned)'} />
-            <InfoRow label="Vendor" value={poVendorName(po) || '-'} />
-            <InfoRow label="Vendor Contact" value={po.vendor?.contactName || '-'} />
-            <InfoRow label="Vendor Quote #" value={po.vendorQuoteNumber || '-'} />
-            <InfoRow label="Shipping Costs" value={po.shippingCost != null ? `$${po.shippingCost.toFixed(2)}` : '-'} />
-            <InfoRow label="Tariffs" value={po.tariffAmount != null ? `$${po.tariffAmount.toFixed(2)}` : '-'} />
-            <InfoRow label="Preferred Delivery Date" value={formatDate(po.preferredDeliveryDate)} />
-            <InfoRow label="Expected Delivery Date" value={formatDate(po.expectedDeliveryDate)} />
-            <InfoRow label="Order Date" value={formatDate(po.orderedAt)} />
-            {po.notes && (
-              <Box sx={{ display: 'flex', py: 0.5 }}>
-                <Typography variant="body2" color="text.secondary" sx={{ width: 200, flexShrink: 0 }}>
-                  Notes:
-                </Typography>
-                <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>{po.notes}</Typography>
+          /* A two-column readout instead of the old label-colon-dash column: every field stays, an
+             absent one says so with a dimmed em dash rather than reading as a blank. */
+          <FadeIn>
+            <Box
+              sx={{
+                mb: 3,
+                display: 'grid',
+                gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' },
+                columnGap: 4,
+                rowGap: 1.75,
+              }}
+            >
+              <InfoField label="PO Number" value={po.poNumber} placeholder="Not assigned" mono />
+              <InfoField label="Vendor" value={poVendorName(po)} />
+              <InfoField label="Vendor Contact" value={po.vendor?.contactName} />
+              <InfoField label="Vendor Quote #" value={po.vendorQuoteNumber} mono />
+              <InfoField
+                label="Shipping Costs"
+                value={po.shippingCost != null ? `$${po.shippingCost.toFixed(2)}` : null}
+                numeric
+              />
+              <InfoField
+                label="Tariffs"
+                value={po.tariffAmount != null ? `$${po.tariffAmount.toFixed(2)}` : null}
+                numeric
+              />
+              <InfoField label="Preferred Delivery Date" value={formatDate(po.preferredDeliveryDate)} />
+              <InfoField label="Expected Delivery Date" value={formatDate(po.expectedDeliveryDate)} />
+              <InfoField label="Order Date" value={formatDate(po.orderedAt)} />
+              {/* A PO with a project shows it in the list; here only its absence is worth a line -
+                  the modal has the project's id, not its human number. */}
+              {!po.projectId && <InfoField label="Project" value="No Project" />}
+              <Box sx={{ gridColumn: '1 / -1' }}>
+                <InfoField label="Notes" value={po.notes} wrap />
               </Box>
-            )}
-            {!po.projectId && <InfoRow label="Project" value="No Project" />}
-            {vendorIdError && (
-              <Typography color="error" variant="body2" sx={{ mt: 1 }}>
-                {vendorIdError}
-              </Typography>
-            )}
-          </Box>
+              {vendorIdError && (
+                <Typography color="error" variant="body2" sx={{ gridColumn: '1 / -1' }}>
+                  {vendorIdError}
+                </Typography>
+              )}
+            </Box>
+          </FadeIn>
         )}
 
-        <Divider sx={{ mb: 2 }} />
-
         {/* Line Items */}
-        <Typography variant="h6" gutterBottom>
-          Line Items
-        </Typography>
+        <SectionHeading>Line Items</SectionHeading>
         {po.lineItems.length > 0 ? (
           <DataTable
             columns={editing ? editLineItemColumns : lineItemColumns}
             rows={po.lineItems}
-            height={300}
+            height={lineItemGridHeight}
             getRowId={(row) => row.id}
             hideFooter={po.lineItems.length <= 10}
           />
@@ -686,57 +739,68 @@ export default function PODetailModal({
 
         {/* Which doors this PO is for (#302). Below the line items, which are the product view of the
             same hardware - this is the opening view the buyer works from on the schedule. Renders
-            nothing at all for a stock PO, which has no hardware schedule behind it. */}
-        <Divider sx={{ my: 2 }} />
+            nothing at all for a stock PO, which has no hardware schedule behind it (its own section
+            rule goes with it, so no orphaned heading is left behind). */}
         <POOpeningsSection poId={po.id} />
 
         {/* Documents Section */}
-        <Divider sx={{ my: 2 }} />
-        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
-          <Typography variant="h6">Documents</Typography>
-          {canUploadDocs && (
-            <Button
-              size="small"
-              variant="outlined"
-              startIcon={<UploadFileIcon />}
-              onClick={() => setUploadDialogOpen(true)}
-            >
-              Upload Document
-            </Button>
-          )}
-        </Box>
+        <SectionHeading
+          action={
+            canUploadDocs ? (
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<Upload {...ICON} />}
+                onClick={() => setUploadDialogOpen(true)}
+              >
+                Upload Document
+              </Button>
+            ) : undefined
+          }
+        >
+          Documents
+        </SectionHeading>
 
         {po.documents.length > 0 ? (
-          <List dense>
+          <List dense disablePadding>
             {po.documents.map((doc) => (
               <ListItem
                 key={doc.id}
+                sx={{ px: 0, borderBottom: '1px solid', borderColor: 'divider' }}
                 secondaryAction={
                   <Stack direction="row" spacing={0.5}>
                     <IconButton
                       size="small"
+                      aria-label={`Download ${doc.fileName}`}
                       href={doc.downloadUrl}
                       target="_blank"
                       rel="noopener noreferrer"
                     >
-                      <DownloadIcon fontSize="small" />
+                      <Download {...ICON} />
                     </IconButton>
                     {canUploadDocs && (
                       <IconButton
                         size="small"
                         color="error"
+                        aria-label={`Delete ${doc.fileName}`}
                         onClick={() => handleDeleteDocument(doc.id)}
                       >
-                        <DeleteIcon fontSize="small" />
+                        <Trash2 {...ICON} />
                       </IconButton>
                     )}
                   </Stack>
                 }
               >
-                <DescriptionIcon sx={{ mr: 1, color: 'action.active' }} />
+                <Box sx={{ mr: 1.5, display: 'flex', color: 'text.secondary' }}>
+                  <FileText {...ICON} />
+                </Box>
                 <ListItemText
                   primary={doc.fileName}
                   secondary={`${DOC_TYPE_LABELS[doc.documentType] ?? doc.documentType} \u2022 ${formatFileSize(doc.fileSize)} \u2022 ${formatDateTime(doc.uploadedAt)}`}
+                  slotProps={{
+                    primary: { sx: { fontWeight: 600 } },
+                    secondary: { sx: { fontSize: '0.75rem' } },
+                  }}
                 />
               </ListItem>
             ))}
@@ -750,21 +814,25 @@ export default function PODetailModal({
         {/* Receiving History */}
         {po.receiveRecords.length > 0 && (
           <>
-            <Divider sx={{ my: 2 }} />
-            <Typography variant="h6" gutterBottom>
-              Receiving History
-            </Typography>
-            <List dense>
+            <SectionHeading>Receiving History</SectionHeading>
+            <List dense disablePadding>
               {po.receiveRecords.map((record) => {
                 const totalItems = record.lineItems.reduce(
                   (sum, li) => sum + li.quantityReceived,
                   0,
                 );
                 return (
-                  <ListItem key={record.id}>
+                  <ListItem
+                    key={record.id}
+                    sx={{ px: 0, borderBottom: '1px solid', borderColor: 'divider' }}
+                  >
                     <ListItemText
                       primary={`Received on ${formatDateTime(record.receivedAt)} by ${record.receivedBy}`}
                       secondary={`${totalItems} total item${totalItems !== 1 ? 's' : ''} received across ${record.lineItems.length} line${record.lineItems.length !== 1 ? 's' : ''}`}
+                      slotProps={{
+                        primary: { sx: { fontWeight: 600, ...tabularSx } },
+                        secondary: { sx: { fontSize: '0.75rem', ...tabularSx } },
+                      }}
                     />
                   </ListItem>
                 );
@@ -818,7 +886,7 @@ export default function PODetailModal({
             variant="contained"
             onClick={handleUpload}
             disabled={!uploadFile || uploadLoading}
-            startIcon={uploadLoading ? <CircularProgress size={16} /> : <UploadFileIcon />}
+            startIcon={uploadLoading ? <CircularProgress size={16} /> : <Upload {...ICON} />}
           >
             {uploadLoading ? 'Uploading...' : 'Upload'}
           </Button>
@@ -860,15 +928,78 @@ export default function PODetailModal({
   );
 }
 
-// --- Helper component ---
+// --- Helper components ---
 
-function InfoRow({ label, value }: { label: string; value: string }) {
+/**
+ * One field of the read-only header grid: micro-label over value. An absent value keeps its label and
+ * renders a dimmed placeholder, so "no quote number" and "we forgot to show the quote number" don't
+ * look the same.
+ */
+function InfoField({
+  label,
+  value,
+  placeholder = EMPTY,
+  mono = false,
+  numeric = false,
+  wrap = false,
+}: {
+  label: string;
+  value: string | null | undefined;
+  placeholder?: string;
+  mono?: boolean;
+  numeric?: boolean;
+  wrap?: boolean;
+}) {
+  const empty = !value || value === EMPTY;
   return (
-    <Box sx={{ display: 'flex', py: 0.5 }}>
-      <Typography variant="body2" color="text.secondary" sx={{ width: 200, flexShrink: 0 }}>
-        {label}:
+    <Box sx={{ minWidth: 0 }}>
+      <Typography component="div" sx={{ ...microLabelSx, mb: 0.25 }}>
+        {label}
       </Typography>
-      <Typography variant="body2">{value}</Typography>
+      <Typography
+        component="div"
+        variant="body2"
+        sx={{
+          ...(mono && !empty ? monoSx : {}),
+          ...(numeric ? tabularSx : {}),
+          color: empty ? 'text.disabled' : 'text.primary',
+          whiteSpace: wrap ? 'pre-wrap' : undefined,
+          wordBreak: wrap ? 'break-word' : undefined,
+        }}
+      >
+        {empty ? placeholder : value}
+      </Typography>
+    </Box>
+  );
+}
+
+/** A 2px ink rule with a micro-label heading — how this modal separates its sections. */
+function SectionHeading({
+  children,
+  action,
+}: {
+  children: ReactNode;
+  action?: ReactNode;
+}) {
+  return (
+    <Box
+      sx={{
+        mt: 3,
+        mb: 1.25,
+        pt: 1.25,
+        borderTop: '2px solid',
+        borderColor: 'text.primary',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 2,
+        minHeight: 32,
+      }}
+    >
+      <Typography component="h3" sx={microLabelSx}>
+        {children}
+      </Typography>
+      {action}
     </Box>
   );
 }

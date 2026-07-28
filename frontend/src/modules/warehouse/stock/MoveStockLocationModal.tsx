@@ -1,10 +1,11 @@
 import { useState } from 'react';
-import { Button, Stack, TextField, Alert } from '@mui/material';
+import { Box, Button, Stack, TextField, Alert, Typography } from '@mui/material';
 import { useMutation } from '@apollo/client/react';
 import Modal from '../../../components/Modal';
 import { useToast } from '../../../components/Toast';
 import { MOVE_STOCK_LOCATION } from '../../../graphql/warehouse';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../../graphql/refetch';
+import { microLabelSx, monoSx } from '../../../theme';
 import type { StockItem } from '../StockPoolView';
 
 interface Props {
@@ -62,6 +63,14 @@ export default function MoveStockLocationModal({ item, onClose, onSuccess }: Pro
     >
       <Stack spacing={2}>
         {error && <Alert severity="error">{error.message}</Alert>}
+        <Box sx={{ pb: 1, borderBottom: '1px solid', borderColor: 'divider' }}>
+          <Typography component="div" sx={microLabelSx}>
+            Currently at
+          </Typography>
+          <Typography sx={monoSx}>
+            {[item.aisle, item.row, item.bay].filter(Boolean).join(' / ') || 'unlocated'}
+          </Typography>
+        </Box>
         <Stack direction="row" spacing={2}>
           <TextField label="Aisle" value={aisle} onChange={(e) => setAisle(e.target.value)} required />
           <TextField label="Row" value={row} onChange={(e) => setRow(e.target.value)} required />

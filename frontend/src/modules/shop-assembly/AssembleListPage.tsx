@@ -15,7 +15,7 @@ import {
   Stack,
   Button,
 } from '@mui/material';
-import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import { ChevronDown } from 'lucide-react';
 import { useQuery, useMutation } from '@apollo/client/react';
 import { GET_ASSEMBLE_LIST, ASSIGN_OPENINGS, REMOVE_OPENING_FROM_USER } from '../../graphql/shop-assembly';
 import { ASSIGNMENT_STALE_ROOT_FIELDS } from '../../graphql/refetch';
@@ -25,6 +25,8 @@ import { useIdentity } from '../../hooks/useIdentity';
 import { useToast } from '../../components/Toast';
 import AssemblyDetailModal from './AssemblyDetailModal';
 import { assemblyProgress, assemblyStatusLabel, unitProgressLabel } from './openingFilters';
+import { microLabelSx, monoSx, tabularSx } from '../../theme';
+import { FadeIn, StaggerList, StaggerItem } from '../../motion';
 
 // --- Types ---
 
@@ -208,9 +210,15 @@ export default function AssembleListPage() {
 
   return (
     <Box>
-      <Typography variant="h5" gutterBottom>
-        Assemble List
-      </Typography>
+      <FadeIn>
+        <Typography variant="h5" sx={{ mb: 0.5 }}>
+          Assemble List
+        </Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          Every approved door leaf, grouped by whether its hardware has actually arrived. Only the
+          ready ones can be worked.
+        </Typography>
+      </FadeIn>
 
       <OpeningLeafStatusPanel mode="assembly" grouped title="Door leaves assembled (by project)" />
 
@@ -226,115 +234,137 @@ export default function AssembleListPage() {
         </Alert>
       )}
 
-      <Stack spacing={2}>
+      <Stack spacing={3}>
         {PULL_STATUS_SECTIONS.map((section) => {
           const sectionOpenings = grouped[section.key] ?? [];
           return (
             <Box key={section.key}>
-              <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
-                <Typography variant="h6">{section.label}</Typography>
-                <Chip
-                  label={section.badgeLabel}
-                  color={section.badgeColor}
-                  size="small"
-                />
-                <Typography variant="body2" color="text.secondary">
-                  ({sectionOpenings.length})
+              {/* Group header as a rule with a count on it: three groups have to be tellable apart
+                  at a glance, and the badge is what says whether the group can be worked at all. */}
+              <Stack
+                direction="row"
+                spacing={1}
+                alignItems="center"
+                sx={{ mb: 1, pb: 0.75, borderBottom: 2, borderColor: 'text.primary' }}
+              >
+                <Typography component="div" sx={{ ...microLabelSx, color: 'text.primary' }}>
+                  {section.label}
+                </Typography>
+                <Chip label={section.badgeLabel} color={section.badgeColor} size="small" />
+                <Typography variant="body2" color="text.secondary" sx={tabularSx}>
+                  {sectionOpenings.length}
                 </Typography>
               </Stack>
 
               {sectionOpenings.length === 0 ? (
-                <Typography variant="body2" color="text.secondary" sx={{ ml: 2, mb: 2 }}>
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
                   No openings in this category.
                 </Typography>
               ) : (
-                sectionOpenings.map((opening) => {
-                  const actions = renderActions(opening);
-                  const progress = assemblyProgress(opening.items ?? []);
-                  return (
-                    <Accordion key={opening.id} variant="outlined" sx={{ mb: 1 }}>
-                      <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                        <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap">
-                          <Typography fontWeight="bold">
-                            Opening: {opening.openingNumber || opening.openingId}
-                            {leafSuffix(opening.leaf)}
-                          </Typography>
-                          <Chip
-                            label={formatPullStatus(opening.pullStatus)}
-                            color={section.badgeColor}
-                            size="small"
-                            variant="outlined"
-                          />
-                          {/* Assembly state is separate from pull state - a leaf can be fully pulled
-                              and half built (#340). */}
-                          <Chip
-                            label={assemblyStatusLabel(opening.assemblyStatus)}
-                            color={opening.assemblyStatus === 'IN_PROGRESS' ? 'info' : 'default'}
-                            size="small"
-                            variant="outlined"
-                          />
-                          <Typography variant="body2" color="text.secondary">
-                            {unitProgressLabel(opening.items ?? [])}
-                          </Typography>
-                          {/* Owed but never pulled. Its own chip rather than part of the progress
-                              count: it is not outstanding work, and the leaf finishes without it. */}
-                          {progress.short > 0 && (
-                            <Chip
-                              label={`${progress.short} never pulled`}
-                              color="warning"
-                              size="small"
-                              variant="outlined"
-                            />
-                          )}
-                        </Stack>
-                      </AccordionSummary>
-                      <AccordionDetails>
-                        {actions && <Box sx={{ mb: 2 }}>{actions}</Box>}
-                        {opening.items.length > 0 ? (
-                          <Table size="small">
-                            <TableHead>
-                              <TableRow>
-                                <TableCell>Product Code</TableCell>
-                                <TableCell>Hardware Category</TableCell>
-                                <TableCell align="right">Owed</TableCell>
-                                <TableCell align="right">Pulled</TableCell>
-                                <TableCell align="right">Installed</TableCell>
-                                <TableCell align="right">Deficient</TableCell>
-                              </TableRow>
-                            </TableHead>
-                            <TableBody>
-                              {opening.items.map((item) => (
-                                <TableRow key={item.id}>
-                                  <TableCell>{item.productCode}</TableCell>
-                                  <TableCell>{item.hardwareCategory}</TableCell>
-                                  <TableCell align="right">{item.quantity}</TableCell>
-                                  <TableCell align="right">
-                                    {item.allocatedQuantity}
-                                    {item.quantity > item.allocatedQuantity && (
-                                      <Chip
-                                        size="small"
-                                        variant="outlined"
-                                        color="warning"
-                                        label={`${item.quantity - item.allocatedQuantity} never pulled`}
-                                        sx={{ ml: 0.5 }}
-                                      />
-                                    )}
-                                  </TableCell>
-                                  <TableCell align="right">{item.installedQuantity}</TableCell>
-                                  <TableCell align="right">{item.deficientQuantity}</TableCell>
-                                </TableRow>
-                              ))}
-                            </TableBody>
-                          </Table>
-                        ) : (
-                          <Typography variant="body2" color="text.secondary">
-                            No hardware items.
-                          </Typography>
-                        )}
-                      </AccordionDetails>
-                    </Accordion>
-                  );
-                })
+                <StaggerList count={sectionOpenings.length}>
+                  {sectionOpenings.map((opening) => {
+                    const actions = renderActions(opening);
+                    const progress = assemblyProgress(opening.items ?? []);
+                    return (
+                      <StaggerItem key={opening.id}>
+                        <Accordion variant="outlined" sx={{ mb: 1 }}>
+                          <AccordionSummary expandIcon={<ChevronDown size={18} strokeWidth={1.75} />}>
+                            <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap" useFlexGap>
+                              {/* One element: an eyebrow plus the identifier in the mono face, but
+                                  never split across elements - the accessible name of this summary is
+                                  how the row is found. */}
+                              <Typography component="div">
+                                <Box component="span" sx={microLabelSx}>
+                                  Opening:
+                                </Box>
+                                {/* A real space, as a text node of the summary itself: an accessible
+                                    name is assembled from the flattened text of each child element,
+                                    and whitespace inside a child span is trimmed away before the
+                                    pieces are joined. */}
+                                {' '}
+                                <Box component="span" sx={{ ...monoSx, fontWeight: 600 }}>
+                                  {(opening.openingNumber || opening.openingId) +
+                                    leafSuffix(opening.leaf)}
+                                </Box>
+                              </Typography>
+                              <Chip
+                                label={formatPullStatus(opening.pullStatus)}
+                                color={section.badgeColor}
+                                size="small"
+                                variant="outlined"
+                              />
+                              {/* Assembly state is separate from pull state - a leaf can be fully pulled
+                                  and half built (#340). */}
+                              <Chip
+                                label={assemblyStatusLabel(opening.assemblyStatus)}
+                                color={opening.assemblyStatus === 'IN_PROGRESS' ? 'info' : 'default'}
+                                size="small"
+                                variant="outlined"
+                              />
+                              <Typography variant="body2" color="text.secondary" sx={tabularSx}>
+                                {unitProgressLabel(opening.items ?? [])}
+                              </Typography>
+                              {/* Owed but never pulled. Its own chip rather than part of the progress
+                                  count: it is not outstanding work, and the leaf finishes without it. */}
+                              {progress.short > 0 && (
+                                <Chip
+                                  label={`${progress.short} never pulled`}
+                                  color="warning"
+                                  size="small"
+                                  variant="outlined"
+                                />
+                              )}
+                            </Stack>
+                          </AccordionSummary>
+                          <AccordionDetails>
+                            {actions && <Box sx={{ mb: 2 }}>{actions}</Box>}
+                            {opening.items.length > 0 ? (
+                              <Table size="small">
+                                <TableHead>
+                                  <TableRow>
+                                    <TableCell>Product Code</TableCell>
+                                    <TableCell>Hardware Category</TableCell>
+                                    <TableCell align="right">Owed</TableCell>
+                                    <TableCell align="right">Pulled</TableCell>
+                                    <TableCell align="right">Installed</TableCell>
+                                    <TableCell align="right">Deficient</TableCell>
+                                  </TableRow>
+                                </TableHead>
+                                <TableBody>
+                                  {opening.items.map((item) => (
+                                    <TableRow key={item.id} hover>
+                                      <TableCell sx={monoSx}>{item.productCode}</TableCell>
+                                      <TableCell>{item.hardwareCategory}</TableCell>
+                                      <TableCell align="right">{item.quantity}</TableCell>
+                                      <TableCell align="right">
+                                        {item.allocatedQuantity}
+                                        {item.quantity > item.allocatedQuantity && (
+                                          <Chip
+                                            size="small"
+                                            variant="outlined"
+                                            color="warning"
+                                            label={`${item.quantity - item.allocatedQuantity} never pulled`}
+                                            sx={{ ml: 0.5 }}
+                                          />
+                                        )}
+                                      </TableCell>
+                                      <TableCell align="right">{item.installedQuantity}</TableCell>
+                                      <TableCell align="right">{item.deficientQuantity}</TableCell>
+                                    </TableRow>
+                                  ))}
+                                </TableBody>
+                              </Table>
+                            ) : (
+                              <Typography variant="body2" color="text.secondary">
+                                No hardware items.
+                              </Typography>
+                            )}
+                          </AccordionDetails>
+                        </Accordion>
+                      </StaggerItem>
+                    );
+                  })}
+                </StaggerList>
               )}
             </Box>
           );

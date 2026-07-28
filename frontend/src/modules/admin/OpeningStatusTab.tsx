@@ -15,9 +15,11 @@ import {
   TableRow,
   Paper,
 } from '@mui/material';
-import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import { ChevronDown } from 'lucide-react';
 import { useQuery } from '@apollo/client/react';
 import { GET_OPENING_HARDWARE_STATUS } from '../../graphql/admin';
+import { microLabelSx, monoSx, tabularSx } from '../../theme';
+import { FadeIn, StaggerList, StaggerItem } from '../../motion';
 
 interface OpeningHardwareStatusItem {
   hardwareCategory: string;
@@ -65,57 +67,82 @@ export default function OpeningStatusTab() {
 
   return (
     <Box>
-      {openings.map((opening) => {
-        const subtitle = [opening.building, opening.floor, opening.location]
-          .filter(Boolean)
-          .join(' / ');
+      <FadeIn>
+        <Typography variant="h5" sx={{ mb: 0.25 }}>
+          Opening Status
+        </Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          Where each opening's hardware sits between drafted, ordered, and received.
+        </Typography>
+      </FadeIn>
 
-        return (
-          <Accordion key={opening.openingNumber}>
-            <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-              <Box>
-                <Typography variant="subtitle1" fontWeight="bold">
-                  {opening.openingNumber}
-                </Typography>
-                {subtitle && (
-                  <Typography variant="body2" color="text.secondary">
-                    {subtitle}
-                  </Typography>
-                )}
-              </Box>
-            </AccordionSummary>
-            <AccordionDetails>
-              <TableContainer component={Paper} variant="outlined">
-                <Table size="small">
-                  <TableHead>
-                    <TableRow>
-                      <TableCell>Hardware Category</TableCell>
-                      <TableCell>Product Code</TableCell>
-                      <TableCell align="right">Quantity</TableCell>
-                      <TableCell>Status</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {opening.items.map((item, idx) => {
-                      const chip = STATUS_CHIP[item.status] ?? STATUS_CHIP.PO_DRAFTED;
-                      return (
-                        <TableRow key={idx}>
-                          <TableCell>{item.hardwareCategory}</TableCell>
-                          <TableCell>{item.productCode}</TableCell>
-                          <TableCell align="right">{item.itemQuantity}</TableCell>
-                          <TableCell>
-                            <Chip label={chip.label} color={chip.color} size="small" />
-                          </TableCell>
-                        </TableRow>
-                      );
-                    })}
-                  </TableBody>
-                </Table>
-              </TableContainer>
-            </AccordionDetails>
-          </Accordion>
-        );
-      })}
+      {/* gap (not Stack's margins) so the stagger wrapper's display:contents stays transparent. */}
+      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+        <StaggerList count={openings.length}>
+          {openings.map((opening) => {
+            const subtitle = [opening.building, opening.floor, opening.location]
+              .filter(Boolean)
+              .join(' / ');
+
+            return (
+              <StaggerItem key={opening.openingNumber}>
+                <Accordion
+                  variant="outlined"
+                  disableGutters
+                  sx={{ '&::before': { display: 'none' }, borderRadius: 1 }}
+                >
+                  <AccordionSummary expandIcon={<ChevronDown size={18} strokeWidth={1.75} />}>
+                    <Box>
+                      <Typography component="div" sx={{ ...monoSx, fontSize: '0.9375rem', fontWeight: 600 }}>
+                        {opening.openingNumber}
+                      </Typography>
+                      {subtitle && (
+                        <Typography variant="body2" color="text.secondary">
+                          {subtitle}
+                        </Typography>
+                      )}
+                    </Box>
+                  </AccordionSummary>
+                  <AccordionDetails>
+                    <TableContainer component={Paper} variant="outlined">
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow>
+                            <TableCell>Hardware Category</TableCell>
+                            <TableCell>Product Code</TableCell>
+                            <TableCell align="right">Quantity</TableCell>
+                            <TableCell>Status</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {opening.items.map((item, idx) => {
+                            const chip = STATUS_CHIP[item.status] ?? STATUS_CHIP.PO_DRAFTED;
+                            return (
+                              <TableRow key={idx} hover>
+                                <TableCell>{item.hardwareCategory}</TableCell>
+                                <TableCell sx={monoSx}>{item.productCode}</TableCell>
+                                <TableCell align="right" sx={tabularSx}>
+                                  {item.itemQuantity}
+                                </TableCell>
+                                <TableCell>
+                                  <Chip label={chip.label} color={chip.color} size="small" />
+                                </TableCell>
+                              </TableRow>
+                            );
+                          })}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                    <Typography component="div" sx={{ ...microLabelSx, mt: 1 }}>
+                      {opening.items.length} item{opening.items.length === 1 ? '' : 's'}
+                    </Typography>
+                  </AccordionDetails>
+                </Accordion>
+              </StaggerItem>
+            );
+          })}
+        </StaggerList>
+      </Box>
     </Box>
   );
 }

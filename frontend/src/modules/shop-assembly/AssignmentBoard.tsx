@@ -29,6 +29,8 @@ import { leafSuffix } from '../../utils/leaf';
 import AssemblyDetailModal from './AssemblyDetailModal';
 import ManagerAssignPanel from './ManagerAssignPanel';
 import { isAvailableForAssignment } from './openingFilters';
+import { microLabelSx, monoSx } from '../../theme';
+import { FadeIn } from '../../motion';
 
 interface OpeningItem {
   id: string;
@@ -98,12 +100,14 @@ function DraggableCard({
           p: 1.5,
           mb: 1,
           cursor: isDragOverlay ? 'grabbing' : 'grab',
-          bgcolor: isDragOverlay ? 'action.hover' : 'background.paper',
-          '&:hover': { bgcolor: 'action.hover' },
+          bgcolor: isDragOverlay ? 'background.paper' : 'background.paper',
+          transition: 'border-color 0.15s ease, box-shadow 0.15s ease',
+          boxShadow: isDragOverlay ? '0 8px 24px rgba(29, 27, 23, 0.18)' : 'none',
+          '&:hover': { bgcolor: 'action.hover', borderColor: 'text.secondary' },
         }}
       >
-        <Stack direction='row' justifyContent='space-between' alignItems='center'>
-          <Typography fontWeight='bold' variant='body2'>
+        <Stack direction='row' justifyContent='space-between' alignItems='center' spacing={1}>
+          <Typography variant='body2' sx={{ ...monoSx, fontWeight: 600 }}>
             {(opening.openingNumber || opening.openingId.slice(0, 8)) + leafSuffix(opening.leaf)}
           </Typography>
           <Chip label={`${opening.items.length} items`} size="small" variant="outlined" />
@@ -148,13 +152,23 @@ function DroppablePanel({
         p: 2,
         minHeight: 400,
         bgcolor: isOver ? 'action.selected' : color || 'background.default',
-        transition: 'background-color 0.2s',
+        // The amber edge is the app's "this is the one" signal; here it marks the panel a card is
+        // about to land in.
+        boxShadow: isOver ? (t) => `inset 3px 0 0 ${t.vars.palette.secondary.main}` : 'none',
+        transition: 'background-color 0.2s ease, box-shadow 0.2s ease',
       }}
     >
-      <Typography variant='h6' gutterBottom>
-        {title}
-        <Chip label={openings.length} size='small' sx={{ ml: 1 }} />
-      </Typography>
+      <Stack
+        direction='row'
+        spacing={1}
+        alignItems='center'
+        sx={{ mb: 1.5, pb: 0.75, borderBottom: 2, borderColor: 'text.primary' }}
+      >
+        <Typography component='div' sx={{ ...microLabelSx, color: 'text.primary' }}>
+          {title}
+        </Typography>
+        <Chip label={openings.length} size='small' variant='outlined' />
+      </Stack>
       {openings.length === 0 ? (
         <Typography variant='body2' color='text.secondary' sx={{ mt: 2, textAlign: 'center' }}>
           {emptyText}
@@ -297,12 +311,14 @@ export default function AssignmentBoard() {
 
   return (
     <Box>
-      <Typography variant='h5' gutterBottom>
-        Opening Assignment Board
-      </Typography>
-      <Typography variant='body2' color='text.secondary' sx={{ mb: 2 }}>
-        Claim a pulled opening with "Assign to me" (or drag it across), then complete its assembly here or from My Work.
-      </Typography>
+      <FadeIn>
+        <Typography variant='h5' sx={{ mb: 0.5 }}>
+          Opening Assignment Board
+        </Typography>
+        <Typography variant='body2' color='text.secondary' sx={{ mb: 2, maxWidth: 780 }}>
+          Claim a pulled opening with "Assign to me" (or drag it across), then complete its assembly here or from My Work.
+        </Typography>
+      </FadeIn>
 
       {isManager && <ManagerAssignPanel />}
 
@@ -311,21 +327,23 @@ export default function AssignmentBoard() {
         onDragStart={handleDragStart}
         onDragEnd={handleDragEnd}
       >
-        <Grid container spacing={3}>
-          <Grid size={6}>
+        <Grid container spacing={2}>
+          <Grid size={{ xs: 12, md: 6 }}>
             <DroppablePanel
               id='available'
               title='Available Openings (Pulled)'
               openings={available}
               emptyText='No unassigned openings available'
+              // Outlined, not filled: this action repeats once per card, and a column of amber
+              // buttons would spend the screen's accent twenty times over.
               renderActions={(opening) => (
-                <Button size='small' variant='contained' onClick={() => claim(opening)}>
+                <Button size='small' variant='outlined' onClick={() => claim(opening)}>
                   Assign to me
                 </Button>
               )}
             />
           </Grid>
-          <Grid size={6}>
+          <Grid size={{ xs: 12, md: 6 }}>
             <DroppablePanel
               id='assigned'
               title={`Assigned to ${displayName}`}

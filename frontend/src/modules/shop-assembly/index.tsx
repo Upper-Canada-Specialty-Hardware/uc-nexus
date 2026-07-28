@@ -1,32 +1,22 @@
-import type { ReactNode } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
-import { Box } from '@mui/material';
 import AssembleListPage from './AssembleListPage';
 import AssignmentBoard from './AssignmentBoard';
 import MyWorkPage from './MyWorkPage';
 import PipelinePage from './PipelinePage';
 import ShopAssemblyLanding from './ShopAssemblyLanding';
 import ShopAssemblyRequestsPage from './ShopAssemblyRequestsPage';
-import BackToModule from '../../components/BackToModule';
 
-function ShopAssemblySubLayout({ children }: { children: ReactNode }) {
-  return (
-    <Box>
-      <BackToModule to="/app/shop-assembly" label="Shop Assembly" />
-      {children}
-    </Box>
-  );
-}
-
+// No back-to-module bar: the persistent nav rail and the app-bar breadcrumbs both carry the way back
+// now, and a third one only spent a row of the page saying it again.
 export default function ShopAssemblyModule() {
   return (
     <Routes>
       <Route index element={<ShopAssemblyLanding />} />
-      <Route path="requests" element={<ShopAssemblySubLayout><ShopAssemblyRequestsPage /></ShopAssemblySubLayout>} />
-      <Route path="assemble" element={<ShopAssemblySubLayout><AssembleListPage /></ShopAssemblySubLayout>} />
-      <Route path="assign" element={<ShopAssemblySubLayout><AssignmentBoard /></ShopAssemblySubLayout>} />
-      <Route path="my-work" element={<ShopAssemblySubLayout><MyWorkPage /></ShopAssemblySubLayout>} />
-      <Route path="pipeline" element={<ShopAssemblySubLayout><PipelinePage /></ShopAssemblySubLayout>} />
+      <Route path="requests" element={<ShopAssemblyRequestsPage />} />
+      <Route path="assemble" element={<AssembleListPage />} />
+      <Route path="assign" element={<AssignmentBoard />} />
+      <Route path="my-work" element={<MyWorkPage />} />
+      <Route path="pipeline" element={<PipelinePage />} />
       <Route path="*" element={<Navigate to="" replace />} />
     </Routes>
   );

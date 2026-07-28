@@ -18,9 +18,7 @@ import {
   Tooltip,
   Typography,
 } from '@mui/material';
-import AddIcon from '@mui/icons-material/Add';
-import RemoveIcon from '@mui/icons-material/Remove';
-import RestartAltIcon from '@mui/icons-material/RestartAlt';
+import { Minus, Plus, RotateCcw } from 'lucide-react';
 import type { InventoryAvailabilityRow } from './types';
 import {
   allocatedFor,
@@ -38,6 +36,8 @@ import {
   type ShopAssemblyOpeningDraft,
 } from './allocation';
 import { leafSuffix } from '../../utils/leaf';
+import { monoSx, microLabelSx, tabularSx } from '../../theme';
+import { StaggerItem, StaggerList } from '../../motion';
 
 interface ShopAssemblyStepProps {
   sarRequestNumber: string;
@@ -186,6 +186,7 @@ export default function ShopAssemblyStep({
         value={sarRequestNumber}
         onChange={(e) => onSarNumberChange(e.target.value)}
         sx={{ mb: 3, width: 300 }}
+        slotProps={{ input: { sx: monoSx } }}
       />
 
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
@@ -229,7 +230,12 @@ export default function ShopAssemblyStep({
             <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
               Hardware this request would reserve
             </Typography>
-            <Button size="small" startIcon={<RestartAltIcon />} onClick={runAutoAssign}>
+            <Button
+              size="small"
+              variant="outlined"
+              startIcon={<RotateCcw size={18} strokeWidth={1.75} />}
+              onClick={runAutoAssign}
+            >
               Re-run auto-assign
             </Button>
           </Stack>
@@ -247,8 +253,8 @@ export default function ShopAssemblyStep({
             </TableHead>
             <TableBody>
               {summaryRows.map((row) => (
-                <TableRow key={row.key}>
-                  <TableCell>{row.productCode}</TableCell>
+                <TableRow key={row.key} hover>
+                  <TableCell sx={monoSx}>{row.productCode}</TableCell>
                   <TableCell>{row.hardwareCategory}</TableCell>
                   <TableCell align="right">{row.owed}</TableCell>
                   <TableCell align="right">{availabilityError ? '?' : row.available}</TableCell>
@@ -278,11 +284,11 @@ export default function ShopAssemblyStep({
         </Alert>
       )}
 
-      <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 600 }}>
+      <Typography sx={{ ...microLabelSx, ...tabularSx, mb: 1 }}>
         Door leaves ({includedCount} of {openingDrafts.length} being sent)
       </Typography>
 
-      <Stack spacing={1.5}>
+      <StaggerList count={openingDrafts.length}>
         {openingDrafts.map((draft) => {
           const key = leafKey(draft);
           const coverage = leafCoverage(allocation, draft);
@@ -292,13 +298,18 @@ export default function ShopAssemblyStep({
           const allocated = leafAllocatedTotal(allocation, draft);
 
           return (
+            <StaggerItem key={key}>
             <Paper
-              key={key}
               variant="outlined"
-              sx={{ p: 1.5, opacity: autoDropped ? 0.55 : included ? 1 : 0.75 }}
+              sx={{
+                p: 1.5,
+                mb: 1.5,
+                opacity: autoDropped ? 0.55 : included ? 1 : 0.75,
+                boxShadow: included ? (t) => `inset 3px 0 0 ${t.vars?.palette.secondary.main ?? t.palette.secondary.main}` : 'none',
+              }}
             >
               <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}>
-                <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+                <Typography variant="subtitle2" sx={{ fontWeight: 600, ...monoSx }}>
                   {draft.openingNumber}
                   {leafSuffix(draft.leaf)}
                 </Typography>
@@ -310,7 +321,7 @@ export default function ShopAssemblyStep({
                   </Tooltip>
                 )}
                 <Box sx={{ flexGrow: 1 }} />
-                <Typography variant="caption" color="text.secondary">
+                <Typography variant="caption" color="text.secondary" sx={tabularSx}>
                   {allocated} of {owed} allocated
                 </Typography>
                 <Tooltip
@@ -364,8 +375,8 @@ export default function ShopAssemblyStep({
                     );
                     const short = item.quantity - current;
                     return (
-                      <TableRow key={comboKey(item)}>
-                        <TableCell>{item.productCode}</TableCell>
+                      <TableRow key={comboKey(item)} hover>
+                        <TableCell sx={monoSx}>{item.productCode}</TableCell>
                         <TableCell>{item.hardwareCategory}</TableCell>
                         <TableCell align="right">{item.quantity}</TableCell>
                         <TableCell align="center">
@@ -376,16 +387,18 @@ export default function ShopAssemblyStep({
                               onClick={() => handleLineChange(draft, item, current - 1)}
                               aria-label={`Remove one ${item.productCode}`}
                             >
-                              <RemoveIcon fontSize="inherit" />
+                              <Minus size={16} strokeWidth={1.75} />
                             </IconButton>
-                            <Box sx={{ minWidth: 28, textAlign: 'center' }}>{current}</Box>
+                            <Box sx={{ minWidth: 28, textAlign: 'center', ...tabularSx, fontWeight: 600 }}>
+                              {current}
+                            </Box>
                             <IconButton
                               size="small"
                               disabled={!included || current >= ceiling}
                               onClick={() => handleLineChange(draft, item, current + 1)}
                               aria-label={`Add one ${item.productCode}`}
                             >
-                              <AddIcon fontSize="inherit" />
+                              <Plus size={16} strokeWidth={1.75} />
                             </IconButton>
                           </Stack>
                         </TableCell>
@@ -400,9 +413,10 @@ export default function ShopAssemblyStep({
                 </TableBody>
               </Table>
             </Paper>
+            </StaggerItem>
           );
         })}
-      </Stack>
+      </StaggerList>
 
       <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 3 }}>
         <Button onClick={onBack}>Back</Button>

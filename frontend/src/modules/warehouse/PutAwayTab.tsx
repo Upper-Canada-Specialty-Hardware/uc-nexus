@@ -20,12 +20,14 @@ import {
   TableRow,
   Paper,
 } from '@mui/material';
-import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import { ChevronDown } from 'lucide-react';
 import { useQuery, useMutation } from '@apollo/client/react';
 import { useToast } from '../../components/Toast';
 import LocationAutocomplete from '../../components/LocationAutocomplete';
 import { GET_PROJECTS, ASSIGN_INVENTORY_LOCATION } from '../../graphql/shared';
 import { GET_UNLOCATED_INVENTORY, GET_LOCATION_DISTINCT_VALUES } from '../../graphql/warehouse';
+import { microLabelSx, monoSx, tabularSx } from '../../theme';
+import { StaggerItem, StaggerList } from '../../motion';
 
 // ---- Types ----
 
@@ -58,6 +60,17 @@ interface LocationInput {
 }
 
 // ---- Helpers ----
+
+// Flat, hairline-bordered group. minWidth:0 on the summary content keeps a long category name
+// from being clipped by the flex row it sits in.
+const ACCORDION_SX = {
+  border: '1px solid',
+  borderColor: 'divider',
+  borderRadius: 1,
+  mb: 1,
+  '&:before': { display: 'none' },
+  '& .MuiAccordionSummary-content': { minWidth: 0, alignItems: 'center' },
+} as const;
 
 function formatDate(dateStr: string): string {
   return new Date(dateStr).toLocaleDateString();
@@ -183,8 +196,17 @@ export default function PutAwayTab() {
     return <Alert severity="error">Error loading unlocated inventory: {error.message}</Alert>;
   }
 
+  const groups = Array.from(grouped.entries());
+
   return (
     <Box>
+      <Typography variant="h5" sx={{ mb: 0.5 }}>
+        Put Away
+      </Typography>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+        Received hardware with no rack location yet. Give each row an aisle, row and bay.
+      </Typography>
+
       {/* Project filter */}
       <FormControl size="small" sx={{ minWidth: 250, mb: 3 }}>
         <InputLabel>Filter by Project</InputLabel>
@@ -209,98 +231,114 @@ export default function PutAwayTab() {
       )}
 
       {/* Grouped by category */}
-      {Array.from(grouped.entries()).map(([category, categoryItems]) => {
-        const totalQty = categoryItems.reduce(
-          (sum, item) => sum + item.inventoryLocation.quantity,
-          0,
-        );
+      <StaggerList count={groups.length}>
+        {groups.map(([category, categoryItems]) => {
+          const totalQty = categoryItems.reduce(
+            (sum, item) => sum + item.inventoryLocation.quantity,
+            0,
+          );
 
-        return (
-          <Accordion key={category} defaultExpanded>
-            <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-              <Typography sx={{ fontWeight: 600 }}>{category}</Typography>
-              <Typography sx={{ ml: 2, color: 'text.secondary' }}>
-                {categoryItems.length} item{categoryItems.length !== 1 ? 's' : ''}, {totalQty} total qty
-              </Typography>
-            </AccordionSummary>
-            <AccordionDetails>
-              <TableContainer component={Paper} variant="outlined">
-                <Table size="small">
-                  <TableHead>
-                    <TableRow>
-                      <TableCell>Product Code</TableCell>
-                      <TableCell align="right">Qty</TableCell>
-                      <TableCell>PO#</TableCell>
-                      <TableCell>Received</TableCell>
-                      <TableCell>Aisle</TableCell>
-                      <TableCell>Row</TableCell>
-                      <TableCell>Bay</TableCell>
-                      <TableCell></TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {categoryItems.map((item) => {
-                      const id = item.inventoryLocation.id;
-                      const loc = getLocationInput(id);
-                      const valid = isValid(id);
-                      const isAssigning = assigningId === id;
-
-                      return (
-                        <TableRow key={id}>
-                          <TableCell>{item.inventoryLocation.productCode}</TableCell>
-                          <TableCell align="right">{item.inventoryLocation.quantity}</TableCell>
-                          <TableCell>{item.poNumber ?? '\u2014'}</TableCell>
-                          <TableCell>{formatDate(item.inventoryLocation.receivedAt)}</TableCell>
-                          <TableCell sx={{ minWidth: 140 }}>
-                            <LocationAutocomplete
-                              label=""
-                              value={loc.aisle}
-                              onChange={(v) => updateLocationInput(id, 'aisle', v)}
-                              options={aisleOptions}
-                            />
-                          </TableCell>
-                          <TableCell sx={{ minWidth: 140 }}>
-                            <LocationAutocomplete
-                              label=""
-                              value={loc.row}
-                              onChange={(v) => updateLocationInput(id, 'row', v)}
-                              options={rowOptions}
-                            />
-                          </TableCell>
-                          <TableCell sx={{ minWidth: 140 }}>
-                            <LocationAutocomplete
-                              label=""
-                              value={loc.bay}
-                              onChange={(v) => updateLocationInput(id, 'bay', v)}
-                              options={bayOptions}
-                            />
-                          </TableCell>
-                          <TableCell>
-                            <Button
-                              variant="contained"
-                              size="small"
-                              disabled={!valid || isAssigning}
-                              onClick={() =>
-                                handleAssign(id, item.inventoryLocation.productCode)
-                              }
-                            >
-                              {isAssigning ? (
-                                <CircularProgress size={20} />
-                              ) : (
-                                'Assign'
-                              )}
-                            </Button>
-                          </TableCell>
+          return (
+            <StaggerItem key={category}>
+              <Accordion defaultExpanded disableGutters elevation={0} sx={ACCORDION_SX}>
+                <AccordionSummary expandIcon={<ChevronDown size={18} strokeWidth={1.75} />}>
+                  <Box
+                    sx={{
+                      display: 'flex',
+                      alignItems: 'baseline',
+                      gap: 2,
+                      width: '100%',
+                      minWidth: 0,
+                    }}
+                  >
+                    <Typography sx={{ fontWeight: 600, flex: 1, minWidth: 0 }}>{category}</Typography>
+                    <Typography component="div" sx={{ ...microLabelSx, flexShrink: 0 }}>
+                      {categoryItems.length} item{categoryItems.length !== 1 ? 's' : ''} \u00b7{' '}
+                      {totalQty} qty
+                    </Typography>
+                  </Box>
+                </AccordionSummary>
+                <AccordionDetails>
+                  <TableContainer component={Paper} variant="outlined">
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Product Code</TableCell>
+                          <TableCell align="right">Qty</TableCell>
+                          <TableCell>PO#</TableCell>
+                          <TableCell>Received</TableCell>
+                          {/* One destination cell instead of three unlabelled columns: the fields
+                              now carry their own Aisle/Row/Bay labels rather than relying on a
+                              header three rows up. */}
+                          <TableCell sx={{ minWidth: 300 }}>Destination</TableCell>
+                          <TableCell />
                         </TableRow>
-                      );
-                    })}
-                  </TableBody>
-                </Table>
-              </TableContainer>
-            </AccordionDetails>
-          </Accordion>
-        );
-      })}
+                      </TableHead>
+                      <TableBody>
+                        {categoryItems.map((item) => {
+                          const id = item.inventoryLocation.id;
+                          const loc = getLocationInput(id);
+                          const valid = isValid(id);
+                          const isAssigning = assigningId === id;
+
+                          return (
+                            <TableRow key={id} hover>
+                              <TableCell sx={monoSx}>
+                                {item.inventoryLocation.productCode}
+                              </TableCell>
+                              <TableCell align="right">
+                                {item.inventoryLocation.quantity}
+                              </TableCell>
+                              <TableCell sx={monoSx}>{item.poNumber ?? '\u2014'}</TableCell>
+                              <TableCell sx={tabularSx}>
+                                {formatDate(item.inventoryLocation.receivedAt)}
+                              </TableCell>
+                              <TableCell>
+                                <Box sx={{ display: 'flex', gap: 1, minWidth: 300 }}>
+                                  <LocationAutocomplete
+                                    label="Aisle"
+                                    value={loc.aisle}
+                                    onChange={(v) => updateLocationInput(id, 'aisle', v)}
+                                    options={aisleOptions}
+                                  />
+                                  <LocationAutocomplete
+                                    label="Row"
+                                    value={loc.row}
+                                    onChange={(v) => updateLocationInput(id, 'row', v)}
+                                    options={rowOptions}
+                                  />
+                                  <LocationAutocomplete
+                                    label="Bay"
+                                    value={loc.bay}
+                                    onChange={(v) => updateLocationInput(id, 'bay', v)}
+                                    options={bayOptions}
+                                  />
+                                </Box>
+                              </TableCell>
+                              <TableCell>
+                                <Button
+                                  variant="contained"
+                                  size="small"
+                                  disabled={!valid || isAssigning}
+                                  onClick={() =>
+                                    handleAssign(id, item.inventoryLocation.productCode)
+                                  }
+                                >
+                                  {isAssigning ? <CircularProgress size={20} /> : 'Assign'}
+                                </Button>
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                </AccordionDetails>
+              </Accordion>
+            </StaggerItem>
+          );
+        })}
+      </StaggerList>
     </Box>
   );
 }

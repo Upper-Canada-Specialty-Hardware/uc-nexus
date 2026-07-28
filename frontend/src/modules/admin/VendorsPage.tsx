@@ -11,12 +11,14 @@ import {
   DialogActions,
 } from '@mui/material';
 import { DataGrid, type GridColDef, type GridRowParams } from '@mui/x-data-grid';
-import DeleteIcon from '@mui/icons-material/Delete';
+import { Trash2 } from 'lucide-react';
 import { useQuery, useMutation } from '@apollo/client/react';
 import { DELETE_VENDOR } from '../../graphql/admin';
 import { GET_VENDORS } from '../../graphql/shared';
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
+import { monoSx } from '../../theme';
+import { FadeIn } from '../../motion';
 import VendorEditDialog, { type VendorFormValue } from './VendorEditDialog';
 
 interface Vendor {
@@ -77,7 +79,17 @@ export default function VendorsPage() {
 
   const columns: GridColDef[] = useMemo(() => {
     const cols: GridColDef[] = [
-      { field: 'name', headerName: 'Name', flex: 1.2, minWidth: 160 },
+      {
+        field: 'name',
+        headerName: 'Name',
+        flex: 1.2,
+        minWidth: 160,
+        renderCell: (params) => (
+          <Box component="span" sx={{ fontWeight: 600 }}>
+            {params.row.name}
+          </Box>
+        ),
+      },
       {
         field: 'contactName',
         headerName: 'Contact',
@@ -90,14 +102,22 @@ export default function VendorsPage() {
         headerName: 'Email',
         flex: 1.2,
         minWidth: 180,
-        valueFormatter: (v: string | null) => v ?? '—',
+        renderCell: (params) => (
+          <Box component="span" sx={params.row.email ? monoSx : undefined}>
+            {params.row.email ?? '—'}
+          </Box>
+        ),
       },
       {
         field: 'phone',
         headerName: 'Phone',
         flex: 0.8,
         minWidth: 120,
-        valueFormatter: (v: string | null) => v ?? '—',
+        renderCell: (params) => (
+          <Box component="span" sx={params.row.phone ? monoSx : undefined}>
+            {params.row.phone ?? '—'}
+          </Box>
+        ),
       },
     ];
     if (isAdmin) {
@@ -110,12 +130,13 @@ export default function VendorsPage() {
         renderCell: (params) => (
           <IconButton
             size="small"
+            aria-label={`Delete vendor ${params.row.name}`}
             onClick={(e) => {
               e.stopPropagation();
               setPendingDelete(params.row as Vendor);
             }}
           >
-            <DeleteIcon fontSize="small" />
+            <Trash2 size={18} strokeWidth={1.75} />
           </IconButton>
         ),
       });
@@ -125,19 +146,21 @@ export default function VendorsPage() {
 
   return (
     <Box>
-      <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 2 }}>
-        <Box>
-          <Typography variant="h5" gutterBottom>
-            Vendors
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            Companies we buy from. Click a row to edit.
-          </Typography>
-        </Box>
-        <Button variant="contained" onClick={handleCreate}>
-          Create Vendor
-        </Button>
-      </Stack>
+      <FadeIn>
+        <Stack direction="row" justifyContent="space-between" alignItems="flex-start" sx={{ mb: 2 }}>
+          <Box>
+            <Typography variant="h5" sx={{ mb: 0.25 }}>
+              Vendors
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              Companies we buy from. Click a row to edit.
+            </Typography>
+          </Box>
+          <Button variant="contained" onClick={handleCreate}>
+            Create Vendor
+          </Button>
+        </Stack>
+      </FadeIn>
 
       <DataGrid
         rows={vendors}
@@ -148,7 +171,7 @@ export default function VendorsPage() {
         disableRowSelectionOnClick
         pageSizeOptions={[10, 25, 50]}
         initialState={{ pagination: { paginationModel: { pageSize: 10 } } }}
-        sx={{ cursor: 'pointer' }}
+        sx={{ '& .MuiDataGrid-row': { cursor: 'pointer' } }}
       />
 
       <VendorEditDialog
