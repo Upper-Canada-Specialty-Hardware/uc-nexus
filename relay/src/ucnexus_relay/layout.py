@@ -24,6 +24,12 @@ from pathlib import Path
 ASSET_NAME = "ucnexus-relay.exe"  # the exe name inside a version folder
 CURRENT_LINK = "current"
 VERSION_PREFIX = "app-"
+# A version folder that has been moved aside for deletion. Deliberately NOT app-*, so a half-deleted
+# leftover can never be mistaken for an installable version by the app-*/ globs.
+TRASH_PREFIX = "trash-"
+# How many version folders cleanup keeps: the running one plus one previous, so a failed update always
+# has an intact bundle to roll back to (#376).
+KEEP_RECENT_VERSIONS = 2
 _NO_WINDOW = 0x08000000  # CREATE_NO_WINDOW
 _SAFE = re.compile(r"[^A-Za-z0-9._-]")
 
@@ -46,12 +52,37 @@ def _build_number(name: str) -> int:
     return int(m.group(1)) if m else -1
 
 
+def version_dirs(data_dir) -> list[Path]:
+    """Every app-*/ version folder that actually contains the exe, highest build number first."""
+    candidates = [p for p in Path(data_dir).glob(VERSION_PREFIX + "*") if (p / ASSET_NAME).exists()]
+    return sorted(candidates, key=lambda p: _build_number(p.name), reverse=True)
+
+
 def newest_version_dir(data_dir) -> Path | None:
     """The app-*/ version folder with the highest build number that actually contains the exe, or None."""
-    candidates = [p for p in Path(data_dir).glob(VERSION_PREFIX + "*") if (p / ASSET_NAME).exists()]
-    if not candidates:
-        return None
-    return max(candidates, key=lambda p: _build_number(p.name))
+    dirs = version_dirs(data_dir)
+    return dirs[0] if dirs else None
+
+
+def current_target(data_dir) -> Path | None:
+    """The real folder the `current` junction points at, or None if it doesn't resolve."""
+    link = current_link(data_dir)
+    try:
+        if link.exists():
+            return link.resolve()
+    except OSError:
+        pass
+    return None
+
+
+def versions_to_keep(data_dir, extra=()) -> set[str]:
+    """The version-folder NAMES cleanup must preserve: the newest KEEP_RECENT_VERSIONS builds, plus
+    anything named in `extra` (the folder we run from, the one `current` points at). Keeping a previous
+    build is the point - it is what a failed update rolls back to, and the run that motivated this deleted
+    it, leaving nothing bootable to fall back to (#376)."""
+    keep = {Path(k).name for k in extra if k}
+    keep |= {p.name for p in version_dirs(data_dir)[:KEEP_RECENT_VERSIONS]}
+    return keep
 
 
 def installed_exe(data_dir) -> Path:
@@ -117,10 +148,39 @@ def extract_zip(zip_path, dest_dir) -> Path:
     return dest
 
 
+def _sweep_trash(data_dir) -> None:
+    """Re-try deleting anything a previous pass moved aside. Partial progress is fine here: a trash- folder
+    is already unreachable by every app-*/ lookup, so whatever survives is dead weight, not a half-install."""
+    for p in Path(data_dir).glob(TRASH_PREFIX + "*"):
+        shutil.rmtree(p, ignore_errors=True)
+
+
 def cleanup_old_versions(data_dir, keep) -> None:
-    """Delete every app-*/ version folder except the ones named in `keep` (folder names). Best-effort: a
-    folder still held open by an exiting helper is skipped and cleaned on a later pass."""
+    """Discard every app-*/ version folder except the ones named in `keep` (folder names).
+
+    Removal is ALL-OR-NOTHING: each folder is renamed aside to trash-<name> first, and only then deleted.
+    On Windows a rename fails while any file inside is open, so a folder still in use is left completely
+    INTACT and retried on a later pass.
+
+    That ordering is the whole fix for #376. This used to be a bare shutil.rmtree(ignore_errors=True),
+    which does not skip a folder that is in use - it deletes every file it CAN and leaves the locked ones.
+    A self-update runs its helper from the PREVIOUS version folder while it health-gates the new one, so
+    the newly launched app's startup cleanup hollowed out that folder underneath the live helper: gone were
+    unicodedata.pyd, webview/, pyodbc; left behind were only the files the helper already held open. The
+    helper's next /health probe needed the lazily-imported idna codec (encodings.idna -> stringprep ->
+    unicodedata), got `LookupError: unknown encoding: idna`, read a perfectly healthy relay as dead, and
+    rolled back to the folder it had just gutted - which then could not start at all."""
+    data_dir = Path(data_dir)
+    _sweep_trash(data_dir)
     keep_names = {Path(k).name for k in keep}
-    for p in Path(data_dir).glob(VERSION_PREFIX + "*"):
-        if p.is_dir() and p.name not in keep_names:
-            shutil.rmtree(p, ignore_errors=True)
+    for p in sorted(data_dir.glob(VERSION_PREFIX + "*")):
+        if not p.is_dir() or p.name in keep_names:
+            continue
+        trash = data_dir / (TRASH_PREFIX + p.name)
+        if trash.exists():
+            continue  # last pass's leftovers still hold the name; the sweep above will get them eventually
+        try:
+            p.rename(trash)
+        except OSError:
+            continue  # in use (an update helper is running from it) - leave it whole and try again later
+        shutil.rmtree(trash, ignore_errors=True)

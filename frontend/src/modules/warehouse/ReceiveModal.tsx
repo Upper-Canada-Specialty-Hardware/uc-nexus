@@ -690,15 +690,17 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
   ) : (
     <>
       <Button onClick={handleClose}>Cancel</Button>
+      {/* An offline relay is NOT a submit blocker (#376). #353 PR E made createReceive enqueue onto the
+          durable outbox instead of failing, and this modal already handles that answer - the `queued`
+          branch and its amber panel below. But this button was disabled on exactly the condition that
+          produces a queued receipt, so that whole path was unreachable from the running app: the only
+          thing that ever reached it was a unit test mocking createReceive past the gate. The relay state
+          is now advisory (the alert above says what will happen), and the warehouse user who has already
+          counted the hardware can record it either way. */}
       <Button
         variant="contained"
         disabled={
-          !hasAnyReceiveQuantity ||
-          hasQuantityErrors ||
-          !putAwayValid ||
-          !relayConnected ||
-          blockedPos.length > 0 ||
-          submitting
+          !hasAnyReceiveQuantity || hasQuantityErrors || !putAwayValid || blockedPos.length > 0 || submitting
         }
         onClick={() => setConfirmOpen(true)}
       >
@@ -749,7 +751,8 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
             />
           </Box>
         )}
-        {/* A receive posts a GP receipt via the on-prem relay, so the relay must be up. */}
+        {/* A receive posts a GP receipt via the on-prem relay. An offline relay no longer blocks the
+            receive (#353 PR E queues it), so this says what will happen rather than refusing. */}
         {!poDetailsLoading && !poDetailsError && !succeeded && (
           <Box sx={{ mb: 2 }}>
             {relayStatus === null ? (
@@ -757,9 +760,9 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
             ) : relayConnected ? (
               <Chip size="small" color="success" label="GP relay connected" />
             ) : (
-              <Alert severity="error">
-                GP relay not detected on this machine - it must be running to receive (a receive posts the
-                GP receipt).
+              <Alert severity="warning">
+                GP relay offline - this receipt will be queued and post itself when the relay reconnects.
+                Nothing appears in inventory until it does.
               </Alert>
             )}
           </Box>

@@ -489,6 +489,11 @@ export default function PODetailModal({
               </span>
             </Tooltip>
           )}
+          {/* Stays gated on the relay, unlike the receive modal (#376). Registering needs LIVE GP reads
+              to compose at all - the company comes from the connected relay, and the vendor list, tax
+              details and cost codes are all skipped while it is down - so an offline dialog could not be
+              filled in even if it opened. registerPoInGp's outbox path still gets exercised: the relay
+              only has to drop between opening this and submitting. */}
           {canRegisterInGp && (
             <Tooltip
               title={relayConnected ? '' : 'GP relay not detected on this machine - it must be running to register a PO'}
