@@ -148,6 +148,13 @@ type PullRequest {
   staging_status: PullStatus
   staged_opening_count: Int
   total_opening_count: Int
+  # When the pick was confirmed and by whom (#367). This is the moment stock left inventory;
+  # approved_at only says the warehouse started on the pull. Staging and completion gate on this.
+  picked_at: DateTime
+  picked_by: String
+  # Stock has come off the shelf for this pull but it is not fully picked - a short confirm waiting
+  # on a second one. Only computed for un-picked pulls; null means "not evaluated".
+  partially_picked: Boolean
   items: [PullRequestItem!]!
 }
 
@@ -165,6 +172,99 @@ type PullRequestItem {
   hardware_category: String
   product_code: String
   requested_quantity: Int!
+  # Fetch check-off on an OPENING_ITEM line (#367): the assembled leaf has been collected off the
+  # rack. Always null on a LOOSE line, which is picked by quantity instead.
+  fetched_at: DateTime
+  fetched_by: String
+}
+
+# --- The pick (#367) ---------------------------------------------------------------------------
+# Approving a pull no longer deducts anything. The warehouse user dictates a quantity per location
+# against a printable sheet, and confirming that is what moves stock. Note what is NOT in any of
+# these types: a suggested quantity or a suggested split. A system suggestion is a default in
+# everything but name, and the whole point of #367 is that the person at the rack decides.
+
+type PickSheetLeaf {
+  opening_number: String!
+  leaf: Int
+  quantity: Int!
+}
+
+type PickSheetLocation {
+  inventory_location_id: ID!
+  warehouse_id: ID
+  warehouse_code: String
+  aisle: String
+  row: String
+  bay: String
+  # On-hand minus condemned: the ceiling confirmPick enforces for this row.
+  available: Int!
+  # Here so the picker can rotate stock themselves, which is the only thing FIFO was ever for.
+  received_at: DateTime!
+  draft_quantity: Int!
+  applied_quantity: Int!
+}
+
+type PickSheetSection {
+  hardware_category: String!
+  product_code: String!
+  required_quantity: Int!
+  applied_quantity: Int!
+  remaining_quantity: Int!
+  # What this pull may actually take: on-hand minus condemned minus OTHER requests' claims. The
+  # third ceiling confirmPick enforces, surfaced so contention shows on the screen and the printed
+  # sheet rather than as a refusal after the picker has walked the racks.
+  claimable_quantity: Int!
+  claimable_shortfall: Int!
+  # Every leaf, never truncated: the picker builds carts per leaf, so the list is the work.
+  leaves: [PickSheetLeaf!]!
+  locations: [PickSheetLocation!]!
+}
+
+type PickSheetFetchItem {
+  pull_request_item_id: ID!
+  opening_item_id: ID
+  opening_number: String!
+  leaf: Int
+  aisle: String
+  row: String
+  bay: String
+  state: OpeningItemState
+  fetched_at: DateTime
+  fetched_by: String
+}
+
+type PickSheet {
+  pull_request: PullRequest!
+  sections: [PickSheetSection!]!
+  fetch_items: [PickSheetFetchItem!]!
+}
+
+input PickLineInput {
+  # The combo is carried alongside the location id so the server can check the two agree; a client
+  # that has drifted from the sheet is refused rather than deducting the wrong bin.
+  hardware_category: String!
+  product_code: String!
+  inventory_location_id: ID!
+  quantity: Int!
+}
+
+# Replaces ApproveOutcome, whose values described a moment that no longer exists. The mapping is not
+# one-to-one: INSUFFICIENT meant "nothing happened, the pull is blocked and still PENDING", SHORT
+# means "some of it happened, the pull is In Progress and holds real deducted stock".
+enum PickOutcome {
+  PICKED
+  SHORT
+}
+
+type ConfirmPickResult {
+  pull_request: PullRequest!
+  outcome: PickOutcome!
+  notification: Notification
+  # Populated when outcome is SHORT: what each combo is still owed. Empty on PICKED.
+  shortfalls: [InventoryShortfall!]!
+  # Units this confirmation took off the shelf. Zero on a pure fetch pull.
+  applied_quantity: Int!
 }
 
 input StagePullOpeningsInput {
@@ -205,23 +305,6 @@ type CancelPullRequestResult {
   # short, in which case integrity_note says so and the request carries the same message.
   reservations_recreated: Boolean!
   integrity_note: String
-}
-
-type ApproveResult {
-  pull_request: PullRequest!
-  outcome: ApproveOutcome!
-  notification: Notification
-  shortfalls: [InventoryShortfall!]!
-}
-
-# Two values, because approve_pull_request returns exactly two outcome strings. A third,
-# CANCELLED, was removed as dead state in #344: it dated from the pre-#224 behaviour where an approve
-# that found insufficient stock cancelled the pull, and since #224 such an approve leaves the PR
-# PENDING and returns INSUFFICIENT. GraphQL-only and never persisted, so no migration was needed - a
-# *cancelled pull* is PullRequestStatus.CANCELLED, which is a different enum on a real column.
-enum ApproveOutcome {
-  APPROVED
-  INSUFFICIENT
 }
 
 type InventoryShortfall {
@@ -451,6 +534,9 @@ type Query {
   # PullRequest: a resolver field would run once per row of the pull-request queue, which never
   # needs it. Empty for a shipping-out / PR-REPL / legacy pull.
   pullRequestOpenings(pullRequestId: ID!): [ShopAssemblyOpening!]!
+  # Everything the pick screen and the printed sheet render from (#367). A separate query for the
+  # same reason as pullRequestOpenings: only the pick page needs it, never the queue.
+  pullPickSheet(pullRequestId: ID!): PickSheet!
   shipReadyItems(projectId: ID): ShipReadyItems!
   projectProgressByProduct(projectId: ID!): [ProjectProgressByProduct!]!
   packingSlips(projectId: ID): [PackingSlip!]!
@@ -462,18 +548,34 @@ type Query {
 
 type Mutation {
   createReceive(input: CreateReceiveInput!): ReceiveRecord!
-  approvePullRequest(id: ID!, approvedBy: String!): ApproveResult!
+  # Claim a pending pull and open it for picking (#367). Nothing moves in inventory - this is what
+  # approvePullRequest was, minus everything that touched stock.
+  startPullRequestPick(id: ID!, startedBy: String!): PullRequest!
+  # Save the half-keyed pick sheet (#367). Replace-all, not merge: the paper is the authority.
+  # Shape is validated, availability deliberately is not - a draft is a note, not a claim.
+  savePickDraft(pullRequestId: ID!, lines: [PickLineInput!]!, enteredBy: String!): PickSheet!
+  # Deduct exactly the rows the picker dictated and consume the claim behind them (#367). Three hard
+  # ceilings: the row's available units, what the pull asked for, and what is free once other
+  # requests' reservations are counted (CONFLICT when that one is hit, so #342 holds). A
+  # confirmation that does not cover everything returns SHORT and is resumable.
+  confirmPick(pullRequestId: ID!, lines: [PickLineInput!]!, pickedBy: String!): ConfirmPickResult!
+  # Tick (or untick) one assembled leaf off a shipping pull's fetch list (#367). Nothing moves in
+  # inventory - the leaf's hardware left it at assembly.
+  setPullItemFetched(itemId: ID!, fetched: Boolean!, fetchedBy: String!): PullRequestItem!
   # Close the whole pull. Since #343 this reads as "stage everything still outstanding and finish":
   # any opening not yet confirmed individually is flipped to PULLED and stamped with completedBy.
+  # Refused until the pick is confirmed (#367).
   completePullRequest(id: ID!, completedBy: String): PullRequest!
-  # Confirm that the carts for these openings of an approved shop-assembly pull are built (#343).
+  # Confirm that the carts for these openings of a picked shop-assembly pull are built (#343).
   # Each one becomes assignable and workable immediately; staging the last completes the pull.
-  # Nothing moves in inventory - the FIFO deduction and the source request's reservation were both
-  # spent at approval. Already-staged openings are skipped, not refused.
+  # Nothing moves in inventory - the deduction and the source request's reservation were both spent
+  # at the pick confirmation. Already-staged openings are skipped, not refused.
   stagePullOpenings(input: StagePullOpeningsInput!): StagePullOpeningsResult!
-  # Cancel an approved pull, return its hardware to inventory, and hand the source request back to
+  # Cancel a started pull, return its hardware to inventory, and hand the source request back to
   # PENDING (#343). All-or-nothing: an opening whose assembly has started or finished refuses the
-  # whole cancellation with CONFLICT, naming every blocker.
+  # whole cancellation with CONFLICT, naming every blocker. What comes back is what was picked
+  # (#367): everything on a fully picked pull, the picked part of a short one, nothing on an
+  # un-picked one.
   cancelPullRequest(input: CancelPullRequestInput!): CancelPullRequestResult!
   confirmShipment(input: ConfirmShipmentInput!): PackingSlip!
   createShipmentReturn(input: CreateShipmentReturnInput!): ShipmentReturn!

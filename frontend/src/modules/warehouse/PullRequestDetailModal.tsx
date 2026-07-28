@@ -1,4 +1,5 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Box,
   Typography,
@@ -14,13 +15,11 @@ import {
   TextField,
   Divider,
 } from '@mui/material';
-import { CircleCheck, CircleX } from 'lucide-react';
-import { useMutation, useQuery } from '@apollo/client/react';
+import { useMutation } from '@apollo/client/react';
 import {
-  APPROVE_PULL_REQUEST,
   CANCEL_PULL_REQUEST,
   COMPLETE_PULL_REQUEST,
-  GET_INVENTORY_HIERARCHY,
+  START_PULL_REQUEST_PICK,
 } from '../../graphql/warehouse';
 import {
   PULL_CANCEL_REFETCH_QUERIES,
@@ -32,9 +31,9 @@ import { useToast } from '../../components/Toast';
 import Modal from '../../components/Modal';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import PullStagingPanel from './PullStagingPanel';
-import { isCancellable, stagingChipColor, stagingChipLabel } from './pullStaging';
-import type { PullRequest, PullRequestItem } from './PullRequestQueue';
-import { leafLabel } from '../../utils/leaf';
+import { isCancellable, pullPhase } from './pullStaging';
+import type { PullRequest } from './PullRequestQueue';
+import { leafIdentity } from '../../utils/leaf';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 
 // --- Status config ---
@@ -66,31 +65,6 @@ function formatDate(dateStr: string | null | undefined): string {
 function formatDateTime(dateStr: string | null | undefined): string {
   if (!dateStr) return '-';
   return new Date(dateStr).toLocaleString();
-}
-
-// --- Inventory lookup types ---
-
-interface InventoryProductCode {
-  productCode: string;
-  totalQuantity: number;
-  // Issue #229: net of deficient units (quantity - deficient_quantity) - the approve gate's basis.
-  totalAvailableQuantity: number;
-}
-
-interface InventoryCategoryGroup {
-  hardwareCategory: string;
-  totalQuantity: number;
-  totalAvailableQuantity: number;
-  productCodes: InventoryProductCode[];
-}
-
-// #224: per-combo shortfall returned by approvePullRequest when the pull is blocked.
-interface InventoryShortfall {
-  hardwareCategory: string;
-  productCode: string;
-  requested: number;
-  available: number;
-  short: number;
 }
 
 // --- Props ---
@@ -161,9 +135,9 @@ export default function PullRequestDetailModal({
 }: PullRequestDetailModalProps) {
   const { displayName } = useIdentity();
   const { showToast } = useToast();
+  const navigate = useNavigate();
 
   // Confirm dialog state
-  const [confirmApproveOpen, setConfirmApproveOpen] = useState(false);
   const [confirmCompleteOpen, setConfirmCompleteOpen] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
@@ -176,51 +150,12 @@ export default function PullRequestDetailModal({
     setCancelBlockedMessage(null);
   }, []);
 
-  // #224 gate 2: the shortfall the server returned when an approve was blocked for insufficient
-  // inventory. The PR is left PENDING; we show this inline instead of cancelling.
-  const [approveShortfalls, setApproveShortfalls] = useState<InventoryShortfall[]>([]);
-
-  // Fetch inventory hierarchy for availability checks
-  const { data: inventoryData } = useQuery<{ inventoryHierarchy: InventoryCategoryGroup[] }>(
-    GET_INVENTORY_HIERARCHY,
-    {
-      variables: { projectId: pr.projectId },
-      skip: pr.status !== 'PENDING',
-    },
-  );
-
-  const inventoryHierarchy = inventoryData?.inventoryHierarchy ?? [];
-
-  // Build lookup map: "category|productCode" -> available quantity. Issue #229: use the NET
-  // available (quantity - deficient_quantity), the same basis as the backend approve gate, so the
-  // Available Qty column and the pre-approve warning agree with what approval will actually allow.
-  const availabilityMap = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const cat of inventoryHierarchy) {
-      for (const pc of cat.productCodes) {
-        const key = `${cat.hardwareCategory}|${pc.productCode}`;
-        map.set(key, pc.totalAvailableQuantity);
-      }
-    }
-    return map;
-  }, [inventoryHierarchy]);
-
-  // Get available quantity for a loose item
-  function getAvailableQty(item: PullRequestItem): number {
-    if (!item.hardwareCategory || !item.productCode) return 0;
-    const key = `${item.hardwareCategory}|${item.productCode}`;
-    return availabilityMap.get(key) ?? 0;
-  }
-
-  // Check if all loose items have sufficient inventory
   const looseItems = pr.items.filter((item) => item.itemType === 'LOOSE');
   const openingItems = pr.items.filter((item) => item.itemType === 'OPENING_ITEM');
 
-  const allLooseSufficient = useMemo(() => {
-    if (pr.status !== 'PENDING') return true;
-    return looseItems.every((item) => getAvailableQty(item) >= item.requestedQuantity);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [looseItems, availabilityMap, pr.status]);
+  // The availability lookup that used to live here is gone with the approve gate (#367). It answered
+  // "will approving this succeed", and approving no longer moves anything - real per-location
+  // availability is on the pick page, where the person who can see the rack is looking at it.
 
   // --- Mutations ---
 
@@ -235,30 +170,15 @@ export default function PullRequestDetailModal({
     cache.gc();
   };
 
-  const [approvePR, { loading: approveLoading }] = useMutation(APPROVE_PULL_REQUEST, {
+  const [startPick, { loading: startLoading }] = useMutation(START_PULL_REQUEST_PICK, {
     update: evictPullLifecycleFields,
-    onCompleted: (data) => {
-      const approveResult = (
-        data as { approvePullRequest?: { outcome?: string; shortfalls?: InventoryShortfall[] } }
-      )?.approvePullRequest;
-      setConfirmApproveOpen(false);
-      if (approveResult?.outcome === 'INSUFFICIENT') {
-        // #224 gate 2: the pull is blocked, not cancelled. The PR stays PENDING; show the exact
-        // shortfall inline and let the user know purchasing was notified to backfill. Do NOT call
-        // onRefetch() here - the parent nulls selectedPR and unmounts this modal, which would drop
-        // the shortfall Alert we just set. The PR row is unchanged (still PENDING), so no refetch is
-        // needed to keep the list accurate.
-        setApproveShortfalls(approveResult.shortfalls ?? []);
-        showToast('Insufficient inventory - PR left pending; purchasing notified to backfill.', 'warning');
-      } else {
-        showToast('Pull Request approved. Inventory deducted.', 'success');
-        onRefetch();
-      }
+    onCompleted: () => {
+      // Straight to the pick page (#367): starting a pick is not a decision with an outcome to
+      // report, it is the first step of the picking job, and stopping to show a toast over a modal
+      // the user is about to leave would be ceremony.
+      navigate(`/app/warehouse/pull-requests/${pr.id}/pick`);
     },
-    onError: (error) => {
-      setConfirmApproveOpen(false);
-      showToast(error.message, 'error');
-    },
+    onError: (error) => showToast(error.message, 'error'),
   });
 
   const [completePR, { loading: completeLoading }] = useMutation(COMPLETE_PULL_REQUEST, {
@@ -316,11 +236,6 @@ export default function PullRequestDetailModal({
 
   // --- Handlers ---
 
-  const handleApprove = () => {
-    setApproveShortfalls([]); // clear any prior shortfall before re-attempting
-    approvePR({ variables: { id: pr.id, approvedBy: displayName } });
-  };
-
   const handleComplete = () => {
     completePR({ variables: { id: pr.id, completedBy: displayName } });
   };
@@ -341,15 +256,17 @@ export default function PullRequestDetailModal({
   const isCompleted = pr.status === 'COMPLETED';
   const isCancelled = pr.status === 'CANCELLED';
 
+  const isPicked = Boolean(pr.pickedAt);
   const isAssignedToCurrentUser = isInProgress && pr.assignedTo === displayName;
   const isLockedToOtherUser = isInProgress && pr.assignedTo !== displayName;
 
-  // #343: the staging checklist is the shop-assembly pull's execution view. It is shown from
-  // approval onwards - including after completion, read-only, so the record of who staged what
-  // survives the pull being finished.
-  const showStaging = pr.source === 'SHOP_ASSEMBLY' && (isInProgress || isCompleted);
+  // #343: the staging checklist is the shop-assembly pull's execution view. Since #367 it appears
+  // only once the pick is confirmed - staging is a claim that a cart is built, and before the pick
+  // the hardware is still on the shelf. It stays visible after completion, read-only, so the record
+  // of who staged what survives the pull being finished.
+  const showStaging = pr.source === 'SHOP_ASSEMBLY' && ((isInProgress && isPicked) || isCompleted);
   const canCancel = isCancellable(pr);
-  const stagingLabel = stagingChipLabel(pr);
+  const phase = pullPhase(pr);
 
   // --- Action buttons ---
 
@@ -366,18 +283,35 @@ export default function PullRequestDetailModal({
     </Button>
   ) : null;
 
+  const goToPick = () => navigate(`/app/warehouse/pull-requests/${pr.id}/pick`);
+
   let actionButtons: React.ReactNode | undefined;
 
   if (isPending) {
+    // No availability gate any more (#367): starting a pick moves nothing, and whether the stock is
+    // there is a question the pick screen answers per location rather than one this button guesses
+    // at from an aggregate.
     actionButtons = (
       <Button
         variant="contained"
         color="secondary"
-        onClick={() => setConfirmApproveOpen(true)}
-        disabled={approveLoading || !allLooseSufficient}
+        onClick={() => startPick({ variables: { id: pr.id, startedBy: displayName } })}
+        disabled={startLoading}
       >
-        {approveLoading ? 'Approving...' : 'Approve and Start'}
+        {startLoading ? 'Starting...' : 'Start pick'}
       </Button>
+    );
+  } else if (isInProgress && !isPicked && !isLockedToOtherUser) {
+    // Locked-out users fall through to the cancel-only branch below. Two people keying the same
+    // paper sheet against one pull would each be entering rows the other cannot see, and
+    // `confirm_pick` does not check the assignment - the button is the only thing standing there.
+    actionButtons = (
+      <>
+        {cancelButton}
+        <Button variant="contained" color="secondary" onClick={goToPick}>
+          Resume pick
+        </Button>
+      </>
     );
   } else if (isAssignedToCurrentUser) {
     actionButtons = (
@@ -430,8 +364,11 @@ export default function PullRequestDetailModal({
               color={STATUS_CHIP_COLOR[pr.status] ?? 'default'}
               size="small"
             />
-            {stagingLabel && (
-              <Chip label={stagingLabel} color={stagingChipColor(pr)} size="small" variant="outlined" />
+            <Chip label={phase.label} color={phase.color} size="small" variant="outlined" />
+            {phase.detail && (
+              <Typography variant="caption" color="text.secondary" sx={tabularSx}>
+                {phase.detail}
+              </Typography>
             )}
           </Stack>
           <Box
@@ -470,36 +407,27 @@ export default function PullRequestDetailModal({
           </Box>
         )}
 
-        {/* Approved info */}
+        {/* Started / picked stamps (#367). Two moments now, and the difference matters: started is
+            "the warehouse opened this", picked is "the stock has left the shelf". */}
         {(isInProgress || isCompleted) && pr.approvedAt && (
           <Box sx={{ mb: 2 }}>
             <Typography variant="body2" color="text.secondary" sx={tabularSx}>
-              Approved at: {formatDateTime(pr.approvedAt)}
+              Pick started: {formatDateTime(pr.approvedAt)}
             </Typography>
+            {isPicked && (
+              <Typography variant="body2" color="text.secondary" sx={tabularSx}>
+                Pick confirmed: {formatDateTime(pr.pickedAt)}
+                {pr.pickedBy ? ` by ${pr.pickedBy}` : ''}
+              </Typography>
+            )}
           </Box>
         )}
 
-        {/* Insufficient inventory pre-check banner for pending PRs (#224: approving while short
-            leaves the PR pending and notifies purchasing - it is no longer auto-cancelled). */}
-        {isPending && !allLooseSufficient && looseItems.length > 0 && approveShortfalls.length === 0 && (
-          <Alert severity="warning" sx={{ mb: 2 }}>
-            Insufficient inventory - approving will leave this PR pending and notify purchasing to backfill.
-          </Alert>
-        )}
-
-        {/* Shortfall returned by a blocked approve (#224). The PR stays pending. */}
-        {approveShortfalls.length > 0 && (
-          <Alert severity="warning" sx={{ mb: 2 }}>
-            <Typography variant="body2" fontWeight="bold" gutterBottom>
-              Approve blocked - insufficient inventory. PR left pending; purchasing notified to backfill.
-            </Typography>
-            <Box component="ul" sx={{ m: 0, pl: 2 }}>
-              {approveShortfalls.map((s) => (
-                <li key={`${s.hardwareCategory}|${s.productCode}`}>
-                  {s.hardwareCategory} {s.productCode}: need {s.requested}, {s.available} available (short {s.short})
-                </li>
-              ))}
-            </Box>
+        {isInProgress && !isPicked && (
+          <Alert severity={pr.partiallyPicked ? 'error' : 'info'} sx={{ mb: 2 }}>
+            {pr.partiallyPicked
+              ? 'This pick was confirmed short. Some hardware is off the shelf and the rest is outstanding - open the pick sheet to enter the remainder.'
+              : 'Nothing has left inventory yet. Open the pick sheet to record what comes off each location.'}
           </Alert>
         )}
 
@@ -539,53 +467,27 @@ export default function PullRequestDetailModal({
                 <Typography variant="subtitle2" gutterBottom>
                   Loose Items ({looseItems.length})
                 </Typography>
+                {/* The Available Qty and Status columns are gone with the approve gate (#367).
+                    They forecast whether approval would succeed, off a project-wide aggregate; the
+                    pick page shows the real numbers per location to the person at the rack. */}
                 <Table size="small" sx={{ '& td': { fontSize: '0.8125rem' } }}>
                   <TableHead>
                     <TableRow>
                       <TableCell>Product Code</TableCell>
                       <TableCell>Hardware Category</TableCell>
-                      <TableCell>Opening Number</TableCell>
-                      {/* Shop-assembly pulls are per leaf too (#311), so a pair's two lines read
-                          identically without this. */}
                       <TableCell>Leaf</TableCell>
                       <TableCell align="right">Requested Qty</TableCell>
-                      {isPending && <TableCell align="right">Available Qty</TableCell>}
-                      {isPending && <TableCell align="center">Status</TableCell>}
                     </TableRow>
                   </TableHead>
                   <TableBody>
-                    {looseItems.map((item) => {
-                      const availableQty = getAvailableQty(item);
-                      const sufficient = availableQty >= item.requestedQuantity;
-                      return (
-                        <TableRow key={item.id} hover>
-                          <TableCell sx={monoSx}>{item.productCode ?? '-'}</TableCell>
-                          <TableCell>{item.hardwareCategory ?? '-'}</TableCell>
-                          <TableCell sx={monoSx}>{item.openingNumber}</TableCell>
-                          <TableCell>{leafLabel(item.leaf) ?? '-'}</TableCell>
-                          <TableCell align="right">{item.requestedQuantity}</TableCell>
-                          {isPending && <TableCell align="right">{availableQty}</TableCell>}
-                          {isPending && (
-                            <TableCell align="center">
-                              <Box
-                                component="span"
-                                sx={{
-                                  display: 'inline-flex',
-                                  color: sufficient ? 'success.main' : 'error.main',
-                                }}
-                                aria-label={sufficient ? 'Sufficient' : 'Short'}
-                              >
-                                {sufficient ? (
-                                  <CircleCheck size={18} strokeWidth={1.75} />
-                                ) : (
-                                  <CircleX size={18} strokeWidth={1.75} />
-                                )}
-                              </Box>
-                            </TableCell>
-                          )}
-                        </TableRow>
-                      );
-                    })}
+                    {looseItems.map((item) => (
+                      <TableRow key={item.id} hover>
+                        <TableCell sx={monoSx}>{item.productCode ?? '-'}</TableCell>
+                        <TableCell>{item.hardwareCategory ?? '-'}</TableCell>
+                        <TableCell sx={monoSx}>{leafIdentity(item.openingNumber, item.leaf)}</TableCell>
+                        <TableCell align="right">{item.requestedQuantity}</TableCell>
+                      </TableRow>
+                    ))}
                   </TableBody>
                 </Table>
               </Box>
@@ -600,20 +502,28 @@ export default function PullRequestDetailModal({
                 <Table size="small" sx={{ '& td': { fontSize: '0.8125rem' } }}>
                   <TableHead>
                     <TableRow>
-                      <TableCell>Type</TableCell>
-                      <TableCell>Opening Number</TableCell>
                       {/* #335: a pair ships as two lines. Without the leaf they read identically. */}
                       <TableCell>Leaf</TableCell>
                       <TableCell align="right">Requested Qty</TableCell>
+                      <TableCell>Collected</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
                     {openingItems.map((item) => (
                       <TableRow key={item.id} hover>
-                        <TableCell>Assembled Opening</TableCell>
-                        <TableCell sx={monoSx}>{item.openingNumber}</TableCell>
-                        <TableCell>{leafLabel(item.leaf) ?? '-'}</TableCell>
+                        <TableCell sx={monoSx}>{leafIdentity(item.openingNumber, item.leaf)}</TableCell>
                         <TableCell align="right">{item.requestedQuantity}</TableCell>
+                        <TableCell>
+                          {item.fetchedAt ? (
+                            <Typography variant="caption" color="text.secondary" sx={tabularSx}>
+                              {item.fetchedBy} {formatDateTime(item.fetchedAt)}
+                            </Typography>
+                          ) : (
+                            <Typography variant="body2" color="text.secondary">
+                              Not yet
+                            </Typography>
+                          )}
+                        </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
@@ -623,17 +533,6 @@ export default function PullRequestDetailModal({
           </>
         )}
       </Modal>
-
-      {/* Confirm: Approve */}
-      <ConfirmDialog
-        open={confirmApproveOpen}
-        title="Approve Pull Request"
-        message={`Approve and start processing Pull Request ${pr.requestNumber}? Inventory will be deducted.`}
-        confirmLabel="Approve and Start"
-        cancelLabel="Cancel"
-        onConfirm={handleApprove}
-        onCancel={() => setConfirmApproveOpen(false)}
-      />
 
       {/* Confirm: Complete */}
       <ConfirmDialog

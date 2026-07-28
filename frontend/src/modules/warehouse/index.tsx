@@ -5,6 +5,7 @@ import InventoryView from './InventoryView';
 import LocationsTab from './LocationsTab';
 import ReceivingPage from './ReceivingPage';
 import PullRequestQueue from './PullRequestQueue';
+import PickPage from './PickPage';
 import PutAwayTab from './PutAwayTab';
 import StockPoolView from './StockPoolView';
 import DeficientItemsReview from './DeficientItemsReview';
@@ -23,6 +24,9 @@ export default function WarehouseModule() {
       <Route path="receiving" element={<ReceivingPage />} />
       <Route path="put-away" element={<PutAwayTab />} />
       <Route path="pull-requests" element={<PullRequestQueue />} />
+      {/* A page, not a modal (#367): the pick is the longest single piece of data entry in the app,
+          it is done against a printed sheet, and it has to survive a reload. */}
+      <Route path="pull-requests/:id/pick" element={<PickPage />} />
       <Route path="stock-pool" element={<StockPoolView />} />
       <Route path="deficient-items" element={<DeficientItemsReview />} />
       <Route path="shipments" element={<ShipmentsPage />} />
