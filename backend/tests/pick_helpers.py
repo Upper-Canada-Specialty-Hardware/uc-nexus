@@ -15,6 +15,7 @@ Tests that are actually about the pick (which rows, over-pull, short confirms) b
 """
 
 import uuid
+from datetime import datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -23,6 +24,27 @@ from app.models.enums import PullPickLineState, PullRequestItemType, PullRequest
 from app.models.inventory import InventoryLocation
 from app.models.pull_pick_line import PullPickLine
 from app.repositories import warehouse as warehouse_repository
+
+
+def mark_picked(session: Session, pr, *, by: str = "picker"):
+    """Put a pull straight into the state a confirmed pick leaves behind, without picking anything.
+
+    For tests about what happens *after* the pick - the replacement loop, the pipeline ladder - which
+    shortcut the warehouse entirely by hand-setting `status`. Before #367 that was enough, because
+    completion only checked the status; it now also requires `picked_at`, which is the whole point of
+    the gate. Stamping both here keeps those tests shortcutting one concept instead of two, and keeps
+    the knowledge of what "worked" means in one place.
+
+    Deliberately not `pick_pull`: these pulls often have no pickable stock behind them (a replacement
+    is raised precisely because the shelf was empty), so actually picking them would confirm short and
+    leave `picked_at` null - which is the correct behaviour and the wrong fixture.
+    """
+    pr.status = PullRequestStatus.IN_PROGRESS
+    if pr.picked_at is None:
+        pr.picked_at = datetime.utcnow()
+        pr.picked_by = by
+    session.flush()
+    return pr
 
 
 def loose_requirements(pr) -> dict[tuple[str, str], int]:

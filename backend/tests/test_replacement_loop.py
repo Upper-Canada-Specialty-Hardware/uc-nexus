@@ -44,7 +44,7 @@ from app.models.shop_assembly import ShopAssemblyOpening, ShopAssemblyOpeningIte
 from app.models.stock_item import StockItem
 from app.repositories import import_repository, shop_assembly_repository, warehouse_admin_repository
 from app.repositories import warehouse as warehouse_repository
-from tests.pick_helpers import pick_pull
+from tests.pick_helpers import mark_picked, pick_pull
 
 HINGE = ("HINGE", "HG-R1")
 LOCK = ("LOCK", "LK-R1")
@@ -162,6 +162,12 @@ def _repl_pull_for(session, sao_item) -> PullRequest:
 
 
 def _work_the_pull(session, pr, *, status=PullRequestStatus.IN_PROGRESS):
+    """Shortcut the warehouse: put the pull where a confirmed pick would leave it (#367).
+
+    These tests are about the replacement loop, not the pick, and a replacement pull usually has no
+    pickable stock behind it - so `mark_picked` stamps the state rather than picking for real."""
+    if status is PullRequestStatus.IN_PROGRESS:
+        return mark_picked(session, pr)
     pr.status = status
     session.flush()
     return pr
@@ -286,8 +292,7 @@ def test_a_second_completed_repl_pull_restores_nothing_extra(db_session):
     db_session.flush()
     assert item.deficient_quantity == 0
 
-    repl.status = PullRequestStatus.IN_PROGRESS
-    db_session.flush()
+    mark_picked(db_session, repl)
     warehouse_repository.complete_pull_request(db_session, repl.id)
     db_session.flush()
     assert item.deficient_quantity == 0

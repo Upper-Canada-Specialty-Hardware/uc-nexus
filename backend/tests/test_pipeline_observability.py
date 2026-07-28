@@ -48,7 +48,7 @@ from app.models.stock_item import StockItem
 from app.repositories import import_repository, shop_assembly_repository, warehouse_admin_repository
 from app.repositories import warehouse as warehouse_repository
 from app.schemas.enums import PickOutcome, PipelineStage
-from tests.pick_helpers import pick_pull
+from tests.pick_helpers import mark_picked, pick_pull
 
 # --- helpers -----------------------------------------------------------------------------------
 
@@ -526,8 +526,7 @@ def test_awaiting_replacement_and_arrived_after_ship_are_both_visible(db_session
     db_session.flush()
 
     repl = db_session.scalar(select(PullRequest).where(PullRequest.request_number == f"PR-REPL-{pr.request_number}"))
-    repl.status = PullRequestStatus.IN_PROGRESS
-    db_session.flush()
+    mark_picked(db_session, repl)
     warehouse_repository.complete_pull_request(db_session, repl.id, completed_by="picker")
     db_session.flush()
 
@@ -753,8 +752,7 @@ def test_replacement_arrival_notifies_the_leafs_assignee(db_session):
     _seed_inventory(db_session, project.id, quantity=20)
     _sar, _pr, _opening, _item, repl = _leaf_with_deficiency(db_session, project)
 
-    repl.status = PullRequestStatus.IN_PROGRESS
-    db_session.flush()
+    mark_picked(db_session, repl)
     warehouse_repository.complete_pull_request(db_session, repl.id, completed_by="picker")
     db_session.flush()
 
@@ -777,8 +775,7 @@ def test_replacement_arrival_on_a_shipped_leaf_notifies_shipping_and_not_the_ass
     leaf.state = OpeningItemState.SHIPPED_OUT
     db_session.flush()
 
-    repl.status = PullRequestStatus.IN_PROGRESS
-    db_session.flush()
+    mark_picked(db_session, repl)
     warehouse_repository.complete_pull_request(db_session, repl.id, completed_by="picker")
     db_session.flush()
 
@@ -796,8 +793,7 @@ def test_replacement_arrival_on_an_unassigned_leaf_notifies_nobody(db_session):
     shop_assembly_repository.remove_opening_from_user(db_session, opening.id)
     db_session.flush()
 
-    repl.status = PullRequestStatus.IN_PROGRESS
-    db_session.flush()
+    mark_picked(db_session, repl)
     warehouse_repository.complete_pull_request(db_session, repl.id, completed_by="picker")
     db_session.flush()
 

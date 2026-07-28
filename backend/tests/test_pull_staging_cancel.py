@@ -124,8 +124,10 @@ def _two_leaf_request(session, project, *, qty=2, code="HG-100", opening_number=
     )
 
 
-def _approved_pull(session, project, *, qty=2, code="HG-100", opening_number="A01"):
-    """Create the request, accept it, approve the pull. Returns (sar, pr, [openings by leaf])."""
+def _picked_pull(session, project, *, qty=2, code="HG-100", opening_number="A01"):
+    """Create the request, accept it, start and confirm its pick (#367).
+
+    Returns (sar, pr, [openings by leaf]) with the pull picked, which is what staging now gates on."""
     result = _two_leaf_request(session, project, qty=qty, code=code, opening_number=opening_number)
     sar = result["shop_assembly_request"]
     shop_assembly_repository.accept_shop_assembly_request(session, sar.id, "acceptor")
@@ -154,7 +156,7 @@ def test_staging_one_opening_leaves_the_other_not_pulled(db_session):
     """Each cart is confirmed on its own: the pull is not an all-or-nothing flip any more."""
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=20)
-    _sar, pr, openings = _approved_pull(db_session, project)
+    _sar, pr, openings = _picked_pull(db_session, project)
     assert [o.pull_status for o in openings] == [PullStatus.NOT_PULLED, PullStatus.NOT_PULLED]
 
     result = warehouse_repository.stage_pull_openings(db_session, pr.id, [openings[0].id], "picker")
@@ -175,7 +177,7 @@ def test_partial_derivation(db_session):
     """PullStatus.PARTIAL is the aggregate reading over the openings, derived and never stored."""
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=20)
-    _sar, pr, openings = _approved_pull(db_session, project)
+    _sar, pr, openings = _picked_pull(db_session, project)
 
     before = warehouse_repository.get_pull_staging_summaries(db_session, [pr.id])[pr.id]
     assert (before.status, before.staged_opening_count, before.total_opening_count) == (PullStatus.NOT_PULLED, 0, 2)
@@ -215,7 +217,7 @@ def test_staged_opening_is_immediately_assignable_and_workable(db_session):
     while the rest of its pull is still being picked."""
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=20)
-    _sar, pr, openings = _approved_pull(db_session, project)
+    _sar, pr, openings = _picked_pull(db_session, project)
     warehouse_repository.stage_pull_openings(db_session, pr.id, [openings[0].id], "picker")
     db_session.flush()
 
@@ -238,7 +240,7 @@ def test_my_work_excludes_a_claimed_opening_whose_staging_was_undone(db_session)
     drops out of the board even though the pull it hung off is otherwise fine."""
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=20)
-    _sar, pr, openings = _approved_pull(db_session, project)
+    _sar, pr, openings = _picked_pull(db_session, project)
     warehouse_repository.stage_pull_openings(db_session, pr.id, [openings[0].id], "picker")
     db_session.flush()
     shop_assembly_repository.assign_openings(db_session, [openings[0].id], "user-1", "Assembler One")
@@ -254,7 +256,7 @@ def test_staging_the_last_opening_completes_the_pull_once(db_session):
     """Completion runs through complete_pull_request, so the notification fires exactly once."""
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=20)
-    _sar, pr, openings = _approved_pull(db_session, project)
+    _sar, pr, openings = _picked_pull(db_session, project)
 
     warehouse_repository.stage_pull_openings(db_session, pr.id, [openings[0].id], "picker")
     db_session.flush()
@@ -280,7 +282,7 @@ def test_replacement_arrivals_are_not_applied_twice_by_staging(db_session):
     single completion staging triggers - not once per staged opening."""
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=20)
-    _sar, pr, openings = _approved_pull(db_session, project)
+    _sar, pr, openings = _picked_pull(db_session, project)
     item = openings[0].items[0]
     item.deficient_quantity = 1
     item.installed_quantity = 0
@@ -316,7 +318,7 @@ def test_restaging_an_already_staged_opening_is_a_no_op(db_session):
     """A double-click or a stale checklist must not be an error, and must not restamp the opening."""
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=20)
-    _sar, pr, openings = _approved_pull(db_session, project)
+    _sar, pr, openings = _picked_pull(db_session, project)
     warehouse_repository.stage_pull_openings(db_session, pr.id, [openings[0].id], "picker")
     db_session.flush()
     first_stamp = openings[0].staged_at
@@ -333,7 +335,7 @@ def test_restaging_an_already_staged_opening_is_a_no_op(db_session):
 def test_staging_writes_an_audit_row_per_opening(db_session):
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=20)
-    _sar, pr, openings = _approved_pull(db_session, project)
+    _sar, pr, openings = _picked_pull(db_session, project)
     warehouse_repository.stage_pull_openings(db_session, pr.id, [o.id for o in openings], "picker")
     db_session.flush()
 
@@ -343,7 +345,7 @@ def test_staging_writes_an_audit_row_per_opening(db_session):
     assert {r.entity_id for r in rows} == {o.id for o in openings}
 
 
-def test_staging_refuses_a_pull_that_is_not_approved(db_session):
+def test_staging_refuses_a_pull_that_is_not_started(db_session):
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=20)
     result = _two_leaf_request(db_session, project)
@@ -362,8 +364,8 @@ def test_staging_refuses_a_pull_that_is_not_approved(db_session):
 def test_staging_refuses_an_opening_from_another_pull(db_session):
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=40)
-    _sar_a, pr_a, _openings_a = _approved_pull(db_session, project, opening_number="A01")
-    _sar_b, _pr_b, openings_b = _approved_pull(db_session, project, opening_number="B01")
+    _sar_a, pr_a, _openings_a = _picked_pull(db_session, project, opening_number="A01")
+    _sar_b, _pr_b, openings_b = _picked_pull(db_session, project, opening_number="B01")
 
     with pytest.raises(ValidationError):
         warehouse_repository.stage_pull_openings(db_session, pr_a.id, [openings_b[0].id], "picker")
@@ -372,7 +374,7 @@ def test_staging_refuses_an_opening_from_another_pull(db_session):
 def test_staging_refuses_an_empty_selection_and_an_unknown_opening(db_session):
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=20)
-    _sar, pr, _openings = _approved_pull(db_session, project)
+    _sar, pr, _openings = _picked_pull(db_session, project)
 
     with pytest.raises(ValidationError):
         warehouse_repository.stage_pull_openings(db_session, pr.id, [], "picker")
@@ -385,7 +387,7 @@ def test_completing_the_pull_wholesale_still_stages_whatever_is_left(db_session)
     the stamp on a cart that was already confirmed individually."""
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=20)
-    _sar, pr, openings = _approved_pull(db_session, project)
+    _sar, pr, openings = _picked_pull(db_session, project)
     warehouse_repository.stage_pull_openings(db_session, pr.id, [openings[0].id], "picker")
     db_session.flush()
     first_stamp = openings[0].staged_at
@@ -402,7 +404,7 @@ def test_staging_deducts_no_inventory(db_session):
     """Deduction timing is unchanged (#343): approval commits the pull, staging only tracks it."""
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=20)
-    _sar, pr, openings = _approved_pull(db_session, project)
+    _sar, pr, openings = _picked_pull(db_session, project)
     after_approve = _on_hand(db_session, project.id)
     assert after_approve == 16  # 20 - (2 leaves x 2 units)
 
@@ -417,7 +419,7 @@ def test_staging_deducts_no_inventory(db_session):
 def test_cancel_restocks_releases_and_returns_the_request_to_pending(db_session):
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=20)
-    sar, pr, openings = _approved_pull(db_session, project)
+    sar, pr, openings = _picked_pull(db_session, project)
     assert _on_hand(db_session, project.id) == 16
     assert sar.status == ShopAssemblyRequestStatus.APPROVED
 
@@ -444,7 +446,7 @@ def test_cancel_returns_staged_openings_too(db_session):
     hardware still on the shelf - so it comes back, stamp and all."""
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=20)
-    _sar, pr, openings = _approved_pull(db_session, project)
+    _sar, pr, openings = _picked_pull(db_session, project)
     warehouse_repository.stage_pull_openings(db_session, pr.id, [openings[0].id], "picker")
     db_session.flush()
 
@@ -460,7 +462,7 @@ def test_cancel_returns_staged_openings_too(db_session):
 def test_cancel_recreates_the_reservation_for_the_returned_quantities(db_session):
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=20)
-    sar, pr, _openings = _approved_pull(db_session, project)
+    sar, pr, _openings = _picked_pull(db_session, project)
     # Approval consumed the claim.
     assert warehouse_repository.get_reserved_quantities(db_session, project.id) == {}
 
@@ -479,7 +481,7 @@ def test_cancel_flags_rather_than_oversubscribes_when_stock_vanished(db_session)
     all be re-claimed - and the request is left unreserved and flagged, never half-claimed."""
     project = _make_project(db_session)
     il = _seed_inventory(db_session, project.id, quantity=20)
-    sar, pr, _openings = _approved_pull(db_session, project, opening_number="A01")
+    sar, pr, _openings = _picked_pull(db_session, project, opening_number="A01")
     assert _on_hand(db_session, project.id) == 16
     # A second request claims everything the first one left behind...
     _two_leaf_request(db_session, project, qty=8, opening_number="B01")
@@ -506,7 +508,7 @@ def test_cancel_flags_rather_than_oversubscribes_when_stock_vanished(db_session)
 def test_cancel_is_blocked_by_an_opening_in_progress(db_session):
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=20)
-    _sar, pr, openings = _approved_pull(db_session, project)
+    _sar, pr, openings = _picked_pull(db_session, project)
     warehouse_repository.stage_pull_openings(db_session, pr.id, [o.id for o in openings], "picker")
     db_session.flush()
     shop_assembly_repository.assign_openings(db_session, [openings[0].id], "user-1", "Assembler One")
@@ -533,7 +535,7 @@ def test_cancel_is_blocked_by_an_opening_in_progress(db_session):
 def test_cancel_is_blocked_by_a_completed_opening(db_session):
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=20)
-    _sar, pr, openings = _approved_pull(db_session, project)
+    _sar, pr, openings = _picked_pull(db_session, project)
     warehouse_repository.stage_pull_openings(db_session, pr.id, [o.id for o in openings], "picker")
     db_session.flush()
     openings[1].assembly_status = AssemblyStatus.COMPLETED
@@ -549,7 +551,7 @@ def test_a_fully_staged_shop_assembly_pull_is_still_cancellable(db_session):
     is built" - which is not a point of no return."""
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=20)
-    _sar, pr, openings = _approved_pull(db_session, project)
+    _sar, pr, openings = _picked_pull(db_session, project)
     warehouse_repository.stage_pull_openings(db_session, pr.id, [o.id for o in openings], "picker")
     db_session.flush()
     assert pr.status == PullRequestStatus.COMPLETED
@@ -571,7 +573,7 @@ def test_cancel_refuses_a_pending_or_already_cancelled_pull(db_session):
 
     with pytest.raises(InvalidStateTransitionError) as exc:
         warehouse_repository.cancel_pull_request(db_session, pr.id, "warehouse", None)
-    assert "not been approved" in str(exc.value)
+    assert "not been started" in str(exc.value)
 
     pick_pull(db_session, pr.id, "picker")
     db_session.flush()
@@ -584,7 +586,7 @@ def test_cancel_refuses_a_pending_or_already_cancelled_pull(db_session):
 def test_cancel_audits_the_pull_and_every_restocked_row(db_session):
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=20)
-    _sar, pr, _openings = _approved_pull(db_session, project)
+    _sar, pr, _openings = _picked_pull(db_session, project)
 
     warehouse_repository.cancel_pull_request(db_session, pr.id, "warehouse", "duplicate")
     db_session.flush()
@@ -612,7 +614,7 @@ def test_cancel_audits_the_pull_and_every_restocked_row(db_session):
 def test_cancel_rejects_a_missing_actor_and_an_over_long_reason(db_session):
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=20)
-    _sar, pr, _openings = _approved_pull(db_session, project)
+    _sar, pr, _openings = _picked_pull(db_session, project)
 
     with pytest.raises(ValidationError):
         warehouse_repository.cancel_pull_request(db_session, pr.id, "", None)
@@ -625,7 +627,7 @@ def test_a_cancelled_request_can_be_re_accepted_and_re_pulled(db_session):
     the same request number, which is why uniqueness on that number had to become partial."""
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=20)
-    sar, first_pr, _openings = _approved_pull(db_session, project)
+    sar, first_pr, _openings = _picked_pull(db_session, project)
     warehouse_repository.cancel_pull_request(db_session, first_pr.id, "warehouse", None)
     db_session.flush()
 
@@ -655,7 +657,7 @@ def test_reopen_still_finds_the_live_pull_after_a_cancel(db_session):
     """The reopen lookup is by request_number, which a cancelled pull now shares with a live one."""
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=20)
-    sar, first_pr, _openings = _approved_pull(db_session, project)
+    sar, first_pr, _openings = _picked_pull(db_session, project)
     warehouse_repository.cancel_pull_request(db_session, first_pr.id, "warehouse", None)
     db_session.flush()
     shop_assembly_repository.accept_shop_assembly_request(db_session, sar.id, "acceptor")
@@ -675,7 +677,7 @@ def test_cancelling_a_replacement_pull_restocks_without_reservations(db_session)
     the replacement simply has to be requested again."""
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=20)
-    _sar, pr, openings = _approved_pull(db_session, project)
+    _sar, pr, openings = _picked_pull(db_session, project)
     warehouse_repository.stage_pull_openings(db_session, pr.id, [o.id for o in openings], "picker")
     db_session.flush()
     shop_assembly_repository.assign_openings(db_session, [openings[0].id], "user-1", "Assembler One")
@@ -769,7 +771,7 @@ def test_restock_lands_on_the_projects_newest_row_and_re_materializes_a_deleted_
     the FIFO deduction - and it must still land somewhere if a re-upload deleted every row."""
     project = _make_project(db_session)
     il = _seed_inventory(db_session, project.id, quantity=20)
-    _sar, pr, _openings = _approved_pull(db_session, project)
+    _sar, pr, _openings = _picked_pull(db_session, project)
     db_session.delete(il)
     db_session.flush()
     assert _on_hand(db_session, project.id) == 0
@@ -784,7 +786,7 @@ def test_complete_opening_works_while_the_pull_is_only_part_staged(db_session):
     still IN_PROGRESS, and an un-staged sibling still cannot."""
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=20)
-    _sar, pr, openings = _approved_pull(db_session, project, qty=1)
+    _sar, pr, openings = _picked_pull(db_session, project, qty=1)
     warehouse_repository.stage_pull_openings(db_session, pr.id, [openings[0].id], "picker")
     db_session.flush()
     shop_assembly_repository.assign_openings(db_session, [openings[0].id], "user-1", "Assembler One")
@@ -813,7 +815,7 @@ def test_complete_opening_works_while_the_pull_is_only_part_staged(db_session):
 def test_get_pull_request_openings_orders_by_opening_and_leaf(db_session):
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=20)
-    _sar, pr, _openings = _approved_pull(db_session, project)
+    _sar, pr, _openings = _picked_pull(db_session, project)
 
     rows = warehouse_repository.get_pull_request_openings(db_session, pr.id)
     assert [(r.opening_number, r.leaf) for r in rows] == [("A01", 1), ("A01", 2)]
@@ -824,7 +826,7 @@ def test_get_pull_request_openings_orders_by_opening_and_leaf(db_session):
 def test_assemble_list_excludes_a_cancelled_pulls_openings(db_session):
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=20)
-    _sar, pr, _openings = _approved_pull(db_session, project)
+    _sar, pr, _openings = _picked_pull(db_session, project)
     assert len(shop_assembly_repository.get_assemble_list(db_session, project.id)) == 2
 
     warehouse_repository.cancel_pull_request(db_session, pr.id, "warehouse", None)
@@ -841,9 +843,9 @@ def test_staging_summaries_group_correctly_across_several_pulls(db_session):
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=60)
 
-    _sar_a, pr_a, openings_a = _approved_pull(db_session, project, opening_number="A01")
-    _sar_b, pr_b, openings_b = _approved_pull(db_session, project, opening_number="B01")
-    _sar_c, pr_c, _openings_c = _approved_pull(db_session, project, opening_number="C01")
+    _sar_a, pr_a, openings_a = _picked_pull(db_session, project, opening_number="A01")
+    _sar_b, pr_b, openings_b = _picked_pull(db_session, project, opening_number="B01")
+    _sar_c, pr_c, _openings_c = _picked_pull(db_session, project, opening_number="C01")
 
     # A: nothing staged. B: one of two. C: both, which completes it.
     warehouse_repository.stage_pull_openings(db_session, pr_b.id, [openings_b[0].id], "picker")
@@ -880,7 +882,7 @@ def test_completing_a_pull_twice_is_refused_rather_than_double_announced(db_sess
     is what keeps the completion notification and the replacement arrivals to exactly one run."""
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=20)
-    _sar, pr, openings = _approved_pull(db_session, project)
+    _sar, pr, openings = _picked_pull(db_session, project)
 
     warehouse_repository.stage_pull_openings(db_session, pr.id, [o.id for o in openings], "picker")
     db_session.flush()
