@@ -30,6 +30,11 @@ from .types import (
     OpeningItemHardware,
     PackingSlip,
     PackingSlipItem,
+    PickSheet,
+    PickSheetFetchItem,
+    PickSheetLeaf,
+    PickSheetLocation,
+    PickSheetSection,
     PipelineOpening,
     PODocumentData,
     PODocumentInfo,
@@ -682,10 +687,12 @@ def pull_request_item_to_type(item) -> PullRequestItem:
         hardware_category=item.hardware_category,
         product_code=item.product_code,
         requested_quantity=item.requested_quantity,
+        fetched_at=item.fetched_at,
+        fetched_by=item.fetched_by,
     )
 
 
-def pull_request_to_type(pr, staging=None) -> PullRequest:
+def pull_request_to_type(pr, staging=None, partially_picked=None) -> PullRequest:
     """Model -> type. `staging` is a `warehouse.StagingSummary` the *caller* computed (#343).
 
     It is passed in rather than derived here because deriving it needs a query, and a converter that
@@ -693,6 +700,10 @@ def pull_request_to_type(pr, staging=None) -> PullRequest:
     fetches the counts for the whole page in one grouped aggregate and hands each row its own. None
     leaves the three staging fields null, which reads as "not applicable / not evaluated" - never as
     "nothing staged".
+
+    `partially_picked` (#367) arrives the same way and for the same reason: it is one grouped read
+    over `pull_pick_lines` for the whole page, not a lookup per row. None means not evaluated, which
+    is also the honest answer for a pull that is already picked.
     """
     return PullRequest(
         id=strawberry.ID(str(pr.id)),
@@ -705,6 +716,8 @@ def pull_request_to_type(pr, staging=None) -> PullRequest:
         created_at=pr.created_at,
         updated_at=pr.updated_at,
         approved_at=pr.approved_at,
+        picked_at=pr.picked_at,
+        picked_by=pr.picked_by,
         completed_at=pr.completed_at,
         cancelled_at=pr.cancelled_at,
         cancelled_by=pr.cancelled_by,
@@ -713,6 +726,67 @@ def pull_request_to_type(pr, staging=None) -> PullRequest:
         staging_status=staging.status if staging is not None else None,
         staged_opening_count=staging.staged_opening_count if staging is not None else None,
         total_opening_count=staging.total_opening_count if staging is not None else None,
+        partially_picked=partially_picked,
+    )
+
+
+def pick_sheet_to_type(sheet, staging=None, partially_picked=None) -> PickSheet:
+    """`warehouse.PickSheet` -> the GraphQL type (#367).
+
+    The repository has already done every read this needs in a fixed number of queries, so this is a
+    pure shape change - nothing here touches the session. `remainingQuantity` is exposed rather than
+    left to the client to subtract, because the pick screen, the PDF and the confirm gate must all
+    agree on one definition of "still to pick"."""
+    return PickSheet(
+        pull_request=pull_request_to_type(sheet.pull_request, staging, partially_picked),
+        sections=[
+            PickSheetSection(
+                hardware_category=section.hardware_category,
+                product_code=section.product_code,
+                required_quantity=section.required_quantity,
+                applied_quantity=section.applied_quantity,
+                remaining_quantity=section.remaining_quantity,
+                leaves=[
+                    PickSheetLeaf(
+                        opening_number=leaf.opening_number,
+                        leaf=leaf.leaf,
+                        quantity=leaf.quantity,
+                    )
+                    for leaf in section.leaves
+                ],
+                locations=[
+                    PickSheetLocation(
+                        inventory_location_id=strawberry.ID(str(loc.inventory_location_id)),
+                        warehouse_id=strawberry.ID(str(loc.warehouse_id)) if loc.warehouse_id else None,
+                        warehouse_code=loc.warehouse_code,
+                        aisle=loc.aisle,
+                        row=loc.row,
+                        bay=loc.bay,
+                        available=loc.available,
+                        received_at=loc.received_at,
+                        draft_quantity=loc.draft_quantity,
+                        applied_quantity=loc.applied_quantity,
+                    )
+                    for loc in section.locations
+                ],
+            )
+            for section in sheet.sections
+        ],
+        fetch_items=[
+            PickSheetFetchItem(
+                pull_request_item_id=strawberry.ID(str(f.pull_request_item_id)),
+                opening_item_id=strawberry.ID(str(f.opening_item_id)) if f.opening_item_id else None,
+                opening_number=f.opening_number,
+                leaf=f.leaf,
+                aisle=f.aisle,
+                row=f.row,
+                bay=f.bay,
+                state=f.state,
+                fetched_at=f.fetched_at,
+                fetched_by=f.fetched_by,
+            )
+            for f in sheet.fetch_items
+        ],
     )
 
 

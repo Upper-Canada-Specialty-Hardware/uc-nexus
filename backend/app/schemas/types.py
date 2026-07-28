@@ -3,7 +3,6 @@ from datetime import date, datetime
 import strawberry
 
 from .enums import (
-    ApproveOutcome,
     AssemblyStatus,
     AuditAction,
     AuditEntityType,
@@ -15,6 +14,7 @@ from .enums import (
     LeafStatus,
     NotificationType,
     OpeningItemState,
+    PickOutcome,
     PipelineStage,
     PODocumentType,
     POStatus,
@@ -543,6 +543,10 @@ class PullRequestItem:
     hardware_category: str | None
     product_code: str | None
     requested_quantity: int
+    # Fetch check-off on an OPENING_ITEM line (#367): the assembled leaf has been collected off the
+    # rack. Always null on a LOOSE line, which is picked by quantity instead.
+    fetched_at: datetime | None = None
+    fetched_by: str | None = None
 
 
 @strawberry.type
@@ -574,6 +578,14 @@ class PullRequest:
     staging_status: PullStatus | None = None
     staged_opening_count: int | None = None
     total_opening_count: int | None = None
+    # When the pick was confirmed and by whom (#367). This is the moment stock left inventory;
+    # `approvedAt` only says the warehouse started on the pull. Staging and completion gate on this.
+    picked_at: datetime | None = None
+    picked_by: str | None = None
+    # Stock has come off the shelf for this pull but it is not fully picked - a short confirm waiting
+    # on a second one. Only computed for un-picked pulls (it is meaningless once `pickedAt` is set);
+    # null means "not evaluated", never "nothing picked".
+    partially_picked: bool | None = None
 
 
 @strawberry.type
@@ -1007,13 +1019,97 @@ class InventoryAvailability:
 
 
 @strawberry.type
-class ApproveResult:
+class PickSheetLeaf:
+    """One door leaf a pick section's units are owed to (#367).
+
+    Every leaf is listed, never summarised into "and N more": the picker is building carts per leaf,
+    so the list of leaves *is* the work, and a truncated one sends them back to another screen."""
+
+    opening_number: str
+    leaf: int | None
+    quantity: int
+
+
+@strawberry.type
+class PickSheetLocation:
+    """One inventory row a pick section's product can be taken from (#367).
+
+    `receivedAt` is here so the picker can rotate stock themselves. There is deliberately no
+    suggested quantity anywhere in this type: a system suggestion is a default in everything but
+    name, and #367 exists because the person at the rack should be the one deciding."""
+
+    inventory_location_id: strawberry.ID
+    warehouse_id: strawberry.ID | None
+    warehouse_code: str | None
+    aisle: str | None
+    row: str | None
+    bay: str | None
+    # On-hand minus condemned: the ceiling `confirmPick` enforces for this row.
+    available: int
+    received_at: datetime
+    # What the saved draft has against this row, and what has already been confirmed off it.
+    draft_quantity: int
+    applied_quantity: int
+
+
+@strawberry.type
+class PickSheetSection:
+    """One product code to pick, with every leaf it is owed to and everywhere it can come from."""
+
+    hardware_category: str
+    product_code: str
+    required_quantity: int
+    applied_quantity: int
+    remaining_quantity: int
+    leaves: list[PickSheetLeaf]
+    locations: list[PickSheetLocation]
+
+
+@strawberry.type
+class PickSheetFetchItem:
+    """One assembled leaf to collect off the rack (#367).
+
+    An OPENING_ITEM line moves a leaf whose hardware left fungible inventory at assembly, so nothing
+    is deducted for it - it is walked to and picked up. The check-off is persisted so it survives a
+    reload or a shift change."""
+
+    pull_request_item_id: strawberry.ID
+    opening_item_id: strawberry.ID | None
+    opening_number: str
+    leaf: int | None
+    aisle: str | None
+    row: str | None
+    bay: str | None
+    state: OpeningItemState | None
+    fetched_at: datetime | None
+    fetched_by: str | None
+
+
+@strawberry.type
+class PickSheet:
+    """Everything the pick screen and the printed sheet render from (#367)."""
+
     pull_request: PullRequest
-    outcome: ApproveOutcome
-    notification: Notification | None
-    # Populated when outcome is INSUFFICIENT: the exact per-combo shortfall shown inline to the
-    # approver. Empty on APPROVED.
+    sections: list[PickSheetSection]
+    fetch_items: list[PickSheetFetchItem]
+
+
+@strawberry.type
+class ConfirmPickResult:
+    """What one pick confirmation did (#367).
+
+    SHORT is a resumable state, not a failure: what was entered is deducted and recorded, the pull
+    stays In Progress and un-picked, purchasing is notified once, and a later confirmation covers the
+    remainder."""
+
+    pull_request: PullRequest
+    outcome: PickOutcome
+    notification: Notification | None = None
+    # Populated when outcome is SHORT: what each combo is still owed, and what is left in the project
+    # for it. Empty on PICKED.
     shortfalls: list[InventoryShortfall] = strawberry.field(default_factory=list)
+    # Units this confirmation took off the shelf. Zero on a pure fetch pull.
+    applied_quantity: int = 0
 
 
 @strawberry.type

@@ -490,6 +490,20 @@ class InstallReplacementInput:
 
 
 @strawberry.input
+class PickLineInput:
+    """One line the warehouse user dictated: this many units of this product off this location (#367).
+
+    The combo is carried alongside the location id rather than derived from it, so the server can
+    check the two agree. A client that has drifted from the sheet - a stale location list, a row
+    re-keyed to another product - is refused instead of quietly deducting the wrong bin."""
+
+    hardware_category: str
+    product_code: str
+    inventory_location_id: strawberry.ID
+    quantity: int
+
+
+@strawberry.input
 class StagePullOpeningsInput:
     """Confirm that the cart(s) for these openings of an approved shop-assembly pull are built (#343).
 

@@ -39,6 +39,9 @@ from app.models.enums import (
     POStatus as POStatusDB,
 )
 from app.models.enums import (
+    PullPickLineState as PullPickLineStateDB,
+)
+from app.models.enums import (
     PullRequestItemType as PullRequestItemTypeDB,
 )
 from app.models.enums import (
@@ -69,6 +72,7 @@ POStatus = strawberry.enum(POStatusDB)
 PullRequestSource = strawberry.enum(PullRequestSourceDB)
 PullRequestStatus = strawberry.enum(PullRequestStatusDB)
 PullRequestItemType = strawberry.enum(PullRequestItemTypeDB)
+PullPickLineState = strawberry.enum(PullPickLineStateDB)
 OpeningItemState = strawberry.enum(OpeningItemStateDB)
 ShopAssemblyRequestStatus = strawberry.enum(ShopAssemblyRequestStatusDB)
 ShippingOutRequestStatus = strawberry.enum(ShippingOutRequestStatusDB)
@@ -97,22 +101,22 @@ class ReconciliationStatus(enum.Enum):
 
 
 @strawberry.enum
-class ApproveOutcome(enum.Enum):
-    """What `approvePullRequest` did. Two values, because `approve_pull_request` returns exactly two
-    outcome strings.
+class PickOutcome(enum.Enum):
+    """What `confirmPick` did (#367). Two values, because `confirm_pick` returns exactly two.
 
-    A third value, CANCELLED, was removed in #344 as dead state. It dated from the pre-#224
-    behaviour where an approve that found insufficient stock *cancelled* the pull; since #224 such
-    an approve leaves the PR PENDING (blocked, not cancelled) and returns INSUFFICIENT with the
-    shortfall detail, so no code path could produce it and no client branched on it. It is safe to
-    delete without a migration: ApproveOutcome is a GraphQL-only enum and was never persisted -
-    a *cancelled pull* is `PullRequestStatus.CANCELLED`, which is a different enum on a real column
-    and is very much alive since #343."""
+    It replaces `ApproveOutcome`, whose two values described a moment that no longer exists:
+    approval stopped being the thing that touches inventory. The mapping is not one-to-one, which is
+    why the enum is not simply renamed - INSUFFICIENT meant "nothing happened, the pull is blocked
+    and still PENDING", while SHORT means "some of it happened, the pull is In Progress and holds
+    real deducted stock". Neither is GraphQL-only trivia the client can guess at, so the rename is
+    the honest signal that the state machine changed.
+    """
 
-    APPROVED = "approved"
-    # #224: an approve blocked by insufficient inventory leaves the PR PENDING (not cancelled) and
-    # returns the shortfall to the approver; the PO is notified for backfill.
-    INSUFFICIENT = "insufficient"
+    # Every combo is covered. The pull is stamped picked and can be staged.
+    PICKED = "picked"
+    # Some units were picked and some were not. The pull stays In Progress and un-picked, purchasing
+    # is notified for backfill, and a later confirmation enters the remainder.
+    SHORT = "short"
 
 
 @strawberry.enum
