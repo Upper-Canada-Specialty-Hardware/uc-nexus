@@ -21,9 +21,11 @@ import json
 import logging
 import os
 import re
+import socket
 import subprocess
 import sys
 import time
+import urllib.parse
 import urllib.request
 import zipfile
 from datetime import datetime, timezone
@@ -374,13 +376,51 @@ def _health_url(install_dir: Path) -> str:
         return "http://127.0.0.1:7321/health"
 
 
+def _probe_health(url: str, timeout: float = 2.0) -> bool:
+    """One GET of the loopback /health, spoken over a RAW socket instead of through urllib.
+
+    urllib resolves the host with socket.getaddrinfo(<str>), and CPython encodes a str host through the
+    `idna` text codec - a LAZY import that reaches encodings.idna -> stringprep -> unicodedata. Miss any of
+    those in the frozen bundle and the codec registry raises `LookupError: unknown encoding: idna` on EVERY
+    probe, so a perfectly healthy relay reads as dead and gets rolled back. That is #318's codec, and it is
+    what turned #376's damaged bundle into a total outage. Handing getaddrinfo a BYTES host skips the codec
+    path entirely, which keeps the probe truthful in the one situation where its verdict decides whether
+    the machine keeps a working relay: when something is wrong with the install.
+
+    Deliberately minimal HTTP - one request, `Connection: close`, read to EOF. The body is located by its
+    first `{` so chunked framing needs no decoding."""
+    parts = urllib.parse.urlsplit(url)
+    host = parts.hostname or "127.0.0.1"
+    port = parts.port or 80
+    request = (
+        f"GET {parts.path or '/'} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n"
+    ).encode("ascii")
+    chunks: list[bytes] = []
+    with socket.create_connection((host.encode("ascii"), port), timeout=timeout) as conn:
+        conn.settimeout(timeout)
+        conn.sendall(request)
+        while True:
+            chunk = conn.recv(4096)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    head, _, body = b"".join(chunks).partition(b"\r\n\r\n")
+    status_line = head.split(b"\r\n", 1)[0].split()
+    if len(status_line) < 2 or status_line[1] != b"200":
+        return False
+    start = body.find(b"{")
+    if start < 0:
+        return False
+    payload, _ = json.JSONDecoder().raw_decode(body[start:].decode("utf-8", "replace"))
+    return isinstance(payload, dict) and payload.get("status") == "ok"
+
+
 def _wait_for_health(url: str, deadline: float, log: logging.Logger | None = None) -> bool:
     last_err: Exception | None = None
     while _monotonic() < deadline:
         try:
-            with urllib.request.urlopen(url, timeout=2) as r:  # noqa: S310 (localhost health URL)
-                if json.loads(r.read().decode()).get("status") == "ok":
-                    return True
+            if _probe_health(url):
+                return True
         except Exception as e:  # noqa: BLE001 - the probe's ONLY job is "is it up yet?"; ANY failure
             # (connection refused, a partial body, or a missing text codec like #318's
             # `LookupError: unknown encoding: idna`) means not-up-yet. Swallow it and retry within the
@@ -417,13 +457,7 @@ def _relaunch_and_wait_healthy(install_dir: Path, deadline: float, log: logging.
 
 def _current_target(install_dir: Path) -> Path | None:
     """The real folder the `current` junction points at now (for rollback on a failed update)."""
-    link = layout.current_link(install_dir)
-    try:
-        if link.exists():
-            return link.resolve()
-    except OSError:
-        pass
-    return None
+    return layout.current_target(install_dir)
 
 
 # --- staging + applying -------------------------------------------------------------------------------
@@ -546,7 +580,9 @@ def apply_staged_update(app_pid, install_dir: str | Path) -> dict:
 
     if _relaunch_and_wait_healthy(install_dir, deadline, log):
         _finish_ledger(install_dir, "success", None)
-        layout.cleanup_old_versions(install_dir, keep={new_dir.name})
+        # Keep the version we just left as well as the new one. WE are still running from it, and it is
+        # what the next update rolls back to if that one fails (#376). Anything older goes now.
+        layout.cleanup_old_versions(install_dir, layout.versions_to_keep(install_dir, extra=(new_dir, old_target)))
         log.info("update applied: now on %s", target)
         return {"ok": True}
 
@@ -578,7 +614,7 @@ def apply_update(url: str, install_dir: str | Path) -> dict:
     except Exception:  # noqa: BLE001
         pass
     if ok:
-        layout.cleanup_old_versions(install_dir, keep={ver.name})
+        layout.cleanup_old_versions(install_dir, layout.versions_to_keep(install_dir, extra=(ver, old_target)))
         return {"ok": True, "restarted": True, "note": "reopen the window to load the updated UI"}
     if old_target is not None:
         layout.repoint_current(install_dir, old_target)

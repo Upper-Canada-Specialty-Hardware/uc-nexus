@@ -44,6 +44,7 @@ class RelayApp:
         self._mutex = None  # single_instance.MutexResult while we own the app slot
         self._control = None  # single_instance.ControlServer answering ping / show / quit_for_upgrade
         self._update_poller_stop = None  # threading.Event stopping the background update poll
+        self._hard_exit_timer = None  # threading.Timer arming the exit-anyway fallback (see _arm_hard_exit)
 
     # --- serve child supervision ----------------------------------------------------------------------
 
@@ -151,11 +152,8 @@ class RelayApp:
             self.shutdown()
             # Guarantee the process exits so the helper's swap can proceed promptly. shutdown() stopped
             # serve + tray and asked the window to close, but destroy() runs off the GUI thread and does
-            # not always tear down webview.start(); this daemon timer is the fallback (it dies with the
-            # process if we exit cleanly first, so it only ever fires when the GUI loop is stuck).
-            timer = threading.Timer(2.0, lambda: os._exit(0))
-            timer.daemon = True
-            timer.start()
+            # not always tear down webview.start(); this is the fallback.
+            self._arm_hard_exit()
         return result
 
     def _reconcile_update_ledger(self) -> None:
@@ -237,25 +235,55 @@ class RelayApp:
         self._show_window()
         single_instance.bring_to_front()
 
+    def _arm_hard_exit(self, delay: float = 2.0) -> None:
+        """Exit the process anyway if a graceful teardown leaves the GUI loop stuck. A daemon timer, so it
+        dies with us and only ever fires when we failed to exit on our own.
+
+        The handle is kept so it can be cancelled. It has to be: the timer outlives whatever armed it, and
+        it resolves os._exit at FIRE time. A test that neutralises os._exit with monkeypatch gets that
+        patch undone at test teardown while this timer is still pending, so two seconds later the real
+        os._exit(0) fired inside the test runner - killing pytest mid-suite with exit code 0, no summary,
+        and a green CI that had silently run about a third of its tests."""
+        timer = threading.Timer(delay, lambda: os._exit(0))
+        timer.daemon = True
+        self._hard_exit_timer = timer
+        timer.start()
+
+    def cancel_hard_exit(self) -> None:
+        """Disarm the exit-anyway fallback (see _arm_hard_exit)."""
+        if self._hard_exit_timer is not None:
+            self._hard_exit_timer.cancel()
+            self._hard_exit_timer = None
+
     def _ipc_quit(self) -> None:
         """A newer instance is taking over: tear down WITHOUT the shutdown-confirm dialog, then guarantee we
         exit so our exe lock frees for the swap (mirrors the updater's hard-exit fallback)."""
         logger.info("relay app evicted by a newer instance; shutting down for handoff")
         self.shutdown()
-        timer = threading.Timer(2.0, lambda: os._exit(0))
-        timer.daemon = True
-        timer.start()
+        self._arm_hard_exit()
 
     def _cleanup_old_versions(self) -> None:
-        """Delete stale app-<build>/ version folders a past update left behind, keeping the one we run
-        from. Best-effort - a folder still held by an exiting update helper is skipped and cleaned on a
-        later start (see layout.cleanup_old_versions)."""
-        from . import layout
+        """Discard stale app-<build>/ version folders a past update left behind, keeping the one we run
+        from, the one `current` points at, and the previous build as a rollback target.
+
+        Skipped outright while an update is still in flight. This runs in the app the update helper just
+        relaunched, and that helper is executing from the PREVIOUS version folder while it health-gates
+        us - so the folder this was most likely to destroy was the one still in use (#376). Removal is
+        all-or-nothing now (see layout.cleanup_old_versions) and would leave it intact anyway, but not
+        touching it at all while it is being used is the honest rule. An abandoned ledger (a helper that
+        died without recording a result, #369) does not count as in-flight, or cleanup would never run
+        again on that machine."""
+        from . import layout, updater
 
         try:
+            install_dir = self._install_dir()
+            ledger = updater.read_ledger(install_dir)
+            if ledger.get("status") in ("staging", "applying") and not updater.ledger_is_abandoned(ledger):
+                logger.info("skipping stale version cleanup: an update is still in flight")
+                return
             running = layout.running_version_dir()
-            keep = {running.name} if running is not None else set()
-            layout.cleanup_old_versions(self._install_dir(), keep)
+            keep = layout.versions_to_keep(install_dir, extra=(running, layout.current_target(install_dir)))
+            layout.cleanup_old_versions(install_dir, keep)
         except Exception:
             logger.exception("error cleaning up old relay versions")
 

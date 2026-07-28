@@ -274,7 +274,7 @@ def test_kill_relay_pids_uses_pid_not_image_name(tmp_path, monkeypatch):
 
 
 def test_wait_for_health_returns_true_on_ok(monkeypatch):
-    monkeypatch.setattr(updater.urllib.request, "urlopen", lambda *a, **k: _Resp({"status": "ok"}))
+    monkeypatch.setattr(updater, "_probe_health", lambda url, **k: True)
     # drive _monotonic off a tick list that steps PAST the deadline (and no-op _sleep) so a regression that
     # stops returning True times out to False instead of spinning forever on the real clock/sleep.
     ticks = [0.0, 1.0, 2.0]
@@ -289,7 +289,7 @@ def test_wait_for_health_logs_last_error_on_timeout(monkeypatch):
     def _boom(*a, **k):
         raise OSError("connection refused")
 
-    monkeypatch.setattr(updater.urllib.request, "urlopen", _boom)
+    monkeypatch.setattr(updater, "_probe_health", _boom)
     monkeypatch.setattr(updater, "_sleep", lambda s: None)
     ticks = [0.0, 1.0]
     monkeypatch.setattr(updater, "_monotonic", lambda: ticks.pop(0) if ticks else 999.0)
@@ -311,12 +311,101 @@ def test_wait_for_health_swallows_a_probe_error_instead_of_crashing(monkeypatch)
     def _boom(*a, **k):
         raise LookupError("unknown encoding: idna")
 
-    monkeypatch.setattr(updater.urllib.request, "urlopen", _boom)
+    monkeypatch.setattr(updater, "_probe_health", _boom)
     monkeypatch.setattr(updater, "_sleep", lambda s: None)
     ticks = [0.0, 1.0, 2.0]  # three probes, then the next monotonic check is past the deadline
     monkeypatch.setattr(updater, "_monotonic", lambda: ticks.pop(0) if ticks else 999.0)
 
     assert updater._wait_for_health("http://127.0.0.1:7321/health", 5.0) is False
+
+
+# --- _probe_health ------------------------------------------------------------------------------------
+
+
+class _FakeSock:
+    """A socket that replays one canned HTTP response and records what was sent."""
+
+    def __init__(self, response: bytes, sent: list):
+        self._response = response
+        self._sent = sent
+        self._done = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def settimeout(self, t):
+        pass
+
+    def sendall(self, data):
+        self._sent.append(data)
+
+    def recv(self, n):
+        if self._done:
+            return b""
+        self._done = True
+        return self._response
+
+
+def _fake_connect(monkeypatch, response: bytes):
+    """Patch socket.create_connection and hand back (addresses, sent-bytes) for assertions."""
+    addresses, sent = [], []
+
+    def _connect(address, timeout=None):
+        addresses.append(address)
+        return _FakeSock(response, sent)
+
+    monkeypatch.setattr(updater.socket, "create_connection", _connect)
+    return addresses, sent
+
+
+_OK_RESPONSE = b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{"status": "ok", "version": "0.1.0"}'
+
+
+def test_probe_health_passes_a_bytes_host_so_the_idna_codec_is_never_reached(monkeypatch):
+    """#376's outage mechanism, guarded at the source.
+
+    getaddrinfo encodes a STR host through the `idna` text codec, which is a lazy import chain
+    (encodings.idna -> stringprep -> unicodedata). When a damaged bundle is missing any link, every probe
+    raises `LookupError: unknown encoding: idna`, a healthy relay reads as dead, and the update rolls back
+    onto the broken install. A bytes host skips that path, so the probe still answers truthfully when the
+    bundle is exactly the thing that is wrong."""
+    addresses, _ = _fake_connect(monkeypatch, _OK_RESPONSE)
+
+    assert updater._probe_health("http://127.0.0.1:7321/health") is True
+
+    host, port = addresses[0]
+    assert isinstance(host, bytes) and host == b"127.0.0.1"
+    assert port == 7321
+
+
+def test_probe_health_sends_a_close_delimited_get_for_the_url_path(monkeypatch):
+    _, sent = _fake_connect(monkeypatch, _OK_RESPONSE)
+
+    updater._probe_health("http://127.0.0.1:7321/health")
+
+    request = b"".join(sent)
+    assert request.startswith(b"GET /health HTTP/1.1\r\n")
+    assert b"Connection: close\r\n" in request
+
+
+def test_probe_health_is_false_on_a_non_200(monkeypatch):
+    _fake_connect(monkeypatch, b'HTTP/1.1 503 Service Unavailable\r\n\r\n{"status": "ok"}')
+    assert updater._probe_health("http://127.0.0.1:7321/health") is False
+
+
+def test_probe_health_is_false_when_the_body_says_anything_but_ok(monkeypatch):
+    _fake_connect(monkeypatch, b'HTTP/1.1 200 OK\r\n\r\n{"status": "starting"}')
+    assert updater._probe_health("http://127.0.0.1:7321/health") is False
+
+
+def test_probe_health_reads_the_body_through_chunked_framing(monkeypatch):
+    # uvicorn sends content-length today, but the probe must not care: it finds the JSON by its first `{`.
+    chunked = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n17\r\n" + b'{"status": "ok"}' + b"\r\n0\r\n\r\n"
+    _fake_connect(monkeypatch, chunked)
+    assert updater._probe_health("http://127.0.0.1:7321/health") is True
 
 
 # --- _relaunch_and_wait_healthy -----------------------------------------------------------------------
