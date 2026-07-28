@@ -59,5 +59,13 @@ Dev Planning/
 # also exclude its ClickOnce publish output (regenerable build artifact)
 docs/**/publish/
 
+# Impeccable design skill. iui/ and .impeccable/design.json are the shared contract and are
+# tracked; everything below is per-machine state. These were previously only in .git/info/exclude,
+# which does not survive a clone.
+.impeccable/hook.cache.json
+.impeccable/config.local.json
+.impeccable/live/
+.impeccable/critique/
+
 # Credentials
 clerk_credentials.txt
