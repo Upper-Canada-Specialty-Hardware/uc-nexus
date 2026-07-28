@@ -489,8 +489,8 @@ def _download_and_extract(url: str, install_dir: Path, target_build: str | None)
 
 def stage_update(url: str, install_dir: str | Path, app_pid: int, target_build: str | None = None) -> dict:
     """Download + extract the new version alongside the current one, seed the ledger, and spawn the detached
-    windowless helper from the CURRENT (settled) exe. The caller (ui.apply_update) then shuts the app down
-    so the helper can repoint the junction and relaunch."""
+    windowless helper from the CURRENT (settled) exe, by its REAL path. The caller (ui.apply_update) then
+    shuts the app down so the helper can repoint the junction and relaunch."""
     from . import single_instance
 
     install_dir = Path(install_dir)
@@ -500,7 +500,21 @@ def stage_update(url: str, install_dir: str | Path, app_pid: int, target_build: 
 
     _clear_cancel(install_dir)
     _stage_ledger(install_dir, target_build or "", url, str(ver))
+    # Resolve the `current` junction to the real app-<build>/ folder before spawning. The helper is the
+    # thing that REPOINTS that junction, and a onedir process keeps loading out of the _internal/ next to
+    # the exe path it was launched from - so a helper launched as `current\ucnexus-relay.exe` has its
+    # runtime rooted in a path it then moves out from under itself. Every LAZY import after the repoint
+    # (the health probe's `encodings.idna` -> stringprep -> unicodedata is the one that bites) resolves
+    # through the junction into the NEW version, or into nothing during the remove/recreate window. When
+    # that import loses the race the codec registry caches the failure for the life of the process, so
+    # every subsequent probe reports `LookupError: unknown encoding: idna`, a healthy new version reads as
+    # dead, and the update rolls back. Observed doing exactly that on build.38 -> build.39, whose bundle
+    # was fully intact. Launching from the resolved real folder keeps the helper's runtime still.
     helper_exe = single_instance.installed_exe_path(install_dir)  # the current, already-scanned version
+    try:
+        helper_exe = Path(helper_exe).resolve()
+    except OSError:
+        pass  # unresolvable junction: fall back to the link path rather than not updating at all
     _spawn_detached([str(helper_exe), "update-apply", "--pid", str(int(app_pid))], cwd=install_dir)
     return {"ok": True, "note": "the relay will close and reopen on the new version"}
 
