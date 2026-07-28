@@ -9,9 +9,10 @@ import {
   Chip,
   Divider,
 } from '@mui/material';
-import CloseIcon from '@mui/icons-material/Close';
+import { X } from 'lucide-react';
 import { useQuery } from '@apollo/client/react';
 import { GET_AUDIT_LOG } from '../../graphql/shared';
+import { microLabelSx, monoSx, tabularSx } from '../../theme';
 
 interface AuditLogEntry {
   id: string;
@@ -66,7 +67,10 @@ function formatLocation(loc: Record<string, unknown> | null | undefined): string
 function DetailLine({ label, value }: { label: string; value: string | number }) {
   return (
     <Typography variant="body2" color="text.secondary">
-      {label}: <Typography component="span" variant="body2" color="text.primary">{value}</Typography>
+      {label}:{' '}
+      <Typography component="span" color="text.primary" sx={monoSx}>
+        {value}
+      </Typography>
     </Typography>
   );
 }
@@ -127,7 +131,7 @@ function AuditEntry({ entry }: { entry: AuditLogEntry }) {
           size="small"
           variant="outlined"
         />
-        <Typography variant="caption" color="text.secondary">
+        <Typography variant="caption" color="text.secondary" sx={tabularSx}>
           {formatDateTime(entry.createdAt)}
         </Typography>
       </Box>
@@ -159,16 +163,26 @@ export default function AuditHistoryDrawer({
   return (
     <Drawer anchor="right" open={open} onClose={onClose} PaperProps={{ sx: { width: 400, maxWidth: '90vw' } }}>
       <Box sx={{ p: 2 }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
-          <Typography variant="h6">Audit History</Typography>
-          <IconButton onClick={onClose} size="small">
-            <CloseIcon />
+        <Box
+          sx={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            mb: 1.5,
+            pb: 0.75,
+            borderBottom: '2px solid',
+            borderColor: 'text.primary',
+          }}
+        >
+          <Typography component="div" sx={microLabelSx}>
+            Audit History
+          </Typography>
+          <IconButton onClick={onClose} size="small" aria-label="Close audit history">
+            <X size={18} strokeWidth={1.75} />
           </IconButton>
         </Box>
         {label && (
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-            {label}
-          </Typography>
+          <Typography sx={{ ...monoSx, color: 'text.secondary', mb: 2 }}>{label}</Typography>
         )}
 
         {loading && (

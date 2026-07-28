@@ -5,6 +5,8 @@ import VendorSelect from '../../components/VendorSelect';
 import OrderAsAutocomplete from '../../components/OrderAsAutocomplete';
 import { GET_PRIOR_ORDER_AS_VALUES } from '../../graphql/shared';
 import type { AggregatedHardwareItem } from './types';
+import { monoSx, microLabelSx, tabularSx } from '../../theme';
+import { StaggerItem, StaggerList } from '../../motion';
 
 // ---- Aggregation Types ----
 
@@ -144,18 +146,19 @@ function VendorGroupCard({
           control={<Checkbox checked={isSelected} onChange={() => onToggleVendor(vendor)} />}
           label={
             <Box>
-              <Typography variant="caption" color="text.secondary">
-                Manufacturer
-              </Typography>
-              <Typography variant="subtitle1" sx={{ fontWeight: 'bold' }}>
+              <Typography sx={microLabelSx}>Manufacturer</Typography>
+              <Typography variant="subtitle1" sx={{ fontWeight: 700, ...monoSx, fontSize: '1rem' }}>
                 {vendor}
               </Typography>
             </Box>
           }
         />
-        <Typography variant="subtitle1" color="primary">
-          PO Total: ${poTotal.toFixed(2)}
-        </Typography>
+        <Box sx={{ textAlign: 'right' }}>
+          <Typography sx={microLabelSx}>PO Total</Typography>
+          <Typography variant="subtitle1" sx={{ ...tabularSx, fontWeight: 700 }}>
+            ${poTotal.toFixed(2)}
+          </Typography>
+        </Box>
       </Box>
 
       {/* Vendor select + Preferred delivery date + Notes fields */}
@@ -192,52 +195,54 @@ function VendorGroupCard({
       </Box>
 
       {/* Line Items subheading */}
-      <Typography variant="subtitle2" sx={{ mb: 1 }}>
-        Line Items ({aggregated.length})
-      </Typography>
+      <Typography sx={{ ...microLabelSx, mb: 1 }}>Line Items ({aggregated.length})</Typography>
 
-      {/* Aggregated line items grid */}
-      <Box sx={{ display: 'grid', gridTemplateColumns: '1.2fr 1.5fr 1.5fr 0.7fr 0.8fr 0.8fr' }}>
+      {/* Aggregated line items: a ledger - a 2px ink rule under the headers and hairline row rules,
+          no zebra fill (the old grey.50/grey.100 pair was invisible in dark mode anyway). */}
+      <Box
+        sx={{
+          display: 'grid',
+          gridTemplateColumns: '1.2fr 1.5fr 1.5fr 0.7fr 0.8fr 0.8fr',
+          '& .po-head': {
+            ...microLabelSx,
+            px: 1,
+            py: 0.75,
+            borderBottom: '2px solid',
+            borderColor: 'text.primary',
+          },
+          '& .po-cell': {
+            px: 1,
+            py: 0.75,
+            borderBottom: '1px solid',
+            borderColor: 'divider',
+            display: 'flex',
+            alignItems: 'center',
+            minWidth: 0,
+          },
+          '& .po-cell-right': { justifyContent: 'flex-end' },
+        }}
+      >
         {/* Header row */}
-        <Box sx={{ bgcolor: 'grey.100', p: 0.75 }}>
-          <Typography variant="caption" sx={{ fontWeight: 'bold' }}>
-            Order As
-          </Typography>
+        <Box className="po-head">Order As</Box>
+        <Box className="po-head">Product Code</Box>
+        <Box className="po-head">Hardware Category</Box>
+        <Box className="po-head" sx={{ textAlign: 'right' }}>
+          Total Qty
         </Box>
-        <Box sx={{ bgcolor: 'grey.100', p: 0.75 }}>
-          <Typography variant="caption" sx={{ fontWeight: 'bold' }}>
-            Product Code
-          </Typography>
+        <Box className="po-head" sx={{ textAlign: 'right' }}>
+          Unit Cost
         </Box>
-        <Box sx={{ bgcolor: 'grey.100', p: 0.75 }}>
-          <Typography variant="caption" sx={{ fontWeight: 'bold' }}>
-            Hardware Category
-          </Typography>
-        </Box>
-        <Box sx={{ bgcolor: 'grey.100', p: 0.75, textAlign: 'right' }}>
-          <Typography variant="caption" sx={{ fontWeight: 'bold' }}>
-            Total Qty
-          </Typography>
-        </Box>
-        <Box sx={{ bgcolor: 'grey.100', p: 0.75, textAlign: 'right' }}>
-          <Typography variant="caption" sx={{ fontWeight: 'bold' }}>
-            Unit Cost
-          </Typography>
-        </Box>
-        <Box sx={{ bgcolor: 'grey.100', p: 0.75, textAlign: 'right' }}>
-          <Typography variant="caption" sx={{ fontWeight: 'bold' }}>
-            Total Cost
-          </Typography>
+        <Box className="po-head" sx={{ textAlign: 'right' }}>
+          Total Cost
         </Box>
 
         {/* Data rows */}
-        {aggregated.map((line, idx) => {
-          const rowBg = idx % 2 === 0 ? 'background.paper' : 'grey.50';
+        {aggregated.map((line) => {
           const aliasKey = `${line.productCode}|${line.hardwareCategory}`;
           const options = priorMap.get(line.productCode) ?? [];
           return (
             <Box key={`${line.productCode}-${line.hardwareCategory}`} sx={{ display: 'contents' }}>
-              <Box sx={{ bgcolor: rowBg, p: 0.75, display: 'flex', alignItems: 'center' }}>
+              <Box className="po-cell">
                 <OrderAsAutocomplete
                   value={orderAsValues.get(aliasKey) ?? ''}
                   onChange={(next) => onUpdateOrderAs(aliasKey, next)}
@@ -246,16 +251,20 @@ function VendorGroupCard({
                   placeholder="Order as"
                 />
               </Box>
-              <Box sx={{ bgcolor: rowBg, p: 0.75 }}>
-                <Typography variant="body2">{line.productCode}</Typography>
+              <Box className="po-cell">
+                <Typography variant="body2" sx={monoSx}>
+                  {line.productCode}
+                </Typography>
               </Box>
-              <Box sx={{ bgcolor: rowBg, p: 0.75 }}>
+              <Box className="po-cell">
                 <Typography variant="body2">{line.hardwareCategory}</Typography>
               </Box>
-              <Box sx={{ bgcolor: rowBg, p: 0.75, textAlign: 'right' }}>
-                <Typography variant="body2">{line.totalQuantity}</Typography>
+              <Box className="po-cell po-cell-right">
+                <Typography variant="body2" sx={tabularSx}>
+                  {line.totalQuantity}
+                </Typography>
               </Box>
-              <Box sx={{ bgcolor: rowBg, p: 0.75, textAlign: 'right' }}>
+              <Box className="po-cell po-cell-right">
                 <TextField
                   size="small"
                   type="number"
@@ -270,14 +279,17 @@ function VendorGroupCard({
                   slotProps={{
                     input: {
                       startAdornment: <InputAdornment position="start">$</InputAdornment>,
+                      sx: tabularSx,
                     },
                     htmlInput: { min: 0, step: 0.01 },
                   }}
                   sx={{ width: 120 }}
                 />
               </Box>
-              <Box sx={{ bgcolor: rowBg, p: 0.75, textAlign: 'right' }}>
-                <Typography variant="body2">${line.totalCost.toFixed(2)}</Typography>
+              <Box className="po-cell po-cell-right">
+                <Typography variant="body2" sx={tabularSx}>
+                  ${line.totalCost.toFixed(2)}
+                </Typography>
               </Box>
             </Box>
           );
@@ -316,29 +328,32 @@ export default function PurchaseOrdersStep({
       <Typography variant="h6" sx={{ mb: 1 }}>
         Purchase Orders
       </Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
+      <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, mb: 3 }}>
         {vendorGroups.size} manufacturer group(s). Select which to create purchase orders for, and pick a vendor (the company you buy from). PO numbers can be assigned later from Microsoft GP.
       </Typography>
 
-      {sortedVendors.map(([vendor, items]) => {
-        const info = vendorPOInfo.get(vendor) ?? { vendorId: null, notes: '', preferredDeliveryDate: '' };
-        const isSelected = selectedVendors.has(vendor);
-        return (
-          <VendorGroupCard
-            key={vendor}
-            vendor={vendor}
-            items={items}
-            info={info}
-            isSelected={isSelected}
-            unitCostOverrides={unitCostOverrides}
-            orderAsValues={orderAsValues}
-            onToggleVendor={onToggleVendor}
-            onUpdateVendorPO={onUpdateVendorPO}
-            onUpdateUnitCost={onUpdateUnitCost}
-            onUpdateOrderAs={onUpdateOrderAs}
-          />
-        );
-      })}
+      <StaggerList count={sortedVendors.length}>
+        {sortedVendors.map(([vendor, items]) => {
+          const info = vendorPOInfo.get(vendor) ?? { vendorId: null, notes: '', preferredDeliveryDate: '' };
+          const isSelected = selectedVendors.has(vendor);
+          return (
+            <StaggerItem key={vendor}>
+              <VendorGroupCard
+                vendor={vendor}
+                items={items}
+                info={info}
+                isSelected={isSelected}
+                unitCostOverrides={unitCostOverrides}
+                orderAsValues={orderAsValues}
+                onToggleVendor={onToggleVendor}
+                onUpdateVendorPO={onUpdateVendorPO}
+                onUpdateUnitCost={onUpdateUnitCost}
+                onUpdateOrderAs={onUpdateOrderAs}
+              />
+            </StaggerItem>
+          );
+        })}
+      </StaggerList>
 
       {/* Bottom navigation */}
       <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 3 }}>

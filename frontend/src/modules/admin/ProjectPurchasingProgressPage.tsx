@@ -8,11 +8,13 @@ import {
   TextField,
   Tooltip,
 } from '@mui/material';
-import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
+import { Info } from 'lucide-react';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useQuery } from '@apollo/client/react';
 import { GET_PROJECT_PROGRESS_BY_PRODUCT } from '../../graphql/admin';
 import { GET_PROJECTS } from '../../graphql/shared';
+import { microLabelSx, monoSx } from '../../theme';
+import { FadeIn } from '../../motion';
 import type { Project } from '../../types/project';
 
 interface ProgressRow {
@@ -32,16 +34,16 @@ interface ProgressRow {
 function infoHeader(label: string, tooltip: string): GridColDef['renderHeader'] {
   return () => (
     <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5 }}>
-      <Box component="span" sx={{ fontWeight: 500 }}>
+      <Box component="span" sx={microLabelSx}>
         {label}
       </Box>
       <Tooltip arrow enterTouchDelay={0} title={tooltip}>
         <Box
           component="span"
-          sx={{ display: 'inline-flex', alignItems: 'center', cursor: 'help' }}
+          sx={{ display: 'inline-flex', alignItems: 'center', cursor: 'help', color: 'text.secondary' }}
           onClick={(e) => e.stopPropagation()}
         >
-          <InfoOutlinedIcon sx={{ fontSize: 16 }} color="action" />
+          <Info size={14} strokeWidth={1.75} />
         </Box>
       </Tooltip>
     </Box>
@@ -49,7 +51,17 @@ function infoHeader(label: string, tooltip: string): GridColDef['renderHeader'] 
 }
 
 const columns: GridColDef[] = [
-  { field: 'productCode', headerName: 'Product Code', flex: 1, minWidth: 140 },
+  {
+    field: 'productCode',
+    headerName: 'Product Code',
+    flex: 1,
+    minWidth: 140,
+    renderCell: (params) => (
+      <Box component="span" sx={{ ...monoSx, fontWeight: 600 }}>
+        {params.row.productCode}
+      </Box>
+    ),
+  },
   { field: 'hardwareCategory', headerName: 'Hardware Category', flex: 1, minWidth: 160 },
   {
     field: 'requiredQuantity',
@@ -164,9 +176,14 @@ export default function ProjectPurchasingProgressPage() {
 
   return (
     <Box>
-      <Typography variant="h5" sx={{ mb: 2 }}>
-        Project Purchasing Progress
-      </Typography>
+      <FadeIn>
+        <Typography variant="h5" sx={{ mb: 0.25 }}>
+          Project Purchasing Progress
+        </Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          Required against drafted, ordered, received, back-ordered, and shipped, per product.
+        </Typography>
+      </FadeIn>
 
       <Autocomplete
         sx={{ maxWidth: 480, mb: 3 }}

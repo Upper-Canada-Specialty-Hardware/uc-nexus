@@ -1,10 +1,11 @@
 import { useState } from 'react';
-import { Button, Stack, TextField, Alert, Typography } from '@mui/material';
+import { Box, Button, Stack, TextField, Alert, Typography } from '@mui/material';
 import { useMutation } from '@apollo/client/react';
 import Modal from '../../../components/Modal';
 import { useToast } from '../../../components/Toast';
 import { REPORT_STOCK_DEFICIENCY } from '../../../graphql/warehouse';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../../graphql/refetch';
+import { microLabelSx, monoSx } from '../../../theme';
 import type { StockItem } from '../StockPoolView';
 
 interface Props {
@@ -61,9 +62,16 @@ export default function ReportStockDeficiencyModal({ item, onClose, onSuccess }:
     >
       <Stack spacing={2}>
         {error && <Alert severity="error">{error.message}</Alert>}
+        <Box sx={{ pb: 1, borderBottom: '1px solid', borderColor: 'divider' }}>
+          <Typography component="div" sx={microLabelSx}>
+            Currently available · {item.available} of {item.quantity}
+          </Typography>
+          <Typography sx={monoSx}>
+            {item.hardwareCategory} / {item.productCode}
+          </Typography>
+        </Box>
         <Typography variant="body2" color="text.secondary">
-          Currently available: {item.available} of {item.quantity}. Flagged units stay on the row but
-          are excluded from pulls until resolved.
+          Flagged units stay on the row but are excluded from pulls until resolved.
         </Typography>
         <TextField
           label={`Quantity to flag (max ${item.available})`}

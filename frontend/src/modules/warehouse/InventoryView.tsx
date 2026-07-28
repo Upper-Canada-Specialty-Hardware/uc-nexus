@@ -1,9 +1,11 @@
 import { useState } from 'react';
 import { Box, Tab, Tabs as MUITabs, Button, Typography } from '@mui/material';
-import ArrowBackIcon from '@mui/icons-material/ArrowBack';
+import { LayoutGrid } from 'lucide-react';
 import HardwareItemsTab from './HardwareItemsTab';
 import OpeningItemsTab from './OpeningItemsTab';
 import ProjectLandingPage from '../../components/ProjectLandingPage';
+import { microLabelSx } from '../../theme';
+import { FadeIn } from '../../motion';
 import type { Project } from '../../types/project';
 
 export default function InventoryView() {
@@ -25,26 +27,46 @@ export default function InventoryView() {
 
   return (
     <Box>
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+      {/* One way back, not three: the app shell's breadcrumbs cover "Warehouse", so the only
+          navigation this page owns is the project switch it actually controls. */}
+      <Box
+        sx={{
+          display: 'flex',
+          alignItems: 'flex-end',
+          justifyContent: 'space-between',
+          gap: 2,
+          flexWrap: 'wrap',
+          mb: 2,
+        }}
+      >
+        <Box sx={{ minWidth: 0 }}>
+          <Typography component="div" sx={microLabelSx}>
+            Inventory
+          </Typography>
+          <Typography variant="h5" sx={{ lineHeight: 1.2 }}>
+            {projectLabel}
+          </Typography>
+        </Box>
         <Button
           size="small"
-          startIcon={<ArrowBackIcon />}
+          variant="outlined"
+          startIcon={<LayoutGrid size={18} strokeWidth={1.75} />}
           onClick={() => setSelectedProject(null)}
         >
           Projects
         </Button>
-        <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
-          {projectLabel}
-        </Typography>
       </Box>
+
       <MUITabs value={activeTab} onChange={(_, v) => setActiveTab(v)}>
         <Tab label="Hardware Items" />
         <Tab label="Opening Items" />
       </MUITabs>
-      <Box sx={{ mt: 2 }}>
-        {activeTab === 0 && <HardwareItemsTab projectId={projectId} />}
-        {activeTab === 1 && <OpeningItemsTab projectId={projectId} />}
-      </Box>
+      <FadeIn key={activeTab} y={8}>
+        <Box sx={{ mt: 2 }}>
+          {activeTab === 0 && <HardwareItemsTab projectId={projectId} />}
+          {activeTab === 1 && <OpeningItemsTab projectId={projectId} />}
+        </Box>
+      </FadeIn>
     </Box>
   );
 }

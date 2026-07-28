@@ -14,12 +14,15 @@ import {
   Avatar,
   Stack,
   TextField,
+  Chip,
 } from '@mui/material';
 import { DataGrid, type GridColDef, type GridRowParams } from '@mui/x-data-grid';
 import { useQuery, useMutation } from '@apollo/client/react';
 import { GET_USERS, UPDATE_USER_GP_BUYER_ID, UPDATE_USER_NAME, UPDATE_USER_ROLES } from '../../graphql/admin';
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
+import { FONT_MONO, microLabelSx, monoSx } from '../../theme';
+import { FadeIn } from '../../motion';
 
 const ALL_ROLES = [
   'Hardware Schedule Import',
@@ -65,19 +68,51 @@ const columns: GridColDef[] = [
     valueGetter: (_value: unknown, row: ClerkUser) =>
       [row.firstName, row.lastName].filter(Boolean).join(' ') || '-',
   },
-  { field: 'email', headerName: 'Email', flex: 1.5 },
+  {
+    field: 'email',
+    headerName: 'Email',
+    flex: 1.5,
+    renderCell: (params) => (
+      <Box component="span" sx={monoSx}>
+        {params.row.email}
+      </Box>
+    ),
+  },
   {
     field: 'roles',
     headerName: 'Roles',
     flex: 2,
+    // The sortable/filterable value stays the joined string; the cell reads it back as tags.
     valueGetter: (_value: unknown, row: ClerkUser) =>
       row.roles.length > 0 ? row.roles.join(', ') : 'No roles',
+    renderCell: (params) => {
+      const roles = (params.row as ClerkUser).roles;
+      if (roles.length === 0) {
+        return (
+          <Box component="span" sx={{ color: 'text.secondary' }}>
+            No roles
+          </Box>
+        );
+      }
+      return (
+        <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap', alignItems: 'center', py: 0.5 }}>
+          {roles.map((role) => (
+            <Chip key={role} label={role} size="small" variant="outlined" />
+          ))}
+        </Box>
+      );
+    },
   },
   {
     field: 'gpBuyerId',
     headerName: 'GP Buyer',
     width: 120,
     valueGetter: (_value: unknown, row: ClerkUser) => row.gpBuyerId || '—',
+    renderCell: (params) => (
+      <Box component="span" sx={params.row.gpBuyerId ? monoSx : undefined}>
+        {params.row.gpBuyerId || '—'}
+      </Box>
+    ),
   },
 ];
 
@@ -149,12 +184,14 @@ export default function UserManagementPage() {
 
   return (
     <Box>
-      <Typography variant="h5" gutterBottom>
-        User Management
-      </Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Click a user to manage their roles and GP buyer identity.
-      </Typography>
+      <FadeIn>
+        <Typography variant="h5" sx={{ mb: 0.25 }}>
+          User Management
+        </Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          Click a user to manage their roles and GP buyer identity.
+        </Typography>
+      </FadeIn>
 
       <DataGrid
         rows={users}
@@ -162,10 +199,14 @@ export default function UserManagementPage() {
         loading={loading}
         onRowClick={handleRowClick}
         autoHeight
+        getRowHeight={() => 'auto'}
         disableRowSelectionOnClick
         pageSizeOptions={[10, 25, 50]}
         initialState={{ pagination: { paginationModel: { pageSize: 10 } } }}
-        sx={{ cursor: 'pointer' }}
+        sx={{
+          '& .MuiDataGrid-row': { cursor: 'pointer' },
+          '& .MuiDataGrid-cell': { py: 0.75 },
+        }}
       />
 
       <Dialog
@@ -184,17 +225,26 @@ export default function UserManagementPage() {
                 <Avatar src={selectedUser.imageUrl} sx={{ width: 48, height: 48 }}>
                   {(selectedUser.firstName?.[0] || selectedUser.email?.[0] || '?').toUpperCase()}
                 </Avatar>
-                <Box>
+                <Box sx={{ minWidth: 0 }}>
                   <Typography variant="body1">
                     {[selectedUser.firstName, selectedUser.lastName].filter(Boolean).join(' ')}
                   </Typography>
-                  <Typography variant="body2" color="text.secondary">
+                  <Typography component="div" sx={{ ...monoSx, color: 'text.secondary' }}>
                     {selectedUser.email}
+                  </Typography>
+                  <Typography
+                    component="div"
+                    sx={{ ...monoSx, fontSize: '0.6875rem', color: 'text.secondary', wordBreak: 'break-all' }}
+                  >
+                    {selectedUser.id}
                   </Typography>
                 </Box>
               </>
             )}
           </Stack>
+          <Typography component="div" sx={{ ...microLabelSx, mb: 1 }}>
+            Display name
+          </Typography>
           {/* Issue #240: admin-editable display name (Clerk first/last name). */}
           <Stack direction="row" spacing={2} sx={{ mb: 2 }}>
             <TextField
@@ -212,6 +262,9 @@ export default function UserManagementPage() {
               sx={{ flex: 1 }}
             />
           </Stack>
+          <Typography component="div" sx={{ ...microLabelSx, mb: 0.5 }}>
+            Roles
+          </Typography>
           <FormGroup>
             {ALL_ROLES.map((role) => (
               <FormControlLabel
@@ -226,12 +279,15 @@ export default function UserManagementPage() {
               />
             ))}
           </FormGroup>
+          <Typography component="div" sx={{ ...microLabelSx, mt: 2, mb: 1 }}>
+            GP identity
+          </Typography>
           <TextField
             label="GP Buyer ID"
             value={editGpBuyerId}
             onChange={(e) => setEditGpBuyerId(e.target.value)}
             size="small"
-            sx={{ mt: 2, width: 240 }}
+            sx={{ width: 240, '& .MuiInputBase-input': { fontFamily: FONT_MONO } }}
             helperText="The GP BUYERID this account creates POs as (issue #216). Blank = cannot create POs."
           />
         </DialogContent>

@@ -2,6 +2,8 @@ import { useQuery } from '@apollo/client/react';
 import { Box, Typography, Stack, Chip, Alert, Skeleton } from '@mui/material';
 import { GET_PO_OPENINGS } from '../../graphql/po';
 import { leafLabel } from '../../utils/leaf';
+import { monoSx, microLabelSx } from '../../theme';
+import { StaggerItem, StaggerList } from '../../motion';
 
 // One (opening, leaf) the PO's hardware was bought for, with the hardware ordered against it.
 interface POOpeningItem {
@@ -49,9 +51,21 @@ export default function POOpeningsSection({ poId }: { poId: string }) {
 
   return (
     <Box sx={{ mb: 2 }}>
-      <Typography variant="h6" gutterBottom>
-        Openings on this PO
-      </Typography>
+      {/* Owns its own section rule: the whole section disappears for a stock PO, and a rule left
+          behind by the caller would float there with nothing under it. */}
+      <Box
+        sx={{
+          mt: 3,
+          mb: 1.25,
+          pt: 1.25,
+          borderTop: '2px solid',
+          borderColor: 'text.primary',
+        }}
+      >
+        <Typography component="h3" sx={microLabelSx}>
+          Openings on this PO
+        </Typography>
+      </Box>
 
       {error && (
         <Alert severity="warning" sx={{ mb: 1 }}>
@@ -65,40 +79,55 @@ export default function POOpeningsSection({ poId }: { poId: string }) {
           <Skeleton variant="text" width="45%" />
         </Stack>
       ) : (
-        <Stack spacing={1}>
-          {openings.map((opening) => {
-            const place = placeOf(opening);
-            const leaf = leafLabel(opening.leaf);
-            return (
-              <Box
-                key={`${opening.openingNumber}|${opening.leaf ?? 'none'}`}
-                sx={{ display: 'flex', alignItems: 'flex-start', gap: 1, flexWrap: 'wrap' }}
-              >
-                <Typography variant="body2" sx={{ fontWeight: 600, minWidth: 96 }}>
-                  {opening.openingNumber}
-                </Typography>
-                {/* A frame, or an item imported before #311, genuinely has no leaf - say so rather
-                    than printing a misleading "Leaf 1". */}
-                <Chip
-                  size="small"
-                  variant="outlined"
-                  label={leaf ?? 'No leaf'}
-                  color={leaf ? 'default' : 'warning'}
-                />
-                <Typography variant="body2" color="text.secondary" sx={{ flex: 1, minWidth: 200 }}>
-                  {opening.items
-                    .map((i) => `${i.quantity}x ${i.productCode}`)
-                    .join(', ')}
-                </Typography>
-                {place && (
-                  <Typography variant="caption" color="text.secondary">
-                    {place}
-                  </Typography>
-                )}
-              </Box>
-            );
-          })}
-        </Stack>
+        <Box>
+          <StaggerList count={openings.length}>
+            {openings.map((opening) => {
+              const place = placeOf(opening);
+              const leaf = leafLabel(opening.leaf);
+              return (
+                <StaggerItem key={`${opening.openingNumber}|${opening.leaf ?? 'none'}`}>
+                  <Box
+                    sx={{
+                      display: 'flex',
+                      alignItems: 'baseline',
+                      gap: 1,
+                      flexWrap: 'wrap',
+                      py: 0.75,
+                      borderBottom: '1px solid',
+                      borderColor: 'divider',
+                    }}
+                  >
+                    <Box component="span" sx={{ ...monoSx, fontWeight: 600, minWidth: 96 }}>
+                      {opening.openingNumber}
+                    </Box>
+                    {/* A frame, or an item imported before #311, genuinely has no leaf - say so rather
+                        than printing a misleading "Leaf 1". */}
+                    <Chip
+                      size="small"
+                      variant="outlined"
+                      label={leaf ?? 'No leaf'}
+                      color={leaf ? 'default' : 'warning'}
+                    />
+                    <Typography
+                      variant="body2"
+                      color="text.secondary"
+                      sx={{ ...monoSx, flex: 1, minWidth: 200 }}
+                    >
+                      {opening.items
+                        .map((i) => `${i.quantity}x ${i.productCode}`)
+                        .join(', ')}
+                    </Typography>
+                    {place && (
+                      <Typography variant="caption" color="text.secondary">
+                        {place}
+                      </Typography>
+                    )}
+                  </Box>
+                </StaggerItem>
+              );
+            })}
+          </StaggerList>
+        </Box>
       )}
     </Box>
   );

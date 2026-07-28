@@ -1,3 +1,6 @@
+/* eslint-disable react-refresh/only-export-components -- shared motion module:
+   the spring tokens must live next to the primitives so every consumer imports
+   one vocabulary; losing fast-refresh granularity here is acceptable. */
 import { useEffect, type ReactNode } from 'react';
 import {
   MotionConfig,

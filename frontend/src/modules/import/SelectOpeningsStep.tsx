@@ -15,11 +15,12 @@ import {
   TableRow,
   Alert,
 } from '@mui/material';
-import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import { ChevronDown } from 'lucide-react';
 import { DataGrid, type GridColDef, type GridRowSelectionModel } from '@mui/x-data-grid';
 import type { ParsedOpening } from '../../types/hardwareSchedule';
 import type { AggregatedHardwareItem } from './types';
 import { aggregationKey, itemGroupKey } from './types';
+import { monoSx, tabularSx } from '../../theme';
 
 // ---- Row type ----
 
@@ -114,10 +115,12 @@ export default function SelectOpeningsStep({
 
   const columns = useMemo<GridColDef<OpeningRow>[]>(() => {
     const base: GridColDef<OpeningRow>[] = [
-      { field: 'opening_number', headerName: 'Opening #', width: 110 },
-      { field: 'building', headerName: 'Building', width: 100 },
+      // Building and Location carry real names ("Building B - East Wing"), so they get room to grow
+      // instead of a fixed width that clipped every one of them (the audit's truncated columns).
+      { field: 'opening_number', headerName: 'Opening #', width: 110, cellClassName: 'mono-cell' },
+      { field: 'building', headerName: 'Building', flex: 1, minWidth: 130 },
       { field: 'floor', headerName: 'Floor', width: 80 },
-      { field: 'location', headerName: 'Location', width: 110 },
+      { field: 'location', headerName: 'Location', flex: 1.2, minWidth: 150 },
       { field: 'location_to', headerName: 'Location To', width: 120 },
       { field: 'location_from', headerName: 'Location From', width: 120 },
       { field: 'hand', headerName: 'Hand', width: 70 },
@@ -194,29 +197,30 @@ export default function SelectOpeningsStep({
     <Box>
       <Box sx={{ display: 'flex', gap: 2, height: 'calc(100vh - 260px)', minHeight: 400 }}>
         {/* ---- Left Panel: Openings ---- */}
-        <Box sx={{ flex: '1 1 55%', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+        <Box sx={{ flex: '1 1 auto', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
           <Typography variant="h6" sx={{ mb: 1 }}>
             Openings
           </Typography>
 
-          {/* Filter by opening numbers */}
+          {/* Filter by opening numbers - two rows tall by default; it grows as you paste. */}
           <Box sx={{ display: 'flex', gap: 1, mb: 1, alignItems: 'flex-start' }}>
             <TextField
               multiline
-              minRows={3}
+              minRows={2}
               maxRows={4}
               size="small"
               placeholder="Paste opening numbers, one per line..."
               value={filterText}
               onChange={(e) => setFilterText(e.target.value)}
               sx={{ flex: 1 }}
+              slotProps={{ input: { sx: monoSx } }}
             />
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
-              <Button size="small" variant="contained" onClick={handleApplyFilter}>
+              <Button size="small" variant="outlined" onClick={handleApplyFilter}>
                 Filter
               </Button>
               {activeFilter !== null && (
-                <Button size="small" variant="outlined" onClick={handleClearFilter}>
+                <Button size="small" variant="text" onClick={handleClearFilter}>
                   Clear
                 </Button>
               )}
@@ -234,20 +238,27 @@ export default function SelectOpeningsStep({
             </Alert>
           )}
 
-          <Box sx={{ display: 'flex', gap: 1, mb: 1, alignItems: 'center' }}>
+          <Box sx={{ display: 'flex', gap: 1, mb: 1, alignItems: 'center', flexWrap: 'wrap' }}>
             <Button size="small" variant="outlined" onClick={handleSelectAllOpenings}>
               Select All
             </Button>
             <Button size="small" variant="outlined" onClick={handleDeselectAllOpenings}>
               Deselect All
             </Button>
-            <Typography variant="body2" color="text.secondary">
-              {selectedOpenings.size} of {filteredRows.length} selected
-              {activeFilter !== null && ` (filtered from ${openings.length} total)`}
-            </Typography>
+            <Chip
+              size="small"
+              color={selectedOpenings.size > 0 ? 'info' : 'default'}
+              label={`${selectedOpenings.size} of ${filteredRows.length} selected`}
+            />
+            {activeFilter !== null && (
+              <Typography variant="caption" color="text.secondary" sx={tabularSx}>
+                filtered from {openings.length} total
+              </Typography>
+            )}
           </Box>
           <Box sx={{ flex: 1, minHeight: 0 }}>
             <DataGrid
+              sx={{ '& .mono-cell': monoSx }}
               rows={filteredRows}
               columns={columns}
               checkboxSelection
@@ -279,12 +290,26 @@ export default function SelectOpeningsStep({
           </Box>
         </Box>
 
-        {/* ---- Right Panel: Hardware Items (read-only preview) ---- */}
-        <Box sx={{ flex: '1 1 45%', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+        {/* ---- Right Panel: Hardware Items (read-only preview) ----
+             A read-only preview earns less width than the grid you actually work in, so it takes a
+             fixed column instead of half the step. */}
+        <Box
+          sx={{
+            flex: '0 1 380px',
+            minWidth: 280,
+            display: 'flex',
+            flexDirection: 'column',
+          }}
+        >
           <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
             <Typography variant="h6">
               Hardware Items
-              <Typography component="span" variant="body2" color="text.secondary" sx={{ ml: 1 }}>
+              <Typography
+                component="span"
+                variant="body2"
+                color="text.secondary"
+                sx={{ ml: 1, ...tabularSx }}
+              >
                 ({itemTotalCount} items)
               </Typography>
             </Typography>
@@ -311,9 +336,9 @@ export default function SelectOpeningsStep({
 
                 return (
                   <Accordion key={manufacturer} defaultExpanded={false}>
-                    <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%' }}>
-                        <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                    <AccordionSummary expandIcon={<ChevronDown size={18} strokeWidth={1.75} />}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%', flexWrap: 'wrap' }}>
+                        <Typography variant="subtitle2" sx={{ fontWeight: 700, ...monoSx }}>
                           {manufacturer}
                         </Typography>
                         <Chip
@@ -326,7 +351,11 @@ export default function SelectOpeningsStep({
                           size="small"
                           variant="outlined"
                         />
-                        <Typography variant="body2" color="text.secondary" sx={{ ml: 'auto', mr: 2 }}>
+                        <Typography
+                          variant="body2"
+                          color="text.secondary"
+                          sx={{ ml: 'auto', mr: 2, ...tabularSx }}
+                        >
                           {occurrenceCount}
                         </Typography>
                       </Box>
@@ -337,9 +366,9 @@ export default function SelectOpeningsStep({
 
                         return (
                           <Accordion key={groupKey} defaultExpanded={false} disableGutters>
-                            <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%' }}>
-                                <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+                            <AccordionSummary expandIcon={<ChevronDown size={18} strokeWidth={1.75} />}>
+                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%', flexWrap: 'wrap' }}>
+                                <Typography variant="subtitle2" sx={{ fontWeight: 600, ...monoSx }}>
                                   {productCode}
                                 </Typography>
                                 <Chip label={category} size="small" variant="outlined" />
@@ -353,7 +382,11 @@ export default function SelectOpeningsStep({
                                   size="small"
                                   variant="outlined"
                                 />
-                                <Typography variant="body2" color="text.secondary" sx={{ ml: 'auto', mr: 2 }}>
+                                <Typography
+                                  variant="body2"
+                                  color="text.secondary"
+                                  sx={{ ml: 'auto', mr: 2, ...tabularSx }}
+                                >
                                   {items.length}
                                 </Typography>
                               </Box>
@@ -369,7 +402,7 @@ export default function SelectOpeningsStep({
                                 <TableBody>
                                   {items.map((hi) => (
                                     <TableRow key={aggregationKey(hi)} hover>
-                                      <TableCell>{hi.opening_number}</TableCell>
+                                      <TableCell sx={monoSx}>{hi.opening_number}</TableCell>
                                       <TableCell align="right">{hi.item_quantity}</TableCell>
                                     </TableRow>
                                   ))}

@@ -6,7 +6,7 @@ import {
   IconButton,
   type DialogProps,
 } from '@mui/material';
-import CloseIcon from '@mui/icons-material/Close';
+import { X } from 'lucide-react';
 import type { ReactNode } from 'react';
 
 interface ModalProps extends Omit<DialogProps, 'title'> {
@@ -27,13 +27,15 @@ export default function Modal({ title, children, actions, onClose, ...props }: M
       sx={{ '& .MuiDialog-container': { overscrollBehavior: 'contain' } }}
       {...props}
     >
-      <DialogTitle>
+      <DialogTitle sx={{ fontWeight: 700, pr: 6, py: 1.75 }}>
         {title}
         <IconButton
           onClick={onClose}
-          sx={{ position: 'absolute', right: 8, top: 8 }}
+          aria-label="Close"
+          size="small"
+          sx={{ position: 'absolute', right: 12, top: 12, color: 'text.secondary' }}
         >
-          <CloseIcon />
+          <X size={18} strokeWidth={1.75} />
         </IconButton>
       </DialogTitle>
       {/* overscrollBehavior: contain stops scroll chaining (#316). Without it, scrolling inside the
@@ -44,7 +46,11 @@ export default function Modal({ title, children, actions, onClose, ...props }: M
       <DialogContent dividers sx={{ overscrollBehavior: 'contain' }}>
         {children}
       </DialogContent>
-      {actions && <DialogActions>{actions}</DialogActions>}
+      {actions && (
+        <DialogActions sx={{ px: 3, py: 2, justifyContent: 'flex-end', gap: 1 }}>
+          {actions}
+        </DialogActions>
+      )}
     </Dialog>
   );
 }

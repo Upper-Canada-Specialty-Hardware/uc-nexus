@@ -11,9 +11,7 @@ import {
   TextField,
   Typography,
 } from '@mui/material';
-import DeleteIcon from '@mui/icons-material/Delete';
-import AddIcon from '@mui/icons-material/Add';
-import RefreshIcon from '@mui/icons-material/Refresh';
+import { Trash2, Plus, RefreshCw } from 'lucide-react';
 import { useApolloClient, useMutation, useQuery } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import { useToast } from '../../components/Toast';
@@ -29,6 +27,12 @@ import { poVendorName } from './poVendorName';
 import { computeManufacturerVendorHint, type ManufacturerSuggestion } from './manufacturerVendorHint';
 import GpErrorAlert from '../../components/GpErrorAlert';
 import { extractGpError, isRelayOpUnsupported, type GpError } from '../../graphql/gpError';
+import { monoSx, microLabelSx } from '../../theme';
+
+const ICON = { size: 18, strokeWidth: 1.75 } as const;
+
+/** Identifiers typed or read back from GP render in the mono face, inside their field. */
+const MONO_FIELD_SX = { '& input': monoSx } as const;
 
 // --- Types ---
 
@@ -811,7 +815,7 @@ export default function GpPurchaseOrderDialog({
                 disabled={!relayConnected}
                 sx={{ mt: 0.5 }}
               >
-                <RefreshIcon fontSize="small" />
+                <RefreshCw {...ICON} />
               </IconButton>
             </Stack>
             {gpVendorId && !vendorConfirmed && (
@@ -885,7 +889,7 @@ export default function GpPurchaseOrderDialog({
       {isRegister && (
       <Box sx={{ mb: 3, p: 2, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
         <Stack direction="row" spacing={2} alignItems="center" sx={{ mb: 2 }} flexWrap="wrap" useFlexGap>
-          <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+          <Typography component="h3" sx={microLabelSx}>
             GP purchase order
           </Typography>
           <RelayStatusChip connected={relayStatus} />
@@ -896,7 +900,7 @@ export default function GpPurchaseOrderDialog({
             label="GP company"
             value={company || '—'}
             size="small"
-            sx={{ minWidth: 140 }}
+            sx={{ minWidth: 140, ...MONO_FIELD_SX }}
             disabled
           />
           {/* Issue #216: the buyer IS the caller's GP identity - display only, never a pick. */}
@@ -904,7 +908,7 @@ export default function GpPurchaseOrderDialog({
             label="Buyer (you)"
             value={gpBuyerId ?? '—'}
             size="small"
-            sx={{ minWidth: 180 }}
+            sx={{ minWidth: 180, ...MONO_FIELD_SX }}
             disabled
           />
           <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 0.5 }}>
@@ -914,7 +918,7 @@ export default function GpPurchaseOrderDialog({
               value={costCode}
               onChange={(e) => setCostCode(e.target.value)}
               size="small"
-              sx={{ minWidth: 260 }}
+              sx={{ minWidth: 260, '& .MuiSelect-select': monoSx }}
               disabled={!isJob || !relayConnected || costCodesLoading || costCodes.length === 0}
               error={!!errors.costCode}
               helperText={errors.costCode || costCodeHelper}
@@ -932,7 +936,7 @@ export default function GpPurchaseOrderDialog({
               disabled={!isJob || !relayConnected}
               sx={{ mt: 0.5 }}
             >
-              <RefreshIcon fontSize="small" />
+              <RefreshCw {...ICON} />
             </IconButton>
           </Box>
         </Stack>
@@ -977,7 +981,7 @@ export default function GpPurchaseOrderDialog({
               value={taxDetailId}
               onChange={(e) => setTaxDetailId(e.target.value)}
               size="small"
-              sx={{ minWidth: 260 }}
+              sx={{ minWidth: 260, ...MONO_FIELD_SX }}
               error={!!errors.taxDetail}
               helperText={
                 errors.taxDetail ||
@@ -1048,11 +1052,22 @@ export default function GpPurchaseOrderDialog({
       )}
 
       {/* Line Items */}
-      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
-        <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+      <Box
+        sx={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 2,
+          mb: 1,
+          pt: 1.5,
+          borderTop: '2px solid',
+          borderColor: 'text.primary',
+        }}
+      >
+        <Typography component="h3" sx={microLabelSx}>
           Line Items
         </Typography>
-        <Button size="small" startIcon={<AddIcon />} onClick={addLineItem}>
+        <Button size="small" variant="outlined" startIcon={<Plus {...ICON} />} onClick={addLineItem}>
           Add Item
         </Button>
       </Box>
@@ -1073,11 +1088,11 @@ export default function GpPurchaseOrderDialog({
           mb: 0.5,
         }}
       >
-        <Typography variant="caption" sx={{ fontWeight: 'bold' }}>Hardware Category</Typography>
-        <Typography variant="caption" sx={{ fontWeight: 'bold' }}>Product Code</Typography>
-        <Typography variant="caption" sx={{ fontWeight: 'bold' }}>Qty</Typography>
-        <Typography variant="caption" sx={{ fontWeight: 'bold' }}>Unit Cost</Typography>
-        <Typography variant="caption" sx={{ fontWeight: 'bold' }}>Order As</Typography>
+        <Typography sx={microLabelSx}>Hardware Category</Typography>
+        <Typography sx={microLabelSx}>Product Code</Typography>
+        <Typography sx={microLabelSx}>Qty</Typography>
+        <Typography sx={microLabelSx}>Unit Cost</Typography>
+        <Typography sx={microLabelSx}>Order As</Typography>
         <Box />
       </Box>
 
@@ -1108,6 +1123,7 @@ export default function GpPurchaseOrderDialog({
             error={!!errors[`li_${idx}_code`]}
             helperText={errors[`li_${idx}_code`]}
             placeholder="e.g. AB123"
+            sx={MONO_FIELD_SX}
           />
           <TextField
             size="small"
@@ -1135,14 +1151,16 @@ export default function GpPurchaseOrderDialog({
             error={!!errors[`li_${idx}_orderAs`]}
             helperText={errors[`li_${idx}_orderAs`]}
             placeholder="e.g. ML2010"
+            sx={MONO_FIELD_SX}
           />
           <IconButton
             size="small"
             color="error"
+            aria-label={`Remove line item ${idx + 1}`}
             onClick={() => removeLineItem(li.key)}
             disabled={lineItems.length <= 1}
           >
-            <DeleteIcon fontSize="small" />
+            <Trash2 {...ICON} />
           </IconButton>
         </Box>
       ))}

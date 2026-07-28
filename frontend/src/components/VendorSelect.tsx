@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback } from 'react';
-import { Autocomplete, TextField } from '@mui/material';
+import { Autocomplete, Box, TextField } from '@mui/material';
 import { useQuery } from '@apollo/client/react';
 import { GET_VENDORS } from '../graphql/shared';
 import VendorEditDialog from '../modules/admin/VendorEditDialog';
@@ -70,6 +70,31 @@ export default function VendorSelect({
         isOptionEqualToValue={(o, v) => o.id === v.id}
         onChange={handleChange}
         disabled={disabled}
+        // The create-new entry is an action sitting in a list of data; it gets a rule above it and
+        // the accent so it never reads as just another vendor.
+        renderOption={(props, option) => {
+          const { key, ...liProps } = props as React.HTMLAttributes<HTMLLIElement> & { key: string };
+          const isCreate = option.id === CREATE_NEW_ID;
+          return (
+            <Box
+              component="li"
+              key={key}
+              {...liProps}
+              sx={
+                isCreate
+                  ? {
+                      fontWeight: 600,
+                      borderTop: 1,
+                      borderColor: 'divider',
+                      color: 'text.primary',
+                    }
+                  : undefined
+              }
+            >
+              {option.name}
+            </Box>
+          );
+        }}
         renderInput={(params) => (
           <TextField
             {...params}

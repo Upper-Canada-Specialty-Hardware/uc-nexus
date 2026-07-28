@@ -13,8 +13,7 @@ import {
   TextField,
   Typography,
 } from '@mui/material';
-import AddIcon from '@mui/icons-material/Add';
-import DeleteIcon from '@mui/icons-material/Delete';
+import { Plus, Trash2 } from 'lucide-react';
 import { DataGrid, type GridColDef, type GridRowParams } from '@mui/x-data-grid';
 import { useMutation, useQuery } from '@apollo/client/react';
 import { GET_BUYER_ASSIGNMENTS, GET_PROJECTS } from '../../graphql/shared';
@@ -22,6 +21,8 @@ import { DELETE_BUYER_ASSIGNMENT, SAVE_BUYER_ASSIGNMENT } from '../../graphql/ad
 import ConfirmDialog from '../../components/ConfirmDialog';
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
+import { FONT_MONO, microLabelSx, monoSx } from '../../theme';
+import { FadeIn } from '../../motion';
 import type { Project } from '../../types/project';
 
 interface AssignmentProject {
@@ -116,7 +117,16 @@ export default function BuyersPage() {
 
   const columns = useMemo<GridColDef[]>(
     () => [
-      { field: 'buyerId', headerName: 'GP Buyer', width: 160 },
+      {
+        field: 'buyerId',
+        headerName: 'GP Buyer',
+        width: 160,
+        renderCell: (params) => (
+          <Box component="span" sx={{ ...monoSx, fontWeight: 600 }}>
+            {params.row.buyerId}
+          </Box>
+        ),
+      },
       {
         field: 'projects',
         headerName: 'Assigned Projects',
@@ -126,7 +136,7 @@ export default function BuyersPage() {
           <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap', py: 0.5 }}>
             {(params.row.projects as AssignmentProject[]).length > 0
               ? (params.row.projects as AssignmentProject[]).map((p) => (
-                  <Chip key={p.id} size="small" label={projectLabel(p)} />
+                  <Chip key={p.id} size="small" variant="outlined" label={projectLabel(p)} />
                 ))
               : '—'}
           </Box>
@@ -139,6 +149,14 @@ export default function BuyersPage() {
         sortable: false,
         valueGetter: (_value: unknown, row: BuyerAssignmentRow) =>
           row.costCodes.length > 0 ? row.costCodes.join(', ') : '—',
+        renderCell: (params) => {
+          const codes = (params.row as BuyerAssignmentRow).costCodes;
+          return (
+            <Box component="span" sx={codes.length > 0 ? monoSx : undefined}>
+              {codes.length > 0 ? codes.join(', ') : '—'}
+            </Box>
+          );
+        },
       },
       {
         field: 'actions',
@@ -156,7 +174,7 @@ export default function BuyersPage() {
               setDeleteTarget(params.row.buyerId);
             }}
           >
-            <DeleteIcon fontSize="small" />
+            <Trash2 size={18} strokeWidth={1.75} />
           </IconButton>
         ),
       },
@@ -174,18 +192,28 @@ export default function BuyersPage() {
 
   return (
     <Box>
-      <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
-        <Box sx={{ flex: 1 }}>
-          <Typography variant="h5">Buyers</Typography>
-          <Typography variant="body2" color="text.secondary">
-            Which projects each GP buyer may create POs for, and their designated cost codes. A buyer
-            with no assignment cannot create project POs. Link accounts to buyers in User Management.
-          </Typography>
+      <FadeIn>
+        <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 2, mb: 2 }}>
+          <Box sx={{ flex: 1 }}>
+            <Typography variant="h5" sx={{ mb: 0.25 }}>
+              Buyers
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              Which projects each GP buyer may create POs for, and their designated cost codes. A buyer
+              with no assignment cannot create project POs. Link accounts to buyers in User Management.
+            </Typography>
+          </Box>
+          <Button
+            variant="contained"
+            size="small"
+            startIcon={<Plus size={18} strokeWidth={1.75} />}
+            onClick={openNew}
+            sx={{ flexShrink: 0 }}
+          >
+            Add Buyer
+          </Button>
         </Box>
-        <Button variant="contained" size="small" startIcon={<AddIcon />} onClick={openNew}>
-          Add Buyer
-        </Button>
-      </Box>
+      </FadeIn>
 
       <DataGrid
         rows={rows}
@@ -198,6 +226,7 @@ export default function BuyersPage() {
         onRowClick={(params: GridRowParams<BuyerAssignmentRow>) => openEdit(params.row)}
         hideFooter={rows.length <= 25}
         autoHeight
+        sx={{ '& .MuiDataGrid-row': { cursor: 'pointer' } }}
       />
 
       <Dialog open={editOpen} onClose={() => setEditOpen(false)} maxWidth="sm" fullWidth>
@@ -210,9 +239,12 @@ export default function BuyersPage() {
             size="small"
             fullWidth
             disabled={!isNew}
-            sx={{ mt: 1, mb: 2 }}
+            sx={{ mt: 1, mb: 2, '& .MuiInputBase-input': { fontFamily: FONT_MONO } }}
             helperText={isNew ? 'The GP BUYERID exactly as it appears in GP (POP00101)' : ''}
           />
+          <Typography component="div" sx={{ ...microLabelSx, mb: 1 }}>
+            Scope
+          </Typography>
           <Autocomplete
             multiple
             options={projects}
@@ -234,6 +266,7 @@ export default function BuyersPage() {
             maxRows={8}
             placeholder={'310-000\n210-200'}
             helperText="One per line, as 'cc1-cc2' (the code without the element digit)"
+            sx={{ '& .MuiInputBase-input': { fontFamily: FONT_MONO } }}
           />
         </DialogContent>
         <DialogActions>
@@ -249,6 +282,7 @@ export default function BuyersPage() {
         title="Delete buyer assignment?"
         message={`Buyer '${deleteTarget}' will no longer be able to create project POs.`}
         confirmLabel="Delete"
+        confirmColor="error"
         cancelLabel="Cancel"
         onConfirm={() => deleteAssignment({ variables: { buyerId: deleteTarget } })}
         onCancel={() => setDeleteTarget(null)}

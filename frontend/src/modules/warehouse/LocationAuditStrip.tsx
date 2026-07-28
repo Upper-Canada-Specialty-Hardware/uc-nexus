@@ -1,6 +1,7 @@
 import { useQuery } from '@apollo/client/react';
 import { Box, Typography, List, ListItem, ListItemText, Skeleton, Alert, Chip } from '@mui/material';
 import { GET_LOCATION_AUDIT_HISTORY } from '../../graphql/warehouse';
+import { microLabelSx, tabularSx } from '../../theme';
 
 interface AuditDetail {
   fromLocation?: { aisle?: string | null; row?: string | null; bay?: string | null };
@@ -75,7 +76,7 @@ export default function LocationAuditStrip({ aisle, row, bay }: Props) {
   if (loading && !data) {
     return (
       <Box sx={{ mt: 2 }}>
-        <Typography variant="subtitle2" sx={{ mb: 1 }}>Recent activity</Typography>
+        <Typography component="div" sx={{ ...microLabelSx, mb: 1 }}>Recent activity</Typography>
         <Skeleton variant="rectangular" height={40} />
         <Skeleton variant="rectangular" height={40} sx={{ mt: 1 }} />
       </Box>
@@ -85,7 +86,7 @@ export default function LocationAuditStrip({ aisle, row, bay }: Props) {
   if (error) {
     return (
       <Box sx={{ mt: 2 }}>
-        <Typography variant="subtitle2" sx={{ mb: 1 }}>Recent activity</Typography>
+        <Typography component="div" sx={{ ...microLabelSx, mb: 1 }}>Recent activity</Typography>
         <Alert severity="error">Could not load history: {error.message}</Alert>
       </Box>
     );
@@ -95,7 +96,7 @@ export default function LocationAuditStrip({ aisle, row, bay }: Props) {
   if (entries.length === 0) {
     return (
       <Box sx={{ mt: 2 }}>
-        <Typography variant="subtitle2" sx={{ mb: 1 }}>Recent activity</Typography>
+        <Typography component="div" sx={{ ...microLabelSx, mb: 1 }}>Recent activity</Typography>
         <Typography variant="caption" color="text.secondary">
           No audit events recorded for this location.
         </Typography>
@@ -105,7 +106,9 @@ export default function LocationAuditStrip({ aisle, row, bay }: Props) {
 
   return (
     <Box sx={{ mt: 2 }}>
-      <Typography variant="subtitle2" sx={{ mb: 1 }}>Recent activity (last {entries.length})</Typography>
+      <Typography component="div" sx={{ ...microLabelSx, mb: 1 }}>
+        Recent activity (last {entries.length})
+      </Typography>
       <List dense disablePadding>
         {entries.map((e) => (
           <ListItem
@@ -115,12 +118,13 @@ export default function LocationAuditStrip({ aisle, row, bay }: Props) {
           >
             <ListItemText
               primary={
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
                   <Chip label={e.entityType.replace('_', ' ')} size="small" variant="outlined" />
                   <Typography variant="body2">{summarize(e)}</Typography>
                 </Box>
               }
               secondary={`${new Date(e.createdAt).toLocaleString()} — ${e.performedBy}`}
+              slotProps={{ secondary: { sx: tabularSx } }}
             />
           </ListItem>
         ))}

@@ -1,4 +1,5 @@
 import { Autocomplete, TextField } from '@mui/material';
+import { monoSx } from '../theme';
 
 interface LocationAutocompleteProps {
   label: string;
@@ -36,8 +37,15 @@ export default function LocationAutocomplete({
         if (typeof newValue === 'string') onChange(newValue.slice(0, 20));
         else if (newValue == null) onChange('');
       }}
+      // A bin is an identifier, so it is set in mono - both in the field and in the suggestions.
+      slotProps={{ listbox: { sx: { '& .MuiAutocomplete-option': monoSx } } }}
       renderInput={(params) => (
-        <TextField {...params} label={label} autoFocus={autoFocus} />
+        <TextField
+          {...params}
+          label={label}
+          autoFocus={autoFocus}
+          sx={{ '& .MuiInputBase-input': monoSx }}
+        />
       )}
     />
   );

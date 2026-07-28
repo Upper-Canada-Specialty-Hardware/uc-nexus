@@ -3,17 +3,17 @@ import {
   Box,
   Typography,
   Card,
-  CardContent,
   CardActionArea,
-  CircularProgress,
+  Grid,
+  Skeleton,
   Alert,
-  Button,
 } from '@mui/material';
-import FolderIcon from '@mui/icons-material/Folder';
-import AllInboxIcon from '@mui/icons-material/AllInbox';
+import { Folder, LayoutGrid } from 'lucide-react';
 import { useQuery } from '@apollo/client/react';
 import { GET_PROJECTS } from '../graphql/shared';
 import type { Project } from '../types/project';
+import { monoSx, microLabelSx } from '../theme';
+import { StaggerList, StaggerItem } from '../motion';
 
 interface ProjectLandingPageProps {
   title: string;
@@ -22,6 +22,13 @@ interface ProjectLandingPageProps {
   createButton?: ReactNode;
   emptyStateText?: string;
 }
+
+const CELL = { xs: 12, sm: 6, md: 4 } as const;
+
+const CARD_SX = {
+  height: '100%',
+  '&:hover': { transform: 'translateY(-1px)' },
+} as const;
 
 export default function ProjectLandingPage({
   title,
@@ -33,10 +40,47 @@ export default function ProjectLandingPage({
   const { data, loading, error } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
   const projects = data?.projects ?? [];
 
+  const subtitle = showAllProjects
+    ? 'Select a project to continue, or view data across all projects.'
+    : 'Select a project to continue.';
+
+  const header = (
+    <Box
+      sx={{
+        display: 'flex',
+        alignItems: 'flex-start',
+        justifyContent: 'space-between',
+        gap: 2,
+        flexWrap: 'wrap',
+        mb: 2.5,
+      }}
+    >
+      <Box sx={{ minWidth: 0 }}>
+        <Typography variant="h5" sx={{ mb: 0.5 }}>
+          {title}
+        </Typography>
+        <Typography variant="body2" color="text.secondary">
+          {subtitle}
+        </Typography>
+      </Box>
+      {createButton}
+    </Box>
+  );
+
   if (loading) {
     return (
-      <Box sx={{ display: 'flex', justifyContent: 'center', py: 8 }}>
-        <CircularProgress />
+      <Box>
+        {header}
+        <Grid container spacing={1.5}>
+          {Array.from({ length: 6 }).map((_, i) => (
+            <Grid key={i} size={CELL}>
+              <Card variant="outlined" sx={{ px: 2, py: 1.75 }}>
+                <Skeleton width="60%" height={20} />
+                <Skeleton width="35%" height={14} sx={{ mt: 0.75 }} />
+              </Card>
+            </Grid>
+          ))}
+        </Grid>
       </Box>
     );
   }
@@ -45,69 +89,95 @@ export default function ProjectLandingPage({
     return <Alert severity="error">Error loading projects: {error.message}</Alert>;
   }
 
-  const subtitle = showAllProjects
-    ? 'Select a project to continue, or view data across all projects.'
-    : 'Select a project to continue.';
-
   return (
     <Box>
-      <Typography variant="h5" gutterBottom>
-        {title}
-      </Typography>
-      <Typography variant="body1" color="text.secondary" sx={{ mb: 3 }}>
-        {subtitle}
-      </Typography>
+      {header}
 
-      <Box sx={{ display: 'flex', gap: 1.5, mb: 3, flexWrap: 'wrap' }}>
-        {showAllProjects && (
-          <Button
-            variant="outlined"
-            size="large"
-            startIcon={<AllInboxIcon />}
-            onClick={() => onSelect(null)}
-          >
-            All Projects
-          </Button>
-        )}
-        {createButton}
-      </Box>
+      <StaggerList count={projects.length + (showAllProjects ? 1 : 0)}>
+        <Grid container spacing={1.5}>
+          {showAllProjects && (
+            <Grid size={CELL}>
+              <StaggerItem style={{ height: '100%' }}>
+                {/* Same onSelect(null) contract the old button had, promoted to the lead card so the
+                    cross-project view sits in the same scan path as the projects it spans. */}
+                <Card
+                  variant="outlined"
+                  sx={{
+                    ...CARD_SX,
+                    borderLeft: '3px solid',
+                    borderLeftColor: 'secondary.main',
+                  }}
+                >
+                  <CardActionArea onClick={() => onSelect(null)} sx={{ height: '100%' }}>
+                    <Box sx={{ px: 2, py: 1.75, display: 'flex', gap: 1.5, alignItems: 'center' }}>
+                      <Box sx={{ display: 'flex' }}>
+                        <LayoutGrid size={18} strokeWidth={1.75} />
+                      </Box>
+                      <Box sx={{ minWidth: 0 }}>
+                        <Typography sx={{ fontWeight: 700, lineHeight: 1.3 }}>
+                          All Projects
+                        </Typography>
+                        <Typography component="div" sx={{ ...microLabelSx, mt: 0.25 }}>
+                          Every project
+                        </Typography>
+                      </Box>
+                    </Box>
+                  </CardActionArea>
+                </Card>
+              </StaggerItem>
+            </Grid>
+          )}
 
-      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
-        {projects.map((p) => {
-          const subtitleParts: string[] = [];
-          if (p.projectId) subtitleParts.push(`#${p.projectId}`);
-          if (p.client) subtitleParts.push(p.client);
-          const cardSubtitle = subtitleParts.join(' • ');
-          return (
-            <Card
-              key={p.id}
-              variant="outlined"
-              sx={{ transition: 'box-shadow 0.2s', '&:hover': { boxShadow: 4 } }}
-            >
-              <CardActionArea onClick={() => onSelect(p)}>
-                <CardContent sx={{ display: 'flex', alignItems: 'center', gap: 2, py: 1.5 }}>
-                  <FolderIcon color="primary" />
-                  <Box>
-                    <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
-                      {p.description || p.projectId}
-                    </Typography>
-                    {cardSubtitle && (
-                      <Typography variant="body2" color="text.secondary">
-                        {cardSubtitle}
-                      </Typography>
-                    )}
-                    {p.jobSiteName && (
-                      <Typography variant="caption" color="text.secondary" display="block">
-                        {p.jobSiteName}
-                      </Typography>
-                    )}
-                  </Box>
-                </CardContent>
-              </CardActionArea>
-            </Card>
-          );
-        })}
-      </Box>
+          {projects.map((p) => (
+            <Grid key={p.id} size={CELL}>
+              <StaggerItem style={{ height: '100%' }}>
+                <Card variant="outlined" sx={CARD_SX}>
+                  <CardActionArea onClick={() => onSelect(p)} sx={{ height: '100%' }}>
+                    <Box
+                      sx={{ px: 2, py: 1.75, display: 'flex', gap: 1.5, alignItems: 'flex-start' }}
+                    >
+                      <Box sx={{ display: 'flex', color: 'text.secondary', mt: 0.25 }}>
+                        <Folder size={18} strokeWidth={1.75} />
+                      </Box>
+                      <Box sx={{ minWidth: 0 }}>
+                        <Typography
+                          title={p.description || p.projectId}
+                          sx={{
+                            fontWeight: 600,
+                            lineHeight: 1.3,
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {p.description || p.projectId}
+                        </Typography>
+                        {p.projectId && (
+                          <Typography
+                            component="div"
+                            sx={{ ...monoSx, color: 'text.secondary', mt: 0.25 }}
+                          >
+                            #{p.projectId}
+                          </Typography>
+                        )}
+                        {(p.client || p.jobSiteName) && (
+                          <Typography
+                            variant="caption"
+                            color="text.secondary"
+                            sx={{ display: 'block', mt: 0.25 }}
+                          >
+                            {[p.client, p.jobSiteName].filter(Boolean).join(' • ')}
+                          </Typography>
+                        )}
+                      </Box>
+                    </Box>
+                  </CardActionArea>
+                </Card>
+              </StaggerItem>
+            </Grid>
+          ))}
+        </Grid>
+      </StaggerList>
 
       {projects.length === 0 && (
         <Alert severity="info" sx={{ mt: 2 }}>

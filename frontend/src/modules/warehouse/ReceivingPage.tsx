@@ -22,6 +22,8 @@ import { formatPoStatus, poStatusChipColor } from '../po/poStatus';
 import { GET_PROJECTS } from '../../graphql/shared';
 import { GET_OPEN_POS, GET_RECENT_RECEIVE_RECORDS } from '../../graphql/warehouse';
 import { poVendorName } from '../po/poVendorName';
+import { microLabelSx, monoSx, tabularSx } from '../../theme';
+import { FadeIn } from '../../motion';
 
 // ---- Types ----
 
@@ -112,7 +114,16 @@ export default function ReceivingPage() {
   // PO rows
   const poColumns: GridColDef[] = useMemo(
     () => [
-      { field: 'poNumber', headerName: 'PO Number', flex: 0.8 },
+      {
+        field: 'poNumber',
+        headerName: 'PO Number',
+        flex: 0.8,
+        renderCell: (params) => (
+          <Typography component="span" sx={{ ...monoSx, fontWeight: 600 }}>
+            {params.value as string}
+          </Typography>
+        ),
+      },
       { field: 'vendorName', headerName: 'Vendor', flex: 1 },
       { field: 'projectName', headerName: 'Project', flex: 1 },
       {
@@ -126,7 +137,7 @@ export default function ReceivingPage() {
             <Typography
               variant="body2"
               color={overdue ? 'error.main' : 'text.primary'}
-              sx={{ fontWeight: overdue ? 600 : 400 }}
+              sx={{ ...tabularSx, fontWeight: overdue ? 600 : 400 }}
             >
               {formatDate(date)}
               {overdue && ' (overdue)'}
@@ -212,13 +223,31 @@ export default function ReceivingPage() {
 
   return (
     <Box sx={{ position: 'relative', minHeight: '60vh' }}>
+      <Typography variant="h5" sx={{ mb: 0.5 }}>
+        Receiving
+      </Typography>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 2.5 }}>
+        Book hardware off a purchase order and into a rack location. Every receipt posts to GP.
+      </Typography>
+
       {/* Pending POs Section */}
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-        <Typography variant="h6">
-          POs Awaiting Receipt
+      <Box
+        sx={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'flex-end',
+          gap: 2,
+          pb: 0.75,
+          mb: 1.5,
+          borderBottom: '2px solid',
+          borderColor: 'text.primary',
+        }}
+      >
+        <Typography component="div" sx={microLabelSx}>
+          POs Awaiting Receipt{poRows.length > 0 ? ` (${poRows.length})` : ''}
         </Typography>
         {selectedPOIds.length > 0 && (
-          <Button variant="contained" onClick={handleReceiveSelected}>
+          <Button variant="contained" size="small" onClick={handleReceiveSelected} sx={{ mb: 0.25 }}>
             Receive {selectedPOIds.length} Selected
           </Button>
         )}
@@ -257,7 +286,16 @@ export default function ReceivingPage() {
       )}
 
       {/* Recent Activity Section */}
-      <Typography variant="h6" sx={{ mb: 2 }}>
+      <Typography
+        component="div"
+        sx={{
+          ...microLabelSx,
+          pb: 0.75,
+          mb: 1.5,
+          borderBottom: '2px solid',
+          borderColor: 'text.primary',
+        }}
+      >
         Recent Activity
       </Typography>
 
@@ -275,28 +313,32 @@ export default function ReceivingPage() {
         <Typography color="text.secondary">No recent receiving activity.</Typography>
       )}
       {!recentLoading && !recentError && recentRecords.length > 0 && (
-        <TableContainer component={Paper} variant="outlined">
-          <Table size="small">
-            <TableHead>
-              <TableRow>
-                <TableCell>Date</TableCell>
-                <TableCell>Received By</TableCell>
-                <TableCell>PO Number</TableCell>
-                <TableCell align="right">Items Received</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {recentRecords.map((record) => (
-                <TableRow key={record.receiveRecord.id}>
-                  <TableCell>{formatDateTime(record.receiveRecord.receivedAt)}</TableCell>
-                  <TableCell>{record.receiveRecord.receivedBy}</TableCell>
-                  <TableCell>{record.poNumber ?? '\u2014'}</TableCell>
-                  <TableCell align="right">{record.totalItemsReceived}</TableCell>
+        <FadeIn y={8}>
+          <TableContainer component={Paper} variant="outlined">
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Date</TableCell>
+                  <TableCell>Received By</TableCell>
+                  <TableCell>PO Number</TableCell>
+                  <TableCell align="right">Items Received</TableCell>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </TableContainer>
+              </TableHead>
+              <TableBody>
+                {recentRecords.map((record) => (
+                  <TableRow key={record.receiveRecord.id} hover>
+                    <TableCell sx={tabularSx}>
+                      {formatDateTime(record.receiveRecord.receivedAt)}
+                    </TableCell>
+                    <TableCell>{record.receiveRecord.receivedBy}</TableCell>
+                    <TableCell sx={monoSx}>{record.poNumber ?? '\u2014'}</TableCell>
+                    <TableCell align="right">{record.totalItemsReceived}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </FadeIn>
       )}
 
       <ReceiveModal

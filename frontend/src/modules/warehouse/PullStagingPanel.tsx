@@ -24,6 +24,8 @@ import ConfirmDialog from '../../components/ConfirmDialog';
 import { useIdentity } from '../../hooks/useIdentity';
 import { isStageable, type PullStagingOpening } from './pullStaging';
 import { leafLabel } from '../../utils/leaf';
+import { microLabelSx, monoSx, tabularSx } from '../../theme';
+import { FadeIn } from '../../motion';
 
 function openingLabel(opening: PullStagingOpening): string {
   const leaf = leafLabel(opening.leaf);
@@ -147,8 +149,13 @@ export default function PullStagingPanel({
 
   return (
     <Box sx={{ mb: 2 }}>
-      <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
-        <Typography variant="h6" sx={{ flexGrow: 1 }}>
+      <Stack
+        direction="row"
+        spacing={1}
+        alignItems="center"
+        sx={{ mb: 1.5, pb: 0.75, borderBottom: '2px solid', borderColor: 'text.primary' }}
+      >
+        <Typography component="div" sx={{ ...microLabelSx, flexGrow: 1 }}>
           Staging ({stagedCount} of {openings.length} openings)
         </Typography>
         {editable && stageable.length > 0 && (
@@ -180,7 +187,7 @@ export default function PullStagingPanel({
           {openings.map((opening) => {
             const stageableRow = isStageable(opening);
             return (
-              <TableRow key={opening.id} data-testid={`staging-row-${opening.id}`}>
+              <TableRow key={opening.id} hover data-testid={`staging-row-${opening.id}`}>
                 {editable && (
                   <TableCell padding="checkbox">
                     <Checkbox
@@ -191,7 +198,7 @@ export default function PullStagingPanel({
                     />
                   </TableCell>
                 )}
-                <TableCell>{openingLabel(opening)}</TableCell>
+                <TableCell sx={monoSx}>{openingLabel(opening)}</TableCell>
                 <TableCell>
                   {[opening.building, opening.floor].filter(Boolean).join(' / ') || '-'}
                 </TableCell>
@@ -203,7 +210,7 @@ export default function PullStagingPanel({
                   ) : (
                     <Box component="ul" sx={{ m: 0, pl: 2 }}>
                       {opening.items.map((item) => (
-                        <li key={item.id}>
+                        <Box component="li" key={item.id} sx={monoSx}>
                           {/* The pick count is the ALLOCATED quantity - that is what the pull line
                               asks for and what was reserved. Owed is shown only when it differs, so
                               the puller can see the cart is deliberately short rather than wondering
@@ -216,7 +223,7 @@ export default function PullStagingPanel({
                               never pulled
                             </Typography>
                           )}
-                        </li>
+                        </Box>
                       ))}
                     </Box>
                   )}
@@ -225,14 +232,18 @@ export default function PullStagingPanel({
                   {stageableRow ? (
                     <Chip label="Not staged" size="small" />
                   ) : (
-                    <Stack spacing={0.5}>
-                      <Chip label="Staged" color="success" size="small" />
-                      {opening.stagedBy && (
-                        <Typography variant="caption" color="text.secondary">
-                          {opening.stagedBy} {formatDateTime(opening.stagedAt)}
-                        </Typography>
-                      )}
-                    </Stack>
+                    /* The confirmed row's tag rises in: the checkbox flow is unchanged, but the
+                       claim "this cart is built" gets a beat of its own when it lands. */
+                    <FadeIn y={4}>
+                      <Stack spacing={0.5} alignItems="flex-start">
+                        <Chip label="Staged" color="success" size="small" />
+                        {opening.stagedBy && (
+                          <Typography variant="caption" color="text.secondary" sx={tabularSx}>
+                            {opening.stagedBy} {formatDateTime(opening.stagedAt)}
+                          </Typography>
+                        )}
+                      </Stack>
+                    </FadeIn>
                   )}
                 </TableCell>
                 <TableCell>
@@ -256,6 +267,8 @@ export default function PullStagingPanel({
         <Stack direction="row" spacing={1} sx={{ mt: 2 }}>
           <Button
             variant="contained"
+            // Ink, not amber: the dialog's footer action is this surface's single amber accent.
+            color="primary"
             disabled={selected.size === 0 || staging}
             onClick={() => setConfirmOpen(true)}
           >

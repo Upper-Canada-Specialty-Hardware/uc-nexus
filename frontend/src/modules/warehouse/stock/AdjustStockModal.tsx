@@ -1,10 +1,11 @@
 import { useState } from 'react';
-import { Button, Stack, TextField, Alert } from '@mui/material';
+import { Box, Button, Stack, TextField, Alert, Typography } from '@mui/material';
 import { useMutation } from '@apollo/client/react';
 import Modal from '../../../components/Modal';
 import { useToast } from '../../../components/Toast';
 import { ADJUST_STOCK_QUANTITY } from '../../../graphql/warehouse';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../../graphql/refetch';
+import { microLabelSx, monoSx } from '../../../theme';
 import type { StockItem } from '../StockPoolView';
 
 interface Props {
@@ -62,6 +63,14 @@ export default function AdjustStockModal({ item, onClose, onSuccess }: Props) {
     >
       <Stack spacing={2}>
         {error && <Alert severity="error">{error.message}</Alert>}
+        <Box sx={{ pb: 1, borderBottom: '1px solid', borderColor: 'divider' }}>
+          <Typography component="div" sx={microLabelSx}>
+            Stock row
+          </Typography>
+          <Typography sx={monoSx}>
+            {item.hardwareCategory} / {item.productCode}
+          </Typography>
+        </Box>
         <TextField
           label="Current quantity"
           value={item.quantity}

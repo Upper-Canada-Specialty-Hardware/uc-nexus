@@ -21,6 +21,8 @@ import { useIdentity } from '../../hooks/useIdentity';
 import { GET_WAREHOUSES } from '../../graphql/shared';
 import { GET_RETURNABLE_LINES, CREATE_SHIPMENT_RETURN } from '../../graphql/shipping';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
+import { monoSx, microLabelSx } from '../../theme';
+import { StaggerItem, StaggerList } from '../../motion';
 
 type Disposition = 'RETURN_TO_PROJECT' | 'NON_STOCK' | 'RMA_DEFECTIVE';
 
@@ -217,9 +219,15 @@ export default function ReturnShipmentDialog({ slip, onClose, onCompleted }: Pro
         {formError && <Alert severity="error">{formError}</Alert>}
         {error && <Alert severity="error">{error.message}</Alert>}
 
-        <Typography variant="body2" color="text.secondary">
-          {slip.projectName} · loose hardware only. Opening items are not returned.
-        </Typography>
+        <Box>
+          <Typography sx={microLabelSx}>Packing slip</Typography>
+          <Typography sx={{ ...monoSx, fontWeight: 600, fontSize: '0.9375rem' }}>
+            {slip.packingSlipNumber}
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            {slip.projectName} · loose hardware only. Opening items are not returned.
+          </Typography>
+        </Box>
 
         <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
           <FormControl size="small" sx={{ minWidth: 200 }} required>
@@ -243,7 +251,12 @@ export default function ReturnShipmentDialog({ slip, onClose, onCompleted }: Pro
             onChange={(e) => setReference(e.target.value)}
             fullWidth
           />
-          <Button onClick={handleCancelShipment} disabled={lines.length === 0} sx={{ whiteSpace: 'nowrap' }}>
+          <Button
+            variant="outlined"
+            onClick={handleCancelShipment}
+            disabled={lines.length === 0}
+            sx={{ whiteSpace: 'nowrap' }}
+          >
             Cancel whole shipment
           </Button>
         </Stack>
@@ -258,72 +271,94 @@ export default function ReturnShipmentDialog({ slip, onClose, onCompleted }: Pro
           <Alert severity="info">Nothing left to return on this shipment.</Alert>
         )}
 
-        {lines.map((line) => {
-          const draft = getDraft(line.packingSlipItemId);
-          const isRma = draft.disposition === 'RMA_DEFECTIVE';
-          return (
-            <Paper key={line.packingSlipItemId} variant="outlined" sx={{ p: 1.5 }}>
-              <Stack spacing={1.5}>
-                <Box
-                  sx={{ display: 'flex', alignItems: 'baseline', gap: 1, flexWrap: 'wrap' }}
-                >
-                  <Typography variant="subtitle2">{line.productCode}</Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    {line.hardwareCategory}
-                    {line.openingNumber ? ` · opening ${line.openingNumber}` : ''}
-                  </Typography>
-                  <Box sx={{ flexGrow: 1 }} />
-                  <Chip size="small" label={`returnable ${line.returnableQuantity}`} />
-                </Box>
-                <Box sx={{ display: 'flex', gap: 1.5, flexWrap: 'wrap', alignItems: 'flex-start' }}>
-                  <TextField
-                    size="small"
-                    label="Qty"
-                    type="number"
-                    value={draft.quantity}
-                    onChange={(e) => setDraft(line.packingSlipItemId, { quantity: e.target.value })}
-                    inputProps={{ min: 0, max: line.returnableQuantity }}
-                    sx={{ width: 90 }}
-                  />
-                  <FormControl size="small" sx={{ minWidth: 210 }}>
-                    <InputLabel>Disposition</InputLabel>
-                    <Select
-                      label="Disposition"
-                      value={draft.disposition}
-                      onChange={(e) =>
-                        setDraft(line.packingSlipItemId, { disposition: e.target.value as Disposition })
-                      }
+        {lines.length > 0 && (
+          <Typography sx={{ ...microLabelSx, pb: 0.5, borderBottom: '2px solid', borderColor: 'text.primary' }}>
+            Returnable lines ({lines.length})
+          </Typography>
+        )}
+
+        <StaggerList count={lines.length}>
+          {lines.map((line) => {
+            const draft = getDraft(line.packingSlipItemId);
+            const isRma = draft.disposition === 'RMA_DEFECTIVE';
+            return (
+              <StaggerItem key={line.packingSlipItemId}>
+                <Paper variant="outlined" sx={{ p: 1.5, mb: 1.5 }}>
+                  <Stack spacing={1.5}>
+                    <Box
+                      sx={{
+                        display: 'flex',
+                        alignItems: 'baseline',
+                        gap: 1,
+                        flexWrap: 'wrap',
+                        pb: 1,
+                        borderBottom: '1px solid',
+                        borderColor: 'divider',
+                      }}
                     >
-                      {DISPOSITION_OPTIONS.map((o) => (
-                        <MenuItem key={o.value} value={o.value}>
-                          {o.label}
-                        </MenuItem>
-                      ))}
-                    </Select>
-                  </FormControl>
-                  {isRma && (
-                    <TextField
-                      size="small"
-                      label="PO / RMA reference (optional)"
-                      value={draft.rmaReference}
-                      onChange={(e) =>
-                        setDraft(line.packingSlipItemId, { rmaReference: e.target.value })
-                      }
-                      sx={{ minWidth: 220 }}
-                    />
-                  )}
-                  <TextField
-                    size="small"
-                    label="Reason (optional)"
-                    value={draft.reasonText}
-                    onChange={(e) => setDraft(line.packingSlipItemId, { reasonText: e.target.value })}
-                    sx={{ flexGrow: 1, minWidth: 180 }}
-                  />
-                </Box>
-              </Stack>
-            </Paper>
-          );
-        })}
+                      <Typography sx={{ ...monoSx, fontWeight: 600 }}>{line.productCode}</Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        {line.hardwareCategory}
+                        {line.openingNumber ? ` · opening ${line.openingNumber}` : ''}
+                      </Typography>
+                      <Box sx={{ flexGrow: 1 }} />
+                      <Chip size="small" label={`returnable ${line.returnableQuantity}`} />
+                    </Box>
+                    <Box sx={{ display: 'flex', gap: 1.5, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+                      <TextField
+                        size="small"
+                        label="Qty"
+                        type="number"
+                        value={draft.quantity}
+                        onChange={(e) => setDraft(line.packingSlipItemId, { quantity: e.target.value })}
+                        inputProps={{ min: 0, max: line.returnableQuantity }}
+                        sx={{ width: 90 }}
+                      />
+                      <FormControl size="small" sx={{ minWidth: 210 }}>
+                        <InputLabel>Disposition</InputLabel>
+                        <Select
+                          label="Disposition"
+                          value={draft.disposition}
+                          onChange={(e) =>
+                            setDraft(line.packingSlipItemId, {
+                              disposition: e.target.value as Disposition,
+                            })
+                          }
+                        >
+                          {DISPOSITION_OPTIONS.map((o) => (
+                            <MenuItem key={o.value} value={o.value}>
+                              {o.label}
+                            </MenuItem>
+                          ))}
+                        </Select>
+                      </FormControl>
+                      {isRma && (
+                        <TextField
+                          size="small"
+                          label="PO / RMA reference (optional)"
+                          value={draft.rmaReference}
+                          onChange={(e) =>
+                            setDraft(line.packingSlipItemId, { rmaReference: e.target.value })
+                          }
+                          sx={{ minWidth: 220 }}
+                        />
+                      )}
+                      <TextField
+                        size="small"
+                        label="Reason (optional)"
+                        value={draft.reasonText}
+                        onChange={(e) =>
+                          setDraft(line.packingSlipItemId, { reasonText: e.target.value })
+                        }
+                        sx={{ flexGrow: 1, minWidth: 180 }}
+                      />
+                    </Box>
+                  </Stack>
+                </Paper>
+              </StaggerItem>
+            );
+          })}
+        </StaggerList>
       </Stack>
     </Modal>
   );

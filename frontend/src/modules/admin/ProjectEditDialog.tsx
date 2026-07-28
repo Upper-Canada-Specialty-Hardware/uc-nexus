@@ -4,6 +4,7 @@ import { useMutation } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import { useToast } from '../../components/Toast';
 import { UPDATE_PROJECT, GET_ADMIN_PROJECTS } from '../../graphql/admin';
+import { microLabelSx, monoSx } from '../../theme';
 
 export interface ProjectFormValue {
   id: string;
@@ -142,10 +143,16 @@ function ProjectEditDialogContent({ project, onClose }: { project: ProjectFormVa
           label="Off-site storage agreement (OSSA)"
         />
 
+        <Typography component="div" sx={microLabelSx}>
+          Job
+        </Typography>
         <TextField label="Description" value={form.description} onChange={setText('description')} fullWidth />
         <TextField label="Client" value={form.client} onChange={setText('client')} fullWidth />
         <TextField label="Job Site Name" value={form.jobSiteName} onChange={setText('jobSiteName')} fullWidth />
 
+        <Typography component="div" sx={{ ...microLabelSx, pt: 0.5 }}>
+          Site address
+        </Typography>
         <TextField label="Address" value={form.address} onChange={setText('address')} fullWidth />
         <Stack direction="row" spacing={2}>
           <TextField label="City" value={form.city} onChange={setText('city')} fullWidth />
@@ -153,6 +160,9 @@ function ProjectEditDialogContent({ project, onClose }: { project: ProjectFormVa
           <TextField label="Zip" value={form.zip} onChange={setText('zip')} sx={{ width: 140 }} />
         </Stack>
 
+        <Typography component="div" sx={{ ...microLabelSx, pt: 0.5 }}>
+          General contractor
+        </Typography>
         <TextField label="General Contractor" value={form.contractor} onChange={setText('contractor')} fullWidth />
         <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
           <TextField label="GC Contact Name" value={form.gcContactName} onChange={setText('gcContactName')} fullWidth />
@@ -166,14 +176,19 @@ function ProjectEditDialogContent({ project, onClose }: { project: ProjectFormVa
         </Stack>
 
         <Divider />
-        <Typography variant="subtitle2" color="text.secondary">
+        <Typography component="div" sx={microLabelSx}>
           From TITAN (read-only)
         </Typography>
-        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 1 }}>
+        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 1.5 }}>
           {readOnly.map(([label, value]) => (
-            <Typography key={label} variant="body2">
-              <strong>{label}:</strong> {value}
-            </Typography>
+            <Box key={label}>
+              <Typography variant="caption" color="text.secondary" component="div">
+                {label}
+              </Typography>
+              <Typography component="div" sx={monoSx}>
+                {value}
+              </Typography>
+            </Box>
           ))}
         </Box>
       </Stack>

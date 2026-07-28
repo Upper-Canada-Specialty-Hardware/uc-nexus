@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
 import {
+  Alert,
   Box,
   Typography,
   TextField,
@@ -8,13 +9,13 @@ import {
   Stack,
   IconButton,
 } from '@mui/material';
-import AddIcon from '@mui/icons-material/Add';
-import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
+import { Plus, Trash2 } from 'lucide-react';
 import { useMutation } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
+import { FONT_MONO, microLabelSx, monoSx, tabularSx } from '../../theme';
 import { OVERRIDE_INVENTORY_QUANTITY, ASSIGN_OPENING_ITEM_LOCATION } from '../../graphql/admin';
 import { MOVE_INVENTORY_LOCATION, MARK_INVENTORY_UNLOCATED, ASSIGN_INVENTORY_LOCATION, MOVE_OPENING_ITEM_LOCATION, MARK_OPENING_ITEM_UNLOCATED } from '../../graphql/shared';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
@@ -97,6 +98,35 @@ function formatLocation(aisle: string | null, row: string | null, bay: string | 
 }
 
 const REASON_MAX_LENGTH = 500;
+
+/** The read-only item slab: a hairline-bordered panel that works in both colour schemes. */
+const DETAIL_SLAB_SX = {
+  display: 'grid',
+  gridTemplateColumns: '1fr 1fr',
+  gap: 1.5,
+  mb: 3,
+  p: 2,
+  bgcolor: 'action.hover',
+  border: '1px solid',
+  borderColor: 'divider',
+  borderRadius: 1,
+} as const;
+
+/** Aisle / row / bay are identifiers - type them in the mono face. */
+const MONO_INPUT_SX = { '& .MuiInputBase-input': { fontFamily: FONT_MONO } } as const;
+
+function DetailField({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <Box>
+      <Typography component="div" sx={microLabelSx}>
+        {label}
+      </Typography>
+      <Typography component="div" sx={mono ? monoSx : { fontSize: '0.875rem' }}>
+        {value}
+      </Typography>
+    </Box>
+  );
+}
 
 export default function InventoryCorrectionModal({
   open,
@@ -433,53 +463,27 @@ export default function InventoryCorrectionModal({
     if (itemType === 'inventory') {
       const inv = item as InventoryItem;
       return (
-        <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1, mb: 3, p: 2, bgcolor: 'grey.50', borderRadius: 1 }}>
-          <Box>
-            <Typography variant="caption" color="text.secondary">Product Code</Typography>
-            <Typography variant="body2">{inv.productCode}</Typography>
-          </Box>
-          <Box>
-            <Typography variant="caption" color="text.secondary">Hardware Category</Typography>
-            <Typography variant="body2">{inv.hardwareCategory}</Typography>
-          </Box>
-          <Box>
-            <Typography variant="caption" color="text.secondary">Quantity</Typography>
-            <Typography variant="body2">{inv.quantity}</Typography>
-          </Box>
-          <Box>
-            <Typography variant="caption" color="text.secondary">Location</Typography>
-            <Typography variant="body2">{formatLocation(inv.aisle, inv.row, inv.bay)}</Typography>
-          </Box>
+        <Box sx={DETAIL_SLAB_SX}>
+          <DetailField label="Product Code" value={inv.productCode} mono />
+          <DetailField label="Hardware Category" value={inv.hardwareCategory} />
+          <DetailField label="Quantity" value={String(inv.quantity)} mono />
+          <DetailField label="Location" value={formatLocation(inv.aisle, inv.row, inv.bay)} mono />
         </Box>
       );
     } else {
       const op = item as OpeningItem;
       return (
-        <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1, mb: 3, p: 2, bgcolor: 'grey.50', borderRadius: 1 }}>
-          <Box>
-            <Typography variant="caption" color="text.secondary">Opening Number</Typography>
-            <Typography variant="body2">{op.openingNumber}</Typography>
-          </Box>
-          <Box>
-            <Typography variant="caption" color="text.secondary">State</Typography>
-            <Typography variant="body2">{op.state}</Typography>
-          </Box>
-          <Box>
-            <Typography variant="caption" color="text.secondary">Building</Typography>
-            <Typography variant="body2">{op.building ?? '--'}</Typography>
-          </Box>
-          <Box>
-            <Typography variant="caption" color="text.secondary">Floor</Typography>
-            <Typography variant="body2">{op.floor ?? '--'}</Typography>
-          </Box>
-          <Box>
-            <Typography variant="caption" color="text.secondary">Location</Typography>
-            <Typography variant="body2">{op.location ?? '--'}</Typography>
-          </Box>
-          <Box>
-            <Typography variant="caption" color="text.secondary">Warehouse Location</Typography>
-            <Typography variant="body2">{formatLocation(op.aisle, op.row, op.bay)}</Typography>
-          </Box>
+        <Box sx={DETAIL_SLAB_SX}>
+          <DetailField label="Opening Number" value={op.openingNumber} mono />
+          <DetailField label="State" value={op.state} />
+          <DetailField label="Building" value={op.building ?? '--'} />
+          <DetailField label="Floor" value={op.floor ?? '--'} />
+          <DetailField label="Location" value={op.location ?? '--'} />
+          <DetailField
+            label="Warehouse Location"
+            value={formatLocation(op.aisle, op.row, op.bay)}
+            mono
+          />
         </Box>
       );
     }
@@ -513,6 +517,7 @@ export default function InventoryCorrectionModal({
                       : `Adding ${delta} (current ${item.quantity}) - place the added units below`
               }
               slotProps={{ htmlInput: { min: 0 } }}
+              sx={{ '& .MuiInputBase-input': tabularSx }}
             />
             <TextField
               label="Reason"
@@ -533,9 +538,11 @@ export default function InventoryCorrectionModal({
               <Box>
                 <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', mb: 1, gap: 1 }}>
                   <Typography variant="subtitle2">Where do the {delta} added unit(s) go?</Typography>
-                  <Typography variant="caption" color={remaining === 0 ? 'success.main' : 'error.main'}>
-                    {remaining === 0 ? 'all placed' : `${remaining} unplaced`}
-                  </Typography>
+                  <Chip
+                    size="small"
+                    color={remaining === 0 ? 'success' : 'error'}
+                    label={remaining === 0 ? 'all placed' : `${remaining} unplaced`}
+                  />
                 </Box>
                 <Stack spacing={1}>
                   {destRows.map((d, idx) => (
@@ -545,21 +552,21 @@ export default function InventoryCorrectionModal({
                         size="small"
                         value={d.aisle}
                         onChange={(e) => updateDest(idx, 'aisle', e.target.value)}
-                        sx={{ width: 90 }}
+                        sx={{ width: 90, ...MONO_INPUT_SX }}
                       />
                       <TextField
                         label="Row"
                         size="small"
                         value={d.row}
                         onChange={(e) => updateDest(idx, 'row', e.target.value)}
-                        sx={{ width: 90 }}
+                        sx={{ width: 90, ...MONO_INPUT_SX }}
                       />
                       <TextField
                         label="Bay"
                         size="small"
                         value={d.bay}
                         onChange={(e) => updateDest(idx, 'bay', e.target.value)}
-                        sx={{ width: 90 }}
+                        sx={{ width: 90, ...MONO_INPUT_SX }}
                       />
                       <TextField
                         label="Qty"
@@ -568,7 +575,7 @@ export default function InventoryCorrectionModal({
                         value={d.quantity}
                         onChange={(e) => updateDest(idx, 'quantity', e.target.value)}
                         slotProps={{ htmlInput: { min: 1 } }}
-                        sx={{ width: 80 }}
+                        sx={{ width: 80, '& .MuiInputBase-input': tabularSx }}
                       />
                       <IconButton
                         size="small"
@@ -576,11 +583,16 @@ export default function InventoryCorrectionModal({
                         disabled={destRows.length <= 1}
                         onClick={() => removeDest(idx)}
                       >
-                        <DeleteOutlineIcon fontSize="small" />
+                        <Trash2 size={18} strokeWidth={1.75} />
                       </IconButton>
                     </Stack>
                   ))}
-                  <Button size="small" startIcon={<AddIcon />} onClick={addDest} sx={{ alignSelf: 'flex-start' }}>
+                  <Button
+                    size="small"
+                    startIcon={<Plus size={18} strokeWidth={1.75} />}
+                    onClick={addDest}
+                    sx={{ alignSelf: 'flex-start' }}
+                  >
                     Add location
                   </Button>
                 </Stack>
@@ -594,7 +606,10 @@ export default function InventoryCorrectionModal({
         return (
           <Stack spacing={2}>
             <Typography variant="body2" color="text.secondary">
-              Current location: {formatLocation(item.aisle, item.row, item.bay)}
+              Current location:{' '}
+              <Box component="span" sx={monoSx}>
+                {formatLocation(item.aisle, item.row, item.bay)}
+              </Box>
             </Typography>
             <TextField
               label="Aisle"
@@ -602,6 +617,7 @@ export default function InventoryCorrectionModal({
               onChange={(e) => setAisle(e.target.value.slice(0, 20))}
               size="small"
               fullWidth
+              sx={MONO_INPUT_SX}
             />
             <TextField
               label="Row"
@@ -609,6 +625,7 @@ export default function InventoryCorrectionModal({
               onChange={(e) => setRow(e.target.value.slice(0, 20))}
               size="small"
               fullWidth
+              sx={MONO_INPUT_SX}
             />
             <TextField
               label="Bay"
@@ -616,18 +633,17 @@ export default function InventoryCorrectionModal({
               onChange={(e) => setBay(e.target.value.slice(0, 20))}
               size="small"
               fullWidth
+              sx={MONO_INPUT_SX}
             />
           </Stack>
         );
 
       case 'markUnlocated':
         return (
-          <Box sx={{ p: 2, bgcolor: 'warning.light', borderRadius: 1 }}>
-            <Typography variant="body2">
-              This will remove the current location ({formatLocation(item.aisle, item.row, item.bay)}) from this item.
-              The item will need to be reassigned a location later.
-            </Typography>
-          </Box>
+          <Alert severity="warning">
+            This will remove the current location ({formatLocation(item.aisle, item.row, item.bay)}) from this item.
+            The item will need to be reassigned a location later.
+          </Alert>
         );
 
       case 'assignLocation':
@@ -639,6 +655,7 @@ export default function InventoryCorrectionModal({
               onChange={(e) => setAisle(e.target.value.slice(0, 20))}
               size="small"
               fullWidth
+              sx={MONO_INPUT_SX}
             />
             <TextField
               label="Row"
@@ -646,6 +663,7 @@ export default function InventoryCorrectionModal({
               onChange={(e) => setRow(e.target.value.slice(0, 20))}
               size="small"
               fullWidth
+              sx={MONO_INPUT_SX}
             />
             <TextField
               label="Bay"
@@ -653,6 +671,7 @@ export default function InventoryCorrectionModal({
               onChange={(e) => setBay(e.target.value.slice(0, 20))}
               size="small"
               fullWidth
+              sx={MONO_INPUT_SX}
             />
           </Stack>
         );
@@ -691,7 +710,7 @@ export default function InventoryCorrectionModal({
         {renderItemDetails()}
 
         {/* Correction type selector */}
-        <Typography variant="subtitle2" sx={{ mb: 1 }}>
+        <Typography component="div" sx={{ ...microLabelSx, mb: 1 }}>
           Correction Type
         </Typography>
         <Stack direction="row" spacing={1} sx={{ mb: 3, flexWrap: 'wrap' }}>

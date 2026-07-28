@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { Box, Typography, Chip, Stack, CircularProgress, Alert } from '@mui/material';
 import { useQuery } from '@apollo/client/react';
 import { GET_OPENING_LEAF_STATUS } from '../graphql/shared';
+import { microLabelSx } from '../theme';
 
 // Per-opening door-leaf rollup (#313). Shared between the shipping (project-scoped) and shop-assembly
 // (global, grouped by project) views; `mode` reframes the N-of-M summary, `grouped` toggles the
@@ -59,7 +60,18 @@ function OpeningRow({ row, mode }: { row: OpeningLeafStatusRow; mode: 'assembly'
   const done = completedCount(row.leaves, mode);
   const verb = mode === 'shipping' ? 'shipped' : 'assembled';
   return (
-    <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, alignItems: 'center', py: 0.5 }}>
+    <Box
+      sx={{
+        display: 'flex',
+        flexWrap: 'wrap',
+        gap: 0.75,
+        alignItems: 'center',
+        py: 0.625,
+        borderBottom: 1,
+        borderColor: 'divider',
+        '&:last-of-type': { borderBottom: 0 },
+      }}
+    >
       <Chip
         size="small"
         color={summaryColor(done, row.leafCount)}
@@ -130,7 +142,7 @@ export default function OpeningLeafStatusPanel({
 
   return (
     <Box sx={{ mb: 2 }}>
-      <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>
+      <Typography component="div" sx={{ ...microLabelSx, mb: 1 }}>
         {title}
       </Typography>
       <Stack spacing={grouped ? 1.5 : 0.5}>

@@ -1,6 +1,6 @@
 import React from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
-import { Box, CircularProgress } from '@mui/material';
+import { Box, Skeleton } from '@mui/material';
 import { SignedIn, SignedOut, SignIn, RedirectToSignIn } from '@clerk/clerk-react';
 import AppLayout from './components/AppLayout';
 import { LazyRoute } from './components/LazyBoundary';
@@ -25,8 +25,14 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 
 function SuspenseFallback() {
   return (
-    <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', py: 8 }}>
-      <CircularProgress />
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5, pt: 1 }}>
+      <Skeleton variant="text" width={260} height={40} />
+      <Box sx={{ display: 'flex', gap: 1.5 }}>
+        {Array.from({ length: 4 }).map((_, i) => (
+          <Skeleton key={i} variant="rounded" height={72} sx={{ flex: '1 1 0' }} />
+        ))}
+      </Box>
+      <Skeleton variant="rounded" height={320} />
     </Box>
   );
 }

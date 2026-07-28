@@ -21,6 +21,8 @@ import {
 } from '../../graphql/shop-assembly';
 import RequestsReviewPage from '../../components/RequestsReviewPage';
 import { leafSuffix } from '../../utils/leaf';
+import { monoSx } from '../../theme';
+import { FadeIn } from '../../motion';
 
 interface RequestOpeningItem {
   id: string;
@@ -62,16 +64,18 @@ export default function ShopAssemblyRequestsPage() {
 
   return (
     <Box>
-      <ToggleButtonGroup
-        size="small"
-        exclusive
-        value={view}
-        onChange={(_e, next) => next && setView(next)}
-        sx={{ mb: 2 }}
-      >
-        <ToggleButton value="PENDING">Pending</ToggleButton>
-        <ToggleButton value="APPROVED">Approved</ToggleButton>
-      </ToggleButtonGroup>
+      <FadeIn>
+        <ToggleButtonGroup
+          size="small"
+          exclusive
+          value={view}
+          onChange={(_e, next) => next && setView(next)}
+          sx={{ mb: 2 }}
+        >
+          <ToggleButton value="PENDING">Pending</ToggleButton>
+          <ToggleButton value="APPROVED">Approved</ToggleButton>
+        </ToggleButtonGroup>
+      </FadeIn>
 
       <RequestsReviewPage<ShopAssemblyRequest>
         title="Shop Assembly Requests"
@@ -117,7 +121,7 @@ export default function ShopAssemblyRequestsPage() {
         req.openings.map((opening) => (
           <Box key={opening.id}>
             <Stack direction="row" spacing={1} alignItems="baseline" sx={{ mb: 0.5 }}>
-              <Typography variant="subtitle2">
+              <Typography variant="subtitle2" sx={{ ...monoSx, fontWeight: 600 }}>
                 {(opening.openingNumber || opening.id.slice(0, 8)) + leafSuffix(opening.leaf)}
               </Typography>
               {(opening.building || opening.floor) && (
@@ -138,8 +142,8 @@ export default function ShopAssemblyRequestsPage() {
                 </TableHead>
                 <TableBody>
                   {opening.items.map((item) => (
-                    <TableRow key={item.id}>
-                      <TableCell>{item.productCode}</TableCell>
+                    <TableRow key={item.id} hover>
+                      <TableCell sx={monoSx}>{item.productCode}</TableCell>
                       <TableCell>{item.hardwareCategory}</TableCell>
                       <TableCell align="right">{item.quantity}</TableCell>
                       <TableCell align="right">

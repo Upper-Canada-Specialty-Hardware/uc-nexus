@@ -14,6 +14,7 @@ import {
   ToggleButtonGroup,
   Typography,
 } from '@mui/material';
+import { motion } from 'motion/react';
 import { useQuery } from '@apollo/client/react';
 import type { GridColDef } from '@mui/x-data-grid';
 import { GET_ASSEMBLY_PIPELINE, GET_ASSEMBLY_PIPELINE_SUMMARIES } from '../../graphql/shop-assembly';
@@ -21,6 +22,8 @@ import DataTable from '../../components/DataTable';
 import Modal from '../../components/Modal';
 import { leafSuffix } from '../../utils/leaf';
 import { pipelineFlags, stageColor, stageLabel, stageProgress, unitProgressLabel } from './pipelineStages';
+import { microLabelSx, monoSx, tabularSx } from '../../theme';
+import { FadeIn, springs } from '../../motion';
 
 export interface PipelineSummary {
   requestId: string;
@@ -104,26 +107,60 @@ function StageChip({ stage }: { stage: string }) {
   return <Chip size='small' variant='outlined' color={stageColor(stage)} label={stageLabel(stage)} />;
 }
 
+/** The ladder position as a rail that springs to its value. Read-only, like everything here. */
+function ProgressRail({ value }: { value: number }) {
+  return (
+    <Box
+      role='progressbar'
+      aria-valuenow={Math.round(value * 100)}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      sx={{ height: 6, borderRadius: 1, bgcolor: 'action.hover', overflow: 'hidden', mb: 2 }}
+    >
+      <motion.div
+        initial={{ width: 0 }}
+        animate={{ width: `${value * 100}%` }}
+        transition={springs.base}
+        style={{ height: '100%', background: 'var(--mui-palette-text-primary)' }}
+      />
+    </Box>
+  );
+}
+
+// A ledger: identifiers in the mono face, counts tabular and hugging their content, and only the
+// two columns that carry prose given room to spread.
 const columns: GridColDef[] = [
-  { field: 'requestNumber', headerName: 'Request', flex: 1 },
+  {
+    field: 'requestNumber',
+    headerName: 'Request',
+    width: 132,
+    renderCell: (params) => (
+      <Box component='span' sx={monoSx}>
+        {params.row.requestNumber}
+      </Box>
+    ),
+  },
   {
     field: 'project',
     headerName: 'Project',
     flex: 1.1,
+    minWidth: 180,
     valueGetter: (_v: unknown, row: PipelineSummary) =>
       [row.projectCode, row.projectName].filter(Boolean).join(' - ') || '-',
   },
   {
     field: 'stage',
     headerName: 'Stage',
-    flex: 0.9,
+    width: 132,
     // The stage of the least-advanced opening: what the request is waiting on, not its best news.
     renderCell: (params) => <StageChip stage={params.row.stage} />,
   },
   {
     field: 'staging',
     headerName: 'Staged',
-    flex: 0.8,
+    width: 96,
+    align: 'right',
+    headerAlign: 'right',
     // Blank rather than "0 of 0" when the request has no openings - the same rule the pull queue's
     // staging column follows, so "nothing to say" never reads as "nothing done".
     valueGetter: (_v: unknown, row: PipelineSummary) =>
@@ -132,20 +169,26 @@ const columns: GridColDef[] = [
   {
     field: 'progress',
     headerName: 'Progress',
-    flex: 0.9,
+    width: 112,
+    align: 'right',
+    headerAlign: 'right',
     valueGetter: (_v: unknown, row: PipelineSummary) => unitProgressLabel(row),
   },
   {
     field: 'assembled',
     headerName: 'Assembled',
-    flex: 0.8,
+    width: 104,
+    align: 'right',
+    headerAlign: 'right',
     valueGetter: (_v: unknown, row: PipelineSummary) =>
       row.openingCount > 0 ? `${row.completedOpeningCount} of ${row.openingCount}` : '',
   },
   {
     field: 'shipped',
     headerName: 'Shipped',
-    flex: 0.7,
+    width: 96,
+    align: 'right',
+    headerAlign: 'right',
     valueGetter: (_v: unknown, row: PipelineSummary) =>
       row.openingCount > 0 ? `${row.shippedOpeningCount} of ${row.openingCount}` : '',
   },
@@ -153,6 +196,7 @@ const columns: GridColDef[] = [
     field: 'flags',
     headerName: 'Flags',
     flex: 1.2,
+    minWidth: 200,
     sortable: false,
     // Nothing at all when nothing is wrong. A row of reassuring chips would make the one row that
     // does need attention harder to find, which is the opposite of what this column is for.
@@ -202,37 +246,41 @@ export default function PipelinePage() {
 
   return (
     <Box>
-      <Typography variant='h5' gutterBottom>
-        Pipeline
-      </Typography>
-      <Typography variant='body2' color='text.secondary' sx={{ mb: 2 }}>
-        Every shop-assembly request and how far it has got: requested, accepted, staged, assigned,
-        built, shipped. A request reads by its least-advanced opening, so the stage shown is what it
-        is waiting on. Open one to see each door leaf.
-      </Typography>
+      <FadeIn>
+        <Typography variant='h5' sx={{ mb: 0.5 }}>
+          Pipeline
+        </Typography>
+        <Typography variant='body2' color='text.secondary' sx={{ mb: 2, maxWidth: 780 }}>
+          Every shop-assembly request and how far it has got: requested, accepted, staged, assigned,
+          built, shipped. A request reads by its least-advanced opening, so the stage shown is what it
+          is waiting on. Open one to see each door leaf.
+        </Typography>
 
-      <ToggleButtonGroup
-        size='small'
-        exclusive
-        value={status}
-        onChange={(_e, next) => setStatus(next ?? '')}
-        sx={{ mb: 2 }}
-      >
-        {VIEWS.map((view) => (
-          <ToggleButton key={view.value || 'all'} value={view.value}>
-            {view.label}
-          </ToggleButton>
-        ))}
-      </ToggleButtonGroup>
+        <ToggleButtonGroup
+          size='small'
+          exclusive
+          value={status}
+          onChange={(_e, next) => setStatus(next ?? '')}
+          sx={{ mb: 2 }}
+        >
+          {VIEWS.map((view) => (
+            <ToggleButton key={view.value || 'all'} value={view.value}>
+              {view.label}
+            </ToggleButton>
+          ))}
+        </ToggleButtonGroup>
+      </FadeIn>
 
-      <DataTable
-        rows={rows}
-        columns={columns}
-        loading={loading}
-        onRowClick={handleRowClick}
-        getRowId={(row: PipelineSummary) => row.requestId}
-        height={520}
-      />
+      <FadeIn delay={0.08}>
+        <DataTable
+          rows={rows}
+          columns={columns}
+          loading={loading}
+          onRowClick={handleRowClick}
+          getRowId={(row: PipelineSummary) => row.requestId}
+          height={520}
+        />
+      </FadeIn>
 
       {selectedRequestId && (
         <PipelineDetailModal requestId={selectedRequestId} onClose={() => setSelectedRequestId(null)} />
@@ -284,7 +332,12 @@ function PipelineDetailModal({ requestId, onClose }: { requestId: string; onClos
             </Alert>
           )}
 
-          <Stack direction='row' spacing={1} sx={{ mb: 1, flexWrap: 'wrap', alignItems: 'center' }}>
+          <Stack
+            direction='row'
+            spacing={1}
+            useFlexGap
+            sx={{ mb: 1.5, flexWrap: 'wrap', alignItems: 'center' }}
+          >
             <StageChip stage={summary.stage} />
             <Chip
               size='small'
@@ -313,9 +366,7 @@ function PipelineDetailModal({ requestId, onClose }: { requestId: string; onClos
               />
             )}
           </Stack>
-          {progress !== null && (
-            <LinearProgress variant='determinate' value={progress * 100} sx={{ mb: 2 }} />
-          )}
+          {progress !== null && <ProgressRail value={progress} />}
 
           <Typography variant='body2' color='text.secondary' sx={{ mb: 2 }}>
             Requested by {summary.createdBy} on {formatWhen(summary.createdAt)}
@@ -329,6 +380,9 @@ function PipelineDetailModal({ requestId, onClose }: { requestId: string; onClos
             </Typography>
           ) : (
             <Box sx={{ overflowX: 'auto' }}>
+              <Typography component='div' sx={{ ...microLabelSx, color: 'text.primary', mb: 0.5 }}>
+                Door leaves
+              </Typography>
               <Table size='small'>
                 <TableHead>
                   <TableRow>
@@ -336,17 +390,19 @@ function PipelineDetailModal({ requestId, onClose }: { requestId: string; onClos
                     <TableCell>Stage</TableCell>
                     <TableCell>Staged</TableCell>
                     <TableCell>Assigned to</TableCell>
-                    <TableCell>Units</TableCell>
+                    <TableCell align='right'>Units</TableCell>
                     <TableCell>Location</TableCell>
                     <TableCell>Owed</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
                   {openings.map((row) => (
-                    <TableRow key={row.shopAssemblyOpeningId}>
+                    <TableRow key={row.shopAssemblyOpeningId} hover>
                       <TableCell>
-                        {row.openingNumber}
-                        {leafSuffix(row.leaf)}
+                        <Box component='span' sx={monoSx}>
+                          {row.openingNumber}
+                          {leafSuffix(row.leaf)}
+                        </Box>
                         {(row.building || row.floor) && (
                           <Typography variant='caption' color='text.secondary' display='block'>
                             {[row.building, row.floor].filter(Boolean).join(' / ')}
@@ -371,8 +427,10 @@ function PipelineDetailModal({ requestId, onClose }: { requestId: string; onClos
                         )}
                       </TableCell>
                       <TableCell>{row.assignedTo ?? '-'}</TableCell>
-                      <TableCell>{unitProgressLabel(row)}</TableCell>
-                      <TableCell>{row.assembledLocation ?? '-'}</TableCell>
+                      <TableCell align='right' sx={tabularSx}>
+                        {unitProgressLabel(row)}
+                      </TableCell>
+                      <TableCell sx={monoSx}>{row.assembledLocation ?? '-'}</TableCell>
                       <TableCell>
                         <Stack direction='row' spacing={0.5} sx={{ flexWrap: 'wrap' }}>
                           {row.awaitingReplacementUnitCount > 0 && (

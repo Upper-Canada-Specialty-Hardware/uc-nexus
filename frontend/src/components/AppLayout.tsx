@@ -220,6 +220,7 @@ export default function AppLayout() {
         title="Drop & Rebuild Schema?"
         message="This will DROP the entire public schema and rebuild it from migrations. All data will be lost."
         confirmLabel="Drop & Rebuild"
+        confirmColor="error"
         cancelLabel="Cancel"
         onConfirm={handleResetSchema}
         onCancel={() => setResetConfirmOpen(false)}

@@ -17,7 +17,7 @@ import {
   Tooltip,
 } from '@mui/material';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
-import ContentCopyIcon from '@mui/icons-material/ContentCopy';
+import { Copy } from 'lucide-react';
 import { useQuery, useMutation } from '@apollo/client/react';
 import {
   RELAY_INSTALLS,
@@ -33,6 +33,8 @@ import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
 import { useRelayStatus } from '../../relay/useRelayStatus';
 import RelayStatusChip from '../../relay/RelayStatusChip';
+import { FONT_MONO, microLabelSx, monoSx, tabularSx } from '../../theme';
+import { FadeIn } from '../../motion';
 
 // The GP companies a relay may be provisioned for. Matches the relay's baked KNOWN_COMPANIES; the relay's
 // own Setup tab must be set to the same company as the token it enrolls with.
@@ -81,6 +83,19 @@ const ADOPT_WARNING =
   'For the next 5 minutes, the first relay that connects presenting any secret will be bound to this ' +
   'install and accepted. Only do this when a relay you own is dialling in with a secret the backend has ' +
   'lost. Cancel the window as soon as the relay reconnects.';
+
+/** A secret or a command line: mono, wrapped, on a hairline-bordered slab that works in both schemes. */
+const CODE_BOX_SX = {
+  ...monoSx,
+  wordBreak: 'break-all',
+  bgcolor: 'action.hover',
+  border: '1px solid',
+  borderColor: 'divider',
+  px: 1,
+  py: 0.5,
+  borderRadius: 1,
+  flex: 1,
+} as const;
 
 const DELETE_WARNING =
   'This permanently deletes the install row and revokes its secret. If that relay is still running it ' +
@@ -204,36 +219,89 @@ export default function RelayInstallsPage() {
 
   const columns: GridColDef[] = useMemo(
     () => [
-      { field: 'label', headerName: 'Label', flex: 1, minWidth: 140 },
-      { field: 'company', headerName: 'Company', width: 100 },
+      {
+        field: 'label',
+        headerName: 'Label',
+        flex: 1,
+        minWidth: 140,
+        renderCell: (p) => (
+          <Box component="span" sx={{ ...monoSx, fontWeight: 600 }}>
+            {p.row.label}
+          </Box>
+        ),
+      },
+      {
+        field: 'company',
+        headerName: 'Company',
+        width: 100,
+        renderCell: (p) => (
+          <Box component="span" sx={monoSx}>
+            {p.row.company}
+          </Box>
+        ),
+      },
       {
         field: 'hostname',
         headerName: 'Hostname',
         flex: 1,
         minWidth: 140,
-        valueFormatter: (v: string | null) => v ?? '—',
-      },
-      {
-        field: 'enrolled',
-        headerName: 'Status',
-        width: 120,
         renderCell: (p) => (
-          <Chip
-            size="small"
-            label={p.row.enrolled ? 'enrolled' : 'pending'}
-            color={p.row.enrolled ? 'success' : 'default'}
-          />
+          <Box component="span" sx={p.row.hostname ? monoSx : undefined}>
+            {p.row.hostname ?? '—'}
+          </Box>
         ),
       },
-      { field: 'enrolledAt', headerName: 'Enrolled at', flex: 1, minWidth: 160, valueFormatter: (v: string | null) => fmtDate(v) },
-      { field: 'lastSeenAt', headerName: 'Last seen', flex: 1, minWidth: 160, valueFormatter: (v: string | null) => fmtDate(v) },
-      { field: 'createdAt', headerName: 'Created', flex: 1, minWidth: 160, valueFormatter: (v: string) => fmtDate(v) },
+      {
+        // Real system state, so it gets real status colour: enrolment, plus the one install that is
+        // holding the live /relay-link socket right now.
+        field: 'enrolled',
+        headerName: 'Status',
+        width: 170,
+        renderCell: (p) => {
+          const isLive = liveInstallId != null && p.row.id === liveInstallId;
+          return (
+            <Stack direction="row" spacing={0.5} alignItems="center" sx={{ height: '100%' }}>
+              <Chip
+                size="small"
+                label={p.row.enrolled ? 'enrolled' : 'pending'}
+                color={p.row.enrolled ? 'success' : 'warning'}
+              />
+              {isLive && <Chip size="small" label="connected" color="info" />}
+            </Stack>
+          );
+        },
+      },
+      {
+        field: 'enrolledAt',
+        headerName: 'Enrolled at',
+        flex: 1,
+        minWidth: 160,
+        valueFormatter: (v: string | null) => fmtDate(v),
+        cellClassName: 'ts-cell',
+      },
+      {
+        field: 'lastSeenAt',
+        headerName: 'Last seen',
+        flex: 1,
+        minWidth: 160,
+        valueFormatter: (v: string | null) => fmtDate(v),
+        cellClassName: 'ts-cell',
+      },
+      {
+        field: 'createdAt',
+        headerName: 'Created',
+        flex: 1,
+        minWidth: 160,
+        valueFormatter: (v: string) => fmtDate(v),
+        cellClassName: 'ts-cell',
+      },
       {
         field: 'adoptedAt',
         headerName: 'Adopted at',
         flex: 1,
         minWidth: 160,
         valueFormatter: (v: string | null) => fmtDate(v),
+        cellClassName: 'ts-cell',
       },
       {
         field: 'adoptedBy',
@@ -285,28 +353,35 @@ export default function RelayInstallsPage() {
 
   return (
     <Box>
-      <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 2 }}>
-        <Box>
-          <Typography variant="h5" gutterBottom>
-            Relay Installs
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            Provision a one-time enrollment token, then enroll the relay from its Setup tab.
-          </Typography>
-        </Box>
-        <Stack direction="row" spacing={2} alignItems="center">
-          <RelayStatusChip connected={relay.connected} />
-          {/* Issue #315: show the live relay build so an out-of-date relay is visible at a glance. A
-              connected relay too old to advertise its build (pre-hello-frame) reports null -> 'build
-              unknown', itself a signal it needs updating. */}
-          {relay.connected && (
-            <Chip size="small" variant="outlined" label={relay.build ? `build: ${relay.build}` : 'build unknown'} />
-          )}
-          <Button variant="contained" onClick={() => setProvisionOpen(true)}>
-            Provision install
-          </Button>
+      <FadeIn>
+        <Stack direction="row" justifyContent="space-between" alignItems="flex-start" sx={{ mb: 2 }}>
+          <Box>
+            <Typography variant="h5" sx={{ mb: 0.25 }}>
+              Relay Installs
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              Provision a one-time enrollment token, then enroll the relay from its Setup tab.
+            </Typography>
+          </Box>
+          <Stack direction="row" spacing={2} alignItems="center">
+            <RelayStatusChip connected={relay.connected} />
+            {/* Issue #315: show the live relay build so an out-of-date relay is visible at a glance. A
+                connected relay too old to advertise its build (pre-hello-frame) reports null -> 'build
+                unknown', itself a signal it needs updating. */}
+            {relay.connected && (
+              <Chip
+                size="small"
+                variant="outlined"
+                label={relay.build ? `build: ${relay.build}` : 'build unknown'}
+                sx={{ fontFamily: FONT_MONO, textTransform: 'none' }}
+              />
+            )}
+            <Button variant="contained" onClick={() => setProvisionOpen(true)}>
+              Provision install
+            </Button>
+          </Stack>
         </Stack>
-      </Stack>
+      </FadeIn>
 
       {/* An open adopt window is real system state with a real security cost, which DESIGN.md reserves
           status colour for: it stays loud until it is consumed or cancelled. */}
@@ -323,7 +398,14 @@ export default function RelayInstallsPage() {
           <AlertTitle>Adopt window open — {adoptWindow.label}</AlertTitle>
           <Typography variant="body2">
             The next relay connection presenting any secret will be bound to this install. Closes in{' '}
-            <strong>{fmtCountdown(adoptWindow.expiresAt)}</strong>. Armed by {adoptWindow.armedBy}.
+            <Box component="strong" sx={{ ...monoSx, ...tabularSx, fontWeight: 700 }}>
+              {fmtCountdown(adoptWindow.expiresAt)}
+            </Box>
+            . Armed by{' '}
+            <Box component="span" sx={monoSx}>
+              {adoptWindow.armedBy}
+            </Box>
+            .
           </Typography>
         </Alert>
       )}
@@ -337,23 +419,10 @@ export default function RelayInstallsPage() {
             Shown once. Expires {fmtDate(provisioned.enrollmentTokenExpiresAt)}. Copy it now.
           </Typography>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
-            <Box
-              sx={{
-                fontFamily: 'monospace',
-                fontSize: 13,
-                wordBreak: 'break-all',
-                bgcolor: 'rgba(0,0,0,0.06)',
-                px: 1,
-                py: 0.5,
-                borderRadius: 1,
-                flex: 1,
-              }}
-            >
-              {provisioned.enrollmentToken}
-            </Box>
+            <Box sx={CODE_BOX_SX}>{provisioned.enrollmentToken}</Box>
             <Tooltip title="Copy token">
-              <IconButton size="small" onClick={() => copy(provisioned.enrollmentToken, 'Token')}>
-                <ContentCopyIcon fontSize="small" />
+              <IconButton size="small" aria-label="Copy token" onClick={() => copy(provisioned.enrollmentToken, 'Token')}>
+                <Copy size={18} strokeWidth={1.75} />
               </IconButton>
             </Tooltip>
           </Box>
@@ -362,29 +431,19 @@ export default function RelayInstallsPage() {
             and click <strong>Enroll</strong>. Or run:
           </Typography>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 0.5 }}>
-            <Box
-              sx={{
-                fontFamily: 'monospace',
-                fontSize: 12,
-                wordBreak: 'break-all',
-                bgcolor: 'rgba(0,0,0,0.06)',
-                px: 1,
-                py: 0.5,
-                borderRadius: 1,
-                flex: 1,
-              }}
-            >
-              {enrollCommand}
-            </Box>
+            <Box sx={{ ...CODE_BOX_SX, fontSize: '0.75rem' }}>{enrollCommand}</Box>
             <Tooltip title="Copy command">
-              <IconButton size="small" onClick={() => copy(enrollCommand, 'Command')}>
-                <ContentCopyIcon fontSize="small" />
+              <IconButton size="small" aria-label="Copy command" onClick={() => copy(enrollCommand, 'Command')}>
+                <Copy size={18} strokeWidth={1.75} />
               </IconButton>
             </Tooltip>
           </Box>
         </Alert>
       )}
 
+      <Typography component="div" sx={{ ...microLabelSx, mb: 1 }}>
+        Installs
+      </Typography>
       <DataGrid
         rows={installs}
         columns={columns}
@@ -397,6 +456,7 @@ export default function RelayInstallsPage() {
         disableRowSelectionOnClick
         pageSizeOptions={[10, 25, 50]}
         initialState={{ pagination: { paginationModel: { pageSize: 10 } } }}
+        sx={{ '& .ts-cell': { ...monoSx, ...tabularSx, color: 'text.secondary' } }}
       />
 
       {/* #353 PR E: the GP writes that were accepted while the relay was down live here, next to the
@@ -419,6 +479,7 @@ export default function RelayInstallsPage() {
         title={`Remove ${deleteTarget?.label ?? ''}?`}
         message={DELETE_WARNING}
         confirmLabel={deleting ? 'Removing…' : 'Remove install'}
+        confirmColor="error"
         onConfirm={() => {
           if (deleteTarget) deleteInstall({ variables: { installId: deleteTarget.id } });
         }}
