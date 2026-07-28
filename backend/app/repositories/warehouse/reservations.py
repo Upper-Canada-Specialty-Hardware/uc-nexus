@@ -456,13 +456,14 @@ def top_up_replacement_reservations(
 
     Returns {pull_request_id: units claimed}, for callers and tests to assert on.
     """
-    from .receiving import find_pending_replacement_pulls
+    from .pull_requests import outstanding_loose_needs
+    from .receiving import find_open_replacement_pulls
 
     wanted = set(combos)
     if not wanted:
         return {}
 
-    pulls = sorted(find_pending_replacement_pulls(session, project_id, wanted), key=lambda p: p.created_at)
+    pulls = sorted(find_open_replacement_pulls(session, project_id, wanted), key=lambda p: p.created_at)
     if not pulls:
         return {}
 
@@ -481,15 +482,11 @@ def top_up_replacement_reservations(
 
     claimed: dict[uuid.UUID, int] = {}
     for pr in pulls:
-        # What this pull wants of the combos that just became available, net of what it already holds.
-        needs: dict[tuple[str, str], int] = {}
-        for line in pr.items:
-            if not line.hardware_category or not line.product_code or line.requested_quantity <= 0:
-                continue
-            key = (line.hardware_category, line.product_code)
-            if key not in wanted:
-                continue
-            needs[key] = needs.get(key, 0) + line.requested_quantity
+        # What this pull still has to pick of the combos that just became available, net of what it
+        # already holds. Outstanding rather than originally-requested (#367): a short-picked pull has
+        # part of its hardware on a cart already, and topping its claim back up to the original
+        # number would re-claim units it is no longer waiting for.
+        needs = {combo: qty for combo, qty in outstanding_loose_needs(session, pr).items() if combo in wanted}
 
         for combo, need in sorted(needs.items()):
             existing = held.get((pr.id, *combo))

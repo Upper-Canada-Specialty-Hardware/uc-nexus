@@ -69,6 +69,7 @@ from .pull_requests import (
     get_pull_requests,
     get_pull_staging_summaries,
     notify_assembly_work_available,
+    outstanding_loose_needs,
     save_pick_draft,
     set_pull_item_fetched,
     stage_pull_openings,
@@ -76,7 +77,7 @@ from .pull_requests import (
 )
 from .receiving import (
     create_receive,
-    find_pending_replacement_pulls,
+    find_open_replacement_pulls,
     get_back_ordered_items,
     get_expected_deliveries,
     get_po_receiving_details,
@@ -125,7 +126,7 @@ __all__ = [
     "create_receive",
     "create_reservations",
     "discard_pending_pull_request",
-    "find_pending_replacement_pulls",
+    "find_open_replacement_pulls",
     "find_reservation_holder",
     "get_audit_log",
     "get_available_quantities",
@@ -165,6 +166,7 @@ __all__ = [
     "normalize_location_value",
     "notify_assembly_work_available",
     "notify_unblocked_replacement_pulls",
+    "outstanding_loose_needs",
     "override_inventory_quantity",
     "release_reservations",
     "reserve_for_replacement_pull",

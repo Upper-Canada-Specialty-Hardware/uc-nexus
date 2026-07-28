@@ -88,6 +88,15 @@ def _pick_lines_from_input(lines: list[PickLineInput]) -> list[warehouse_reposit
     ]
 
 
+def _partially_picked(session, pr) -> bool | None:
+    """Whether stock is off the shelf for an un-picked pull (#367), or None when the question does
+    not apply. Every resolver that returns a PullRequest must pass this: the field is part of the
+    shared client selection set, so a mutation result that omits it writes null over a cached true."""
+    if pr.picked_at is not None:
+        return None
+    return pr.id in warehouse_repository.get_partially_picked_pull_ids(session, [pr.id])
+
+
 def _load_receive_type(receive_id: uuid.UUID) -> ReceiveRecord:
     from sqlalchemy import select
     from sqlalchemy.orm import selectinload
@@ -764,13 +773,16 @@ class WarehouseMutations:
                 _pick_lines_from_input(lines),
                 entered_by,
             )
+            # `save_pick_draft` already returns the rebuilt sheet, so it is converted here rather
+            # than read a second time: this is the picker's most frequent action, and re-running the
+            # whole sheet read over Railway's network hop would double its cost for nothing. Built
+            # before the commit, because expire_on_commit would leave the ORM objects detached.
+            pr_id = sheet.pull_request.id
+            staging = warehouse_repository.get_pull_staging_summaries(session, [pr_id])
+            partial = pr_id in warehouse_repository.get_partially_picked_pull_ids(session, [pr_id])
+            result = pick_sheet_to_type(sheet, staging.get(pr_id), partially_picked=partial)
             session.commit()
-            sheet = warehouse_repository.get_pick_sheet(session, uuid.UUID(str(pull_request_id)))
-            staging = warehouse_repository.get_pull_staging_summaries(session, [sheet.pull_request.id])
-            partial = sheet.pull_request.id in warehouse_repository.get_partially_picked_pull_ids(
-                session, [sheet.pull_request.id]
-            )
-            return pick_sheet_to_type(sheet, staging.get(sheet.pull_request.id), partially_picked=partial)
+            return result
 
     @strawberry.mutation
     def confirm_pick(
@@ -865,7 +877,7 @@ class WarehouseMutations:
             session.commit()
             pr = warehouse_repository.get_pull_request_details(session, pr.id)
             staging = warehouse_repository.get_pull_staging_summaries(session, [pr.id])
-            return pull_request_to_type(pr, staging.get(pr.id))
+            return pull_request_to_type(pr, staging.get(pr.id), _partially_picked(session, pr))
 
     @strawberry.mutation
     def stage_pull_openings(self, info: strawberry.Info, input: StagePullOpeningsInput) -> StagePullOpeningsResult:
@@ -893,7 +905,7 @@ class WarehouseMutations:
             staging = warehouse_repository.get_pull_staging_summaries(session, [pr.id])
             openings = warehouse_repository.get_pull_request_openings(session, pr.id)
             return StagePullOpeningsResult(
-                pull_request=pull_request_to_type(pr, staging.get(pr.id)),
+                pull_request=pull_request_to_type(pr, staging.get(pr.id), _partially_picked(session, pr)),
                 openings=[shop_assembly_opening_to_type(o) for o in openings],
                 newly_staged_opening_ids=[strawberry.ID(str(oid)) for oid in result.newly_staged_ids],
                 completed=result.completed,
@@ -923,7 +935,7 @@ class WarehouseMutations:
             session.commit()
             pr = warehouse_repository.get_pull_request_details(session, result.pull_request.id)
             return CancelPullRequestResult(
-                pull_request=pull_request_to_type(pr),
+                pull_request=pull_request_to_type(pr, partially_picked=_partially_picked(session, pr)),
                 restocked=[
                     RestockedLine(
                         hardware_category=r.hardware_category,

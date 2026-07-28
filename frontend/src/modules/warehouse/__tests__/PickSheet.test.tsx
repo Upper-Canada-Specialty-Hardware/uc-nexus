@@ -190,6 +190,21 @@ it('reads as balanced once the counts add up', () => {
   expect(screen.queryByText(/Only \d+ here/)).not.toBeInTheDocument();
 });
 
+it('refuses a sheet the server would refuse for contention', () => {
+  // Regression for the half-built gate: the warning rendered but nothing stopped Confirm, so the
+  // server rejected the whole submission and every section had to be re-keyed.
+  const s = section({ claimableQuantity: 1, claimableShortfall: 3 });
+  expect(sectionTotals(s, { [OLD]: '2' })).toMatchObject({ beyondClaimable: true });
+  expect(pickTotals([s], { [OLD]: '2' })).toMatchObject({ over: true, balanced: false });
+  // Entering only what is free is allowed, and the pull is then deliberately short.
+  expect(pickTotals([s], { [OLD]: '1' })).toMatchObject({ over: false, balanced: false });
+});
+
+it('names the claimable ceiling on the section that crossed it', () => {
+  render(<Harness s={section({ claimableQuantity: 1, claimableShortfall: 3 })} initial={{ [OLD]: '2' }} />);
+  expect(screen.getByText(/of this is free for this pull/)).toBeInTheDocument();
+});
+
 it('says when a code has nowhere to come from', () => {
   render(<Harness s={section({ locations: [] })} />);
   expect(screen.getByText(/No inventory rows hold this product/)).toBeInTheDocument();

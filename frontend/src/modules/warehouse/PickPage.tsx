@@ -66,7 +66,7 @@ export default function PickPage() {
   const [shortfalls, setShortfalls] = useState<Shortfall[]>([]);
   const [printing, setPrinting] = useState(false);
 
-  const { data, loading, error, refetch } = useQuery<{ pullPickSheet: PickSheet }>(
+  const { data, loading, error } = useQuery<{ pullPickSheet: PickSheet }>(
     GET_PULL_PICK_SHEET,
     { variables: { pullRequestId: id }, fetchPolicy: 'cache-and-network', skip: !id },
   );
@@ -99,6 +99,11 @@ export default function PickPage() {
 
   const isPicked = Boolean(pr?.pickedAt);
   const isOpen = pr?.status === 'IN_PROGRESS' && !isPicked;
+  // Fetching outlives picking. An assembled leaf is collected off the rack, not deducted, so
+  // `setPullItemFetched` stays open for the whole In Progress life of the pull - and it has to,
+  // because a pure fetch pull is confirmable the moment it opens (no loose lines to balance), which
+  // would otherwise strand every check-off behind a Confirm the picker had not meant to finish with.
+  const canFetch = pr?.status === 'IN_PROGRESS';
 
   const [saveDraft, { loading: saving }] = useMutation(SAVE_PICK_DRAFT, {
     onCompleted: () => showToast('Draft saved. Your entries will be here when you come back.', 'success'),
@@ -333,7 +338,7 @@ export default function PickPage() {
         />
       ))}
 
-      <FetchListPanel items={fetchItems} editable={isOpen} onChanged={() => refetch()} />
+      <FetchListPanel items={fetchItems} editable={canFetch} />
 
       <ConfirmDialog
         open={confirmOpen}

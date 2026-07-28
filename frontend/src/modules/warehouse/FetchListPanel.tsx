@@ -1,3 +1,4 @@
+import { useCallback, useState } from 'react';
 import { Box, Checkbox, Chip, Stack, Typography } from '@mui/material';
 import { useMutation } from '@apollo/client/react';
 import { SET_PULL_ITEM_FETCHED } from '../../graphql/warehouse';
@@ -5,7 +6,7 @@ import { useIdentity } from '../../hooks/useIdentity';
 import { useToast } from '../../components/Toast';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { leafIdentity } from '../../utils/leaf';
-import type { PickSheetFetchItem } from './pick';
+import { locationLabel, type PickSheetFetchItem } from './pick';
 
 const STATE_TAG: Record<string, { label: string; color: 'default' | 'success' | 'info' | 'error' }> = {
   IN_INVENTORY: { label: 'In inventory', color: 'default' },
@@ -22,8 +23,12 @@ interface FetchListPanelProps {
   items: PickSheetFetchItem[];
   /** False once the pull is complete or cancelled: the list stays as the record of who fetched what. */
   editable: boolean;
-  onChanged?: () => void;
 }
+
+/** What one tick changed, held locally so a thirty-leaf list does not refetch the whole pick sheet
+ *  thirty times. The mutation returns the updated line, so this is the server's answer, not a guess;
+ *  the query is still the source of truth on the next load. */
+type FetchOverride = { fetchedAt: string | null; fetchedBy: string | null };
 
 /**
  * The assembled leaves a shipping pull has to collect off the rack (#367).
@@ -36,18 +41,41 @@ interface FetchListPanelProps {
  * leaves across two aisles; losing the ticks to a reload, or to handing the sheet to the next shift,
  * means walking the rack twice.
  */
-export default function FetchListPanel({ items, editable, onChanged }: FetchListPanelProps) {
+export default function FetchListPanel({ items, editable }: FetchListPanelProps) {
   const { displayName } = useIdentity();
   const { showToast } = useToast();
+  const [overrides, setOverrides] = useState<Record<string, FetchOverride>>({});
+  // Per row, not one shared flag: ticking leaf 1 must not freeze the other twenty-nine checkboxes
+  // while the round trip runs.
+  const [pending, setPending] = useState<Set<string>>(new Set());
 
-  const [setFetched, { loading }] = useMutation(SET_PULL_ITEM_FETCHED, {
-    onCompleted: () => onChanged?.(),
+  const settle = useCallback((itemId: string) => {
+    setPending((prev) => {
+      const next = new Set(prev);
+      next.delete(itemId);
+      return next;
+    });
+  }, []);
+
+  const [setFetched] = useMutation(SET_PULL_ITEM_FETCHED, {
+    onCompleted: (data) => {
+      const item = (data as { setPullItemFetched?: { id: string } & FetchOverride })?.setPullItemFetched;
+      if (!item) return;
+      setOverrides((prev) => ({
+        ...prev,
+        [item.id]: { fetchedAt: item.fetchedAt, fetchedBy: item.fetchedBy },
+      }));
+      settle(item.id);
+    },
     onError: (error) => showToast(error.message, 'error'),
   });
 
+  const stateOf = (item: PickSheetFetchItem): FetchOverride =>
+    overrides[item.pullRequestItemId] ?? { fetchedAt: item.fetchedAt, fetchedBy: item.fetchedBy };
+
   if (items.length === 0) return null;
 
-  const fetchedCount = items.filter((i) => i.fetchedAt).length;
+  const fetchedCount = items.filter((i) => stateOf(i).fetchedAt).length;
 
   return (
     <Box component="section" sx={{ mb: 3 }} data-testid="fetch-list">
@@ -77,8 +105,9 @@ export default function FetchListPanel({ items, editable, onChanged }: FetchList
         </Box>
         <Box component="tbody">
           {items.map((item) => {
-            const bin = [item.aisle, item.row, item.bay].filter(Boolean).join('-');
+            const bin = locationLabel(item);
             const tag = item.state ? STATE_TAG[item.state] : undefined;
+            const fetched = stateOf(item);
             return (
               <Box
                 component="tr"
@@ -89,17 +118,18 @@ export default function FetchListPanel({ items, editable, onChanged }: FetchList
                 {editable && (
                   <Box component="td">
                     <Checkbox
-                      checked={Boolean(item.fetchedAt)}
-                      disabled={loading}
-                      onChange={(e) =>
+                      checked={Boolean(fetched.fetchedAt)}
+                      disabled={pending.has(item.pullRequestItemId)}
+                      onChange={(e) => {
+                        setPending((prev) => new Set(prev).add(item.pullRequestItemId));
                         setFetched({
                           variables: {
                             itemId: item.pullRequestItemId,
                             fetched: e.target.checked,
                             fetchedBy: displayName,
                           },
-                        })
-                      }
+                        }).catch(() => settle(item.pullRequestItemId));
+                      }}
                       inputProps={{
                         'aria-label': `Collected ${leafIdentity(item.openingNumber, item.leaf)}`,
                       }}
@@ -122,9 +152,9 @@ export default function FetchListPanel({ items, editable, onChanged }: FetchList
                   {tag ? <Chip label={tag.label} color={tag.color} size="small" /> : '-'}
                 </Box>
                 <Box component="td">
-                  {item.fetchedAt ? (
+                  {fetched.fetchedAt ? (
                     <Typography variant="caption" color="text.secondary" sx={tabularSx}>
-                      {item.fetchedBy} {formatDateTime(item.fetchedAt)}
+                      {fetched.fetchedBy} {formatDateTime(fetched.fetchedAt)}
                     </Typography>
                   ) : (
                     <Typography variant="body2" color="text.secondary">

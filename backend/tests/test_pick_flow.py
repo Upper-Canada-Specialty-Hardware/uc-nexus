@@ -19,11 +19,12 @@ import uuid
 from datetime import datetime, timedelta
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.errors import ConflictError, InvalidStateTransitionError, NotFoundError, ValidationError
 from app.models.audit_log import InventoryAuditLog
 from app.models.enums import (
+    AssemblyStatus,
     AuditAction,
     NotificationType,
     OpeningItemState,
@@ -31,6 +32,7 @@ from app.models.enums import (
     PullRequestItemType,
     PullRequestSource,
     PullRequestStatus,
+    PullStatus,
     ReservationSource,
 )
 from app.models.inventory import InventoryLocation
@@ -39,7 +41,7 @@ from app.models.opening_item import OpeningItem
 from app.models.project import Project
 from app.models.pull_pick_line import PullPickLine
 from app.models.pull_request import PullRequest, PullRequestItem
-from app.models.shop_assembly import ShopAssemblyOpening
+from app.models.shop_assembly import ShopAssemblyOpening, ShopAssemblyOpeningItem
 from app.models.stock_item import StockItem
 from app.repositories import import_repository, shop_assembly_repository, warehouse_admin_repository
 from app.repositories import warehouse as warehouse_repository
@@ -182,6 +184,32 @@ def _two_leaf_request(session, project, *, qty=2, code=HINGE[1], opening_number=
             ],
         },
     )
+
+
+def _sa_opening_with_item(session, project_id, *, quantity=4):
+    """A minimal shop-assembly work unit and one checklist line, so a pull line can carry a real
+    `sa_opening_item_id` - which is what makes a pull a replacement, structurally."""
+    opening = ShopAssemblyOpening(
+        id=uuid.uuid4(),
+        opening_id=uuid.uuid4(),
+        opening_number="A01",
+        leaf=1,
+        pull_status=PullStatus.PULLED,
+        assembly_status=AssemblyStatus.IN_PROGRESS,
+    )
+    session.add(opening)
+    session.flush()
+    item = ShopAssemblyOpeningItem(
+        id=uuid.uuid4(),
+        shop_assembly_opening_id=opening.id,
+        hardware_category=HINGE[0],
+        product_code=HINGE[1],
+        quantity=quantity,
+        allocated_quantity=quantity,
+    )
+    session.add(item)
+    session.flush()
+    return opening, item
 
 
 def _accepted_pull(session, project, *, qty=2):
@@ -466,6 +494,29 @@ def test_the_over_pull_ceiling_counts_what_is_already_picked(db_session):
         warehouse_repository.confirm_pick(db_session, pr.id, [_line(row, 2)], "picker")
 
 
+def test_contention_is_only_blamed_when_it_is_the_whole_obstacle(db_session):
+    """A shortfall can be part claim and part plain scarcity. Telling a picker "the units are on the
+    shelf but they are spoken for" when half of them do not exist anywhere sends them after a
+    competing request that cannot explain the gap - so the message is reserved for the case where
+    removing the claim would have let the entry through."""
+    project = _make_project(db_session)
+    row = _seed_inventory(db_session, project.id, quantity=5)
+    # A live claim on 4 of the 5, held by somebody else.
+    sar, _other = _accepted_pull(db_session, project, qty=2)
+    assert warehouse_repository.get_reserved_total(db_session, ReservationSource.SHOP_ASSEMBLY_REQUEST, sar.id) == 4
+    stranger = _started_pull(db_session, project.id, needs=[(*HINGE, 10, 1)])
+
+    # 10 wanted, 5 on hand: reservations are not what stops this, scarcity is.
+    with pytest.raises(ValidationError, match="only 5 available"):
+        warehouse_repository.confirm_pick(db_session, stranger.id, [_line(row, 10)], "picker")
+
+    # 3 wanted, 5 on hand, 4 claimed: now the claim genuinely is the only obstacle.
+    with pytest.raises(ConflictError, match="already claimed this stock"):
+        warehouse_repository.confirm_pick(db_session, stranger.id, [_line(row, 3)], "picker")
+
+    assert row.quantity == 5
+
+
 def test_a_pull_cannot_pick_past_what_other_requests_have_left_free(db_session):
     """The third ceiling. The units are on the shelf and reachable; they are somebody else's."""
     project = _make_project(db_session)
@@ -480,6 +531,86 @@ def test_a_pull_cannot_pick_past_what_other_requests_have_left_free(db_session):
         warehouse_repository.confirm_pick(db_session, stranger.id, [_line(row, 4)], "picker")
 
     assert row.quantity == 10
+
+
+def test_a_short_picked_replacement_stays_in_the_backfill_loop(db_session):
+    """The regression a review caught. Before #367 a replacement that could not be filled stayed
+    PENDING, so `top_up_replacement_reservations` claimed arriving stock for it and
+    `notify_unblocked_replacement_pulls` told the warehouse it could be filled. A short pick leaves
+    it IN_PROGRESS, and on the old PENDING-only filter it dropped out of both loops: its claim was
+    never topped up, the units it was waiting for stayed free for the next request to take, and
+    nothing ever said the remainder could be keyed in."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=0)
+    pr = _started_pull(db_session, project.id, needs=[(*HINGE, 4, 1)])
+    # Make it a replacement structurally, which is how the loop identifies one.
+    line = db_session.scalar(select(PullRequestItem).where(PullRequestItem.pull_request_id == pr.id))
+    opening, sao = _sa_opening_with_item(db_session, project.id)
+    line.sa_opening_item_id = sao.id
+    db_session.flush()
+
+    row = _seed_inventory(db_session, project.id, quantity=1, aisle="B")
+    warehouse_repository.confirm_pick(db_session, pr.id, [_line(row, 1)], "picker")
+    db_session.flush()
+    assert pr.status == PullRequestStatus.IN_PROGRESS and pr.picked_at is None
+
+    # It is still owed 3, so the loop must still see it.
+    assert pr.id in {p.id for p in warehouse_repository.find_open_replacement_pulls(db_session, project.id)}
+    assert warehouse_repository.outstanding_loose_needs(db_session, pr) == {HINGE: 3}
+
+    # The backfill lands: the claim tops up to the outstanding 3, not the original 4.
+    _seed_inventory(db_session, project.id, quantity=3, aisle="C")
+    claimed = warehouse_repository.top_up_replacement_reservations(db_session, project.id, [HINGE])
+
+    assert claimed.get(pr.id) == 3
+    assert warehouse_repository.get_reserved_total(db_session, ReservationSource.REPLACEMENT_PULL, pr.id) == 3
+
+
+def test_a_picked_pull_leaves_the_backfill_loop(db_session):
+    """The other half: once a replacement is fully picked it is not waiting for anything, so it must
+    not keep claiming stock that arrives."""
+    project = _make_project(db_session)
+    row = _seed_inventory(db_session, project.id, quantity=4)
+    pr = _started_pull(db_session, project.id, needs=[(*HINGE, 4, 1)])
+    line = db_session.scalar(select(PullRequestItem).where(PullRequestItem.pull_request_id == pr.id))
+    _opening, sao = _sa_opening_with_item(db_session, project.id)
+    line.sa_opening_item_id = sao.id
+    db_session.flush()
+    warehouse_repository.confirm_pick(db_session, pr.id, [_line(row, 4)], "picker")
+    db_session.flush()
+
+    assert pr.id not in {p.id for p in warehouse_repository.find_open_replacement_pulls(db_session, project.id)}
+
+
+def test_confirming_with_nothing_entered_is_refused_on_a_pull_with_loose_lines(db_session):
+    """It would deduct nothing, report the whole requirement short, and raise a PO backfill signal
+    for a walk nobody took - and then dedupe would suppress the real signal from the pick that
+    followed."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=5)
+    pr = _started_pull(db_session, project.id, needs=[(*HINGE, 4, 1)])
+
+    with pytest.raises(ValidationError, match="Nothing was entered"):
+        warehouse_repository.confirm_pick(db_session, pr.id, [], "picker")
+
+    assert (
+        db_session.scalar(select(func.count()).select_from(Notification).where(Notification.pull_request_id == pr.id))
+        == 0
+    )
+
+
+def test_a_soft_deleted_pull_cannot_be_started(db_session):
+    """`lock_rows` does not filter soft-deletes. Without the check the status flip commits and the
+    resolver's re-read then fails, leaving the pull IN_PROGRESS and unpickable forever."""
+    project = _make_project(db_session)
+    pr = _pending_pull(db_session, project.id, needs=[(*HINGE, 1, 1)])
+    pr.deleted_at = datetime.utcnow()
+    db_session.flush()
+
+    with pytest.raises(NotFoundError):
+        warehouse_repository.start_pull_request_pick(db_session, pr.id, "picker")
+
+    assert pr.status == PullRequestStatus.PENDING
 
 
 def test_a_plain_shortage_is_not_reported_as_contention(db_session):

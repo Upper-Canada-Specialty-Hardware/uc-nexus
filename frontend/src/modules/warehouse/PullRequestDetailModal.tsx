@@ -301,7 +301,10 @@ export default function PullRequestDetailModal({
         {startLoading ? 'Starting...' : 'Start pick'}
       </Button>
     );
-  } else if (isInProgress && !isPicked) {
+  } else if (isInProgress && !isPicked && !isLockedToOtherUser) {
+    // Locked-out users fall through to the cancel-only branch below. Two people keying the same
+    // paper sheet against one pull would each be entering rows the other cannot see, and
+    // `confirm_pick` does not check the assignment - the button is the only thing standing there.
     actionButtons = (
       <>
         {cancelButton}

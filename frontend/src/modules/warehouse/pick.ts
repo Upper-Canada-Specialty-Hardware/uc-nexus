@@ -105,6 +105,10 @@ export interface SectionTotals {
   over: boolean;
   /** At least one row asks for more than that row has. */
   anyRowOver: boolean;
+  /** Entered more than another request has left free for this pull - the server's third ceiling.
+   *  Without this the screen calls a sheet balanced and `confirmPick` rejects the whole submission,
+   *  discarding every entry in every section and making the picker re-key the lot. */
+  beyondClaimable: boolean;
 }
 
 export function sectionTotals(section: PickSheetSection, entries: PickEntries): SectionTotals {
@@ -121,6 +125,7 @@ export function sectionTotals(section: PickSheetSection, entries: PickEntries): 
     remaining: Math.max(0, section.requiredQuantity - covered),
     over: covered > section.requiredQuantity,
     anyRowOver,
+    beyondClaimable: entered > section.claimableQuantity,
   };
 }
 
@@ -130,7 +135,8 @@ export interface PickTotals {
   applied: number;
   entered: number;
   remaining: number;
-  /** Any row or any product code has been entered past its ceiling. Confirming is refused. */
+  /** Any of the three ceilings has been crossed - the row, the request, or what other requests have
+   *  left free. Confirming is refused, and the server would refuse it too. */
   over: boolean;
   /** Every product code is fully covered once this entry is applied. */
   balanced: boolean;
@@ -148,7 +154,7 @@ export function pickTotals(sections: PickSheetSection[], entries: PickEntries): 
     applied += section.appliedQuantity;
     entered += totals.entered;
     remaining += totals.remaining;
-    if (totals.over || totals.anyRowOver) over = true;
+    if (totals.over || totals.anyRowOver || totals.beyondClaimable) over = true;
   }
   return {
     codeCount: sections.length,

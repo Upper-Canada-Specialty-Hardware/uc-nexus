@@ -94,7 +94,12 @@ export default function PickSheetDocument({
         )}
 
         {sections.map((section) => (
-          <View key={`${section.hardwareCategory}|${section.productCode}`} wrap={false}>
+          // No `wrap={false}` here: react-pdf cannot split an unwrappable element, so a section
+          // taller than a page would silently lose the tail of its location table - write-in boxes
+          // and all - which is the exact failure the "every leaf, never truncated" rule exists to
+          // stop. Rows wrap individually instead, and `minPresenceAhead` keeps a header from
+          // orphaning at the foot of a page.
+          <View key={`${section.hardwareCategory}|${section.productCode}`} minPresenceAhead={60}>
             <View style={styles.sectionHeader}>
               <Text style={styles.sectionCode}>
                 {section.productCode} · {section.hardwareCategory}
@@ -129,7 +134,7 @@ export default function PickSheetDocument({
                   <Text style={[styles.th, { width: '22%' }]}>Pulled</Text>
                 </View>
                 {section.locations.map((loc) => (
-                  <View key={loc.inventoryLocationId} style={styles.tableRow}>
+                  <View key={loc.inventoryLocationId} style={styles.tableRow} wrap={false}>
                     <Text style={[styles.td, { width: '38%' }]}>
                       {loc.warehouseCode ? `${loc.warehouseCode} ` : ''}
                       {locationLabel(loc) ?? 'Unlocated'}
@@ -149,7 +154,7 @@ export default function PickSheetDocument({
         ))}
 
         {fetchItems.length > 0 && (
-          <View wrap={false}>
+          <View minPresenceAhead={60}>
             <View style={styles.sectionHeader}>
               <Text style={styles.sectionCode}>Assembled leaves to fetch</Text>
               <Text style={styles.sectionCounts}>
@@ -163,16 +168,14 @@ export default function PickSheetDocument({
               <Text style={[styles.th, { width: '20%' }]}>State</Text>
             </View>
             {fetchItems.map((item) => (
-              <View key={item.pullRequestItemId} style={styles.tableRow}>
+              <View key={item.pullRequestItemId} style={styles.tableRow} wrap={false}>
                 <View style={{ width: '10%' }}>
                   <View style={styles.checkBox} />
                 </View>
                 <Text style={[styles.td, { width: '40%' }]}>
                   {leafIdentity(item.openingNumber, item.leaf)}
                 </Text>
-                <Text style={[styles.td, { width: '30%' }]}>
-                  {[item.aisle, item.row, item.bay].filter(Boolean).join('-') || 'Unlocated'}
-                </Text>
+                <Text style={[styles.td, { width: '30%' }]}>{locationLabel(item) ?? 'Unlocated'}</Text>
                 <Text style={[styles.td, { width: '20%' }]}>{item.state ?? '-'}</Text>
               </View>
             ))}

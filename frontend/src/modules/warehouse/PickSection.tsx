@@ -224,6 +224,19 @@ export default function PickSection({ section, entries, onChange, editable }: Pi
           request asked for. A pull never takes more than it is owed.
         </Typography>
       )}
+
+      {/* The server refuses the whole confirmation on this, so the screen has to refuse it too -
+          otherwise a balanced-looking sheet is rejected wholesale and every section is re-keyed. */}
+      {totals.beyondClaimable && !totals.over && (
+        <Typography variant="body2" color="error.main" sx={{ mt: 1 }}>
+          Only{' '}
+          <Box component="span" sx={tabularSx}>
+            {section.claimableQuantity}
+          </Box>{' '}
+          of this is free for this pull - the rest is claimed by another request. Enter that much or
+          less and purchasing will be told about the remainder.
+        </Typography>
+      )}
     </Box>
   );
 }

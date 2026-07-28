@@ -215,7 +215,7 @@ def check_inventory_sufficiency(
 def _is_replacement_pull(session: Session, pr: PullRequestModel) -> bool:
     """Structural test for a PR-REPL pull: at least one line carries `sa_opening_item_id` (#339).
 
-    Same test as `find_pending_replacement_pulls`, and deliberately not the `PR-REPL-` number prefix
+    Same test as `find_open_replacement_pulls`, and deliberately not the `PR-REPL-` number prefix
     - the prefix is a display convention, the FK is what makes the pull a replacement, and a
     structural test cannot be broken by renaming a request.
     """
@@ -310,6 +310,11 @@ def start_pull_request_pick(session: Session, pr_id: uuid.UUID, started_by: str)
         raise NotFoundError(f"Pull request {pr_id} not found")
     pr = locked_prs[0]
 
+    # `lock_rows` does not filter soft-deletes, and every read path does. Without this check the
+    # status flip below commits and *then* the resolver's re-read raises NotFoundError, leaving the
+    # pull IN_PROGRESS with no way back: `_pickable_pull` refuses it, so does starting it again.
+    if pr.deleted_at is not None:
+        raise NotFoundError(f"Pull request {pr_id} not found")
     if pr.status != PullRequestStatus.PENDING:
         raise InvalidStateTransitionError(f"Pull request must be Pending to start picking, got {pr.status.value}")
 
@@ -415,6 +420,26 @@ def _loose_requirements(pr: PullRequestModel) -> dict[tuple[str, str], int]:
             continue
         required[(item.hardware_category, item.product_code)] += item.requested_quantity
     return dict(required)
+
+
+def outstanding_loose_needs(session: Session, pr: PullRequestModel) -> dict[tuple[str, str], int]:
+    """What a pull still has to pick, per combo: what it asked for minus what it has already picked.
+
+    Identical to `_loose_requirements` for any pull that has picked nothing, which is every pull that
+    has not been started. It differs only for a **short-picked** one (#367), and that difference is
+    what keeps the replacement loop honest: topping a part-filled pull's claim back up to its
+    original requirement would re-claim units it already has on a cart, and asking whether the
+    original requirement is now coverable would keep answering no long after the gap had closed.
+
+    Combos that are fully picked drop out entirely rather than appearing as zero.
+    """
+    already = _applied_by_combo(session, pr.id)
+    outstanding = {}
+    for combo, total in _loose_requirements(pr).items():
+        remaining = total - already.get(combo, 0)
+        if remaining > 0:
+            outstanding[combo] = remaining
+    return outstanding
 
 
 def _pick_lines(session: Session, pr_id: uuid.UUID, state: PullPickLineState | None = None) -> list[PullPickLineModel]:
@@ -826,6 +851,18 @@ def confirm_pick(
     already = _applied_by_combo(session, pr.id)
     now = datetime.utcnow()
 
+    # A confirmation with nothing entered is only meaningful on a pure fetch pull, where there is
+    # genuinely nothing to deduct. On a pull with loose lines it would deduct nothing, report the
+    # whole requirement as short, and raise a PO backfill signal for a walk nobody took - and then
+    # `has_unread_notification_for_pull` would suppress the *real* signal from the pick that
+    # follows. Refused rather than treated as a short pick.
+    if required and not entered:
+        raise ValidationError(
+            "Nothing was entered. Record what came off each location before confirming, or cancel "
+            "the pull if none of it can be picked.",
+            field="lines",
+        )
+
     # No combo may be pushed past what the pull asked for, counting what is already picked.
     entered_by_combo: dict[tuple[str, str], int] = defaultdict(int)
     for (cat, code, _loc_id), qty in entered.items():
@@ -853,16 +890,26 @@ def confirm_pick(
             reservation_aware=True,
             exclude_reservations_of=holder,
         )
-        # Only speak of contention when reservations are actually the cause. A combo can also come
-        # up short here simply because the project does not hold that much, and saying "another
-        # request has claimed this" with `reserved = 0` would send somebody hunting for a competing
-        # request that does not exist. That case falls through to the per-row check below, which
-        # names the bin and the number - the more useful answer, and the one the picker can act on.
+        # Only speak of contention when reservations are the *whole* reason. A combo can also come up
+        # short because the project simply does not hold that much, and telling a picker "the units
+        # are on the shelf but they are spoken for" when half of them do not exist sends them
+        # hunting for a competing request that cannot explain the gap. The test is whether the entry
+        # would have fitted with the reservations removed: if on-hand alone covers it, the claim is
+        # the only obstacle and this is genuine contention. Otherwise it is (also) plain scarcity,
+        # and the per-row check below gives the better answer by naming the bin and the number.
         #
-        # Falling through is safe rather than a hole: with no reservations, free is exactly on-hand,
-        # so entering more than the combo has means at least one row was entered past its own
+        # Falling through is safe rather than a hole: entered exceeding on-hand means the rows named
+        # were collectively asked for more than they hold, so at least one was entered past its own
         # available units, which is precisely what that check catches.
-        contested = [s for s in contention.shortfalls if s.reserved > 0]
+        on_hand = {
+            combo: sum(row.quantity - (row.deficient_quantity or 0) for row in rows_for_combo)
+            for combo, rows_for_combo in contention.inventory_by_combo.items()
+        }
+        contested = [
+            s
+            for s in contention.shortfalls
+            if s.reserved > 0 and s.requested <= on_hand.get((s.hardware_category, s.product_code), 0)
+        ]
         if contested:
             blocked = "; ".join(
                 f"{s.hardware_category} {s.product_code}: {s.requested} entered but only {s.available} "
