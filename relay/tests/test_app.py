@@ -2,10 +2,12 @@
 verified from the frozen exe; here we cover the serve supervision, the shutdown sequence, the X-close
 decision, and the Api methods that reach the app."""
 
+import json
 import threading
+from datetime import datetime, timedelta, timezone
 
 from ucnexus_relay import app as appmod
-from ucnexus_relay import setup, ui
+from ucnexus_relay import setup, ui, updater
 
 
 def test_ensure_serve_noop_when_already_running(monkeypatch):
@@ -81,8 +83,6 @@ def test_api_shutdown_app_errors_when_not_in_app_mode(monkeypatch):
 
 
 def test_api_apply_update_stages_then_shuts_down_in_app_mode(monkeypatch):
-    import os
-
     from ucnexus_relay import updater
 
     a = appmod.RelayApp()
@@ -93,7 +93,6 @@ def test_api_apply_update_stages_then_shuts_down_in_app_mode(monkeypatch):
     # The staging sequence now lives in RelayApp.begin_update (the update poller runs the same one),
     # so the frozen guard is checked there too.
     monkeypatch.setattr(appmod.sys, "frozen", True, raising=False)
-    monkeypatch.setattr(os, "_exit", lambda code: None)  # neutralize the hard-exit fallback timer
     passed = {}
     monkeypatch.setattr(
         updater, "stage_update", lambda url, d, pid, target_build=None: passed.update(build=target_build) or {"ok": True}
@@ -103,6 +102,19 @@ def test_api_apply_update_stages_then_shuts_down_in_app_mode(monkeypatch):
     assert shut == [True]  # the app shut itself down so the helper can swap the unlocked exe
     assert a._updating is True  # marked as the update handoff, so a later teardown isn't a user cancel
     assert passed["build"] == "relay-v0.1.0-build.11"  # target build threaded through to the ledger
+    assert a._hard_exit_timer is not None  # the exit-anyway fallback is armed for a stuck GUI loop
+    a.cancel_hard_exit()  # and disarmed here, so it cannot fire into the rest of the suite
+
+
+def test_cancel_hard_exit_disarms_the_pending_timer():
+    a = appmod.RelayApp()
+    a._arm_hard_exit(delay=30.0)
+    timer = a._hard_exit_timer
+
+    a.cancel_hard_exit()
+
+    assert timer.finished.is_set()  # cancelled, so it can never reach os._exit
+    assert a._hard_exit_timer is None
 
 
 def test_api_apply_update_does_not_shut_down_on_a_failed_stage(monkeypatch):
@@ -243,17 +255,76 @@ def test_acquire_defers_when_it_loses_the_cold_start_race(monkeypatch):
     assert 7 in sent and (9, "z") in sent
 
 
-def test_cleanup_old_versions_keeps_running_drops_others(monkeypatch, tmp_path):
+def _installed_version(root, name: str):
+    d = root / name
+    d.mkdir()
+    (d / "ucnexus-relay.exe").write_bytes(b"exe")
+    return d
+
+
+def test_cleanup_old_versions_keeps_the_running_build_and_one_previous(monkeypatch, tmp_path):
     from ucnexus_relay import layout
 
     a = appmod.RelayApp()
     monkeypatch.setattr(a, "_install_dir", lambda: tmp_path)
-    for name in ("app-relay-v0.1.0-build.26", "app-relay-v0.1.0-build.27", "app-old"):
-        (tmp_path / name).mkdir()
+    for name in ("app-relay-v0.1.0-build.25", "app-relay-v0.1.0-build.26", "app-relay-v0.1.0-build.27"):
+        _installed_version(tmp_path, name)
+    (tmp_path / "app-old").mkdir()
     running = tmp_path / "app-relay-v0.1.0-build.27"
     monkeypatch.setattr(layout, "running_version_dir", lambda: running)
 
     a._cleanup_old_versions()
 
     remaining = sorted(p.name for p in tmp_path.glob("app-*"))
-    assert remaining == ["app-relay-v0.1.0-build.27"]  # kept the running version, dropped the rest
+    # 26 stays as the rollback target a failed update needs; 25 and the unversioned folder go
+    assert remaining == ["app-relay-v0.1.0-build.26", "app-relay-v0.1.0-build.27"]
+
+
+def test_cleanup_old_versions_is_skipped_while_an_update_is_in_flight(monkeypatch, tmp_path):
+    # #376: this runs in the app the update helper just relaunched, and that helper is executing FROM the
+    # previous version folder while it health-gates us. Deleting anything mid-update is the bug.
+    from ucnexus_relay import layout
+
+    a = appmod.RelayApp()
+    monkeypatch.setattr(a, "_install_dir", lambda: tmp_path)
+    for name in ("app-relay-v0.1.0-build.20", "app-relay-v0.1.0-build.36", "app-relay-v0.1.0-build.37"):
+        _installed_version(tmp_path, name)
+    monkeypatch.setattr(layout, "running_version_dir", lambda: tmp_path / "app-relay-v0.1.0-build.37")
+    (tmp_path / "update-state.json").write_text(
+        json.dumps(
+            {
+                "status": "applying",
+                "target_build": "relay-v0.1.0-build.37",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    a._cleanup_old_versions()
+
+    assert len(sorted(tmp_path.glob("app-*"))) == 3  # nothing touched, not even the genuinely stale build.20
+
+
+def test_cleanup_old_versions_runs_again_once_the_stuck_ledger_is_abandoned(monkeypatch, tmp_path):
+    # the in-flight guard must not become permanent: a helper that died without recording a result (#369)
+    # leaves the ledger pinned at "applying", and honouring that forever would end cleanup on that machine.
+    from ucnexus_relay import layout
+
+    a = appmod.RelayApp()
+    monkeypatch.setattr(a, "_install_dir", lambda: tmp_path)
+    for name in ("app-relay-v0.1.0-build.20", "app-relay-v0.1.0-build.36", "app-relay-v0.1.0-build.37"):
+        _installed_version(tmp_path, name)
+    monkeypatch.setattr(layout, "running_version_dir", lambda: tmp_path / "app-relay-v0.1.0-build.37")
+    stale = datetime.now(timezone.utc) - timedelta(seconds=updater.ABANDONED_AFTER_SECONDS + 60)
+    (tmp_path / "update-state.json").write_text(
+        json.dumps({"status": "applying", "target_build": "relay-v0.1.0-build.37", "updated_at": stale.isoformat()}),
+        encoding="utf-8",
+    )
+
+    a._cleanup_old_versions()
+
+    assert sorted(p.name for p in tmp_path.glob("app-*")) == [
+        "app-relay-v0.1.0-build.36",
+        "app-relay-v0.1.0-build.37",
+    ]

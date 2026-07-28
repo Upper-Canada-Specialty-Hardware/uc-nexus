@@ -152,10 +152,32 @@ function createReceiveData(quantityReceived: number) {
   };
 }
 
-function renderModal(extraMocks: MockedResponse[] = []) {
+// The relay reported as DOWN. Used to drive the real offline path rather than mocking past it: the
+// queued outcome only ever happens when the relay is unreachable, so a test that reports it connected
+// and just stubs a queued mutation result never touches the gate that decides whether a user can get
+// there at all (#376).
+function offlineRelayMock(): MockedResponse {
+  return {
+    request: { query: GET_RELAY_STATUS },
+    result: {
+      data: {
+        relayStatus: {
+          __typename: 'RelayStatus',
+          connected: false,
+          company: null,
+          build: null,
+          installId: null,
+        },
+      },
+    },
+    maxUsageCount: Number.POSITIVE_INFINITY,
+  };
+}
+
+function renderModal(extraMocks: MockedResponse[] = [], relay: MockedResponse = relayMock()) {
   const onClose = vi.fn();
   render(
-    <MockedProvider mocks={[relayMock(), warehousesMock(), ...extraMocks]}>
+    <MockedProvider mocks={[relay, warehousesMock(), ...extraMocks]}>
       <MemoryRouter>
         <ToastProvider>
           <ReceiveModal open onClose={onClose} poIds={['po-1']} />
@@ -171,11 +193,19 @@ function renderModal(extraMocks: MockedResponse[] = []) {
 // queries until the transition finishes
 const SLOW = { timeout: 5000 };
 
-// render + wait for the PO grid and the relay-connected chip (submit is gated on the relay)
+// render + wait for the PO grid and the relay-connected chip
 async function openModal(extraMocks: MockedResponse[] = []) {
   const result = renderModal(extraMocks);
   await screen.findByText('HG-100', undefined, SLOW);
   await screen.findByText('GP relay connected', undefined, SLOW);
+  return result;
+}
+
+// render + wait for the PO grid and the offline-relay warning
+async function openModalRelayOffline(extraMocks: MockedResponse[] = []) {
+  const result = renderModal(extraMocks, offlineRelayMock());
+  await screen.findByText('HG-100', undefined, SLOW);
+  await screen.findByText(/GP relay offline/, undefined, SLOW);
   return result;
 }
 
@@ -397,6 +427,45 @@ describe('ReceiveModal', () => {
     expect(screen.queryByText(/items added to inventory/)).toBeNull();
     expect(keys).toHaveLength(1);
     expect(keys[0]).toMatch(UUID_RE);
+  });
+
+  it('lets a receive be submitted while the GP relay is offline, and queues it', async () => {
+    // #376: the queued outcome above was unreachable in the running app. Complete Receive was disabled
+    // on !relayConnected - exactly the condition that produces a queued receipt - so the outbox path,
+    // its amber panel and this behaviour existed only under a mock. The relay state is advisory now:
+    // a warehouse user who has counted the hardware can record it, and it posts itself later.
+    const queuedMock: MockedResponse<Record<string, unknown>, CreateReceiveVars> = {
+      request: { query: CREATE_RECEIVE, variables: () => true },
+      result: {
+        data: {
+          createReceive: {
+            __typename: 'CreateReceiveResult',
+            queued: true,
+            outboxEntryId: 'outbox-9',
+            receiveRecord: null,
+          },
+        },
+      },
+    };
+    await openModalRelayOffline([poDetailsMock(), queuedMock]);
+
+    setReceiveQty('3');
+    fillLocation(0, 'A1', 'B2', 'C3');
+    expect(completeButton()).toBeEnabled(); // the gate that used to make this unreachable
+
+    await submitViaConfirm();
+
+    await screen.findByText(/Queued — the GP relay is offline/, undefined, SLOW);
+    expect(screen.queryByText(/items added to inventory/)).toBeNull();
+  });
+
+  it('still blocks a receive on the things that are genuinely invalid while the relay is offline', async () => {
+    // the relay going advisory must not weaken the real validation - an empty receive is still refused.
+    await openModalRelayOffline([poDetailsMock()]);
+
+    expect(completeButton()).toBeDisabled(); // nothing entered yet
+    setReceiveQty('3');
+    expect(completeButton()).toBeDisabled(); // put-away location still missing
   });
 
   it('blocks receiving a PO that is not GP-registered', async () => {
