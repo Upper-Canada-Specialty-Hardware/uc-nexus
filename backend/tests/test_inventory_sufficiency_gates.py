@@ -5,9 +5,11 @@ creation in #342 - this time as a *reservation*: creating a request gates on
 `on-hand - deficient - other requests' reservations` and writes its own claim. Accept is now a pure
 human gate that re-checks nothing, because the hardware is already this request's.
 
-Gate 2: warehouse approve_pull_request leaves the PR PENDING (not cancelled) when short. It still
-exists, and it is still what a PR-REPL replacement pull (which can hold no reservation) runs into.
-Both notify the PO with an INVENTORY_SHORTFALL signal carrying the shortfall detail.
+Gate 2 moved with it in #367. It used to be an approve-time refusal that left the pull PENDING; the
+deduction now happens at `confirm_pick`, so a pull that cannot be filled is *picked short* rather
+than blocked - what is on the shelf comes off, the pull stays In Progress and un-picked, and the
+remainder is entered later. Both gates still notify the PO with an INVENTORY_SHORTFALL signal
+carrying the shortfall detail, which is what the backfill loop hangs off.
 """
 
 import uuid
@@ -34,6 +36,7 @@ from app.models.shop_assembly import ShopAssemblyRequest
 from app.models.stock_item import StockItem
 from app.repositories import import_repository, shop_assembly_repository, warehouse_admin_repository
 from app.repositories import warehouse as warehouse_repository
+from tests.pick_helpers import pick_pull
 
 
 def _make_project(session) -> Project:
@@ -297,48 +300,57 @@ def test_gate1_accept_mints_pr_when_covered(db_session):
     assert pr.request_number == sar.request_number
 
 
-# --- gate 2: warehouse approve_pull_request --------------------------------------------------
+# --- gate 2: the warehouse pick (#367) ---------------------------------------------------------
 
 
-def test_gate2_short_leaves_pr_pending_and_notifies_po(db_session):
+def test_gate2_short_pick_keeps_the_pull_open_and_notifies_po(db_session):
+    """A pull that cannot be filled is no longer refused at approve - it is picked short.
+
+    The difference is real, not cosmetic. The old behaviour put back the one hinge that *was* there
+    and left the pull PENDING, so the warehouse had nothing to show for the trip; now the unit comes
+    off the shelf, the pull stays In Progress holding it, and the remainder is entered when the
+    backfill lands."""
     project = _make_project(db_session)
-    _seed_inventory(db_session, project.id, quantity=1)  # need 4, only 1 available
+    row = _seed_inventory(db_session, project.id, quantity=1)  # need 4, only 1 available
     pr = _make_pending_pr(db_session, project.id, needs=[("HINGE", "HG-100", 4)])
     db_session.flush()
 
-    returned_pr, outcome, notif, shortfalls = warehouse_repository.approve_pull_request(
-        db_session, pr.id, "warehouse-user"
-    )
+    result = pick_pull(db_session, pr.id, "warehouse-user")
 
-    assert outcome == "INSUFFICIENT"
-    # PR is left PENDING - blocked, not cancelled.
-    assert returned_pr.status == PullRequestStatus.PENDING
-    assert returned_pr.cancelled_at is None
-    # Exact shortfall returned to the approver.
-    assert len(shortfalls) == 1
-    assert (shortfalls[0].requested, shortfalls[0].available, shortfalls[0].short) == (4, 1, 3)
+    assert result.outcome == "SHORT"
+    # In Progress and un-picked: resumable, not blocked.
+    assert result.pull_request.status == PullRequestStatus.IN_PROGRESS
+    assert result.pull_request.picked_at is None
+    assert result.pull_request.cancelled_at is None
+    # What was there did come off the shelf.
+    assert row.quantity == 0
+    assert result.applied_quantity == 1
+    # Exact shortfall returned to the picker.
+    assert len(result.shortfalls) == 1
+    assert (result.shortfalls[0].requested, result.shortfalls[0].short) == (4, 3)
     # PO is notified for backfill.
-    assert notif is not None
-    assert notif.type == NotificationType.INVENTORY_SHORTFALL
+    assert result.notification is not None
+    assert result.notification.type == NotificationType.INVENTORY_SHORTFALL
     assert len(_po_shortfall_notifs(db_session, project.id)) == 1
 
 
-def test_gate2_sufficient_approves_and_deducts_fifo(db_session):
+def test_gate2_full_pick_stamps_picked_and_deducts_the_rows_dictated(db_session):
     project = _make_project(db_session)
     older = _seed_inventory(db_session, project.id, quantity=2, received_at=datetime(2020, 1, 1))
     newer = _seed_inventory(db_session, project.id, quantity=5, received_at=datetime(2024, 1, 1))
     pr = _make_pending_pr(db_session, project.id, needs=[("HINGE", "HG-100", 3)])
     db_session.flush()
 
-    returned_pr, outcome, notif, shortfalls = warehouse_repository.approve_pull_request(
-        db_session, pr.id, "warehouse-user"
-    )
+    result = pick_pull(db_session, pr.id, "warehouse-user")
 
-    assert outcome == "APPROVED"
-    assert returned_pr.status == PullRequestStatus.IN_PROGRESS
-    assert notif is None
-    assert shortfalls == []
-    # FIFO: the older row is drained first (2), then 1 off the newer row.
+    assert result.outcome == "PICKED"
+    assert result.pull_request.status == PullRequestStatus.IN_PROGRESS
+    assert result.pull_request.picked_at is not None
+    assert result.pull_request.picked_by == "warehouse-user"
+    assert result.notification is None
+    assert result.shortfalls == []
+    # The helper dictates oldest-first, so this is the same split the old FIFO produced - the point
+    # being that the split is now something a caller chose, not something the system decided.
     assert older.quantity == 0
     assert newer.quantity == 4
     assert _po_shortfall_notifs(db_session, project.id) == []

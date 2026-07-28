@@ -43,6 +43,7 @@ from app.repositories import (
     warehouse_admin_repository,
 )
 from app.repositories import warehouse as warehouse_repository
+from tests.pick_helpers import pick_pull
 
 # --- fixtures / helpers ------------------------------------------------------------------------
 
@@ -386,12 +387,11 @@ def test_approval_consumes_the_requests_own_claim_and_deducts(db_session):
     db_session.flush()
 
     pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == sar.request_number))
-    _, outcome, _, shortfalls = warehouse_repository.approve_pull_request(db_session, pr.id, "warehouse")
-    db_session.flush()
+    result = pick_pull(db_session, pr.id, "warehouse")
 
-    assert outcome == "APPROVED"
-    assert shortfalls == []
-    assert il.quantity == 0  # deducted FIFO, unchanged behaviour
+    assert result.outcome == "PICKED"
+    assert result.shortfalls == []
+    assert il.quantity == 0  # the dictated row gave up its units
     assert _reserved_total(db_session, project.id) == 0  # the claim became the deduction
 
 
@@ -404,17 +404,19 @@ def test_approval_consumes_a_shipping_out_claim(db_session):
     db_session.flush()
 
     pr = db_session.scalar(select(PullRequest).where(PullRequest.id == req.pull_request_id))
-    _, outcome, _, _ = warehouse_repository.approve_pull_request(db_session, pr.id, "warehouse")
-    db_session.flush()
+    result = pick_pull(db_session, pr.id, "warehouse")
 
-    assert outcome == "APPROVED"
+    assert result.outcome == "PICKED"
     assert il.quantity == 0
     assert _reserved_total(db_session, project.id) == 0
 
 
-def test_a_blocked_approval_keeps_the_claim(db_session):
-    """Stock written off under a live claim: the pull is short, stays PENDING, and must NOT hand its
-    hardware to whoever asks next - so the reservation survives the failed attempt."""
+def test_a_short_pick_keeps_the_un_picked_part_of_the_claim(db_session):
+    """Stock written off under a live claim: the pick comes up short, and the units it could not
+    find must NOT be handed to whoever asks next - so that part of the reservation survives.
+
+    Since #367 the consumption is per combo and partial (it used to be all-or-nothing at approve),
+    so what remains claimed is exactly what remains owed."""
     project = _make_project(db_session)
     il = _seed_inventory(db_session, project.id, quantity=3)
     sar = _finalize_sar(db_session, project, qty=3)["shop_assembly_request"]
@@ -426,21 +428,30 @@ def test_a_blocked_approval_keeps_the_claim(db_session):
     db_session.flush()
 
     pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == sar.request_number))
-    _, outcome, notif, shortfalls = warehouse_repository.approve_pull_request(db_session, pr.id, "warehouse")
-    db_session.flush()
+    result = pick_pull(db_session, pr.id, "warehouse")
 
-    assert outcome == "INSUFFICIENT"
-    assert shortfalls[0].short == 2
-    assert notif is not None
-    assert _reserved_total(db_session, project.id) == 3
+    assert result.outcome == "SHORT"
+    assert result.shortfalls[0].short == 2
+    assert result.notification is not None
+    # 1 was picked and consumed; the 2 it could not find stay claimed for this request.
+    assert _reserved_total(db_session, project.id) == 2
 
 
-def test_a_replacement_pull_holds_no_claim_but_respects_everyone_elses(db_session):
-    """A PR-REPL pull is unreserved by nature - nobody can reserve for a deficiency that has not
-    happened yet - so it keeps the reactive check. What it must not do is eat stock another request
-    has already claimed."""
+def test_a_pull_with_no_claim_picks_what_is_physically_there(db_session):
+    """The picker's count wins over the reservation book (#367), and this is the case where that is
+    visible.
+
+    An unreserved pull - a PR-REPL replacement that could only partly reserve, or a pull from the
+    #342 backfill population - used to be refused at approve when the stock it wanted was claimed by
+    somebody else. The pick has no such gate: the ceiling is the row's own available units, because
+    the person confirming is holding the hardware and telling the system what left the shelf.
+
+    The consequence is deliberate and worth stating: the *other* request's claim can end up
+    over-committed, and that request discovers it as a short pick on its own pull, with the same PO
+    backfill signal. Reservations still gate request creation, which is where competing demand
+    belongs."""
     project = _make_project(db_session)
-    _seed_inventory(db_session, project.id, quantity=5)
+    il = _seed_inventory(db_session, project.id, quantity=5)
     _finalize_sar(db_session, project, qty=4)  # claims 4 of the 5
     db_session.flush()
 
@@ -469,12 +480,13 @@ def test_a_replacement_pull_holds_no_claim_but_respects_everyone_elses(db_sessio
 
     assert warehouse_repository.find_reservation_holder(db_session, repl) is None
 
-    _, outcome, _, shortfalls = warehouse_repository.approve_pull_request(db_session, repl.id, "warehouse")
-    db_session.flush()
+    result = pick_pull(db_session, repl.id, "warehouse")
 
-    assert outcome == "INSUFFICIENT"
-    assert (shortfalls[0].available, shortfalls[0].reserved) == (1, 4)
-    # The other request's claim is untouched by the blocked replacement pull.
+    assert result.outcome == "PICKED"
+    assert il.quantity == 3
+    # The other request's claim rows are untouched - this pull holds none of its own to consume - so
+    # its 4 units are now claimed against 3 on the shelf. `get_project_availability` floors that at
+    # zero, the same way it already does for stock written off under a live claim.
     assert _reserved_total(db_session, project.id) == 4
 
 
@@ -507,10 +519,9 @@ def test_a_replacement_pull_approves_out_of_what_is_genuinely_free(db_session):
     )
     db_session.flush()
 
-    _, outcome, _, _ = warehouse_repository.approve_pull_request(db_session, repl.id, "warehouse")
-    db_session.flush()
+    result = pick_pull(db_session, repl.id, "warehouse")
 
-    assert outcome == "APPROVED"
+    assert result.outcome == "PICKED"
     assert il.quantity == 3
     assert _reserved_total(db_session, project.id) == 3  # the other request still holds its 3
 
@@ -889,7 +900,7 @@ def test_shop_assembly_openings_still_reach_the_bench_after_a_reserved_pull(db_s
     shop_assembly_repository.accept_shop_assembly_request(db_session, sar.id, "acceptor")
     db_session.flush()
     pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == sar.request_number))
-    warehouse_repository.approve_pull_request(db_session, pr.id, "warehouse")
+    pick_pull(db_session, pr.id, "warehouse")
     db_session.flush()
     warehouse_repository.complete_pull_request(db_session, pr.id)
     db_session.flush()
@@ -931,9 +942,13 @@ def test_self_coverage_excludes_only_that_request_not_the_other_source(db_sessio
     ) == {("HINGE", "HG-100"): 3}
 
 
-def test_a_pull_is_refused_when_the_other_request_type_is_holding_the_stock(db_session):
-    """End to end: a shop-assembly pull approved while a shipping-out request holds part of the
-    shelf. With the exclusion written correctly the pull sees only what is genuinely free."""
+def test_the_cross_type_exclusion_is_what_the_creation_gate_reads(db_session):
+    """End to end: a shop-assembly request created while a shipping-out request holds part of the
+    shelf sees only what is genuinely free.
+
+    This used to be asserted through pull approval, which was the gate. Since #367 the pull is not
+    gated on an aggregate at all - the picker names rows - so the assertion moved to the arithmetic
+    itself, which is where the cross-type guarantee actually lives."""
     project = _make_project(db_session)
     il = _seed_inventory(db_session, project.id, quantity=5)
     sar = _finalize_sar(db_session, project, qty=3)["shop_assembly_request"]
@@ -946,12 +961,16 @@ def test_a_pull_is_refused_when_the_other_request_type_is_holding_the_stock(db_s
 
     shop_assembly_repository.accept_shop_assembly_request(db_session, sar.id, "acceptor")
     db_session.flush()
-    pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == sar.request_number))
+    result = warehouse_repository.check_inventory_sufficiency(
+        db_session,
+        project.id,
+        [("HINGE", "HG-100", 3)],
+        reservation_aware=True,
+        exclude_reservations_of=(ReservationSource.SHOP_ASSEMBLY_REQUEST, sar.id),
+    )
 
-    _, outcome, _, shortfalls = warehouse_repository.approve_pull_request(db_session, pr.id, "warehouse")
-    db_session.flush()
-
-    assert outcome == "INSUFFICIENT"
+    assert not result.sufficient
+    shortfalls = result.shortfalls
     assert [(s.product_code, s.available, s.short, s.reserved) for s in shortfalls] == [("HG-100", 2, 1, 2)]
     assert il.quantity == 5  # nothing deducted
 
@@ -977,10 +996,9 @@ def test_an_unreserved_holder_that_comes_up_short_is_not_an_integrity_error(db_s
     db_session.flush()
 
     pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == sar.request_number))
-    _, outcome, _, _ = warehouse_repository.approve_pull_request(db_session, pr.id, "warehouse")
-    db_session.flush()
+    result = pick_pull(db_session, pr.id, "warehouse")
 
-    assert outcome == "INSUFFICIENT"
+    assert result.outcome == "SHORT"
     integrity_rows = [
         row
         for row in db_session.scalars(select(InventoryAuditLog).where(InventoryAuditLog.entity_id == pr.id)).all()
@@ -1005,10 +1023,9 @@ def test_a_holder_that_really_does_hold_a_claim_still_records_the_integrity_erro
     db_session.flush()
 
     pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == sar.request_number))
-    _, outcome, _, _ = warehouse_repository.approve_pull_request(db_session, pr.id, "warehouse")
-    db_session.flush()
+    result = pick_pull(db_session, pr.id, "warehouse")
 
-    assert outcome == "INSUFFICIENT"
+    assert result.outcome == "SHORT"
     integrity_rows = [
         row
         for row in db_session.scalars(select(InventoryAuditLog).where(InventoryAuditLog.entity_id == pr.id)).all()

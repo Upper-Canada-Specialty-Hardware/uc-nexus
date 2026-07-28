@@ -47,6 +47,7 @@ from app.models.shop_assembly import ShopAssemblyOpening
 from app.models.stock_item import StockItem
 from app.repositories import import_repository, shop_assembly_repository, warehouse_admin_repository
 from app.repositories import warehouse as warehouse_repository
+from tests.pick_helpers import pick_pull
 
 # --- helpers -----------------------------------------------------------------------------------
 
@@ -130,7 +131,7 @@ def _approved_pull(session, project, *, qty=2, code="HG-100", opening_number="A0
     shop_assembly_repository.accept_shop_assembly_request(session, sar.id, "acceptor")
     session.flush()
     pr = session.scalar(select(PullRequest).where(PullRequest.request_number == sar.request_number))
-    warehouse_repository.approve_pull_request(session, pr.id, "picker")
+    pick_pull(session, pr.id, "picker")
     session.flush()
     openings = list(
         session.scalars(
@@ -572,7 +573,7 @@ def test_cancel_refuses_a_pending_or_already_cancelled_pull(db_session):
         warehouse_repository.cancel_pull_request(db_session, pr.id, "warehouse", None)
     assert "not been approved" in str(exc.value)
 
-    warehouse_repository.approve_pull_request(db_session, pr.id, "picker")
+    pick_pull(db_session, pr.id, "picker")
     db_session.flush()
     warehouse_repository.cancel_pull_request(db_session, pr.id, "warehouse", None)
     db_session.flush()
@@ -639,7 +640,7 @@ def test_a_cancelled_request_can_be_re_accepted_and_re_pulled(db_session):
     assert len(live) == 1
     assert live[0].id != first_pr.id
 
-    warehouse_repository.approve_pull_request(db_session, live[0].id, "picker")
+    pick_pull(db_session, live[0].id, "picker")
     db_session.flush()
     assert live[0].status == PullRequestStatus.IN_PROGRESS
     assert _on_hand(db_session, project.id) == 16
@@ -696,7 +697,7 @@ def test_cancelling_a_replacement_pull_restocks_without_reservations(db_session)
         select(PullRequest).where(PullRequest.request_number.like("PR-REPL-%"), PullRequest.project_id == project.id)
     )
     assert repl is not None
-    warehouse_repository.approve_pull_request(db_session, repl.id, "picker")
+    pick_pull(db_session, repl.id, "picker")
     db_session.flush()
     on_hand_after_repl_pull = _on_hand(db_session, project.id)
 
@@ -745,7 +746,7 @@ def test_cancelling_a_shipping_out_pull_returns_its_request_and_reserves_loose_l
 
     shipping_repository.accept_shipping_out_request(db_session, sor.id, "acceptor")
     db_session.flush()
-    warehouse_repository.approve_pull_request(db_session, sor.pull_request_id, "picker")
+    pick_pull(db_session, sor.pull_request_id, "picker")
     db_session.flush()
     pr_id = sor.pull_request_id
     assert _on_hand(db_session, project.id) == 17

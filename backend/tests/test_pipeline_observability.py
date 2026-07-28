@@ -47,7 +47,8 @@ from app.models.shop_assembly import ShopAssemblyOpening, ShopAssemblyOpeningIte
 from app.models.stock_item import StockItem
 from app.repositories import import_repository, shop_assembly_repository, warehouse_admin_repository
 from app.repositories import warehouse as warehouse_repository
-from app.schemas.enums import ApproveOutcome, PipelineStage
+from app.schemas.enums import PickOutcome, PipelineStage
+from tests.pick_helpers import pick_pull
 
 # --- helpers -----------------------------------------------------------------------------------
 
@@ -248,7 +249,7 @@ def test_pipeline_walks_a_request_from_requested_to_shipped(db_session):
     assert s.accepted_by == "acceptor"
 
     # 3. Approved but unstaged: stock is deducted, no cart is built.
-    warehouse_repository.approve_pull_request(db_session, pr.id, "picker")
+    pick_pull(db_session, pr.id, "picker")
     db_session.flush()
     openings = _openings(db_session, pr)
     assert _summary(db_session, sar).stage == "PULLING"
@@ -342,7 +343,7 @@ def test_request_stage_is_always_the_minimum_of_its_opening_stages(db_session):
     _seed_inventory(db_session, project.id, quantity=40)
     sar = _request(db_session, project, leaves=(1, 2))
     pr = _accept(db_session, sar)
-    warehouse_repository.approve_pull_request(db_session, pr.id, "picker")
+    pick_pull(db_session, pr.id, "picker")
     db_session.flush()
     openings = _openings(db_session, pr)
 
@@ -377,7 +378,7 @@ def test_unassigning_an_in_progress_leaf_still_reads_in_progress(db_session):
     _seed_inventory(db_session, project.id, quantity=20)
     sar = _request(db_session, project, leaves=(1,))
     pr = _accept(db_session, sar)
-    warehouse_repository.approve_pull_request(db_session, pr.id, "picker")
+    pick_pull(db_session, pr.id, "picker")
     db_session.flush()
     opening = _openings(db_session, pr)[0]
     warehouse_repository.stage_pull_openings(db_session, pr.id, [opening.id], "picker")
@@ -422,7 +423,7 @@ def test_cancelled_pull_shows_as_cancelled_with_its_history(db_session):
     _seed_inventory(db_session, project.id, quantity=20)
     sar = _request(db_session, project)
     pr = _accept(db_session, sar)
-    warehouse_repository.approve_pull_request(db_session, pr.id, "picker")
+    pick_pull(db_session, pr.id, "picker")
     db_session.flush()
     warehouse_repository.cancel_pull_request(db_session, pr.id, "supervisor", "raised on the wrong project")
     db_session.flush()
@@ -448,7 +449,7 @@ def test_re_accepting_after_a_cancel_shows_the_live_pull_and_keeps_the_history(d
     _seed_inventory(db_session, project.id, quantity=20)
     sar = _request(db_session, project)
     first = _accept(db_session, sar)
-    warehouse_repository.approve_pull_request(db_session, first.id, "picker")
+    pick_pull(db_session, first.id, "picker")
     db_session.flush()
     warehouse_repository.cancel_pull_request(db_session, first.id, "supervisor", None)
     db_session.flush()
@@ -485,7 +486,7 @@ def test_awaiting_replacement_and_arrived_after_ship_are_both_visible(db_session
     _seed_inventory(db_session, project.id, quantity=20)
     sar = _request(db_session, project, leaves=(1,), qty=2)
     pr = _accept(db_session, sar)
-    warehouse_repository.approve_pull_request(db_session, pr.id, "picker")
+    pick_pull(db_session, pr.id, "picker")
     db_session.flush()
     opening = _openings(db_session, pr)[0]
     warehouse_repository.stage_pull_openings(db_session, pr.id, [opening.id], "picker")
@@ -632,7 +633,7 @@ def test_staging_notifies_the_manager_audience_once_per_confirmation(db_session)
     _seed_inventory(db_session, project.id, quantity=40)
     sar = _request(db_session, project, leaves=(1, 2, 3))
     pr = _accept(db_session, sar)
-    warehouse_repository.approve_pull_request(db_session, pr.id, "picker")
+    pick_pull(db_session, pr.id, "picker")
     db_session.flush()
     openings = _openings(db_session, pr)
 
@@ -657,7 +658,7 @@ def test_staging_the_last_opening_announces_once_not_twice(db_session):
     _seed_inventory(db_session, project.id, quantity=40)
     sar = _request(db_session, project, leaves=(1, 2))
     pr = _accept(db_session, sar)
-    warehouse_repository.approve_pull_request(db_session, pr.id, "picker")
+    pick_pull(db_session, pr.id, "picker")
     db_session.flush()
     openings = _openings(db_session, pr)
 
@@ -676,7 +677,7 @@ def test_re_staging_an_already_staged_opening_announces_nothing(db_session):
     _seed_inventory(db_session, project.id, quantity=40)
     sar = _request(db_session, project, leaves=(1, 2))
     pr = _accept(db_session, sar)
-    warehouse_repository.approve_pull_request(db_session, pr.id, "picker")
+    pick_pull(db_session, pr.id, "picker")
     db_session.flush()
     openings = _openings(db_session, pr)
 
@@ -695,7 +696,7 @@ def test_completing_an_unstaged_pull_directly_still_announces(db_session):
     _seed_inventory(db_session, project.id, quantity=40)
     sar = _request(db_session, project, leaves=(1, 2))
     pr = _accept(db_session, sar)
-    warehouse_repository.approve_pull_request(db_session, pr.id, "picker")
+    pick_pull(db_session, pr.id, "picker")
     db_session.flush()
 
     warehouse_repository.complete_pull_request(db_session, pr.id, completed_by="picker")
@@ -711,7 +712,7 @@ def _leaf_with_deficiency(db_session, project, *, complete=False, assign_to=("us
     """One leaf with a unit condemned at the bench, so a PR-REPL pull exists for it."""
     sar = _request(db_session, project, leaves=(1,), qty=2)
     pr = _accept(db_session, sar)
-    warehouse_repository.approve_pull_request(db_session, pr.id, "picker")
+    pick_pull(db_session, pr.id, "picker")
     db_session.flush()
     opening = _openings(db_session, pr)[0]
     warehouse_repository.stage_pull_openings(db_session, pr.id, [opening.id], "picker")
@@ -960,12 +961,15 @@ def test_a_stock_pool_receive_never_unblocks_a_project_replacement(db_session):
 # --- dead state --------------------------------------------------------------------------------
 
 
-def test_approve_outcome_has_no_cancelled_value(db_session):
-    """#344's one enum deletion. `approve_pull_request` returns "APPROVED" or "INSUFFICIENT" and
-    nothing else since #224, so CANCELLED was unreachable. It is a GraphQL-only enum and was never
-    persisted, so removing it needed no migration - a *cancelled pull* is
+def test_pick_outcome_replaced_approve_outcome(db_session):
+    """#344 deleted ApproveOutcome.CANCELLED as dead state; #367 retired the whole enum.
+
+    `confirm_pick` returns "PICKED" or "SHORT", and neither maps onto the old pair: INSUFFICIENT
+    meant "nothing happened, the pull is blocked and still PENDING", SHORT means "some of it
+    happened, the pull is In Progress and holds real deducted stock". Both were GraphQL-only and
+    never persisted, so the swap needed no migration - a *cancelled pull* is
     `PullRequestStatus.CANCELLED`, a different enum on a real column, and very much alive."""
-    assert {v.name for v in ApproveOutcome} == {"APPROVED", "INSUFFICIENT"}
+    assert {v.name for v in PickOutcome} == {"PICKED", "SHORT"}
     assert PullRequestStatus.CANCELLED.value == "CANCELLED"
 
 
@@ -978,7 +982,7 @@ def test_pull_status_partial_is_derived_and_never_persisted(db_session):
     _seed_inventory(db_session, project.id, quantity=40)
     sar = _request(db_session, project, leaves=(1, 2))
     pr = _accept(db_session, sar)
-    warehouse_repository.approve_pull_request(db_session, pr.id, "picker")
+    pick_pull(db_session, pr.id, "picker")
     db_session.flush()
     openings = _openings(db_session, pr)
     warehouse_repository.stage_pull_openings(db_session, pr.id, [openings[0].id], "picker")
@@ -1004,7 +1008,7 @@ def test_assembly_status_values_are_all_reachable(db_session):
     _seed_inventory(db_session, project.id, quantity=20)
     sar = _request(db_session, project, leaves=(1,), qty=1)
     pr = _accept(db_session, sar)
-    warehouse_repository.approve_pull_request(db_session, pr.id, "picker")
+    pick_pull(db_session, pr.id, "picker")
     db_session.flush()
     opening = _openings(db_session, pr)[0]
     assert opening.assembly_status == AssemblyStatus.PENDING
@@ -1035,7 +1039,7 @@ def test_assembly_status_values_are_all_reachable(db_session):
 def _build_and_complete(db_session, sar, *, assign_to=("user_1", "Ana")):
     """Walk one single-leaf request all the way to an assembled OpeningItem."""
     pr = _accept(db_session, sar)
-    warehouse_repository.approve_pull_request(db_session, pr.id, "picker")
+    pick_pull(db_session, pr.id, "picker")
     db_session.flush()
     opening = _openings(db_session, pr)[0]
     warehouse_repository.stage_pull_openings(db_session, pr.id, [opening.id], "picker")
