@@ -6,12 +6,17 @@ long-lived Bearer secret became a hash in migration 067 (#353 PR C): storing it 
 enrolled relay is orphaned with no recovery path, because the plaintext exists nowhere else.
 
 `encrypt_secret` / `decrypt_secret` survive only to read pre-067 rows, which
-`relay_repository.authenticate_secret` upgrades to a hash in place on their next handshake. Once no
-`secret_encrypted` remains, `RELAY_SECRET_ENC_KEY` is dead weight and can be deleted:
+`relay_repository.authenticate_secret` upgrades to a hash in place on their next handshake. That
+retirement is finished (#382): the gating count reached 0, and `RELAY_SECRET_ENC_KEY` is set in no
+environment any more - not on Railway, not in `.env.example`.
 
-    SELECT count(*) FROM relay_installs WHERE secret_encrypted IS NOT NULL;  -- 0 means it is unused
+    SELECT count(*) FROM relay_installs WHERE secret_encrypted IS NOT NULL;  -- 0
 
-No install enrolled or adopted from 067 on reads that key for anything."""
+With no key present `has_encryption_key` is False and the legacy decrypt path is skipped outright, so
+in practice nothing below `hash_token` runs outside the tests. A legacy row also cannot come back:
+`set_install_secret` is the only writer of `secret_encrypted` and it NULLs the column on every enroll
+and adopt. These three functions are kept only so that a row restored from an old backup could still
+be read by setting the variable again - deleting them (and the column) is a separate job."""
 
 import hashlib
 import os
