@@ -25,6 +25,7 @@ import UploadFileIcon from '@mui/icons-material/UploadFile';
 import CloudUploadIcon from '@mui/icons-material/CloudUpload';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import { useLazyQuery, useMutation, useQuery } from '@apollo/client/react';
+import { CombinedGraphQLErrors } from '@apollo/client/errors';
 import { useWizard } from '../../contexts/WizardContext';
 import { useToast } from '../../components/Toast';
 import ConfirmDialog from '../../components/ConfirmDialog';
@@ -63,6 +64,13 @@ import ReconciliationStep from './ReconciliationStep';
 import ClassificationStep from './ClassificationStep';
 import PurchaseOrdersStep from './PurchaseOrdersStep';
 import ShopAssemblyStep from './ShopAssemblyStep';
+import {
+  autoAssign,
+  buildAllocatedDrafts,
+  leafCoverage,
+  leafKey,
+  type Allocation,
+} from './allocation';
 import ShippingPRsStep from './ShippingPRsStep';
 
 // ---- Local Types ----
@@ -74,6 +82,17 @@ type StepId = 'upload' | 'purpose' | 'openings' | 'reconciliation'
 interface StepDescriptor {
   id: StepId;
   label: string;
+}
+
+/**
+ * Did the finalize bounce because stock was not available? On a shop-assembly finalize that can only
+ * be a race now - the allocation never asks for more than was free when it was built - so it is the
+ * signal to refetch and rebuild rather than an error to show and leave the user staring at.
+ */
+function isInventoryShortfall(err: unknown): boolean {
+  return (
+    CombinedGraphQLErrors.is(err) && err.errors?.[0]?.extensions?.code === 'INVENTORY_SHORTFALL'
+  );
 }
 
 /** The slice of GET_OPENING_ITEMS the shipping purpose reads (#335). */
@@ -155,6 +174,14 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
   const [siteShopClassifications, setSiteShopClassifications] = useState<Map<string, string>>(new Map());
   const [orderAsValues, setOrderAsValues] = useState<Map<string, string>>(new Map());
   const [sarRequestNumber, setSarRequestNumber] = useState('');
+  // Shop-assembly allocation: how much of each leaf's owed hardware this request actually claims,
+  // and which leaves are being sent. Held here rather than inside the step so stepping back and
+  // forward does not silently re-run auto-assign over the user's manual moves.
+  const [sarAllocation, setSarAllocation] = useState<Allocation>(new Map());
+  const [includedLeafKeys, setIncludedLeafKeys] = useState<Set<string>>(new Set());
+  // The server refused the finalize because availability moved under the allocation (#342 race).
+  // The step says so and shows the rebuilt numbers rather than letting the user resend the stale set.
+  const [allocationStale, setAllocationStale] = useState(false);
   const [shippingPRDrafts, setShippingPRDrafts] = useState<ShippingPRDraft[]>([]);
   // The user has been shown the "incomplete - awaiting replacement" warning on a leaf and chose to
   // ship it anyway (#341). The backend refuses a flagged leaf without this, so the flag is the
@@ -508,6 +535,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
     data: availabilityData,
     loading: availabilityLoading,
     error: availabilityError,
+    refetch: refetchAvailability,
   } = useQuery<{ projectInventoryAvailability: InventoryAvailabilityRow[] }>(
     GET_PROJECT_INVENTORY_AVAILABILITY,
     {
@@ -586,16 +614,28 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
       });
   }, [purpose, parsed, selectedOpenings, classifications]);
 
-  // What this wizard is about to claim, per combo. Shop assembly claims every checklist line;
-  // shipping claims only its LOOSE lines - an assembled leaf left fungible inventory when it was
-  // built and ships as itself (docs/HARDWARE_IDENTITY_LIFECYCLE.md), so it reserves nothing.
+  // The exact payload the shop-assembly finalize sends: the included, non-empty leaves with both
+  // numbers per line. Derived from the same drafts the allocator step renders, so what the user was
+  // held to is by construction what gets submitted.
+  const allocatedShopAssemblyDrafts = useMemo(
+    () =>
+      purpose === 'assembly'
+        ? buildAllocatedDrafts(shopAssemblyOpeningDrafts, sarAllocation, includedLeafKeys)
+        : [],
+    [purpose, shopAssemblyOpeningDrafts, sarAllocation, includedLeafKeys],
+  );
+
+  // What this wizard is about to claim, per combo. Shop assembly claims the ALLOCATED quantities -
+  // a short line reserves nothing, which is the whole point of the allocator. Shipping claims only
+  // its LOOSE lines: an assembled leaf left fungible inventory when it was built and ships as itself
+  // (docs/HARDWARE_IDENTITY_LIFECYCLE.md), so it reserves nothing.
   const requestedByCombo = useMemo(() => {
     const map = new Map<string, number>();
     if (purpose === 'assembly') {
-      for (const draft of shopAssemblyOpeningDrafts) {
+      for (const draft of allocatedShopAssemblyDrafts) {
         for (const item of draft.items) {
           const key = itemGroupKey({ hardware_category: item.hardwareCategory, product_code: item.productCode });
-          map.set(key, (map.get(key) ?? 0) + item.quantity);
+          map.set(key, (map.get(key) ?? 0) + item.allocatedQuantity);
         }
       }
     } else if (purpose === 'shipping') {
@@ -608,7 +648,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
       }
     }
     return map;
-  }, [purpose, shopAssemblyOpeningDrafts, effectiveShippingPRDrafts]);
+  }, [purpose, allocatedShopAssemblyDrafts, effectiveShippingPRDrafts]);
 
   const availabilityShortfalls = useMemo(
     // While the lookup is still in flight an empty map would read as "nothing available" and block
@@ -707,6 +747,9 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
     setClassifications(new Map());
     setSiteShopClassifications(new Map());
     setSarRequestNumber('');
+    setSarAllocation(new Map());
+    setIncludedLeafKeys(new Set());
+    setAllocationStale(false);
     setShippingPRDrafts([]);
     setSelectedReconItems(new Set());
     setMutationError(null);
@@ -1017,10 +1060,12 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
       replaceSchedule: canStartFromLatest && !hydratedFromPersisted,
       // Only ever true after the user confirmed the warning dialog on a flagged leaf (#341).
       acknowledgeIncompleteLeaves: acknowledgedIncompleteLeaves,
-      // The exact work units the wizard gated on (#342), not a second derivation of them.
-      shopAssemblyOpenings: purpose === 'assembly' ? shopAssemblyOpeningDrafts : null,
+      // The exact work units the wizard gated on (#342), not a second derivation of them - now
+      // carrying the allocated quantity per line, and already minus the excluded and auto-dropped
+      // leaves.
+      shopAssemblyOpenings: purpose === 'assembly' ? allocatedShopAssemblyDrafts : null,
     };
-  }, [parsed, project.id, purpose, vendorGroups, vendorPOInfo, selectedVendors, unitCostOverrides, orderAsValues, classifications, siteShopClassifications, effectiveShippingPRDrafts, shopAssemblyOpeningDrafts, sarRequestNumber, canStartFromLatest, hydratedFromPersisted, acknowledgedIncompleteLeaves]);
+  }, [parsed, project.id, purpose, vendorGroups, vendorPOInfo, selectedVendors, unitCostOverrides, orderAsValues, classifications, siteShopClassifications, effectiveShippingPRDrafts, allocatedShopAssemblyDrafts, sarRequestNumber, canStartFromLatest, hydratedFromPersisted, acknowledgedIncompleteLeaves]);
 
   const handleFinalize = useCallback(async () => {
     setConfirmOpen(false);
@@ -1035,6 +1080,7 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
       const data = result.data?.finalizeImportSession as FinalizeResultData;
       setFinalizeResult(data);
       setFinalizeLoading(false);
+      setAllocationStale(false);
 
       showToast('Import session finalized successfully!', 'success');
       setPostSuccessOpen(true);
@@ -1042,8 +1088,33 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
       const message = err instanceof Error ? err.message : 'An unknown error occurred';
       setMutationError(message);
       setFinalizeLoading(false);
+      // INVENTORY_SHORTFALL on a shop-assembly finalize now means one thing only: availability moved
+      // between building the allocation and sending it, because the allocation itself never asks for
+      // more than was free when it was built. Refetch, rebuild from the current numbers and send the
+      // user back to review - resending the stale allocation would just bounce again.
+      if (purpose === 'assembly' && isInventoryShortfall(err)) {
+        setAllocationStale(true);
+        const refreshed = await refetchAvailability().catch(() => null);
+        const fresh = new Map<string, number>();
+        for (const row of refreshed?.data?.projectInventoryAvailability ?? []) {
+          fresh.set(
+            itemGroupKey({ hardware_category: row.hardwareCategory, product_code: row.productCode }),
+            row.availableQuantity,
+          );
+        }
+        const next = autoAssign(shopAssemblyOpeningDrafts, fresh);
+        setSarAllocation(next);
+        setIncludedLeafKeys(
+          new Set(
+            shopAssemblyOpeningDrafts
+              .filter((draft) => leafCoverage(next, draft) !== 'NONE')
+              .map((draft) => leafKey(draft)),
+          ),
+        );
+        setActiveStepId('shop-assembly');
+      }
     }
-  }, [buildFinalizeInput, finalizeImport, showToast]);
+  }, [buildFinalizeInput, finalizeImport, showToast, purpose, refetchAvailability, shopAssemblyOpeningDrafts]);
 
   const handlePostAction = useCallback(
     (action: 'po' | 'inventory' | 'home') => {
@@ -1422,11 +1493,14 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
               sarRequestNumber={sarRequestNumber}
               onSarNumberChange={setSarRequestNumber}
               openingDrafts={shopAssemblyOpeningDrafts}
-              requestedByCombo={requestedByCombo}
               availabilityByCombo={availabilityByCombo}
-              availabilityShortfalls={availabilityShortfalls}
+              allocation={sarAllocation}
+              onAllocationChange={setSarAllocation}
+              includedLeafKeys={includedLeafKeys}
+              onIncludedLeafKeysChange={setIncludedLeafKeys}
               availabilityLoading={availabilityLoading && availabilityData === undefined}
               availabilityError={availabilityError !== undefined}
+              allocationStale={allocationStale}
               onNext={handleNext}
               onBack={handleBack}
             />

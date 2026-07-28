@@ -473,6 +473,7 @@ def shop_assembly_opening_item_to_type(item) -> ShopAssemblyOpeningItem:
         hardware_category=item.hardware_category,
         product_code=item.product_code,
         quantity=item.quantity,
+        allocated_quantity=item.allocated_quantity,
         # Plain columns on the row the caller already loaded (#340) - reading them triggers no load.
         installed_quantity=item.installed_quantity,
         deficient_quantity=item.deficient_quantity,
@@ -561,11 +562,14 @@ def assembly_pipeline_summary_to_type(row) -> AssemblyPipelineSummary:
         completed_opening_count=row.completed_opening_count,
         shipped_opening_count=row.shipped_opening_count,
         planned_unit_count=row.planned_unit_count,
+        allocated_unit_count=row.allocated_unit_count,
+        short_unit_count=row.short_unit_count,
         installed_unit_count=row.installed_unit_count,
         deficient_unit_count=row.deficient_unit_count,
         replacement_pending_unit_count=row.replacement_pending_unit_count,
         awaiting_replacement_opening_count=row.awaiting_replacement_opening_count,
         replacement_after_ship_opening_count=row.replacement_after_ship_opening_count,
+        short_opening_count=row.short_opening_count,
         stage=PipelineStage(row.stage),
     )
 
@@ -590,6 +594,8 @@ def pipeline_opening_to_type(row) -> PipelineOpening:
         assembly_status=row.assembly_status,
         completed_at=row.completed_at,
         planned_unit_count=row.planned_unit_count,
+        allocated_unit_count=row.allocated_unit_count,
+        short_unit_count=row.short_unit_count,
         installed_unit_count=row.installed_unit_count,
         deficient_unit_count=row.deficient_unit_count,
         replacement_pending_unit_count=row.replacement_pending_unit_count,

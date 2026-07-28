@@ -371,6 +371,44 @@ def _gate_on_available_inventory(
         )
 
 
+def _allocated_quantity(item_input: dict) -> int:
+    """What a checklist line actually claims out of inventory.
+
+    A missing / null `allocated_quantity` means **fully allocated**. That default is what keeps every
+    caller that predates the allocator - tests, scripts, a browser tab loaded before the deploy - on
+    the old all-or-nothing behaviour: it asks for the whole line, and the availability gate bounces
+    the finalize if the whole line does not fit. The allocator step always sends the number.
+    """
+    allocated = item_input.get("allocated_quantity")
+    return item_input["quantity"] if allocated is None else allocated
+
+
+def _validate_leaf_allocation(opening_number: str, sa_opening_input: dict) -> None:
+    """Per-line bounds, and the one leaf-level rule the allocator enforces client-side.
+
+    A leaf with nothing allocated on any line is an empty cart: nothing to pull, nothing to stage,
+    nothing to assemble, and `complete_opening` would refuse it at the far end for having zero
+    installed units. The wizard drops such leaves before submitting, so reaching here means a race
+    (availability collapsed between load and send) or a non-UI caller - both of which are better
+    refused than turned into a work unit that can never be finished.
+    """
+    items = sa_opening_input.get("items", [])
+    for item in items:
+        allocated = _allocated_quantity(item)
+        if allocated < 0 or allocated > item["quantity"]:
+            raise ValidationError(
+                f"{_opening_leaf_label(opening_number, sa_opening_input.get('leaf'))} {item['product_code']}: "
+                f"allocated quantity {allocated} must be between 0 and the {item['quantity']} unit(s) owed.",
+                field="allocated_quantity",
+            )
+    if items and all(_allocated_quantity(item) == 0 for item in items):
+        raise ValidationError(
+            f"{_opening_leaf_label(opening_number, sa_opening_input.get('leaf'))} has no hardware allocated to it, "
+            "so there is nothing to pull for it. Drop it from the request, or wait for stock.",
+            field="allocated_quantity",
+        )
+
+
 def _live_shop_assembly_requests(session: Session, project_id: uuid.UUID) -> list[SARModel]:
     """Shop-assembly requests in a project that are still in flight: PENDING, or APPROVED while the
     pull they minted has not been worked (PENDING). Once the warehouse approves the pull, inventory
@@ -489,7 +527,13 @@ def _handle_schedule_replacement(
                 sar.project_id,
                 ReservationSource.SHOP_ASSEMBLY_REQUEST,
                 sar.id,
-                [(item.hardware_category, item.product_code, item.quantity) for o in sar.openings for item in o.items],
+                # Allocated, not owed: the claim it held was minted from the allocation, and rebuilding
+                # from `quantity` would inflate it into a claim on hardware this request never had.
+                [
+                    (item.hardware_category, item.product_code, item.allocated_quantity)
+                    for o in sar.openings
+                    for item in o.items
+                ],
             )
         sar.integrity_note = SCHEDULE_CHANGED_DROPPED_NOTE if lost else SCHEDULE_CHANGED_NOTE
 
@@ -911,34 +955,46 @@ def finalize_import_session(
                 ).all()
             }
 
-        # Deficiency guard (#341). A leaf whose source checklist still has condemned-and-unreplaced
-        # units - or units whose replacement has arrived but is not fitted yet - is physically short
-        # of the hardware list it ships under. The business decision is warn + confirm, never silent
-        # and never a hard block: deliberate short-shipping is a real workflow (reallocation exists
-        # for it), but it has to be a decision someone made. So it is refused here unless the caller
-        # says explicitly that it knows, and the wizard's confirm is what sets that flag.
+        # Incomplete-leaf guard (#341). A leaf can be physically short of the hardware list it ships
+        # under for two unrelated reasons, and the shipper needs to see both because the remedies are
+        # not the same:
+        #   - **awaiting replacement** - a unit arrived and failed. A replacement pull already exists;
+        #     waiting is a real option.
+        #   - **never pulled** - the unit was never available when the request was sent, so it was
+        #     allocated 0 and no pull was ever raised for it. Waiting does nothing; that gap is
+        #     closed by purchasing and, later, by reallocation.
+        # The business decision is warn + confirm, never silent and never a hard block: deliberate
+        # short-shipping is a real workflow, it just has to be a decision someone made. Refused here
+        # unless the caller says explicitly that it knows, and the wizard's confirm sets that flag.
         #
-        # One grouped scalar aggregate for every referenced leaf, not a per-line count.
+        # Two grouped scalar aggregates for every referenced leaf, not a per-line count.
         if referenced_oi_ids and not acknowledge_incomplete_leaves:
             from app.repositories import shop_assembly_repository
 
-            flagged_leaves = shop_assembly_repository.get_awaiting_replacement_quantities(
-                session, list(referenced_oi_ids)
-            )
-            if flagged_leaves:
+            oi_ids = list(referenced_oi_ids)
+            flagged_leaves = shop_assembly_repository.get_awaiting_replacement_quantities(session, oi_ids)
+            never_pulled = shop_assembly_repository.get_never_pulled_quantities(session, oi_ids)
+            if flagged_leaves or never_pulled:
                 # Name every flagged leaf, not just the first: the user is being asked to make a
-                # decision, and they can only make it once if they can see the whole list.
-                detail = ", ".join(
-                    sorted(
-                        f"{_leaf_label(opening_items_by_id[oi_id])} ({qty} unit(s) awaiting replacement)"
-                        for oi_id, qty in flagged_leaves.items()
-                        if oi_id in opening_items_by_id
-                    )
-                )
+                # decision, and they can only make it once if they can see the whole list. Each leaf
+                # carries whichever of the two counts is non-zero, so "waiting will fix this" and
+                # "waiting will not" are distinguishable per leaf rather than lumped together.
+                labels = []
+                for oi_id in set(flagged_leaves) | set(never_pulled):
+                    oi = opening_items_by_id.get(oi_id)
+                    if oi is None:
+                        continue
+                    parts = []
+                    if oi_id in flagged_leaves:
+                        parts.append(f"{flagged_leaves[oi_id]} unit(s) awaiting replacement")
+                    if oi_id in never_pulled:
+                        parts.append(f"{never_pulled[oi_id]} unit(s) never pulled")
+                    labels.append(f"{_leaf_label(oi)} ({', '.join(parts)})")
+                detail = ", ".join(sorted(labels))
                 raise ValidationError(
-                    "These assembled leaves are incomplete - hardware on them is still awaiting a "
-                    f"replacement: {detail}. Confirm you want to ship them short, or wait for the "
-                    "replacements to be installed.",
+                    "These assembled leaves are incomplete - hardware they should carry is either "
+                    f"awaiting a replacement or was never pulled: {detail}. Confirm you want to ship "
+                    "them short, or wait for the hardware.",
                     field="opening_item_id",
                 )
 
@@ -1143,6 +1199,7 @@ def finalize_import_session(
                     "so it cannot be sent to shop assembly.",
                     field="shop_assembly_openings",
                 )
+            _validate_leaf_allocation(opening_number, sa_opening_input)
             opening_id_by_number[opening_number] = opening_id
             opening_leaf_specs.append((opening_number, opening_id, sa_opening_input.get("leaf")))
 
@@ -1194,12 +1251,21 @@ def finalize_import_session(
                 field="shop_assembly_openings",
             )
 
-        # Reservation gate: every checklist line claims fungible stock, so the whole request must fit
-        # inside what is available right now.
+        # Reservation gate, now over the ALLOCATION rather than the demand. The request no longer has
+        # to fit the schedule's full bill of hardware - the requester already decided what to claim
+        # and what to send short - so what is gated is exactly what will be reserved and pulled.
+        #
+        # `_gate_on_available_inventory` itself is unchanged and still refuses the whole finalize.
+        # It is not the shortfall gate any more; it is the **race** gate. The allocator built its
+        # numbers from a snapshot of availability, and if that snapshot went stale between load and
+        # send (another request took the stock, an admin wrote it off), reserving anyway would write
+        # a claim on hardware that is not there. The wizard catches the refusal, refetches
+        # availability, re-runs auto-assign and asks the user to look again.
         sar_needs = [
-            (item["hardware_category"], item["product_code"], item["quantity"])
+            (item["hardware_category"], item["product_code"], _allocated_quantity(item))
             for sa_opening_input in sar_openings_input
             for item in sa_opening_input.get("items", [])
+            if _allocated_quantity(item) > 0
         ]
         _gate_on_available_inventory(
             session,
@@ -1208,6 +1274,20 @@ def finalize_import_session(
             label="shop-assembly request",
             request_number=sar_request_number,
         )
+        # Everything the schedule owed but the allocation could not cover. Short combos are out of
+        # available stock by construction - the allocator only leaves a line short once the pool for
+        # that combo is exhausted - so this is always a genuine purchasing signal, not a claim
+        # somebody else is holding. It fires *after* the request is created, unlike the refusal path
+        # in app/schemas/imports.py, which stays for the race above.
+        sar_short_by_combo: dict[tuple[str, str], tuple[int, int]] = {}
+        for sa_opening_input in sar_openings_input:
+            for item in sa_opening_input.get("items", []):
+                short = item["quantity"] - _allocated_quantity(item)
+                if short <= 0:
+                    continue
+                key = (item["hardware_category"], item["product_code"])
+                owed, missing = sar_short_by_combo.get(key, (0, 0))
+                sar_short_by_combo[key] = (owed + item["quantity"], missing + short)
 
         sar = SARModel(
             id=uuid.uuid4(),
@@ -1247,12 +1327,17 @@ def finalize_import_session(
                         shop_assembly_opening_id=sa_opening.id,
                         hardware_category=item_input["hardware_category"],
                         product_code=item_input["product_code"],
+                        # Owed stays the schedule's number even when nothing could be claimed for it.
+                        # The checklist is what the leaf takes; the allocation is what turned up.
                         quantity=item_input["quantity"],
+                        allocated_quantity=_allocated_quantity(item_input),
                     )
                 )
 
         # The request holds its claim from here until the warehouse approves the pull that spends it
-        # (#342). One row per combo across the whole request, not per opening.
+        # (#342). One row per combo across the whole request, not per opening - and over the
+        # allocated quantities, so the pull the accept mints asks for exactly what is reserved and
+        # `approve_pull_request` keeps its all-or-nothing property with no warehouse-side change.
         warehouse_repository.create_reservations(
             session,
             project.id,
@@ -1260,6 +1345,26 @@ def finalize_import_session(
             sar.id,
             sar_needs,
         )
+
+        if sar_short_by_combo:
+            from app.services import notification_service
+
+            notification_service.notify_po_shortfall(
+                session,
+                project_id=project.id,
+                request_number=sar_request_number,
+                shortfalls=[
+                    warehouse_repository.Shortfall(
+                        hardware_category=cat,
+                        product_code=code,
+                        requested=owed,
+                        available=owed - missing,
+                        short=missing,
+                        reserved=0,
+                    )
+                    for (cat, code), (owed, missing) in sorted(sar_short_by_combo.items())
+                ],
+            )
 
     session.flush()
 

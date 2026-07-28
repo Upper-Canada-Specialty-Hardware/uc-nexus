@@ -77,17 +77,24 @@ type ShopAssemblyOpeningItem {
   shop_assembly_opening_id: ID!
   hardware_category: String!
   product_code: String!
-  # Units pulled for this leaf - the plan.
+  # Owed: what the hardware schedule says this leaf takes. Never reduced by scarcity.
   quantity: Int!
-  # Persisted assembly progress (#340). Remaining = quantity - installed - deficient, derived on the
-  # client; completion is refused while any line still has remaining > 0.
+  # Allocated: what the requester could claim out of available inventory when the request was sent,
+  # and therefore what is reserved, pulled and physically arrives on the cart. 0 <= allocated <=
+  # quantity, and 0 is legal on a line whose leaf is covered by its other lines.
+  # Short = quantity - allocated_quantity, derived here and everywhere else - never stored, because
+  # what a leaf is still missing is answered by the current schedule against what is on the leaf.
+  allocated_quantity: Int!
+  # Persisted assembly progress (#340). Remaining = allocated - installed - deficient, derived on the
+  # client; completion is refused while any line still has remaining > 0. Short units sit outside
+  # that sum - they were never pulled, so the bench has nothing to disposition.
   installed_quantity: Int!
   deficient_quantity: Int!
   # Units whose replacement pull has completed but which are not on the leaf yet (#341). Non-zero
   # only on a COMPLETED opening: while the leaf is still on the bench an arrived replacement just
   # lowers deficient_quantity and becomes remaining work again. On a finished leaf that would break
   # the completion invariant, so the unit moves deficient -> replacement_pending instead and
-  # installed + deficient + replacement_pending stays equal to quantity.
+  # installed + deficient + replacement_pending stays equal to allocated_quantity.
   replacement_pending_quantity: Int!
 }
 
@@ -178,7 +185,12 @@ type PipelineOpening {
   assigned_to: String
   assembly_status: AssemblyStatus!
   completed_at: DateTime
+  # Owed by the schedule vs what the request could claim out of inventory. The three progress
+  # counters partition allocated_unit_count; short_unit_count is the rest and was never pulled, so
+  # no work at the bench can account for it and the leaf completes without it.
   planned_unit_count: Int!
+  allocated_unit_count: Int!
+  short_unit_count: Int!
   installed_unit_count: Int!
   deficient_unit_count: Int!
   replacement_pending_unit_count: Int!
@@ -229,11 +241,17 @@ type AssemblyPipelineSummary {
   completed_opening_count: Int!
   shipped_opening_count: Int!
   planned_unit_count: Int!
+  # Sent short: a request can be legitimately complete and still not have delivered its full bill of
+  # hardware, and nothing else on this row would say so.
+  allocated_unit_count: Int!
+  short_unit_count: Int!
   installed_unit_count: Int!
   deficient_unit_count: Int!
   replacement_pending_unit_count: Int!
   awaiting_replacement_opening_count: Int!
   replacement_after_ship_opening_count: Int!
+  # Openings carrying at least one line that was never fully pulled.
+  short_opening_count: Int!
   stage: PipelineStage!
 }
 

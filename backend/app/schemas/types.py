@@ -576,11 +576,19 @@ class ShopAssemblyOpeningItem:
     shop_assembly_opening_id: strawberry.ID
     hardware_category: str
     product_code: str
+    # Owed: what the hardware schedule says this door leaf takes.
     quantity: int
+    # What the requester actually claimed out of available inventory when the request was sent, and
+    # therefore what physically arrives on the cart. Short is `quantity - allocatedQuantity`, derived
+    # on the client exactly as it is on the server - it is never stored, because the authority on
+    # what a leaf is still missing is the current schedule against what is on the leaf, not this
+    # request's record of what it managed to send.
+    allocated_quantity: int = 0
     # Persisted assembly progress (#340). installed_quantity is what the assembler has recorded
     # fitting to the leaf; deficient_quantity is what has already been condemned and replaced.
-    # Remaining is quantity - installed - deficient, derived on the client - completion is refused
-    # while any line still has remaining > 0.
+    # Remaining is allocated - installed - deficient, derived on the client - completion is refused
+    # while any line still has remaining > 0. Short units are outside that sum: they were never
+    # pulled, so there is nothing on the bench to disposition.
     installed_quantity: int = 0
     deficient_quantity: int = 0
     # Units whose replacement has arrived but is not on the leaf yet (#341). Non-zero only on a
@@ -668,7 +676,11 @@ class PipelineOpening:
     assigned_to: str | None
     assembly_status: AssemblyStatus
     completed_at: datetime | None
+    # Owed by the schedule vs what the request could claim. The progress counters below partition
+    # `allocated_unit_count`; `short_unit_count` is the rest and was never pulled.
     planned_unit_count: int
+    allocated_unit_count: int
+    short_unit_count: int
     installed_unit_count: int
     deficient_unit_count: int
     replacement_pending_unit_count: int
@@ -728,11 +740,16 @@ class AssemblyPipelineSummary:
     completed_opening_count: int
     shipped_opening_count: int
     planned_unit_count: int
+    # Sent short: a request can be legitimately complete and still not have delivered its full bill
+    # of hardware, and nothing else on this row would say so.
+    allocated_unit_count: int
+    short_unit_count: int
     installed_unit_count: int
     deficient_unit_count: int
     replacement_pending_unit_count: int
     awaiting_replacement_opening_count: int
     replacement_after_ship_opening_count: int
+    short_opening_count: int
     # The stage of the least-advanced opening: what the request is waiting on, not its best news.
     stage: PipelineStage
 

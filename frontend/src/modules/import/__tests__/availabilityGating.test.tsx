@@ -1,4 +1,5 @@
-import { render, screen, fireEvent } from '@testing-library/react';
+import { useState } from 'react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import ShopAssemblyStep from '../ShopAssemblyStep';
 import ShippingPRsStep from '../ShippingPRsStep';
 import type {
@@ -7,15 +8,16 @@ import type {
   ShippingPRDraft,
 } from '../types';
 import { computeAvailabilityShortfalls } from '../types';
+import type { Allocation } from '../allocation';
 
 /**
- * Reservation-aware availability gating in Start a Task (#342).
+ * Reservation-aware availability gating in Start a Task (#342), and the allocator that replaced the
+ * all-or-nothing half of it.
  *
- * Creating a shop-assembly or shipping-out request RESERVES the hardware it needs, so the server
- * refuses a selection that does not fit `on-hand - deficient - other requests' reservations`. The
- * wizard applies the same numbers and blocks before submission - this is the last screen where
- * refining the selection is cheap, and a bounced finalize tells the user nothing they can act on
- * without starting over.
+ * Creating a shipping-out request still RESERVES what it needs and is still refused whole if it does
+ * not fit. Shop assembly is not: the requester assigns what is available to leaves, partially covered
+ * leaves stay in the request, and the send/don't-send call is theirs. Both wizards apply the same
+ * numbers the server does, because this is the last screen where refining is cheap.
  */
 
 function availability(rows: Partial<InventoryAvailabilityRow>[]): Map<string, InventoryAvailabilityRow> {
@@ -63,7 +65,7 @@ describe('computeAvailabilityShortfalls', () => {
   });
 });
 
-// ---- shop assembly step ----
+// ---- shop assembly step (the allocator) ----
 
 const SA_DRAFTS = [
   {
@@ -71,65 +73,123 @@ const SA_DRAFTS = [
     leaf: 1,
     items: [{ hardwareCategory: 'HINGE', productCode: 'HG-100', quantity: 4 }],
   },
+  {
+    openingNumber: 'A02',
+    leaf: 1,
+    items: [{ hardwareCategory: 'HINGE', productCode: 'HG-100', quantity: 4 }],
+  },
 ];
 
-function renderShopAssembly(overrides: Record<string, unknown> = {}) {
-  const onNext = vi.fn();
-  render(
+/**
+ * The step is controlled - the wizard owns the allocation so it survives a step change - so the
+ * harness has to own it too. Rendering it with a frozen allocation would make every assertion about
+ * moving hardware between leaves a no-op that still passed.
+ */
+function Harness({ drafts, ...props }: { drafts: typeof SA_DRAFTS } & Record<string, unknown>) {
+  const [allocation, setAllocation] = useState<Allocation>(new Map());
+  const [included, setIncluded] = useState<Set<string>>(new Set());
+  return (
     <ShopAssemblyStep
       sarRequestNumber="SA-1"
       onSarNumberChange={vi.fn()}
-      openingDrafts={SA_DRAFTS}
-      requestedByCombo={new Map([['HINGE|HG-100', 4]])}
+      openingDrafts={drafts}
       availabilityByCombo={availability([{ onHandQuantity: 10, availableQuantity: 10 }])}
-      availabilityShortfalls={[]}
+      allocation={allocation}
+      onAllocationChange={setAllocation}
+      includedLeafKeys={included}
+      onIncludedLeafKeysChange={setIncluded}
       availabilityLoading={false}
       availabilityError={false}
-      onNext={onNext}
+      allocationStale={false}
+      onNext={vi.fn()}
       onBack={vi.fn()}
-      {...overrides}
-    />,
+      {...props}
+    />
   );
-  return { onNext };
+}
+
+function renderShopAssembly(overrides: Record<string, unknown> = {}) {
+  render(<Harness drafts={SA_DRAFTS} {...overrides} />);
 }
 
 const nextButton = () => screen.getByRole('button', { name: 'Next' });
+const leafCard = (opening: string) =>
+  screen.getByText(opening, { exact: false }).closest('.MuiPaper-root')!;
 
-describe('ShopAssemblyStep availability gating', () => {
-  it('shows what the request would reserve against what is available', () => {
+describe('ShopAssemblyStep allocator', () => {
+  it('fills leaves in schedule order until the pool runs out', () => {
+    // 6 hinges, two leaves wanting 4 each: the first leaf is whole, the second gets the remainder.
+    // Whole leaves first is the point - half a leaf's hardware assembles nothing, and the leaf still
+    // occupies a cart and a bench either way.
+    renderShopAssembly({
+      availabilityByCombo: availability([{ onHandQuantity: 6, availableQuantity: 6 }]),
+    });
+    expect(leafCard('A01')).toHaveTextContent('4 of 4 allocated');
+    expect(leafCard('A01')).toHaveTextContent('Fully covered');
+    expect(leafCard('A02')).toHaveTextContent('2 of 4 allocated');
+    expect(leafCard('A02')).toHaveTextContent('Partial');
+    expect(leafCard('A02')).toHaveTextContent('2 short');
+  });
+
+  it('does NOT block on a shortfall - sending short is the requester decision', () => {
+    // The whole point of the slice: the old gate refused the request outright, so one leaf short of
+    // one hinge held up every leaf behind it.
+    renderShopAssembly({
+      availabilityByCombo: availability([{ onHandQuantity: 6, availableQuantity: 6 }]),
+    });
+    expect(nextButton()).toBeEnabled();
+    expect(screen.getByText(/2 unit\(s\) short of what the schedule calls for/)).toBeInTheDocument();
+  });
+
+  it('auto-drops a leaf nothing could be allocated to and leaves it out of the request', () => {
+    // An empty cart has nothing to pull, stage or assemble, and the server refuses one too.
+    renderShopAssembly({
+      availabilityByCombo: availability([{ onHandQuantity: 4, availableQuantity: 4 }]),
+    });
+    expect(leafCard('A02')).toHaveTextContent('auto-dropped');
+    expect(screen.getByText(/1 of 2 being sent/)).toBeInTheDocument();
+    // Still sendable: the covered leaf goes on its own.
+    expect(nextButton()).toBeEnabled();
+  });
+
+  it('frees units for a later leaf when an earlier one gives them back', () => {
+    renderShopAssembly({
+      availabilityByCombo: availability([{ onHandQuantity: 6, availableQuantity: 6 }]),
+    });
+    const minus = within(leafCard('A01')).getByRole('button', { name: 'Remove one HG-100' });
+    fireEvent.click(minus);
+    fireEvent.click(minus);
+    expect(leafCard('A01')).toHaveTextContent('2 of 4 allocated');
+    // The two freed hinges are now assignable on A02, which was capped at 2 a moment ago.
+    const plus = within(leafCard('A02')).getByRole('button', { name: 'Add one HG-100' });
+    fireEvent.click(plus);
+    fireEvent.click(plus);
+    expect(leafCard('A02')).toHaveTextContent('4 of 4 allocated');
+  });
+
+  it('returns an excluded leaf allocation to the pool', () => {
+    renderShopAssembly({
+      availabilityByCombo: availability([{ onHandQuantity: 6, availableQuantity: 6 }]),
+    });
+    fireEvent.click(within(leafCard('A01')).getByRole('switch', { name: /Include A01/ }));
+    // A01 is out, so the summary is A02 alone and the 4 hinges it was holding are assignable again.
+    expect(screen.getByText(/1 of 2 being sent/)).toBeInTheDocument();
+    const plus = within(leafCard('A02')).getByRole('button', { name: 'Add one HG-100' });
+    fireEvent.click(plus);
+    fireEvent.click(plus);
+    expect(leafCard('A02')).toHaveTextContent('4 of 4 allocated');
+  });
+
+  it('shows owed against available per combo', () => {
     renderShopAssembly({
       availabilityByCombo: availability([
         { onHandQuantity: 10, reservedQuantity: 3, availableQuantity: 7 },
       ]),
     });
     expect(screen.getByText('Hardware this request would reserve')).toBeInTheDocument();
-    const row = screen.getByText('HG-100').closest('tr')!;
-    expect(row).toHaveTextContent('4'); // needed
+    const row = screen.getAllByText('HG-100')[0].closest('tr')!;
+    expect(row).toHaveTextContent('8'); // owed across both leaves
     expect(row).toHaveTextContent('7'); // available
-    expect(row).toHaveTextContent('3'); // reserved elsewhere
-    expect(nextButton()).toBeEnabled();
-  });
-
-  it('blocks the step and names the short combo when the selection does not fit', () => {
-    renderShopAssembly({
-      availabilityByCombo: availability([
-        { onHandQuantity: 10, reservedQuantity: 8, availableQuantity: 2 },
-      ]),
-      availabilityShortfalls: [
-        {
-          hardwareCategory: 'HINGE',
-          productCode: 'HG-100',
-          requested: 4,
-          available: 2,
-          reserved: 8,
-          short: 2,
-        },
-      ],
-    });
-    expect(nextButton()).toBeDisabled();
-    expect(screen.getByText(/HINGE HG-100: need 4, 2 available/)).toBeInTheDocument();
-    // The distinction that matters: the stock is here, another request has it.
-    expect(screen.getByText(/8 reserved by other requests/)).toBeInTheDocument();
   });
 
   it('blocks while the availability lookup is still in flight', () => {
@@ -147,9 +207,20 @@ describe('ShopAssemblyStep availability gating', () => {
 
   it('blocks a request with no work units at all', () => {
     // A zero-opening request is refused server-side too (#342); catching it here saves the round trip.
-    renderShopAssembly({ openingDrafts: [], requestedByCombo: new Map() });
+    renderShopAssembly({ drafts: [] });
     expect(nextButton()).toBeDisabled();
     expect(screen.getByText(/nothing to send to shop assembly/i)).toBeInTheDocument();
+  });
+
+  it('blocks when every leaf was auto-dropped - there is no request to make', () => {
+    renderShopAssembly({ availabilityByCombo: availability([{ availableQuantity: 0 }]) });
+    expect(nextButton()).toBeDisabled();
+    expect(screen.getByText(/0 of 2 being sent/)).toBeInTheDocument();
+  });
+
+  it('says the allocation was rebuilt after a race, rather than silently changing the numbers', () => {
+    renderShopAssembly({ allocationStale: true });
+    expect(screen.getByText(/Available inventory changed/)).toBeInTheDocument();
   });
 });
 

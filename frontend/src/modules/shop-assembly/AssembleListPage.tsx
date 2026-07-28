@@ -33,7 +33,10 @@ interface AssembleOpeningItem {
   shopAssemblyOpeningId: string;
   hardwareCategory: string;
   productCode: string;
+  // Owed by the schedule vs pulled for the bench. The three progress buckets partition
+  // `allocatedQuantity`; `quantity - allocatedQuantity` was never pulled and is not outstanding work.
   quantity: number;
+  allocatedQuantity: number;
   installedQuantity: number;
   deficientQuantity: number;
   // Arrived-but-not-yet-fitted replacement units (#341): the third bucket a line is partitioned
@@ -283,6 +286,7 @@ export default function AssembleListPage() {
                               <TableRow>
                                 <TableCell>Product Code</TableCell>
                                 <TableCell>Hardware Category</TableCell>
+                                <TableCell align="right">Owed</TableCell>
                                 <TableCell align="right">Pulled</TableCell>
                                 <TableCell align="right">Installed</TableCell>
                                 <TableCell align="right">Deficient</TableCell>
@@ -294,6 +298,18 @@ export default function AssembleListPage() {
                                   <TableCell>{item.productCode}</TableCell>
                                   <TableCell>{item.hardwareCategory}</TableCell>
                                   <TableCell align="right">{item.quantity}</TableCell>
+                                  <TableCell align="right">
+                                    {item.allocatedQuantity}
+                                    {item.quantity > item.allocatedQuantity && (
+                                      <Chip
+                                        size="small"
+                                        variant="outlined"
+                                        color="warning"
+                                        label={`${item.quantity - item.allocatedQuantity} never pulled`}
+                                        sx={{ ml: 0.5 }}
+                                      />
+                                    )}
+                                  </TableCell>
                                   <TableCell align="right">{item.installedQuantity}</TableCell>
                                   <TableCell align="right">{item.deficientQuantity}</TableCell>
                                 </TableRow>

@@ -24,10 +24,12 @@ from app.models.enums import ReservationSource
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.inventory_reservation import InventoryReservation as InventoryReservationModel
 
-# The FK column each source discriminator writes to / filters on.
+# The FK column each source discriminator writes to / filters on. A REPLACEMENT_PULL claim is held
+# by the PR-REPL pull itself, because a deficiency has no request behind it (#342 follow-up).
 _SOURCE_COLUMN = {
     ReservationSource.SHOP_ASSEMBLY_REQUEST: InventoryReservationModel.shop_assembly_request_id,
     ReservationSource.SHIPPING_OUT_REQUEST: InventoryReservationModel.shipping_out_request_id,
+    ReservationSource.REPLACEMENT_PULL: InventoryReservationModel.pull_request_id,
 }
 
 
@@ -176,6 +178,43 @@ def get_project_availability(session: Session, project_id: uuid.UUID) -> list[di
     return result
 
 
+def get_available_quantities(
+    session: Session,
+    project_id: uuid.UUID,
+    combos: Iterable[tuple[str, str]],
+    *,
+    lock: bool = False,
+) -> dict[tuple[str, str], int]:
+    """Free stock per combo: `on-hand - deficient - every active reservation`, floored at 0.
+
+    The same arithmetic `check_inventory_sufficiency` applies, exposed as a number rather than a
+    pass/fail, because the replacement-reservation paths do not ask "does all of it fit" - they ask
+    "how much of it can I claim right now" and take whatever that is. **No self-exclusion**: a
+    reservation the caller already holds is stock it has already claimed, so counting it here is what
+    stops a top-up from claiming the same units twice.
+
+    `lock=True` takes `SELECT ... FOR UPDATE` on the inventory rows, so a mint that reads this number
+    and writes a claim against it serialises with any concurrent one.
+    """
+    pairs = list(combos)
+    if not pairs:
+        return {}
+
+    inv_stmt = select(InventoryLocationModel).where(
+        InventoryLocationModel.project_id == project_id,
+        _combo_filter(pairs, InventoryLocationModel.hardware_category, InventoryLocationModel.product_code),
+    )
+    if lock:
+        inv_stmt = inv_stmt.order_by(InventoryLocationModel.id).with_for_update()
+    on_hand: dict[tuple[str, str], int] = {}
+    for il in session.scalars(inv_stmt).all():
+        key = (il.hardware_category, il.product_code)
+        on_hand[key] = on_hand.get(key, 0) + il.quantity - (il.deficient_quantity or 0)
+
+    reserved = get_reserved_quantities(session, project_id, pairs)
+    return {key: max(0, on_hand.get(key, 0) - reserved.get(key, 0)) for key in pairs}
+
+
 def create_reservations(
     session: Session,
     project_id: uuid.UUID,
@@ -201,21 +240,39 @@ def create_reservations(
 
     created: list[InventoryReservationModel] = []
     for (cat, code), qty in sorted(totals.items()):
-        row = InventoryReservationModel(
-            id=uuid.uuid4(),
-            project_id=project_id,
-            hardware_category=cat,
-            product_code=code,
-            quantity=qty,
-            source=source,
-            shop_assembly_request_id=(request_id if source is ReservationSource.SHOP_ASSEMBLY_REQUEST else None),
-            shipping_out_request_id=(request_id if source is ReservationSource.SHIPPING_OUT_REQUEST else None),
-        )
+        row = _new_reservation(project_id, source, request_id, cat, code, qty)
         session.add(row)
         created.append(row)
     if created:
         session.flush()
     return created
+
+
+def _new_reservation(
+    project_id: uuid.UUID,
+    source: ReservationSource,
+    holder_id: uuid.UUID,
+    hardware_category: str,
+    product_code: str,
+    quantity: int,
+) -> InventoryReservationModel:
+    """One reservation row, with the holder written to the single FK its `source` requires.
+
+    The check constraint (`ck_inventory_reservations_source_matches_request`) refuses any other
+    combination, so this is the only place that has to know which column goes with which
+    discriminator.
+    """
+    return InventoryReservationModel(
+        id=uuid.uuid4(),
+        project_id=project_id,
+        hardware_category=hardware_category,
+        product_code=product_code,
+        quantity=quantity,
+        source=source,
+        shop_assembly_request_id=(holder_id if source is ReservationSource.SHOP_ASSEMBLY_REQUEST else None),
+        shipping_out_request_id=(holder_id if source is ReservationSource.SHIPPING_OUT_REQUEST else None),
+        pull_request_id=(holder_id if source is ReservationSource.REPLACEMENT_PULL else None),
+    )
 
 
 def release_reservations(session: Session, source: ReservationSource, request_id: uuid.UUID) -> int:
@@ -233,6 +290,7 @@ def release_reservations(session: Session, source: ReservationSource, request_id
     | Pull approval that comes up short        | **no release** - the pull stays blocked, holding  |
     | Re-upload drops the request's openings    | release, by rebuilding from what survived         |
     | Re-upload leaves the request empty       | auto-reject, which releases                       |
+    | Discard a PENDING replacement pull       | release - the pull is hard-deleted, so is its claim |
 
     **Reopen deliberately does not release.** A reopen undoes the *accept*, not the *creation*: the
     request goes back to PENDING and is still a live claim on stock, exactly as it was between
@@ -253,3 +311,120 @@ def release_reservations(session: Session, source: ReservationSource, request_id
     )
     session.flush()
     return int(result.rowcount or 0)
+
+
+def reserve_for_replacement_pull(
+    session: Session,
+    pull_request_id: uuid.UUID,
+    project_id: uuid.UUID,
+    hardware_category: str,
+    product_code: str,
+    wanted: int,
+) -> int:
+    """Claim up to `wanted` more units of one combo for a PR-REPL pull. Returns what it claimed.
+
+    Called the moment a unit is flagged deficient at the bench. Before this existed, the replacement
+    pull was the only pull holding nothing: any request created *after* the defect was found could
+    take the very stock the replacement was waiting on, so the pull sat blocked while the hardware
+    walked. Reserving at the flag puts the replacement into the queue at the moment its demand
+    becomes real, which is the only defensible position for it.
+
+    **Claiming less than was condemned is the normal case, not a failure.** The whole reason a
+    replacement is needed is often that there is no spare on the shelf; the pull holds whatever it
+    could get and `top_up_replacement_reservations` closes the gap as stock arrives or is repaired.
+
+    It only ever claims *free* stock - `get_available_quantities` is already net of everyone else's
+    claims - so a replacement can never take hardware another request has reserved. And because every
+    term in the chain is keyed by `project_id`, a claim on another project's stock is not expressible.
+    """
+    if wanted <= 0:
+        return 0
+    combo = (hardware_category, product_code)
+    available = get_available_quantities(session, project_id, [combo], lock=True).get(combo, 0)
+    claim = min(available, wanted)
+    if claim <= 0:
+        return 0
+
+    existing = session.scalars(
+        select(InventoryReservationModel).where(
+            InventoryReservationModel.source == ReservationSource.REPLACEMENT_PULL,
+            InventoryReservationModel.pull_request_id == pull_request_id,
+            InventoryReservationModel.hardware_category == hardware_category,
+            InventoryReservationModel.product_code == product_code,
+        )
+    ).first()
+    if existing is not None:
+        # One row per combo per holder, same as `create_reservations` - every availability sum is an
+        # aggregate, and a stack of one-unit rows would only make it add them back up.
+        existing.quantity += claim
+    else:
+        session.add(
+            _new_reservation(
+                project_id,
+                ReservationSource.REPLACEMENT_PULL,
+                pull_request_id,
+                hardware_category,
+                product_code,
+                claim,
+            )
+        )
+    session.flush()
+    return claim
+
+
+def top_up_replacement_reservations(
+    session: Session,
+    project_id: uuid.UUID,
+    combos: Iterable[tuple[str, str]],
+) -> dict[uuid.UUID, int]:
+    """Raise every PENDING replacement pull's claim towards what it actually needs, oldest first.
+
+    A replacement reserves what it can at flag time, which is often less than it was owed. This is
+    the other half: whenever availability *rises* - stock is received, a condemned unit is repaired
+    back into service - the replacements already waiting get first refusal on it, in the order the
+    defects were found. Without it a receive intended to unblock a replacement could be claimed by
+    a request created in between, and the replacement would go round the blocked/backfill loop again.
+
+    Oldest pull first is the queue the warehouse already works, and it is what makes the outcome
+    deterministic when two replacements want the same scarce combo.
+
+    Returns {pull_request_id: units claimed}, for callers and tests to assert on.
+    """
+    from .receiving import find_pending_replacement_pulls
+
+    wanted = set(combos)
+    if not wanted:
+        return {}
+
+    claimed: dict[uuid.UUID, int] = {}
+    pulls = sorted(find_pending_replacement_pulls(session, project_id, wanted), key=lambda p: p.created_at)
+    for pr in pulls:
+        # What this pull still wants, per combo, net of what it already holds.
+        needs: dict[tuple[str, str], int] = {}
+        for line in pr.items:
+            if not line.hardware_category or not line.product_code or line.requested_quantity <= 0:
+                continue
+            key = (line.hardware_category, line.product_code)
+            if key not in wanted:
+                continue
+            needs[key] = needs.get(key, 0) + line.requested_quantity
+        if not needs:
+            continue
+
+        held = {
+            (row.hardware_category, row.product_code): row.quantity
+            for row in session.scalars(
+                select(InventoryReservationModel).where(
+                    InventoryReservationModel.source == ReservationSource.REPLACEMENT_PULL,
+                    InventoryReservationModel.pull_request_id == pr.id,
+                )
+            ).all()
+        }
+        for combo, need in sorted(needs.items()):
+            gap = need - held.get(combo, 0)
+            if gap <= 0:
+                continue
+            got = reserve_for_replacement_pull(session, pr.id, project_id, combo[0], combo[1], gap)
+            if got:
+                claimed[pr.id] = claimed.get(pr.id, 0) + got
+    return claimed

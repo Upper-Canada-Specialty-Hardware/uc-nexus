@@ -132,14 +132,17 @@ class ShopAssemblyOpeningItem(Base):
             "shop_assembly_opening_id",
         ),
         CheckConstraint("quantity >= 1", name="ck_shop_assembly_opening_items_quantity_positive"),
-        # Progress can never exceed the planned quantity, and no count can go negative (#340/#341).
-        # The three buckets partition the line: installed + deficient + replacement_pending <=
-        # quantity, and completion requires equality. That is what lets a replacement arriving on an
-        # already-completed leaf move a unit out of `deficient` without the leaf reading as
-        # un-dispositioned - the unit lands in replacement_pending, and the sum is unchanged.
+        # Progress can never exceed what was actually pulled for the line, and no count can go
+        # negative (#340/#341). The three buckets partition `allocated_quantity`, not `quantity`:
+        # installed + deficient + replacement_pending <= allocated, and completion requires
+        # equality. That is what lets a replacement arriving on an already-completed leaf move a unit
+        # out of `deficient` without the leaf reading as un-dispositioned - the unit lands in
+        # replacement_pending, and the sum is unchanged - while the short units (quantity -
+        # allocated) sit outside the partition entirely, because they were never pulled.
         CheckConstraint(
             "installed_quantity >= 0 AND deficient_quantity >= 0 AND replacement_pending_quantity >= 0 "
-            "AND installed_quantity + deficient_quantity + replacement_pending_quantity <= quantity",
+            "AND allocated_quantity >= 0 AND allocated_quantity <= quantity "
+            "AND installed_quantity + deficient_quantity + replacement_pending_quantity <= allocated_quantity",
             name="ck_shop_assembly_opening_items_progress_within_quantity",
         ),
         # The replacement-install work queue and the shipping deficiency guard both scan for lines
@@ -156,6 +159,20 @@ class ShopAssemblyOpeningItem(Base):
     hardware_category: Mapped[str] = mapped_column(String, nullable=False)
     product_code: Mapped[str] = mapped_column(String, nullable=False)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    # What the schedule says this leaf is owed, vs what the requester could actually claim out of
+    # available inventory when the request was sent. Shop assembly is not all-or-nothing: a partially
+    # covered leaf still goes to the bench, and the requester makes the informed send/don't-send call.
+    #   quantity           - owed. The schedule's number, never reduced by scarcity.
+    #   allocated_quantity - what was reserved, pulled and will physically arrive on the cart.
+    # **Short is derived, never stored**: short = quantity - allocated_quantity. There is no separate
+    # state for it and nothing downstream may write one, because the authority on what is still
+    # missing is the *current* schedule compared against what is physically on the leaf - the short
+    # count here is evidence of what this request executed, not a backlog anybody works off.
+    # Backfilling a short leaf when stock turns up later belongs to the reallocation module.
+    #
+    # 0 is legal: a line can be fully short on a leaf that other lines do cover. A leaf with *every*
+    # line at 0 has an empty cart and is dropped before it reaches here.
+    allocated_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     # Per-item assembly progress (#340). The assembler records these incrementally at the bench;
     # completion reads them rather than taking an ephemeral checklist as input.
     #   installed_quantity - units physically fitted to the leaf. Absolute, editable both directions
@@ -163,8 +180,9 @@ class ShopAssemblyOpeningItem(Base):
     #   deficient_quantity - units found defective and already handed to the deficiency flow
     #     (returned to inventory flagged deficient + a PR-REPL replacement line). Only ever grows;
     #     undoing a deficiency is deficiency review's job, not the assembler's.
-    # Remaining (quantity - installed - deficient) is derived, never stored; completion is refused
-    # while any line still has remaining > 0.
+    # Remaining (allocated - installed - deficient) is derived, never stored; completion is refused
+    # while any line still has remaining > 0. It counts against `allocated_quantity`, not `quantity`:
+    # a short unit was never pulled, so there is nothing for the assembler to disposition.
     installed_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     deficient_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     # Units whose replacement hardware has arrived but is not on the leaf yet (#341). Only ever

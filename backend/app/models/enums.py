@@ -64,6 +64,11 @@ class ReservationSource(str, enum.Enum):
 
     SHOP_ASSEMBLY_REQUEST = "SHOP_ASSEMBLY_REQUEST"
     SHIPPING_OUT_REQUEST = "SHIPPING_OUT_REQUEST"
+    # A PR-REPL replacement pull, which holds its claim directly rather than through a request
+    # (there is no request behind a deficiency). Minted the moment a unit is flagged deficient at the
+    # bench, so the replacement is not left competing for stock at approval time against requests
+    # that were created after the defect was found.
+    REPLACEMENT_PULL = "REPLACEMENT_PULL"
 
 
 class PullStatus(str, enum.Enum):

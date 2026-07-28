@@ -52,11 +52,16 @@ export interface PipelineSummary {
   completedOpeningCount: number;
   shippedOpeningCount: number;
   plannedUnitCount: number;
+  /** Claimed out of inventory; the progress counters partition this, not plannedUnitCount. */
+  allocatedUnitCount: number;
+  /** Owed but never pulled - the request was sent short. */
+  shortUnitCount: number;
   installedUnitCount: number;
   deficientUnitCount: number;
   replacementPendingUnitCount: number;
   awaitingReplacementOpeningCount: number;
   replacementAfterShipOpeningCount: number;
+  shortOpeningCount: number;
   stage: string;
 }
 
@@ -76,6 +81,8 @@ export interface PipelineOpeningRow {
   assemblyStatus: string;
   completedAt: string | null;
   plannedUnitCount: number;
+  allocatedUnitCount: number;
+  shortUnitCount: number;
   installedUnitCount: number;
   deficientUnitCount: number;
   replacementPendingUnitCount: number;
@@ -297,6 +304,14 @@ function PipelineDetailModal({ requestId, onClose }: { requestId: string; onClos
                 label={`${summary.awaitingReplacementOpeningCount} awaiting replacement`}
               />
             )}
+            {summary.shortUnitCount > 0 && (
+              <Chip
+                size='small'
+                variant='outlined'
+                color='warning'
+                label={`${summary.shortUnitCount} unit(s) never pulled across ${summary.shortOpeningCount} leaf/leaves`}
+              />
+            )}
           </Stack>
           {progress !== null && (
             <LinearProgress variant='determinate' value={progress * 100} sx={{ mb: 2 }} />
@@ -359,20 +374,29 @@ function PipelineDetailModal({ requestId, onClose }: { requestId: string; onClos
                       <TableCell>{unitProgressLabel(row)}</TableCell>
                       <TableCell>{row.assembledLocation ?? '-'}</TableCell>
                       <TableCell>
-                        {row.awaitingReplacementUnitCount > 0 ? (
-                          <Chip
-                            size='small'
-                            variant='outlined'
-                            color={row.replacementArrivedAfterShip ? 'error' : 'warning'}
-                            label={
-                              row.replacementArrivedAfterShip
-                                ? `${row.awaitingReplacementUnitCount} arrived after shipping`
-                                : `${row.awaitingReplacementUnitCount} awaiting replacement`
-                            }
-                          />
-                        ) : (
-                          '-'
-                        )}
+                        <Stack direction='row' spacing={0.5} sx={{ flexWrap: 'wrap' }}>
+                          {row.awaitingReplacementUnitCount > 0 && (
+                            <Chip
+                              size='small'
+                              variant='outlined'
+                              color={row.replacementArrivedAfterShip ? 'error' : 'warning'}
+                              label={
+                                row.replacementArrivedAfterShip
+                                  ? `${row.awaitingReplacementUnitCount} arrived after shipping`
+                                  : `${row.awaitingReplacementUnitCount} awaiting replacement`
+                              }
+                            />
+                          )}
+                          {row.shortUnitCount > 0 && (
+                            <Chip
+                              size='small'
+                              variant='outlined'
+                              color='warning'
+                              label={`${row.shortUnitCount} never pulled`}
+                            />
+                          )}
+                          {row.awaitingReplacementUnitCount === 0 && row.shortUnitCount === 0 && '-'}
+                        </Stack>
                       </TableCell>
                     </TableRow>
                   ))}

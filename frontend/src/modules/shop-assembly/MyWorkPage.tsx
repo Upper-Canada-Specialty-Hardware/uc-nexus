@@ -15,7 +15,10 @@ interface OpeningItem {
   shopAssemblyOpeningId: string;
   hardwareCategory: string;
   productCode: string;
+  // Owed by the schedule vs pulled for the bench. The three progress buckets partition
+  // `allocatedQuantity`; `quantity - allocatedQuantity` was never pulled and is not outstanding work.
   quantity: number;
+  allocatedQuantity: number;
   installedQuantity: number;
   deficientQuantity: number;
   // Arrived-but-not-yet-fitted replacement units (#341): the third bucket a line is partitioned

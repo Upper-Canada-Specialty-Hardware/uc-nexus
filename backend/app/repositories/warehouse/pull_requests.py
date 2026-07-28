@@ -205,22 +205,46 @@ def check_inventory_sufficiency(
     return SufficiencyResult(shortfalls=shortfalls, inventory_by_combo=dict(inv_by_combo))
 
 
+def _is_replacement_pull(session: Session, pr: PullRequestModel) -> bool:
+    """Structural test for a PR-REPL pull: at least one line carries `sa_opening_item_id` (#339).
+
+    Same test as `find_pending_replacement_pulls`, and deliberately not the `PR-REPL-` number prefix
+    - the prefix is a display convention, the FK is what makes the pull a replacement, and a
+    structural test cannot be broken by renaming a request.
+    """
+    return bool(
+        session.scalar(
+            select(PullRequestItemModel.id)
+            .where(
+                PullRequestItemModel.pull_request_id == pr.id,
+                PullRequestItemModel.sa_opening_item_id.is_not(None),
+            )
+            .limit(1)
+        )
+    )
+
+
 def find_reservation_holder(session: Session, pr: PullRequestModel) -> tuple[ReservationSource, uuid.UUID] | None:
-    """The request whose reservations this pull is going to spend, or None if it has none (#342).
+    """Whose reservations this pull is going to spend, or None if it has none (#342).
 
     A shop-assembly accept stamps the minted PR with the request's own `request_number` (unique on
     both tables), and a shipping-out accept stamps `pull_request_id` on the request - so each hop
-    is a single indexed lookup, no string parsing.
+    is a single indexed lookup, no string parsing. A **replacement pull holds its own claim**: there
+    is no request behind a deficiency, so the pull is the holder, found structurally by its
+    `sa_opening_item_id` lines rather than by its number.
 
-    None is the honest answer for three real cases, and they all behave identically downstream (the
+    None is the honest answer for two remaining cases, and they behave identically downstream (the
     pull is checked against on-hand minus *everyone's* reservations, and consumes nothing):
 
-    - a **PR-REPL replacement pull**. Nobody can reserve for a deficiency that has not happened yet,
-      so a replacement genuinely holds no claim; it keeps the reactive check and the PO-backfill
-      loop, and it must not be able to eat stock other requests have reserved.
     - a pull whose source request was **rejected/reopened** after the accept - the claim is gone by
       design.
     - a **legacy pull** minted before this table existed, or one created directly by a non-UI caller.
+
+    The replacement case used to be on that list. It no longer is: a replacement reserves at the
+    moment the defect is flagged (`report_deficiency_at_assembly`), so by approval time it has a
+    claim to spend like anything else. The guarantee that made the old behaviour safe still holds -
+    a replacement only ever reserves *free* stock, so it can no more eat another request's claim
+    than it could before.
     """
     if pr.source == PullRequestSource.SHOP_ASSEMBLY:
         sar_id = session.scalar(
@@ -228,6 +252,8 @@ def find_reservation_holder(session: Session, pr: PullRequestModel) -> tuple[Res
         )
         if sar_id is not None:
             return (ReservationSource.SHOP_ASSEMBLY_REQUEST, sar_id)
+        if _is_replacement_pull(session, pr):
+            return (ReservationSource.REPLACEMENT_PULL, pr.id)
     elif pr.source == PullRequestSource.SHIPPING_OUT:
         sor_id = session.scalar(
             select(ShippingOutRequestModel.id).where(ShippingOutRequestModel.pull_request_id == pr.id)
@@ -306,12 +332,20 @@ def approve_pull_request(session: Session, pr_id: uuid.UUID, approved_by: str) -
             shortfalls=result.shortfalls,
         )
         # The audit below is an *integrity* signal, so it has to fire only for a pull that genuinely
-        # held a claim. Having a source request is not the same as holding reservations: the #342
-        # backfill deliberately left the whole pre-existing in-flight population unreserved and
-        # flagged rather than inventing claims for it, and a cancel that could not re-reserve leaves a
-        # live request in the same state. Those are the *expected* shortfall population - flagging
-        # every one of them as an integrity error is exactly how a real one gets missed.
-        if holder is not None and reservations.get_reserved_total(session, holder[0], holder[1]) > 0:
+        # held a claim for everything it is asking for. Having a source request is not the same as
+        # holding reservations: the #342 backfill deliberately left the whole pre-existing in-flight
+        # population unreserved and flagged rather than inventing claims for it, and a cancel that
+        # could not re-reserve leaves a live request in the same state. Those are the *expected*
+        # shortfall population - flagging every one of them as an integrity error is exactly how a
+        # real one gets missed.
+        #
+        # A replacement pull is expected-shortfall by design and is excluded outright. It reserves
+        # `min(free stock, condemned)` at flag time, so being *partly* covered is its normal resting
+        # state - there was no spare on the shelf, which is why a replacement was needed. It holds a
+        # non-zero claim and still comes up short every time until the backfill lands, and that is
+        # the PO loop working, not an inventory discrepancy.
+        reserved_path = holder is not None and holder[0] is not ReservationSource.REPLACEMENT_PULL
+        if reserved_path and reservations.get_reserved_total(session, holder[0], holder[1]) > 0:
             # The reserved path is not supposed to be able to come up short. Record it against the
             # pull so the discrepancy is investigable rather than indistinguishable from the normal
             # PR-REPL / legacy shortfall the approver sees.
@@ -1010,9 +1044,12 @@ def cancel_pull_request(
     the same honest-and-flagged shape the #342 backfill uses.
 
     **A PR-REPL replacement pull has no source request**, so cancelling one restocks and re-creates
-    nothing: it never held a reservation (a deficiency cannot be foreseen, so nobody could have
-    claimed for it). The leaf's `deficient_quantity` is untouched and the expectation stays on the
-    checklist line - the replacement simply has to be requested again.
+    nothing. It does hold a claim of its own now (minted when the defect was flagged), but by the
+    time it can be cancelled that claim has already been *consumed* at approval - only an approved
+    pull is cancellable, and approval spends the reservation - so there is nothing left to release
+    and nothing to hand back to. The leaf's `deficient_quantity` is untouched and the expectation
+    stays on the checklist line; the replacement simply has to be requested again. A **PENDING**
+    replacement pull is not cancelled but discarded, and that path does release.
     """
     if not cancelled_by:
         raise ValidationError("cancelled_by is required", field="cancelled_by")
@@ -1271,7 +1308,12 @@ def discard_pending_pull_request(session: Session, pr_id: uuid.UUID | None) -> N
     the request would leave the warehouse out of sync, so the caller is told to resolve it in the
     warehouse first. A hard delete (not the soft deleted_at) is required because request_number is
     unique: a later re-accept re-mints a PR with the same number. A null/missing PR id is a no-op (the
-    accept is already effectively undone)."""
+    accept is already effectively undone).
+
+    A PENDING **replacement** pull reaches this the same way, and its own claim goes with it: the pull
+    is the holder, so hard-deleting it without releasing would strand a reservation with nothing left
+    that could ever spend or release it. The FK cascade would take the rows anyway; releasing
+    explicitly keeps the session's identity map honest and makes the intent readable."""
     if pr_id is None:
         return
     locked = lock_rows(session, PullRequestModel, [pr_id])
@@ -1283,6 +1325,7 @@ def discard_pending_pull_request(session: Session, pr_id: uuid.UUID | None) -> N
             f"Cannot reopen - the warehouse has already started this pull request ({pr.status.value}). "
             "Resolve it in the warehouse first."
         )
+    reservations.release_reservations(session, ReservationSource.REPLACEMENT_PULL, pr.id)
     # Bulk-delete the items in one statement (rather than a load + per-row DELETE), then the PR itself.
     session.execute(delete(PullRequestItemModel).where(PullRequestItemModel.pull_request_id == pr.id))
     session.delete(pr)
