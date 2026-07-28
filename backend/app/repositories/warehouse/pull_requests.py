@@ -1,4 +1,4 @@
-"""Pull requests: reads, the shared inventory-sufficiency gate, approve/complete flows."""
+"""Pull requests: reads, the shared inventory-sufficiency gate, the pick flow, complete/cancel."""
 
 import uuid
 from collections import defaultdict
@@ -16,6 +16,7 @@ from app.models.enums import (
     AuditEntityType,
     NotificationType,
     OpeningItemState,
+    PullPickLineState,
     PullRequestItemType,
     PullRequestSource,
     PullRequestStatus,
@@ -26,11 +27,13 @@ from app.models.enums import (
 )
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.opening_item import OpeningItem as OpeningItemModel
+from app.models.pull_pick_line import PullPickLine as PullPickLineModel
 from app.models.pull_request import PullRequest as PullRequestModel
 from app.models.pull_request import PullRequestItem as PullRequestItemModel
 from app.models.shipping_out_request import ShippingOutRequest as ShippingOutRequestModel
 from app.models.shop_assembly import ShopAssemblyOpening
 from app.models.shop_assembly import ShopAssemblyRequest as ShopAssemblyRequestModel
+from app.models.warehouse import Warehouse as WarehouseModel
 from app.services import notification_service
 from app.services.locking import lock_rows
 
@@ -139,22 +142,25 @@ def check_inventory_sufficiency(
     compares each against available inventory in the project, and returns a Shortfall per combo
     that can't be fully covered - no partial fulfilment.
 
-    - Base availability is `quantity - deficient_quantity`, the same rule approve_pull_request
-      deducts under. A deficiency reported at the bench bumps the inventory row's `quantity` and
+    - Base availability is `quantity - deficient_quantity`, the same rule `confirm_pick` deducts
+      under. A deficiency reported at the bench bumps the inventory row's `quantity` and
       `deficient_quantity` together, so it nets to zero here - a condemned unit is back in the
       building but is not available, and it is not double-counted against anything.
     - `reservation_aware=True` also subtracts active reservations, giving
-      `available = on-hand - deficient - reservations`. This is what request creation gates on and
-      what pull approval re-checks: stock another request has already claimed is not free.
-    - `exclude_reservations_of=(source, request_id)` is **self-coverage**. Approving request R's
-      pull spends R's own reservations, so R's claim must not be counted against R - otherwise a
-      request that reserved exactly what it needs could never be approved. Everyone else's claims
-      still count, which is what stops a PR-REPL replacement pull (which holds no reservations of
-      its own, because a deficiency cannot be foreseen) from eating stock somebody reserved.
+      `available = on-hand - deficient - reservations`. This is what request creation gates on:
+      stock another request has already claimed is not free.
+    - `exclude_reservations_of=(source, request_id)` is **self-coverage**. Spending request R's claim
+      is what backs R's own pull, so R's claim must not be counted against R - otherwise a request
+      that reserved exactly what it needs could never be satisfied. Everyone else's claims still
+      count, which is what stops a PR-REPL replacement pull from eating stock somebody reserved.
 
-    With lock=True the inventory rows are SELECT ... FOR UPDATE and returned grouped by combo so the
-    caller can pull FIFO against exactly what was checked. Creation locks too: two creators racing
-    for the last hinge serialise on those rows, so the second one sees the first one's reservation.
+    With lock=True the inventory rows are SELECT ... FOR UPDATE and returned grouped by combo, so a
+    caller can act against exactly what was checked. Creation locks too: two creators racing for the
+    last hinge serialise on those rows, so the second one sees the first one's reservation.
+
+    Since #367 this is **no longer the warehouse-side gate**. A pull is not refused up front on an
+    aggregate any more; the picker sees real per-location availability and `confirm_pick` refuses to
+    over-pull any row. What remains here is the creation-time gate and the cancel-time re-check.
     """
     needed_combos: dict[tuple[str, str], int] = defaultdict(int)
     for cat, code, qty in needs:
@@ -241,7 +247,7 @@ def find_reservation_holder(session: Session, pr: PullRequestModel) -> tuple[Res
     - a **legacy pull** minted before this table existed, or one created directly by a non-UI caller.
 
     The replacement case used to be on that list. It no longer is: a replacement reserves at the
-    moment the defect is flagged (`report_deficiency_at_assembly`), so by approval time it has a
+    moment the defect is flagged (`report_deficiency_at_assembly`), so by pick time it has a
     claim to spend like anything else. The guarantee that made the old behaviour safe still holds -
     a replacement only ever reserves *free* stock, so it can no more eat another request's claim
     than it could before.
@@ -263,171 +269,797 @@ def find_reservation_holder(session: Session, pr: PullRequestModel) -> tuple[Res
     return None
 
 
-def approve_pull_request(session: Session, pr_id: uuid.UUID, approved_by: str) -> tuple:
+# ---------------------------------------------------------------------------
+# The pick (#367): start, sheet, draft, confirm
+# ---------------------------------------------------------------------------
+#
+# Before this, approving a pull deducted inventory FIFO by `received_at` in the same call, and
+# nobody recorded where the hardware physically came from. The warehouse user - the only person
+# actually standing in front of the racks - never chose. Picking splits that single moment in two:
+#
+#   start_pull_request_pick   the pull is claimed and opened for picking. Nothing moves.
+#   confirm_pick              the picker dictates a quantity per location, and *that* deducts.
+#
+# The #342 invariant is preserved, just relocated: the source request's claim is consumed at the
+# exact moment of the deduction, atomically, under the same row locks - which is now confirm rather
+# than approve. What changes is that the consumption can be partial, because a pick can be
+# confirmed short and the un-picked remainder is still owed.
+
+
+def start_pull_request_pick(session: Session, pr_id: uuid.UUID, started_by: str) -> PullRequestModel:
+    """Claim a PENDING pull and open it for picking (#367). **Nothing moves in inventory.**
+
+    This is what `approve_pull_request` used to be, minus everything that touched stock: no
+    sufficiency gate, no FIFO deduction, no reservation consumption. Those all belong to
+    `confirm_pick` now, because until somebody has walked the racks and written numbers down, the
+    system has no idea what was actually picked or from where.
+
+    Dropping the sufficiency gate here is deliberate and is not a hole. It never protected the
+    hardware - it protected the *approver* from starting a pull that could not be filled - and it did
+    so by refusing before the picker had looked. The pick screen shows real per-location availability
+    and the confirm refuses to over-pull any row, so scarcity is now discovered where it is visible
+    rather than asserted from an aggregate. A pull that genuinely cannot be filled comes back as a
+    short confirm, which raises the same PO backfill signal it always did.
+
+    `approved_at` keeps its old name and its weaker meaning: the warehouse started on this pull. The
+    moment stock left is `picked_at`, and that is what staging and completion gate on.
     """
-    Approve a pull request with pessimistic locking and FIFO inventory deduction.
-
-    Returns tuple: (pr, outcome_string, notification_or_none, shortfalls)
-    where outcome_string is "APPROVED" or "INSUFFICIENT". On INSUFFICIENT the PR is left PENDING
-    (the pull is blocked, not cancelled - #224), `notification_or_none` is the PO backfill signal,
-    and `shortfalls` lists the shorted combos. On APPROVED `shortfalls` is empty.
-
-    Since #342 this is where a request's reservation is **consumed**: the claim it has held since
-    creation turns into the actual FIFO deduction, atomically, under the same row locks. Two rules
-    make that safe:
-
-    - **Self-coverage.** The availability check excludes this request's own reservations. They are
-      what backs the deduction; counting them as competing demand would make a correctly-reserved
-      request permanently unapprovable.
-    - **Consume only on success.** A pull that comes up short keeps its claim and stays PENDING, so
-      the blocked request does not quietly hand its hardware to whoever asks next.
-
-    A shortfall on a pull that *did* hold reservations is not normal flow - it means stock vanished
-    under a live claim (an admin write-off or quantity override). It is reported the same way so the
-    approver and the PO see it, but it is additionally recorded as an integrity event, because the
-    reserved path is supposed to be un-shortfallable.
-    """
-    # 1. Lock PR
     locked_prs = lock_rows(session, PullRequestModel, [pr_id])
     if not locked_prs:
         raise NotFoundError(f"Pull request {pr_id} not found")
     pr = locked_prs[0]
 
     if pr.status != PullRequestStatus.PENDING:
-        raise InvalidStateTransitionError(f"Pull request must be Pending to approve, got {pr.status.value}")
+        raise InvalidStateTransitionError(f"Pull request must be Pending to start picking, got {pr.status.value}")
 
-    # 2. Gather inventory needs from Loose items
-    needs: list[tuple[str, str, int]] = []
-    opening_item_ids: list[uuid.UUID] = []
+    pr.status = PullRequestStatus.IN_PROGRESS
+    pr.assigned_to = started_by
+    pr.approved_at = datetime.utcnow()
+    session.flush()
+    return pr
 
+
+@dataclass(frozen=True)
+class PickSheetLeaf:
+    """One door leaf a section's units are owed to. Every leaf is listed, never summarised: the
+    picker is building carts per leaf, and "and 6 more" is exactly the information they need."""
+
+    opening_number: str
+    leaf: int | None
+    quantity: int
+
+
+@dataclass(frozen=True)
+class PickSheetLocation:
+    """One inventory row a section's product could be picked from, as the sheet shows it.
+
+    `received_at` is here so the picker can rotate stock themselves. There is deliberately **no
+    suggested quantity**: the system proposing a split and the human overriding it is how a
+    suggestion quietly becomes the default, and the whole point of #367 is that the person at the
+    rack decides."""
+
+    inventory_location_id: uuid.UUID
+    warehouse_id: uuid.UUID | None
+    warehouse_code: str | None
+    aisle: str | None
+    row: str | None
+    bay: str | None
+    available: int
+    received_at: datetime
+    draft_quantity: int
+    applied_quantity: int
+
+
+@dataclass(frozen=True)
+class PickSheetSection:
+    """One product code to pick, with everywhere it can come from and every leaf it is owed to."""
+
+    hardware_category: str
+    product_code: str
+    required_quantity: int
+    applied_quantity: int
+    leaves: list[PickSheetLeaf]
+    locations: list[PickSheetLocation]
+
+    @property
+    def remaining_quantity(self) -> int:
+        return max(0, self.required_quantity - self.applied_quantity)
+
+
+@dataclass(frozen=True)
+class PickSheetFetchItem:
+    """One assembled leaf to fetch off the rack (#367).
+
+    An OPENING_ITEM line moves a leaf that was already tagged at shop assembly, so its hardware left
+    fungible inventory then and there is nothing here to deduct - only to walk over and collect. The
+    check-off is persisted so it survives a reload or a shift change."""
+
+    pull_request_item_id: uuid.UUID
+    opening_item_id: uuid.UUID | None
+    opening_number: str
+    leaf: int | None
+    aisle: str | None
+    row: str | None
+    bay: str | None
+    state: OpeningItemState | None
+    fetched_at: datetime | None
+    fetched_by: str | None
+
+
+@dataclass(frozen=True)
+class PickSheet:
+    pull_request: PullRequestModel
+    sections: list[PickSheetSection]
+    fetch_items: list[PickSheetFetchItem]
+
+
+def _loose_requirements(pr: PullRequestModel) -> dict[tuple[str, str], int]:
+    """What the pull's LOOSE lines add up to, per combo. The pick's denominator."""
+    required: dict[tuple[str, str], int] = defaultdict(int)
     for item in pr.items:
-        if item.item_type == PullRequestItemType.LOOSE:
-            needs.append((item.hardware_category, item.product_code, item.requested_quantity))
-        elif item.item_type == PullRequestItemType.OPENING_ITEM:
-            if item.opening_item_id is not None:
-                opening_item_ids.append(item.opening_item_id)
+        if item.item_type != PullRequestItemType.LOOSE:
+            continue
+        if not item.hardware_category or not item.product_code or item.requested_quantity <= 0:
+            continue
+        required[(item.hardware_category, item.product_code)] += item.requested_quantity
+    return dict(required)
 
+
+def _pick_lines(session: Session, pr_id: uuid.UUID, state: PullPickLineState | None = None) -> list[PullPickLineModel]:
+    stmt = select(PullPickLineModel).where(PullPickLineModel.pull_request_id == pr_id)
+    if state is not None:
+        stmt = stmt.where(PullPickLineModel.state == state)
+    return list(session.scalars(stmt).all())
+
+
+def _applied_by_combo(session: Session, pr_id: uuid.UUID) -> dict[tuple[str, str], int]:
+    """How much of each combo this pull has already picked. One grouped aggregate, no rows loaded."""
+    rows = session.execute(
+        select(
+            PullPickLineModel.hardware_category,
+            PullPickLineModel.product_code,
+            func.coalesce(func.sum(PullPickLineModel.quantity), 0),
+        )
+        .where(
+            PullPickLineModel.pull_request_id == pr_id,
+            PullPickLineModel.state == PullPickLineState.APPLIED,
+        )
+        .group_by(PullPickLineModel.hardware_category, PullPickLineModel.product_code)
+    ).all()
+    return {(cat, code): int(total or 0) for cat, code, total in rows}
+
+
+def get_pick_sheet(session: Session, pr_id: uuid.UUID) -> PickSheet:
+    """Everything the pick screen and the printed sheet need, in a fixed number of queries (#367).
+
+    Three reads regardless of how many product codes the pull covers, because a per-section query
+    over Railway's network hop is the N+1 that turns "fast on dev" into a frozen page (CLAUDE.md
+    perf rules): the pull with its items, every candidate inventory row for every combo at once, and
+    the assembled leaves behind the OPENING_ITEM lines.
+
+    A location is a candidate when it still has available units **or** when this pull has already
+    named it. The second half matters: a row picked down to zero must stay on the sheet, or the row
+    the picker took twelve units off vanishes the moment they confirm and the sheet stops matching
+    the paper in their hand.
+    """
+    pr = get_pull_request_details(session, pr_id)
+
+    required = _loose_requirements(pr)
+    applied_lines = _pick_lines(session, pr.id)
+    applied_by_combo: dict[tuple[str, str], int] = defaultdict(int)
+    by_location: dict[tuple[str, str, uuid.UUID], dict[str, int]] = defaultdict(lambda: {"draft": 0, "applied": 0})
+    referenced_location_ids: set[uuid.UUID] = set()
+    for line in applied_lines:
+        if line.inventory_location_id is not None:
+            referenced_location_ids.add(line.inventory_location_id)
+            key = (line.hardware_category, line.product_code, line.inventory_location_id)
+            bucket = "applied" if line.state == PullPickLineState.APPLIED else "draft"
+            by_location[key][bucket] += line.quantity
+        if line.state == PullPickLineState.APPLIED:
+            applied_by_combo[(line.hardware_category, line.product_code)] += line.quantity
+
+    # Leaves per combo, in the order the carts are laid out.
+    leaves_by_combo: dict[tuple[str, str], list[PickSheetLeaf]] = defaultdict(list)
+    for item in pr.items:
+        if item.item_type != PullRequestItemType.LOOSE:
+            continue
+        if not item.hardware_category or not item.product_code or item.requested_quantity <= 0:
+            continue
+        leaves_by_combo[(item.hardware_category, item.product_code)].append(
+            PickSheetLeaf(
+                opening_number=item.opening_number,
+                leaf=item.leaf,
+                quantity=item.requested_quantity,
+            )
+        )
+
+    locations_by_combo: dict[tuple[str, str], list[PickSheetLocation]] = defaultdict(list)
+    if required:
+        combo_clause = or_(
+            *[
+                and_(
+                    InventoryLocationModel.hardware_category == cat,
+                    InventoryLocationModel.product_code == code,
+                )
+                for (cat, code) in required
+            ]
+        )
+        visibility = InventoryLocationModel.quantity - func.coalesce(InventoryLocationModel.deficient_quantity, 0) > 0
+        if referenced_location_ids:
+            visibility = or_(visibility, InventoryLocationModel.id.in_(referenced_location_ids))
+        rows = session.execute(
+            select(InventoryLocationModel, WarehouseModel.code)
+            .outerjoin(WarehouseModel, WarehouseModel.id == InventoryLocationModel.warehouse_id)
+            .where(
+                InventoryLocationModel.project_id == pr.project_id,
+                combo_clause,
+                visibility,
+            )
+            .order_by(InventoryLocationModel.received_at.asc(), InventoryLocationModel.id.asc())
+        ).all()
+        for il, warehouse_code in rows:
+            combo = (il.hardware_category, il.product_code)
+            counts = by_location.get((*combo, il.id), {"draft": 0, "applied": 0})
+            locations_by_combo[combo].append(
+                PickSheetLocation(
+                    inventory_location_id=il.id,
+                    warehouse_id=il.warehouse_id,
+                    warehouse_code=warehouse_code,
+                    aisle=il.aisle,
+                    row=il.row,
+                    bay=il.bay,
+                    available=max(0, il.quantity - (il.deficient_quantity or 0)),
+                    received_at=il.received_at,
+                    draft_quantity=counts["draft"],
+                    applied_quantity=counts["applied"],
+                )
+            )
+
+    sections = [
+        PickSheetSection(
+            hardware_category=cat,
+            product_code=code,
+            required_quantity=total,
+            applied_quantity=applied_by_combo.get((cat, code), 0),
+            leaves=sorted(
+                leaves_by_combo.get((cat, code), []),
+                key=lambda leaf: (leaf.opening_number or "", leaf.leaf if leaf.leaf is not None else -1),
+            ),
+            locations=locations_by_combo.get((cat, code), []),
+        )
+        for (cat, code), total in sorted(required.items())
+    ]
+
+    fetch_lines = [
+        item
+        for item in pr.items
+        if item.item_type == PullRequestItemType.OPENING_ITEM and item.opening_item_id is not None
+    ]
+    opening_items: dict[uuid.UUID, OpeningItemModel] = {}
+    if fetch_lines:
+        opening_items = {
+            oi.id: oi
+            for oi in session.scalars(
+                select(OpeningItemModel).where(OpeningItemModel.id.in_([item.opening_item_id for item in fetch_lines]))
+            ).all()
+        }
+    fetch_items = [
+        PickSheetFetchItem(
+            pull_request_item_id=item.id,
+            opening_item_id=item.opening_item_id,
+            opening_number=item.opening_number,
+            leaf=item.leaf,
+            aisle=oi.aisle if (oi := opening_items.get(item.opening_item_id)) is not None else None,
+            row=oi.row if oi is not None else None,
+            bay=oi.bay if oi is not None else None,
+            state=oi.state if oi is not None else None,
+            fetched_at=item.fetched_at,
+            fetched_by=item.fetched_by,
+        )
+        for item in fetch_lines
+    ]
+    fetch_items.sort(key=lambda f: (f.opening_number or "", f.leaf if f.leaf is not None else -1))
+
+    return PickSheet(pull_request=pr, sections=sections, fetch_items=fetch_items)
+
+
+@dataclass(frozen=True)
+class PickLine:
+    """One line the picker dictated: this many units of this combo off this inventory row."""
+
+    hardware_category: str
+    product_code: str
+    inventory_location_id: uuid.UUID
+    quantity: int
+
+
+def _normalise_pick_lines(
+    lines: Iterable[PickLine],
+    required: dict[tuple[str, str], int],
+) -> dict[tuple[str, str, uuid.UUID], int]:
+    """Aggregate the submitted lines by (combo, location), dropping zeros and refusing nonsense.
+
+    Two lines naming the same row is a legitimate thing for a client to send (two leaves picked off
+    the same bin), so they are summed rather than rejected - the row-level availability check runs
+    against the total, which is what actually leaves the shelf.
+    """
+    entered: dict[tuple[str, str, uuid.UUID], int] = defaultdict(int)
+    for line in lines:
+        if line.quantity is None or line.quantity == 0:
+            continue
+        if line.quantity < 0:
+            raise ValidationError(
+                f"Picked quantity for {line.hardware_category} {line.product_code} cannot be negative",
+                field="quantity",
+            )
+        combo = (line.hardware_category, line.product_code)
+        if combo not in required:
+            raise ValidationError(
+                f"{line.hardware_category} {line.product_code} is not on this pull request",
+                field="lines",
+            )
+        if line.inventory_location_id is None:
+            raise ValidationError(
+                f"A location is required for every picked line ({line.hardware_category} {line.product_code})",
+                field="inventoryLocationId",
+            )
+        entered[(*combo, line.inventory_location_id)] += line.quantity
+    return {key: qty for key, qty in entered.items() if qty > 0}
+
+
+def _pickable_pull(session: Session, pr_id: uuid.UUID) -> PullRequestModel:
+    """Lock the pull and refuse anything that is not an open, un-picked, in-progress pull."""
+    locked = lock_rows(session, PullRequestModel, [pr_id])
+    if not locked:
+        raise NotFoundError(f"Pull request {pr_id} not found")
+    pr = locked[0]
+    if pr.deleted_at is not None:
+        raise NotFoundError(f"Pull request {pr_id} not found")
+    if pr.status != PullRequestStatus.IN_PROGRESS:
+        raise InvalidStateTransitionError(
+            f"Pull request must be In_Progress to pick, got {pr.status.value}. Start the pick first."
+        )
+    if pr.picked_at is not None:
+        raise InvalidStateTransitionError(
+            f"Pull request {pr.request_number} has already been picked - its hardware is off the shelf."
+        )
+    return pr
+
+
+def save_pick_draft(
+    session: Session,
+    pr_id: uuid.UUID,
+    lines: Iterable[PickLine],
+    entered_by: str,
+) -> PickSheet:
+    """Save the half-keyed sheet without moving anything (#367).
+
+    **Replace-all, not merge.** The picker is transcribing a piece of paper, and the paper is the
+    authority: a save says "this is the sheet now", so the pull's whole DRAFT set is discarded and
+    rewritten. Merging would silently keep a row the picker had crossed out, which is the one
+    outcome a transcription must not produce.
+
+    Shape is validated - the combo is on this pull, the location belongs to this project, the
+    quantity is positive - but **availability is not**. A draft is a note, not a claim; blocking a
+    picker from writing down what is on their sheet because the numbers do not balance yet would
+    make the save button useless exactly when it is needed. `confirm_pick` is the gate.
+    """
+    pr = _pickable_pull(session, pr_id)
+    required = _loose_requirements(pr)
+    entered = _normalise_pick_lines(lines, required)
+
+    location_ids = sorted({loc_id for (_cat, _code, loc_id) in entered})
+    rows = _load_pick_locations(session, pr, location_ids, entered)
+
+    session.execute(
+        delete(PullPickLineModel).where(
+            PullPickLineModel.pull_request_id == pr.id,
+            PullPickLineModel.state == PullPickLineState.DRAFT,
+        )
+    )
+    now = datetime.utcnow()
+    for (cat, code, loc_id), qty in sorted(entered.items(), key=lambda kv: (kv[0][0], kv[0][1], str(kv[0][2]))):
+        session.add(
+            PullPickLineModel(
+                id=uuid.uuid4(),
+                pull_request_id=pr.id,
+                hardware_category=cat,
+                product_code=code,
+                inventory_location_id=rows[loc_id].id,
+                quantity=qty,
+                state=PullPickLineState.DRAFT,
+                entered_by=entered_by,
+                entered_at=now,
+            )
+        )
+    session.flush()
+    return get_pick_sheet(session, pr.id)
+
+
+def _load_pick_locations(
+    session: Session,
+    pr: PullRequestModel,
+    location_ids: list[uuid.UUID],
+    entered: dict[tuple[str, str, uuid.UUID], int],
+    *,
+    lock: bool = False,
+) -> dict[uuid.UUID, InventoryLocationModel]:
+    """Resolve the named inventory rows and check they are the rows the picker says they are.
+
+    `lock=True` takes the row locks in id order, the same order every other inventory writer takes
+    them in, so a concurrent confirm on a shared bin serialises here rather than lost-updating.
+    """
+    if not location_ids:
+        return {}
+    if lock:
+        rows = lock_rows(session, InventoryLocationModel, location_ids)
+    else:
+        rows = list(
+            session.scalars(select(InventoryLocationModel).where(InventoryLocationModel.id.in_(location_ids))).all()
+        )
+    by_id = {row.id: row for row in rows}
+    missing = [str(loc_id) for loc_id in location_ids if loc_id not in by_id]
+    if missing:
+        raise NotFoundError(f"Inventory locations not found: {', '.join(missing)}")
+
+    for cat, code, loc_id in entered:
+        row = by_id[loc_id]
+        if row.project_id != pr.project_id:
+            raise ValidationError(
+                "That location holds another project's inventory - a pull can only take its own project's stock.",
+                field="inventoryLocationId",
+            )
+        if (row.hardware_category, row.product_code) != (cat, code):
+            raise ValidationError(
+                f"Location {loc_id} holds {row.hardware_category} {row.product_code}, not {cat} {code}",
+                field="inventoryLocationId",
+            )
+    return by_id
+
+
+@dataclass
+class ConfirmPickResult:
+    """What one pick confirmation did (#367).
+
+    `outcome` is PICKED when every combo is now fully covered (the pull is stamped picked and can be
+    staged) or SHORT when it is not. SHORT is a real, resumable state, not a failure: the units
+    entered are deducted and recorded, the pull stays In Progress and un-picked, purchasing is
+    notified, and a later confirmation enters the remainder."""
+
+    pull_request: PullRequestModel
+    outcome: str
+    shortfalls: list[Shortfall]
+    notification: object | None = None
+    applied_quantity: int = 0
+
+
+def confirm_pick(
+    session: Session,
+    pr_id: uuid.UUID,
+    lines: Iterable[PickLine],
+    picked_by: str,
+) -> ConfirmPickResult:
+    """Deduct exactly the rows the picker dictated, and consume the claim behind them (#367).
+
+    This is the atomic swap the old `approve_pull_request` performed, moved to the moment somebody
+    has actually been to the racks. In one transaction, under the pull's lock and the locks of every
+    named inventory row:
+
+    1. the source request's reservation is consumed for what is being picked (partially - see
+       `reservations.consume_reservations`), and
+    2. those units come off the exact rows named.
+
+    Consumption happens before the deduction so the two can never be observed apart: a reader
+    between them would otherwise see the units both reserved and already gone.
+
+    **Never over-pull.** Two independent ceilings, both hard: no row may give up more than its own
+    available units (`quantity - deficient_quantity`, so condemned stock stays put), and no combo may
+    exceed what the pull asked for once what is already picked is counted. Neither is negotiable
+    from the client.
+
+    **Availability is per row, not reservation-aware.** The old approve compared an aggregate against
+    on-hand-minus-everyone-else's-claims; here the picker is holding the hardware, and the question
+    is whether that specific bin has the units. Reservations still gate request *creation*, which is
+    where competing demand belongs; a pick that dips into stock another request has claimed leaves
+    that request short, and it comes back as a short confirm on its own pull with the same PO
+    backfill signal - which is a truer picture than refusing a picker who is looking at the units.
+
+    **Short is a first-class outcome.** Deduct what was entered, leave the pull In Progress and
+    un-picked, notify purchasing, and let a second confirmation cover the remainder. The alternative
+    - refusing the whole confirmation - would mean a picker who found nine of twelve hinges has to
+    put the nine back on the shelf, which nobody does; they would go and mark the pull complete
+    anyway and the system would be lying.
+
+    A pull with no LOOSE lines at all (a pure fetch pull: shipping out assembled leaves) is picked
+    the moment it is confirmed with nothing, because there is nothing to deduct.
+    """
+    pr = _pickable_pull(session, pr_id)
+    required = _loose_requirements(pr)
+    entered = _normalise_pick_lines(lines, required)
+    already = _applied_by_combo(session, pr.id)
     now = datetime.utcnow()
 
-    # 3. Re-run the shared sufficiency gate, locking the rows we'd pull from. Reservation-aware, with
-    #    this request's own claim excluded (self-coverage) - so it pulls from
-    #    on-hand - deficient - *other* requests' reservations, plus whatever it reserved itself.
-    holder = find_reservation_holder(session, pr)
-    result = check_inventory_sufficiency(
-        session,
-        pr.project_id,
-        needs,
-        lock=True,
-        reservation_aware=True,
-        exclude_reservations_of=holder,
-    )
+    # No combo may be pushed past what the pull asked for, counting what is already picked.
+    entered_by_combo: dict[tuple[str, str], int] = defaultdict(int)
+    for (cat, code, _loc_id), qty in entered.items():
+        entered_by_combo[(cat, code)] += qty
+    for combo, qty in sorted(entered_by_combo.items()):
+        ceiling = required[combo] - already.get(combo, 0)
+        if qty > ceiling:
+            raise ValidationError(
+                f"{combo[0]} {combo[1]}: entering {qty} would pull more than the {required[combo]} this "
+                f"request asked for ({already.get(combo, 0)} already picked, {max(0, ceiling)} left to pick)",
+                field="quantity",
+            )
 
-    # 4. If short: leave the PR PENDING (blocked, not cancelled), keep the reservations (the claim
-    #    outlives the blocked attempt), and notify the PO for backfill.
-    if not result.sufficient:
+    location_ids = sorted({loc_id for (_cat, _code, loc_id) in entered})
+    rows = _load_pick_locations(session, pr, location_ids, entered, lock=True)
+
+    # No row may give up more than it has available. Aggregated per row first: two lines naming the
+    # same bin are one withdrawal as far as the shelf is concerned.
+    per_row: dict[uuid.UUID, int] = defaultdict(int)
+    for (_cat, _code, loc_id), qty in entered.items():
+        per_row[loc_id] += qty
+    for loc_id, qty in sorted(per_row.items(), key=lambda kv: str(kv[0])):
+        row = rows[loc_id]
+        row_available = row.quantity - (row.deficient_quantity or 0)
+        if qty > row_available:
+            raise ValidationError(
+                f"{row.hardware_category} {row.product_code} at "
+                f"{_location_label(row)}: {qty} entered but only {row_available} available",
+                field="quantity",
+            )
+
+    # 1. Consume the claim for what is about to leave. Partial by design: a short confirm keeps the
+    #    remainder claimed, so the un-picked units are not quietly handed to whoever asks next.
+    holder = find_reservation_holder(session, pr)
+    if holder is not None and entered_by_combo:
+        reservations.consume_reservations(session, holder[0], holder[1], entered_by_combo)
+
+    # 2. Deduct the dictated rows, one audit and one APPLIED pick line each.
+    warehouse_codes = _warehouse_codes(session, [row.warehouse_id for row in rows.values()])
+    applied_total = 0
+    for (cat, code, loc_id), qty in sorted(entered.items(), key=lambda kv: (kv[0][0], kv[0][1], str(kv[0][2]))):
+        row = rows[loc_id]
+        old_qty = row.quantity
+        row.quantity -= qty
+        applied_total += qty
+        session.add(
+            PullPickLineModel(
+                id=uuid.uuid4(),
+                pull_request_id=pr.id,
+                hardware_category=cat,
+                product_code=code,
+                inventory_location_id=row.id,
+                quantity=qty,
+                state=PullPickLineState.APPLIED,
+                entered_by=picked_by,
+                entered_at=now,
+                applied_at=now,
+            )
+        )
+        _log_audit_event(
+            session,
+            project_id=pr.project_id,
+            entity_type=AuditEntityType.INVENTORY_LOCATION,
+            entity_id=row.id,
+            action=AuditAction.PULL_DEDUCTION,
+            performed_by=picked_by,
+            detail={
+                "oldQuantity": old_qty,
+                "newQuantity": row.quantity,
+                "deducted": qty,
+                "pullRequestId": str(pr.id),
+                "pullRequestNumber": pr.request_number,
+                "hardwareCategory": cat,
+                "productCode": code,
+                "warehouseId": str(row.warehouse_id) if row.warehouse_id else None,
+                "warehouseCode": warehouse_codes.get(row.warehouse_id),
+                "aisle": row.aisle,
+                "row": row.row,
+                "bay": row.bay,
+            },
+        )
+
+    # The draft was the transcription in progress; the confirmation supersedes it whole, including
+    # on a short confirm - what was entered is now APPLIED, and the remainder is keyed fresh.
+    session.execute(
+        delete(PullPickLineModel).where(
+            PullPickLineModel.pull_request_id == pr.id,
+            PullPickLineModel.state == PullPickLineState.DRAFT,
+        )
+    )
+    session.flush()
+
+    covered = {combo: already.get(combo, 0) + entered_by_combo.get(combo, 0) for combo in required}
+    short_combos = {combo: required[combo] - picked for combo, picked in covered.items() if picked < required[combo]}
+
+    if not short_combos:
+        pr.picked_at = now
+        pr.picked_by = picked_by
+        session.flush()
+        return ConfirmPickResult(
+            pull_request=pr, outcome="PICKED", shortfalls=[], notification=None, applied_quantity=applied_total
+        )
+
+    shortfalls = _pick_shortfalls(session, pr, required, covered, short_combos, holder)
+    notif = None
+    # One open signal per pull, not one per confirmation: a picker keying a big sheet in three
+    # sittings would otherwise raise three identical backfill notifications for the same gap.
+    if not notification_service.has_unread_notification_for_pull(session, pr.id, NotificationType.INVENTORY_SHORTFALL):
         notif = notification_service.notify_po_shortfall(
             session,
             project_id=pr.project_id,
             request_number=pr.request_number,
-            shortfalls=result.shortfalls,
+            shortfalls=shortfalls,
+            pull_request_id=pr.id,
         )
-        # The audit below is an *integrity* signal, so it has to fire only for a pull that genuinely
-        # held a claim for everything it is asking for. Having a source request is not the same as
-        # holding reservations: the #342 backfill deliberately left the whole pre-existing in-flight
-        # population unreserved and flagged rather than inventing claims for it, and a cancel that
-        # could not re-reserve leaves a live request in the same state. Those are the *expected*
-        # shortfall population - flagging every one of them as an integrity error is exactly how a
-        # real one gets missed.
-        #
-        # A replacement pull is expected-shortfall by design and is excluded outright. It reserves
-        # `min(free stock, condemned)` at flag time, so being *partly* covered is its normal resting
-        # state - there was no spare on the shelf, which is why a replacement was needed. It holds a
-        # non-zero claim and still comes up short every time until the backfill lands, and that is
-        # the PO loop working, not an inventory discrepancy.
-        reserved_path = holder is not None and holder[0] is not ReservationSource.REPLACEMENT_PULL
-        if reserved_path and reservations.get_reserved_total(session, holder[0], holder[1]) > 0:
-            # The reserved path is not supposed to be able to come up short. Record it against the
-            # pull so the discrepancy is investigable rather than indistinguishable from the normal
-            # PR-REPL / legacy shortfall the approver sees.
-            _log_audit_event(
-                session,
-                project_id=pr.project_id,
-                entity_type=AuditEntityType.INVENTORY_LOCATION,
-                entity_id=pr.id,
-                action=AuditAction.PULL_DEDUCTION,
-                performed_by=approved_by,
-                detail={
-                    "integrityError": "RESERVED_PULL_SHORT",
-                    "pullRequestNumber": pr.request_number,
-                    "reservationSource": holder[0].value,
-                    "reservationRequestId": str(holder[1]),
-                    "shortfalls": [
-                        {
-                            "hardwareCategory": s.hardware_category,
-                            "productCode": s.product_code,
-                            "requested": s.requested,
-                            "available": s.available,
-                            "short": s.short,
-                        }
-                        for s in result.shortfalls
-                    ],
-                },
-            )
-        return (pr, "INSUFFICIENT", notif, result.shortfalls)
 
-    # 5. If sufficient: consume the source request's claim and deduct FIFO, in this transaction.
-    #    Consumption happens before the deduction so the two can never be observed apart: a reader
-    #    between them would otherwise see the units both reserved and already gone.
-    if holder is not None:
-        reservations.release_reservations(session, holder[0], holder[1])
+    # An *integrity* signal, so it must fire only for a pull that genuinely held a claim for
+    # everything it is asking for. Having a source request is not the same as holding reservations:
+    # the #342 backfill deliberately left the whole pre-existing in-flight population unreserved and
+    # flagged rather than inventing claims for it, and a cancel that could not re-reserve leaves a
+    # live request in the same state. Those are the *expected* shortfall population - flagging every
+    # one of them is exactly how a real discrepancy gets missed.
+    #
+    # A replacement pull is expected-shortfall by design and is excluded outright: it reserves
+    # `min(free stock, condemned)` at flag time, so being partly covered is its normal resting state.
+    reserved_path = holder is not None and holder[0] is not ReservationSource.REPLACEMENT_PULL
+    if reserved_path and reservations.get_reserved_total(session, holder[0], holder[1]) > 0:
+        _log_audit_event(
+            session,
+            project_id=pr.project_id,
+            entity_type=AuditEntityType.PULL_REQUEST,
+            entity_id=pr.id,
+            action=AuditAction.PULL_DEDUCTION,
+            performed_by=picked_by,
+            detail={
+                "integrityError": "RESERVED_PULL_SHORT",
+                "pullRequestNumber": pr.request_number,
+                "reservationSource": holder[0].value,
+                "reservationRequestId": str(holder[1]),
+                "shortfalls": [
+                    {
+                        "hardwareCategory": s.hardware_category,
+                        "productCode": s.product_code,
+                        "requested": s.requested,
+                        "available": s.available,
+                        "short": s.short,
+                    }
+                    for s in shortfalls
+                ],
+            },
+        )
 
-    pr.status = PullRequestStatus.IN_PROGRESS
-    pr.assigned_to = approved_by
-    pr.approved_at = now
+    return ConfirmPickResult(
+        pull_request=pr,
+        outcome="SHORT",
+        shortfalls=shortfalls,
+        notification=notif,
+        applied_quantity=applied_total,
+    )
 
-    if needs:
-        inv_by_combo = result.inventory_by_combo
-        needed_combos: dict[tuple[str, str], int] = defaultdict(int)
-        for cat, code, qty in needs:
-            needed_combos[(cat, code)] += qty
 
-        for (cat, code), requested in needed_combos.items():
-            # Sort by received_at ASC (oldest first) for FIFO
-            rows = sorted(inv_by_combo.get((cat, code), []), key=lambda r: r.received_at)
-            remaining = requested
-            for row in rows:
-                if remaining <= 0:
-                    break
-                # Deficient units must stay on the row — only available units can be pulled
-                row_available = row.quantity - (row.deficient_quantity or 0)
-                if row_available <= 0:
-                    continue
-                deduct = min(remaining, row_available)
-                old_qty = row.quantity
-                row.quantity -= deduct
-                remaining -= deduct
-                _log_audit_event(
-                    session,
-                    project_id=pr.project_id,
-                    entity_type=AuditEntityType.INVENTORY_LOCATION,
-                    entity_id=row.id,
-                    action=AuditAction.PULL_DEDUCTION,
-                    performed_by=approved_by,
-                    detail={
-                        "oldQuantity": old_qty,
-                        "newQuantity": row.quantity,
-                        "deducted": deduct,
-                        "pullRequestNumber": pr.request_number,
-                        "hardwareCategory": cat,
-                        "productCode": code,
-                    },
-                )
+def _location_label(row: InventoryLocationModel) -> str:
+    parts = [p for p in (row.aisle, row.row, row.bay) if p]
+    return "-".join(parts) if parts else "Unlocated"
 
-    # 6. Lock Opening_Item rows if any
-    if opening_item_ids:
-        lock_rows(session, OpeningItemModel, opening_item_ids)
 
-    return (pr, "APPROVED", None, [])
+def _warehouse_codes(session: Session, warehouse_ids: Iterable[uuid.UUID | None]) -> dict[uuid.UUID, str]:
+    """Codes for the warehouses the picked rows sit in. One query for the whole confirmation."""
+    ids = sorted({wid for wid in warehouse_ids if wid is not None})
+    if not ids:
+        return {}
+    return {
+        wid: code
+        for wid, code in session.execute(
+            select(WarehouseModel.id, WarehouseModel.code).where(WarehouseModel.id.in_(ids))
+        ).all()
+    }
+
+
+def _pick_shortfalls(
+    session: Session,
+    pr: PullRequestModel,
+    required: dict[tuple[str, str], int],
+    covered: dict[tuple[str, str], int],
+    short_combos: dict[tuple[str, str], int],
+    holder: tuple[ReservationSource, uuid.UUID] | None,
+) -> list[Shortfall]:
+    """The gap, reported the way the approve-time gate always reported it.
+
+    `available` is read *after* the deduction, so it answers the question purchasing actually has -
+    what is left in the project for this product right now - rather than restating what the picker
+    already knows they could not find. Two grouped aggregates for the whole confirmation."""
+    combos = sorted(short_combos)
+    on_hand: dict[tuple[str, str], int] = {}
+    rows = session.execute(
+        select(
+            InventoryLocationModel.hardware_category,
+            InventoryLocationModel.product_code,
+            func.coalesce(
+                func.sum(InventoryLocationModel.quantity - func.coalesce(InventoryLocationModel.deficient_quantity, 0)),
+                0,
+            ),
+        )
+        .where(
+            InventoryLocationModel.project_id == pr.project_id,
+            or_(
+                *[
+                    and_(
+                        InventoryLocationModel.hardware_category == cat,
+                        InventoryLocationModel.product_code == code,
+                    )
+                    for (cat, code) in combos
+                ]
+            ),
+        )
+        .group_by(InventoryLocationModel.hardware_category, InventoryLocationModel.product_code)
+    ).all()
+    for cat, code, total in rows:
+        on_hand[(cat, code)] = int(total or 0)
+
+    exclude_source, exclude_request_id = holder or (None, None)
+    reserved = reservations.get_reserved_quantities(
+        session,
+        pr.project_id,
+        combos,
+        exclude_source=exclude_source,
+        exclude_request_id=exclude_request_id,
+    )
+
+    return [
+        Shortfall(
+            hardware_category=cat,
+            product_code=code,
+            requested=required[(cat, code)],
+            available=max(0, on_hand.get((cat, code), 0) - reserved.get((cat, code), 0)),
+            short=required[(cat, code)] - covered[(cat, code)],
+            reserved=reserved.get((cat, code), 0),
+        )
+        for (cat, code) in combos
+    ]
+
+
+def set_pull_item_fetched(
+    session: Session,
+    item_id: uuid.UUID,
+    fetched: bool,
+    fetched_by: str,
+) -> PullRequestItemModel:
+    """Tick (or untick) one assembled leaf off the fetch list (#367).
+
+    Only on an OPENING_ITEM line of a pull that is being picked. A LOOSE line has a quantity, not a
+    check-off, and a pull that is finished or cancelled is not being fetched from any more - both
+    are refused rather than silently ignored, because a client offering the control on either is a
+    bug worth surfacing.
+
+    Unticking is supported deliberately: a picker who ticked the wrong leaf must be able to say so,
+    and nothing about a check-off is irreversible - no stock moves here.
+    """
+    item = session.get(PullRequestItemModel, item_id)
+    if item is None:
+        raise NotFoundError(f"Pull request item {item_id} not found")
+    if item.item_type != PullRequestItemType.OPENING_ITEM:
+        raise ValidationError(
+            "Only assembled-leaf lines are fetched; loose hardware is picked by quantity.",
+            field="itemId",
+        )
+    locked = lock_rows(session, PullRequestModel, [item.pull_request_id])
+    if not locked:
+        raise NotFoundError(f"Pull request {item.pull_request_id} not found")
+    pr = locked[0]
+    if pr.status != PullRequestStatus.IN_PROGRESS:
+        raise InvalidStateTransitionError(f"Pull request must be In_Progress to record fetches, got {pr.status.value}")
+
+    if fetched:
+        item.fetched_at = datetime.utcnow()
+        item.fetched_by = fetched_by
+    else:
+        item.fetched_at = None
+        item.fetched_by = None
+    session.flush()
+    return item
 
 
 def _apply_replacement_arrivals(session: Session, pr: PullRequestModel) -> None:
@@ -582,10 +1214,24 @@ def _apply_replacement_arrivals(session: Session, pr: PullRequestModel) -> None:
         )
 
 
+def _require_picked(pr: PullRequestModel, action: str) -> None:
+    """Refuse anything downstream of the pick until the pick has actually been confirmed (#367).
+
+    Staging says a cart is built and completion hands the pull over; both are claims about physical
+    hardware. Before per-location picking they were safe by construction, because approval had
+    already deducted. Now approval only opens the pull, so without this gate a pull could be staged -
+    making its openings assignable on the shop floor - while its stock was still on the shelf and
+    still claimable by the next request."""
+    if pr.picked_at is None:
+        raise InvalidStateTransitionError(
+            f"Pull request {pr.request_number} has not been picked yet - confirm the pick before you {action} it."
+        )
+
+
 def complete_pull_request(session: Session, pr_id: uuid.UUID, completed_by: str | None = None) -> PullRequestModel:
     """
     Complete a pull request:
-    1. Validate status == In_Progress
+    1. Validate status == In_Progress and the pick has been confirmed (#367)
     2. Set status=Completed, completed_at=now()
     3. Create notification
     4. Restore any leaf expectations the pull's replacement lines are owed to (#341)
@@ -613,6 +1259,7 @@ def complete_pull_request(session: Session, pr_id: uuid.UUID, completed_by: str 
 
     if pr.status != PullRequestStatus.IN_PROGRESS:
         raise InvalidStateTransitionError(f"Pull request must be In_Progress to complete, got {pr.status.value}")
+    _require_picked(pr, "complete")
 
     now = datetime.utcnow()
     pr.status = PullRequestStatus.COMPLETED
@@ -768,6 +1415,31 @@ def get_pull_staging_summaries(session: Session, pr_ids: Iterable[uuid.UUID]) ->
     }
 
 
+def get_partially_picked_pull_ids(session: Session, pr_ids: Iterable[uuid.UUID]) -> set[uuid.UUID]:
+    """Which of these pulls have picked *something* without being finished (#367).
+
+    The queue draws a phase per row - Pending / Picking / Short / Staging n of m / Completed - and
+    "Short" is exactly "un-picked, but stock has already come off the shelf for it". That is one
+    grouped EXISTS over `pull_pick_lines` for the whole page, never a lookup per row (CLAUDE.md perf
+    rules): the pull-request queue is the screen that made the resolver N+1 a production incident.
+
+    Callers pass only the un-picked pulls; a pull with `picked_at` set is finished picking by
+    definition and its answer would be meaningless.
+    """
+    ids = [pid for pid in pr_ids if pid is not None]
+    if not ids:
+        return set()
+    rows = session.execute(
+        select(PullPickLineModel.pull_request_id)
+        .where(
+            PullPickLineModel.pull_request_id.in_(ids),
+            PullPickLineModel.state == PullPickLineState.APPLIED,
+        )
+        .group_by(PullPickLineModel.pull_request_id)
+    ).all()
+    return {row[0] for row in rows}
+
+
 def get_pull_request_openings(session: Session, pr_id: uuid.UUID) -> list[ShopAssemblyOpening]:
     """The shop-assembly openings a pull covers, items eager-loaded, for the staging checklist (#343).
 
@@ -800,7 +1472,7 @@ def stage_pull_openings(
     opening_ids: Iterable[uuid.UUID],
     staged_by: str,
 ) -> StageResult:
-    """Confirm that the cart(s) for these openings of an approved shop-assembly pull are built (#343).
+    """Confirm that the cart(s) for these openings of a picked shop-assembly pull are built (#343).
 
     The warehouse stages a pull opening by opening; before this, `pull_status` was flipped for every
     opening at once when the whole pull was marked pulled, so an opening picked first thing in the
@@ -809,14 +1481,18 @@ def stage_pull_openings(
     `record_assembly_progress` and `complete_opening` all gate on the opening's own `pull_status`,
     so nothing else has to change for the assembly floor to see it.
 
-    **Nothing moves in inventory here.** The FIFO deduction and the consumption of the source
-    request's reservation both happen at approval and stay there (see `approve_pull_request`).
-    Approval is the moment the pull is committed: the reservation the request has held since creation
-    becomes the deduction, atomically, under one set of row locks. Deducting per opening instead
-    would mean an approved-but-unstaged opening held neither a reservation nor a deduction - its
-    hardware would read as free and could be claimed by the next request, which is the exact hole
-    #342 closed - and it would reintroduce a shortfall at staging time, where the only recovery is a
-    half-deducted pull. Staging is progress tracking; `cancel_pull_request` is what reverses stock.
+    **Nothing moves in inventory here.** The deduction and the consumption of the source request's
+    reservation both happen at the pick confirmation and stay there (see `confirm_pick`). That is the
+    moment the pull is committed: the reservation the request has held since creation becomes the
+    deduction, atomically, under one set of row locks. Deducting per opening instead would mean a
+    picked-but-unstaged opening held neither a reservation nor a deduction - its hardware would read
+    as free and could be claimed by the next request, which is the exact hole #342 closed - and it
+    would reintroduce a shortfall at staging time, where the only recovery is a half-deducted pull.
+    Staging is progress tracking; `cancel_pull_request` is what reverses stock.
+
+    Which is also why staging is gated on `picked_at` (#367). Approval no longer moves anything, so
+    without that gate a cart could be declared built - and its opening handed to the assembly floor -
+    off hardware still sitting on the shelf.
 
     Staging the last opening completes the pull, by calling `complete_pull_request` rather than
     reimplementing it, so the completion notification and the replacement-arrival application fire
@@ -838,6 +1514,7 @@ def stage_pull_openings(
         )
     if pr.status != PullRequestStatus.IN_PROGRESS:
         raise InvalidStateTransitionError(f"Pull request must be In_Progress to stage openings, got {pr.status.value}")
+    _require_picked(pr, "stage")
 
     openings = lock_rows(session, ShopAssemblyOpening, ids)
     by_id = {o.id: o for o in openings}
@@ -1001,16 +1678,147 @@ def _return_units_to_project_inventory(
     return il
 
 
+def _restock_cancelled_pull(
+    session: Session,
+    pr: PullRequestModel,
+    needs_by_combo: dict[tuple[str, str], int],
+    cancelled_by: str,
+    reason: str | None,
+) -> list[RestockedLine]:
+    """Put a cancelled pull's hardware back, on the rows it actually came off where that is known.
+
+    Three shapes, and which one applies is decided by evidence rather than by the pull's age:
+
+    - **Picked under #367** (APPLIED pick lines exist): every unit goes back on the exact
+      `InventoryLocation` it was taken from, one PULL_RESTOCK audit per row. The picker recorded
+      where each handful came from, so there is no reason to guess - and a bin that gave up twelve
+      hinges gets twelve hinges back, which is what makes a physical recount agree with the system.
+    - **Picked under the old model** (`picked_at` stamped, no pick lines - the migration's backfill
+      population): the per-combo return, exactly as before. The old FIFO deduction spread across
+      whichever rows were oldest and kept no record, so the units land on the project's newest row
+      for the combo. That is defensible because inventory is fungible
+      (docs/HARDWARE_IDENTITY_LIFECYCLE.md) and conservative for future FIFO: older stock still goes
+      out first.
+    - **Never picked** (no `picked_at`, no applied lines): nothing is restocked, because nothing ever
+      left. Cancelling here is just closing a pull the warehouse opened and did not work; any DRAFT
+      lines are discarded with it, since a draft is a note about hardware, not a hold on it.
+    """
+    applied = [line for line in _pick_lines(session, pr.id, PullPickLineState.APPLIED) if line.quantity > 0]
+
+    if not applied:
+        if pr.picked_at is None:
+            return []
+        # Legacy: deducted before pick lines existed, so there is nothing to reverse row by row.
+        restocked: list[RestockedLine] = []
+        for (cat, code), qty in sorted(needs_by_combo.items()):
+            il = _return_units_to_project_inventory(session, pr.project_id, cat, code, qty)
+            restocked.append(RestockedLine(hardware_category=cat, product_code=code, quantity=qty))
+            _log_audit_event(
+                session,
+                project_id=pr.project_id,
+                entity_type=AuditEntityType.INVENTORY_LOCATION,
+                entity_id=il.id,
+                action=AuditAction.PULL_RESTOCK,
+                performed_by=cancelled_by,
+                detail={
+                    "pullRequestId": str(pr.id),
+                    "pullRequestNumber": pr.request_number,
+                    "restockedQuantity": qty,
+                    "newQuantity": il.quantity,
+                    "hardwareCategory": cat,
+                    "productCode": code,
+                    "reasonText": reason,
+                },
+            )
+        return restocked
+
+    by_row: dict[tuple[str, str, uuid.UUID], int] = defaultdict(int)
+    orphaned: dict[tuple[str, str], int] = defaultdict(int)
+    for line in applied:
+        if line.inventory_location_id is None:
+            orphaned[(line.hardware_category, line.product_code)] += line.quantity
+        else:
+            by_row[(line.hardware_category, line.product_code, line.inventory_location_id)] += line.quantity
+
+    totals: dict[tuple[str, str], int] = defaultdict(int)
+    rows = {
+        row.id: row
+        for row in lock_rows(
+            session,
+            InventoryLocationModel,
+            sorted({loc_id for (_cat, _code, loc_id) in by_row}),
+        )
+    }
+    for (cat, code, loc_id), qty in sorted(by_row.items(), key=lambda kv: (kv[0][0], kv[0][1], str(kv[0][2]))):
+        row = rows.get(loc_id)
+        if row is None:
+            # The FK is ON DELETE SET NULL, so this should be unreachable - but a row that has gone
+            # missing another way must not swallow the units.
+            orphaned[(cat, code)] += qty
+            continue
+        row.quantity += qty
+        totals[(cat, code)] += qty
+        _log_audit_event(
+            session,
+            project_id=pr.project_id,
+            entity_type=AuditEntityType.INVENTORY_LOCATION,
+            entity_id=row.id,
+            action=AuditAction.PULL_RESTOCK,
+            performed_by=cancelled_by,
+            detail={
+                "pullRequestId": str(pr.id),
+                "pullRequestNumber": pr.request_number,
+                "restockedQuantity": qty,
+                "newQuantity": row.quantity,
+                "hardwareCategory": cat,
+                "productCode": code,
+                "aisle": row.aisle,
+                "row": row.row,
+                "bay": row.bay,
+                "returnedToSourceRow": True,
+                "reasonText": reason,
+            },
+        )
+
+    for (cat, code), qty in sorted(orphaned.items()):
+        il = _return_units_to_project_inventory(session, pr.project_id, cat, code, qty)
+        totals[(cat, code)] += qty
+        _log_audit_event(
+            session,
+            project_id=pr.project_id,
+            entity_type=AuditEntityType.INVENTORY_LOCATION,
+            entity_id=il.id,
+            action=AuditAction.PULL_RESTOCK,
+            performed_by=cancelled_by,
+            detail={
+                "pullRequestId": str(pr.id),
+                "pullRequestNumber": pr.request_number,
+                "restockedQuantity": qty,
+                "newQuantity": il.quantity,
+                "hardwareCategory": cat,
+                "productCode": code,
+                "returnedToSourceRow": False,
+                "reasonText": reason,
+            },
+        )
+
+    session.flush()
+    return [
+        RestockedLine(hardware_category=cat, product_code=code, quantity=qty)
+        for (cat, code), qty in sorted(totals.items())
+    ]
+
+
 def cancel_pull_request(
     session: Session,
     pr_id: uuid.UUID,
     cancelled_by: str,
     reason: str | None = None,
 ) -> CancelResult:
-    """Cancel an approved pull, put its hardware back on the shelf, and hand the source request back
+    """Cancel a started pull, put its hardware back on the shelf, and hand the source request back
     for re-acceptance (#343).
 
-    Before this there was no way out of an approved pull: inventory had been deducted and
+    Before this there was no way out of a started pull: inventory had been deducted and
     `PullRequestStatus.CANCELLED` was an enum value nothing ever set, so a pull raised against the
     wrong project or superseded by a schedule revision could only be walked forward.
 
@@ -1036,20 +1844,25 @@ def cancel_pull_request(
     shipping-out pull has already flipped its leaves to SHIP_READY and a completed PR-REPL pull has
     already given leaves their expectation back; unwinding those is not this function's job.
 
-    **The source request goes back to PENDING**, with its reservation re-created from the returned
-    quantities and re-checked against availability first. The claim was consumed at approval, so
-    re-creating it is a new claim competing with everyone else's: if stock was written off or
-    condemned under it in the meantime the re-check comes up short, and rather than write a partial
-    claim that reads as covered, the request is left unreserved and flagged via `integrity_note` -
-    the same honest-and-flagged shape the #342 backfill uses.
+    **How much comes back depends on how much went out** (#367). A fully picked pull returns
+    everything, to the exact rows it was taken from; a short-picked one returns only what was picked;
+    a pull cancelled before its pick returns nothing, because nothing left. See
+    `_restock_cancelled_pull`.
+
+    **The source request goes back to PENDING**, with its reservation re-created from what it will
+    need on re-acceptance - its full requirement, not what happened to come back - and re-checked
+    against availability first. Any claim the pull still holds is released before that, because since
+    #367 a cancellable pull may still be holding one. If stock was written off or condemned in the
+    meantime the re-check comes up short, and rather than write a partial claim that reads as
+    covered, the request is left unreserved and flagged via `integrity_note` - the same
+    honest-and-flagged shape the #342 backfill uses.
 
     **A PR-REPL replacement pull has no source request**, so cancelling one restocks and re-creates
-    nothing. It does hold a claim of its own now (minted when the defect was flagged), but by the
-    time it can be cancelled that claim has already been *consumed* at approval - only an approved
-    pull is cancellable, and approval spends the reservation - so there is nothing left to release
-    and nothing to hand back to. The leaf's `deficient_quantity` is untouched and the expectation
-    stays on the checklist line; the replacement simply has to be requested again. A **PENDING**
-    replacement pull is not cancelled but discarded, and that path does release.
+    nothing. It does hold a claim of its own (minted when the defect was flagged); that claim is
+    released here, whether it was consumed by a pick or never spent at all. The leaf's
+    `deficient_quantity` is untouched and the expectation stays on the checklist line; the
+    replacement simply has to be requested again. A **PENDING** replacement pull is not cancelled but
+    discarded, and that path releases too.
     """
     if not cancelled_by:
         raise ValidationError("cancelled_by is required", field="cancelled_by")
@@ -1088,7 +1901,7 @@ def cancel_pull_request(
     cancellable_from_completed = pr.source == PullRequestSource.SHOP_ASSEMBLY and bool(openings)
     if pr.status == PullRequestStatus.PENDING:
         raise InvalidStateTransitionError(
-            "This pull has not been approved yet, so nothing has left inventory. Reopen or reject "
+            "This pull has not been started yet, so nothing has left inventory. Reopen or reject "
             "the source request instead."
         )
     if pr.status == PullRequestStatus.CANCELLED:
@@ -1120,7 +1933,7 @@ def cancel_pull_request(
     now = datetime.utcnow()
 
     # 1. Inverse inventory write. Only LOOSE lines ever left inventory; an OPENING_ITEM line moves an
-    #    assembled leaf, which approval only locked.
+    #    assembled leaf, which the pick only fetches.
     needs_by_combo: dict[tuple[str, str], int] = defaultdict(int)
     for item in items:
         if item.item_type != PullRequestItemType.LOOSE:
@@ -1129,27 +1942,7 @@ def cancel_pull_request(
             continue
         needs_by_combo[(item.hardware_category, item.product_code)] += item.requested_quantity
 
-    restocked: list[RestockedLine] = []
-    for (cat, code), qty in sorted(needs_by_combo.items()):
-        il = _return_units_to_project_inventory(session, pr.project_id, cat, code, qty)
-        restocked.append(RestockedLine(hardware_category=cat, product_code=code, quantity=qty))
-        _log_audit_event(
-            session,
-            project_id=pr.project_id,
-            entity_type=AuditEntityType.INVENTORY_LOCATION,
-            entity_id=il.id,
-            action=AuditAction.PULL_RESTOCK,
-            performed_by=cancelled_by,
-            detail={
-                "pullRequestId": str(pr.id),
-                "pullRequestNumber": pr.request_number,
-                "restockedQuantity": qty,
-                "newQuantity": il.quantity,
-                "hardwareCategory": cat,
-                "productCode": code,
-                "reasonText": reason,
-            },
-        )
+    restocked = _restock_cancelled_pull(session, pr, needs_by_combo, cancelled_by, reason)
 
     # 2. Release the openings: back to NOT_PULLED, unstaged, unassigned, and off the cancelled pull so
     #    a re-accept re-links them the way the accept path already does.
@@ -1170,8 +1963,28 @@ def cancel_pull_request(
     pr.cancellation_reason = reason
     session.flush()
 
-    # 4. Hand the source request back, and re-claim the returned hardware for it if it is still free.
-    #    The availability check runs *after* the restock, so the units just returned count towards it.
+    # 4. Drop whatever claim the pull still holds, so the re-creation below cannot stack on top of it.
+    #    Before #367 this was structurally impossible: approval consumed the claim whole, so a
+    #    cancellable pull held nothing. Now the claim is consumed *as the pick is confirmed*, so a
+    #    pull cancelled before its pick still holds all of it and one cancelled after a short pick
+    #    holds the un-picked remainder. Re-creating the request's full need on top of either would
+    #    double-claim the same units. Released via `find_reservation_holder` rather than the source
+    #    request, because that is the one lookup that also covers a PR-REPL pull holding its own.
+    holder = find_reservation_holder(session, pr)
+    if holder is not None:
+        reservations.release_reservations(session, holder[0], holder[1])
+    # A draft is a transcription in progress, not a hold on anything - it dies with the pull.
+    session.execute(
+        delete(PullPickLineModel).where(
+            PullPickLineModel.pull_request_id == pr.id,
+            PullPickLineModel.state == PullPickLineState.DRAFT,
+        )
+    )
+
+    # 5. Hand the source request back, and re-claim the hardware for it if it is still free.
+    #    The availability check runs *after* the restock, so the units just returned count towards it,
+    #    and `needs_by_combo` is what the request will need again on re-acceptance - not what came
+    #    back, which on a short-picked pull is less.
     source_request, source_reservation = _find_source_request(session, pr)
     returned_to_pending = False
     reservations_recreated = False
@@ -1331,5 +2144,9 @@ def discard_pending_pull_request(session: Session, pr_id: uuid.UUID | None) -> N
     reservations.release_reservations(session, ReservationSource.REPLACEMENT_PULL, pr.id)
     # Bulk-delete the items in one statement (rather than a load + per-row DELETE), then the PR itself.
     session.execute(delete(PullRequestItemModel).where(PullRequestItemModel.pull_request_id == pr.id))
+    # A PENDING pull cannot have pick lines - `save_pick_draft` and `confirm_pick` both require
+    # IN_PROGRESS - so this is belt and braces against a future path that lets one exist, not a live
+    # case. The FK cascades on delete anyway; stating it keeps the session's identity map honest.
+    session.execute(delete(PullPickLineModel).where(PullPickLineModel.pull_request_id == pr.id))
     session.delete(pr)
     session.flush()
