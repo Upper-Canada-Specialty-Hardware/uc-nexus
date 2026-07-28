@@ -13,9 +13,7 @@ import {
   ToggleButton,
   ToggleButtonGroup,
 } from '@mui/material';
-import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
-import CloseIcon from '@mui/icons-material/Close';
-import AddIcon from '@mui/icons-material/Add';
+import { ChevronDown, Plus, X } from 'lucide-react';
 import {
   DataGrid,
   type GridColDef,
@@ -23,6 +21,7 @@ import {
   type GridRenderCellParams,
 } from '@mui/x-data-grid';
 import type { ClassificationOption } from './types';
+import { monoSx, microLabelSx } from '../../theme';
 
 export interface ClassificationRow {
   id: string;
@@ -120,10 +119,10 @@ function buildGroupTree(rows: ClassificationRow[], fields: GroupByField[]): Map<
 }
 
 const ALL_COLUMNS: GridColDef[] = [
-  { field: 'openingNumber', headerName: 'Opening #', flex: 0.7 },
-  { field: 'productCode', headerName: 'Product Code', flex: 1, cellClassName: 'wrap-cell' },
+  { field: 'openingNumber', headerName: 'Opening #', flex: 0.7, cellClassName: 'mono-cell' },
+  { field: 'productCode', headerName: 'Product Code', flex: 1, cellClassName: 'wrap-cell mono-cell' },
   { field: 'hardwareCategory', headerName: 'Hardware Category', flex: 1, cellClassName: 'wrap-cell' },
-  { field: 'vendorNo', headerName: 'Manufacturer', flex: 0.8 },
+  { field: 'vendorNo', headerName: 'Manufacturer', flex: 0.8, cellClassName: 'mono-cell' },
   {
     field: 'listPrice',
     headerName: 'List Price',
@@ -215,12 +214,13 @@ function LeafGrid({ rows, columns, options, onClassify, readOnly, siteShop }: Le
           lineHeight: 1.4,
           py: 0.75,
         },
+        '& .MuiDataGrid-cell.mono-cell': monoSx,
       }}
       slots={{
         toolbar: !readOnly && selectedCount > 0
           ? () => (
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 1, py: 0.5, flexWrap: 'wrap' }}>
-                <Typography variant="body2">{selectedCount} selected</Typography>
+                <Typography sx={microLabelSx}>{selectedCount} selected</Typography>
                 {options.map((opt) => (
                   <Button key={opt.value} size="small" color={opt.color} onClick={() => handleBulkClassify(opt.value)}>
                     Classify as {opt.label}
@@ -281,9 +281,9 @@ function GroupAccordion({ node, columns, options, onClassify, readOnly, depth, s
       TransitionProps={{ unmountOnExit: true }}
       sx={{ pl: depth * 2 }}
     >
-      <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+      <AccordionSummary expandIcon={<ChevronDown size={18} strokeWidth={1.75} />}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%', mr: 1 }}>
-          <Typography sx={{ fontWeight: 700 }}>{node.label}</Typography>
+          <Typography sx={{ fontWeight: 700, ...monoSx, fontSize: '0.875rem' }}>{node.label}</Typography>
           <Chip
             size="small"
             label={
@@ -494,9 +494,7 @@ export default function ClassificationGrid({
       <Box sx={{ mb: 2, display: 'flex', flexDirection: 'column', gap: 1 }}>
         {groupByFields.map((field, index) => (
           <Box key={index} sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <Typography variant="body2" color="text.secondary" sx={{ minWidth: 56 }}>
-              Level {index + 1}:
-            </Typography>
+            <Typography sx={{ ...microLabelSx, minWidth: 56 }}>Level {index + 1}</Typography>
             <TextField
               select
               size="small"
@@ -510,15 +508,19 @@ export default function ClassificationGrid({
                   <MenuItem key={opt.value} value={opt.value}>{opt.label}</MenuItem>
                 ))}
             </TextField>
-            <IconButton size="small" onClick={() => handleRemoveLevel(index)}>
-              <CloseIcon fontSize="small" />
+            <IconButton
+              size="small"
+              aria-label={`Remove group level ${index + 1}`}
+              onClick={() => handleRemoveLevel(index)}
+            >
+              <X size={16} strokeWidth={1.75} />
             </IconButton>
           </Box>
         ))}
         {groupByFields.length < GROUP_BY_OPTIONS.length && (
           <Button
             size="small"
-            startIcon={<AddIcon />}
+            startIcon={<Plus size={18} strokeWidth={1.75} />}
             onClick={handleAddLevel}
             sx={{ alignSelf: 'flex-start' }}
           >

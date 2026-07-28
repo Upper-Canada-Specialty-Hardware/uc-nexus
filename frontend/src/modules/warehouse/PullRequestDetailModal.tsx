@@ -14,8 +14,7 @@ import {
   TextField,
   Divider,
 } from '@mui/material';
-import CheckCircleIcon from '@mui/icons-material/CheckCircle';
-import CancelIcon from '@mui/icons-material/Cancel';
+import { CircleCheck, CircleX } from 'lucide-react';
 import { useMutation, useQuery } from '@apollo/client/react';
 import {
   APPROVE_PULL_REQUEST,
@@ -36,6 +35,7 @@ import PullStagingPanel from './PullStagingPanel';
 import { isCancellable, stagingChipColor, stagingChipLabel } from './pullStaging';
 import type { PullRequest, PullRequestItem } from './PullRequestQueue';
 import { leafLabel } from '../../utils/leaf';
+import { microLabelSx, monoSx, tabularSx } from '../../theme';
 
 // --- Status config ---
 
@@ -104,14 +104,50 @@ interface PullRequestDetailModalProps {
 
 // --- Helper component ---
 
-function InfoRow({ label, value }: { label: string; value: string }) {
+/** One field of the pull's identity card. Two columns, one line each — no 200px label gutter. */
+function InfoRow({
+  label,
+  value,
+  mono,
+  tabular,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+  tabular?: boolean;
+}) {
   return (
-    <Box sx={{ display: 'flex', py: 0.5 }}>
-      <Typography variant="body2" color="text.secondary" sx={{ width: 200, flexShrink: 0 }}>
-        {label}:
+    <Box>
+      <Typography component="div" sx={microLabelSx}>
+        {label}
       </Typography>
-      <Typography variant="body2">{value}</Typography>
+      <Typography
+        component="div"
+        variant="body2"
+        sx={{ ...(mono ? monoSx : {}), ...(tabular ? tabularSx : {}) }}
+      >
+        {value}
+      </Typography>
     </Box>
+  );
+}
+
+/** A ruled break between the modal's sections, with the section's own micro-label. */
+function SectionHeading({ children, sx }: { children: React.ReactNode; sx?: object }) {
+  return (
+    <Typography
+      component="div"
+      sx={{
+        ...microLabelSx,
+        pb: 0.75,
+        mb: 1.5,
+        borderBottom: '2px solid',
+        borderColor: 'text.primary',
+        ...sx,
+      }}
+    >
+      {children}
+    </Typography>
   );
 }
 
@@ -317,8 +353,15 @@ export default function PullRequestDetailModal({
 
   // --- Action buttons ---
 
+  // Destructive action sits hard left, away from the confirming action on the right.
   const cancelButton = canCancel ? (
-    <Button variant="outlined" color="error" onClick={() => setCancelOpen(true)} disabled={cancelLoading}>
+    <Button
+      variant="outlined"
+      color="error"
+      onClick={() => setCancelOpen(true)}
+      disabled={cancelLoading}
+      sx={{ mr: 'auto' }}
+    >
       Cancel Pull
     </Button>
   ) : null;
@@ -327,33 +370,31 @@ export default function PullRequestDetailModal({
 
   if (isPending) {
     actionButtons = (
-      <Stack direction="row" spacing={1}>
-        <Button
-          variant="contained"
-          color="primary"
-          onClick={() => setConfirmApproveOpen(true)}
-          disabled={approveLoading || !allLooseSufficient}
-        >
-          {approveLoading ? 'Approving...' : 'Approve and Start'}
-        </Button>
-      </Stack>
+      <Button
+        variant="contained"
+        color="secondary"
+        onClick={() => setConfirmApproveOpen(true)}
+        disabled={approveLoading || !allLooseSufficient}
+      >
+        {approveLoading ? 'Approving...' : 'Approve and Start'}
+      </Button>
     );
   } else if (isAssignedToCurrentUser) {
     actionButtons = (
-      <Stack direction="row" spacing={1}>
+      <>
         {cancelButton}
         <Button
           variant="contained"
-          color="primary"
+          color="secondary"
           onClick={() => setConfirmCompleteOpen(true)}
           disabled={completeLoading}
         >
           {completeLoading ? 'Completing...' : 'Mark as Pulled'}
         </Button>
-      </Stack>
+      </>
     );
   } else if (canCancel) {
-    actionButtons = <Stack direction="row" spacing={1}>{cancelButton}</Stack>;
+    actionButtons = cancelButton;
   }
 
   // --- Render ---
@@ -366,34 +407,52 @@ export default function PullRequestDetailModal({
         onClose={onClose}
         actions={actionButtons}
         maxWidth="md"
+        // Nothing here is unsaved (the cancel reason lives in its own dialog), so Escape simply
+        // dismisses the pull. The nested Confirm/Cancel dialogs are siblings, not children, so
+        // their own Escape never reaches this handler.
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            event.stopPropagation();
+            onClose();
+          }
+        }}
       >
         {/* Header: Status + Info */}
         <Box sx={{ mb: 2 }}>
-          <Stack direction="row" spacing={2} alignItems="center" sx={{ mb: 1 }}>
+          <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1.5 }} flexWrap="wrap" useFlexGap>
             <Chip
               label={formatStatus(pr.source)}
               color={SOURCE_CHIP_COLOR[pr.source] ?? 'default'}
-              size="medium"
+              size="small"
             />
             <Chip
               label={formatStatus(pr.status)}
               color={STATUS_CHIP_COLOR[pr.status] ?? 'default'}
-              size="medium"
+              size="small"
             />
             {stagingLabel && (
-              <Chip label={stagingLabel} color={stagingChipColor(pr)} size="medium" variant="outlined" />
+              <Chip label={stagingLabel} color={stagingChipColor(pr)} size="small" variant="outlined" />
             )}
           </Stack>
-          <InfoRow label="Request #" value={pr.requestNumber} />
-          <InfoRow label="Created Date" value={formatDate(pr.createdAt)} />
-          <InfoRow label="Requested By" value={pr.requestedBy} />
-          <InfoRow label="Assigned To" value={pr.assignedTo ?? '-'} />
+          <Box
+            sx={{
+              display: 'grid',
+              gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' },
+              columnGap: 3,
+              rowGap: 1.25,
+            }}
+          >
+            <InfoRow label="Request #" value={pr.requestNumber} mono />
+            <InfoRow label="Created Date" value={formatDate(pr.createdAt)} tabular />
+            <InfoRow label="Requested By" value={pr.requestedBy} />
+            <InfoRow label="Assigned To" value={pr.assignedTo ?? '-'} />
+          </Box>
         </Box>
 
         {/* Completed info */}
         {isCompleted && (
           <Box sx={{ mb: 2 }}>
-            <Typography variant="body2" color="success.main">
+            <Typography variant="body2" color="success.main" sx={tabularSx}>
               Completed at: {formatDateTime(pr.completedAt)}
             </Typography>
           </Box>
@@ -414,7 +473,7 @@ export default function PullRequestDetailModal({
         {/* Approved info */}
         {(isInProgress || isCompleted) && pr.approvedAt && (
           <Box sx={{ mb: 2 }}>
-            <Typography variant="body2" color="text.secondary">
+            <Typography variant="body2" color="text.secondary" sx={tabularSx}>
               Approved at: {formatDateTime(pr.approvedAt)}
             </Typography>
           </Box>
@@ -455,23 +514,18 @@ export default function PullRequestDetailModal({
 
         {/* Per-opening staging checklist (#343). Read-only once the pull is complete. */}
         {showStaging && (
-          <>
-            <PullStagingPanel
-              pullRequestId={pr.id}
-              pullRequestNumber={pr.requestNumber}
-              editable={isInProgress}
-              onStaged={(completed) => {
-                if (completed) onRefetch();
-              }}
-            />
-            <Divider sx={{ mb: 2 }} />
-          </>
+          <PullStagingPanel
+            pullRequestId={pr.id}
+            pullRequestNumber={pr.requestNumber}
+            editable={isInProgress}
+            onStaged={(completed) => {
+              if (completed) onRefetch();
+            }}
+          />
         )}
 
         {/* Items table */}
-        <Typography variant="h6" gutterBottom>
-          Items ({pr.items.length})
-        </Typography>
+        <SectionHeading>Items ({pr.items.length})</SectionHeading>
 
         {pr.items.length === 0 ? (
           <Typography variant="body2" color="text.secondary">
@@ -485,7 +539,7 @@ export default function PullRequestDetailModal({
                 <Typography variant="subtitle2" gutterBottom>
                   Loose Items ({looseItems.length})
                 </Typography>
-                <Table size="small">
+                <Table size="small" sx={{ '& td': { fontSize: '0.8125rem' } }}>
                   <TableHead>
                     <TableRow>
                       <TableCell>Product Code</TableCell>
@@ -504,20 +558,29 @@ export default function PullRequestDetailModal({
                       const availableQty = getAvailableQty(item);
                       const sufficient = availableQty >= item.requestedQuantity;
                       return (
-                        <TableRow key={item.id}>
-                          <TableCell>{item.productCode ?? '-'}</TableCell>
+                        <TableRow key={item.id} hover>
+                          <TableCell sx={monoSx}>{item.productCode ?? '-'}</TableCell>
                           <TableCell>{item.hardwareCategory ?? '-'}</TableCell>
-                          <TableCell>{item.openingNumber}</TableCell>
+                          <TableCell sx={monoSx}>{item.openingNumber}</TableCell>
                           <TableCell>{leafLabel(item.leaf) ?? '-'}</TableCell>
                           <TableCell align="right">{item.requestedQuantity}</TableCell>
                           {isPending && <TableCell align="right">{availableQty}</TableCell>}
                           {isPending && (
                             <TableCell align="center">
-                              {sufficient ? (
-                                <CheckCircleIcon color="success" fontSize="small" />
-                              ) : (
-                                <CancelIcon color="error" fontSize="small" />
-                              )}
+                              <Box
+                                component="span"
+                                sx={{
+                                  display: 'inline-flex',
+                                  color: sufficient ? 'success.main' : 'error.main',
+                                }}
+                                aria-label={sufficient ? 'Sufficient' : 'Short'}
+                              >
+                                {sufficient ? (
+                                  <CircleCheck size={18} strokeWidth={1.75} />
+                                ) : (
+                                  <CircleX size={18} strokeWidth={1.75} />
+                                )}
+                              </Box>
                             </TableCell>
                           )}
                         </TableRow>
@@ -534,7 +597,7 @@ export default function PullRequestDetailModal({
                 <Typography variant="subtitle2" gutterBottom>
                   Assembled Opening Items ({openingItems.length})
                 </Typography>
-                <Table size="small">
+                <Table size="small" sx={{ '& td': { fontSize: '0.8125rem' } }}>
                   <TableHead>
                     <TableRow>
                       <TableCell>Type</TableCell>
@@ -546,9 +609,9 @@ export default function PullRequestDetailModal({
                   </TableHead>
                   <TableBody>
                     {openingItems.map((item) => (
-                      <TableRow key={item.id}>
+                      <TableRow key={item.id} hover>
                         <TableCell>Assembled Opening</TableCell>
-                        <TableCell>{item.openingNumber}</TableCell>
+                        <TableCell sx={monoSx}>{item.openingNumber}</TableCell>
                         <TableCell>{leafLabel(item.leaf) ?? '-'}</TableCell>
                         <TableCell align="right">{item.requestedQuantity}</TableCell>
                       </TableRow>

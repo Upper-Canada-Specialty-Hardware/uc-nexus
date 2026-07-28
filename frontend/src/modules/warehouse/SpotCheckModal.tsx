@@ -6,6 +6,7 @@ import ConfirmDialog from '../../components/ConfirmDialog';
 import { useToast } from '../../components/Toast';
 import { ADJUST_INVENTORY_QUANTITY } from '../../graphql/warehouse';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
+import { microLabelSx, monoSx, tabularSx } from '../../theme';
 
 interface SpotCheckItem {
   id: string;
@@ -89,22 +90,33 @@ export default function SpotCheckModal({ open, onClose, item, onSuccess }: SpotC
   return (
     <>
       <Modal title="Spot Check" open={open} onClose={onClose} actions={actions}>
-        <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1, mb: 3, p: 2, bgcolor: 'grey.50', borderRadius: 1 }}>
+        <Box
+          sx={{
+            display: 'grid',
+            gridTemplateColumns: '1fr 1fr',
+            gap: 1.5,
+            mb: 3,
+            p: 2,
+            border: '1px solid',
+            borderColor: 'divider',
+            borderRadius: 1,
+          }}
+        >
           <Box>
-            <Typography variant="caption" color="text.secondary">Product Code</Typography>
-            <Typography variant="body2">{item.productCode}</Typography>
+            <Typography component="div" sx={microLabelSx}>Product Code</Typography>
+            <Typography sx={monoSx}>{item.productCode}</Typography>
           </Box>
           <Box>
-            <Typography variant="caption" color="text.secondary">Category</Typography>
+            <Typography component="div" sx={microLabelSx}>Category</Typography>
             <Typography variant="body2">{item.hardwareCategory}</Typography>
           </Box>
           <Box>
-            <Typography variant="caption" color="text.secondary">Location</Typography>
-            <Typography variant="body2">{formatLocation(item.aisle, item.row, item.bay)}</Typography>
+            <Typography component="div" sx={microLabelSx}>Location</Typography>
+            <Typography sx={monoSx}>{formatLocation(item.aisle, item.row, item.bay)}</Typography>
           </Box>
           <Box>
-            <Typography variant="caption" color="text.secondary">System Quantity</Typography>
-            <Typography variant="body2" sx={{ fontWeight: 600 }}>{item.quantity}</Typography>
+            <Typography component="div" sx={microLabelSx}>System Quantity</Typography>
+            <Typography variant="body2" sx={{ ...tabularSx, fontWeight: 700 }}>{item.quantity}</Typography>
           </Box>
         </Box>
 

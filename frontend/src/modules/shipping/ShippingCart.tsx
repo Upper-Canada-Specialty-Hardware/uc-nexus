@@ -1,13 +1,14 @@
 import { useState } from 'react';
 import {
   Drawer, Box, Typography, IconButton, List, ListItem, ListItemText,
-  ListItemSecondaryAction, Button, Divider, Chip,
+  Button, Divider, Chip,
 } from '@mui/material';
-import DeleteIcon from '@mui/icons-material/Delete';
-import ShoppingCartIcon from '@mui/icons-material/ShoppingCart';
+import { ShoppingCart, Trash2 } from 'lucide-react';
 import { useCart } from '../../contexts/CartContext';
 import PackingSlipForm from './PackingSlipForm';
 import { leafSuffix } from '../../utils/leaf';
+import { monoSx, microLabelSx, tabularSx } from '../../theme';
+import { AnimatedNumber, StaggerItem, StaggerList } from '../../motion';
 
 interface ShippingCartProps {
   open: boolean;
@@ -33,7 +34,7 @@ export default function ShippingCart({ open, onClose, projectId, projectName }: 
       <Drawer anchor="right" open={open} onClose={onClose}>
         <Box sx={{ width: 400, display: 'flex', flexDirection: 'column', height: '100%' }}>
           <Box sx={{ p: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
-            <ShoppingCartIcon />
+            <ShoppingCart size={18} strokeWidth={1.75} />
             <Typography variant="h6">Shipping Cart</Typography>
           </Box>
 
@@ -48,48 +49,97 @@ export default function ShippingCart({ open, onClose, projectId, projectName }: 
               <>
                 {openingItems.length > 0 && (
                   <>
-                    <Typography variant="subtitle2" sx={{ px: 1, pt: 1 }}>
-                      Opening Items
-                      <Chip label={openingItems.length} size="small" sx={{ ml: 1 }} />
-                    </Typography>
-                    <List dense>
-                      {openingItems.map((item) => (
-                        <ListItem key={item.id}>
-                          <ListItemText
-                            primary={`Opening ${item.openingNumber}${leafSuffix(item.leaf)}`}
-                            secondary="Assembled Opening"
-                          />
-                          <ListItemSecondaryAction>
-                            <IconButton edge="end" size="small" onClick={() => removeItem(item.id)}>
-                              <DeleteIcon fontSize="small" />
-                            </IconButton>
-                          </ListItemSecondaryAction>
-                        </ListItem>
-                      ))}
+                    <Box
+                      sx={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 1,
+                        px: 1,
+                        pt: 1,
+                        pb: 0.5,
+                        borderBottom: '2px solid',
+                        borderColor: 'text.primary',
+                      }}
+                    >
+                      <Typography sx={microLabelSx}>Opening Items</Typography>
+                      <Chip label={openingItems.length} size="small" />
+                    </Box>
+                    <List dense disablePadding>
+                      <StaggerList count={openingItems.length}>
+                        {openingItems.map((item) => (
+                          <StaggerItem key={item.id}>
+                            <ListItem
+                              divider
+                              secondaryAction={
+                                <IconButton
+                                  edge="end"
+                                  size="small"
+                                  aria-label="Remove from cart"
+                                  onClick={() => removeItem(item.id)}
+                                >
+                                  <Trash2 size={16} strokeWidth={1.75} />
+                                </IconButton>
+                              }
+                            >
+                              <ListItemText
+                                primary={`Opening ${item.openingNumber}${leafSuffix(item.leaf)}`}
+                                secondary="Assembled Opening"
+                                slotProps={{ primary: { sx: monoSx } }}
+                              />
+                            </ListItem>
+                          </StaggerItem>
+                        ))}
+                      </StaggerList>
                     </List>
                   </>
                 )}
 
                 {looseItems.length > 0 && (
                   <>
-                    <Typography variant="subtitle2" sx={{ px: 1, pt: 1 }}>
-                      Loose Hardware
-                      <Chip label={looseItems.length} size="small" sx={{ ml: 1 }} />
-                    </Typography>
-                    <List dense>
-                      {looseItems.map((item) => (
-                        <ListItem key={item.id}>
-                          <ListItemText
-                            primary={`${item.productCode} (${item.hardwareCategory})`}
-                            secondary={`Opening ${item.openingNumber} - Qty: ${item.quantity}`}
-                          />
-                          <ListItemSecondaryAction>
-                            <IconButton edge="end" size="small" onClick={() => removeItem(item.id)}>
-                              <DeleteIcon fontSize="small" />
-                            </IconButton>
-                          </ListItemSecondaryAction>
-                        </ListItem>
-                      ))}
+                    <Box
+                      sx={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 1,
+                        px: 1,
+                        pt: 2,
+                        pb: 0.5,
+                        borderBottom: '2px solid',
+                        borderColor: 'text.primary',
+                      }}
+                    >
+                      <Typography sx={microLabelSx}>Loose Hardware</Typography>
+                      <Chip label={looseItems.length} size="small" />
+                    </Box>
+                    <List dense disablePadding>
+                      <StaggerList count={looseItems.length}>
+                        {looseItems.map((item) => (
+                          <StaggerItem key={item.id}>
+                            <ListItem
+                              divider
+                              secondaryAction={
+                                <IconButton
+                                  edge="end"
+                                  size="small"
+                                  aria-label="Remove from cart"
+                                  onClick={() => removeItem(item.id)}
+                                >
+                                  <Trash2 size={16} strokeWidth={1.75} />
+                                </IconButton>
+                              }
+                            >
+                              <ListItemText
+                                primary={`${item.productCode} (${item.hardwareCategory})`}
+                                secondary={`Opening ${item.openingNumber} - Qty: ${item.quantity}`}
+                                slotProps={{
+                                  primary: { sx: monoSx },
+                                  secondary: { sx: tabularSx },
+                                }}
+                              />
+                            </ListItem>
+                          </StaggerItem>
+                        ))}
+                      </StaggerList>
                     </List>
                   </>
                 )}
@@ -100,9 +150,12 @@ export default function ShippingCart({ open, onClose, projectId, projectName }: 
           <Divider />
 
           <Box sx={{ p: 2 }}>
-            <Typography variant="body2" sx={{ mb: 1 }}>
-              Total items: <strong>{itemCount}</strong>
-            </Typography>
+            <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, mb: 1.5 }}>
+              <Typography sx={microLabelSx}>Total items</Typography>
+              <Typography variant="h6" sx={tabularSx}>
+                <AnimatedNumber value={itemCount} />
+              </Typography>
+            </Box>
             <Box sx={{ display: 'flex', gap: 1 }}>
               <Button
                 variant="outlined"

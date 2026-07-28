@@ -6,6 +6,7 @@ import { GET_GP_OUTBOX, GET_GP_OUTBOX_SUMMARY } from '../../graphql/shared';
 import { RETRY_GP_OUTBOX_ENTRY, CANCEL_GP_OUTBOX_ENTRY } from '../../graphql/admin';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import { useToast } from '../../components/Toast';
+import { microLabelSx, monoSx, tabularSx } from '../../theme';
 
 interface OutboxEntry {
   id: string;
@@ -82,7 +83,16 @@ export default function GpWriteQueuePanel() {
   const columns: GridColDef[] = useMemo(
     () => [
       { field: 'label', headerName: 'Write', flex: 1, minWidth: 220 },
-      { field: 'company', headerName: 'Company', width: 100 },
+      {
+        field: 'company',
+        headerName: 'Company',
+        width: 100,
+        renderCell: (p) => (
+          <Box component="span" sx={monoSx}>
+            {p.row.company}
+          </Box>
+        ),
+      },
       {
         field: 'status',
         headerName: 'Status',
@@ -91,7 +101,7 @@ export default function GpWriteQueuePanel() {
           <Chip size="small" label={p.row.status} color={STATUS_COLOR[p.row.status] ?? 'default'} />
         ),
       },
-      { field: 'attempts', headerName: 'Tries', width: 80 },
+      { field: 'attempts', headerName: 'Tries', width: 80, type: 'number', headerAlign: 'right', align: 'right' },
       {
         field: 'failureKind',
         headerName: 'Failure',
@@ -105,8 +115,16 @@ export default function GpWriteQueuePanel() {
         flex: 1,
         minWidth: 170,
         valueFormatter: (v: string) => fmtDate(v),
+        cellClassName: 'ts-cell',
       },
-      { field: 'createdAt', headerName: 'Queued at', flex: 1, minWidth: 170, valueFormatter: (v: string) => fmtDate(v) },
+      {
+        field: 'createdAt',
+        headerName: 'Queued at',
+        flex: 1,
+        minWidth: 170,
+        valueFormatter: (v: string) => fmtDate(v),
+        cellClassName: 'ts-cell',
+      },
       {
         field: 'actions',
         headerName: 'Actions',
@@ -143,7 +161,7 @@ export default function GpWriteQueuePanel() {
 
   return (
     <Box sx={{ mt: 4 }}>
-      <Typography variant="h6" gutterBottom>
+      <Typography component="div" sx={{ ...microLabelSx, mb: 0.5 }}>
         GP write queue
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
@@ -162,6 +180,7 @@ export default function GpWriteQueuePanel() {
         disableRowSelectionOnClick
         pageSizeOptions={[10, 25, 50]}
         initialState={{ pagination: { paginationModel: { pageSize: 10 } } }}
+        sx={{ '& .ts-cell': { ...monoSx, ...tabularSx, color: 'text.secondary' } }}
       />
 
       <ConfirmDialog
@@ -178,6 +197,7 @@ export default function GpWriteQueuePanel() {
         title={`Cancel "${cancelTarget?.label ?? ''}"?`}
         message="This abandons the write. It will never reach GP, and whoever submitted it will have to redo it."
         confirmLabel={cancelling ? 'Cancelling…' : 'Cancel the write'}
+        confirmColor="error"
         onConfirm={handleCancel}
         onCancel={() => setCancelTarget(null)}
       />

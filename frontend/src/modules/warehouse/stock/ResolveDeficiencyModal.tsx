@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import {
+  Box,
   Button,
   Stack,
   TextField,
@@ -15,6 +16,7 @@ import Modal from '../../../components/Modal';
 import { useToast } from '../../../components/Toast';
 import { RESOLVE_DEFICIENCY } from '../../../graphql/warehouse';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../../graphql/refetch';
+import { microLabelSx, monoSx } from '../../../theme';
 
 export interface DeficientRow {
   source: 'PROJECT_INVENTORY' | 'STOCK_POOL';
@@ -98,10 +100,15 @@ export default function ResolveDeficiencyModal({ row, onClose, onSuccess }: Prop
     >
       <Stack spacing={2}>
         {error && <Alert severity="error">{error.message}</Alert>}
-        <Typography variant="body2" color="text.secondary">
-          {row.source === 'PROJECT_INVENTORY' ? 'Project inventory' : 'Stock pool'} ·{' '}
-          {row.hardwareCategory} · {row.deficientQuantity} deficient
-        </Typography>
+        <Box sx={{ pb: 1, borderBottom: '1px solid', borderColor: 'divider' }}>
+          <Typography component="div" sx={microLabelSx}>
+            {row.source === 'PROJECT_INVENTORY' ? 'Project inventory' : 'Stock pool'} ·{' '}
+            {row.deficientQuantity} deficient
+          </Typography>
+          <Typography sx={monoSx}>
+            {row.hardwareCategory} / {row.productCode}
+          </Typography>
+        </Box>
         <FormControl size="small" required>
           <InputLabel>Resolution</InputLabel>
           <Select

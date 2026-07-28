@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import { Alert, Box, Button, Typography } from '@mui/material';
+import { tabularSx } from '../../theme';
 import ClassificationGrid, { type ClassificationRow } from './ClassificationGrid';
 import { SCOPE_OPTIONS, ASSEMBLY_OPTIONS } from './types';
 import type { ImportPurpose } from './types';
@@ -54,7 +55,7 @@ export default function ClassificationStep({
       <Typography variant="h6" sx={{ mb: 2 }}>
         Classification
       </Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+      <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, mb: 1 }}>
         {isReimport
           ? `${itemCount} items need ordering (not available or partial in inventory).`
           : `${itemCount} hardware items across ${openingCount} openings.`}
@@ -73,7 +74,7 @@ export default function ClassificationStep({
           </Typography>
           <Typography
             variant="body2"
-            sx={{ mb: purpose === 'po' ? 0.5 : 2 }}
+            sx={{ ...tabularSx, fontWeight: 600, mb: purpose === 'po' ? 0.5 : 2 }}
             color={allClassified ? 'success.main' : 'text.secondary'}
           >
             {classifiedCount} of {classificationRows.length} items classified
@@ -81,7 +82,7 @@ export default function ClassificationStep({
           {purpose === 'po' && (
             <Typography
               variant="body2"
-              sx={{ mb: 2 }}
+              sx={{ ...tabularSx, fontWeight: 600, mb: 2 }}
               color={allSiteShopClassified ? 'success.main' : 'text.secondary'}
             >
               {siteShopCount} of {inScopeRows.length} in-scope items site/shop classified

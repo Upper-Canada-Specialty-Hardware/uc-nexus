@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Alert, Typography, Box, Button, List, ListItem, ListItemText, Collapse } from '@mui/material';
 import type { ValidationSummary } from '../types/hardwareSchedule';
+import { tabularSx, monoSx } from '../theme';
 
 interface ValidationSummaryDisplayProps {
   summary: ValidationSummary;
@@ -16,11 +17,23 @@ export default function ValidationSummaryDisplay({ summary }: ValidationSummaryD
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
-      <Box>
-        <Typography variant="body1">
+      {/* Both counts stay single text nodes - they are the parse receipt users read verbatim. */}
+      <Box
+        sx={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: 3,
+          px: 2,
+          py: 1.25,
+          border: 1,
+          borderColor: 'divider',
+          borderRadius: 1,
+        }}
+      >
+        <Typography variant="body2" sx={{ ...tabularSx, fontWeight: 600 }}>
           {totalOpenings} openings parsed
         </Typography>
-        <Typography variant="body1">
+        <Typography variant="body2" sx={{ ...tabularSx, fontWeight: 600 }}>
           {totalHardwareItems} hardware items parsed
         </Typography>
       </Box>
@@ -41,7 +54,7 @@ export default function ValidationSummaryDisplay({ summary }: ValidationSummaryD
                   primary={row.reason}
                   secondary={row.context}
                   primaryTypographyProps={{ variant: 'body2' }}
-                  secondaryTypographyProps={{ variant: 'caption' }}
+                  secondaryTypographyProps={{ variant: 'caption', sx: monoSx }}
                 />
               </ListItem>
             ))}
@@ -55,7 +68,7 @@ export default function ValidationSummaryDisplay({ summary }: ValidationSummaryD
                       primary={row.reason}
                       secondary={row.context}
                       primaryTypographyProps={{ variant: 'body2' }}
-                      secondaryTypographyProps={{ variant: 'caption' }}
+                      secondaryTypographyProps={{ variant: 'caption', sx: monoSx }}
                     />
                   </ListItem>
                 ))}

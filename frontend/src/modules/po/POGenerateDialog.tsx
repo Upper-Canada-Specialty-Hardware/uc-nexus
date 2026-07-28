@@ -1,8 +1,8 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, type ReactNode } from 'react';
 import {
   Dialog, DialogTitle, DialogContent, DialogActions, Button, TextField,
   Typography, Box, Stack, MenuItem, Select, FormControl, InputLabel,
-  FormControlLabel, Switch, Divider, CircularProgress, Alert, FormHelperText,
+  FormControlLabel, Switch, CircularProgress, Alert, FormHelperText,
 } from '@mui/material';
 import { useQuery, useMutation } from '@apollo/client/react';
 import { pdf } from '@react-pdf/renderer';
@@ -11,6 +11,18 @@ import { useToast } from '../../components/Toast';
 import { poVendorName } from './poVendorName';
 import PurchaseOrderDocument, { type PurchaseOrderDocumentProps } from './PurchaseOrderDocument';
 import type { PurchaseOrder } from './index';
+import { monoSx, microLabelSx } from '../../theme';
+
+/** Section separator for this form: a 2px ink rule under a micro-label. */
+function SectionHeading({ children }: { children: ReactNode }) {
+  return (
+    <Box sx={{ pt: 1.5, borderTop: '2px solid', borderColor: 'text.primary' }}>
+      <Typography component="h3" sx={microLabelSx}>
+        {children}
+      </Typography>
+    </Box>
+  );
+}
 
 interface POGenerateDialogProps {
   open: boolean;
@@ -86,7 +98,12 @@ export default function POGenerateDialog({ open, po, onClose, onRefetch }: POGen
 
   return (
     <Dialog open={open} onClose={loading ? undefined : onClose} maxWidth="md" fullWidth>
-      <DialogTitle>Generate PO Document - {poNumber || po.requestNumber}</DialogTitle>
+      <DialogTitle>
+        Generate PO Document{' '}
+        <Box component="span" sx={{ ...monoSx, color: 'text.secondary' }}>
+          {poNumber || po.requestNumber}
+        </Box>
+      </DialogTitle>
       {open && settings && !loading ? (
         <GenerateForm
           po={po}
@@ -283,7 +300,7 @@ function GenerateForm({ po, settings, buyers, gpTotals, projectNumber, onClose, 
     <>
       <DialogContent dividers>
         <Stack spacing={2} sx={{ mt: 1 }}>
-          <Typography variant="subtitle2" color="text.secondary">Vendor & buyer</Typography>
+          <Typography component="h3" sx={microLabelSx}>Vendor &amp; buyer</Typography>
           <TextField
             label="Vendor mailing address" value={vendorAddress}
             onChange={(e) => setVendorAddress(e.target.value)}
@@ -310,8 +327,7 @@ function GenerateForm({ po, settings, buyers, gpTotals, projectNumber, onClose, 
             </FormControl>
           </Stack>
 
-          <Divider />
-          <Typography variant="subtitle2" color="text.secondary">Ship to</Typography>
+          <SectionHeading>Ship to</SectionHeading>
           <TextField
             label="Ship-to block" value={shipTo} onChange={(e) => setShipTo(e.target.value)}
             fullWidth size="small" multiline minRows={3}
@@ -330,8 +346,7 @@ function GenerateForm({ po, settings, buyers, gpTotals, projectNumber, onClose, 
             </Select>
           </FormControl>
 
-          <Divider />
-          <Typography variant="subtitle2" color="text.secondary">Header details</Typography>
+          <SectionHeading>Header details</SectionHeading>
           <Stack direction="row" spacing={2}>
             <TextField
               label="Proposal #" value={proposalNumber} onChange={(e) => setProposalNumber(e.target.value)}
@@ -344,10 +359,7 @@ function GenerateForm({ po, settings, buyers, gpTotals, projectNumber, onClose, 
             />
           </Stack>
 
-          <Divider />
-          <Typography variant="subtitle2" color="text.secondary">
-            Totals (pre-filled from the PO / GP - override if needed)
-          </Typography>
+          <SectionHeading>Totals (pre-filled from the PO / GP - override if needed)</SectionHeading>
           <Stack direction="row" spacing={2}>
             <TextField
               label="Freight" type="number" value={freight} onChange={(e) => setFreight(e.target.value)}
@@ -375,8 +387,7 @@ function GenerateForm({ po, settings, buyers, gpTotals, projectNumber, onClose, 
             />
           </Stack>
 
-          <Divider />
-          <Typography variant="subtitle2" color="text.secondary">Conditional notes</Typography>
+          <SectionHeading>Conditional notes</SectionHeading>
           <FormControl>
             <FormControlLabel
               control={<Switch checked={includeFsc} onChange={(e) => setIncludeFsc(e.target.checked)} />}
@@ -400,7 +411,7 @@ function GenerateForm({ po, settings, buyers, gpTotals, projectNumber, onClose, 
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose} disabled={working}>Cancel</Button>
-        <Button onClick={handleSaveToPO} disabled={working}>
+        <Button variant="outlined" onClick={handleSaveToPO} disabled={working}>
           {working ? 'Working...' : 'Save to PO documents'}
         </Button>
         <Button

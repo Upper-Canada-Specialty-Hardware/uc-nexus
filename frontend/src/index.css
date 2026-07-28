@@ -15,3 +15,19 @@ body {
 #root {
   min-height: 100vh;
 }
+
+:root {
+  --font-mono: "IBM Plex Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
+}
+
+/* CSS-driven transitions collapse for users who ask for less motion.
+   (Motion-driven animations are handled by MotionConfig reducedMotion="user".) */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

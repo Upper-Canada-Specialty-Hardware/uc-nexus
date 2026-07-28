@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
 import {
+  Box,
   Button,
   Stack,
   TextField,
@@ -18,6 +19,7 @@ import { useIdentity } from '../../hooks/useIdentity';
 import { GET_WAREHOUSES } from '../../graphql/shared';
 import { GET_LOCATION_DISTINCT_VALUES, TRANSFER_INVENTORY } from '../../graphql/warehouse';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
+import { microLabelSx, monoSx } from '../../theme';
 
 export interface TransferSource {
   type: 'INVENTORY_LOCATION' | 'STOCK_ITEM';
@@ -108,11 +110,16 @@ export default function TransferDialog({ source, onClose, onSuccess }: TransferD
     });
   };
 
+  // A part-typed destination is real work; Escape must not throw it away. Once the row is blank
+  // again the dialog goes back to dismissing on Escape like every other one.
+  const hasTypedDestination = Boolean(aisle.trim() || row.trim() || bay.trim());
+
   return (
     <Modal
       open
       onClose={onClose}
       title={`Transfer ${source.productCode}`}
+      disableEscapeKeyDown={hasTypedDestination}
       actions={
         <>
           <Button onClick={onClose} disabled={loading}>
@@ -126,9 +133,23 @@ export default function TransferDialog({ source, onClose, onSuccess }: TransferD
     >
       <Stack spacing={2} sx={{ pt: 1 }}>
         {error && <Alert severity="error">{error.message}</Alert>}
-        <Typography variant="body2" color="text.secondary">
-          {source.available} available to transfer.
-        </Typography>
+        <Box
+          sx={{
+            display: 'flex',
+            alignItems: 'baseline',
+            gap: 1,
+            pb: 1,
+            borderBottom: '1px solid',
+            borderColor: 'divider',
+          }}
+        >
+          <Typography component="span" sx={monoSx}>
+            {source.productCode}
+          </Typography>
+          <Typography component="span" sx={microLabelSx}>
+            {source.available} available to transfer
+          </Typography>
+        </Box>
         <FormControl size="small" fullWidth>
           <InputLabel id="transfer-dest-warehouse">Destination warehouse</InputLabel>
           <Select

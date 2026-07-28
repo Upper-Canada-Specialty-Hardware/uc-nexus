@@ -9,9 +9,13 @@ import client from './apollo';
 import { WizardProvider } from './contexts/WizardContext';
 import { CartProvider } from './contexts/CartContext';
 import { ToastProvider } from './components/Toast';
+import { MotionProvider } from './motion';
 import App from './App';
 // @ts-expect-error fontsource CSS-only import has no type declarations
 import '@fontsource-variable/source-sans-3';
+import '@fontsource/ibm-plex-mono/400.css';
+import '@fontsource/ibm-plex-mono/500.css';
+import '@fontsource/ibm-plex-mono/600.css';
 import './index.css';
 
 const CLERK_PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -26,15 +30,17 @@ createRoot(document.getElementById('root')!).render(
       <ApolloProvider client={client}>
         <ThemeProvider theme={theme} defaultMode="light" modeStorageKey="uc-nexus-mode">
           <CssBaseline />
-          <BrowserRouter>
-            <WizardProvider>
-              <CartProvider>
-                <ToastProvider>
-                  <App />
-                </ToastProvider>
-              </CartProvider>
-            </WizardProvider>
-          </BrowserRouter>
+          <MotionProvider>
+            <BrowserRouter>
+              <WizardProvider>
+                <CartProvider>
+                  <ToastProvider>
+                    <App />
+                  </ToastProvider>
+                </CartProvider>
+              </WizardProvider>
+            </BrowserRouter>
+          </MotionProvider>
         </ThemeProvider>
       </ApolloProvider>
     </ClerkProvider>

@@ -23,6 +23,7 @@ import {
 } from '../../graphql/shipping';
 import RequestsReviewPage from '../../components/RequestsReviewPage';
 import { leafLabel } from '../../utils/leaf';
+import { monoSx } from '../../theme';
 
 interface ShippingRequestItem {
   id: string;
@@ -121,10 +122,10 @@ export default function ShippingRequestsPage({ projectId }: Props) {
               </TableHead>
               <TableBody>
                 {req.items.map((item) => (
-                  <TableRow key={item.id}>
-                    <TableCell>{item.openingNumber || '-'}</TableCell>
+                  <TableRow key={item.id} hover>
+                    <TableCell sx={monoSx}>{item.openingNumber || '-'}</TableCell>
                     <TableCell>{leafLabel(item.leaf) ?? '-'}</TableCell>
-                    <TableCell>
+                    <TableCell sx={item.itemType === 'OPENING_ITEM' ? undefined : monoSx}>
                       {item.itemType === 'OPENING_ITEM' ? 'Assembled door leaf' : item.productCode || '-'}
                     </TableCell>
                     <TableCell>{item.hardwareCategory || '-'}</TableCell>

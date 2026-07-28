@@ -1,11 +1,11 @@
 import { useMemo, useCallback, useEffect, useRef } from 'react';
 import { Alert, Box, Button, Chip, CircularProgress, Tooltip, Typography } from '@mui/material';
-import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
-import WarningAmberIcon from '@mui/icons-material/WarningAmber';
+import { AlertTriangle, Info } from 'lucide-react';
 import { DataGrid, type GridColDef, type GridRowSelectionModel } from '@mui/x-data-grid';
 import type { ImportPurpose, ReconciliationRow } from './types';
 import { aggregationKey, itemGroupKey } from './types';
 import type { ParsedHardwareItem } from '../../types/hardwareSchedule';
+import { monoSx, tabularSx } from '../../theme';
 
 // ---- Props ----
 
@@ -279,21 +279,22 @@ export default function ReconciliationStep({
 
   const columns = useMemo<GridColDef[]>(() => {
     const cols: GridColDef[] = [
-      { field: 'hardwareCategory', headerName: 'Hardware Category', flex: 1 },
-      { field: 'productCode', headerName: 'Product Code', flex: 1 },
+      { field: 'hardwareCategory', headerName: 'Hardware Category', flex: 1, minWidth: 140 },
+      {
+        field: 'productCode',
+        headerName: 'Product Code',
+        flex: 1,
+        minWidth: 130,
+        cellClassName: 'mono-cell',
+      },
+      // Quantities are figures to compare down a column, not status - they read as tabular numerals
+      // rather than as tags, which the theme reserves for real lifecycle state.
       {
         field: 'quantityNeeded',
         headerName: 'Qty Needed (Selected Openings)',
         flex: 0.9,
         type: 'number',
-        renderCell: (params) => (
-          <Chip
-            size="small"
-            label={params.value as number}
-            color="primary"
-            variant="filled"
-          />
-        ),
+        cellClassName: 'figure-cell',
       },
     ];
 
@@ -303,14 +304,7 @@ export default function ReconciliationStep({
         headerName: 'Qty Needed by Project',
         flex: 0.9,
         type: 'number',
-        renderCell: (params) => (
-          <Chip
-            size="small"
-            label={params.value as number}
-            color="info"
-            variant="filled"
-          />
-        ),
+        cellClassName: 'figure-cell',
       });
     }
 
@@ -324,12 +318,12 @@ export default function ReconciliationStep({
           const available = params.value as number;
           const needed = params.row.quantityNeeded as number;
           const isPartial = available > 0 && available < needed;
+          // This one IS state: nothing available, some, or enough - so it keeps its tag.
           return (
             <Chip
               size="small"
               label={available}
               color={available === 0 ? 'default' : isPartial ? 'warning' : 'success'}
-              variant={available === 0 ? 'outlined' : 'filled'}
             />
           );
         },
@@ -363,7 +357,7 @@ export default function ReconciliationStep({
               >
                 <Chip
                   size="small"
-                  icon={<WarningAmberIcon />}
+                  icon={<AlertTriangle size={14} strokeWidth={1.75} />}
                   label={`Over-committed by ${row.overCommitAmount}`}
                   color="warning"
                   variant="outlined"
@@ -389,7 +383,9 @@ export default function ReconciliationStep({
         <Typography variant="h6">Reconciliation</Typography>
         {isReimport && (
           <Tooltip arrow title={HEADER_TOOLTIPS[purpose]}>
-            <InfoOutlinedIcon fontSize="small" color="action" />
+            <Box component="span" sx={{ display: 'inline-flex', color: 'text.secondary' }}>
+              <Info size={16} strokeWidth={1.75} />
+            </Box>
           </Tooltip>
         )}
       </Box>
@@ -417,9 +413,11 @@ export default function ReconciliationStep({
               <Button size="small" variant="outlined" onClick={handleDeselectAll}>
                 Deselect All
               </Button>
-              <Typography variant="body2" color="text.secondary">
-                {productLevelSelection.size} of {aggregatedProductRows.length} product(s) selected
-              </Typography>
+              <Chip
+                size="small"
+                color={productLevelSelection.size > 0 ? 'info' : 'default'}
+                label={`${productLevelSelection.size} of ${aggregatedProductRows.length} product(s) selected`}
+              />
             </Box>
           )}
 
@@ -470,6 +468,8 @@ export default function ReconciliationStep({
               sx={{
                 '& .MuiDataGrid-cell': { py: 0.5 },
                 '& .ineligible-row': { opacity: 0.5, bgcolor: 'action.hover' },
+                '& .mono-cell': monoSx,
+                '& .figure-cell': { ...tabularSx, fontWeight: 600 },
               }}
             />
           </Box>

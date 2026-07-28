@@ -19,8 +19,8 @@ import {
   InputLabel,
   Select,
 } from '@mui/material';
-import MoreVertIcon from '@mui/icons-material/MoreVert';
-import LocationOnIcon from '@mui/icons-material/LocationOn';
+import { Ellipsis, MapPin, X } from 'lucide-react';
+import { motion } from 'motion/react';
 import { DataGrid, type GridColDef, type GridRowParams } from '@mui/x-data-grid';
 import { useQuery } from '@apollo/client/react';
 import { GET_WAREHOUSES } from '../../graphql/shared';
@@ -32,6 +32,8 @@ import LocationActionDialog, {
 import LocationAuditStrip from './LocationAuditStrip';
 import TransferDialog, { type TransferSource } from './TransferDialog';
 import { leafSuffix } from '../../utils/leaf';
+import { microLabelSx, monoSx, tabularSx } from '../../theme';
+import { springs } from '../../motion';
 
 interface LocationEntry {
   warehouseId: string | null;
@@ -150,12 +152,14 @@ function buildUtilColumns(
         valueGetter: (_v, row) => formatLocation(row.aisle, row.row, row.bay),
         renderCell: ({ row }) => (
           <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0, width: '100%' }}>
-            <LocationOnIcon fontSize="small" color="action" />
-            <Typography variant="body2" noWrap sx={{ flex: 1, minWidth: 0 }}>
+            <Box sx={{ display: 'flex', color: 'text.secondary' }}>
+              <MapPin size={18} strokeWidth={1.75} />
+            </Box>
+            <Typography noWrap sx={{ ...monoSx, flex: 1, minWidth: 0 }}>
               {formatLocation(row.aisle, row.row, row.bay)}
             </Typography>
             {showWarehouse && warehouseChip(row.warehouseId, warehouseCode)}
-            <Typography variant="caption" color="text.secondary">
+            <Typography variant="caption" color="text.secondary" sx={tabularSx}>
               {row.totalQuantity}
             </Typography>
           </Stack>
@@ -172,8 +176,10 @@ function buildUtilColumns(
       valueGetter: (_v, row) => formatLocation(row.aisle, row.row, row.bay),
       renderCell: (p) => (
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-          <LocationOnIcon fontSize="small" color="action" />
-          <Typography variant="body2">{p.value as string}</Typography>
+          <Box sx={{ display: 'flex', color: 'text.secondary' }}>
+            <MapPin size={18} strokeWidth={1.75} />
+          </Box>
+          <Typography sx={monoSx}>{p.value as string}</Typography>
         </Box>
       ),
     },
@@ -223,7 +229,7 @@ function RowActionMenu({
   return (
     <>
       <IconButton size="small" onClick={(e) => setAnchorEl(e.currentTarget)} aria-label="Item actions">
-        <MoreVertIcon fontSize="small" />
+        <Ellipsis size={18} strokeWidth={1.75} />
       </IconButton>
       <Menu anchorEl={anchorEl} open={Boolean(anchorEl)} onClose={() => setAnchorEl(null)}>
         <MenuItem
@@ -370,16 +376,29 @@ function ContentsPanel({
 
   return (
     <Paper variant="outlined" sx={{ p: 2, position: 'sticky', top: 16, minWidth: 0 }}>
-      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1, gap: 1 }}>
-        <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, minWidth: 0 }}>
-          <Typography variant="h6" noWrap>
+      <Box
+        sx={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          mb: 1.5,
+          pb: 0.75,
+          gap: 1,
+          borderBottom: '2px solid',
+          borderColor: 'text.primary',
+        }}
+      >
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0 }}>
+          <Typography noWrap sx={{ ...monoSx, fontSize: '1rem', fontWeight: 700 }}>
             {formatLocation(selected.aisle, selected.row, selected.bay)}
           </Typography>
           {warehouseLabel && (
             <Chip label={warehouseLabel} size="small" variant="outlined" />
           )}
         </Box>
-        <Button size="small" onClick={onClose}>Close</Button>
+        <IconButton size="small" onClick={onClose} aria-label="Close location contents">
+          <X size={18} strokeWidth={1.75} />
+        </IconButton>
       </Box>
 
       {loading && !data && (
@@ -400,11 +419,14 @@ function ContentsPanel({
             gap: 1,
             p: 1,
             mb: 1,
-            bgcolor: 'primary.50',
+            flexWrap: 'wrap',
+            bgcolor: 'action.selected',
+            borderLeft: '3px solid',
+            borderColor: 'secondary.main',
             borderRadius: 1,
           }}
         >
-          <Typography variant="body2" sx={{ flex: 1 }}>
+          <Typography variant="body2" sx={{ flex: 1, fontWeight: 600 }}>
             {selectedIds.size} selected
           </Typography>
           <Button size="small" variant="outlined" onClick={() => openBulk('move')}>
@@ -419,7 +441,7 @@ function ContentsPanel({
 
       {invItems.length > 0 && (
         <>
-          <Typography variant="subtitle2" sx={{ mb: 1 }}>
+          <Typography component="div" sx={{ ...microLabelSx, mb: 1 }}>
             Hardware Items ({invItems.length})
           </Typography>
           <Stack spacing={0.5}>
@@ -444,10 +466,10 @@ function ContentsPanel({
                     onChange={() => toggleSelect(il.id)}
                   />
                   <Box sx={{ flex: 1, minWidth: 0 }}>
-                    <Typography variant="body2" noWrap>
+                    <Typography noWrap sx={monoSx}>
                       {il.productCode} — {il.hardwareCategory}
                     </Typography>
-                    <Typography variant="caption" color="text.secondary">
+                    <Typography variant="caption" color="text.secondary" sx={tabularSx}>
                       Qty {il.quantity} · PO {item.poNumber ?? '—'} · {formatCurrency(item.unitCost)}/ea
                     </Typography>
                   </Box>
@@ -480,7 +502,7 @@ function ContentsPanel({
 
       {oiItems.length > 0 && (
         <>
-          <Typography variant="subtitle2" sx={{ mb: 1 }}>
+          <Typography component="div" sx={{ ...microLabelSx, mb: 1 }}>
             Opening Items ({oiItems.length})
           </Typography>
           <Stack spacing={0.5}>
@@ -504,8 +526,8 @@ function ContentsPanel({
                     onChange={() => toggleSelect(oi.id)}
                   />
                   <Box sx={{ flex: 1, minWidth: 0 }}>
-                    <Typography variant="body2" noWrap>{oi.openingNumber}{leafSuffix(oi.leaf)}</Typography>
-                    <Typography variant="caption" color="text.secondary">
+                    <Typography noWrap sx={monoSx}>{oi.openingNumber}{leafSuffix(oi.leaf)}</Typography>
+                    <Typography variant="caption" color="text.secondary" sx={tabularSx}>
                       Qty {oi.quantity} · {oi.building ?? ''} {oi.floor ?? ''}
                     </Typography>
                   </Box>
@@ -526,7 +548,7 @@ function ContentsPanel({
 
       {stockItems.length > 0 && (
         <>
-          <Typography variant="subtitle2" sx={{ mb: 1 }}>
+          <Typography component="div" sx={{ ...microLabelSx, mb: 1 }}>
             Stock Pool ({stockItems.length})
           </Typography>
           <Stack spacing={0.5}>
@@ -550,10 +572,10 @@ function ContentsPanel({
                     onChange={() => toggleSelect(si.id)}
                   />
                   <Box sx={{ flex: 1, minWidth: 0 }}>
-                    <Typography variant="body2" noWrap>
+                    <Typography noWrap sx={monoSx}>
                       {si.productCode} — {si.hardwareCategory}
                     </Typography>
-                    <Typography variant="caption" color="text.secondary">
+                    <Typography variant="caption" color="text.secondary" sx={tabularSx}>
                       Qty {si.quantity}{si.deficientQuantity > 0 ? ` (${si.deficientQuantity} deficient)` : ''}
                     </Typography>
                   </Box>
@@ -702,6 +724,13 @@ export default function LocationsTab() {
 
   return (
     <Box>
+      <Typography variant="h5" sx={{ mb: 0.5 }}>
+        Locations
+      </Typography>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+        Every rack position in use, and what is sitting in it.
+      </Typography>
+
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 2, flexWrap: 'wrap' }}>
         <TextField
           label="Search locations"
@@ -730,8 +759,8 @@ export default function LocationsTab() {
             ))}
           </Select>
         </FormControl>
-        <Typography variant="body2" color="text.secondary">
-          {totalLocations} locations - {totalQty.toLocaleString()} total items
+        <Typography component="div" sx={{ ...microLabelSx, ...tabularSx }}>
+          {totalLocations} locations · {totalQty.toLocaleString()} total items
         </Typography>
       </Box>
 
@@ -743,15 +772,16 @@ export default function LocationsTab() {
           specific location to see its product codes.
         </Alert>
       ) : (
-        <Box
-          sx={{
-            display: 'grid',
-            gridTemplateColumns: { xs: '1fr', lg: selected ? 'minmax(300px, 380px) 1fr' : '1fr' },
-            gap: 2,
-            alignItems: 'start',
-          }}
-        >
-          <Box sx={{ height: 600, minWidth: 0 }}>
+        <Box sx={{ display: 'flex', gap: 2, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+          {/* Master-detail: picking a location collapses the full table into a narrow rail and hands
+              the width to the contents panel. The rail's own width is animated (rather than a
+              transform-based layout animation, which would visibly squash the table mid-flight), so
+              the hand-off reads as one surface resizing. */}
+          <motion.div
+            animate={{ width: selected ? 340 : '100%' }}
+            transition={springs.slow}
+            style={{ minWidth: 0, height: 600, flexShrink: 0 }}
+          >
             <DataGrid
               rows={rows}
               columns={columns}
@@ -761,14 +791,23 @@ export default function LocationsTab() {
               onRowClick={handleRowClick}
               density="compact"
               getRowClassName={(p) => (isSelectedRow(p.row) ? 'row-selected' : '')}
-              sx={{
+              sx={(theme) => ({
                 '& .MuiDataGrid-row': { cursor: 'pointer' },
-                '& .row-selected': { bgcolor: 'action.selected' },
-              }}
+                // Same amber selection edge the theme gives every other selected row.
+                '& .row-selected': {
+                  bgcolor: 'action.selected',
+                  boxShadow: `inset 3px 0 0 ${theme.vars.palette.secondary.main}`,
+                },
+              })}
             />
-          </Box>
+          </motion.div>
           {selected && (
-            <Box sx={{ minWidth: 0 }}>
+            <motion.div
+              initial={{ opacity: 0, x: 16 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={springs.slow}
+              style={{ flex: '1 1 380px', minWidth: 0 }}
+            >
               <ContentsPanel
                 selected={selected}
                 warehouseLabel={selected.warehouseId ? warehouseCode.get(selected.warehouseId) : undefined}
@@ -777,7 +816,7 @@ export default function LocationsTab() {
                 rowOptions={rowValues}
                 bayOptions={bays}
               />
-            </Box>
+            </motion.div>
           )}
         </Box>
       )}

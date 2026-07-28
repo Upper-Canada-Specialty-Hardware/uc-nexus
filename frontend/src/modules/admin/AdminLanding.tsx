@@ -1,22 +1,25 @@
 import type { ReactNode } from 'react';
-import { Box, Typography, Card, CardContent, CardActionArea, Grid } from '@mui/material';
-import SummarizeIcon from '@mui/icons-material/Summarize';
-import VisibilityIcon from '@mui/icons-material/Visibility';
-import StoreIcon from '@mui/icons-material/Store';
-import WarehouseIcon from '@mui/icons-material/Warehouse';
-import FolderIcon from '@mui/icons-material/Folder';
-import GroupIcon from '@mui/icons-material/Group';
-import CleaningServicesIcon from '@mui/icons-material/CleaningServices';
-import RouterIcon from '@mui/icons-material/Router';
-import BadgeIcon from '@mui/icons-material/Badge';
-import PeopleIcon from '@mui/icons-material/People';
-import BusinessIcon from '@mui/icons-material/Business';
-import CategoryIcon from '@mui/icons-material/Category';
-import DoorFrontIcon from '@mui/icons-material/DoorFront';
+import { Box, Typography, Card, CardActionArea, Grid } from '@mui/material';
+import {
+  ClipboardList,
+  Eye,
+  Store,
+  Warehouse,
+  Folder,
+  Users,
+  SprayCan,
+  Router,
+  IdCard,
+  Building2,
+  Boxes,
+  DoorOpen,
+} from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@apollo/client/react';
 import { StatCard, StatCardSkeleton } from '../../components/StatCard';
 import { GET_ADMIN_STATS } from '../../graphql/admin';
+import { microLabelSx, tabularSx } from '../../theme';
+import { AnimatedNumber, StaggerList, StaggerItem, FadeIn } from '../../motion';
 
 interface AdminStatsData {
   adminStats: {
@@ -27,35 +30,58 @@ interface AdminStatsData {
   };
 }
 
+const CARD_ICON = { size: 26, strokeWidth: 1.5 } as const;
+const TILE_ICON = { size: 18, strokeWidth: 1.75 } as const;
+
 interface ShortcutCardProps {
   label: string;
   icon: ReactNode;
+  /** The landing already knows this figure; showing it here saves a trip into the page. */
+  count?: number;
   onClick: () => void;
 }
 
-function ShortcutCard({ label, icon, onClick }: ShortcutCardProps) {
+function ShortcutCard({ label, icon, count, onClick }: ShortcutCardProps) {
   return (
-    <Card variant="outlined" sx={{ height: '100%', transition: 'box-shadow 0.2s', '&:hover': { boxShadow: 4 } }}>
-      <CardActionArea onClick={onClick} sx={{ height: '100%', p: 1 }}>
-        <CardContent sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-          <Box sx={{ color: 'primary.main', display: 'flex' }}>{icon}</Box>
-          <Typography variant="h6">{label}</Typography>
-        </CardContent>
+    <Card variant="outlined" sx={{ height: '100%' }}>
+      <CardActionArea onClick={onClick} sx={{ height: '100%' }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, px: 2, py: 1.75 }}>
+          <Box sx={{ color: 'text.secondary', display: 'flex', flexShrink: 0 }}>{icon}</Box>
+          <Typography variant="subtitle1" sx={{ flexGrow: 1, minWidth: 0 }}>
+            {label}
+          </Typography>
+          {count !== undefined && (
+            <Typography
+              component="div"
+              sx={{ ...tabularSx, fontSize: '1.25rem', fontWeight: 700, lineHeight: 1.1 }}
+            >
+              <AnimatedNumber value={count} />
+            </Typography>
+          )}
+        </Box>
       </CardActionArea>
     </Card>
   );
 }
 
-const SUB_ROUTES = [
-  { label: 'Project Purchasing Progress', path: '/app/admin/project-purchasing-progress', icon: <SummarizeIcon fontSize="large" /> },
-  { label: 'Opening Status', path: '/app/admin/opening-status', icon: <VisibilityIcon fontSize="large" /> },
-  { label: 'Vendors', path: '/app/admin/vendors', icon: <StoreIcon fontSize="large" /> },
-  { label: 'Warehouses', path: '/app/admin/warehouses', icon: <WarehouseIcon fontSize="large" /> },
-  { label: 'Projects', path: '/app/admin/projects', icon: <FolderIcon fontSize="large" /> },
-  { label: 'User Management', path: '/app/admin/users', icon: <GroupIcon fontSize="large" /> },
-  { label: 'Buyers', path: '/app/admin/buyers', icon: <BadgeIcon fontSize="large" /> },
-  { label: 'Relay Installs', path: '/app/admin/relay-installs', icon: <RouterIcon fontSize="large" /> },
-  { label: 'Location Cleanup', path: '/app/admin/location-cleanup', icon: <CleaningServicesIcon fontSize="large" /> },
+interface SubRoute {
+  label: string;
+  path: string;
+  icon: ReactNode;
+  /** Which adminStats field, if any, belongs on this card. */
+  countKey?: keyof AdminStatsData['adminStats'];
+}
+
+const SUB_ROUTES: SubRoute[] = [
+  { label: 'Project Purchasing Progress', path: '/app/admin/project-purchasing-progress', icon: <ClipboardList {...CARD_ICON} /> },
+  { label: 'Opening Status', path: '/app/admin/opening-status', icon: <Eye {...CARD_ICON} />, countKey: 'openingCount' },
+  { label: 'Vendors', path: '/app/admin/vendors', icon: <Store {...CARD_ICON} />, countKey: 'vendorCount' },
+  { label: 'Warehouses', path: '/app/admin/warehouses', icon: <Warehouse {...CARD_ICON} /> },
+  { label: 'Projects', path: '/app/admin/projects', icon: <Folder {...CARD_ICON} /> },
+  { label: 'User Management', path: '/app/admin/users', icon: <Users {...CARD_ICON} />, countKey: 'userCount' },
+  { label: 'Buyers', path: '/app/admin/buyers', icon: <IdCard {...CARD_ICON} /> },
+  { label: 'Relay Installs', path: '/app/admin/relay-installs', icon: <Router {...CARD_ICON} /> },
+  { label: 'Location Cleanup', path: '/app/admin/location-cleanup', icon: <SprayCan {...CARD_ICON} /> },
 ];
 
 export default function AdminLanding() {
@@ -67,46 +93,54 @@ export default function AdminLanding() {
 
   return (
     <Box>
-      <Typography variant="h5" sx={{ mb: 2 }}>Admin</Typography>
+      <FadeIn>
+        <Typography variant="h5" sx={{ mb: 0.25 }}>
+          Admin
+        </Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          Reference data, access, and the machinery behind the shop floor.
+        </Typography>
+      </FadeIn>
+
       <Box sx={{ display: 'flex', gap: 1.5, mb: 3, flexWrap: 'wrap' }}>
         {loading && !s ? (
           Array.from({ length: 4 }).map((_, i) => <StatCardSkeleton key={i} />)
         ) : s ? (
-          <>
-            <StatCard
-              icon={<BusinessIcon />}
-              label="Vendors"
-              value={s.vendorCount}
-              color="primary.main"
-            />
-            <StatCard
-              icon={<PeopleIcon />}
-              label="Users"
-              value={s.userCount}
-              color="info.main"
-            />
-            <StatCard
-              icon={<CategoryIcon />}
-              label="Hardware Items"
-              value={s.hardwareItemCount}
-              color="text.secondary"
-            />
-            <StatCard
-              icon={<DoorFrontIcon />}
-              label="Openings"
-              value={s.openingCount}
-              color="text.secondary"
-            />
-          </>
+          <StaggerList count={4}>
+            <StaggerItem style={{ flex: '1 1 0', minWidth: 130, display: 'flex' }}>
+              <StatCard icon={<Building2 {...TILE_ICON} />} label="Vendors" value={s.vendorCount} />
+            </StaggerItem>
+            <StaggerItem style={{ flex: '1 1 0', minWidth: 130, display: 'flex' }}>
+              <StatCard icon={<Users {...TILE_ICON} />} label="Users" value={s.userCount} />
+            </StaggerItem>
+            <StaggerItem style={{ flex: '1 1 0', minWidth: 130, display: 'flex' }}>
+              <StatCard icon={<Boxes {...TILE_ICON} />} label="Hardware Items" value={s.hardwareItemCount} />
+            </StaggerItem>
+            <StaggerItem style={{ flex: '1 1 0', minWidth: 130, display: 'flex' }}>
+              <StatCard icon={<DoorOpen {...TILE_ICON} />} label="Openings" value={s.openingCount} />
+            </StaggerItem>
+          </StaggerList>
         ) : null}
       </Box>
-      <Typography variant="h6" sx={{ mb: 2, mt: 1 }}>Go to</Typography>
+
+      <Typography component="div" sx={{ ...microLabelSx, mb: 1.25 }}>
+        Go to
+      </Typography>
       <Grid container spacing={2}>
-        {SUB_ROUTES.map((card) => (
-          <Grid key={card.path} size={{ xs: 12, sm: 6, md: 4, lg: 3 }}>
-            <ShortcutCard label={card.label} icon={card.icon} onClick={() => navigate(card.path)} />
-          </Grid>
-        ))}
+        <StaggerList count={SUB_ROUTES.length}>
+          {SUB_ROUTES.map((card) => (
+            <Grid key={card.path} size={{ xs: 12, sm: 6, md: 4, lg: 3 }}>
+              <StaggerItem style={{ height: '100%' }}>
+                <ShortcutCard
+                  label={card.label}
+                  icon={card.icon}
+                  count={card.countKey && s ? s[card.countKey] : undefined}
+                  onClick={() => navigate(card.path)}
+                />
+              </StaggerItem>
+            </Grid>
+          ))}
+        </StaggerList>
       </Grid>
     </Box>
   );

@@ -2,10 +2,7 @@ import { useState, useMemo } from 'react';
 import {
   Box,
   Typography,
-  Card,
-  CardActionArea,
-  CardContent,
-  Grid,
+  ButtonBase,
   Chip,
   Button,
   Paper,
@@ -28,11 +25,14 @@ import {
   Autocomplete,
   createFilterOptions,
 } from '@mui/material';
-import AddIcon from '@mui/icons-material/Add';
-import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
-import KeyboardArrowRightIcon from '@mui/icons-material/KeyboardArrowRight';
-import UnfoldMoreIcon from '@mui/icons-material/UnfoldMore';
-import UnfoldLessIcon from '@mui/icons-material/UnfoldLess';
+import {
+  Plus,
+  ChevronRight,
+  ChevronsUpDown,
+  ChevronsDownUp,
+  Settings,
+} from 'lucide-react';
+import { motion } from 'motion/react';
 import { useQuery } from '@apollo/client/react';
 import { GET_PURCHASE_ORDERS, GET_PO_STATISTICS } from '../../graphql/po';
 import { GET_GP_OUTBOX } from '../../graphql/shared';
@@ -46,9 +46,12 @@ import { poVendorName } from './poVendorName';
 import { PO_STATUS_VALUES, formatPoStatus, poStatusChipColor } from './poStatus';
 import { isStatusCardActive, toggleStatusCard } from './statusCardFilter';
 import { Routes, Route, useNavigate } from 'react-router-dom';
-import SettingsIcon from '@mui/icons-material/Settings';
 import { useIdentity } from '../../hooks/useIdentity';
 import PODocumentSettingsPage from './PODocumentSettingsPage';
+import { monoSx, tabularSx, microLabelSx } from '../../theme';
+import { AnimatedNumber, FadeIn, StaggerItem, StaggerList, springs } from '../../motion';
+
+const ICON = { size: 18, strokeWidth: 1.75 } as const;
 
 // --- Types ---
 
@@ -163,11 +166,15 @@ interface POStatistics {
 }
 
 
-// --- Stat card config ---
+// --- Status strip config ---
 
-// `status` is the po_status the card filters the table down to when clicked (#316); null on Total,
-// which clears the status filter instead. Clicking the already-active card clears it too, so the card
-// row doubles as the status filter and never traps you in a filtered view with no way back.
+// `status` is the po_status the segment filters the table down to when clicked (#316); null on Total,
+// which clears the status filter instead. Clicking the already-active segment clears it too, so the
+// strip doubles as the status filter and never traps you in a filtered view with no way back.
+//
+// Rendered as ONE compact strip rather than seven tiles: the counts are a readout, and a grid of tiles
+// spent a third of the page saying "0" six times. Total leads; a zero count is dimmed so the eye lands
+// on the statuses that actually have POs in them.
 const STAT_CARDS: { label: string; key: keyof POStatistics; status: string | null }[] = [
   { label: 'Total', key: 'total', status: null },
   { label: 'Draft', key: 'draft', status: 'DRAFT' },
@@ -346,13 +353,17 @@ function POLineItemsMiniTable({ lineItems, hasReceives }: POLineItemsMiniTablePr
       <TableBody>
         {lineItems.map((li) => (
           <TableRow key={li.id}>
-            <TableCell>{li.productCode}</TableCell>
-            <TableCell>{li.orderAs || '—'}</TableCell>
+            <TableCell sx={monoSx}>{li.productCode}</TableCell>
+            <TableCell sx={li.orderAs ? monoSx : { color: 'text.disabled' }}>
+              {li.orderAs || '—'}
+            </TableCell>
             <TableCell>{li.hardwareCategory}</TableCell>
-            <TableCell align="right">{li.orderedQuantity}</TableCell>
-            {hasReceives && <TableCell align="right">{li.receivedQuantity}</TableCell>}
-            <TableCell align="right">${(li.unitCost ?? 0).toFixed(2)}</TableCell>
-            <TableCell align="right">
+            <TableCell align="right" sx={tabularSx}>{li.orderedQuantity}</TableCell>
+            {hasReceives && (
+              <TableCell align="right" sx={tabularSx}>{li.receivedQuantity}</TableCell>
+            )}
+            <TableCell align="right" sx={tabularSx}>${(li.unitCost ?? 0).toFixed(2)}</TableCell>
+            <TableCell align="right" sx={tabularSx}>
               ${((li.orderedQuantity ?? 0) * (li.unitCost ?? 0)).toFixed(2)}
             </TableCell>
           </TableRow>
@@ -368,16 +379,20 @@ interface SortHeaderProps {
   field: SortField;
   label: string;
   align?: 'left' | 'right';
+  // Hug the content instead of sharing the leftover width. Every column hugs except Vendor, which
+  // takes the remainder - vendor names are the one value here long enough to want the room.
+  hug?: boolean;
   sortState: SortState;
   onSort: (field: SortField) => void;
 }
 
-function SortHeader({ field, label, align = 'left', sortState, onSort }: SortHeaderProps) {
+function SortHeader({ field, label, align = 'left', hug = true, sortState, onSort }: SortHeaderProps) {
   const active = sortState.field === field;
   return (
     <TableCell
       align={align}
       sortDirection={active ? sortState.direction : false}
+      sx={hug ? { width: '1%', whiteSpace: 'nowrap' } : undefined}
     >
       <TableSortLabel
         active={active}
@@ -504,7 +519,12 @@ function FilterRow({ filterState, onChange, projects }: FilterRowProps) {
         />
       </TableCell>
       <TableCell>
-        <Box sx={{ display: 'flex', gap: 0.5 }}>
+        {/* A bare pair of date boxes gave no clue which end was which. The aria-labels stay for
+            assistive tech; the From/To eyebrows say the same thing on screen. */}
+        <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
+          <Typography component="span" sx={{ ...microLabelSx, flexShrink: 0 }}>
+            From
+          </Typography>
           <TextField
             size="small"
             type="date"
@@ -513,6 +533,9 @@ function FilterRow({ filterState, onChange, projects }: FilterRowProps) {
             inputProps={{ 'aria-label': 'Ordered from' }}
             sx={{ flex: 1 }}
           />
+          <Typography component="span" sx={{ ...microLabelSx, flexShrink: 0 }}>
+            To
+          </Typography>
           <TextField
             size="small"
             type="date"
@@ -534,13 +557,14 @@ function FilterRow({ filterState, onChange, projects }: FilterRowProps) {
           sx={{ width: 90 }}
         />
       </TableCell>
+      <TableCell />
     </TableRow>
   );
 }
 
 // --- Single PO row + collapsible line-item panel ---
 
-const PO_TABLE_COLUMN_COUNT = 8;
+const PO_TABLE_COLUMN_COUNT = 9;
 
 interface POTableRowProps {
   po: PurchaseOrder;
@@ -563,11 +587,27 @@ function POTableRow({
   onOpen,
   gpWriteQueued,
 }: POTableRowProps) {
-  const dataCellSx = { cursor: 'pointer' };
+  const hugSx = { width: '1%', whiteSpace: 'nowrap' as const };
   return (
     <>
-      <TableRow hover sx={{ '& > *': { borderBottom: 'unset' } }}>
-        <TableCell sx={{ width: 48 }}>
+      {/* The whole data row opens the PO. The leading cell is the expander and nothing else, so a
+          click meant for "show me the lines" never turns into a modal. */}
+      <TableRow
+        hover
+        onClick={onOpen}
+        sx={{
+          cursor: 'pointer',
+          '& > *': { borderBottom: 'unset' },
+          '&:hover .po-row-chevron': { color: 'text.primary' },
+        }}
+      >
+        <TableCell
+          sx={{ width: 48 }}
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggle();
+          }}
+        >
           <IconButton
             size="small"
             aria-label={expanded ? 'Collapse line items' : 'Expand line items'}
@@ -576,25 +616,31 @@ function POTableRow({
               onToggle();
             }}
           >
-            {expanded ? <KeyboardArrowDownIcon /> : <KeyboardArrowRightIcon />}
+            <motion.span
+              animate={{ rotate: expanded ? 90 : 0 }}
+              transition={springs.fast}
+              style={{ display: 'inline-flex' }}
+            >
+              <ChevronRight {...ICON} />
+            </motion.span>
           </IconButton>
         </TableCell>
-        <TableCell sx={dataCellSx} onClick={onOpen}>
-          {projectNumber || '-'}
-        </TableCell>
-        <TableCell sx={dataCellSx} onClick={onOpen}>
+        <TableCell sx={{ ...hugSx, ...monoSx }}>{projectNumber || '-'}</TableCell>
+        <TableCell sx={hugSx}>
           <Typography variant="body2" noWrap title={projectName || undefined} sx={{ maxWidth: 240 }}>
             {projectName || '-'}
           </Typography>
         </TableCell>
-        <TableCell sx={dataCellSx} onClick={onOpen}>
+        <TableCell sx={hugSx}>
           {po.poNumber ? (
-            po.poNumber
+            <Box component="span" sx={monoSx}>
+              {po.poNumber}
+            </Box>
           ) : (
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-              <Typography variant="body2" color="text.secondary">
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+              <Box component="span" sx={{ ...monoSx, color: 'text.secondary' }}>
                 {po.requestNumber}
-              </Typography>
+              </Box>
               <Chip
                 label="Draft"
                 size="small"
@@ -604,7 +650,7 @@ function POTableRow({
             </Box>
           )}
         </TableCell>
-        <TableCell sx={dataCellSx} onClick={onOpen}>
+        <TableCell sx={hugSx}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap' }}>
             <Chip
               label={formatPoStatus(po.status)}
@@ -624,14 +670,27 @@ function POTableRow({
                 and register from there. */}
           </Box>
         </TableCell>
-        <TableCell sx={dataCellSx} onClick={onOpen}>
-          {poVendorName(po) || '-'}
-        </TableCell>
-        <TableCell sx={dataCellSx} onClick={onOpen}>
+        <TableCell>{poVendorName(po) || '-'}</TableCell>
+        <TableCell sx={hugSx}>
           {po.orderedAt ? new Date(po.orderedAt).toLocaleDateString() : '-'}
         </TableCell>
-        <TableCell sx={dataCellSx} align="right" onClick={onOpen}>
+        <TableCell sx={{ ...hugSx, ...tabularSx }} align="right">
           {po.lineItems?.length ?? 0}
+        </TableCell>
+        {/* Says the row goes somewhere, and gives the keyboard the same door the mouse has. */}
+        <TableCell sx={{ width: 44, py: 0 }} align="right">
+          <IconButton
+            size="small"
+            className="po-row-chevron"
+            aria-label={`Open ${poDisplayId(po)} details`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpen();
+            }}
+            sx={{ color: 'text.disabled', transition: 'color 0.15s ease' }}
+          >
+            <ChevronRight {...ICON} />
+          </IconButton>
         </TableCell>
       </TableRow>
       <TableRow>
@@ -639,9 +698,9 @@ function POTableRow({
           sx={{ p: 0, borderBottom: expanded ? undefined : 'none' }}
           colSpan={PO_TABLE_COLUMN_COUNT}
         >
-          <Collapse in={expanded} timeout="auto" unmountOnExit>
+          <Collapse in={expanded} timeout={220} unmountOnExit>
             <Box sx={{ p: 2, bgcolor: 'action.hover' }}>
-              <Typography variant="subtitle2" sx={{ mb: 1 }}>
+              <Typography component="h3" sx={{ ...microLabelSx, mb: 1 }}>
                 Line Items
               </Typography>
               <POLineItemsMiniTable
@@ -790,59 +849,97 @@ function POListPage() {
         <RelayStatusChip connected={relayConnected} />
         {isAdmin && (
           <Button
+            variant="outlined"
             size="small"
-            startIcon={<SettingsIcon />}
+            startIcon={<Settings {...ICON} />}
             onClick={() => navigate('/app/po/document-settings')}
           >
             Document Settings
           </Button>
         )}
         {/* Issue #256: creating a PO lands as a DRAFT (no GP involved), so no relay gating here -
-            the relay is only needed later, to register the draft into GP. */}
+            the relay is only needed later, to register the draft into GP. This is the screen's one
+            filled accent: the thing you came here to do. */}
         <Button
           variant="contained"
           size="small"
-          startIcon={<AddIcon />}
+          startIcon={<Plus {...ICON} />}
           onClick={() => setCreateOpen(true)}
         >
           Create PO
         </Button>
       </Box>
 
-      {/* Statistics cards. Clicking one filters the table to that status (#316) - the count and the
+      {/* Status strip. Clicking a segment filters the table to that status (#316) - the count and the
           list it describes are the same thing, so reading one and then hunting the filter row for the
-          other was busywork. */}
-      <Grid container spacing={2} sx={{ mb: 3 }}>
-        {STAT_CARDS.map((card) => {
-          const active = isStatusCardActive(filterState, card.status);
-          return (
-            <Grid key={card.key} size={{ xs: 6, sm: 4, md: 2 }}>
-              <Card variant={active ? 'elevation' : 'outlined'} sx={{ borderColor: active ? 'primary.main' : undefined }}>
-                <CardActionArea
-                  onClick={() => setFilterState((f) => toggleStatusCard(f, card.status))}
-                  aria-pressed={active}
-                  aria-label={`Filter by ${card.label}`}
-                >
-                  <CardContent sx={{ textAlign: 'center', py: 2 }}>
-                    <Typography variant="h4" color="primary">
-                      {statsLoading ? '-' : (stats?.[card.key] ?? 0)}
+          other was busywork. Display-only borders are deliberately absent: the only edge here marks
+          the segment that IS filtering the table. */}
+      <FadeIn>
+        <Paper
+          variant="outlined"
+          sx={{ mb: 2.5, display: 'flex', flexWrap: 'wrap', alignItems: 'stretch', overflow: 'hidden' }}
+        >
+          <StaggerList count={STAT_CARDS.length}>
+            {STAT_CARDS.map((card, i) => {
+              const active = isStatusCardActive(filterState, card.status);
+              const count = stats?.[card.key] ?? 0;
+              const zero = !statsLoading && count === 0;
+              return (
+                <StaggerItem key={card.key} style={{ display: 'flex' }}>
+                  <ButtonBase
+                    onClick={() => setFilterState((f) => toggleStatusCard(f, card.status))}
+                    aria-pressed={active}
+                    aria-label={`Filter by ${card.label}`}
+                    sx={{
+                      display: 'flex',
+                      alignItems: 'baseline',
+                      gap: 0.75,
+                      px: 2,
+                      py: 1.25,
+                      borderLeft: i === 0 ? 'none' : '1px solid',
+                      borderLeftColor: 'divider',
+                      borderBottom: '2px solid',
+                      borderBottomColor: active ? 'secondary.main' : 'transparent',
+                      '&:hover': { backgroundColor: 'action.hover' },
+                    }}
+                  >
+                    <Typography
+                      component="span"
+                      sx={{
+                        ...tabularSx,
+                        fontSize: '1.125rem',
+                        fontWeight: 700,
+                        lineHeight: 1,
+                        color: zero ? 'text.secondary' : 'text.primary',
+                        opacity: zero ? 0.6 : 1,
+                      }}
+                    >
+                      {statsLoading ? '–' : <AnimatedNumber value={count} />}
                     </Typography>
-                    <Typography variant="body2" color={active ? 'primary' : 'text.secondary'}>
+                    <Typography
+                      component="span"
+                      sx={{
+                        ...microLabelSx,
+                        whiteSpace: 'nowrap',
+                        color: active ? 'text.primary' : 'text.secondary',
+                        opacity: zero ? 0.6 : 1,
+                      }}
+                    >
                       {card.label}
                     </Typography>
-                  </CardContent>
-                </CardActionArea>
-              </Card>
-            </Grid>
-          );
-        })}
-      </Grid>
+                  </ButtonBase>
+                </StaggerItem>
+              );
+            })}
+          </StaggerList>
+        </Paper>
+      </FadeIn>
 
       {/* Expand / Collapse controls */}
       <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1, mb: 1 }}>
         <Button
           size="small"
-          startIcon={<UnfoldMoreIcon />}
+          startIcon={<ChevronsUpDown {...ICON} />}
           onClick={handleExpandAll}
           disabled={posLoading || allVisibleExpanded}
         >
@@ -850,7 +947,7 @@ function POListPage() {
         </Button>
         <Button
           size="small"
-          startIcon={<UnfoldLessIcon />}
+          startIcon={<ChevronsDownUp {...ICON} />}
           onClick={handleCollapseAll}
           disabled={posLoading || noneVisibleExpanded}
         >
@@ -891,6 +988,7 @@ function POListPage() {
               <SortHeader
                 field="vendor"
                 label="Vendor"
+                hug={false}
                 sortState={sortState}
                 onSort={handleSortClick}
               />
@@ -907,6 +1005,7 @@ function POListPage() {
                 sortState={sortState}
                 onSort={handleSortClick}
               />
+              <TableCell sx={{ width: 44 }} />
             </TableRow>
             <FilterRow
               filterState={filterState}

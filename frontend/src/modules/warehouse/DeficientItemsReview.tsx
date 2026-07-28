@@ -13,9 +13,10 @@ import {
 } from '@mui/material';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useQuery } from '@apollo/client/react';
-import GavelIcon from '@mui/icons-material/Gavel';
+import { Gavel } from 'lucide-react';
 import { GET_DEFICIENT_ITEMS } from '../../graphql/warehouse';
 import ResolveDeficiencyModal, { type DeficientRow } from './stock/ResolveDeficiencyModal';
+import { microLabelSx, monoSx } from '../../theme';
 
 type SourceFilter = 'ALL' | 'PROJECT_INVENTORY' | 'STOCK_POOL';
 
@@ -51,7 +52,17 @@ export default function DeficientItemsReview() {
       ),
     },
     { field: 'hardwareCategory', headerName: 'Category', flex: 1, minWidth: 140 },
-    { field: 'productCode', headerName: 'Product Code', flex: 1, minWidth: 140 },
+    {
+      field: 'productCode',
+      headerName: 'Product Code',
+      flex: 1,
+      minWidth: 140,
+      renderCell: ({ value }) => (
+        <Typography component="span" sx={monoSx}>
+          {value as string}
+        </Typography>
+      ),
+    },
     {
       field: 'deficientQuantity',
       headerName: 'Deficient',
@@ -66,6 +77,11 @@ export default function DeficientItemsReview() {
       minWidth: 160,
       valueGetter: (_v, row) =>
         [row.aisle, row.row, row.bay].filter(Boolean).join(' / ') || '— Unlocated —',
+      renderCell: ({ value }) => (
+        <Typography component="span" sx={monoSx}>
+          {value as string}
+        </Typography>
+      ),
     },
     {
       field: 'actions',
@@ -76,7 +92,7 @@ export default function DeficientItemsReview() {
       renderCell: ({ row }) => (
         <Button
           size="small"
-          startIcon={<GavelIcon />}
+          startIcon={<Gavel size={18} strokeWidth={1.75} />}
           variant="outlined"
           onClick={() => setSelected(row as DeficientRow)}
         >
@@ -88,8 +104,22 @@ export default function DeficientItemsReview() {
 
   return (
     <Box>
-      <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 2 }}>
-        <Typography variant="h5">Deficient Items Review</Typography>
+      <Stack
+        direction="row"
+        alignItems="flex-end"
+        justifyContent="space-between"
+        gap={2}
+        flexWrap="wrap"
+        sx={{ mb: 2 }}
+      >
+        <Box sx={{ minWidth: 0 }}>
+          <Typography variant="h5" sx={{ mb: 0.5 }}>
+            Deficient Items Review
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            Damaged and short-shipped units held out of pulls until someone decides their fate.
+          </Typography>
+        </Box>
         <ToggleButtonGroup
           value={filter}
           exclusive
@@ -105,9 +135,14 @@ export default function DeficientItemsReview() {
       {error && <Alert severity="error">{error.message}</Alert>}
 
       {rows.length === 0 && !loading ? (
-        <Card variant="outlined">
+        <Card variant="outlined" sx={{ maxWidth: 620 }}>
           <CardContent>
-            <Typography variant="h6">No deficient items pending review</Typography>
+            <Typography component="div" sx={microLabelSx}>
+              Clear
+            </Typography>
+            <Typography variant="h6" sx={{ mt: 0.25 }}>
+              No deficient items pending review
+            </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
               Deficient items appear here when they're flagged during receiving, shop assembly, or
               directly from the stock pool. Resolving moves them out of this queue.

@@ -1,12 +1,24 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import {
-  Box, Typography, TextField, Button, Stack, Divider, Alert, CircularProgress,
+  Box, Typography, TextField, Button, Stack, Alert, CircularProgress,
 } from '@mui/material';
 import { useQuery, useMutation } from '@apollo/client/react';
 import { GET_PO_DOCUMENT_SETTINGS, UPDATE_PO_DOCUMENT_SETTINGS } from '../../graphql/po';
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
-import BackToModule from '../../components/BackToModule';
+import { microLabelSx } from '../../theme';
+import { FadeIn } from '../../motion';
+
+/** A 2px ink rule with a micro-label heading — the section separator used across the PO module. */
+function SectionHeading({ children }: { children: ReactNode }) {
+  return (
+    <Box sx={{ pt: 1.5, borderTop: '2px solid', borderColor: 'text.primary' }}>
+      <Typography component="h2" sx={microLabelSx}>
+        {children}
+      </Typography>
+    </Box>
+  );
+}
 
 interface PODocumentSettings {
   taxNumbers: string;
@@ -38,7 +50,7 @@ export default function PODocumentSettingsPage() {
 
   return (
     <Box>
-      <BackToModule to="/app/po" label="Purchase Orders" />
+      {/* No back link: the nav rail's breadcrumb already says where this page sits. */}
       {!isAdmin ? (
         <Alert severity="warning">You need the Admin/Manager role to edit PO document settings.</Alert>
       ) : loading && !data ? (
@@ -97,6 +109,7 @@ function SettingsForm({ settings }: { settings: PODocumentSettings }) {
   };
 
   return (
+    <FadeIn>
     <Box sx={{ maxWidth: 820 }}>
       <Typography variant="h5" gutterBottom>PO Document Settings</Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
@@ -105,6 +118,7 @@ function SettingsForm({ settings }: { settings: PODocumentSettings }) {
       </Typography>
 
       <Stack spacing={2.5}>
+        <SectionHeading>Company &amp; terms</SectionHeading>
         <TextField
           label="Company from-address" value={companyFromAddress}
           onChange={(e) => setCompanyFromAddress(e.target.value)}
@@ -128,7 +142,7 @@ function SettingsForm({ settings }: { settings: PODocumentSettings }) {
           helperText="Dropdown options for the generate dialog's Shipping Method, one per line."
         />
 
-        <Divider />
+        <SectionHeading>Tax &amp; mandatory notes</SectionHeading>
         <TextField
           label="Tax numbers" value={taxNumbers} onChange={(e) => setTaxNumbers(e.target.value)}
           fullWidth multiline minRows={3} helperText="GST / PST / HST lines, one per line."
@@ -139,7 +153,7 @@ function SettingsForm({ settings }: { settings: PODocumentSettings }) {
           helperText="One bullet per line. Printed below the totals on every PO."
         />
 
-        <Divider />
+        <SectionHeading>Conditional notes</SectionHeading>
         <TextField
           label="Wood-door FSC note" value={fscNote} onChange={(e) => setFscNote(e.target.value)}
           fullWidth multiline minRows={2}
@@ -156,7 +170,7 @@ function SettingsForm({ settings }: { settings: PODocumentSettings }) {
           sx={{ maxWidth: 280 }}
         />
 
-        <Divider />
+        <SectionHeading>Customs &amp; shipping accounts</SectionHeading>
         <TextField
           label="Customs broker block" value={customsBrokerBlock}
           onChange={(e) => setCustomsBrokerBlock(e.target.value)}
@@ -168,7 +182,7 @@ function SettingsForm({ settings }: { settings: PODocumentSettings }) {
           fullWidth multiline minRows={3} helperText="Courier account lines, one per line."
         />
 
-        <Divider />
+        <SectionHeading>Signature &amp; footer</SectionHeading>
         <TextField
           label="Signature note" value={signatureNote} onChange={(e) => setSignatureNote(e.target.value)}
           fullWidth
@@ -185,5 +199,6 @@ function SettingsForm({ settings }: { settings: PODocumentSettings }) {
         </Box>
       </Stack>
     </Box>
+    </FadeIn>
   );
 }

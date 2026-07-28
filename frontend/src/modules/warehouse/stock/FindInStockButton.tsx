@@ -15,8 +15,9 @@ import {
   Box,
 } from '@mui/material';
 import { useLazyQuery } from '@apollo/client/react';
-import SearchIcon from '@mui/icons-material/Search';
+import { Search } from 'lucide-react';
 import Modal from '../../../components/Modal';
+import { monoSx } from '../../../theme';
 import { GET_STOCK_MATCHES_FOR_OPENING } from '../../../graphql/warehouse';
 import AllocateStockModal from './AllocateStockModal';
 import type { StockItem } from '../StockPoolView';
@@ -57,7 +58,7 @@ export default function FindInStockButton({
       <Button
         variant="outlined"
         size="small"
-        startIcon={<SearchIcon />}
+        startIcon={<Search size={18} strokeWidth={1.75} />}
         onClick={handleOpen}
       >
         Find in Stock
@@ -94,11 +95,11 @@ export default function FindInStockButton({
                 </TableHead>
                 <TableBody>
                   {matches.map((m) => (
-                    <TableRow key={m.id}>
+                    <TableRow key={m.id} hover>
                       <TableCell>{m.hardwareCategory}</TableCell>
-                      <TableCell>{m.productCode}</TableCell>
+                      <TableCell sx={monoSx}>{m.productCode}</TableCell>
                       <TableCell align="right">{m.available}</TableCell>
-                      <TableCell>
+                      <TableCell sx={monoSx}>
                         {[m.aisle, m.row, m.bay].filter(Boolean).join(' / ') || '— unlocated —'}
                       </TableCell>
                       <TableCell>

@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Box, Typography, Chip } from '@mui/material';
+import { ChevronRight } from 'lucide-react';
 import { useQuery } from '@apollo/client/react';
 import type { GridColDef, GridRowParams } from '@mui/x-data-grid';
 import { GET_PULL_REQUESTS } from '../../graphql/warehouse';
@@ -7,6 +8,7 @@ import DataTable from '../../components/DataTable';
 import Tabs from '../../components/Tabs';
 import PullRequestDetailModal from './PullRequestDetailModal';
 import { stagingChipColor, stagingChipLabel } from './pullStaging';
+import { monoSx } from '../../theme';
 
 // --- Types ---
 
@@ -75,6 +77,11 @@ const columns: GridColDef[] = [
     headerName: 'Request #',
     flex: 1,
     minWidth: 140,
+    renderCell: (params) => (
+      <Typography component="span" sx={{ ...monoSx, fontWeight: 600 }}>
+        {params.value as string}
+      </Typography>
+    ),
   },
   {
     field: 'createdAt',
@@ -125,6 +132,20 @@ const columns: GridColDef[] = [
       return <Chip label={label} color={stagingChipColor(params.row as PullRequest)} size="small" />;
     },
   },
+  {
+    // The whole row opens the pull; the chevron is what tells the user so.
+    field: 'open',
+    headerName: '',
+    width: 44,
+    sortable: false,
+    filterable: false,
+    align: 'center',
+    renderCell: () => (
+      <Box data-row-open sx={{ display: 'flex', color: 'text.secondary' }}>
+        <ChevronRight size={18} strokeWidth={1.75} />
+      </Box>
+    ),
+  },
 ];
 
 // --- Tab content component ---
@@ -157,7 +178,10 @@ function PullRequestTab({ source }: PullRequestTabProps) {
         rows={requests}
         loading={loading}
         onRowClick={handleRowClick}
-        sx={{ cursor: 'pointer' }}
+        sx={{
+          cursor: 'pointer',
+          '& .MuiDataGrid-row:hover [data-row-open]': { color: 'text.primary' },
+        }}
         getRowId={(row) => row.id}
       />
       {selected && (
@@ -182,8 +206,11 @@ export default function PullRequestQueue() {
 
   return (
     <Box>
-      <Typography variant="h5" gutterBottom>
+      <Typography variant="h5" sx={{ mb: 0.5 }}>
         Pull Request Queue
+      </Typography>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+        Every request to take hardware out of inventory. Open a row to approve, stage and complete it.
       </Typography>
 
       <Tabs tabs={tabs} defaultTab={0} />

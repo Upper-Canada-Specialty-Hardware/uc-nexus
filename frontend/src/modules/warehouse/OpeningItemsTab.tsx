@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, type ReactNode } from 'react';
 import {
   Box,
   Typography,
@@ -14,6 +14,7 @@ import {
   Paper,
   Button,
 } from '@mui/material';
+import { ChevronRight } from 'lucide-react';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useQuery, useLazyQuery } from '@apollo/client/react';
 import { GET_OPENING_ITEMS, GET_OPENING_ITEM_DETAILS } from '../../graphql/warehouse';
@@ -23,6 +24,7 @@ import InventoryCorrectionModal from '../admin/InventoryCorrectionModal';
 import FindInStockButton from './stock/FindInStockButton';
 import { leafLabel } from '../../utils/leaf';
 import OpeningLeafStatusPanel from '../../components/OpeningLeafStatusPanel';
+import { microLabelSx, monoSx, tabularSx } from '../../theme';
 
 interface InstalledHardware {
   id: string;
@@ -89,8 +91,22 @@ function getStateDisplay(state: string): { label: string; color: StateColor } {
   }
 }
 
+function MonoCell({ value }: { value: string | null | undefined }) {
+  return (
+    <Typography component="span" sx={monoSx}>
+      {value == null || value === '' ? '—' : value}
+    </Typography>
+  );
+}
+
 const columns: GridColDef[] = [
-  { field: 'openingNumber', headerName: 'Opening Number', flex: 1, sortable: true },
+  {
+    field: 'openingNumber',
+    headerName: 'Opening Number',
+    flex: 1,
+    sortable: true,
+    renderCell: (params) => <MonoCell value={params.value as string} />,
+  },
   {
     field: 'leaf',
     headerName: 'Leaf',
@@ -100,9 +116,24 @@ const columns: GridColDef[] = [
   { field: 'building', headerName: 'Building', flex: 0.8 },
   { field: 'floor', headerName: 'Floor', flex: 0.6 },
   { field: 'location', headerName: 'Location', flex: 1 },
-  { field: 'aisle', headerName: 'Aisle', flex: 0.6 },
-  { field: 'row', headerName: 'Row', flex: 0.6 },
-  { field: 'bay', headerName: 'Bay', flex: 0.6 },
+  {
+    field: 'aisle',
+    headerName: 'Aisle',
+    flex: 0.6,
+    renderCell: (params) => <MonoCell value={params.value as string | null} />,
+  },
+  {
+    field: 'row',
+    headerName: 'Row',
+    flex: 0.6,
+    renderCell: (params) => <MonoCell value={params.value as string | null} />,
+  },
+  {
+    field: 'bay',
+    headerName: 'Bay',
+    flex: 0.6,
+    renderCell: (params) => <MonoCell value={params.value as string | null} />,
+  },
   { field: 'quantity', headerName: 'Quantity', flex: 0.6, type: 'number' },
   {
     field: 'assemblyCompletedAt',
@@ -110,7 +141,34 @@ const columns: GridColDef[] = [
     flex: 1.2,
     valueFormatter: (value: string | null) => formatDate(value),
   },
+  {
+    // The whole row opens the detail; the chevron is what says so.
+    field: 'open',
+    headerName: '',
+    width: 44,
+    sortable: false,
+    filterable: false,
+    align: 'center',
+    renderCell: () => (
+      <Box sx={{ display: 'flex', color: 'text.secondary' }}>
+        <ChevronRight size={18} strokeWidth={1.75} />
+      </Box>
+    ),
+  },
 ];
+
+function InfoField({ label, value, mono }: { label: string; value: ReactNode; mono?: boolean }) {
+  return (
+    <Box>
+      <Typography component="div" sx={microLabelSx}>
+        {label}
+      </Typography>
+      <Typography component="div" variant="body2" sx={mono ? monoSx : undefined}>
+        {value}
+      </Typography>
+    </Box>
+  );
+}
 
 function OpeningItemDetailModal({
   open,
@@ -158,67 +216,53 @@ function OpeningItemDetailModal({
         {error && <Alert severity="error">Error loading details: {error.message}</Alert>}
         {openingItem && !loading && (
           <Box>
-            <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 2, mb: 3 }}>
-              <Box>
-                <Typography variant="subtitle2" color="text.secondary">
-                  Opening Number
-                </Typography>
-                <Typography>{openingItem.openingNumber}</Typography>
-              </Box>
-              <Box>
-                <Typography variant="subtitle2" color="text.secondary">
-                  Leaf
-                </Typography>
-                <Typography>{leafLabel(openingItem.leaf) ?? '—'}</Typography>
-              </Box>
-              <Box>
-                <Typography variant="subtitle2" color="text.secondary">
-                  State
-                </Typography>
-                <Chip
-                  label={getStateDisplay(openingItem.state).label}
-                  color={getStateDisplay(openingItem.state).color}
-                  size="small"
-                />
-              </Box>
-              <Box>
-                <Typography variant="subtitle2" color="text.secondary">
-                  Building
-                </Typography>
-                <Typography>{openingItem.building ?? '—'}</Typography>
-              </Box>
-              <Box>
-                <Typography variant="subtitle2" color="text.secondary">
-                  Floor
-                </Typography>
-                <Typography>{openingItem.floor ?? '—'}</Typography>
-              </Box>
-              <Box>
-                <Typography variant="subtitle2" color="text.secondary">
-                  Location
-                </Typography>
-                <Typography>{openingItem.location ?? '—'}</Typography>
-              </Box>
-              <Box>
-                <Typography variant="subtitle2" color="text.secondary">
-                  Assembly Completion Date
-                </Typography>
-                <Typography>{formatDate(openingItem.assemblyCompletedAt)}</Typography>
-              </Box>
-              <Box>
-                <Typography variant="subtitle2" color="text.secondary">
-                  Warehouse Location
-                </Typography>
-                <Typography>
-                  {formatLocation(openingItem.aisle, openingItem.row, openingItem.bay)}
-                </Typography>
-              </Box>
-              <Box>
-                <Typography variant="subtitle2" color="text.secondary">
-                  Quantity
-                </Typography>
-                <Typography>{openingItem.quantity}</Typography>
-              </Box>
+            <Box
+              sx={{
+                display: 'grid',
+                gridTemplateColumns: { xs: '1fr 1fr', sm: 'repeat(3, 1fr)' },
+                gap: 1.5,
+                pb: 2,
+                mb: 2,
+                borderBottom: '1px solid',
+                borderColor: 'divider',
+              }}
+            >
+              <InfoField label="Opening Number" value={openingItem.openingNumber} mono />
+              <InfoField label="Leaf" value={leafLabel(openingItem.leaf) ?? '—'} />
+              <InfoField
+                label="State"
+                value={
+                  <Chip
+                    label={getStateDisplay(openingItem.state).label}
+                    color={getStateDisplay(openingItem.state).color}
+                    size="small"
+                  />
+                }
+              />
+              <InfoField label="Building" value={openingItem.building ?? '—'} />
+              <InfoField label="Floor" value={openingItem.floor ?? '—'} />
+              <InfoField label="Location" value={openingItem.location ?? '—'} />
+              <InfoField
+                label="Assembly Completed"
+                value={
+                  <Box component="span" sx={tabularSx}>
+                    {formatDate(openingItem.assemblyCompletedAt)}
+                  </Box>
+                }
+              />
+              <InfoField
+                label="Warehouse Location"
+                value={formatLocation(openingItem.aisle, openingItem.row, openingItem.bay)}
+                mono
+              />
+              <InfoField
+                label="Quantity"
+                value={
+                  <Box component="span" sx={tabularSx}>
+                    {openingItem.quantity}
+                  </Box>
+                }
+              />
             </Box>
 
             <Box sx={{ mb: 3, display: 'flex', gap: 1 }}>
@@ -240,11 +284,13 @@ function OpeningItemDetailModal({
               />
             </Box>
 
-            <Typography variant="h6" sx={{ mb: 1 }}>
-              Installed Hardware
+            <Typography component="div" sx={{ ...microLabelSx, mb: 0.5 }}>
+              Installed Hardware ({hardware.length})
             </Typography>
             {hardware.length === 0 ? (
-              <Typography color="text.secondary">No installed hardware</Typography>
+              <Typography variant="body2" color="text.secondary">
+                No installed hardware
+              </Typography>
             ) : (
               <TableContainer component={Paper} variant="outlined">
                 <Table size="small">
@@ -257,8 +303,8 @@ function OpeningItemDetailModal({
                   </TableHead>
                   <TableBody>
                     {hardware.map((hw) => (
-                      <TableRow key={hw.id}>
-                        <TableCell>{hw.productCode}</TableCell>
+                      <TableRow key={hw.id} hover>
+                        <TableCell sx={monoSx}>{hw.productCode}</TableCell>
                         <TableCell>{hw.hardwareCategory}</TableCell>
                         <TableCell align="right">{hw.quantity}</TableCell>
                       </TableRow>

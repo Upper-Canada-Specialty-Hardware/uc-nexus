@@ -11,8 +11,7 @@ import {
   TextField,
   Typography,
 } from '@mui/material';
-import AddIcon from '@mui/icons-material/Add';
-import DeleteIcon from '@mui/icons-material/Delete';
+import { Plus, Trash2 } from 'lucide-react';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import type {
   AggregatedHardwareItem,
@@ -24,6 +23,8 @@ import type {
 } from './types';
 import { aggregationKey, itemGroupKey, shippingPRItemKey } from './types';
 import { leafSuffix } from '../../utils/leaf';
+import { monoSx, microLabelSx, tabularSx } from '../../theme';
+import { StaggerItem, StaggerList } from '../../motion';
 
 /** Units of a leaf's own hardware list that are not physically on it, however they went missing. */
 function incompleteUnits(leaf: AssembledLeafCandidate): number {
@@ -232,16 +233,31 @@ export default function ShippingPRsStep({
         </Alert>
       )}
 
+      <StaggerList count={shippingPRDrafts.length}>
       {shippingPRDrafts.map((draft, prIdx) => {
         const selectedKeys = new Set(draft.items.map(shippingPRItemKey));
         return (
-          <Paper key={prIdx} variant="outlined" sx={{ p: 2, mb: 2 }}>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
-              <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-                Shipping PR #{prIdx + 1}
-              </Typography>
-              <IconButton size="small" color="error" onClick={() => onRemovePR(prIdx)}>
-                <DeleteIcon fontSize="small" />
+          <StaggerItem key={prIdx}>
+          <Paper variant="outlined" sx={{ p: 2, mb: 2 }}>
+            <Box
+              sx={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                mb: 1.5,
+                pb: 0.75,
+                borderBottom: '2px solid',
+                borderColor: 'text.primary',
+              }}
+            >
+              <Typography sx={microLabelSx}>Shipping PR #{prIdx + 1}</Typography>
+              <IconButton
+                size="small"
+                color="error"
+                aria-label={`Remove shipping PR ${prIdx + 1}`}
+                onClick={() => onRemovePR(prIdx)}
+              >
+                <Trash2 size={16} strokeWidth={1.75} />
               </IconButton>
             </Box>
 
@@ -253,6 +269,7 @@ export default function ShippingPRsStep({
                 value={draft.requestNumber}
                 onChange={(e) => onUpdatePR(prIdx, 'requestNumber', e.target.value)}
                 sx={{ flex: 1 }}
+                slotProps={{ input: { sx: monoSx } }}
               />
               <TextField
                 label="Requested By"
@@ -263,7 +280,7 @@ export default function ShippingPRsStep({
               />
             </Box>
 
-            <Typography variant="body2" sx={{ mb: 1 }}>
+            <Typography variant="body2" sx={{ ...tabularSx, mb: 1, fontWeight: 600 }}>
               Select items ({draft.items.length} selected):
             </Typography>
 
@@ -273,7 +290,7 @@ export default function ShippingPRsStep({
                   against stock. */}
               {assembledLeaves.length > 0 && (
                 <>
-                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+                  <Typography sx={{ ...microLabelSx, display: 'block', mb: 0.5 }}>
                     Assembled door leaves
                   </Typography>
                   {assembledLeaves.map((leaf) => {
@@ -302,7 +319,9 @@ export default function ShippingPRsStep({
                         label={
                           <Box>
                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                              <Typography variant="body2">
+                              {/* One text run on purpose: the opening ref, its leaf and the
+                                  assembled-unit note read as a single identifier. */}
+                              <Typography variant="body2" sx={monoSx}>
                                 Opening {leaf.openingNumber}
                                 {leafSuffix(leaf.leaf)}
                                 {leaf.leaf == null && ' (assembled unit)'}
@@ -347,9 +366,12 @@ export default function ShippingPRsStep({
               {looseItems.length > 0 && (
                 <>
                   <Typography
-                    variant="caption"
-                    color="text.secondary"
-                    sx={{ display: 'block', mt: assembledLeaves.length > 0 ? 1.5 : 0, mb: 0.5 }}
+                    sx={{
+                      ...microLabelSx,
+                      display: 'block',
+                      mt: assembledLeaves.length > 0 ? 1.5 : 0,
+                      mb: 0.5,
+                    }}
                   >
                     Loose hardware
                   </Typography>
@@ -381,7 +403,7 @@ export default function ShippingPRsStep({
                         }
                         label={
                           <Box>
-                            <Typography variant="body2">
+                            <Typography variant="body2" sx={{ ...monoSx, ...tabularSx }}>
                               Opening: {hi.opening_number} | Product: {hi.product_code} | Category:{' '}
                               {hi.hardware_category} | Qty: {hi.item_quantity}
                             </Typography>
@@ -410,10 +432,12 @@ export default function ShippingPRsStep({
               )}
             </Box>
           </Paper>
+          </StaggerItem>
         );
       })}
+      </StaggerList>
 
-      <Button startIcon={<AddIcon />} onClick={onAddPR}>
+      <Button variant="outlined" startIcon={<Plus size={18} strokeWidth={1.75} />} onClick={onAddPR}>
         Add Shipping PR
       </Button>
 

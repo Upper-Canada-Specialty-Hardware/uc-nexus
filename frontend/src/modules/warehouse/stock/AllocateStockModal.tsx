@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import {
+  Box,
   Button,
   Stack,
   TextField,
@@ -16,6 +17,7 @@ import { useToast } from '../../../components/Toast';
 import { GET_PROJECTS } from '../../../graphql/shared';
 import { ALLOCATE_STOCK_TO_PROJECT } from '../../../graphql/warehouse';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../../graphql/refetch';
+import { microLabelSx, monoSx } from '../../../theme';
 import type { StockItem } from '../StockPoolView';
 
 interface Project {
@@ -105,10 +107,14 @@ export default function AllocateStockModal({
     >
       <Stack spacing={2}>
         {error && <Alert severity="error">{error.message}</Alert>}
-        <Typography variant="body2" color="text.secondary">
-          Source: <b>{item.hardwareCategory}</b> / <b>{item.productCode}</b> (available{' '}
-          {item.available})
-        </Typography>
+        <Box sx={{ pb: 1, borderBottom: '1px solid', borderColor: 'divider' }}>
+          <Typography component="div" sx={microLabelSx}>
+            Source · {item.available} available
+          </Typography>
+          <Typography sx={monoSx}>
+            {item.hardwareCategory} / {item.productCode}
+          </Typography>
+        </Box>
         <FormControl size="small" required>
           <InputLabel>Target project</InputLabel>
           <Select

@@ -10,8 +10,9 @@ import {
   IconButton,
   Stack,
   Alert,
+  Typography,
 } from '@mui/material';
-import RefreshIcon from '@mui/icons-material/Refresh';
+import { RefreshCw } from 'lucide-react';
 import { useMutation, useQuery } from '@apollo/client/react';
 import { CombinedGraphQLErrors } from '@apollo/client/errors';
 import { ADOPT_GP_JOB, GET_GP_JOBS } from '../../graphql/import';
@@ -20,6 +21,7 @@ import { useToast } from '../../components/Toast';
 import RelayStatusChip from '../../relay/RelayStatusChip';
 import { useRelayStatus } from '../../relay/useRelayStatus';
 import type { Project } from '../../types/project';
+import { monoSx, microLabelSx } from '../../theme';
 
 interface GpJobOption {
   jobNumber: string;
@@ -126,9 +128,12 @@ export default function AdoptGpJobDialog({ open, onClose }: AdoptGpJobDialogProp
               size="small"
               disabled
               sx={{ minWidth: 140 }}
+              slotProps={{ input: { sx: monoSx } }}
             />
             <RelayStatusChip connected={relayConnected} />
           </Stack>
+
+          <Typography sx={microLabelSx}>Job master (live from GP)</Typography>
           <Stack direction="row" spacing={0.5} alignItems="flex-start">
             <Autocomplete
               options={jobs}
@@ -142,6 +147,7 @@ export default function AdoptGpJobDialog({ open, onClose }: AdoptGpJobDialogProp
               }}
               disabled={!relayConnected || loading}
               sx={{ flex: 1 }}
+              slotProps={{ listbox: { sx: monoSx } }}
               renderInput={(params) => (
                 <TextField
                   {...params}
@@ -167,7 +173,7 @@ export default function AdoptGpJobDialog({ open, onClose }: AdoptGpJobDialogProp
               disabled={!relayConnected || loading}
               sx={{ mt: 1 }}
             >
-              <RefreshIcon fontSize="small" />
+              <RefreshCw size={16} strokeWidth={1.75} />
             </IconButton>
           </Stack>
         </Stack>

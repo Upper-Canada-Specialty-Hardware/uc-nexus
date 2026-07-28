@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Button } from '@mui/material';
-import AddIcon from '@mui/icons-material/Add';
+import { Plus } from 'lucide-react';
 import ProjectLandingPage from '../../components/ProjectLandingPage';
 import AdoptGpJobDialog from './AdoptGpJobDialog';
 import ImportWizard from './ImportWizard';
@@ -32,7 +32,7 @@ export default function ImportModule() {
           <Button
             variant="contained"
             size="large"
-            startIcon={<AddIcon />}
+            startIcon={<Plus size={18} strokeWidth={1.75} />}
             onClick={() => setAdoptOpen(true)}
           >
             Adopt GP Job
