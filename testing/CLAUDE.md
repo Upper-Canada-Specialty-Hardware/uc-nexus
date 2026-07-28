@@ -289,9 +289,33 @@ Two things a fresh reader gets wrong every time:
 **PO Detail Modal**:
 - Shows: status chip, PO number, vendor info, quote #, dates, "No Project" label if project-less
 - Line items grid: product code, hardware category, Order As, classification, ordered/received qty, unit cost, line total
+- "Openings on this PO" section (#302), between Line Items and Documents - one row per (opening, leaf)
+  the PO's hardware was bought for: opening number, a `Leaf N` chip, the hardware ordered against it
+  (`2x E90600IC 626`), and a `building / floor / location` caption on the right. See below for which
+  POs have one at all.
 - Documents section with upload capability
 - Receiving history
 - Actions: Edit (header fields + line item Order As/costs), Mark as Ordered, Cancel PO
+
+**Only a wizard-created PO has an "Openings on this PO" section**, and its absence is not a bug. The
+link is `HardwareItem.po_line_item_id`, which only the Import wizard's Create-Purchase-Orders path
+stamps; a PO built in the Create PO dialog, a stock PO, or one seeded straight into GP has no hardware
+schedule behind it, so `poOpenings` returns `[]` and the whole section (its rule included) renders
+nothing rather than an empty heading. Check `{ poOpenings(poId: "...") { openingNumber leaf } }` before
+concluding the resolver is broken.
+
+To produce one cheaply - the whole run is a couple of minutes and touches nothing else:
+
+1. Start a Task -> project card -> **Use last uploaded schedule** -> Purpose **Create Purchase Orders**.
+2. Select Openings: tick 2 openings via `document.querySelector('.MuiDataGrid-row[data-id="0501-EX"] input[type=checkbox]').click()`. Prefer openings whose Hand column shows a pair (`RHRA/LHR`) so the section has more than one leaf to show.
+3. Reconciliation: **Deselect All**, then tick exactly one product row (`data-id` is `"<category>|<productCode>"`). That is what keeps the PO to one line and one manufacturer group.
+4. Classification: click By UCSH + Shop on each row (both counters must fill).
+5. Purchase Orders: tick the single manufacturer card's checkbox. Vendor is optional here - leave it blank, the draft still creates.
+6. Finalize -> Finish Import Session -> Finalize -> **View Purchase Orders**, then the `Open <PO-REQ-NNN> details` button.
+
+The per-leaf quantities in the section sum to the line item's Ordered Qty - that is the cheapest
+correctness check on the join (e.g. `1x` on 0442-EX leaf 1 plus `2x`/`1x` on 0501-EX leaves 1 and 2
+against an ordered qty of 4).
 
 **PO Lifecycle**:
 ```
@@ -674,7 +698,7 @@ Inventory quantity corrections are NOT here — they live in the Warehouse modul
 - To test the Warehouse Receiving wizard's "Enter Quantities" step, you need at least one PO in ORDERED (or higher) status. DRAFT POs do not appear in the receiving wizard's PO selection list.
 - The line item field formerly called "Vendor Alias" is now called "Order As" in pre-order screens (Create PO dialog, PO detail modal) and "Ordered As" in post-order screens (Warehouse receiving wizard).
 - On the Import wizard Select Openings/Hardware step with a large XML file (1998 openings), `take_snapshot` produces an output file that exceeds the tool token limit. Use `evaluate_script` with `document.body.innerText` or targeted DOM queries to check state and click buttons. Use `evaluate_script` to click "Select All" when the snapshot uid approach times out due to large DOM.
-- Import wizard Classification step columns: Opening #, Product Code, Hardware Category, Vendor, List Price, Discount, Unit Cost, Qty, Classification. Each row has two toggle buttons: "By UCSH" and "By Others". Also has "Add group level" button and a header checkbox to select all rows. Counter shows "X of Y items classified".
+- Import wizard Classification step columns: Opening #, Product Code, Hardware Category, Manufacturer, List Price, Discount, Unit Cost, Qty, Classification, Site/Shop. Each row has four toggle buttons - "By UCSH" / "By Others" in Classification, and "Site" / "Shop" in Site/Shop. Also has "Add group level" button and a header checkbox to select all rows. There are **two** counters ("X of Y items classified" and "X of Y in-scope items site/shop classified") and Next stays disabled until both are satisfied, so ticking only By UCSH leaves the step blocked.
 - Import wizard step order for "Create Purchase Orders" purpose: Upload File -> Purpose -> Select Openings/Hardware -> Reconciliation -> Classification -> Purchase Orders -> Finalize (7 steps total).
 - For a first-time import (new project, no existing data), the Reconciliation step has no data to display — it just shows "New project — all items will be ordered fresh." The step is effectively a pass-through; do NOT use `wait_for` to wait for reconciliation data. Just click Next immediately.
 - Classification step grouping: Clicking "Add group level" creates a Level 1 dropdown pre-set to "Hardware Category" with a remove (X) button. Shows accordion rows per group with item counts, "By UCSH All" and "By Others All" bulk buttons on the right, and a collapse/expand chevron. Each group shows a chip: "0/N classified" (grey, unclassified), "All By Others" (orange/amber), or "All By UCSH" (green). With 26548 items the snapshot is too large — use evaluate_script to find and click buttons. Classification counter turns green when all items are classified.
