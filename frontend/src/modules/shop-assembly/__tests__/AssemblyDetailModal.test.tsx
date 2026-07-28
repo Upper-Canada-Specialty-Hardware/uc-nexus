@@ -16,6 +16,9 @@ function item(overrides: Record<string, unknown> = {}) {
     hardwareCategory: 'HINGE',
     productCode: 'HG-100',
     quantity: 4,
+    // Fully allocated unless a test says otherwise: the interesting short cases set it explicitly,
+    // and every other case is about the progress buckets, which partition allocated.
+    allocatedQuantity: 4,
     installedQuantity: 0,
     deficientQuantity: 0,
     replacementPendingQuantity: 0,
@@ -82,7 +85,7 @@ describe('AssemblyDetailModal progress editor', () => {
 
   it('refuses to enable Mark Complete when every unit was flagged deficient', () => {
     // Fully dispositioned but nothing installed - completing would mint an empty assembled leaf.
-    renderModal([item({ quantity: 2, installedQuantity: 0, deficientQuantity: 2 })]);
+    renderModal([item({ quantity: 2, allocatedQuantity: 2, installedQuantity: 0, deficientQuantity: 2 })]);
 
     expect(screen.getByRole('button', { name: /mark complete/i })).toBeDisabled();
     expect(screen.getByText(/nothing assembled to complete/i)).toBeInTheDocument();
@@ -201,7 +204,7 @@ describe('AssemblyDetailModal progress editor', () => {
             floor: '2',
             leaf: 1,
             items: [
-              { __typename: 'ShopAssemblyOpeningItem', ...item({ quantity: 2, installedQuantity: 2 }) },
+              { __typename: 'ShopAssemblyOpeningItem', ...item({ quantity: 2, allocatedQuantity: 2, installedQuantity: 2 }) },
             ],
           },
         },
@@ -246,7 +249,7 @@ describe('AssemblyDetailModal progress editor', () => {
       },
     };
 
-    const { onCompleted } = renderModal([item({ quantity: 2 })], [saveMock, completeMock]);
+    const { onCompleted } = renderModal([item({ quantity: 2, allocatedQuantity: 2 })], [saveMock, completeMock]);
 
     fireEvent.change(installedInput(), { target: { value: '2' } });
     fireEvent.click(screen.getByRole('button', { name: /mark complete/i }));
@@ -257,7 +260,7 @@ describe('AssemblyDetailModal progress editor', () => {
   });
 
   it('requires a reason before a deficiency can be flagged', async () => {
-    renderModal([item({ quantity: 2 })]);
+    renderModal([item({ quantity: 2, allocatedQuantity: 2 })]);
 
     fireEvent.click(screen.getByRole('button', { name: /flag deficient/i }));
     const confirm = await screen.findByRole('button', { name: /^flag deficient$/i });
@@ -270,7 +273,7 @@ describe('AssemblyDetailModal progress editor', () => {
   });
 
   it('will not let more units be flagged deficient than are left unrecorded', async () => {
-    renderModal([item({ quantity: 3, installedQuantity: 2 })]);
+    renderModal([item({ quantity: 3, allocatedQuantity: 3, installedQuantity: 2 })]);
 
     fireEvent.click(screen.getByRole('button', { name: /flag deficient/i }));
     fireEvent.change(await screen.findByLabelText('Deficiency reason'), {

@@ -74,10 +74,13 @@ from .receiving import (
 )
 from .reservations import (
     create_reservations,
+    get_available_quantities,
     get_project_availability,
     get_reserved_quantities,
     get_reserved_total,
     release_reservations,
+    reserve_for_replacement_pull,
+    top_up_replacement_reservations,
 )
 
 __all__ = [
@@ -104,6 +107,7 @@ __all__ = [
     "find_pending_replacement_pulls",
     "find_reservation_holder",
     "get_audit_log",
+    "get_available_quantities",
     "get_back_ordered_items",
     "get_distinct_location_values",
     "get_expected_deliveries",
@@ -140,6 +144,8 @@ __all__ = [
     "notify_unblocked_replacement_pulls",
     "override_inventory_quantity",
     "release_reservations",
+    "reserve_for_replacement_pull",
     "stage_pull_openings",
+    "top_up_replacement_reservations",
     "validate_receive_eligibility",
 ]

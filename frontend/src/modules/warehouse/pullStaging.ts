@@ -31,7 +31,10 @@ export interface PullStagingOpeningItem {
   shopAssemblyOpeningId: string;
   hardwareCategory: string;
   productCode: string;
+  /** Owed by the schedule. Context only - the warehouse does not pick against this number. */
   quantity: number;
+  /** The pick count: what was reserved, what the pull line asks for, what goes on the cart. */
+  allocatedQuantity: number;
 }
 
 export interface PullStagingOpening {

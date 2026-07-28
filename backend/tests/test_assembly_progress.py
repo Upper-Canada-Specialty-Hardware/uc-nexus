@@ -115,13 +115,18 @@ def _make_pulled_opening(
     session.flush()
 
     sao_items = {}
-    for category, code, qty in items:
+    # `items` entries are (category, code, owed) or (category, code, owed, allocated). Omitting the
+    # fourth means fully allocated - the ordinary case, and the only one that existed before partial
+    # allocation. A test that wants a short line says so explicitly.
+    for category, code, qty, *rest in items:
+        allocated = rest[0] if rest else qty
         sao_item = ShopAssemblyOpeningItem(
             id=uuid.uuid4(),
             shop_assembly_opening_id=opening.id,
             hardware_category=category,
             product_code=code,
             quantity=qty,
+            allocated_quantity=allocated,
         )
         session.add(sao_item)
         sao_items[code] = sao_item
@@ -234,6 +239,42 @@ def test_installed_plus_deficient_cannot_exceed_the_pulled_quantity(db_session):
     with pytest.raises(ValidationError):
         shop_assembly_repository.record_assembly_progress(
             db_session, opening.id, [Update(item_id, installed_quantity=3)]
+        )
+
+
+def test_progress_is_capped_at_what_was_pulled_not_at_what_was_owed(db_session):
+    """A short unit never left inventory, so there is nothing on the cart to install or condemn.
+    Letting progress run to the owed quantity would mean recording hardware onto a leaf that never
+    arrived."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, category=HINGE[0], code=HINGE[1])
+    # Owed 4, only 2 pulled.
+    opening, sao = _make_pulled_opening(db_session, project.id, request_number="PR-SA-ALLOC1", items=[(*HINGE, 4, 2)])
+    item_id = sao[HINGE[1]].id
+
+    shop_assembly_repository.record_assembly_progress(db_session, opening.id, [Update(item_id, installed_quantity=2)])
+    db_session.flush()
+    assert sao[HINGE[1]].installed_quantity == 2
+
+    with pytest.raises(ValidationError) as excinfo:
+        shop_assembly_repository.record_assembly_progress(
+            db_session, opening.id, [Update(item_id, installed_quantity=3)]
+        )
+    # The message names the pulled quantity and says why the other two are not coming.
+    assert "2 unit(s) pulled" in str(excinfo.value)
+    assert "never pulled" in str(excinfo.value)
+
+
+def test_a_short_line_cannot_be_flagged_deficient_beyond_what_arrived(db_session):
+    """Deficiency is a statement about a unit somebody held. A short unit was never held."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, category=HINGE[0], code=HINGE[1])
+    opening, sao = _make_pulled_opening(db_session, project.id, request_number="PR-SA-ALLOC2", items=[(*HINGE, 4, 1)])
+    with pytest.raises(ValidationError):
+        shop_assembly_repository.record_assembly_progress(
+            db_session,
+            opening.id,
+            [Update(sao[HINGE[1]].id, flag_deficient_quantity=2, deficient_reason="bent")],
         )
 
 

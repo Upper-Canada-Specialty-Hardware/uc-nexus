@@ -78,6 +78,7 @@ export const GET_OPENING_ITEMS = gql`
       aisle row bay
       createdAt updatedAt
       awaitingReplacementQuantity
+      neverPulledQuantity
       installedHardware {
         id openingItemId productCode hardwareCategory quantity
       }
@@ -551,7 +552,7 @@ const PULL_REQUEST_FIELDS = `
 const PULL_STAGING_OPENING_FIELDS = `
   id pullRequestId openingId openingNumber leaf building floor
   pullStatus assemblyStatus assignedToUserId assignedTo stagedAt stagedBy
-  items { id shopAssemblyOpeningId hardwareCategory productCode quantity }
+  items { id shopAssemblyOpeningId hardwareCategory productCode quantity allocatedQuantity }
 `;
 
 export const APPROVE_PULL_REQUEST = gql`

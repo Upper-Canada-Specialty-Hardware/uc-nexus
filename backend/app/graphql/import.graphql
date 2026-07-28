@@ -110,7 +110,12 @@ input SAROpeningInput {
 input SAROpeningItemInput {
   hardware_category: String!
   product_code: String!
+  # Owed - the schedule's number for this leaf.
   quantity: Int!
+  # What the allocator step assigned to this line out of available inventory, 0..quantity. Null means
+  # "fully allocated" (= quantity), which keeps every non-allocator caller on the old all-or-nothing
+  # behaviour: ask for the whole line, and bounce if it does not fit.
+  allocated_quantity: Int
 }
 
 input FinalizeImportSessionInput {

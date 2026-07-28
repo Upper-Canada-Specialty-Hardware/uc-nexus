@@ -35,7 +35,12 @@ interface OpeningItem {
   shopAssemblyOpeningId: string;
   hardwareCategory: string;
   productCode: string;
+  // Owed: what the schedule says this leaf takes.
   quantity: number;
+  // Pulled: what the request could claim out of inventory and what physically arrived on the cart.
+  // The bench works against this number, never against `quantity` - the difference was never pulled,
+  // so no amount of work here can account for it.
+  allocatedQuantity: number;
   installedQuantity: number;
   deficientQuantity: number;
   // Units whose replacement has arrived but has not been fitted yet (#341). Zero while the leaf is
@@ -137,9 +142,9 @@ export default function AssemblyDetailModal({
     return value.length >= 1 && value.length <= 20;
   };
 
-  // The most a line can be marked installed: everything not already condemned.
+  // The most a line can be marked installed: everything pulled that is not already condemned.
   const maxInstalled = (item: OpeningItem): number =>
-    item.quantity - item.deficientQuantity - item.replacementPendingQuantity;
+    item.allocatedQuantity - item.deficientQuantity - item.replacementPendingQuantity;
 
   const draftFor = (item: OpeningItem): string =>
     draftInstalled[item.id] ?? String(item.installedQuantity);
@@ -164,6 +169,7 @@ export default function AssemblyDetailModal({
       assemblyProgress(
         opening.items.map((item) => ({
           quantity: item.quantity,
+          allocatedQuantity: item.allocatedQuantity,
           installedQuantity: parsedDraft(item) ?? item.installedQuantity,
           deficientQuantity: item.deficientQuantity,
           replacementPendingQuantity: item.replacementPendingQuantity,
@@ -255,7 +261,7 @@ export default function AssemblyDetailModal({
   // so allowing a flag that the unsaved draft has already spoken for would leave the draft above its
   // own maximum the moment the flag lands - the field turns red and Save Progress refuses it.
   const flagRemaining = flagging
-    ? flagging.quantity -
+    ? flagging.allocatedQuantity -
       (parsedDraft(flagging) ?? flagging.installedQuantity) -
       flagging.deficientQuantity -
       flagging.replacementPendingQuantity
@@ -341,7 +347,7 @@ export default function AssemblyDetailModal({
             <Chip
               size="small"
               variant="outlined"
-              label={`${draftProgress.planned - draftProgress.remaining}/${draftProgress.planned} units accounted for`}
+              label={`${draftProgress.dispositioned}/${draftProgress.allocated} units accounted for`}
             />
           </Stack>
 
@@ -360,6 +366,7 @@ export default function AssemblyDetailModal({
                 <TableRow>
                   <TableCell>Product Code</TableCell>
                   <TableCell>Hardware Category</TableCell>
+                  <TableCell align="right">Owed</TableCell>
                   <TableCell align="right">Pulled</TableCell>
                   <TableCell align="right">Installed</TableCell>
                   <TableCell align="right">Deficient</TableCell>
@@ -371,22 +378,38 @@ export default function AssemblyDetailModal({
                 {opening.items.map((item) => {
                   const parsed = parsedDraft(item);
                   const storedRemaining =
-                    item.quantity -
+                    item.allocatedQuantity -
                     item.installedQuantity -
                     item.deficientQuantity -
                     item.replacementPendingQuantity;
                   const remaining =
                     parsed === null
                       ? storedRemaining
-                      : item.quantity -
+                      : item.allocatedQuantity -
                         parsed -
                         item.deficientQuantity -
                         item.replacementPendingQuantity;
+                  // Owed but never pulled. Shown so the leaf does not read as a full bill of hardware
+                  // it is not carrying, and labelled rather than folded into Remaining - it is not
+                  // this assembler's outstanding work, and the leaf completes without it.
+                  const short = item.quantity - item.allocatedQuantity;
                   return (
                     <TableRow key={item.id}>
                       <TableCell>{item.productCode}</TableCell>
                       <TableCell>{item.hardwareCategory}</TableCell>
                       <TableCell align="right">{item.quantity}</TableCell>
+                      <TableCell align="right">
+                        {item.allocatedQuantity}
+                        {short > 0 && (
+                          <Chip
+                            size="small"
+                            variant="outlined"
+                            color="warning"
+                            label={`${short} never pulled`}
+                            sx={{ ml: 0.5 }}
+                          />
+                        )}
+                      </TableCell>
                       <TableCell align="right">
                         <TextField
                           size="small"

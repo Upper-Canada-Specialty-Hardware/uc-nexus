@@ -68,6 +68,8 @@ export function stageProgress(stage: string): number | null {
 
 export interface PipelineUnitFields {
   plannedUnitCount: number;
+  /** Null on a server that predates allocation, where every line was fully allocated by construction. */
+  allocatedUnitCount?: number | null;
   installedUnitCount: number;
   deficientUnitCount: number;
   replacementPendingUnitCount: number;
@@ -77,16 +79,21 @@ export interface PipelineUnitFields {
  * fitted is most of the job, and a line count would report it as untouched.
  *
  * Dispositioned - installed plus condemned plus awaiting-a-replacement - rather than installed alone,
- * because that is the number completion is gated on (#340). */
+ * because that is the number completion is gated on (#340).
+ *
+ * Measured against ALLOCATED, not owed. A short unit was never pulled, so it can never be
+ * dispositioned; counting it in the denominator would leave a finished request stuck reading "6/8
+ * units" forever, which is the one thing a progress label must not do. */
 export function unitProgressLabel(row: PipelineUnitFields): string {
   const done = row.installedUnitCount + row.deficientUnitCount + row.replacementPendingUnitCount;
-  return `${done}/${row.plannedUnitCount} units`;
+  return `${done}/${row.allocatedUnitCount ?? row.plannedUnitCount} units`;
 }
 
 export interface PipelineFlagFields {
   integrityNote?: string | null;
   awaitingReplacementOpeningCount?: number | null;
   replacementAfterShipOpeningCount?: number | null;
+  shortUnitCount?: number | null;
 }
 
 /** The flags earlier slices introduced, as short chip labels, in the order somebody should read them:
@@ -109,6 +116,12 @@ export function pipelineFlags(row: PipelineFlagFields): { label: string; severit
       label: `${row.replacementAfterShipOpeningCount} arrived after shipping`,
       severity: 'error',
     });
+  }
+  // Sent short: units the schedule owed that were never available to pull. A warning rather than an
+  // error - it was a decision somebody made with the numbers in front of them - but it has to be on
+  // the row, because every other count here can read as complete while it is non-zero.
+  if (row.shortUnitCount) {
+    flags.push({ label: `${row.shortUnitCount} unit(s) never pulled`, severity: 'warning' });
   }
   return flags;
 }
