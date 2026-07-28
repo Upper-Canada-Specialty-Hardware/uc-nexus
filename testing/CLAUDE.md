@@ -105,12 +105,29 @@ company TUBC, `relay-v0.1.0-build.40`), and a full `registerPoInGp` + `createRec
 succeeds live with `gpOutboxSummary.pending` never leaving 0. Do not re-derive the 7/26 diagnosis from
 this section; re-check `relayStatus` first. Two things worth knowing from that session:
 
-- **The relay can drop mid-session and come back on its own.** The socket went away after ~30 minutes
-  (backend redeploy is the likely trigger), `relayStatus.connected` went false, and the Railway deploy
-  log showed *one* `"WebSocket /relay-link" [accepted]` and then nothing - no 403 cadence, no
-  disconnect line. It re-handshaked without intervention a few minutes later. A held-open socket logs
-  exactly one accept line for its whole life, so "one accept and silence" is ambiguous between healthy
-  and dead; only `relayStatus` settles it.
+- **The relay can drop mid-session and come back on its own, and the backend cannot tell you why.**
+  Observed 2026-07-28: accepted 03:09:25Z, serving GP calls fine at ~03:40Z, `connected: false` by
+  03:42Z, re-accepted 03:45:59Z - a ~4-5 minute hole. **Do not blame a redeploy without checking**;
+  that was the first guess here and it was wrong. Rule-outs worth repeating:
+  - `list-deployments` showed no backend deploy anywhere near the drop (the only one that day
+    finished 03:09:22Z - which *caused* the 03:09:25 reconnect, 300ms after the old instance was
+    removed, and is a different event from the drop).
+  - `build.40` was already the newest relay tag and the relay was already running it, so there was no
+    pending self-update to restart the process.
+  - **An absent disconnect line means nothing.** `RelayGateway.unregister` logs *nothing*; the only
+    relay line uvicorn ever emits is the `"WebSocket /relay-link" [accepted]` access log. A held-open
+    socket therefore logs exactly one accept for its whole life, so "one accept and then silence" is
+    ambiguous between healthy and dead - only `relayStatus` settles it.
+  - What *is* signal: reconnect backoff is 1s doubling to a 30s ceiling, so 4-5 minutes of silence is
+    ~8-10 missed dials, not one blip. And a rejected handshake would have logged 403s; there were
+    none. So the relay either was not running or could not reach the backend at TCP/DNS level - both
+    invisible from Railway, because neither reaches the ASGI app.
+  - The answer lives in `relay.log` on the workstation (the file #370 gitignored). `_run_once`'s
+    reconnect handler logs every attempt with a `category` - `dropped` / `server_restarting` /
+    `unauthorized` / `conflict` - plus the error and current backoff. That log names the cause; the
+    backend never can.
+  - Reap timing for dating the drop: `HEARTBEAT_INTERVAL_SECONDS` 20s x `HEARTBEAT_MAX_MISSED` 2, so
+    an armed connection flips to disconnected ~40s after the relay actually goes quiet.
 - A `relay_status` traceback in the deploy log ending `jwt.exceptions.ExpiredSignatureError` /
   `AuthError: Invalid or expired authentication token` is **your own browser token ageing out**, not a
   relay fault. `relayStatus` is `require_user`-gated now, so a stale `getToken()` value in an injected
