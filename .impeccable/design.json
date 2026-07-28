@@ -1,45 +1,86 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-07-16T02:00:17Z",
+  "generatedAt": "2026-07-28T16:53:48Z",
   "title": "Design System: UC Nexus",
   "extensions": {
     "colorMeta": {
       "ink": {
         "role": "primary",
         "displayName": "Ink",
-        "canonical": "#212121",
-        "tonalRamp": ["#121212", "#212121", "#424242", "#616161", "#9e9e9e", "#bdbdbd", "#e0e0e0", "#f5f5f5"]
+        "canonical": "#1d1b17",
+        "tonalRamp": ["#0e0d0b", "#1d1b17", "#2b2823", "#3a362f", "#5c564b", "#8b8578", "#c9c4b8", "#e9e5dc"]
       },
       "shop-amber": {
         "role": "secondary",
         "displayName": "Shop Amber",
         "canonical": "#ffca28",
-        "tonalRamp": ["#7a4f00", "#a86e00", "#d18e00", "#ffb300", "#ffca28", "#ffd54f", "#ffe082", "#fff3c4"]
+        "tonalRamp": ["#4d3600", "#7a5600", "#a87700", "#d19700", "#ffb300", "#ffca28", "#ffd54f", "#ffe9a8"]
+      },
+      "paper": {
+        "role": "neutral",
+        "displayName": "Paper",
+        "canonical": "#fdfcfa",
+        "tonalRamp": ["#161513", "#201e1b", "#2b2926", "#3d3a35", "#6b655a", "#a49e91", "#e6e2d9", "#fdfcfa"]
       },
       "canvas": {
         "role": "neutral",
-        "displayName": "Canvas",
-        "canonical": "#f5f5f5",
-        "tonalRamp": ["#121212", "#1e1e1e", "#2a2a2a", "#616161", "#9e9e9e", "#eeeeee", "#f5f5f5", "#ffffff"]
+        "displayName": "Bone Canvas",
+        "canonical": "#f2f0ea",
+        "tonalRamp": ["#111110", "#161513", "#232120", "#332f2a", "#5c564b", "#9c968a", "#dedad1", "#f2f0ea"]
       },
-      "status-success": { "role": "tertiary", "displayName": "Status Green", "canonical": "#2e7d32" },
-      "status-warning": { "role": "tertiary", "displayName": "Status Orange", "canonical": "#ed6c02" },
-      "status-error": { "role": "tertiary", "displayName": "Status Red", "canonical": "#d32f2f" },
-      "status-info": { "role": "tertiary", "displayName": "Status Blue", "canonical": "#0288d1" }
+      "text-secondary": {
+        "role": "neutral",
+        "displayName": "Warm Taupe",
+        "canonical": "#5c564b",
+        "tonalRamp": ["#1a1815", "#2a2721", "#3f3a32", "#5c564b", "#7d7669", "#a49e91", "#c5c0b5", "#e4e0d7"]
+      },
+      "status-success": {
+        "role": "tertiary",
+        "displayName": "Status Green",
+        "canonical": "#2e7d32",
+        "tonalRamp": ["#0d2610", "#14401a", "#1b5e20", "#256a2a", "#2e7d32", "#4caf50", "#81c784", "#c8e6c9"]
+      },
+      "status-warning": {
+        "role": "tertiary",
+        "displayName": "Status Orange",
+        "canonical": "#ed6c02",
+        "tonalRamp": ["#3d1c00", "#5f2c00", "#8a4000", "#b85600", "#ed6c02", "#ff9800", "#ffb74d", "#ffe0b2"]
+      },
+      "status-error": {
+        "role": "tertiary",
+        "displayName": "Status Red",
+        "canonical": "#d32f2f",
+        "tonalRamp": ["#3d0d0d", "#5f1414", "#8a1c1c", "#b02525", "#d32f2f", "#e57373", "#ef9a9a", "#ffcdd2"]
+      },
+      "status-info": {
+        "role": "tertiary",
+        "displayName": "Status Blue",
+        "canonical": "#0288d1",
+        "tonalRamp": ["#00263a", "#003c5c", "#015782", "#0272ad", "#0288d1", "#29b6f6", "#81d4fa", "#b3e5fc"]
+      }
     },
     "typographyMeta": {
-      "display": { "displayName": "Display", "purpose": "Page titles - one per screen (Purchase Orders, Welcome back)." },
-      "headline": { "displayName": "Headline", "purpose": "Section headers inside a page or modal." },
-      "title": { "displayName": "Title", "purpose": "Sub-section labels, stat-tile values, dialog titles." },
-      "body": { "displayName": "Body", "purpose": "The workhorse - table cells, form fields, descriptions. Compact by default." },
-      "label": { "displayName": "Label", "purpose": "Captions, stat-tile labels, helper text, breadcrumbs. Sentence case." }
+      "display": { "displayName": "Display", "purpose": "Page titles. One per screen." },
+      "headline": { "displayName": "Headline", "purpose": "Section headers." },
+      "title": { "displayName": "Title", "purpose": "Sub-sections, dialog titles, gauge values (gauges may go to 1.7rem/700)." },
+      "body": { "displayName": "Body", "purpose": "The workhorse." },
+      "label": { "displayName": "Label", "purpose": "Helper text, sentence case." },
+      "micro-label": { "displayName": "Micro-label", "purpose": "Table headers, gauge captions, eyebrows, status tags. The stencil voice - use it for labels-of-data, never for prose." },
+      "identifier": { "displayName": "Identifier", "purpose": "PO/request numbers, product codes, opening/leaf refs, bins, packing slips. Never for prose." }
     },
     "shadows": [
-      { "name": "card-hover", "value": "0 4px 12px rgba(0,0,0,0.08)", "purpose": "The only ambient shadow: interactive cards on hover, paired with a border darken. Dark scheme uses rgba(0,0,0,0.4)." }
+      { "name": "card-hover", "value": "0 4px 14px rgba(29, 27, 23, 0.09)", "purpose": "The only ambient shadow: cards and gauges on hover, paired with a one-step border darken and an optional 1px lift, 0.2s. Depth is feedback, never decoration." },
+      { "name": "card-hover-dark", "value": "0 4px 14px rgba(0, 0, 0, 0.45)", "purpose": "Dark-scheme counterpart of card-hover." },
+      { "name": "amber-edge", "value": "inset 3px 0 0 #ffca28", "purpose": "The Amber-Edge Rule's mechanism: selection and current state as a 3px inset left edge on rows, nav items, gauges, and wizard steps. Dark scheme uses #ffd54f. Never a full amber fill on a content surface." }
     ],
     "motion": [
-      { "name": "ease-standard", "value": "ease-in-out", "purpose": "Default easing for state transitions (box-shadow, border-color, background)." },
-      { "name": "duration-standard", "value": "200ms", "purpose": "State transitions sit in the 150-250ms band; they convey state, never choreography." }
+      { "name": "spring-fast", "value": "spring, visualDuration 0.22s, bounce 0.08", "purpose": "Chips, tags, toggles, small state flips." },
+      { "name": "spring-base", "value": "spring, visualDuration 0.34s, bounce 0.14", "purpose": "Cards, rows, panels, dialogs, page entrances. The default." },
+      { "name": "spring-slow", "value": "spring, visualDuration 0.48s, bounce 0.16", "purpose": "Large surfaces: master-detail rail collapse, panel resize." },
+      { "name": "counter-spring", "value": "spring, stiffness 170, damping 26, mass 0.9", "purpose": "Numeric counters on gauges: values count up on mount and on change." },
+      { "name": "stagger", "value": "<=0.05s per item, total <=0.45s", "purpose": "Card grids and gauge rows enter in sequence; the dashboard may orchestrate greeting to gauges to feed within 0.6s." },
+      { "name": "state-transition", "value": "0.2s", "purpose": "Hover shadow, border-color, and background changes on resting surfaces." },
+      { "name": "reduced-motion", "value": "prefers-reduced-motion collapses to opacity or nothing", "purpose": "Enforced globally via MotionConfig and a CSS media query. Not optional." }
     ],
     "breakpoints": [
       { "name": "sm", "value": "600px" },
@@ -53,95 +94,103 @@
       "name": "Primary Action Button",
       "kind": "button",
       "refersTo": "button-secondary",
-      "description": "The default action button (e.g. Create PO). Shop Amber fill, ink text.",
-      "html": "<button class=\"ds-btn-secondary\"><svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><line x1=\"12\" y1=\"5\" x2=\"12\" y2=\"19\"/><line x1=\"5\" y1=\"12\" x2=\"19\" y2=\"12\"/></svg>Create PO</button>",
-      "css": ".ds-btn-secondary { display: inline-flex; align-items: center; gap: 8px; background: #ffca28; color: #212121; font-family: 'Source Sans 3 Variable', 'Source Sans 3', Arial, sans-serif; font-size: 0.875rem; font-weight: 600; padding: 6px 20px; border: none; border-radius: 8px; cursor: pointer; transition: background 0.2s ease-in-out; } .ds-btn-secondary:hover { background: #ffb300; } .ds-btn-secondary:focus-visible { outline: 2px solid #212121; outline-offset: 2px; } .ds-btn-secondary:active { background: #ffa000; }"
+      "description": "The screen's one primary action (e.g. Create PO). Amber fill, ink text, 3px edge.",
+      "html": "<button class=\"ds-btn-secondary\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><line x1=\"12\" y1=\"5\" x2=\"12\" y2=\"19\"/><line x1=\"5\" y1=\"12\" x2=\"19\" y2=\"12\"/></svg>Create PO</button>",
+      "css": ".ds-btn-secondary { display: inline-flex; align-items: center; gap: 8px; background: #ffca28; color: #1d1b17; font-family: 'Source Sans 3 Variable', 'Source Sans 3', 'Helvetica Neue', Arial, sans-serif; font-size: 0.875rem; font-weight: 600; text-transform: none; padding: 6px 20px; border: none; border-radius: 3px; cursor: pointer; transition: background 0.2s ease-in-out; } .ds-btn-secondary:hover { background: #ffb300; } .ds-btn-secondary:focus-visible { outline: 2px solid #1d1b17; outline-offset: 2px; } .ds-btn-secondary:active { background: #d19700; }"
     },
     {
-      "name": "Primary (Ink) Button",
+      "name": "Structural (Ink) Button",
       "kind": "button",
       "refersTo": "button-primary",
-      "description": "Structural or confirm actions. Ink fill, white text.",
+      "description": "Structural or confirm actions. Ink fill, paper text.",
       "html": "<button class=\"ds-btn-primary\">Register in GP</button>",
-      "css": ".ds-btn-primary { background: #212121; color: #ffffff; font-family: 'Source Sans 3 Variable', 'Source Sans 3', Arial, sans-serif; font-size: 0.875rem; font-weight: 600; padding: 6px 20px; border: none; border-radius: 8px; cursor: pointer; transition: background 0.2s ease-in-out; } .ds-btn-primary:hover { background: #424242; } .ds-btn-primary:focus-visible { outline: 2px solid #212121; outline-offset: 2px; }"
+      "css": ".ds-btn-primary { display: inline-flex; align-items: center; gap: 8px; background: #1d1b17; color: #fdfcfa; font-family: 'Source Sans 3 Variable', 'Source Sans 3', 'Helvetica Neue', Arial, sans-serif; font-size: 0.875rem; font-weight: 600; text-transform: none; padding: 6px 20px; border: none; border-radius: 3px; cursor: pointer; transition: background 0.2s ease-in-out; } .ds-btn-primary:hover { background: #3a362f; } .ds-btn-primary:focus-visible { outline: 2px solid #1d1b17; outline-offset: 2px; }"
     },
     {
       "name": "Outlined Button",
       "kind": "button",
       "refersTo": "button-outlined",
-      "description": "Lower-priority and inline row actions. Ink border and text on transparent.",
+      "description": "Lower-priority and inline row actions. Ink hairline and text on transparent.",
       "html": "<button class=\"ds-btn-outlined\">Cancel PO</button>",
-      "css": ".ds-btn-outlined { background: transparent; color: #212121; font-family: 'Source Sans 3 Variable', 'Source Sans 3', Arial, sans-serif; font-size: 0.875rem; font-weight: 600; padding: 6px 20px; border: 1px solid #212121; border-radius: 8px; cursor: pointer; transition: background 0.2s ease-in-out; } .ds-btn-outlined:hover { background: rgba(33,33,33,0.06); } .ds-btn-outlined:focus-visible { outline: 2px solid #212121; outline-offset: 2px; }"
+      "css": ".ds-btn-outlined { display: inline-flex; align-items: center; gap: 8px; background: transparent; color: #1d1b17; font-family: 'Source Sans 3 Variable', 'Source Sans 3', 'Helvetica Neue', Arial, sans-serif; font-size: 0.875rem; font-weight: 600; text-transform: none; padding: 6px 20px; border: 1px solid rgba(29,27,23,0.28); border-radius: 3px; cursor: pointer; transition: background 0.2s ease-in-out, border-color 0.2s ease-in-out; } .ds-btn-outlined:hover { background: rgba(29,27,23,0.05); border-color: #1d1b17; } .ds-btn-outlined:focus-visible { outline: 2px solid #1d1b17; outline-offset: 2px; }"
     },
     {
-      "name": "Status Chip",
+      "name": "Status Tag",
       "kind": "chip",
-      "refersTo": "chip-primary",
-      "description": "Compact status marker on rows (e.g. PO status). Primary chip is ink; status meaning comes from the status color set, not the accent.",
-      "html": "<span class=\"ds-chip\">GP-Registered</span>",
-      "css": ".ds-chip { display: inline-flex; align-items: center; background: #212121; color: #ffffff; font-family: 'Source Sans 3 Variable', 'Source Sans 3', Arial, sans-serif; font-size: 0.75rem; font-weight: 500; line-height: 1; padding: 5px 10px; border-radius: 8px; }"
+      "refersTo": "status-tag",
+      "description": "Square stenciled status marker. Tinted ground at 12% of the status hue, 1px border at 55%, text in the status hue. Status meaning never comes from the accent.",
+      "html": "<span class=\"ds-tag ds-tag-success\">Staged</span> <span class=\"ds-tag ds-tag-warning\">Pending</span> <span class=\"ds-tag ds-tag-error\">Cancelled</span>",
+      "css": ".ds-tag { display: inline-flex; align-items: center; font-family: 'Source Sans 3 Variable', 'Source Sans 3', 'Helvetica Neue', Arial, sans-serif; font-size: 0.6875rem; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; line-height: 1; padding: 5px 8px; border-radius: 3px; border: 1px solid; } .ds-tag-success { background: rgba(46,125,50,0.12); border-color: rgba(46,125,50,0.55); color: #2e7d32; } .ds-tag-warning { background: rgba(237,108,2,0.12); border-color: rgba(237,108,2,0.55); color: #ed6c02; } .ds-tag-error { background: rgba(211,47,47,0.12); border-color: rgba(211,47,47,0.55); color: #d32f2f; }"
     },
     {
-      "name": "Stat Tile",
+      "name": "Stat Gauge",
       "kind": "card",
       "refersTo": "card",
-      "description": "Compact dashboard KPI tile: icon + value + label. Flat, bordered, shares width evenly (flex 1 1 0). Never a gradient hero-metric.",
-      "html": "<div class=\"ds-stat\"><svg class=\"ds-stat-icon\" width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"3\" y=\"4\" width=\"18\" height=\"16\" rx=\"2\"/><path d=\"M3 9h18\"/></svg><div class=\"ds-stat-body\"><div class=\"ds-stat-value\">47</div><div class=\"ds-stat-label\">Open POs</div></div></div>",
-      "css": ".ds-stat { display: inline-flex; align-items: center; gap: 12px; min-width: 140px; background: #ffffff; border: 1px solid rgba(0,0,0,0.08); border-radius: 8px; padding: 12px 16px; transition: box-shadow 0.2s ease-in-out, border-color 0.2s ease-in-out; } .ds-stat:hover { border-color: rgba(0,0,0,0.16); box-shadow: 0 4px 12px rgba(0,0,0,0.08); } .ds-stat-icon { color: #616161; flex-shrink: 0; } .ds-stat-value { font-family: 'Source Sans 3 Variable', 'Source Sans 3', Arial, sans-serif; font-size: 1.25rem; font-weight: 600; line-height: 1.2; color: #212121; } .ds-stat-label { font-family: 'Source Sans 3 Variable', 'Source Sans 3', Arial, sans-serif; font-size: 0.75rem; color: #616161; }"
+      "description": "Compact dashboard gauge: tabular value, micro-label caption, optional 3px amber edge for 'needs someone now'. Flat, hairline-bordered, flex 1 1 0. Never a gradient hero-metric.",
+      "html": "<div class=\"ds-gauge ds-gauge-attention\"><div class=\"ds-gauge-value\">47</div><div class=\"ds-gauge-caption\">Open POs</div></div>",
+      "css": ".ds-gauge { display: inline-flex; flex-direction: column; gap: 4px; flex: 1 1 0; min-width: 130px; background: #fdfcfa; border: 1px solid rgba(29,27,23,0.14); border-radius: 6px; padding: 12px 16px; transition: box-shadow 0.2s ease-in-out, border-color 0.2s ease-in-out; } .ds-gauge-attention { box-shadow: inset 3px 0 0 #ffca28; } .ds-gauge:hover { border-color: rgba(29,27,23,0.28); box-shadow: inset 3px 0 0 #ffca28, 0 4px 14px rgba(29,27,23,0.09); } .ds-gauge-value { font-family: 'Source Sans 3 Variable', 'Source Sans 3', 'Helvetica Neue', Arial, sans-serif; font-size: 1.7rem; font-weight: 700; line-height: 1.1; color: #1d1b17; font-variant-numeric: tabular-nums; } .ds-gauge-caption { font-family: 'Source Sans 3 Variable', 'Source Sans 3', 'Helvetica Neue', Arial, sans-serif; font-size: 0.6875rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: #5c564b; }"
     },
     {
       "name": "Text Field",
       "kind": "input",
       "refersTo": "button-outlined",
-      "description": "MUI outlined small text field. Hairline stroke, 8px radius, floating label doubles as the empty-state placeholder.",
+      "description": "MUI outlined small field. Hairline stroke, 4px radius, real floating label (a placeholder-only label is a bug).",
       "html": "<div class=\"ds-field\"><label class=\"ds-field-label\">Proposal #</label><input class=\"ds-field-input\" type=\"text\" value=\"0038515-R1\" /></div>",
-      "css": ".ds-field { display: inline-flex; flex-direction: column; gap: 4px; } .ds-field-label { font-family: 'Source Sans 3 Variable', 'Source Sans 3', Arial, sans-serif; font-size: 0.75rem; font-weight: 500; color: #616161; } .ds-field-input { font-family: 'Source Sans 3 Variable', 'Source Sans 3', Arial, sans-serif; font-size: 0.875rem; color: #212121; padding: 8px 12px; border: 1px solid rgba(0,0,0,0.23); border-radius: 8px; background: #ffffff; transition: border-color 0.2s ease-in-out; } .ds-field-input:hover { border-color: #212121; } .ds-field-input:focus-visible { outline: none; border-color: #212121; border-width: 2px; padding: 7px 11px; }"
+      "css": ".ds-field { display: inline-flex; flex-direction: column; gap: 4px; } .ds-field-label { font-family: 'Source Sans 3 Variable', 'Source Sans 3', 'Helvetica Neue', Arial, sans-serif; font-size: 0.75rem; font-weight: 500; color: #5c564b; } .ds-field-input { font-family: 'IBM Plex Mono', 'Cascadia Code', Consolas, ui-monospace, monospace; font-size: 0.8125rem; color: #1d1b17; padding: 8px 12px; border: 1px solid rgba(29,27,23,0.28); border-radius: 4px; background: #fdfcfa; transition: border-color 0.2s ease-in-out; } .ds-field-input:hover { border-color: #1d1b17; } .ds-field-input:focus-visible { outline: none; border-color: #1d1b17; border-width: 2px; padding: 7px 11px; }"
     },
     {
-      "name": "Data Grid Header Row",
+      "name": "The Ledger",
       "kind": "custom",
-      "refersTo": "data-grid-header",
-      "description": "The operational table's tinted sticky header. Borderless grid, header reads via a tint rather than a divider line.",
-      "html": "<table class=\"ds-grid\"><thead><tr><th>Project #</th><th>PO / Request #</th><th>Status</th><th class=\"ds-grid-num\">Items</th></tr></thead><tbody><tr><td>80003</td><td>PO0000056</td><td>GP-Registered</td><td class=\"ds-grid-num\">1</td></tr></tbody></table>",
-      "css": ".ds-grid { border-collapse: collapse; font-family: 'Source Sans 3 Variable', 'Source Sans 3', Arial, sans-serif; font-size: 0.875rem; color: #212121; border-radius: 8px; overflow: hidden; } .ds-grid th { background: #eeeeee; font-weight: 600; text-align: left; padding: 10px 16px; } .ds-grid td { padding: 10px 16px; border-top: 1px solid rgba(0,0,0,0.06); } .ds-grid .ds-grid-num { text-align: right; }"
+      "refersTo": "ledger-table-header",
+      "description": "Signature component. Transparent header over a 2px ink rule, micro-label header type, hairline row dividers, mono identifier columns, right-aligned tabular counts, amber-edge selection. No tinted header fill.",
+      "html": "<table class=\"ds-ledger\"><thead><tr><th>Project</th><th>PO / Request</th><th>Status</th><th class=\"ds-ledger-num\">Items</th></tr></thead><tbody><tr class=\"ds-ledger-selected\"><td>80003</td><td class=\"ds-ledger-id\">PO0000056</td><td><span class=\"ds-tag ds-tag-success\">Staged</span></td><td class=\"ds-ledger-num\">12</td></tr><tr><td>80004</td><td class=\"ds-ledger-id\">PO0000057</td><td><span class=\"ds-tag ds-tag-warning\">Pending</span></td><td class=\"ds-ledger-num\">3</td></tr></tbody></table>",
+      "css": ".ds-ledger { border-collapse: collapse; width: 100%; font-family: 'Source Sans 3 Variable', 'Source Sans 3', 'Helvetica Neue', Arial, sans-serif; font-size: 0.875rem; color: #1d1b17; background: #fdfcfa; } .ds-ledger th { background: transparent; font-size: 0.6875rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; line-height: 1.4; color: #5c564b; text-align: left; padding: 10px 14px; border-bottom: 2px solid #1d1b17; } .ds-ledger td { padding: 10px 14px; border-bottom: 1px solid rgba(29,27,23,0.14); font-variant-numeric: tabular-nums; } .ds-ledger tbody tr { cursor: pointer; transition: background 0.2s ease-in-out; } .ds-ledger tbody tr:hover { background: rgba(29,27,23,0.04); } .ds-ledger-selected { background: rgba(29,27,23,0.06); box-shadow: inset 3px 0 0 #ffca28; } .ds-ledger-id { font-family: 'IBM Plex Mono', 'Cascadia Code', Consolas, ui-monospace, monospace; font-size: 0.8125rem; } .ds-ledger-num { text-align: right; }"
+    },
+    {
+      "name": "Nav Rail Item",
+      "kind": "nav",
+      "refersTo": "button-outlined",
+      "description": "Persistent desktop rail entry. Stroke icon (Lucide), never a filled Material glyph; the active module carries the 3px amber edge.",
+      "html": "<nav class=\"ds-rail\"><a class=\"ds-rail-item ds-rail-active\" href=\"#\"><svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M3 3h18v4H3z\"/><path d=\"M5 7v14h14V7\"/><path d=\"M10 12h4\"/></svg>Purchase Orders</a><a class=\"ds-rail-item\" href=\"#\"><svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M21 8v13H3V8\"/><path d=\"M1 3h22v5H1z\"/><path d=\"M10 12h4\"/></svg>Warehouse</a></nav>",
+      "css": ".ds-rail { display: flex; flex-direction: column; background: #fdfcfa; border-right: 1px solid rgba(29,27,23,0.14); padding: 8px 0; min-width: 200px; } .ds-rail-item { display: flex; align-items: center; gap: 10px; font-family: 'Source Sans 3 Variable', 'Source Sans 3', 'Helvetica Neue', Arial, sans-serif; font-size: 0.875rem; font-weight: 500; color: #5c564b; text-decoration: none; padding: 9px 16px; border-radius: 4px; transition: background 0.2s ease-in-out, color 0.2s ease-in-out; } .ds-rail-item:hover { background: rgba(29,27,23,0.04); color: #1d1b17; } .ds-rail-item:focus-visible { outline: 2px solid #1d1b17; outline-offset: -2px; } .ds-rail-active { color: #1d1b17; font-weight: 600; background: rgba(29,27,23,0.06); box-shadow: inset 3px 0 0 #ffca28; }"
     }
   ],
   "narrative": {
-    "northStar": "One toolkit, many stations.",
-    "overview": "UC Nexus is one continuous lifecycle - TITAN import, purchase orders, warehouse receiving, shop assembly, shipping - and every module draws from a single MUI theme: one font, one palette, one 8px radius, one component set. The visual language never changes station to station. What changes is density and rhythm, and only that. The character is efficient, precise, and industrial - a dependable shop tool, not a consumer app. Near-black ink carries structure and primary actions; a single Shop Amber accent marks the one thing that matters on a screen. Surfaces are flat and bordered, not shadowed. Components should feel solid and dependable - built to take the same task performed dozens of times a day.",
+    "northStar": "Shop instrument, not admin template.",
+    "overview": "UC Nexus is one continuous lifecycle - TITAN import, purchase orders, warehouse receiving, shop assembly, shipping - and every module draws from a single MUI theme: one warm-neutral palette, two typographic voices, one 3px-edge accent motif, one component set. The visual language never changes station to station. What changes is density and rhythm, and only that.\n\nThe character is industrial and precise - a dependable shop tool. The neutrals are *warm* steel and kraft (never the stock Material grey ramp): ink `#1d1b17`, bone canvas, warm-white paper, and a night-shift warm charcoal in dark mode. Structure is carried by hairline borders and 2px ink rules, not shadows or tinted fills. A single Shop Amber accent marks the one thing that matters on a screen and doubles as the selection *edge*. Data speaks in its own voice: identifiers in a mono face, counts in tabular numerals, captions as stenciled micro-labels. Iconography is stroke-based (Lucide), never filled Material glyphs.\n\nDensity flexes by station, within the one language: the dashboard runs compact bordered gauges and a bounded activity feed; operational tables make the ledger the screen; the guided wizard stays linear and calm at one decision per step; master-detail pairs a compact list rail with a wide detail pane; task modals are focused overlays with actions bottom-right.\n\nThis system explicitly rejects consumer SaaS gloss, sprawl (regions that don't earn their space), legacy-ERP gray-on-gray, and decorative motion. If a screen looks like a template, it is wrong.",
     "keyCharacteristics": [
       "One shared theme across every module; density varies, vocabulary does not.",
-      "Near-black ink + a single Shop Amber accent; accent on roughly 10% of a screen, never decoration.",
-      "Flat and bordered by default; elevation appears only as a response to state.",
-      "One humanist sans (Source Sans 3) at a fixed rem scale, bold headings, no display faces in UI.",
+      "Warm steel/kraft neutrals + a single Shop Amber accent spent as edge + primary action.",
+      "Flat and bordered at rest; elevation only as feedback (hover, dialogs).",
+      "Two type voices: Source Sans 3 for UI, IBM Plex Mono for identifiers; hierarchy from weight/size.",
       "Every region earns its space; the viewport never scrolls sideways.",
-      "Full light and dark schemes, WCAG 2.1 AA."
+      "Full light and dark schemes, WCAG 2.1 AA, `prefers-reduced-motion` respected."
     ],
     "rules": [
-      { "name": "The One Accent Rule", "body": "Shop Amber marks at most one primary thing per screen - the main action or the current selection, at roughly 10% coverage. If two amber elements compete, one is wrong.", "section": "colors" },
-      { "name": "The Status-Only Color Rule", "body": "Success/warning/error/info hues are reserved for real system state. Color that can mean status must only ever mean status.", "section": "colors" },
-      { "name": "The Fixed-Scale Rule", "body": "Type sizes are fixed rem values, never clamp()/fluid. A heading that shrinks inside a sidebar reads as broken, not responsive.", "section": "typography" },
-      { "name": "The One-Family Rule", "body": "Source Sans 3 carries everything. Hierarchy comes from weight and size alone; no display or secondary family enters the UI.", "section": "typography" },
-      { "name": "The Flat-At-Rest Rule", "body": "Surfaces are flat when idle. A shadow is feedback, never decoration.", "section": "elevation" }
+      { "name": "The One Accent Rule", "body": "Shop Amber marks at most one primary thing per screen, plus the selection edge. If two amber fills compete, one is wrong.", "section": "colors" },
+      { "name": "The Amber-Edge Rule", "body": "Selection and \"current\" are expressed as a 3px amber left edge (rows, nav items, gauges, steps) - never as a full amber fill on content surfaces.", "section": "colors" },
+      { "name": "The Status-Only Color Rule", "body": "Status hues mean real system state, exclusively.", "section": "colors" },
+      { "name": "The Warm-Neutral Rule", "body": "No pure Material greys (`#f5f5f5`, `#eeeeee`, `#9e9e9e`...). Every neutral comes from the warm ramp above.", "section": "colors" },
+      { "name": "The Fixed-Scale Rule", "body": "Fixed rem sizes, never fluid/clamp().", "section": "typography" },
+      { "name": "The Two-Voice Rule", "body": "Source Sans 3 for UI, Plex Mono for identifiers - no third family, no display face. Anything that names a *thing in the system* (a PO, a code, a bin) is mono; anything that talks to the user is sans.", "section": "typography" },
+      { "name": "The Tabular Rule", "body": "Any column of figures gets `font-variant-numeric: tabular-nums` and right alignment.", "section": "typography" },
+      { "name": "The Flat-At-Rest Rule", "body": "A resting shadow is a bug.", "section": "elevation" }
     ],
     "dos": [
-      "Do keep one shared vocabulary across modules - same button, chip, input, and table styles everywhere.",
-      "Do spend Shop Amber on one thing per screen (the primary action or current selection), at roughly 10% coverage.",
-      "Do keep surfaces flat and bordered at rest; let shadow appear only on hover or in dialogs.",
-      "Do use fixed rem type sizes and the single Source Sans 3 family; build hierarchy from weight and size.",
-      "Do size every region to its content and let one flexible element absorb the slack - in master-detail, collapse the list to a rail and give the detail the width.",
-      "Do ship every interactive state (default, hover, focus, active, disabled, loading) and use skeletons for loading, not centered spinners.",
-      "Do reserve success/warning/error/info strictly for real system state (relay, GP sync, validation)."
+      "Do keep one vocabulary across modules; the same action looks the same everywhere.",
+      "Do spend amber on one primary thing per screen plus the selection edge.",
+      "Do put every identifier in mono and every figure column in tabular numerals.",
+      "Do size regions to content; let one flexible element absorb slack.",
+      "Do ship every interactive state, use skeletons over spinners, animate entrances once.",
+      "Do reserve status hues for real state and render them as tags."
     ],
     "donts": [
-      "Don't make it look like consumer / playful SaaS - no rounded-everything, no colorful marketing gloss, no oversized empty hero sections.",
-      "Don't sprawl - no short values stretched across empty columns, no panel sprawling vertically while starved horizontally.",
-      "Don't slide into legacy enterprise clutter - no gray-on-gray, cramped, inconsistent old-ERP density with no hierarchy.",
-      "Don't add flashy or heavy motion - no gradients-as-decoration, no bounce or elastic, no orchestrated page-load sequences.",
-      "Don't let the viewport scroll sideways - a component may scroll inside its own bounded container, but the page never widens.",
-      "Don't build a gradient hero-metric tile; stat tiles stay compact, bordered, and flat.",
-      "Don't reach for a modal first - exhaust inline and progressive-disclosure alternatives before overlaying the flow.",
-      "Don't introduce a second font family or a display face into UI labels, buttons, or data."
+      "Don't reintroduce Material greys, filled icons, pill chips, or tinted table-header fills.",
+      "Don't sprawl - no lone full-width cards, no 2-character values in 250px columns, no stranded far-edge timestamps.",
+      "Don't let motion decorate: no gradients, no bounce, no load choreography beyond the one entrance, nothing above ~0.6s.",
+      "Don't let the viewport scroll sideways (`min-width: 0` on flex/grid children).",
+      "Don't reach for a modal first; and never let Escape silently discard typed input.",
+      "Don't render raw enums, machine strings, or unpluralized counts to a human."
     ]
   }
 }
