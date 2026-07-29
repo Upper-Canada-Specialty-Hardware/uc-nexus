@@ -263,14 +263,14 @@ def create_job_op(conn, *, company: str, request: models.CreateJobRequest) -> mo
 def create_buyer_op(conn, *, company: str, request: models.CreateBuyerRequest) -> models.CreateBuyerResponse:
     """Register a GP buyer (issue #409): pre-check, create, read back. The caller commits.
 
-    Same three-beat shape as create_job_op, for the same reasons. The pre-check matters more here
-    because taCreateBuyer's body is encrypted: whether it errors on a duplicate or quietly overwrites
-    the existing description is not knowable from the proc, and overwriting one would rename a buyer
-    that live POs are already attributed to. Checking POP00101 first makes the answer ours.
+    Same three-beat shape as create_job_op, for the same reasons. taCreateBuyer does reject a
+    duplicate on its own (error state 2684), but it does so from inside the proc, and this turns that
+    into a clean buyer_already_exists the dialog can show. It also makes a retry after an ambiguous
+    failure safe: if the first attempt committed and the reply was lost, the retry says "already
+    registered" instead of surfacing a raw eConnect state for something that already worked.
 
-    The read-back guards the err=0-but-nothing-landed case and returns GP's stored description - the
-    column is char(30) on the proc, so a longer one is truncated on write and the request no longer
-    describes the row."""
+    The read-back guards the err=0-but-nothing-landed case and answers with GP's stored row, which is
+    what the buyer dropdowns will show on their next refetch."""
     if econnect.buyer_exists(conn, request.buyer_id):
         raise RelayOpError(
             "buyer_already_exists",

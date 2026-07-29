@@ -1,8 +1,10 @@
 """create_buyer / create_buyer_op (issue #409). No real GP: a fake cursor records each EXEC's SQL +
 params and answers with a settable (error_state, err_string).
 
-taCreateBuyer's body is encrypted, so nothing here can assert what GP does with a duplicate - which is
-precisely why the op pre-checks POP00101 itself, and why that pre-check is pinned below."""
+What matters here is that the EXEC carries ONLY BUYERID and DSCRIPTN - taCreateBuyer's other inputs
+are defaulted, and sending them as explicit NULLs is not the same thing - and that the op's own
+duplicate pre-check runs before the proc, so a re-register reads as a sentence rather than as GP's
+error state 2684."""
 
 from collections import namedtuple
 
@@ -80,11 +82,12 @@ def test_blank_description_is_still_sent():
 def test_proc_error_raises_carrying_the_error_state():
     # No proc_message here, unlike wsiJCJobMaster: taCreateBuyer IS a taXxx proc, so its error states
     # are taErrorCode entries and errors.econnect_error_body resolves a real GP description for them.
-    conn = _FakeConn(error_state=1234, err_string="")
+    # 2683 is that table's "Unable to insert into the Buyer Master Table - POP00101".
+    conn = _FakeConn(error_state=2683, err_string="")
     with pytest.raises(EConnectError) as exc:
         create_buyer(conn, buyer_id="donr", description="Don")
     assert exc.value.proc == "taCreateBuyer"
-    assert exc.value.error_state == 1234
+    assert exc.value.error_state == 2683
     assert exc.value.proc_message is None
 
 
@@ -148,8 +151,9 @@ def test_op_answers_with_gps_stored_description_not_the_request(monkeypatch):
 
 
 def test_op_refuses_a_duplicate_without_calling_the_proc(monkeypatch):
-    # Overwriting an existing registration would rename a buyer that live POs are already attributed
-    # to, so this must stop before taCreateBuyer runs.
+    # The proc would reject it too (error state 2684), but from inside itself. Pre-empting it is what
+    # turns a re-register into a sentence the dialog can show, and what makes a retry after an
+    # ambiguous failure read as "already registered" rather than as a raw eConnect state.
     conn = _FakeConn()
     called = []
     monkeypatch.setattr(econnect, "buyer_exists", lambda c, b: True)

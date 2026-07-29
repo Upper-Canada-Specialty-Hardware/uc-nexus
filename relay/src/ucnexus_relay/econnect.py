@@ -614,12 +614,13 @@ def create_buyer(conn, *, buyer_id: str, description: str = "") -> None:
     """Register a GP buyer through eConnect's taCreateBuyer (#409) - the same thing GP's Buyer
     Maintenance window does, so an admin no longer has to open GP just to add one.
 
-    taCreateBuyer's body is encrypted (as every taXxx proc's is), so what it does with a BUYERID that
-    already exists cannot be read off it. create_buyer_op pre-checks POP00101 rather than find out.
-
     Only BUYERID and DSCRIPTN are sent. The proc's other inputs (RequesterTrx, USRDEFND1-5) are
-    defaulted, matching create_job's rule: an unset optional is absent from the EXEC, not an explicit
-    NULL."""
+    defaulted, matching what _exec_tapohdr does with taPoHdr's ~100: an unset optional is absent from
+    the EXEC, not an explicit NULL.
+
+    Error states worth recognizing, from DYNAMICS.taErrorCode: 2681 (BUYERID empty), 2684 (duplicate
+    in POP00101), 2683 (insert failed), 2679 (a null input). create_buyer_op pre-empts 2684 with its
+    own check so the dialog gets a sentence rather than a code."""
     sql = """
     DECLARE @err int = 0;
     DECLARE @err_str varchar(255) = '';
