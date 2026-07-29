@@ -17,6 +17,7 @@ from .converters import (
     gp_cost_code_to_type,
     gp_customer_address_to_type,
     gp_customer_to_type,
+    gp_employee_to_type,
     gp_job_to_type,
     gp_tax_detail_to_type,
     gp_tax_schedule_to_type,
@@ -28,6 +29,7 @@ from .types import (
     GpCostCode,
     GpCustomer,
     GpCustomerAddress,
+    GpEmployee,
     GpJob,
     GpPoTotals,
     GpTaxDetail,
@@ -136,6 +138,20 @@ class RelayQueries:
         require_user(info)
         result = await relay_gateway.relay_call(company, "list_customer_addresses", {"customer": customer})
         return [gp_customer_address_to_type(a) for a in result["addresses"]]
+
+    @strawberry.field
+    async def gp_employees(self, info: strawberry.Info, company: str) -> list[GpEmployee]:
+        """Live payroll employee master (UPR00100) via the connected relay, for the create-job
+        estimator and WS manager pickers (#392). The job proc validates both against this master, so
+        they cannot be free text.
+
+        Admin-gated, unlike the other gp_* reads. This one returns the payroll roster with names, and
+        its only consumer is create_gp_job's dialog, which is already admin-only - so gating it at
+        require_user would hand the staff list to every signed-in warehouse and assembly user for no
+        benefit. A vendor or customer list is ordinary working data; a payroll master is not."""
+        require_admin(info)
+        result = await relay_gateway.relay_call(company, "list_employees")
+        return [gp_employee_to_type(e) for e in result["employees"]]
 
     @strawberry.field
     async def gp_tax_schedules(self, info: strawberry.Info, company: str) -> list[GpTaxSchedule]:
@@ -268,9 +284,9 @@ class RelayMutations:
         Rows pile up from every abandoned provisioning attempt - a token minted and never used, a
         re-enrolment that superseded an earlier row, a retired workstation - and until now the only way
         to remove one was hand-written SQL against Railway Postgres. Two things made that worse than
-        clutter: a stale pre-067 row keeps `secret_encrypted` forever, so the count that gates retiring
-        RELAY_SECRET_ENC_KEY never reaches 0; and the row is a live credential `authenticate_secret`
-        would still accept.
+        clutter: a stale pre-067 row keeps `secret_encrypted` forever, so the count that gated retiring
+        RELAY_SECRET_ENC_KEY never reached 0 (that retirement finished in #382); and the row is a live
+        credential `authenticate_secret` would still accept.
 
         Refuses the install currently holding the connection - revoking the credential under a live relay
         would take GP down. A merely switched-off relay deletes fine; that is the retire-a-workstation

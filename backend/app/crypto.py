@@ -6,12 +6,25 @@ long-lived Bearer secret became a hash in migration 067 (#353 PR C): storing it 
 enrolled relay is orphaned with no recovery path, because the plaintext exists nowhere else.
 
 `encrypt_secret` / `decrypt_secret` survive only to read pre-067 rows, which
-`relay_repository.authenticate_secret` upgrades to a hash in place on their next handshake. Once no
-`secret_encrypted` remains, `RELAY_SECRET_ENC_KEY` is dead weight and can be deleted:
+`relay_repository.authenticate_secret` upgrades to a hash in place on their next handshake. That
+retirement is finished (#382): the gating count reached 0, and `RELAY_SECRET_ENC_KEY` is set in no
+environment any more - not on Railway, not in `.env.example`.
 
-    SELECT count(*) FROM relay_installs WHERE secret_encrypted IS NOT NULL;  -- 0 means it is unused
+    SELECT count(*) FROM relay_installs WHERE secret_encrypted IS NOT NULL;  -- 0
 
-No install enrolled or adopted from 067 on reads that key for anything."""
+With no key present `has_encryption_key` is False, so `authenticate_secret` skips the legacy decrypt
+path and `_fernet` / `encrypt_secret` / `decrypt_secret` are reachable only from the tests.
+`has_encryption_key` itself is NOT dead with them: it still runs on every rejected handshake to fill
+the `encryption_key_present` log field.
+
+No new legacy row can appear. `set_install_secret` NULLs `secret_encrypted` on every enroll and adopt,
+and the only other statement naming the column is `/admin/reset-data` (main.py), which round-trips
+existing values across a schema rebuild - it can preserve a legacy row, never create one.
+
+Restoring one from an old backup would not help. Fernet needs the exact original key and no copy of it
+survives anywhere, so a recovered pre-067 row is simply unreadable; an orphaned relay is recovered
+through the admin-armed adopt window (066, #353 PR B) instead. Deleting these functions and dropping
+the column is a separate job, and it has to touch that reset-data SQL too."""
 
 import hashlib
 import os

@@ -8,6 +8,7 @@ from ucnexus_relay.econnect import (
     list_customer_addresses,
     list_customers,
     list_divisions,
+    list_employees,
     list_tax_schedules,
 )
 
@@ -94,6 +95,32 @@ def test_list_tax_schedules_reads_the_schedule_master_not_the_details():
     sql = conn.sql()
     assert "TX00101" in sql
     assert "TX00201" not in sql  # that's list_tax_details, a different thing
+
+
+def test_list_employees_returns_id_and_name():
+    Row = namedtuple("Row", "employee_id first_name last_name")
+    conn = _FakeConn([Row("IANB", "Ian", "Brown"), Row("JONATHANR", "Jonathan", "Ruballos")])
+    assert list_employees(conn) == [
+        {"employee_id": "IANB", "first_name": "Ian", "last_name": "Brown"},
+        {"employee_id": "JONATHANR", "first_name": "Jonathan", "last_name": "Ruballos"},
+    ]
+    assert "UPR00100" in conn.sql()
+
+
+def test_list_employees_hides_inactive_by_default():
+    # wsiJCJobMaster rejects an estimator that isn't in the payroll master (error 51117), so the
+    # picker must not offer one that can only fail.
+    Row = namedtuple("Row", "employee_id first_name last_name")
+    conn = _FakeConn([Row("IANB", "Ian", "Brown")])
+    list_employees(conn)
+    assert "INACTIVE = 0" in conn.sql()
+
+
+def test_list_employees_can_include_inactive_on_request():
+    Row = namedtuple("Row", "employee_id first_name last_name")
+    conn = _FakeConn([Row("IANB", "Ian", "Brown")])
+    list_employees(conn, active_only=False)
+    assert "INACTIVE" not in conn.sql()
 
 
 def test_list_divisions_filters_to_divisions_with_accounts():

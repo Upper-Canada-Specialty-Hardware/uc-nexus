@@ -20,6 +20,8 @@ class FakeInfo:
 @pytest.fixture(autouse=True)
 def _bypass_require_user(monkeypatch):
     monkeypatch.setattr(relay_module, "require_user", lambda info: {"user_id": "test-user"})
+    # gp_employees is admin-gated (#392): the payroll roster is not ordinary working data.
+    monkeypatch.setattr(relay_module, "require_admin", lambda info: {"user_id": "test-admin", "roles": ["Admin"]})
 
 
 class FakeGateway:
@@ -186,6 +188,42 @@ def test_gp_tax_schedules_maps_relay_result_to_type(monkeypatch):
     assert [(s.tax_schedule_id, s.description) for s in schedules] == [("GST 5%", "Federal GST 5%")]
     # list_tax_schedules (TX00101), not list_tax_details (TX00201) - different table, different thing
     assert fake.calls == [("TUBC", "list_tax_schedules", None)]
+
+
+def test_gp_employees_maps_relay_result_to_type(monkeypatch):
+    fake = _install_fake_gateway(
+        monkeypatch,
+        {"employees": [{"employee_id": "IANB", "first_name": "Ian", "last_name": "Brown"}]},
+    )
+
+    async def run():
+        return await Query().gp_employees(FakeInfo(), company="TUBC")
+
+    employees = asyncio.run(run())
+    assert [(e.employee_id, e.first_name, e.last_name) for e in employees] == [("IANB", "Ian", "Brown")]
+    assert fake.calls == [("TUBC", "list_employees", None)]
+
+
+def test_gp_employees_requires_an_admin(monkeypatch):
+    # Every other gp_* read is require_user; this one returns staff names, and its only consumer is
+    # the admin-only create-job dialog.
+    from app.auth import AuthError
+
+    def _deny(info):
+        raise AuthError("Admin role required")
+
+    monkeypatch.setattr(relay_module, "require_admin", _deny)
+
+    async def _never(*a, **k):
+        raise AssertionError("the relay must not be called for a non-admin")
+
+    monkeypatch.setattr(relay_module, "relay_gateway", type("G", (), {"relay_call": staticmethod(_never)})())
+
+    async def run():
+        return await Query().gp_employees(FakeInfo(), company="TUBC")
+
+    with pytest.raises(AuthError):
+        asyncio.run(run())
 
 
 def test_gp_divisions_passes_through_the_relay_list(monkeypatch):

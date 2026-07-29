@@ -22,6 +22,7 @@ import {
   GET_GP_CUSTOMERS,
   GET_GP_CUSTOMER_ADDRESSES,
   GET_GP_DIVISIONS,
+  GET_GP_EMPLOYEES,
   GET_GP_TAX_SCHEDULES,
 } from '../../graphql/import';
 import { GET_PROJECTS } from '../../graphql/shared';
@@ -48,6 +49,70 @@ interface GpCustomerAddressOption {
 interface GpTaxScheduleOption {
   taxScheduleId: string;
   description: string | null;
+}
+
+interface GpEmployeeOption {
+  employeeId: string;
+  firstName: string | null;
+  lastName: string | null;
+}
+
+function employeeLabel(e: GpEmployeeOption): string {
+  const name = [e.firstName, e.lastName].filter(Boolean).join(' ');
+  return name ? `${e.employeeId} - ${name}` : e.employeeId;
+}
+
+interface EmployeeFieldProps {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  employees: GpEmployeeOption[];
+  loading: boolean;
+  unavailable: boolean;
+  disabled: boolean;
+}
+
+/**
+ * Estimator / WS Manager. One component because the two fields are identical apart from their label
+ * and binding, and a fix applied to a copy-pasted twin is a fix that silently misses one of them.
+ *
+ * An Autocomplete rather than a Select: this is an unbounded master (TUBC has two employees, a real
+ * payroll has hundreds), so it needs to be searchable for the same reason the Customer picker is.
+ *
+ * `unavailable` falls back to free text. The read can fail on its own - an older relay has no
+ * list_employees op - and GP still accepts a known EMPLOYID, so leaving the field unsettable would
+ * take away something #380 allowed. That is the same banner-plus-fallback shape the register-PO
+ * dialog uses for tax details rather than showing an empty dropdown.
+ */
+function EmployeeField({ label, value, onChange, employees, loading, unavailable, disabled }: EmployeeFieldProps) {
+  if (unavailable) {
+    return (
+      <TextField
+        label={label}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        size="small"
+        sx={{ flex: 1 }}
+        slotProps={{ input: { sx: monoSx }, htmlInput: { maxLength: MAX.id } }}
+        helperText="Employee list unavailable - type a GP payroll ID"
+      />
+    );
+  }
+  return (
+    <Autocomplete
+      options={employees}
+      loading={loading}
+      value={employees.find((e) => e.employeeId === value) ?? null}
+      getOptionLabel={employeeLabel}
+      isOptionEqualToValue={(o, v) => o.employeeId === v.employeeId}
+      onChange={(_, selected) => onChange(selected?.employeeId ?? '')}
+      disabled={disabled}
+      sx={{ flex: 1 }}
+      slotProps={{ listbox: { sx: monoSx } }}
+      renderInput={(params) => <TextField {...params} label={label} size="small" />}
+    />
+  );
 }
 
 interface CreateGpJobDialogProps {
@@ -100,6 +165,8 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
   const [createdDate, setCreatedDate] = useState(todayIso);
 
   const [optionalOpen, setOptionalOpen] = useState(false);
+  // #392: both hold a GP payroll EMPLOYID, picked via EmployeeField. wsProjectNumber stays free
+  // text - nothing in GP validates it.
   const [estimatorId, setEstimatorId] = useState('');
   const [wsManagerId, setWsManagerId] = useState('');
   const [wsProjectNumber, setWsProjectNumber] = useState('');
@@ -150,6 +217,19 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
     skip: readsSkipped,
     fetchPolicy: 'cache-first',
   });
+  // Only the optional section consumes this, so it is not fetched until that section is opened -
+  // most creates never need it, and every open would otherwise cost a relay round-trip and a
+  // UPR00100 read for nothing.
+  const {
+    data: employeesData,
+    loading: employeesLoading,
+    error: employeesError,
+    refetch: refetchEmployees,
+  } = useQuery<{ gpEmployees: GpEmployeeOption[] }>(GET_GP_EMPLOYEES, {
+    variables: { company },
+    skip: readsSkipped || !optionalOpen,
+    fetchPolicy: 'cache-first',
+  });
 
   // Addresses are per-customer: the proc validates a code against THAT customer's addresses, so this
   // re-fetches on every customer change and the two address selects stay disabled until one is picked.
@@ -177,6 +257,7 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
     fetchPolicy: 'cache-first',
   });
 
+  const employees = useMemo(() => employeesData?.gpEmployees ?? [], [employeesData]);
   const customers = useMemo(() => customersData?.gpCustomers ?? [], [customersData]);
   const divisions = useMemo(() => divisionsData?.gpDivisions ?? [], [divisionsData]);
   const taxSchedules = useMemo(() => taxSchedulesData?.gpTaxSchedules ?? [], [taxSchedulesData]);
@@ -187,24 +268,33 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
     [billScopedToOwnCustomer, billAddressesData, addresses],
   );
 
-  // A failed read is NOT an empty list. Without this the deploy-before-relay-rebuild window (the four
-  // ops are not in an older relay's advertised op-set) renders a green relay chip over three empty
-  // required dropdowns and a button that can never enable, with nothing saying why.
+  // A failed read is NOT an empty list. Without this the deploy-before-relay-rebuild window (the ops
+  // are not in an older relay's advertised op-set) renders a green relay chip over empty required
+  // dropdowns and a button that can never enable, with nothing saying why.
+  //
+  // Only the REQUIRED reads count here. Folding the optional employees read in made a relay that
+  // serves create_job perfectly well announce "too old to create jobs" while the form stayed enabled
+  // and the create went through - the banner asserting the opposite of what the button did. That is
+  // exactly the state between deploying this and updating the relay, so it has to stay out.
   const readError = customersError ?? divisionsError ?? taxSchedulesError ?? addressesError ?? null;
   const readsUnsupported = [customersError, divisionsError, taxSchedulesError, addressesError].some((e) =>
     isRelayOpUnsupported(e),
   );
+  // The optional section degrades on its own instead: pickers become free-text entry.
+  const employeesUnavailable = Boolean(employeesError);
 
   const refreshReads = useCallback(() => {
     void refetchCustomers();
     void refetchDivisions();
     void refetchTaxSchedules();
+    void refetchEmployees();
     if (customer) void refetchAddresses();
-  }, [refetchCustomers, refetchDivisions, refetchTaxSchedules, refetchAddresses, customer]);
+  }, [refetchCustomers, refetchDivisions, refetchTaxSchedules, refetchEmployees, refetchAddresses, customer]);
 
-  const [createGpJob, { loading }] = useMutation<{ createGpJob: Project }>(CREATE_GP_JOB, {
-    refetchQueries: [{ query: GET_PROJECTS }],
-  });
+  const [createGpJob, { loading }] = useMutation<{ createGpJob: { created: boolean; project: Pick<Project, 'id'> } }>(
+    CREATE_GP_JOB,
+    { refetchQueries: [{ query: GET_PROJECTS }] },
+  );
 
   const requiredComplete =
     jobNumber.trim() !== '' &&
@@ -284,7 +374,7 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
     const blankToNull = (v: string) => (v.trim() === '' ? null : v.trim());
 
     try {
-      await createGpJob({
+      const response = await createGpJob({
         variables: {
           input: {
             jobNumber: jobNumber.trim(),
@@ -306,7 +396,17 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
           },
         },
       });
-      showToast(`Job ${jobNumber.trim()} created in GP.`, 'success');
+      // #392: GP may not have created anything - when it already held the job number the mutation
+      // adopts it instead, and saying "created" there would report something that did not happen.
+      // `=== true`, not `!== false`: an absent or partial payload must not be read as a creation,
+      // which is the very claim this branch exists to stop making.
+      const created = response.data?.createGpJob?.created === true;
+      showToast(
+        created
+          ? `Job ${jobNumber.trim()} created in GP.`
+          : `Job ${jobNumber.trim()} already existed in GP and is now a project.`,
+        'success',
+      );
       handleClose();
     } catch (err) {
       // GP's own words - a closed fiscal period, an address code not on the customer, a division with
@@ -362,7 +462,7 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
               aria-label="Refresh GP data"
               onClick={refreshReads}
               disabled={!relayConnected || loading}
-              title="Re-read customers, divisions and tax schedules from GP"
+              title="Re-read customers, addresses, divisions, tax schedules and employees from GP"
             >
               <RefreshCw size={16} strokeWidth={1.75} />
             </IconButton>
@@ -530,24 +630,26 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
 
           <Collapse in={optionalOpen} unmountOnExit>
             <Stack spacing={2}>
+              {/* #392: GP validates both against the payroll master, so typing a name only ever
+                  earns "The estimator does not exist in the payroll master table". */}
               <Stack direction="row" spacing={2}>
-                <TextField
-                  label="Estimator ID"
+                <EmployeeField
+                  label="Estimator"
                   value={estimatorId}
-                  onChange={(e) => setEstimatorId(e.target.value)}
+                  onChange={setEstimatorId}
+                  employees={employees}
+                  loading={employeesLoading}
+                  unavailable={employeesUnavailable}
                   disabled={disabled}
-                  size="small"
-                  sx={{ flex: 1 }}
-                  slotProps={{ input: { sx: monoSx }, htmlInput: { maxLength: MAX.id } }}
                 />
-                <TextField
-                  label="WS Manager ID"
+                <EmployeeField
+                  label="WS Manager"
                   value={wsManagerId}
-                  onChange={(e) => setWsManagerId(e.target.value)}
+                  onChange={setWsManagerId}
+                  employees={employees}
+                  loading={employeesLoading}
+                  unavailable={employeesUnavailable}
                   disabled={disabled}
-                  size="small"
-                  sx={{ flex: 1 }}
-                  slotProps={{ input: { sx: monoSx }, htmlInput: { maxLength: MAX.id } }}
                 />
               </Stack>
 
