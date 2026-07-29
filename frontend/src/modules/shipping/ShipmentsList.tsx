@@ -19,6 +19,7 @@ import { GET_PACKING_SLIPS } from '../../graphql/shipping';
 import ReturnShipmentDialog, { type ReturnSlip } from './ReturnShipmentDialog';
 import { monoSx, tabularSx } from '../../theme';
 import { FadeIn } from '../../motion';
+import { parseServerDate } from '../../utils/serverDate';
 
 interface PackingSlipItem {
   id: string;
@@ -128,7 +129,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
         headerName: 'Shipped',
         width: 120,
         cellClassName: 'tabular-cell',
-        renderCell: ({ row }) => new Date(row.shippedAt).toLocaleDateString(),
+        renderCell: ({ row }) => parseServerDate(row.shippedAt).toLocaleDateString(),
       },
       { field: 'looseUnits', headerName: 'Loose units', width: 110, type: 'number' },
       {

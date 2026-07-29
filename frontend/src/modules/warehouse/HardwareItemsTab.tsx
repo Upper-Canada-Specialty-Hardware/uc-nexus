@@ -29,6 +29,7 @@ import SpotCheckModal from './SpotCheckModal';
 import DestockInventoryModal from './stock/DestockInventoryModal';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { AnimatedNumber } from '../../motion';
+import { parseServerDate } from '../../utils/serverDate';
 
 interface InventoryItem {
   id: string;
@@ -92,7 +93,7 @@ function formatLocation(aisle: string | null, row: string | null, bay: string | 
 
 function formatDate(dateStr: string | null): string {
   if (!dateStr) return '—';
-  return new Date(dateStr).toLocaleDateString();
+  return parseServerDate(dateStr).toLocaleDateString();
 }
 
 function formatCurrency(value: number | null | undefined): string {

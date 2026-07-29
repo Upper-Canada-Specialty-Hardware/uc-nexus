@@ -1,6 +1,7 @@
 import { Document, Page, Text, View, StyleSheet } from '@react-pdf/renderer';
 import { leafIdentity } from '../../utils/leaf';
 import { locationLabel, type PickSheetFetchItem, type PickSheetSection } from './pick';
+import { parseServerDate } from '../../utils/serverDate';
 
 const styles = StyleSheet.create({
   page: { fontFamily: 'Helvetica', fontSize: 11, padding: 36, color: '#333' },
@@ -140,7 +141,7 @@ export default function PickSheetDocument({
                       {locationLabel(loc) ?? 'Unlocated'}
                     </Text>
                     <Text style={[styles.td, { width: '22%' }]}>
-                      {new Date(loc.receivedAt).toLocaleDateString()}
+                      {parseServerDate(loc.receivedAt).toLocaleDateString()}
                     </Text>
                     <Text style={[styles.td, { width: '18%' }]}>{loc.available}</Text>
                     <View style={{ width: '22%' }}>
