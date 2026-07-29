@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Box, Typography, Chip, Stack } from '@mui/material';
+import { Alert, Box, Typography, Chip, Stack } from '@mui/material';
 import { ChevronRight } from 'lucide-react';
 import { useQuery } from '@apollo/client/react';
 import type { GridColDef, GridRowParams } from '@mui/x-data-grid';
@@ -108,7 +108,7 @@ const columns: GridColDef[] = [
   },
   {
     field: 'itemsCount',
-    headerName: 'Items Count',
+    headerName: 'Items',
     flex: 0.8,
     minWidth: 120,
     type: 'number',
@@ -162,7 +162,7 @@ const columns: GridColDef[] = [
     filterable: false,
     align: 'center',
     renderCell: () => (
-      <Box data-row-open sx={{ display: 'flex', color: 'text.secondary' }}>
+      <Box data-row-open aria-hidden sx={{ display: 'flex', color: 'text.secondary' }}>
         <ChevronRight size={18} strokeWidth={1.75} />
       </Box>
     ),
@@ -181,7 +181,7 @@ function PullRequestTab({ source }: PullRequestTabProps) {
   // snapshot - the same trap #340 fixed in the assembly views.
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  const { data, loading } = useQuery<{ pullRequests: PullRequest[] }>(GET_PULL_REQUESTS, {
+  const { data, loading, error } = useQuery<{ pullRequests: PullRequest[] }>(GET_PULL_REQUESTS, {
     variables: { source },
   });
 
@@ -194,6 +194,13 @@ function PullRequestTab({ source }: PullRequestTabProps) {
 
   return (
     <>
+      {/* Without this, a failed load reads as an empty queue - the one thing this screen must
+          never claim wrongly. */}
+      {error && (
+        <Alert severity="error" sx={{ mb: 1.5 }}>
+          Error loading pull requests: {error.message}
+        </Alert>
+      )}
       <DataTable
         columns={columns}
         rows={requests}
@@ -202,6 +209,7 @@ function PullRequestTab({ source }: PullRequestTabProps) {
         // The phase cell is a tag over a line of detail (#367); the default 52px row clips it.
         rowHeight={64}
         height={520}
+        localeText={{ noRowsLabel: 'No pull requests' }}
         sx={{
           cursor: 'pointer',
           '& .MuiDataGrid-row:hover [data-row-open]': { color: 'text.primary' },
