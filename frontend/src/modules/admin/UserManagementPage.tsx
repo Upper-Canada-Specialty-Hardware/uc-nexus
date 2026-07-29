@@ -21,8 +21,10 @@ import { useQuery, useMutation } from '@apollo/client/react';
 import { GET_USERS, UPDATE_USER_GP_BUYER_ID, UPDATE_USER_NAME, UPDATE_USER_ROLES } from '../../graphql/admin';
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
-import { FONT_MONO, microLabelSx, monoSx } from '../../theme';
+import { microLabelSx, monoSx } from '../../theme';
 import { FadeIn } from '../../motion';
+import GpBuyerSelect from './GpBuyerSelect';
+import { useGpBuyers } from './useGpBuyers';
 
 const ALL_ROLES = [
   'Hardware Schedule Import',
@@ -121,7 +123,7 @@ export default function UserManagementPage() {
   const { showToast } = useToast();
   const [selectedUser, setSelectedUser] = useState<ClerkUser | null>(null);
   const [editRoles, setEditRoles] = useState<string[]>([]);
-  const [editGpBuyerId, setEditGpBuyerId] = useState('');
+  const [editGpBuyerId, setEditGpBuyerId] = useState<string | null>(null);
   // Issue #240: admin-editable display name (Clerk first/last name).
   const [editFirstName, setEditFirstName] = useState('');
   const [editLastName, setEditLastName] = useState('');
@@ -129,6 +131,10 @@ export default function UserManagementPage() {
 
   const { data, loading } = useQuery<{ users: ClerkUser[] }>(GET_USERS);
   const users = useMemo(() => data?.users ?? [], [data]);
+
+  // Issue #409: GP's live buyer master backs the buyer field below. Only polled while the edit dialog
+  // is open - the grid shows whatever id is already stored and needs no GP round-trip for that.
+  const gpBuyers = useGpBuyers({ skip: !selectedUser });
 
   const [updateRoles] = useMutation(UPDATE_USER_ROLES);
   const [updateName] = useMutation(UPDATE_USER_NAME);
@@ -139,7 +145,7 @@ export default function UserManagementPage() {
   const handleRowClick = useCallback((params: GridRowParams<ClerkUser>) => {
     setSelectedUser(params.row);
     setEditRoles(params.row.roles);
-    setEditGpBuyerId(params.row.gpBuyerId ?? '');
+    setEditGpBuyerId(params.row.gpBuyerId);
     setEditFirstName(params.row.firstName ?? '');
     setEditLastName(params.row.lastName ?? '');
   }, []);
@@ -164,7 +170,12 @@ export default function UserManagementPage() {
           variables: { userId: selectedUser.id, firstName: editFirstName.trim(), lastName: editLastName.trim() },
         });
       }
-      await updateGpBuyerId({ variables: { userId: selectedUser.id, gpBuyerId: editGpBuyerId.trim() || null } });
+      // Same only-when-changed rule as the name above, which #409 makes load-bearing rather than
+      // merely tidy: while the relay is down the buyer field is disabled and holds the stored id, and
+      // an unconditional write would re-PATCH Clerk on every unrelated save.
+      if (editGpBuyerId !== (selectedUser.gpBuyerId ?? null)) {
+        await updateGpBuyerId({ variables: { userId: selectedUser.id, gpBuyerId: editGpBuyerId } });
+      }
       showToast('User updated successfully', 'success');
       setSelectedUser(null);
     } catch (err: unknown) {
@@ -282,13 +293,14 @@ export default function UserManagementPage() {
           <Typography component="div" sx={{ ...microLabelSx, mt: 2, mb: 1 }}>
             GP identity
           </Typography>
-          <TextField
-            label="GP Buyer ID"
+          {/* Issue #409: picked from GP's live buyer master rather than typed, with an inline way to
+              register a missing one - a typo here only surfaces later as a rejected PO. */}
+          <GpBuyerSelect
             value={editGpBuyerId}
-            onChange={(e) => setEditGpBuyerId(e.target.value)}
-            size="small"
-            sx={{ width: 240, '& .MuiInputBase-input': { fontFamily: FONT_MONO } }}
-            helperText="The GP BUYERID this account creates POs as (issue #216). Blank = cannot create POs."
+            onChange={setEditGpBuyerId}
+            state={gpBuyers}
+            sx={{ width: 320 }}
+            helperText="The GP buyer this account creates POs as (issue #216). Blank = cannot create POs."
           />
         </DialogContent>
         <DialogActions>

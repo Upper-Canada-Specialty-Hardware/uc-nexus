@@ -7,13 +7,21 @@ import strawberry
 
 from app.auth import require_admin, require_user
 from app.database import SessionLocal
-from app.errors import ConflictError, NotFoundError
+from app.errors import (
+    ConflictError,
+    NotFoundError,
+    RelayCallError,
+    RelayUnavailableError,
+    ValidationError,
+    validation_error_from_relay,
+)
 from app.models.relay_install import RelayInstall
 from app.repositories import relay_repository
 from app.services import relay_adopt
 from app.services.relay_gateway import gateway as relay_gateway
 
 from .converters import (
+    gp_buyer_to_type,
     gp_cost_code_to_type,
     gp_customer_address_to_type,
     gp_customer_to_type,
@@ -26,6 +34,7 @@ from .converters import (
 )
 from .inputs import EnrollRelayInstallInput
 from .types import (
+    GpBuyer,
     GpCostCode,
     GpCustomer,
     GpCustomerAddress,
@@ -104,6 +113,19 @@ class RelayQueries:
         require_user(info)
         result = await relay_gateway.relay_call(company, "list_buyers")
         return result["buyers"]
+
+    @strawberry.field
+    async def gp_buyers_detailed(self, info: strawberry.Info, company: str) -> list[GpBuyer]:
+        """Registered GP buyers (POP00101) WITH their descriptions, via the connected relay, for the
+        admin screens that link a Nexus account to a GP buyer identity (#409).
+
+        Admin-gated where gp_buyers above is not, on the same reasoning as gp_employees: the bare id
+        list is ordinary working data every PO creator needs, but the descriptions are a staff roster
+        by another name ('Don Roberton', and in the production company every buyer's email), and the
+        only consumers are admin-only screens."""
+        require_admin(info)
+        result = await relay_gateway.relay_call(company, "list_buyers_detailed")
+        return [gp_buyer_to_type(b) for b in result["buyers"]]
 
     @strawberry.field
     async def gp_cost_codes(self, info: strawberry.Info, company: str, job: str) -> list[GpCostCode]:
@@ -238,6 +260,63 @@ class RelayQueries:
 
 @strawberry.type
 class RelayMutations:
+    @strawberry.mutation
+    async def create_gp_buyer(
+        self, info: strawberry.Info, buyer_id: str, description: str = "", company: str | None = None
+    ) -> GpBuyer:
+        """Register a buyer in GP's buyer master through the relay's taCreateBuyer op (#409).
+
+        A Nexus account can only create POs once an admin links it to a GP BUYERID (#216), and until
+        now that id had to already exist - so onboarding a new buyer meant opening GP locally to add
+        one. This is the same registration GP's Buyer Maintenance window performs.
+
+        `company` defaults to whatever the connected relay is enrolled for, which is the only company
+        it could be written to anyway; passing it explicitly is for symmetry with the gp_* reads.
+
+        Admin-only, and writing to the accounting system of record - the same bar create_gp_job sets.
+        Note there is no delete counterpart: eConnect exposes no proc for it, and removing a buyer
+        rows-deep in POP00101 by hand would bypass the business logic that rule exists to protect."""
+        require_admin(info)
+
+        target = company or relay_gateway.company
+        if not target:
+            raise RelayUnavailableError(
+                "The GP relay is not connected, so this buyer cannot be registered in GP. "
+                "Start the relay and try again."
+            )
+
+        # Bounded here as well as in the relay's CreateBuyerRequest: an over-length id would otherwise
+        # travel a full round-trip to come back as a generic invalid_payload, and GP's char widths are
+        # the honest thing to report against (BUYERID char(15), taCreateBuyer's DSCRIPTN char(30)).
+        cleaned_id = (buyer_id or "").strip()
+        if not cleaned_id:
+            raise ValidationError("A GP buyer ID is required.", field="buyer_id")
+        if len(cleaned_id) > 15:
+            raise ValidationError("A GP buyer ID is at most 15 characters.", field="buyer_id")
+        cleaned_description = (description or "").strip()
+        if len(cleaned_description) > 30:
+            raise ValidationError("A GP buyer description is at most 30 characters.", field="description")
+
+        try:
+            result = await relay_gateway.relay_call(
+                target, "create_buyer", {"buyer_id": cleaned_id, "description": cleaned_description}
+            )
+        except RelayCallError as e:
+            # GP said no, or the id is already registered. Either way the relay words it better than a
+            # generic failure would, and the detail body carries the proc + error state the dialog's
+            # error alert renders - which is what validation_error_from_relay preserves.
+            raise validation_error_from_relay(e) from e
+
+        # GP's stored row, read back from POP00101 by the relay rather than the request echoed back.
+        # That row is what gpBuyersDetailed will serve on its next refetch, so answering with anything
+        # else could hand the dialog a buyer that differs from the one everything else is about to see.
+        return gp_buyer_to_type(
+            {
+                "buyer_id": str((result or {}).get("buyer_id") or cleaned_id),
+                "description": (result or {}).get("description") or None,
+            }
+        )
+
     @strawberry.mutation
     def provision_relay_install(self, info: strawberry.Info, label: str, company: str) -> RelayInstallProvision:
         """Admin: create a relay install + a one-time enrollment token shown ONCE. The relay uses the

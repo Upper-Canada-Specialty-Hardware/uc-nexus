@@ -153,6 +153,57 @@ class BuyersResponse(BaseModel):
     buyers: list[str]  # registered GP buyer IDs (POP00101) for the Create PO buyer dropdown
 
 
+# --- register a GP buyer (issue #409) ---
+# The admin screens that link a Nexus account to a GP buyer identity need the buyer master with
+# descriptions, and a way to add to it - otherwise an admin has to open GP to do either.
+
+class BuyerOut(BaseModel):
+    buyer_id: str                   # GP BUYERID (POP00101), char(15)
+    description: str | None = None  # GP DSCRIPTN
+
+
+class BuyersDetailedResponse(BaseModel):
+    company: str
+    buyers: list[BuyerOut]
+
+
+class CreateBuyerRequest(BaseModel):
+    """Max lengths are taCreateBuyer's own parameter widths - char(15) BUYERID, char(30) DSCRIPTN -
+    so an over-length value is rejected here rather than silently truncated on the way into GP.
+
+    Note DSCRIPTN is char(31) on POP00101 but char(30) on the proc; the proc is the narrower gate and
+    therefore the binding one."""
+
+    company: str
+    buyer_id: str
+    description: str = ""
+
+    @model_validator(mode="after")
+    def normalize(self):
+        """Trim both, reject a blank id, then bound the trimmed values. A whitespace-only BUYERID would
+        land in POP00101 as the blank buyer that list_buyers explicitly filters out - registered,
+        invisible, unusable.
+
+        The widths are checked here rather than through Field(max_length=...) because a Field
+        constraint runs BEFORE this validator, so it would measure the padding too and reject a padded
+        value that trims to a perfectly legal id."""
+        self.buyer_id = (self.buyer_id or "").strip()
+        if not self.buyer_id:
+            raise ValueError("buyer_id is required")
+        if len(self.buyer_id) > 15:
+            raise ValueError("buyer_id is at most 15 characters (BUYERID is char(15))")
+        self.description = (self.description or "").strip()
+        if len(self.description) > 30:
+            raise ValueError("description is at most 30 characters (taCreateBuyer's DSCRIPTN is char(30))")
+        return self
+
+
+class CreateBuyerResponse(BaseModel):
+    company: str
+    buyer_id: str
+    description: str | None = None
+
+
 # --- cost codes (per-job, feeds the Create PO cost-code dropdown) ---
 
 class CostCodeOut(BaseModel):

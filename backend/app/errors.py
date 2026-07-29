@@ -93,3 +93,19 @@ class RelayOpUnsupportedError(AppError):
         super().__init__(message, "RELAY_OP_UNSUPPORTED")
         self.op = op
         self.detail = detail or {}
+
+
+def validation_error_from_relay(e: RelayCallError) -> ValidationError:
+    """Turn a relay refusal into a ValidationError that still carries the relay's error body.
+
+    main.py's ErrorHandlerExtension publishes `extensions.relayError` from whatever `.detail` the
+    raised error has, and ValidationError has no such field - so converting the error plainly would
+    strip the GP proc, the error state and the taErrorCode description on the way to the browser, and
+    the dialog's GpErrorAlert would render an empty detail table. That table is the whole point of
+    #187: error screenshots are how these get reported.
+
+    Lives here rather than in one schema module because every GP write that surfaces a refusal to a
+    dialog needs exactly this conversion (createGpJob #380, createGpBuyer #409)."""
+    error = ValidationError(str(e.message))
+    error.detail = e.detail
+    return error
