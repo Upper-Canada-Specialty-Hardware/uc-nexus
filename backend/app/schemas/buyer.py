@@ -4,7 +4,7 @@ import uuid
 
 import strawberry
 
-from app.auth import require_admin
+from app.auth import require_admin, require_user
 from app.database import SessionLocal
 from app.repositories import buyer_repository
 
@@ -15,9 +15,11 @@ from .types import BuyerAssignment
 @strawberry.type
 class BuyerQueries:
     @strawberry.field
-    def buyer_assignments(self) -> list[BuyerAssignment]:
+    def buyer_assignments(self, info: strawberry.Info) -> list[BuyerAssignment]:
         """Issue #216: per-buyer project + cost-code authorization. The PO dialog reads this to
-        filter its options; the create/register mutations re-enforce it server-side."""
+        filter its options; the create/register mutations re-enforce it server-side. require_user,
+        not admin (#415), because that dialog is a PO-user screen."""
+        require_user(info)
         with SessionLocal() as session:
             return [buyer_assignment_to_type(a) for a in buyer_repository.list_assignments(session)]
 
