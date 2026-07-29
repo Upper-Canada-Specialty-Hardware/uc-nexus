@@ -340,6 +340,7 @@ export const GET_LOCATION_DISTINCT_VALUES = gql`
 export const GET_BACK_ORDERED_ITEMS = gql`
   query GetBackOrderedItems($projectId: ID) {
     backOrderedItems(projectId: $projectId) {
+      poLineItemId
       hardwareCategory
       productCode
       orderedQuantity
@@ -361,7 +362,6 @@ export const GET_WAREHOUSE_DASHBOARD = gql`
       unlocatedCount
       pendingPullShop
       pendingPullShipping
-      receivedLast7Days
       backOrderedCount
       deficientCount
     }

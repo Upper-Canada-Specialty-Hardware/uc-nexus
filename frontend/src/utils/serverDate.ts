@@ -4,9 +4,10 @@
  * pushes every server timestamp into the future by the viewer's UTC offset - relative times read
  * "just now" for hours, and absolute times are simply wrong.
  *
- * Date-ONLY strings ("2026-07-29") must keep local parsing (#238): they are calendar dates, and
- * UTC-parsing them prints the previous day in any behind-UTC timezone. This helper therefore only
- * appends "Z" to zone-less date-TIME strings and leaves everything else to the platform.
+ * Date-ONLY strings ("2026-07-29") are left exactly as the platform takes them, which means `new
+ * Date` parses them as UTC midnight. That is NOT the right reading of a calendar date - it prints
+ * and compares as the previous day anywhere behind UTC (#238) - so this function is the wrong tool
+ * for one. Reach for `parseServerDay` below instead; this one is for instants.
  */
 export function parseServerDate(value: string): Date {
   const zoneless = /T\d{2}:\d{2}/.test(value) && !/(Z|[+-]\d{2}:?\d{2})$/.test(value);

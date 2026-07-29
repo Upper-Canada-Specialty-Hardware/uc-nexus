@@ -413,12 +413,12 @@ class WarehouseQueries:
             )
             return [
                 BackOrderedItem(
+                    po_line_item_id=strawberry.ID(str(item["po_line_item"].id)),
                     hardware_category=item["po_line_item"].hardware_category,
                     product_code=item["po_line_item"].product_code,
                     ordered_quantity=item["po_line_item"].ordered_quantity,
                     received_quantity=item["po_line_item"].received_quantity,
                     outstanding_quantity=item["outstanding_quantity"],
-                    unit_cost=float(item["po_line_item"].unit_cost),
                     po_number=item["po_number"],
                     vendor_name=item["vendor_name"],
                     expected_delivery_date=item["expected_delivery_date"],

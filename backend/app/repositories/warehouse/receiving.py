@@ -576,7 +576,7 @@ def get_back_ordered_items(session: Session, project_id: uuid.UUID | None = None
             "expected_delivery_date": row[3],
             # Same fallback the rest of the app shows a project by: the description if it has one,
             # otherwise the TITAN project number.
-            "project_name": (row[4] or row[5]) or None,
+            "project_name": row[4] or row[5] or None,
             "outstanding_quantity": row[0].ordered_quantity - row[0].received_quantity,
         }
         for row in rows

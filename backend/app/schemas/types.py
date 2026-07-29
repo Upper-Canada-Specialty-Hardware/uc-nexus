@@ -1342,12 +1342,15 @@ class LocationMergeResult:
 
 @strawberry.type
 class BackOrderedItem:
+    # The PO line this row IS. A back-ordered row has no identity of its own, so without this the
+    # only key a client can build is its position in the result, which changes under the query's own
+    # ORDER BY every time anything is received.
+    po_line_item_id: strawberry.ID
     hardware_category: str
     product_code: str
     ordered_quantity: int
     received_quantity: int
     outstanding_quantity: int
-    unit_cost: float
     po_number: str | None
     vendor_name: str | None
     expected_delivery_date: date | None

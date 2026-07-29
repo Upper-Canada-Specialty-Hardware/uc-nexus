@@ -68,6 +68,7 @@ interface RecentReceiveRecord {
 }
 
 interface BackOrderedItem {
+  poLineItemId: string;
   hardwareCategory: string;
   productCode: string;
   orderedQuantity: number;
@@ -87,7 +88,10 @@ interface BackOrderedItem {
  *  the same value and calling a PO due today "1d overdue". */
 function formatDate(dateStr: string | null): string {
   if (!dateStr) return '\u2014';
-  return parseServerDay(dateStr).toLocaleDateString();
+  const d = parseServerDay(dateStr);
+  // Same unparseable-input guard the two PO screens put around their copies of this parse, so all
+  // three read the same way if one of them is ever pointed at a looser field than a Date scalar.
+  return isNaN(d.getTime()) ? '\u2014' : d.toLocaleDateString();
 }
 
 function formatDateTime(dateStr: string): string {
@@ -105,9 +109,12 @@ function urgencyOf(
   today.setHours(0, 0, 0, 0);
   const date = parseServerDay(dateStr);
   date.setHours(0, 0, 0, 0);
-  // Ceil, not round: a DST boundary makes the span 23 or 25 hours, and only ceil still calls that
-  // one day.
-  const days = Math.ceil((date.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+  // Round, not ceil or floor. Both operands are local midnight, so a DST boundary between them makes
+  // the span 23 or 25 hours rather than 24, and only rounding maps that back to the whole day it is.
+  // Ceil got all three of the interesting cases wrong: tomorrow across a fall-back read "In 2d",
+  // seven days out across one lost its chip entirely, and yesterday across a spring-forward came out
+  // as -0, which is not < 0, so a PO that was already late chipped "Today".
+  const days = Math.round((date.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
   if (days < 0) return { label: `${Math.abs(days)}d overdue`, color: 'error' };
   if (days === 0) return { label: 'Today', color: 'warning' };
   if (days === 1) return { label: 'Tomorrow', color: 'info' };
@@ -306,15 +313,23 @@ export default function ReceivingPage() {
 
   const backOrderRows = useMemo(
     () =>
-      (backOrderData?.backOrderedItems ?? []).map((item, i) => ({
+      (backOrderData?.backOrderedItems ?? []).map((item) => ({
         ...item,
-        // No field on the row is unique on its own - the same product code is routinely back-ordered
-        // on more than one PO - so the index is what keeps the grid keys apart.
-        id: `${item.poNumber}-${item.productCode}-${i}`,
+        // The PO line, not the row's position. A back-ordered row is a PO line, and every refetch
+        // this page now performs re-runs the query's ORDER BY - so an index key would hand the grid
+        // a fresh id for every unchanged row and make it rebuild instead of diff.
+        id: item.poLineItemId,
         projectName: item.projectName ?? 'Stock PO',
         vendorName: item.vendorName ?? '\u2014',
       })),
     [backOrderData],
+  );
+
+  // Units, not lines. The landing card's back-ordered figure is a SUM of outstanding quantities, so
+  // a header counting rows would disagree with the number that linked the user here.
+  const backOrderUnits = useMemo(
+    () => backOrderRows.reduce((sum, r) => sum + r.outstandingQuantity, 0),
+    [backOrderRows],
   );
 
   const recentRecords = recentData?.recentReceiveRecords ?? [];
@@ -412,7 +427,10 @@ export default function ReceivingPage() {
           borderColor: 'text.primary',
         }}
       >
-        Back-Ordered Items{backOrderRows.length > 0 ? ` (${backOrderRows.length})` : ''}
+        Back-Ordered Items
+        {backOrderRows.length > 0
+          ? ` (${backOrderRows.length} ${backOrderRows.length === 1 ? 'line' : 'lines'}, ${backOrderUnits} ${backOrderUnits === 1 ? 'unit' : 'units'})`
+          : ''}
       </Typography>
 
       {backOrderLoading && (

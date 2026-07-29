@@ -1,5 +1,18 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { parseServerDate, parseServerDay } from '../serverDate';
+
+// `parseServerDay` and a bare `new Date` are the SAME function on a UTC runner, and CI is a UTC
+// runner - so on UTC alone every assertion below passes just as happily against the #238 bug as
+// against the fix. A behind-UTC zone is what gives these tests teeth. Forced per-file rather than in
+// vitest.config.ts so the rest of the suite keeps the machine's own zone; the parseServerDate cases
+// compare against Date.UTC and do not care either way.
+const ORIGINAL_TZ = process.env.TZ;
+beforeAll(() => {
+  process.env.TZ = 'America/Toronto';
+});
+afterAll(() => {
+  process.env.TZ = ORIGINAL_TZ;
+});
 
 describe('parseServerDate', () => {
   it('parses a zone-less server datetime as UTC', () => {
@@ -23,18 +36,24 @@ describe('parseServerDate', () => {
 });
 
 describe('parseServerDay', () => {
-  it('builds a date-only string as the local calendar day it names', () => {
-    const d = parseServerDay('2026-08-15');
-    expect([d.getFullYear(), d.getMonth(), d.getDate()]).toEqual([2026, 7, 15]);
-    expect([d.getHours(), d.getMinutes()]).toEqual([0, 0]);
+  it('runs behind UTC, or the rest of these tests prove nothing', () => {
+    // Not ceremony: without this the suite can silently go back to passing against the bug if the
+    // forced zone ever stops taking effect. August, so the offset is EDT's 240.
+    expect(new Date(2026, 7, 1).getTimezoneOffset()).toBe(240);
+  });
+
+  it('names the day in the string, where the platform parse names the one before', () => {
+    expect(parseServerDay('2026-08-01').getDate()).toBe(1);
+    // The bug itself, spelled out rather than described: this is what the page used to print.
+    expect(new Date('2026-08-01').getDate()).toBe(31);
+    expect(parseServerDay('2026-08-01').getTime()).not.toBe(new Date('2026-08-01').getTime());
   });
 
   it('lands on local midnight, which is what makes a day-difference come out whole', () => {
-    // The whole point of #238: the UTC parse of this string is Jul 31 20:00 in Toronto, so a raw
-    // `new Date` renders and compares as the wrong day for half the world. Asserted against a
-    // locally-constructed date rather than the UTC one so the expectation holds in a UTC CI runner
-    // too, where the two happen to coincide.
-    expect(parseServerDay('2026-08-01').getTime()).toBe(new Date(2026, 7, 1).getTime());
+    const d = parseServerDay('2026-08-15');
+    expect([d.getFullYear(), d.getMonth(), d.getDate()]).toEqual([2026, 7, 15]);
+    expect([d.getHours(), d.getMinutes(), d.getSeconds()]).toEqual([0, 0, 0]);
+    expect(d.getTime()).toBe(new Date(2026, 7, 15).getTime());
   });
 
   it('falls through to parseServerDate for anything that is not a bare date', () => {

@@ -239,9 +239,12 @@ export const GP_OUTBOX_DRAINED_STALE_ROOT_FIELDS = [
   'purchaseOrder',
   'poReceivingDetails',
   'recentReceiveRecords',
-  // A receipt that finally posts is a receipt that closes back-ordered lines, and the section
-  // reading them is on the page the user is most likely sitting on when the drain lands (#416).
+  // A receipt that finally posts is a receipt that closes back-ordered lines and moves the PO's
+  // received quantities, and since #416 both readings sit on the same page - the one the user is
+  // most likely on when the drain lands. Evicting one without the other is what would let the
+  // awaiting-receipt table keep pre-receipt pending counts directly above a grid that had updated.
   'backOrderedItems',
+  'openPOs',
   'warehouseDashboard',
   'inventoryHierarchy',
   'inventoryByVendor',
