@@ -35,6 +35,7 @@ import { useRelayStatus } from '../../relay/useRelayStatus';
 import RelayStatusChip from '../../relay/RelayStatusChip';
 import { FONT_MONO, microLabelSx, monoSx, tabularSx } from '../../theme';
 import { FadeIn } from '../../motion';
+import { parseServerDate } from '../../utils/serverDate';
 
 // The GP companies a relay may be provisioned for. Matches the relay's baked KNOWN_COMPANIES; the relay's
 // own Setup tab must be set to the same company as the token it enrolls with.
@@ -69,11 +70,11 @@ interface AdoptWindow {
 }
 
 function fmtDate(v: string | null | undefined): string {
-  return v ? new Date(v).toLocaleString() : '—';
+  return v ? parseServerDate(v).toLocaleString() : '—';
 }
 
 function fmtCountdown(expiresAt: string): string {
-  const ms = new Date(expiresAt).getTime() - Date.now();
+  const ms = parseServerDate(expiresAt).getTime() - Date.now();
   if (ms <= 0) return 'expired';
   const total = Math.floor(ms / 1000);
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;

@@ -9,6 +9,7 @@ import Tabs from '../../components/Tabs';
 import PullRequestDetailModal from './PullRequestDetailModal';
 import { pullPhase } from './pullStaging';
 import { monoSx, tabularSx } from '../../theme';
+import { parseServerDate } from '../../utils/serverDate';
 
 // --- Types ---
 
@@ -75,7 +76,7 @@ function formatStatus(status: string): string {
 
 function formatDate(dateStr: string | null | undefined): string {
   if (!dateStr) return '-';
-  return new Date(dateStr).toLocaleDateString();
+  return parseServerDate(dateStr).toLocaleDateString();
 }
 
 // --- Columns ---

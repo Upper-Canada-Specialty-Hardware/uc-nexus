@@ -25,6 +25,7 @@ import FindInStockButton from './stock/FindInStockButton';
 import { leafLabel } from '../../utils/leaf';
 import OpeningLeafStatusPanel from '../../components/OpeningLeafStatusPanel';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
+import { parseServerDate } from '../../utils/serverDate';
 
 interface InstalledHardware {
   id: string;
@@ -66,7 +67,7 @@ interface OpeningItemsTabProps {
 
 function formatDate(dateStr: string | null): string {
   if (!dateStr) return '—';
-  return new Date(dateStr).toLocaleDateString();
+  return parseServerDate(dateStr).toLocaleDateString();
 }
 
 function formatLocation(aisle: string | null, row: string | null, bay: string | null): string {
