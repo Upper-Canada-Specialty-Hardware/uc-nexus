@@ -184,6 +184,19 @@ class GpVendor:
 
 
 @strawberry.type
+class GpBuyer:
+    """A registered GP buyer (POP00101) read live via the relay, for the admin screens that link a
+    Nexus account to a GP buyer identity (#409).
+
+    The description is the whole reason this exists alongside `gpBuyers`, which returns bare ids for
+    the Create PO dropdown: an id like 'donr' or 'mira' says nothing about who it is, and an admin
+    picking the wrong one silently mis-attributes every PO that account goes on to create."""
+
+    buyer_id: str
+    description: str | None
+
+
+@strawberry.type
 class GpCostCode:
     cost_code: str  # two-segment number 'cc1-cc2' e.g. '310-000'
     description: str | None

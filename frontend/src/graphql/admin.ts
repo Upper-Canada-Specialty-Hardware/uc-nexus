@@ -362,6 +362,28 @@ export const UPDATE_USER_GP_BUYER_ID = gql`
   }
 `;
 
+// Issue #409: GP's own buyer master, read live through the relay, so an admin picks a buyer identity
+// instead of typing one - and registers a missing one here rather than opening GP. Admin-gated on the
+// backend (the descriptions are a staff roster); gpBuyers, the bare-id read behind the Create PO
+// dropdown, is unchanged and still any-user.
+export const GET_GP_BUYERS_DETAILED = gql`
+  query GetGpBuyersDetailed($company: String!) {
+    gpBuyersDetailed(company: $company) {
+      buyerId
+      description
+    }
+  }
+`;
+
+export const CREATE_GP_BUYER = gql`
+  mutation CreateGpBuyer($buyerId: String!, $description: String!) {
+    createGpBuyer(buyerId: $buyerId, description: $description) {
+      buyerId
+      description
+    }
+  }
+`;
+
 export const SAVE_BUYER_ASSIGNMENT = gql`
   mutation SaveBuyerAssignment($buyerId: String!, $projectIds: [ID!]!, $costCodes: [String!]!) {
     saveBuyerAssignment(buyerId: $buyerId, projectIds: $projectIds, costCodes: $costCodes) {

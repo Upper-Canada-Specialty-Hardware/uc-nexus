@@ -19,7 +19,9 @@ type ClerkUser {
   # (app/auth.SHOP_ASSEMBLY_MANAGER_ROLE). Free-form in Clerk, so this is not an enum.
   roles: [String!]!
   # The GP BUYERID this account acts as (#216). Null until an admin links it; createPo and
-  # registerPoInGp enforce that the caller has one.
+  # registerPoInGp enforce that the caller has one. Since #409 the admin picks it from GP's live
+  # buyer master (Query.gpBuyersDetailed) rather than typing it, so an id that was never registered
+  # in GP can no longer be saved here - taPoHdr would have rejected it at PO time anyway (error 269).
   gp_buyer_id: String
   image_url: String!
 }

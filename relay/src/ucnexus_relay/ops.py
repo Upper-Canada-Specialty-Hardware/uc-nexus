@@ -260,6 +260,42 @@ def create_job_op(conn, *, company: str, request: models.CreateJobRequest) -> mo
     )
 
 
+def create_buyer_op(conn, *, company: str, request: models.CreateBuyerRequest) -> models.CreateBuyerResponse:
+    """Register a GP buyer (issue #409): pre-check, create, read back. The caller commits.
+
+    Same three-beat shape as create_job_op, for the same reasons. The pre-check matters more here
+    because taCreateBuyer's body is encrypted: whether it errors on a duplicate or quietly overwrites
+    the existing description is not knowable from the proc, and overwriting one would rename a buyer
+    that live POs are already attributed to. Checking POP00101 first makes the answer ours.
+
+    The read-back guards the err=0-but-nothing-landed case and returns GP's stored description - the
+    column is char(30) on the proc, so a longer one is truncated on write and the request no longer
+    describes the row."""
+    if econnect.buyer_exists(conn, request.buyer_id):
+        raise RelayOpError(
+            "buyer_already_exists",
+            f"buyer '{request.buyer_id}' is already registered in GP company {company} (POP00101)",
+        )
+
+    econnect.create_buyer(conn, buyer_id=request.buyer_id, description=request.description)
+
+    created = next(
+        (b for b in econnect.list_buyers_detailed(conn) if b["buyer_id"] == request.buyer_id),
+        None,
+    )
+    if created is None:
+        raise econnect.EConnectError(
+            f"taCreateBuyer reported success but buyer {request.buyer_id} is not in POP00101",
+            proc="taCreateBuyer",
+        )
+
+    return models.CreateBuyerResponse(
+        company=company,
+        buyer_id=created["buyer_id"],
+        description=created["description"],
+    )
+
+
 def create_receipt_op(conn, *, company: str, request: models.ReceiptRequest) -> models.ReceiptResponse:
     """Receive against a PO. Reads the PO's lines from POP10110, then: taGetPurchReceiptNextNumber ->
     taPopRcptLineInsert x N -> taPopRcptHdrInsert, and (for companies with a paired custom DB) inserts

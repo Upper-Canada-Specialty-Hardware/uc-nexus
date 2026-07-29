@@ -585,6 +585,61 @@ def list_buyers(conn) -> list[str]:
     return [r.b for r in rows]
 
 
+def list_buyers_detailed(conn) -> list[dict]:
+    """The same POP00101 buyer master as list_buyers, with each buyer's description (#409).
+
+    list_buyers returns bare ids because that is all the Create PO dropdown needs. The admin screens
+    that assign a buyer identity to a Nexus account need the description too: an id like 'donr' or
+    'mira' says nothing on its own about who or what it is, and picking the wrong one silently
+    mis-attributes every PO that account creates. Kept separate rather than widening list_buyers so
+    the PO path's payload doesn't grow a field it never reads."""
+    rows = conn.cursor().execute(
+        "SELECT RTRIM(BUYERID) AS buyer_id, RTRIM(DSCRIPTN) AS description "
+        "FROM dbo.POP00101 WHERE BUYERID <> '' ORDER BY BUYERID"
+    ).fetchall()
+    return [{"buyer_id": r.buyer_id, "description": r.description or None} for r in rows]
+
+
+def buyer_exists(conn, buyer_id: str) -> bool:
+    """Read-only: is buyer_id already in the buyer master POP00101? BUYERID is char(15), so the column
+    is RTRIM'd and the argument stripped - the same normalization list_buyers/list_buyers_detailed
+    apply, so an id read out of either dropdown compares equal here."""
+    row = conn.cursor().execute(
+        "SELECT COUNT(*) AS n FROM dbo.POP00101 WHERE RTRIM(BUYERID) = ?", buyer_id.strip()
+    ).fetchone()
+    return row.n > 0
+
+
+def create_buyer(conn, *, buyer_id: str, description: str = "") -> None:
+    """Register a GP buyer through eConnect's taCreateBuyer (#409) - the same thing GP's Buyer
+    Maintenance window does, so an admin no longer has to open GP just to add one.
+
+    taCreateBuyer's body is encrypted (as every taXxx proc's is), so what it does with a BUYERID that
+    already exists cannot be read off it. create_buyer_op pre-checks POP00101 rather than find out.
+
+    Only BUYERID and DSCRIPTN are sent. The proc's other inputs (RequesterTrx, USRDEFND1-5) are
+    defaulted, matching create_job's rule: an unset optional is absent from the EXEC, not an explicit
+    NULL."""
+    sql = """
+    DECLARE @err int = 0;
+    DECLARE @err_str varchar(255) = '';
+    EXEC dbo.taCreateBuyer
+        @I_vBUYERID    = ?,
+        @I_vDSCRIPTN   = ?,
+        @O_iErrorState = @err OUTPUT,
+        @oErrString    = @err_str OUTPUT;
+    SELECT @err AS error_state, @err_str AS err_string;
+    """
+    row = conn.cursor().execute(sql, buyer_id, description).fetchone()
+    if row.error_state != 0:
+        message = (row.err_string or "").strip()
+        raise EConnectError(
+            f"taCreateBuyer failed for buyer {buyer_id}: {message}",
+            proc="taCreateBuyer",
+            error_state=row.error_state,
+        )
+
+
 def list_jobs(conn) -> list[dict]:
     """Read-only: the job master JC00102 (WennSoft Job Cost). Feeds the outbound-channel list_jobs
     op - there's no existing HTTP route for this (nothing reads it via the browser hop today)."""

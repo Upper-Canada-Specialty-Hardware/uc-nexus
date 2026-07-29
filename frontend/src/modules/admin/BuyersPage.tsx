@@ -10,10 +10,13 @@ import {
   DialogContent,
   DialogTitle,
   IconButton,
+  Paper,
+  Stack,
   TextField,
+  Tooltip,
   Typography,
 } from '@mui/material';
-import { Plus, Trash2 } from 'lucide-react';
+import { AlertTriangle, Plus, Trash2 } from 'lucide-react';
 import { DataGrid, type GridColDef, type GridRowParams } from '@mui/x-data-grid';
 import { useMutation, useQuery } from '@apollo/client/react';
 import { GET_BUYER_ASSIGNMENTS, GET_PROJECTS } from '../../graphql/shared';
@@ -23,6 +26,9 @@ import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
 import { FONT_MONO, microLabelSx, monoSx } from '../../theme';
 import { FadeIn } from '../../motion';
+import GpBuyerSelect from './GpBuyerSelect';
+import RegisterGpBuyerDialog from './RegisterGpBuyerDialog';
+import { useGpBuyers } from './useGpBuyers';
 import type { Project } from '../../types/project';
 
 interface AssignmentProject {
@@ -60,6 +66,14 @@ export default function BuyersPage() {
   const [selectedProjects, setSelectedProjects] = useState<Project[]>([]);
   const [costCodesText, setCostCodesText] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [registerOpen, setRegisterOpen] = useState(false);
+
+  // Issue #409: GP's live buyer master. Polled for the whole page, not just the dialog - the panel
+  // below renders it, and the grid uses it to flag assignments for ids GP never registered.
+  const gpBuyers = useGpBuyers({ skip: !isAdmin });
+  const registeredIds = useMemo(() => new Set(gpBuyers.buyers.map((b) => b.buyerId)), [gpBuyers.buyers]);
+  // Only meaningful once the list actually loaded: an unavailable read would otherwise flag every row.
+  const canFlagUnregistered = !gpBuyers.unavailable && !gpBuyers.loading && gpBuyers.buyers.length > 0;
 
   const [saveAssignment, { loading: saving }] = useMutation(SAVE_BUYER_ASSIGNMENT, {
     refetchQueries: [{ query: GET_BUYER_ASSIGNMENTS }],
@@ -120,12 +134,26 @@ export default function BuyersPage() {
       {
         field: 'buyerId',
         headerName: 'GP Buyer',
-        width: 160,
-        renderCell: (params) => (
-          <Box component="span" sx={{ ...monoSx, fontWeight: 600 }}>
-            {params.row.buyerId}
-          </Box>
-        ),
+        width: 190,
+        renderCell: (params) => {
+          // #409: an assignment for an id GP never registered can never produce a PO - taPoHdr rejects
+          // the BUYERID (error 269). Free text made these easy to create and invisible afterwards.
+          const unregistered = canFlagUnregistered && !registeredIds.has(params.row.buyerId);
+          return (
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+              <Box component="span" sx={{ ...monoSx, fontWeight: 600 }}>
+                {params.row.buyerId}
+              </Box>
+              {unregistered && (
+                <Tooltip title="Not registered in GP (POP00101). POs for this buyer will be rejected.">
+                  <Box component="span" sx={{ display: 'flex', color: 'warning.main' }}>
+                    <AlertTriangle size={15} strokeWidth={2} aria-label="Not registered in GP" />
+                  </Box>
+                </Tooltip>
+              )}
+            </Box>
+          );
+        },
       },
       {
         field: 'projects',
@@ -179,7 +207,7 @@ export default function BuyersPage() {
         ),
       },
     ],
-    [],
+    [canFlagUnregistered, registeredIds],
   );
 
   if (!isAdmin) {
@@ -229,19 +257,80 @@ export default function BuyersPage() {
         sx={{ '& .MuiDataGrid-row': { cursor: 'pointer' } }}
       />
 
+      {/* Issue #409: GP's own buyer master, so an admin can see what exists and add to it without
+          opening GP. Separate from the grid above because the two are different things: this is who
+          GP knows as a buyer, that is what each buyer is allowed to do here. */}
+      <Paper variant="outlined" sx={{ mt: 3, p: 2 }}>
+        <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 2, mb: 1.5 }}>
+          <Box sx={{ flex: 1 }}>
+            <Typography component="div" sx={microLabelSx}>
+              Registered in GP
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              GP&apos;s buyer master (POP00101) for {gpBuyers.company || 'the connected company'}. A buyer must
+              be registered here before an account can be linked to it. Removing one is still a GP task.
+            </Typography>
+          </Box>
+          <Button
+            variant="outlined"
+            size="small"
+            startIcon={<Plus size={18} strokeWidth={1.75} />}
+            onClick={() => setRegisterOpen(true)}
+            disabled={gpBuyers.unavailable}
+            sx={{ flexShrink: 0 }}
+          >
+            Register GP Buyer
+          </Button>
+        </Box>
+
+        {gpBuyers.unavailable ? (
+          <Alert severity="warning" sx={{ mt: 1 }}>
+            {gpBuyers.unsupported
+              ? 'The connected relay is too old to list GP buyers. Update the relay on that workstation, then reload this page.'
+              : gpBuyers.relayConnected
+                ? `Could not read the buyer master from GP. ${gpBuyers.error?.message ?? ''}`
+                : 'The GP relay is not connected, so the buyer master cannot be read or added to.'}
+          </Alert>
+        ) : gpBuyers.buyers.length === 0 && !gpBuyers.loading ? (
+          <Typography variant="body2" color="text.secondary">
+            No buyers are registered in this GP company yet.
+          </Typography>
+        ) : (
+          <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', gap: 1 }}>
+            {gpBuyers.buyers.map((b) => (
+              <Chip
+                key={b.buyerId}
+                size="small"
+                variant="outlined"
+                label={b.description ? `${b.buyerId} · ${b.description}` : b.buyerId}
+                sx={{ '& .MuiChip-label': { fontFamily: FONT_MONO } }}
+              />
+            ))}
+          </Stack>
+        )}
+      </Paper>
+
+      <RegisterGpBuyerDialog
+        open={registerOpen}
+        company={gpBuyers.company}
+        onClose={() => setRegisterOpen(false)}
+      />
+
       <Dialog open={editOpen} onClose={() => setEditOpen(false)} maxWidth="sm" fullWidth>
         <DialogTitle>{isNew ? 'Add Buyer Assignment' : `Edit Buyer: ${buyerId}`}</DialogTitle>
         <DialogContent>
-          <TextField
-            label="GP Buyer ID"
-            value={buyerId}
-            onChange={(e) => setBuyerId(e.target.value)}
-            size="small"
-            fullWidth
-            disabled={!isNew}
-            sx={{ mt: 1, mb: 2, '& .MuiInputBase-input': { fontFamily: FONT_MONO } }}
-            helperText={isNew ? 'The GP BUYERID exactly as it appears in GP (POP00101)' : ''}
-          />
+          {/* #409: picked from GP's buyer master rather than typed. Still locked on an existing
+              assignment - the buyer id is the row key, so changing it would be a different row. */}
+          <Box sx={{ mt: 1, mb: 2 }}>
+            <GpBuyerSelect
+              value={buyerId || null}
+              onChange={(next) => setBuyerId(next ?? '')}
+              state={gpBuyers}
+              disabled={!isNew}
+              fullWidth
+              helperText={isNew ? 'Only buyers registered in GP (POP00101) can be assigned' : ''}
+            />
+          </Box>
           <Typography component="div" sx={{ ...microLabelSx, mb: 1 }}>
             Scope
           </Typography>
