@@ -94,6 +94,21 @@ def format_shortfall_lines(shortfalls) -> str:
     )
 
 
+def format_pick_shortfall_lines(shortfalls) -> str:
+    """The short-pick frame (#367), which the creation-gate template cannot say truthfully.
+
+    A pick's `short` is what the pull is still owed after the confirm, and its `available` is what
+    the project shows free *now* - deliberately post-deduction (see `_pick_shortfalls`). Pushing
+    those numbers through the gate template rendered "need 3, 6 available (short 2)": arithmetic
+    that holds in the gate frame (short = need - available) and reads as nonsense in this one.
+    """
+    return "; ".join(
+        f"{s.hardware_category} {s.product_code}: {s.requested - s.short} of {s.requested} picked - "
+        f"{s.short} still owed ({s.available} free in the project now)"
+        for s in shortfalls
+    )
+
+
 def notify_po_shortfall(
     session: Session,
     project_id: uuid.UUID,
@@ -101,6 +116,7 @@ def notify_po_shortfall(
     shortfalls,
     sent_short: bool = False,
     pull_request_id: uuid.UUID | None = None,
+    pick_frame: bool = False,
 ) -> Notification:
     """PO backfill signal (#224), carrying the shortfall detail.
 
@@ -123,7 +139,8 @@ def notify_po_shortfall(
         if sent_short
         else f"{label} couldn't be fulfilled - backfill needed."
     )
-    message = f"{headline} {format_shortfall_lines(shortfalls)}"
+    lines = format_pick_shortfall_lines(shortfalls) if pick_frame else format_shortfall_lines(shortfalls)
+    message = f"{headline} {lines}"
     return create_notification(
         session,
         project_id=project_id,
