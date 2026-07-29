@@ -1,8 +1,19 @@
 import { useMemo, useState } from 'react';
-import { Box, Typography, Chip, Stack, CircularProgress, Alert, TextField, Button } from '@mui/material';
+import {
+  Box,
+  Typography,
+  Chip,
+  Stack,
+  Skeleton,
+  Alert,
+  TextField,
+  Button,
+  InputAdornment,
+} from '@mui/material';
+import { Search } from 'lucide-react';
 import { useQuery } from '@apollo/client/react';
 import { GET_OPENING_LEAF_STATUS } from '../graphql/shared';
-import { microLabelSx, tabularSx } from '../theme';
+import { microLabelSx, monoSx, tabularSx } from '../theme';
 
 // Per-opening door-leaf rollup (#313). Shared between the shipping (project-scoped) and shop-assembly
 // (global, grouped by project) views; `mode` reframes the N-of-M summary, `grouped` toggles the
@@ -75,7 +86,10 @@ function OpeningRow({ row, mode }: { row: OpeningLeafStatusRow; mode: 'assembly'
       <Chip
         size="small"
         color={summaryColor(done, row.leafCount)}
-        label={`Opening ${row.openingNumber}: ${done} of ${row.leafCount} leaves ${verb}`}
+        // Single-leaf doors are the common case; "1 of 1 leaves" reads as a machine talking.
+        label={`Opening ${row.openingNumber}: ${done} of ${row.leafCount} ${
+          row.leafCount === 1 ? 'leaf' : 'leaves'
+        } ${verb}`}
       />
       {[...row.leaves]
         .sort((a, b) => a.leaf - b.leaf)
@@ -141,9 +155,13 @@ export default function OpeningLeafStatusPanel({
   }, [filtered, grouped]);
 
   if (loading && !data) {
+    // Skeletons shaped like the rows they become (DESIGN.md: skeletons over spinners).
     return (
-      <Box sx={{ display: 'flex', justifyContent: 'center', py: 2 }}>
-        <CircularProgress size={20} />
+      <Box sx={{ mb: 2 }}>
+        <Skeleton width={110} height={14} sx={{ mb: 1 }} />
+        {Array.from({ length: 3 }).map((_, i) => (
+          <Skeleton key={i} height={26} sx={{ mb: 0.5, maxWidth: 480 }} />
+        ))}
       </Box>
     );
   }
@@ -168,8 +186,19 @@ export default function OpeningLeafStatusPanel({
             placeholder="Search opening #"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            inputProps={{ 'aria-label': 'Search opening number' }}
-            sx={{ width: 200 }}
+            // Same affordance as the shipping browse: search glyph in, mono for the identifier.
+            slotProps={{
+              input: {
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <Search size={16} strokeWidth={1.75} />
+                  </InputAdornment>
+                ),
+                sx: monoSx,
+              },
+              htmlInput: { 'aria-label': 'Search opening number' },
+            }}
+            sx={{ width: { xs: '100%', sm: 200 } }}
           />
         )}
       </Stack>
@@ -195,7 +224,7 @@ export default function OpeningLeafStatusPanel({
                       {group.projectName}
                     </Typography>
                     <Typography variant="caption" color="text.secondary" sx={tabularSx}>
-                      {leafDone} of {leafTotal} leaves {verb}
+                      {leafDone} of {leafTotal} {leafTotal === 1 ? 'leaf' : 'leaves'} {verb}
                     </Typography>
                   </Stack>
                 )}

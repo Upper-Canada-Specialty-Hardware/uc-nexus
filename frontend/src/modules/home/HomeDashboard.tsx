@@ -1,4 +1,4 @@
-import { Box, Typography, Card, Skeleton } from '@mui/material';
+import { Alert, Box, Typography, Card, Skeleton } from '@mui/material';
 import { ReceiptText, ClipboardList, PackageCheck, FolderOpen } from 'lucide-react';
 import { useQuery } from '@apollo/client/react';
 import { useIdentity } from '../../hooks/useIdentity';
@@ -103,15 +103,14 @@ function formatActionLabel(action: string, entityType: string): string {
   return `${a} ${e}`;
 }
 
-
 export default function HomeDashboard() {
   const { displayName } = useIdentity();
 
-  const { data: statsData, loading: statsLoading } = useQuery<HomeStatsData>(
+  const { data: statsData, loading: statsLoading, error: statsError } = useQuery<HomeStatsData>(
     GET_HOME_DASHBOARD_STATS,
     { fetchPolicy: 'cache-and-network' },
   );
-  const { data: activityData, loading: activityLoading } = useQuery<AuditLogData>(
+  const { data: activityData, loading: activityLoading, error: activityError } = useQuery<AuditLogData>(
     GET_AUDIT_LOG,
     { variables: { limit: 10 }, fetchPolicy: 'cache-and-network' },
   );
@@ -133,56 +132,67 @@ export default function HomeDashboard() {
         </Typography>
       </FadeIn>
 
-      <StaggerList count={4} style={{ display: 'flex', gap: 12, marginBottom: 32, flexWrap: 'wrap' }}>
-        {statsLoading && !s
-          ? Array.from({ length: 4 }).map((_, i) => (
-              <StaggerItem key={i} style={{ flex: '1 1 0', minWidth: 150 }}>
-                <StatCardSkeleton />
-              </StaggerItem>
-            ))
-          : s
-            ? [
-                {
-                  key: 'po',
-                  icon: <ReceiptText size={18} strokeWidth={1.75} />,
-                  label: 'Open POs',
-                  value: s.openPoCount,
-                  color: 'text.secondary',
-                },
-                {
-                  key: 'pulls',
-                  icon: <ClipboardList size={18} strokeWidth={1.75} />,
-                  label: 'Pending Pull Requests',
-                  value: s.pendingPullRequestCount,
-                  // Colour is an attention signal, not decoration: a zero count is nothing to act on.
-                  color: s.pendingPullRequestCount > 0 ? 'info.main' : 'text.secondary',
-                },
-                {
-                  key: 'receiving',
-                  icon: <PackageCheck size={18} strokeWidth={1.75} />,
-                  label: 'Items Pending Receiving',
-                  value: s.itemsPendingReceiving,
-                  color: s.itemsPendingReceiving > 0 ? 'warning.main' : 'text.secondary',
-                },
-                {
-                  key: 'projects',
-                  icon: <FolderOpen size={18} strokeWidth={1.75} />,
-                  label: 'Projects',
-                  value: s.projectCount,
-                  color: 'text.secondary',
-                },
-              ].map((tile) => (
-                <StaggerItem key={tile.key} style={{ flex: '1 1 0', minWidth: 150 }}>
-                  <StatCard
-                    icon={tile.icon}
-                    label={tile.label}
-                    value={tile.value}
-                    color={tile.color}
-                  />
+      {/* An errored rollup renders as an error, never as a silently missing gauge row - the
+          operator must not read "no gauges" as "nothing to do". */}
+      {statsError && !s ? (
+        <Alert severity="error" sx={{ mb: 3 }}>
+          Error loading dashboard stats: {statsError.message}
+        </Alert>
+      ) : (
+        <StaggerList
+          count={4}
+          style={{ display: 'flex', gap: 12, marginBottom: 24, flexWrap: 'wrap' }}
+        >
+          {statsLoading && !s
+            ? Array.from({ length: 4 }).map((_, i) => (
+                <StaggerItem key={i} style={{ flex: '1 1 0', minWidth: 150 }}>
+                  <StatCardSkeleton />
                 </StaggerItem>
               ))
-            : null}
-      </StaggerList>
+            : s
+              ? [
+                  {
+                    key: 'po',
+                    icon: <ReceiptText size={18} strokeWidth={1.75} />,
+                    label: 'Open POs',
+                    value: s.openPoCount,
+                    color: 'text.secondary',
+                  },
+                  {
+                    key: 'pulls',
+                    icon: <ClipboardList size={18} strokeWidth={1.75} />,
+                    label: 'Pending Pull Requests',
+                    value: s.pendingPullRequestCount,
+                    // Colour is an attention signal, not decoration: a zero count is nothing to act on.
+                    color: s.pendingPullRequestCount > 0 ? 'info.main' : 'text.secondary',
+                  },
+                  {
+                    key: 'receiving',
+                    icon: <PackageCheck size={18} strokeWidth={1.75} />,
+                    label: 'Items Pending Receiving',
+                    value: s.itemsPendingReceiving,
+                    color: s.itemsPendingReceiving > 0 ? 'warning.main' : 'text.secondary',
+                  },
+                  {
+                    key: 'projects',
+                    icon: <FolderOpen size={18} strokeWidth={1.75} />,
+                    label: 'Projects',
+                    value: s.projectCount,
+                    color: 'text.secondary',
+                  },
+                ].map((tile) => (
+                  <StaggerItem key={tile.key} style={{ flex: '1 1 0', minWidth: 150 }}>
+                    <StatCard
+                      icon={tile.icon}
+                      label={tile.label}
+                      value={tile.value}
+                      color={tile.color}
+                    />
+                  </StaggerItem>
+                ))
+              : null}
+        </StaggerList>
+      )}
 
       {/* Bounded: a full-bleed feed strands every timestamp a screen away from the line it belongs
           to. At this width the "when" sits next to the "what". */}
@@ -191,7 +201,9 @@ export default function HomeDashboard() {
           <Typography component="div" sx={{ ...microLabelSx, mb: 1.5 }}>
             Recent Activity
           </Typography>
-          {activityLoading && activity.length === 0 ? (
+          {activityError && activity.length === 0 ? (
+            <Alert severity="error">Error loading recent activity: {activityError.message}</Alert>
+          ) : activityLoading && activity.length === 0 ? (
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
               {Array.from({ length: 5 }).map((_, i) => (
                 <Skeleton key={i} variant="text" width="80%" height={28} />
@@ -242,6 +254,8 @@ export default function HomeDashboard() {
                         variant="caption"
                         color="text.secondary"
                         sx={{ whiteSpace: 'nowrap', flexShrink: 0 }}
+                        // Relative time reads fast; the exact moment is one hover away.
+                        title={parseServerDate(entry.createdAt).toLocaleString()}
                       >
                         {formatRelativeTime(entry.createdAt)}
                       </Typography>
