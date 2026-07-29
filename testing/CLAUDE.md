@@ -354,6 +354,23 @@ DRAFT -> ORDERED -> VENDOR_CONFIRMED -> PARTIALLY_RECEIVED -> CLOSED
 - **VENDOR_CONFIRMED** auto-triggers when ORDERED PO has both vendor quote number and vendor acknowledgement document; auto-reverts if either is removed
 - **Receiving** a PO without a project will show error: "PO must be associated with a project before receiving"
 
+**A cancelled PO disappears from the list entirely, and the CANCELLED stat card is always 0.**
+`cancel_po` (`po_repository.py`) sets `status = CANCELLED` *and* `deleted_at` in the same write, while
+`get_purchase_orders` filters `deleted_at IS NULL`. So the cancelled PO is gone from the grid, gone
+from the TOTAL, and the CANCELLED card it should be counted in can never be non-zero. Observed live
+2026-07-29 with a cancelled PO definitely present in the database.
+
+Two consequences when testing:
+
+- **A PO count that drops between two measurements is a cancel, not data loss.** This costs real time
+  if you meet it cold - the PO simply vanishes with nothing in the audit log to say so (PO cancels are
+  not audit-logged). `deleted_at` has exactly one writer in the whole backend, `cancel_po`, reachable
+  only through the user-triggered `cancelPo` mutation, so a vanished PO always means somebody
+  cancelled one.
+- **Record PO ids, not just counts**, when you need a before/after. Aggregating by status tells you
+  something changed but not which row, and you cannot query a soft-deleted PO back through GraphQL to
+  find out afterwards.
+
 **Generate PO Document** (issue #230): button on the PO detail modal action bar, shown for any non-cancelled PO. Opens a dialog that builds the finished supplier PO as a client-side PDF (`@react-pdf/renderer`), replacing the old hand-edit-GP's-doc workflow. No relay involved.
 - Dialog fields pre-fill from the PO, its saved `PODocumentData`, and `poDocumentSettings`: vendor mailing address, buyer (from `buyerId`), currency (CAD `$` / USD `$US`), ship-to (warehouse dropdown | "Use project site" button | custom text - the resolved block is stored verbatim), shipping method, proposal #, required-by (defaults to `expectedDeliveryDate`), freight/misc/tax + tax label, and three conditional toggles (wood-door FSC, USA tariff, international customs).
 - **Generate & preview** opens the PDF in a new tab (`window.open` blob). **Save to PO documents** persists `PODocumentData` + uploads the PDF as a `GENERATED_PO` document (appears in the Documents list, label "Generated PO", downloadable via presigned URL). Both first call `savePoDocumentData`, so re-opening the dialog pre-fills.
