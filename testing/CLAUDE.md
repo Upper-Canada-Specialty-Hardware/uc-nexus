@@ -19,27 +19,44 @@ This is a tester's knowledge journal for UC Nexus. It documents how the app work
   - Tokens are one-time use; fetch a fresh one each session. Works on any runtime with the same Clerk dev instance.
 - **Test XML file**: `testing/fixtures/contracterp-74.xml` - TITAN hardware schedule export, use for Import wizard testing (upload via `upload_file`)
 
-### A PR environment is always relay-disconnected, and that is useful
+### A PR environment is relay-disconnected by default, and that is useful
 
-The relay dials ONE backend - the `[channel] backend_url` in its `config.toml`, which is production.
-A PR environment therefore always reports `relayStatus.connected: false`, and no amount of waiting
-changes it. Pointing the relay at a PR backend is not a shortcut either: relay installs live in
-Postgres, and a PR environment boots a fresh empty one, so the relay would have to be re-provisioned
-and re-enrolled there and then put back afterwards.
+By default a PR environment always reports `relayStatus.connected: false`, and no amount of waiting
+changes it. Two independent reasons, both addressed by #414 but neither automatic:
 
-Read that as a free test fixture rather than a limitation. The relay-down half of any GP-gated
-feature - disabled controls, "not connected" copy, held values still displaying, buttons that must
-not be clickable - is exactly what a PR environment exercises by construction, and it is the half
+1. The relay dials whatever `[channel] backend_url` in its `config.toml` names. Since #414 that takes
+   a LIST, so a PR backend can be added *alongside* production rather than replacing it - but somebody
+   has to add it, and the relay needs a restart to pick it up.
+2. Relay installs live in Postgres and a PR environment boots a fresh empty one, so the handshake is
+   refused (4403) even if the relay does dial. Since #414 the backend seeds a trusted install on
+   startup from `RELAY_SEED_SECRET_HASH` - the SHA-256 already in production's row, copyable from
+   Admin -> Relay Installs ("Seed hash" column). That variable has to be set on the environment PR
+   deploys are cloned from; it is deliberately refused in production.
+
+Read the default state as a free test fixture rather than a limitation. The relay-down half of any
+GP-gated feature - disabled controls, "not connected" copy, held values still displaying, buttons that
+must not be clickable - is exactly what a PR environment exercises by construction, and it is the half
 that is otherwise awkward to reach on production without stopping the relay for everyone.
 
-What a PR environment cannot show is any populated GP dropdown or any GP write. Those need
-production, after merge and after the installed relay is rebuilt to a build whose `_OPS` includes the
-new op (an older build answers `unknown_op` -> `RELAY_OP_UNSUPPORTED`, which is its own distinct UI
-state and worth checking on purpose during the deploy-before-rebuild window).
+A PR environment with a connected relay is pinned to **TUBC** and refuses every other company with
+`company_not_allowed_on_channel`, reads and writes alike. Reads and writes both work against TUBC;
+that pin is what makes serving writes off a test backend acceptable at all.
 
-Verified on PR #412 (issue #409's buyer dropdown): the field rendered `role="combobox"`, disabled,
-still showing the stored `mira`, with "The GP relay is not connected, so this cannot be changed right
-now." - all four assertions met without touching production.
+What a PR environment still cannot show is a NEW op. The workstation runs a packaged build, so a PR
+that adds to `_OPS` answers `unknown_op` -> `RELAY_OP_UNSUPPORTED` there just as it does on production
+before the relay is rebuilt (its own distinct UI state, worth checking on purpose during the
+deploy-before-rebuild window).
+
+Verified on PR #412 (issue #409's buyer dropdown), in the default disconnected state: the field
+rendered `role="combobox"`, disabled, still showing the stored `mira`, with "The GP relay is not
+connected, so this cannot be changed right now." - all four assertions met without touching production.
+
+Seeding verified live on PR #421 (#414 itself), against that PR's own environment: setting
+`RELAY_SEED_SECRET_HASH` produced exactly one install row labelled `seed:uc-nexus-pr-<N>` (company
+TUBC, ENROLLED), the Seed hash cell truncated to 8 chars with a copy button carrying the full 64-char
+digest, a provisioned-but-unenrolled row showing `—` and no button, and a second full redeploy still
+leaving exactly one seeded row. Note the label takes `RAILWAY_ENVIRONMENT_NAME` verbatim, which on a
+PR environment is `uc-nexus-pr-<N>` rather than `pr-<N>`.
 
 ### Inventory can only be seeded through the relay - check this first
 
