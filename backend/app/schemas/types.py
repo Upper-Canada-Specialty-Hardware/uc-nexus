@@ -1351,6 +1351,8 @@ class BackOrderedItem:
     po_number: str | None
     vendor_name: str | None
     expected_delivery_date: date | None
+    # None for a stock PO, which has no project to name.
+    project_name: str | None
 
 
 @strawberry.type

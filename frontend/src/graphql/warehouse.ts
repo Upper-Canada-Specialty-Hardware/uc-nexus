@@ -337,33 +337,6 @@ export const GET_LOCATION_DISTINCT_VALUES = gql`
   }
 `;
 
-export const GET_EXPECTED_DELIVERIES = gql`
-  query GetExpectedDeliveries($projectId: ID) {
-    expectedDeliveries(projectId: $projectId) {
-      id
-      poNumber
-      requestNumber
-      gpVendorId
-      vendorNameSnapshot
-      vendor {
-        id
-        name
-      }
-      expectedDeliveryDate
-      orderedAt
-      status
-      lineItems {
-        id
-        hardwareCategory
-        productCode
-        orderedQuantity
-        receivedQuantity
-        unitCost
-      }
-    }
-  }
-`;
-
 export const GET_BACK_ORDERED_ITEMS = gql`
   query GetBackOrderedItems($projectId: ID) {
     backOrderedItems(projectId: $projectId) {
@@ -376,6 +349,7 @@ export const GET_BACK_ORDERED_ITEMS = gql`
       poNumber
       vendorName
       expectedDeliveryDate
+      projectName
     }
   }
 `;
