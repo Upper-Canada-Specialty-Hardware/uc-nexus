@@ -220,8 +220,6 @@ export default function AssembleListPage() {
         </Typography>
       </FadeIn>
 
-      <OpeningLeafStatusPanel mode="assembly" grouped title="Door leaves assembled (by project)" />
-
       {loading && !data && (
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
           Loading...
@@ -370,6 +368,12 @@ export default function AssembleListPage() {
           );
         })}
       </Stack>
+
+      {/* Reference, not work: the sections above are what this page is for, so the by-project
+          leaf-status rollup reads below them rather than burying them under a schedule-sized wall. */}
+      <Box sx={{ mt: 4 }}>
+        <OpeningLeafStatusPanel mode="assembly" grouped title="Door leaves assembled (by project)" />
+      </Box>
 
       {completing && (
         <AssemblyDetailModal
