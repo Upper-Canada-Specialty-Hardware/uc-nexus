@@ -62,13 +62,66 @@ function employeeLabel(e: GpEmployeeOption): string {
   return name ? `${e.employeeId} - ${name}` : e.employeeId;
 }
 
+interface EmployeeFieldProps {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  employees: GpEmployeeOption[];
+  loading: boolean;
+  unavailable: boolean;
+  disabled: boolean;
+}
+
+/**
+ * Estimator / WS Manager. One component because the two fields are identical apart from their label
+ * and binding, and a fix applied to a copy-pasted twin is a fix that silently misses one of them.
+ *
+ * An Autocomplete rather than a Select: this is an unbounded master (TUBC has two employees, a real
+ * payroll has hundreds), so it needs to be searchable for the same reason the Customer picker is.
+ *
+ * `unavailable` falls back to free text. The read can fail on its own - an older relay has no
+ * list_employees op - and GP still accepts a known EMPLOYID, so leaving the field unsettable would
+ * take away something #380 allowed. That is the same banner-plus-fallback shape the register-PO
+ * dialog uses for tax details rather than showing an empty dropdown.
+ */
+function EmployeeField({ label, value, onChange, employees, loading, unavailable, disabled }: EmployeeFieldProps) {
+  if (unavailable) {
+    return (
+      <TextField
+        label={label}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        size="small"
+        sx={{ flex: 1 }}
+        slotProps={{ input: { sx: monoSx }, htmlInput: { maxLength: MAX.id } }}
+        helperText="Employee list unavailable - type a GP payroll ID"
+      />
+    );
+  }
+  return (
+    <Autocomplete
+      options={employees}
+      loading={loading}
+      value={employees.find((e) => e.employeeId === value) ?? null}
+      getOptionLabel={employeeLabel}
+      isOptionEqualToValue={(o, v) => o.employeeId === v.employeeId}
+      onChange={(_, selected) => onChange(selected?.employeeId ?? '')}
+      disabled={disabled}
+      sx={{ flex: 1 }}
+      slotProps={{ listbox: { sx: monoSx } }}
+      renderInput={(params) => <TextField {...params} label={label} size="small" />}
+    />
+  );
+}
+
 interface CreateGpJobDialogProps {
   open: boolean;
   onClose: () => void;
 }
 
 /** GP column widths, so an over-length value is caught in the field rather than by the proc. */
-const MAX = { jobNumber: 17, jobName: 31, projectNumber: 17 };
+const MAX = { jobNumber: 17, jobName: 31, projectNumber: 17, id: 15 };
 
 /**
  * Today in LOCAL time. Deliberately not toISOString().slice(0, 10), which is UTC: west of Greenwich
@@ -112,9 +165,10 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
   const [createdDate, setCreatedDate] = useState(todayIso);
 
   const [optionalOpen, setOptionalOpen] = useState(false);
+  // #392: both hold a GP payroll EMPLOYID, picked via EmployeeField. wsProjectNumber stays free
+  // text - nothing in GP validates it.
   const [estimatorId, setEstimatorId] = useState('');
   const [wsManagerId, setWsManagerId] = useState('');
-  // #392: both are GP payroll employee ids, validated by the proc, so they are selects.
   const [wsProjectNumber, setWsProjectNumber] = useState('');
   const [billCustomer, setBillCustomer] = useState<GpCustomerOption | null>(null);
   const [useTaxSchedule, setUseTaxSchedule] = useState('');
@@ -163,6 +217,9 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
     skip: readsSkipped,
     fetchPolicy: 'cache-first',
   });
+  // Only the optional section consumes this, so it is not fetched until that section is opened -
+  // most creates never need it, and every open would otherwise cost a relay round-trip and a
+  // UPR00100 read for nothing.
   const {
     data: employeesData,
     loading: employeesLoading,
@@ -170,7 +227,7 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
     refetch: refetchEmployees,
   } = useQuery<{ gpEmployees: GpEmployeeOption[] }>(GET_GP_EMPLOYEES, {
     variables: { company },
-    skip: readsSkipped,
+    skip: readsSkipped || !optionalOpen,
     fetchPolicy: 'cache-first',
   });
 
@@ -211,18 +268,20 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
     [billScopedToOwnCustomer, billAddressesData, addresses],
   );
 
-  // A failed read is NOT an empty list. Without this the deploy-before-relay-rebuild window (the four
-  // ops are not in an older relay's advertised op-set) renders a green relay chip over three empty
-  // required dropdowns and a button that can never enable, with nothing saying why.
-  const readError =
-    customersError ?? divisionsError ?? taxSchedulesError ?? employeesError ?? addressesError ?? null;
-  const readsUnsupported = [
-    customersError,
-    divisionsError,
-    taxSchedulesError,
-    employeesError,
-    addressesError,
-  ].some((e) => isRelayOpUnsupported(e));
+  // A failed read is NOT an empty list. Without this the deploy-before-relay-rebuild window (the ops
+  // are not in an older relay's advertised op-set) renders a green relay chip over empty required
+  // dropdowns and a button that can never enable, with nothing saying why.
+  //
+  // Only the REQUIRED reads count here. Folding the optional employees read in made a relay that
+  // serves create_job perfectly well announce "too old to create jobs" while the form stayed enabled
+  // and the create went through - the banner asserting the opposite of what the button did. That is
+  // exactly the state between deploying this and updating the relay, so it has to stay out.
+  const readError = customersError ?? divisionsError ?? taxSchedulesError ?? addressesError ?? null;
+  const readsUnsupported = [customersError, divisionsError, taxSchedulesError, addressesError].some((e) =>
+    isRelayOpUnsupported(e),
+  );
+  // The optional section degrades on its own instead: pickers become free-text entry.
+  const employeesUnavailable = Boolean(employeesError);
 
   const refreshReads = useCallback(() => {
     void refetchCustomers();
@@ -232,7 +291,7 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
     if (customer) void refetchAddresses();
   }, [refetchCustomers, refetchDivisions, refetchTaxSchedules, refetchEmployees, refetchAddresses, customer]);
 
-  const [createGpJob, { loading }] = useMutation<{ createGpJob: { created: boolean; project: Project } }>(
+  const [createGpJob, { loading }] = useMutation<{ createGpJob: { created: boolean; project: Pick<Project, 'id'> } }>(
     CREATE_GP_JOB,
     { refetchQueries: [{ query: GET_PROJECTS }] },
   );
@@ -339,7 +398,9 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
       });
       // #392: GP may not have created anything - when it already held the job number the mutation
       // adopts it instead, and saying "created" there would report something that did not happen.
-      const created = response.data?.createGpJob?.created !== false;
+      // `=== true`, not `!== false`: an absent or partial payload must not be read as a creation,
+      // which is the very claim this branch exists to stop making.
+      const created = response.data?.createGpJob?.created === true;
       showToast(
         created
           ? `Job ${jobNumber.trim()} created in GP.`
@@ -401,7 +462,7 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
               aria-label="Refresh GP data"
               onClick={refreshReads}
               disabled={!relayConnected || loading}
-              title="Re-read customers, divisions and tax schedules from GP"
+              title="Re-read customers, addresses, divisions, tax schedules and employees from GP"
             >
               <RefreshCw size={16} strokeWidth={1.75} />
             </IconButton>
@@ -572,42 +633,24 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
               {/* #392: GP validates both against the payroll master, so typing a name only ever
                   earns "The estimator does not exist in the payroll master table". */}
               <Stack direction="row" spacing={2}>
-                <TextField
-                  select
+                <EmployeeField
                   label="Estimator"
                   value={estimatorId}
-                  onChange={(e) => setEstimatorId(e.target.value)}
-                  disabled={disabled || employeesLoading}
-                  size="small"
-                  sx={{ flex: 1 }}
-                >
-                  <MenuItem value="">
-                    <em>None</em>
-                  </MenuItem>
-                  {employees.map((e) => (
-                    <MenuItem key={e.employeeId} value={e.employeeId}>
-                      {employeeLabel(e)}
-                    </MenuItem>
-                  ))}
-                </TextField>
-                <TextField
-                  select
+                  onChange={setEstimatorId}
+                  employees={employees}
+                  loading={employeesLoading}
+                  unavailable={employeesUnavailable}
+                  disabled={disabled}
+                />
+                <EmployeeField
                   label="WS Manager"
                   value={wsManagerId}
-                  onChange={(e) => setWsManagerId(e.target.value)}
-                  disabled={disabled || employeesLoading}
-                  size="small"
-                  sx={{ flex: 1 }}
-                >
-                  <MenuItem value="">
-                    <em>None</em>
-                  </MenuItem>
-                  {employees.map((e) => (
-                    <MenuItem key={e.employeeId} value={e.employeeId}>
-                      {employeeLabel(e)}
-                    </MenuItem>
-                  ))}
-                </TextField>
+                  onChange={setWsManagerId}
+                  employees={employees}
+                  loading={employeesLoading}
+                  unavailable={employeesUnavailable}
+                  disabled={disabled}
+                />
               </Stack>
 
               <TextField

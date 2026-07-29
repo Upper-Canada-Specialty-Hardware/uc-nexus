@@ -182,12 +182,10 @@ export const CREATE_GP_JOB = gql`
   mutation CreateGpJob($input: CreateGpJobInput!) {
     createGpJob(input: $input) {
       created
+      # id only: the dialog reads created, and the list is refreshed by refetchQueries, so the rest
+      # of the project would be fetched and thrown away.
       project {
         id
-        projectId
-        description
-        client
-        jobSiteName
       }
     }
   }

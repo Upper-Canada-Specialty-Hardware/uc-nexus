@@ -193,8 +193,13 @@ def _run_list_tax_schedules(company: str, payload: dict) -> dict:
 def _run_list_employees(company: str, payload: dict) -> dict:
     ops.check_company_allowed(company)
     with db.get_read_connection(company) as conn:
-        rows = econnect.list_employees(conn)
-    return {"company": company, "employees": rows}
+        # active_only is forwarded (like _run_list_vendors): the proc validates the estimator against
+        # the whole of UPR00100, not just its active rows, so backdating or recreating a job whose
+        # estimator has since been deactivated has to remain expressible.
+        rows = econnect.list_employees(conn, active_only=payload.get("active_only", True))
+    # Built through the response model rather than returned as a loose dict, so EmployeesResponse is
+    # the enforced description of this op's wire shape instead of a second one that can silently drift.
+    return models.EmployeesResponse(company=company, employees=rows).model_dump(mode="json")
 
 
 def _run_list_divisions(company: str, payload: dict) -> dict:

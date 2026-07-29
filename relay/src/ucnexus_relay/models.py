@@ -168,7 +168,7 @@ class CostCodesResponse(BaseModel):
 
 
 # --- create a GP job (issue #380) ---
-# The four reads that feed the create-job form's dropdowns, then the create request itself.
+# The five reads that feed the create-job form's dropdowns, then the create request itself.
 
 class CustomerOut(BaseModel):
     customer_number: str            # GP CUSTNMBR (RM00101)

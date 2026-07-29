@@ -143,8 +143,13 @@ class RelayQueries:
     async def gp_employees(self, info: strawberry.Info, company: str) -> list[GpEmployee]:
         """Live payroll employee master (UPR00100) via the connected relay, for the create-job
         estimator and WS manager pickers (#392). The job proc validates both against this master, so
-        they cannot be free text."""
-        require_user(info)
+        they cannot be free text.
+
+        Admin-gated, unlike the other gp_* reads. This one returns the payroll roster with names, and
+        its only consumer is create_gp_job's dialog, which is already admin-only - so gating it at
+        require_user would hand the staff list to every signed-in warehouse and assembly user for no
+        benefit. A vendor or customer list is ordinary working data; a payroll master is not."""
+        require_admin(info)
         result = await relay_gateway.relay_call(company, "list_employees")
         return [gp_employee_to_type(e) for e in result["employees"]]
 

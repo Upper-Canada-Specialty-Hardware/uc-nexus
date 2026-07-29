@@ -647,8 +647,9 @@ def list_cost_codes(conn, job_number: str) -> list[dict]:
 
 # --- create a GP job (issue #380) ------------------------------------------
 # Nexus can adopt an existing GP job as a project; these originate one. The create-job form cannot be
-# composed from anything Nexus stores - customer, address codes, tax schedule and division all live in
-# GP - so the four reads below feed its dropdowns and create_job runs the WennSoft job proc.
+# composed from anything Nexus stores - customer, address codes, tax schedule, division and the
+# estimator/manager payroll ids all live in GP - so the five reads below feed its dropdowns and
+# create_job runs the WennSoft job proc.
 
 
 def list_customers(conn, *, active_only: bool = True) -> list[dict]:
@@ -677,9 +678,13 @@ def list_employees(conn, *, active_only: bool = True) -> list[dict]:
     fields could only ever be guessed right. EMPLOYID is char(15), the same width as JC00102's
     Estimator_ID and WS_Manager_ID.
 
-    INACTIVE = 0 by default, the same rule as list_customers / list_vendors / list_divisions: never
-    offer a choice that can only fail validation. There is no WennSoft-specific estimator master;
-    JC90102 carries WS_Estimator_Name and WS_Manager_Name, but that is denormalized reporting output."""
+    INACTIVE = 0 by DEFAULT, the same rule as list_customers / list_vendors / list_divisions: never
+    offer a choice that can only fail validation. It is a default rather than a rule because the proc
+    validates against the whole of UPR00100 - an inactive employee is still a legal estimator - so
+    active_only=False stays reachable through the op for backdating or recreating an older job.
+
+    There is no WennSoft-specific estimator master; JC90102 carries WS_Estimator_Name and
+    WS_Manager_Name, but that is denormalized reporting output."""
     sql = (
         "SELECT RTRIM(EMPLOYID) AS employee_id, RTRIM(FRSTNAME) AS first_name, "
         "RTRIM(LASTNAME) AS last_name FROM dbo.UPR00100 "
