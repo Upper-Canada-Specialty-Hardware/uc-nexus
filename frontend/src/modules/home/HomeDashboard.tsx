@@ -7,6 +7,7 @@ import { GET_HOME_DASHBOARD_STATS } from '../../graphql/home';
 import { GET_AUDIT_LOG } from '../../graphql/shared';
 import { microLabelSx, monoSx } from '../../theme';
 import { FadeIn, StaggerList, StaggerItem } from '../../motion';
+import { describeEntity } from './activityIdentity';
 
 interface HomeStatsData {
   homeDashboardStats: {
@@ -22,6 +23,7 @@ interface AuditLogEntry {
   entityType: string;
   entityId: string;
   action: string;
+  detail: Record<string, unknown> | null;
   performedBy: string;
   createdAt: string;
 }
@@ -100,17 +102,6 @@ function formatActionLabel(action: string, entityType: string): string {
   return `${a} ${e}`;
 }
 
-/**
- * The record's own id, shortened. Two "Staged door leaf" rows in a row are indistinguishable
- * otherwise; a UUID stem is enough to tell them apart and to search the audit log with. Ids that are
- * already short (a request number, say) are shown whole.
- */
-function shortEntityId(entityId: string | null | undefined): string | null {
-  if (!entityId) return null;
-  const trimmed = entityId.trim();
-  if (!trimmed) return null;
-  return trimmed.length > 12 ? trimmed.slice(0, 8) : trimmed;
-}
 
 export default function HomeDashboard() {
   const { displayName } = useIdentity();
@@ -212,7 +203,7 @@ export default function HomeDashboard() {
           ) : (
             <StaggerList count={activity.length} style={{ display: 'block' }}>
               {activity.map((entry, i) => {
-                const shortId = shortEntityId(entry.entityId);
+                const identity = describeEntity(entry);
                 return (
                   <StaggerItem key={entry.id}>
                     <Box
@@ -230,13 +221,16 @@ export default function HomeDashboard() {
                       <Box sx={{ minWidth: 0 }}>
                         <Typography variant="body2">
                           {formatActionLabel(entry.action, entry.entityType)}
-                          {shortId && (
-                            <Box
-                              component="span"
-                              sx={{ ...monoSx, ml: 0.75, color: 'text.secondary' }}
-                            >
-                              {shortId}
-                            </Box>
+                          {identity && (
+                            <>
+                              {' '}
+                              <Box
+                                component="span"
+                                sx={{ ...monoSx, ml: 0.25, color: 'text.secondary' }}
+                              >
+                                {identity}
+                              </Box>
+                            </>
                           )}
                         </Typography>
                         <Typography variant="caption" color="text.secondary">
