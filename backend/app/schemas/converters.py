@@ -20,6 +20,7 @@ from .types import (
     GpCostCode,
     GpCustomer,
     GpCustomerAddress,
+    GpEmployee,
     GpJob,
     GpOutboxEntry,
     GpOutboxSummary,
@@ -190,6 +191,14 @@ def gp_tax_detail_to_type(t: dict) -> GpTaxDetail:
 
 def gp_customer_to_type(c: dict) -> GpCustomer:
     return GpCustomer(customer_number=c["customer_number"], customer_name=c.get("customer_name"))
+
+
+def gp_employee_to_type(e: dict) -> GpEmployee:
+    return GpEmployee(
+        employee_id=e["employee_id"],
+        first_name=e.get("first_name"),
+        last_name=e.get("last_name"),
+    )
 
 
 def gp_customer_address_to_type(a: dict) -> GpCustomerAddress:

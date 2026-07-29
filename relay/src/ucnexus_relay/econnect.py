@@ -647,8 +647,9 @@ def list_cost_codes(conn, job_number: str) -> list[dict]:
 
 # --- create a GP job (issue #380) ------------------------------------------
 # Nexus can adopt an existing GP job as a project; these originate one. The create-job form cannot be
-# composed from anything Nexus stores - customer, address codes, tax schedule and division all live in
-# GP - so the four reads below feed its dropdowns and create_job runs the WennSoft job proc.
+# composed from anything Nexus stores - customer, address codes, tax schedule, division and the
+# estimator/manager payroll ids all live in GP - so the five reads below feed its dropdowns and
+# create_job runs the WennSoft job proc.
 
 
 def list_customers(conn, *, active_only: bool = True) -> list[dict]:
@@ -666,6 +667,40 @@ def list_customers(conn, *, active_only: bool = True) -> list[dict]:
     sql += "ORDER BY CUSTNAME"
     rows = conn.cursor().execute(sql).fetchall()
     return [{"customer_number": r.customer_number, "customer_name": r.customer_name or None} for r in rows]
+
+
+def list_employees(conn, *, active_only: bool = True) -> list[dict]:
+    """Read-only: the payroll employee master UPR00100, for the create-job estimator and WS manager
+    pickers (#392).
+
+    wsiJCJobMaster validates both against this table - a made-up EstimatorID comes back as "The
+    estimator does not exist in the payroll master table." (error state 51117) - so #380's free-text
+    fields could only ever be guessed right. EMPLOYID is char(15), the same width as JC00102's
+    Estimator_ID and WS_Manager_ID.
+
+    INACTIVE = 0 by DEFAULT, the same rule as list_customers / list_vendors / list_divisions: never
+    offer a choice that can only fail validation. It is a default rather than a rule because the proc
+    validates against the whole of UPR00100 - an inactive employee is still a legal estimator - so
+    active_only=False stays reachable through the op for backdating or recreating an older job.
+
+    There is no WennSoft-specific estimator master; JC90102 carries WS_Estimator_Name and
+    WS_Manager_Name, but that is denormalized reporting output."""
+    sql = (
+        "SELECT RTRIM(EMPLOYID) AS employee_id, RTRIM(FRSTNAME) AS first_name, "
+        "RTRIM(LASTNAME) AS last_name FROM dbo.UPR00100 "
+    )
+    if active_only:
+        sql += "WHERE INACTIVE = 0 "
+    sql += "ORDER BY LASTNAME, FRSTNAME"
+    rows = conn.cursor().execute(sql).fetchall()
+    return [
+        {
+            "employee_id": r.employee_id,
+            "first_name": r.first_name or None,
+            "last_name": r.last_name or None,
+        }
+        for r in rows
+    ]
 
 
 def get_job(conn, job_number: str) -> dict | None:
