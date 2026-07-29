@@ -2,6 +2,7 @@ import { useQuery } from '@apollo/client/react';
 import { Box, Typography, List, ListItem, ListItemText, Skeleton, Alert, Chip } from '@mui/material';
 import { GET_LOCATION_AUDIT_HISTORY } from '../../graphql/warehouse';
 import { microLabelSx, tabularSx } from '../../theme';
+import { parseServerDate } from '../../utils/serverDate';
 
 interface AuditDetail {
   fromLocation?: { aisle?: string | null; row?: string | null; bay?: string | null };
@@ -123,7 +124,7 @@ export default function LocationAuditStrip({ aisle, row, bay }: Props) {
                   <Typography variant="body2">{summarize(e)}</Typography>
                 </Box>
               }
-              secondary={`${new Date(e.createdAt).toLocaleString()} — ${e.performedBy}`}
+              secondary={`${parseServerDate(e.createdAt).toLocaleString()} — ${e.performedBy}`}
               slotProps={{ secondary: { sx: tabularSx } }}
             />
           </ListItem>

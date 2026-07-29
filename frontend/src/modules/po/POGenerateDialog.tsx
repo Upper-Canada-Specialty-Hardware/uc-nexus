@@ -12,6 +12,7 @@ import { poVendorName } from './poVendorName';
 import PurchaseOrderDocument, { type PurchaseOrderDocumentProps } from './PurchaseOrderDocument';
 import type { PurchaseOrder } from './index';
 import { monoSx, microLabelSx } from '../../theme';
+import { parseServerDate } from '../../utils/serverDate';
 
 /** Section separator for this form: a 2px ink rule under a micro-label. */
 function SectionHeading({ children }: { children: ReactNode }) {
@@ -59,7 +60,7 @@ function formatDocDate(dateStr: string | null | undefined): string {
   if (!dateStr) return '';
   // Parse a date-only string (YYYY-MM-DD) as LOCAL midnight, not UTC, so it prints as entered.
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr);
-  const d = m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(dateStr);
+  const d = m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : parseServerDate(dateStr);
   return isNaN(d.getTime()) ? '' : d.toLocaleDateString();
 }
 

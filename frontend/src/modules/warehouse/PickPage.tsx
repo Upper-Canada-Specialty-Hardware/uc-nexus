@@ -24,6 +24,7 @@ import PickSection from './PickSection';
 import FetchListPanel from './FetchListPanel';
 import PickSheetDocument from './PickSheetDocument';
 import { entriesFromDraft, pickTotals, toPickLines, type PickEntries, type PickSheet } from './pick';
+import { parseServerDate } from '../../utils/serverDate';
 
 interface ProjectRow {
   id: string;
@@ -287,7 +288,7 @@ export default function PickPage() {
 
       {isPicked && (
         <Alert severity="success" sx={{ mb: 2 }}>
-          This pull was picked by {pr.pickedBy} on {new Date(pr.pickedAt as string).toLocaleString()}.
+          This pull was picked by {pr.pickedBy} on {parseServerDate(pr.pickedAt as string).toLocaleString()}.
           Its hardware is off the shelf; go back to the queue to stage the carts.
         </Alert>
       )}

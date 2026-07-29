@@ -1,6 +1,7 @@
 import { Box, Chip, Stack, TextField, Typography } from '@mui/material';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { leafIdentity } from '../../utils/leaf';
+import { parseServerDate } from '../../utils/serverDate';
 import {
   entryKey,
   locationLabel,
@@ -12,7 +13,7 @@ import {
 
 function formatDate(value: string | null | undefined): string {
   if (!value) return '-';
-  return new Date(value).toLocaleDateString();
+  return parseServerDate(value).toLocaleDateString();
 }
 
 /** One figure of the section's arithmetic. Required / Entered / Remaining, in that order, always. */

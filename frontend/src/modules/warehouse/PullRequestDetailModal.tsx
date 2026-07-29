@@ -35,6 +35,7 @@ import { isCancellable, pullPhase } from './pullStaging';
 import type { PullRequest } from './PullRequestQueue';
 import { leafIdentity } from '../../utils/leaf';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
+import { parseServerDate } from '../../utils/serverDate';
 
 // --- Status config ---
 
@@ -59,12 +60,12 @@ function formatStatus(status: string): string {
 
 function formatDate(dateStr: string | null | undefined): string {
   if (!dateStr) return '-';
-  return new Date(dateStr).toLocaleDateString();
+  return parseServerDate(dateStr).toLocaleDateString();
 }
 
 function formatDateTime(dateStr: string | null | undefined): string {
   if (!dateStr) return '-';
-  return new Date(dateStr).toLocaleString();
+  return parseServerDate(dateStr).toLocaleString();
 }
 
 // --- Props ---

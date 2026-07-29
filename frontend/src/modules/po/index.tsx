@@ -50,6 +50,7 @@ import { useIdentity } from '../../hooks/useIdentity';
 import PODocumentSettingsPage from './PODocumentSettingsPage';
 import { monoSx, tabularSx, microLabelSx } from '../../theme';
 import { AnimatedNumber, FadeIn, StaggerItem, StaggerList, springs } from '../../motion';
+import { parseServerDate } from '../../utils/serverDate';
 
 const ICON = { size: 18, strokeWidth: 1.75 } as const;
 
@@ -672,7 +673,7 @@ function POTableRow({
         </TableCell>
         <TableCell>{poVendorName(po) || '-'}</TableCell>
         <TableCell sx={hugSx}>
-          {po.orderedAt ? new Date(po.orderedAt).toLocaleDateString() : '-'}
+          {po.orderedAt ? parseServerDate(po.orderedAt).toLocaleDateString() : '-'}
         </TableCell>
         <TableCell sx={{ ...hugSx, ...tabularSx }} align="right">
           {po.lineItems?.length ?? 0}
