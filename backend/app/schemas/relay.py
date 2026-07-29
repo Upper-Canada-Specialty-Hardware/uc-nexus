@@ -268,9 +268,9 @@ class RelayMutations:
         Rows pile up from every abandoned provisioning attempt - a token minted and never used, a
         re-enrolment that superseded an earlier row, a retired workstation - and until now the only way
         to remove one was hand-written SQL against Railway Postgres. Two things made that worse than
-        clutter: a stale pre-067 row keeps `secret_encrypted` forever, so the count that gates retiring
-        RELAY_SECRET_ENC_KEY never reaches 0; and the row is a live credential `authenticate_secret`
-        would still accept.
+        clutter: a stale pre-067 row keeps `secret_encrypted` forever, so the count that gated retiring
+        RELAY_SECRET_ENC_KEY never reached 0 (that retirement finished in #382); and the row is a live
+        credential `authenticate_secret` would still accept.
 
         Refuses the install currently holding the connection - revoking the credential under a live relay
         would take GP down. A merely switched-off relay deletes fine; that is the retire-a-workstation
