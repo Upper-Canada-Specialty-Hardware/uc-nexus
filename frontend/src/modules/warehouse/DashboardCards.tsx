@@ -16,6 +16,7 @@ export interface WarehouseDashboard {
   pendingPullShipping: number;
   receivedLast7Days: number;
   backOrderedCount: number;
+  deficientCount: number;
 }
 
 function formatCurrency(value: number): string {
