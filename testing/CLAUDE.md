@@ -19,6 +19,28 @@ This is a tester's knowledge journal for UC Nexus. It documents how the app work
   - Tokens are one-time use; fetch a fresh one each session. Works on any runtime with the same Clerk dev instance.
 - **Test XML file**: `testing/fixtures/contracterp-74.xml` - TITAN hardware schedule export, use for Import wizard testing (upload via `upload_file`)
 
+### A PR environment is always relay-disconnected, and that is useful
+
+The relay dials ONE backend - the `[channel] backend_url` in its `config.toml`, which is production.
+A PR environment therefore always reports `relayStatus.connected: false`, and no amount of waiting
+changes it. Pointing the relay at a PR backend is not a shortcut either: relay installs live in
+Postgres, and a PR environment boots a fresh empty one, so the relay would have to be re-provisioned
+and re-enrolled there and then put back afterwards.
+
+Read that as a free test fixture rather than a limitation. The relay-down half of any GP-gated
+feature - disabled controls, "not connected" copy, held values still displaying, buttons that must
+not be clickable - is exactly what a PR environment exercises by construction, and it is the half
+that is otherwise awkward to reach on production without stopping the relay for everyone.
+
+What a PR environment cannot show is any populated GP dropdown or any GP write. Those need
+production, after merge and after the installed relay is rebuilt to a build whose `_OPS` includes the
+new op (an older build answers `unknown_op` -> `RELAY_OP_UNSUPPORTED`, which is its own distinct UI
+state and worth checking on purpose during the deploy-before-rebuild window).
+
+Verified on PR #412 (issue #409's buyer dropdown): the field rendered `role="combobox"`, disabled,
+still showing the stored `mira`, with "The GP relay is not connected, so this cannot be changed right
+now." - all four assertions met without touching production.
+
 ### Inventory can only be seeded through the relay - check this first
 
 **Nothing puts new hardware into inventory except `createReceive`, and `createReceive` is
