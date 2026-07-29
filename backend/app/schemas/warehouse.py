@@ -1027,9 +1027,14 @@ class WarehouseMutations:
     def override_inventory_quantity(
         self, info: strawberry.Info, input: OverrideInventoryQuantityInput
     ) -> InventoryLocation:
-        """Admin-gated (#415): sets an inventory row's quantity outright rather than by a delta, from
-        the admin Inventory Correction modal. Nothing downstream re-checks the caller."""
-        require_admin(info)
+        """require_user, not admin. The Correction button on the warehouse Hardware Items tab is
+        rendered for everyone ("available to all users, not just admins", HardwareItemsTab.tsx), and it
+        opens `InventoryCorrectionModal`, which is what calls this. Admin-gating it would break the
+        warehouse's own count-correction workflow.
+
+        Gating it would also buy nothing while `adjustInventoryQuantity` next door stays open to any
+        signed-in user: the same end quantity is reachable by passing the delta instead."""
+        require_user(info)
         with SessionLocal() as session:
             result = warehouse_repository.override_inventory_quantity(
                 session,

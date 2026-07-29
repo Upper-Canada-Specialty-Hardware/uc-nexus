@@ -213,6 +213,23 @@ _USER_GATED = [
         warehouse_module,
         lambda: WarehouseMutations().set_pull_item_fetched(FakeInfo(), _id(), True, "picker"),
     ),
+    # Both of these are reached from non-admin screens through a component that happens to live under
+    # modules/admin/, so they are user-gated and pinned here rather than in _ADMIN_GATED. Pinning the
+    # gate they actually use is what stops a future "tidy-up" from promoting them to require_admin and
+    # silently breaking a PO user's vendor add or the warehouse's count correction.
+    (
+        "createVendor",
+        vendor_module,
+        lambda: VendorMutations().create_vendor(FakeInfo(), CreateVendorInput(name="V")),
+    ),
+    (
+        "overrideInventoryQuantity",
+        warehouse_module,
+        lambda: WarehouseMutations().override_inventory_quantity(
+            FakeInfo(),
+            OverrideInventoryQuantityInput(inventory_location_id=_id(), new_quantity=1, reason_text="r"),
+        ),
+    ),
 ]
 
 
@@ -267,11 +284,6 @@ _ADMIN_GATED = [
     ),
     ("adminStats", dashboard_module, lambda: DashboardQueries().admin_stats(FakeInfo())),
     (
-        "createVendor",
-        vendor_module,
-        lambda: VendorMutations().create_vendor(FakeInfo(), CreateVendorInput(name="V")),
-    ),
-    (
         "updateVendor",
         vendor_module,
         lambda: VendorMutations().update_vendor(FakeInfo(), _id(), UpdateVendorInput(name="V")),
@@ -281,14 +293,6 @@ _ADMIN_GATED = [
         "locationDuplicates",
         warehouse_module,
         lambda: WarehouseQueries().location_duplicates(FakeInfo()),
-    ),
-    (
-        "overrideInventoryQuantity",
-        warehouse_module,
-        lambda: WarehouseMutations().override_inventory_quantity(
-            FakeInfo(),
-            OverrideInventoryQuantityInput(inventory_location_id=_id(), new_quantity=1, reason_text="r"),
-        ),
     ),
     (
         "mergeLocations",

@@ -35,7 +35,12 @@ class VendorQueries:
 class VendorMutations:
     @strawberry.mutation
     def create_vendor(self, info: strawberry.Info, input: CreateVendorInput) -> Vendor:
-        require_admin(info)
+        """require_user, not admin. `VendorSelect` offers "+ Create new vendor" to every caller and
+        renders `VendorEditDialog` with `vendor={null}`, so a PO user adding a supplier mid-order goes
+        through here. Editing or deleting an existing vendor is still admin - only the admin Vendors
+        page reaches those. The dialog living under `modules/admin/` says nothing about who can open
+        it, which is exactly the trap this comment exists to stop."""
+        require_user(info)
         with SessionLocal() as session:
             vendor = vendor_repository.create_vendor(
                 session,

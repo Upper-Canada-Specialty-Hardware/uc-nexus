@@ -28,7 +28,11 @@ import pytest
 
 _SCHEMAS_DIR = Path(__file__).resolve().parent.parent / "app" / "schemas"
 
-_GATES = {"require_user", "require_admin", "require_role", "require_admin_request"}
+# `require_admin_request` is deliberately absent: it takes a FastAPI Request, not a Strawberry Info,
+# so it is the gate for the plain HTTP routes in main.py and can never be a valid resolver gate.
+# Accepting it here would green-light `require_admin_request(info)`, which type-checks to nothing and
+# blows up at runtime on `info.headers`.
+_GATES = {"require_user", "require_admin", "require_role"}
 
 # (module stem, resolver function name) -> why it is deliberately reachable without a gate.
 # Anything added here needs a reason that survives review, not a note that gating was inconvenient.
@@ -64,9 +68,35 @@ def _calls_a_gate(fn) -> bool:
     return False
 
 
+def _leading_call_name(stmt) -> str | None:
+    """The function called by a bare-expression or plain-assignment statement, if it is one.
+
+    Assignment counts because several resolvers legitimately keep the result:
+    ``auth = require_user(info)`` then read ``auth["user_id"]``.
+    """
+    if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
+        call = stmt.value
+    elif isinstance(stmt, ast.Assign) and isinstance(stmt.value, ast.Call):
+        call = stmt.value
+    else:
+        return None
+    f = call.func
+    return f.id if isinstance(f, ast.Name) else (f.attr if isinstance(f, ast.Attribute) else None)
+
+
+def _gates_before_acting(fn) -> bool:
+    """The gate must be the first thing the body does, after any docstring."""
+    body = list(fn.body)
+    if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+        body = body[1:]
+    return bool(body) and _leading_call_name(body[0]) in _GATES
+
+
 def _all_resolvers():
+    # rglob, not glob: a resolver moved into a sub-package (app/schemas/gp/queries.py) must not fall
+    # out of the sweep just by moving.
     rows = []
-    for path in sorted(_SCHEMAS_DIR.glob("*.py")):
+    for path in sorted(_SCHEMAS_DIR.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for fn in _resolver_functions(tree):
             rows.append((path.stem, fn))
@@ -75,11 +105,24 @@ def _all_resolvers():
 
 _RESOLVERS = _all_resolvers()
 
+# Every file that *looks* like it defines resolvers, decided by plain text rather than by the AST
+# walk this file is trying to police - so the two can disagree and be caught at it.
+_MODULES_WITH_DECORATORS = {
+    path.stem
+    for path in _SCHEMAS_DIR.rglob("*.py")
+    if "@strawberry.field" in (text := path.read_text(encoding="utf-8")) or "@strawberry.mutation" in text
+}
 
-def test_the_sweep_found_resolvers_at_all():
-    """Guard the guard: an AST change that silently matches nothing would make this file pass by
-    finding no resolvers to check."""
-    assert len(_RESOLVERS) > 100
+
+def test_every_module_that_declares_resolvers_was_collected():
+    """Guard the guard. A bare count threshold is too weak: if the decorator predicate regressed and
+    warehouse.py's 46 resolvers stopped being collected, a `> 100` assertion would still pass with 115.
+    Comparing against a text scan catches a whole module dropping out, which is the realistic failure.
+    """
+    collected = {module for module, _ in _RESOLVERS}
+    missing = _MODULES_WITH_DECORATORS - collected
+    assert not missing, f"modules declare resolver decorators but none were collected from them: {sorted(missing)}"
+    assert len(_RESOLVERS) >= 155, f"only {len(_RESOLVERS)} resolvers collected; the AST walk likely regressed"
 
 
 @pytest.mark.parametrize(
@@ -95,4 +138,27 @@ def test_resolver_calls_an_auth_gate(module, fn):
         f"{module}.{fn.name} (line {fn.lineno}) is a GraphQL resolver with no "
         f"require_user/require_admin/require_role call. Nothing else enforces auth - add a gate, or "
         f"add it to _EXEMPT in this file with a reason."
+    )
+
+
+@pytest.mark.parametrize(
+    "module, fn",
+    _RESOLVERS,
+    ids=[f"{module}.{fn.name}" for module, fn in _RESOLVERS],
+)
+def test_resolver_gates_before_it_acts(module, fn):
+    """A gate that runs after the work has already happened is not a gate.
+
+    The pin tests in `test_resolver_auth_gates.py` prove ordering by monkeypatching a sentinel, but
+    only for the resolvers somebody listed. This covers every one of them, so a refactor that drops
+    `require_user(info)` below the `with SessionLocal()` block - letting an anonymous caller's write
+    land and only then rejecting them - fails here by name.
+    """
+    if (module, fn.name) in _EXEMPT:
+        pytest.skip(f"deliberately ungated: {_EXEMPT[(module, fn.name)]}")
+
+    assert _gates_before_acting(fn), (
+        f"{module}.{fn.name} (line {fn.lineno}) calls a gate, but not as its first statement. "
+        f"Move the gate above everything else in the body - work done before it runs is work done "
+        f"for an unauthenticated caller."
     )
