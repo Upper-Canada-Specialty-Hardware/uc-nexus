@@ -7,6 +7,7 @@ import { useToast } from '../../components/Toast';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { leafIdentity } from '../../utils/leaf';
 import { locationLabel, type PickSheetFetchItem } from './pick';
+import { parseServerDate } from '../../utils/serverDate';
 
 const STATE_TAG: Record<string, { label: string; color: 'default' | 'success' | 'info' | 'error' }> = {
   IN_INVENTORY: { label: 'In inventory', color: 'default' },
@@ -16,7 +17,7 @@ const STATE_TAG: Record<string, { label: string; color: 'default' | 'success' | 
 
 function formatDateTime(value: string | null): string {
   if (!value) return '';
-  return new Date(value).toLocaleString();
+  return parseServerDate(value).toLocaleString();
 }
 
 interface FetchListPanelProps {

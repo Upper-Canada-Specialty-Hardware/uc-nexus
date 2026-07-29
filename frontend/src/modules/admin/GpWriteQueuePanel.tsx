@@ -7,6 +7,7 @@ import { RETRY_GP_OUTBOX_ENTRY, CANCEL_GP_OUTBOX_ENTRY } from '../../graphql/adm
 import ConfirmDialog from '../../components/ConfirmDialog';
 import { useToast } from '../../components/Toast';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
+import { parseServerDate } from '../../utils/serverDate';
 
 interface OutboxEntry {
   id: string;
@@ -23,7 +24,7 @@ interface OutboxEntry {
 }
 
 function fmtDate(v: string | null | undefined): string {
-  return v ? new Date(v).toLocaleString() : '—';
+  return v ? parseServerDate(v).toLocaleString() : '—';
 }
 
 const STATUS_COLOR: Record<string, 'default' | 'warning' | 'success' | 'error'> = {

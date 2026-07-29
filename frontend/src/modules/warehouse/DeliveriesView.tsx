@@ -173,7 +173,7 @@ const backOrderColumns: GridColDef[] = [
   },
 ];
 
-function UpcomingView({ projectId }: { projectId: string }) {
+function UpcomingView({ projectId }: { projectId: string | null }) {
   const { data, loading, error } = useQuery<{ expectedDeliveries: ExpectedDeliveryPO[] }>(
     GET_EXPECTED_DELIVERIES,
     { variables: { projectId } },
@@ -254,7 +254,7 @@ function UpcomingView({ projectId }: { projectId: string }) {
   );
 }
 
-function OutstandingView({ projectId }: { projectId: string }) {
+function OutstandingView({ projectId }: { projectId: string | null }) {
   const { data, loading, error } = useQuery<{ backOrderedItems: BackOrderedItem[] }>(
     GET_BACK_ORDERED_ITEMS,
     { variables: { projectId } },
@@ -285,15 +285,25 @@ function OutstandingView({ projectId }: { projectId: string }) {
 }
 
 export default function DeliveriesView() {
-  const [selectedProject, setSelectedProject] = useState<Project | null>(null);
+  // 'all' is the cross-project view; null is "nothing chosen yet" and shows the landing. Same
+  // contract as InventoryView/ShippingModule - the landing's All Projects card calls onSelect(null).
+  const [selectedProject, setSelectedProject] = useState<Project | 'all' | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('upcoming');
 
-  if (!selectedProject) {
-    return <ProjectLandingPage title="Deliveries" onSelect={setSelectedProject} />;
+  if (selectedProject === null) {
+    return (
+      <ProjectLandingPage
+        title="Deliveries"
+        onSelect={(p) => setSelectedProject(p === null ? 'all' : p)}
+      />
+    );
   }
 
-  const projectId = selectedProject.id;
-  const projectLabel = selectedProject.description || selectedProject.projectId;
+  const projectId = selectedProject !== 'all' ? selectedProject.id : null;
+  const projectLabel =
+    selectedProject === 'all'
+      ? 'All Projects'
+      : selectedProject.description || selectedProject.projectId;
 
   return (
     <Box>

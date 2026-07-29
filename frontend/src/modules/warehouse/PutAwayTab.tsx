@@ -28,6 +28,7 @@ import { GET_PROJECTS, ASSIGN_INVENTORY_LOCATION } from '../../graphql/shared';
 import { GET_UNLOCATED_INVENTORY, GET_LOCATION_DISTINCT_VALUES } from '../../graphql/warehouse';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { StaggerItem, StaggerList } from '../../motion';
+import { parseServerDate } from '../../utils/serverDate';
 
 // ---- Types ----
 
@@ -73,7 +74,7 @@ const ACCORDION_SX = {
 } as const;
 
 function formatDate(dateStr: string): string {
-  return new Date(dateStr).toLocaleDateString();
+  return parseServerDate(dateStr).toLocaleDateString();
 }
 
 function groupByCategory(items: UnlocatedItem[]): Map<string, UnlocatedItem[]> {
