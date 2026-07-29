@@ -15,6 +15,7 @@ from app.models.purchase_order import PurchaseOrder as POModel
 from app.models.receiving import ReceiveLineItem as ReceiveLineItemModel
 from app.models.shipping import PackingSlip as PackingSlipModel
 from app.models.shipping import PackingSlipItem as PackingSlipItemModel
+from app.models.stock_item import StockItem as StockItemModel
 
 
 def get_warehouse_dashboard(session: Session) -> dict:
@@ -98,6 +99,25 @@ def get_warehouse_dashboard(session: Session) -> dict:
         or 0
     )
 
+    # Deficient units held for review: the same rows the Deficient Items screen lists
+    # (project inventory + stock pool), summed by quantity.
+    deficient_project = (
+        session.scalar(
+            select(func.coalesce(func.sum(InventoryLocationModel.deficient_quantity), 0)).where(
+                InventoryLocationModel.deficient_quantity > 0
+            )
+        )
+        or 0
+    )
+    deficient_stock = (
+        session.scalar(
+            select(func.coalesce(func.sum(StockItemModel.deficient_quantity), 0)).where(
+                StockItemModel.deficient_quantity > 0
+            )
+        )
+        or 0
+    )
+
     return {
         "total_item_count": int(inv_stats[0]),
         "total_value": float(inv_stats[1]),
@@ -106,6 +126,7 @@ def get_warehouse_dashboard(session: Session) -> dict:
         "pending_pull_shipping": int(pending_shipping),
         "received_last_7_days": int(received_recent),
         "back_ordered_count": int(back_ordered),
+        "deficient_count": int(deficient_project) + int(deficient_stock),
     }
 
 

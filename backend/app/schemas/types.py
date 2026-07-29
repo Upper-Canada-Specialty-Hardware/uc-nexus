@@ -1349,6 +1349,7 @@ class WarehouseDashboard:
     pending_pull_shipping: int
     received_last_7_days: int
     back_ordered_count: int
+    deficient_count: int
 
 
 @strawberry.type
