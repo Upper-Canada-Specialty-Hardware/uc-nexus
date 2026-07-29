@@ -713,6 +713,23 @@ def test_a_short_confirm_deducts_what_was_entered_and_stays_open(db_session):
     assert [(s.product_code, s.requested, s.short) for s in result.shortfalls] == [(HINGE[1], 12, 3)]
 
 
+def test_a_short_confirm_notification_speaks_the_pick_frame(db_session):
+    """A pick shortfall's numbers are (requested, free-now, still-owed). The creation-gate template
+    rendered them as "need 12, N available (short 3)" - arithmetic that only holds in the gate frame
+    where short = need - available - so purchasing read a contradiction."""
+    project = _make_project(db_session)
+    row = _seed_inventory(db_session, project.id, quantity=9)
+    pr = _started_pull(db_session, project.id, needs=[(*HINGE, 12, 1)])
+
+    result = warehouse_repository.confirm_pick(db_session, pr.id, [_line(row, 9)], "picker")
+    db_session.flush()
+
+    assert result.notification is not None
+    assert f"{HINGE[0]} {HINGE[1]}: 9 of 12 picked - 3 still owed (0 free in the project now)" in (
+        result.notification.message
+    )
+
+
 def test_a_short_confirm_notifies_purchasing_once_per_pull(db_session):
     """A picker keying a big sheet in three sittings must not raise three identical backfill signals
     for the same gap."""
