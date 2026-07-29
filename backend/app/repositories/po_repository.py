@@ -10,7 +10,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import InvalidStateTransitionError, NotFoundError, ValidationError
-from app.models.enums import Classification, PODocumentType, POStatus
+from app.models.enums import Classification, HardwareItemState, PODocumentType, POStatus
 from app.models.purchase_order import PODocument, PODocumentData, POLineItem, PurchaseOrder
 from app.models.receiving import ReceiveRecord
 
@@ -390,13 +390,17 @@ def register_po_in_gp(
             )
 
     # Remove lines the user dropped. A DRAFT PO has no receiving/inventory yet, so the only rows that can
-    # reference these lines are imported HardwareItem rows (FK is RESTRICT) - orphan them (po_line_item_id
-    # -> NULL) before deleting, which the user accepted as the cost of editing the imported line set.
+    # reference these lines are imported HardwareItem rows (FK is RESTRICT) - release them back to
+    # AVAILABLE before deleting, which the user accepted as the cost of editing the imported line set.
+    # State must come back too: an orphaned row left IN_PO counts as ordered nowhere yet blocks the
+    # item from being recreated as AVAILABLE by a later import.
     removed = [poli for lid, poli in existing.items() if lid not in seen_ids]
     if removed:
         removed_ids = [poli.id for poli in removed]
         session.execute(
-            update(HardwareItem).where(HardwareItem.po_line_item_id.in_(removed_ids)).values(po_line_item_id=None)
+            update(HardwareItem)
+            .where(HardwareItem.po_line_item_id.in_(removed_ids))
+            .values(po_line_item_id=None, state=HardwareItemState.AVAILABLE)
         )
         for poli in removed:
             session.delete(poli)
@@ -702,8 +706,11 @@ def cancel_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
     - Validate exists + not soft-deleted (NotFoundError)
     - Validate status in (Draft, GP_Registered, Vendor_Confirmed) (InvalidStateTransitionError)
     - Set status=Cancelled, deleted_at=datetime.utcnow()
+    - Release the PO's hardware-schedule rows back to AVAILABLE
     - Return updated PO
     """
+    from app.models.hardware import HardwareItem
+
     po = get_purchase_order(session, po_id)
     if po is None:
         raise NotFoundError(f"Purchase order {po_id} not found")
@@ -713,6 +720,19 @@ def cancel_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
 
     po.status = POStatus.CANCELLED
     po.deleted_at = datetime.utcnow()
+
+    # These statuses precede receiving, so nothing from this PO is in inventory yet. Without this,
+    # the schedule rows the wizard stamped stay IN_PO against a dead PO: reconciliation reads the
+    # combo as needing ordering again (it excludes cancelled POs), but the re-order mints brand-new
+    # IN_PO rows next to the stranded ones - required_quantity rollups double-count, and the
+    # stranded key blocks the item from ever being recreated as AVAILABLE by a later import.
+    line_ids = [li.id for li in po.line_items]
+    if line_ids:
+        session.execute(
+            update(HardwareItem)
+            .where(HardwareItem.po_line_item_id.in_(line_ids))
+            .values(po_line_item_id=None, state=HardwareItemState.AVAILABLE)
+        )
 
     return po
 
