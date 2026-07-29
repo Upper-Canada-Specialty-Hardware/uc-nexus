@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { Box, Typography, Card, CardActionArea, Grid, Skeleton } from '@mui/material';
+import { Alert, Box, Typography, Card, CardActionArea, Grid, Skeleton } from '@mui/material';
 import {
   Boxes,
   ClipboardList,
@@ -149,7 +149,7 @@ function DestinationCard({ dest, onClick }: { dest: Destination; onClick: () => 
 export default function WarehouseLanding() {
   const navigate = useNavigate();
   // One dashboard query for the whole page: the two gauges below and every card count come from it.
-  const { data, loading: queryLoading } = useQuery<{ warehouseDashboard: WarehouseDashboard }>(
+  const { data, loading: queryLoading, error } = useQuery<{ warehouseDashboard: WarehouseDashboard }>(
     GET_WAREHOUSE_DASHBOARD,
     { fetchPolicy: 'cache-and-network' },
   );
@@ -165,6 +165,14 @@ export default function WarehouseLanding() {
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
         What is in the building, what is waiting to be worked, and where to go next.
       </Typography>
+
+      {/* A failed rollup must say so; the destination cards below stay navigable without their
+          counts, so the floor can still get where it is going. */}
+      {error && !dashboard && (
+        <Alert severity="error" sx={{ mb: 3 }}>
+          Error loading warehouse dashboard: {error.message}
+        </Alert>
+      )}
 
       <DashboardCards dashboard={dashboard} loading={loading} />
 

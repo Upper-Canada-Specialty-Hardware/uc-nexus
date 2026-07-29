@@ -150,8 +150,9 @@ describe('OpeningLeafStatusPanel', () => {
       </MockedProvider>,
     );
 
-    // Once the empty result resolves the spinner clears and the panel collapses to null (no chips).
-    await waitFor(() => expect(container.querySelector('.MuiCircularProgress-root')).toBeNull(), SLOW);
+    // Once the empty result resolves the loading skeletons clear and the panel collapses to null
+    // (no chips).
+    await waitFor(() => expect(container.querySelector('.MuiSkeleton-root')).toBeNull(), SLOW);
     expect(container.querySelector('.MuiChip-root')).toBeNull();
   });
 });
