@@ -1090,6 +1090,9 @@ def confirm_pick(
             request_number=pr.request_number,
             shortfalls=shortfalls,
             pull_request_id=pr.id,
+            # These shortfalls carry the pick frame (short = still owed, available = free now), not
+            # the gate frame (short = need - available); the gate template misreads them.
+            pick_frame=True,
         )
 
     # An *integrity* signal, so it must fire only for a pull that genuinely held a claim for
