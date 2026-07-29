@@ -11,7 +11,7 @@ This is a tester's knowledge journal for UC Nexus. It documents how the app work
 **Railway is the default** for simulated user testing (issue #182 pivot - the localdev runtime was dropped for UC Nexus e2e; zero local setup needed).
 
 - **Railway production (default)**: frontend `https://frontend-production-34fc.up.railway.app/`, backend `https://backend-production-7866.up.railway.app/`. Deploys from master after CI passes.
-- **Railway PR environments** (once enabled in Project Settings → Environments): every PR gets a full ephemeral replica (frontend + backend + fresh empty Postgres, migrated on boot). The Railway GitHub bot comments the environment's URLs on the PR - test there BEFORE merge, substituting those URLs into the sign-in flow below. Data starts empty; seed via the import fixture. `VITE_GRAPHQL_URL` is a reference variable (`https://${{backend.RAILWAY_PUBLIC_DOMAIN}}/graphql`) so each environment self-wires; `TESTING_ENABLED` and Clerk keys inherit from production.
+- **Railway PR environments** (ENABLED 2026-07-29, `prDeploys` on the project; bot PRs like dependabot deliberately excluded): every non-draft PR gets a full ephemeral replica (frontend + backend + fresh empty Postgres, migrated on boot) named `uc-nexus-pr-<N>`. Do not wait for a Railway bot comment - none was observed; the URLs are derivable: `https://backend-uc-nexus-pr-<N>.up.railway.app` / `https://frontend-uc-nexus-pr-<N>.up.railway.app`. Substitute them into the sign-in flow below; verified live on PR #401 (`/health` 200, `/testing/clerk-sign-in` mints tokens, GraphQL serves the fresh DB). Data starts empty; seed via the import fixture. `VITE_GRAPHQL_URL` is a reference variable (`https://${{backend.RAILWAY_PUBLIC_DOMAIN}}/graphql`) so each environment self-wires; `TESTING_ENABLED` and Clerk keys inherit from production. **A PR that only touches one service's directory only deploys that service in its environment** (root-directory change filtering - PR #401 was backend-only and the frontend showed `latestDeployment: null`); trigger the missing one from the dashboard or via the API (`serviceInstanceDeployV2(environmentId, serviceId)`). Environments auto-delete when the PR closes.
 - **Local (manual fallback)**: frontend `http://localhost:5173`, backend `http://localhost:8000`. Run the backend with `poetry run uvicorn main:app --reload` (from `backend/`) and the frontend with `npm run dev` (from `frontend/`). Needs a local Postgres (not provided; the worktree-localdev adoption was dropped).
 - **Auth**: Clerk sign-in, automated via one-time sign-in tokens (no manual password/verification needed).
   - Backend endpoint `GET /testing/clerk-sign-in` generates the token (requires `TESTING_ENABLED=true`).
@@ -428,7 +428,9 @@ was flagged, topped up as stock arrives), usually smaller than what it is owed, 
 covered is its normal resting state and a short pick on one is not an integrity error.
 
 
-**Entry**: `/app/warehouse` -> Warehouse landing page with stat cards and "Go to" card buttons for: Inventory, Locations, Deliveries, Receiving, Put Away, Pull Requests, Stock Pool, Deficient Items, Shipments. (No longer "three tabs" - this has evolved to a full landing page.)
+**Entry**: `/app/warehouse` -> Warehouse landing page with stat cards and "Go to" card buttons for: Inventory, Locations, Deliveries, Receiving, Put Away, Pull Requests, Stock Pool, Deficient Items, Shipments. (No longer "three tabs" - this has evolved to a full landing page.) Since PR #395 the Deficient Items card shows `deficientCount` (deficient units across project inventory + stock pool - the same rows the review page lists, amber edge when non-zero) and the Deliveries card carries the `backOrderedCount` figure (undelivered units on active POs, no attention edge). The two numbers matching their destination pages is the thing to assert.
+
+**Deliveries "All Projects"** works since PR #397 (it was a dead click - `onSelect(null)` collided with "nothing chosen"). The all-projects view queries both tabs with a null projectId.
 
 **Inventory tab default**: Navigating directly to `/app/warehouse/inventory` defaults to "All Projects" view — shows the "Projects" back button, "All Projects" heading, and Hardware Items / Opening Items sub-tabs immediately. The ProjectLandingPage is NOT shown on initial load. Clicking "Projects" brings up the ProjectLandingPage where you can filter to a specific project or click "All Projects" to return to the all-projects view.
 
@@ -501,6 +503,10 @@ the `PULL_DEDUCTION` audit row carrying `aisle/row/bay`, `warehouseCode` and `ol
 **Short pick**: enter less than required and Confirm. The pull stays IN_PROGRESS with `pickedAt`
 null, the queue phase reads `Short`, purchasing gets one `INVENTORY_SHORTFALL` notification (deduped
 per pull, so a second short confirm does not raise another), and the remainder is keyed in later.
+Since PR #401 that notification speaks the pick frame - `<CATEGORY> <CODE>: N of M picked - S still
+owed (A free in the project now)` - matching the pick page's own alert. The old gate-frame wording
+(`need N, M available (short S)`) still belongs to the *creation-gate* and sent-short messages;
+seeing it on a short pick is a regression.
 An empty submission is refused *while stock is available* but **allowed when there is none** - that
 is the "walked the racks, found nothing" case and it confirms short of everything.
 
@@ -887,8 +893,13 @@ queries/mutations and every action are unchanged, but a lot of chrome moved:
 - **Shipping browse (Ship tab)** is no longer a chip wall: one row per opening (mono ref +
   per-leaf tags), with a text search on opening # and an All / Shippable / Shipped / Not ready
   filter. Long project groups window at 30 rows with a "Show N more of M" tail - enumerate via
-  the search box or expand the tail. Selection/cart semantics unchanged. (Shop-assembly screens
-  still use the old shared chip panel.)
+  the search box or expand the tail. Selection/cart semantics unchanged. (The shop-assembly /
+  warehouse shared chip panel caught up on 2026-07-29, PR #400: `OpeningLeafStatusPanel` windows
+  each project group at 30 rows with a "Show N more of M" tail, adds a "Search opening #" box once
+  there are more than 30 rows - searching expands across the window - and grouped project headers
+  carry a "N of M leaves assembled/shipped" summary. On the Assemble List the panel now renders
+  BELOW the Ready/Waiting/Pending work sections, so asserting on the top of that page means the
+  work sections, not the chip wall.)
 - **Import wizard**: step 1 shows a single success strip (the old second green alert is merged
   in); Purpose options are cards now but the radio semantics and the exact label strings
   ("Create Purchase Orders", "Pull Request for Shop Assembly", "Pull Request for Shipping Out")
@@ -898,4 +909,9 @@ queries/mutations and every action are unchanged, but a lot of chrome moved:
 - **DevAction: drop and rebuild schema** is finally visible in light mode (it was ink-on-ink);
   same label, now to the right of the bar spacer, and its confirm button is red.
 - Home's Recent Activity renders human sentences ("Staged door leaf ..."), never raw enums like
-  `INSTALL_PROGRESS SHOP_ASSEMBLY_OPENING`.
+  `INSTALL_PROGRESS SHOP_ASSEMBLY_OPENING`. Since PR #396 the rows also carry a real identity mined
+  from the audit `detail` payload - `Staged door leaf 62 · L1`, `Pulled inventory item 2× BB1068 ...
+  · SA-E2E-367`, `Received ... · PO0000066` - with the shortened UUID only as a last resort.
+- Every server timestamp in the app parses as UTC since PR #399 (`parseServerDate`; backend
+  datetimes are naive-UTC with no zone suffix). Relative times reading "just now" for hours, or
+  wall-clock times off by your UTC offset, are a regression of that fix, not server clock drift.
