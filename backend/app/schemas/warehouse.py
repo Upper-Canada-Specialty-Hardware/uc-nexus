@@ -18,27 +18,30 @@ from .converters import (
     notification_to_type,
     opening_item_hardware_to_type,
     opening_item_to_type,
+    pick_sheet_to_type,
     po_to_type,
+    pull_request_item_to_type,
     pull_request_to_type,
     receive_record_to_type,
     shop_assembly_opening_to_type,
     stock_item_to_type,
     warehouse_to_type,
 )
-from .enums import ApproveOutcome, AuditEntityType, LeafStatus, PullRequestSource, PullRequestStatus
+from .enums import AuditEntityType, LeafStatus, PickOutcome, PullRequestSource, PullRequestStatus
 from .inputs import (
     CancelPullRequestInput,
     CreateReceiveInput,
     CreateWarehouseInput,
     OverrideInventoryQuantityInput,
+    PickLineInput,
     StagePullOpeningsInput,
     UpdateWarehouseInput,
 )
 from .types import (
-    ApproveResult,
     AuditLogEntry,
     BackOrderedItem,
     CancelPullRequestResult,
+    ConfirmPickResult,
     CreateReceiveResult,
     InventoryAvailability,
     InventoryHierarchyNode,
@@ -55,9 +58,11 @@ from .types import (
     OpeningItemDetail,
     OpeningLeafState,
     OpeningLeafStatus,
+    PickSheet,
     ProductCodeNode,
     ProjectProgressByProduct,
     PullRequest,
+    PullRequestItem,
     PurchaseOrder,
     ReceiveRecord,
     RecentReceiveRecord,
@@ -68,6 +73,28 @@ from .types import (
     Warehouse,
     WarehouseDashboard,
 )
+
+
+def _pick_lines_from_input(lines: list[PickLineInput]) -> list[warehouse_repository.PickLine]:
+    """GraphQL input -> the repository's `PickLine`. The id parse is the only conversion."""
+    return [
+        warehouse_repository.PickLine(
+            hardware_category=line.hardware_category,
+            product_code=line.product_code,
+            inventory_location_id=uuid.UUID(str(line.inventory_location_id)),
+            quantity=line.quantity,
+        )
+        for line in lines
+    ]
+
+
+def _partially_picked(session, pr) -> bool | None:
+    """Whether stock is off the shelf for an un-picked pull (#367), or None when the question does
+    not apply. Every resolver that returns a PullRequest must pass this: the field is part of the
+    shared client selection set, so a mutation result that omits it writes null over a cached true."""
+    if pr.picked_at is not None:
+        return None
+    return pr.id in warehouse_repository.get_partially_picked_pull_ids(session, [pr.id])
 
 
 def _load_receive_type(receive_id: uuid.UUID) -> ReceiveRecord:
@@ -313,17 +340,56 @@ class WarehouseQueries:
             prs = warehouse_repository.get_pull_requests(
                 session, uuid.UUID(str(project_id)) if project_id else None, source, status
             )
-            # One grouped aggregate for the whole page, not one query per row (#343 / CLAUDE.md perf
-            # rules): the queue renders a staging chip on every shop-assembly row.
+            # Two grouped aggregates for the whole page, never one query per row (#343, #367 /
+            # CLAUDE.md perf rules): the queue renders a staging chip on every shop-assembly row and
+            # a phase cell on every row. The partial-pick read is narrowed to un-picked pulls, which
+            # are the only ones it means anything for.
             staging = warehouse_repository.get_pull_staging_summaries(session, [pr.id for pr in prs])
-            return [pull_request_to_type(pr, staging.get(pr.id)) for pr in prs]
+            partial = warehouse_repository.get_partially_picked_pull_ids(
+                session, [pr.id for pr in prs if pr.picked_at is None]
+            )
+            return [
+                pull_request_to_type(
+                    pr,
+                    staging.get(pr.id),
+                    partially_picked=(pr.id in partial) if pr.picked_at is None else None,
+                )
+                for pr in prs
+            ]
 
     @strawberry.field
     def pull_request_details(self, id: strawberry.ID) -> PullRequest:
         with SessionLocal() as session:
             pr = warehouse_repository.get_pull_request_details(session, uuid.UUID(str(id)))
             staging = warehouse_repository.get_pull_staging_summaries(session, [pr.id])
-            return pull_request_to_type(pr, staging.get(pr.id))
+            partial = (
+                pr.id in warehouse_repository.get_partially_picked_pull_ids(session, [pr.id])
+                if pr.picked_at is None
+                else None
+            )
+            return pull_request_to_type(pr, staging.get(pr.id), partially_picked=partial)
+
+    @strawberry.field
+    def pull_pick_sheet(self, info: strawberry.Info, pull_request_id: strawberry.ID) -> PickSheet:
+        """Everything the pick screen and the printed sheet render from (#367).
+
+        A query of its own rather than a field on `PullRequest`, for the same reason
+        `pullRequestOpenings` is: a resolver field would run once per row of the pull-request queue,
+        and the queue never needs it - only the pick page does.
+
+        Open to any signed-in user. It exposes real per-location inventory for one project, which is
+        the same shape of information the warehouse inventory views already carry."""
+        require_user(info)
+        with SessionLocal() as session:
+            sheet = warehouse_repository.get_pick_sheet(session, uuid.UUID(str(pull_request_id)))
+            pr = sheet.pull_request
+            staging = warehouse_repository.get_pull_staging_summaries(session, [pr.id])
+            partial = (
+                pr.id in warehouse_repository.get_partially_picked_pull_ids(session, [pr.id])
+                if pr.picked_at is None
+                else None
+            )
+            return pick_sheet_to_type(sheet, staging.get(pr.id), partially_picked=partial)
 
     @strawberry.field
     def pull_request_openings(self, info: strawberry.Info, pull_request_id: strawberry.ID) -> list[ShopAssemblyOpening]:
@@ -662,33 +728,143 @@ class WarehouseMutations:
         )
         return CreateReceiveResult(queued=False, outbox_entry_id=None, receive_record=record)
 
-    # Pull Requests
+    # Pull Requests - the pick (#367)
     @strawberry.mutation
-    def approve_pull_request(self, id: strawberry.ID, approved_by: str) -> ApproveResult:
+    def start_pull_request_pick(self, info: strawberry.Info, id: strawberry.ID, started_by: str) -> PullRequest:
+        """Claim a pending pull and open it for picking (#367). Nothing moves in inventory.
+
+        This is what `approvePullRequest` used to be, minus everything that touched stock. The
+        deduction, the sufficiency question and the consumption of the source request's claim all
+        belong to `confirmPick` now, because until somebody has walked the racks nobody knows what
+        was picked or from where.
+
+        Open to any signed-in user - it assigns the pull to the caller, so it must not be reachable
+        anonymously."""
+        require_user(info)
         with SessionLocal() as session:
-            pr, outcome, notification, shortfalls = warehouse_repository.approve_pull_request(
-                session, uuid.UUID(str(id)), approved_by
-            )
+            pr = warehouse_repository.start_pull_request_pick(session, uuid.UUID(str(id)), started_by)
             session.commit()
             pr = warehouse_repository.get_pull_request_details(session, pr.id)
             staging = warehouse_repository.get_pull_staging_summaries(session, [pr.id])
+            return pull_request_to_type(pr, staging.get(pr.id), partially_picked=False)
 
-            return ApproveResult(
-                pull_request=pull_request_to_type(pr, staging.get(pr.id)),
-                outcome=ApproveOutcome.APPROVED if outcome == "APPROVED" else ApproveOutcome.INSUFFICIENT,
-                notification=notification_to_type(notification) if notification else None,
-                shortfalls=[
-                    InventoryShortfall(
-                        hardware_category=s.hardware_category,
-                        product_code=s.product_code,
-                        requested=s.requested,
-                        available=s.available,
-                        short=s.short,
-                        reserved=s.reserved,
-                    )
-                    for s in shortfalls
-                ],
+    @strawberry.mutation
+    def save_pick_draft(
+        self,
+        info: strawberry.Info,
+        pull_request_id: strawberry.ID,
+        lines: list[PickLineInput],
+        entered_by: str,
+    ) -> PickSheet:
+        """Save the half-keyed pick sheet without moving anything (#367).
+
+        Replace-all rather than merge: the picker is transcribing a piece of paper, and a save says
+        "this is the sheet now". Shape is validated; availability deliberately is not, because a
+        draft is a note and blocking it while the numbers are mid-entry would make the button useless
+        exactly when it is wanted.
+
+        Open to any signed-in user - it attributes a user action, same rationale as
+        `saveAssemblyProgress`."""
+        require_user(info)
+        with SessionLocal() as session:
+            sheet = warehouse_repository.save_pick_draft(
+                session,
+                uuid.UUID(str(pull_request_id)),
+                _pick_lines_from_input(lines),
+                entered_by,
             )
+            # `save_pick_draft` already returns the rebuilt sheet, so it is converted here rather
+            # than read a second time: this is the picker's most frequent action, and re-running the
+            # whole sheet read over Railway's network hop would double its cost for nothing. Built
+            # before the commit, because expire_on_commit would leave the ORM objects detached.
+            pr_id = sheet.pull_request.id
+            staging = warehouse_repository.get_pull_staging_summaries(session, [pr_id])
+            partial = pr_id in warehouse_repository.get_partially_picked_pull_ids(session, [pr_id])
+            result = pick_sheet_to_type(sheet, staging.get(pr_id), partially_picked=partial)
+            session.commit()
+            return result
+
+    @strawberry.mutation
+    def confirm_pick(
+        self,
+        info: strawberry.Info,
+        pull_request_id: strawberry.ID,
+        lines: list[PickLineInput],
+        picked_by: str,
+    ) -> ConfirmPickResult:
+        """Deduct exactly the rows the picker dictated, and consume the claim behind them (#367).
+
+        The atomic swap that used to live in `approvePullRequest`, moved to the moment somebody has
+        actually been to the racks: the source request's reservation is consumed for what is being
+        picked and those units come off the exact rows named, in one transaction under the pull's
+        lock and the locks of every named row.
+
+        No row may give up more than its available units and no combo may exceed what the pull asked
+        for - both hard, neither negotiable from the client. A confirmation that does not cover
+        everything returns SHORT: what was entered is deducted, the pull stays In Progress and
+        un-picked, purchasing is notified once, and a later confirmation enters the remainder.
+
+        Open to any signed-in user - it writes inventory, so it must not be reachable anonymously."""
+        require_user(info)
+        with SessionLocal() as session:
+            result = warehouse_repository.confirm_pick(
+                session,
+                uuid.UUID(str(pull_request_id)),
+                _pick_lines_from_input(lines),
+                picked_by,
+            )
+            notification = notification_to_type(result.notification) if result.notification else None
+            shortfalls = [
+                InventoryShortfall(
+                    hardware_category=s.hardware_category,
+                    product_code=s.product_code,
+                    requested=s.requested,
+                    available=s.available,
+                    short=s.short,
+                    reserved=s.reserved,
+                )
+                for s in result.shortfalls
+            ]
+            outcome = PickOutcome.PICKED if result.outcome == "PICKED" else PickOutcome.SHORT
+            applied_quantity = result.applied_quantity
+            session.commit()
+
+            pr = warehouse_repository.get_pull_request_details(session, uuid.UUID(str(pull_request_id)))
+            staging = warehouse_repository.get_pull_staging_summaries(session, [pr.id])
+            partial = (
+                pr.id in warehouse_repository.get_partially_picked_pull_ids(session, [pr.id])
+                if pr.picked_at is None
+                else None
+            )
+            return ConfirmPickResult(
+                pull_request=pull_request_to_type(pr, staging.get(pr.id), partially_picked=partial),
+                outcome=outcome,
+                notification=notification,
+                shortfalls=shortfalls,
+                applied_quantity=applied_quantity,
+            )
+
+    @strawberry.mutation
+    def set_pull_item_fetched(
+        self,
+        info: strawberry.Info,
+        item_id: strawberry.ID,
+        fetched: bool,
+        fetched_by: str,
+    ) -> PullRequestItem:
+        """Tick (or untick) one assembled leaf off a shipping pull's fetch list (#367).
+
+        Nothing moves in inventory - the leaf's hardware left it at assembly. The check-off is
+        persisted so it survives a reload or a shift change, and unticking is supported because a
+        picker who ticked the wrong leaf must be able to say so.
+
+        Open to any signed-in user - it attributes a user action."""
+        require_user(info)
+        with SessionLocal() as session:
+            item = warehouse_repository.set_pull_item_fetched(session, uuid.UUID(str(item_id)), fetched, fetched_by)
+            session.commit()
+            session.refresh(item)
+            return pull_request_item_to_type(item)
 
     @strawberry.mutation
     def complete_pull_request(self, id: strawberry.ID, completed_by: str | None = None) -> PullRequest:
@@ -701,7 +877,7 @@ class WarehouseMutations:
             session.commit()
             pr = warehouse_repository.get_pull_request_details(session, pr.id)
             staging = warehouse_repository.get_pull_staging_summaries(session, [pr.id])
-            return pull_request_to_type(pr, staging.get(pr.id))
+            return pull_request_to_type(pr, staging.get(pr.id), _partially_picked(session, pr))
 
     @strawberry.mutation
     def stage_pull_openings(self, info: strawberry.Info, input: StagePullOpeningsInput) -> StagePullOpeningsResult:
@@ -729,7 +905,7 @@ class WarehouseMutations:
             staging = warehouse_repository.get_pull_staging_summaries(session, [pr.id])
             openings = warehouse_repository.get_pull_request_openings(session, pr.id)
             return StagePullOpeningsResult(
-                pull_request=pull_request_to_type(pr, staging.get(pr.id)),
+                pull_request=pull_request_to_type(pr, staging.get(pr.id), _partially_picked(session, pr)),
                 openings=[shop_assembly_opening_to_type(o) for o in openings],
                 newly_staged_opening_ids=[strawberry.ID(str(oid)) for oid in result.newly_staged_ids],
                 completed=result.completed,
@@ -759,7 +935,7 @@ class WarehouseMutations:
             session.commit()
             pr = warehouse_repository.get_pull_request_details(session, result.pull_request.id)
             return CancelPullRequestResult(
-                pull_request=pull_request_to_type(pr),
+                pull_request=pull_request_to_type(pr, partially_picked=_partially_picked(session, pr)),
                 restocked=[
                     RestockedLine(
                         hardware_category=r.hardware_category,

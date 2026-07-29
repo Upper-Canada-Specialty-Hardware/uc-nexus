@@ -175,6 +175,88 @@ def test_create_receipt_invalid_payload_translates_cleanly():
     assert reply["error"]["error"] == "invalid_payload"
 
 
+# --- create-job ops (issue #380) ---
+
+_JOB_PAYLOAD = {
+    "job_number": "NEXUS-380-T1",
+    "job_name": "Test job",
+    "division": "VANCOUVER",
+    "customer_number": "ELL100",
+    "job_address_code": "MAIN",
+    "billto_address_code": "MAIN",
+    "tax_schedule_id": "GST 5%",
+    "created_date": "2025-09-15",
+}
+
+
+def test_list_customers_routes_to_econnect(monkeypatch):
+    monkeypatch.setattr(econnect, "list_customers", lambda conn: [{"customer_number": "ELL100"}])
+    reply = channel._dispatch("list_customers", "TUBC", {})
+    assert reply == {"ok": True, "result": {"company": "TUBC", "customers": [{"customer_number": "ELL100"}]}}
+
+
+def test_list_customer_addresses_requires_customer():
+    reply = channel._dispatch("list_customer_addresses", "TUBC", {})
+    assert reply["ok"] is False
+    assert reply["error"]["error"] == "missing_customer"
+
+
+def test_list_customer_addresses_routes_to_econnect_and_strips_customer(monkeypatch):
+    seen = {}
+
+    def _fake(conn, customer):
+        seen["customer"] = customer
+        return [{"address_code": "MAIN"}]
+
+    monkeypatch.setattr(econnect, "list_customer_addresses", _fake)
+    reply = channel._dispatch("list_customer_addresses", "TUBC", {"customer": "  ELL100  "})
+    assert seen["customer"] == "ELL100"
+    assert reply == {
+        "ok": True,
+        "result": {"company": "TUBC", "customer": "ELL100", "addresses": [{"address_code": "MAIN"}]},
+    }
+
+
+def test_list_tax_schedules_routes_to_econnect(monkeypatch):
+    monkeypatch.setattr(econnect, "list_tax_schedules", lambda conn: [{"tax_schedule_id": "GST 5%"}])
+    reply = channel._dispatch("list_tax_schedules", "TUBC", {})
+    assert reply == {"ok": True, "result": {"company": "TUBC", "tax_schedules": [{"tax_schedule_id": "GST 5%"}]}}
+
+
+def test_list_divisions_routes_to_econnect(monkeypatch):
+    monkeypatch.setattr(econnect, "list_divisions", lambda conn: ["VANCOUVER"])
+    reply = channel._dispatch("list_divisions", "TUBC", {})
+    assert reply == {"ok": True, "result": {"company": "TUBC", "divisions": ["VANCOUVER"]}}
+
+
+def test_create_job_success_returns_the_response_body(monkeypatch):
+    from ucnexus_relay.models import CreateJobResponse
+
+    def _fake(conn, *, company, request):
+        return CreateJobResponse(job_number=request.job_number, job_name=request.job_name, company=company)
+
+    monkeypatch.setattr(ops, "create_job_op", _fake)
+    reply = channel._dispatch("create_job", "TUBC", _JOB_PAYLOAD)
+    assert reply["ok"] is True
+    assert reply["result"] == {"job_number": "NEXUS-380-T1", "job_name": "Test job", "company": "TUBC"}
+
+
+def test_create_job_already_exists_translates_cleanly(monkeypatch):
+    def _raise(conn, *, company, request):
+        raise ops.RelayOpError("job_already_exists", "job 'NEXUS-380-T1' already exists in GP company TUBC")
+
+    monkeypatch.setattr(ops, "create_job_op", _raise)
+    reply = channel._dispatch("create_job", "TUBC", _JOB_PAYLOAD)
+    assert reply["ok"] is False
+    assert reply["error"]["error"] == "job_already_exists"
+
+
+def test_create_job_invalid_payload_translates_cleanly():
+    reply = channel._dispatch("create_job", "TUBC", {"job_number": "NEXUS-380-T1"})  # missing the rest
+    assert reply["ok"] is False
+    assert reply["error"]["error"] == "invalid_payload"
+
+
 def test_hello_frame_advertises_build_and_the_full_op_set():
     # Issue #315: the relay's connect frame carries its build tag and exact op-set so the backend can gate
     # a call for an op this build lacks. The op list must mirror channel._OPS - a new op added there is

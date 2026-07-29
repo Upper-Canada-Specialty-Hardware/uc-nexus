@@ -111,18 +111,46 @@ export const ASSEMBLY_COMPLETE_STALE_ROOT_FIELDS = [
 // own board, which is a different route and never mounted while a manager is assigning.
 export const ASSIGNMENT_STALE_ROOT_FIELDS = ['myWork', ...PIPELINE_STALE_ROOT_FIELDS];
 
-// What approving or completing a pull invalidates, beyond the queue the caller already refetches.
+// What starting or completing a pull invalidates, beyond the queue the caller already refetches.
 //
 // #343 re-keyed workability from "the pull is COMPLETED" to "this opening is PULLED", which made both
-// of these moments change what the assembly floor can see: approving lets the Assemble List show the
-// pull's openings as waiting, and completing stages whatever is left. Neither list is mounted while a
-// warehouse user is working a pull, so both are evicted rather than refetched. shipReadyItems is here
-// for the shipping-out side, where completing the pull is what flips leaves to SHIP_READY.
+// of these moments change what the assembly floor can see: starting a pick lets the Assemble List
+// show the pull's openings as waiting, and completing stages whatever is left. Neither list is
+// mounted while a warehouse user is working a pull, so both are evicted rather than refetched.
+// shipReadyItems is here for the shipping-out side, where completing the pull is what flips leaves
+// to SHIP_READY.
 export const PULL_LIFECYCLE_STALE_ROOT_FIELDS = [
   'assembleList',
   'myWork',
   'shipReadyItems',
   'projectInventoryAvailability',
+  ...PIPELINE_STALE_ROOT_FIELDS,
+];
+
+// What confirming a pick invalidates (#367). This is the moment stock actually leaves inventory, so
+// it is the widest inventory blast radius in the warehouse short of a cancel.
+//
+// Refetched. The pick page's own sheet is refetched by name because the page stays mounted through
+// the confirmation and has to re-render from the server's answer - a short confirm leaves rows the
+// picker must keep working, and an optimistic guess about which ones would be a guess about
+// physical hardware. The queue behind it carries the phase cell that this confirmation moves.
+export const PICK_CONFIRM_REFETCH_QUERIES = ['GetPullPickSheet', 'GetPullRequests'];
+
+// Evicted, and disjoint from the list above (see the note at the top of this file). Every one of
+// these is read by a view that is not mounted while somebody is picking: the warehouse inventory
+// summaries behind the pick page, the Start-a-Task wizard's availability (the consumed reservation
+// and the deduction both change what may be claimed), and the assembly floor's work lists, which
+// #343 made sensitive to the pull moving.
+export const PICK_CONFIRM_STALE_ROOT_FIELDS = [
+  'inventoryHierarchy',
+  'inventoryByVendor',
+  'unlocatedInventory',
+  'warehouseDashboard',
+  'projectProgressByProduct',
+  'projectInventoryAvailability',
+  'assembleList',
+  'myWork',
+  'shipReadyItems',
   ...PIPELINE_STALE_ROOT_FIELDS,
 ];
 

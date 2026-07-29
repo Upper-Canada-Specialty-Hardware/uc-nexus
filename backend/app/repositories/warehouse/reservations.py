@@ -4,18 +4,20 @@ Creating a shop-assembly or shipping-out request reserves what it needs, so
 
     available = on-hand - deficient - active reservations
 
-and the creator is held to what is genuinely free at creation time. Approving the pull *consumes*
-the source request's reservations and deducts FIFO in the same transaction; every other way a
-request can die *releases* them. Both are the same DB operation - delete the request's rows - and
-the two names exist because the two moments mean opposite things (`release_reservations` documents
-the whole table).
+and the creator is held to what is genuinely free at creation time. Confirming the pull's pick
+*consumes* the source request's reservations and deducts the dictated rows in the same transaction
+(#367 moved that moment from approval); every other way a request can die *releases* them.
+
+Consumption is per combo and partial (`consume_reservations`), because a pick can be confirmed
+short and the un-picked remainder is still owed. Release is whole-holder (`release_reservations`,
+which documents the whole table), because a dead request is owed nothing.
 
 Everything here aggregates with `func.sum`; there is no path that loads reservation rows to count
 them in Python (CLAUDE.md perf rules).
 """
 
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 
 from sqlalchemy import and_, delete, func, not_, or_, select
 from sqlalchemy.orm import Session
@@ -286,8 +288,9 @@ def release_reservations(session: Session, source: ReservationSource, request_id
     | Reject (either request type)             | release - the request is dead, the claim dies too |
     | Reject after a reopen                    | release - same call, same result                  |
     | Reopen an accepted request (#325)        | **no release** - see below                        |
-    | Pull approval (the reserved path)        | consume - the claim becomes the FIFO deduction    |
-    | Pull approval that comes up short        | **no release** - the pull stays blocked, holding  |
+    | Pick confirmation (the reserved path)    | consume - per combo, for what was picked (#367)    |
+    | Pick confirmed short                     | **partial consume** - the remainder stays claimed  |
+    | Cancelling a pull                        | release, then re-create what it will need again    |
     | Re-upload drops the request's openings    | release, by rebuilding from what survived         |
     | Re-upload leaves the request empty       | auto-reject, which releases                       |
     | Discard a PENDING replacement pull       | release - the pull is hard-deleted, so is its claim |
@@ -311,6 +314,63 @@ def release_reservations(session: Session, source: ReservationSource, request_id
     )
     session.flush()
     return int(result.rowcount or 0)
+
+
+def consume_reservations(
+    session: Session,
+    source: ReservationSource,
+    holder_id: uuid.UUID,
+    consumed: Mapping[tuple[str, str], int],
+) -> int:
+    """Spend part of a holder's claim: the units named here have just become a real deduction (#367).
+
+    `release_reservations` drops a holder's claim whole, which is the right shape for every way a
+    request can *die*. Picking is different: a pick can be confirmed short, and the remainder of the
+    claim has to survive it. Dropping the whole row on a partial pick would hand the un-picked
+    remainder to whoever asked next - the exact hole reservations were introduced to close, opened at
+    the one moment the request is provably still owed the hardware.
+
+    So this decrements per combo and deletes only rows that reach zero. Returns the total units
+    actually taken off the book.
+
+    **Overshoot is ignored, not an error.** A claim can legitimately be smaller than the pick: a
+    replacement pull reserves `min(free stock, condemned)` at flag time, the #342 backfill left the
+    pre-existing in-flight population unreserved, and a cancel that could not re-reserve leaves a
+    live request holding nothing. In all of those the units are genuinely being taken and the claim
+    simply does not cover them; refusing the pick over a bookkeeping row the picker cannot see would
+    be the wrong end of the problem.
+    """
+    wanted = {combo: qty for combo, qty in consumed.items() if qty and qty > 0}
+    if not wanted:
+        return 0
+
+    rows = session.scalars(
+        select(InventoryReservationModel).where(
+            InventoryReservationModel.source == source,
+            _SOURCE_COLUMN[source] == holder_id,
+            _combo_filter(
+                wanted.keys(),
+                InventoryReservationModel.hardware_category,
+                InventoryReservationModel.product_code,
+            ),
+        )
+    ).all()
+
+    taken = 0
+    for row in rows:
+        want = wanted.get((row.hardware_category, row.product_code), 0)
+        if want <= 0:
+            continue
+        take = min(row.quantity, want)
+        wanted[(row.hardware_category, row.product_code)] = want - take
+        taken += take
+        if take >= row.quantity:
+            session.delete(row)
+        else:
+            row.quantity -= take
+    if taken:
+        session.flush()
+    return taken
 
 
 def reserve_for_replacement_pull(
@@ -396,13 +456,14 @@ def top_up_replacement_reservations(
 
     Returns {pull_request_id: units claimed}, for callers and tests to assert on.
     """
-    from .receiving import find_pending_replacement_pulls
+    from .pull_requests import outstanding_loose_needs
+    from .receiving import find_open_replacement_pulls
 
     wanted = set(combos)
     if not wanted:
         return {}
 
-    pulls = sorted(find_pending_replacement_pulls(session, project_id, wanted), key=lambda p: p.created_at)
+    pulls = sorted(find_open_replacement_pulls(session, project_id, wanted), key=lambda p: p.created_at)
     if not pulls:
         return {}
 
@@ -421,15 +482,11 @@ def top_up_replacement_reservations(
 
     claimed: dict[uuid.UUID, int] = {}
     for pr in pulls:
-        # What this pull wants of the combos that just became available, net of what it already holds.
-        needs: dict[tuple[str, str], int] = {}
-        for line in pr.items:
-            if not line.hardware_category or not line.product_code or line.requested_quantity <= 0:
-                continue
-            key = (line.hardware_category, line.product_code)
-            if key not in wanted:
-                continue
-            needs[key] = needs.get(key, 0) + line.requested_quantity
+        # What this pull still has to pick of the combos that just became available, net of what it
+        # already holds. Outstanding rather than originally-requested (#367): a short-picked pull has
+        # part of its hardware on a cart already, and topping its claim back up to the original
+        # number would re-claim units it is no longer waiting for.
+        needs = {combo: qty for combo, qty in outstanding_loose_needs(session, pr).items() if combo in wanted}
 
         for combo, need in sorted(needs.items()):
             existing = held.get((pr.id, *combo))

@@ -1,4 +1,4 @@
-"""Every gated resolver in the shop-assembly and stock modules actually calls its gate (#345).
+"""Every gated resolver in the shop-assembly, stock and warehouse-pick surfaces calls its gate (#345).
 
 Auth in this codebase is **opt-in per resolver** (CLAUDE.md): there is no middleware to catch a
 resolver that forgets, and `get_context` only stashes the request. That makes a dropped
@@ -23,12 +23,14 @@ from app.schemas import gp_outbox as gp_outbox_module
 from app.schemas import relay as relay_module
 from app.schemas import shop_assembly as shop_assembly_module
 from app.schemas import stock as stock_module
+from app.schemas import warehouse as warehouse_module
 from app.schemas.enums import DeficiencyResolution
 from app.schemas.gp_outbox import GpOutboxMutations, GpOutboxQueries
 from app.schemas.inputs import (
     AssignOpeningsInput,
     CompleteOpeningInput,
     InstallReplacementInput,
+    PickLineInput,
     RecordAssemblyProgressInput,
     ReportDeficiencyAtAssemblyInput,
     ReportInventoryDeficiencyInput,
@@ -38,6 +40,7 @@ from app.schemas.inputs import (
 from app.schemas.relay import RelayMutations, RelayQueries
 from app.schemas.shop_assembly import ShopAssemblyMutations, ShopAssemblyQueries
 from app.schemas.stock import StockMutations
+from app.schemas.warehouse import WarehouseMutations, WarehouseQueries
 
 
 class _GateReached(Exception):
@@ -153,6 +156,44 @@ _USER_GATED = [
                 reviewed_by="reviewer",
             ),
         ),
+    ),
+    # The pick (#367). confirmPick writes inventory; the other three attribute a user action or
+    # expose one project's per-location stock, so all four are gated for the same reasons the
+    # staging and cancel mutations next to them are.
+    (
+        "pullPickSheet",
+        warehouse_module,
+        lambda: WarehouseQueries().pull_pick_sheet(FakeInfo(), _id()),
+    ),
+    (
+        "startPullRequestPick",
+        warehouse_module,
+        lambda: WarehouseMutations().start_pull_request_pick(FakeInfo(), _id(), "picker"),
+    ),
+    (
+        "savePickDraft",
+        warehouse_module,
+        lambda: WarehouseMutations().save_pick_draft(
+            FakeInfo(),
+            _id(),
+            [PickLineInput(hardware_category="HINGE", product_code="HG-100", inventory_location_id=_id(), quantity=1)],
+            "picker",
+        ),
+    ),
+    (
+        "confirmPick",
+        warehouse_module,
+        lambda: WarehouseMutations().confirm_pick(
+            FakeInfo(),
+            _id(),
+            [PickLineInput(hardware_category="HINGE", product_code="HG-100", inventory_location_id=_id(), quantity=1)],
+            "picker",
+        ),
+    ),
+    (
+        "setPullItemFetched",
+        warehouse_module,
+        lambda: WarehouseMutations().set_pull_item_fetched(FakeInfo(), _id(), True, "picker"),
     ),
 ]
 

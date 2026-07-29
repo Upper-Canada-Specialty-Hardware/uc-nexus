@@ -6,9 +6,10 @@ import { isStageable, stagingChipColor, stagingChipLabel, isCancellable } from '
 import { GET_PULL_REQUEST_OPENINGS, STAGE_PULL_OPENINGS } from '../../../graphql/warehouse';
 
 /**
- * Per-opening pull staging (#343). The warehouse picks a pull cart by cart, so the checklist's unit
- * of confirmation is one opening and its hardware lines. Confirming is a two-step (tick, then
- * Confirm) because staging is a claim that hardware is physically on a cart.
+ * Per-leaf pull staging (#343, laid out as sections in #367). The warehouse picks a pull cart by
+ * cart, so the checklist's unit of confirmation is one door leaf and its hardware lines. Confirming
+ * is a two-step (tick, then Confirm) because staging is a claim that hardware is physically on a
+ * cart.
  */
 
 vi.setConfig({ testTimeout: 30_000 });
@@ -119,9 +120,11 @@ function renderPanel(mocks: MockedResponse[], editable = true) {
 it('groups the pull by opening and lists that opening s hardware lines', async () => {
   renderPanel([openingsMock([opening(), opening({ id: 'sao-2', leaf: 2 })])]);
 
-  expect(await screen.findByText(/Staging \(0 of 2 openings\)/)).toBeInTheDocument();
+  expect(await screen.findByText(/Stage carts \(0 of 2 leaves\)/)).toBeInTheDocument();
   expect(screen.getAllByText(/0019-EX/)).toHaveLength(2);
-  expect(screen.getAllByText(/3 x HG-100 \(HINGE\)/)).toHaveLength(2);
+  // #367: a section per leaf, hardware as ledger rows beneath it - not a bulleted list in a cell.
+  expect(screen.getAllByText('HG-100')).toHaveLength(2);
+  expect(screen.getAllByText('HINGE')).toHaveLength(2);
 });
 
 it('shows a staged opening as staged, with who staged it, and does not offer it again', async () => {
@@ -132,7 +135,7 @@ it('shows a staged opening as staged, with who staged it, and does not offer it 
     ]),
   ]);
 
-  expect(await screen.findByText(/Staging \(1 of 2 openings\)/)).toBeInTheDocument();
+  expect(await screen.findByText(/Stage carts \(1 of 2 leaves\)/)).toBeInTheDocument();
   expect(screen.getByText('Staged')).toBeInTheDocument();
   expect(screen.getByText(/Ada/)).toBeInTheDocument();
   // The already-staged row's checkbox is disabled; only the outstanding one can be ticked.
@@ -149,7 +152,7 @@ it('will not confirm anything until an opening is ticked', async () => {
 
 it('confirms behind a dialog rather than staging on the tick', async () => {
   renderPanel([openingsMock([opening(), opening({ id: 'sao-2', leaf: 2 })])]);
-  fireEvent.click(await screen.findByRole('checkbox', { name: /Stage 0019-EX - Leaf 1/ }));
+  fireEvent.click(await screen.findByRole('checkbox', { name: /Stage 0019-EX . L1/ }));
 
   fireEvent.click(screen.getByRole('button', { name: /Confirm 1 staged/ }));
   expect(await screen.findByText('Confirm staged openings')).toBeInTheDocument();
@@ -166,12 +169,12 @@ it('stages the ticked opening and says the rest of the pull is still outstanding
       opening({ id: 'sao-2', leaf: 2 }),
     ]),
   ]);
-  fireEvent.click(await screen.findByRole('checkbox', { name: /Stage 0019-EX - Leaf 1/ }));
+  fireEvent.click(await screen.findByRole('checkbox', { name: /Stage 0019-EX . L1/ }));
   fireEvent.click(screen.getByRole('button', { name: /Confirm 1 staged/ }));
   fireEvent.click(await screen.findByRole('button', { name: 'Confirm staged' }));
 
   expect(
-    await screen.findByText(/Openings staged. They are now available for assembly./),
+    await screen.findByText(/Carts staged. Those leaves are now available for assembly./),
   ).toBeInTheDocument();
 });
 
@@ -180,20 +183,20 @@ it('says the pull is complete when the last opening is staged', async () => {
     openingsMock([opening({ pullStatus: 'PULLED', stagedBy: 'Ada' }), opening({ id: 'sao-2', leaf: 2 })]),
     stageMock(['sao-2'], true, []),
   ]);
-  fireEvent.click(await screen.findByRole('checkbox', { name: /Stage 0019-EX - Leaf 2/ }));
+  fireEvent.click(await screen.findByRole('checkbox', { name: /Stage 0019-EX . L2/ }));
   fireEvent.click(screen.getByRole('button', { name: /Confirm 1 staged/ }));
   // The dialog says so before it happens, too.
   expect(await screen.findByText(/This completes the pull/)).toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: 'Confirm staged' }));
 
   expect(
-    await screen.findByText(/All openings staged - PR-SA-0001 is complete./),
+    await screen.findByText(/All carts staged - PR-SA-0001 is complete./),
   ).toBeInTheDocument();
 });
 
 it('is read-only once the pull is no longer in progress', async () => {
   renderPanel([openingsMock([opening({ pullStatus: 'PULLED', stagedBy: 'Ada' })])], false);
-  expect(await screen.findByText(/Staging \(1 of 1 openings\)/)).toBeInTheDocument();
+  expect(await screen.findByText(/Stage carts \(1 of 1 leaves\)/)).toBeInTheDocument();
   expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: /Confirm/ })).not.toBeInTheDocument();
 });
@@ -201,7 +204,7 @@ it('is read-only once the pull is no longer in progress', async () => {
 it('renders nothing for a pull with no openings', async () => {
   const { container } = renderPanel([openingsMock([])]);
   await waitFor(() => expect(screen.queryByText(/Loading openings/)).not.toBeInTheDocument());
-  expect(container.querySelector('table')).toBeNull();
+  expect(container.querySelector('section')).toBeNull();
 });
 
 // --- derived readings --------------------------------------------------------------------------

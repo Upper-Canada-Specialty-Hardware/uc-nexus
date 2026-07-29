@@ -138,3 +138,61 @@ def test_relay_status_resolver_reads_gateway_connected(monkeypatch):
     gateway = RelayGateway()
     monkeypatch.setattr(relay_module, "relay_gateway", gateway)
     assert Query().relay_status(FakeInfo()).connected is False
+
+
+# --- the create-job form's live reads (#380) ---
+
+
+def test_gp_customers_maps_relay_result_to_type(monkeypatch):
+    fake = _install_fake_gateway(
+        monkeypatch,
+        {"customers": [{"customer_number": "ELL100", "customer_name": "Ellis Don"}, {"customer_number": "X1"}]},
+    )
+
+    async def run():
+        return await Query().gp_customers(FakeInfo(), company="TUBC")
+
+    customers = asyncio.run(run())
+    assert [(c.customer_number, c.customer_name) for c in customers] == [("ELL100", "Ellis Don"), ("X1", None)]
+    assert fake.calls == [("TUBC", "list_customers", None)]
+
+
+def test_gp_customer_addresses_scopes_the_call_to_the_customer(monkeypatch):
+    fake = _install_fake_gateway(
+        monkeypatch,
+        {"addresses": [{"address_code": "MAIN", "address1": "1 Main St", "city": "Vancouver", "state": "BC"}]},
+    )
+
+    async def run():
+        return await Query().gp_customer_addresses(FakeInfo(), company="TUBC", customer="ELL100")
+
+    addresses = asyncio.run(run())
+    assert addresses[0].address_code == "MAIN"
+    assert addresses[0].city == "Vancouver"
+    # the customer must ride on the payload - an address code is only valid under its own customer
+    assert fake.calls == [("TUBC", "list_customer_addresses", {"customer": "ELL100"})]
+
+
+def test_gp_tax_schedules_maps_relay_result_to_type(monkeypatch):
+    fake = _install_fake_gateway(
+        monkeypatch,
+        {"tax_schedules": [{"tax_schedule_id": "GST 5%", "description": "Federal GST 5%"}]},
+    )
+
+    async def run():
+        return await Query().gp_tax_schedules(FakeInfo(), company="TUBC")
+
+    schedules = asyncio.run(run())
+    assert [(s.tax_schedule_id, s.description) for s in schedules] == [("GST 5%", "Federal GST 5%")]
+    # list_tax_schedules (TX00101), not list_tax_details (TX00201) - different table, different thing
+    assert fake.calls == [("TUBC", "list_tax_schedules", None)]
+
+
+def test_gp_divisions_passes_through_the_relay_list(monkeypatch):
+    fake = _install_fake_gateway(monkeypatch, {"divisions": ["VANCOUVER"]})
+
+    async def run():
+        return await Query().gp_divisions(FakeInfo(), company="TUBC")
+
+    assert asyncio.run(run()) == ["VANCOUVER"]
+    assert fake.calls == [("TUBC", "list_divisions", None)]

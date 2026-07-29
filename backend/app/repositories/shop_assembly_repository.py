@@ -57,8 +57,15 @@ _WORKABLE_ASSEMBLY_STATUSES = (AssemblyStatus.PENDING, AssemblyStatus.IN_PROGRES
 # while the rest of the pull is still being picked, and the pull only reaches COMPLETED when the
 # last cart is built. Every one of those checks is now keyed on `ShopAssemblyOpening.pull_status ==
 # PULLED` - the fact that actually governs - with the pull-status filter kept only to exclude a pull
-# that never got off the ground (PENDING, nothing deducted) or was cancelled (hardware restocked;
-# cancellation also detaches its openings, so this is belt-and-braces).
+# that was never accepted (PENDING) or was cancelled (hardware restocked; cancellation also detaches
+# its openings, so this is belt-and-braces).
+#
+# Since #367 IN_PROGRESS no longer implies "stock deducted": a pull is IN_PROGRESS from the moment
+# its pick is started, and `picked_at` is what says the hardware actually left. That does not weaken
+# anything here, because every gate that lets work *happen* keys on the opening's own
+# `pull_status == PULLED`, and staging is itself refused until the pick is confirmed. It does mean
+# `assemble_list` shows an un-picked pull's openings as waiting, which is the same reading it already
+# gives a picked-but-unstaged one, and is why that list is deliberately not a workability gate.
 _APPROVED_PULL_STATUSES = (PullRequestStatus.IN_PROGRESS, PullRequestStatus.COMPLETED)
 
 
