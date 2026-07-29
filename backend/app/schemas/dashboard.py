@@ -2,6 +2,7 @@
 
 import strawberry
 
+from app.auth import require_admin, require_user
 from app.database import SessionLocal
 from app.repositories import dashboard_repository, user_repository
 
@@ -11,7 +12,8 @@ from .types import AdminStats, HomeDashboardStats, ShopAssemblyStats
 @strawberry.type
 class DashboardQueries:
     @strawberry.field
-    def home_dashboard_stats(self) -> HomeDashboardStats:
+    def home_dashboard_stats(self, info: strawberry.Info) -> HomeDashboardStats:
+        require_user(info)
         with SessionLocal() as session:
             d = dashboard_repository.get_home_dashboard_stats(session)
             return HomeDashboardStats(
@@ -22,7 +24,8 @@ class DashboardQueries:
             )
 
     @strawberry.field
-    def shop_assembly_stats(self) -> ShopAssemblyStats:
+    def shop_assembly_stats(self, info: strawberry.Info) -> ShopAssemblyStats:
+        require_user(info)
         with SessionLocal() as session:
             d = dashboard_repository.get_shop_assembly_stats(session)
             return ShopAssemblyStats(
@@ -30,7 +33,10 @@ class DashboardQueries:
             )
 
     @strawberry.field
-    def admin_stats(self) -> AdminStats:
+    def admin_stats(self, info: strawberry.Info) -> AdminStats:
+        """Admin-gated (#415): only the admin landing page reads it, and it enumerates Clerk users to
+        count them."""
+        require_admin(info)
         users = user_repository.list_users()
         with SessionLocal() as session:
             d = dashboard_repository.get_admin_stats(session, user_count=len(users))
