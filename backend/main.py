@@ -298,17 +298,23 @@ def reset_data(request: Request):
     environment check. TESTING_ENABLED keeps it off any deployment that isn't a test target, and
     require_admin_request means it is not enough to merely reach the box.
 
-    It also PRESERVES relay_installs across the rebuild. Dropping those rows silently orphans the
-    on-prem relay: its enrolled secret no longer matches any row, so /relay-link refuses every
-    handshake and all GP writes fail until someone re-enrols on the workstation. A dev-convenience
-    reset must not take GP down as a side effect."""
+    It also PRESERVES the tables that hold setup rather than project data - app/services/
+    reset_preservation.py owns that list and the reasoning per table. relay_installs is the one that
+    hurts most: dropping those rows silently orphans the on-prem relay, because its enrolled secret no
+    longer matches any row, so /relay-link refuses every handshake and all GP writes fail until someone
+    re-enrols on the workstation. A dev-convenience reset must not take GP down as a side effect.
+
+    Projects are deliberately NOT preserved - they are re-adopted straight from GP by a forced sync
+    pass right after the rebuild, since GP owns them. That pass is also what makes the buyer/project
+    links restorable: re-adopted projects get new UUIDs, so the links come back matched on GP job
+    number rather than on the id they used to point at (#410)."""
     from alembic.config import Config
-    from sqlalchemy import inspect as sa_inspect
     from sqlalchemy import text
 
     from alembic import command
     from app.config import TESTING_ENABLED
     from app.database import engine
+    from app.services import reset_preservation
 
     if not TESTING_ENABLED:
         return JSONResponse(status_code=403, content={"error": "Data reset is not enabled on this deployment"})
@@ -319,23 +325,8 @@ def reset_data(request: Request):
         status = 403 if e.code == "FORBIDDEN" else 401
         return JSONResponse(status_code=status, content={"error": str(e), "code": e.code})
 
-    # Snapshot the relay enrolments before the schema goes. Read as plain mappings: the ORM model is
-    # about to have its table dropped and recreated, so nothing here may hold a live identity-mapped
-    # instance. The table is absent on a fresh or half-migrated database, which must not block a reset -
-    # that is exactly the state a reset exists to clear.
-    relay_rows: list[dict] = []
     with engine.connect() as conn:
-        if sa_inspect(conn).has_table("relay_installs"):
-            relay_rows = [
-                dict(r)
-                for r in conn.execute(
-                    text(
-                        "SELECT id, label, company, hostname, secret_hash, secret_encrypted, "
-                        "enrollment_token_hash, enrollment_token_expires_at, enrolled_at, last_seen_at, "
-                        "created_at, adopted_at, adopted_by FROM relay_installs"
-                    )
-                ).mappings()
-            ]
+        snap = reset_preservation.snapshot(conn)
 
     with engine.connect() as conn:
         conn.execute(text("DROP SCHEMA public CASCADE"))
@@ -347,24 +338,42 @@ def reset_data(request: Request):
     command.upgrade(alembic_cfg, "head")
 
     with engine.connect() as conn:
-        for row in relay_rows:
-            conn.execute(
-                text(
-                    "INSERT INTO relay_installs (id, label, company, hostname, secret_hash, "
-                    "secret_encrypted, enrollment_token_hash, enrollment_token_expires_at, enrolled_at, "
-                    "last_seen_at, created_at, adopted_at, adopted_by) VALUES (:id, :label, :company, "
-                    ":hostname, :secret_hash, :secret_encrypted, :enrollment_token_hash, "
-                    ":enrollment_token_expires_at, :enrolled_at, :last_seen_at, :created_at, "
-                    ":adopted_at, :adopted_by)"
-                ),
-                row,
-            )
+        preserved = reset_preservation.restore(conn, snap)
         conn.commit()
+
+    # Re-adopt every GP job before re-linking, not after: the links are matched on job number, so a
+    # projects table that is still empty here drops every one of them. Skipped silently when no relay
+    # is connected - see run_once_blocking; the buyer rows and their cost codes survive either way, and
+    # the background poll re-adopts the projects later (it just has nothing left to re-link them to).
+    sync_result = gp_job_sync.run_once_blocking()
+
+    with engine.connect() as conn:
+        links_restored, links_dropped = reset_preservation.relink_buyer_projects(conn, snap.buyer_project_pairs)
+        conn.commit()
+
+    # The frontend alerts `message` verbatim, so it carries the summary; the fields below are for
+    # anyone reading the response itself.
+    parts = [f"{count} {table}" for table, count in preserved.items() if count]
+    message = "Schema dropped and rebuilt"
+    if parts:
+        message += f". Preserved {', '.join(parts)}"
+    if sync_result:
+        message += f". Re-adopted {sync_result[1]} of {sync_result[0]} GP jobs"
+    else:
+        message += ". GP job sync did not run, so projects were not re-adopted"
+    if snap.buyer_project_pairs:
+        message += f". Buyer project links: {links_restored} restored, {links_dropped} dropped"
 
     return {
         "status": "ok",
-        "message": "Schema dropped and rebuilt",
-        "relay_installs_preserved": len(relay_rows),
+        "message": message,
+        "preserved": preserved,
+        "relay_installs_preserved": preserved.get("relay_installs", 0),
+        # null, not 0, when no sync pass ran - "GP had no new jobs" and "GP was never asked" are
+        # different answers and the second one explains any dropped buyer links.
+        "jobs_adopted": sync_result[1] if sync_result else None,
+        "buyer_links_restored": links_restored,
+        "buyer_links_dropped": links_dropped,
     }
 
 

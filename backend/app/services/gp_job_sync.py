@@ -33,7 +33,19 @@ logger = logging.getLogger(__name__)
 # covers "I just made one and want it now".
 POLL_SECONDS = 300.0
 
+# How long /admin/reset-data waits for its one forced sync pass. Generous next to relay_call's own 30s
+# because this pass also writes a project row per GP job, and the reset is a deliberate manual action
+# that nobody is timing - overshooting costs a few seconds, giving up early costs every buyer link.
+RESET_SYNC_TIMEOUT_SECONDS = 90.0
+
 _wake_event: asyncio.Event | None = None
+
+# The loop `run_forever` was scheduled on, which is the loop the relay websocket lives on. Captured so
+# a *synchronous* caller in the threadpool can still run a sync pass: `/admin/reset-data` is a sync def
+# and must re-adopt every GP job right after it rebuilds the schema, but `run_once` talks to the relay
+# over that socket and may only be awaited on its own loop (#410). None until the lifespan task starts,
+# and it never starts when `enabled()` is False - callers treat that as "no sync available" and skip.
+_loop: "asyncio.AbstractEventLoop | None" = None
 
 
 def enabled() -> bool:
@@ -102,11 +114,39 @@ async def run_once() -> tuple[int, int]:
     return await asyncio.to_thread(_persist_missing, jobs)
 
 
+def run_once_blocking(timeout: float = RESET_SYNC_TIMEOUT_SECONDS) -> tuple[int, int] | None:
+    """One sync pass driven from a worker thread instead of the event loop (#410).
+
+    `/admin/reset-data` is a sync def, so FastAPI runs it in the threadpool - but it has to re-adopt
+    every GP job the moment it has rebuilt the schema. Waiting out POLL_SECONDS is not an option there:
+    the buyer/project links the reset restores are matched by job number, so until the projects are
+    back there is nothing to match and every link drops. `run_once` awaits the relay socket and may
+    only be awaited on the loop that owns it, hence the hand-off.
+
+    Returns (total, adopted), or None when no pass could run - sync disabled, no relay connected, the
+    relay went away mid-pass, or it did not answer in time. Every one of those is a skip rather than a
+    failure: a reset must not fail because GP happened to be unreachable."""
+    loop = _loop
+    if loop is None or not relay_gateway.connected:
+        return None
+    try:
+        return asyncio.run_coroutine_threadsafe(run_once(), loop).result(timeout=timeout)
+    except (RelayUnavailableError, RelayTimeoutError) as e:
+        logger.info("gp job sync: relay unavailable during reset (%s); projects not re-adopted", e.message)
+    except TimeoutError:
+        # The pass is still running on the loop; it will finish or fail on its own. Only this wait ends.
+        logger.warning("gp job sync: pass did not finish within %ss during reset", timeout)
+    except Exception:  # noqa: BLE001 - a reset must not 500 on a bad sync
+        logger.exception("gp job sync: pass failed during reset")
+    return None
+
+
 async def run_forever() -> None:
     """The lifespan task. Every iteration is wrapped so no error can kill it - a dead sync is silently
     missing projects, which surfaces much later as "why isn't this job in Nexus"."""
-    global _wake_event
+    global _wake_event, _loop
     _wake_event = asyncio.Event()
+    _loop = asyncio.get_running_loop()
     logger.info("gp job sync started")
     while True:
         try:
