@@ -19,6 +19,30 @@ This is a tester's knowledge journal for UC Nexus. It documents how the app work
   - Tokens are one-time use; fetch a fresh one each session. Works on any runtime with the same Clerk dev instance.
 - **Test XML file**: `testing/fixtures/contracterp-74.xml` - TITAN hardware schedule export, use for Import wizard testing (upload via `upload_file`)
 
+### Every resolver needs a token now (#415)
+
+Until #415 most resolvers were reachable with no `Authorization` header at all, so an injected
+`fetch('/graphql', ...)` helper that forgot the token still returned data and nothing looked wrong.
+That is over: every resolver in `app/schemas/` calls `require_user` / `require_admin` / `require_role`
+as its first statement, enforced by `backend/tests/test_resolver_gate_completeness.py`. The only
+exception is `enrollRelayInstall`, which carries its own enrollment-token auth.
+
+Consequences when driving the app by script:
+
+- Always mint a token first - `await window.Clerk.session.getToken({skipCache: true})` - and send it
+  as `Authorization: Bearer <token>`. A helper without one now gets
+  `{"data": null, "errors": [{"message": "Authentication required", "extensions": {"code": "UNAUTHENTICATED"}}]}`
+  on *every* query, not just the handful that used to be gated.
+- Distinguish the three failure shapes: **no header** -> `Authentication required`; **unparseable
+  token** -> `Malformed authentication token`; **valid token, wrong role** -> `FORBIDDEN`, e.g.
+  `Admin/Manager role required`. Getting `Authentication required` from inside a signed-in page means
+  your helper dropped the header, not that the session died.
+- Admin-gated reads worth knowing, because a non-admin session gets FORBIDDEN rather than an empty
+  list: `users`, `adminStats`, `openingHardwareStatus`, `locationDuplicates`. Their writes too -
+  the vendor and warehouse CRUD, `overrideInventoryQuantity`, `mergeLocations`.
+- `require_admin` costs a Clerk Backend API round-trip per call (`require_user` does not), so a page
+  hitting several admin resolvers at once is legitimately slower than the equivalent user page.
+
 ### A PR environment is relay-disconnected by default, and that is useful
 
 By default a PR environment always reports `relayStatus.connected: false`, and no amount of waiting
