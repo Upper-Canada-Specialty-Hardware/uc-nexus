@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+﻿import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
 import { ToastProvider } from '../../../components/Toast';
 import PullStagingPanel from '../PullStagingPanel';
@@ -196,7 +196,7 @@ it('says the pull is complete when the last opening is staged', async () => {
 
 it('is read-only once the pull is no longer in progress', async () => {
   renderPanel([openingsMock([opening({ pullStatus: 'PULLED', stagedBy: 'Ada' })])], false);
-  expect(await screen.findByText(/Stage carts \(1 of 1 leaves\)/)).toBeInTheDocument();
+  expect(await screen.findByText(/Stage carts \(1 of 1 leaf\)/)).toBeInTheDocument();
   expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: /Confirm/ })).not.toBeInTheDocument();
 });

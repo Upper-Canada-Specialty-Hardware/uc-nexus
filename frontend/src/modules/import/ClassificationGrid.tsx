@@ -298,7 +298,7 @@ function GroupAccordion({ node, columns, options, onClassify, readOnly, depth, s
             }
           />
           <Typography variant="body2" color="text.secondary">
-            ({node.rows.length} items)
+            ({node.rows.length} {node.rows.length === 1 ? 'item' : 'items'})
           </Typography>
           {!readOnly && (
             <Box sx={{ ml: 'auto', display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
