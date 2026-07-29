@@ -18,13 +18,14 @@ path and `_fernet` / `encrypt_secret` / `decrypt_secret` are reachable only from
 the `encryption_key_present` log field.
 
 No new legacy row can appear. `set_install_secret` NULLs `secret_encrypted` on every enroll and adopt,
-and the only other statement naming the column is `/admin/reset-data` (main.py), which round-trips
-existing values across a schema rebuild - it can preserve a legacy row, never create one.
+and the only other path that carries the column is `/admin/reset-data`, which round-trips existing
+values across a schema rebuild - it can preserve a legacy row, never create one.
 
 Restoring one from an old backup would not help. Fernet needs the exact original key and no copy of it
 survives anywhere, so a recovered pre-067 row is simply unreadable; an orphaned relay is recovered
 through the admin-armed adopt window (066, #353 PR B) instead. Deleting these functions and dropping
-the column is a separate job, and it has to touch that reset-data SQL too."""
+the column is a separate job, but it is now purely a migration: the reset derives its columns from
+`RelayInstall.__table__`, so nothing over there names this one by hand any more (#411)."""
 
 import hashlib
 import os
