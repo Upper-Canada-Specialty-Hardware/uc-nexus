@@ -44,8 +44,9 @@ _wake_event: asyncio.Event | None = None
 # a *synchronous* caller in the threadpool can still run a sync pass: `/admin/reset-data` is a sync def
 # and must re-adopt every GP job right after it rebuilds the schema, but `run_once` talks to the relay
 # over that socket and may only be awaited on its own loop (#410). None until the lifespan task starts,
-# and it never starts when `enabled()` is False - callers treat that as "no sync available" and skip.
-_loop: "asyncio.AbstractEventLoop | None" = None
+# and cleared again when it stops - handing a coroutine to a loop that is no longer running never
+# completes, so a stale value here would block the reset for the whole timeout and then lie about why.
+_loop: asyncio.AbstractEventLoop | None = None
 
 
 def enabled() -> bool:
@@ -125,9 +126,13 @@ def run_once_blocking(timeout: float = RESET_SYNC_TIMEOUT_SECONDS) -> tuple[int,
 
     Returns (total, adopted), or None when no pass could run - sync disabled, no relay connected, the
     relay went away mid-pass, or it did not answer in time. Every one of those is a skip rather than a
-    failure: a reset must not fail because GP happened to be unreachable."""
+    failure: a reset must not fail because GP happened to be unreachable.
+
+    `enabled()` is re-checked here rather than inferred from `_loop` being None. The kill switch and
+    the loop handle are two different facts, and a caller that blocks for 90 seconds should not depend
+    on the lifespan wiring never changing."""
     loop = _loop
-    if loop is None or not relay_gateway.connected:
+    if not enabled() or loop is None or not loop.is_running() or not relay_gateway.connected:
         return None
     try:
         return asyncio.run_coroutine_threadsafe(run_once(), loop).result(timeout=timeout)
@@ -148,25 +153,31 @@ async def run_forever() -> None:
     _wake_event = asyncio.Event()
     _loop = asyncio.get_running_loop()
     logger.info("gp job sync started")
-    while True:
-        try:
-            if relay_gateway.connected and relay_gateway.company:
-                total, adopted = await run_once()
-                if adopted:
-                    logger.info("gp job sync: adopted %s of %s GP jobs", adopted, total)
-        except asyncio.CancelledError:
-            raise
-        except (RelayUnavailableError, RelayTimeoutError) as e:
-            # The relay went away between the guard above and the call, or mid-pass. Routine - relays
-            # restart, get updated, and flap - and the next tick retries. Logging a traceback for every
-            # relay restart would bury a real fault in noise.
-            logger.info("gp job sync: relay unavailable this pass (%s); retrying later", e.message)
-        except Exception:  # noqa: BLE001
-            logger.exception("gp job sync iteration failed")
+    try:
+        while True:
+            try:
+                if relay_gateway.connected and relay_gateway.company:
+                    total, adopted = await run_once()
+                    if adopted:
+                        logger.info("gp job sync: adopted %s of %s GP jobs", adopted, total)
+            except asyncio.CancelledError:
+                raise
+            except (RelayUnavailableError, RelayTimeoutError) as e:
+                # The relay went away between the guard above and the call, or mid-pass. Routine - relays
+                # restart, get updated, and flap - and the next tick retries. Logging a traceback for every
+                # relay restart would bury a real fault in noise.
+                logger.info("gp job sync: relay unavailable this pass (%s); retrying later", e.message)
+            except Exception:  # noqa: BLE001
+                logger.exception("gp job sync iteration failed")
 
-        try:
-            await asyncio.wait_for(_wake_event.wait(), timeout=POLL_SECONDS)
-        except TimeoutError:
-            pass
-        finally:
-            _wake_event.clear()
+            try:
+                await asyncio.wait_for(_wake_event.wait(), timeout=POLL_SECONDS)
+            except TimeoutError:
+                pass
+            finally:
+                _wake_event.clear()
+    finally:
+        # Shutdown, or the task being cancelled. Drop the handles so run_once_blocking skips instead of
+        # scheduling a coroutine onto a loop that will never run it.
+        _loop = None
+        _wake_event = None

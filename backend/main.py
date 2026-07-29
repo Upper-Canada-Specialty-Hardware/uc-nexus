@@ -353,12 +353,13 @@ def reset_data(request: Request):
 
     # The frontend alerts `message` verbatim, so it carries the summary; the fields below are for
     # anyone reading the response itself.
-    parts = [f"{count} {table}" for table, count in preserved.items() if count]
+    parts = reset_preservation.describe_counts(preserved)
     message = "Schema dropped and rebuilt"
     if parts:
         message += f". Preserved {', '.join(parts)}"
     if sync_result:
-        message += f". Re-adopted {sync_result[1]} of {sync_result[0]} GP jobs"
+        total, adopted = sync_result
+        message += f". Re-adopted {adopted} of {total} GP {'job' if total == 1 else 'jobs'}"
     else:
         message += ". GP job sync did not run, so projects were not re-adopted"
     if snap.buyer_project_pairs:

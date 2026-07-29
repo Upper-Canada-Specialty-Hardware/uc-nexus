@@ -14,7 +14,13 @@ from sqlalchemy import inspect as sa_inspect
 from app.models.buyer_assignment import BuyerAssignment
 from app.models.project import Project
 from app.models.relay_install import RelayInstall
-from app.services.reset_preservation import PRESERVED_MODELS, preserved_columns, snapshot_statement
+from app.services.reset_preservation import (
+    PRESERVED_LABELS,
+    PRESERVED_MODELS,
+    describe_counts,
+    preserved_columns,
+    snapshot_statement,
+)
 
 
 def _all_columns(model) -> list[str]:
@@ -101,9 +107,23 @@ def test_preserved_models_carry_json_columns():
     assert json_columns, "expected at least one JSON column among the preserved models"
 
 
+def test_every_preserved_model_has_a_human_label():
+    """The reset's `message` is alerted to the user verbatim, so a new preserved table must not leak its
+    raw table name into it."""
+    assert {m.__tablename__ for m in PRESERVED_MODELS} <= set(PRESERVED_LABELS)
+
+
+def test_counts_agree_in_number():
+    """One is singular. The reset used to render "1 relay_installs"."""
+    assert describe_counts({"relay_installs": 1, "warehouses": 3}) == ["1 relay install", "3 warehouses"]
+    # A table that preserved nothing is not worth a clause.
+    assert describe_counts({"relay_installs": 0, "warehouses": 2}) == ["2 warehouses"]
+
+
 def test_snapshot_statement_targets_the_models_own_table():
     """Sanity check that the derived SELECT reads the table it claims to - a wrong FROM would preserve
-    the wrong rows silently."""
+    the wrong rows silently. Asserted on the compiled FROM clause, not on a substring of the SQL: every
+    column is prefixed with its own table name, so a substring check can never fail."""
     for model in PRESERVED_MODELS:
         stmt = snapshot_statement(model, _all_columns(model))
-        assert sa_inspect(model).local_table.name in str(stmt)
+        assert stmt.get_final_froms() == [sa_inspect(model).local_table]

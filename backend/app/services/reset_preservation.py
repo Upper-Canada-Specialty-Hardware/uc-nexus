@@ -31,12 +31,14 @@ their original UUIDs.
 """
 
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
-from sqlalchemy import insert, select
+from sqlalchemy import Select, delete, insert, select
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.engine import Connection
 
+from app.models import Base
 from app.models.buyer_assignment import BuyerAssignment, buyer_assignment_projects
 from app.models.manufacturer_vendor_map import ManufacturerVendorMap
 from app.models.po_document_settings import PODocumentSettings
@@ -56,6 +58,17 @@ PRESERVED_MODELS = (
     PODocumentSettings,
 )
 
+# Human labels for the reset's summary line. `/admin/reset-data` returns `message` and the frontend
+# alerts it verbatim, so the counts have to agree in number and read as English rather than as table
+# names ("1 relay install", not "1 relay_installs").
+PRESERVED_LABELS: dict[str, tuple[str, str]] = {
+    "relay_installs": ("relay install", "relay installs"),
+    "warehouses": ("warehouse", "warehouses"),
+    "buyer_assignments": ("buyer assignment", "buyer assignments"),
+    "manufacturer_vendor_map": ("manufacturer/vendor mapping", "manufacturer/vendor mappings"),
+    "po_document_settings": ("PO document setting", "PO document settings"),
+}
+
 
 @dataclass
 class ResetSnapshot:
@@ -72,7 +85,7 @@ class ResetSnapshot:
         return {table: len(rows) for table, rows in self.rows.items()}
 
 
-def preserved_columns(model, live_column_names) -> list[str]:
+def preserved_columns(model: type[Base], live_column_names: Iterable[str]) -> list[str]:
     """The model's columns that the live table also has, in model declaration order.
 
     Pure function over names - the unit test for this needs no database. The intersection is the
@@ -83,7 +96,7 @@ def preserved_columns(model, live_column_names) -> list[str]:
     return [c.name for c in model.__table__.columns if c.name in live]
 
 
-def snapshot_statement(model, live_column_names):
+def snapshot_statement(model: type[Base], live_column_names: Iterable[str]) -> Select | None:
     """The SELECT that reads one preserved table, or None when nothing about it is preservable.
 
     Split out from `snapshot` so it can be asserted on without a database - it is the statement that
@@ -101,18 +114,28 @@ def snapshot(conn: Connection) -> ResetSnapshot:
     database: a table that isn't there yet is simply not preserved, which is exactly the state a reset
     exists to clear."""
     inspector = sa_inspect(conn)
+    # One round trip for the whole table list instead of a has_table call per model; this runs against
+    # managed Postgres over a network hop, where each extra round trip is a real cost.
+    live_tables = set(inspector.get_table_names())
     snap = ResetSnapshot()
 
     for model in PRESERVED_MODELS:
         table = model.__table__
-        if not inspector.has_table(table.name):
+        if table.name not in live_tables:
             continue
         stmt = snapshot_statement(model, [c["name"] for c in inspector.get_columns(table.name)])
         if stmt is None:
             continue
         snap.rows[table.name] = [dict(r) for r in conn.execute(stmt).mappings()]
 
-    if inspector.has_table(buyer_assignment_projects.name) and inspector.has_table(Project.__table__.name):
+    # Only worth collecting when the left-hand side of the link is itself preserved: a pair whose
+    # `buyer_assignments` row never comes back would fail the FK on relink, after the schema has already
+    # been rebuilt and committed.
+    if (
+        BuyerAssignment.__table__.name in snap.rows
+        and buyer_assignment_projects.name in live_tables
+        and Project.__table__.name in live_tables
+    ):
         projects = Project.__table__
         pairs = select(
             buyer_assignment_projects.c.buyer_assignment_id,
@@ -125,16 +148,38 @@ def snapshot(conn: Connection) -> ResetSnapshot:
 
 
 def restore(conn: Connection, snap: ResetSnapshot) -> dict[str, int]:
-    """Insert the snapshotted rows back into the rebuilt schema, original UUIDs intact.
+    """Put the snapshotted rows back into the rebuilt schema, original UUIDs intact. Returns the count
+    actually restored per table, which is not always the count snapshotted - see below.
 
-    Runs before anything can lazily seed a default row - `PODocumentSettings` in particular is read
-    through a get-or-create helper, so restoring first is what stops a defaults row being seeded
-    alongside the admin-edited one."""
+    **The snapshot wins over whatever the rebuild left in the table.** `alembic upgrade head` replays
+    every migration, and some of them seed the table they create: 033 seeds `warehouses` with Warden
+    and VP. Those seeds are the previous cycle's rows under fresh UUIDs, so inserting the snapshot on
+    top of them is a duplicate-key failure on `uq_warehouses_name`, not a merge. The same window lets
+    a concurrent read seed the single `po_document_settings` row through its get-or-create helper
+    before the restore lands. Clearing the table first makes the preserved rows authoritative in both
+    cases. A table the snapshot has nothing for is left alone, so a fresh database keeps its seeds.
+
+    **One table's failure must not take the others down.** Each table restores inside its own
+    SAVEPOINT: relay_installs is the row set whose loss means a GP outage until someone walks to the
+    workstation, and it must not be rolled back because some later table hit a constraint."""
+    restored: dict[str, int] = {}
     for model in PRESERVED_MODELS:
-        rows = snap.rows.get(model.__table__.name)
-        if rows:
-            conn.execute(insert(model.__table__), rows)
-    return snap.counts
+        table = model.__table__
+        rows = snap.rows.get(table.name)
+        if rows is None:
+            continue
+        restored[table.name] = 0
+        if not rows:
+            continue
+        try:
+            with conn.begin_nested():
+                conn.execute(delete(table))
+                conn.execute(insert(table), rows)
+        except Exception:  # noqa: BLE001 - one unrestorable table must not discard the rest
+            logger.exception("reset: could not restore %s; its %s preserved rows are lost", table.name, len(rows))
+            continue
+        restored[table.name] = len(rows)
+    return restored
 
 
 def relink_buyer_projects(conn: Connection, pairs: list[dict]) -> tuple[int, int]:
@@ -148,11 +193,27 @@ def relink_buyer_projects(conn: Connection, pairs: list[dict]) -> tuple[int, int
 
     projects = Project.__table__
     by_job = {row.project_id: row.id for row in conn.execute(select(projects.c.project_id, projects.c.id))}
+    # A buyer whose own row failed to restore has nothing to hang the link on; inserting anyway would
+    # fail the FK and 500 the reset after the schema is already rebuilt and committed.
+    live_buyers = {row.id for row in conn.execute(select(BuyerAssignment.__table__.c.id))}
     rows = [
         {"buyer_assignment_id": pair["buyer_assignment_id"], "project_id": by_job[pair["job_number"]]}
         for pair in pairs
-        if pair["job_number"] in by_job
+        if pair["job_number"] in by_job and pair["buyer_assignment_id"] in live_buyers
     ]
     if rows:
         conn.execute(insert(buyer_assignment_projects), rows)
     return len(rows), len(pairs) - len(rows)
+
+
+def describe_counts(counts: dict[str, int]) -> list[str]:
+    """ "1 relay install", "3 warehouses" - the pieces of the reset's summary line.
+
+    The endpoint's `message` is alerted to the user verbatim, so a count of one has to read as one."""
+    described = []
+    for table, count in counts.items():
+        if not count:
+            continue
+        singular, plural = PRESERVED_LABELS.get(table, (table, table))
+        described.append(f"{count} {singular if count == 1 else plural}")
+    return described
