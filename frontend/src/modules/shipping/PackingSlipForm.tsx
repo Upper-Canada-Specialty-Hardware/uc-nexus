@@ -16,6 +16,7 @@ import { extractGpError } from '../../graphql/gpError';
 import PackingSlipDocument from './PackingSlipDocument';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import { StaggerItem, StaggerList } from '../../motion';
+import { parseServerDate } from '../../utils/serverDate';
 
 interface PackingSlipFormProps {
   open: boolean;
@@ -204,7 +205,7 @@ export default function PackingSlipForm({ open, onClose, onShipped, projectId, p
           packingSlipNumber={result.packingSlipNumber}
           projectName={projectName}
           shippedBy={result.shippedBy}
-          shippedAt={new Date(result.shippedAt).toLocaleString()}
+          shippedAt={parseServerDate(result.shippedAt).toLocaleString()}
           openingItems={openingItems}
           looseItems={looseItems}
         />

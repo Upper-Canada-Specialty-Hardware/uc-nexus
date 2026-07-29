@@ -13,6 +13,7 @@ import { isStageable, type PullStagingOpening } from './pullStaging';
 import { leafIdentity } from '../../utils/leaf';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { FadeIn } from '../../motion';
+import { parseServerDate } from '../../utils/serverDate';
 
 function openingLabel(opening: PullStagingOpening): string {
   return leafIdentity(opening.openingNumber, opening.leaf);
@@ -20,7 +21,7 @@ function openingLabel(opening: PullStagingOpening): string {
 
 function formatDateTime(value: string | null): string {
   if (!value) return '';
-  return new Date(value).toLocaleString();
+  return parseServerDate(value).toLocaleString();
 }
 
 /** "1 leaf" / "3 leaves". A raw "leaf(s)" is a machine string, not something you say to a person. */

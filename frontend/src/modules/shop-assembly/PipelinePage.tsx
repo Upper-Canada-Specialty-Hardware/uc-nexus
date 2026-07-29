@@ -24,6 +24,7 @@ import { leafSuffix } from '../../utils/leaf';
 import { pipelineFlags, stageColor, stageLabel, stageProgress, unitProgressLabel } from './pipelineStages';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { FadeIn, springs } from '../../motion';
+import { parseServerDate } from '../../utils/serverDate';
 
 export interface PipelineSummary {
   requestId: string;
@@ -212,7 +213,7 @@ const columns: GridColDef[] = [
 
 function formatWhen(value: string | null): string {
   if (!value) return '-';
-  const date = new Date(value);
+  const date = parseServerDate(value);
   return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString();
 }
 

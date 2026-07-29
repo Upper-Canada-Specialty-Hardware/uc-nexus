@@ -13,6 +13,7 @@ import { X } from 'lucide-react';
 import { useQuery } from '@apollo/client/react';
 import { GET_AUDIT_LOG } from '../../graphql/shared';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
+import { parseServerDate } from '../../utils/serverDate';
 
 interface AuditLogEntry {
   id: string;
@@ -54,7 +55,7 @@ const ACTION_LABELS: Record<string, string> = {
 };
 
 function formatDateTime(dateStr: string): string {
-  return new Date(dateStr).toLocaleString();
+  return parseServerDate(dateStr).toLocaleString();
 }
 
 function formatLocation(loc: Record<string, unknown> | null | undefined): string {

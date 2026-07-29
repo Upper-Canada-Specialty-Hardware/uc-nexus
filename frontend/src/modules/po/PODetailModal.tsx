@@ -41,6 +41,7 @@ import { poVendorName } from './poVendorName';
 import { formatPoStatus, poStatusChipColor } from './poStatus';
 import { monoSx, tabularSx, microLabelSx } from '../../theme';
 import { FadeIn } from '../../motion';
+import { parseServerDate } from '../../utils/serverDate';
 
 const ICON = { size: 18, strokeWidth: 1.75 } as const;
 
@@ -59,13 +60,13 @@ function formatDate(dateStr: string | null | undefined): string {
   // Parse a date-only string (YYYY-MM-DD) as LOCAL midnight, not UTC, so it displays as entered
   // (same #238 fix as the PO-document code - `new Date('2026-08-01')` renders 7/31 behind UTC).
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr);
-  const d = m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(dateStr);
+  const d = m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : parseServerDate(dateStr);
   return isNaN(d.getTime()) ? EMPTY : d.toLocaleDateString();
 }
 
 function formatDateTime(dateStr: string | null | undefined): string {
   if (!dateStr) return EMPTY;
-  return new Date(dateStr).toLocaleString();
+  return parseServerDate(dateStr).toLocaleString();
 }
 
 function formatFileSize(bytes: number): string {

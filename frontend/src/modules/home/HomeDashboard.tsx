@@ -7,6 +7,7 @@ import { GET_HOME_DASHBOARD_STATS } from '../../graphql/home';
 import { GET_AUDIT_LOG } from '../../graphql/shared';
 import { microLabelSx, monoSx } from '../../theme';
 import { FadeIn, StaggerList, StaggerItem } from '../../motion';
+import { parseServerDate } from '../../utils/serverDate';
 
 interface HomeStatsData {
   homeDashboardStats: {
@@ -82,7 +83,7 @@ function prettify(value: string, capitalize: boolean): string {
 }
 
 function formatRelativeTime(iso: string): string {
-  const date = new Date(iso);
+  const date = parseServerDate(iso);
   const diffMs = Date.now() - date.getTime();
   const diffMin = Math.floor(diffMs / 60000);
   if (diffMin < 1) return 'just now';

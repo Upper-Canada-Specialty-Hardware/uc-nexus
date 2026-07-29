@@ -14,6 +14,7 @@ import { Bell, BellOff } from 'lucide-react';
 import { useQuery, useMutation } from '@apollo/client/react';
 import { GET_NOTIFICATIONS, MARK_NOTIFICATION_AS_READ } from '../graphql/shared';
 import { microLabelSx } from '../theme';
+import { parseServerDate } from '../utils/serverDate';
 
 interface Notification {
   id: string;
@@ -27,7 +28,7 @@ interface Notification {
 
 function formatTimeAgo(dateString: string): string {
   const now = new Date();
-  const date = new Date(dateString);
+  const date = parseServerDate(dateString);
   const seconds = Math.floor((now.getTime() - date.getTime()) / 1000);
 
   if (seconds < 60) return 'just now';

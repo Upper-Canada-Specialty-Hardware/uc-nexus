@@ -24,6 +24,7 @@ import { GET_OPEN_POS, GET_RECENT_RECEIVE_RECORDS } from '../../graphql/warehous
 import { poVendorName } from '../po/poVendorName';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { FadeIn } from '../../motion';
+import { parseServerDate } from '../../utils/serverDate';
 
 // ---- Types ----
 
@@ -66,11 +67,11 @@ interface RecentReceiveRecord {
 
 function formatDate(dateStr: string | null): string {
   if (!dateStr) return '\u2014';
-  return new Date(dateStr).toLocaleDateString();
+  return parseServerDate(dateStr).toLocaleDateString();
 }
 
 function formatDateTime(dateStr: string): string {
-  return new Date(dateStr).toLocaleString();
+  return parseServerDate(dateStr).toLocaleString();
 }
 
 function isOverdue(expectedDeliveryDate: string | null): boolean {
