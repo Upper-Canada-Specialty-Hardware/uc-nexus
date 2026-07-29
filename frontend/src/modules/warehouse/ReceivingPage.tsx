@@ -70,6 +70,8 @@ interface RecentReceiveRecord {
 interface BackOrderedItem {
   hardwareCategory: string;
   productCode: string;
+  orderedQuantity: number;
+  receivedQuantity: number;
   outstandingQuantity: number;
   poNumber: string | null;
   vendorName: string | null;
@@ -145,6 +147,11 @@ const backOrderColumns: GridColDef[] = [
     flex: 0.7,
     renderCell: (params) => <MonoCell value={params.value as string | null} />,
   },
+  // Ordered and Received beside Outstanding because the bare outstanding number does not say whether
+  // a line is untouched or nearly complete, and "2 of 10" and "2 of 3" are very different problems.
+  // The deleted Deliveries accordion was the only place this breakdown showed.
+  { field: 'orderedQuantity', headerName: 'Ordered', flex: 0.5, type: 'number' },
+  { field: 'receivedQuantity', headerName: 'Received', flex: 0.5, type: 'number' },
   { field: 'outstandingQuantity', headerName: 'Outstanding', flex: 0.6, type: 'number' },
   {
     field: 'expectedDeliveryDate',

@@ -345,7 +345,6 @@ export const GET_BACK_ORDERED_ITEMS = gql`
       orderedQuantity
       receivedQuantity
       outstandingQuantity
-      unitCost
       poNumber
       vendorName
       expectedDeliveryDate
