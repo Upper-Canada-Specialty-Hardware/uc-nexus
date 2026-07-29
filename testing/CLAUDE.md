@@ -46,10 +46,10 @@ with `relayInstalls { label enrolled enrolledAt lastSeenAt }` and the Railway ba
 - **The deploy log is what settles it.** A held-open socket silences the ~30s dial cadence for its
   whole duration, so look for a *gap*: an unbroken 403 cadence with no `[accepted]` line means the
   channel never came up. Read it across the whole life of the deployment, not a sample window.
-- **A 403 cadence that runs unbroken *through* the enrolment instant means a stale secret, and it
-  also exonerates the Fernet key.** `enroll_install` calls `encrypt_secret`, so a successful enrolment
-  proves `RELAY_SECRET_ENC_KEY` was valid at that moment; if auth still 403s seconds later, the
-  mismatch is in the secret, not the key. Usual cause: enrolment rewrote `[auth] shared_secret` in
+- **A 403 cadence that runs unbroken *through* the enrolment instant means a stale secret.**
+  `enroll_install` stores a SHA-256 hash of whatever secret the relay generated, so a successful
+  enrolment cannot leave the row wrong about it; if auth still 403s seconds later, the mismatch is in
+  the secret the relay is presenting. Usual cause: enrolment rewrote `[auth] shared_secret` in
   `config.toml` while the **already-running relay service kept dialling with its old in-memory
   secret**. It needs a *restart*, not another enrol. The relay's inbound server is bound to
   `127.0.0.1:7321`, so there is no remote restart — **but since #353 PR B there is a remote fix.**
@@ -59,9 +59,10 @@ with `relayInstalls { label enrolled enrolledAt lastSeenAt }` and the Railway ba
   then an accepted `/relay-link`. The adoption is stamped on the row as `adoptedAt` / `adoptedBy`.
 - The silent-decrypt path is gone (#352 logs the cause; #353 PR C removed the key from the
   authentication path entirely). Since migration `067` the relay secret is a SHA-256 hash, so a
-  rotated or missing `RELAY_SECRET_ENC_KEY` can no longer orphan a relay — if you still see a
-  `relay handshake rejected` line, read its `hash_rows` / `legacy_rows` / `encryption_key_present`
-  fields, which name the actual cause.
+  rotated or missing `RELAY_SECRET_ENC_KEY` can no longer orphan a relay. On a `relay handshake
+  rejected` line, read `hash_rows` and `cause`. Since #382 retired the key, `legacy_rows` is always 0
+  and `encryption_key_present` always false, so neither of those two distinguishes anything any more -
+  a false `encryption_key_present` is the healthy state now, not a config problem to chase.
 - `POST /admin/reset-data` **preserves** the `relay_installs` rows across the rebuild (#352), so a
   schema reset no longer orphans the on-prem relay.
 
