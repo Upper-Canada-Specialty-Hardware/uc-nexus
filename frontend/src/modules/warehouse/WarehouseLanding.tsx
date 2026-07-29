@@ -50,6 +50,7 @@ function buildDestinations(d: WarehouseDashboard | undefined): Destination[] {
       path: '/app/warehouse/deliveries',
       icon: <Truck size={18} strokeWidth={1.75} />,
       caption: 'Upcoming POs and outstanding lines',
+      metric: d ? { value: d.backOrderedCount, noun: 'back-ordered', attention: false } : undefined,
     },
     {
       label: 'Receiving',
@@ -84,7 +85,7 @@ function buildDestinations(d: WarehouseDashboard | undefined): Destination[] {
       icon: <TriangleAlert size={18} strokeWidth={1.75} />,
       caption: 'Resolve damaged and short-shipped units',
       metric: d
-        ? { value: d.backOrderedCount, noun: 'back-ordered', attention: d.backOrderedCount > 0 }
+        ? { value: d.deficientCount, noun: 'deficient', attention: d.deficientCount > 0 }
         : undefined,
     },
     {
