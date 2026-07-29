@@ -47,7 +47,7 @@ export default function GpBuyerSelect({
   helperText,
 }: GpBuyerSelectProps) {
   const [registerOpen, setRegisterOpen] = useState(false);
-  const { buyers, loading, company, relayStatus, unsupported, unavailable } = state;
+  const { buyers, loading, company, relayConnected, relayStatus, unsupported, unavailable } = state;
 
   const options: (GpBuyerOption | { buyerId: typeof REGISTER_NEW_ID; description: null })[] = useMemo(
     () => [...buyers, { buyerId: REGISTER_NEW_ID, description: null }],
@@ -72,13 +72,17 @@ export default function GpBuyerSelect({
     [onChange],
   );
 
-  const unavailableText = !company && relayStatus === null
-    ? 'Checking the GP relay…'
-    : unsupported
-      ? 'The connected relay is too old to list GP buyers. Update the relay, then reopen this.'
-      : state.relayConnected
-        ? 'Could not read the buyer list from GP, so this cannot be changed right now.'
-        : 'The GP relay is not connected, so this cannot be changed right now.';
+  // Ordered most-specific first. The null status is its own case rather than folded into the
+  // disconnected one: the first poll is still in flight, and reporting that as "not connected" would
+  // tell the user something is wrong during the second it takes to find out.
+  const unavailableText =
+    relayStatus === null
+      ? 'Checking the GP relay…'
+      : unsupported
+        ? 'The connected relay is too old to list GP buyers. Update the relay, then reopen this.'
+        : relayConnected
+          ? 'Could not read the buyer list from GP, so this cannot be changed right now.'
+          : 'The GP relay is not connected, so this cannot be changed right now.';
 
   return (
     <>
