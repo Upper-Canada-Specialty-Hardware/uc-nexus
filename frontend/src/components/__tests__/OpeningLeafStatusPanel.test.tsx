@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
 import OpeningLeafStatusPanel from '../OpeningLeafStatusPanel';
 import { GET_OPENING_LEAF_STATUS } from '../../graphql/shared';
@@ -101,6 +101,45 @@ describe('OpeningLeafStatusPanel', () => {
     await screen.findByText('Opening 101: 2 of 2 leaves assembled', undefined, SLOW);
     expect(screen.getByText('Opening 101: 0 of 2 leaves assembled')).toBeInTheDocument();
     expect(screen.getAllByText('Same')).toHaveLength(2);
+  });
+
+  it('windows a long project group and reveals the rest on demand', async () => {
+    const many = Array.from({ length: 35 }, (_, i) =>
+      row('p1', 'Alpha', `${1000 + i}`, [leaf(1, 'NOT_ASSEMBLED'), leaf(2, 'NOT_ASSEMBLED')]),
+    );
+    const mocks = [statusMock(null, many)];
+    render(
+      <MockedProvider mocks={mocks}>
+        <OpeningLeafStatusPanel mode="assembly" grouped />
+      </MockedProvider>,
+    );
+
+    await screen.findByText('Opening 1000: 0 of 2 leaves assembled', undefined, SLOW);
+    // Row 31 sits behind the tail button.
+    expect(screen.queryByText('Opening 1030: 0 of 2 leaves assembled')).toBeNull();
+    // The group header still tells the whole story.
+    expect(screen.getByText('0 of 70 leaves assembled')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show 5 more of 35' }));
+    expect(screen.getByText('Opening 1034: 0 of 2 leaves assembled')).toBeInTheDocument();
+  });
+
+  it('search filters across the window', async () => {
+    const many = Array.from({ length: 35 }, (_, i) =>
+      row('p1', 'Alpha', `${1000 + i}`, [leaf(1, 'NOT_ASSEMBLED'), leaf(2, 'NOT_ASSEMBLED')]),
+    );
+    const mocks = [statusMock(null, many)];
+    render(
+      <MockedProvider mocks={mocks}>
+        <OpeningLeafStatusPanel mode="assembly" grouped />
+      </MockedProvider>,
+    );
+
+    await screen.findByText('Opening 1000: 0 of 2 leaves assembled', undefined, SLOW);
+    fireEvent.change(screen.getByLabelText('Search opening number'), { target: { value: '1034' } });
+    // The match renders even though it sat past the window; the rest drop out.
+    expect(screen.getByText('Opening 1034: 0 of 2 leaves assembled')).toBeInTheDocument();
+    expect(screen.queryByText('Opening 1000: 0 of 2 leaves assembled')).toBeNull();
   });
 
   it('renders nothing when there are no pair openings', async () => {
