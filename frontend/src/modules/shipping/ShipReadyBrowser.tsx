@@ -4,9 +4,9 @@ import {
   Box,
   Button,
   Chip,
-  CircularProgress,
   InputAdornment,
   MenuItem,
+  Skeleton,
   Stack,
   Tab,
   Tabs,
@@ -221,9 +221,14 @@ function LeafStatusLedger({ projectId }: { projectId: string | undefined }) {
   }, [visible, grouped]);
 
   if (loading && !data) {
+    // Skeletons shaped like the rows they become, matching OpeningLeafStatusPanel's loading state
+    // (DESIGN.md: skeletons over spinners).
     return (
-      <Box sx={{ display: 'flex', justifyContent: 'center', py: 2 }}>
-        <CircularProgress size={20} />
+      <Box sx={{ mb: 2 }}>
+        <Skeleton width={110} height={14} sx={{ mb: 1 }} />
+        {Array.from({ length: 3 }).map((_, i) => (
+          <Skeleton key={i} height={26} sx={{ mb: 0.5, maxWidth: 480 }} />
+        ))}
       </Box>
     );
   }
