@@ -1,4 +1,4 @@
-"""Every gated resolver in the shop-assembly, stock and warehouse-pick surfaces calls its gate (#345).
+"""Gated resolvers call their gate before they act (#345, extended to the admin surface by #415).
 
 Auth in this codebase is **opt-in per resolver** (CLAUDE.md): there is no middleware to catch a
 resolver that forgets, and `get_context` only stashes the request. That makes a dropped
@@ -13,33 +13,51 @@ makes the resolver return (or fail differently) and the test goes red on that re
 
 `shopAssemblyMembers` and the manager branch of `assignOpenings` are role-gated rather than
 user-gated; both gates are pinned.
+
+This file pins gates one at a time and proves the gate runs *first*, which is what a monkeypatched
+sentinel can show and a source scan cannot. It says nothing about resolvers nobody thought to list -
+that is `test_resolver_gate_completeness.py`, which walks every resolver in `app/schemas/` and fails
+on any that never asks. The two are complements: this one is depth, that one is coverage.
 """
 
 import uuid
 
 import pytest
 
+from app.schemas import admin as admin_module
+from app.schemas import dashboard as dashboard_module
 from app.schemas import gp_outbox as gp_outbox_module
 from app.schemas import relay as relay_module
 from app.schemas import shop_assembly as shop_assembly_module
 from app.schemas import stock as stock_module
+from app.schemas import user as user_module
+from app.schemas import vendor as vendor_module
 from app.schemas import warehouse as warehouse_module
+from app.schemas.admin import AdminQueries
+from app.schemas.dashboard import DashboardQueries
 from app.schemas.enums import DeficiencyResolution
 from app.schemas.gp_outbox import GpOutboxMutations, GpOutboxQueries
 from app.schemas.inputs import (
     AssignOpeningsInput,
     CompleteOpeningInput,
+    CreateVendorInput,
+    CreateWarehouseInput,
     InstallReplacementInput,
+    OverrideInventoryQuantityInput,
     PickLineInput,
     RecordAssemblyProgressInput,
     ReportDeficiencyAtAssemblyInput,
     ReportInventoryDeficiencyInput,
     ReportStockDeficiencyInput,
     ResolveDeficiencyInput,
+    UpdateVendorInput,
+    UpdateWarehouseInput,
 )
 from app.schemas.relay import RelayMutations, RelayQueries
 from app.schemas.shop_assembly import ShopAssemblyMutations, ShopAssemblyQueries
 from app.schemas.stock import StockMutations
+from app.schemas.user import UserMutations, UserQueries
+from app.schemas.vendor import VendorMutations
 from app.schemas.warehouse import WarehouseMutations, WarehouseQueries
 
 
@@ -195,6 +213,23 @@ _USER_GATED = [
         warehouse_module,
         lambda: WarehouseMutations().set_pull_item_fetched(FakeInfo(), _id(), True, "picker"),
     ),
+    # Both of these are reached from non-admin screens through a component that happens to live under
+    # modules/admin/, so they are user-gated and pinned here rather than in _ADMIN_GATED. Pinning the
+    # gate they actually use is what stops a future "tidy-up" from promoting them to require_admin and
+    # silently breaking a PO user's vendor add or the warehouse's count correction.
+    (
+        "createVendor",
+        vendor_module,
+        lambda: VendorMutations().create_vendor(FakeInfo(), CreateVendorInput(name="V")),
+    ),
+    (
+        "overrideInventoryQuantity",
+        warehouse_module,
+        lambda: WarehouseMutations().override_inventory_quantity(
+            FakeInfo(),
+            OverrideInventoryQuantityInput(inventory_location_id=_id(), new_quantity=1, reason_text="r"),
+        ),
+    ),
 ]
 
 
@@ -218,6 +253,66 @@ _ADMIN_GATED = [
         "cancelGpOutboxEntry",
         gp_outbox_module,
         lambda: GpOutboxMutations().cancel_gp_outbox_entry(FakeInfo(), _id()),
+    ),
+    # #415. All four user.py resolvers shipped with no gate at all. `updateUserRoles` is the one that
+    # matters most: it grants Admin/Manager, the role every other entry in this list is gated on, so
+    # an ungated copy is a self-service escalation into all of them. `users` returns every account's
+    # email, roles and GP buyer id.
+    ("users", user_module, lambda: UserQueries().users(FakeInfo())),
+    (
+        "updateUserRoles",
+        user_module,
+        lambda: UserMutations().update_user_roles(FakeInfo(), "user_1", ["Admin/Manager"]),
+    ),
+    (
+        "updateUserName",
+        user_module,
+        lambda: UserMutations().update_user_name(FakeInfo(), "user_1", "First", "Last"),
+    ),
+    (
+        "updateUserGpBuyerId",
+        user_module,
+        lambda: UserMutations().update_user_gp_buyer_id(FakeInfo(), "user_1", "donr"),
+    ),
+    # #415 sweep: the rest of the admin-only surface, all of it previously ungated. The warehouse and
+    # vendor writes are the ones with teeth - an anonymous caller could delete a warehouse, rewrite an
+    # inventory row's quantity outright, or merge every item at one location into another.
+    (
+        "openingHardwareStatus",
+        admin_module,
+        lambda: AdminQueries().opening_hardware_status(FakeInfo()),
+    ),
+    ("adminStats", dashboard_module, lambda: DashboardQueries().admin_stats(FakeInfo())),
+    (
+        "updateVendor",
+        vendor_module,
+        lambda: VendorMutations().update_vendor(FakeInfo(), _id(), UpdateVendorInput(name="V")),
+    ),
+    ("deleteVendor", vendor_module, lambda: VendorMutations().delete_vendor(FakeInfo(), _id())),
+    (
+        "locationDuplicates",
+        warehouse_module,
+        lambda: WarehouseQueries().location_duplicates(FakeInfo()),
+    ),
+    (
+        "mergeLocations",
+        warehouse_module,
+        lambda: WarehouseMutations().merge_locations(FakeInfo(), "A", "1", "1", "B", "2", "2"),
+    ),
+    (
+        "createWarehouse",
+        warehouse_module,
+        lambda: WarehouseMutations().create_warehouse(FakeInfo(), CreateWarehouseInput(name="W", code="W1")),
+    ),
+    (
+        "updateWarehouse",
+        warehouse_module,
+        lambda: WarehouseMutations().update_warehouse(FakeInfo(), _id(), UpdateWarehouseInput(name="W")),
+    ),
+    (
+        "deleteWarehouse",
+        warehouse_module,
+        lambda: WarehouseMutations().delete_warehouse(FakeInfo(), _id()),
     ),
 ]
 

@@ -245,15 +245,19 @@ def _persist_register_po(
 class POQueries:
     @strawberry.field
     def purchase_orders(
-        self, project_id: strawberry.ID | None = None, status: POStatus | None = None
+        self, info: strawberry.Info, project_id: strawberry.ID | None = None, status: POStatus | None = None
     ) -> list[PurchaseOrder]:
+        require_user(info)
         with SessionLocal() as session:
             pid = uuid.UUID(str(project_id)) if project_id else None
             pos = po_repository.get_purchase_orders(session, pid, status)
             return [po_to_type(po) for po in pos]
 
     @strawberry.field
-    def po_document_download_url(self, document_id: strawberry.ID) -> str:
+    def po_document_download_url(self, info: strawberry.Info, document_id: strawberry.ID) -> str:
+        """Mints a presigned S3 URL, so the gate is the only thing standing between an anonymous
+        caller and a supplier PO document (#415)."""
+        require_user(info)
         from app.services import storage
 
         with SessionLocal() as session:
@@ -261,7 +265,8 @@ class POQueries:
             return storage.generate_presigned_url(doc.s3_key)
 
     @strawberry.field
-    def purchase_order(self, id: strawberry.ID) -> PurchaseOrder | None:
+    def purchase_order(self, info: strawberry.Info, id: strawberry.ID) -> PurchaseOrder | None:
+        require_user(info)
         with SessionLocal() as session:
             po = po_repository.get_purchase_order(session, uuid.UUID(str(id)))
             if po is None:
@@ -299,15 +304,18 @@ class POQueries:
     @strawberry.field
     def prior_order_as_values(
         self,
+        info: strawberry.Info,
         vendor_id: strawberry.ID,
         product_codes: list[str],
     ) -> list[PriorOrderAsForProduct]:
+        require_user(info)
         with SessionLocal() as session:
             result = po_repository.get_prior_order_as_values(session, uuid.UUID(str(vendor_id)), product_codes)
             return [PriorOrderAsForProduct(product_code=pc, values=vals) for pc, vals in result.items()]
 
     @strawberry.field
-    def po_statistics(self, project_id: strawberry.ID | None = None) -> POStatistics:
+    def po_statistics(self, info: strawberry.Info, project_id: strawberry.ID | None = None) -> POStatistics:
+        require_user(info)
         with SessionLocal() as session:
             stats = po_repository.get_po_statistics(session, uuid.UUID(str(project_id)) if project_id else None)
             return POStatistics(
@@ -321,7 +329,8 @@ class POQueries:
             )
 
     @strawberry.field
-    def open_p_os(self, project_id: strawberry.ID | None = None) -> list[PurchaseOrder]:
+    def open_p_os(self, info: strawberry.Info, project_id: strawberry.ID | None = None) -> list[PurchaseOrder]:
+        require_user(info)
         with SessionLocal() as session:
             pos = po_repository.get_open_pos(session, uuid.UUID(str(project_id)) if project_id else None)
             return [po_to_type(po) for po in pos]
@@ -491,6 +500,7 @@ class POMutations:
     @strawberry.mutation
     def update_po(
         self,
+        info: strawberry.Info,
         id: strawberry.ID,
         vendor_id: strawberry.ID | None = None,
         expected_delivery_date: date | None = None,
@@ -503,6 +513,7 @@ class POMutations:
         shipping_cost: float | None = strawberry.UNSET,
         tariff_amount: float | None = strawberry.UNSET,
     ) -> PurchaseOrder:
+        require_user(info)
         from app.repositories.po_repository import _UNSET
 
         pid = uuid.UUID(str(project_id)) if project_id else _UNSET
@@ -525,7 +536,8 @@ class POMutations:
             return po_to_type(po_repository.reload_po(session, po.id))
 
     @strawberry.mutation
-    def mark_po_as_ordered(self, id: strawberry.ID) -> PurchaseOrder:
+    def mark_po_as_ordered(self, info: strawberry.Info, id: strawberry.ID) -> PurchaseOrder:
+        require_user(info)
         with SessionLocal() as session:
             po = po_repository.mark_po_as_ordered(session, uuid.UUID(str(id)))
             session.commit()
@@ -533,7 +545,8 @@ class POMutations:
             return po_to_type(po)
 
     @strawberry.mutation
-    def cancel_po(self, id: strawberry.ID) -> PurchaseOrder:
+    def cancel_po(self, info: strawberry.Info, id: strawberry.ID) -> PurchaseOrder:
+        require_user(info)
         with SessionLocal() as session:
             po = po_repository.cancel_po(session, uuid.UUID(str(id)))
             session.commit()
@@ -541,7 +554,10 @@ class POMutations:
             return po_to_type(po)
 
     @strawberry.mutation
-    def update_po_line_item_order_as(self, id: strawberry.ID, order_as: str | None = None) -> POLineItem:
+    def update_po_line_item_order_as(
+        self, info: strawberry.Info, id: strawberry.ID, order_as: str | None = None
+    ) -> POLineItem:
+        require_user(info)
         with SessionLocal() as session:
             poli = po_repository.update_line_item_order_as(session, uuid.UUID(str(id)), order_as)
             session.commit()
@@ -549,7 +565,8 @@ class POMutations:
             return po_line_item_to_type(poli)
 
     @strawberry.mutation
-    def update_po_line_item_unit_cost(self, id: strawberry.ID, unit_cost: float) -> POLineItem:
+    def update_po_line_item_unit_cost(self, info: strawberry.Info, id: strawberry.ID, unit_cost: float) -> POLineItem:
+        require_user(info)
         with SessionLocal() as session:
             poli = po_repository.update_line_item_unit_cost(session, uuid.UUID(str(id)), unit_cost)
             session.commit()
@@ -560,12 +577,14 @@ class POMutations:
     @strawberry.mutation
     def upload_po_document(
         self,
+        info: strawberry.Info,
         po_id: strawberry.ID,
         file_name: str,
         content_type: str,
         document_type: PODocumentType,
         file_data_base64: str,
     ) -> PODocumentInfo:
+        require_user(info)
         from app.models.enums import PODocumentType as PODocTypeDB
 
         with SessionLocal() as session:
@@ -582,7 +601,8 @@ class POMutations:
             return po_document_to_type(doc)
 
     @strawberry.mutation
-    def delete_po_document(self, document_id: strawberry.ID) -> bool:
+    def delete_po_document(self, info: strawberry.Info, document_id: strawberry.ID) -> bool:
+        require_user(info)
         with SessionLocal() as session:
             po_repository.delete_po_document(session, uuid.UUID(str(document_id)))
             session.commit()
