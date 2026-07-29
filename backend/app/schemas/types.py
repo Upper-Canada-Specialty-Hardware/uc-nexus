@@ -199,6 +199,18 @@ class GpCustomer:
 
 
 @strawberry.type
+class GpEmployee:
+    """A GP payroll employee (UPR00100) read live via the relay, for the create-job estimator and
+    WS manager pickers (#392). The job proc validates both against this master, so these cannot be
+    free text - a value that isn't here is rejected with "The estimator does not exist in the payroll
+    master table"."""
+
+    employee_id: str
+    first_name: str | None
+    last_name: str | None
+
+
+@strawberry.type
 class GpCustomerAddress:
     """One address code on a GP customer (RM00102), for the create-job job/bill-to address pickers
     (#380). Scoped to a single customer: the job proc validates an address code against that
@@ -221,6 +233,19 @@ class GpTaxSchedule:
 
     tax_schedule_id: str
     description: str | None
+
+
+@strawberry.type
+class CreateGpJobResult:
+    """The outcome of createGpJob (#392).
+
+    `created` distinguishes the two ways this mutation succeeds. Normally GP creates the job and
+    `created` is true. But when GP already holds that job number the mutation adopts it instead of
+    dead-ending (the retry-after-ambiguous-failure path), and the caller has to be able to tell -
+    otherwise the UI reports a creation that never happened."""
+
+    project: "Project"
+    created: bool
 
 
 @strawberry.type

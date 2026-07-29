@@ -190,6 +190,13 @@ def _run_list_tax_schedules(company: str, payload: dict) -> dict:
     return {"company": company, "tax_schedules": rows}
 
 
+def _run_list_employees(company: str, payload: dict) -> dict:
+    ops.check_company_allowed(company)
+    with db.get_read_connection(company) as conn:
+        rows = econnect.list_employees(conn)
+    return {"company": company, "employees": rows}
+
+
 def _run_list_divisions(company: str, payload: dict) -> dict:
     ops.check_company_allowed(company)
     with db.get_read_connection(company) as conn:
@@ -238,6 +245,9 @@ _OPS = {
     "list_tax_schedules": _run_list_tax_schedules,
     "list_divisions": _run_list_divisions,
     "create_job": _run_create_job,
+    # issue #392 - estimator / WS manager are validated against the payroll master, so they need a
+    # picker rather than free text.
+    "list_employees": _run_list_employees,
 }
 
 

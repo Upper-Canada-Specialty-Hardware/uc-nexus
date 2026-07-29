@@ -668,6 +668,36 @@ def list_customers(conn, *, active_only: bool = True) -> list[dict]:
     return [{"customer_number": r.customer_number, "customer_name": r.customer_name or None} for r in rows]
 
 
+def list_employees(conn, *, active_only: bool = True) -> list[dict]:
+    """Read-only: the payroll employee master UPR00100, for the create-job estimator and WS manager
+    pickers (#392).
+
+    wsiJCJobMaster validates both against this table - a made-up EstimatorID comes back as "The
+    estimator does not exist in the payroll master table." (error state 51117) - so #380's free-text
+    fields could only ever be guessed right. EMPLOYID is char(15), the same width as JC00102's
+    Estimator_ID and WS_Manager_ID.
+
+    INACTIVE = 0 by default, the same rule as list_customers / list_vendors / list_divisions: never
+    offer a choice that can only fail validation. There is no WennSoft-specific estimator master;
+    JC90102 carries WS_Estimator_Name and WS_Manager_Name, but that is denormalized reporting output."""
+    sql = (
+        "SELECT RTRIM(EMPLOYID) AS employee_id, RTRIM(FRSTNAME) AS first_name, "
+        "RTRIM(LASTNAME) AS last_name FROM dbo.UPR00100 "
+    )
+    if active_only:
+        sql += "WHERE INACTIVE = 0 "
+    sql += "ORDER BY LASTNAME, FRSTNAME"
+    rows = conn.cursor().execute(sql).fetchall()
+    return [
+        {
+            "employee_id": r.employee_id,
+            "first_name": r.first_name or None,
+            "last_name": r.last_name or None,
+        }
+        for r in rows
+    ]
+
+
 def get_job(conn, job_number: str) -> dict | None:
     """Read-only: one job's stored record from JC00102, or None. Used as the read-back after a create
     (issue #380) so the response carries GP's OWN job number and name rather than the request echoed

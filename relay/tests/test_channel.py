@@ -223,6 +223,12 @@ def test_list_tax_schedules_routes_to_econnect(monkeypatch):
     assert reply == {"ok": True, "result": {"company": "TUBC", "tax_schedules": [{"tax_schedule_id": "GST 5%"}]}}
 
 
+def test_list_employees_routes_to_econnect(monkeypatch):
+    monkeypatch.setattr(econnect, "list_employees", lambda conn: [{"employee_id": "IANB"}])
+    reply = channel._dispatch("list_employees", "TUBC", {})
+    assert reply == {"ok": True, "result": {"company": "TUBC", "employees": [{"employee_id": "IANB"}]}}
+
+
 def test_list_divisions_routes_to_econnect(monkeypatch):
     monkeypatch.setattr(econnect, "list_divisions", lambda conn: ["VANCOUVER"])
     reply = channel._dispatch("list_divisions", "TUBC", {})

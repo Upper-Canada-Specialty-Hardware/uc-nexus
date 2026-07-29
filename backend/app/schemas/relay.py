@@ -17,6 +17,7 @@ from .converters import (
     gp_cost_code_to_type,
     gp_customer_address_to_type,
     gp_customer_to_type,
+    gp_employee_to_type,
     gp_job_to_type,
     gp_tax_detail_to_type,
     gp_tax_schedule_to_type,
@@ -28,6 +29,7 @@ from .types import (
     GpCostCode,
     GpCustomer,
     GpCustomerAddress,
+    GpEmployee,
     GpJob,
     GpPoTotals,
     GpTaxDetail,
@@ -136,6 +138,15 @@ class RelayQueries:
         require_user(info)
         result = await relay_gateway.relay_call(company, "list_customer_addresses", {"customer": customer})
         return [gp_customer_address_to_type(a) for a in result["addresses"]]
+
+    @strawberry.field
+    async def gp_employees(self, info: strawberry.Info, company: str) -> list[GpEmployee]:
+        """Live payroll employee master (UPR00100) via the connected relay, for the create-job
+        estimator and WS manager pickers (#392). The job proc validates both against this master, so
+        they cannot be free text."""
+        require_user(info)
+        result = await relay_gateway.relay_call(company, "list_employees")
+        return [gp_employee_to_type(e) for e in result["employees"]]
 
     @strawberry.field
     async def gp_tax_schedules(self, info: strawberry.Info, company: str) -> list[GpTaxSchedule]:

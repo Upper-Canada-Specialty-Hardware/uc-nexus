@@ -203,6 +203,17 @@ class TaxSchedulesResponse(BaseModel):
     tax_schedules: list[TaxScheduleOut]
 
 
+class EmployeeOut(BaseModel):
+    employee_id: str                # GP EMPLOYID (UPR00100), what Estimator_ID / WS_Manager_ID hold
+    first_name: str | None = None   # GP FRSTNAME
+    last_name: str | None = None    # GP LASTNAME
+
+
+class EmployeesResponse(BaseModel):
+    company: str
+    employees: list[EmployeeOut]
+
+
 class DivisionsResponse(BaseModel):
     company: str
     # WennSoft divisions with division accounts set up. Bare strings: neither JCDivisionSETP nor

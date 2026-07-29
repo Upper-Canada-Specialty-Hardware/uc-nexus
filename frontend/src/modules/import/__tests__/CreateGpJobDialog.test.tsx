@@ -8,6 +8,7 @@ import {
   GET_GP_CUSTOMERS,
   GET_GP_CUSTOMER_ADDRESSES,
   GET_GP_DIVISIONS,
+  GET_GP_EMPLOYEES,
   GET_GP_TAX_SCHEDULES,
 } from '../../../graphql/import';
 import { GET_PROJECTS, GET_RELAY_STATUS } from '../../../graphql/shared';
@@ -55,6 +56,18 @@ const readMocks: MockedResponse[] = [
     result: { data: { gpDivisions: ['VANCOUVER'] } },
   },
   {
+    request: { query: GET_GP_EMPLOYEES, variables: { company: COMPANY } },
+    maxUsageCount: INFINITE,
+    result: {
+      data: {
+        gpEmployees: [
+          { employeeId: 'IANB', firstName: 'Ian', lastName: 'Brown', __typename: 'GpEmployee' },
+          { employeeId: 'JONATHANR', firstName: 'Jonathan', lastName: 'Ruballos', __typename: 'GpEmployee' },
+        ],
+      },
+    },
+  },
+  {
     request: { query: GET_GP_TAX_SCHEDULES, variables: { company: COMPANY } },
     maxUsageCount: INFINITE,
     result: {
@@ -90,16 +103,17 @@ const readMocks: MockedResponse[] = [
       },
     },
   },
-  {
-    request: { query: GET_PROJECTS },
-    maxUsageCount: INFINITE,
-    result: { data: { projects: [] } },
-  },
 ];
+
+const projectsMock: MockedResponse = {
+  request: { query: GET_PROJECTS },
+  maxUsageCount: INFINITE,
+  result: { data: { projects: [] } },
+};
 
 function renderDialog(mocks: MockedResponse[] = [], { connected = true } = {}) {
   return render(
-    <MockedProvider mocks={[relayStatusMock(connected), ...readMocks, ...mocks]}>
+    <MockedProvider mocks={[relayStatusMock(connected), ...readMocks, projectsMock, ...mocks]}>
       <ToastProvider>
         <CreateGpJobDialog open onClose={() => {}} />
       </ToastProvider>
@@ -183,7 +197,7 @@ test('a relay too old for the new ops says so instead of showing empty dropdowns
   // The deploy-before-relay-rebuild window: the four reads are not in the installed relay's
   // advertised op-set. Without this the dialog renders a green relay chip over empty required
   // dropdowns and a permanently disabled button, with nothing explaining why.
-  const unsupported: MockedResponse[] = [GET_GP_CUSTOMERS, GET_GP_DIVISIONS, GET_GP_TAX_SCHEDULES].map((query) => ({
+  const unsupported: MockedResponse[] = [GET_GP_CUSTOMERS, GET_GP_DIVISIONS, GET_GP_TAX_SCHEDULES, GET_GP_EMPLOYEES].map((query) => ({
     request: { query, variables: { company: COMPANY } },
     maxUsageCount: INFINITE,
     result: {
@@ -196,7 +210,7 @@ test('a relay too old for the new ops says so instead of showing empty dropdowns
   }));
 
   render(
-    <MockedProvider mocks={[relayStatusMock(true), ...unsupported, readMocks[4]]}>
+    <MockedProvider mocks={[relayStatusMock(true), ...unsupported, projectsMock]}>
       <ToastProvider>
         <CreateGpJobDialog open onClose={() => {}} />
       </ToastProvider>
@@ -207,14 +221,14 @@ test('a relay too old for the new ops says so instead of showing empty dropdowns
 });
 
 test('a failed GP read is reported rather than looking like an empty list', async () => {
-  const failing: MockedResponse[] = [GET_GP_CUSTOMERS, GET_GP_DIVISIONS, GET_GP_TAX_SCHEDULES].map((query) => ({
+  const failing: MockedResponse[] = [GET_GP_CUSTOMERS, GET_GP_DIVISIONS, GET_GP_TAX_SCHEDULES, GET_GP_EMPLOYEES].map((query) => ({
     request: { query, variables: { company: COMPANY } },
     maxUsageCount: INFINITE,
     result: { errors: [new GraphQLError('relay timed out')] },
   }));
 
   render(
-    <MockedProvider mocks={[relayStatusMock(true), ...failing, readMocks[4]]}>
+    <MockedProvider mocks={[relayStatusMock(true), ...failing, projectsMock]}>
       <ToastProvider>
         <CreateGpJobDialog open onClose={() => {}} />
       </ToastProvider>
@@ -222,6 +236,59 @@ test('a failed GP read is reported rather than looking like an empty list', asyn
   );
 
   expect(await screen.findByText(/Could not read the job setup data from GP/i)).toBeInTheDocument();
+});
+
+test('an adopted job does not claim it was created', async () => {
+  // #392: GP already held the number, so createGpJob adopted rather than created. Saying "created"
+  // there reports something that did not happen.
+  const adopted: MockedResponse = {
+    request: {
+      query: CREATE_GP_JOB,
+      variables: {
+        input: {
+          jobNumber: 'NEXUS-380-T1',
+          jobName: 'Test job',
+          division: 'VANCOUVER',
+          customerNumber: 'ELL100',
+          jobAddressCode: 'MAIN',
+          billtoAddressCode: 'MAIN',
+          taxScheduleId: 'GST 5%',
+          createdDate: '2025-09-15',
+          estimatorId: null,
+          wsManagerId: null,
+          wsProjectNumber: null,
+          billCustomerNumber: null,
+          useTaxSchedule: null,
+          scheduleStartDate: null,
+          scheduledCompletionDate: null,
+          bidDueDate: null,
+        },
+      },
+    },
+    result: {
+      data: {
+        createGpJob: {
+          created: false,
+          project: {
+            id: 'project-1',
+            projectId: 'NEXUS-380-T1',
+            description: 'Test job',
+            client: null,
+            jobSiteName: null,
+            __typename: 'Project',
+          },
+          __typename: 'CreateGpJobResult',
+        },
+      },
+    },
+  };
+
+  renderDialog([adopted]);
+  await fillRequired();
+  await waitFor(() => expect(createButton()).toBeEnabled());
+  fireEvent.click(createButton());
+
+  expect(await screen.findByText(/already existed in GP and is now a project/)).toBeInTheDocument();
 });
 
 test('the whole form is disabled while the relay is down', async () => {
@@ -296,7 +363,7 @@ test('a successful submit sends only the optional fields that were filled in', a
           billtoAddressCode: 'MAIN',
           taxScheduleId: 'GST 5%',
           createdDate: '2025-09-15',
-          estimatorId: 'EST1',
+          estimatorId: 'IANB',
           scheduleStartDate: '2025-09-20',
           wsManagerId: null,
           wsProjectNumber: null,
@@ -310,12 +377,16 @@ test('a successful submit sends only the optional fields that were filled in', a
     result: {
       data: {
         createGpJob: {
-          id: 'project-1',
-          projectId: 'NEXUS-380-T1',
-          description: 'Test job',
-          client: null,
-          jobSiteName: null,
-          __typename: 'Project',
+          created: true,
+          project: {
+            id: 'project-1',
+            projectId: 'NEXUS-380-T1',
+            description: 'Test job',
+            client: null,
+            jobSiteName: null,
+            __typename: 'Project',
+          },
+          __typename: 'CreateGpJobResult',
         },
       },
     },
@@ -325,7 +396,7 @@ test('a successful submit sends only the optional fields that were filled in', a
   await fillRequired();
 
   fireEvent.click(screen.getByRole('button', { name: /Show optional fields/i }));
-  typeInto(/^Estimator ID/, 'EST1');
+  await pickFromSelect(/^Estimator/, /IANB/);
   typeInto(/^Scheduled start/, '2025-09-20');
 
   await waitFor(() => expect(createButton()).toBeEnabled());

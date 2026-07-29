@@ -188,6 +188,20 @@ def test_gp_tax_schedules_maps_relay_result_to_type(monkeypatch):
     assert fake.calls == [("TUBC", "list_tax_schedules", None)]
 
 
+def test_gp_employees_maps_relay_result_to_type(monkeypatch):
+    fake = _install_fake_gateway(
+        monkeypatch,
+        {"employees": [{"employee_id": "IANB", "first_name": "Ian", "last_name": "Brown"}]},
+    )
+
+    async def run():
+        return await Query().gp_employees(FakeInfo(), company="TUBC")
+
+    employees = asyncio.run(run())
+    assert [(e.employee_id, e.first_name, e.last_name) for e in employees] == [("IANB", "Ian", "Brown")]
+    assert fake.calls == [("TUBC", "list_employees", None)]
+
+
 def test_gp_divisions_passes_through_the_relay_list(monkeypatch):
     fake = _install_fake_gateway(monkeypatch, {"divisions": ["VANCOUVER"]})
 

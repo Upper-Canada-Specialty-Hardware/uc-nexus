@@ -149,6 +149,18 @@ export const GET_GP_CUSTOMER_ADDRESSES = gql`
   }
 `;
 
+// Issue #392: the job proc validates Estimator/WS Manager against the payroll master, so they are
+// pickers, not free text.
+export const GET_GP_EMPLOYEES = gql`
+  query GetGpEmployees($company: String!) {
+    gpEmployees(company: $company) {
+      employeeId
+      firstName
+      lastName
+    }
+  }
+`;
+
 export const GET_GP_TAX_SCHEDULES = gql`
   query GetGpTaxSchedules($company: String!) {
     gpTaxSchedules(company: $company) {
@@ -164,14 +176,19 @@ export const GET_GP_DIVISIONS = gql`
   }
 `;
 
+// Issue #392: `created` distinguishes GP actually creating the job from the mutation adopting one GP
+// already held, so the toast can stop claiming a creation that did not happen.
 export const CREATE_GP_JOB = gql`
   mutation CreateGpJob($input: CreateGpJobInput!) {
     createGpJob(input: $input) {
-      id
-      projectId
-      description
-      client
-      jobSiteName
+      created
+      project {
+        id
+        projectId
+        description
+        client
+        jobSiteName
+      }
     }
   }
 `;

@@ -22,6 +22,7 @@ import {
   GET_GP_CUSTOMERS,
   GET_GP_CUSTOMER_ADDRESSES,
   GET_GP_DIVISIONS,
+  GET_GP_EMPLOYEES,
   GET_GP_TAX_SCHEDULES,
 } from '../../graphql/import';
 import { GET_PROJECTS } from '../../graphql/shared';
@@ -50,13 +51,24 @@ interface GpTaxScheduleOption {
   description: string | null;
 }
 
+interface GpEmployeeOption {
+  employeeId: string;
+  firstName: string | null;
+  lastName: string | null;
+}
+
+function employeeLabel(e: GpEmployeeOption): string {
+  const name = [e.firstName, e.lastName].filter(Boolean).join(' ');
+  return name ? `${e.employeeId} - ${name}` : e.employeeId;
+}
+
 interface CreateGpJobDialogProps {
   open: boolean;
   onClose: () => void;
 }
 
 /** GP column widths, so an over-length value is caught in the field rather than by the proc. */
-const MAX = { jobNumber: 17, jobName: 31, projectNumber: 17, id: 15 };
+const MAX = { jobNumber: 17, jobName: 31, projectNumber: 17 };
 
 /**
  * Today in LOCAL time. Deliberately not toISOString().slice(0, 10), which is UTC: west of Greenwich
@@ -102,6 +114,7 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
   const [optionalOpen, setOptionalOpen] = useState(false);
   const [estimatorId, setEstimatorId] = useState('');
   const [wsManagerId, setWsManagerId] = useState('');
+  // #392: both are GP payroll employee ids, validated by the proc, so they are selects.
   const [wsProjectNumber, setWsProjectNumber] = useState('');
   const [billCustomer, setBillCustomer] = useState<GpCustomerOption | null>(null);
   const [useTaxSchedule, setUseTaxSchedule] = useState('');
@@ -150,6 +163,16 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
     skip: readsSkipped,
     fetchPolicy: 'cache-first',
   });
+  const {
+    data: employeesData,
+    loading: employeesLoading,
+    error: employeesError,
+    refetch: refetchEmployees,
+  } = useQuery<{ gpEmployees: GpEmployeeOption[] }>(GET_GP_EMPLOYEES, {
+    variables: { company },
+    skip: readsSkipped,
+    fetchPolicy: 'cache-first',
+  });
 
   // Addresses are per-customer: the proc validates a code against THAT customer's addresses, so this
   // re-fetches on every customer change and the two address selects stay disabled until one is picked.
@@ -177,6 +200,7 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
     fetchPolicy: 'cache-first',
   });
 
+  const employees = useMemo(() => employeesData?.gpEmployees ?? [], [employeesData]);
   const customers = useMemo(() => customersData?.gpCustomers ?? [], [customersData]);
   const divisions = useMemo(() => divisionsData?.gpDivisions ?? [], [divisionsData]);
   const taxSchedules = useMemo(() => taxSchedulesData?.gpTaxSchedules ?? [], [taxSchedulesData]);
@@ -190,21 +214,28 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
   // A failed read is NOT an empty list. Without this the deploy-before-relay-rebuild window (the four
   // ops are not in an older relay's advertised op-set) renders a green relay chip over three empty
   // required dropdowns and a button that can never enable, with nothing saying why.
-  const readError = customersError ?? divisionsError ?? taxSchedulesError ?? addressesError ?? null;
-  const readsUnsupported = [customersError, divisionsError, taxSchedulesError, addressesError].some((e) =>
-    isRelayOpUnsupported(e),
-  );
+  const readError =
+    customersError ?? divisionsError ?? taxSchedulesError ?? employeesError ?? addressesError ?? null;
+  const readsUnsupported = [
+    customersError,
+    divisionsError,
+    taxSchedulesError,
+    employeesError,
+    addressesError,
+  ].some((e) => isRelayOpUnsupported(e));
 
   const refreshReads = useCallback(() => {
     void refetchCustomers();
     void refetchDivisions();
     void refetchTaxSchedules();
+    void refetchEmployees();
     if (customer) void refetchAddresses();
-  }, [refetchCustomers, refetchDivisions, refetchTaxSchedules, refetchAddresses, customer]);
+  }, [refetchCustomers, refetchDivisions, refetchTaxSchedules, refetchEmployees, refetchAddresses, customer]);
 
-  const [createGpJob, { loading }] = useMutation<{ createGpJob: Project }>(CREATE_GP_JOB, {
-    refetchQueries: [{ query: GET_PROJECTS }],
-  });
+  const [createGpJob, { loading }] = useMutation<{ createGpJob: { created: boolean; project: Project } }>(
+    CREATE_GP_JOB,
+    { refetchQueries: [{ query: GET_PROJECTS }] },
+  );
 
   const requiredComplete =
     jobNumber.trim() !== '' &&
@@ -284,7 +315,7 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
     const blankToNull = (v: string) => (v.trim() === '' ? null : v.trim());
 
     try {
-      await createGpJob({
+      const response = await createGpJob({
         variables: {
           input: {
             jobNumber: jobNumber.trim(),
@@ -306,7 +337,15 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
           },
         },
       });
-      showToast(`Job ${jobNumber.trim()} created in GP.`, 'success');
+      // #392: GP may not have created anything - when it already held the job number the mutation
+      // adopts it instead, and saying "created" there would report something that did not happen.
+      const created = response.data?.createGpJob?.created !== false;
+      showToast(
+        created
+          ? `Job ${jobNumber.trim()} created in GP.`
+          : `Job ${jobNumber.trim()} already existed in GP and is now a project.`,
+        'success',
+      );
       handleClose();
     } catch (err) {
       // GP's own words - a closed fiscal period, an address code not on the customer, a division with
@@ -530,25 +569,45 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
 
           <Collapse in={optionalOpen} unmountOnExit>
             <Stack spacing={2}>
+              {/* #392: GP validates both against the payroll master, so typing a name only ever
+                  earns "The estimator does not exist in the payroll master table". */}
               <Stack direction="row" spacing={2}>
                 <TextField
-                  label="Estimator ID"
+                  select
+                  label="Estimator"
                   value={estimatorId}
                   onChange={(e) => setEstimatorId(e.target.value)}
-                  disabled={disabled}
+                  disabled={disabled || employeesLoading}
                   size="small"
                   sx={{ flex: 1 }}
-                  slotProps={{ input: { sx: monoSx }, htmlInput: { maxLength: MAX.id } }}
-                />
+                >
+                  <MenuItem value="">
+                    <em>None</em>
+                  </MenuItem>
+                  {employees.map((e) => (
+                    <MenuItem key={e.employeeId} value={e.employeeId}>
+                      {employeeLabel(e)}
+                    </MenuItem>
+                  ))}
+                </TextField>
                 <TextField
-                  label="WS Manager ID"
+                  select
+                  label="WS Manager"
                   value={wsManagerId}
                   onChange={(e) => setWsManagerId(e.target.value)}
-                  disabled={disabled}
+                  disabled={disabled || employeesLoading}
                   size="small"
                   sx={{ flex: 1 }}
-                  slotProps={{ input: { sx: monoSx }, htmlInput: { maxLength: MAX.id } }}
-                />
+                >
+                  <MenuItem value="">
+                    <em>None</em>
+                  </MenuItem>
+                  {employees.map((e) => (
+                    <MenuItem key={e.employeeId} value={e.employeeId}>
+                      {employeeLabel(e)}
+                    </MenuItem>
+                  ))}
+                </TextField>
               </Stack>
 
               <TextField
