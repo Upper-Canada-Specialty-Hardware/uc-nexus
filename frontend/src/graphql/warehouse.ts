@@ -390,6 +390,7 @@ export const GET_WAREHOUSE_DASHBOARD = gql`
       pendingPullShipping
       receivedLast7Days
       backOrderedCount
+      deficientCount
     }
   }
 `;
