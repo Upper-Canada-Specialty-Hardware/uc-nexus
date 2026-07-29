@@ -119,6 +119,42 @@ def test_gp_buyers_returns_relay_result_directly(monkeypatch):
     assert fake.calls == [("TUBC", "list_buyers", None)]
 
 
+def test_gp_buyers_detailed_maps_relay_result_to_type(monkeypatch):
+    fake = _install_fake_gateway(
+        monkeypatch,
+        {"buyers": [{"buyer_id": "donr", "description": "Don Roberton"}, {"buyer_id": "mira"}]},
+    )
+
+    async def run():
+        return await Query().gp_buyers_detailed(FakeInfo(), company="TUBC")
+
+    buyers = asyncio.run(run())
+    assert [(b.buyer_id, b.description) for b in buyers] == [("donr", "Don Roberton"), ("mira", None)]
+    # list_buyers_detailed, not list_buyers - the bare-id op still backs the Create PO dropdown
+    assert fake.calls == [("TUBC", "list_buyers_detailed", None)]
+
+
+def test_gp_buyers_detailed_requires_an_admin(monkeypatch):
+    # gp_buyers (bare ids) stays require_user; the descriptions are a staff roster by another name.
+    from app.auth import AuthError
+
+    def _deny(info):
+        raise AuthError("Admin role required")
+
+    monkeypatch.setattr(relay_module, "require_admin", _deny)
+
+    async def _never(*a, **k):
+        raise AssertionError("the relay must not be called for a non-admin")
+
+    monkeypatch.setattr(relay_module, "relay_gateway", type("G", (), {"relay_call": staticmethod(_never)})())
+
+    async def run():
+        return await Query().gp_buyers_detailed(FakeInfo(), company="TUBC")
+
+    with pytest.raises(AuthError):
+        asyncio.run(run())
+
+
 def test_gp_cost_codes_maps_relay_result_to_type(monkeypatch):
     fake = _install_fake_gateway(
         monkeypatch,

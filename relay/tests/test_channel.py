@@ -287,6 +287,50 @@ def test_create_job_invalid_payload_translates_cleanly():
     assert reply["error"]["error"] == "invalid_payload"
 
 
+# --- buyer ops (issue #409) ---
+
+
+def test_list_buyers_detailed_routes_to_econnect(monkeypatch):
+    monkeypatch.setattr(
+        econnect,
+        "list_buyers_detailed",
+        lambda conn: [{"buyer_id": "donr", "description": "Don Roberton"}],
+    )
+    reply = channel._dispatch("list_buyers_detailed", "TUBC", {})
+    assert reply == {
+        "ok": True,
+        "result": {"company": "TUBC", "buyers": [{"buyer_id": "donr", "description": "Don Roberton"}]},
+    }
+
+
+def test_create_buyer_success_returns_the_response_body(monkeypatch):
+    from ucnexus_relay.models import CreateBuyerResponse
+
+    def _fake(conn, *, company, request):
+        return CreateBuyerResponse(company=company, buyer_id=request.buyer_id, description=request.description)
+
+    monkeypatch.setattr(ops, "create_buyer_op", _fake)
+    reply = channel._dispatch("create_buyer", "TUBC", {"buyer_id": "newbuyer", "description": "New Buyer"})
+    assert reply["ok"] is True
+    assert reply["result"] == {"company": "TUBC", "buyer_id": "newbuyer", "description": "New Buyer"}
+
+
+def test_create_buyer_already_exists_translates_cleanly(monkeypatch):
+    def _raise(conn, *, company, request):
+        raise ops.RelayOpError("buyer_already_exists", "buyer 'donr' is already registered in GP company TUBC")
+
+    monkeypatch.setattr(ops, "create_buyer_op", _raise)
+    reply = channel._dispatch("create_buyer", "TUBC", {"buyer_id": "donr"})
+    assert reply["ok"] is False
+    assert reply["error"]["error"] == "buyer_already_exists"
+
+
+def test_create_buyer_invalid_payload_translates_cleanly():
+    reply = channel._dispatch("create_buyer", "TUBC", {"buyer_id": "   "})
+    assert reply["ok"] is False
+    assert reply["error"]["error"] == "invalid_payload"
+
+
 def test_hello_frame_advertises_build_and_the_full_op_set():
     # Issue #315: the relay's connect frame carries its build tag and exact op-set so the backend can gate
     # a call for an op this build lacks. The op list must mirror channel._OPS - a new op added there is

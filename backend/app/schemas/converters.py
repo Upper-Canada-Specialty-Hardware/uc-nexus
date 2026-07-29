@@ -17,6 +17,7 @@ from .types import (
     ClerkUser,
     DeficiencyReview,
     DeficientItemRow,
+    GpBuyer,
     GpCostCode,
     GpCustomer,
     GpCustomerAddress,
@@ -179,6 +180,10 @@ def gp_vendor_to_type(v: dict) -> GpVendor:
         # relay doesn't break the vendor dropdown.
         currency=v.get("currency") or "CAD",
     )
+
+
+def gp_buyer_to_type(b: dict) -> GpBuyer:
+    return GpBuyer(buyer_id=b["buyer_id"], description=b.get("description"))
 
 
 def gp_cost_code_to_type(c: dict) -> GpCostCode:

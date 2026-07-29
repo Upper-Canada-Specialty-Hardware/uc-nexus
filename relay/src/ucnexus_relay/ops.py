@@ -260,6 +260,41 @@ def create_job_op(conn, *, company: str, request: models.CreateJobRequest) -> mo
     )
 
 
+def create_buyer_op(conn, *, company: str, request: models.CreateBuyerRequest) -> models.CreateBuyerResponse:
+    """Register a GP buyer (issue #409): pre-check, create, read back. The caller commits.
+
+    Same three-beat shape as create_job_op, for the same reasons. taCreateBuyer does reject a
+    duplicate on its own (error state 2684), but it does so from inside the proc, and this turns that
+    into a clean buyer_already_exists the dialog can show. It also makes a retry after an ambiguous
+    failure safe: if the first attempt committed and the reply was lost, the retry says "already
+    registered" instead of surfacing a raw eConnect state for something that already worked.
+
+    The read-back guards the err=0-but-nothing-landed case and answers with GP's stored row, which is
+    what the buyer dropdowns will show on their next refetch. It goes through econnect.get_buyer, so
+    it normalizes the id exactly as the buyer_exists pre-check does - a Python match against the whole
+    buyer master would disagree with the pre-check on case and roll back a create that worked."""
+    if econnect.buyer_exists(conn, request.buyer_id):
+        raise RelayOpError(
+            "buyer_already_exists",
+            f"buyer '{request.buyer_id}' is already registered in GP company {company} (POP00101)",
+        )
+
+    econnect.create_buyer(conn, buyer_id=request.buyer_id, description=request.description)
+
+    created = econnect.get_buyer(conn, request.buyer_id)
+    if created is None:
+        raise econnect.EConnectError(
+            f"taCreateBuyer reported success but buyer {request.buyer_id} is not in POP00101",
+            proc="taCreateBuyer",
+        )
+
+    return models.CreateBuyerResponse(
+        company=company,
+        buyer_id=created["buyer_id"],
+        description=created["description"],
+    )
+
+
 def create_receipt_op(conn, *, company: str, request: models.ReceiptRequest) -> models.ReceiptResponse:
     """Receive against a PO. Reads the PO's lines from POP10110, then: taGetPurchReceiptNextNumber ->
     taPopRcptLineInsert x N -> taPopRcptHdrInsert, and (for companies with a paired custom DB) inserts
