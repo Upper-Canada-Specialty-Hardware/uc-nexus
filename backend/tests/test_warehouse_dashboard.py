@@ -54,11 +54,24 @@ def test_deficient_count_sums_project_inventory_and_stock_pool(db_session):
             received_at=now,
         )
     )
-    # Project inventory row with 3 deficient units.
+    # Project inventory row with 3 deficient units. Rows need an origin
+    # (ck_inventory_locations_has_origin), so back it with a stock item the way allocation does.
+    origin = StockItem(
+        id=uuid.uuid4(),
+        warehouse_id=warehouse_id,
+        hardware_category="LOCK",
+        product_code="LK-DEF",
+        quantity=4,
+        deficient_quantity=0,
+        received_at=now,
+    )
+    session.add(origin)
+    session.flush()
     session.add(
         InventoryLocation(
             id=uuid.uuid4(),
             project_id=project.id,
+            stock_item_id=origin.id,
             warehouse_id=warehouse_id,
             hardware_category="LOCK",
             product_code="LK-DEF",
