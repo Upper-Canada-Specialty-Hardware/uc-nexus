@@ -142,9 +142,11 @@ def test_over_length_description_is_rejected(monkeypatch):
 
 def test_an_already_registered_buyer_surfaces_the_relays_own_message(monkeypatch):
     _as_admin(monkeypatch)
+    # Shaped as relay/errors.py error_body() builds it: {error, message, context}, always all three.
     detail = {
         "error": "buyer_already_exists",
         "message": "buyer 'donr' is already registered in GP company TUBC (POP00101)",
+        "context": {},
     }
     _relay(monkeypatch, raises=RelayCallError(detail["message"], detail=detail))
 
@@ -159,10 +161,22 @@ def test_an_already_registered_buyer_surfaces_the_relays_own_message(monkeypatch
 
 def test_a_gp_refusal_surfaces_with_its_detail_intact(monkeypatch):
     _as_admin(monkeypatch)
-    detail = {"error": "econnect_error", "message": "taCreateBuyer failed", "proc": "taCreateBuyer", "error_state": 1}
-    _relay(monkeypatch, raises=RelayCallError("taCreateBuyer failed", detail=detail))
+    # relay/errors.py econnect_error_body() nests the proc, the numeric state and its taErrorCode
+    # description under `context` - that is the shape GpErrorAlert reads (error.relay.context.proc),
+    # so asserting against a flattened one would prove nothing about what the alert renders.
+    detail = {
+        "error": "econnect_error",
+        "message": "Unable to insert into the Buyer Master Table - POP00101",
+        "context": {
+            "proc": "taCreateBuyer",
+            "error_state": 2683,
+            "error_description": "Unable to insert into the Buyer Master Table - POP00101",
+        },
+    }
+    _relay(monkeypatch, raises=RelayCallError(detail["message"], detail=detail))
 
     with pytest.raises(ValidationError) as exc:
         _create()
 
-    assert exc.value.detail["proc"] == "taCreateBuyer"
+    assert exc.value.detail["context"]["proc"] == "taCreateBuyer"
+    assert exc.value.detail["context"]["error_state"] == 2683

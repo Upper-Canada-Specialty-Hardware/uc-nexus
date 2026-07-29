@@ -270,7 +270,9 @@ def create_buyer_op(conn, *, company: str, request: models.CreateBuyerRequest) -
     registered" instead of surfacing a raw eConnect state for something that already worked.
 
     The read-back guards the err=0-but-nothing-landed case and answers with GP's stored row, which is
-    what the buyer dropdowns will show on their next refetch."""
+    what the buyer dropdowns will show on their next refetch. It goes through econnect.get_buyer, so
+    it normalizes the id exactly as the buyer_exists pre-check does - a Python match against the whole
+    buyer master would disagree with the pre-check on case and roll back a create that worked."""
     if econnect.buyer_exists(conn, request.buyer_id):
         raise RelayOpError(
             "buyer_already_exists",
@@ -279,10 +281,7 @@ def create_buyer_op(conn, *, company: str, request: models.CreateBuyerRequest) -
 
     econnect.create_buyer(conn, buyer_id=request.buyer_id, description=request.description)
 
-    created = next(
-        (b for b in econnect.list_buyers_detailed(conn) if b["buyer_id"] == request.buyer_id),
-        None,
-    )
+    created = econnect.get_buyer(conn, request.buyer_id)
     if created is None:
         raise econnect.EConnectError(
             f"taCreateBuyer reported success but buyer {request.buyer_id} is not in POP00101",

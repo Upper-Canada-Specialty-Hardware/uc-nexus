@@ -7,7 +7,14 @@ import strawberry
 
 from app.auth import require_admin, require_user
 from app.database import SessionLocal
-from app.errors import ConflictError, NotFoundError, RelayCallError, RelayUnavailableError, ValidationError
+from app.errors import (
+    ConflictError,
+    NotFoundError,
+    RelayCallError,
+    RelayUnavailableError,
+    ValidationError,
+    validation_error_from_relay,
+)
 from app.models.relay_install import RelayInstall
 from app.repositories import relay_repository
 from app.services import relay_adopt
@@ -297,10 +304,8 @@ class RelayMutations:
         except RelayCallError as e:
             # GP said no, or the id is already registered. Either way the relay words it better than a
             # generic failure would, and the detail body carries the proc + error state the dialog's
-            # error alert renders.
-            error = ValidationError(str(e.message))
-            error.detail = e.detail
-            raise error from e
+            # error alert renders - which is what validation_error_from_relay preserves.
+            raise validation_error_from_relay(e) from e
 
         # GP's stored row, read back from POP00101 by the relay rather than the request echoed back.
         # That row is what gpBuyersDetailed will serve on its next refetch, so answering with anything

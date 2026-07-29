@@ -175,17 +175,26 @@ class CreateBuyerRequest(BaseModel):
     therefore the binding one."""
 
     company: str
-    buyer_id: str = Field(..., max_length=15)
-    description: str = Field(default="", max_length=30)
+    buyer_id: str
+    description: str = ""
 
     @model_validator(mode="after")
     def normalize(self):
-        """Trim both, then reject a blank id. A whitespace-only BUYERID would land in POP00101 as the
-        blank buyer that list_buyers explicitly filters out - registered, invisible, unusable."""
+        """Trim both, reject a blank id, then bound the trimmed values. A whitespace-only BUYERID would
+        land in POP00101 as the blank buyer that list_buyers explicitly filters out - registered,
+        invisible, unusable.
+
+        The widths are checked here rather than through Field(max_length=...) because a Field
+        constraint runs BEFORE this validator, so it would measure the padding too and reject a padded
+        value that trims to a perfectly legal id."""
         self.buyer_id = (self.buyer_id or "").strip()
         if not self.buyer_id:
             raise ValueError("buyer_id is required")
+        if len(self.buyer_id) > 15:
+            raise ValueError("buyer_id is at most 15 characters (BUYERID is char(15))")
         self.description = (self.description or "").strip()
+        if len(self.description) > 30:
+            raise ValueError("description is at most 30 characters (taCreateBuyer's DSCRIPTN is char(30))")
         return self
 
 

@@ -2,7 +2,7 @@ import { useCallback, useMemo, useState } from 'react';
 import { Autocomplete, Box, TextField } from '@mui/material';
 import RegisterGpBuyerDialog from './RegisterGpBuyerDialog';
 import type { GpBuyerOption, GpBuyersState } from './useGpBuyers';
-import { monoSx } from '../../theme';
+import { FONT_MONO, monoSx } from '../../theme';
 
 const REGISTER_NEW_ID = '__register_new__';
 
@@ -49,17 +49,20 @@ export default function GpBuyerSelect({
   const [registerOpen, setRegisterOpen] = useState(false);
   const { buyers, loading, company, relayConnected, relayStatus, unsupported, unavailable } = state;
 
-  const options: (GpBuyerOption | { buyerId: typeof REGISTER_NEW_ID; description: null })[] = useMemo(
-    () => [...buyers, { buyerId: REGISTER_NEW_ID, description: null }],
-    [buyers],
-  );
-
   // A value set before this dropdown existed (or by an older relay's list) still has to show. Without
   // this the field would render empty over a link that is really there, which reads as "not set".
   const selected = useMemo(
     () => buyers.find((b) => b.buyerId === value) ?? (value ? { buyerId: value, description: null } : null),
     [buyers, value],
   );
+
+  // The held value joins the option list when the live list doesn't carry it - the relay-down case
+  // above. MUI matches `value` against `options` and warns "None of the options match" otherwise, on
+  // every render of exactly the path this component exists to support.
+  const options: (GpBuyerOption | { buyerId: typeof REGISTER_NEW_ID; description: null })[] = useMemo(() => {
+    const held = selected && !buyers.some((b) => b.buyerId === selected.buyerId) ? [selected] : [];
+    return [...held, ...buyers, { buyerId: REGISTER_NEW_ID, description: null }];
+  }, [buyers, selected]);
 
   const handleChange = useCallback(
     (_: unknown, option: GpBuyerOption | { buyerId: string } | null) => {
@@ -121,6 +124,9 @@ export default function GpBuyerSelect({
             label={label}
             size="small"
             helperText={unavailable ? unavailableText : helperText}
+            // The id reads mono in the option list, in the Buyers grid and in the User Management
+            // grid; the selected value has to match or the same BUYERID renders in two faces.
+            sx={{ '& .MuiInputBase-input': { fontFamily: FONT_MONO } }}
           />
         )}
         sx={sx}

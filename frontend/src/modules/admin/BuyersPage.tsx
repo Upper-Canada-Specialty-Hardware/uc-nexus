@@ -284,13 +284,34 @@ export default function BuyersPage() {
         </Box>
 
         {gpBuyers.unavailable ? (
-          <Alert severity="warning" sx={{ mt: 1 }}>
-            {gpBuyers.unsupported
-              ? 'The connected relay is too old to list GP buyers. Update the relay on that workstation, then reload this page.'
-              : gpBuyers.relayConnected
-                ? `Could not read the buyer master from GP. ${gpBuyers.error?.message ?? ''}`
-                : 'The GP relay is not connected, so the buyer master cannot be read or added to.'}
-          </Alert>
+          // Same three-way state GpBuyerSelect words, in the same order. The null relay status is its
+          // own case: it is the first poll still in flight, and reporting that as "not connected" puts
+          // a warning on every load of this page during the second it takes to find out.
+          gpBuyers.relayStatus === null ? (
+            <Typography variant="body2" color="text.secondary">
+              Checking the GP relay&hellip;
+            </Typography>
+          ) : (
+            <Alert
+              severity="warning"
+              sx={{ mt: 1 }}
+              // A failed read is sticky - nothing re-runs the buyer query on its own, so without this
+              // one GP timeout locks the panel and both buyer pickers until the page is remounted.
+              action={
+                gpBuyers.relayConnected && !gpBuyers.unsupported ? (
+                  <Button color="inherit" size="small" onClick={gpBuyers.refetch}>
+                    Retry
+                  </Button>
+                ) : undefined
+              }
+            >
+              {gpBuyers.unsupported
+                ? 'The connected relay is too old to list GP buyers. Update the relay on that workstation, then reload this page.'
+                : gpBuyers.relayConnected
+                  ? `Could not read the buyer master from GP. ${gpBuyers.error?.message ?? ''}`
+                  : 'The GP relay is not connected, so the buyer master cannot be read or added to.'}
+            </Alert>
+          )
         ) : gpBuyers.buyers.length === 0 && !gpBuyers.loading ? (
           <Typography variant="body2" color="text.secondary">
             No buyers are registered in this GP company yet.

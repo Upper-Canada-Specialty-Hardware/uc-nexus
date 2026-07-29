@@ -610,6 +610,26 @@ def buyer_exists(conn, buyer_id: str) -> bool:
     return row.n > 0
 
 
+def get_buyer(conn, buyer_id: str) -> dict | None:
+    """Read-only: one buyer's stored row from POP00101, or None. Used as the read-back after a create
+    (#409) so the response carries GP's OWN id and description rather than the request echoed back -
+    DSCRIPTN is char(31) on the table and char(30) on the proc, so a longer description is truncated
+    on write and the request no longer describes the row. Doubles as proof the row actually landed.
+
+    Matched the same way buyer_exists matches (RTRIM'd column, stripped argument, SQL comparison) so
+    the pre-check and the read-back agree about what counts as the same buyer - a Python `==` against
+    list_buyers_detailed would disagree with the pre-check on case, and would roll back a create that
+    actually succeeded."""
+    row = conn.cursor().execute(
+        "SELECT RTRIM(BUYERID) AS buyer_id, RTRIM(DSCRIPTN) AS description "
+        "FROM dbo.POP00101 WHERE RTRIM(BUYERID) = ?",
+        buyer_id.strip(),
+    ).fetchone()
+    if row is None:
+        return None
+    return {"buyer_id": row.buyer_id, "description": row.description or None}
+
+
 def create_buyer(conn, *, buyer_id: str, description: str = "") -> None:
     """Register a GP buyer through eConnect's taCreateBuyer (#409) - the same thing GP's Buyer
     Maintenance window does, so an admin no longer has to open GP just to add one.

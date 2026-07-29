@@ -20,8 +20,10 @@ type ClerkUser {
   roles: [String!]!
   # The GP BUYERID this account acts as (#216). Null until an admin links it; createPo and
   # registerPoInGp enforce that the caller has one. Since #409 the admin picks it from GP's live
-  # buyer master (Query.gpBuyersDetailed) rather than typing it, so an id that was never registered
-  # in GP can no longer be saved here - taPoHdr would have rejected it at PO time anyway (error 269).
+  # buyer master (Query.gpBuyersDetailed) rather than typing it, so the UI no longer offers an id GP
+  # never registered - taPoHdr would reject that one at PO time anyway (error 269). Note the guard is
+  # the picker, not this mutation: updateUserGpBuyerId still accepts any string, and rows written as
+  # free text before #409 are unmigrated, which is why the Buyers grid flags unregistered ids.
   gp_buyer_id: String
   image_url: String!
 }

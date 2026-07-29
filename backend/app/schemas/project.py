@@ -8,7 +8,13 @@ import strawberry
 
 from app.auth import require_admin
 from app.database import SessionLocal
-from app.errors import ConflictError, NotFoundError, RelayCallError, RelayUnavailableError, ValidationError
+from app.errors import (
+    ConflictError,
+    NotFoundError,
+    RelayCallError,
+    RelayUnavailableError,
+    validation_error_from_relay,
+)
 from app.repositories import project_repository
 from app.services import gp_job_sync
 from app.services.relay_gateway import gateway as relay_gateway
@@ -18,19 +24,6 @@ from .inputs import CreateGpJobInput, UpdateProjectInput
 from .types import CreateGpJobResult, GpJobSyncResult, Project, ProjectShipTo
 
 logger = logging.getLogger(__name__)
-
-
-def _validation_error_from(e: RelayCallError) -> ValidationError:
-    """Turn a relay refusal into a ValidationError that still carries the relay's error body.
-
-    main.py's ErrorHandlerExtension publishes `extensions.relayError` from whatever `.detail` the
-    raised error has, and ValidationError has no such field - so converting the error plainly would
-    strip the GP proc, the error state and the taErrorCode description on the way to the browser, and
-    the dialog's GpErrorAlert would render an empty detail table. That table is the whole point of
-    #187: error screenshots are how these get reported."""
-    error = ValidationError(str(e.message))
-    error.detail = e.detail
-    return error
 
 
 def _load_project(job_number: str) -> Project:
@@ -158,7 +151,7 @@ class ProjectMutations:
             # GP said no - a closed fiscal period, an address code that isn't on the customer, a
             # division without accounts. The proc words those better than we could, so the message is
             # passed through to the dialog rather than replaced with a generic failure.
-            raise _validation_error_from(e) from e
+            raise validation_error_from_relay(e) from e
 
         # GP's own record of what it created, read back from JC00102 by the relay - not the input
         # echoed back (see ops.create_job_op).

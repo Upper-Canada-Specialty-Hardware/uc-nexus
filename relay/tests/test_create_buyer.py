@@ -15,6 +15,7 @@ from ucnexus_relay.econnect import EConnectError, create_buyer
 
 _ExecRow = namedtuple("_ExecRow", "error_state err_string")
 _CountRow = namedtuple("_CountRow", "n")
+_BuyerRow = namedtuple("_BuyerRow", "buyer_id description")
 
 
 class _FakeCursor:
@@ -30,14 +31,18 @@ class _FakeCursor:
     def fetchone(self):
         if "taCreateBuyer" in self._sql:
             return _ExecRow(self._conn.error_state, self._conn.err_string)
-        return _CountRow(self._conn.buyer_count)  # the buyer_exists pre-check
+        if "COUNT(*)" in self._sql:
+            return _CountRow(self._conn.buyer_count)  # the buyer_exists pre-check
+        # the get_buyer read-back
+        return None if self._conn.buyer_row is None else _BuyerRow(*self._conn.buyer_row)
 
 
 class _FakeConn:
-    def __init__(self, *, error_state=0, err_string="", buyer_count=0):
+    def __init__(self, *, error_state=0, err_string="", buyer_count=0, buyer_row=None):
         self.error_state = error_state
         self.err_string = err_string
         self.buyer_count = buyer_count
+        self.buyer_row = buyer_row
         self.calls: list[tuple[str, tuple]] = []
 
     def cursor(self):
@@ -91,7 +96,7 @@ def test_proc_error_raises_carrying_the_error_state():
     assert exc.value.proc_message is None
 
 
-# --- econnect.buyer_exists / list_buyers_detailed ---
+# --- econnect.buyer_exists / get_buyer ---
 
 
 def test_buyer_exists_strips_the_argument():
@@ -108,6 +113,22 @@ def test_buyer_exists_is_false_when_absent():
     assert econnect.buyer_exists(conn, "nobody") is False
 
 
+def test_get_buyer_matches_the_id_in_sql_like_the_pre_check_does():
+    # The read-back has to normalize the id the SAME way buyer_exists does - RTRIM'd column, stripped
+    # argument, comparison left to SQL - or the two gates disagree about what is the same buyer and a
+    # create that worked gets rolled back as "reported success but not in POP00101".
+    conn = _FakeConn(buyer_row=("donr", "Don Roberton"))
+    assert econnect.get_buyer(conn, "  donr  ") == {"buyer_id": "donr", "description": "Don Roberton"}
+    sql, params = conn.calls[0]
+    assert "RTRIM(BUYERID) = ?" in sql
+    assert params == ("donr",)
+
+
+def test_get_buyer_is_none_when_the_row_never_landed():
+    conn = _FakeConn(buyer_row=None)
+    assert econnect.get_buyer(conn, "nobody") is None
+
+
 # --- ops.create_buyer_op: pre-check, create, read back ---
 
 
@@ -118,9 +139,7 @@ def _request(**overrides):
 
 
 def _stub_read_back(monkeypatch, buyer_id="newbuyer", description="New Buyer"):
-    monkeypatch.setattr(
-        econnect, "list_buyers_detailed", lambda c: [{"buyer_id": buyer_id, "description": description}]
-    )
+    monkeypatch.setattr(econnect, "get_buyer", lambda c, b: {"buyer_id": buyer_id, "description": description})
 
 
 def test_op_creates_then_reads_back(monkeypatch):
@@ -171,7 +190,7 @@ def test_op_raises_when_the_row_never_landed(monkeypatch):
     conn = _FakeConn()
     monkeypatch.setattr(econnect, "buyer_exists", lambda c, b: False)
     monkeypatch.setattr(econnect, "create_buyer", lambda c, **k: None)
-    monkeypatch.setattr(econnect, "list_buyers_detailed", lambda c: [])
+    monkeypatch.setattr(econnect, "get_buyer", lambda c, b: None)
 
     with pytest.raises(EConnectError, match="not in POP00101"):
         ops.create_buyer_op(conn, company="TUBC", request=_request())

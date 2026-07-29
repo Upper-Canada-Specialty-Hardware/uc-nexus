@@ -10,7 +10,7 @@ import {
   TextField,
   Typography,
 } from '@mui/material';
-import { useMutation } from '@apollo/client/react';
+import { useApolloClient, useMutation } from '@apollo/client/react';
 import { CREATE_GP_BUYER, GET_GP_BUYERS_DETAILED } from '../../graphql/admin';
 import GpErrorAlert from '../../components/GpErrorAlert';
 import { extractGpError, type GpError } from '../../graphql/gpError';
@@ -64,17 +64,35 @@ export default function RegisterGpBuyerDialog({
     onClose();
   }, [reset, onClose]);
 
+  const client = useApolloClient();
+  const refetchBuyers = useCallback(
+    () => client.refetchQueries({ include: [GET_GP_BUYERS_DETAILED] }),
+    [client],
+  );
+
   const [createGpBuyer, { loading }] = useMutation<{ createGpBuyer: { buyerId: string } }>(CREATE_GP_BUYER, {
-    // The dropdowns this feeds read gpBuyersDetailed, so they have to see the new row before the
-    // caller's onRegistered tries to select it.
+    // The dropdowns this feeds read gpBuyersDetailed, so the new row is pulled in behind the write.
+    // NOT awaited: awaitRefetchQueries folds a refetch failure into the mutation's, which would report
+    // a buyer GP really did register as a failed registration if the relay dropped in the window right
+    // after taCreateBuyer committed. Nothing depends on the refetch having landed either - GpBuyerSelect
+    // renders an id that isn't in the list yet from its own held-value fallback.
     refetchQueries: [{ query: GET_GP_BUYERS_DETAILED, variables: { company } }],
-    awaitRefetchQueries: true,
     onCompleted: (data) => {
       showToast(`Buyer '${data.createGpBuyer.buyerId}' registered in GP`, 'success');
       onRegistered?.(data.createGpBuyer.buyerId);
       handleClose();
     },
-    onError: (err) => setGpError(extractGpError(err) ?? { message: err.message }),
+    onError: (err) => {
+      const gp = extractGpError(err) ?? { message: err.message };
+      setGpError(gp);
+      // 'Already registered' is the answer to a retry after an ambiguous failure: the first attempt
+      // committed and its reply was lost. GP holds the buyer, but the list this dialog feeds was read
+      // before the write, so without a refetch here the admin is shown an error for a buyer that
+      // exists AND still can't pick it - a dead end only a page reload clears.
+      if (gp.relay?.error === 'buyer_already_exists') {
+        void refetchBuyers();
+      }
+    },
   });
 
   const handleSubmit = useCallback(() => {
