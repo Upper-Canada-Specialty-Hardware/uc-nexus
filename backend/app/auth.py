@@ -5,6 +5,13 @@ The backend has no global auth middleware; verification is opt-in per resolver v
 so ungated queries pay no JWT/JWKS/Clerk-API cost. Roles live in Clerk publicMetadata
 (not in the default session token), so we verify the token for identity (``sub``) and
 then look up roles through the Clerk Backend API.
+
+Opt-in means a resolver that forgets to ask is silently public, which is how every resolver in
+``app/schemas/user.py`` - ``updateUserRoles`` among them - shipped reachable with no session at all
+(#415). Since that sweep the opt-in is enforced from outside: ``tests/test_resolver_gate_completeness``
+walks every ``@strawberry.field`` / ``@strawberry.mutation`` under ``app/schemas/`` and fails on any
+that calls none of the gates below, so leaving one open is now an explicit entry on that test's
+exemption list rather than an omission nobody notices.
 """
 
 import time

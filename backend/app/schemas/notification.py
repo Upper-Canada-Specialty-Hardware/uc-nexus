@@ -4,6 +4,7 @@ import uuid
 
 import strawberry
 
+from app.auth import require_user
 from app.database import SessionLocal
 from app.repositories import notification_repository
 
@@ -16,11 +17,13 @@ class NotificationQueries:
     @strawberry.field
     def notifications(
         self,
+        info: strawberry.Info,
         project_id: strawberry.ID | None = None,
         recipient_role: str = "",
         unread_only: bool | None = None,
         limit: int = 5,
     ) -> list[Notification]:
+        require_user(info)
         with SessionLocal() as session:
             results = notification_repository.get_notifications(
                 session,
@@ -35,7 +38,8 @@ class NotificationQueries:
 @strawberry.type
 class NotificationMutations:
     @strawberry.mutation
-    def mark_notification_as_read(self, id: strawberry.ID) -> Notification:
+    def mark_notification_as_read(self, info: strawberry.Info, id: strawberry.ID) -> Notification:
+        require_user(info)
         with SessionLocal() as session:
             notification = notification_repository.mark_as_read(session, uuid.UUID(str(id)))
             session.commit()
