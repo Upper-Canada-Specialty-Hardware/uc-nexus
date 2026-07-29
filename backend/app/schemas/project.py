@@ -15,7 +15,7 @@ from app.services.relay_gateway import gateway as relay_gateway
 
 from .converters import project_to_type
 from .inputs import CreateGpJobInput, UpdateProjectInput
-from .types import GpJobSyncResult, Project, ProjectShipTo
+from .types import CreateGpJobResult, GpJobSyncResult, Project, ProjectShipTo
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +97,7 @@ class ProjectQueries:
 @strawberry.type
 class ProjectMutations:
     @strawberry.mutation
-    async def create_gp_job(self, info: strawberry.Info, input: CreateGpJobInput) -> Project:
+    async def create_gp_job(self, info: strawberry.Info, input: CreateGpJobInput) -> CreateGpJobResult:
         """Originate a job in GP, then hold it as a UC Nexus project (#380).
 
         This replaces the old adopt_gp_job mutation. Adoption is no longer something a user does: the
@@ -153,7 +153,8 @@ class ProjectMutations:
                 # right now, so satisfy it instead of dead-ending the dialog on an error that no
                 # amount of retrying can clear.
                 logger.info("create_gp_job: %s already in GP; adopting instead", input.job_number)
-                return await _adopt_existing(input.job_number)
+                project = await _adopt_existing(input.job_number)
+                return CreateGpJobResult(project=project, created=False)
             # GP said no - a closed fiscal period, an address code that isn't on the customer, a
             # division without accounts. The proc words those better than we could, so the message is
             # passed through to the dialog rather than replaced with a generic failure.
@@ -173,12 +174,14 @@ class ProjectMutations:
 
         try:
             # Off the event loop: the /relay-link read loop runs on it and must not block on Postgres.
-            return await asyncio.to_thread(_persist)
+            return CreateGpJobResult(project=await asyncio.to_thread(_persist), created=True)
         except ConflictError:
             # The sync adopted this job between GP committing and us persisting. Benign race, same as
             # the one _persist_missing swallows from the other side - the row we wanted exists.
+            # GP still created the job on this call, so this is a real creation - only the Nexus row
+            # was written by someone else first.
             logger.info("create_gp_job: %s was adopted by the sync first", job_number)
-            return await asyncio.to_thread(_load_project, job_number)
+            return CreateGpJobResult(project=await asyncio.to_thread(_load_project, job_number), created=True)
         except Exception:
             # The job EXISTS in GP at this point - that call already committed. Losing the Nexus row is
             # recoverable rather than fatal: the sync adopts it on its next pass, and retrying the

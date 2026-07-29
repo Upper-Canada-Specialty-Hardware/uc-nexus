@@ -168,7 +168,7 @@ class CostCodesResponse(BaseModel):
 
 
 # --- create a GP job (issue #380) ---
-# The four reads that feed the create-job form's dropdowns, then the create request itself.
+# The five reads that feed the create-job form's dropdowns, then the create request itself.
 
 class CustomerOut(BaseModel):
     customer_number: str            # GP CUSTNMBR (RM00101)
@@ -201,6 +201,17 @@ class TaxScheduleOut(BaseModel):
 class TaxSchedulesResponse(BaseModel):
     company: str
     tax_schedules: list[TaxScheduleOut]
+
+
+class EmployeeOut(BaseModel):
+    employee_id: str                # GP EMPLOYID (UPR00100), what Estimator_ID / WS_Manager_ID hold
+    first_name: str | None = None   # GP FRSTNAME
+    last_name: str | None = None    # GP LASTNAME
+
+
+class EmployeesResponse(BaseModel):
+    company: str
+    employees: list[EmployeeOut]
 
 
 class DivisionsResponse(BaseModel):

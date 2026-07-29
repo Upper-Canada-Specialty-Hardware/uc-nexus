@@ -223,6 +223,36 @@ def test_list_tax_schedules_routes_to_econnect(monkeypatch):
     assert reply == {"ok": True, "result": {"company": "TUBC", "tax_schedules": [{"tax_schedule_id": "GST 5%"}]}}
 
 
+def test_list_employees_routes_to_econnect(monkeypatch):
+    monkeypatch.setattr(
+        econnect,
+        "list_employees",
+        lambda conn, active_only=True: [{"employee_id": "IANB", "first_name": "Ian", "last_name": "Brown"}],
+    )
+    reply = channel._dispatch("list_employees", "TUBC", {})
+    assert reply == {
+        "ok": True,
+        "result": {
+            "company": "TUBC",
+            "employees": [{"employee_id": "IANB", "first_name": "Ian", "last_name": "Brown"}],
+        },
+    }
+
+
+def test_list_employees_forwards_active_only(monkeypatch):
+    # The proc validates against all of UPR00100, so an inactive employee is still a legal estimator -
+    # the override has to be reachable through the op, not just present on the econnect function.
+    seen = {}
+
+    def _fake(conn, active_only=True):
+        seen["active_only"] = active_only
+        return []
+
+    monkeypatch.setattr(econnect, "list_employees", _fake)
+    channel._dispatch("list_employees", "TUBC", {"active_only": False})
+    assert seen["active_only"] is False
+
+
 def test_list_divisions_routes_to_econnect(monkeypatch):
     monkeypatch.setattr(econnect, "list_divisions", lambda conn: ["VANCOUVER"])
     reply = channel._dispatch("list_divisions", "TUBC", {})

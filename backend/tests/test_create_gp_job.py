@@ -171,7 +171,10 @@ def test_a_job_already_in_gp_is_adopted_rather_than_dead_ending(monkeypatch):
     monkeypatch.setattr(project_module.gp_job_sync, "run_once", _fake_sync)
     monkeypatch.setattr(project_module, "_load_project", lambda job_number: f"project:{job_number}")
 
-    assert _create() == "project:NEXUS-380-T1"
+    result = _create()
+    assert result.project == "project:NEXUS-380-T1"
+    # created=False is what stops the UI reporting a creation that never happened (#392)
+    assert result.created is False
     assert synced == [True]  # the sync pass is what gives the project GP's own job name
 
 
@@ -218,7 +221,10 @@ def test_the_sync_winning_the_race_is_not_an_error(monkeypatch):
     monkeypatch.setattr(project_module.project_repository, "adopt_gp_job", _already_there)
     monkeypatch.setattr(project_module, "_load_project", lambda job_number: f"existing:{job_number}")
 
-    assert _create() == "existing:NEXUS-380-T1"
+    result = _create()
+    assert result.project == "existing:NEXUS-380-T1"
+    # GP still created the job on this call; only the Nexus row was written by someone else first
+    assert result.created is True
 
 
 def test_persists_the_project_from_gps_own_answer(monkeypatch, _clean_up_test_projects):
@@ -226,7 +232,8 @@ def test_persists_the_project_from_gps_own_answer(monkeypatch, _clean_up_test_pr
     # GP's reply, not the input, is what the project is built from
     _relay(monkeypatch, result={"job_number": "NEXUS-380-T9", "job_name": "Name GP Kept"})
 
-    project = _create(job_number="NEXUS-380-T9", job_name="What The Caller Typed")
+    result = _create(job_number="NEXUS-380-T9", job_name="What The Caller Typed")
 
-    assert project.project_id == "NEXUS-380-T9"
-    assert project.description == "Name GP Kept"
+    assert result.created is True
+    assert result.project.project_id == "NEXUS-380-T9"
+    assert result.project.description == "Name GP Kept"
