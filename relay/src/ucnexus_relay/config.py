@@ -90,10 +90,42 @@ class LoggingCfg(BaseModel):
     file: str = "relay.log"
 
 
+# THE production backend. Identity - not list position - is what makes a channel the primary one, so
+# reordering backend_url can never accidentally hand a test backend unrestricted company access.
+PRODUCTION_BACKEND_URL = "wss://backend-production-7866.up.railway.app/relay-link"
+
+# What a NON-PRIMARY channel (a Railway PR environment, a local dev backend) may target. Reads AND
+# writes are served on those channels - that is the whole point, a PR that touches GP has to be
+# verifiable before it merges - but only against the sandbox company, so the worst a test backend can
+# do is write to TUBC. Baked deliberately: an operator-editable value here would be one typo away from
+# pointing a PR backend at a live GP company, which is the only thing making this safe (#414).
+NON_PRIMARY_ALLOWED_COMPANIES = ["TUBC"]
+
+
+def _normalize_url(url: str) -> str:
+    return (url or "").strip().rstrip("/").lower()
+
+
+def is_primary_backend_url(url: str) -> bool:
+    """Whether this channel is the production backend. Tolerates a trailing slash and case so a
+    cosmetic difference in config.toml cannot silently demote production to a restricted channel; a
+    genuinely different host never matches."""
+    return _normalize_url(url) == _normalize_url(PRODUCTION_BACKEND_URL)
+
+
+def channel_allowed_companies(url: str) -> list[str] | None:
+    """The GP companies this channel may target, or None for unrestricted (the production channel,
+    which is governed by [gp] allowed_companies alone, as it always has been)."""
+    return None if is_primary_backend_url(url) else list(NON_PRIMARY_ALLOWED_COMPANIES)
+
+
 class ChannelCfg(BaseModel):
-    # Outbound wss URL to the UC Nexus backend's relay gateway. Baked dev default (dev-determined infra);
-    # a blank value would disable the channel (relay runs only its inbound HTTP server).
-    backend_url: str = "wss://backend-production-7866.up.railway.app/relay-link"
+    # Outbound wss URL(s) to UC Nexus backend relay gateways. A bare string is one channel (every
+    # config.toml written before #414 is exactly this); a list opens one connection per URL, so a
+    # workstation can serve a Railway PR environment WITHOUT dropping production - the reason a list
+    # exists at all. Empty (blank string, or empty list) disables the channel entirely and the relay
+    # runs only its inbound HTTP server. Baked dev default: production alone.
+    backend_url: str | list[str] = PRODUCTION_BACKEND_URL
     # the `websockets` client's own ping_interval/ping_timeout default to 20s/20s, which already
     # satisfies the ~20s keepalive the channel needs to hold a corporate-proxy idle timeout open -
     # these just make that tunable without a code change.
@@ -101,6 +133,22 @@ class ChannelCfg(BaseModel):
     ping_timeout: float = 20.0
     reconnect_min_seconds: float = 1.0
     reconnect_max_seconds: float = 30.0
+
+    @property
+    def backend_urls(self) -> list[str]:
+        """backend_url in its one true shape: a de-duplicated list of non-blank URLs. Duplicates are
+        dropped because two channels to the same backend would fight over its single connection slot,
+        each closing the other with 4409 forever."""
+        raw = [self.backend_url] if isinstance(self.backend_url, str) else list(self.backend_url)
+        seen: set[str] = set()
+        urls: list[str] = []
+        for candidate in raw:
+            url = (candidate or "").strip()
+            key = _normalize_url(url)
+            if url and key not in seen:
+                seen.add(key)
+                urls.append(url)
+        return urls
 
 
 class Settings(BaseModel):

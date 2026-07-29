@@ -136,6 +136,11 @@ class RelayInstallInfo:
     # authenticate - that has to stay visible long after the in-memory window is gone.
     adopted_at: datetime | None = None
     adopted_by: str | None = None
+    # SHA-256 hex of this install's Bearer secret - the value RELAY_SEED_SECRET_HASH wants (#414).
+    # Exposed so an admin can copy it into the Railway PR-environment template instead of running SQL
+    # against Postgres. A digest is a verifier, not a credential: it authenticates nothing, only its
+    # preimage does, and that never leaves the workstation. The query is admin-gated regardless.
+    secret_hash: str | None = None
 
 
 @strawberry.type

@@ -101,5 +101,33 @@ advertises to the backend on connect so an out-of-date relay is caught before th
 reconnects with exponential backoff on drop; the `websockets` client's default 20s ping/pong keeps the
 channel alive through a corporate proxy's idle timeout.
 
+more than one backend (#414)
+
+`[channel] backend_url` also takes a LIST, and the relay then holds one independent reconnecting
+channel per URL. that exists so a Railway PR environment can be tested without re-pointing the
+workstation: production's connection is never dropped, and the same enrolled secret authenticates on
+every channel (the backend matches on its hash, and a PR environment is seeded with that hash via
+`RELAY_SEED_SECRET_HASH` rather than issued a credential of its own).
+
+```toml
+[channel]
+backend_url = [
+  "wss://backend-production-7866.up.railway.app/relay-link",
+  "wss://backend-pr-414.up.railway.app/relay-link",
+]
+```
+
+the production URL is unrestricted. every other URL is pinned to `TUBC`
+(`config.NON_PRIMARY_ALLOWED_COMPANIES`) - reads AND writes are served there, since a PR touching GP
+has to be verifiable before it merges, and the company pin is the only thing making that safe. a job
+for any other company comes back `company_not_allowed_on_channel` before it reaches GP. which URL is
+production is decided by matching `config.PRODUCTION_BACKEND_URL`, not by list position.
+
+the list is read once at `serve` start, so adding or removing a PR URL needs a relay restart (the
+app's Restart Relay button). the enrolled secret is still re-read on every reconnect, unchanged. the
+setup wizard preserves a hand-added `[channel]` block, so re-running it will not silently drop the PR
+URL. remove the URL when the PR closes - a torn-down environment retries forever otherwise (quietly:
+a non-production channel logs a repeated failure once, then at DEBUG).
+
 the ops newer than `create_po` / `create_receipt` are channel-only - they have no HTTP route, because
 the browser hop is no longer the live path.

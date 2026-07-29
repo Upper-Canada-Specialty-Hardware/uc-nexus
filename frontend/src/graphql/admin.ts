@@ -74,6 +74,7 @@ export const RELAY_INSTALLS = gql`
       createdAt
       adoptedAt
       adoptedBy
+      secretHash
     }
   }
 `;

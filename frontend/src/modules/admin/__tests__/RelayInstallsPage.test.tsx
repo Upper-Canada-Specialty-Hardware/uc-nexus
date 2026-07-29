@@ -50,6 +50,7 @@ const INSTALL = {
   createdAt: '2026-07-24T22:50:00.000Z',
   adoptedAt: null,
   adoptedBy: null,
+  secretHash: '231a2314ff30d343fdea3f67436d4010efbc0272c59df346d48de909369e779d',
 };
 
 const statusMock: MockedResponse = {
@@ -188,4 +189,35 @@ it('disables Remove on the install that is currently connected', async () => {
   await waitFor(() => expect(remove).toBeDisabled(), GRID_TIMEOUT);
   // The adopt action stays available - it is the recovery path, not a destructive one.
   expect(screen.getByRole('button', { name: /adopt next connection/i })).not.toBeDisabled();
+});
+
+it('copies the full seed hash for the PR-environment variable', async () => {
+  // #414: RELAY_SEED_SECRET_HASH is what lets a Railway PR environment accept this relay without a
+  // provision + enroll cycle. The grid truncates it to stay readable, so the copy must carry the whole
+  // digest - a truncated one silently never matches on the handshake.
+  const copied: string[] = [];
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: { writeText: (t: string) => { copied.push(t); return Promise.resolve(); } },
+  });
+
+  renderPage([statusMock, installsMock, windowMock(null)]);
+
+  const button = await screen.findByRole('button', { name: /copy seed hash/i }, GRID_TIMEOUT);
+  fireEvent.click(button);
+  await waitFor(() => expect(copied).toEqual([INSTALL.secretHash]), GRID_TIMEOUT);
+});
+
+it('shows no seed hash for an install that has not enrolled yet', async () => {
+  // A provisioned-but-never-enrolled row has no secret, so there is nothing to seed with. Offering a
+  // copy button there would hand over an empty string that fails silently in Railway.
+  const pending = { ...INSTALL, id: 'install-2', enrolled: false, enrolledAt: null, secretHash: null };
+  renderPage([
+    statusMock,
+    { ...installsMock, result: { data: { relayInstalls: [pending] } } },
+    windowMock(null),
+  ]);
+
+  await screen.findByRole('button', { name: /adopt next connection/i }, GRID_TIMEOUT);
+  expect(screen.queryByRole('button', { name: /copy seed hash/i })).toBeNull();
 });

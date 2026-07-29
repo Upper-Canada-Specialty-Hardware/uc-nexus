@@ -59,3 +59,13 @@ file = "relay.log"
 # outbound wss channel to the UC Nexus backend's relay gateway. empty backend_url disables it (the
 # relay just runs its existing inbound HTTP server, as today). auths on connect with [auth].shared_secret.
 backend_url = "wss://backend-production-xxxx.up.railway.app/relay-link"
+
+# a LIST opens one channel per URL, so a Railway PR environment can be tested without dropping
+# production (#414). the same enrolled secret authenticates on all of them. the production URL is
+# unrestricted; every other URL is pinned to TUBC and refuses any other company, reads and writes
+# alike. read once at serve start - restart the relay after editing. remove a PR URL when its PR
+# closes.
+# backend_url = [
+#   "wss://backend-production-xxxx.up.railway.app/relay-link",
+#   "wss://backend-pr-414.up.railway.app/relay-link",
+# ]

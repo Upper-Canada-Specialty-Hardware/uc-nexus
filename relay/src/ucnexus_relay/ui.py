@@ -20,9 +20,23 @@ import tomllib
 import urllib.request
 from pathlib import Path
 
+from pydantic import ValidationError as PydanticValidationError
+
 from . import __version__ as VERSION
 from . import autostart, updater
-from .config import ChannelCfg, DEFAULT_CONFIG_PATH, KNOWN_COMPANIES, SqlCfg
+from .config import (
+    ChannelCfg,
+    DEFAULT_CONFIG_PATH,
+    KNOWN_COMPANIES,
+    SqlCfg,
+    is_primary_backend_url,
+)
+
+
+def _primary_backend_url(urls: list[str]) -> str:
+    """The production URL among the configured channels, falling back to the first one so a dev
+    checkout pointed only at localhost still shows (and can enroll against) something."""
+    return next((u for u in urls if is_primary_backend_url(u)), urls[0] if urls else "")
 
 
 def _resolve_log_path(config_path: Path, logging_file: str) -> Path:
@@ -49,7 +63,14 @@ def config_summary(config_path: str | Path | None = None) -> dict:
     # infra (SQL, channel) is baked into config.py, not written to config.toml - overlay the baked
     # defaults so the read-only display shows the EFFECTIVE values; a file override (dev) still wins.
     sql = {**SqlCfg().model_dump(), **(data.get("sql") or {})}
-    channel = {"backend_url": ChannelCfg().backend_url, **(data.get("channel") or {})}
+    # backend_url may be one URL or a list of them (#414). Build the model so the baked defaults fill
+    # any gap and `backend_urls` does the normalizing; a malformed value falls back to the defaults
+    # rather than breaking the whole status panel.
+    try:
+        channel_cfg = ChannelCfg(**(data.get("channel") or {}))
+    except PydanticValidationError:
+        channel_cfg = ChannelCfg()
+    backend_urls = channel_cfg.backend_urls
     server = data.get("server") or {}
     auth = data.get("auth") or {}
     secret = auth.get("shared_secret") or ""
@@ -60,7 +81,11 @@ def config_summary(config_path: str | Path | None = None) -> dict:
         "allowed_companies": gp.get("allowed_companies") or [],
         "sql_server": sql.get("server"),
         "odbc_driver": sql.get("driver"),
-        "backend_url": channel.get("backend_url") or "",
+        # Singular stays the PRIMARY (production) URL, not merely the first configured one: it is what
+        # the enroll wizard derives its GraphQL endpoint from, and enrolling against a PR environment
+        # would rotate the workstation's secret away from production.
+        "backend_url": _primary_backend_url(backend_urls),
+        "backend_urls": backend_urls,
         "host": server.get("host", "127.0.0.1"),
         "port": server.get("port", 7321),
         "enrolled": bool(secret),
@@ -156,11 +181,17 @@ def gather_status(config_path: str | Path | None = None) -> dict:
     # running the channel can't be up (it lives inside serve) -> disconnected. Fall back to the log
     # inference only if a running serve didn't report a channel (an older serve build).
     if not health.get("running"):
-        channel = {"state": "disconnected"}
+        channel = {"state": "disconnected", "channels": []}
     elif health.get("channel"):
-        channel = {"state": health["channel"].get("state", "unknown")}
+        # `state` is the PRIMARY channel's, which is what the header dot has always meant. `channels`
+        # is the per-URL detail a multi-channel relay reports (#414); a serve build that predates it
+        # simply reports none and the panel shows the single-channel view, as before.
+        channel = {
+            "state": health["channel"].get("state", "unknown"),
+            "channels": health["channel"].get("channels") or [],
+        }
     else:
-        channel = channel_state(config_path)
+        channel = {**channel_state(config_path), "channels": []}
     return {
         "ui_version": VERSION,
         "build": updater.current_build(),
@@ -469,6 +500,13 @@ _HTML = """<!doctype html><html><head><meta charset="utf-8"><title>UC Nexus Rela
     $('hdot').className = 'dot ' + (connected ? 'ok' : (st === 'unknown' ? '' : 'bad'));
     $('hstate').innerText = connected ? 'connected to backend' : ('channel: ' + st);
     const c = s.config, r = s.relay, a = s.autostart;
+    // One row per channel, but only once there is more than one to tell apart (#414). A single-channel
+    // relay - every workstation, normally - keeps the panel it has always had.
+    const chans = s.channel.channels || [];
+    const chanRows = chans.length > 1 ? chans.map(ch =>
+      row(ch.primary ? 'Channel (production)' : 'Channel (test)',
+          pill(!!ch.connected, esc(ch.state), ch.state === 'unknown') +
+          ` <span class="muted">${esc(ch.url)}</span>`)).join('') : '';
     $('status').innerHTML =
       row('Build', esc(s.build) || '-') +
       row('Relay process', r.running ? pill(true,'running v'+(r.version||'?')) : pill(false,'not running')) +
@@ -478,6 +516,7 @@ _HTML = """<!doctype html><html><head><meta charset="utf-8"><title>UC Nexus Rela
       row('Companies', (c.allowed_companies||[]).join(', ') || '-') +
       row('SQL server', c.sql_server || '-') +
       row('Backend URL', c.backend_url || '-') +
+      chanRows +
       row('Autostart', a.installed===null ? '-' : pill(!!a.installed, a.installed?'installed':'not installed'));
     if ($('c-autostart')) $('c-autostart').checked = !!a.installed;
     const logs = await window.pywebview.api.get_logs(200);

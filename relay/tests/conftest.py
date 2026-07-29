@@ -14,6 +14,22 @@ import os
 
 import pytest
 
+from ucnexus_relay import channel
+
+
+@pytest.fixture
+def clean_channel_states():
+    """Empty channel._STATES around a test. It is module-level and keyed by backend URL (#414), so a
+    test that marks a channel connected would otherwise leak that row into every later
+    channel_state_snapshot() assertion."""
+    saved = dict(channel._STATES)
+    channel._STATES.clear()
+    try:
+        yield channel._STATES
+    finally:
+        channel._STATES.clear()
+        channel._STATES.update(saved)
+
 
 @pytest.fixture(autouse=True, scope="session")
 def _never_hard_exit_the_test_runner():
