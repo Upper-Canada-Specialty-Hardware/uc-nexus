@@ -239,12 +239,13 @@ step. Everything in it is exercisable against Railway.
 | --- | --- | --- | --- |
 | 1 | **Request** a leaf for shop assembly | Import -> Start a Task | A PENDING `ShopAssemblyRequest`, and the hardware is **reserved** on the spot (#342). Creating over-subscribed is refused whole, naming every short combo |
 | 2 | **Accept** it | Shop Assembly -> Requests | A PENDING warehouse pull. A pure human gate - nothing is re-checked, nothing is spent. Rejecting instead is what releases the claim |
-| 3 | **Approve** the pull | Warehouse -> Pull Requests | Stock is deducted FIFO and the claim is consumed, atomically. This is the only moment inventory moves |
+| 3a | **Start the pick** | Warehouse -> Pull Requests -> Start pick | The pull is claimed and opened. **Nothing moves**, and there is no sufficiency gate - a pull with an empty shelf still opens (#367) |
+| 3b | **Confirm the pick** | The pick page, `/pull-requests/:id/pick` | The picker dictates a quantity per location; confirming deducts *those rows* and consumes the claim, atomically. This is the only moment inventory moves |
 | 4 | **Stage** each opening's cart | Warehouse -> Pull Requests -> Staging panel | One `pull_status` flips to PULLED per opening (#343). That leaf is assignable *immediately*, while the rest of the pull is still being picked. Nothing moves in inventory |
 | 5 | **Claim** the leaf | Shop Assembly -> Assemble List / Assignment Board | An assignment. A manager may take one off somebody; a self-claim may not |
 | 6 | **Build** it, unit by unit | Shop Assembly -> My Work -> the modal | `installed_quantity` per line, saved as you go (#340). A defect flagged here goes back to inventory *now* and mints a `PR-REPL-*` pull immediately |
 | 7 | **Finish** it | Same modal -> Mark Complete | An `OpeningItem` per leaf, carrying what was actually installed. Refused while any unit is unaccounted for, or if nothing at all was installed |
-| 8 | **Replacement arrives** | Warehouse -> Pull Requests -> approve+complete the `PR-REPL-*` pull | The leaf gets its expectation back (#341). Still on the bench: it becomes Remaining again. Already finished: a Replacement Install card on My Work. Already shipped: a warning, and reallocation's problem |
+| 8 | **Replacement arrives** | Warehouse -> Pull Requests -> pick+complete the `PR-REPL-*` pull | The leaf gets its expectation back (#341). Still on the bench: it becomes Remaining again. Already finished: a Replacement Install card on My Work. Already shipped: a warning, and reallocation's problem |
 | 9 | **Ship** it | Shipping Out | `SHIP_READY`, then a packing slip. A leaf still owed hardware is flagged and takes an explicit "Ship it short" |
 | - | **Undo the pull** at any point before assembly starts | Warehouse -> Pull Requests -> Cancel Pull | Stock restocked, openings released, request back to Pending (#343). Refused, naming blockers, once any opening is IN_PROGRESS or COMPLETED |
 | - | **See all of it at once** | Shop Assembly -> Pipeline | Read-only (#344). Answers "where is opening A01 leaf 2?" without opening the other four screens |
@@ -254,8 +255,11 @@ Two things a fresh reader gets wrong every time:
 - **"Pulled" is per opening, not per pull.** Since #343 a leaf can be workable while its own sibling
   on the same pull is still on the shelf. A row with no buttons on the Assemble List is not broken;
   its cart is not built yet.
-- **Reserved is not deducted.** Between steps 1 and 3 the hardware is claimed but still on the shelf,
+- **Reserved is not deducted.** Between steps 1 and 3b the hardware is claimed but still on the shelf,
   so the Warehouse inventory number and the Start-a-Task availability number legitimately disagree.
+- **Started is not picked either (#367).** A pull sits IN_PROGRESS from the moment somebody presses
+  Start pick, which is *before* any stock has moved. `Status` alone can no longer tell you whether
+  the hardware has left - the queue's **Phase** column and `pickedAt` are what answer that.
 
 ---
 
@@ -417,10 +421,11 @@ Task wizard's is `on-hand - deficient - reservations`: what may still be *claime
 read 10 available in the warehouse and 0 available in the wizard; that is not a bug, it means live
 requests are holding it.
 
-**Approving a pull request consumes its source request's reservation.** A pull whose request reserved
-exactly what it needs still approves - the check excludes the request's own claim (self-coverage). A
-`PR-REPL-*` replacement pull holds no reservation at all, so it keeps the old reactive behaviour: it
-can come up INSUFFICIENT and notify the PO, and it can only draw from what nobody else has claimed.
+**Confirming a pick consumes its source request's reservation (#367 moved this off approve).** A pull
+whose request reserved exactly what it needs still picks fine - the check excludes the request's own
+claim (self-coverage). A `PR-REPL-*` replacement pull *does* hold a claim now (minted when the defect
+was flagged, topped up as stock arrives), usually smaller than what it is owed, so being partly
+covered is its normal resting state and a short pick on one is not an integrity error.
 
 
 **Entry**: `/app/warehouse` -> Warehouse landing page with stat cards and "Go to" card buttons for: Inventory, Locations, Deliveries, Receiving, Put Away, Pull Requests, Stock Pool, Deficient Items, Shipments. (No longer "three tabs" - this has evolved to a full landing page.)
@@ -436,27 +441,99 @@ can come up INSUFFICIENT and notify the PO, and it can only draw from what nobod
 **Inventory**: Browse by hardware category and product code, see storage locations.
 
 **Pull Requests**: Queue of pull requests from shop assembly or shipping modules. Two tabs (Shop
-Assembly / Shipping Out); clicking a row opens the detail modal. The grid has a **Staging** column
-since #343 - a chip reading "4 of 8 staged" (grey at 0, amber part-staged, green all-staged). It is
-**blank** on shipping-out and `PR-REPL-*` pulls: those have no openings, so staging does not apply
-and the UI deliberately shows nothing rather than "0 of 0".
+Assembly / Shipping Out); clicking a row opens the detail modal. Since #367 the old Staging column is
+a **Phase** column - a tag over a line of detail, because `Status` stopped being enough once picking
+became its own phase:
 
-**Per-opening staging (#343)** is the shop-assembly pull's execution view, inside the detail modal
-between the header and the Items table, headed `Staging (N of M openings)`.
+| Phase | Detail line | Means |
+| --- | --- | --- |
+| `Pending` | Not started | Nobody has pressed Start pick |
+| `Picking` | Nothing off the shelf yet | IN_PROGRESS, `pickedAt` null, no pick lines |
+| `Short` | Part-picked - remainder outstanding | A short confirm landed; some stock is gone, the rest is owed |
+| `Staging` | `4 of 8 staged` | Picked, now building carts |
+| `Picked` | Ready to mark pulled | Picked, and staging does not apply (shipping-out / `PR-REPL-*`) |
+| `Completed` / `Cancelled` | - | Terminal |
 
-- One row per opening, showing its leaf, location and its own hardware lines (`3 x HG-100 (HINGE)`).
-- Confirming is **two-step**: tick the checkboxes (`Stage <opening> - Leaf N`), press
-  `Confirm N staged`, then confirm the dialog. A tick alone writes nothing - staging is a claim that
-  hardware is physically on a cart. `Select all remaining` ticks every un-staged row.
-- Each confirmed opening is **immediately** assignable/workable in Shop Assembly, while the rest of
+An IN_PROGRESS row reading `PICKED` in Phase is the normal, correct state for a shipping-out or
+replacement pull - Status and Phase disagreeing is the point of the column.
+
+#### The pick (#367) - where inventory actually moves
+
+Approve is gone. There is no `Approve and Start` button anywhere, and no Available Qty / Status
+columns in the detail modal's Loose Items table (they forecast whether an approve would succeed, and
+approving no longer moves anything).
+
+**Driving it end to end**, verified live on Railway 2026-07-28:
+
+1. Open a PENDING pull -> **`Start pick`**. This routes straight to
+   `/app/warehouse/pull-requests/<id>/pick`; there is no toast and no confirm, because starting is
+   the first step of a job rather than a decision. The pull goes IN_PROGRESS and **nothing is
+   deducted** - verify with `inventoryItems` before and after.
+2. The page: `PICK SHEET` eyebrow, mono PR number, phase tag, project and requester; gauges for
+   `PRODUCT CODES / REQUIRED / ENTERED / REMAINING`; then one section per product code.
+3. Each section lists **every leaf in full** (`OWED TO 1 LEAF`, `015.2 · L1 × 1`) and a ledger of
+   every candidate location: `LOCATION | RECEIVED | AVAILABLE | PULLED`. There is deliberately **no
+   suggested column and no autofill** - assert their absence, it is the whole point of the slice.
+4. Number inputs carry `aria-label="Pulled from <bin>"` and a `max` of that row's available, which is
+   what makes them addressable from the MCP tools.
+
+**What to assert, and the traps:**
+
+- **Deficient units are withheld.** A row with `quantity 4, deficient 1` shows Available **3**.
+- **Over-entry** on a row shows `Only N here` under the input, a page-level red alert, and disables
+  Confirm. Over the pull's own requirement shows `... more than this request asked for`.
+- **`Save draft` then reload**: entries come back. Zeros are *not* stored, so a box you set to `0`
+  returns empty - that is correct, not a lost draft.
+- **The confirm button changes name**: `Confirm pick` when balanced, `Confirm short pick` when
+  something is entered but not everything, disabled when any ceiling is crossed.
+- **On success the page navigates back to the queue**, so a toast assertion there is racy - assert
+  on the inventory rows and `pickedAt` instead.
+- Once picked, the page renders read-only: inputs disabled, `Save draft` and `Confirm pick` gone,
+  and a banner naming who picked it and when. `Print pick sheet` still works.
+
+**The against-FIFO test - the one that proves the feature.** Find a product code sitting in two bins
+(`inventoryItems(projectId, category, productCode)` returns `receivedAt` per row), note which is
+oldest, then deliberately pick from the **newer** one. Old behaviour would have drained the oldest.
+Verified live: A-1-1 (oldest, received 03:51) untouched at qty 1, A-1-3 (received 04:07) 4 -> 3, and
+the `PULL_DEDUCTION` audit row carrying `aisle/row/bay`, `warehouseCode` and `oldQuantity/newQuantity`
+- the record the old FIFO deduction never kept.
+
+**Short pick**: enter less than required and Confirm. The pull stays IN_PROGRESS with `pickedAt`
+null, the queue phase reads `Short`, purchasing gets one `INVENTORY_SHORTFALL` notification (deduped
+per pull, so a second short confirm does not raise another), and the remainder is keyed in later.
+An empty submission is refused *while stock is available* but **allowed when there is none** - that
+is the "walked the racks, found nothing" case and it confirms short of everything.
+
+**Fetch list**: a shipping-out pull's OPENING_ITEM lines are *fetched*, not picked - check-offs with
+no quantity, persisted per leaf, editable for the whole IN_PROGRESS life of the pull (they outlive
+the pick confirmation, because a pure fetch pull is confirmable before a single leaf is ticked).
+
+**The printed sheet** (`Print pick sheet`) opens a blob URL in a new tab: per-code sections, full
+leaf lists, every location with Received/Available, **blank write-in boxes**, and a
+`Picked by / Date / Keyed into Nexus by` signature footer.
+
+**Per-leaf staging (#343, relaid out as sections in #367)** is the shop-assembly pull's execution
+view, inside the detail modal between the header and the Items table, headed
+`Stage carts (N of M leaves)`. **It only appears once the pick is confirmed** - before that there is
+nothing on a cart to declare.
+
+- One bordered **section per door leaf**, not a table row: header is the mono leaf identity
+  (`015.2 · L1`) plus building/floor, with the hardware beneath as ledger rows
+  (category | mono product code | right-aligned qty). The old single-cell bulleted list is gone.
+- The section carries a 3px left edge: amber when selected, green once staged, hairline otherwise.
+- Confirming is **two-step**: tick the checkboxes (`Stage <opening> · LN` - note the new identity
+  format), press `Confirm N staged`, then confirm the dialog. A tick alone writes nothing.
+  `Select all remaining` ticks every un-staged section.
+- Each confirmed leaf is **immediately** assignable/workable in Shop Assembly, while the rest of
   the pull is still un-staged. This is the thing to exercise: stage one leaf of a pair, then go to
   `/app/shop-assembly/assemble` and claim it while its sibling still shows as waiting.
-- An already-staged row has a disabled checkbox and a green "Staged" chip with who staged it and when.
-- Staging the **last** opening completes the pull (toast: "All openings staged - <PR> is complete.").
+- An already-staged section has a disabled checkbox and a green "Staged" tag with who staged it and when.
+- Staging the **last** leaf completes the pull (toast: "All carts staged - <PR> is complete.").
   The panel then renders read-only, so the record of who staged what survives.
 - `Mark as Pulled` still exists and now means "stage everything remaining and finish"; its confirm
   dialog says so.
-- Nothing moves in inventory at staging. Stock was deducted when the pull was **approved**.
+- Nothing moves in inventory at staging. Stock was deducted when the **pick was confirmed**, and
+  `stage_pull_openings` refuses outright until it has been.
 
 **Cancel Pull (#343)**: an outlined red button in the modal's action bar on any IN_PROGRESS pull, and
 on a COMPLETED *shop-assembly* pull (there "completed" only means every cart is built). Absent on a
@@ -760,6 +837,29 @@ Inventory quantity corrections are NOT here — they live in the Warehouse modul
 - **Select Openings is paginated at 50 rows/page, ordered by the schedule, not sorted**, and the "Filter" control is a Select (column filter), *not* a text search - there is no way to type an opening number. To enumerate or tick specific openings, scroll the `.MuiDataGrid-virtualScroller` in ~150px steps, and after each `scrollTop` assignment **dispatch a `scroll` event and wait ~450ms** or the virtualizer does not re-render and you silently collect only the first screenful (17 of 50). Keep the sweep under ~40s of `await` or the 45s CDP cap kills the call mid-loop - it leaves the page in a valid state (rows already ticked stay ticked), so just re-run and top up the selection.
 - The Receive modal has **two** confirmations: `Complete Receive` opens a nested `Confirm Receive` ("Receive N items across M PO into inventory?") whose button is just `Receive`. Scripting only the outer button looks like a silent no-op - inventory stays empty and the outbox stays at 0 because no mutation ever fired.
 - Receive modal quantity + location fields take a native value-setter + `input`/`change` event fine (no need for the ArrowUp trick), and the location block only appears once a Receive Now qty > 0. `all placed` chips per product gate `Complete Receive`.
+- **DataGrid rows are invisible to `take_snapshot`.** The a11y snapshot gives you `columnheader`s and
+  the pagination controls and *nothing else* - no row uids - so `click(uid)` cannot reach a row at
+  all. Read rows with `evaluate_script` over `[role="row"]`, and prefer the per-cell form, which
+  gives you the column names too:
+  `[...r.querySelectorAll('[role="gridcell"]')].map(c => ({field: c.getAttribute('data-field'), text: c.innerText}))`.
+  To open one, dispatch the event yourself:
+  `cell.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, view:window}))`.
+- **Read grid rows twice after switching tabs.** A read ~3s after a tab click came back with the last
+  two cells missing (`... | Jay Puzon | 2` and nothing else); the same read a moment later had the
+  full six. It is render timing, not a bug - do not report a missing column off a single sample.
+- **Multi-line cells arrive as one string.** The Phase cell is a tag over a caption, so its `innerText`
+  reads `PENDING
+Not started` - replace newlines before matching, or assert on the parts.
+- **Waiting for a Railway deploy**: poll the *schema* for a field the new build adds rather than
+  guessing at a duration -
+  `{ __type(name: "PickSheetSection") { fields { name } } }` until the new field appears. Backend and
+  frontend deploy separately; the backend took ~225s from merge to serving on 2026-07-28. `/health`
+  answering is not sufficient, it answers on the old build too.
+- **Most warehouse reads are ungated, so curl is faster than the browser for setup and assertions.**
+  `pullRequests`, `inventoryItems`, `inventoryHierarchy` and `auditLog` all answer unauthenticated;
+  `shopAssemblyRequests`, `relayStatus` and the pick mutations are `require_user`. A partially-gated
+  query returns HTTP 200 with `data.<field>: null` *and* an `errors` array - if a list looks
+  mysteriously empty, print `errors` before concluding the data is missing.
 - Allocator step (#378) specifics: the summary table is `Owed / Available / Allocated / Left to assign / Short`; each leaf card carries a `Fully covered` / `Not covered - auto-dropped` chip, an `N of M allocated` caption and an include/exclude toggle; the steppers have `aria-label`s `Add one <productCode>` / `Remove one <productCode>` and the `+` disables at `allocated === owed`. Driving a leaf's only line to 0 flips it to auto-dropped, greys the card, drops it out of the `Door leaves (N of M being sent)` count, removes its owed units from the summary, and shows an amber `N short` chip - **and Next stays enabled**, which is the whole point of the change.
 
 ## 2026-07-28 UI revamp - what changed for testers
