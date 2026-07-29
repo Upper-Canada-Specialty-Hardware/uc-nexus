@@ -91,10 +91,15 @@ shared_secret` on the connect handshake. the backend's `relay_call(company, op, 
 down that socket as `{id, op, company, payload}`; the relay answers `{id, ok, result|error}` by
 running the same eConnect logic the HTTP routes use (`ops.py` holds the shared `create_po`/
 `create_receipt` orchestration). set `[channel] backend_url` in `config.toml` to enable it; leave it
-blank to run HTTP-only, as before. op dispatch: `list_vendors`, `list_buyers`, `list_cost_codes`,
-`list_jobs`, `create_po`, `create_receipt`. reconnects with exponential backoff on drop; the
-`websockets` client's default 20s ping/pong keeps the channel alive through a corporate proxy's idle
-timeout.
+blank to run HTTP-only, as before. op dispatch (`_OPS` in `channel.py`, which is also what the relay
+advertises to the backend on connect so an out-of-date relay is caught before the round-trip):
+- reads: `list_vendors`, `list_buyers`, `list_buyers_detailed`, `list_tax_details`, `list_cost_codes`,
+  `list_jobs`, `list_customers`, `list_customer_addresses`, `list_tax_schedules`, `list_divisions`,
+  `list_employees`, `read_po_totals`
+- writes: `create_po`, `create_receipt`, `create_job`, `create_buyer`
 
-this is a foundation slice - nothing calls through `relay_call` yet (no GraphQL fields, no frontend
-change). every other relay-through-backend slice builds on this channel.
+reconnects with exponential backoff on drop; the `websockets` client's default 20s ping/pong keeps the
+channel alive through a corporate proxy's idle timeout.
+
+the ops newer than `create_po` / `create_receipt` are channel-only - they have no HTTP route, because
+the browser hop is no longer the live path.

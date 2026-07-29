@@ -119,6 +119,26 @@ def _run_list_buyers(company: str, payload: dict) -> dict:
     return {"company": company, "buyers": ids}
 
 
+def _run_list_buyers_detailed(company: str, payload: dict) -> dict:
+    ops.check_company_allowed(company)
+    with db.get_read_connection(company) as conn:
+        rows = econnect.list_buyers_detailed(conn)
+    return models.BuyersDetailedResponse(company=company, buyers=rows).model_dump(mode="json")
+
+
+def _run_create_buyer(company: str, payload: dict) -> dict:
+    ops.check_company_allowed(company)
+    request = models.CreateBuyerRequest(company=company, **payload)
+    with db.get_connection(company) as conn:
+        try:
+            response = ops.create_buyer_op(conn, company=company, request=request)
+            conn.commit()
+            return response.model_dump(mode="json")
+        except Exception:
+            conn.rollback()
+            raise
+
+
 def _run_list_tax_details(company: str, payload: dict) -> dict:
     ops.check_company_allowed(company)
     with db.get_read_connection(company) as conn:
@@ -253,6 +273,10 @@ _OPS = {
     # issue #392 - estimator / WS manager are validated against the payroll master, so they need a
     # picker rather than free text.
     "list_employees": _run_list_employees,
+    # issue #409 - the admin buyer screens: the buyer master with descriptions, and registering a new
+    # buyer so linking a Nexus account to a GP buyer identity never needs GP opened.
+    "list_buyers_detailed": _run_list_buyers_detailed,
+    "create_buyer": _run_create_buyer,
 }
 
 
