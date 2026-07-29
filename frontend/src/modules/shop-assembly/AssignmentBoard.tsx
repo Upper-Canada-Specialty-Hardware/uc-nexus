@@ -110,7 +110,11 @@ function DraggableCard({
           <Typography variant='body2' sx={{ ...monoSx, fontWeight: 600 }}>
             {(opening.openingNumber || opening.openingId.slice(0, 8)) + leafSuffix(opening.leaf)}
           </Typography>
-          <Chip label={`${opening.items.length} items`} size="small" variant="outlined" />
+          <Chip
+            label={`${opening.items.length} ${opening.items.length === 1 ? 'item' : 'items'}`}
+            size="small"
+            variant="outlined"
+          />
         </Stack>
         {(opening.building || opening.floor) && (
           <Typography variant='caption' color='text.secondary'>

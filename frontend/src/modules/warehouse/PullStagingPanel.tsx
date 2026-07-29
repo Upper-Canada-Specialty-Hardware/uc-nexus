@@ -153,7 +153,7 @@ export default function PullStagingPanel({
         sx={{ mb: 1.5, pb: 0.75, borderBottom: '2px solid', borderColor: 'text.primary' }}
       >
         <Typography component="div" sx={{ ...microLabelSx, flexGrow: 1 }}>
-          Stage carts ({stagedCount} of {openings.length} leaves)
+          Stage carts ({stagedCount} of {openings.length} {openings.length === 1 ? 'leaf' : 'leaves'})
         </Typography>
         {editable && stageable.length > 0 && (
           <Button size="small" variant="text" onClick={toggleAll}>
