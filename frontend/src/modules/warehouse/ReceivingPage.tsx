@@ -28,7 +28,7 @@ import {
 import { poVendorName } from '../po/poVendorName';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { FadeIn } from '../../motion';
-import { parseServerDate } from '../../utils/serverDate';
+import { parseServerDate, parseServerDay } from '../../utils/serverDate';
 
 // ---- Types ----
 
@@ -79,9 +79,13 @@ interface BackOrderedItem {
 
 // ---- Helpers ----
 
+/** An expected-delivery date is a calendar date, so it goes through `parseServerDay` (#238). This
+ *  page used the instant parse until #416 and printed every expected delivery a day early for any
+ *  viewer behind UTC - invisible on its own, glaring once the urgency chip started counting days off
+ *  the same value and calling a PO due today "1d overdue". */
 function formatDate(dateStr: string | null): string {
   if (!dateStr) return '\u2014';
-  return parseServerDate(dateStr).toLocaleDateString();
+  return parseServerDay(dateStr).toLocaleDateString();
 }
 
 function formatDateTime(dateStr: string): string {
@@ -89,15 +93,15 @@ function formatDateTime(dateStr: string): string {
 }
 
 /** How late or how soon, as a chip, or null when the date is far enough out to say nothing about.
- *  Parsed through `parseServerDate` like every other date on this page, so the chip and the date it
- *  sits beside can never disagree about which day they mean. */
+ *  Reads the date through the same `parseServerDay` the printed date uses, so the chip and the date
+ *  it sits beside can never disagree about which day they mean. */
 function urgencyOf(
   dateStr: string | null,
 ): { label: string; color: 'error' | 'warning' | 'info' } | null {
   if (!dateStr) return null;
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const date = parseServerDate(dateStr);
+  const date = parseServerDay(dateStr);
   date.setHours(0, 0, 0, 0);
   // Ceil, not round: a DST boundary makes the span 23 or 25 hours, and only ceil still calls that
   // one day.
