@@ -15,7 +15,6 @@ import { useQuery, useMutation } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import LocationAutocomplete from '../../components/LocationAutocomplete';
 import { useToast } from '../../components/Toast';
-import { useIdentity } from '../../hooks/useIdentity';
 import { GET_WAREHOUSES } from '../../graphql/shared';
 import { GET_LOCATION_DISTINCT_VALUES, TRANSFER_INVENTORY } from '../../graphql/warehouse';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
@@ -46,7 +45,6 @@ interface TransferDialogProps {
 
 export default function TransferDialog({ source, onClose, onSuccess }: TransferDialogProps) {
   const { showToast } = useToast();
-  const { displayName } = useIdentity();
 
   const { data: warehousesData } = useQuery<{ warehouses: WarehouseOption[] }>(GET_WAREHOUSES, {
     variables: { includeInactive: false },
@@ -104,7 +102,6 @@ export default function TransferDialog({ source, onClose, onSuccess }: TransferD
           destAisle: aisle.trim(),
           destRow: row.trim(),
           destBay: bay.trim(),
-          performedBy: displayName,
         },
       },
     });

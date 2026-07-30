@@ -19,7 +19,7 @@ import {
 import { AlertTriangle, Plus, Trash2 } from 'lucide-react';
 import { DataGrid, type GridColDef, type GridRowParams } from '@mui/x-data-grid';
 import { useMutation, useQuery } from '@apollo/client/react';
-import { GET_BUYER_ASSIGNMENTS, GET_PROJECTS } from '../../graphql/shared';
+import { GET_ALL_BUYER_ASSIGNMENTS, GET_PROJECTS } from '../../graphql/shared';
 import { DELETE_BUYER_ASSIGNMENT, SAVE_BUYER_ASSIGNMENT } from '../../graphql/admin';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import { useToast } from '../../components/Toast';
@@ -50,13 +50,15 @@ export default function BuyersPage() {
   const { isAdmin } = useIdentity();
   const { showToast } = useToast();
 
-  const { data, loading } = useQuery<{ buyerAssignments: BuyerAssignmentRow[] }>(GET_BUYER_ASSIGNMENTS, {
+  // #428: the admin whole-table read. `buyerAssignments` is scoped to the caller's own row now, so
+  // this page - the one screen that genuinely needs every buyer - uses the admin-gated resolver.
+  const { data, loading } = useQuery<{ allBuyerAssignments: BuyerAssignmentRow[] }>(GET_ALL_BUYER_ASSIGNMENTS, {
     skip: !isAdmin,
     fetchPolicy: 'cache-and-network',
   });
   const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS, { skip: !isAdmin });
   const projects = useMemo(() => projectsData?.projects ?? [], [projectsData]);
-  const rows = useMemo(() => data?.buyerAssignments ?? [], [data]);
+  const rows = useMemo(() => data?.allBuyerAssignments ?? [], [data]);
 
   // Edit dialog state. isNew drives whether the buyer id is editable (it's the row key).
   const [editOpen, setEditOpen] = useState(false);
@@ -74,7 +76,7 @@ export default function BuyersPage() {
   const canFlagUnregistered = !gpBuyers.unavailable && !gpBuyers.loading && gpBuyers.buyers.length > 0;
 
   const [saveAssignment, { loading: saving }] = useMutation(SAVE_BUYER_ASSIGNMENT, {
-    refetchQueries: [{ query: GET_BUYER_ASSIGNMENTS }],
+    refetchQueries: [{ query: GET_ALL_BUYER_ASSIGNMENTS }],
     onCompleted: () => {
       showToast('Buyer assignment saved', 'success');
       setEditOpen(false);
@@ -83,7 +85,7 @@ export default function BuyersPage() {
   });
 
   const [deleteAssignment] = useMutation(DELETE_BUYER_ASSIGNMENT, {
-    refetchQueries: [{ query: GET_BUYER_ASSIGNMENTS }],
+    refetchQueries: [{ query: GET_ALL_BUYER_ASSIGNMENTS }],
     onCompleted: () => {
       showToast('Buyer assignment deleted', 'success');
       setDeleteTarget(null);

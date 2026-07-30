@@ -404,7 +404,6 @@ function ProductCodeDetail({
                   inventoryLocationId: il.id,
                   quantity: q,
                   reasonText: reason,
-                  performedBy: 'Warehouse',
                 },
               },
             });

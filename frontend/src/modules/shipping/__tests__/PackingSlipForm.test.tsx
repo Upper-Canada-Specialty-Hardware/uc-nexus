@@ -55,7 +55,6 @@ const CONFIRM_VARS = {
   input: {
     projectId: PROJECT_ID,
     packingSlipNumber: 'PS-0019-L1',
-    shippedBy: 'Me',
     items: [{ itemType: 'OPENING_ITEM', openingItemId: 'oi-1', quantity: 1 }],
   },
 };

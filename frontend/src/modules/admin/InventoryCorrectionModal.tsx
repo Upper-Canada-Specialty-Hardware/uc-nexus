@@ -14,7 +14,6 @@ import { useMutation } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import { useToast } from '../../components/Toast';
-import { useIdentity } from '../../hooks/useIdentity';
 import { FONT_MONO, microLabelSx, monoSx, tabularSx } from '../../theme';
 import { OVERRIDE_INVENTORY_QUANTITY, ASSIGN_OPENING_ITEM_LOCATION } from '../../graphql/admin';
 import { MOVE_INVENTORY_LOCATION, MARK_INVENTORY_UNLOCATED, ASSIGN_INVENTORY_LOCATION, MOVE_OPENING_ITEM_LOCATION, MARK_OPENING_ITEM_UNLOCATED } from '../../graphql/shared';
@@ -136,7 +135,6 @@ export default function InventoryCorrectionModal({
   onSuccess,
 }: InventoryCorrectionModalProps) {
   const { showToast } = useToast();
-  const { displayName } = useIdentity();
 
   // Determine smart default correction type
   const defaultCorrectionType: CorrectionType = hasLocation(item) ? 'moveLocation' : 'assignLocation';
@@ -395,7 +393,6 @@ export default function InventoryCorrectionModal({
                         quantity: Number(d.quantity),
                       }))
                     : [],
-                performedBy: displayName,
               },
             },
           });

@@ -32,6 +32,7 @@ from .inputs import (
     CancelPullRequestInput,
     CreateReceiveInput,
     CreateWarehouseInput,
+    IgnoredActorArg,
     OverrideInventoryQuantityInput,
     PickLineInput,
     StagePullOpeningsInput,
@@ -776,7 +777,9 @@ class WarehouseMutations:
 
     # Pull Requests - the pick (#367)
     @strawberry.mutation
-    def start_pull_request_pick(self, info: strawberry.Info, id: strawberry.ID, started_by: str) -> PullRequest:
+    def start_pull_request_pick(
+        self, info: strawberry.Info, id: strawberry.ID, started_by: IgnoredActorArg = None
+    ) -> PullRequest:
         """Claim a pending pull and open it for picking (#367). Nothing moves in inventory.
 
         This is what `approvePullRequest` used to be, minus everything that touched stock. The
@@ -785,10 +788,12 @@ class WarehouseMutations:
         was picked or from where.
 
         Open to any signed-in user - it assigns the pull to the caller, so it must not be reachable
-        anonymously."""
-        require_user(info)
+        anonymously. The pull is assigned to the Clerk-authenticated caller (#427), not to whatever
+        `startedBy` said - the assignment is what the whole pick is then attributed to."""
+        auth = require_user(info)
+        actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
-            pr = warehouse_repository.start_pull_request_pick(session, uuid.UUID(str(id)), started_by)
+            pr = warehouse_repository.start_pull_request_pick(session, uuid.UUID(str(id)), actor)
             session.commit()
             pr = warehouse_repository.get_pull_request_details(session, pr.id)
             staging = warehouse_repository.get_pull_staging_summaries(session, [pr.id])
@@ -800,7 +805,7 @@ class WarehouseMutations:
         info: strawberry.Info,
         pull_request_id: strawberry.ID,
         lines: list[PickLineInput],
-        entered_by: str,
+        entered_by: IgnoredActorArg = None,
     ) -> PickSheet:
         """Save the half-keyed pick sheet without moving anything (#367).
 
@@ -810,14 +815,15 @@ class WarehouseMutations:
         exactly when it is wanted.
 
         Open to any signed-in user - it attributes a user action, same rationale as
-        `saveAssemblyProgress`."""
-        require_user(info)
+        `saveAssemblyProgress`. Who entered it is the Clerk-authenticated caller (#427)."""
+        auth = require_user(info)
+        actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             sheet = warehouse_repository.save_pick_draft(
                 session,
                 uuid.UUID(str(pull_request_id)),
                 _pick_lines_from_input(lines),
-                entered_by,
+                actor,
             )
             # `save_pick_draft` already returns the rebuilt sheet, so it is converted here rather
             # than read a second time: this is the picker's most frequent action, and re-running the
@@ -836,7 +842,7 @@ class WarehouseMutations:
         info: strawberry.Info,
         pull_request_id: strawberry.ID,
         lines: list[PickLineInput],
-        picked_by: str,
+        picked_by: IgnoredActorArg = None,
     ) -> ConfirmPickResult:
         """Deduct exactly the rows the picker dictated, and consume the claim behind them (#367).
 
@@ -850,14 +856,18 @@ class WarehouseMutations:
         everything returns SHORT: what was entered is deducted, the pull stays In Progress and
         un-picked, purchasing is notified once, and a later confirmation enters the remainder.
 
-        Open to any signed-in user - it writes inventory, so it must not be reachable anonymously."""
-        require_user(info)
+        Open to any signed-in user - it writes inventory, so it must not be reachable anonymously.
+        The deduction is stamped with the Clerk-authenticated caller (#427): this is the audit row
+        that says who took the stock off the rack, and it is worth nothing if the client picks the
+        name on it."""
+        auth = require_user(info)
+        actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             result = warehouse_repository.confirm_pick(
                 session,
                 uuid.UUID(str(pull_request_id)),
                 _pick_lines_from_input(lines),
-                picked_by,
+                actor,
             )
             notification = notification_to_type(result.notification) if result.notification else None
             shortfalls = [
@@ -896,7 +906,7 @@ class WarehouseMutations:
         info: strawberry.Info,
         item_id: strawberry.ID,
         fetched: bool,
-        fetched_by: str,
+        fetched_by: IgnoredActorArg = None,
     ) -> PullRequestItem:
         """Tick (or untick) one assembled leaf off a shipping pull's fetch list (#367).
 
@@ -904,25 +914,31 @@ class WarehouseMutations:
         persisted so it survives a reload or a shift change, and unticking is supported because a
         picker who ticked the wrong leaf must be able to say so.
 
-        Open to any signed-in user - it attributes a user action."""
-        require_user(info)
+        Open to any signed-in user - it attributes a user action, and since #427 it attributes it to
+        the Clerk-authenticated caller: the tick is a claim that a specific person has the leaf."""
+        auth = require_user(info)
+        actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
-            item = warehouse_repository.set_pull_item_fetched(session, uuid.UUID(str(item_id)), fetched, fetched_by)
+            item = warehouse_repository.set_pull_item_fetched(session, uuid.UUID(str(item_id)), fetched, actor)
             session.commit()
             session.refresh(item)
             return pull_request_item_to_type(item)
 
     @strawberry.mutation
     def complete_pull_request(
-        self, info: strawberry.Info, id: strawberry.ID, completed_by: str | None = None
+        self, info: strawberry.Info, id: strawberry.ID, completed_by: IgnoredActorArg = None
     ) -> PullRequest:
         """Close the whole pull in one go. Since #343 this reads as "stage everything still
         outstanding and finish": any opening not yet confirmed individually is flipped to PULLED and
-        stamped here. `completedBy` is optional and additive - it only names the actor on those
-        stamps, so existing callers are unaffected."""
-        require_user(info)
+        stamped here.
+
+        That stamp is the Clerk-authenticated caller as of #427. It was the client's `completedBy`
+        string, which made this the clearest example of the bug: one call could put any name on every
+        opening the pull staged, and the staging panel shows exactly that name."""
+        auth = require_user(info)
+        actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
-            pr = warehouse_repository.complete_pull_request(session, uuid.UUID(str(id)), completed_by=completed_by)
+            pr = warehouse_repository.complete_pull_request(session, uuid.UUID(str(id)), completed_by=actor)
             session.commit()
             pr = warehouse_repository.get_pull_request_details(session, pr.id)
             staging = warehouse_repository.get_pull_staging_summaries(session, [pr.id])
@@ -940,14 +956,15 @@ class WarehouseMutations:
         replacement-arrival application still happen exactly once.
 
         Open to any signed-in user - it makes hardware workable, so it must not be reachable
-        anonymously."""
-        require_user(info)
+        anonymously. Each opening is stamped with the Clerk-authenticated caller (#427)."""
+        auth = require_user(info)
+        actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             result = warehouse_repository.stage_pull_openings(
                 session,
                 uuid.UUID(str(input.pull_request_id)),
                 [uuid.UUID(str(oid)) for oid in input.opening_ids],
-                input.staged_by,
+                actor,
             )
             session.commit()
             pr = warehouse_repository.get_pull_request_details(session, result.pull_request.id)
@@ -972,13 +989,16 @@ class WarehouseMutations:
         its claim is re-created from the returned quantities if availability still allows; if it does
         not, the request is left unreserved and flagged rather than half-claimed.
 
-        Open to any signed-in user - it writes inventory, so it must not be reachable anonymously."""
-        require_user(info)
+        Open to any signed-in user - it writes inventory, so it must not be reachable anonymously.
+        The cancellation and every restock audit row it writes name the Clerk-authenticated caller
+        (#427)."""
+        auth = require_user(info)
+        actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             result = warehouse_repository.cancel_pull_request(
                 session,
                 uuid.UUID(str(input.id)),
-                input.cancelled_by,
+                actor,
                 input.reason,
             )
             session.commit()
@@ -1004,10 +1024,18 @@ class WarehouseMutations:
     def adjust_inventory_quantity(
         self, info: strawberry.Info, inventory_location_id: strawberry.ID, adjustment: int, reason: str
     ) -> InventoryLocation:
-        require_user(info)
+        """Move a project inventory row's count by a delta, with a reason, writing an ADJUSTMENT
+        audit row.
+
+        Every one of those rows said "Admin/Manager" until #427, whoever actually made the change:
+        the repository hardcoded it and there was no parameter to pass the truth through. `auditLog`,
+        the location history panel and the recent-activity feed all read that column, so the one
+        record of who altered a count was uniformly wrong."""
+        auth = require_user(info)
+        actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             result = warehouse_repository.adjust_inventory_quantity(
-                session, uuid.UUID(str(inventory_location_id)), adjustment, reason
+                session, uuid.UUID(str(inventory_location_id)), adjustment, reason, performed_by=actor
             )
             session.commit()
             session.refresh(result)
@@ -1024,7 +1052,8 @@ class WarehouseMutations:
 
         Gating it would also buy nothing while `adjustInventoryQuantity` next door stays open to any
         signed-in user: the same end quantity is reachable by passing the delta instead."""
-        require_user(info)
+        auth = require_user(info)
+        actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             result = warehouse_repository.override_inventory_quantity(
                 session,
@@ -1034,7 +1063,7 @@ class WarehouseMutations:
                 destinations=[
                     {"aisle": d.aisle, "row": d.row, "bay": d.bay, "quantity": d.quantity} for d in input.destinations
                 ],
-                performed_by=input.performed_by or "Warehouse",
+                performed_by=actor,
             )
             session.commit()
             session.refresh(result)
@@ -1049,10 +1078,13 @@ class WarehouseMutations:
         new_row: str,
         new_bay: str,
     ) -> InventoryLocation:
-        require_user(info)
+        """Relocate a project inventory row, writing a MOVE audit row naming the caller (#427); it
+        used to name "Admin/Manager" regardless of who moved the stock."""
+        auth = require_user(info)
+        actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             result = warehouse_repository.move_inventory_location(
-                session, uuid.UUID(str(inventory_location_id)), new_aisle, new_row, new_bay
+                session, uuid.UUID(str(inventory_location_id)), new_aisle, new_row, new_bay, performed_by=actor
             )
             session.commit()
             session.refresh(result)
@@ -1062,9 +1094,14 @@ class WarehouseMutations:
     def mark_inventory_unlocated(
         self, info: strawberry.Info, inventory_location_id: strawberry.ID
     ) -> InventoryLocation:
-        require_user(info)
+        """Clear a project inventory row's location, writing an UNLOCATE audit row naming the
+        caller (#427)."""
+        auth = require_user(info)
+        actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
-            result = warehouse_repository.mark_inventory_unlocated(session, uuid.UUID(str(inventory_location_id)))
+            result = warehouse_repository.mark_inventory_unlocated(
+                session, uuid.UUID(str(inventory_location_id)), performed_by=actor
+            )
             session.commit()
             session.refresh(result)
             return inventory_location_to_type(result)
@@ -1078,10 +1115,12 @@ class WarehouseMutations:
         row: str,
         bay: str,
     ) -> InventoryLocation:
-        require_user(info)
+        """Put a project inventory row away, writing a PUT_AWAY audit row naming the caller (#427)."""
+        auth = require_user(info)
+        actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             result = warehouse_repository.assign_inventory_location(
-                session, uuid.UUID(str(inventory_location_id)), aisle, row, bay
+                session, uuid.UUID(str(inventory_location_id)), aisle, row, bay, performed_by=actor
             )
             session.commit()
             session.refresh(result)
@@ -1097,7 +1136,9 @@ class WarehouseMutations:
         bay: str,
         warehouse_id: strawberry.ID | None = None,
     ) -> OpeningItem:
-        require_user(info)
+        """Relocate an assembled leaf, writing a MOVE audit row naming the caller (#427)."""
+        auth = require_user(info)
+        actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             result = warehouse_repository.move_opening_item_location(
                 session,
@@ -1106,6 +1147,7 @@ class WarehouseMutations:
                 row,
                 bay,
                 warehouse_id=uuid.UUID(str(warehouse_id)) if warehouse_id else None,
+                performed_by=actor,
             )
             session.commit()
             session.refresh(result)
@@ -1113,9 +1155,13 @@ class WarehouseMutations:
 
     @strawberry.mutation
     def mark_opening_item_unlocated(self, info: strawberry.Info, opening_item_id: strawberry.ID) -> OpeningItem:
-        require_user(info)
+        """Clear an assembled leaf's location, writing an UNLOCATE audit row naming the caller (#427)."""
+        auth = require_user(info)
+        actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
-            result = warehouse_repository.mark_opening_item_unlocated(session, uuid.UUID(str(opening_item_id)))
+            result = warehouse_repository.mark_opening_item_unlocated(
+                session, uuid.UUID(str(opening_item_id)), performed_by=actor
+            )
             session.commit()
             session.refresh(result)
             return opening_item_to_type(result)
@@ -1129,10 +1175,12 @@ class WarehouseMutations:
         row: str,
         bay: str,
     ) -> OpeningItem:
-        require_user(info)
+        """Put an assembled leaf away, writing a PUT_AWAY audit row naming the caller (#427)."""
+        auth = require_user(info)
+        actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             result = warehouse_repository.assign_opening_item_location(
-                session, uuid.UUID(str(opening_item_id)), aisle, row, bay
+                session, uuid.UUID(str(opening_item_id)), aisle, row, bay, performed_by=actor
             )
             session.commit()
             session.refresh(result)
@@ -1150,8 +1198,11 @@ class WarehouseMutations:
         to_bay: str,
     ) -> LocationMergeResult:
         """Admin-gated (#415): rewrites the location of every inventory row, opening item and stock
-        item at the source location. It already stamps its audit rows "Admin/Manager"."""
-        require_admin(info)
+        item at the source location. Its audit rows name the admin who ran it (#427) rather than the
+        literal "Admin/Manager" - the gate already proves the role, so the row may as well say which
+        admin, given a merge can touch hundreds of rows at once."""
+        auth = require_admin(info)
+        actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             counts = warehouse_repository.merge_locations(
                 session,
@@ -1161,7 +1212,7 @@ class WarehouseMutations:
                 to_aisle=to_aisle,
                 to_row=to_row,
                 to_bay=to_bay,
-                performed_by="Admin/Manager",
+                performed_by=actor,
             )
             session.commit()
             return LocationMergeResult(

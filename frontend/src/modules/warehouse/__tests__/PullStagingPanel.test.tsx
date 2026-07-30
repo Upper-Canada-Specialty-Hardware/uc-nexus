@@ -67,7 +67,7 @@ function stageMock(openingIds: string[], completed: boolean, resulting: unknown[
   return {
     request: {
       query: STAGE_PULL_OPENINGS,
-      variables: { input: { pullRequestId: 'pr-1', openingIds, stagedBy: 'Picker' } },
+      variables: { input: { pullRequestId: 'pr-1', openingIds } },
     },
     result: {
       data: {

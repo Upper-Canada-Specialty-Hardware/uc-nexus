@@ -2,7 +2,6 @@ import { useCallback, useState } from 'react';
 import { Box, Checkbox, Chip, Stack, Typography } from '@mui/material';
 import { useMutation } from '@apollo/client/react';
 import { SET_PULL_ITEM_FETCHED } from '../../graphql/warehouse';
-import { useIdentity } from '../../hooks/useIdentity';
 import { useToast } from '../../components/Toast';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { leafIdentity } from '../../utils/leaf';
@@ -43,7 +42,6 @@ type FetchOverride = { fetchedAt: string | null; fetchedBy: string | null };
  * means walking the rack twice.
  */
 export default function FetchListPanel({ items, editable }: FetchListPanelProps) {
-  const { displayName } = useIdentity();
   const { showToast } = useToast();
   const [overrides, setOverrides] = useState<Record<string, FetchOverride>>({});
   // Per row, not one shared flag: ticking leaf 1 must not freeze the other twenty-nine checkboxes
@@ -127,7 +125,6 @@ export default function FetchListPanel({ items, editable }: FetchListPanelProps)
                           variables: {
                             itemId: item.pullRequestItemId,
                             fetched: e.target.checked,
-                            fetchedBy: displayName,
                           },
                         }).catch(() => settle(item.pullRequestItemId));
                       }}

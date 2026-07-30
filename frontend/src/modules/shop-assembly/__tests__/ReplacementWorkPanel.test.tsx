@@ -46,7 +46,7 @@ function installMock(quantity: number): MockedResponse {
     request: {
       query: INSTALL_REPLACEMENT,
       variables: {
-        input: { shopAssemblyOpeningItemId: 'sai-1', quantity, performedBy: 'Ada' },
+        input: { shopAssemblyOpeningItemId: 'sai-1', quantity },
       },
     },
     result: {
@@ -76,7 +76,7 @@ function renderPanel(mocks: MockedResponse[], userId: string | null = 'user_1') 
   return render(
     <MockedProvider mocks={mocks}>
       <ToastProvider>
-        <ReplacementWorkPanel assignedToUserId={userId} performedBy='Ada' />
+        <ReplacementWorkPanel assignedToUserId={userId} />
       </ToastProvider>
     </MockedProvider>
   );

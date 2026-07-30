@@ -30,8 +30,6 @@ export interface ReplacementWorkRow {
 interface ReplacementWorkPanelProps {
   /** The signed-in assembler; the panel shows only the work assigned to them. */
   assignedToUserId: string | null;
-  /** Recorded as the performer on the install audit row. */
-  performedBy?: string;
 }
 
 /**
@@ -46,7 +44,7 @@ interface ReplacementWorkPanelProps {
  * listed, because the hardware is real and must not be silently stranded; it just cannot be
  * installed from here.
  */
-export default function ReplacementWorkPanel({ assignedToUserId, performedBy }: ReplacementWorkPanelProps) {
+export default function ReplacementWorkPanel({ assignedToUserId }: ReplacementWorkPanelProps) {
   const { showToast } = useToast();
   const [pending, setPending] = useState<ReplacementWorkRow | null>(null);
 
@@ -77,7 +75,6 @@ export default function ReplacementWorkPanel({ assignedToUserId, performedBy }: 
           // The whole pending quantity: the units arrived together on one pull line, and splitting
           // them would be an invented distinction the assembler has no way to act on.
           quantity: row.pendingQuantity,
-          performedBy,
         },
       },
     });
@@ -87,7 +84,7 @@ export default function ReplacementWorkPanel({ assignedToUserId, performedBy }: 
         'success',
       );
     }
-  }, [pending, installReplacement, performedBy, showToast]);
+  }, [pending, installReplacement, showToast]);
 
   const rows = data?.replacementWork ?? [];
   if (!assignedToUserId || loading || rows.length === 0) return null;

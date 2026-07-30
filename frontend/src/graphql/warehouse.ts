@@ -558,9 +558,12 @@ const PULL_STAGING_OPENING_FIELDS = `
   items { id shopAssemblyOpeningId hardwareCategory productCode quantity allocatedQuantity }
 `;
 
+// #427: who did it is taken from the Clerk token server-side, so these mutations no longer send an
+// actor. The arguments still exist in the schema (accepted and ignored) so a tab loaded against the
+// previous deploy keeps working; they are dropped once no deployed frontend references them.
 export const START_PULL_REQUEST_PICK = gql`
-  mutation StartPullRequestPick($id: ID!, $startedBy: String!) {
-    startPullRequestPick(id: $id, startedBy: $startedBy) { ${PULL_REQUEST_FIELDS} }
+  mutation StartPullRequestPick($id: ID!) {
+    startPullRequestPick(id: $id) { ${PULL_REQUEST_FIELDS} }
   }
 `;
 
@@ -571,16 +574,16 @@ export const GET_PULL_PICK_SHEET = gql`
 `;
 
 export const SAVE_PICK_DRAFT = gql`
-  mutation SavePickDraft($pullRequestId: ID!, $lines: [PickLineInput!]!, $enteredBy: String!) {
-    savePickDraft(pullRequestId: $pullRequestId, lines: $lines, enteredBy: $enteredBy) {
+  mutation SavePickDraft($pullRequestId: ID!, $lines: [PickLineInput!]!) {
+    savePickDraft(pullRequestId: $pullRequestId, lines: $lines) {
       ${PICK_SHEET_FIELDS}
     }
   }
 `;
 
 export const CONFIRM_PICK = gql`
-  mutation ConfirmPick($pullRequestId: ID!, $lines: [PickLineInput!]!, $pickedBy: String!) {
-    confirmPick(pullRequestId: $pullRequestId, lines: $lines, pickedBy: $pickedBy) {
+  mutation ConfirmPick($pullRequestId: ID!, $lines: [PickLineInput!]!) {
+    confirmPick(pullRequestId: $pullRequestId, lines: $lines) {
       pullRequest { ${PULL_REQUEST_FIELDS} }
       outcome
       appliedQuantity
@@ -595,8 +598,8 @@ export const CONFIRM_PICK = gql`
 `;
 
 export const SET_PULL_ITEM_FETCHED = gql`
-  mutation SetPullItemFetched($itemId: ID!, $fetched: Boolean!, $fetchedBy: String!) {
-    setPullItemFetched(itemId: $itemId, fetched: $fetched, fetchedBy: $fetchedBy) {
+  mutation SetPullItemFetched($itemId: ID!, $fetched: Boolean!) {
+    setPullItemFetched(itemId: $itemId, fetched: $fetched) {
       id pullRequestId itemType openingNumber openingItemId leaf
       hardwareCategory productCode requestedQuantity fetchedAt fetchedBy
     }
@@ -604,8 +607,8 @@ export const SET_PULL_ITEM_FETCHED = gql`
 `;
 
 export const COMPLETE_PULL_REQUEST = gql`
-  mutation CompletePullRequest($id: ID!, $completedBy: String) {
-    completePullRequest(id: $id, completedBy: $completedBy) { ${PULL_REQUEST_FIELDS} }
+  mutation CompletePullRequest($id: ID!) {
+    completePullRequest(id: $id) { ${PULL_REQUEST_FIELDS} }
   }
 `;
 
