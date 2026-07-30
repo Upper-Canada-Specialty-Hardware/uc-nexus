@@ -10,26 +10,32 @@ This is a tester's knowledge journal for UC Nexus. It documents how the app work
 
 **A Railway PR environment is the only place end-to-end testing happens** (issue #182 pivot - the localdev runtime was dropped for UC Nexus e2e; zero local setup needed).
 
-> **The `*-production-*` Railway services are REAL PRODUCTION.** Real customer data, real users.
-> Never point a testing session at them, and never fire mutation probes at them - not to "just check"
+> **The `*-production-*` Railway services are off-limits to automated testing sessions.** Never
+> point a testing session at them, and never fire mutation probes at them - not to "just check"
 > something after a merge, and not because a change is already deployed there. If a thing genuinely
 > can only be observed on production, ask a human first.
 >
-> This file used to call production "the default" runtime for testing, and that was followed in
-> practice. If you are reading a stale copy of that guidance somewhere else - the global
-> `~/.claude/CLAUDE.md` said the same thing - this block supersedes it.
+> As of 2026-07-30 production carries no live data yet - UC Nexus is still in a testing state, and
+> the production environment is where humans (the user and executives) test. The split is
+> deliberate anyway: agents test on Preview Environments to get ahead of the day production holds
+> real data. The plan is for today's "production" to become a proper staging environment, with a
+> true production created alongside; the agent-side rule does not change at any point in that
+> evolution.
 
-- **Railway PR environments (the testing target)** (ENABLED 2026-07-29, `prDeploys` on the project; bot PRs like dependabot deliberately excluded): every non-draft PR gets a full ephemeral replica (frontend + backend + fresh empty Postgres, migrated on boot) named `uc-nexus-pr-<N>`. Do not wait for a Railway bot comment - none was observed; the URLs are derivable: `https://backend-uc-nexus-pr-<N>.up.railway.app` / `https://frontend-uc-nexus-pr-<N>.up.railway.app`. Substitute them into the sign-in flow below; verified live on PR #401 (`/health` 200, `/testing/clerk-sign-in` mints tokens, GraphQL serves the fresh DB). Data starts empty; seed via the import fixture. No PR open for what you need to test? Open a throwaway one - that is cheaper than the alternative. `VITE_GRAPHQL_URL` is a reference variable (`https://${{backend.RAILWAY_PUBLIC_DOMAIN}}/graphql`) so each environment self-wires; `TESTING_ENABLED` and Clerk keys inherit from production. **That inheritance is a copy taken when the environment is created, not a live link** (#431): a variable added to production afterwards never reaches a PR environment that already exists, so set it on that environment's own backend service too and let it redeploy. Found the hard way with `RELAY_SEED_SECRET_HASH` on pr-430 - see the relay section below. **A PR that only touches one service's directory only deploys that service in its environment** (root-directory change filtering - PR #401 was backend-only and the frontend showed `latestDeployment: null`); trigger the missing one from the dashboard or via the API (`serviceInstanceDeployV2(environmentId, serviceId)`). Environments auto-delete when the PR closes.
+- **Railway PR environments, a.k.a. "Preview Environments" (the testing target)** (ENABLED 2026-07-29, `prDeploys` on the project; bot PRs like dependabot deliberately excluded): every non-draft PR gets a full ephemeral replica (frontend + backend + fresh empty Postgres, migrated on boot) named `uc-nexus-pr-<N>`. Do not wait for a Railway bot comment - none was observed; the URLs are derivable: `https://backend-uc-nexus-pr-<N>.up.railway.app` / `https://frontend-uc-nexus-pr-<N>.up.railway.app`. Substitute them into the sign-in flow below; verified live on PR #401 (`/health` 200, `/testing/clerk-sign-in` mints tokens, GraphQL serves the fresh DB). Data starts empty; seed via the import fixture. No PR open for what you need to test? Open a throwaway one - that is cheaper than the alternative. `VITE_GRAPHQL_URL` is a reference variable (`https://${{backend.RAILWAY_PUBLIC_DOMAIN}}/graphql`) so each environment self-wires; `TESTING_ENABLED` and Clerk keys inherit from production. **That inheritance is a copy taken when the environment is created, not a live link** (#431): a variable added to production afterwards never reaches a PR environment that already exists, so set it on that environment's own backend service too and let it redeploy. Found the hard way with `RELAY_SEED_SECRET_HASH` on pr-430 - see the relay section below. **A PR that only touches one service's directory only deploys that service in its environment** (root-directory change filtering - PR #401 was backend-only and the frontend showed `latestDeployment: null`); trigger the missing one from the dashboard or via the API (`serviceInstanceDeployV2(environmentId, serviceId)`). Environments auto-delete when the PR closes.
 - **Local (manual fallback)**: frontend `http://localhost:5173`, backend `http://localhost:8000`. Run the backend with `poetry run uvicorn main:app --reload` (from `backend/`) and the frontend with `npm run dev` (from `frontend/`). Needs a local Postgres (not provided; the worktree-localdev adoption was dropped).
 - **Auth**: Clerk sign-in, automated via one-time sign-in tokens (no manual password/verification needed).
   - Backend endpoint `GET /testing/clerk-sign-in` generates the token (requires `TESTING_ENABLED=true`).
   - Since #422 the endpoint also requires a credential: an Admin/Manager `Authorization` bearer, or
     the shared testing secret in an `X-Testing-Secret` header. The secret is the bootstrap path on a
     fresh PR environment (no session exists there yet): its SHA-256 hex must sit in the backend's
-    `TESTING_SIGN_IN_SECRET_HASH` variable. Since #424 flipped `TESTING_ENABLED` off in production,
-    new PR environments inherit it off too - so for each PR environment you test on, set both
-    `TESTING_ENABLED=true` and a `TESTING_SIGN_IN_SECRET_HASH` you know the preimage of on that
-    environment's backend service (see `backend/.env.example` for the generator one-liner).
+    `TESTING_SIGN_IN_SECRET_HASH` variable. `TESTING_ENABLED` was re-enabled on production
+    2026-07-30 (humans test there until the staging/production split), so new Preview Environments
+    inherit it on again; `TESTING_SIGN_IN_SECRET_HASH` stays unset on production on purpose (its
+    secret path must not be mintable there), so for each Preview Environment you test on, set a
+    `TESTING_SIGN_IN_SECRET_HASH` you know the preimage of on that environment's backend service
+    (see `backend/.env.example` for the generator one-liner). An environment created while
+    production still had `TESTING_ENABLED=false` needs that set by hand too.
   - Navigate to the frontend URL with `?__clerk_ticket=TOKEN` to auto-authenticate.
   - Tokens are one-time use; fetch a fresh one each session. Works on any runtime with the same Clerk dev instance.
   - **Every environment inherits production Clerk keys**, so the accounts in a PR environment are real
@@ -272,8 +278,12 @@ import-created draft otherwise blocks the register dialog with per-line `Require
    - Clerk auto-authenticates — no email, password, or verification code needed.
    - You land on `/app` (Module Selector) fully signed in.
 2. **Reset data** (if needed): Click the "DevAction: drop and rebuild schema" button in the app bar.
+   - Since #442 the button mints the Clerk session token off the auth bridge and sends it as an
+     `Authorization: Bearer` header - `/admin/reset-data` sits behind `require_admin_request` (#422),
+     so the signed-in account must hold **Admin/Manager**. With no session it alerts and skips the
+     request instead of firing a doomed unauthenticated POST.
    - A MUI confirm dialog appears first — click "Drop & Rebuild" to confirm.
-   - Then a `window.alert()` fires with "schema dropped and rebuilt" — use `handle_dialog` with `action: "accept"` to dismiss it.
+   - Then a `window.alert()` fires with "Schema dropped and rebuilt..." — use `handle_dialog` with `action: "accept"` to dismiss it.
    - Only then can you `take_snapshot` again (alerts block all MCP interaction).
 3. **Post-login**: You land on `/app` — the Module Selector with 6 module cards.
 
