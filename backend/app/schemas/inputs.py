@@ -1,5 +1,4 @@
 from datetime import date
-from typing import Annotated
 
 import strawberry
 
@@ -11,19 +10,6 @@ from .enums import (
     ReturnDisposition,
     TransferSourceType,
 )
-
-# Issue #427: every mutation that stamps an actor on an audit or history row now takes that actor
-# from the Clerk token the gate verified, never from its arguments - the old way let any signed-in
-# user file their work under someone else's name.
-#
-# The arguments themselves stay in the schema, accepted and ignored, for the same reason #430 kept
-# `saveBuyerAssignment(costCodes:)`: a tab loaded against the previous deploy still sends them, and
-# an unknown argument fails GraphQL validation outright, so removing them would break every open
-# session at once. They also became nullable, because a required argument cannot carry @deprecated -
-# and widening required to optional is safe in the other direction, since old clients still send a
-# value. Dropped once no deployed frontend references them.
-ACTOR_IGNORED = "the actor is taken from the authenticated caller (#427); this value is ignored"
-IgnoredActorArg = Annotated[str | None, strawberry.argument(deprecation_reason=ACTOR_IGNORED)]
 
 
 @strawberry.input
@@ -170,7 +156,6 @@ class ShippingOutPRDraftItemInput:
 @strawberry.input
 class ShippingOutPRDraftInput:
     request_number: str
-    requested_by: str
     items: list[ShippingOutPRDraftItemInput] = strawberry.field(default_factory=list)
 
 
@@ -338,7 +323,6 @@ class TransferInventoryInput:
     dest_aisle: str
     dest_row: str
     dest_bay: str
-    performed_by: str | None = strawberry.field(default=None, deprecation_reason=ACTOR_IGNORED)
 
 
 @strawberry.input
@@ -458,7 +442,6 @@ class ShipmentItemInput:
 class ConfirmShipmentInput:
     project_id: strawberry.ID
     packing_slip_number: str
-    shipped_by: str | None = strawberry.field(default=None, deprecation_reason=ACTOR_IGNORED)
     items: list[ShipmentItemInput] = strawberry.field(default_factory=list)
 
 
@@ -475,7 +458,6 @@ class ShipmentReturnItemInput:
 class CreateShipmentReturnInput:
     packing_slip_id: strawberry.ID
     warehouse_id: strawberry.ID
-    returned_by: str | None = strawberry.field(default=None, deprecation_reason=ACTOR_IGNORED)
     reference: str | None = None
     items: list[ShipmentReturnItemInput] = strawberry.field(default_factory=list)
 
@@ -512,7 +494,6 @@ class AssemblyProgressItemInput:
 class RecordAssemblyProgressInput:
     opening_id: strawberry.ID
     items: list[AssemblyProgressItemInput] = strawberry.field(default_factory=list)
-    performed_by: str | None = strawberry.field(default=None, deprecation_reason=ACTOR_IGNORED)
 
 
 @strawberry.input
@@ -522,7 +503,6 @@ class InstallReplacementInput:
 
     shop_assembly_opening_item_id: strawberry.ID
     quantity: int
-    performed_by: str | None = strawberry.field(default=None, deprecation_reason=ACTOR_IGNORED)
 
 
 @strawberry.input
@@ -548,7 +528,6 @@ class StagePullOpeningsInput:
 
     pull_request_id: strawberry.ID
     opening_ids: list[strawberry.ID]
-    staged_by: str | None = strawberry.field(default=None, deprecation_reason=ACTOR_IGNORED)
 
 
 @strawberry.input
@@ -559,7 +538,6 @@ class CancelPullRequestInput:
     and the refusal names them. `reason` is optional but shown to whoever raised the pull."""
 
     id: strawberry.ID
-    cancelled_by: str | None = strawberry.field(default=None, deprecation_reason=ACTOR_IGNORED)
     reason: str | None = None
 
 
@@ -569,7 +547,6 @@ class CompleteOpeningInput:
     aisle: str | None = None
     row: str | None = None
     bay: str | None = None
-    completed_by: str | None = strawberry.field(default=None, deprecation_reason=ACTOR_IGNORED)
 
 
 # ---------------------------------------------------------------------------
@@ -586,7 +563,6 @@ class DestockInventoryInput:
     target_aisle: str | None = None
     target_row: str | None = None
     target_bay: str | None = None
-    performed_by: str | None = strawberry.field(default=None, deprecation_reason=ACTOR_IGNORED)
 
 
 @strawberry.input
@@ -599,7 +575,6 @@ class AllocateStockToProjectInput:
     target_aisle: str | None = None
     target_row: str | None = None
     target_bay: str | None = None
-    performed_by: str | None = strawberry.field(default=None, deprecation_reason=ACTOR_IGNORED)
 
 
 @strawberry.input
@@ -607,7 +582,6 @@ class AdjustStockQuantityInput:
     stock_item_id: strawberry.ID
     new_quantity: int
     reason_text: str
-    performed_by: str | None = strawberry.field(default=None, deprecation_reason=ACTOR_IGNORED)
 
 
 @strawberry.input
@@ -616,7 +590,6 @@ class MoveStockLocationInput:
     new_aisle: str
     new_row: str
     new_bay: str
-    performed_by: str | None = strawberry.field(default=None, deprecation_reason=ACTOR_IGNORED)
 
 
 @strawberry.input
@@ -626,7 +599,6 @@ class ReclassifyStockItemInput:
     new_product_code: str
     quantity: int
     reason_text: str | None = None
-    performed_by: str | None = strawberry.field(default=None, deprecation_reason=ACTOR_IGNORED)
 
 
 @strawberry.input
@@ -634,7 +606,6 @@ class ReportInventoryDeficiencyInput:
     inventory_location_id: strawberry.ID
     quantity: int
     reason_text: str | None = None
-    performed_by: str | None = strawberry.field(default=None, deprecation_reason=ACTOR_IGNORED)
 
 
 @strawberry.input
@@ -654,7 +625,6 @@ class OverrideInventoryQuantityInput:
     reason_text: str
     # required when new_quantity increases the row; ignored on a decrease. quantities must sum to the delta.
     destinations: list[OverrideDestinationInput] = strawberry.field(default_factory=list)
-    performed_by: str | None = strawberry.field(default=None, deprecation_reason=ACTOR_IGNORED)
 
 
 @strawberry.input
@@ -662,7 +632,6 @@ class ReportStockDeficiencyInput:
     stock_item_id: strawberry.ID
     quantity: int
     reason_text: str | None = None
-    performed_by: str | None = strawberry.field(default=None, deprecation_reason=ACTOR_IGNORED)
 
 
 @strawberry.input
@@ -670,7 +639,6 @@ class ReportDeficiencyAtAssemblyInput:
     shop_assembly_opening_item_id: strawberry.ID
     quantity: int
     reason_text: str | None = None
-    performed_by: str | None = strawberry.field(default=None, deprecation_reason=ACTOR_IGNORED)
 
 
 @strawberry.input
@@ -683,4 +651,3 @@ class ResolveDeficiencyInput:
     reason_text: str | None = None
     rma_reference: str | None = None
     destock_source: DestockSource | None = None
-    reviewed_by: str | None = strawberry.field(default=None, deprecation_reason=ACTOR_IGNORED)

@@ -34,9 +34,13 @@ export function shippingPRItemKey(item: ShippingPRItem): string {
     : `LOOSE|${item.openingNumber}|${item.hardwareCategory}|${item.productCode}`;
 }
 
+/**
+ * One shipping-out request the wizard will create on finalize. There is deliberately no requester
+ * field: the import path stamps every request it creates as "Hardware Schedule Import", so the
+ * "Requested By" box the step used to show was never read (#438).
+ */
 export interface ShippingPRDraft {
   requestNumber: string;
-  requestedBy: string;
   items: ShippingPRItem[];
 }
 

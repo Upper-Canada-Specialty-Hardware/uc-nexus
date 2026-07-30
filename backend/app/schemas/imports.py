@@ -189,7 +189,6 @@ class ImportMutations:
             "shipping_out_pr_drafts": [
                 {
                     "request_number": pr.request_number,
-                    "requested_by": pr.requested_by,
                     "items": [
                         {
                             "item_type": item.item_type.value,

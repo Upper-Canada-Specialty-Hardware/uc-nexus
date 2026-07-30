@@ -32,7 +32,6 @@ from .inputs import (
     CancelPullRequestInput,
     CreateReceiveInput,
     CreateWarehouseInput,
-    IgnoredActorArg,
     OverrideInventoryQuantityInput,
     PickLineInput,
     StagePullOpeningsInput,
@@ -752,9 +751,7 @@ class WarehouseMutations:
 
     # Pull Requests - the pick (#367)
     @strawberry.mutation
-    def start_pull_request_pick(
-        self, info: strawberry.Info, id: strawberry.ID, started_by: IgnoredActorArg = None
-    ) -> PullRequest:
+    def start_pull_request_pick(self, info: strawberry.Info, id: strawberry.ID) -> PullRequest:
         """Claim a pending pull and open it for picking (#367). Nothing moves in inventory.
 
         This is what `approvePullRequest` used to be, minus everything that touched stock. The
@@ -763,8 +760,9 @@ class WarehouseMutations:
         was picked or from where.
 
         Open to any signed-in user - it assigns the pull to the caller, so it must not be reachable
-        anonymously. The pull is assigned to the Clerk-authenticated caller (#427), not to whatever
-        `startedBy` said - the assignment is what the whole pick is then attributed to."""
+        anonymously. The pull is assigned to the Clerk-authenticated caller (#427), never to a name
+        the client picks - the assignment is what the whole pick is then attributed to. The old
+        `startedBy` argument that let it be picked came out in #438."""
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
@@ -780,7 +778,6 @@ class WarehouseMutations:
         info: strawberry.Info,
         pull_request_id: strawberry.ID,
         lines: list[PickLineInput],
-        entered_by: IgnoredActorArg = None,
     ) -> PickSheet:
         """Save the half-keyed pick sheet without moving anything (#367).
 
@@ -817,7 +814,6 @@ class WarehouseMutations:
         info: strawberry.Info,
         pull_request_id: strawberry.ID,
         lines: list[PickLineInput],
-        picked_by: IgnoredActorArg = None,
     ) -> ConfirmPickResult:
         """Deduct exactly the rows the picker dictated, and consume the claim behind them (#367).
 
@@ -881,7 +877,6 @@ class WarehouseMutations:
         info: strawberry.Info,
         item_id: strawberry.ID,
         fetched: bool,
-        fetched_by: IgnoredActorArg = None,
     ) -> PullRequestItem:
         """Tick (or untick) one assembled leaf off a shipping pull's fetch list (#367).
 
@@ -900,16 +895,15 @@ class WarehouseMutations:
             return pull_request_item_to_type(item)
 
     @strawberry.mutation
-    def complete_pull_request(
-        self, info: strawberry.Info, id: strawberry.ID, completed_by: IgnoredActorArg = None
-    ) -> PullRequest:
+    def complete_pull_request(self, info: strawberry.Info, id: strawberry.ID) -> PullRequest:
         """Close the whole pull in one go. Since #343 this reads as "stage everything still
         outstanding and finish": any opening not yet confirmed individually is flipped to PULLED and
         stamped here.
 
         That stamp is the Clerk-authenticated caller as of #427. It was the client's `completedBy`
         string, which made this the clearest example of the bug: one call could put any name on every
-        opening the pull staged, and the staging panel shows exactly that name."""
+        opening the pull staged, and the staging panel shows exactly that name. The argument was
+        removed outright in #438."""
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:

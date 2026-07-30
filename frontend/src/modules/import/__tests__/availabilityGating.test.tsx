@@ -253,7 +253,6 @@ function looseItem(overrides: Partial<AggregatedHardwareItem> = {}): AggregatedH
 
 const SHIP_DRAFT: ShippingPRDraft = {
   requestNumber: 'SOR-1',
-  requestedBy: 'ada',
   items: [
     {
       itemType: 'LOOSE',

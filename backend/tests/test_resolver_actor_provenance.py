@@ -174,8 +174,9 @@ def test_resolver_does_not_take_its_actor_from_the_client(module, fn):
         f"name. Take it from the gate instead:\n"
         f"    auth = require_user(info)\n"
         f"    actor = resolve_display_name(auth['user_id'])\n"
-        f"The argument may stay in the GraphQL schema, accepted and ignored, so a frontend from the "
-        f"previous deploy keeps working - it just must not reach the repository."
+        f"Do not add the argument back to the GraphQL schema either. #427 left the old ones in as "
+        f"ignored @deprecated no-ops purely so a tab from the previous deploy still validated, and "
+        f"#438 removed them once that window closed - a new one has no such window to earn."
     )
 
 
