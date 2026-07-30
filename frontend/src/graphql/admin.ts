@@ -397,13 +397,11 @@ export const CREATE_GP_BUYER = gql`
   }
 `;
 
-// costCodes is dead weight both ways (the new backend ignores it, nothing reads it back), but the
-// OLD backend still declares it as a required [String!]! - so keep sending the defaulted empty list
-// or a frontend that deploys ahead of the backend fails GraphQL validation on every save. The
-// follow-up PR that drops the argument from the schema drops it here first.
+// costCodes came out of the schema in #438: per-buyer cost-code designation was removed in #430,
+// which left the argument as an ignored no-op only so a tab from the previous deploy still validated.
 export const SAVE_BUYER_ASSIGNMENT = gql`
-  mutation SaveBuyerAssignment($buyerId: String!, $projectIds: [ID!]!, $costCodes: [String!] = []) {
-    saveBuyerAssignment(buyerId: $buyerId, projectIds: $projectIds, costCodes: $costCodes) {
+  mutation SaveBuyerAssignment($buyerId: String!, $projectIds: [ID!]!) {
+    saveBuyerAssignment(buyerId: $buyerId, projectIds: $projectIds) {
       buyerId
       projects {
         id

@@ -15,7 +15,7 @@ from .converters import (
     shipping_out_request_to_type,
 )
 from .enums import ShippingOutRequestStatus
-from .inputs import ConfirmShipmentInput, CreateShipmentReturnInput, IgnoredActorArg
+from .inputs import ConfirmShipmentInput, CreateShipmentReturnInput
 from .types import (
     PackingSlip,
     ReturnableLine,
@@ -89,9 +89,7 @@ class ShippingQueries:
 @strawberry.type
 class ShippingMutations:
     @strawberry.mutation
-    def accept_shipping_out_request(
-        self, info: strawberry.Info, id: strawberry.ID, accepted_by: IgnoredActorArg = None
-    ) -> ShippingOutRequest:
+    def accept_shipping_out_request(self, info: strawberry.Info, id: strawberry.ID) -> ShippingOutRequest:
         """Accept a PENDING shipping-out request (#293). Open to any signed-in user. Mints the
         warehouse PullRequest (SHIPPING_OUT, PENDING) from the request's items; the warehouse
         approve handles any inventory shortfall (no gate here).
@@ -109,7 +107,7 @@ class ShippingMutations:
 
     @strawberry.mutation
     def reject_shipping_out_request(
-        self, info: strawberry.Info, id: strawberry.ID, rejected_by: IgnoredActorArg = None, reason: str | None = None
+        self, info: strawberry.Info, id: strawberry.ID, reason: str | None = None
     ) -> ShippingOutRequest:
         """Reject a PENDING shipping-out request (#293). Open to any signed-in user. Recorded against
         the Clerk-authenticated caller (#427)."""
@@ -141,7 +139,7 @@ class ShippingMutations:
 
         `shippedBy` is printed on the slip and shown in the shipments grid, so it is the record of
         who released the hardware. It is the Clerk-authenticated caller as of #427; the input field
-        is still accepted and ignored."""
+        that used to name it was dropped in #438."""
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         from app.models.enums import PullRequestItemType
@@ -178,7 +176,7 @@ class ShippingMutations:
     @strawberry.mutation
     def create_shipment_return(self, info: strawberry.Info, input: CreateShipmentReturnInput) -> ShipmentReturn:
         """Book hardware back off a packing slip. `returnedBy` is the Clerk-authenticated caller
-        (#427); the input field is still accepted and ignored."""
+        (#427); the input field that used to name it was dropped in #438."""
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         from app.models.enums import ReturnDisposition

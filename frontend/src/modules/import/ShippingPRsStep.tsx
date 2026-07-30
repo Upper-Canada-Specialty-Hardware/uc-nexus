@@ -58,7 +58,7 @@ interface ShippingPRsStepProps {
   leavesError: boolean;
   onAddPR: () => void;
   onRemovePR: (index: number) => void;
-  onUpdatePR: (index: number, field: 'requestNumber' | 'requestedBy', value: string) => void;
+  onUpdatePR: (index: number, requestNumber: string) => void;
   onTogglePRItem: (prIndex: number, item: ShippingPRItem) => void;
   /**
    * Reservation-aware availability per (category|product) for this project (#342). A LOOSE line
@@ -261,22 +261,17 @@ export default function ShippingPRsStep({
               </IconButton>
             </Box>
 
+            {/* No requester box: the import stamps every request it creates as "Hardware Schedule
+                Import", so the one that used to sit here was collected and thrown away (#438). */}
             <Box sx={{ display: 'flex', gap: 2, mb: 2 }}>
               <TextField
                 label="PR Number"
                 size="small"
                 required
                 value={draft.requestNumber}
-                onChange={(e) => onUpdatePR(prIdx, 'requestNumber', e.target.value)}
+                onChange={(e) => onUpdatePR(prIdx, e.target.value)}
                 sx={{ flex: 1 }}
                 slotProps={{ input: { sx: monoSx } }}
-              />
-              <TextField
-                label="Requested By"
-                size="small"
-                value={draft.requestedBy}
-                onChange={(e) => onUpdatePR(prIdx, 'requestedBy', e.target.value)}
-                sx={{ flex: 1 }}
               />
             </Box>
 

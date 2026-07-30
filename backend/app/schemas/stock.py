@@ -2,10 +2,10 @@
 
 Every mutation here writes an audit row, and since #427 the actor on it is the Clerk-authenticated
 caller (`current_user` -> `resolve_display_name`), never the request's own `performedBy`/`reviewedBy`
-field. Those input fields are still accepted so a frontend from the previous deploy keeps working;
-they are ignored. Before the change these rows carried whatever the client sent, defaulting to the
-literal strings "Admin/Manager" or "Warehouse" - which is what most of them actually stored, because
-the stock modals hardcoded exactly those two.
+field. Those input fields survived #427 as ignored no-ops so a frontend from the previous deploy kept
+validating, and came out of the schema entirely in #438. Before the change these rows carried
+whatever the client sent, defaulting to the literal strings "Admin/Manager" or "Warehouse" - which is
+what most of them actually stored, because the stock modals hardcoded exactly those two.
 """
 
 import uuid
