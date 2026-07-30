@@ -8,6 +8,7 @@ import ShipmentsList from './ShipmentsList';
 import ShippingCart from './ShippingCart';
 import ShippingRequestsPage from './ShippingRequestsPage';
 import ProjectLandingPage from '../../components/ProjectLandingPage';
+import GpSetupQuarantineBanner from '../../components/GpSetupQuarantineBanner';
 import type { Project } from '../../types/project';
 
 export default function ShippingModule() {
@@ -34,6 +35,9 @@ export default function ShippingModule() {
   const projectId = selectedProject !== 'all' ? selectedProject.id : undefined;
   const projectName =
     selectedProject === 'all' ? 'All Projects' : (selectedProject.description || selectedProject.projectId);
+  // #425: only meaningful for a single project. The All Projects view spans every job, so there is no
+  // one verdict to show and no single action to block - the cart is scoped to a project either way.
+  const gpSetupProject = selectedProject !== 'all' ? selectedProject : null;
 
   return (
     <Box>
@@ -68,6 +72,7 @@ export default function ShippingModule() {
           </IconButton>
         </Box>
       </Box>
+      <GpSetupQuarantineBanner project={gpSetupProject} action="shipping from it" />
       <Routes>
         <Route path="requests" element={<ShippingRequestsPage projectId={projectId} />} />
         <Route path="browse" element={<ShipReadyBrowser projectId={projectId} />} />
@@ -79,6 +84,7 @@ export default function ShippingModule() {
         onClose={() => setCartOpen(false)}
         projectId={projectId}
         projectName={projectName}
+        project={gpSetupProject}
       />
     </Box>
   );

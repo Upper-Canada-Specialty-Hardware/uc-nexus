@@ -218,6 +218,31 @@ class CostCodesResponse(BaseModel):
     cost_codes: list[CostCodeOut]
 
 
+# --- GP job setup health (issue #425) ---
+# The verdict the backend stamps onto every project each sync pass, so a job whose JC00701 rows point
+# at accounts this company does not have is quarantined before anyone raises a PO on it.
+
+
+class JobSetupIssueOut(BaseModel):
+    cost_code: str      # 'phase-step-element', e.g. '210-200-2' - what the register-PO dropdown shows
+    account_index: int  # the dangling JC00701.WS_Account_Index_1, absent from this company's GL00105
+
+
+class JobSetupOut(BaseModel):
+    job_number: str                 # GP WS_Job_Number (JC00102), which is the Nexus project_id
+    ok: bool                        # has active cost codes AND none of them dangle
+    active_cost_code_count: int     # 0 is itself a failure: a job with no cost structure set up
+    issues: list[JobSetupIssueOut] = []
+
+
+class JobSetupHealthResponse(BaseModel):
+    company: str
+    # Present only when the caller asked about ONE job (the live re-check at PO submit); None for the
+    # whole-company sweep, so the backend can tell a filtered answer from an exhaustive one.
+    job: str | None = None
+    jobs: list[JobSetupOut]
+
+
 # --- create a GP job (issue #380) ---
 # The five reads that feed the create-job form's dropdowns, then the create request itself.
 

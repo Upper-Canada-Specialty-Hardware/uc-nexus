@@ -1,5 +1,8 @@
 import { gql } from '@apollo/client/core';
 
+// gpSetupOk / gpSetupIssues (#425) ride along on every project read: they are scalar columns on the
+// project row (no relationship walk, no N+1), and every module that lets a user pick a project has to
+// be able to badge a quarantined one rather than discovering it at the submit button.
 export const GET_PROJECTS = gql`
   query GetProjects {
     projects {
@@ -9,6 +12,12 @@ export const GET_PROJECTS = gql`
       client
       jobSiteName
       openingCount
+      gpSetupOk
+      gpSetupCheckedAt
+      gpSetupIssues {
+        costCode
+        accountIndex
+      }
     }
   }
 `;

@@ -12,6 +12,8 @@ import { Folder, LayoutGrid } from 'lucide-react';
 import { useQuery } from '@apollo/client/react';
 import { GET_PROJECTS } from '../graphql/shared';
 import type { Project } from '../types/project';
+import { isGpSetupBroken } from '../types/project';
+import { GpSetupBadge } from './GpSetupQuarantineBanner';
 import { monoSx, microLabelSx } from '../theme';
 import { StaggerList, StaggerItem } from '../motion';
 
@@ -131,7 +133,18 @@ export default function ProjectLandingPage({
           {projects.map((p) => (
             <Grid key={p.id} size={CELL}>
               <StaggerItem style={{ height: '100%' }}>
-                <Card variant="outlined" sx={CARD_SX}>
+                {/* #425: a quarantined project is still selectable - the module screen explains why
+                    its actions are off, and refusing the click would leave the user with a card that
+                    does nothing and no reason given. The edge and the chip are what stop somebody
+                    picking it by accident. */}
+                <Card
+                  variant="outlined"
+                  sx={
+                    isGpSetupBroken(p)
+                      ? { ...CARD_SX, borderLeft: '3px solid', borderLeftColor: 'error.main' }
+                      : CARD_SX
+                  }
+                >
                   <CardActionArea onClick={() => onSelect(p)} sx={{ height: '100%' }}>
                     <Box
                       sx={{ px: 2, py: 1.75, display: 'flex', gap: 1.5, alignItems: 'flex-start' }}
@@ -152,6 +165,11 @@ export default function ProjectLandingPage({
                         >
                           {p.description || p.projectId}
                         </Typography>
+                        {isGpSetupBroken(p) && (
+                          <Box sx={{ mt: 0.5 }}>
+                            <GpSetupBadge project={p} />
+                          </Box>
+                        )}
                         {p.projectId && (
                           <Typography
                             component="div"

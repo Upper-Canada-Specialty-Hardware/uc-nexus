@@ -9,9 +9,21 @@ import strawberry
 
 from app.auth import require_admin, require_user
 from app.database import SessionLocal
-from app.errors import InvalidStateTransitionError, NotFoundError, RelayUnavailableError, ValidationError
-from app.repositories import buyer_repository, po_document_settings_repository, po_repository, user_repository
-from app.services import gp_idempotency, gp_outbox_enqueue, gp_po
+from app.errors import (
+    GpSetupInvalidError,
+    InvalidStateTransitionError,
+    NotFoundError,
+    RelayUnavailableError,
+    ValidationError,
+)
+from app.repositories import (
+    buyer_repository,
+    po_document_settings_repository,
+    po_repository,
+    project_repository,
+    user_repository,
+)
+from app.services import gp_idempotency, gp_job_sync, gp_outbox_enqueue, gp_po
 from app.services.relay_gateway import gateway as relay_gateway
 
 from .converters import (
@@ -175,6 +187,13 @@ def _prepare_register_po(
             if project is None:
                 raise NotFoundError(f"Project {effective_project_id} not found")
             job_number = project.project_id
+
+        # #425: the stamped quarantine gate. Runs here, in the pre-GP pre-flight, and NOT in
+        # po_repository.register_po_in_gp - that one persists after GP has already created the PO, and
+        # refusing there would leave a PO in GP that Nexus never records. The resolver re-checks the
+        # same job live against GP before the push (see register_po_in_gp); this is the floor that
+        # still applies when the live check cannot run.
+        project_repository.require_gp_setup_ok(session, effective_project_id)
 
         # Issue #216: registering a draft is the ordering action - same strict buyer gating.
         buyer_repository.validate_buyer_can_order(session, buyer_id, effective_project_id)
@@ -393,7 +412,22 @@ class POMutations:
 
         Issue #202 #1/#3: idempotency_key makes a retry a no-op in GP; the DRAFT-state guard and fields
         are checked before the relay_call so a double-submit never reaches GP; the DB work is offloaded
-        so no Postgres connection is held across the relay round-trip."""
+        so no Postgres connection is held across the relay round-trip.
+
+        Issue #425 - the two-layer GP setup gate. `_prepare_register_po` applies the STAMPED verdict
+        the sync last wrote on the project; this resolver then re-asks GP about that one job LIVE,
+        immediately before the push, and that live answer is authoritative. Registering is where the
+        damage is done - the WennSoft integration copies the job's cost-code account index onto
+        POP10110.INVINDX, and a dangling index there makes a PO that can never be received - so a
+        verdict up to a poll interval old is not good enough to let a registration through.
+
+        If the live check cannot run (relay down, relay too old for the op, GP slow), the stamped
+        verdict stands and the registration proceeds. That asymmetry is deliberate: the failure being
+        defended against is a job that broke in the last few minutes, which is rare, while relays
+        restart and flap routinely. Refusing every registration whenever the health op is unreachable
+        would trade a rare bad PO for a constantly unusable button - and the relay's own create_po
+        pre-check (cost_code_account_invalid) is still there as the last line of defence, running
+        inside GP's own transaction where it cannot be stale at all."""
         auth = require_user(info)
         # Issue #216: the PO is registered as the caller's own GP buyer identity, never a free pick.
         caller_buyer = await asyncio.to_thread(user_repository.get_user_gp_buyer_id, auth["user_id"])
@@ -436,6 +470,33 @@ class POMutations:
             trade_discount=input.trade_discount,
             project_id=register_project_id,
         )
+
+        # #425 live re-check. The job number is read back off the payload rather than returned
+        # separately, because the payload is the thing actually being pushed - checking anything else
+        # could check a job this PO is not going to GP under. Only job-cost lines carry one; a
+        # non-inventoried PO has no job and nothing to check.
+        job_number = next((line["job_number"] for line in payload["lines"] if line.get("job_number")), None)
+        if job_number:
+            verdict = await gp_job_sync.check_job_setup_live(input.gp_company, job_number)
+            if verdict is not None and not verdict.get("ok"):
+                issues = [
+                    {"cost_code": str(i.get("cost_code") or ""), "account_index": int(i.get("account_index") or 0)}
+                    for i in (verdict.get("issues") or [])
+                    if isinstance(i, dict)
+                ]
+                named = ", ".join(f"{i['cost_code']} -> GL account index {i['account_index']}" for i in issues[:3])
+                raise GpSetupInvalidError(
+                    f"GP job {job_number} is not set up correctly in {input.gp_company}, so this PO "
+                    f"cannot be registered: "
+                    + (
+                        f"these cost codes point at general ledger accounts that do not exist in this company: {named}"
+                        if named
+                        else "the job has no usable cost codes"
+                    )
+                    + ". The PO would register but could never be received. Accounting has to correct "
+                    "the job's cost-code accounts in GP first.",
+                    issues=issues,
+                )
 
         persist_context = {
             "po_id": str(pid),

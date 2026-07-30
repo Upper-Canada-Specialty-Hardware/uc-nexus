@@ -212,6 +212,20 @@ def _run_list_jobs(company: str, payload: dict) -> dict:
     return {"company": company, "jobs": rows}
 
 
+def _run_job_setup_health(company: str, payload: dict) -> dict:
+    """Read-only GP setup verdict per job (#425). The optional `job` filter narrows it to one job for
+    the live re-check register_po_in_gp runs at submit time; without it this answers for every job in
+    the company, which is what the backend's sync pass stamps onto projects.
+
+    Unlike _run_list_cost_codes there is no missing_job error: a blank job is not a mistake here, it
+    is the whole-company sweep."""
+    ops.check_company_allowed(company)
+    job = (payload.get("job") or "").strip() or None
+    with db.get_read_connection(company) as conn:
+        jobs = econnect.job_setup_health(conn, job)
+    return models.JobSetupHealthResponse(company=company, job=job, jobs=jobs).model_dump(mode="json")
+
+
 def _run_read_po_totals(company: str, payload: dict) -> dict:
     ops.check_company_allowed(company)
     po_number = (payload.get("po_number") or "").strip()
@@ -326,6 +340,9 @@ _OPS = {
     # buyer so linking a Nexus account to a GP buyer identity never needs GP opened.
     "list_buyers_detailed": _run_list_buyers_detailed,
     "create_buyer": _run_create_buyer,
+    # issue #425 - jobs replicated from UCSH carry GL account indexes that do not exist in UBC, so a
+    # PO against them registers and can never be received. This is how Nexus finds out which ones.
+    "job_setup_health": _run_job_setup_health,
 }
 
 

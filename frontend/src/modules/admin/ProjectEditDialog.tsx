@@ -4,6 +4,7 @@ import { useMutation } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import { useToast } from '../../components/Toast';
 import { UPDATE_PROJECT, GET_ADMIN_PROJECTS } from '../../graphql/admin';
+import type { GpSetupIssue } from '../../types/project';
 import { microLabelSx, monoSx } from '../../theme';
 
 export interface ProjectFormValue {
@@ -28,6 +29,11 @@ export interface ProjectFormValue {
   submittalAssignmentCount: number | null;
   estimatorCode: string | null;
   titanUserId: string | null;
+  // GP job setup verdict (#425), read-only and stamped by the sync. Present so the admin project grid
+  // can badge a quarantined job; the edit form never writes it.
+  gpSetupOk?: boolean | null;
+  gpSetupCheckedAt?: string | null;
+  gpSetupIssues?: GpSetupIssue[] | null;
 }
 
 interface ProjectEditDialogProps {

@@ -104,6 +104,25 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
                 "cost_code_not_on_job",
                 f"cost code '{line.cost_code}' is not set up on job '{job}' (JC00701) for {company}",
             )
+        # Issue #425: the cost code exists on the job, but the GL account index it carries may not
+        # exist in this company's chart. That is the pre-2023 UCSH -> UBC job copy's legacy - 1504
+        # JC00701 rows across 62 UBC jobs point at UCSH indexes - and the WennSoft integration copies
+        # the index onto POP10110.INVINDX at step 4 below. Nothing objects at that point; the PO
+        # registers cleanly and then fails FOREVER at receipt with eConnect 4612 "Invalid Account
+        # Index", by which time the hardware is on a truck. Refusing it here costs one SELECT and
+        # turns an unreceivable PO into a message naming the code and the index.
+        account_index = econnect.cost_code_account_index(conn, job, line.cost_code)
+        if account_index is not None and not econnect.account_index_exists(conn, account_index):
+            raise RelayOpError(
+                "cost_code_account_invalid",
+                f"cost code '{line.cost_code}' on job '{job}' points at GL account index "
+                f"{account_index}, which does not exist in {company} (GL00105). A PO on this cost "
+                f"code would register but could never be received; the job's GP setup needs fixing "
+                f"in accounting first.",
+                job=job,
+                cost_code=line.cost_code,
+                account_index=account_index,
+            )
 
     # 1. PO number: use UC Nexus's own number if supplied, else reserve GP's next 'PO' number. A
     #    client-supplied number is rejected if it's already used anywhere in GP - active OR history.
@@ -327,6 +346,27 @@ def create_receipt_op(conn, *, company: str, request: models.ReceiptRequest) -> 
                 f"line ORD {rl.po_line_ord}: qty {rl.quantity} exceeds remaining {remaining} "
                 f"(ordered {pl['qtyorder']}, already received {pl['prev_received']})",
             )
+
+    # Issue #425: pre-flight the account index each line was stamped with at registration.
+    # taPopRcptLineInsert reads POP10110.INVINDX and rejects an index that is not in GL00105 with
+    # eConnect 4612 "Invalid Account Index" - the failure that started this issue. Raised as a
+    # RelayOpError rather than left to the proc for two reasons: 4612 says nothing about which line or
+    # which account, and the whole receipt has already been half-built by the time the proc gets there.
+    # Only the lines being received are checked; an unrelated broken line on the same PO is somebody
+    # else's problem on the day they try to receive it.
+    receiving_ords = {rl.po_line_ord for rl in request.lines}
+    broken = [b for b in econnect.po_lines_with_dangling_account(conn, request.po_number) if b["ord"] in receiving_ords]
+    if broken:
+        first = broken[0]
+        raise RelayOpError(
+            "po_line_account_invalid",
+            f"PO {request.po_number} line {first['ord']} ({first['item']}) is stamped with GL account "
+            f"index {first['account_index']}, which does not exist in {company} (GL00105). This came "
+            f"from job '{first['job'] or 'unknown'}' cost-code setup when the PO was registered, so "
+            f"the receipt cannot be posted until accounting fixes the job's GP setup.",
+            po_number=request.po_number,
+            lines=broken,
+        )
 
     receipt_number = econnect.get_next_receipt_number(conn)
     # eConnect processes receipt LINES before the header (the line proc creates the receipt document;

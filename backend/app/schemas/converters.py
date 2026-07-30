@@ -7,6 +7,7 @@ performance rules in CLAUDE.md before adding a field that walks a new relationsh
 import strawberry
 
 from app.models.project import Project as ProjectModel
+from app.repositories import project_repository
 
 from .enums import GpOutboxStatus, PipelineStage
 from .types import (
@@ -25,6 +26,7 @@ from .types import (
     GpJob,
     GpOutboxEntry,
     GpOutboxSummary,
+    GpSetupIssue,
     GpTaxDetail,
     GpTaxSchedule,
     GpVendor,
@@ -406,6 +408,15 @@ def project_to_type(
         created_at=p.created_at,
         updated_at=p.updated_at,
         opening_count=opening_count,
+        # #425: scalar columns off the row already loaded, so this is free in both list and detail
+        # contexts and needs no include_ flag. The JSON detail column is parsed here rather than
+        # exposed raw - a GraphQL type is the wrong place for a client-side JSON.parse.
+        gp_setup_ok=p.gp_setup_ok,
+        gp_setup_checked_at=p.gp_setup_checked_at,
+        gp_setup_issues=[
+            GpSetupIssue(cost_code=issue["cost_code"], account_index=issue["account_index"])
+            for issue in project_repository.parse_gp_setup_issues(p.gp_setup_detail)
+        ],
         openings=openings_list,
         purchase_orders=[],  # Loaded on demand in later tickets
     )

@@ -30,6 +30,9 @@ import { useRelayStatus } from '../../relay/useRelayStatus';
 import { poVendorName } from '../po/poVendorName';
 import GpErrorAlert from '../../components/GpErrorAlert';
 import { extractGpError, type GpError } from '../../graphql/gpError';
+import { GET_PROJECTS } from '../../graphql/shared';
+import GpSetupQuarantineBanner from '../../components/GpSetupQuarantineBanner';
+import { isGpSetupBroken, type Project } from '../../types/project';
 import { microLabelSx, monoSx } from '../../theme';
 
 // ---- Types ----
@@ -51,6 +54,9 @@ interface PODetailLineItem {
 interface PODetails {
   id: string;
   poNumber: string | null;
+  // #425: which project (and therefore which GP job) this PO belongs to, so the modal can tell the
+  // warehouse user the receipt will be refused before they finish counting. Null for a stock PO.
+  projectId: string | null;
   // The GP company this PO was registered in. A receive posts to GP, so it can only run against a PO
   // that was registered in GP (has a gpCompany + poNumber). See isPoGpRegistered.
   gpCompany: string | null;
@@ -142,6 +148,12 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
   });
   const warehouses = useMemo(() => warehousesData?.warehouses ?? [], [warehousesData]);
   const [warehouseId, setWarehouseId] = useState<string>('');
+
+  // #425: the GP setup verdict lives on the project, and the PO only carries a project id. Read from
+  // the shared projects query, which every other screen already primes, so this is normally a cache
+  // hit rather than a round trip on modal open.
+  const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS, { skip: !open });
+  const projects = useMemo(() => projectsData?.projects ?? [], [projectsData]);
 
   useEffect(() => {
     if (!warehouseId && warehouses.length > 0) {
@@ -296,6 +308,22 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
     () => poIds.map((id) => poDetailsMap[id]).filter((d): d is PODetails => !!d && !isPoGpRegistered(d)),
     [poIds, poDetailsMap],
   );
+
+  // #425: POs in this batch whose project's GP job setup is broken. Not a Nexus rule - eConnect
+  // rejects the receipt line with "Invalid Account Index" because the account was stamped onto the PO
+  // line at registration, so this receipt cannot post no matter how carefully it is entered. Said up
+  // front, because the alternative is a warehouse user counting a pallet and then being refused.
+  const quarantinedProjects = useMemo(() => {
+    const byId = new Map(projects.map((p) => [p.id, p]));
+    const seen = new Map<string, Project>();
+    for (const id of poIds) {
+      const pid = poDetailsMap[id]?.projectId;
+      if (!pid) continue;
+      const project = byId.get(pid);
+      if (project && isGpSetupBroken(project)) seen.set(pid, project);
+    }
+    return [...seen.values()];
+  }, [poIds, poDetailsMap, projects]);
 
   // Put-away is mandatory: every received unit must land in a valid row and each row's deficient count
   // must be within its quantity. Mirrors the backend contract in warehouse_repository.create_receive
@@ -731,10 +759,18 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
           thing that ever reached it was a unit test mocking createReceive past the gate. The relay state
           is now advisory (the alert above says what will happen), and the warehouse user who has already
           counted the hardware can record it either way. */}
+      {/* #425 is a hard blocker, unlike the relay state above it: an offline relay means "later", a
+          broken GP job means "never, until accounting fixes it". Queuing the receipt would not help -
+          the outbox would drain into the same eConnect rejection. */}
       <Button
         variant="contained"
         disabled={
-          !hasAnyReceiveQuantity || hasQuantityErrors || !putAwayValid || blockedPos.length > 0 || submitting
+          !hasAnyReceiveQuantity ||
+          hasQuantityErrors ||
+          !putAwayValid ||
+          blockedPos.length > 0 ||
+          quarantinedProjects.length > 0 ||
+          submitting
         }
         onClick={() => setConfirmOpen(true)}
       >
@@ -815,6 +851,19 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
         )}
         {/* Receiving requires a GP-registered PO (issue #177): it can only run against a PO created
             through the relay, which has a GP PO number + company. */}
+        {/* #425: one banner per affected project, not per PO - a batch receive can span several POs on
+            the same broken job, and repeating the same cost-code list four times says nothing new. */}
+        {!poDetailsLoading &&
+          !poDetailsError &&
+          !succeeded &&
+          quarantinedProjects.map((project) => (
+            <GpSetupQuarantineBanner
+              key={project.id}
+              project={project}
+              action="receiving against it"
+              dense
+            />
+          ))}
         {!poDetailsLoading && !poDetailsError && !succeeded && blockedPos.length > 0 && (
           <Alert severity="warning" sx={{ mb: 2 }}>
             {blockedPos.length === 1
