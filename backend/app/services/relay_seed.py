@@ -15,13 +15,18 @@ existing workstation relay authenticate there with the secret it already holds -
 new credential, and nothing replayable stored in Railway (a digest cannot be presented as a Bearer
 token; only its preimage can, and that never leaves the workstation).
 
-Two guards keep this out of production. Railway PR environments duplicate the base environment's
-variables, so `RELAY_SEED_SECRET_HASH` will be visible in production too - `seed_from_env` refuses
-outright when `RAILWAY_ENVIRONMENT_NAME` says production, rather than trusting the variable to be
-absent. And the seeded install is pinned to `TUBC`: the relay's own `allowed_companies` guardrail
-already blocks production GP companies, and `relay_gateway.relay_call` refuses any company that does
-not match the registered install's, so a PR backend cannot reach past the sandbox even if someone
-sets the variable somewhere unexpected.
+Two guards keep this out of production, and the variable is SUPPOSED to be set there (#431). Railway
+clones a new PR environment from production directly - there is no separate base environment - so
+production is the only place `RELAY_SEED_SECRET_HASH` can sit for a PR environment to inherit it at
+all. It is inert there: `seed_from_env` refuses outright when `RAILWAY_ENVIRONMENT_NAME` says
+production, rather than trusting the variable to be absent, and set-but-ignored on production is the
+intended steady state, not a misconfiguration to clean up. (That inheritance is taken at environment
+creation and never refreshed, so a PR environment that already existed when the variable was set on
+production needs it set on that environment's own backend service too.) And the seeded install is
+pinned to `TUBC`: the relay's own `allowed_companies` guardrail already blocks production GP
+companies, and `relay_gateway.relay_call` refuses any company that does not match the registered
+install's, so a PR backend cannot reach past the sandbox even if someone sets the variable somewhere
+unexpected.
 """
 
 import logging
@@ -89,10 +94,14 @@ def seed_from_env(session: Session, *, environment_name: str, secret_hash: str) 
         return None
 
     if _is_production(environment_name):
-        logger.error(
-            "RELAY_SEED_SECRET_HASH is set in the production environment and was IGNORED. Railway "
-            "duplicates variables into PR environments, so this belongs only on the environment PR "
-            "deploys are cloned from - remove it from production.",
+        # INFO, not ERROR (#431): this is the intended steady state, not an operator mistake. Railway
+        # clones a PR environment from production, so the variable has to live here for a new PR
+        # environment to inherit it - an ERROR line invites someone to "fix" production by deleting it,
+        # which silently breaks every PR environment created afterwards.
+        logger.info(
+            "RELAY_SEED_SECRET_HASH is set here and seeding was skipped, which is correct: seeding never "
+            "runs in production. Leave the variable in place - Railway clones a new PR environment from "
+            "production, so this is where a PR environment inherits it from.",
         )
         return None
 
