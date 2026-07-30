@@ -497,9 +497,9 @@ was flagged, topped up as stock arrives), usually smaller than what it is owed, 
 covered is its normal resting state and a short pick on one is not an integrity error.
 
 
-**Entry**: `/app/warehouse` -> Warehouse landing page with stat cards and "Go to" card buttons for: Inventory, Locations, Deliveries, Receiving, Put Away, Pull Requests, Stock Pool, Deficient Items, Shipments. (No longer "three tabs" - this has evolved to a full landing page.) Since PR #395 the Deficient Items card shows `deficientCount` (deficient units across project inventory + stock pool - the same rows the review page lists, amber edge when non-zero) and the Deliveries card carries the `backOrderedCount` figure (undelivered units on active POs, no attention edge). The two numbers matching their destination pages is the thing to assert.
+**Entry**: `/app/warehouse` -> Warehouse landing page with stat cards and "Go to" card buttons for: Inventory, Locations, Receiving, Put Away, Pull Requests, Stock Pool, Deficient Items, Shipments. (No longer "three tabs" - this has evolved to a full landing page.) Since PR #395 the Deficient Items card shows `deficientCount` (deficient units across project inventory + stock pool - the same rows the review page lists, amber edge when non-zero). The card count matching its destination page is the thing to assert.
 
-**Deliveries "All Projects"** works since PR #397 (it was a dead click - `onSelect(null)` collided with "nothing chosen"). The all-projects view queries both tabs with a null projectId.
+**There is no Deliveries page any more (#416).** It was a read-only lens over active POs, and its "Upcoming Deliveries" accordion asked `expectedDeliveries` for the exact PO population `openPOs` already drew the Receiving page's awaiting-receipt table from - the same three statuses, not soft-deleted - so on one page it would have been the same list twice. Only the back-order grid survived the merge, as a **Back-Ordered Items** section of Receiving; the accordion's urgency chip moved onto the awaiting-receipt table's Expected Delivery column. `expectedDeliveries` is gone from the schema entirely (querying it errors `Cannot query field`), `backOrderedCount` now rides the **Receiving** card, and `/app/warehouse/deliveries` redirects to `/app/warehouse/receiving`. Anything in an older session note about a Deliveries card, its project landing, or its "All Projects" toggle (PR #397) describes a page that no longer exists.
 
 **Inventory tab default**: Navigating directly to `/app/warehouse/inventory` defaults to "All Projects" view — shows the "Projects" back button, "All Projects" heading, and Hardware Items / Opening Items sub-tabs immediately. The ProjectLandingPage is NOT shown on initial load. Clicking "Projects" brings up the ProjectLandingPage where you can filter to a specific project or click "All Projects" to return to the all-projects view.
 
@@ -508,6 +508,35 @@ covered is its normal resting state and a short pick on one is not an integrity 
 2. Enter quantities received per line item — line items grid shows: Product Code, Ordered As, Hardware Category, Ordered Qty, Already Received, Pending, Receive Now
 3. Assign storage locations (aisle/bay/bin)
 - Receiving auto-transitions PO status (ORDERED -> PARTIALLY_RECEIVED -> CLOSED)
+
+Three sections since #416, in this order: **POs Awaiting Receipt**, **Back-Ordered Items**, **Recent
+Activity**. The back-order grid is line-level and cross-project (no project landing step), carries a
+Project column that reads "Stock PO" for a project-less PO, and chips how late or soon each line is
+(`3d overdue` / `Today` / `Tomorrow` / `In 5d`, nothing beyond a week or with no date). The same chip
+sits on the awaiting-receipt table's Expected Delivery column.
+
+A successful receive now refetches this page's own three reads, so a line the receipt closed leaves
+the back-order grid without a manual reload; a queued receipt that drains later evicts
+`backOrderedItems` for the same reason. Before #416 a receive only refetched the inventory summaries.
+
+**A PR environment cannot populate either grid, and production is not the answer.** Both grids want
+POs at GP_REGISTERED or later, and `registerPoInGp` is relay-gated, so a fresh PR database shows "No
+purchase orders awaiting receipt" and "Nothing is back-ordered" no matter what you do. Reaching for
+production instead is the exact move the Environment section forbids.
+
+Stub the GraphQL reads instead: from an `initScript`, intercept `window.fetch`, match the operation
+name in the request body (`GetOpenPOs` / `GetBackOrderedItems`) and return rows built from `new
+Date()` offsets. That drives the real components, which is enough to assert the column set, the
+"Stock PO" and em-dash fallbacks, and every urgency band in one pass.
+
+Be honest about what that does and does not cover. It proves the rendering. It does NOT exercise the
+receive itself, so the refetch wiring above - the thing that makes a filled line leave the grid
+without a reload - stays unverified at runtime until somebody receives against a real GP-registered
+PO. Say so rather than calling a stubbed pass end-to-end.
+
+**Build the stub's dates from local components, not `toISOString()`.** `toISOString` is UTC, so
+after ~20:00 Eastern it names tomorrow, and the chip you assert against is then off by a day for a
+reason that has nothing to do with the code under test. This is the same trap as #238 itself.
 
 **Inventory**: Browse by hardware category and product code, see storage locations.
 
