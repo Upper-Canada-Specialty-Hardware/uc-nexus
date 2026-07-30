@@ -490,6 +490,22 @@ function growingAddressesMock(
   } as MockedResponse;
 }
 
+/** A customer's addresses, counted, so a test can prove that picker's own query was re-read. */
+function countedAddressesMock(
+  customer: string,
+  rows: ReturnType<typeof address>[],
+  counter: { calls: number },
+): MockedResponse {
+  return {
+    request: { query: GET_GP_CUSTOMER_ADDRESSES, variables: { company: COMPANY, customer } },
+    maxUsageCount: INFINITE,
+    result: () => {
+      counter.calls += 1;
+      return { data: { gpCustomerAddresses: rows } };
+    },
+  } as MockedResponse;
+}
+
 /** The nested dialog, so its Cancel is never confused with the job form's own. */
 function addAddressDialog() {
   const dialog = screen.getByLabelText(/^Address code/).closest('[role="dialog"]');
@@ -518,6 +534,26 @@ test('the add-address row opens the nested dialog without becoming the selected 
   fireEvent.click(within(addAddressDialog()).getByRole('button', { name: /^Cancel$/i }));
   await waitFor(() =>
     expect(screen.getByRole('combobox', { name: /^Job address/ })).toHaveTextContent('MAIN - 1 Main St, Vancouver'),
+  );
+});
+
+test('the add-address row does not become the selected bill-to address either', async () => {
+  // The bill-to picker carries its own copy of the sentinel row, so the job picker's test does not
+  // cover it - and a sentinel stored here is a code the proc refuses, on the field the user is least
+  // likely to look at again.
+  renderDialog();
+  await waitFor(() => expect(screen.getByLabelText(/^Job number/)).toBeEnabled());
+  await pickCustomer(/Ellis Don/);
+  await pickFromSelect(/^Bill-to address/, /MAIN/);
+
+  await pickFromSelect(/^Bill-to address/, /Add new address/);
+  expect(await screen.findByLabelText(/^Address code/)).toBeInTheDocument();
+
+  fireEvent.click(within(addAddressDialog()).getByRole('button', { name: /^Cancel$/i }));
+  await waitFor(() =>
+    expect(screen.getByRole('combobox', { name: /^Bill-to address/ })).toHaveTextContent(
+      'MAIN - 1 Main St, Vancouver',
+    ),
   );
 });
 
@@ -592,6 +628,81 @@ test('an address added from the job picker is created under the job customer and
   expect(screen.queryByLabelText(/^Address code/)).not.toBeInTheDocument();
 });
 
+test('a created address is selectable even when the re-read of GP fails', async () => {
+  // The cache write, not the re-read, is what puts the option in the picker. While the selection was
+  // chained onto the refetch, a relay that dropped in the window right after taCreateCustomerAddress
+  // committed left the user with an address GP holds and a required field that would not take it.
+  let calls = 0;
+  const flakyAddresses: MockedResponse = {
+    request: { query: GET_GP_CUSTOMER_ADDRESSES, variables: { company: COMPANY, customer: 'ELL100' } },
+    maxUsageCount: INFINITE,
+    result: () => {
+      calls += 1;
+      return calls > 1
+        ? { errors: [new GraphQLError('no relay is currently connected')] }
+        : { data: { gpCustomerAddresses: [address('MAIN', '1 Main St', 'Vancouver')] } };
+    },
+  } as MockedResponse;
+
+  const created: MockedResponse = {
+    request: {
+      query: CREATE_GP_CUSTOMER_ADDRESS,
+      variables: {
+        input: {
+          customerNumber: 'ELL100',
+          addressCode: 'SITE3',
+          address1: '77 New Rd',
+          address2: null,
+          city: 'Surrey',
+          state: null,
+          zipCode: null,
+          country: null,
+        },
+      },
+    },
+    result: {
+      data: {
+        createGpCustomerAddress: {
+          addressCode: 'SITE3',
+          address1: '77 New Rd',
+          city: 'Surrey',
+          state: 'BC',
+          __typename: 'GpCustomerAddress',
+        },
+      },
+    },
+  };
+
+  render(
+    <MockedProvider
+      mocks={[
+        relayStatusMock(true),
+        ...readMocks.filter((m) => m !== addressesReadMock),
+        flakyAddresses,
+        projectsMock,
+        created,
+      ]}
+    >
+      <ToastProvider>
+        <CreateGpJobDialog open onClose={() => {}} />
+      </ToastProvider>
+    </MockedProvider>,
+  );
+
+  await waitFor(() => expect(screen.getByLabelText(/^Job number/)).toBeEnabled());
+  await pickCustomer(/Ellis Don/);
+  await waitFor(() => expect(calls).toBe(1));
+
+  await pickFromSelect(/^Job address/, /Add new address/);
+  fillNewAddress({ code: 'site3', line1: '77 New Rd', city: 'Surrey' });
+  fireEvent.click(within(addAddressDialog()).getByRole('button', { name: /^Add address$/i }));
+
+  await waitFor(() => expect(calls).toBe(2));
+  await waitFor(() =>
+    expect(screen.getByRole('combobox', { name: /^Job address/ })).toHaveTextContent('SITE3 - 77 New Rd, Surrey'),
+  );
+});
+
 test('an address added from the bill-to picker is created under the bill-to customer', async () => {
   // The whole point of the scoping: the bill-to picker is showing SCO100's addresses, so a code added
   // from it has to be filed against SCO100. Against ELL100 it would not even appear in the list it
@@ -648,7 +759,14 @@ test('an address added from the bill-to picker is created under the bill-to cust
   );
 });
 
-test('a duplicate address code keeps the nested dialog open with the typed address intact', async () => {
+test('a duplicate address code shows the relay detail, stays open, and re-reads the picker', async () => {
+  // The shape the backend actually emits: the relay refusal arrives as a RelayCallError, which
+  // errors.py validation_error_from_relay turns into a ValidationError carrying `.detail`, so
+  // extensions.code is VALIDATION_ERROR and the relay's own body rides along under
+  // extensions.relayError. A recovery keyed on extensions.code === 'address_code_already_exists'
+  // would match nothing in production, which is why the mock has to be this shape and not that one.
+  const message = "customer 'ELL100' already has address code 'MAIN' in GP company TUBC (RM00102)";
+  const ell100 = { calls: 0 };
   const duplicate: MockedResponse = {
     request: {
       query: CREATE_GP_CUSTOMER_ADDRESS,
@@ -667,22 +785,52 @@ test('a duplicate address code keeps the nested dialog open with the typed addre
     },
     result: {
       errors: [
-        new GraphQLError('Customer ELL100 already has an address code MAIN', {
-          extensions: { code: 'address_code_already_exists' },
+        new GraphQLError(message, {
+          extensions: {
+            code: 'VALIDATION_ERROR',
+            relayError: { error: 'address_code_already_exists', message, context: {} },
+          },
         }),
       ],
     },
   };
 
-  renderDialog([duplicate]);
+  render(
+    <MockedProvider
+      mocks={[
+        relayStatusMock(true),
+        ...readMocks.filter((m) => m !== addressesReadMock),
+        countedAddressesMock('ELL100', [address('MAIN', '1 Main St', 'Vancouver')], ell100),
+        projectsMock,
+        duplicate,
+      ]}
+    >
+      <ToastProvider>
+        <CreateGpJobDialog open onClose={() => {}} />
+      </ToastProvider>
+    </MockedProvider>,
+  );
+
   await waitFor(() => expect(screen.getByLabelText(/^Job number/)).toBeEnabled());
   await pickCustomer(/Ellis Don/);
+  await waitFor(() => expect(ell100.calls).toBe(1));
 
   await pickFromSelect(/^Job address/, /Add new address/);
   fillNewAddress({ code: 'main', line1: '77 New Rd', city: 'Surrey' });
   fireEvent.click(within(addAddressDialog()).getByRole('button', { name: /^Add address$/i }));
 
-  expect(await screen.findByText(/already has an address code MAIN/)).toBeInTheDocument();
+  expect(await screen.findByText(/already has address code/)).toBeInTheDocument();
+  // the relay's own key, rendered off extensions.relayError - the detail table is what gets
+  // screenshotted, so it is the thing worth asserting rather than the message text alone
+  const dialog = within(addAddressDialog());
+  expect(dialog.getByText('Relay')).toBeInTheDocument();
+  expect(dialog.getByText('address_code_already_exists')).toBeInTheDocument();
+
+  // 'Already exists' is the answer to a retry whose first attempt committed and lost its reply, so the
+  // picker's own list is re-read - otherwise the user is shown an error for an address GP holds and
+  // still cannot select it without reloading the page.
+  await waitFor(() => expect(ell100.calls).toBe(2));
+
   // Closing here would throw away a whole address over one wrong code, so it stays open and typed in.
   expect(screen.getByLabelText(/^Address code/)).toHaveValue('MAIN');
   expect(screen.getByLabelText(/^Address 1/)).toHaveValue('77 New Rd');

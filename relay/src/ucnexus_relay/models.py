@@ -4,7 +4,7 @@ before any SQL connection is opened."""
 from datetime import date
 from decimal import Decimal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class NextNumberRequest(BaseModel):
@@ -413,6 +413,11 @@ class CreateCustomerAddressRequest(BaseModel):
     The widths are checked in the validator rather than through Field(max_length=...) for the reason
     CreateBuyerRequest gives: a Field constraint runs BEFORE this validator, so it would measure the
     padding too and reject a padded value that trims to a perfectly legal one."""
+
+    # Unknown keys are refused, not ignored: a newer backend sending a field this relay build has no
+    # parameter for would otherwise have it silently dropped, and the address would be created in GP
+    # without it while the caller is told the create succeeded. Loud is the only safe reading.
+    model_config = ConfigDict(extra="forbid")
 
     company: str
 

@@ -695,20 +695,33 @@ def read_po_totals(conn, po_number: str) -> dict | None:
 
 
 def list_cost_codes(conn, job_number: str) -> list[dict]:
-    """Read-only: the active cost codes defined for ONE job in JC00701 (WennSoft Job Cost).
-    Cost codes are per-job, and the real Cost_Element varies by code (210-200 is element 2,
-    310-000 is element 3, 510-000 is element 5, ...). The Create PO dropdown is populated from
-    this and the /po cost_code is assembled as 'phase-step-element' (e.g. '310-000-3') from the
-    code's own element - NOT a hardcoded 2.
+    """Read-only: the active, account-usable cost codes defined for ONE job in JC00701 (WennSoft
+    Job Cost). Cost codes are per-job, and the real Cost_Element varies by code (210-200 is
+    element 2, 310-000 is element 3, 510-000 is element 5, ...). The Create PO dropdown is
+    populated from this and the /po cost_code is assembled as 'phase-step-element' (e.g.
+    '310-000-3') from the code's own element - NOT a hardcoded 2.
+
+    Two filters make this "usable on a new PO":
+      - WS_Inactive = 0, matching the cost_code_on_job pre-check.
+      - the code's WS_Account_Index_1 is 0 or exists in GL00105 - the same rule as
+        account_index_exists, which is what the create_po cost_code_account_invalid guard
+        enforces. A dangling index (the pre-2023 UCSH -> UBC job copy left 1504 such rows across
+        62 UBC jobs, #425) means a PO on the code registers cleanly and then fails FOREVER at
+        receipt with eConnect 4612, so after #430 opened the dropdown to every active code, a code
+        the guard would refuse must not be offered for selection in the first place. Index 0
+        passes: it means "GP picks the account at posting time", which eConnect honours.
 
     Returns one dict per code: cost_code = the two-segment number 'cc1-cc2' (segments 3/4 are
     blank for every code at this customer), description (Cost_Code_Description), and the integer
-    cost_element. WS_Inactive = 0 filters to codes usable on a new PO."""
+    cost_element."""
     rows = conn.cursor().execute(
-        "SELECT RTRIM(Cost_Code_Number_1) AS cc1, RTRIM(Cost_Code_Number_2) AS cc2, "
-        "Cost_Element AS elem, RTRIM(Cost_Code_Description) AS descr "
-        "FROM dbo.JC00701 WHERE RTRIM(WS_Job_Number) = ? AND WS_Inactive = 0 "
-        "ORDER BY Cost_Code_Number_1, Cost_Code_Number_2",
+        "SELECT RTRIM(c.Cost_Code_Number_1) AS cc1, RTRIM(c.Cost_Code_Number_2) AS cc2, "
+        "c.Cost_Element AS elem, RTRIM(c.Cost_Code_Description) AS descr "
+        "FROM dbo.JC00701 c "
+        "LEFT JOIN dbo.GL00105 a ON a.ACTINDX = c.WS_Account_Index_1 "
+        "WHERE RTRIM(c.WS_Job_Number) = ? AND c.WS_Inactive = 0 "
+        "AND (c.WS_Account_Index_1 = 0 OR a.ACTINDX IS NOT NULL) "
+        "ORDER BY c.Cost_Code_Number_1, c.Cost_Code_Number_2",
         job_number,
     ).fetchall()
     return [
@@ -1100,7 +1113,9 @@ def create_job(conn, *, only_validate: bool = False, **fields) -> None:
 #
 # taCreateCustomerAddress is a stock eConnect proc, present with DYNGRP EXECUTE in every company DB. It
 # has NO OnlyValidate parameter, unlike wsiJCJobMaster, so there is no dry-run pass to lean on here -
-# the duplicate guard is entirely ours (customer_address_exists, called by create_customer_address_op).
+# the duplicate guard is entirely ours: customer_address_exists, which create_customer_address_op runs
+# before the EXEC and again when the EXEC fails, since a code saved in between is the one case a single
+# pre-check cannot see.
 
 
 def customer_address_exists(conn, customer_number: str, address_code: str) -> bool:
@@ -1112,9 +1127,11 @@ def customer_address_exists(conn, customer_number: str, address_code: str) -> bo
     normalization list_customer_addresses applies - a code read out of that dropdown compares equal
     here.
 
-    This is the whole duplicate guard for the create (the proc offers no validate-only pass), and it is
-    what lets create_customer_address hardcode UpdateIfExists=0 without a re-run of the dialog turning
-    into a raw eConnect error state."""
+    This is the whole of the duplicate guard for the create (the proc offers no validate-only pass),
+    which is why create_customer_address_op calls it twice - once as a pre-check, and once more when
+    the EXEC fails, because a code saved between the two is exactly what the pre-check cannot see. It
+    is what lets create_customer_address hardcode UpdateIfExists=0 without a re-run of the dialog
+    turning into a raw eConnect error state."""
     row = conn.cursor().execute(
         "SELECT COUNT(*) AS n FROM dbo.RM00102 WHERE RTRIM(CUSTNMBR) = ? AND RTRIM(ADRSCODE) = ?",
         customer_number.strip(),
@@ -1185,7 +1202,7 @@ def create_customer_address(conn, fields: dict) -> None:
     RM00102 is master data accounting maintains in GP, an address code is already referenced by every
     job and posted invoice that used it, and the business here is adding a site nobody has entered yet -
     never re-pointing one. Pinned to 0, the worst a duplicate can do is fail, and
-    create_customer_address_op pre-empts even that.
+    create_customer_address_op pre-empts nearly all of them and words the rest.
 
     Every parameter is sent on every call, unset optionals as blanks. That is the opposite of
     create_job's "absent means leave GP's default", and right for the same reason create_buyer sends a

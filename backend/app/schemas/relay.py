@@ -55,6 +55,25 @@ from .types import (
 
 logger = logging.getLogger(__name__)
 
+# Every field of a GP customer address, as (input attribute, GraphQL field, label, GP column width,
+# required). The widths are taCreateCustomerAddress's own parameter widths - char(15) CUSTNMBR /
+# ADRSCODE, char(60) ADDRESS1 / ADDRESS2 / COUNTRY, char(35) CITY, char(29) STATE, char(10) ZIPCODE -
+# and the required four are what make the row an address anyone could ship hardware to.
+#
+# The GraphQL name is carried alongside because that is what the error's `field` extension has to be
+# for a dialog to anchor the message to the input the user typed it into; the resolver's own argument
+# names are snake_case and mean nothing to the client.
+_GP_ADDRESS_FIELDS = (
+    ("customer_number", "customerNumber", "A GP customer number", 15, True),
+    ("address_code", "addressCode", "An address code", 15, True),
+    ("address1", "address1", "A street address", 60, True),
+    ("address2", "address2", "A second address line", 60, False),
+    ("city", "city", "A city", 35, True),
+    ("state", "state", "A state or province", 29, False),
+    ("zip_code", "zipCode", "A postal or ZIP code", 10, False),
+    ("country", "country", "A country", 60, False),
+)
+
 
 @strawberry.type
 class RelayQueries:
@@ -328,15 +347,37 @@ class RelayMutations:
                 "The GP relay is not connected, so this address cannot be created in GP. Start the relay and try again."
             )
 
+        # Trimmed and bounded here as well as in the relay's CreateCustomerAddressRequest, for the
+        # reason create_gp_buyer gives above: the relay's model is the server-side truth, but it can
+        # only report a rejection as a whole pydantic dump after a full round-trip, with no field for a
+        # dialog to anchor it to. The dialog checks these too, so what this catches is a caller that
+        # isn't the dialog - and GP's own char widths are the honest thing to report against.
+        cleaned: dict[str, str | None] = {}
+        for attr, gql_field, label, limit, required in _GP_ADDRESS_FIELDS:
+            value = (getattr(input, attr) or "").strip()
+            if attr == "address_code":
+                # Uppercased here as well as in the relay's model. GP's own codes are uppercase
+                # ('MAIN', 'PRIMARY'), so this is what lands in RM00102 either way - doing it on this
+                # side too means the payload this backend logs is the row GP stores rather than
+                # whatever case the value happened to be typed in.
+                value = value.upper()
+            if required and not value:
+                raise ValidationError(f"{label} is required.", field=gql_field)
+            if len(value) > limit:
+                raise ValidationError(f"{label} is at most {limit} characters in GP.", field=gql_field)
+            # An untouched optional stays absent rather than becoming a blank string, so the relay is
+            # never guessing at what the user left empty.
+            cleaned[attr] = value if required else (value or None)
+
         payload = {
-            "customer": input.customer_number,
-            "address_code": input.address_code,
-            "address1": input.address1,
-            "address2": input.address2,
-            "city": input.city,
-            "state": input.state,
-            "zip_code": input.zip_code,
-            "country": input.country,
+            "customer": cleaned["customer_number"],
+            "address_code": cleaned["address_code"],
+            "address1": cleaned["address1"],
+            "address2": cleaned["address2"],
+            "city": cleaned["city"],
+            "state": cleaned["state"],
+            "zip_code": cleaned["zip_code"],
+            "country": cleaned["country"],
         }
 
         try:
@@ -351,15 +392,12 @@ class RelayMutations:
         # GP's stored row, read back from RM00102 by the relay. That row is what gpCustomerAddresses
         # will serve on its next refetch, so answering with anything else could hand the dialog an
         # address that differs from the one it is about to see in the picker.
-        address = (result or {}).get("address") or {}
-        return gp_customer_address_to_type(
-            {
-                "address_code": str(address.get("address_code") or input.address_code),
-                "address1": address.get("address1"),
-                "city": address.get("city"),
-                "state": address.get("state"),
-            }
-        )
+        #
+        # Subscripted bare, with no fallback to the input: a relay whose response shape has drifted
+        # must fail here, loudly, the way every sibling resolver does. Falling back would answer with
+        # the caller's own values dressed up as GP's stored row - a well-formed success reporting an
+        # address nobody has confirmed landed, which is exactly the echo the docstring forbids.
+        return gp_customer_address_to_type(result["address"])
 
     @strawberry.mutation
     def provision_relay_install(self, info: strawberry.Info, label: str, company: str) -> RelayInstallProvision:

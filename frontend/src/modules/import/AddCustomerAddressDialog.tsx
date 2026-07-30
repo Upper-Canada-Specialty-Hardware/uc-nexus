@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { Dialog, DialogTitle, DialogContent, DialogActions, TextField, Button, Stack } from '@mui/material';
+import { Dialog, DialogTitle, DialogContent, DialogActions, TextField, Button, Stack, Alert } from '@mui/material';
 import { useMutation } from '@apollo/client/react';
 import { CREATE_GP_CUSTOMER_ADDRESS } from '../../graphql/import';
 import { useToast } from '../../components/Toast';
@@ -7,13 +7,39 @@ import GpErrorAlert from '../../components/GpErrorAlert';
 import { extractGpError, type GpError } from '../../graphql/gpError';
 import { monoSx } from '../../theme';
 
+/**
+ * The row GP stored, in exactly the shape gpCustomerAddresses returns it (`__typename` included), so
+ * the caller can write it straight into that query's cache entry rather than having to invent a row.
+ */
+export interface CreatedGpCustomerAddress {
+  __typename?: string;
+  addressCode: string;
+  address1: string | null;
+  city: string | null;
+  state: string | null;
+}
+
 interface AddCustomerAddressDialogProps {
   open: boolean;
   onClose: () => void;
   /** The customer the picker that opened this is bound to. The address is created under it, not a picked one. */
   customer: { customerNumber: string; customerName: string | null };
-  /** The code GP stored, ready to be selected in the picker that opened this. */
-  onCreated: (addressCode: string) => void;
+  /**
+   * False disables the submit while leaving the typed address alone. The parent form gates itself on
+   * the relay, but this nested dialog outlives that check: the relay can drop while it is open, and a
+   * submit that then fails takes a whole re-keyed address with it.
+   */
+  relayConnected: boolean;
+  /** The row GP stored, ready to be offered and selected by the picker that opened this. */
+  onCreated: (address: CreatedGpCustomerAddress) => void;
+  /**
+   * GP refused the code as one the customer already has. The parent re-reads that picker's addresses:
+   * 'already exists' is the answer to a retry after an ambiguous failure - the first attempt committed
+   * and its reply was lost - so GP holds the code while the list this was opened from was read before
+   * the write. Without the re-read the user is shown an error for an address that exists AND still
+   * cannot pick it, a dead end only a page reload clears.
+   */
+  onDuplicate?: () => void;
 }
 
 /** GP address column widths, so an over-length value is caught in the field rather than by the proc. */
@@ -35,7 +61,9 @@ export default function AddCustomerAddressDialog({
   open,
   onClose,
   customer,
+  relayConnected,
   onCreated,
+  onDuplicate,
 }: AddCustomerAddressDialogProps) {
   const { showToast } = useToast();
 
@@ -49,7 +77,7 @@ export default function AddCustomerAddressDialog({
 
   const [gpError, setGpError] = useState<GpError | null>(null);
 
-  const [createAddress, { loading }] = useMutation<{ createGpCustomerAddress: { addressCode: string } }>(
+  const [createAddress, { loading }] = useMutation<{ createGpCustomerAddress: CreatedGpCustomerAddress }>(
     CREATE_GP_CUSTOMER_ADDRESS,
   );
 
@@ -93,17 +121,29 @@ export default function AddCustomerAddressDialog({
           },
         },
       });
-      // The code GP stored, not the one typed: GP normalizes the key itself, and selecting anything
-      // else would leave the picker holding a code the job proc goes on to reject.
-      const created = response.data?.createGpCustomerAddress?.addressCode ?? addressCode.trim();
-      showToast(`Address ${created} added to customer ${customer.customerNumber}.`, 'success');
+      // The row GP stored, not the one typed: GP normalizes the key itself, and handing the picker
+      // anything else would leave it holding a code the job proc goes on to reject. The typed values
+      // are only a fallback for a payload that did not come back at all.
+      const created: CreatedGpCustomerAddress = response.data?.createGpCustomerAddress ?? {
+        __typename: 'GpCustomerAddress',
+        addressCode: addressCode.trim(),
+        address1: address1.trim(),
+        city: city.trim(),
+        state: blankToNull(state),
+      };
+      showToast(`Address ${created.addressCode} added to customer ${customer.customerNumber}.`, 'success');
       onCreated(created);
       reset();
       onClose();
     } catch (err) {
       // GP's own words - most often a code the customer already has. The dialog stays open with the
       // typed address intact, so fixing it is one edit rather than re-keying the whole thing.
-      setGpError(extractGpError(err));
+      const gp = extractGpError(err);
+      setGpError(gp);
+      // The relay's own key for a code the customer already has (relay error_body: {error, ...}),
+      // which the backend forwards under extensions.relayError. See onDuplicate for the dead end this
+      // clears - the same one RegisterGpBuyerDialog re-reads the buyer master for.
+      if (gp?.relay?.error === 'address_code_already_exists') onDuplicate?.();
     }
   }, [
     createAddress,
@@ -117,6 +157,7 @@ export default function AddCustomerAddressDialog({
     country,
     showToast,
     onCreated,
+    onDuplicate,
     reset,
     onClose,
   ]);
@@ -130,6 +171,18 @@ export default function AddCustomerAddressDialog({
       <DialogTitle>Add a Customer Address</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 1 }}>
+          <Alert severity="info">
+            This writes permanent master data to GP&apos;s customer address master under {customerLabel}. An
+            address added here cannot be undone or edited from Nexus.
+          </Alert>
+
+          {!relayConnected && (
+            <Alert severity="warning">
+              The GP relay is not connected. An address can only be created against live GP data, so this form
+              stays disabled until the relay is running.
+            </Alert>
+          )}
+
           {gpError && <GpErrorAlert error={gpError} onClose={() => setGpError(null)} />}
 
           {/* Read-only: the picker that opened this decided the customer. */}
@@ -222,7 +275,7 @@ export default function AddCustomerAddressDialog({
         <Button onClick={handleClose} disabled={loading}>
           Cancel
         </Button>
-        <Button variant="contained" onClick={handleSubmit} disabled={loading || !requiredComplete}>
+        <Button variant="contained" onClick={handleSubmit} disabled={loading || !relayConnected || !requiredComplete}>
           {loading ? 'Adding…' : 'Add address'}
         </Button>
       </DialogActions>

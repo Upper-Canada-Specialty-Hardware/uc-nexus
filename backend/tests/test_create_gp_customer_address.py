@@ -1,10 +1,15 @@
 """createGpCustomerAddress: admin gate, relay gating, payload shape and GP error surfacing (#444).
 
 The mutation writes to GP's customer address master and persists nothing locally, so what these pin is
-the guard order and the wire contract: a missing relay must stop the call before GP is touched, the op
-name and every address key must reach the relay intact (a dropped key is a silently blank address in
-GP), and a refusal must reach the dialog in the relay's words with its detail body intact - that body
+the guard order and the wire contract: a missing relay must stop the call before GP is touched, a blank
+or over-length value must be refused here against GP's own char widths rather than after a round-trip,
+the op name and every address key must reach the relay intact (a dropped key is a silently blank address
+in GP), and a refusal must reach the dialog in the relay's words with its detail body intact - that body
 is what the error alert renders.
+
+The field named on a rejection is the GraphQL one, in camelCase. That is the string the dialog has to
+match to highlight the input the user typed the value into; the resolver's own snake_case argument names
+mean nothing on the client.
 """
 
 import asyncio
@@ -151,6 +156,80 @@ def test_answers_with_gps_stored_row_not_the_request(monkeypatch):
     assert address.address1 == "What GP Actually Kept"
     assert address.city == "Burnaby"
     assert address.state == "BC"
+
+
+def test_the_address_code_is_uppercased_on_the_way_out(monkeypatch):
+    # GP's own codes are uppercase, and the relay uppercases too - doing it here as well means the
+    # payload this backend logs is the row GP stores rather than whatever case it was typed in.
+    calls = _relay(monkeypatch)
+
+    _create(address_code="  tower5  ")
+
+    assert calls[0][2]["address_code"] == "TOWER5"
+
+
+@pytest.mark.parametrize(
+    "attr,gql_field",
+    [
+        ("customer_number", "customerNumber"),
+        ("address_code", "addressCode"),
+        ("address1", "address1"),
+        ("city", "city"),
+    ],
+)
+def test_a_blank_required_field_is_rejected_before_the_relay(monkeypatch, attr, gql_field):
+    # Without this the relay's model is the only thing checking, and its refusal arrives after a full
+    # round-trip as a multi-line pydantic dump anchored to nothing the dialog can highlight.
+    calls = _relay(monkeypatch)
+
+    with pytest.raises(ValidationError) as exc:
+        _create(**{attr: "   "})
+
+    assert exc.value.field == gql_field
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "attr,gql_field,limit",
+    [
+        ("customer_number", "customerNumber", 15),
+        ("address_code", "addressCode", 15),
+        ("address1", "address1", 60),
+        ("address2", "address2", 60),
+        ("city", "city", 35),
+        ("state", "state", 29),
+        ("zip_code", "zipCode", 10),
+        ("country", "country", 60),
+    ],
+)
+def test_over_length_is_rejected_against_gps_own_width(monkeypatch, attr, gql_field, limit):
+    # taCreateCustomerAddress's own parameter widths. Rejected, never truncated: SQL Server would
+    # shorten a char column silently and put a wrong address on a job nobody would think to re-check.
+    calls = _relay(monkeypatch)
+
+    with pytest.raises(ValidationError) as exc:
+        _create(**{attr: "x" * (limit + 1)})
+
+    assert exc.value.field == gql_field
+    assert str(limit) in str(exc.value)
+    assert calls == []
+
+
+def test_a_value_that_trims_to_a_legal_length_is_accepted(monkeypatch):
+    calls = _relay(monkeypatch)
+
+    _create(address_code="  " + "X" * 15 + "  ")
+
+    assert calls[0][2]["address_code"] == "X" * 15
+
+
+def test_a_relay_response_missing_the_address_fails_loudly(monkeypatch):
+    # No fallback to the input: echoing what the caller typed would report a well-formed success for an
+    # address nobody has confirmed landed in RM00102, which is the one thing this mutation must not do.
+    _relay(monkeypatch, result={"company": "TUBC", "customer": "ELL100"})
+
+    with pytest.raises(KeyError):
+        _create()
 
 
 def test_a_duplicate_code_surfaces_the_relays_own_message(monkeypatch):

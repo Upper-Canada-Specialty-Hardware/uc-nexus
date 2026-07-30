@@ -268,6 +268,46 @@ def test_op_short_circuits_before_any_exec_of_the_proc():
     assert conn.proc_calls() == []
 
 
+def test_op_words_a_duplicate_that_lands_between_the_pre_check_and_the_exec(monkeypatch):
+    # The pre-check is check-then-act. A second Nexus caller, or somebody saving the same code in GP's
+    # own Customer Address Maintenance window, can get in between it and the EXEC - and then the proc
+    # is what refuses it. Re-reading RM00102 on the way out turns that raw eConnect state back into the
+    # sentence the pre-check would have shown.
+    conn = _FakeConn()
+    answers = iter([False, True])  # absent at the pre-check, present at the re-check
+    monkeypatch.setattr(econnect, "customer_address_exists", lambda c, cu, a: next(answers))
+
+    def _raise(c, fields):
+        raise EConnectError("duplicate", proc="taCreateCustomerAddress", error_state=350)
+
+    monkeypatch.setattr(econnect, "create_customer_address", _raise)
+
+    with pytest.raises(ops.RelayOpError) as exc:
+        ops.create_customer_address_op(conn, company="TUBC", request=_request())
+
+    assert exc.value.code == "address_code_already_exists"
+    assert "TOWER5" in exc.value.message
+    # chained, so the GP failure that actually happened is still in the traceback in relay.log
+    assert isinstance(exc.value.__cause__, EConnectError)
+
+
+def test_op_reraises_a_gp_refusal_that_is_not_a_duplicate(monkeypatch):
+    # The re-check only reclassifies a failure the row itself explains. Everything else - a customer
+    # that does not exist, a value GP will not take - propagates as the eConnect error it is.
+    conn = _FakeConn()
+    monkeypatch.setattr(econnect, "customer_address_exists", lambda c, cu, a: False)
+
+    def _raise(c, fields):
+        raise EConnectError("Customer Number does not exist", proc="taCreateCustomerAddress", error_state=350)
+
+    monkeypatch.setattr(econnect, "create_customer_address", _raise)
+
+    with pytest.raises(EConnectError) as exc:
+        ops.create_customer_address_op(conn, company="TUBC", request=_request())
+
+    assert "Customer Number does not exist" in str(exc.value)
+
+
 def test_op_raises_when_the_row_never_landed(monkeypatch):
     # err=0 with no row: the silent-failure class create_po_line and create_job_op guard against.
     conn = _FakeConn()
@@ -334,6 +374,13 @@ def test_over_length_is_rejected_against_gps_own_width(field, limit):
     # something other than what they saw would put a wrong address on a job nobody would re-check.
     with pytest.raises(ValueError, match=f"{field} is at most {limit} characters"):
         _request(**{field: "x" * (limit + 1)})
+
+
+def test_an_unknown_key_is_refused_rather_than_dropped():
+    # A newer backend sending a field this relay build has no parameter for must fail loudly. Dropped
+    # silently, the address lands in GP without it and the caller is told the create succeeded.
+    with pytest.raises(ValueError, match="address3"):
+        models.CreateCustomerAddressRequest(company="TUBC", address3="Floor 3", **FIELDS)
 
 
 def test_a_value_that_trims_to_a_legal_length_is_accepted():
