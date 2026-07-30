@@ -33,6 +33,7 @@ import RelayStatusChip from '../../relay/RelayStatusChip';
 import { useRelayStatus } from '../../relay/useRelayStatus';
 import type { Project } from '../../types/project';
 import { monoSx, microLabelSx } from '../../theme';
+import AddCustomerAddressDialog from './AddCustomerAddressDialog';
 
 interface GpCustomerOption {
   customerNumber: string;
@@ -142,6 +143,13 @@ function addressLabel(a: GpCustomerAddressOption): string {
 }
 
 /**
+ * #444: the value the "+ Add new address" row carries. A MUI select has no way to hold an action
+ * alongside its options, so the choice arrives through onChange like any other - and this is the one
+ * value that must never be stored, since it is not an address code GP would accept.
+ */
+const ADD_ADDRESS = '__add__';
+
+/**
  * Originate a job in GP (issue #380), which then becomes a Nexus project.
  *
  * Nexus holds only the job number and description; customer, address codes, tax schedule and division
@@ -175,6 +183,10 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
   const [scheduleStartDate, setScheduleStartDate] = useState('');
   const [scheduledCompletionDate, setScheduledCompletionDate] = useState('');
   const [bidDueDate, setBidDueDate] = useState('');
+
+  // #444: which address picker asked for a new address, which is also what decides the customer it is
+  // created under. Null keeps the nested dialog unmounted, so its fields start clean every time.
+  const [addAddressFor, setAddAddressFor] = useState<'job' | 'bill' | null>(null);
 
   const [gpError, setGpError] = useState<GpError | null>(null);
   const [fieldError, setFieldError] = useState<string | null>(null);
@@ -249,7 +261,11 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
   // customer and rejects - the form could not express a valid pairing at all.
   const billCustomerNumber = billCustomer?.customerNumber ?? null;
   const billScopedToOwnCustomer = billCustomerNumber !== null && billCustomerNumber !== customer?.customerNumber;
-  const { data: billAddressesData, loading: billAddressesLoading } = useQuery<{
+  const {
+    data: billAddressesData,
+    loading: billAddressesLoading,
+    refetch: refetchBillAddresses,
+  } = useQuery<{
     gpCustomerAddresses: GpCustomerAddressOption[];
   }>(GET_GP_CUSTOMER_ADDRESSES, {
     variables: { company, customer: billCustomerNumber ?? '' },
@@ -267,6 +283,9 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
     () => (billScopedToOwnCustomer ? (billAddressesData?.gpCustomerAddresses ?? []) : addresses),
     [billScopedToOwnCustomer, billAddressesData, addresses],
   );
+  // #444: and so does an address created FROM that picker - same rule, same reason.
+  const billPickerCustomer = billScopedToOwnCustomer ? billCustomer : customer;
+  const addAddressCustomer = addAddressFor === 'bill' ? billPickerCustomer : addAddressFor === 'job' ? customer : null;
 
   // A failed read is NOT an empty list. Without this the deploy-before-relay-rebuild window (the ops
   // are not in an older relay's advertised op-set) renders a green relay chip over empty required
@@ -339,6 +358,25 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
     setJobAddressCode('');
     setBilltoAddressCode('');
   }, []);
+
+  /**
+   * #444: the code GP just stored becomes the picker's selection.
+   *
+   * The re-read comes first because each picker renders its options from its own query - selecting a
+   * code that is not in that list yet leaves the field blank until the read lands. `catch` keeps a
+   * failed re-read from stranding the selection: the address exists in GP either way.
+   */
+  const handleAddressCreated = useCallback(
+    (addressCode: string) => {
+      const forBill = addAddressFor === 'bill';
+      const refetch = forBill && billScopedToOwnCustomer ? refetchBillAddresses : refetchAddresses;
+      const select = forBill ? setBilltoAddressCode : setJobAddressCode;
+      void refetch()
+        .catch(() => undefined)
+        .then(() => select(addressCode));
+    },
+    [addAddressFor, billScopedToOwnCustomer, refetchAddresses, refetchBillAddresses],
+  );
 
   const handleBillCustomerChange = useCallback((value: GpCustomerOption | null) => {
     setBillCustomer(value);
@@ -548,7 +586,12 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
               select
               label="Job address"
               value={jobAddressCode}
-              onChange={(e) => setJobAddressCode(e.target.value)}
+              // #444: the add row arrives as a value like any option, so it is intercepted here and
+              // never stored - it opens the nested dialog and leaves the current selection alone.
+              onChange={(e) => {
+                if (e.target.value === ADD_ADDRESS) setAddAddressFor('job');
+                else setJobAddressCode(e.target.value);
+              }}
               required
               disabled={disabled || !customer || addressesLoading}
               size="small"
@@ -560,12 +603,20 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
                   {addressLabel(a)}
                 </MenuItem>
               ))}
+              {customer && (
+                <MenuItem value={ADD_ADDRESS} sx={{ fontStyle: 'italic' }}>
+                  + Add new address
+                </MenuItem>
+              )}
             </TextField>
             <TextField
               select
               label="Bill-to address"
               value={billtoAddressCode}
-              onChange={(e) => setBilltoAddressCode(e.target.value)}
+              onChange={(e) => {
+                if (e.target.value === ADD_ADDRESS) setAddAddressFor('bill');
+                else setBilltoAddressCode(e.target.value);
+              }}
               required
               disabled={disabled || !customer || addressesLoading || billAddressesLoading}
               size="small"
@@ -583,6 +634,11 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
                   {addressLabel(a)}
                 </MenuItem>
               ))}
+              {billPickerCustomer && (
+                <MenuItem value={ADD_ADDRESS} sx={{ fontStyle: 'italic' }}>
+                  + Add new address
+                </MenuItem>
+              )}
             </TextField>
           </Stack>
 
@@ -743,6 +799,16 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
           {loading ? 'Creating…' : 'Create Job'}
         </Button>
       </DialogActions>
+
+      {/* #444: mounted only while a picker is asking, so the half-filled job form stays behind it. */}
+      {addAddressCustomer && (
+        <AddCustomerAddressDialog
+          open
+          onClose={() => setAddAddressFor(null)}
+          customer={addAddressCustomer}
+          onCreated={handleAddressCreated}
+        />
+      )}
     </Dialog>
   );
 }

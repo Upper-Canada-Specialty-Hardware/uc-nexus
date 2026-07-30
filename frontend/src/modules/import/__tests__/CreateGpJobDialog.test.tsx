@@ -4,6 +4,7 @@ import { GraphQLError } from 'graphql';
 import { ToastProvider } from '../../../components/Toast';
 import CreateGpJobDialog from '../CreateGpJobDialog';
 import {
+  CREATE_GP_CUSTOMER_ADDRESS,
   CREATE_GP_JOB,
   GET_GP_CUSTOMERS,
   GET_GP_CUSTOMER_ADDRESSES,
@@ -36,6 +37,20 @@ function relayStatusMock(connected: boolean): MockedResponse {
     },
   };
 }
+
+function address(addressCode: string, address1: string, city: string) {
+  return { addressCode, address1, city, state: 'BC', __typename: 'GpCustomerAddress' };
+}
+
+// The addresses ELL100 already has in GP. Named like employeesReadMock so a test that has to serve a
+// growing list (#444: an address created mid-form) can swap it out of readMocks by identity.
+const addressesReadMock: MockedResponse = {
+  request: { query: GET_GP_CUSTOMER_ADDRESSES, variables: { company: COMPANY, customer: 'ELL100' } },
+  maxUsageCount: INFINITE,
+  result: {
+    data: { gpCustomerAddresses: [address('MAIN', '1 Main St', 'Vancouver'), address('SITE2', '9 Site Rd', 'Burnaby')] },
+  },
+};
 
 // Named so tests that need to replace or count it can swap it out of readMocks by identity.
 const employeesReadMock: MockedResponse = {
@@ -82,30 +97,7 @@ const readMocks: MockedResponse[] = [
       },
     },
   },
-  {
-    request: { query: GET_GP_CUSTOMER_ADDRESSES, variables: { company: COMPANY, customer: 'ELL100' } },
-    maxUsageCount: INFINITE,
-    result: {
-      data: {
-        gpCustomerAddresses: [
-          {
-            addressCode: 'MAIN',
-            address1: '1 Main St',
-            city: 'Vancouver',
-            state: 'BC',
-            __typename: 'GpCustomerAddress',
-          },
-          {
-            addressCode: 'SITE2',
-            address1: '9 Site Rd',
-            city: 'Burnaby',
-            state: 'BC',
-            __typename: 'GpCustomerAddress',
-          },
-        ],
-      },
-    },
-  },
+  addressesReadMock,
 ];
 
 const projectsMock: MockedResponse = {
@@ -150,6 +142,14 @@ async function pickCustomer(name: RegExp) {
   await waitFor(() => expect(input).toBeEnabled());
   fireEvent.mouseDown(input);
   fireEvent.change(input, { target: { value: 'E' } });
+  fireEvent.click(await screen.findByText(name));
+}
+
+async function pickBillCustomer(name: RegExp) {
+  const input = await screen.findByRole('combobox', { name: /^Bill-to customer/ });
+  await waitFor(() => expect(input).toBeEnabled());
+  fireEvent.mouseDown(input);
+  fireEvent.change(input, { target: { value: 'Scott' } });
   fireEvent.click(await screen.findByText(name));
 }
 
@@ -465,4 +465,225 @@ test('a successful submit sends only the optional fields that were filled in', a
   fireEvent.click(createButton());
 
   expect(await screen.findByText(/Job NEXUS-380-T1 created in GP/)).toBeInTheDocument();
+});
+
+// --- #444: creating a customer address from the pickers themselves -------------------------------
+
+/**
+ * A customer's addresses as GP reports them either side of a create - `extra` only shows up from the
+ * second read on. A picker offers a code only once its own query has returned it, so the call count
+ * is what proves the re-read happened rather than the code being pushed into the select blind.
+ */
+function growingAddressesMock(
+  customer: string,
+  base: ReturnType<typeof address>[],
+  extra: ReturnType<typeof address>,
+  counter: { calls: number },
+): MockedResponse {
+  return {
+    request: { query: GET_GP_CUSTOMER_ADDRESSES, variables: { company: COMPANY, customer } },
+    maxUsageCount: INFINITE,
+    result: () => {
+      counter.calls += 1;
+      return { data: { gpCustomerAddresses: counter.calls > 1 ? [...base, extra] : base } };
+    },
+  } as MockedResponse;
+}
+
+/** The nested dialog, so its Cancel is never confused with the job form's own. */
+function addAddressDialog() {
+  const dialog = screen.getByLabelText(/^Address code/).closest('[role="dialog"]');
+  if (!(dialog instanceof HTMLElement)) throw new Error('the add-address dialog is not open');
+  return dialog;
+}
+
+/** The three fields GP requires. The code goes in lower-case: the field is what upper-cases it. */
+function fillNewAddress({ code, line1, city }: { code: string; line1: string; city: string }) {
+  fireEvent.change(screen.getByLabelText(/^Address code/), { target: { value: code } });
+  fireEvent.change(screen.getByLabelText(/^Address 1/), { target: { value: line1 } });
+  fireEvent.change(screen.getByLabelText(/^City/), { target: { value: city } });
+}
+
+test('the add-address row opens the nested dialog without becoming the selected address', async () => {
+  renderDialog();
+  await waitFor(() => expect(screen.getByLabelText(/^Job number/)).toBeEnabled());
+  await pickCustomer(/Ellis Don/);
+  await pickFromSelect(/^Job address/, /MAIN/);
+
+  await pickFromSelect(/^Job address/, /Add new address/);
+  expect(await screen.findByLabelText(/^Address code/)).toBeInTheDocument();
+
+  // The row's value is a sentinel, not an address code. Storing it would hand GP a code no customer
+  // has, and it would have wiped the selection the user had already made to get here.
+  fireEvent.click(within(addAddressDialog()).getByRole('button', { name: /^Cancel$/i }));
+  await waitFor(() =>
+    expect(screen.getByRole('combobox', { name: /^Job address/ })).toHaveTextContent('MAIN - 1 Main St, Vancouver'),
+  );
+});
+
+test('an address added from the job picker is created under the job customer and selected', async () => {
+  const ell100 = { calls: 0 };
+  // The mock matches on exact variables, so this object IS the assertion on the payload: the customer
+  // is the one the picker is bound to, the code is upper-cased, and the four fields left blank travel
+  // as null rather than as empty strings GP would store over its own defaults.
+  const created: MockedResponse = {
+    request: {
+      query: CREATE_GP_CUSTOMER_ADDRESS,
+      variables: {
+        input: {
+          customerNumber: 'ELL100',
+          addressCode: 'SITE3',
+          address1: '77 New Rd',
+          address2: null,
+          city: 'Surrey',
+          state: null,
+          zipCode: null,
+          country: null,
+        },
+      },
+    },
+    result: {
+      data: {
+        createGpCustomerAddress: {
+          addressCode: 'SITE3',
+          address1: '77 New Rd',
+          city: 'Surrey',
+          state: 'BC',
+          __typename: 'GpCustomerAddress',
+        },
+      },
+    },
+  };
+
+  render(
+    <MockedProvider
+      mocks={[
+        relayStatusMock(true),
+        ...readMocks.filter((m) => m !== addressesReadMock),
+        growingAddressesMock(
+          'ELL100',
+          [address('MAIN', '1 Main St', 'Vancouver'), address('SITE2', '9 Site Rd', 'Burnaby')],
+          address('SITE3', '77 New Rd', 'Surrey'),
+          ell100,
+        ),
+        projectsMock,
+        created,
+      ]}
+    >
+      <ToastProvider>
+        <CreateGpJobDialog open onClose={() => {}} />
+      </ToastProvider>
+    </MockedProvider>,
+  );
+
+  await waitFor(() => expect(screen.getByLabelText(/^Job number/)).toBeEnabled());
+  await pickCustomer(/Ellis Don/);
+  await waitFor(() => expect(ell100.calls).toBe(1));
+
+  await pickFromSelect(/^Job address/, /Add new address/);
+  fillNewAddress({ code: 'site3', line1: '77 New Rd', city: 'Surrey' });
+  fireEvent.click(within(addAddressDialog()).getByRole('button', { name: /^Add address$/i }));
+
+  await waitFor(() => expect(ell100.calls).toBe(2));
+  await waitFor(() =>
+    expect(screen.getByRole('combobox', { name: /^Job address/ })).toHaveTextContent('SITE3 - 77 New Rd, Surrey'),
+  );
+  // and the job form is back, with everything filled in so far still there
+  expect(screen.queryByLabelText(/^Address code/)).not.toBeInTheDocument();
+});
+
+test('an address added from the bill-to picker is created under the bill-to customer', async () => {
+  // The whole point of the scoping: the bill-to picker is showing SCO100's addresses, so a code added
+  // from it has to be filed against SCO100. Against ELL100 it would not even appear in the list it
+  // was added from, and the job proc would refuse it.
+  const sco100 = { calls: 0 };
+  const created: MockedResponse = {
+    request: {
+      query: CREATE_GP_CUSTOMER_ADDRESS,
+      variables: {
+        input: {
+          customerNumber: 'SCO100',
+          addressCode: 'SITE9',
+          address1: '3 Depot Ave',
+          address2: null,
+          city: 'Langley',
+          state: null,
+          zipCode: null,
+          country: null,
+        },
+      },
+    },
+    result: {
+      data: {
+        createGpCustomerAddress: {
+          addressCode: 'SITE9',
+          address1: '3 Depot Ave',
+          city: 'Langley',
+          state: 'BC',
+          __typename: 'GpCustomerAddress',
+        },
+      },
+    },
+  };
+
+  renderDialog([
+    growingAddressesMock('SCO100', [address('HQ', '5 Bay St', 'Toronto')], address('SITE9', '3 Depot Ave', 'Langley'), sco100),
+    created,
+  ]);
+
+  await waitFor(() => expect(screen.getByLabelText(/^Job number/)).toBeEnabled());
+  await pickCustomer(/Ellis Don/);
+  fireEvent.click(screen.getByRole('button', { name: /Show optional fields/i }));
+  await pickBillCustomer(/Scott Construction/);
+  await waitFor(() => expect(sco100.calls).toBe(1));
+
+  await pickFromSelect(/^Bill-to address/, /Add new address/);
+  fillNewAddress({ code: 'site9', line1: '3 Depot Ave', city: 'Langley' });
+  fireEvent.click(within(addAddressDialog()).getByRole('button', { name: /^Add address$/i }));
+
+  // the bill-to customer's own query is the one re-read, and the new code lands in that picker
+  await waitFor(() => expect(sco100.calls).toBe(2));
+  await waitFor(() =>
+    expect(screen.getByRole('combobox', { name: /^Bill-to address/ })).toHaveTextContent('SITE9 - 3 Depot Ave, Langley'),
+  );
+});
+
+test('a duplicate address code keeps the nested dialog open with the typed address intact', async () => {
+  const duplicate: MockedResponse = {
+    request: {
+      query: CREATE_GP_CUSTOMER_ADDRESS,
+      variables: {
+        input: {
+          customerNumber: 'ELL100',
+          addressCode: 'MAIN',
+          address1: '77 New Rd',
+          address2: null,
+          city: 'Surrey',
+          state: null,
+          zipCode: null,
+          country: null,
+        },
+      },
+    },
+    result: {
+      errors: [
+        new GraphQLError('Customer ELL100 already has an address code MAIN', {
+          extensions: { code: 'address_code_already_exists' },
+        }),
+      ],
+    },
+  };
+
+  renderDialog([duplicate]);
+  await waitFor(() => expect(screen.getByLabelText(/^Job number/)).toBeEnabled());
+  await pickCustomer(/Ellis Don/);
+
+  await pickFromSelect(/^Job address/, /Add new address/);
+  fillNewAddress({ code: 'main', line1: '77 New Rd', city: 'Surrey' });
+  fireEvent.click(within(addAddressDialog()).getByRole('button', { name: /^Add address$/i }));
+
+  expect(await screen.findByText(/already has an address code MAIN/)).toBeInTheDocument();
+  // Closing here would throw away a whole address over one wrong code, so it stays open and typed in.
+  expect(screen.getByLabelText(/^Address code/)).toHaveValue('MAIN');
+  expect(screen.getByLabelText(/^Address 1/)).toHaveValue('77 New Rd');
 });

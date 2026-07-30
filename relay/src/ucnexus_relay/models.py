@@ -371,3 +371,88 @@ class CreateJobResponse(BaseModel):
     job_number: str
     job_name: str
     company: str
+
+
+# --- create a GP customer address (issue #444) ---
+# The write half of the address picker above: a job site that was never entered in GP no longer means
+# abandoning the create-job dialog to go and add it there.
+
+_ADDRESS_REQUIRED_STRINGS = ("customer_number", "address_code", "address1", "city")
+_ADDRESS_OPTIONAL_STRINGS = ("address2", "state", "zip_code", "country")
+
+# field -> the width of the GP column it lands in, taken from taCreateCustomerAddress's own parameters:
+# char(15) CUSTNMBR / ADRSCODE, char(60) ADDRESS1 / ADDRESS2 / COUNTRY, char(35) CITY, char(29) STATE,
+# char(10) ZIPCODE.
+_ADDRESS_MAX_LENGTHS = {
+    "customer_number": 15,
+    "address_code": 15,
+    "address1": 60,
+    "address2": 60,
+    "city": 35,
+    "state": 29,
+    "zip_code": 10,
+    "country": 60,
+}
+
+
+class CreateCustomerAddressRequest(BaseModel):
+    """One new address code under an existing GP customer (RM00102).
+
+    Required: customer_number, address_code, address1, city. Without a street and a city the row is not
+    an address anyone could ship hardware to, and the two codes are what identify it at all.
+
+    An optional field left blank is SENT as a blank, not dropped. That is the opposite of
+    CreateJobRequest, where an unset optional means "leave GP's default" - this row does not exist yet,
+    so there is no default to preserve, and an address with no state is a perfectly ordinary address.
+
+    Over-length is REJECTED, never truncated. The user typed these values into a dialog seconds ago and
+    is looking at them; storing something other than what they saw - silently, because SQL Server
+    truncates a char column without a word - would put a wrong address on a job nobody would think to
+    re-check. A message naming the field and GP's width is the only honest answer.
+
+    The widths are checked in the validator rather than through Field(max_length=...) for the reason
+    CreateBuyerRequest gives: a Field constraint runs BEFORE this validator, so it would measure the
+    padding too and reject a padded value that trims to a perfectly legal one."""
+
+    company: str
+
+    customer_number: str
+    address_code: str
+    address1: str
+    city: str
+
+    address2: str | None = None
+    state: str | None = None
+    zip_code: str | None = None
+    country: str | None = None
+
+    @model_validator(mode="after")
+    def normalize(self):
+        """Trim everything, reject a required field that trimmed to nothing, uppercase the address code,
+        then bound every value against GP's column widths.
+
+        address_code is uppercased because GP's are ('MAIN', 'PRIMARY', 'RIH'), and the picker this
+        feeds lists them alongside each other - a lowercase 'main' created from Nexus would read as a
+        different kind of thing forever after. SQL Server's default collation is case-insensitive, so
+        this changes nothing about which rows the duplicate pre-check matches; it is about what the row
+        looks like to everyone who sees it later."""
+        for name in _ADDRESS_REQUIRED_STRINGS:
+            value = (getattr(self, name) or "").strip()
+            if not value:
+                raise ValueError(f"{name} is required")
+            setattr(self, name, value)
+        self.address_code = self.address_code.upper()
+        for name in _ADDRESS_OPTIONAL_STRINGS:
+            setattr(self, name, (getattr(self, name) or "").strip())
+        for name, limit in _ADDRESS_MAX_LENGTHS.items():
+            if len(getattr(self, name)) > limit:
+                raise ValueError(f"{name} is at most {limit} characters in GP")
+        return self
+
+
+class CreateCustomerAddressResponse(BaseModel):
+    company: str
+    customer: str
+    # GP's stored row, read back from RM00102 - the same shape list_customer_addresses returns, so the
+    # address just created and the ones the picker already has are interchangeable to the caller.
+    address: CustomerAddressOut

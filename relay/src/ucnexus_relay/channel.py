@@ -305,6 +305,28 @@ def _run_create_job(company: str, payload: dict) -> dict:
             raise
 
 
+def _run_create_customer_address(company: str, payload: dict) -> dict:
+    """Add an address code to a GP customer (#444) - the write half of _run_list_customer_addresses.
+
+    The customer arrives under the key `customer`, as it does on the read op: the two halves of the same
+    picker should not disagree about what the customer key is called. `customer_number` is accepted too,
+    since that is the name the model and the proc parameter use."""
+    ops.check_company_allowed(company)
+    fields = dict(payload)
+    customer = fields.pop("customer", None)
+    if customer is not None:
+        fields["customer_number"] = customer
+    request = models.CreateCustomerAddressRequest(company=company, **fields)
+    with db.get_connection(company) as conn:
+        try:
+            response = ops.create_customer_address_op(conn, company=company, request=request)
+            conn.commit()
+            return response.model_dump(mode="json")
+        except Exception:
+            conn.rollback()
+            raise
+
+
 def _run_create_receipt(company: str, payload: dict) -> dict:
     ops.check_company_allowed(company)
     request = models.ReceiptRequest(company=company, **payload)
@@ -340,6 +362,9 @@ _OPS = {
     # buyer so linking a Nexus account to a GP buyer identity never needs GP opened.
     "list_buyers_detailed": _run_list_buyers_detailed,
     "create_buyer": _run_create_buyer,
+    # issue #444 - the create-job dialog can add a job site that was never entered in GP, instead of
+    # dead-ending on an address picker that has no code for it.
+    "create_customer_address": _run_create_customer_address,
     # issue #425 - jobs replicated from UCSH carry GL account indexes that do not exist in UBC, so a
     # PO against them registers and can never be received. This is how Nexus finds out which ones.
     "job_setup_health": _run_job_setup_health,

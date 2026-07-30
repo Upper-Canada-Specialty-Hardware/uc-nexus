@@ -153,6 +153,7 @@ ROOT_FIELD_POLICY: dict[str, str] = {
     "suggestVendorForManufacturer": SIGNED_IN,
     "armRelayAdopt": ADMIN_ROLE,
     "createGpBuyer": ADMIN_ROLE,
+    "createGpCustomerAddress": ADMIN_ROLE,
     "deleteRelayInstall": ADMIN_ROLE,
     "disarmRelayAdopt": ADMIN_ROLE,
     "provisionRelayInstall": ADMIN_ROLE,

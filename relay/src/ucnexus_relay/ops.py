@@ -279,6 +279,50 @@ def create_job_op(conn, *, company: str, request: models.CreateJobRequest) -> mo
     )
 
 
+def create_customer_address_op(
+    conn, *, company: str, request: models.CreateCustomerAddressRequest
+) -> models.CreateCustomerAddressResponse:
+    """Add an address code to a GP customer (issue #444): pre-check, create, read back. The caller
+    commits.
+
+    The same three beats as create_buyer_op, and here they carry more weight. taCreateCustomerAddress
+    has NO OnlyValidate parameter, so there is no dry-run pass to fall back on the way create_job_op has
+    - the pre-check IS the duplicate guard, and it is what lets econnect.create_customer_address pin
+    UpdateIfExists to 0 (see that docstring: overwriting an address accounting already maintains is the
+    one outcome this feature must never produce).
+
+    It also makes a retry after an ambiguous failure safe: if the first attempt committed and the reply
+    was lost, pressing Create again reads as "that customer already has this address code" rather than
+    as a raw eConnect state for something that already worked.
+
+    The read-back guards the err=0-but-nothing-landed case create_po_line has a known mode for, and
+    answers with GP's stored row - which is exactly what list_customer_addresses will serve the picker
+    on its next refetch, so answering with anything else could hand the dialog an address that differs
+    from the one everything else is about to see."""
+    if econnect.customer_address_exists(conn, request.customer_number, request.address_code):
+        raise RelayOpError(
+            "address_code_already_exists",
+            f"customer '{request.customer_number}' already has address code '{request.address_code}' "
+            f"in GP company {company} (RM00102)",
+        )
+
+    econnect.create_customer_address(conn, request.model_dump(exclude={"company"}))
+
+    created = econnect.get_customer_address(conn, request.customer_number, request.address_code)
+    if created is None:
+        raise econnect.EConnectError(
+            f"taCreateCustomerAddress reported success but address '{request.address_code}' is not in "
+            f"RM00102 for customer '{request.customer_number}'",
+            proc="taCreateCustomerAddress",
+        )
+
+    return models.CreateCustomerAddressResponse(
+        company=company,
+        customer=request.customer_number,
+        address=models.CustomerAddressOut(**created),
+    )
+
+
 def create_buyer_op(conn, *, company: str, request: models.CreateBuyerRequest) -> models.CreateBuyerResponse:
     """Register a GP buyer (issue #409): pre-check, create, read back. The caller commits.
 
