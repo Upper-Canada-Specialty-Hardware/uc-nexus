@@ -390,7 +390,6 @@ export default function AssignmentBoard() {
             setCompletingId(null);
             refetch();
           }}
-          completedBy={displayName}
         />
       )}
     </Box>

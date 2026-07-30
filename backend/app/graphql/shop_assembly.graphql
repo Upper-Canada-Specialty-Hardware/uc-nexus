@@ -315,12 +315,13 @@ type Mutation {
   # VALIDATION_ERROR if more than has arrived; INVALID_STATE_TRANSITION if the leaf is still on the
   # bench (record it as progress instead) or has already shipped (that is reallocation's problem).
   installReplacement(input: InstallReplacementInput!): OpeningItem!
-  # Accept gate (#293). Any signed-in user (require_user). acceptedBy/rejectedBy is the caller's
-  # display name. Accept mints the warehouse PullRequest and is a **pure human gate** since #342: the
-  # hardware was reserved when the request was created, so nothing is re-checked here. Reject is what
-  # releases that reservation.
-  acceptShopAssemblyRequest(id: ID!, acceptedBy: String!): ShopAssemblyRequest!
-  rejectShopAssemblyRequest(id: ID!, rejectedBy: String!, reason: String): ShopAssemblyRequest!
+  # Accept gate (#293). Any signed-in user (require_user). Accept mints the warehouse PullRequest and
+  # is a **pure human gate** since #342: the hardware was reserved when the request was created, so
+  # nothing is re-checked here. Reject is what releases that reservation. The approval is recorded
+  # against the Clerk-authenticated caller (#427) - acceptedBy/rejectedBy are accepted and IGNORED,
+  # kept only so a frontend from the previous deploy still validates.
+  acceptShopAssemblyRequest(id: ID!, acceptedBy: String @deprecated(reason: "ignored; actor is the caller")): ShopAssemblyRequest!
+  rejectShopAssemblyRequest(id: ID!, rejectedBy: String @deprecated(reason: "ignored; actor is the caller"), reason: String): ShopAssemblyRequest!
   # Reopen (#325). Undoes an erroneous accept: APPROVED -> PENDING, hard-deletes the minted
   # PullRequest and re-points the openings off it. Refused if the warehouse has already worked the pull.
   reopenShopAssemblyRequest(id: ID!): ShopAssemblyRequest!

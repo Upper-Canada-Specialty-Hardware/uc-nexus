@@ -64,7 +64,7 @@ const openingsMock: MockedResponse = {
 };
 
 function cancelVariables(reason: string | null) {
-  return { input: { id: 'pr-1', cancelledBy: 'Picker', reason } };
+  return { input: { id: 'pr-1', reason } };
 }
 
 function cancelSuccessMock(integrityNote: string | null = null): MockedResponse {

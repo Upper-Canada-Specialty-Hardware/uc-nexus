@@ -41,7 +41,6 @@ export default function AdjustStockModal({ item, onClose, onSuccess }: Props) {
           stockItemId: item.id,
           newQuantity: newQ,
           reasonText: reason.trim(),
-          performedBy: 'Warehouse',
         },
       },
     });

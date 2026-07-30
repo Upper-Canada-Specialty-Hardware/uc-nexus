@@ -15,7 +15,6 @@ import { ChevronDown, Check, X, Undo2 } from 'lucide-react';
 import { useMutation } from '@apollo/client/react';
 import type { DocumentNode } from 'graphql';
 import { useToast } from './Toast';
-import { useIdentity } from '../hooks/useIdentity';
 import ConfirmDialog from './ConfirmDialog';
 import { RESERVATION_STALE_ROOT_FIELDS } from '../graphql/refetch';
 import { monoSx } from '../theme';
@@ -87,7 +86,6 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
   note,
 }: RequestsReviewPageProps<TRequest>) {
   const { showToast } = useToast();
-  const { displayName } = useIdentity();
   // Which request is mid-flight, and which action - drives per-button spinners while every button on
   // that request disables so the actions can't race each other.
   const [pending, setPending] = useState<{ id: string; action: 'accept' | 'reject' | 'reopen' } | null>(null);
@@ -128,12 +126,12 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
 
   const handleAccept = (id: string) => {
     setPending({ id, action: 'accept' });
-    acceptRequest({ variables: { id, acceptedBy: displayName } });
+    acceptRequest({ variables: { id } });
   };
 
   const handleReject = (id: string) => {
     setPending({ id, action: 'reject' });
-    rejectRequest({ variables: { id, rejectedBy: displayName, reason: null } });
+    rejectRequest({ variables: { id, reason: null } });
   };
 
   const handleReopen = (id: string) => {

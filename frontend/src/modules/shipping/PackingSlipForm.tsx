@@ -147,7 +147,6 @@ export default function PackingSlipForm({ open, onClose, onShipped, projectId, p
           input: {
             projectId,
             packingSlipNumber,
-            shippedBy: displayName,
             items: shipmentItems,
           },
         },

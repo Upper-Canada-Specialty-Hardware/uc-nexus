@@ -69,7 +69,6 @@ const saveMock: MockedResponse = {
       input: {
         openingId: 'o1',
         items: [{ shopAssemblyOpeningItemId: 'i1', installedQuantity: 2 }],
-        performedBy: 'Ada Lovelace',
       },
     },
   },

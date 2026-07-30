@@ -99,8 +99,8 @@ export const GET_SHIPPING_OUT_REQUESTS = gql`
 `;
 
 export const ACCEPT_SHIPPING_OUT_REQUEST = gql`
-  mutation AcceptShippingOutRequest($id: ID!, $acceptedBy: String!) {
-    acceptShippingOutRequest(id: $id, acceptedBy: $acceptedBy) {
+  mutation AcceptShippingOutRequest($id: ID!) {
+    acceptShippingOutRequest(id: $id) {
       id
       status
     }
@@ -108,8 +108,8 @@ export const ACCEPT_SHIPPING_OUT_REQUEST = gql`
 `;
 
 export const REJECT_SHIPPING_OUT_REQUEST = gql`
-  mutation RejectShippingOutRequest($id: ID!, $rejectedBy: String!, $reason: String) {
-    rejectShippingOutRequest(id: $id, rejectedBy: $rejectedBy, reason: $reason) {
+  mutation RejectShippingOutRequest($id: ID!, $reason: String) {
+    rejectShippingOutRequest(id: $id, reason: $reason) {
       id
       status
     }

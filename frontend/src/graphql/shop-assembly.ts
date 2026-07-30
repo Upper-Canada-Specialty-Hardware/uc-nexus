@@ -253,8 +253,8 @@ export const GET_SHOP_ASSEMBLY_REQUESTS = gql`
 `;
 
 export const ACCEPT_SHOP_ASSEMBLY_REQUEST = gql`
-  mutation AcceptShopAssemblyRequest($id: ID!, $acceptedBy: String!) {
-    acceptShopAssemblyRequest(id: $id, acceptedBy: $acceptedBy) {
+  mutation AcceptShopAssemblyRequest($id: ID!) {
+    acceptShopAssemblyRequest(id: $id) {
       id
       status
     }
@@ -262,8 +262,8 @@ export const ACCEPT_SHOP_ASSEMBLY_REQUEST = gql`
 `;
 
 export const REJECT_SHOP_ASSEMBLY_REQUEST = gql`
-  mutation RejectShopAssemblyRequest($id: ID!, $rejectedBy: String!, $reason: String) {
-    rejectShopAssemblyRequest(id: $id, rejectedBy: $rejectedBy, reason: $reason) {
+  mutation RejectShopAssemblyRequest($id: ID!, $reason: String) {
+    rejectShopAssemblyRequest(id: $id, reason: $reason) {
       id
       status
     }

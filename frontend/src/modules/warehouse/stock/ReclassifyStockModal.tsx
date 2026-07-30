@@ -51,7 +51,6 @@ export default function ReclassifyStockModal({ item, onClose, onSuccess }: Props
           newProductCode: newCode.trim(),
           quantity: q,
           reasonText: reason.trim() || null,
-          performedBy: 'Warehouse',
         },
       },
     });
