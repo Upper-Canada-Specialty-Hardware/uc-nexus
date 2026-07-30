@@ -62,7 +62,6 @@ function assignmentsMock(buyerIds: string[]): MockedResponse {
       data: {
         buyerAssignments: buyerIds.map((buyerId) => ({
           buyerId,
-          costCodes: ['310-000'],
           projects: [],
           __typename: 'BuyerAssignment',
         })),
