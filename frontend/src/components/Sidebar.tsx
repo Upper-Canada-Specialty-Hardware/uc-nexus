@@ -1,8 +1,7 @@
-import { useState, type ReactNode } from 'react';
+import { type ReactNode } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
   Box,
-  Collapse,
   Drawer,
   List,
   ListItem,
@@ -20,21 +19,14 @@ import {
   Wrench,
   Truck,
   ShieldCheck,
-  ChevronDown,
 } from 'lucide-react';
 import { useIdentity } from '../hooks/useIdentity';
-
-interface SidebarSubItem {
-  label: string;
-  path: string;
-}
 
 interface SidebarItem {
   label: string;
   path: string;
   icon: ReactNode;
   requiredRoles: string[];
-  subItems?: SidebarSubItem[];
 }
 
 const ICON_PROPS = { size: 19, strokeWidth: 1.75 } as const;
@@ -58,27 +50,12 @@ const SIDEBAR_ITEMS: SidebarItem[] = [
     path: '/app/warehouse',
     icon: <Warehouse {...ICON_PROPS} />,
     requiredRoles: ['Warehouse Staff'],
-    subItems: [
-      { label: 'Inventory', path: '/app/warehouse/inventory' },
-      { label: 'Locations', path: '/app/warehouse/locations' },
-      { label: 'Receiving', path: '/app/warehouse/receiving' },
-      { label: 'Put Away', path: '/app/warehouse/put-away' },
-      { label: 'Pull Requests', path: '/app/warehouse/pull-requests' },
-      { label: 'Shipments', path: '/app/warehouse/shipments' },
-    ],
   },
   {
     label: 'Shop Assembly',
     path: '/app/shop-assembly',
     icon: <Wrench {...ICON_PROPS} />,
     requiredRoles: ['Shop Assembly User', 'Shop Assembly Manager'],
-    subItems: [
-      { label: 'Requests', path: '/app/shop-assembly/requests' },
-      { label: 'Assemble List', path: '/app/shop-assembly/assemble' },
-      { label: 'Assignments', path: '/app/shop-assembly/assign' },
-      { label: 'My Work', path: '/app/shop-assembly/my-work' },
-      { label: 'Pipeline', path: '/app/shop-assembly/pipeline' },
-    ],
   },
   {
     label: 'Shipping',
@@ -91,14 +68,6 @@ const SIDEBAR_ITEMS: SidebarItem[] = [
     path: '/app/admin',
     icon: <ShieldCheck {...ICON_PROPS} />,
     requiredRoles: ['Admin/Manager'],
-    subItems: [
-      { label: 'Project Purchasing Progress', path: '/app/admin/project-purchasing-progress' },
-      { label: 'Opening Status', path: '/app/admin/opening-status' },
-      { label: 'Vendors', path: '/app/admin/vendors' },
-      { label: 'User Management', path: '/app/admin/users' },
-      { label: 'Buyers', path: '/app/admin/buyers' },
-      { label: 'Relay Installs', path: '/app/admin/relay-installs' },
-    ],
   },
 ];
 
@@ -123,7 +92,6 @@ export function NavContent({ collapsed = false, onNavigate }: NavContentProps) {
   const navigate = useNavigate();
   const location = useLocation();
   const { hasRole, isAdmin } = useIdentity();
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   const canAccess = (item: SidebarItem) => {
     if (item.requiredRoles.length === 0) return true;
@@ -131,17 +99,8 @@ export function NavContent({ collapsed = false, onNavigate }: NavContentProps) {
     return item.requiredRoles.some((role) => hasRole(role));
   };
 
-  const handleParentClick = (item: SidebarItem) => {
+  const handleItemClick = (item: SidebarItem) => {
     navigate(item.path);
-    if (!collapsed && item.subItems && item.subItems.length > 0) {
-      setExpanded((prev) => ({ ...prev, [item.path]: !(prev[item.path] ?? isActive(location.pathname, item.path)) }));
-    } else {
-      onNavigate?.();
-    }
-  };
-
-  const handleSubItemClick = (path: string) => {
-    navigate(path);
     onNavigate?.();
   };
 
@@ -149,15 +108,13 @@ export function NavContent({ collapsed = false, onNavigate }: NavContentProps) {
     <List sx={{ px: 1, py: 1 }}>
       {SIDEBAR_ITEMS.map((item) => {
         const active = isActive(location.pathname, item.path);
-        const hasSubItems = !!item.subItems && item.subItems.length > 0;
-        const isExpanded = !collapsed && hasSubItems ? (expanded[item.path] ?? active) : false;
         const accessible = canAccess(item);
 
         const button = (
           <ListItemButton
             selected={active}
             disabled={!accessible}
-            onClick={() => handleParentClick(item)}
+            onClick={() => handleItemClick(item)}
             sx={{
               minHeight: 40,
               px: collapsed ? 1.25 : 1.5,
@@ -184,19 +141,6 @@ export function NavContent({ collapsed = false, onNavigate }: NavContentProps) {
                 }}
               />
             )}
-            {!collapsed && accessible && hasSubItems && (
-              <Box
-                component="span"
-                sx={{
-                  display: 'flex',
-                  color: 'text.secondary',
-                  transition: 'transform 0.2s ease',
-                  transform: isExpanded ? 'rotate(180deg)' : 'rotate(0deg)',
-                }}
-              >
-                <ChevronDown size={15} strokeWidth={1.75} />
-              </Box>
-            )}
           </ListItemButton>
         );
 
@@ -215,39 +159,9 @@ export function NavContent({ collapsed = false, onNavigate }: NavContentProps) {
           );
 
         return (
-          <Box key={item.path}>
-            <ListItem disablePadding sx={{ mb: 0.25 }}>
-              {wrapped}
-            </ListItem>
-            {accessible && hasSubItems && !collapsed && (
-              <Collapse in={isExpanded} timeout={200} unmountOnExit>
-                <List component="div" disablePadding sx={{ mb: 0.5 }}>
-                  {item.subItems!.map((sub) => {
-                    const subActive = isActive(location.pathname, sub.path);
-                    return (
-                      <ListItemButton
-                        key={sub.path}
-                        sx={{ pl: 5.5, py: 0.5, minHeight: 32 }}
-                        selected={subActive}
-                        onClick={() => handleSubItemClick(sub.path)}
-                      >
-                        <ListItemText
-                          primary={sub.label}
-                          slotProps={{
-                            primary: {
-                              fontSize: '0.8125rem',
-                              fontWeight: subActive ? 600 : 400,
-                              color: subActive ? 'text.primary' : 'text.secondary',
-                            },
-                          }}
-                        />
-                      </ListItemButton>
-                    );
-                  })}
-                </List>
-              </Collapse>
-            )}
-          </Box>
+          <ListItem key={item.path} disablePadding sx={{ mb: 0.25 }}>
+            {wrapped}
+          </ListItem>
         );
       })}
     </List>
