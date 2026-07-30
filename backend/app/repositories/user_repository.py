@@ -16,7 +16,11 @@ _client = httpx.Client(base_url=CLERK_API_BASE, timeout=30.0)
 
 def _headers() -> dict[str, str]:
     if not CLERK_SECRET_KEY:
-        raise AppError("CLERK_SECRET_KEY is not configured")
+        # AppError takes a code, so the bare one-argument raise this used to be was a TypeError
+        # rather than the misconfiguration message it meant to be. Reachable from more paths since
+        # #423 - the gate now calls list_users() to authorize the roster-backed fields, so a backend
+        # deployed without the key answers those with a 500 traceback instead of a named error.
+        raise AppError("CLERK_SECRET_KEY is not configured", "CONFIGURATION_ERROR")
     return {
         "Authorization": f"Bearer {CLERK_SECRET_KEY}",
         "Content-Type": "application/json",
