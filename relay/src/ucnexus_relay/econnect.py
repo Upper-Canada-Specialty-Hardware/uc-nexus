@@ -695,20 +695,33 @@ def read_po_totals(conn, po_number: str) -> dict | None:
 
 
 def list_cost_codes(conn, job_number: str) -> list[dict]:
-    """Read-only: the active cost codes defined for ONE job in JC00701 (WennSoft Job Cost).
-    Cost codes are per-job, and the real Cost_Element varies by code (210-200 is element 2,
-    310-000 is element 3, 510-000 is element 5, ...). The Create PO dropdown is populated from
-    this and the /po cost_code is assembled as 'phase-step-element' (e.g. '310-000-3') from the
-    code's own element - NOT a hardcoded 2.
+    """Read-only: the active, account-usable cost codes defined for ONE job in JC00701 (WennSoft
+    Job Cost). Cost codes are per-job, and the real Cost_Element varies by code (210-200 is
+    element 2, 310-000 is element 3, 510-000 is element 5, ...). The Create PO dropdown is
+    populated from this and the /po cost_code is assembled as 'phase-step-element' (e.g.
+    '310-000-3') from the code's own element - NOT a hardcoded 2.
+
+    Two filters make this "usable on a new PO":
+      - WS_Inactive = 0, matching the cost_code_on_job pre-check.
+      - the code's WS_Account_Index_1 is 0 or exists in GL00105 - the same rule as
+        account_index_exists, which is what the create_po cost_code_account_invalid guard
+        enforces. A dangling index (the pre-2023 UCSH -> UBC job copy left 1504 such rows across
+        62 UBC jobs, #425) means a PO on the code registers cleanly and then fails FOREVER at
+        receipt with eConnect 4612, so after #430 opened the dropdown to every active code, a code
+        the guard would refuse must not be offered for selection in the first place. Index 0
+        passes: it means "GP picks the account at posting time", which eConnect honours.
 
     Returns one dict per code: cost_code = the two-segment number 'cc1-cc2' (segments 3/4 are
     blank for every code at this customer), description (Cost_Code_Description), and the integer
-    cost_element. WS_Inactive = 0 filters to codes usable on a new PO."""
+    cost_element."""
     rows = conn.cursor().execute(
-        "SELECT RTRIM(Cost_Code_Number_1) AS cc1, RTRIM(Cost_Code_Number_2) AS cc2, "
-        "Cost_Element AS elem, RTRIM(Cost_Code_Description) AS descr "
-        "FROM dbo.JC00701 WHERE RTRIM(WS_Job_Number) = ? AND WS_Inactive = 0 "
-        "ORDER BY Cost_Code_Number_1, Cost_Code_Number_2",
+        "SELECT RTRIM(c.Cost_Code_Number_1) AS cc1, RTRIM(c.Cost_Code_Number_2) AS cc2, "
+        "c.Cost_Element AS elem, RTRIM(c.Cost_Code_Description) AS descr "
+        "FROM dbo.JC00701 c "
+        "LEFT JOIN dbo.GL00105 a ON a.ACTINDX = c.WS_Account_Index_1 "
+        "WHERE RTRIM(c.WS_Job_Number) = ? AND c.WS_Inactive = 0 "
+        "AND (c.WS_Account_Index_1 = 0 OR a.ACTINDX IS NOT NULL) "
+        "ORDER BY c.Cost_Code_Number_1, c.Cost_Code_Number_2",
         job_number,
     ).fetchall()
     return [
@@ -1090,6 +1103,146 @@ def create_job(conn, *, only_validate: bool = False, **fields) -> None:
             proc="wsiJCJobMaster",
             error_state=row.error_state,
             proc_message=message or None,
+        )
+
+
+# --- create a GP customer address (issue #444) ------------------------------
+# The create-job form picks its job address and bill-to address out of RM00102 (list_customer_addresses
+# above), so a site that was never entered in GP meant stopping the job creation, opening GP, adding the
+# address, and starting over. This is the write half of that picker.
+#
+# taCreateCustomerAddress is a stock eConnect proc, present with DYNGRP EXECUTE in every company DB. It
+# has NO OnlyValidate parameter, unlike wsiJCJobMaster, so there is no dry-run pass to lean on here -
+# the duplicate guard is entirely ours: customer_address_exists, which create_customer_address_op runs
+# before the EXEC and again when the EXEC fails, since a code saved in between is the one case a single
+# pre-check cannot see.
+
+
+def customer_address_exists(conn, customer_number: str, address_code: str) -> bool:
+    """Read-only: does this customer already have this address code (RM00102)?
+
+    Scoped to BOTH columns because ADRSCODE is unique per customer, not globally - 'MAIN' exists under
+    nearly every customer in GP, so a global probe would refuse almost every legitimate create. Both
+    columns are char(15), so they are RTRIM'd and the arguments stripped, which is the same
+    normalization list_customer_addresses applies - a code read out of that dropdown compares equal
+    here.
+
+    This is the whole of the duplicate guard for the create (the proc offers no validate-only pass),
+    which is why create_customer_address_op calls it twice - once as a pre-check, and once more when
+    the EXEC fails, because a code saved between the two is exactly what the pre-check cannot see. It
+    is what lets create_customer_address hardcode UpdateIfExists=0 without a re-run of the dialog
+    turning into a raw eConnect error state."""
+    row = conn.cursor().execute(
+        "SELECT COUNT(*) AS n FROM dbo.RM00102 WHERE RTRIM(CUSTNMBR) = ? AND RTRIM(ADRSCODE) = ?",
+        customer_number.strip(),
+        address_code.strip(),
+    ).fetchone()
+    return row.n > 0
+
+
+def get_customer_address(conn, customer_number: str, address_code: str) -> dict | None:
+    """Read-only: one stored address row from RM00102, or None. Used as the read-back after a create
+    (#444), so the response reports what GP ACTUALLY STORED rather than the request echoed back - the
+    same honesty rule get_job follows for the job name.
+
+    RM00102 is fixed-width char throughout (ADDRESS1 char(60), CITY char(35), STATE char(29)) and SQL
+    Server truncates on the way in without a word. CreateCustomerAddressRequest rejects an over-length
+    value before it ever gets here, so a truncation should be unreachable - reading the row back is what
+    makes that a guarantee instead of an assumption, and it doubles as proof the row landed at all.
+
+    Returns the same shape as a list_customer_addresses row, so the address just created and the ones
+    the picker fetched are the same kind of thing to everything downstream.
+
+    Matched the way customer_address_exists matches (RTRIM'd columns, stripped arguments, comparison
+    left to SQL) so the pre-check and the read-back agree on what counts as the same address - a Python
+    match would disagree on case and roll back a create that actually worked."""
+    row = conn.cursor().execute(
+        "SELECT RTRIM(ADRSCODE) AS address_code, RTRIM(ADDRESS1) AS address1, RTRIM(CITY) AS city, "
+        "RTRIM(STATE) AS state FROM dbo.RM00102 WHERE RTRIM(CUSTNMBR) = ? AND RTRIM(ADRSCODE) = ?",
+        customer_number.strip(),
+        address_code.strip(),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "address_code": row.address_code,
+        "address1": row.address1 or None,
+        "city": row.city or None,
+        "state": row.state or None,
+    }
+
+
+# request field -> taCreateCustomerAddress parameter name (minus the @I_v prefix), in the proc's own
+# parameter order. The proc takes more than these (ADDRESS3, the phone/fax numbers, the shipping
+# method, the user-defined fields); those are left defaulted, the same treatment _exec_tapohdr gives
+# taPoHdr's ~100 - an unset optional is absent from the EXEC, not an explicit NULL.
+_CREATE_CUSTOMER_ADDRESS_PARAMS = (
+    ("customer_number", "CUSTNMBR"),
+    ("address_code", "ADRSCODE"),
+    ("address1", "ADDRESS1"),
+    ("address2", "ADDRESS2"),
+    ("city", "CITY"),
+    ("state", "STATE"),
+    ("zip_code", "ZIPCODE"),
+    ("country", "COUNTRY"),
+)
+
+# The four without which the row is not an address anyone could ship to. CreateCustomerAddressRequest
+# rejects them first; this is the same defence in depth _CREATE_JOB_REQUIRED provides for the job proc.
+_CREATE_CUSTOMER_ADDRESS_REQUIRED = ("customer_number", "address_code", "address1", "city")
+
+
+def create_customer_address(conn, fields: dict) -> None:
+    """Create an address code under a GP customer through eConnect's taCreateCustomerAddress (#444) -
+    the same thing GP's Customer Address Maintenance window does. Same DECLARE / EXEC / SELECT shape as
+    _exec_tapohdr, built from the ordered {field: parameter} map above.
+
+    @I_vUpdateIfExists = 0 is a LITERAL in the statement, deliberately not a parameter the caller can
+    set. With 1 the proc overwrites an existing address code in place, and Nexus must never do that:
+    RM00102 is master data accounting maintains in GP, an address code is already referenced by every
+    job and posted invoice that used it, and the business here is adding a site nobody has entered yet -
+    never re-pointing one. Pinned to 0, the worst a duplicate can do is fail, and
+    create_customer_address_op pre-empts nearly all of them and words the rest.
+
+    Every parameter is sent on every call, unset optionals as blanks. That is the opposite of
+    create_job's "absent means leave GP's default", and right for the same reason create_buyer sends a
+    blank DSCRIPTN: this row does not exist yet, so there is no GP default to preserve - a blank STATE
+    is simply an address with no state.
+
+    No proc_message on the raised error, unlike wsiJCJobMaster: taCreateCustomerAddress is a taXxx proc,
+    so its error states ARE taErrorCode entries and errors.econnect_error_body resolves a real GP
+    description for them. GP's own errString still rides in the message."""
+    unknown = set(fields) - {field for field, _ in _CREATE_CUSTOMER_ADDRESS_PARAMS}
+    if unknown:
+        raise EConnectError(
+            f"unknown create_customer_address field(s): {sorted(unknown)}", proc="taCreateCustomerAddress"
+        )
+    missing = [field for field in _CREATE_CUSTOMER_ADDRESS_REQUIRED if not (fields.get(field) or "").strip()]
+    if missing:
+        raise EConnectError(
+            f"create_customer_address is missing required field(s): {missing}", proc="taCreateCustomerAddress"
+        )
+
+    values = [fields.get(field) or "" for field, _ in _CREATE_CUSTOMER_ADDRESS_PARAMS]
+    assignments = ",\n        ".join(f"@I_v{param} = ?" for _, param in _CREATE_CUSTOMER_ADDRESS_PARAMS)
+    sql = f"""
+    DECLARE @err int = 0;
+    DECLARE @err_str varchar(255) = '';
+    EXEC dbo.taCreateCustomerAddress
+        {assignments},
+        @I_vUpdateIfExists = 0,
+        @O_iErrorState     = @err OUTPUT,
+        @oErrString        = @err_str OUTPUT;
+    SELECT @err AS error_state, @err_str AS err_string;
+    """
+    row = conn.cursor().execute(sql, *values).fetchone()
+    if row.error_state != 0:
+        message = (row.err_string or "").strip()
+        raise EConnectError(
+            f"taCreateCustomerAddress failed for customer {fields.get('customer_number')} "
+            f"address {fields.get('address_code')}: {message}",
+            proc="taCreateCustomerAddress",
+            error_state=row.error_state,
         )
 
 

@@ -46,6 +46,34 @@ class CreateGpJobInput:
 
 
 @strawberry.input
+class CreateGpCustomerAddressInput:
+    """Add an address code to an existing GP customer (RM00102) through eConnect's
+    taCreateCustomerAddress (#444).
+
+    The create-job dialog picks its job and bill-to addresses out of that customer's existing codes, so
+    a job site nobody had entered in GP meant abandoning the dialog, opening GP to add the address, and
+    starting over. This is the same record GP's Customer Address Maintenance window creates.
+
+    No company field: the connected relay is enrolled for exactly one GP company, which is the only one
+    this could be written to - the same resolution createGpJob uses.
+
+    The four required fields are what makes the row an address anyone could ship hardware to. Server-side
+    truth lives in the relay's CreateCustomerAddressRequest, which trims, uppercases the code and bounds
+    every value against GP's own char widths (rejecting rather than truncating); these are plain strings
+    carrying what the user typed."""
+
+    customer_number: str
+    address_code: str
+    address1: str
+    city: str
+
+    address2: str | None = None
+    state: str | None = None
+    zip_code: str | None = None
+    country: str | None = None
+
+
+@strawberry.input
 class UpdateProjectInput:
     description: str | None = None
     client: str | None = None

@@ -279,6 +279,70 @@ def create_job_op(conn, *, company: str, request: models.CreateJobRequest) -> mo
     )
 
 
+def _address_code_already_exists(company: str, request: models.CreateCustomerAddressRequest) -> RelayOpError:
+    """The one sentence a duplicate address code is reported with, wherever it is detected. Both halves
+    of create_customer_address_op's duplicate guard raise it, so a race loser reads identically to a
+    caller who lost the race by a full second - the user is looking at the same situation either way."""
+    return RelayOpError(
+        "address_code_already_exists",
+        f"customer '{request.customer_number}' already has address code '{request.address_code}' "
+        f"in GP company {company} (RM00102)",
+    )
+
+
+def create_customer_address_op(
+    conn, *, company: str, request: models.CreateCustomerAddressRequest
+) -> models.CreateCustomerAddressResponse:
+    """Add an address code to a GP customer (issue #444): pre-check, create, read back. The caller
+    commits.
+
+    The same three beats as create_buyer_op, and here they carry more weight. taCreateCustomerAddress
+    has NO OnlyValidate parameter, so there is no dry-run pass to fall back on the way create_job_op
+    has - the duplicate guard is ours to build, and it is what lets econnect.create_customer_address
+    pin UpdateIfExists to 0 (see that docstring: overwriting an address accounting already maintains is
+    the one outcome this feature must never produce).
+
+    That guard is in two parts, because the pre-check alone is check-then-act. It is the first line and
+    answers almost every duplicate, including the important one: if a first attempt committed and the
+    reply was lost, pressing Create again reads as "that customer already has this address code" rather
+    than as a raw eConnect state for something that already worked. But between that SELECT and the
+    EXEC, a second Nexus caller or somebody in GP's own Customer Address Maintenance window can save the
+    same code, and then the proc is what refuses it. So an eConnect failure re-runs the check on the way
+    out: if the row is there now, the race is what happened, and it is worded the same as if the
+    pre-check had caught it. Anything else re-raises untouched.
+
+    The read-back guards the err=0-but-nothing-landed case create_po_line has a known mode for, and
+    answers with GP's stored row - which is exactly what list_customer_addresses will serve the picker
+    on its next refetch, so answering with anything else could hand the dialog an address that differs
+    from the one everything else is about to see."""
+    if econnect.customer_address_exists(conn, request.customer_number, request.address_code):
+        raise _address_code_already_exists(company, request)
+
+    try:
+        econnect.create_customer_address(conn, request.model_dump(exclude={"company"}))
+    except econnect.EConnectError as e:
+        # One extra SELECT on a path that has already failed, and it is what turns "eConnect state 350"
+        # into a sentence naming the customer and the code. Chained from the original so the raw GP
+        # failure is still in the traceback for anyone reading relay.log.
+        if econnect.customer_address_exists(conn, request.customer_number, request.address_code):
+            raise _address_code_already_exists(company, request) from e
+        raise
+
+    created = econnect.get_customer_address(conn, request.customer_number, request.address_code)
+    if created is None:
+        raise econnect.EConnectError(
+            f"taCreateCustomerAddress reported success but address '{request.address_code}' is not in "
+            f"RM00102 for customer '{request.customer_number}'",
+            proc="taCreateCustomerAddress",
+        )
+
+    return models.CreateCustomerAddressResponse(
+        company=company,
+        customer=request.customer_number,
+        address=models.CustomerAddressOut(**created),
+    )
+
+
 def create_buyer_op(conn, *, company: str, request: models.CreateBuyerRequest) -> models.CreateBuyerResponse:
     """Register a GP buyer (issue #409): pre-check, create, read back. The caller commits.
 
