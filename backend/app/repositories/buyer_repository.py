@@ -1,6 +1,12 @@
-"""Repository for buyer assignments (issue #216): which projects a GP buyer may create POs for and
-which GP cost codes they may use. Enforcement is STRICT - a buyer with no assignment row cannot
-create project POs at all; stock POs (no project) are not gated here."""
+"""Repository for buyer assignments (issue #216): which projects a GP buyer may create POs for.
+Enforcement is STRICT - a buyer with no assignment row cannot create project POs at all; stock POs
+(no project) are not gated here.
+
+Cost codes are deliberately NOT part of this authorization. They used to be: each buyer carried a
+designated subset of codes, and the register-PO dropdown showed only those. GP has no per-job notion
+of "the right cost codes" (WS_Inactive is unused in practice - every job carries its full division
+template), so the subset was hand-maintained Nexus config that hid valid codes from purchasers and
+blocked legitimate registrations. Whatever GP reports active for the job is now selectable."""
 
 import uuid
 
@@ -19,18 +25,6 @@ def _clean_buyer_id(buyer_id: str) -> str:
     return cleaned
 
 
-def _clean_cost_codes(cost_codes: list[str] | None) -> list[str]:
-    """Normalize to a deduped list of non-empty 'cc1-cc2' strings, preserving order."""
-    seen: set[str] = set()
-    cleaned: list[str] = []
-    for code in cost_codes or []:
-        c = (code or "").strip()
-        if c and c not in seen:
-            seen.add(c)
-            cleaned.append(c)
-    return cleaned
-
-
 def list_assignments(session: Session) -> list[BuyerAssignment]:
     stmt = select(BuyerAssignment).options(selectinload(BuyerAssignment.projects)).order_by(BuyerAssignment.buyer_id)
     return list(session.scalars(stmt).unique().all())
@@ -45,9 +39,7 @@ def get_assignment(session: Session, buyer_id: str) -> BuyerAssignment | None:
     return session.scalars(stmt).unique().first()
 
 
-def save_assignment(
-    session: Session, buyer_id: str, project_ids: list[uuid.UUID], cost_codes: list[str]
-) -> BuyerAssignment:
+def save_assignment(session: Session, buyer_id: str, project_ids: list[uuid.UUID]) -> BuyerAssignment:
     """Upsert the one assignment row for a buyer (the admin dialog sends the whole state each save)."""
     cleaned_id = _clean_buyer_id(buyer_id)
     projects = []
@@ -59,9 +51,8 @@ def save_assignment(
 
     assignment = get_assignment(session, cleaned_id)
     if assignment is None:
-        assignment = BuyerAssignment(id=uuid.uuid4(), buyer_id=cleaned_id, cost_codes=[])
+        assignment = BuyerAssignment(id=uuid.uuid4(), buyer_id=cleaned_id)
         session.add(assignment)
-    assignment.cost_codes = _clean_cost_codes(cost_codes)
     assignment.projects = projects
     session.flush()
     return assignment
@@ -74,12 +65,10 @@ def delete_assignment(session: Session, buyer_id: str) -> None:
     session.delete(assignment)
 
 
-def validate_buyer_can_order(
-    session: Session, buyer_id: str, project_id: uuid.UUID | None, cost_code: str | None
-) -> None:
-    """Enforce issue #216 for a PROJECT PO push: the buyer must be assigned to the project and the
-    cost code's 'cc1-cc2' part must be one of their designated codes. A stock PO (project_id None)
-    is not gated. Raises a clean field error the dialog can show."""
+def validate_buyer_can_order(session: Session, buyer_id: str, project_id: uuid.UUID | None) -> None:
+    """Enforce issue #216 for a PROJECT PO push: the buyer must be assigned to the project. A stock PO
+    (project_id None) is not gated. The cost code is not checked here - see the module docstring.
+    Raises a clean field error the dialog can show."""
     if project_id is None:
         return
 
@@ -91,8 +80,3 @@ def validate_buyer_can_order(
         )
     if not any(p.id == project_id for p in assignment.projects):
         raise ValidationError(f"Buyer '{buyer_id}' is not assigned to this project", field="project_id")
-
-    # cost_code arrives as 'cc1-cc2-element' (the dialog's pick); designations are 'cc1-cc2'.
-    code_part = (cost_code or "").strip().rsplit("-", 1)[0]
-    if not code_part or code_part not in (assignment.cost_codes or []):
-        raise ValidationError(f"Cost code '{cost_code}' is not designated to buyer '{buyer_id}'", field="cost_code")

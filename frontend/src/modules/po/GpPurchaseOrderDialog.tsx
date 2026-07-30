@@ -189,12 +189,12 @@ export default function GpPurchaseOrderDialog({
   const isJob = !!projectId && !!selectedProject;
   const jobNumber = selectedProject?.projectId ?? null;
 
-  // Issue #216: the caller's buyer assignment (their projects + designated cost codes). Register-only
+  // Issue #216: the caller's buyer assignment (the projects they may order for). Register-only
   // (issue #256: drafting is open to everyone; the GP registration is where the buyer gating applies) -
-  // the caller must be assigned to the draft's project and only designated cost codes are offered.
+  // the caller must be assigned to the draft's project. Cost codes are NOT filtered by buyer: the
+  // dropdown offers every code GP reports active for the job.
   interface BuyerAssignmentData {
     buyerId: string;
-    costCodes: string[];
     projects: { id: string; projectId: string; description: string | null }[];
   }
   const { data: assignmentsData } = useQuery<{ buyerAssignments: BuyerAssignmentData[] }>(GET_BUYER_ASSIGNMENTS, {
@@ -210,7 +210,6 @@ export default function GpPurchaseOrderDialog({
     );
   }, [assignmentsData, gpBuyerId]);
   const assignedProjectIds = useMemo(() => new Set((myAssignment?.projects ?? []).map((p) => p.id)), [myAssignment]);
-  const designatedCostCodes = useMemo(() => new Set(myAssignment?.costCodes ?? []), [myAssignment]);
   const registerProjectAllowed = !isRegister || !registerPo?.projectId || assignedProjectIds.has(registerPo.projectId);
 
   // Live GP vendor list (PM00200), per company - issue #200 replaces the locally-synced vendor mirror
@@ -336,8 +335,10 @@ export default function GpPurchaseOrderDialog({
     skip: !open || !isRegister || !relayConnected || !company || !jobNumber,
     fetchPolicy: 'cache-first',
   });
-  // Issue #216: only the caller's designated cost codes ('cc1-cc2') are offered for the job.
-  const costCodes = (costCodesData?.gpCostCodes ?? []).filter((c) => designatedCostCodes.has(c.costCode));
+  // Every code GP reports active for the job is offered. This used to be filtered to the caller's
+  // designated cost codes, which meant a purchaser saw two of the job's twenty-eight and could not
+  // register against the rest - GP has no per-job notion of correct codes for the filter to reflect.
+  const costCodes = costCodesData?.gpCostCodes ?? [];
 
   // Seed the form when the dialog opens. Create mode -> empty; register mode -> the draft's values
   // (project locked, line items carrying their ids so edits map back). The vendor is seeded separately

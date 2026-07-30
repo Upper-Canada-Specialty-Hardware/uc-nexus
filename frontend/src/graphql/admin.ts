@@ -385,10 +385,9 @@ export const CREATE_GP_BUYER = gql`
 `;
 
 export const SAVE_BUYER_ASSIGNMENT = gql`
-  mutation SaveBuyerAssignment($buyerId: String!, $projectIds: [ID!]!, $costCodes: [String!]!) {
-    saveBuyerAssignment(buyerId: $buyerId, projectIds: $projectIds, costCodes: $costCodes) {
+  mutation SaveBuyerAssignment($buyerId: String!, $projectIds: [ID!]!) {
+    saveBuyerAssignment(buyerId: $buyerId, projectIds: $projectIds) {
       buyerId
-      costCodes
       projects {
         id
         projectId

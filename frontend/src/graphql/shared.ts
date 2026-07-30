@@ -199,7 +199,6 @@ export const GET_BUYER_ASSIGNMENTS = gql`
   query GetBuyerAssignments {
     buyerAssignments {
       buyerId
-      costCodes
       projects {
         id
         projectId

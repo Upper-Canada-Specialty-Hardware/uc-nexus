@@ -15,12 +15,12 @@ preserved row after the next reset, silently. `preserved_columns` takes the name
 intersection is what keeps a half-migrated database (one predating a column the model already
 declares) from crashing the snapshot, which is the same tolerance the `has_table` guard gives.
 
-**Statements are built through SQLAlchemy Core, not string SQL.** Two of the preserved models store
-JSON (`BuyerAssignment.cost_codes`, and four columns on `PODocumentSettings`). Round-tripping those
-through `text()` bind params does not work: psycopg2 adapts a Python list to a Postgres *array*, so
-the restore fails with "column is of type json but expression is of type text[]". Core carries the
-column types, so JSON, UUID, enum and datetime all serialize correctly, and a column the snapshot is
-missing falls back to the model's Python-side default instead of being inserted as NULL.
+**Statements are built through SQLAlchemy Core, not string SQL.** `PODocumentSettings` stores JSON in
+four columns. Round-tripping those through `text()` bind params does not work: psycopg2 adapts a
+Python list to a Postgres *array*, so the restore fails with "column is of type json but expression
+is of type text[]". Core carries the column types, so JSON, UUID, enum and datetime all serialize
+correctly, and a column the snapshot is missing falls back to the model's Python-side default instead
+of being inserted as NULL.
 
 One table cannot be restored by row. `buyer_assignment_projects` is keyed on `projects.id`, and
 projects do not survive a reset - they are re-adopted from GP afterwards with **new** UUIDs, so every
@@ -187,7 +187,7 @@ def relink_buyer_projects(conn: Connection, pairs: list[dict]) -> tuple[int, int
 
     Call this only after the GP job sync has re-adopted the projects; before that, `projects` is empty
     and every pair drops. A pair whose job no longer exists in GP matches nothing and is dropped by
-    design - the buyer keeps their row and cost codes, they just lose a link to a job that is gone."""
+    design - the buyer keeps their row, they just lose a link to a job that is gone."""
     if not pairs:
         return 0, 0
 

@@ -1,4 +1,4 @@
-"""Buyer assignment queries + mutations (issue #216: per-buyer project/cost-code authorization)."""
+"""Buyer assignment queries + mutations (issue #216: per-buyer project authorization)."""
 
 import uuid
 
@@ -16,8 +16,8 @@ from .types import BuyerAssignment
 class BuyerQueries:
     @strawberry.field
     def buyer_assignments(self) -> list[BuyerAssignment]:
-        """Issue #216: per-buyer project + cost-code authorization. The PO dialog reads this to
-        filter its options; the create/register mutations re-enforce it server-side."""
+        """Issue #216: which projects each buyer may create POs for. The PO dialog reads this to
+        filter its project options; the create/register mutations re-enforce it server-side."""
         with SessionLocal() as session:
             return [buyer_assignment_to_type(a) for a in buyer_repository.list_assignments(session)]
 
@@ -26,16 +26,22 @@ class BuyerQueries:
 class BuyerMutations:
     @strawberry.mutation
     def save_buyer_assignment(
-        self, info: strawberry.Info, buyer_id: str, project_ids: list[strawberry.ID], cost_codes: list[str]
+        self,
+        info: strawberry.Info,
+        buyer_id: str,
+        project_ids: list[strawberry.ID],
+        # Accepted and ignored: cost-code designation was removed, but an admin tab loaded before that
+        # deploy still sends this argument, and an unknown argument fails GraphQL validation outright.
+        # Dropped once deployed frontends stop sending it, together with the field on BuyerAssignment.
+        cost_codes: list[str] | None = None,  # noqa: ARG002
     ) -> BuyerAssignment:
-        """Issue #216: upsert a buyer's whole assignment (projects + designated cost codes). Admin."""
+        """Issue #216: upsert a buyer's whole assignment (the projects they may order for). Admin."""
         require_admin(info)
         with SessionLocal() as session:
             assignment = buyer_repository.save_assignment(
                 session,
                 buyer_id,
                 [uuid.UUID(str(pid)) for pid in project_ids],
-                cost_codes,
             )
             session.commit()
             refreshed = buyer_repository.get_assignment(session, assignment.buyer_id)

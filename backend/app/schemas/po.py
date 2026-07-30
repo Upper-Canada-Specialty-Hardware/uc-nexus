@@ -177,7 +177,7 @@ def _prepare_register_po(
             job_number = project.project_id
 
         # Issue #216: registering a draft is the ordering action - same strict buyer gating.
-        buyer_repository.validate_buyer_can_order(session, buyer_id, effective_project_id, cost_code)
+        buyer_repository.validate_buyer_can_order(session, buyer_id, effective_project_id)
 
         manufacturers = _resolve_line_manufacturers(session, effective_project_id, line_items_data)
 

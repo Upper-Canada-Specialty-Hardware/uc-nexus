@@ -85,11 +85,12 @@ def test_projects_are_not_preserved():
     assert Project not in PRESERVED_MODELS
 
 
-def test_buyer_assignments_are_preserved_with_their_cost_codes():
-    """The buyer's cost codes are the part that cannot be recovered from GP - the project links can be
-    (by job number), the designated cost codes cannot."""
+def test_buyer_assignments_are_preserved():
+    """Who may order for which project is setup, not project data: GP knows nothing about it, so a
+    reset that dropped it would cost an admin a round of re-entry in Admin -> Buyers. The project
+    links themselves survive as (assignment, job number) pairs and are relinked after the GP sync."""
     assert BuyerAssignment in PRESERVED_MODELS
-    assert "cost_codes" in preserved_columns(BuyerAssignment, _all_columns(BuyerAssignment))
+    assert "buyer_id" in preserved_columns(BuyerAssignment, _all_columns(BuyerAssignment))
 
 
 def test_preserved_models_carry_json_columns():

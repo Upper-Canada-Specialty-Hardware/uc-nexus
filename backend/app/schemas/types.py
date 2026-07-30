@@ -1491,11 +1491,17 @@ class BuyerAssignmentProject:
 
 @strawberry.type
 class BuyerAssignment:
-    """Issue #216: the projects a GP buyer may create POs for + their designated cost codes."""
+    """Issue #216: the projects a GP buyer may create POs for."""
 
     buyer_id: str
-    cost_codes: list[str]
     projects: list[BuyerAssignmentProject]
+    # Always []. Per-buyer cost-code designation was removed (every code GP reports active for the job
+    # is selectable), but a browser tab loaded before that deploy still asks for this field, and an
+    # unknown field is a GraphQL validation error the frontend's chunk-error boundary cannot catch.
+    # Kept until deployed frontends no longer request it, then dropped with the field on the mutation.
+    cost_codes: list[str] = strawberry.field(
+        default_factory=list, deprecation_reason="cost-code designation removed; always empty"
+    )
 
 
 @strawberry.type

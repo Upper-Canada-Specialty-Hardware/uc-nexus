@@ -291,7 +291,6 @@ def clerk_user_to_type(u: dict) -> ClerkUser:
 def buyer_assignment_to_type(a) -> BuyerAssignment:
     return BuyerAssignment(
         buyer_id=a.buyer_id,
-        cost_codes=list(a.cost_codes or []),
         projects=[
             BuyerAssignmentProject(
                 id=strawberry.ID(str(p.id)),
