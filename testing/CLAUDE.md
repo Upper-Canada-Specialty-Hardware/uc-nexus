@@ -519,13 +519,20 @@ A successful receive now refetches this page's own three reads, so a line the re
 the back-order grid without a manual reload; a queued receipt that drains later evicts
 `backOrderedItems` for the same reason. Before #416 a receive only refetched the inventory summaries.
 
-**A PR environment cannot populate either grid.** Both want POs at GP_REGISTERED or later, and
-`registerPoInGp` is relay-gated, so a fresh PR database shows "No purchase orders awaiting receipt"
-and "Nothing is back-ordered" no matter what you do. To exercise the columns and chips without
-production, stub the GraphQL reads from an `initScript` - intercept `window.fetch`, match the
-operation name in the request body (`GetOpenPOs` / `GetBackOrderedItems`) and return rows built from
-`new Date()` offsets. That drives the real components, which is enough to assert column set, the
+**A PR environment cannot populate either grid, and production is not the answer.** Both grids want
+POs at GP_REGISTERED or later, and `registerPoInGp` is relay-gated, so a fresh PR database shows "No
+purchase orders awaiting receipt" and "Nothing is back-ordered" no matter what you do. Reaching for
+production instead is the exact move the Environment section forbids.
+
+Stub the GraphQL reads instead: from an `initScript`, intercept `window.fetch`, match the operation
+name in the request body (`GetOpenPOs` / `GetBackOrderedItems`) and return rows built from `new
+Date()` offsets. That drives the real components, which is enough to assert the column set, the
 "Stock PO" and em-dash fallbacks, and every urgency band in one pass.
+
+Be honest about what that does and does not cover. It proves the rendering. It does NOT exercise the
+receive itself, so the refetch wiring above - the thing that makes a filled line leave the grid
+without a reload - stays unverified at runtime until somebody receives against a real GP-registered
+PO. Say so rather than calling a stubbed pass end-to-end.
 
 **Build the stub's dates from local components, not `toISOString()`.** `toISOString` is UTC, so
 after ~20:00 Eastern it names tomorrow, and the chip you assert against is then off by a day for a
