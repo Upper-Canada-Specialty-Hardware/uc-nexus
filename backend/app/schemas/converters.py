@@ -163,6 +163,7 @@ def relay_install_to_type(ri) -> RelayInstallInfo:
         created_at=ri.created_at,
         adopted_at=ri.adopted_at,
         adopted_by=ri.adopted_by,
+        secret_hash=ri.secret_hash,
     )
 
 

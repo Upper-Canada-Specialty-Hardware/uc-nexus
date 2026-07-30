@@ -52,6 +52,7 @@ interface RelayInstall {
   createdAt: string;
   adoptedAt: string | null;
   adoptedBy: string | null;
+  secretHash: string | null;
 }
 
 interface Provisioned {
@@ -312,6 +313,37 @@ export default function RelayInstallsPage() {
         valueFormatter: (v: string | null) => v ?? '—',
       },
       {
+        // #414: the value RELAY_SEED_SECRET_HASH wants, so a PR environment can accept this relay
+        // without a provision + enroll cycle. Copyable here because the alternative is hand-written
+        // SQL against Railway Postgres. Safe to show: a digest authenticates nothing - only its
+        // preimage does, and that never leaves the workstation.
+        field: 'secretHash',
+        headerName: 'Seed hash',
+        width: 150,
+        sortable: false,
+        filterable: false,
+        renderCell: (p) => {
+          const hash: string | null = p.row.secretHash;
+          if (!hash) return <Box component="span" sx={{ color: 'text.secondary' }}>—</Box>;
+          return (
+            <Stack direction="row" spacing={0.5} alignItems="center" sx={{ height: '100%' }}>
+              <Box component="span" sx={{ ...monoSx, color: 'text.secondary' }}>
+                {hash.slice(0, 8)}…
+              </Box>
+              <Tooltip title="Copy the full hash for RELAY_SEED_SECRET_HASH">
+                <IconButton
+                  size="small"
+                  aria-label="Copy seed hash"
+                  onClick={() => copy(hash, 'Seed hash')}
+                >
+                  <Copy size={16} strokeWidth={1.75} />
+                </IconButton>
+              </Tooltip>
+            </Stack>
+          );
+        },
+      },
+      {
         field: 'adopt',
         headerName: 'Recovery',
         width: 300,
@@ -345,7 +377,7 @@ export default function RelayInstallsPage() {
         },
       },
     ],
-    [liveInstallId],
+    [liveInstallId, copy],
   );
 
   if (!isAdmin) {

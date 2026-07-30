@@ -10,6 +10,7 @@ from websockets.exceptions import ConnectionClosedError, InvalidStatusCode
 from websockets.frames import Close
 
 from ucnexus_relay import channel
+from ucnexus_relay.config import PRODUCTION_BACKEND_URL
 
 
 def test_http_403_handshake_rejection_is_secret_rejected():
@@ -45,17 +46,18 @@ def test_normal_close_is_generic_retry():
     assert channel._classify_connect_failure(exc)[0] == "dropped"
 
 
-def test_channel_state_snapshot_reflects_the_mark_helpers():
-    # the live state run_forever maintains + /health exposes (so the UI shows the REAL channel state)
-    channel._mark_connected()
+def test_channel_state_snapshot_reflects_the_mark_helpers(clean_channel_states):
+    # the live state _run_channel maintains + /health exposes (so the UI shows the REAL channel state)
+    url = PRODUCTION_BACKEND_URL
+    channel._mark_connected(url)
     snap = channel.channel_state_snapshot()
     assert snap["connected"] is True
     assert snap["state"] == "connected"
-    channel._mark_disconnected("secret_rejected")
+    channel._mark_disconnected(url, "secret_rejected")
     snap = channel.channel_state_snapshot()
     assert snap["connected"] is False
     assert snap["state"] == "secret_rejected"
-    channel._mark_disconnected()
+    channel._mark_disconnected(url)
     assert channel.channel_state_snapshot()["state"] == "disconnected"
 
 
