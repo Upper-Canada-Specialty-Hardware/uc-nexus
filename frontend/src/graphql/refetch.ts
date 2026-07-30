@@ -17,6 +17,19 @@ export const WAREHOUSE_REFETCH_QUERIES = [
   'GetProjectProgressByProduct',
 ];
 
+// What a successful receive invalidates, on top of the inventory summaries above (#416). The three
+// added here are the Receiving page's own reads, and they only became worth naming when the
+// back-order grid moved onto that page: a receive that closes a line has to take that line out of
+// the section sitting directly under the button that was just pressed, and the PO table and recent
+// feed beside it move for the same reason. Refetching by name is self-scoping - Apollo only touches
+// mounted instances - so this costs nothing anywhere else in the app.
+export const RECEIVE_REFETCH_QUERIES = [
+  ...WAREHOUSE_REFETCH_QUERIES,
+  'GetOpenPOs',
+  'GetBackOrderedItems',
+  'GetRecentReceiveRecords',
+];
+
 // What confirmShipment invalidates (#337). The two lists are deliberately DISJOINT: evicting a root
 // field that a mounted query also refetches makes Apollo fire a repair fetch for the incomplete
 // cache diff on top of the explicit refetch, so the heaviest shipping resolvers would run twice
@@ -226,6 +239,12 @@ export const GP_OUTBOX_DRAINED_STALE_ROOT_FIELDS = [
   'purchaseOrder',
   'poReceivingDetails',
   'recentReceiveRecords',
+  // A receipt that finally posts is a receipt that closes back-ordered lines and moves the PO's
+  // received quantities, and since #416 both readings sit on the same page - the one the user is
+  // most likely on when the drain lands. Evicting one without the other is what would let the
+  // awaiting-receipt table keep pre-receipt pending counts directly above a grid that had updated.
+  'backOrderedItems',
+  'openPOs',
   'warehouseDashboard',
   'inventoryHierarchy',
   'inventoryByVendor',
