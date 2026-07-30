@@ -173,6 +173,65 @@ def test_a_root_field_with_no_policy_entry_is_refused():
     assert "someFieldNobodyGatedYet" in str(excinfo.value)
 
 
+# --- per-field pins ------------------------------------------------------------------------------
+#
+# The #415 shape had one pin per resolver, each asserting that body called its gate. These are the
+# replacement, and they are strictly stronger: they exercise the decision the caller actually gets
+# rather than the presence of a line, and they still fail by field name, which is what made the old
+# ones useful in review. Driven off ROOT_FIELD_POLICY so a field added to the table is covered the
+# moment it is added, and one removed stops being asserted about - neither needs a list here.
+
+_ROLE_GATED = sorted(f for f, requirement in ROOT_FIELD_POLICY.items() if requirement != SIGNED_IN)
+
+
+@pytest.mark.parametrize("field", sorted(ROOT_FIELD_POLICY), ids=sorted(ROOT_FIELD_POLICY))
+def test_every_gated_field_refuses_an_anonymous_caller(field):
+    """No session, no field. This is the property #415 established and #423 had to preserve while
+    moving where it is decided - a refactor that dropped a policy entry, or made SIGNED_IN mean
+    "anyone", fails here on the field it broke."""
+    with pytest.raises(AppError) as excinfo:
+        enforce_root_field(field, {"request": _FakeRequest()})
+
+    assert excinfo.value.code == "UNAUTHENTICATED", f"{field} let an anonymous caller through with {excinfo.value.code}"
+
+
+@pytest.mark.parametrize("field", _ROLE_GATED, ids=_ROLE_GATED)
+def test_every_role_gated_field_refuses_a_caller_without_the_role(field, monkeypatch):
+    """A signed-in session is not a role. Everything in this list guards something a plain warehouse
+    or assembly account has no business reaching - relay credentials, the Clerk roster, warehouse
+    and vendor writes, the GP job and buyer writes, and `updateUserRoles`, which grants the role the
+    rest of them are gated on."""
+    monkeypatch.setattr(auth, "verify_clerk_token", lambda token: {"sub": "u_caller"})
+    monkeypatch.setattr(user_repository, "get_user_roles", lambda user_id: ["Warehouse Staff"])
+    monkeypatch.setattr(user_repository, "list_users", lambda: [{"id": "u_caller", "roles": ["Warehouse Staff"]}])
+
+    with pytest.raises(AppError) as excinfo:
+        enforce_root_field(field, {"request": _FakeRequest("tok")})
+
+    assert excinfo.value.code == "FORBIDDEN", f"{field} admitted a caller holding only Warehouse Staff"
+    assert excinfo.value.message == f"{ROOT_FIELD_POLICY[field]} role required"
+
+
+@pytest.mark.parametrize("field", _ROLE_GATED, ids=_ROLE_GATED)
+def test_every_role_gated_field_admits_a_caller_holding_the_role(field, monkeypatch):
+    """The other direction, per field. A gate nobody can pass is the failure mode a deny-by-default
+    refactor invites: a typo in a role name, or a policy entry pointing at a role Clerk never grants,
+    locks the field for everyone and looks like working security until someone reports it."""
+    role = ROOT_FIELD_POLICY[field]
+    monkeypatch.setattr(auth, "verify_clerk_token", lambda token: {"sub": "u_caller"})
+    monkeypatch.setattr(user_repository, "get_user_roles", lambda user_id: [role])
+    monkeypatch.setattr(user_repository, "list_users", lambda: [{"id": "u_caller", "roles": [role]}])
+
+    enforce_root_field(field, {"request": _FakeRequest("tok")})
+
+
+@pytest.mark.parametrize("field", sorted(OPEN_OPERATIONS), ids=sorted(OPEN_OPERATIONS))
+def test_every_open_operation_is_reachable_without_a_session(field):
+    """The allowlist has to actually allow. `enrollRelayInstall` is the relay's only way in during
+    setup, before it holds any credential - gating it strands every new install."""
+    enforce_root_field(field, {"request": _FakeRequest()})
+
+
 def test_nested_fields_are_not_re_checked(monkeypatch, signed_in):
     """Only root fields are gated (`info.path.prev is None`). A nested field is reachable only through
     a root field that already passed, and checking each one would put a Clerk decision on every node
