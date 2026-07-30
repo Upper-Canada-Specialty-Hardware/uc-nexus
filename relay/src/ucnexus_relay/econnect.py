@@ -246,10 +246,12 @@ def cost_code_on_job(conn, job_number: str, cost_code: str) -> bool:
     """Read-only: is cost_code an ACTIVE cost code on job_number in the cost-code detail master
     JC00701? Matches the same six-column key the WennSoft proc uses (WS_Job_Number +
     Cost_Code_Number_1..4 + Cost_Element), splitting cost_code with the identical split_cost_code
-    the wsi call uses, and filtering WS_Inactive = 0 so it accepts exactly the codes the /cost-codes
-    dropdown (list_cost_codes) offers - an inactive code the dropdown hides must not slip past this
-    pre-check and then fail mid-orchestration with the raw eConnect error the pre-check exists to
-    prevent. /po pre-checks this so a code not on the job returns a clean cost_code_not_on_job."""
+    the wsi call uses, and filtering WS_Inactive = 0 - an inactive code the dropdown hides must not
+    slip past this pre-check and then fail mid-orchestration with the raw eConnect error the
+    pre-check exists to prevent. The /cost-codes dropdown (list_cost_codes) also hides codes whose
+    account index dangles; those pass HERE and are refused by the cost_code_account_invalid guard
+    right after, so every code the dropdown hides is still refused by one pre-check or the other.
+    /po pre-checks this so a code not on the job returns a clean cost_code_not_on_job."""
     cc1, cc2, cc3, cc4, cost_element = split_cost_code(cost_code)
     row = conn.cursor().execute(
         "SELECT COUNT(*) AS n FROM dbo.JC00701 "
@@ -695,20 +697,33 @@ def read_po_totals(conn, po_number: str) -> dict | None:
 
 
 def list_cost_codes(conn, job_number: str) -> list[dict]:
-    """Read-only: the active cost codes defined for ONE job in JC00701 (WennSoft Job Cost).
-    Cost codes are per-job, and the real Cost_Element varies by code (210-200 is element 2,
-    310-000 is element 3, 510-000 is element 5, ...). The Create PO dropdown is populated from
-    this and the /po cost_code is assembled as 'phase-step-element' (e.g. '310-000-3') from the
-    code's own element - NOT a hardcoded 2.
+    """Read-only: the active, account-usable cost codes defined for ONE job in JC00701 (WennSoft
+    Job Cost). Cost codes are per-job, and the real Cost_Element varies by code (210-200 is
+    element 2, 310-000 is element 3, 510-000 is element 5, ...). The Create PO dropdown is
+    populated from this and the /po cost_code is assembled as 'phase-step-element' (e.g.
+    '310-000-3') from the code's own element - NOT a hardcoded 2.
+
+    Two filters make this "usable on a new PO":
+      - WS_Inactive = 0, matching the cost_code_on_job pre-check.
+      - the code's WS_Account_Index_1 is 0 or exists in GL00105 - the same rule as
+        account_index_exists, which is what the create_po cost_code_account_invalid guard
+        enforces. A dangling index (the pre-2023 UCSH -> UBC job copy left 1504 such rows across
+        62 UBC jobs, #425) means a PO on the code registers cleanly and then fails FOREVER at
+        receipt with eConnect 4612, so after #430 opened the dropdown to every active code, a code
+        the guard would refuse must not be offered for selection in the first place. Index 0
+        passes: it means "GP picks the account at posting time", which eConnect honours.
 
     Returns one dict per code: cost_code = the two-segment number 'cc1-cc2' (segments 3/4 are
     blank for every code at this customer), description (Cost_Code_Description), and the integer
-    cost_element. WS_Inactive = 0 filters to codes usable on a new PO."""
+    cost_element."""
     rows = conn.cursor().execute(
-        "SELECT RTRIM(Cost_Code_Number_1) AS cc1, RTRIM(Cost_Code_Number_2) AS cc2, "
-        "Cost_Element AS elem, RTRIM(Cost_Code_Description) AS descr "
-        "FROM dbo.JC00701 WHERE RTRIM(WS_Job_Number) = ? AND WS_Inactive = 0 "
-        "ORDER BY Cost_Code_Number_1, Cost_Code_Number_2",
+        "SELECT RTRIM(c.Cost_Code_Number_1) AS cc1, RTRIM(c.Cost_Code_Number_2) AS cc2, "
+        "c.Cost_Element AS elem, RTRIM(c.Cost_Code_Description) AS descr "
+        "FROM dbo.JC00701 c "
+        "LEFT JOIN dbo.GL00105 a ON a.ACTINDX = c.WS_Account_Index_1 "
+        "WHERE RTRIM(c.WS_Job_Number) = ? AND c.WS_Inactive = 0 "
+        "AND (c.WS_Account_Index_1 = 0 OR a.ACTINDX IS NOT NULL) "
+        "ORDER BY c.Cost_Code_Number_1, c.Cost_Code_Number_2",
         job_number,
     ).fetchall()
     return [
