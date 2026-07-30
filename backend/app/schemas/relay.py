@@ -5,7 +5,7 @@ import uuid
 
 import strawberry
 
-from app.auth import require_admin, require_user
+from app.auth import current_user
 from app.database import SessionLocal
 from app.errors import (
     ConflictError,
@@ -60,7 +60,6 @@ logger = logging.getLogger(__name__)
 class RelayQueries:
     @strawberry.field
     def relay_installs(self, info: strawberry.Info) -> list[RelayInstallInfo]:
-        require_admin(info)
         with SessionLocal() as session:
             return [relay_install_to_type(ri) for ri in relay_repository.list_installs(session)]
 
@@ -69,7 +68,6 @@ class RelayQueries:
         """The currently armed adopt window, or null. Admin-only, and polled by the Relay Installs page
         so the warning banner and its countdown reflect the real (single-replica, in-memory) state
         rather than what the browser that armed it happens to remember."""
-        require_admin(info)
         window = relay_adopt.peek()
         if window is None:
             return None
@@ -84,7 +82,6 @@ class RelayQueries:
     def relay_status(self, info: strawberry.Info) -> RelayStatus:
         """Whether the outbound relay WS channel is currently connected (and, if so, the GP company it is
         enrolled for), for the relay status chip and the company-aware PO/receive/adopt dialogs."""
-        require_user(info)
         live_install = relay_gateway.install_id
         return RelayStatus(
             connected=relay_gateway.connected,
@@ -96,21 +93,18 @@ class RelayQueries:
     @strawberry.field
     async def gp_jobs(self, info: strawberry.Info, company: str) -> list[GpJob]:
         """Live job master (JC00102) via the connected relay."""
-        require_user(info)
         result = await relay_gateway.relay_call(company, "list_jobs")
         return [gp_job_to_type(j) for j in result["jobs"]]
 
     @strawberry.field
     async def gp_vendors(self, info: strawberry.Info, company: str) -> list[GpVendor]:
         """Live active vendor list (PM00200) via the connected relay."""
-        require_user(info)
         result = await relay_gateway.relay_call(company, "list_vendors")
         return [gp_vendor_to_type(v) for v in result["vendors"]]
 
     @strawberry.field
     async def gp_buyers(self, info: strawberry.Info, company: str) -> list[str]:
         """Registered GP buyers (POP00101) via the connected relay, for the Create PO buyer dropdown."""
-        require_user(info)
         result = await relay_gateway.relay_call(company, "list_buyers")
         return result["buyers"]
 
@@ -123,14 +117,12 @@ class RelayQueries:
         list is ordinary working data every PO creator needs, but the descriptions are a staff roster
         by another name ('Don Roberton', and in the production company every buyer's email), and the
         only consumers are admin-only screens."""
-        require_admin(info)
         result = await relay_gateway.relay_call(company, "list_buyers_detailed")
         return [gp_buyer_to_type(b) for b in result["buyers"]]
 
     @strawberry.field
     async def gp_cost_codes(self, info: strawberry.Info, company: str, job: str) -> list[GpCostCode]:
         """Active per-job cost codes (JC00701) via the connected relay, for the Create PO cost-code dropdown."""
-        require_user(info)
         result = await relay_gateway.relay_call(company, "list_cost_codes", {"job": job})
         return [gp_cost_code_to_type(c) for c in result["cost_codes"]]
 
@@ -138,7 +130,6 @@ class RelayQueries:
     async def gp_tax_details(self, info: strawberry.Info, company: str) -> list[GpTaxDetail]:
         """Live GP purchase tax details (TX00201, TXDTLTYP=2) via the connected relay, for the
         register-PO tax-detail dropdown (issue #257)."""
-        require_user(info)
         result = await relay_gateway.relay_call(company, "list_tax_details")
         return [gp_tax_detail_to_type(t) for t in result["tax_details"]]
 
@@ -146,7 +137,6 @@ class RelayQueries:
     async def gp_customers(self, info: strawberry.Info, company: str) -> list[GpCustomer]:
         """Live customer master (RM00101) via the connected relay, for the create-job customer picker
         (#380)."""
-        require_user(info)
         result = await relay_gateway.relay_call(company, "list_customers")
         return [gp_customer_to_type(c) for c in result["customers"]]
 
@@ -157,7 +147,6 @@ class RelayQueries:
         """One customer's address codes (RM00102) via the connected relay, for the create-job job and
         bill-to address pickers (#380). Scoped to the customer because the job proc validates the codes
         against that customer's addresses."""
-        require_user(info)
         result = await relay_gateway.relay_call(company, "list_customer_addresses", {"customer": customer})
         return [gp_customer_address_to_type(a) for a in result["addresses"]]
 
@@ -169,9 +158,8 @@ class RelayQueries:
 
         Admin-gated, unlike the other gp_* reads. This one returns the payroll roster with names, and
         its only consumer is create_gp_job's dialog, which is already admin-only - so gating it at
-        require_user would hand the staff list to every signed-in warehouse and assembly user for no
+        merely signed-in would hand the staff list to every warehouse and assembly user for no
         benefit. A vendor or customer list is ordinary working data; a payroll master is not."""
-        require_admin(info)
         result = await relay_gateway.relay_call(company, "list_employees")
         return [gp_employee_to_type(e) for e in result["employees"]]
 
@@ -179,7 +167,6 @@ class RelayQueries:
     async def gp_tax_schedules(self, info: strawberry.Info, company: str) -> list[GpTaxSchedule]:
         """Live tax schedule master (TX00101) via the connected relay, for the create-job tax-schedule
         and use-tax-schedule pickers (#380). Not gpTaxDetails, which reads TX00201 details."""
-        require_user(info)
         result = await relay_gateway.relay_call(company, "list_tax_schedules")
         return [gp_tax_schedule_to_type(s) for s in result["tax_schedules"]]
 
@@ -188,7 +175,6 @@ class RelayQueries:
         """WennSoft divisions that have division accounts set up, via the connected relay, for the
         create-job division picker (#380). Bare strings, like gpBuyers: the division code is the only
         label GP has for it."""
-        require_user(info)
         result = await relay_gateway.relay_call(company, "list_divisions")
         return result["divisions"]
 
@@ -196,7 +182,6 @@ class RelayQueries:
     async def gp_po_totals(self, info: strawberry.Info, company: str, po_number: str) -> GpPoTotals | None:
         """GP-computed header totals (POP10100) for a PO, read live via the connected relay - auto-fills
         the generated PO document (issue #230). Returns null if the PO isn't found in GP."""
-        require_user(info)
         result = await relay_gateway.relay_call(company, "read_po_totals", {"po_number": po_number})
         if result is None or result.get("totals") is None:
             return None
@@ -218,7 +203,6 @@ class RelayQueries:
         live vendor list (PM00200 via the relay) is ranked by fuzzy score and the top candidates are
         returned (savedMapping false). The DB session is scoped to the mapping lookup only, so no
         session is held across the relay round-trip."""
-        require_user(info)
         from app.repositories import manufacturer_vendor_map_repository
         from app.services import manufacturer_match
 
@@ -276,7 +260,6 @@ class RelayMutations:
         Admin-only, and writing to the accounting system of record - the same bar create_gp_job sets.
         Note there is no delete counterpart: eConnect exposes no proc for it, and removing a buyer
         rows-deep in POP00101 by hand would bypass the business logic that rule exists to protect."""
-        require_admin(info)
 
         target = company or relay_gateway.company
         if not target:
@@ -321,7 +304,6 @@ class RelayMutations:
     def provision_relay_install(self, info: strawberry.Info, label: str, company: str) -> RelayInstallProvision:
         """Admin: create a relay install + a one-time enrollment token shown ONCE. The relay uses the
         token during setup to register its self-generated Bearer secret (which never comes back here)."""
-        require_admin(info)
         with SessionLocal() as session:
             install, token = relay_repository.provision_install(session, label=label, company=company)
             session.commit()
@@ -343,7 +325,7 @@ class RelayMutations:
         without physical access to the workstation - and the relay binds localhost, so there is no
         remote restart. Arm it only when a relay you own is dialling in, and disarm as soon as it
         reconnects."""
-        identity = require_admin(info)
+        identity = current_user(info)
         with SessionLocal() as session:
             install = session.get(RelayInstall, uuid.UUID(str(install_id)))
             if install is None:
@@ -370,7 +352,7 @@ class RelayMutations:
         Refuses the install currently holding the connection - revoking the credential under a live relay
         would take GP down. A merely switched-off relay deletes fine; that is the retire-a-workstation
         case, and the confirm dialog carries the warning."""
-        identity = require_admin(info)
+        identity = current_user(info)
         target = uuid.UUID(str(install_id))
         if relay_gateway.install_id == target:
             raise ConflictError("That relay is currently connected. Disconnect it before removing the install.")
@@ -395,7 +377,6 @@ class RelayMutations:
     @strawberry.mutation
     def disarm_relay_adopt(self, info: strawberry.Info) -> bool:
         """Admin: close an open adopt window early. Returns whether one was open."""
-        require_admin(info)
         return relay_adopt.disarm()
 
     @strawberry.mutation

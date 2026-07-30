@@ -1,12 +1,11 @@
 """Query.suggest_vendor_for_manufacturer (issue #232): saved-mapping hit vs ranked live vendors.
 
-Follows test_gp_relay_reads.py: resolvers exercised directly with require_user monkeypatched out. The
-mapping lookup is patched so these run without a DB - the resolver only opens a session to call lookup,
-which never issues a query here."""
+Follows test_gp_relay_reads.py: the resolver is exercised directly, which since #423 needs no auth
+setup - the gate is a schema extension in front of it, not a line inside it. The mapping lookup is
+patched so these run without a DB; the resolver only opens a session to call lookup, which never
+issues a query here."""
 
 import asyncio
-
-import pytest
 
 from app.repositories import manufacturer_vendor_map_repository as map_repo
 from app.schemas import relay as relay_module
@@ -15,11 +14,6 @@ from app.schemas.queries import Query
 
 class FakeInfo:
     context = {"request": None}
-
-
-@pytest.fixture(autouse=True)
-def _bypass_require_user(monkeypatch):
-    monkeypatch.setattr(relay_module, "require_user", lambda info: {"user_id": "test-user"})
 
 
 class FakeGateway:

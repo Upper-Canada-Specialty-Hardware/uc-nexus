@@ -5,7 +5,7 @@ from typing import Annotated
 
 import strawberry
 
-from app.auth import require_admin, require_user
+from app.auth import current_user
 from app.database import SessionLocal
 from app.repositories import buyer_repository, user_repository
 
@@ -19,7 +19,7 @@ class BuyerQueries:
     def buyer_assignments(self, info: strawberry.Info) -> list[BuyerAssignment]:
         """Issue #216: which projects the CALLER's buyer identity may create POs for. The PO dialog
         reads this to filter its project options; the create/register mutations re-enforce it
-        server-side. require_user, not admin (#415), because that dialog is a PO-user screen.
+        server-side. Signed-in, not admin (#415), because that dialog is a PO-user screen.
 
         Scoped to the caller's own row as of #428. It used to return the whole table, so any signed-in
         account - Shop Assembly, Shipping Out, Warehouse Staff - could enumerate which buyer owns
@@ -29,7 +29,7 @@ class BuyerQueries:
         yet gets an empty list rather than an error - it simply cannot create project POs, which is
         the state the dialog already handles. `allBuyerAssignments` is the admin-gated whole-table
         read for the Buyers page."""
-        auth = require_user(info)
+        auth = current_user(info)
         # Same identity registerPoInGp enforces the PO against, so the dialog and the mutation can
         # never disagree about which assignment applies.
         buyer_id = user_repository.get_user_gp_buyer_id(auth["user_id"])
@@ -43,12 +43,11 @@ class BuyerQueries:
     def all_buyer_assignments(self, info: strawberry.Info) -> list[BuyerAssignment]:
         """Every buyer's assignment, for the Buyers admin page (#428).
 
-        This is what `buyerAssignments` used to be. It stayed a single require_user resolver because
+        This is what `buyerAssignments` used to be. It stayed a single signed-in resolver because
         one admin screen and one PO-user dialog happened to want the same shape - but the dialog only
         ever wants its own row, and the whole table is a map of which buyer owns which project. The
         page that genuinely needs all of them is admin-only anyway, so the whole-table read is gated
         to match."""
-        require_admin(info)
         with SessionLocal() as session:
             return [buyer_assignment_to_type(a) for a in buyer_repository.list_assignments(session)]
 
@@ -73,7 +72,6 @@ class BuyerMutations:
         ] = None,
     ) -> BuyerAssignment:
         """Issue #216: upsert a buyer's whole assignment (the projects they may order for). Admin."""
-        require_admin(info)
         with SessionLocal() as session:
             assignment = buyer_repository.save_assignment(
                 session,
@@ -86,7 +84,6 @@ class BuyerMutations:
 
     @strawberry.mutation
     def delete_buyer_assignment(self, info: strawberry.Info, buyer_id: str) -> bool:
-        require_admin(info)
         with SessionLocal() as session:
             buyer_repository.delete_assignment(session, buyer_id)
             session.commit()

@@ -5,7 +5,6 @@ from dataclasses import replace
 
 import strawberry
 
-from app.auth import require_user
 from app.database import SessionLocal
 from app.errors import InventoryShortfallError
 from app.repositories import (
@@ -39,7 +38,6 @@ class ImportQueries:
     def project_hardware_schedule(
         self, info: strawberry.Info, project_id: strawberry.ID
     ) -> ProjectHardwareSchedule | None:
-        require_user(info)
         with SessionLocal() as session:
             data = import_repository.get_project_hardware_schedule(session, uuid.UUID(str(project_id)))
             if data is None:
@@ -50,7 +48,6 @@ class ImportQueries:
     def reconcile_schedule(
         self, info: strawberry.Info, project_id: strawberry.ID, items: list[ReconciliationItemInput]
     ) -> list[ReconciliationResult]:
-        require_user(info)
         from .enums import ReconciliationStatus
 
         items_data = [
@@ -77,7 +74,6 @@ class ImportQueries:
 
     @strawberry.field
     def project_excluded_items(self, info: strawberry.Info, project_id: strawberry.ID) -> list[ProjectExcludedItem]:
-        require_user(info)
         with SessionLocal() as session:
             rows = import_repository.list_excluded_items(session, uuid.UUID(str(project_id)))
             return [
@@ -93,7 +89,6 @@ class ImportQueries:
 class ImportMutations:
     @strawberry.mutation
     def finalize_import_session(self, info: strawberry.Info, input: FinalizeImportSessionInput) -> FinalizeImportResult:
-        require_user(info)
         # Convert Strawberry input to dict
         input_data = {
             "project_id": str(input.project_id),

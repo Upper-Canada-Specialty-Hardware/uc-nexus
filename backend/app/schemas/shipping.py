@@ -4,7 +4,7 @@ import uuid
 
 import strawberry
 
-from app.auth import require_user, resolve_display_name
+from app.auth import current_user, resolve_display_name
 from app.database import SessionLocal
 from app.repositories import shipping_repository
 
@@ -30,7 +30,6 @@ from .types import (
 class ShippingQueries:
     @strawberry.field
     def ship_ready_items(self, info: strawberry.Info, project_id: strawberry.ID | None = None) -> ShipReadyItems:
-        require_user(info)
         with SessionLocal() as session:
             data = shipping_repository.get_ship_ready_items(session, uuid.UUID(str(project_id)) if project_id else None)
             return ShipReadyItems(
@@ -48,7 +47,6 @@ class ShippingQueries:
 
     @strawberry.field
     def packing_slips(self, info: strawberry.Info, project_id: strawberry.ID | None = None) -> list[PackingSlip]:
-        require_user(info)
         with SessionLocal() as session:
             slips = shipping_repository.list_packing_slips(session, uuid.UUID(str(project_id)) if project_id else None)
             return [packing_slip_to_type(ps) for ps in slips]
@@ -64,7 +62,6 @@ class ShippingQueries:
         """Accept UI (#293): shipping-out requests for a project, PENDING by default. reopenableOnly
         (#325) keeps only requests whose minted pull request is still PENDING - the Approved/reopen
         view uses it so it lists only requests Reopen can still act on."""
-        require_user(info)
         with SessionLocal() as session:
             reqs = shipping_repository.get_shipping_out_requests(
                 session, uuid.UUID(str(project_id)) if project_id else None, status, reopenable_only
@@ -73,7 +70,6 @@ class ShippingQueries:
 
     @strawberry.field
     def returnable_lines(self, info: strawberry.Info, packing_slip_id: strawberry.ID) -> list[ReturnableLine]:
-        require_user(info)
         with SessionLocal() as session:
             lines = shipping_repository.get_returnable_lines(session, uuid.UUID(str(packing_slip_id)))
             return [
@@ -102,7 +98,7 @@ class ShippingMutations:
 
         The approval names the Clerk-authenticated caller (#427), and carries onto the minted pull's
         `requestedBy`."""
-        auth = require_user(info)
+        auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         request_id = uuid.UUID(str(id))
         with SessionLocal() as session:
@@ -117,7 +113,7 @@ class ShippingMutations:
     ) -> ShippingOutRequest:
         """Reject a PENDING shipping-out request (#293). Open to any signed-in user. Recorded against
         the Clerk-authenticated caller (#427)."""
-        auth = require_user(info)
+        auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         request_id = uuid.UUID(str(id))
         with SessionLocal() as session:
@@ -132,7 +128,6 @@ class ShippingMutations:
         hard-deletes the warehouse PullRequest the accept minted and flips the request to PENDING so it
         can be re-accepted or rejected. Refused if the warehouse has already worked the pull. Open to
         any signed-in user."""
-        require_user(info)
         request_id = uuid.UUID(str(id))
         with SessionLocal() as session:
             shipping_repository.reopen_shipping_out_request(session, request_id)
@@ -147,7 +142,7 @@ class ShippingMutations:
         `shippedBy` is printed on the slip and shown in the shipments grid, so it is the record of
         who released the hardware. It is the Clerk-authenticated caller as of #427; the input field
         is still accepted and ignored."""
-        auth = require_user(info)
+        auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         from app.models.enums import PullRequestItemType
 
@@ -184,7 +179,7 @@ class ShippingMutations:
     def create_shipment_return(self, info: strawberry.Info, input: CreateShipmentReturnInput) -> ShipmentReturn:
         """Book hardware back off a packing slip. `returnedBy` is the Clerk-authenticated caller
         (#427); the input field is still accepted and ignored."""
-        auth = require_user(info)
+        auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         from app.models.enums import ReturnDisposition
 

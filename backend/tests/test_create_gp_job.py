@@ -11,7 +11,8 @@ from datetime import date
 
 import pytest
 
-from app.auth import AuthError
+from app.auth import ADMIN_ROLE
+from app.auth_policy import ROOT_FIELD_POLICY
 from app.database import SessionLocal
 from app.errors import ConflictError, RelayCallError, RelayUnavailableError, ValidationError
 from app.models.project import Project as ProjectModel
@@ -34,10 +35,6 @@ def _clean_up_test_projects(_migrate_database):
         for project in session.query(ProjectModel).filter(ProjectModel.project_id.like("NEXUS-380-%")).all():
             session.delete(project)
         session.commit()
-
-
-def _as_admin(monkeypatch):
-    monkeypatch.setattr(project_module, "require_admin", lambda info: {"user_id": "user_1", "roles": ["Admin"]})
 
 
 def _input(**overrides):
@@ -95,24 +92,17 @@ def _create(**overrides):
     return asyncio.run(ProjectMutations().create_gp_job(_FakeInfo(), _input(**overrides)))
 
 
-def test_requires_an_admin(monkeypatch):
-    # Creating a job writes to the accounting system of record, so this is not an any-user mutation.
-    def _deny(info):
-        raise AuthError("Admin role required")
+def test_requires_an_admin():
+    """Creating a job writes to the accounting system of record, so this is not an any-user mutation.
 
-    monkeypatch.setattr(project_module, "require_admin", _deny)
-
-    async def _never(*a, **k):
-        raise AssertionError("the relay must not be called for a non-admin")
-
-    monkeypatch.setattr(project_module.relay_gateway, "relay_call", _never)
-
-    with pytest.raises(AuthError):
-        _create()
+    Since #423 the gate is the policy table, applied by the schema extension before the resolver runs,
+    so the requirement is asserted where it is decided. `test_resolver_auth_gates.py` covers that the
+    extension enforces the table. The tests below call the resolver directly with no auth setup -
+    what they pin is the guard order INSIDE the body, which is unchanged."""
+    assert ROOT_FIELD_POLICY["createGpJob"] == ADMIN_ROLE
 
 
 def test_refuses_when_no_relay_is_connected(monkeypatch):
-    _as_admin(monkeypatch)
     _relay(monkeypatch, company=None)
 
     with pytest.raises(RelayUnavailableError):
@@ -121,7 +111,6 @@ def test_refuses_when_no_relay_is_connected(monkeypatch):
 
 def test_gp_rejection_surfaces_the_procs_own_message(monkeypatch):
     # The whole point of the OnlyValidate pass: GP words the objection better than we can.
-    _as_admin(monkeypatch)
     _relay(
         monkeypatch,
         raises=RelayCallError("Job cannot be created within a closed period", detail={}),
@@ -136,7 +125,6 @@ def test_gp_rejection_keeps_the_relay_detail_for_the_error_alert(monkeypatch):
     # main.py publishes extensions.relayError from the raised error's .detail. A plain ValidationError
     # has no such field, so converting without carrying it over would empty the dialog's GP detail
     # table - the proc, the error state and the taErrorCode description all gone (#187).
-    _as_admin(monkeypatch)
     detail = {
         "error": "econnect_error",
         "message": "Job cannot be created within a closed period",
@@ -156,7 +144,6 @@ def test_a_job_already_in_gp_is_adopted_rather_than_dead_ending(monkeypatch):
     user pressed Create again. The relay's job_exists pre-check now answers job_already_exists, which
     no amount of retrying can clear - and the sync would have created the project a few minutes later
     anyway, so there is nothing to refuse."""
-    _as_admin(monkeypatch)
     _relay(
         monkeypatch,
         raises=RelayCallError("job 'NEXUS-380-T1' already exists in GP", detail={"error": "job_already_exists"}),
@@ -179,7 +166,6 @@ def test_a_job_already_in_gp_is_adopted_rather_than_dead_ending(monkeypatch):
 
 
 def test_sends_every_required_field_and_omits_unset_optionals(monkeypatch):
-    _as_admin(monkeypatch)
     _no_persist(monkeypatch)
     calls = _relay(monkeypatch)
 
@@ -196,7 +182,6 @@ def test_sends_every_required_field_and_omits_unset_optionals(monkeypatch):
 
 
 def test_sends_the_optional_fields_that_were_filled_in(monkeypatch):
-    _as_admin(monkeypatch)
     _no_persist(monkeypatch)
     calls = _relay(monkeypatch)
 
@@ -211,7 +196,6 @@ def test_sends_the_optional_fields_that_were_filled_in(monkeypatch):
 def test_the_sync_winning_the_race_is_not_an_error(monkeypatch):
     # GP committed, then gp_job_sync adopted the job before this resolver's persist ran. The row we
     # wanted exists; failing here would report a failure for a create that fully succeeded.
-    _as_admin(monkeypatch)
     _relay(monkeypatch)
     _no_persist(monkeypatch)
 
@@ -228,7 +212,6 @@ def test_the_sync_winning_the_race_is_not_an_error(monkeypatch):
 
 
 def test_persists_the_project_from_gps_own_answer(monkeypatch, _clean_up_test_projects):
-    _as_admin(monkeypatch)
     # GP's reply, not the input, is what the project is built from
     _relay(monkeypatch, result={"job_number": "NEXUS-380-T9", "job_name": "Name GP Kept"})
 

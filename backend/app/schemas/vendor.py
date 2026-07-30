@@ -4,7 +4,6 @@ import uuid
 
 import strawberry
 
-from app.auth import require_admin, require_user
 from app.database import SessionLocal
 from app.repositories import vendor_repository
 
@@ -17,15 +16,13 @@ from .types import Vendor
 class VendorQueries:
     @strawberry.field
     def vendors(self, info: strawberry.Info) -> list[Vendor]:
-        """require_user, not admin (#415): VendorSelect renders this list on the PO screens, so it is
+        """Signed-in, not admin (#415): VendorSelect renders this list on the PO screens, so it is
         not an admin-only read even though only an admin may write it."""
-        require_user(info)
         with SessionLocal() as session:
             return [vendor_to_type(v) for v in vendor_repository.list_vendors(session)]
 
     @strawberry.field
     def vendor(self, info: strawberry.Info, id: strawberry.ID) -> Vendor | None:
-        require_user(info)
         with SessionLocal() as session:
             v = vendor_repository.find_vendor(session, uuid.UUID(str(id)))
             return vendor_to_type(v) if v is not None else None
@@ -35,12 +32,11 @@ class VendorQueries:
 class VendorMutations:
     @strawberry.mutation
     def create_vendor(self, info: strawberry.Info, input: CreateVendorInput) -> Vendor:
-        """require_user, not admin. `VendorSelect` offers "+ Create new vendor" to every caller and
+        """Signed-in, not admin. `VendorSelect` offers "+ Create new vendor" to every caller and
         renders `VendorEditDialog` with `vendor={null}`, so a PO user adding a supplier mid-order goes
         through here. Editing or deleting an existing vendor is still admin - only the admin Vendors
         page reaches those. The dialog living under `modules/admin/` says nothing about who can open
         it, which is exactly the trap this comment exists to stop."""
-        require_user(info)
         with SessionLocal() as session:
             vendor = vendor_repository.create_vendor(
                 session,
@@ -56,7 +52,6 @@ class VendorMutations:
 
     @strawberry.mutation
     def update_vendor(self, info: strawberry.Info, id: strawberry.ID, input: UpdateVendorInput) -> Vendor:
-        require_admin(info)
         with SessionLocal() as session:
             vendor = vendor_repository.update_vendor(
                 session,
@@ -73,7 +68,6 @@ class VendorMutations:
 
     @strawberry.mutation
     def delete_vendor(self, info: strawberry.Info, id: strawberry.ID) -> bool:
-        require_admin(info)
         with SessionLocal() as session:
             vendor_repository.delete_vendor(session, uuid.UUID(str(id)))
             session.commit()
