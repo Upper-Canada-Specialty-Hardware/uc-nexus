@@ -21,7 +21,7 @@ function leaf(overrides: Partial<AssembledLeafCandidate> = {}): AssembledLeafCan
   };
 }
 
-const EMPTY_DRAFT: ShippingPRDraft = { requestNumber: 'SOR-1', requestedBy: 'ada', items: [] };
+const EMPTY_DRAFT: ShippingPRDraft = { requestNumber: 'SOR-1', items: [] };
 
 function renderStep(leaves: AssembledLeafCandidate[], overrides: Record<string, unknown> = {}) {
   const onTogglePRItem = vi.fn();
@@ -129,7 +129,6 @@ it('leaves the flagged leaf off the request on cancel', async () => {
 it('removes an already-selected flagged leaf without asking', () => {
   const selected: ShippingPRDraft = {
     requestNumber: 'SOR-1',
-    requestedBy: 'ada',
     items: [
       { itemType: 'OPENING_ITEM', openingNumber: '0019-EX', openingItemId: 'oi-1', leaf: 1, requestedQuantity: 1 },
     ],

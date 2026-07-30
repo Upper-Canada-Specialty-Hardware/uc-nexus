@@ -86,7 +86,6 @@ input ClassificationInput {
 
 input ShippingOutPRDraftInput {
   request_number: String!
-  requested_by: String!
   items: [ShippingOutPRDraftItemInput!]!
 }
 

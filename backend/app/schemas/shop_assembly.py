@@ -22,7 +22,6 @@ from .enums import ShopAssemblyRequestStatus
 from .inputs import (
     AssignOpeningsInput,
     CompleteOpeningInput,
-    IgnoredActorArg,
     InstallReplacementInput,
     RecordAssemblyProgressInput,
 )
@@ -151,9 +150,7 @@ class ShopAssemblyQueries:
 @strawberry.type
 class ShopAssemblyMutations:
     @strawberry.mutation
-    def accept_shop_assembly_request(
-        self, info: strawberry.Info, id: strawberry.ID, accepted_by: IgnoredActorArg = None
-    ) -> ShopAssemblyRequest:
+    def accept_shop_assembly_request(self, info: strawberry.Info, id: strawberry.ID) -> ShopAssemblyRequest:
         """Accept a PENDING shop-assembly request (#293). Open to any signed-in user.
 
         A pure human approval gate since #342: it mints the warehouse PullRequest and approves the
@@ -175,7 +172,7 @@ class ShopAssemblyMutations:
 
     @strawberry.mutation
     def reject_shop_assembly_request(
-        self, info: strawberry.Info, id: strawberry.ID, rejected_by: IgnoredActorArg = None, reason: str | None = None
+        self, info: strawberry.Info, id: strawberry.ID, reason: str | None = None
     ) -> ShopAssemblyRequest:
         """Reject a PENDING shop-assembly request (#293). Open to any signed-in user. Recorded
         against the Clerk-authenticated caller (#427), same reasoning as the accept."""

@@ -80,10 +80,10 @@ type Mutation {
   createShipmentReturn(input: CreateShipmentReturnInput!): ShipmentReturn!
   # Accept gate (#293). Any signed-in user. Accept mints the warehouse PullRequest;
   # the warehouse approve handles shortfalls. The approval is recorded against the
-  # Clerk-authenticated caller (#427) - acceptedBy/rejectedBy are accepted and IGNORED, kept only so
-  # a frontend from the previous deploy still validates.
-  acceptShippingOutRequest(id: ID!, acceptedBy: String @deprecated(reason: "ignored; actor is the caller")): ShippingOutRequest!
-  rejectShippingOutRequest(id: ID!, rejectedBy: String @deprecated(reason: "ignored; actor is the caller"), reason: String): ShippingOutRequest!
+  # Clerk-authenticated caller (#427). The acceptedBy/rejectedBy arguments lingered as ignored
+  # @deprecated no-ops for one deploy so stale tabs still validated, and came out in #438.
+  acceptShippingOutRequest(id: ID!): ShippingOutRequest!
+  rejectShippingOutRequest(id: ID!, reason: String): ShippingOutRequest!
   # Reopen (#325). Undoes an erroneous accept: APPROVED -> PENDING, hard-deletes the minted
   # PullRequest. Refused if the warehouse has already worked the pull.
   reopenShippingOutRequest(id: ID!): ShippingOutRequest!

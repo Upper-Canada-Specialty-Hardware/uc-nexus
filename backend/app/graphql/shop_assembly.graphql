@@ -123,7 +123,6 @@ input InstallReplacementInput {
   shop_assembly_opening_item_id: ID!
   # Bounded by replacement_pending_quantity, so this can never inflate a leaf.
   quantity: Int!
-  performed_by: String
 }
 
 input AssignOpeningsInput {
@@ -147,7 +146,6 @@ input AssemblyProgressItemInput {
 input RecordAssemblyProgressInput {
   opening_id: ID!
   items: [AssemblyProgressItemInput!]!
-  performed_by: String
 }
 
 # --- Pipeline observability (#344) ---
@@ -266,7 +264,6 @@ input CompleteOpeningInput {
   aisle: String
   row: String
   bay: String
-  completed_by: String
 }
 
 # Every field below is gated on an authenticated caller (#339) except where a stronger role
@@ -319,10 +316,10 @@ type Mutation {
   # Accept gate (#293). Any signed-in user. Accept mints the warehouse PullRequest and
   # is a **pure human gate** since #342: the hardware was reserved when the request was created, so
   # nothing is re-checked here. Reject is what releases that reservation. The approval is recorded
-  # against the Clerk-authenticated caller (#427) - acceptedBy/rejectedBy are accepted and IGNORED,
-  # kept only so a frontend from the previous deploy still validates.
-  acceptShopAssemblyRequest(id: ID!, acceptedBy: String @deprecated(reason: "ignored; actor is the caller")): ShopAssemblyRequest!
-  rejectShopAssemblyRequest(id: ID!, rejectedBy: String @deprecated(reason: "ignored; actor is the caller"), reason: String): ShopAssemblyRequest!
+  # against the Clerk-authenticated caller (#427). The acceptedBy/rejectedBy arguments lingered as
+  # ignored @deprecated no-ops for one deploy so stale tabs still validated, and came out in #438.
+  acceptShopAssemblyRequest(id: ID!): ShopAssemblyRequest!
+  rejectShopAssemblyRequest(id: ID!, reason: String): ShopAssemblyRequest!
   # Reopen (#325). Undoes an erroneous accept: APPROVED -> PENDING, hard-deletes the minted
   # PullRequest and re-points the openings off it. Refused if the warehouse has already worked the pull.
   reopenShopAssemblyRequest(id: ID!): ShopAssemblyRequest!

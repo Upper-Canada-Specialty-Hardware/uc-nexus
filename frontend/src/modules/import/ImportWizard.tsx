@@ -925,21 +925,18 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
 
   // Shipping PR management
   const addShippingPR = useCallback(() => {
-    setShippingPRDrafts((prev) => [...prev, { requestNumber: '', requestedBy: '', items: [] }]);
+    setShippingPRDrafts((prev) => [...prev, { requestNumber: '', items: [] }]);
   }, []);
 
   const removeShippingPR = useCallback((index: number) => {
     setShippingPRDrafts((prev) => prev.filter((_, i) => i !== index));
   }, []);
 
-  const updateShippingPR = useCallback(
-    (index: number, field: 'requestNumber' | 'requestedBy', value: string) => {
-      setShippingPRDrafts((prev) =>
-        prev.map((draft, i) => (i === index ? { ...draft, [field]: value } : draft)),
-      );
-    },
-    [],
-  );
+  const updateShippingPR = useCallback((index: number, requestNumber: string) => {
+    setShippingPRDrafts((prev) =>
+      prev.map((draft, i) => (i === index ? { ...draft, requestNumber } : draft)),
+    );
+  }, []);
 
   // Add or remove one already-built line on a draft (#335). The step decides what kind of line it
   // is - an assembled leaf or loose hardware - so this no longer hard-codes LOOSE.
@@ -1085,7 +1082,6 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
       shippingOutPrDrafts: purpose === 'shipping'
         ? effectiveShippingPRDrafts.map((pr) => ({
             requestNumber: pr.requestNumber,
-            requestedBy: pr.requestedBy,
             items: pr.items.map((item) => ({
               itemType: item.itemType,
               openingNumber: item.openingNumber,
