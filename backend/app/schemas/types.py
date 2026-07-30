@@ -489,6 +489,16 @@ class PurchaseOrder:
 
 
 @strawberry.type
+class GpSetupIssue:
+    """One JC00701 cost code on this project's GP job whose GL account index does not exist in the
+    company's chart (#425). What the quarantine banner names, so the message points at something
+    accounting can look up rather than at "GP setup"."""
+
+    cost_code: str  # 'phase-step-element', as the register-PO dropdown shows it
+    account_index: int  # the dangling index, absent from GL00105
+
+
+@strawberry.type
 class Project:
     id: strawberry.ID
     project_id: str
@@ -513,6 +523,15 @@ class Project:
     created_at: datetime
     updated_at: datetime
     opening_count: int
+    # GP job setup verdict (#425). Plain scalar columns on the project row plus a parse of the JSON
+    # detail column, so no relationship is walked and these are safe on the all-projects list query -
+    # unlike `openings` below, which list callers deliberately leave empty.
+    #
+    # null means never checked (no relay has answered yet) and does NOT quarantine; false does. The
+    # frontend must treat them differently or a relay outage would grey out the whole application.
+    gp_setup_ok: bool | None
+    gp_setup_checked_at: datetime | None
+    gp_setup_issues: list[GpSetupIssue]
     openings: list[Opening]
     purchase_orders: list[PurchaseOrder]
 

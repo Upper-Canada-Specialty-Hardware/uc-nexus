@@ -38,11 +38,20 @@ def _clean_up_test_projects(_migrate_database):
         session.commit()
 
 
-def _relay(monkeypatch, *, company="TUBC", jobs=None, raises=None):
+def _relay(monkeypatch, *, company="TUBC", jobs=None, raises=None, health=None, health_raises=None):
+    """Fake the relay socket. `health` is the job_setup_health answer (#425); left None it echoes the
+    job list as all-healthy, so the existing adoption tests are unaffected by the health pass."""
     calls: list[tuple] = []
 
     async def _call(_company, op, payload=None, timeout=None):
         calls.append((_company, op, payload))
+        if op == "job_setup_health":
+            if health_raises is not None:
+                raise health_raises
+            if health is not None:
+                return {"jobs": health}
+            reported = JOBS if jobs is None else jobs
+            return {"jobs": [{"job_number": j.get("job_number"), "ok": True, "issues": []} for j in reported]}
         if raises is not None:
             raise raises
         return {"jobs": JOBS if jobs is None else jobs}
@@ -163,3 +172,111 @@ def test_kill_switch_reads_the_environment(monkeypatch):
 def test_wake_is_safe_before_the_loop_has_started(monkeypatch):
     monkeypatch.setattr(gp_job_sync, "_wake_event", None)
     gp_job_sync.wake()  # must not raise - /relay-link calls this on every registration
+
+
+# --- GP setup health stamping (#425) ---------------------------------------------------------------
+# Every pass also asks GP whether each job's cost codes point at accounts this company actually has,
+# and stamps the answer on the project. A job replicated from UCSH before 2023 carries UCSH account
+# indexes, which makes a PO on it registerable and permanently unreceivable - the stamp is how Nexus
+# finds out before somebody spends a PO on it.
+
+
+def _stamps(prefix="SYNC-380-"):
+    with SessionLocal() as session:
+        return {
+            p.project_id: (p.gp_setup_ok, p.gp_setup_detail, p.gp_setup_checked_at is not None)
+            for p in session.query(ProjectModel).filter(ProjectModel.project_id.like(f"{prefix}%")).all()
+        }
+
+
+def test_stamps_the_setup_verdict_on_every_reported_job(monkeypatch):
+    _relay(
+        monkeypatch,
+        health=[
+            {"job_number": "SYNC-380-A", "ok": True, "issues": []},
+            {
+                "job_number": "SYNC-380-B",
+                "ok": False,
+                "issues": [{"cost_code": "210-200-2", "account_index": 1617}],
+            },
+        ],
+    )
+
+    asyncio.run(gp_job_sync.run_once())
+
+    stamps = _stamps()
+    assert stamps["SYNC-380-A"][0] is True
+    assert stamps["SYNC-380-A"][1] is None  # a healthy job carries no stale detail
+    assert stamps["SYNC-380-B"][0] is False
+    assert "210-200-2" in stamps["SYNC-380-B"][1]
+    assert "1617" in stamps["SYNC-380-B"][1]
+    assert all(checked for _, _, checked in stamps.values())
+
+
+def test_a_job_adopted_this_pass_is_stamped_on_the_same_pass(monkeypatch):
+    """The health read runs AFTER adoption on purpose - a job GP has only just started reporting gets
+    its project and its verdict together rather than a whole poll interval apart."""
+    _relay(monkeypatch, health=[{"job_number": "SYNC-380-A", "ok": False, "issues": []}])
+
+    total, adopted = asyncio.run(gp_job_sync.run_once())
+
+    assert adopted == 2
+    assert _stamps()["SYNC-380-A"][0] is False
+
+
+def test_a_failed_health_call_does_not_break_job_adoption(monkeypatch):
+    """The verdict is an annotation; adoption is the invariant this service exists for. A relay too
+    old for the op, or a GP read that times out, must cost the pass nothing."""
+    _relay(monkeypatch, health_raises=RuntimeError("relay too old for job_setup_health"))
+
+    total, adopted = asyncio.run(gp_job_sync.run_once())
+
+    assert (total, adopted) == (2, 2)
+    assert set(_projects()) == {"SYNC-380-A", "SYNC-380-B"}
+    assert all(ok is None for ok, _, _ in _stamps().values())  # nothing stamped, nothing invented
+
+
+def test_a_failed_health_call_leaves_an_existing_stamp_alone(monkeypatch):
+    """Blanking on failure would un-quarantine a broken project on a transient relay blip. A stale
+    verdict is still a verdict."""
+    _relay(monkeypatch, health=[{"job_number": "SYNC-380-A", "ok": False, "issues": []}])
+    asyncio.run(gp_job_sync.run_once())
+
+    _relay(monkeypatch, health_raises=RuntimeError("relay went away"))
+    asyncio.run(gp_job_sync.run_once())
+
+    assert _stamps()["SYNC-380-A"][0] is False
+
+
+def test_the_health_op_is_asked_for_the_whole_company(monkeypatch):
+    # No job filter on the sync pass: one sweep for ~900 jobs, not 900 round trips.
+    calls = _relay(monkeypatch)
+
+    asyncio.run(gp_job_sync.run_once())
+
+    health_calls = [c for c in calls if c[1] == "job_setup_health"]
+    assert len(health_calls) == 1
+    assert health_calls[0][2] in (None, {})
+
+
+def test_the_live_single_job_check_filters_to_that_job(monkeypatch):
+    calls = _relay(monkeypatch, health=[{"job_number": "SYNC-380-B", "ok": False, "issues": []}])
+
+    verdict = asyncio.run(gp_job_sync.check_job_setup_live("TUBC", "SYNC-380-B"))
+
+    assert verdict["ok"] is False
+    assert calls[0] == ("TUBC", "job_setup_health", {"job": "SYNC-380-B"})
+
+
+def test_the_live_check_returns_none_when_it_cannot_run(monkeypatch):
+    """None is "could not check", not "healthy". register_po_in_gp falls back to the stamped verdict
+    on None rather than refusing - a relay blip must not brick PO registration."""
+    _relay(monkeypatch, health_raises=RuntimeError("relay unavailable"))
+
+    assert asyncio.run(gp_job_sync.check_job_setup_live("TUBC", "SYNC-380-A")) is None
+
+
+def test_the_live_check_returns_none_for_a_job_gp_does_not_report(monkeypatch):
+    _relay(monkeypatch, health=[])
+
+    assert asyncio.run(gp_job_sync.check_job_setup_live("TUBC", "GHOST")) is None

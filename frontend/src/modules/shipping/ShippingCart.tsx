@@ -6,6 +6,8 @@ import {
 import { ShoppingCart, Trash2 } from 'lucide-react';
 import { useCart } from '../../contexts/CartContext';
 import PackingSlipForm from './PackingSlipForm';
+import GpSetupQuarantineBanner from '../../components/GpSetupQuarantineBanner';
+import { isGpSetupBroken, type GpSetupStatus } from '../../types/project';
 import { leafSuffix } from '../../utils/leaf';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import { AnimatedNumber, StaggerItem, StaggerList } from '../../motion';
@@ -15,9 +17,19 @@ interface ShippingCartProps {
   onClose: () => void;
   projectId: string | undefined;
   projectName: string;
+  // #425: the selected project's GP setup verdict, passed down rather than re-queried - the module
+  // shell already holds the project object the user picked. Undefined in the All Projects view, where
+  // there is no single job to be broken.
+  project?: GpSetupStatus | null;
 }
 
-export default function ShippingCart({ open, onClose, projectId, projectName }: ShippingCartProps) {
+export default function ShippingCart({
+  open,
+  onClose,
+  projectId,
+  projectName,
+  project,
+}: ShippingCartProps) {
   const { items, removeItem, clearCart, itemCount } = useCart();
   const [packingSlipOpen, setPackingSlipOpen] = useState(false);
 
@@ -150,6 +162,10 @@ export default function ShippingCart({ open, onClose, projectId, projectName }: 
           <Divider />
 
           <Box sx={{ p: 2 }}>
+            {/* #425: shown in the cart rather than only on the page behind it, because this drawer is
+                where the ship decision is made and it covers that page while it is open. Clear Cart
+                stays live - putting things back is never the blocked action. */}
+            <GpSetupQuarantineBanner project={project} action="shipping from it" dense />
             <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, mb: 1.5 }}>
               <Typography sx={microLabelSx}>Total items</Typography>
               <Typography variant="h6" sx={tabularSx}>
@@ -169,7 +185,7 @@ export default function ShippingCart({ open, onClose, projectId, projectName }: 
                 variant="contained"
                 size="small"
                 onClick={() => setPackingSlipOpen(true)}
-                disabled={itemCount === 0}
+                disabled={itemCount === 0 || isGpSetupBroken(project)}
                 sx={{ flexGrow: 1 }}
               >
                 Proceed to Ship

@@ -26,6 +26,12 @@ export const GET_ADMIN_PROJECTS = gql`
       openingCount
       createdAt
       updatedAt
+      gpSetupOk
+      gpSetupCheckedAt
+      gpSetupIssues {
+        costCode
+        accountIndex
+      }
     }
   }
 `;
@@ -217,6 +223,12 @@ export const UPDATE_PROJECT = gql`
       openingCount
       createdAt
       updatedAt
+      gpSetupOk
+      gpSetupCheckedAt
+      gpSetupIssues {
+        costCode
+        accountIndex
+      }
     }
   }
 `;
