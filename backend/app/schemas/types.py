@@ -1509,6 +1509,9 @@ class BuyerAssignment:
     # is selectable), but a browser tab loaded before that deploy still asks for this field, and an
     # unknown field is a GraphQL validation error the frontend's chunk-error boundary cannot catch.
     # Kept until deployed frontends no longer request it, then dropped with the field on the mutation.
+    # Known limit of the shim: it preserves schema validity, not the old behavior - a stale PO tab
+    # filters the job's GP codes against this empty list, so its cost-code dropdown reads empty
+    # ("No cost codes defined for this job in GP") until the tab is reloaded.
     cost_codes: list[str] = strawberry.field(
         default_factory=list, deprecation_reason="cost-code designation removed; always empty"
     )

@@ -338,7 +338,7 @@ export default function GpPurchaseOrderDialog({
   // Every code GP reports active for the job is offered. This used to be filtered to the caller's
   // designated cost codes, which meant a purchaser saw two of the job's twenty-eight and could not
   // register against the rest - GP has no per-job notion of correct codes for the filter to reflect.
-  const costCodes = costCodesData?.gpCostCodes ?? [];
+  const costCodes = useMemo(() => costCodesData?.gpCostCodes ?? [], [costCodesData]);
 
   // Seed the form when the dialog opens. Create mode -> empty; register mode -> the draft's values
   // (project locked, line items carrying their ids so edits map back). The vendor is seeded separately
@@ -502,6 +502,11 @@ export default function GpPurchaseOrderDialog({
       if (!gpBuyerId) errs.buyer = 'Your account has no GP buyer identity - ask an Admin to set it in User Management';
       else if (!registerProjectAllowed) errs.buyer = `Buyer ${gpBuyerId} is not assigned to this project`;
       if (isJob && !costCode) errs.costCode = 'Cost code is required for a project PO';
+      // A refresh can drop the picked code from the job's list (GP-side change); the Select then
+      // renders blank while the state still holds the old pick, so catch it here as a form error
+      // instead of letting the relay reject the push after submit.
+      else if (isJob && costCodes.length > 0 && !costCodes.some((c) => `${c.costCode}-${c.costElement}` === costCode))
+        errs.costCode = 'The selected cost code is no longer on this job in GP - pick another';
       // Issue #257: a CAD PO must carry a tax detail (the relay computes tax from it); a foreign-currency
       // PO carries none (the relay blanks the schedule), so require it for CAD only. Only enforce it when
       // the company actually defines purchase tax details - a company with none would otherwise be
@@ -530,7 +535,7 @@ export default function GpPurchaseOrderDialog({
       errs.tradeDiscount = 'Must be >= 0';
     setErrors(errs);
     return Object.keys(errs).length === 0;
-  }, [lineItems, relayConnected, gpVendorId, isRegister, vendorConfirmed, gpBuyerId, registerProjectAllowed, isJob, costCode, shippingCost, tariffAmount, isForeignCurrency, taxDetailId, gpTaxDetails.length, taxDetailsOpUnsupported, taxDetailsFailed, miscellaneous, tradeDiscount]);
+  }, [lineItems, relayConnected, gpVendorId, isRegister, vendorConfirmed, gpBuyerId, registerProjectAllowed, isJob, costCode, costCodes, shippingCost, tariffAmount, isForeignCurrency, taxDetailId, gpTaxDetails.length, taxDetailsOpUnsupported, taxDetailsFailed, miscellaneous, tradeDiscount]);
 
   const handleSubmit = useCallback(async () => {
     if (!validate()) return;

@@ -1,6 +1,7 @@
 """Buyer assignment queries + mutations (issue #216: per-buyer project authorization)."""
 
 import uuid
+from typing import Annotated
 
 import strawberry
 
@@ -34,8 +35,14 @@ class BuyerMutations:
         project_ids: list[strawberry.ID],
         # Accepted and ignored: cost-code designation was removed, but an admin tab loaded before that
         # deploy still sends this argument, and an unknown argument fails GraphQL validation outright.
-        # Dropped once deployed frontends stop sending it, together with the field on BuyerAssignment.
-        cost_codes: list[str] | None = None,  # noqa: ARG002
+        # (The current frontend keeps sending a defaulted [] too, so a frontend deployed ahead of a
+        # pre-removal backend still satisfies the old required argument.) Dropped once deployed
+        # frontends stop sending it, together with the field on BuyerAssignment. deprecation_reason
+        # makes the no-op visible in introspection/GraphiQL, not just in this comment.
+        cost_codes: Annotated[
+            list[str] | None,
+            strawberry.argument(deprecation_reason="cost-code designation removed; ignored"),
+        ] = None,
     ) -> BuyerAssignment:
         """Issue #216: upsert a buyer's whole assignment (the projects they may order for). Admin."""
         require_admin(info)

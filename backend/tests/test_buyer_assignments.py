@@ -71,17 +71,13 @@ def test_validate_rejects_project_outside_assignment(db_session):
 
 
 def test_validate_allows_any_cost_code(db_session):
-    """The regression guard for the removal: assignment carries no cost-code state at all, so the gate
-    cannot narrow the register-PO dropdown to a hand-maintained subset again."""
+    """The happy path, doubling as the regression guard for the removal: assignment carries no
+    cost-code state at all, so the gate cannot narrow the register-PO dropdown to a hand-maintained
+    subset again. (End-to-end coverage that an arbitrary code registers lives in
+    test_register_po_in_gp.test_prepare_register_po_accepts_any_cost_code.)"""
     p = _make_project(db_session)
     assignment = buyer_repository.save_assignment(db_session, "mira", [p.id])
     assert not hasattr(assignment, "cost_codes")
-    buyer_repository.validate_buyer_can_order(db_session, "mira", p.id)
-
-
-def test_validate_happy_path(db_session):
-    p = _make_project(db_session)
-    buyer_repository.save_assignment(db_session, "mira", [p.id])
     buyer_repository.validate_buyer_can_order(db_session, "mira", p.id)
 
 
