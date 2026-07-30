@@ -71,7 +71,7 @@ class BuyersCfg(BaseModel):
     # unregistered BUYERID (error 269). A device hostname is NOT a registered buyer, so there's no
     # use_hostname option. Resolution order: by_host -> by_login -> default.
     default: str | None = None
-    by_host: dict[str, str] = {}   # device hostname -> registered buyer
+    by_host: dict[str, str] = {}  # device hostname -> registered buyer
     by_login: dict[str, str] = {}  # SQL/SSPI login -> registered buyer
 
 
@@ -119,6 +119,13 @@ def channel_allowed_companies(url: str) -> list[str] | None:
     return None if is_primary_backend_url(url) else list(NON_PRIMARY_ALLOWED_COMPANIES)
 
 
+def primary_url(urls: list[str]) -> str:
+    """The production URL among `urls`, else the first one. Single definition of "which channel stands
+    for this relay" - both the /health snapshot and the enroll wizard's URL derivation need it, and two
+    copies could drift into disagreeing about which channel is production."""
+    return next((u for u in urls if is_primary_backend_url(u)), urls[0] if urls else "")
+
+
 class ChannelCfg(BaseModel):
     # Outbound wss URL(s) to UC Nexus backend relay gateways. A bare string is one channel (every
     # config.toml written before #414 is exactly this); a list opens one connection per URL, so a
@@ -126,6 +133,12 @@ class ChannelCfg(BaseModel):
     # exists at all. Empty (blank string, or empty list) disables the channel entirely and the relay
     # runs only its inbound HTTP server. Baked dev default: production alone.
     backend_url: str | list[str] = PRODUCTION_BACKEND_URL
+    # ADDITIVE test backends, and the way an operator should normally add one. Overriding backend_url
+    # means retyping production's URL alongside the new one, and a single wrong character there does
+    # not fail loudly - it makes is_primary_backend_url False, so the PRODUCTION channel silently
+    # inherits the sandbox pin and every real UBC/UCSH job is refused. Listing only the extra URL here
+    # cannot express that mistake, because production's URL comes from the baked default untouched.
+    extra_backend_urls: list[str] = []
     # the `websockets` client's own ping_interval/ping_timeout default to 20s/20s, which already
     # satisfies the ~20s keepalive the channel needs to hold a corporate-proxy idle timeout open -
     # these just make that tunable without a code change.
@@ -136,10 +149,12 @@ class ChannelCfg(BaseModel):
 
     @property
     def backend_urls(self) -> list[str]:
-        """backend_url in its one true shape: a de-duplicated list of non-blank URLs. Duplicates are
-        dropped because two channels to the same backend would fight over its single connection slot,
-        each closing the other with 4409 forever."""
+        """Every configured channel URL, in one shape: de-duplicated, non-blank, backend_url first then
+        extra_backend_urls. Duplicates are dropped because two channels to the same backend would fight
+        over its single connection slot, each closing the other with 4409 forever - which is also what
+        makes listing production in BOTH keys harmless rather than self-defeating."""
         raw = [self.backend_url] if isinstance(self.backend_url, str) else list(self.backend_url)
+        raw = raw + list(self.extra_backend_urls)
         seen: set[str] = set()
         urls: list[str] = []
         for candidate in raw:

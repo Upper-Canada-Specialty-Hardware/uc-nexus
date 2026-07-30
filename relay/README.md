@@ -103,31 +103,43 @@ channel alive through a corporate proxy's idle timeout.
 
 more than one backend (#414)
 
-`[channel] backend_url` also takes a LIST, and the relay then holds one independent reconnecting
-channel per URL. that exists so a Railway PR environment can be tested without re-pointing the
-workstation: production's connection is never dropped, and the same enrolled secret authenticates on
-every channel (the backend matches on its hash, and a PR environment is seeded with that hash via
-`RELAY_SEED_SECRET_HASH` rather than issued a credential of its own).
+the relay holds one independent reconnecting channel per configured URL. that exists so a Railway PR
+environment can be tested without re-pointing the workstation: production's connection is never
+dropped, and the same enrolled secret authenticates on every channel (the backend matches on its hash,
+and a PR environment is seeded with that hash via `RELAY_SEED_SECRET_HASH` rather than issued a
+credential of its own).
+
+**add a test backend with `extra_backend_urls`, naming only the new one:**
 
 ```toml
 [channel]
-backend_url = [
-  "wss://backend-production-7866.up.railway.app/relay-link",
-  "wss://backend-pr-414.up.railway.app/relay-link",
-]
+extra_backend_urls = ["wss://backend-pr-414.up.railway.app/relay-link"]
 ```
 
-the production URL is unrestricted. every other URL is pinned to `TUBC`
+production's URL comes from the baked default and is never retyped, which matters more than it looks:
+whether a channel is production is decided by matching `config.PRODUCTION_BACKEND_URL`, so one wrong
+character in a hand-typed production URL makes the PRODUCTION channel non-primary and every real
+UBC/UCSH job is refused. `backend_url` does also accept a list (a bare string, the pre-#414 shape,
+still means exactly one channel), but overriding it means retyping production alongside the new URL -
+the one way to express that mistake. the relay logs a WARNING at startup when no configured channel is
+the production one.
+
+the production channel is unrestricted. every other URL is pinned to `TUBC`
 (`config.NON_PRIMARY_ALLOWED_COMPANIES`) - reads AND writes are served there, since a PR touching GP
 has to be verifiable before it merges, and the company pin is the only thing making that safe. a job
-for any other company comes back `company_not_allowed_on_channel` before it reaches GP. which URL is
-production is decided by matching `config.PRODUCTION_BACKEND_URL`, not by list position.
+for any other company comes back `company_not_allowed_on_channel` before it reaches GP.
 
-the list is read once at `serve` start, so adding or removing a PR URL needs a relay restart (the
-app's Restart Relay button). the enrolled secret is still re-read on every reconnect, unchanged. the
-setup wizard preserves a hand-added `[channel]` block, so re-running it will not silently drop the PR
-URL. remove the URL when the PR closes - a torn-down environment retries forever otherwise (quietly:
-a non-production channel logs a repeated failure once, then at DEBUG).
+**`TUBC` must also be in `[gp] allowed_companies`.** the channel pin decides what a test backend may
+ASK for; `ops.check_company_allowed` still decides what this workstation will serve, and it reads
+`[gp] allowed_companies` from config.toml. a workstation set up only for production companies refuses
+every PR-environment job with `company_not_allowed`. nothing checks the two lists intersect at startup.
+
+the URL list is read once at `serve` start, so adding or removing a test backend needs a relay restart
+(the app's Restart Relay button). the enrolled secret is still re-read on every reconnect, unchanged,
+and a config.toml that fails to parse mid-edit no longer kills the channel - it retries with the last
+good settings. the setup wizard preserves a hand-added `[channel]` block, so re-running it will not
+silently drop the URL. remove the URL when the PR closes - a torn-down environment retries forever
+otherwise (quietly: a non-production channel logs a repeated failure once, then at DEBUG).
 
 the ops newer than `create_po` / `create_receipt` are channel-only - they have no HTTP route, because
 the browser hop is no longer the live path.

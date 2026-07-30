@@ -9,6 +9,7 @@ only things keeping that acceptable are the production kill-switch and the sandb
 """
 
 import uuid
+from datetime import datetime
 
 import pytest
 
@@ -49,15 +50,6 @@ def test_seeding_is_idempotent_across_restarts(db_session):
     second = relay_seed.seed_from_env(db_session, environment_name="pr-414", secret_hash=HASH)
     assert second.id == first.id
     assert db_session.query(RelayInstall).filter(RelayInstall.secret_hash == HASH).count() == 1
-
-
-def test_an_existing_row_is_repointed_to_the_sandbox(db_session):
-    stray = RelayInstall(id=uuid.uuid4(), label="hand-made", company="UCSH", secret_hash=HASH)
-    db_session.add(stray)
-    db_session.flush()
-    seeded = relay_seed.seed_from_env(db_session, environment_name="pr-414", secret_hash=HASH)
-    assert seeded.id == stray.id
-    assert seeded.company == "TUBC"  # a PR backend must never reach a live GP company
 
 
 @pytest.mark.parametrize(
@@ -111,3 +103,59 @@ def test_seed_on_startup_never_raises(monkeypatch):
 
     monkeypatch.setattr(relay_seed, "seed_from_env", boom)
     relay_seed.seed_on_startup()  # must not raise
+
+
+def test_a_database_holding_a_real_enrolled_relay_is_never_seeded(db_session):
+    # The naming check alone fails OPEN - rename the base environment, restore a prod dump into
+    # staging, or point DATABASE_URL somewhere shared, and a credential whose preimage sits in a
+    # Railway variable lands next to the real install. `hostname` is written only by enroll_install, so
+    # its presence means a real relay paired with this database whatever the environment is called.
+    real = RelayInstall(
+        id=uuid.uuid4(),
+        label="TAGGING3W10",
+        company="UCSH",
+        hostname="Tagging3W10",
+        secret_hash="c" * 64,
+        enrolled_at=datetime.utcnow(),
+    )
+    db_session.add(real)
+    db_session.flush()
+
+    assert relay_seed.seed_from_env(db_session, environment_name="staging", secret_hash=HASH) is None
+    assert db_session.query(RelayInstall).filter(RelayInstall.secret_hash == HASH).count() == 0
+    assert real.company == "UCSH"  # untouched
+
+
+def test_an_existing_row_carrying_the_hash_is_left_completely_alone(db_session):
+    # An earlier draft "repaired" the company here. On a live install that silently repoints a real
+    # credential from UBC/UCSH to TUBC, with the original value surviving only in a log line.
+    real = RelayInstall(id=uuid.uuid4(), label="hand-made", company="UCSH", secret_hash=HASH)
+    db_session.add(real)
+    db_session.flush()
+
+    returned = relay_seed.seed_from_env(db_session, environment_name="pr-414", secret_hash=HASH)
+    assert returned.id == real.id
+    assert returned.company == "UCSH"  # NOT rewritten to TUBC
+    assert returned.label == "hand-made"
+
+
+def test_rotating_the_hash_removes_the_superseded_seed_row(db_session):
+    # Otherwise the old secret keeps authenticating in that environment forever, and the grid grows a
+    # row per rotation.
+    first = relay_seed.seed_from_env(db_session, environment_name="pr-414", secret_hash=HASH)
+    first_id = first.id
+    rotated = "d" * 64
+    second = relay_seed.seed_from_env(db_session, environment_name="pr-414", secret_hash=rotated)
+
+    assert second.id != first_id
+    assert db_session.query(RelayInstall).filter(RelayInstall.secret_hash == HASH).count() == 0
+    assert db_session.query(RelayInstall).filter(RelayInstall.label == "seed:pr-414").count() == 1
+
+
+def test_rotation_only_removes_this_environments_own_seed_row(db_session):
+    other = RelayInstall(id=uuid.uuid4(), label="seed:pr-999", company="TUBC", secret_hash="e" * 64)
+    db_session.add(other)
+    db_session.flush()
+
+    relay_seed.seed_from_env(db_session, environment_name="pr-414", secret_hash=HASH)
+    assert db_session.query(RelayInstall).filter(RelayInstall.label == "seed:pr-999").count() == 1

@@ -196,16 +196,24 @@ it('copies the full seed hash for the PR-environment variable', async () => {
   // provision + enroll cycle. The grid truncates it to stay readable, so the copy must carry the whole
   // digest - a truncated one silently never matches on the handshake.
   const copied: string[] = [];
+  // Captured and restored: the stub would otherwise persist for every later test in this worker, which
+  // could then observe this array instead of its own and pass for the wrong reason.
+  const original = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
   Object.defineProperty(navigator, 'clipboard', {
     configurable: true,
     value: { writeText: (t: string) => { copied.push(t); return Promise.resolve(); } },
   });
 
-  renderPage([statusMock, installsMock, windowMock(null)]);
+  try {
+    renderPage([statusMock, installsMock, windowMock(null)]);
 
-  const button = await screen.findByRole('button', { name: /copy seed hash/i }, GRID_TIMEOUT);
-  fireEvent.click(button);
-  await waitFor(() => expect(copied).toEqual([INSTALL.secretHash]), GRID_TIMEOUT);
+    const button = await screen.findByRole('button', { name: /copy seed hash/i }, GRID_TIMEOUT);
+    fireEvent.click(button);
+    await waitFor(() => expect(copied).toEqual([INSTALL.secretHash]), GRID_TIMEOUT);
+  } finally {
+    if (original) Object.defineProperty(navigator, 'clipboard', original);
+    else delete (navigator as unknown as Record<string, unknown>).clipboard;
+  }
 });
 
 it('shows no seed hash for an install that has not enrolled yet', async () => {

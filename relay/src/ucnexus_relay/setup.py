@@ -51,9 +51,14 @@ def build_config_toml(fields: dict) -> str:
     # were added by hand (#414), and then it must survive a re-run of the wizard: those URLs exist
     # nowhere else, so dropping them would silently disconnect a PR environment mid-test.
     backend_url = fields.get("backend_url")
-    if backend_url:
-        rendered = _arr(backend_url) if isinstance(backend_url, list) else _s(backend_url)
-        lines += ["[channel]", f"backend_url = {rendered}", ""]
+    extra = fields.get("extra_backend_urls")
+    if backend_url or extra:
+        lines += ["[channel]"]
+        if backend_url:
+            lines += [f"backend_url = {_arr(backend_url) if isinstance(backend_url, list) else _s(backend_url)}"]
+        if extra:
+            lines += [f"extra_backend_urls = {_arr(extra if isinstance(extra, list) else [extra])}"]
+        lines += [""]
     return "\n".join(lines)
 
 
@@ -74,10 +79,11 @@ def write_config(fields: dict, config_path: str | Path) -> dict:
             sec = (existing.get("auth") or {}).get("shared_secret")
             if sec and sec != _PLACEHOLDER_SECRET:
                 fields["shared_secret"] = sec
-        if "backend_url" not in fields:
-            url = (existing.get("channel") or {}).get("backend_url")
-            if url:
-                fields["backend_url"] = url
+        for key in ("backend_url", "extra_backend_urls"):
+            if key not in fields:
+                value = (existing.get("channel") or {}).get(key)
+                if value:
+                    fields[key] = value
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(build_config_toml(fields), encoding="utf-8")
     return {"ok": True, "path": str(config_path)}
@@ -118,9 +124,11 @@ def test_gp_connection(config_path: str | Path) -> dict:
     company = (data.get("gp") or {}).get("default_company") or "TUBC"
     try:
         with pyodbc.connect(_conn_string(sql, company), autocommit=True) as conn:
-            row = conn.cursor().execute(
-                "SELECT SUSER_NAME() AS login, DB_NAME() AS db, IS_MEMBER('DYNGRP') AS dyngrp"
-            ).fetchone()
+            row = (
+                conn.cursor()
+                .execute("SELECT SUSER_NAME() AS login, DB_NAME() AS db, IS_MEMBER('DYNGRP') AS dyngrp")
+                .fetchone()
+            )
         return {
             "ok": True,
             "company": company,

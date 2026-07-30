@@ -40,7 +40,13 @@ from pydantic import ValidationError as PydanticValidationError
 
 from . import __version__ as VERSION
 from . import db, econnect, errors, models, ops
-from .config import channel_allowed_companies, get_settings, is_primary_backend_url
+from .config import (
+    PRODUCTION_BACKEND_URL,
+    channel_allowed_companies,
+    get_settings,
+    is_primary_backend_url,
+    primary_url,
+)
 from .logging_setup import get_logger
 
 logger = get_logger()
@@ -71,16 +77,29 @@ def channel_state_snapshot() -> dict:
     and neither should start reporting on a throwaway PR-environment channel. `channels` carries the
     per-URL detail for the app to render when more than one is configured. With no primary configured
     (a dev checkout pointed at localhost) the first channel stands in, so the app is never blank."""
-    primary_url = next((url for url in _STATES if is_primary_backend_url(url)), None)
-    if primary_url is None:
-        primary_url = next(iter(_STATES), None)
-    snapshot = dict(_STATES.get(primary_url, _UNKNOWN_STATE) if primary_url else _UNKNOWN_STATE)
+    # Copy the mapping ONCE before walking it. /health is a sync def, so Starlette runs it on a
+    # threadpool worker while the event loop keeps running - and a channel's first _mark_* call INSERTS
+    # a key. Iterating _STATES directly could then raise "dictionary changed size during iteration",
+    # which surfaces as /health 500 -> the desktop app reporting the relay "not running" and the update
+    # poller deferring forever. list(dict.items()) takes no Python-level callbacks, so it cannot
+    # interleave. (register_channels pre-seeds the keys too, so in practice this is belt and braces.)
+    states = list(_STATES.items())
+    urls = [url for url, _ in states]
+    chosen = primary_url(urls)
+    snapshot = dict(dict(states).get(chosen, _UNKNOWN_STATE) if chosen else _UNKNOWN_STATE)
     snapshot["jobs_in_flight"] = _INFLIGHT
     snapshot["last_job_finished_ago"] = None if _LAST_JOB_AT is None else time.monotonic() - _LAST_JOB_AT
-    snapshot["channels"] = [
-        {"url": url, "primary": is_primary_backend_url(url), **state} for url, state in _STATES.items()
-    ]
+    snapshot["channels"] = [{"url": url, "primary": is_primary_backend_url(url), **state} for url, state in states]
     return snapshot
+
+
+def register_channels(urls: list[str]) -> None:
+    """Pre-seed a state row per configured URL, before any of them dials. Two reasons: the desktop
+    app's panel can then list every channel from the first poll instead of only those that have already
+    attempted a connection (an operator who just added a PR URL would otherwise see no sign of it), and
+    the key set stops changing under channel_state_snapshot once startup is done."""
+    for url in urls:
+        _STATES.setdefault(url, dict(_UNKNOWN_STATE))
 
 
 def _mark_connected(url: str) -> None:
@@ -331,7 +350,10 @@ def _dispatch(op: str, company: str, payload: dict, allowed_companies: list[str]
             "ok": False,
             "error": errors.error_body(
                 "company_not_allowed_on_channel",
-                f"{company} is not reachable from a non-production backend; only {allowed_companies} is",
+                # Joined, not interpolated as a list: relay_gateway raises RelayCallError(error
+                # ["message"]), so this string is what the browser shows - "only ['TUBC']" would leak a
+                # Python repr into the UI.
+                f"{company} is not reachable from a non-production backend; only {', '.join(allowed_companies)} is",
                 company=company,
                 allowed=list(allowed_companies),
             ),
@@ -472,7 +494,8 @@ async def _run_channel(url: str, stop_event: asyncio.Event | None = None) -> Non
     and failure classification are per-channel, so a dead PR environment retrying at its ceiling has
     no effect on how fast production reconnects."""
     primary = is_primary_backend_url(url)
-    backoff = get_settings().channel.reconnect_min_seconds
+    settings = get_settings()
+    backoff = settings.channel.reconnect_min_seconds
     prev_category: str | None = None
     while stop_event is None or not stop_event.is_set():
         # Re-read config on EVERY attempt, dropping the lru_cache first. Reading the secret once before
@@ -481,8 +504,20 @@ async def _run_channel(url: str, stop_event: asyncio.Event | None = None) -> Non
         # so the backend 403'd every handshake until someone restarted the service by hand - on a
         # workstation that may be nowhere near whoever is debugging. Now a re-enrolment self-heals on
         # the next retry. Cost is one small TOML parse per reconnect attempt.
-        get_settings.cache_clear()
-        settings = get_settings()
+        #
+        # Guarded, and keeping the last good Settings on failure: hand-editing config.toml on a running
+        # relay is the documented way to add a test backend (#414), so a save caught mid-write or a
+        # missing bracket is a live possibility. Letting that raise here - outside the try below - would
+        # kill this channel task outright, production's included, and no amount of fixing the file would
+        # bring it back without a serve restart.
+        try:
+            get_settings.cache_clear()
+            settings = get_settings()
+        except Exception as e:
+            logger.warning(
+                "could not re-read config.toml; retrying with the last good settings",
+                extra={"category": "config_unreadable", "error": str(e), "url": url},
+            )
         secret = settings.auth.shared_secret
         cfg = settings.channel
         try:
@@ -509,9 +544,7 @@ async def _run_channel(url: str, stop_event: asyncio.Event | None = None) -> Non
                 message,
                 extra={"category": category, "error": str(e), "backoff": backoff, "url": url},
             )
-            _mark_disconnected(
-                url, category if category in ("secret_rejected", "slot_busy") else "disconnected"
-            )
+            _mark_disconnected(url, category if category in ("secret_rejected", "slot_busy") else "disconnected")
             if category == "server_restarting":
                 # A deploy, not a fault: the backend told us it is coming straight back, so dial again
                 # at the minimum interval rather than growing the backoff and sitting out the first
@@ -538,15 +571,41 @@ async def run_forever(stop_event: asyncio.Event | None = None) -> None:
         logger.info("channel disabled (no [channel] backend_url configured)")
         return
 
+    if not any(is_primary_backend_url(url) for url in urls):
+        # Loud, because the likeliest cause is a typo in a hand-added backend_url list rather than a
+        # deliberate choice: production is then just another restricted channel and every real UBC/UCSH
+        # job is refused with company_not_allowed_on_channel. A dev checkout pointed at localhost hits
+        # this legitimately, which is why it warns rather than refusing to start.
+        logger.warning(
+            "no production channel configured - EVERY channel is restricted to the sandbox company. "
+            "if this is a workstation, check [channel] backend_url matches the production URL exactly, "
+            "or list only the extra backend under [channel] extra_backend_urls and leave backend_url alone.",
+            extra={"category": "no_primary_channel", "urls": urls, "expected": PRODUCTION_BACKEND_URL},
+        )
+
     logger.info("starting backend channels", extra={"urls": urls})
-    tasks = [asyncio.create_task(_run_channel(url, stop_event), name=f"channel:{url}") for url in urls]
+    register_channels(urls)  # so /health lists every channel from the first poll, before any dials
+
+    async def _supervised(url: str) -> None:
+        """Log a channel that escapes its own retry loop. _run_channel is not supposed to - it catches
+        Exception per attempt - but if it ever does, the log has to happen HERE. Doing it from the
+        gather() below cannot work: gather returns only once EVERY awaitable is done, and the siblings
+        loop forever, so an aggregated result is never reached and a dead channel would be visible
+        only as a stale 'disconnected' on /health with nothing in relay.log."""
+        try:
+            await _run_channel(url, stop_event)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                "backend channel exited unexpectedly and will not reconnect until serve restarts",
+                extra={"category": "channel_died", "url": url},
+            )
+            _mark_disconnected(url, "failed")
+
+    tasks = [asyncio.create_task(_supervised(url), name=f"channel:{url}") for url in urls]
     try:
-        # Each _run_channel loops until stop_event; gather returns only on cancellation or a bug. A
-        # channel that somehow raises must not silently take the others down with it, so the exception
-        # is returned rather than propagated, and logged.
-        for url, result in zip(urls, await asyncio.gather(*tasks, return_exceptions=True), strict=True):
-            if isinstance(result, Exception):
-                logger.exception("backend channel exited unexpectedly", exc_info=result, extra={"url": url})
+        await asyncio.gather(*tasks, return_exceptions=True)
     finally:
         # Reap them rather than just cancelling: cli.py cancels THIS task on shutdown, and a bare
         # cancel() would leave the children pending as the loop closes ("Task was destroyed but it is

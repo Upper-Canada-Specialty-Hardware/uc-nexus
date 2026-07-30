@@ -43,20 +43,47 @@ logger = logging.getLogger(__name__)
 # seeding is acceptable at all is that the blast radius is a sandbox.
 SEED_COMPANY = "TUBC"
 
+# Every row this service creates is labelled with this prefix, which is what lets it recognise its own
+# work later - both to clean up a rotated hash and to stay off rows it did not create.
+SEED_LABEL_PREFIX = "seed:"
+
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _real_relay_install(session: Session) -> RelayInstall | None:
+    """The first install that a real relay actually enrolled, or None.
+
+    `hostname` is the discriminator: only `enroll_install` writes it, from the workstation's own
+    `socket.gethostname()`. Seeded rows never have one, so this does not see its own output and
+    re-seeding keeps working across deploys. A naming-independent signal is the point - an environment
+    whose database holds a genuinely paired relay is production or a copy of it, however it is named."""
+    return session.scalars(select(RelayInstall).where(RelayInstall.hostname.is_not(None)).limit(1)).first()
 
 
 def _is_production(environment_name: str) -> bool:
     return environment_name.strip().lower() == "production"
 
 
+def _seed_label(environment_name: str) -> str:
+    return f"{SEED_LABEL_PREFIX}{environment_name.strip() or 'local'}"
+
+
 def seed_from_env(session: Session, *, environment_name: str, secret_hash: str) -> RelayInstall | None:
     """Ensure a relay install exists for `secret_hash`, or return None if seeding does not apply.
 
-    Idempotent, and keyed on the hash rather than the label: the install this creates is
-    indistinguishable from an enrolled one as far as `authenticate_secret` is concerned, so re-running
-    it on every boot must converge on exactly one row. A row that already carries the hash (whether
-    seeded here or genuinely enrolled) is left alone apart from repairing its company."""
+    Idempotent: re-running it on every boot converges on exactly one row. Two rules make that safe
+    rather than merely convergent, and both matter more than the convergence does.
+
+    It never MUTATES a row it did not create. An earlier draft repaired the company of whatever row
+    already carried the hash, which is fine for its own seed row and catastrophic for the real one: in
+    any environment holding a genuine install (production, or a database restored from it) that
+    silently repoints a live credential from UBC/UCSH to TUBC, and the original value survives only in
+    a log line. A row that already carries the hash is now left completely alone.
+
+    And it refuses outright wherever a relay has genuinely enrolled - see _looks_like_a_real_relay_env.
+    The environment-name check alone is a single-string denylist that fails OPEN: rename the base
+    environment, restore a dump into staging, or point DATABASE_URL somewhere shared, and a credential
+    whose preimage lives in a Railway variable gets inserted next to the real one."""
     secret_hash = (secret_hash or "").strip().lower()
     if not secret_hash:
         return None
@@ -77,21 +104,44 @@ def seed_from_env(session: Session, *, environment_name: str, secret_hash: str) 
         )
         return None
 
+    paired = _real_relay_install(session)
+    if paired is not None:
+        logger.error(
+            "RELAY_SEED_SECRET_HASH is set, but this database already holds a relay install that a real "
+            "relay enrolled - refusing to seed. Seeding is for a fresh PR environment; a database with "
+            "a genuine install is production or a copy of it, whatever the environment is named.",
+            extra={"install_id": str(paired.id), "label": paired.label, "environment": environment_name},
+        )
+        return None
+
     existing = session.scalars(select(RelayInstall).where(RelayInstall.secret_hash == secret_hash)).first()
     if existing is not None:
+        # Deliberately untouched, company included. See the docstring.
         if existing.company != SEED_COMPANY:
             logger.warning(
-                "seeded relay install had the wrong company; repointing to the sandbox",
-                extra={"install_id": str(existing.id), "was": existing.company, "now": SEED_COMPANY},
+                "an install already carries the seed hash but is not on the sandbox company; leaving it "
+                "as it is. relay_call will refuse any company that does not match it.",
+                extra={"install_id": str(existing.id), "company": existing.company},
             )
-            existing.company = SEED_COMPANY
-            session.flush()
         return existing
+
+    # Drop this environment's PREVIOUS seed row, if the hash has been rotated since. Without it the
+    # superseded secret keeps authenticating here forever, and the grid grows a row per rotation.
+    label = _seed_label(environment_name)
+    stale = session.scalars(
+        select(RelayInstall).where(RelayInstall.label == label, RelayInstall.secret_hash != secret_hash)
+    ).all()
+    for row in stale:
+        logger.info(
+            "removing a superseded seeded relay install",
+            extra={"install_id": str(row.id), "label": row.label},
+        )
+        session.delete(row)
 
     now = datetime.utcnow()
     install = RelayInstall(
         id=uuid.uuid4(),
-        label=f"seed:{environment_name.strip() or 'local'}",
+        label=label,
         company=SEED_COMPANY,
         secret_hash=secret_hash,
         # Marked enrolled on creation: there is no enrollment token and none is wanted - the relay
