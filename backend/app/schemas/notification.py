@@ -16,6 +16,7 @@ class NotificationQueries:
     @strawberry.field
     def notifications(
         self,
+        info: strawberry.Info,
         project_id: strawberry.ID | None = None,
         recipient_role: str = "",
         unread_only: bool | None = None,
@@ -35,7 +36,7 @@ class NotificationQueries:
 @strawberry.type
 class NotificationMutations:
     @strawberry.mutation
-    def mark_notification_as_read(self, id: strawberry.ID) -> Notification:
+    def mark_notification_as_read(self, info: strawberry.Info, id: strawberry.ID) -> Notification:
         with SessionLocal() as session:
             notification = notification_repository.mark_as_read(session, uuid.UUID(str(id)))
             session.commit()

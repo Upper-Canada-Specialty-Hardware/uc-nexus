@@ -136,6 +136,11 @@ class RelayInstallInfo:
     # authenticate - that has to stay visible long after the in-memory window is gone.
     adopted_at: datetime | None = None
     adopted_by: str | None = None
+    # SHA-256 hex of this install's Bearer secret - the value RELAY_SEED_SECRET_HASH wants (#414).
+    # Exposed so an admin can copy it into the Railway PR-environment template instead of running SQL
+    # against Postgres. A digest is a verifier, not a credential: it authenticates nothing, only its
+    # preimage does, and that never leaves the workstation. The query is admin-gated regardless.
+    secret_hash: str | None = None
 
 
 @strawberry.type
@@ -484,6 +489,16 @@ class PurchaseOrder:
 
 
 @strawberry.type
+class GpSetupIssue:
+    """One JC00701 cost code on this project's GP job whose GL account index does not exist in the
+    company's chart (#425). What the quarantine banner names, so the message points at something
+    accounting can look up rather than at "GP setup"."""
+
+    cost_code: str  # 'phase-step-element', as the register-PO dropdown shows it
+    account_index: int  # the dangling index, absent from GL00105
+
+
+@strawberry.type
 class Project:
     id: strawberry.ID
     project_id: str
@@ -508,6 +523,15 @@ class Project:
     created_at: datetime
     updated_at: datetime
     opening_count: int
+    # GP job setup verdict (#425). Plain scalar columns on the project row plus a parse of the JSON
+    # detail column, so no relationship is walked and these are safe on the all-projects list query -
+    # unlike `openings` below, which list callers deliberately leave empty.
+    #
+    # null means never checked (no relay has answered yet) and does NOT quarantine; false does. The
+    # frontend must treat them differently or a relay outage would grey out the whole application.
+    gp_setup_ok: bool | None
+    gp_setup_checked_at: datetime | None
+    gp_setup_issues: list[GpSetupIssue]
     openings: list[Opening]
     purchase_orders: list[PurchaseOrder]
 
@@ -1342,15 +1366,20 @@ class LocationMergeResult:
 
 @strawberry.type
 class BackOrderedItem:
+    # The PO line this row IS. A back-ordered row has no identity of its own, so without this the
+    # only key a client can build is its position in the result, which changes under the query's own
+    # ORDER BY every time anything is received.
+    po_line_item_id: strawberry.ID
     hardware_category: str
     product_code: str
     ordered_quantity: int
     received_quantity: int
     outstanding_quantity: int
-    unit_cost: float
     po_number: str | None
     vendor_name: str | None
     expected_delivery_date: date | None
+    # None for a stock PO, which has no project to name.
+    project_name: str | None
 
 
 @strawberry.type
@@ -1491,11 +1520,20 @@ class BuyerAssignmentProject:
 
 @strawberry.type
 class BuyerAssignment:
-    """Issue #216: the projects a GP buyer may create POs for + their designated cost codes."""
+    """Issue #216: the projects a GP buyer may create POs for."""
 
     buyer_id: str
-    cost_codes: list[str]
     projects: list[BuyerAssignmentProject]
+    # Always []. Per-buyer cost-code designation was removed (every code GP reports active for the job
+    # is selectable), but a browser tab loaded before that deploy still asks for this field, and an
+    # unknown field is a GraphQL validation error the frontend's chunk-error boundary cannot catch.
+    # Kept until deployed frontends no longer request it, then dropped with the field on the mutation.
+    # Known limit of the shim: it preserves schema validity, not the old behavior - a stale PO tab
+    # filters the job's GP codes against this empty list, so its cost-code dropdown reads empty
+    # ("No cost codes defined for this job in GP") until the tab is reloaded.
+    cost_codes: list[str] = strawberry.field(
+        default_factory=list, deprecation_reason="cost-code designation removed; always empty"
+    )
 
 
 @strawberry.type

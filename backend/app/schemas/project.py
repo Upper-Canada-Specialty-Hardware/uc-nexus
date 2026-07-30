@@ -6,7 +6,6 @@ import uuid
 
 import strawberry
 
-from app.auth import require_admin
 from app.database import SessionLocal
 from app.errors import (
     ConflictError,
@@ -47,7 +46,9 @@ async def _adopt_existing(job_number: str) -> Project:
 @strawberry.type
 class ProjectQueries:
     @strawberry.field
-    def projects(self) -> list[Project]:
+    def projects(self, info: strawberry.Info) -> list[Project]:
+        """The project picker every module reads, so signed-in rather than the admin requirement on
+        `admin_projects` below - same rows, fewer fields."""
         with SessionLocal() as session:
             rows = project_repository.list_projects_with_opening_counts(session)
             return [project_to_type(p, include_openings=False, opening_count=count) for p, count in rows]
@@ -55,13 +56,12 @@ class ProjectQueries:
     @strawberry.field
     def admin_projects(self, info: strawberry.Info) -> list[Project]:
         """Admin/Manager-only project list with all editable fields for the admin Projects page."""
-        require_admin(info)
         with SessionLocal() as session:
             rows = project_repository.list_projects_with_opening_counts(session)
             return [project_to_type(p, include_openings=False, opening_count=count) for p, count in rows]
 
     @strawberry.field
-    def project_by_schedule_id(self, project_id: str) -> Project | None:
+    def project_by_schedule_id(self, info: strawberry.Info, project_id: str) -> Project | None:
         with SessionLocal() as session:
             p = project_repository.get_project_by_schedule_id(session, project_id)
             if p is None:
@@ -69,7 +69,7 @@ class ProjectQueries:
             return project_to_type(p)
 
     @strawberry.field
-    def project_ship_to(self, project_id: strawberry.ID) -> ProjectShipTo | None:
+    def project_ship_to(self, info: strawberry.Info, project_id: strawberry.ID) -> ProjectShipTo | None:
         """The job-site address block for a project, by its UUID - the "deliver to site" ship-to option
         on the generated PO document (issue #230). A lean projection, kept off the PO list query."""
         with SessionLocal() as session:
@@ -107,7 +107,6 @@ class ProjectMutations:
 
         Admin-only. Creating a job writes to the accounting system of record.
         """
-        require_admin(info)
 
         company = relay_gateway.company
         if not company:
@@ -190,13 +189,11 @@ class ProjectMutations:
         The background service already does this on a timer and on every relay reconnect, so this is
         for the case where someone wants to see the result immediately - after creating a job directly
         in GP, or when checking whether the sync is working at all."""
-        require_admin(info)
         total, adopted = await gp_job_sync.run_once()
         return GpJobSyncResult(total=total, adopted=adopted)
 
     @strawberry.mutation
     def update_project(self, info: strawberry.Info, id: strawberry.ID, input: UpdateProjectInput) -> Project:
-        require_admin(info)
         with SessionLocal() as session:
             project = project_repository.update_project(
                 session,

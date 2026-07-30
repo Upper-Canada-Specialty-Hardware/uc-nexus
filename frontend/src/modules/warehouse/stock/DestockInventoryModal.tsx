@@ -81,7 +81,6 @@ export default function DestockInventoryModal({ inventoryLocation, onClose, onSu
           targetAisle: overrideLoc ? aisle.trim() || null : null,
           targetRow: overrideLoc ? row.trim() || null : null,
           targetBay: overrideLoc ? bay.trim() || null : null,
-          performedBy: 'Warehouse',
         },
       },
     });

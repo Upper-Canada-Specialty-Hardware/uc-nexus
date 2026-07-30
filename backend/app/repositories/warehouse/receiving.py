@@ -1,4 +1,4 @@
-"""PO receiving: eligibility pre-flight, receive persistence, delivery/back-order reads."""
+"""PO receiving: eligibility pre-flight, receive persistence, back-order reads."""
 
 import uuid
 from datetime import datetime
@@ -17,6 +17,7 @@ from app.models.enums import (
     ReservationSource,
 )
 from app.models.inventory import InventoryLocation as InventoryLocationModel
+from app.models.project import Project as ProjectModel
 from app.models.pull_request import PullRequest as PullRequestModel
 from app.models.pull_request import PullRequestItem as PullRequestItemModel
 from app.models.purchase_order import POLineItem as POLineItemModel
@@ -24,6 +25,7 @@ from app.models.purchase_order import PurchaseOrder as POModel
 from app.models.receiving import ReceiveLineItem as ReceiveLineItemModel
 from app.models.receiving import ReceiveRecord as ReceiveRecordModel
 from app.models.vendor import Vendor as VendorModel
+from app.repositories import project_repository
 from app.services import notification_service
 from app.services.locking import lock_rows
 
@@ -60,6 +62,13 @@ def validate_receive_eligibility(
         raise ValidationError("received_by must be 1-100 characters", field="received_by")
     if not line_items_input:
         raise ValidationError("At least one line item is required", field="line_items")
+    # #425: the quarantine gate for receiving, and it belongs HERE rather than in create_receive.
+    # This runs before the GP receipt is posted; create_receive runs after GP has already committed
+    # it, and refusing there would leave a receipt in GP that Nexus will not book - the exact
+    # split-brain the GP-first ordering exists to avoid. A broken job cannot be received anyway
+    # (taPopRcptLineInsert rejects the line's account index with eConnect 4612), so this turns an
+    # unavoidable failure into one that names the cause.
+    project_repository.require_gp_setup_ok(session, po.project_id)
 
     poli_dict: dict[uuid.UUID, POLineItemModel] = {li.id: li for li in po.line_items}
     receipt_line_items: list[dict] = []
@@ -538,28 +547,25 @@ def get_po_receiving_details(session: Session, po_id: uuid.UUID) -> tuple[POMode
     return (po, receive_records)
 
 
-def get_expected_deliveries(session: Session, project_id: uuid.UUID | None = None) -> list:
-    """Active POs with outstanding line items, ordered by expected_delivery_date."""
-    stmt = (
-        select(POModel)
-        .options(selectinload(POModel.line_items), selectinload(POModel.vendor))
-        .where(
-            POModel.status.in_([POStatus.GP_REGISTERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED]),
-            POModel.deleted_at.is_(None),
-        )
-        .order_by(POModel.expected_delivery_date.asc().nulls_last(), POModel.ordered_at.asc())
-    )
-    if project_id is not None:
-        stmt = stmt.where(POModel.project_id == project_id)
-    return list(session.scalars(stmt).unique().all())
-
-
 def get_back_ordered_items(session: Session, project_id: uuid.UUID | None = None) -> list[dict]:
-    """PO line items where received < ordered on active POs."""
+    """PO line items where received < ordered on active POs.
+
+    The project is outer-joined because this feeds the Receiving page's back-order section, which is
+    cross-project by default and therefore has to name the project on every row. A stock PO has no
+    project at all, so `project_name` comes back None and the caller labels it.
+    """
     stmt = (
-        select(POLineItemModel, POModel.po_number, VendorModel.name, POModel.expected_delivery_date)
+        select(
+            POLineItemModel,
+            POModel.po_number,
+            VendorModel.name,
+            POModel.expected_delivery_date,
+            ProjectModel.description,
+            ProjectModel.project_id,
+        )
         .join(POModel, POLineItemModel.po_id == POModel.id)
         .outerjoin(VendorModel, POModel.vendor_id == VendorModel.id)
+        .outerjoin(ProjectModel, POModel.project_id == ProjectModel.id)
         .where(
             POModel.status.in_([POStatus.GP_REGISTERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED]),
             POModel.deleted_at.is_(None),
@@ -576,6 +582,9 @@ def get_back_ordered_items(session: Session, project_id: uuid.UUID | None = None
             "po_number": row[1],
             "vendor_name": row[2],
             "expected_delivery_date": row[3],
+            # Same fallback the rest of the app shows a project by: the description if it has one,
+            # otherwise the TITAN project number.
+            "project_name": row[4] or row[5] or None,
             "outstanding_quantity": row[0].ordered_quantity - row[0].received_quantity,
         }
         for row in rows

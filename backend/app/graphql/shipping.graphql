@@ -78,10 +78,12 @@ type Query {
 type Mutation {
   confirmShipment(input: ConfirmShipmentInput!): PackingSlip!
   createShipmentReturn(input: CreateShipmentReturnInput!): ShipmentReturn!
-  # Accept gate (#293). Any signed-in user (require_user). acceptedBy/rejectedBy is the caller's
-  # display name. Accept mints the warehouse PullRequest; the warehouse approve handles shortfalls.
-  acceptShippingOutRequest(id: ID!, acceptedBy: String!): ShippingOutRequest!
-  rejectShippingOutRequest(id: ID!, rejectedBy: String!, reason: String): ShippingOutRequest!
+  # Accept gate (#293). Any signed-in user. Accept mints the warehouse PullRequest;
+  # the warehouse approve handles shortfalls. The approval is recorded against the
+  # Clerk-authenticated caller (#427) - acceptedBy/rejectedBy are accepted and IGNORED, kept only so
+  # a frontend from the previous deploy still validates.
+  acceptShippingOutRequest(id: ID!, acceptedBy: String @deprecated(reason: "ignored; actor is the caller")): ShippingOutRequest!
+  rejectShippingOutRequest(id: ID!, rejectedBy: String @deprecated(reason: "ignored; actor is the caller"), reason: String): ShippingOutRequest!
   # Reopen (#325). Undoes an erroneous accept: APPROVED -> PENDING, hard-deletes the minted
   # PullRequest. Refused if the warehouse has already worked the pull.
   reopenShippingOutRequest(id: ID!): ShippingOutRequest!

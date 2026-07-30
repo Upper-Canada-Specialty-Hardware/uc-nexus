@@ -17,7 +17,6 @@ import {
 import { useMutation, useQuery } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import { useToast } from '../../components/Toast';
-import { useIdentity } from '../../hooks/useIdentity';
 import { GET_WAREHOUSES } from '../../graphql/shared';
 import { GET_RETURNABLE_LINES, CREATE_SHIPMENT_RETURN } from '../../graphql/shipping';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
@@ -77,7 +76,6 @@ interface Props {
 }
 
 export default function ReturnShipmentDialog({ slip, onClose, onCompleted }: Props) {
-  const { displayName } = useIdentity();
   const { showToast } = useToast();
 
   const { data, loading, error } = useQuery<{ returnableLines: ReturnableLine[] }>(GET_RETURNABLE_LINES, {
@@ -186,7 +184,6 @@ export default function ReturnShipmentDialog({ slip, onClose, onCompleted }: Pro
         input: {
           packingSlipId: slip.id,
           warehouseId: effectiveWarehouseId,
-          returnedBy: displayName,
           reference: reference.trim() || null,
           items: built.items,
         },

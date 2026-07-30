@@ -7,6 +7,8 @@ import { GET_ADMIN_PROJECTS, SYNC_GP_JOBS } from '../../graphql/admin';
 import { useIdentity } from '../../hooks/useIdentity';
 import { useToast } from '../../components/Toast';
 import { extractGpError } from '../../graphql/gpError';
+import { GpSetupBadge } from '../../components/GpSetupQuarantineBanner';
+import { isGpSetupBroken } from '../../types/project';
 import { monoSx } from '../../theme';
 import { FadeIn } from '../../motion';
 import ProjectEditDialog, { type ProjectFormValue } from './ProjectEditDialog';
@@ -106,6 +108,16 @@ export default function ProjectsPage() {
         type: 'number',
         headerAlign: 'right',
         align: 'right',
+      },
+      {
+        // #425: the one place an admin can see, across every project at once, which GP jobs are
+        // quarantined - and therefore how much of the estate is waiting on accounting.
+        field: 'gpSetupOk',
+        headerName: 'GP Setup',
+        width: 150,
+        sortable: true,
+        renderCell: (params) =>
+          isGpSetupBroken(params.row) ? <GpSetupBadge project={params.row} /> : <span>—</span>,
       },
     ],
     [],

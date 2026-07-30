@@ -5,6 +5,12 @@ name: Relay Release
 # - push a tag like `relay-v0.1.0`               -> builds + attaches the zip to that GitHub Release
 # - run manually (workflow_dispatch)             -> builds + uploads the zip as a workflow artifact
 # path filters are not applied to tag pushes, so a `relay-v*` tag always builds regardless of what it touched.
+# workflow_dispatch works on any branch in this repo (`gh workflow run relay-release.yml --ref <branch>`) and
+# publishes nothing - that is how a PR adding an op to `_OPS` gets a build the workstation can serve it from
+# (#431). A branch build is stamped `relay-v<ver>-branch.<branch>.<sha>`, deliberately WITHOUT a `build.<N>`
+# number, so the updater reads it as older than every release and restores the published build on its own
+# instead of leaving a workstation on an unpublished build that looks like a release. See relay/README.md.
+# path filters do not apply to a dispatch either, so a PR that only touches backend/ still builds.
 # Onedir (not onefile) so the C-extension .pyd are permanent files, not re-extracted to %TEMP% on every
 # launch - that per-launch extraction collides with Windows Defender on a fresh self-update and crashes the
 # relaunched relay. DPAPI happens on the workstation at enroll time, so the CI build carries no secret -
@@ -45,15 +51,28 @@ jobs:
         # Write the release tag into _build.py so the packaged exe knows its own version, which the UI's
         # updater compares against the latest GitHub release. Matches the tag the publish steps below use
         # (github.ref_name for a tag push, relay-v<version>-build.<run_number> for a master push).
+        #
+        # A dispatch on a branch other than master is the PR-testing build (#431) and is stamped
+        # `relay-v<version>-branch.<slug>.<sha7>` instead. Two reasons the shape matters:
+        #  - it carries no `build.<N>`, so updater.build_number reads -1 and every published release
+        #    counts as newer. A `build.<run_number>` stamp would be HIGHER than the latest release (run
+        #    numbers only climb), so the workstation would sit on an unpublished branch build forever
+        #    while Admin -> Relay Installs showed something that looks exactly like a release.
+        #  - the branch and sha are visible in the reported build tag and in the artifact name, so two
+        #    branch builds cannot be mistaken for each other.
         shell: bash
         run: |
+          version=$(grep -E '^version' pyproject.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             build="${{ github.ref_name }}"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ github.ref_name }}" != "master" ]]; then
+            slug=$(printf '%s' "${{ github.ref_name }}" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-40)
+            build="relay-v${version}-branch.${slug}.${GITHUB_SHA:0:7}"
           else
-            version=$(grep -E '^version' pyproject.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
             build="relay-v${version}-build.${{ github.run_number }}"
           fi
           echo "BUILD = \"$build\"" > src/ucnexus_relay/_build.py
+          echo "BUILD_TAG=$build" >> "$GITHUB_ENV"
           echo "stamped $build -> src/ucnexus_relay/_build.py"
 
       - name: Build exe
@@ -78,10 +97,13 @@ jobs:
         shell: pwsh
 
       - name: Upload artifact (manual runs)
+        # Named after the stamped build, so a zip downloaded from an old run cannot be confused with the
+        # one from the branch under test (#431). Nothing is published here - a dispatch never cuts a
+        # Release, so a PR-branch build reaches only whoever downloads it deliberately.
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v7
         with:
-          name: ucnexus-relay-zip
+          name: ucnexus-relay-zip-${{ env.BUILD_TAG }}
           path: "relay/dist/ucnexus-relay.zip"
 
       - name: Publish to Release (tag pushes)

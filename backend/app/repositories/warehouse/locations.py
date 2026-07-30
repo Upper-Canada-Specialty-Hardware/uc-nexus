@@ -391,9 +391,13 @@ def merge_locations(
 
 
 def move_inventory_location(
-    session: Session, inv_id: uuid.UUID, new_aisle: str, new_row: str, new_bay: str
+    session: Session, inv_id: uuid.UUID, new_aisle: str, new_row: str, new_bay: str, *, performed_by: str
 ) -> InventoryLocationModel:
-    """Move an InventoryLocation to a new aisle/row/bay."""
+    """Move an InventoryLocation to a new aisle/row/bay.
+
+    `performed_by` is keyword-only and required (#427): the six put-away/unlocate/move helpers below
+    all hardcoded "Admin/Manager", which is what the location history panel showed for every physical
+    move of stock regardless of who made it."""
     il = session.get(InventoryLocationModel, inv_id)
     if il is None:
         raise NotFoundError(f"Inventory location {inv_id} not found")
@@ -411,7 +415,7 @@ def move_inventory_location(
         entity_type=AuditEntityType.INVENTORY_LOCATION,
         entity_id=il.id,
         action=AuditAction.MOVE,
-        performed_by="Admin/Manager",
+        performed_by=performed_by,
         detail={
             "fromLocation": {"aisle": old_aisle, "row": old_row, "bay": old_bay},
             "toLocation": {"aisle": new_aisle, "row": new_row, "bay": new_bay},
@@ -421,7 +425,7 @@ def move_inventory_location(
     return il
 
 
-def mark_inventory_unlocated(session: Session, inv_id: uuid.UUID) -> InventoryLocationModel:
+def mark_inventory_unlocated(session: Session, inv_id: uuid.UUID, *, performed_by: str) -> InventoryLocationModel:
     """Clear the aisle/row/bay on an InventoryLocation."""
     il = session.get(InventoryLocationModel, inv_id)
     if il is None:
@@ -438,7 +442,7 @@ def mark_inventory_unlocated(session: Session, inv_id: uuid.UUID) -> InventoryLo
         entity_type=AuditEntityType.INVENTORY_LOCATION,
         entity_id=il.id,
         action=AuditAction.UNLOCATE,
-        performed_by="Admin/Manager",
+        performed_by=performed_by,
         detail={"fromLocation": {"aisle": old_aisle, "row": old_row, "bay": old_bay}},
     )
 
@@ -446,7 +450,7 @@ def mark_inventory_unlocated(session: Session, inv_id: uuid.UUID) -> InventoryLo
 
 
 def assign_inventory_location(
-    session: Session, inv_id: uuid.UUID, aisle: str, row: str, bay: str
+    session: Session, inv_id: uuid.UUID, aisle: str, row: str, bay: str, *, performed_by: str
 ) -> InventoryLocationModel:
     """Assign aisle/row/bay to an InventoryLocation."""
     il = session.get(InventoryLocationModel, inv_id)
@@ -465,7 +469,7 @@ def assign_inventory_location(
         entity_type=AuditEntityType.INVENTORY_LOCATION,
         entity_id=il.id,
         action=AuditAction.PUT_AWAY,
-        performed_by="Admin/Manager",
+        performed_by=performed_by,
         detail={"toLocation": {"aisle": aisle, "row": row, "bay": bay}},
     )
 
@@ -479,6 +483,8 @@ def move_opening_item_location(
     row: str,
     bay: str,
     warehouse_id: uuid.UUID | None = None,
+    *,
+    performed_by: str,
 ) -> OpeningItemModel:
     """Move an OpeningItem (whole kit) to a new aisle/row/bay, optionally a different warehouse."""
     oi = session.get(OpeningItemModel, oi_id)
@@ -504,7 +510,7 @@ def move_opening_item_location(
         entity_type=AuditEntityType.OPENING_ITEM,
         entity_id=oi.id,
         action=AuditAction.MOVE,
-        performed_by="Admin/Manager",
+        performed_by=performed_by,
         detail={
             "fromWarehouseId": str(old_wh),
             "fromLocation": {"aisle": old_aisle, "row": old_row, "bay": old_bay},
@@ -516,7 +522,7 @@ def move_opening_item_location(
     return oi
 
 
-def mark_opening_item_unlocated(session: Session, oi_id: uuid.UUID) -> OpeningItemModel:
+def mark_opening_item_unlocated(session: Session, oi_id: uuid.UUID, *, performed_by: str) -> OpeningItemModel:
     """Clear the aisle/row/bay on an OpeningItem."""
     oi = session.get(OpeningItemModel, oi_id)
     if oi is None:
@@ -533,7 +539,7 @@ def mark_opening_item_unlocated(session: Session, oi_id: uuid.UUID) -> OpeningIt
         entity_type=AuditEntityType.OPENING_ITEM,
         entity_id=oi.id,
         action=AuditAction.UNLOCATE,
-        performed_by="Admin/Manager",
+        performed_by=performed_by,
         detail={"fromLocation": {"aisle": old_aisle, "row": old_row, "bay": old_bay}},
     )
 
@@ -541,7 +547,7 @@ def mark_opening_item_unlocated(session: Session, oi_id: uuid.UUID) -> OpeningIt
 
 
 def assign_opening_item_location(
-    session: Session, oi_id: uuid.UUID, aisle: str, row: str, bay: str
+    session: Session, oi_id: uuid.UUID, aisle: str, row: str, bay: str, *, performed_by: str
 ) -> OpeningItemModel:
     """Assign aisle/row/bay to an OpeningItem."""
     oi = session.get(OpeningItemModel, oi_id)
@@ -560,7 +566,7 @@ def assign_opening_item_location(
         entity_type=AuditEntityType.OPENING_ITEM,
         entity_id=oi.id,
         action=AuditAction.PUT_AWAY,
-        performed_by="Admin/Manager",
+        performed_by=performed_by,
         detail={"toLocation": {"aisle": aisle, "row": row, "bay": bay}},
     )
 

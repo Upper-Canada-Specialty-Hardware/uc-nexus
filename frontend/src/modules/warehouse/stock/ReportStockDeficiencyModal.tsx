@@ -40,7 +40,6 @@ export default function ReportStockDeficiencyModal({ item, onClose, onSuccess }:
           stockItemId: item.id,
           quantity: q,
           reasonText: reason.trim() || null,
-          performedBy: 'Warehouse',
         },
       },
     });

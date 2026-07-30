@@ -26,6 +26,12 @@ export const GET_ADMIN_PROJECTS = gql`
       openingCount
       createdAt
       updatedAt
+      gpSetupOk
+      gpSetupCheckedAt
+      gpSetupIssues {
+        costCode
+        accountIndex
+      }
     }
   }
 `;
@@ -74,6 +80,7 @@ export const RELAY_INSTALLS = gql`
       createdAt
       adoptedAt
       adoptedBy
+      secretHash
     }
   }
 `;
@@ -216,6 +223,12 @@ export const UPDATE_PROJECT = gql`
       openingCount
       createdAt
       updatedAt
+      gpSetupOk
+      gpSetupCheckedAt
+      gpSetupIssues {
+        costCode
+        accountIndex
+      }
     }
   }
 `;
@@ -384,11 +397,14 @@ export const CREATE_GP_BUYER = gql`
   }
 `;
 
+// costCodes is dead weight both ways (the new backend ignores it, nothing reads it back), but the
+// OLD backend still declares it as a required [String!]! - so keep sending the defaulted empty list
+// or a frontend that deploys ahead of the backend fails GraphQL validation on every save. The
+// follow-up PR that drops the argument from the schema drops it here first.
 export const SAVE_BUYER_ASSIGNMENT = gql`
-  mutation SaveBuyerAssignment($buyerId: String!, $projectIds: [ID!]!, $costCodes: [String!]!) {
+  mutation SaveBuyerAssignment($buyerId: String!, $projectIds: [ID!]!, $costCodes: [String!] = []) {
     saveBuyerAssignment(buyerId: $buyerId, projectIds: $projectIds, costCodes: $costCodes) {
       buyerId
-      costCodes
       projects {
         id
         projectId

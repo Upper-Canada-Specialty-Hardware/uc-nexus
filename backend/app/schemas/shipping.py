@@ -4,7 +4,7 @@ import uuid
 
 import strawberry
 
-from app.auth import require_user
+from app.auth import current_user, resolve_display_name
 from app.database import SessionLocal
 from app.repositories import shipping_repository
 
@@ -15,7 +15,7 @@ from .converters import (
     shipping_out_request_to_type,
 )
 from .enums import ShippingOutRequestStatus
-from .inputs import ConfirmShipmentInput, CreateShipmentReturnInput
+from .inputs import ConfirmShipmentInput, CreateShipmentReturnInput, IgnoredActorArg
 from .types import (
     PackingSlip,
     ReturnableLine,
@@ -29,7 +29,7 @@ from .types import (
 @strawberry.type
 class ShippingQueries:
     @strawberry.field
-    def ship_ready_items(self, project_id: strawberry.ID | None = None) -> ShipReadyItems:
+    def ship_ready_items(self, info: strawberry.Info, project_id: strawberry.ID | None = None) -> ShipReadyItems:
         with SessionLocal() as session:
             data = shipping_repository.get_ship_ready_items(session, uuid.UUID(str(project_id)) if project_id else None)
             return ShipReadyItems(
@@ -46,7 +46,7 @@ class ShippingQueries:
             )
 
     @strawberry.field
-    def packing_slips(self, project_id: strawberry.ID | None = None) -> list[PackingSlip]:
+    def packing_slips(self, info: strawberry.Info, project_id: strawberry.ID | None = None) -> list[PackingSlip]:
         with SessionLocal() as session:
             slips = shipping_repository.list_packing_slips(session, uuid.UUID(str(project_id)) if project_id else None)
             return [packing_slip_to_type(ps) for ps in slips]
@@ -54,6 +54,7 @@ class ShippingQueries:
     @strawberry.field
     def shipping_out_requests(
         self,
+        info: strawberry.Info,
         project_id: strawberry.ID | None = None,
         status: ShippingOutRequestStatus | None = None,
         reopenable_only: bool = False,
@@ -68,7 +69,7 @@ class ShippingQueries:
             return [shipping_out_request_to_type(r) for r in reqs]
 
     @strawberry.field
-    def returnable_lines(self, packing_slip_id: strawberry.ID) -> list[ReturnableLine]:
+    def returnable_lines(self, info: strawberry.Info, packing_slip_id: strawberry.ID) -> list[ReturnableLine]:
         with SessionLocal() as session:
             lines = shipping_repository.get_returnable_lines(session, uuid.UUID(str(packing_slip_id)))
             return [
@@ -89,28 +90,34 @@ class ShippingQueries:
 class ShippingMutations:
     @strawberry.mutation
     def accept_shipping_out_request(
-        self, info: strawberry.Info, id: strawberry.ID, accepted_by: str
+        self, info: strawberry.Info, id: strawberry.ID, accepted_by: IgnoredActorArg = None
     ) -> ShippingOutRequest:
         """Accept a PENDING shipping-out request (#293). Open to any signed-in user. Mints the
         warehouse PullRequest (SHIPPING_OUT, PENDING) from the request's items; the warehouse
-        approve handles any inventory shortfall (no gate here)."""
-        require_user(info)
+        approve handles any inventory shortfall (no gate here).
+
+        The approval names the Clerk-authenticated caller (#427), and carries onto the minted pull's
+        `requestedBy`."""
+        auth = current_user(info)
+        actor = resolve_display_name(auth["user_id"])
         request_id = uuid.UUID(str(id))
         with SessionLocal() as session:
-            shipping_repository.accept_shipping_out_request(session, request_id, accepted_by)
+            shipping_repository.accept_shipping_out_request(session, request_id, actor)
             session.commit()
             refreshed = shipping_repository.get_shipping_out_request(session, request_id)
             return shipping_out_request_to_type(refreshed)
 
     @strawberry.mutation
     def reject_shipping_out_request(
-        self, info: strawberry.Info, id: strawberry.ID, rejected_by: str, reason: str | None = None
+        self, info: strawberry.Info, id: strawberry.ID, rejected_by: IgnoredActorArg = None, reason: str | None = None
     ) -> ShippingOutRequest:
-        """Reject a PENDING shipping-out request (#293). Open to any signed-in user."""
-        require_user(info)
+        """Reject a PENDING shipping-out request (#293). Open to any signed-in user. Recorded against
+        the Clerk-authenticated caller (#427)."""
+        auth = current_user(info)
+        actor = resolve_display_name(auth["user_id"])
         request_id = uuid.UUID(str(id))
         with SessionLocal() as session:
-            shipping_repository.reject_shipping_out_request(session, request_id, rejected_by, reason)
+            shipping_repository.reject_shipping_out_request(session, request_id, actor, reason)
             session.commit()
             refreshed = shipping_repository.get_shipping_out_request(session, request_id)
             return shipping_out_request_to_type(refreshed)
@@ -121,7 +128,6 @@ class ShippingMutations:
         hard-deletes the warehouse PullRequest the accept minted and flips the request to PENDING so it
         can be re-accepted or rejected. Refused if the warehouse has already worked the pull. Open to
         any signed-in user."""
-        require_user(info)
         request_id = uuid.UUID(str(id))
         with SessionLocal() as session:
             shipping_repository.reopen_shipping_out_request(session, request_id)
@@ -130,7 +136,14 @@ class ShippingMutations:
             return shipping_out_request_to_type(refreshed)
 
     @strawberry.mutation
-    def confirm_shipment(self, input: ConfirmShipmentInput) -> PackingSlip:
+    def confirm_shipment(self, info: strawberry.Info, input: ConfirmShipmentInput) -> PackingSlip:
+        """Cut the packing slip for what actually went on the truck.
+
+        `shippedBy` is printed on the slip and shown in the shipments grid, so it is the record of
+        who released the hardware. It is the Clerk-authenticated caller as of #427; the input field
+        is still accepted and ignored."""
+        auth = current_user(info)
+        actor = resolve_display_name(auth["user_id"])
         from app.models.enums import PullRequestItemType
 
         project_id = uuid.UUID(str(input.project_id))
@@ -155,7 +168,7 @@ class ShippingMutations:
                 session,
                 project_id,
                 input.packing_slip_number,
-                input.shipped_by,
+                actor,
                 items_data,
             )
             session.commit()
@@ -163,7 +176,11 @@ class ShippingMutations:
             return packing_slip_to_type(refreshed)
 
     @strawberry.mutation
-    def create_shipment_return(self, input: CreateShipmentReturnInput) -> ShipmentReturn:
+    def create_shipment_return(self, info: strawberry.Info, input: CreateShipmentReturnInput) -> ShipmentReturn:
+        """Book hardware back off a packing slip. `returnedBy` is the Clerk-authenticated caller
+        (#427); the input field is still accepted and ignored."""
+        auth = current_user(info)
+        actor = resolve_display_name(auth["user_id"])
         from app.models.enums import ReturnDisposition
 
         items_data = [
@@ -182,7 +199,7 @@ class ShippingMutations:
                 session,
                 packing_slip_id=uuid.UUID(str(input.packing_slip_id)),
                 warehouse_id=uuid.UUID(str(input.warehouse_id)),
-                returned_by=input.returned_by,
+                returned_by=actor,
                 reference=input.reference,
                 items=items_data,
             )

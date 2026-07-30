@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, ForeignKey, Index, Integer, SmallInteger, String, UniqueConstraint, false
+from sqlalchemy import Boolean, ForeignKey, Index, Integer, SmallInteger, String, Text, UniqueConstraint, false
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from . import Base
@@ -33,6 +33,17 @@ class Project(Base):
     gc_contact_name: Mapped[str | None] = mapped_column(String, nullable=True)
     gc_phone: Mapped[str | None] = mapped_column(String, nullable=True)
     gc_email: Mapped[str | None] = mapped_column(String, nullable=True)
+    # GP job setup verdict, stamped by every gp_job_sync pass (#425). The project's GP job may carry
+    # JC00701 cost codes pointing at GL account indexes this company does not have - a legacy of the
+    # pre-2023 UCSH -> UBC job copy - which makes a PO on that job registerable but never receivable.
+    #
+    # NULL means never checked, and never-checked does NOT quarantine: the sync only runs while a
+    # relay is connected, so a relay outage would otherwise freeze all of Nexus. Only an explicit
+    # False blocks. gp_setup_detail is a JSON list of {cost_code, account_index} so the quarantine
+    # banner can name the codes accounting has to fix rather than saying "something is wrong".
+    gp_setup_ok: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    gp_setup_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    gp_setup_checked_at: Mapped[datetime | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 

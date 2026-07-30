@@ -4,7 +4,7 @@ import uuid
 
 import strawberry
 
-from app.auth import SHOP_ASSEMBLY_MANAGER_ROLE, require_role, require_user
+from app.auth import SHOP_ASSEMBLY_MANAGER_ROLE, current_user, require_role, resolve_display_name, user_roster
 from app.database import SessionLocal
 from app.repositories import shop_assembly_repository, user_repository
 from app.repositories import warehouse as warehouse_repository
@@ -22,6 +22,7 @@ from .enums import ShopAssemblyRequestStatus
 from .inputs import (
     AssignOpeningsInput,
     CompleteOpeningInput,
+    IgnoredActorArg,
     InstallReplacementInput,
     RecordAssemblyProgressInput,
 )
@@ -43,7 +44,6 @@ class ShopAssemblyQueries:
         self, info: strawberry.Info, project_id: strawberry.ID | None = None
     ) -> list[ShopAssemblyOpening]:
         """Openings whose shop-assembly pull is complete (#222). Open to any signed-in user."""
-        require_user(info)
         with SessionLocal() as session:
             saos = shop_assembly_repository.get_assemble_list(
                 session, uuid.UUID(str(project_id)) if project_id else None
@@ -54,7 +54,6 @@ class ShopAssemblyQueries:
     def my_work(self, info: strawberry.Info, assigned_to_user_id: str) -> list[ShopAssemblyOpening]:
         """An assembler's claimed, unfinished openings - PENDING or IN_PROGRESS (#340), so a leaf with
         saved partial progress stays reachable. Open to any signed-in user."""
-        require_user(info)
         with SessionLocal() as session:
             saos = shop_assembly_repository.get_my_work(session, assigned_to_user_id)
             return [shop_assembly_opening_to_type(sao) for sao in saos]
@@ -74,7 +73,6 @@ class ShopAssemblyQueries:
         included deliberately: that replacement must stay visible rather than be stranded, and the
         caller can tell from openingItemState that it needs reallocation instead of an install. Open
         to any signed-in user."""
-        require_user(info)
         with SessionLocal() as session:
             rows = shop_assembly_repository.get_replacement_work(
                 session,
@@ -94,7 +92,6 @@ class ShopAssemblyQueries:
         """Accept UI (#293): shop-assembly requests for a project, PENDING by default. reopenableOnly
         (#325) keeps only requests whose minted pull request is still PENDING - the Approved/reopen
         view uses it so it lists only requests Reopen can still act on. Open to any signed-in user."""
-        require_user(info)
         with SessionLocal() as session:
             reqs = shop_assembly_repository.get_shop_assembly_requests(
                 session, uuid.UUID(str(project_id)) if project_id else None, status, reopenable_only
@@ -119,7 +116,6 @@ class ShopAssemblyQueries:
         runs a fixed five statements - the requests, their pulls, and three grouped aggregates -
         however many requests come back, so the cost of this resolver grows with rows returned and
         not with queries issued. Open to any signed-in user."""
-        require_user(info)
         with SessionLocal() as session:
             rows = shop_assembly_repository.get_assembly_pipeline_summaries(
                 session,
@@ -138,7 +134,6 @@ class ShopAssemblyQueries:
         same aggregates the list uses, so this screen and that one cannot disagree.
 
         Open to any signed-in user."""
-        require_user(info)
         with SessionLocal() as session:
             pipeline = shop_assembly_repository.get_assembly_pipeline(session, uuid.UUID(str(request_id)))
             return assembly_pipeline_to_type(pipeline)
@@ -146,40 +141,49 @@ class ShopAssemblyQueries:
     @strawberry.field
     def shop_assembly_members(self, info: strawberry.Info) -> list[ClerkUser]:
         """Shop-assembly team members for the manager assignment picker (#330). Manager-gated: only
-        a Shop Assembly Manager may enumerate members and assign pulled openings to them."""
-        require_role(info, SHOP_ASSEMBLY_MANAGER_ROLE)
-        return [clerk_user_to_type(u) for u in user_repository.list_shop_assembly_members()]
+        a Shop Assembly Manager may enumerate members and assign pulled openings to them.
+
+        Filters the request-scoped roster the gate loaded to check that role (ROSTER_BACKED in
+        app/auth_policy.py), so the check and the answer share one Clerk call."""
+        return [clerk_user_to_type(u) for u in user_repository.shop_assembly_members(user_roster(info.context))]
 
 
 @strawberry.type
 class ShopAssemblyMutations:
     @strawberry.mutation
     def accept_shop_assembly_request(
-        self, info: strawberry.Info, id: strawberry.ID, accepted_by: str
+        self, info: strawberry.Info, id: strawberry.ID, accepted_by: IgnoredActorArg = None
     ) -> ShopAssemblyRequest:
         """Accept a PENDING shop-assembly request (#293). Open to any signed-in user.
 
         A pure human approval gate since #342: it mints the warehouse PullRequest and approves the
         request, and re-checks nothing. The hardware was reserved when the request was created, so
         it already belongs to this request - there is no shortfall left for the acceptor to be shown
-        and nothing they could do about one if there were."""
-        require_user(info)
+        and nothing they could do about one if there were.
+
+        The approval is recorded against the Clerk-authenticated caller (#427). It is the whole
+        content of the gate: an approval attributable to anyone the client names is not an approval.
+        The name also becomes the minted pull's `requestedBy`."""
+        auth = current_user(info)
+        actor = resolve_display_name(auth["user_id"])
         request_id = uuid.UUID(str(id))
         with SessionLocal() as session:
-            shop_assembly_repository.accept_shop_assembly_request(session, request_id, accepted_by)
+            shop_assembly_repository.accept_shop_assembly_request(session, request_id, actor)
             session.commit()
             refreshed = shop_assembly_repository.get_request_with_openings(session, request_id)
             return shop_assembly_request_to_type(refreshed)
 
     @strawberry.mutation
     def reject_shop_assembly_request(
-        self, info: strawberry.Info, id: strawberry.ID, rejected_by: str, reason: str | None = None
+        self, info: strawberry.Info, id: strawberry.ID, rejected_by: IgnoredActorArg = None, reason: str | None = None
     ) -> ShopAssemblyRequest:
-        """Reject a PENDING shop-assembly request (#293). Open to any signed-in user."""
-        require_user(info)
+        """Reject a PENDING shop-assembly request (#293). Open to any signed-in user. Recorded
+        against the Clerk-authenticated caller (#427), same reasoning as the accept."""
+        auth = current_user(info)
+        actor = resolve_display_name(auth["user_id"])
         request_id = uuid.UUID(str(id))
         with SessionLocal() as session:
-            shop_assembly_repository.reject_shop_assembly_request(session, request_id, rejected_by, reason)
+            shop_assembly_repository.reject_shop_assembly_request(session, request_id, actor, reason)
             session.commit()
             refreshed = shop_assembly_repository.get_request_with_openings(session, request_id)
             return shop_assembly_request_to_type(refreshed)
@@ -190,7 +194,6 @@ class ShopAssemblyMutations:
         hard-deletes the warehouse PullRequest the accept minted, re-points the request's openings off
         it, and flips the request to PENDING so it can be re-accepted or rejected. Refused if the
         warehouse has already worked the pull. Open to any signed-in user."""
-        require_user(info)
         request_id = uuid.UUID(str(id))
         with SessionLocal() as session:
             shop_assembly_repository.reopen_shop_assembly_request(session, request_id)
@@ -212,7 +215,7 @@ class ShopAssemblyMutations:
         also means a manager claiming work *for themselves* must unassign it first - the safer read of
         an ambiguous action, and one keystroke, not a hole.
         """
-        auth = require_user(info)
+        auth = current_user(info)
         is_self = input.assigned_to_user_id == auth["user_id"]
         if not is_self:
             require_role(info, SHOP_ASSEMBLY_MANAGER_ROLE)
@@ -234,7 +237,6 @@ class ShopAssemblyMutations:
         """Unassign an unfinished opening. Allowed while it is PENDING or IN_PROGRESS (#340) - saved
         progress lives on the item rows, so returning a half-built leaf to the pool loses nothing.
         Open to any signed-in user (the board's Unassign action)."""
-        require_user(info)
         with SessionLocal() as session:
             result = shop_assembly_repository.remove_opening_from_user(session, uuid.UUID(str(opening_id)))
             session.commit()
@@ -251,8 +253,12 @@ class ShopAssemblyMutations:
         the opening flips to IN_PROGRESS on the first save and stays in the assembler's My Work, and
         any units flagged deficient are returned to inventory and given a replacement pull line
         immediately rather than waiting for completion. Open to any signed-in user - it moves
-        inventory when a deficiency is flagged, so it must not be reachable anonymously."""
-        require_user(info)
+        inventory when a deficiency is flagged, so it must not be reachable anonymously.
+
+        The assembler on the progress rows and on any deficiency return is the Clerk-authenticated
+        caller (#427), not the request's `performedBy`."""
+        auth = current_user(info)
+        actor = resolve_display_name(auth["user_id"])
         updates = [
             shop_assembly_repository.AssemblyProgressUpdate(
                 shop_assembly_opening_item_id=uuid.UUID(str(item.shop_assembly_opening_item_id)),
@@ -267,7 +273,7 @@ class ShopAssemblyMutations:
                 session,
                 uuid.UUID(str(input.opening_id)),
                 updates,
-                performed_by=input.performed_by,
+                performed_by=actor,
             )
             session.commit()
             refreshed = shop_assembly_repository.get_openings_with_items(session, [result.id])[0]
@@ -282,14 +288,16 @@ class ShopAssemblyMutations:
         replacement_pending to installed on the source checklist line, so the completion invariant
         holds throughout. It can only spend units the replacement pull actually delivered, and it
         refuses a leaf that has already shipped. Open to any signed-in user - it changes what an
-        assembled leaf is recorded as carrying, so it must not be reachable anonymously."""
-        require_user(info)
+        assembled leaf is recorded as carrying, so it must not be reachable anonymously, and the
+        person recorded as fitting it is the Clerk-authenticated caller (#427)."""
+        auth = current_user(info)
+        actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             result = shop_assembly_repository.install_replacement(
                 session,
                 uuid.UUID(str(input.shop_assembly_opening_item_id)),
                 input.quantity,
-                performed_by=input.performed_by,
+                performed_by=actor,
             )
             session.commit()
             refreshed = warehouse_repository.get_opening_item_details(session, result.id)
@@ -306,8 +314,10 @@ class ShopAssemblyMutations:
 
         Takes no checklist (#340): completion reads the per-item counts recordAssemblyProgress has
         been persisting, and is refused while any unit is still unaccounted for. Open to any signed-in
-        user - it writes inventory, so it must not be reachable anonymously."""
-        require_user(info)
+        user - it writes inventory, so it must not be reachable anonymously. Who completed the leaf is
+        the Clerk-authenticated caller (#427)."""
+        auth = current_user(info)
+        actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             result = shop_assembly_repository.complete_opening(
                 session,
@@ -315,7 +325,7 @@ class ShopAssemblyMutations:
                 input.aisle,
                 input.row,
                 input.bay,
-                completed_by=input.completed_by,
+                completed_by=actor,
             )
             session.commit()
             # Re-load with installed_hardware

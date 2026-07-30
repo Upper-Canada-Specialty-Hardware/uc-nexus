@@ -28,6 +28,8 @@ import { useToast } from '../../components/Toast';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import ProgressBar from '../../components/ProgressBar';
 import ValidationSummaryDisplay from '../../components/ValidationSummaryDisplay';
+import GpSetupQuarantineBanner from '../../components/GpSetupQuarantineBanner';
+import { isGpSetupBroken } from '../../types/project';
 import { useHardwareScheduleParser } from '../../hooks/useHardwareScheduleParser';
 import { useNavigate } from 'react-router-dom';
 import { GET_PROJECT_EXCLUDED_ITEMS, GET_PROJECT_HARDWARE_SCHEDULE, RECONCILE_SCHEDULE, FINALIZE_IMPORT_SESSION } from '../../graphql/import';
@@ -1237,6 +1239,12 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
         </AppBar>
 
         <Box sx={{ p: 3 }}>
+          {/* #425: shown from the first step, not at the finalize button. Everything this wizard does
+              lands on a GP job - the schedule, the POs drafted off it, the requests that reserve
+              inventory against it - so letting somebody parse an XML and assign leaves before telling
+              them none of it can be saved would waste the whole session. */}
+          <GpSetupQuarantineBanner project={project} action="starting a task on it" />
+
           <Stepper activeStep={activeStepIndex} sx={{ mb: 4 }}>
             {steps.map((step) => (
               <Step key={step.id}>
@@ -1684,11 +1692,14 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
                 <Button onClick={handleBack} disabled={finalizeLoading}>
                   Back
                 </Button>
+                {/* #425: the server refuses this outright (finalize_import_session ->
+                    require_gp_setup_ok), so leaving the button live would only buy the user a red
+                    toast after a full wizard run. The banner above says why. */}
                 <Button
                   variant="contained"
                   size="large"
                   startIcon={<FileUp size={18} strokeWidth={1.75} />}
-                  disabled={finalizeLoading}
+                  disabled={finalizeLoading || isGpSetupBroken(project)}
                   onClick={() => setConfirmOpen(true)}
                 >
                   Finish Import Session

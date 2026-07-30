@@ -180,6 +180,10 @@ export const GET_PO_RECEIVING_DETAILS = gql`
       id
       poNumber
       requestNumber
+      # #425: the receive modal joins this to the projects list to find out whether the PO's GP job is
+      # quarantined. A broken job's receipt is rejected by eConnect with "Invalid Account Index", so
+      # the modal has to say so before the warehouse user finishes counting.
+      projectId
       gpCompany
       gpVendorId
       vendorNameSnapshot
@@ -337,45 +341,19 @@ export const GET_LOCATION_DISTINCT_VALUES = gql`
   }
 `;
 
-export const GET_EXPECTED_DELIVERIES = gql`
-  query GetExpectedDeliveries($projectId: ID) {
-    expectedDeliveries(projectId: $projectId) {
-      id
-      poNumber
-      requestNumber
-      gpVendorId
-      vendorNameSnapshot
-      vendor {
-        id
-        name
-      }
-      expectedDeliveryDate
-      orderedAt
-      status
-      lineItems {
-        id
-        hardwareCategory
-        productCode
-        orderedQuantity
-        receivedQuantity
-        unitCost
-      }
-    }
-  }
-`;
-
 export const GET_BACK_ORDERED_ITEMS = gql`
   query GetBackOrderedItems($projectId: ID) {
     backOrderedItems(projectId: $projectId) {
+      poLineItemId
       hardwareCategory
       productCode
       orderedQuantity
       receivedQuantity
       outstandingQuantity
-      unitCost
       poNumber
       vendorName
       expectedDeliveryDate
+      projectName
     }
   }
 `;
@@ -388,7 +366,6 @@ export const GET_WAREHOUSE_DASHBOARD = gql`
       unlocatedCount
       pendingPullShop
       pendingPullShipping
-      receivedLast7Days
       backOrderedCount
       deficientCount
     }
@@ -585,9 +562,12 @@ const PULL_STAGING_OPENING_FIELDS = `
   items { id shopAssemblyOpeningId hardwareCategory productCode quantity allocatedQuantity }
 `;
 
+// #427: who did it is taken from the Clerk token server-side, so these mutations no longer send an
+// actor. The arguments still exist in the schema (accepted and ignored) so a tab loaded against the
+// previous deploy keeps working; they are dropped once no deployed frontend references them.
 export const START_PULL_REQUEST_PICK = gql`
-  mutation StartPullRequestPick($id: ID!, $startedBy: String!) {
-    startPullRequestPick(id: $id, startedBy: $startedBy) { ${PULL_REQUEST_FIELDS} }
+  mutation StartPullRequestPick($id: ID!) {
+    startPullRequestPick(id: $id) { ${PULL_REQUEST_FIELDS} }
   }
 `;
 
@@ -598,16 +578,16 @@ export const GET_PULL_PICK_SHEET = gql`
 `;
 
 export const SAVE_PICK_DRAFT = gql`
-  mutation SavePickDraft($pullRequestId: ID!, $lines: [PickLineInput!]!, $enteredBy: String!) {
-    savePickDraft(pullRequestId: $pullRequestId, lines: $lines, enteredBy: $enteredBy) {
+  mutation SavePickDraft($pullRequestId: ID!, $lines: [PickLineInput!]!) {
+    savePickDraft(pullRequestId: $pullRequestId, lines: $lines) {
       ${PICK_SHEET_FIELDS}
     }
   }
 `;
 
 export const CONFIRM_PICK = gql`
-  mutation ConfirmPick($pullRequestId: ID!, $lines: [PickLineInput!]!, $pickedBy: String!) {
-    confirmPick(pullRequestId: $pullRequestId, lines: $lines, pickedBy: $pickedBy) {
+  mutation ConfirmPick($pullRequestId: ID!, $lines: [PickLineInput!]!) {
+    confirmPick(pullRequestId: $pullRequestId, lines: $lines) {
       pullRequest { ${PULL_REQUEST_FIELDS} }
       outcome
       appliedQuantity
@@ -622,8 +602,8 @@ export const CONFIRM_PICK = gql`
 `;
 
 export const SET_PULL_ITEM_FETCHED = gql`
-  mutation SetPullItemFetched($itemId: ID!, $fetched: Boolean!, $fetchedBy: String!) {
-    setPullItemFetched(itemId: $itemId, fetched: $fetched, fetchedBy: $fetchedBy) {
+  mutation SetPullItemFetched($itemId: ID!, $fetched: Boolean!) {
+    setPullItemFetched(itemId: $itemId, fetched: $fetched) {
       id pullRequestId itemType openingNumber openingItemId leaf
       hardwareCategory productCode requestedQuantity fetchedAt fetchedBy
     }
@@ -631,8 +611,8 @@ export const SET_PULL_ITEM_FETCHED = gql`
 `;
 
 export const COMPLETE_PULL_REQUEST = gql`
-  mutation CompletePullRequest($id: ID!, $completedBy: String) {
-    completePullRequest(id: $id, completedBy: $completedBy) { ${PULL_REQUEST_FIELDS} }
+  mutation CompletePullRequest($id: ID!) {
+    completePullRequest(id: $id) { ${PULL_REQUEST_FIELDS} }
   }
 `;
 

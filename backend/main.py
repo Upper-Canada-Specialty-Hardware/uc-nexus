@@ -15,12 +15,13 @@ from strawberry.extensions import SchemaExtension
 from strawberry.fastapi import GraphQLRouter
 
 from app.auth import get_context, require_admin_request
+from app.auth_policy import enforce_root_field
 from app.database import SessionLocal
 from app.errors import AppError
 from app.repositories import relay_repository
 from app.schemas.mutations import Mutation
 from app.schemas.queries import Query
-from app.services import gp_job_sync, gp_outbox_worker, relay_adopt
+from app.services import gp_job_sync, gp_outbox_worker, relay_adopt, relay_seed
 from app.services.relay_gateway import HEARTBEAT_INTERVAL_SECONDS
 from app.services.relay_gateway import gateway as relay_gateway
 
@@ -32,7 +33,30 @@ logger = logging.getLogger(__name__)
 ADOPT_HELLO_TIMEOUT_SECONDS = 5.0
 
 
-class ErrorHandlerExtension(SchemaExtension):
+class ResolverGuardExtension(SchemaExtension):
+    """The one hook every GraphQL field resolution passes through. It does two jobs.
+
+    1. **Authorizes root fields** against ROOT_FIELD_POLICY (app/auth_policy.py), before the resolver
+       runs. Deny-by-default: a field with no policy entry and no place on the open-operations
+       allowlist is refused, so #415's "a resolver that forgets its gate is public" cannot recur.
+       Only root fields are checked (`info.path.prev is None`) - a nested field is reachable only
+       through a root field that already passed, and checking every one would put a Clerk decision on
+       every node of every response.
+    2. **Maps AppError to GraphQLError**, publishing `extensions.code` (and `relayError` where the
+       error carries a detail body).
+
+    Both live in one extension rather than two on purpose:
+
+      - The gate's own refusals are AppErrors, and they MUST reach the browser as
+        `extensions.code = UNAUTHENTICATED` / `FORBIDDEN`; the frontend's Apollo link keys its token
+        re-mint and replay off exactly that (#429). Sharing one try/except makes that structural. As
+        two extensions it would depend on their order in the `extensions=[...]` list, which nothing
+        would fail on if someone swapped it.
+      - `resolve` is graphql-core middleware: it runs per FIELD, not per operation, including every
+        scalar of every row in a list of hundreds. A second extension would double that wrapper cost
+        for no functional gain.
+    """
+
     @staticmethod
     def _to_graphql_error(e: Exception) -> GraphQLError:
         if isinstance(e, AppError):
@@ -50,12 +74,28 @@ class ErrorHandlerExtension(SchemaExtension):
             return GraphQLError(message=e.message, extensions=extensions)
         return GraphQLError(message=str(e), extensions={"code": "NOT_IMPLEMENTED"})
 
+    @staticmethod
+    def _is_root_field(info: GraphQLResolveInfo) -> bool:
+        """A field selected directly on Query/Mutation, and ours rather than graphql-core's.
+
+        The `__`-prefixed introspection fields (`__schema`, `__type`, `__typename`) are root fields
+        too, and they are resolved by graphql-core's own resolvers, which this middleware also wraps.
+        They expose the schema's shape, never any data, and they were reachable before #423 - gating
+        them would break GraphiQL and every introspection-driven tool for no security gain.
+        """
+        return info.path.prev is None and not info.field_name.startswith("__")
+
     def resolve(self, _next: Callable, root: Any, info: GraphQLResolveInfo, *args, **kwargs):
         # For async resolvers _next() returns a coroutine that strawberry awaits *after* this method
         # returns, so a synchronous try/except here would never see the exception - the AppError -> code
         # mapping would be silently dropped. Handle the awaitable case in an async wrapper so both sync
         # and async resolvers get the extension pattern.
         try:
+            # Inside the try so a refusal is mapped by the same code path as any other AppError, and
+            # ahead of _next so the resolver body never starts for a caller who is about to be
+            # refused - the ordering #415's gates could only achieve by convention.
+            if self._is_root_field(info):
+                enforce_root_field(info.field_name, info.context)
             result = _next(root, info, *args, **kwargs)
         except (AppError, NotImplementedError) as e:
             raise self._to_graphql_error(e) from e
@@ -73,7 +113,7 @@ class ErrorHandlerExtension(SchemaExtension):
 schema = strawberry.Schema(
     query=Query,
     mutation=Mutation,
-    extensions=[ErrorHandlerExtension],
+    extensions=[ResolverGuardExtension],
 )
 
 graphql_app = GraphQLRouter(schema, context_getter=get_context)
@@ -86,6 +126,10 @@ async def lifespan(_app: FastAPI):
     Started here rather than lazily on first use so a queue that filled during a deploy starts
     draining as soon as the new container is up, with nobody having to visit a page. Under
     TestClient(app) this runs too, and is harmless: with no relay registered neither loop queries."""
+    # Ahead of the workers, so a PR environment can accept the relay's very first reconnect rather
+    # than 4403-ing it until someone hits a page (#414). A no-op unless RELAY_SEED_SECRET_HASH is set,
+    # and refused outright in production.
+    relay_seed.seed_on_startup()
     tasks: list[asyncio.Task] = []
     if gp_outbox_worker.enabled():
         tasks.append(asyncio.create_task(gp_outbox_worker.run_forever()))
@@ -379,14 +423,39 @@ def reset_data(request: Request):
 
 
 @app.get("/testing/clerk-sign-in")
-def get_clerk_sign_in_token(email: str = "jayp@ucsh.com"):
-    """Create a Clerk sign-in token for E2E testing. Only available when TESTING_ENABLED=true."""
+def get_clerk_sign_in_token(request: Request, email: str = "jayp@ucsh.com"):
+    """Create a Clerk sign-in token for E2E testing.
+
+    Gated twice, like /admin/reset-data (#422). TESTING_ENABLED keeps it off any deployment that is
+    not a test target, checked first so a production deployment refuses outright rather than leaking
+    whether the caller's credential would have been good enough. Then the caller must prove they are
+    already an Admin/Manager, or present the shared testing secret in X-Testing-Secret - the
+    bootstrap path for a fresh PR environment, where the whole point of this endpoint is that no
+    session exists yet. Auth is not optional here: every environment shares the production Clerk
+    instance, so what this mints is a real session for a real staff account, Admin/Manager included,
+    and with only the environment switch this route was a full impersonation primitive on any
+    deployment where the switch was left on."""
+    import hashlib
+    import hmac
+
     import httpx
 
-    from app.config import CLERK_SECRET_KEY, TESTING_ENABLED
+    from app.config import CLERK_SECRET_KEY, TESTING_ENABLED, TESTING_SIGN_IN_SECRET_HASH
 
     if not TESTING_ENABLED:
         return JSONResponse(status_code=403, content={"error": "Testing is not enabled"})
+
+    presented = (request.headers.get("x-testing-secret") or "").strip()
+    secret_ok = bool(TESTING_SIGN_IN_SECRET_HASH) and bool(presented)
+    if secret_ok:
+        digest = hashlib.sha256(presented.encode("utf-8")).hexdigest()
+        secret_ok = hmac.compare_digest(digest, TESTING_SIGN_IN_SECRET_HASH.strip().lower())
+    if not secret_ok:
+        try:
+            require_admin_request(request)
+        except AppError as e:
+            status = 403 if e.code == "FORBIDDEN" else 401
+            return JSONResponse(status_code=status, content={"error": str(e), "code": e.code})
 
     headers = {"Authorization": f"Bearer {CLERK_SECRET_KEY}"}
 

@@ -8,7 +8,6 @@ import {
 } from '../../graphql/refetch';
 import { useToast } from '../../components/Toast';
 import ConfirmDialog from '../../components/ConfirmDialog';
-import { useIdentity } from '../../hooks/useIdentity';
 import { isStageable, type PullStagingOpening } from './pullStaging';
 import { leafIdentity } from '../../utils/leaf';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
@@ -63,7 +62,6 @@ export default function PullStagingPanel({
   onStaged,
 }: PullStagingPanelProps) {
   const { showToast } = useToast();
-  const { displayName } = useIdentity();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [confirmOpen, setConfirmOpen] = useState(false);
 
@@ -124,7 +122,6 @@ export default function PullStagingPanel({
         input: {
           pullRequestId,
           openingIds: Array.from(selected),
-          stagedBy: displayName,
         },
       },
     });

@@ -67,9 +67,6 @@ interface AssemblyDetailModalProps {
   onClose: () => void;
   // Called once the leaf is finished and minted as an OpeningItem - the caller closes and refetches.
   onCompleted: () => void;
-  // The logged-in assembler; recorded as the performer on progress saves, on the completion, and on
-  // any deficiency return so the audit trail names a real user, not the generic "Assembler".
-  completedBy?: string;
 }
 
 const MAX_REASON_LENGTH = 500;
@@ -79,7 +76,6 @@ export default function AssemblyDetailModal({
   opening,
   onClose,
   onCompleted,
-  completedBy,
 }: AssemblyDetailModalProps) {
   const { showToast } = useToast();
   const [aisle, setAisle] = useState('');
@@ -216,12 +212,12 @@ export default function AssemblyDetailModal({
       return;
     }
     const result = await recordProgress({
-      variables: { input: { openingId: opening.id, items, performedBy: completedBy || null } },
+      variables: { input: { openingId: opening.id, items } },
     });
     if (result.data) showToast('Progress saved', 'success');
     // The modal deliberately stays open: a save is a checkpoint mid-job, not the end of it, and the
     // leaf stays in My Work as In Progress.
-  }, [progressPayload, recordProgress, opening.id, completedBy, showToast]);
+  }, [progressPayload, recordProgress, opening.id, showToast]);
 
   const handleConfirmComplete = useCallback(async () => {
     setConfirmOpen(false);
@@ -230,7 +226,7 @@ export default function AssemblyDetailModal({
     const items = progressPayload();
     if (items.length > 0) {
       const saved = await recordProgress({
-        variables: { input: { openingId: opening.id, items, performedBy: completedBy || null } },
+        variables: { input: { openingId: opening.id, items } },
       });
       if (!saved.data) return;
     }
@@ -241,11 +237,10 @@ export default function AssemblyDetailModal({
           aisle: aisle || null,
           row: row || null,
           bay: bay || null,
-          completedBy: completedBy || null,
         },
       },
     });
-  }, [progressPayload, recordProgress, completeOpening, opening.id, aisle, row, bay, completedBy]);
+  }, [progressPayload, recordProgress, completeOpening, opening.id, aisle, row, bay]);
 
   // --- deficiency flagging -------------------------------------------------------------------
 
@@ -291,7 +286,6 @@ export default function AssemblyDetailModal({
               deficientReason: flagReason.trim(),
             },
           ],
-          performedBy: completedBy || null,
         },
       },
     });
@@ -307,7 +301,7 @@ export default function AssemblyDetailModal({
         'success'
       );
     }
-  }, [flagging, recordProgress, opening.id, flagQuantity, flagReason, completedBy, showToast]);
+  }, [flagging, recordProgress, opening.id, flagQuantity, flagReason, showToast]);
 
   return (
     <>

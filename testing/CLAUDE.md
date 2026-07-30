@@ -8,38 +8,111 @@ This is a tester's knowledge journal for UC Nexus. It documents how the app work
 
 ## Environment
 
-**Railway is the default** for simulated user testing (issue #182 pivot - the localdev runtime was dropped for UC Nexus e2e; zero local setup needed).
+**A Railway PR environment is the only place end-to-end testing happens** (issue #182 pivot - the localdev runtime was dropped for UC Nexus e2e; zero local setup needed).
 
-- **Railway production (default)**: frontend `https://frontend-production-34fc.up.railway.app/`, backend `https://backend-production-7866.up.railway.app/`. Deploys from master after CI passes.
-- **Railway PR environments** (ENABLED 2026-07-29, `prDeploys` on the project; bot PRs like dependabot deliberately excluded): every non-draft PR gets a full ephemeral replica (frontend + backend + fresh empty Postgres, migrated on boot) named `uc-nexus-pr-<N>`. Do not wait for a Railway bot comment - none was observed; the URLs are derivable: `https://backend-uc-nexus-pr-<N>.up.railway.app` / `https://frontend-uc-nexus-pr-<N>.up.railway.app`. Substitute them into the sign-in flow below; verified live on PR #401 (`/health` 200, `/testing/clerk-sign-in` mints tokens, GraphQL serves the fresh DB). Data starts empty; seed via the import fixture. `VITE_GRAPHQL_URL` is a reference variable (`https://${{backend.RAILWAY_PUBLIC_DOMAIN}}/graphql`) so each environment self-wires; `TESTING_ENABLED` and Clerk keys inherit from production. **A PR that only touches one service's directory only deploys that service in its environment** (root-directory change filtering - PR #401 was backend-only and the frontend showed `latestDeployment: null`); trigger the missing one from the dashboard or via the API (`serviceInstanceDeployV2(environmentId, serviceId)`). Environments auto-delete when the PR closes.
+> **The `*-production-*` Railway services are REAL PRODUCTION.** Real customer data, real users.
+> Never point a testing session at them, and never fire mutation probes at them - not to "just check"
+> something after a merge, and not because a change is already deployed there. If a thing genuinely
+> can only be observed on production, ask a human first.
+>
+> This file used to call production "the default" runtime for testing, and that was followed in
+> practice. If you are reading a stale copy of that guidance somewhere else - the global
+> `~/.claude/CLAUDE.md` said the same thing - this block supersedes it.
+
+- **Railway PR environments (the testing target)** (ENABLED 2026-07-29, `prDeploys` on the project; bot PRs like dependabot deliberately excluded): every non-draft PR gets a full ephemeral replica (frontend + backend + fresh empty Postgres, migrated on boot) named `uc-nexus-pr-<N>`. Do not wait for a Railway bot comment - none was observed; the URLs are derivable: `https://backend-uc-nexus-pr-<N>.up.railway.app` / `https://frontend-uc-nexus-pr-<N>.up.railway.app`. Substitute them into the sign-in flow below; verified live on PR #401 (`/health` 200, `/testing/clerk-sign-in` mints tokens, GraphQL serves the fresh DB). Data starts empty; seed via the import fixture. No PR open for what you need to test? Open a throwaway one - that is cheaper than the alternative. `VITE_GRAPHQL_URL` is a reference variable (`https://${{backend.RAILWAY_PUBLIC_DOMAIN}}/graphql`) so each environment self-wires; `TESTING_ENABLED` and Clerk keys inherit from production. **That inheritance is a copy taken when the environment is created, not a live link** (#431): a variable added to production afterwards never reaches a PR environment that already exists, so set it on that environment's own backend service too and let it redeploy. Found the hard way with `RELAY_SEED_SECRET_HASH` on pr-430 - see the relay section below. **A PR that only touches one service's directory only deploys that service in its environment** (root-directory change filtering - PR #401 was backend-only and the frontend showed `latestDeployment: null`); trigger the missing one from the dashboard or via the API (`serviceInstanceDeployV2(environmentId, serviceId)`). Environments auto-delete when the PR closes.
 - **Local (manual fallback)**: frontend `http://localhost:5173`, backend `http://localhost:8000`. Run the backend with `poetry run uvicorn main:app --reload` (from `backend/`) and the frontend with `npm run dev` (from `frontend/`). Needs a local Postgres (not provided; the worktree-localdev adoption was dropped).
 - **Auth**: Clerk sign-in, automated via one-time sign-in tokens (no manual password/verification needed).
   - Backend endpoint `GET /testing/clerk-sign-in` generates the token (requires `TESTING_ENABLED=true`).
+  - Since #422 the endpoint also requires a credential: an Admin/Manager `Authorization` bearer, or
+    the shared testing secret in an `X-Testing-Secret` header. The secret is the bootstrap path on a
+    fresh PR environment (no session exists there yet): its SHA-256 hex must sit in the backend's
+    `TESTING_SIGN_IN_SECRET_HASH` variable. Since #424 flipped `TESTING_ENABLED` off in production,
+    new PR environments inherit it off too - so for each PR environment you test on, set both
+    `TESTING_ENABLED=true` and a `TESTING_SIGN_IN_SECRET_HASH` you know the preimage of on that
+    environment's backend service (see `backend/.env.example` for the generator one-liner).
   - Navigate to the frontend URL with `?__clerk_ticket=TOKEN` to auto-authenticate.
   - Tokens are one-time use; fetch a fresh one each session. Works on any runtime with the same Clerk dev instance.
+  - **Every environment inherits production Clerk keys**, so the accounts in a PR environment are real
+    staff accounts and a session minted there is a real session. The Postgres data in a PR environment
+    is disposable; the identities are not. Sign in as the account you were given, and do not mint
+    tokens for colleagues' accounts to test role behaviour - ask instead.
+  - The unauthenticated version of this endpoint was itself a vulnerability (#422 / #424), fixed by
+    the gates above. Do not treat the endpoint answering on a given host as evidence that the host is
+    a test environment - production answered it too, which is exactly what #424 shut off.
 - **Test XML file**: `testing/fixtures/contracterp-74.xml` - TITAN hardware schedule export, use for Import wizard testing (upload via `upload_file`)
 
-### A PR environment is always relay-disconnected, and that is useful
+### Every resolver needs a token now (#415)
 
-The relay dials ONE backend - the `[channel] backend_url` in its `config.toml`, which is production.
-A PR environment therefore always reports `relayStatus.connected: false`, and no amount of waiting
-changes it. Pointing the relay at a PR backend is not a shortcut either: relay installs live in
-Postgres, and a PR environment boots a fresh empty one, so the relay would have to be re-provisioned
-and re-enrolled there and then put back afterwards.
+Until #415 most resolvers were reachable with no `Authorization` header at all, so an injected
+`fetch('/graphql', ...)` helper that forgot the token still returned data and nothing looked wrong.
+That is over: every resolver in `app/schemas/` calls `require_user` / `require_admin` / `require_role`
+as its first statement, enforced by `backend/tests/test_resolver_gate_completeness.py`. The only
+exception is `enrollRelayInstall`, which carries its own enrollment-token auth.
 
-Read that as a free test fixture rather than a limitation. The relay-down half of any GP-gated
-feature - disabled controls, "not connected" copy, held values still displaying, buttons that must
-not be clickable - is exactly what a PR environment exercises by construction, and it is the half
+Consequences when driving the app by script:
+
+- Always mint a token first - `await window.Clerk.session.getToken({skipCache: true})` - and send it
+  as `Authorization: Bearer <token>`. A helper without one now gets
+  `{"data": null, "errors": [{"message": "Authentication required", "extensions": {"code": "UNAUTHENTICATED"}}]}`
+  on *every* query, not just the handful that used to be gated.
+- Distinguish the three failure shapes: **no header** -> `Authentication required`; **unparseable
+  token** -> `Malformed authentication token`; **valid token, wrong role** -> `FORBIDDEN`, e.g.
+  `Admin/Manager role required`. Getting `Authentication required` from inside a signed-in page means
+  your helper dropped the header, not that the session died.
+- Admin-gated reads worth knowing, because a non-admin session gets FORBIDDEN rather than an empty
+  list: `users`, `adminStats`, `openingHardwareStatus`, `locationDuplicates`. Their writes too -
+  the vendor and warehouse CRUD, `overrideInventoryQuantity`, `mergeLocations`.
+- `require_admin` costs a Clerk Backend API round-trip per call (`require_user` does not), so a page
+  hitting several admin resolvers at once is legitimately slower than the equivalent user page.
+
+### A PR environment is relay-disconnected by default, and that is useful
+
+By default a PR environment always reports `relayStatus.connected: false`, and no amount of waiting
+changes it. Two independent reasons, both addressed by #414 but neither automatic:
+
+1. The relay dials whatever `[channel] backend_url` in its `config.toml` names. Since #414 that takes
+   a LIST, so a PR backend can be added *alongside* production rather than replacing it - but somebody
+   has to add it, and the relay needs a restart to pick it up.
+2. Relay installs live in Postgres and a PR environment boots a fresh empty one, so the handshake is
+   refused (4403) even if the relay does dial. Since #414 the backend seeds a trusted install on
+   startup from `RELAY_SEED_SECRET_HASH` - the SHA-256 already in production's row, copyable from
+   Admin -> Relay Installs ("Seed hash" column). Where that variable goes is the part that catches
+   people out (#431):
+   - It belongs on the **production** backend service and stays there inert. PR environments are cloned
+     from production, so that is the only place a new one can inherit it from; production refuses to
+     seed and logs the refusal at INFO, which is the intended steady state, not something to tidy up.
+   - **Inheritance happens at environment creation only.** Setting it on production does nothing for a
+     PR environment that already exists - set it on that environment's own backend service as well.
+     Verified 2026-07-30: pr-430 predated the variable and stayed GP-blind until it had its own copy.
+   - Seeding runs at backend startup, so the variable only takes effect on that service's next deploy.
+
+Read the default state as a free test fixture rather than a limitation. The relay-down half of any
+GP-gated feature - disabled controls, "not connected" copy, held values still displaying, buttons that
+must not be clickable - is exactly what a PR environment exercises by construction, and it is the half
 that is otherwise awkward to reach on production without stopping the relay for everyone.
 
-What a PR environment cannot show is any populated GP dropdown or any GP write. Those need
-production, after merge and after the installed relay is rebuilt to a build whose `_OPS` includes the
-new op (an older build answers `unknown_op` -> `RELAY_OP_UNSUPPORTED`, which is its own distinct UI
-state and worth checking on purpose during the deploy-before-rebuild window).
+A PR environment with a connected relay is pinned to **TUBC** and refuses every other company with
+`company_not_allowed_on_channel`, reads and writes alike. Reads and writes both work against TUBC;
+that pin is what makes serving writes off a test backend acceptable at all.
 
-Verified on PR #412 (issue #409's buyer dropdown): the field rendered `role="combobox"`, disabled,
-still showing the stored `mira`, with "The GP relay is not connected, so this cannot be changed right
-now." - all four assertions met without touching production.
+What a PR environment cannot show out of the box is a NEW op. The workstation runs a packaged build, so
+a PR that adds to `_OPS` answers `unknown_op` -> `RELAY_OP_UNSUPPORTED` there just as it does on
+production before the relay is rebuilt (its own distinct UI state, worth checking on purpose during the
+deploy-before-rebuild window). To exercise the op itself, build the PR's branch with
+`gh workflow run relay-release.yml --ref <branch>` and install that zip on the workstation for the
+session - the full procedure, including how the release build gets restored afterwards, is the
+"testing a PR that adds a new op" section of `relay/README.md`. It is a manual install by design.
+
+Verified on PR #412 (issue #409's buyer dropdown), in the default disconnected state: the field
+rendered `role="combobox"`, disabled, still showing the stored `mira`, with "The GP relay is not
+connected, so this cannot be changed right now." - all four assertions met without touching production.
+
+Seeding verified live on PR #421 (#414 itself), against that PR's own environment: setting
+`RELAY_SEED_SECRET_HASH` produced exactly one install row labelled `seed:uc-nexus-pr-<N>` (company
+TUBC, ENROLLED), the Seed hash cell truncated to 8 chars with a copy button carrying the full 64-char
+digest, a provisioned-but-unenrolled row showing `—` and no button, and a second full redeploy still
+leaving exactly one seeded row. Note the label takes `RAILWAY_ENVIRONMENT_NAME` verbatim, which on a
+PR environment is `uc-nexus-pr-<N>` rather than `pr-<N>`.
 
 ### Inventory can only be seeded through the relay - check this first
 
@@ -175,16 +248,27 @@ import-created draft otherwise blocks the register dialog with per-line `Require
 
 ## Getting Started (Every Session)
 
-1. **Sign in**: Use `evaluate_script` to fetch a sign-in token and navigate with it. Railway production (default):
+0. **Pick the environment first.** Testing runs against the PR environment for the PR you are working on. Set `PR` once and let both URLs derive from it, so there is no production URL in the snippet to fat-finger:
+   ```js
+   const PR = 420;  // <- the PR number under test
+   const BACKEND  = `https://backend-uc-nexus-pr-${PR}.up.railway.app`;
+   const FRONTEND = `https://frontend-uc-nexus-pr-${PR}.up.railway.app`;
+   ```
+1. **Sign in**: Use `evaluate_script` to fetch a sign-in token and navigate with it. Since #422 the
+   fetch must carry the testing secret whose SHA-256 you set as `TESTING_SIGN_IN_SECRET_HASH` on the
+   PR environment's backend (see the Auth bullet in the Environment section):
    ```js
    (async () => {
-     const resp = await fetch('https://backend-production-7866.up.railway.app/testing/clerk-sign-in');
+     const PR = 420;  // <- the PR number under test
+     const SECRET = '...';  // <- preimage of that environment's TESTING_SIGN_IN_SECRET_HASH
+     const resp = await fetch(`https://backend-uc-nexus-pr-${PR}.up.railway.app/testing/clerk-sign-in`,
+       { headers: { 'X-Testing-Secret': SECRET } });
      const { token } = await resp.json();
-     window.location.href = 'https://frontend-production-34fc.up.railway.app/?__clerk_ticket=' + token + '&cb=' + Date.now();
+     window.location.href = `https://frontend-uc-nexus-pr-${PR}.up.railway.app/?__clerk_ticket=${token}&cb=${Date.now()}`;
      return 'Navigating with sign-in token...';
    })()
    ```
-   For a PR environment, swap in the URLs from the Railway bot's PR comment. For the local fallback, use `http://localhost:8000` / `http://localhost:5173`.
+   For the local fallback, use `http://localhost:8000` / `http://localhost:5173`. Do not substitute the production hosts here - see the Environment section.
    - Clerk auto-authenticates — no email, password, or verification code needed.
    - You land on `/app` (Module Selector) fully signed in.
 2. **Reset data** (if needed): Click the "DevAction: drop and rebuild schema" button in the app bar.
@@ -467,9 +551,9 @@ was flagged, topped up as stock arrives), usually smaller than what it is owed, 
 covered is its normal resting state and a short pick on one is not an integrity error.
 
 
-**Entry**: `/app/warehouse` -> Warehouse landing page with stat cards and "Go to" card buttons for: Inventory, Locations, Deliveries, Receiving, Put Away, Pull Requests, Stock Pool, Deficient Items, Shipments. (No longer "three tabs" - this has evolved to a full landing page.) Since PR #395 the Deficient Items card shows `deficientCount` (deficient units across project inventory + stock pool - the same rows the review page lists, amber edge when non-zero) and the Deliveries card carries the `backOrderedCount` figure (undelivered units on active POs, no attention edge). The two numbers matching their destination pages is the thing to assert.
+**Entry**: `/app/warehouse` -> Warehouse landing page with stat cards and "Go to" card buttons for: Inventory, Locations, Receiving, Put Away, Pull Requests, Stock Pool, Deficient Items, Shipments. (No longer "three tabs" - this has evolved to a full landing page.) Since PR #395 the Deficient Items card shows `deficientCount` (deficient units across project inventory + stock pool - the same rows the review page lists, amber edge when non-zero). The card count matching its destination page is the thing to assert.
 
-**Deliveries "All Projects"** works since PR #397 (it was a dead click - `onSelect(null)` collided with "nothing chosen"). The all-projects view queries both tabs with a null projectId.
+**There is no Deliveries page any more (#416).** It was a read-only lens over active POs, and its "Upcoming Deliveries" accordion asked `expectedDeliveries` for the exact PO population `openPOs` already drew the Receiving page's awaiting-receipt table from - the same three statuses, not soft-deleted - so on one page it would have been the same list twice. Only the back-order grid survived the merge, as a **Back-Ordered Items** section of Receiving; the accordion's urgency chip moved onto the awaiting-receipt table's Expected Delivery column. `expectedDeliveries` is gone from the schema entirely (querying it errors `Cannot query field`), `backOrderedCount` now rides the **Receiving** card, and `/app/warehouse/deliveries` redirects to `/app/warehouse/receiving`. Anything in an older session note about a Deliveries card, its project landing, or its "All Projects" toggle (PR #397) describes a page that no longer exists.
 
 **Inventory tab default**: Navigating directly to `/app/warehouse/inventory` defaults to "All Projects" view — shows the "Projects" back button, "All Projects" heading, and Hardware Items / Opening Items sub-tabs immediately. The ProjectLandingPage is NOT shown on initial load. Clicking "Projects" brings up the ProjectLandingPage where you can filter to a specific project or click "All Projects" to return to the all-projects view.
 
@@ -478,6 +562,35 @@ covered is its normal resting state and a short pick on one is not an integrity 
 2. Enter quantities received per line item — line items grid shows: Product Code, Ordered As, Hardware Category, Ordered Qty, Already Received, Pending, Receive Now
 3. Assign storage locations (aisle/bay/bin)
 - Receiving auto-transitions PO status (ORDERED -> PARTIALLY_RECEIVED -> CLOSED)
+
+Three sections since #416, in this order: **POs Awaiting Receipt**, **Back-Ordered Items**, **Recent
+Activity**. The back-order grid is line-level and cross-project (no project landing step), carries a
+Project column that reads "Stock PO" for a project-less PO, and chips how late or soon each line is
+(`3d overdue` / `Today` / `Tomorrow` / `In 5d`, nothing beyond a week or with no date). The same chip
+sits on the awaiting-receipt table's Expected Delivery column.
+
+A successful receive now refetches this page's own three reads, so a line the receipt closed leaves
+the back-order grid without a manual reload; a queued receipt that drains later evicts
+`backOrderedItems` for the same reason. Before #416 a receive only refetched the inventory summaries.
+
+**A PR environment cannot populate either grid, and production is not the answer.** Both grids want
+POs at GP_REGISTERED or later, and `registerPoInGp` is relay-gated, so a fresh PR database shows "No
+purchase orders awaiting receipt" and "Nothing is back-ordered" no matter what you do. Reaching for
+production instead is the exact move the Environment section forbids.
+
+Stub the GraphQL reads instead: from an `initScript`, intercept `window.fetch`, match the operation
+name in the request body (`GetOpenPOs` / `GetBackOrderedItems`) and return rows built from `new
+Date()` offsets. That drives the real components, which is enough to assert the column set, the
+"Stock PO" and em-dash fallbacks, and every urgency band in one pass.
+
+Be honest about what that does and does not cover. It proves the rendering. It does NOT exercise the
+receive itself, so the refetch wiring above - the thing that makes a filled line leave the grid
+without a reload - stays unverified at runtime until somebody receives against a real GP-registered
+PO. Say so rather than calling a stubbed pass end-to-end.
+
+**Build the stub's dates from local components, not `toISOString()`.** `toISOString` is UTC, so
+after ~20:00 Eastern it names tomorrow, and the chip you assert against is then off by a day for a
+reason that has nothing to do with the code under test. This is the same trap as #238 itself.
 
 **Inventory**: Browse by hardware category and product code, see storage locations.
 
@@ -816,7 +929,7 @@ Inventory quantity corrections are NOT here — they live in the Warehouse modul
 
 - `fill_form` is much more reliable than sequential `fill` calls for forms with many fields.
 - After "DevAction: drop and rebuild schema", there are TWO dialogs: a MUI confirm dialog, then a `window.alert()`. Must handle both.
-- Clerk sign-in tokens: Fetch from `GET /testing/clerk-sign-in` on the backend, then navigate to the frontend with `?__clerk_ticket=TOKEN`. Railway production is the default runtime (issue #182); PR environments and localhost use the same flow with their own URLs. Clerk auto-authenticates - no form fill, no verification code. Tokens are one-time use; fetch a fresh one each session.
+- Clerk sign-in tokens: Fetch from `GET /testing/clerk-sign-in` on the backend, then navigate to the frontend with `?__clerk_ticket=TOKEN`. The runtime is the PR environment for the PR under test (issue #182 moved e2e onto Railway; production is not a testing target). Clerk auto-authenticates - no form fill, no verification code. Tokens are one-time use; fetch a fresh one each session.
 - When viewing "All Projects", `projectId` is undefined/null in queries — this returns all POs across projects.
 - To test the Warehouse Receiving wizard's "Enter Quantities" step, you need at least one PO in ORDERED (or higher) status. DRAFT POs do not appear in the receiving wizard's PO selection list.
 - The line item field formerly called "Vendor Alias" is now called "Order As" in pre-order screens (Create PO dialog, PO detail modal) and "Ordered As" in post-order screens (Warehouse receiving wizard).
@@ -852,7 +965,7 @@ Inventory quantity corrections are NOT here — they live in the Warehouse modul
 - Verifying a generated PDF (issue #230 PO document): the doc is text-based react-pdf, not an image, so `pdftotext` works. Fastest path for content assertions: use the dialog's "Save to PO documents" to upload it, query the PO's `documents { downloadUrl }` (presigned S3 URL) via GraphQL, `curl` the URL to a file, then `pdftotext -layout` (or `-raw` for the totals column, which `-layout` misaligns since Subtotal/Freight/Miscellaneous/Tax/Order-Total are right-aligned). "Generate & preview" opens a blob in a new tab that's hard to read via MCP - prefer save-then-fetch.
 - pdftotext/poppler is NOT installed on the dev machine, and naive stream-inflation can't read the text (react-pdf subsets fonts to custom glyph IDs). Working alternative: open the presigned `downloadUrl` directly in a browser tab (Chrome renders PDFs natively) and `take_screenshot` - the full totals column is readable in the image. Verified this way for issue #156 (Tariffs line + Order Total math).
 - Issue #156 fields: PO detail modal shows "Shipping Costs" / "Tariffs" info rows ('-' when null) and edit-mode number fields; the generate-document dialog's Freight prefills from the PO's shippingCost (saved documentData override wins) and its new Tariffs field from the PO's tariffAmount; the PDF prints a Tariffs totals line only when > 0.
-- Issue #216 buyer identity (scoped to REGISTERING by issue #256 - drafting needs neither): registering a PO into GP REQUIRES the signed-in user to have a GP buyer identity (Clerk publicMetadata.gpBuyerId, set in Admin -> User Management) AND, for project POs, a buyer assignment (Admin -> Buyers: assigned projects + designated 'cc1-cc2' cost codes). Without them the register dialog blocks and the backend rejects. The test user (Jay Puzon) is linked to GP buyer "mira" with project 80003 + cost codes 210-200/310-000 assigned. The register dialog's Buyer field is read-only (your identity); its cost-code dropdown offers only designated codes. Stock POs (no project) skip the assignment check but still need the identity.
+- Issue #216 buyer identity (scoped to REGISTERING by issue #256 - drafting needs neither): registering a PO into GP REQUIRES the signed-in user to have a GP buyer identity (Clerk publicMetadata.gpBuyerId, set in Admin -> User Management) AND, for project POs, a buyer assignment (Admin -> Buyers: assigned projects). Without them the register dialog blocks and the backend rejects. The test user (Jay Puzon) is linked to GP buyer "mira" with project 80003 assigned. The register dialog's Buyer field is read-only (your identity); its cost-code dropdown offers every code GP has active on the job - per-buyer cost-code designation was removed (PR #430), so there is no Designated Cost Codes field in Admin -> Buyers anymore. Stock POs (no project) skip the assignment check but still need the identity.
 - Issue #216 delivery dates: PO Requests capture "Preferred delivery date" per vendor card in the import wizard's PO step; the detail modal edits Preferred only while DRAFT and Expected only when GP-Registered/Vendor-Confirmed (server-enforced).
 - Import-created PO drafts have EMPTY Order As values unless set in the wizard's PO step - the register dialog then blocks submit with per-line 'Required' errors until each line's Order As is filled.
 - The generate dialog + admin PO-settings text fields APPEND when driven by `fill`/`fill_form` if they already hold a value (same MUI controlled-input quirk as spinbuttons). For a pre-filled field, set the value via `evaluate_script` using the native value setter + an `input` event (match the label's `for` attr to the input id), or drive the mutation directly. Empty fields fill fine.

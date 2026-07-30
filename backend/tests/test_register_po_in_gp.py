@@ -17,9 +17,9 @@ from app.repositories import buyer_repository, import_repository, po_repository
 from app.schemas import po as po_schema
 
 
-def _assign_buyer(session, buyer_id, project, cost_codes=("210-200",)):
-    """Issue #216: _prepare_register_po enforces buyer->project/cost-code assignments."""
-    return buyer_repository.save_assignment(session, buyer_id, [project.id], list(cost_codes))
+def _assign_buyer(session, buyer_id, project):
+    """Issue #216: _prepare_register_po enforces the buyer->project assignment."""
+    return buyer_repository.save_assignment(session, buyer_id, [project.id])
 
 
 def _make_project(session) -> Project:
@@ -477,6 +477,34 @@ def test_prepare_register_po_attaches_manufacturer_per_line(monkeypatch, db_sess
     )
 
     assert [line["manufacturer"] for line in payload["lines"]] == ["SCHLAGE", "SARGENT"]
+
+
+def test_prepare_register_po_accepts_any_cost_code(monkeypatch, db_session):
+    """Per-buyer cost-code designation is gone: the buyer is assigned to the project and nothing else,
+    so a code that no designation would ever have listed still registers. This used to raise a
+    'not designated to buyer' ValidationError on field cost_code."""
+    project = _make_project(db_session)
+    _add_hardware_item(db_session, project, hardware_category="HINGE", product_code="HG-100", manufacturer="SCHLAGE")
+    gp_vendor = _make_vendor(db_session, "GP Vendor")
+    draft = po_repository.create_po(
+        db_session,
+        line_items=[_register_line("HINGE", "HG-100", "ALIAS-100")],
+        project_id=project.id,
+        vendor_id=gp_vendor.id,
+    )
+    _assign_buyer(db_session, "mira", project)
+    _use_test_session(monkeypatch, db_session)
+
+    payload = po_schema._prepare_register_po(
+        po_id=draft.id,
+        vendor_id=None,
+        gp_vendor_id="GPV1",
+        buyer_id="mira",
+        cost_code="900-000-9",  # 'Misc.' - never in anyone's designated list
+        line_items_data=[_register_line("HINGE", "HG-100", "ALIAS-100")],
+    )
+
+    assert payload["lines"][0]["cost_code"] == "900-000-9"
 
 
 def test_prepare_register_po_disagreeing_items_take_first_non_null_and_log(monkeypatch, db_session, caplog):

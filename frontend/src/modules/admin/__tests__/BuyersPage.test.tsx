@@ -3,7 +3,7 @@ import { MockedProvider, type MockedResponse } from '@apollo/client/testing/reac
 import { ToastProvider } from '../../../components/Toast';
 import BuyersPage from '../BuyersPage';
 import { GET_GP_BUYERS_DETAILED } from '../../../graphql/admin';
-import { GET_BUYER_ASSIGNMENTS, GET_PROJECTS, GET_RELAY_STATUS } from '../../../graphql/shared';
+import { GET_ALL_BUYER_ASSIGNMENTS, GET_PROJECTS, GET_RELAY_STATUS } from '../../../graphql/shared';
 
 vi.setConfig({ testTimeout: 30_000 });
 
@@ -56,13 +56,12 @@ function relayStatusMock(connected: boolean): MockedResponse {
 
 function assignmentsMock(buyerIds: string[]): MockedResponse {
   return {
-    request: { query: GET_BUYER_ASSIGNMENTS },
+    request: { query: GET_ALL_BUYER_ASSIGNMENTS },
     maxUsageCount: INFINITE,
     result: {
       data: {
-        buyerAssignments: buyerIds.map((buyerId) => ({
+        allBuyerAssignments: buyerIds.map((buyerId) => ({
           buyerId,
-          costCodes: ['310-000'],
           projects: [],
           __typename: 'BuyerAssignment',
         })),

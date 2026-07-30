@@ -78,7 +78,6 @@ export default function ResolveDeficiencyModal({ row, onClose, onSuccess }: Prop
           reasonText: reason.trim() || null,
           rmaReference: needsRma ? rma.trim() : null,
           destockSource: resolution === 'SEND_TO_STOCK' ? 'DEFICIENT_SWAP' : null,
-          reviewedBy: 'Warehouse',
         },
       },
     });

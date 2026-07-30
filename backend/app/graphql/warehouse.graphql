@@ -548,24 +548,29 @@ type Query {
 
 type Mutation {
   createReceive(input: CreateReceiveInput!): ReceiveRecord!
+  # Issue #427: the actor on every audit and history row is the Clerk-authenticated caller
+  # (current_user -> resolve_display_name), never an argument. The startedBy / enteredBy / pickedBy /
+  # fetchedBy / completedBy arguments below are accepted and IGNORED, and are nullable so they can
+  # carry @deprecated; they exist only so a frontend from the previous deploy still validates, and
+  # are dropped once none reference them.
   # Claim a pending pull and open it for picking (#367). Nothing moves in inventory - this is what
-  # approvePullRequest was, minus everything that touched stock.
-  startPullRequestPick(id: ID!, startedBy: String!): PullRequest!
+  # approvePullRequest was, minus everything that touched stock. The pull is assigned to the caller.
+  startPullRequestPick(id: ID!, startedBy: String @deprecated(reason: "ignored; actor is the caller")): PullRequest!
   # Save the half-keyed pick sheet (#367). Replace-all, not merge: the paper is the authority.
   # Shape is validated, availability deliberately is not - a draft is a note, not a claim.
-  savePickDraft(pullRequestId: ID!, lines: [PickLineInput!]!, enteredBy: String!): PickSheet!
+  savePickDraft(pullRequestId: ID!, lines: [PickLineInput!]!, enteredBy: String @deprecated(reason: "ignored; actor is the caller")): PickSheet!
   # Deduct exactly the rows the picker dictated and consume the claim behind them (#367). Three hard
   # ceilings: the row's available units, what the pull asked for, and what is free once other
   # requests' reservations are counted (CONFLICT when that one is hit, so #342 holds). A
   # confirmation that does not cover everything returns SHORT and is resumable.
-  confirmPick(pullRequestId: ID!, lines: [PickLineInput!]!, pickedBy: String!): ConfirmPickResult!
+  confirmPick(pullRequestId: ID!, lines: [PickLineInput!]!, pickedBy: String @deprecated(reason: "ignored; actor is the caller")): ConfirmPickResult!
   # Tick (or untick) one assembled leaf off a shipping pull's fetch list (#367). Nothing moves in
   # inventory - the leaf's hardware left it at assembly.
-  setPullItemFetched(itemId: ID!, fetched: Boolean!, fetchedBy: String!): PullRequestItem!
+  setPullItemFetched(itemId: ID!, fetched: Boolean!, fetchedBy: String @deprecated(reason: "ignored; actor is the caller")): PullRequestItem!
   # Close the whole pull. Since #343 this reads as "stage everything still outstanding and finish":
-  # any opening not yet confirmed individually is flipped to PULLED and stamped with completedBy.
+  # any opening not yet confirmed individually is flipped to PULLED and stamped with the caller.
   # Refused until the pick is confirmed (#367).
-  completePullRequest(id: ID!, completedBy: String): PullRequest!
+  completePullRequest(id: ID!, completedBy: String @deprecated(reason: "ignored; actor is the caller")): PullRequest!
   # Confirm that the carts for these openings of a picked shop-assembly pull are built (#343).
   # Each one becomes assignable and workable immediately; staging the last completes the pull.
   # Nothing moves in inventory - the deduction and the source request's reservation were both spent

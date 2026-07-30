@@ -1,10 +1,16 @@
-"""Repository for buyer assignments (issue #216): which projects a GP buyer may create POs for and
-which GP cost codes they may use. Enforcement is STRICT - a buyer with no assignment row cannot
-create project POs at all; stock POs (no project) are not gated here."""
+"""Repository for buyer assignments (issue #216): which projects a GP buyer may create POs for.
+Enforcement is STRICT - a buyer with no assignment row cannot create project POs at all; stock POs
+(no project) are not gated here.
+
+Cost codes are deliberately NOT part of this authorization. They used to be: each buyer carried a
+designated subset of codes, and the register-PO dropdown showed only those. GP has no per-job notion
+of "the right cost codes" (WS_Inactive is unused in practice - every job carries its full division
+template), so the subset was hand-maintained Nexus config that hid valid codes from purchasers and
+blocked legitimate registrations. Whatever GP reports active for the job is now selectable."""
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import NotFoundError, ValidationError
@@ -16,18 +22,6 @@ def _clean_buyer_id(buyer_id: str) -> str:
     cleaned = (buyer_id or "").strip()
     if not cleaned:
         raise ValidationError("Buyer id is required", field="buyer_id")
-    return cleaned
-
-
-def _clean_cost_codes(cost_codes: list[str] | None) -> list[str]:
-    """Normalize to a deduped list of non-empty 'cc1-cc2' strings, preserving order."""
-    seen: set[str] = set()
-    cleaned: list[str] = []
-    for code in cost_codes or []:
-        c = (code or "").strip()
-        if c and c not in seen:
-            seen.add(c)
-            cleaned.append(c)
     return cleaned
 
 
@@ -45,9 +39,26 @@ def get_assignment(session: Session, buyer_id: str) -> BuyerAssignment | None:
     return session.scalars(stmt).unique().first()
 
 
-def save_assignment(
-    session: Session, buyer_id: str, project_ids: list[uuid.UUID], cost_codes: list[str]
-) -> BuyerAssignment:
+def get_assignment_for_identity(session: Session, buyer_id: str) -> BuyerAssignment | None:
+    """The assignment for a GP buyer identity, matched the way `_assert_buyer_identity` matches it:
+    case-insensitively and whitespace-tolerantly, because GP stores BUYERID char-padded uppercase
+    while the value linked to a Nexus account (#216) is whatever an admin typed.
+
+    Separate from `get_assignment`, which is the exact-key accessor the admin upsert and delete need
+    - those address one row by its primary identifier and must not silently hit a differently-cased
+    neighbour. This one answers "which row is the caller's", the question #428's scoped
+    `buyerAssignments` asks; before that scoping the frontend did the same case-insensitive match
+    client-side over the whole table, so keeping the tolerance here is what makes the two equivalent."""
+    cleaned = _clean_buyer_id(buyer_id)
+    stmt = (
+        select(BuyerAssignment)
+        .options(selectinload(BuyerAssignment.projects))
+        .where(func.lower(BuyerAssignment.buyer_id) == cleaned.lower())
+    )
+    return session.scalars(stmt).unique().first()
+
+
+def save_assignment(session: Session, buyer_id: str, project_ids: list[uuid.UUID]) -> BuyerAssignment:
     """Upsert the one assignment row for a buyer (the admin dialog sends the whole state each save)."""
     cleaned_id = _clean_buyer_id(buyer_id)
     projects = []
@@ -59,9 +70,8 @@ def save_assignment(
 
     assignment = get_assignment(session, cleaned_id)
     if assignment is None:
-        assignment = BuyerAssignment(id=uuid.uuid4(), buyer_id=cleaned_id, cost_codes=[])
+        assignment = BuyerAssignment(id=uuid.uuid4(), buyer_id=cleaned_id)
         session.add(assignment)
-    assignment.cost_codes = _clean_cost_codes(cost_codes)
     assignment.projects = projects
     session.flush()
     return assignment
@@ -74,12 +84,10 @@ def delete_assignment(session: Session, buyer_id: str) -> None:
     session.delete(assignment)
 
 
-def validate_buyer_can_order(
-    session: Session, buyer_id: str, project_id: uuid.UUID | None, cost_code: str | None
-) -> None:
-    """Enforce issue #216 for a PROJECT PO push: the buyer must be assigned to the project and the
-    cost code's 'cc1-cc2' part must be one of their designated codes. A stock PO (project_id None)
-    is not gated. Raises a clean field error the dialog can show."""
+def validate_buyer_can_order(session: Session, buyer_id: str, project_id: uuid.UUID | None) -> None:
+    """Enforce issue #216 for a PROJECT PO push: the buyer must be assigned to the project. A stock PO
+    (project_id None) is not gated. The cost code is not checked here - see the module docstring.
+    Raises a clean field error the dialog can show."""
     if project_id is None:
         return
 
@@ -91,8 +99,3 @@ def validate_buyer_can_order(
         )
     if not any(p.id == project_id for p in assignment.projects):
         raise ValidationError(f"Buyer '{buyer_id}' is not assigned to this project", field="project_id")
-
-    # cost_code arrives as 'cc1-cc2-element' (the dialog's pick); designations are 'cc1-cc2'.
-    code_part = (cost_code or "").strip().rsplit("-", 1)[0]
-    if not code_part or code_part not in (assignment.cost_codes or []):
-        raise ValidationError(f"Cost code '{cost_code}' is not designated to buyer '{buyer_id}'", field="cost_code")

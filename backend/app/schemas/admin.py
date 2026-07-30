@@ -13,7 +13,11 @@ from .types import OpeningHardwareStatus, OpeningHardwareStatusItem
 @strawberry.type
 class AdminQueries:
     @strawberry.field
-    def opening_hardware_status(self, project_id: strawberry.ID | None = None) -> list[OpeningHardwareStatus]:
+    def opening_hardware_status(
+        self, info: strawberry.Info, project_id: strawberry.ID | None = None
+    ) -> list[OpeningHardwareStatus]:
+        """Admin-gated (#415): only the admin Opening Status tab reads it, and it walks every opening
+        in a project."""
         with SessionLocal() as session:
             rows = admin_repository.get_opening_hardware_status(
                 session, uuid.UUID(str(project_id)) if project_id else None

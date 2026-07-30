@@ -7,7 +7,6 @@ import {
   Inbox,
   MapPin,
   TriangleAlert,
-  Truck,
   Undo2,
   Warehouse,
 } from 'lucide-react';
@@ -46,18 +45,15 @@ function buildDestinations(d: WarehouseDashboard | undefined): Destination[] {
       caption: 'Racks, bays and what sits in them',
     },
     {
-      label: 'Deliveries',
-      path: '/app/warehouse/deliveries',
-      icon: <Truck size={18} strokeWidth={1.75} />,
-      caption: 'Upcoming POs and outstanding lines',
-      metric: d ? { value: d.backOrderedCount, noun: 'back-ordered', attention: false } : undefined,
-    },
-    {
       label: 'Receiving',
       path: '/app/warehouse/receiving',
       icon: <Download size={18} strokeWidth={1.75} />,
-      caption: 'Book POs into inventory',
-      metric: d ? { value: d.receivedLast7Days, noun: 'received (7d)', attention: false } : undefined,
+      // Only rendered when the dashboard rollup failed and there is no metric to show.
+      caption: 'Book POs into inventory, and what is still owed',
+      // The back-order count rather than receipts-in-7-days: a card carries one number, and this is
+      // the one that says whether anything needs chasing rather than what already went well. This was
+      // `receivedLast7Days`'s only reader, so #416 stopped selecting that field.
+      metric: d ? { value: d.backOrderedCount, noun: 'back-ordered', attention: false } : undefined,
     },
     {
       label: 'Put Away',

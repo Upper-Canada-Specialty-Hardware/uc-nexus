@@ -20,6 +20,8 @@ import { GET_BUYER_ASSIGNMENTS, GET_PROJECTS } from '../../graphql/shared';
 import { useIdentity } from '../../hooks/useIdentity';
 import VendorSelect from '../../components/VendorSelect';
 import type { Project } from '../../types/project';
+import { isGpSetupBroken } from '../../types/project';
+import GpSetupQuarantineBanner, { GpSetupBadge } from '../../components/GpSetupQuarantineBanner';
 import type { PurchaseOrder } from './index';
 import RelayStatusChip from '../../relay/RelayStatusChip';
 import { useRelayStatus } from '../../relay/useRelayStatus';
@@ -189,12 +191,12 @@ export default function GpPurchaseOrderDialog({
   const isJob = !!projectId && !!selectedProject;
   const jobNumber = selectedProject?.projectId ?? null;
 
-  // Issue #216: the caller's buyer assignment (their projects + designated cost codes). Register-only
+  // Issue #216: the caller's buyer assignment (the projects they may order for). Register-only
   // (issue #256: drafting is open to everyone; the GP registration is where the buyer gating applies) -
-  // the caller must be assigned to the draft's project and only designated cost codes are offered.
+  // the caller must be assigned to the draft's project. Cost codes are NOT filtered by buyer: the
+  // dropdown offers every code GP reports active for the job.
   interface BuyerAssignmentData {
     buyerId: string;
-    costCodes: string[];
     projects: { id: string; projectId: string; description: string | null }[];
   }
   const { data: assignmentsData } = useQuery<{ buyerAssignments: BuyerAssignmentData[] }>(GET_BUYER_ASSIGNMENTS, {
@@ -210,7 +212,6 @@ export default function GpPurchaseOrderDialog({
     );
   }, [assignmentsData, gpBuyerId]);
   const assignedProjectIds = useMemo(() => new Set((myAssignment?.projects ?? []).map((p) => p.id)), [myAssignment]);
-  const designatedCostCodes = useMemo(() => new Set(myAssignment?.costCodes ?? []), [myAssignment]);
   const registerProjectAllowed = !isRegister || !registerPo?.projectId || assignedProjectIds.has(registerPo.projectId);
 
   // Live GP vendor list (PM00200), per company - issue #200 replaces the locally-synced vendor mirror
@@ -336,8 +337,10 @@ export default function GpPurchaseOrderDialog({
     skip: !open || !isRegister || !relayConnected || !company || !jobNumber,
     fetchPolicy: 'cache-first',
   });
-  // Issue #216: only the caller's designated cost codes ('cc1-cc2') are offered for the job.
-  const costCodes = (costCodesData?.gpCostCodes ?? []).filter((c) => designatedCostCodes.has(c.costCode));
+  // Every code GP reports active for the job is offered. This used to be filtered to the caller's
+  // designated cost codes, which meant a purchaser saw two of the job's twenty-eight and could not
+  // register against the rest - GP has no per-job notion of correct codes for the filter to reflect.
+  const costCodes = useMemo(() => costCodesData?.gpCostCodes ?? [], [costCodesData]);
 
   // Seed the form when the dialog opens. Create mode -> empty; register mode -> the draft's values
   // (project locked, line items carrying their ids so edits map back). The vendor is seeded separately
@@ -501,6 +504,11 @@ export default function GpPurchaseOrderDialog({
       if (!gpBuyerId) errs.buyer = 'Your account has no GP buyer identity - ask an Admin to set it in User Management';
       else if (!registerProjectAllowed) errs.buyer = `Buyer ${gpBuyerId} is not assigned to this project`;
       if (isJob && !costCode) errs.costCode = 'Cost code is required for a project PO';
+      // A refresh can drop the picked code from the job's list (GP-side change); the Select then
+      // renders blank while the state still holds the old pick, so catch it here as a form error
+      // instead of letting the relay reject the push after submit.
+      else if (isJob && costCodes.length > 0 && !costCodes.some((c) => `${c.costCode}-${c.costElement}` === costCode))
+        errs.costCode = 'The selected cost code is no longer on this job in GP - pick another';
       // Issue #257: a CAD PO must carry a tax detail (the relay computes tax from it); a foreign-currency
       // PO carries none (the relay blanks the schedule), so require it for CAD only. Only enforce it when
       // the company actually defines purchase tax details - a company with none would otherwise be
@@ -529,7 +537,7 @@ export default function GpPurchaseOrderDialog({
       errs.tradeDiscount = 'Must be >= 0';
     setErrors(errs);
     return Object.keys(errs).length === 0;
-  }, [lineItems, relayConnected, gpVendorId, isRegister, vendorConfirmed, gpBuyerId, registerProjectAllowed, isJob, costCode, shippingCost, tariffAmount, isForeignCurrency, taxDetailId, gpTaxDetails.length, taxDetailsOpUnsupported, taxDetailsFailed, miscellaneous, tradeDiscount]);
+  }, [lineItems, relayConnected, gpVendorId, isRegister, vendorConfirmed, gpBuyerId, registerProjectAllowed, isJob, costCode, costCodes, shippingCost, tariffAmount, isForeignCurrency, taxDetailId, gpTaxDetails.length, taxDetailsOpUnsupported, taxDetailsFailed, miscellaneous, tradeDiscount]);
 
   const handleSubmit = useCallback(async () => {
     if (!validate()) return;
@@ -731,12 +739,21 @@ export default function GpPurchaseOrderDialog({
       )
     ) : null;
 
+  // #425: only REGISTER is blocked, not draft creation. A draft touches nothing in GP, and forbidding
+  // it would stop purchasing preparing the order that becomes registerable the moment accounting
+  // fixes the job. Registering is the act that stamps the bad account onto the PO line.
+  const gpSetupBlocksRegister = isRegister && isGpSetupBroken(selectedProject);
+
   const actions = (
     <Stack direction="row" spacing={1}>
       <Button onClick={onClose} disabled={busy}>
         Cancel
       </Button>
-      <Button variant="contained" onClick={handleSubmit} disabled={busy || lineItems.length === 0}>
+      <Button
+        variant="contained"
+        onClick={handleSubmit}
+        disabled={busy || lineItems.length === 0 || gpSetupBlocksRegister}
+      >
         {busy ? submitBusyLabel : submitIdleLabel}
       </Button>
     </Stack>
@@ -749,6 +766,7 @@ export default function GpPurchaseOrderDialog({
           <GpErrorAlert error={gpError} onClose={() => setGpError(null)} />
         </Box>
       )}
+      {isRegister && <GpSetupQuarantineBanner project={selectedProject} action="registering it in GP" dense />}
       {/* Issue #216: GP registration happens as YOUR buyer identity, against your assigned projects.
           Drafting (issue #256) is open to everyone, so these gate register mode only. */}
       {isRegister && !gpBuyerId ? (
@@ -781,9 +799,12 @@ export default function GpPurchaseOrderDialog({
           }
         >
           <MenuItem value="">No Project (stock PO)</MenuItem>
+          {/* #425: badged in the picker, not hidden from it. A quarantined project is still the right
+              project for a draft; what it cannot take is a registration. */}
           {projects.map((p) => (
-            <MenuItem key={p.id} value={p.id}>
+            <MenuItem key={p.id} value={p.id} sx={{ gap: 1 }}>
               {p.description || p.projectId}
+              <GpSetupBadge project={p} />
             </MenuItem>
           ))}
         </TextField>

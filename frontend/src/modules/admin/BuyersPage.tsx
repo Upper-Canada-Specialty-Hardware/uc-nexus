@@ -19,7 +19,7 @@ import {
 import { AlertTriangle, Plus, Trash2 } from 'lucide-react';
 import { DataGrid, type GridColDef, type GridRowParams } from '@mui/x-data-grid';
 import { useMutation, useQuery } from '@apollo/client/react';
-import { GET_BUYER_ASSIGNMENTS, GET_PROJECTS } from '../../graphql/shared';
+import { GET_ALL_BUYER_ASSIGNMENTS, GET_PROJECTS } from '../../graphql/shared';
 import { DELETE_BUYER_ASSIGNMENT, SAVE_BUYER_ASSIGNMENT } from '../../graphql/admin';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import { useToast } from '../../components/Toast';
@@ -39,7 +39,6 @@ interface AssignmentProject {
 
 interface BuyerAssignmentRow {
   buyerId: string;
-  costCodes: string[];
   projects: AssignmentProject[];
 }
 
@@ -51,20 +50,21 @@ export default function BuyersPage() {
   const { isAdmin } = useIdentity();
   const { showToast } = useToast();
 
-  const { data, loading } = useQuery<{ buyerAssignments: BuyerAssignmentRow[] }>(GET_BUYER_ASSIGNMENTS, {
+  // #428: the admin whole-table read. `buyerAssignments` is scoped to the caller's own row now, so
+  // this page - the one screen that genuinely needs every buyer - uses the admin-gated resolver.
+  const { data, loading } = useQuery<{ allBuyerAssignments: BuyerAssignmentRow[] }>(GET_ALL_BUYER_ASSIGNMENTS, {
     skip: !isAdmin,
     fetchPolicy: 'cache-and-network',
   });
   const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS, { skip: !isAdmin });
   const projects = useMemo(() => projectsData?.projects ?? [], [projectsData]);
-  const rows = useMemo(() => data?.buyerAssignments ?? [], [data]);
+  const rows = useMemo(() => data?.allBuyerAssignments ?? [], [data]);
 
   // Edit dialog state. isNew drives whether the buyer id is editable (it's the row key).
   const [editOpen, setEditOpen] = useState(false);
   const [isNew, setIsNew] = useState(false);
   const [buyerId, setBuyerId] = useState('');
   const [selectedProjects, setSelectedProjects] = useState<Project[]>([]);
-  const [costCodesText, setCostCodesText] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [registerOpen, setRegisterOpen] = useState(false);
 
@@ -76,7 +76,7 @@ export default function BuyersPage() {
   const canFlagUnregistered = !gpBuyers.unavailable && !gpBuyers.loading && gpBuyers.buyers.length > 0;
 
   const [saveAssignment, { loading: saving }] = useMutation(SAVE_BUYER_ASSIGNMENT, {
-    refetchQueries: [{ query: GET_BUYER_ASSIGNMENTS }],
+    refetchQueries: [{ query: GET_ALL_BUYER_ASSIGNMENTS }],
     onCompleted: () => {
       showToast('Buyer assignment saved', 'success');
       setEditOpen(false);
@@ -85,7 +85,7 @@ export default function BuyersPage() {
   });
 
   const [deleteAssignment] = useMutation(DELETE_BUYER_ASSIGNMENT, {
-    refetchQueries: [{ query: GET_BUYER_ASSIGNMENTS }],
+    refetchQueries: [{ query: GET_ALL_BUYER_ASSIGNMENTS }],
     onCompleted: () => {
       showToast('Buyer assignment deleted', 'success');
       setDeleteTarget(null);
@@ -100,7 +100,6 @@ export default function BuyersPage() {
     setIsNew(true);
     setBuyerId('');
     setSelectedProjects([]);
-    setCostCodesText('');
     setEditOpen(true);
   }, []);
 
@@ -110,7 +109,6 @@ export default function BuyersPage() {
       setBuyerId(row.buyerId);
       const assignedIds = new Set(row.projects.map((p) => p.id));
       setSelectedProjects(projects.filter((p) => assignedIds.has(p.id)));
-      setCostCodesText(row.costCodes.join('\n'));
       setEditOpen(true);
     },
     [projects],
@@ -121,13 +119,9 @@ export default function BuyersPage() {
       variables: {
         buyerId: buyerId.trim(),
         projectIds: selectedProjects.map((p) => p.id),
-        costCodes: costCodesText
-          .split('\n')
-          .map((c) => c.trim())
-          .filter(Boolean),
       },
     });
-  }, [saveAssignment, buyerId, selectedProjects, costCodesText]);
+  }, [saveAssignment, buyerId, selectedProjects]);
 
   const columns = useMemo<GridColDef[]>(
     () => [
@@ -171,22 +165,6 @@ export default function BuyersPage() {
         ),
       },
       {
-        field: 'costCodes',
-        headerName: 'Designated Cost Codes',
-        flex: 1,
-        sortable: false,
-        valueGetter: (_value: unknown, row: BuyerAssignmentRow) =>
-          row.costCodes.length > 0 ? row.costCodes.join(', ') : '—',
-        renderCell: (params) => {
-          const codes = (params.row as BuyerAssignmentRow).costCodes;
-          return (
-            <Box component="span" sx={codes.length > 0 ? monoSx : undefined}>
-              {codes.length > 0 ? codes.join(', ') : '—'}
-            </Box>
-          );
-        },
-      },
-      {
         field: 'actions',
         headerName: '',
         width: 60,
@@ -227,8 +205,9 @@ export default function BuyersPage() {
               Buyers
             </Typography>
             <Typography variant="body2" color="text.secondary">
-              Which projects each GP buyer may create POs for, and their designated cost codes. A buyer
-              with no assignment cannot create project POs. Link accounts to buyers in User Management.
+              Which projects each GP buyer may create POs for. A buyer with no assignment cannot create
+              project POs. Cost codes are not restricted per buyer - every code GP has active on the job
+              is available at registration. Link accounts to buyers in User Management.
             </Typography>
           </Box>
           <Button
@@ -363,20 +342,6 @@ export default function BuyersPage() {
             getOptionLabel={(p) => projectLabel(p)}
             isOptionEqualToValue={(a, b) => a.id === b.id}
             renderInput={(params) => <TextField {...params} label="Assigned projects" size="small" />}
-            sx={{ mb: 2 }}
-          />
-          <TextField
-            label="Designated cost codes"
-            value={costCodesText}
-            onChange={(e) => setCostCodesText(e.target.value)}
-            size="small"
-            fullWidth
-            multiline
-            minRows={3}
-            maxRows={8}
-            placeholder={'310-000\n210-200'}
-            helperText="One per line, as 'cc1-cc2' (the code without the element digit)"
-            sx={{ '& .MuiInputBase-input': { fontFamily: FONT_MONO } }}
           />
         </DialogContent>
         <DialogActions>

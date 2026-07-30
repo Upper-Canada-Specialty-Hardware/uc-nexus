@@ -85,7 +85,6 @@ export default function AllocateStockModal({
           targetAisle: aisle.trim() || null,
           targetRow: row.trim() || null,
           targetBay: bay.trim() || null,
-          performedBy: 'Warehouse',
         },
       },
     });

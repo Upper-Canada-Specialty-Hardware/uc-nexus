@@ -23,6 +23,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from starlette.websockets import WebSocketDisconnect  # noqa: E402
 
 import main  # noqa: E402
+from app.auth import ADMIN_ROLE  # noqa: E402
 from app.database import SessionLocal  # noqa: E402
 from app.models.relay_install import RelayInstall  # noqa: E402
 from app.repositories import relay_repository  # noqa: E402
@@ -397,27 +398,26 @@ def test_read_loop_records_the_relay_hello_frame(monkeypatch):
 
 
 class _FakeInfo:
-    """A resolver `info` with no real request. require_admin is patched out per test - what is under
-    test here is the connected-install guard, not the auth gate (that lives in
-    test_resolver_auth_gates)."""
+    """A resolver `info` for a caller the gate has already admitted.
 
-    context = {"request": None}
+    These tests call the resolver directly, so no schema extension runs - and since #423 the gate is
+    the extension, not a line in the body. The body still reads the caller's identity through
+    `current_user`, which returns the identity `enforce_root_field` verified and memoised on the
+    request context. Seeding that memo is exactly the state a resolver runs in, and it needs no real
+    request. What is under test here is the connected-install guard; the authorization itself lives
+    in test_resolver_auth_gates."""
+
+    def __init__(self, user_id: str = "user_admin"):
+        self.context = {"request": None, "_auth_user_id": user_id, "_auth_roles": [ADMIN_ROLE]}
 
 
-def _as_admin(monkeypatch):
-    from app.schemas import relay as relay_module
-
-    monkeypatch.setattr(relay_module, "require_admin", lambda info: {"user_id": "user_admin", "roles": ["Admin"]})
-
-
-def test_delete_refuses_the_install_holding_the_live_connection(_migrate_database, monkeypatch):
+def test_delete_refuses_the_install_holding_the_live_connection(_migrate_database):
     """Revoking the secret under a running relay would take GP down mid-write, so the resolver refuses
     it. This drives the real route because the id it compares against is set by the route - reading
     install.id in the same pre-commit block as install.company, per the DetachedInstanceError rule."""
     from app.errors import ConflictError
     from app.schemas.relay import RelayMutations
 
-    _as_admin(monkeypatch)
     secret = "relay-link-delete-guard-secret"
     install_id = _enroll_committed("WS-DELETE-GUARD", "TUBC", secret)
     try:
@@ -438,11 +438,10 @@ def test_delete_refuses_the_install_holding_the_live_connection(_migrate_databas
         _delete_install(install_id)
 
 
-def test_delete_allows_a_different_disconnected_install_while_one_is_live(_migrate_database, monkeypatch):
+def test_delete_allows_a_different_disconnected_install_while_one_is_live(_migrate_database):
     # Retiring a workstation is the normal case and must not be blocked by an unrelated relay being up.
     from app.schemas.relay import RelayMutations
 
-    _as_admin(monkeypatch)
     live_secret = "relay-link-delete-live-secret"
     live_id = _enroll_committed("WS-DELETE-LIVE", "TUBC", live_secret)
     other_id = _enroll_committed("WS-DELETE-OTHER", "TUBC", "relay-link-delete-other-secret")

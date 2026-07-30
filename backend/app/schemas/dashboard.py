@@ -2,8 +2,9 @@
 
 import strawberry
 
+from app.auth import user_roster
 from app.database import SessionLocal
-from app.repositories import dashboard_repository, user_repository
+from app.repositories import dashboard_repository
 
 from .types import AdminStats, HomeDashboardStats, ShopAssemblyStats
 
@@ -11,7 +12,7 @@ from .types import AdminStats, HomeDashboardStats, ShopAssemblyStats
 @strawberry.type
 class DashboardQueries:
     @strawberry.field
-    def home_dashboard_stats(self) -> HomeDashboardStats:
+    def home_dashboard_stats(self, info: strawberry.Info) -> HomeDashboardStats:
         with SessionLocal() as session:
             d = dashboard_repository.get_home_dashboard_stats(session)
             return HomeDashboardStats(
@@ -22,7 +23,7 @@ class DashboardQueries:
             )
 
     @strawberry.field
-    def shop_assembly_stats(self) -> ShopAssemblyStats:
+    def shop_assembly_stats(self, info: strawberry.Info) -> ShopAssemblyStats:
         with SessionLocal() as session:
             d = dashboard_repository.get_shop_assembly_stats(session)
             return ShopAssemblyStats(
@@ -30,8 +31,16 @@ class DashboardQueries:
             )
 
     @strawberry.field
-    def admin_stats(self) -> AdminStats:
-        users = user_repository.list_users()
+    def admin_stats(self, info: strawberry.Info) -> AdminStats:
+        """Admin-gated (#415): only the admin landing page reads it, and it enumerates Clerk users to
+        count them.
+
+        That enumeration is also what authorized the caller. `user_roster` is the request-scoped
+        memo the gate resolved this field's Admin/Manager requirement from (ROSTER_BACKED in
+        app/auth_policy.py) - the roster carries roles per user, so one Clerk call answers both
+        questions. Calling `user_repository.list_users()` directly here would make it two, which is
+        what it was before #423."""
+        users = user_roster(info.context)
         with SessionLocal() as session:
             d = dashboard_repository.get_admin_stats(session, user_count=len(users))
             return AdminStats(
