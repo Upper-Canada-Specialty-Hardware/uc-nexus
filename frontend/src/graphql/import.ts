@@ -149,6 +149,22 @@ export const GET_GP_CUSTOMER_ADDRESSES = gql`
   }
 `;
 
+// Issue #444: an address the job needs but GP does not hold yet. No company argument - the backend
+// uses the connected relay's own company, the same one the reads above are keyed on. The selected
+// fields deliberately mirror gpCustomerAddresses above: the dialog writes the returned row straight
+// into that query's cache entry, which is what lets the picker offer the new code immediately rather
+// than only once a re-read of GP has landed.
+export const CREATE_GP_CUSTOMER_ADDRESS = gql`
+  mutation CreateGpCustomerAddress($input: CreateGpCustomerAddressInput!) {
+    createGpCustomerAddress(input: $input) {
+      addressCode
+      address1
+      city
+      state
+    }
+  }
+`;
+
 // Issue #392: the job proc validates Estimator/WS Manager against the payroll master, so they are
 // pickers, not free text.
 export const GET_GP_EMPLOYEES = gql`
