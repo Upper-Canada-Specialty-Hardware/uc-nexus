@@ -20,7 +20,7 @@ from app.errors import AppError
 from app.repositories import relay_repository
 from app.schemas.mutations import Mutation
 from app.schemas.queries import Query
-from app.services import gp_job_sync, gp_outbox_worker, relay_adopt
+from app.services import gp_job_sync, gp_outbox_worker, relay_adopt, relay_seed
 from app.services.relay_gateway import HEARTBEAT_INTERVAL_SECONDS
 from app.services.relay_gateway import gateway as relay_gateway
 
@@ -86,6 +86,10 @@ async def lifespan(_app: FastAPI):
     Started here rather than lazily on first use so a queue that filled during a deploy starts
     draining as soon as the new container is up, with nobody having to visit a page. Under
     TestClient(app) this runs too, and is harmless: with no relay registered neither loop queries."""
+    # Ahead of the workers, so a PR environment can accept the relay's very first reconnect rather
+    # than 4403-ing it until someone hits a page (#414). A no-op unless RELAY_SEED_SECRET_HASH is set,
+    # and refused outright in production.
+    relay_seed.seed_on_startup()
     tasks: list[asyncio.Task] = []
     if gp_outbox_worker.enabled():
         tasks.append(asyncio.create_task(gp_outbox_worker.run_forever()))

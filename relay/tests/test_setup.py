@@ -159,3 +159,29 @@ def test_api_start_relay_reports_already_running(monkeypatch):
 def test_api_enroll_requires_token():
     r = ui.Api().enroll("")
     assert r["ok"] is False
+
+
+def test_write_config_preserves_a_hand_added_extra_backend_url(tmp_path):
+    # #414: extra_backend_urls exists nowhere but config.toml, and the wizard never asks for it. A
+    # re-run that dropped it would silently disconnect a PR environment mid-test.
+    p = tmp_path / "config.toml"
+    p.write_text(
+        '[auth]\nshared_secret = "s3cret"\n\n[gp]\ndefault_company = "TUBC"\n'
+        '\n[channel]\nextra_backend_urls = ["wss://backend-pr-414.up.railway.app/relay-link"]\n',
+        encoding="utf-8",
+    )
+    setup.write_config({"default_company": "TUCSH", "allowed_companies": ["TUCSH"]}, p)
+    data = tomllib.loads(p.read_text(encoding="utf-8"))
+    assert data["channel"]["extra_backend_urls"] == ["wss://backend-pr-414.up.railway.app/relay-link"]
+    assert data["auth"]["shared_secret"] == "s3cret"  # still preserved alongside it
+    assert data["gp"]["default_company"] == "TUCSH"  # and the wizard's own change applied
+
+
+def test_build_config_toml_renders_extra_backend_urls_as_a_toml_array(tmp_path):
+    data = tomllib.loads(setup.build_config_toml({"extra_backend_urls": ["wss://a/relay-link"]}))
+    assert data["channel"]["extra_backend_urls"] == ["wss://a/relay-link"]
+
+
+def test_build_config_toml_accepts_a_bare_string_extra_url(tmp_path):
+    data = tomllib.loads(setup.build_config_toml({"extra_backend_urls": "wss://a/relay-link"}))
+    assert data["channel"]["extra_backend_urls"] == ["wss://a/relay-link"]
