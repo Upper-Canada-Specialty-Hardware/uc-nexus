@@ -540,7 +540,25 @@ async def _run_channel(url: str, stop_event: asyncio.Event | None = None) -> Non
         try:
             await _run_once(url, secret, cfg)
             backoff = cfg.reconnect_min_seconds  # clean run - reset backoff before the next attempt
-            prev_category = None
+            # A clean return - the socket closed without raising - used to log NOTHING, so the only
+            # trace of the drop was the next "channel connected" line with no warning before it
+            # (issue #384). The 2026-07-28 outage reads in relay.log as a bare reconnect out of
+            # nowhere for exactly this reason, which is what made the drop undiagnosable from either
+            # end. Same shape as the classified failures below so the desktop UI and anyone grepping
+            # relay.log treat it like any other reconnect event.
+            #
+            # It goes through the same quiet_repeat demotion for the same #414 reason: a PR
+            # environment torn down when its PR closed can sit in config.toml closing cleanly in a
+            # loop, and that must not bury production's own reconnect events. The secret_rejected arm
+            # of the rule below cannot apply here, so the primary channel never demotes this one -
+            # a production channel that keeps closing cleanly is exactly what we want to see.
+            quiet_repeat = prev_category == "closed_clean" and not primary
+            logger.log(
+                logging.DEBUG if quiet_repeat else logging.WARNING,
+                "channel closed without an error; reconnecting",
+                extra={"category": "closed_clean", "url": url, "backoff": backoff},
+            )
+            prev_category = "closed_clean"
             _mark_disconnected(url)  # _run_once returned -> socket closed; reconnecting on the next loop
         except asyncio.CancelledError:
             raise

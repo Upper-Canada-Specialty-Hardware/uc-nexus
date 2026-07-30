@@ -50,7 +50,6 @@ function renderModal(
           opening={opening(items)}
           onClose={vi.fn()}
           onCompleted={onCompleted}
-          completedBy="Ada"
         />
       </ToastProvider>
     </MockedProvider>
@@ -132,7 +131,6 @@ describe('AssemblyDetailModal progress editor', () => {
           input: {
             openingId: 'o1',
             items: [{ shopAssemblyOpeningItemId: 'i1', installedQuantity: 2 }],
-            performedBy: 'Ada',
           },
         },
       },
@@ -182,7 +180,6 @@ describe('AssemblyDetailModal progress editor', () => {
           input: {
             openingId: 'o1',
             items: [{ shopAssemblyOpeningItemId: 'i1', installedQuantity: 2 }],
-            performedBy: 'Ada',
           },
         },
       },
@@ -219,7 +216,6 @@ describe('AssemblyDetailModal progress editor', () => {
             aisle: null,
             row: null,
             bay: null,
-            completedBy: 'Ada',
           },
         },
       },

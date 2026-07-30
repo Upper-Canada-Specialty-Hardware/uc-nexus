@@ -8,6 +8,7 @@ The tests that matter most are the refusals: this writes a working credential in
 only things keeping that acceptable are the production kill-switch and the sandbox company pin.
 """
 
+import logging
 import uuid
 from datetime import datetime
 
@@ -23,10 +24,22 @@ HASH = hash_secret(SECRET)
 
 
 def test_production_is_refused_outright(db_session):
-    # Railway duplicates variables into PR environments, so this WILL be visible in production. The
-    # guard is the reason that is survivable - it must not depend on the variable being absent.
+    # Railway clones a PR environment from production, so the variable is SET in production by design
+    # (#431) and will always be visible here. The guard is the reason that is survivable - it must not
+    # depend on the variable being absent.
     assert relay_seed.seed_from_env(db_session, environment_name="production", secret_hash=HASH) is None
     assert db_session.query(RelayInstall).filter(RelayInstall.secret_hash == HASH).count() == 0
+
+
+def test_the_production_refusal_reads_as_expected_not_as_a_misconfiguration(db_session, caplog):
+    # #431: the original message logged at ERROR and told the operator to remove the variable from
+    # production. Following it breaks every PR environment created afterwards, because production is
+    # the only place a new one can inherit the variable from.
+    with caplog.at_level(logging.INFO, logger=relay_seed.__name__):
+        assert relay_seed.seed_from_env(db_session, environment_name="production", secret_hash=HASH) is None
+    record = next(r for r in caplog.records if "RELAY_SEED_SECRET_HASH" in r.getMessage())
+    assert record.levelno == logging.INFO
+    assert "remove" not in record.getMessage().lower()
 
 
 @pytest.mark.parametrize("name", ["Production", "  PRODUCTION  "])

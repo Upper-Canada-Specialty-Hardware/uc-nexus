@@ -147,15 +147,19 @@ def recent_log_events(config_path: str | Path | None = None, limit: int = 200) -
 
 def channel_state(config_path: str | Path | None = None) -> dict:
     """Infer the live channel state from the newest channel-related log event. The #204 fix tags a failed
-    connect with a `category` (secret_rejected / slot_busy / dropped); a success logs 'channel connected'.
+    connect with a `category` (secret_rejected / slot_busy / dropped); a clean socket close is tagged
+    closed_clean (#384); a success logs 'channel connected'.
     Returns state in {connected, secret_rejected, slot_busy, disconnected, unknown}."""
     for row in reversed(recent_log_events(config_path, limit=400)):
         msg = (row.get("message") or "").lower()
         cat = row.get("category")
         if "channel connected" in msg:
             return {"state": "connected", "at": row.get("time")}
-        if cat in ("secret_rejected", "slot_busy", "dropped"):
-            mapped = "disconnected" if cat == "dropped" else cat
+        # closed_clean has to be listed here, not left to fall through: it is a DISCONNECT, and an
+        # unrecognised category walks further back in the log to the "channel connected" that opened
+        # the socket which just closed - so the panel would report a dead channel as connected (#384).
+        if cat in ("secret_rejected", "slot_busy", "dropped", "closed_clean"):
+            mapped = cat if cat in ("secret_rejected", "slot_busy") else "disconnected"
             return {"state": mapped, "at": row.get("time"), "message": row.get("message")}
         if "channel connection dropped" in msg:  # pre-#204 relays logged this without a category
             return {"state": "disconnected", "at": row.get("time")}

@@ -238,14 +238,14 @@ export default function PullRequestDetailModal({
   // --- Handlers ---
 
   const handleComplete = () => {
-    completePR({ variables: { id: pr.id, completedBy: displayName } });
+    completePR({ variables: { id: pr.id } });
   };
 
   const handleCancel = () => {
     setCancelBlockedMessage(null);
     cancelPR({
       variables: {
-        input: { id: pr.id, cancelledBy: displayName, reason: cancelReason.trim() || null },
+        input: { id: pr.id, reason: cancelReason.trim() || null },
       },
     });
   };
@@ -296,7 +296,7 @@ export default function PullRequestDetailModal({
       <Button
         variant="contained"
         color="secondary"
-        onClick={() => startPick({ variables: { id: pr.id, startedBy: displayName } })}
+        onClick={() => startPick({ variables: { id: pr.id } })}
         disabled={startLoading}
       >
         {startLoading ? 'Starting...' : 'Start pick'}

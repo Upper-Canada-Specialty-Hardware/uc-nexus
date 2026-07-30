@@ -134,6 +134,16 @@ ASK for; `ops.check_company_allowed` still decides what this workstation will se
 `[gp] allowed_companies` from config.toml. a workstation set up only for production companies refuses
 every PR-environment job with `company_not_allowed`. nothing checks the two lists intersect at startup.
 
+**the backend side of this - `RELAY_SEED_SECRET_HASH` - lives on the PRODUCTION backend service, and a
+PR environment inherits it only at creation (#431).** Railway clones a new PR environment from
+production, so production is the only place the variable can sit for a PR environment to get it at all;
+the production backend refuses to seed and logs that refusal, which is the intended steady state rather
+than something to clean up. the copy is taken when the environment is created and is never refreshed
+afterwards, so setting it on production does NOT reach a PR environment that already exists - set it on
+that environment's own backend service as well (verified 2026-07-30: pr-430 predated the variable and
+could not read GP until it had its own copy). seeding runs at backend startup, so either way the change
+lands on that service's next deploy.
+
 the URL list is read once at `serve` start, so adding or removing a test backend needs a relay restart
 (the app's Restart Relay button). the enrolled secret is still re-read on every reconnect, unchanged,
 and a config.toml that fails to parse mid-edit no longer kills the channel - it retries with the last
@@ -143,3 +153,37 @@ otherwise (quietly: a non-production channel logs a repeated failure once, then 
 
 the ops newer than `create_po` / `create_receipt` are channel-only - they have no HTTP route, because
 the browser hop is no longer the live path.
+
+testing a PR that adds a new op (#431)
+
+`extra_backend_urls` above gets a PR environment served by the relay already installed on the
+workstation, but that relay is the published release build: an op the PR adds to `_OPS` does not exist
+in it, so the backend refuses the call off the advertised op-set with `RELAY_OP_UNSUPPORTED` before it
+is even sent (#315). testing that op end to end needs a relay built from the PR's branch, installed on
+the workstation for the length of the session. the install step is manual on purpose - nothing reaches
+the workstation remotely.
+
+1. **build it**: `gh workflow run relay-release.yml --ref <branch>`. any branch in this repo works (a
+   fork's branch cannot be dispatched; the workflow definition used is the one on that branch). the run
+   builds the same onedir bundle and uploads it as a workflow artifact - a dispatch publishes NO
+   Release, so no other workstation ever sees it.
+2. **download it**: `gh run download <run-id>`. the artifact is named
+   `ucnexus-relay-zip-relay-v<version>-branch.<branch>.<sha>`, so two branch builds cannot be swapped by
+   accident.
+3. **install it over the release build**: quit the relay app first (X on the window, then confirm - the
+   installer deletes the app folder the running exe holds open), then `install\install-relay-user.ps1
+   -ZipPath <the zip> -StartNow` (or `install-relay.ps1` on an admin/scheduled-task install). it
+   re-extracts the bundle, repoints the `current` junction, and leaves `config.toml` and the enrolled
+   DPAPI secret alone, so no re-enrollment is involved. Admin -> Relay Installs reports the live build
+   tag - confirm it reads `relay-v<version>-branch.<branch>.<sha>` before testing anything.
+4. **restore the release build** when the session is done: re-run the same installer with
+   `ucnexus-relay.zip` from the latest `relay-v*` GitHub Release, or press Update now on the app's
+   Updates tab. a branch build is stamped without a `build.<N>` number, so every release counts as newer
+   than it and the update is offered rather than refused as a downgrade.
+
+that last point cuts both ways, deliberately: the app's auto-update poller reads the branch build as
+behind too, so it will pull the workstation back to the latest release on its own - first check 10-15
+minutes after the app starts, daily after that. a branch build therefore cannot quietly become the
+fleet's permanent build, but a long session can have the build swapped underneath it. if a run suddenly
+starts answering `RELAY_OP_UNSUPPORTED` again, check the build tag before anything else and re-install
+the branch zip.

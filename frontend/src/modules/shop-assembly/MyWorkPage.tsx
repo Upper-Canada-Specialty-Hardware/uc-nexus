@@ -139,7 +139,7 @@ const columns: GridColDef[] = [
 ];
 
 export default function MyWorkPage() {
-  const { displayName, userId } = useIdentity();
+  const { userId } = useIdentity();
   // Hold the id, not the row. The modal writes progress and the list refetches; keeping the object
   // would pin the modal to a snapshot taken before the save, so a just-flagged deficiency would not
   // appear in it.
@@ -191,7 +191,7 @@ export default function MyWorkPage() {
       {/* Leaves this assembler already finished that are owed replacement hardware (#341). Kept out
           of the grid above because those rows are unfinished openings and these are complete ones -
           folding them in would mean either reopening a finished work unit or mislabelling it. */}
-      <ReplacementWorkPanel assignedToUserId={userId} performedBy={displayName} />
+      <ReplacementWorkPanel assignedToUserId={userId} />
 
       {selectedOpening && (
         <AssemblyDetailModal
@@ -202,7 +202,6 @@ export default function MyWorkPage() {
           opening={selectedOpening}
           onClose={() => setSelectedOpeningId(null)}
           onCompleted={handleCompleted}
-          completedBy={displayName}
         />
       )}
     </Box>

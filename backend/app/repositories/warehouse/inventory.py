@@ -355,9 +355,15 @@ def get_opening_item_details(session: Session, oi_id: uuid.UUID) -> OpeningItemM
 
 
 def adjust_inventory_quantity(
-    session: Session, inv_id: uuid.UUID, adjustment: int, reason: str
+    session: Session, inv_id: uuid.UUID, adjustment: int, reason: str, *, performed_by: str
 ) -> InventoryLocationModel:
-    """Adjust the quantity of an InventoryLocation by a positive or negative amount."""
+    """Adjust the quantity of an InventoryLocation by a positive or negative amount.
+
+    `performed_by` is keyword-only and required (#427). This function used to take no actor at all
+    and hardcode "Admin/Manager" on its audit row, so every quantity adjustment in the system was
+    filed under an admin no matter who made it - and, worse, the resolver had no way to pass the
+    truth through even once somebody noticed. Requiring it means a new caller has to answer the
+    question rather than inherit a wrong answer."""
     il = session.get(InventoryLocationModel, inv_id)
     if il is None:
         raise NotFoundError(f"Inventory location {inv_id} not found")
@@ -378,7 +384,7 @@ def adjust_inventory_quantity(
         entity_type=AuditEntityType.INVENTORY_LOCATION,
         entity_id=il.id,
         action=AuditAction.ADJUSTMENT,
-        performed_by="Admin/Manager",
+        performed_by=performed_by,
         detail={
             "oldQuantity": old_quantity,
             "newQuantity": new_quantity,

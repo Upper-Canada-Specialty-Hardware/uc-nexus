@@ -204,9 +204,26 @@ export const GET_OPENING_LEAF_STATUS = gql`
   }
 `;
 
+// The caller's OWN buyer assignment, for the register-PO dialog's project filter (#216). Scoped
+// server-side as of #428, so this returns at most one row - the one matching the caller's linked GP
+// buyer id - or none if no id is linked yet. The whole table is `allBuyerAssignments`, admin only.
 export const GET_BUYER_ASSIGNMENTS = gql`
   query GetBuyerAssignments {
     buyerAssignments {
+      buyerId
+      projects {
+        id
+        projectId
+        description
+      }
+    }
+  }
+`;
+
+// Every buyer's assignment, for the Buyers admin page. Admin-gated (#428).
+export const GET_ALL_BUYER_ASSIGNMENTS = gql`
+  query GetAllBuyerAssignments {
+    allBuyerAssignments {
       buyerId
       projects {
         id
