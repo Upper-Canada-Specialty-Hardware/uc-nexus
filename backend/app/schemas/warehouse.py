@@ -431,17 +431,6 @@ class WarehouseQueries:
             return [shop_assembly_opening_to_type(o) for o in openings]
 
     @strawberry.field
-    def expected_deliveries(
-        self, info: strawberry.Info, project_id: strawberry.ID | None = None
-    ) -> list[PurchaseOrder]:
-        require_user(info)
-        with SessionLocal() as session:
-            pos = warehouse_repository.get_expected_deliveries(
-                session, uuid.UUID(str(project_id)) if project_id else None
-            )
-            return [po_to_type(po) for po in pos]
-
-    @strawberry.field
     def back_ordered_items(
         self, info: strawberry.Info, project_id: strawberry.ID | None = None
     ) -> list[BackOrderedItem]:
@@ -452,15 +441,16 @@ class WarehouseQueries:
             )
             return [
                 BackOrderedItem(
+                    po_line_item_id=strawberry.ID(str(item["po_line_item"].id)),
                     hardware_category=item["po_line_item"].hardware_category,
                     product_code=item["po_line_item"].product_code,
                     ordered_quantity=item["po_line_item"].ordered_quantity,
                     received_quantity=item["po_line_item"].received_quantity,
                     outstanding_quantity=item["outstanding_quantity"],
-                    unit_cost=float(item["po_line_item"].unit_cost),
                     po_number=item["po_number"],
                     vendor_name=item["vendor_name"],
                     expected_delivery_date=item["expected_delivery_date"],
+                    project_name=item["project_name"],
                 )
                 for item in items
             ]

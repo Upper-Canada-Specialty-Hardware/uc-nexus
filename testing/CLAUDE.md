@@ -8,15 +8,31 @@ This is a tester's knowledge journal for UC Nexus. It documents how the app work
 
 ## Environment
 
-**Railway is the default** for simulated user testing (issue #182 pivot - the localdev runtime was dropped for UC Nexus e2e; zero local setup needed).
+**A Railway PR environment is the only place end-to-end testing happens** (issue #182 pivot - the localdev runtime was dropped for UC Nexus e2e; zero local setup needed).
 
-- **Railway production (default)**: frontend `https://frontend-production-34fc.up.railway.app/`, backend `https://backend-production-7866.up.railway.app/`. Deploys from master after CI passes.
-- **Railway PR environments** (ENABLED 2026-07-29, `prDeploys` on the project; bot PRs like dependabot deliberately excluded): every non-draft PR gets a full ephemeral replica (frontend + backend + fresh empty Postgres, migrated on boot) named `uc-nexus-pr-<N>`. Do not wait for a Railway bot comment - none was observed; the URLs are derivable: `https://backend-uc-nexus-pr-<N>.up.railway.app` / `https://frontend-uc-nexus-pr-<N>.up.railway.app`. Substitute them into the sign-in flow below; verified live on PR #401 (`/health` 200, `/testing/clerk-sign-in` mints tokens, GraphQL serves the fresh DB). Data starts empty; seed via the import fixture. `VITE_GRAPHQL_URL` is a reference variable (`https://${{backend.RAILWAY_PUBLIC_DOMAIN}}/graphql`) so each environment self-wires; `TESTING_ENABLED` and Clerk keys inherit from production. **A PR that only touches one service's directory only deploys that service in its environment** (root-directory change filtering - PR #401 was backend-only and the frontend showed `latestDeployment: null`); trigger the missing one from the dashboard or via the API (`serviceInstanceDeployV2(environmentId, serviceId)`). Environments auto-delete when the PR closes.
+> **The `*-production-*` Railway services are REAL PRODUCTION.** Real customer data, real users.
+> Never point a testing session at them, and never fire mutation probes at them - not to "just check"
+> something after a merge, and not because a change is already deployed there. If a thing genuinely
+> can only be observed on production, ask a human first.
+>
+> This file used to call production "the default" runtime for testing, and that was followed in
+> practice. If you are reading a stale copy of that guidance somewhere else - the global
+> `~/.claude/CLAUDE.md` said the same thing - this block supersedes it.
+
+- **Railway PR environments (the testing target)** (ENABLED 2026-07-29, `prDeploys` on the project; bot PRs like dependabot deliberately excluded): every non-draft PR gets a full ephemeral replica (frontend + backend + fresh empty Postgres, migrated on boot) named `uc-nexus-pr-<N>`. Do not wait for a Railway bot comment - none was observed; the URLs are derivable: `https://backend-uc-nexus-pr-<N>.up.railway.app` / `https://frontend-uc-nexus-pr-<N>.up.railway.app`. Substitute them into the sign-in flow below; verified live on PR #401 (`/health` 200, `/testing/clerk-sign-in` mints tokens, GraphQL serves the fresh DB). Data starts empty; seed via the import fixture. No PR open for what you need to test? Open a throwaway one - that is cheaper than the alternative. `VITE_GRAPHQL_URL` is a reference variable (`https://${{backend.RAILWAY_PUBLIC_DOMAIN}}/graphql`) so each environment self-wires; `TESTING_ENABLED` and Clerk keys inherit from production. **A PR that only touches one service's directory only deploys that service in its environment** (root-directory change filtering - PR #401 was backend-only and the frontend showed `latestDeployment: null`); trigger the missing one from the dashboard or via the API (`serviceInstanceDeployV2(environmentId, serviceId)`). Environments auto-delete when the PR closes.
 - **Local (manual fallback)**: frontend `http://localhost:5173`, backend `http://localhost:8000`. Run the backend with `poetry run uvicorn main:app --reload` (from `backend/`) and the frontend with `npm run dev` (from `frontend/`). Needs a local Postgres (not provided; the worktree-localdev adoption was dropped).
 - **Auth**: Clerk sign-in, automated via one-time sign-in tokens (no manual password/verification needed).
   - Backend endpoint `GET /testing/clerk-sign-in` generates the token (requires `TESTING_ENABLED=true`).
   - Navigate to the frontend URL with `?__clerk_ticket=TOKEN` to auto-authenticate.
   - Tokens are one-time use; fetch a fresh one each session. Works on any runtime with the same Clerk dev instance.
+  - **Every environment inherits production Clerk keys**, so the accounts in a PR environment are real
+    staff accounts and a session minted there is a real session. The Postgres data in a PR environment
+    is disposable; the identities are not. Sign in as the account you were given, and do not mint
+    tokens for colleagues' accounts to test role behaviour - ask instead.
+  - That this endpoint will mint a session for any email with no authentication is itself a
+    vulnerability, tracked in #422 / #424. Use it as the sanctioned test flow, but do not treat its
+    availability on a given host as evidence that the host is a test environment - production answers
+    it too, which is exactly the bug.
 - **Test XML file**: `testing/fixtures/contracterp-74.xml` - TITAN hardware schedule export, use for Import wizard testing (upload via `upload_file`)
 
 ### Every resolver needs a token now (#415)
@@ -216,16 +232,23 @@ import-created draft otherwise blocks the register dialog with per-line `Require
 
 ## Getting Started (Every Session)
 
-1. **Sign in**: Use `evaluate_script` to fetch a sign-in token and navigate with it. Railway production (default):
+0. **Pick the environment first.** Testing runs against the PR environment for the PR you are working on. Set `PR` once and let both URLs derive from it, so there is no production URL in the snippet to fat-finger:
+   ```js
+   const PR = 420;  // <- the PR number under test
+   const BACKEND  = `https://backend-uc-nexus-pr-${PR}.up.railway.app`;
+   const FRONTEND = `https://frontend-uc-nexus-pr-${PR}.up.railway.app`;
+   ```
+1. **Sign in**: Use `evaluate_script` to fetch a sign-in token and navigate with it:
    ```js
    (async () => {
-     const resp = await fetch('https://backend-production-7866.up.railway.app/testing/clerk-sign-in');
+     const PR = 420;  // <- the PR number under test
+     const resp = await fetch(`https://backend-uc-nexus-pr-${PR}.up.railway.app/testing/clerk-sign-in`);
      const { token } = await resp.json();
-     window.location.href = 'https://frontend-production-34fc.up.railway.app/?__clerk_ticket=' + token + '&cb=' + Date.now();
+     window.location.href = `https://frontend-uc-nexus-pr-${PR}.up.railway.app/?__clerk_ticket=${token}&cb=${Date.now()}`;
      return 'Navigating with sign-in token...';
    })()
    ```
-   For a PR environment, swap in the URLs from the Railway bot's PR comment. For the local fallback, use `http://localhost:8000` / `http://localhost:5173`.
+   For the local fallback, use `http://localhost:8000` / `http://localhost:5173`. Do not substitute the production hosts here - see the Environment section.
    - Clerk auto-authenticates — no email, password, or verification code needed.
    - You land on `/app` (Module Selector) fully signed in.
 2. **Reset data** (if needed): Click the "DevAction: drop and rebuild schema" button in the app bar.
@@ -491,9 +514,9 @@ was flagged, topped up as stock arrives), usually smaller than what it is owed, 
 covered is its normal resting state and a short pick on one is not an integrity error.
 
 
-**Entry**: `/app/warehouse` -> Warehouse landing page with stat cards and "Go to" card buttons for: Inventory, Locations, Deliveries, Receiving, Put Away, Pull Requests, Stock Pool, Deficient Items, Shipments. (No longer "three tabs" - this has evolved to a full landing page.) Since PR #395 the Deficient Items card shows `deficientCount` (deficient units across project inventory + stock pool - the same rows the review page lists, amber edge when non-zero) and the Deliveries card carries the `backOrderedCount` figure (undelivered units on active POs, no attention edge). The two numbers matching their destination pages is the thing to assert.
+**Entry**: `/app/warehouse` -> Warehouse landing page with stat cards and "Go to" card buttons for: Inventory, Locations, Receiving, Put Away, Pull Requests, Stock Pool, Deficient Items, Shipments. (No longer "three tabs" - this has evolved to a full landing page.) Since PR #395 the Deficient Items card shows `deficientCount` (deficient units across project inventory + stock pool - the same rows the review page lists, amber edge when non-zero). The card count matching its destination page is the thing to assert.
 
-**Deliveries "All Projects"** works since PR #397 (it was a dead click - `onSelect(null)` collided with "nothing chosen"). The all-projects view queries both tabs with a null projectId.
+**There is no Deliveries page any more (#416).** It was a read-only lens over active POs, and its "Upcoming Deliveries" accordion asked `expectedDeliveries` for the exact PO population `openPOs` already drew the Receiving page's awaiting-receipt table from - the same three statuses, not soft-deleted - so on one page it would have been the same list twice. Only the back-order grid survived the merge, as a **Back-Ordered Items** section of Receiving; the accordion's urgency chip moved onto the awaiting-receipt table's Expected Delivery column. `expectedDeliveries` is gone from the schema entirely (querying it errors `Cannot query field`), `backOrderedCount` now rides the **Receiving** card, and `/app/warehouse/deliveries` redirects to `/app/warehouse/receiving`. Anything in an older session note about a Deliveries card, its project landing, or its "All Projects" toggle (PR #397) describes a page that no longer exists.
 
 **Inventory tab default**: Navigating directly to `/app/warehouse/inventory` defaults to "All Projects" view — shows the "Projects" back button, "All Projects" heading, and Hardware Items / Opening Items sub-tabs immediately. The ProjectLandingPage is NOT shown on initial load. Clicking "Projects" brings up the ProjectLandingPage where you can filter to a specific project or click "All Projects" to return to the all-projects view.
 
@@ -502,6 +525,35 @@ covered is its normal resting state and a short pick on one is not an integrity 
 2. Enter quantities received per line item — line items grid shows: Product Code, Ordered As, Hardware Category, Ordered Qty, Already Received, Pending, Receive Now
 3. Assign storage locations (aisle/bay/bin)
 - Receiving auto-transitions PO status (ORDERED -> PARTIALLY_RECEIVED -> CLOSED)
+
+Three sections since #416, in this order: **POs Awaiting Receipt**, **Back-Ordered Items**, **Recent
+Activity**. The back-order grid is line-level and cross-project (no project landing step), carries a
+Project column that reads "Stock PO" for a project-less PO, and chips how late or soon each line is
+(`3d overdue` / `Today` / `Tomorrow` / `In 5d`, nothing beyond a week or with no date). The same chip
+sits on the awaiting-receipt table's Expected Delivery column.
+
+A successful receive now refetches this page's own three reads, so a line the receipt closed leaves
+the back-order grid without a manual reload; a queued receipt that drains later evicts
+`backOrderedItems` for the same reason. Before #416 a receive only refetched the inventory summaries.
+
+**A PR environment cannot populate either grid, and production is not the answer.** Both grids want
+POs at GP_REGISTERED or later, and `registerPoInGp` is relay-gated, so a fresh PR database shows "No
+purchase orders awaiting receipt" and "Nothing is back-ordered" no matter what you do. Reaching for
+production instead is the exact move the Environment section forbids.
+
+Stub the GraphQL reads instead: from an `initScript`, intercept `window.fetch`, match the operation
+name in the request body (`GetOpenPOs` / `GetBackOrderedItems`) and return rows built from `new
+Date()` offsets. That drives the real components, which is enough to assert the column set, the
+"Stock PO" and em-dash fallbacks, and every urgency band in one pass.
+
+Be honest about what that does and does not cover. It proves the rendering. It does NOT exercise the
+receive itself, so the refetch wiring above - the thing that makes a filled line leave the grid
+without a reload - stays unverified at runtime until somebody receives against a real GP-registered
+PO. Say so rather than calling a stubbed pass end-to-end.
+
+**Build the stub's dates from local components, not `toISOString()`.** `toISOString` is UTC, so
+after ~20:00 Eastern it names tomorrow, and the chip you assert against is then off by a day for a
+reason that has nothing to do with the code under test. This is the same trap as #238 itself.
 
 **Inventory**: Browse by hardware category and product code, see storage locations.
 
@@ -840,7 +892,7 @@ Inventory quantity corrections are NOT here — they live in the Warehouse modul
 
 - `fill_form` is much more reliable than sequential `fill` calls for forms with many fields.
 - After "DevAction: drop and rebuild schema", there are TWO dialogs: a MUI confirm dialog, then a `window.alert()`. Must handle both.
-- Clerk sign-in tokens: Fetch from `GET /testing/clerk-sign-in` on the backend, then navigate to the frontend with `?__clerk_ticket=TOKEN`. Railway production is the default runtime (issue #182); PR environments and localhost use the same flow with their own URLs. Clerk auto-authenticates - no form fill, no verification code. Tokens are one-time use; fetch a fresh one each session.
+- Clerk sign-in tokens: Fetch from `GET /testing/clerk-sign-in` on the backend, then navigate to the frontend with `?__clerk_ticket=TOKEN`. The runtime is the PR environment for the PR under test (issue #182 moved e2e onto Railway; production is not a testing target). Clerk auto-authenticates - no form fill, no verification code. Tokens are one-time use; fetch a fresh one each session.
 - When viewing "All Projects", `projectId` is undefined/null in queries — this returns all POs across projects.
 - To test the Warehouse Receiving wizard's "Enter Quantities" step, you need at least one PO in ORDERED (or higher) status. DRAFT POs do not appear in the receiving wizard's PO selection list.
 - The line item field formerly called "Vendor Alias" is now called "Order As" in pre-order screens (Create PO dialog, PO detail modal) and "Ordered As" in post-order screens (Warehouse receiving wizard).
