@@ -10,7 +10,7 @@ blocked legitimate registrations. Whatever GP reports active for the job is now 
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import NotFoundError, ValidationError
@@ -35,6 +35,25 @@ def get_assignment(session: Session, buyer_id: str) -> BuyerAssignment | None:
         select(BuyerAssignment)
         .options(selectinload(BuyerAssignment.projects))
         .where(BuyerAssignment.buyer_id == _clean_buyer_id(buyer_id))
+    )
+    return session.scalars(stmt).unique().first()
+
+
+def get_assignment_for_identity(session: Session, buyer_id: str) -> BuyerAssignment | None:
+    """The assignment for a GP buyer identity, matched the way `_assert_buyer_identity` matches it:
+    case-insensitively and whitespace-tolerantly, because GP stores BUYERID char-padded uppercase
+    while the value linked to a Nexus account (#216) is whatever an admin typed.
+
+    Separate from `get_assignment`, which is the exact-key accessor the admin upsert and delete need
+    - those address one row by its primary identifier and must not silently hit a differently-cased
+    neighbour. This one answers "which row is the caller's", the question #428's scoped
+    `buyerAssignments` asks; before that scoping the frontend did the same case-insensitive match
+    client-side over the whole table, so keeping the tolerance here is what makes the two equivalent."""
+    cleaned = _clean_buyer_id(buyer_id)
+    stmt = (
+        select(BuyerAssignment)
+        .options(selectinload(BuyerAssignment.projects))
+        .where(func.lower(BuyerAssignment.buyer_id) == cleaned.lower())
     )
     return session.scalars(stmt).unique().first()
 

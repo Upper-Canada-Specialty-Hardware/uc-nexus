@@ -4,7 +4,7 @@ import uuid
 
 import strawberry
 
-from app.auth import SHOP_ASSEMBLY_MANAGER_ROLE, require_role, require_user
+from app.auth import SHOP_ASSEMBLY_MANAGER_ROLE, require_role, require_user, resolve_display_name
 from app.database import SessionLocal
 from app.repositories import shop_assembly_repository, user_repository
 from app.repositories import warehouse as warehouse_repository
@@ -22,6 +22,7 @@ from .enums import ShopAssemblyRequestStatus
 from .inputs import (
     AssignOpeningsInput,
     CompleteOpeningInput,
+    IgnoredActorArg,
     InstallReplacementInput,
     RecordAssemblyProgressInput,
 )
@@ -155,31 +156,38 @@ class ShopAssemblyQueries:
 class ShopAssemblyMutations:
     @strawberry.mutation
     def accept_shop_assembly_request(
-        self, info: strawberry.Info, id: strawberry.ID, accepted_by: str
+        self, info: strawberry.Info, id: strawberry.ID, accepted_by: IgnoredActorArg = None
     ) -> ShopAssemblyRequest:
         """Accept a PENDING shop-assembly request (#293). Open to any signed-in user.
 
         A pure human approval gate since #342: it mints the warehouse PullRequest and approves the
         request, and re-checks nothing. The hardware was reserved when the request was created, so
         it already belongs to this request - there is no shortfall left for the acceptor to be shown
-        and nothing they could do about one if there were."""
-        require_user(info)
+        and nothing they could do about one if there were.
+
+        The approval is recorded against the Clerk-authenticated caller (#427). It is the whole
+        content of the gate: an approval attributable to anyone the client names is not an approval.
+        The name also becomes the minted pull's `requestedBy`."""
+        auth = require_user(info)
+        actor = resolve_display_name(auth["user_id"])
         request_id = uuid.UUID(str(id))
         with SessionLocal() as session:
-            shop_assembly_repository.accept_shop_assembly_request(session, request_id, accepted_by)
+            shop_assembly_repository.accept_shop_assembly_request(session, request_id, actor)
             session.commit()
             refreshed = shop_assembly_repository.get_request_with_openings(session, request_id)
             return shop_assembly_request_to_type(refreshed)
 
     @strawberry.mutation
     def reject_shop_assembly_request(
-        self, info: strawberry.Info, id: strawberry.ID, rejected_by: str, reason: str | None = None
+        self, info: strawberry.Info, id: strawberry.ID, rejected_by: IgnoredActorArg = None, reason: str | None = None
     ) -> ShopAssemblyRequest:
-        """Reject a PENDING shop-assembly request (#293). Open to any signed-in user."""
-        require_user(info)
+        """Reject a PENDING shop-assembly request (#293). Open to any signed-in user. Recorded
+        against the Clerk-authenticated caller (#427), same reasoning as the accept."""
+        auth = require_user(info)
+        actor = resolve_display_name(auth["user_id"])
         request_id = uuid.UUID(str(id))
         with SessionLocal() as session:
-            shop_assembly_repository.reject_shop_assembly_request(session, request_id, rejected_by, reason)
+            shop_assembly_repository.reject_shop_assembly_request(session, request_id, actor, reason)
             session.commit()
             refreshed = shop_assembly_repository.get_request_with_openings(session, request_id)
             return shop_assembly_request_to_type(refreshed)
@@ -251,8 +259,12 @@ class ShopAssemblyMutations:
         the opening flips to IN_PROGRESS on the first save and stays in the assembler's My Work, and
         any units flagged deficient are returned to inventory and given a replacement pull line
         immediately rather than waiting for completion. Open to any signed-in user - it moves
-        inventory when a deficiency is flagged, so it must not be reachable anonymously."""
-        require_user(info)
+        inventory when a deficiency is flagged, so it must not be reachable anonymously.
+
+        The assembler on the progress rows and on any deficiency return is the Clerk-authenticated
+        caller (#427), not the request's `performedBy`."""
+        auth = require_user(info)
+        actor = resolve_display_name(auth["user_id"])
         updates = [
             shop_assembly_repository.AssemblyProgressUpdate(
                 shop_assembly_opening_item_id=uuid.UUID(str(item.shop_assembly_opening_item_id)),
@@ -267,7 +279,7 @@ class ShopAssemblyMutations:
                 session,
                 uuid.UUID(str(input.opening_id)),
                 updates,
-                performed_by=input.performed_by,
+                performed_by=actor,
             )
             session.commit()
             refreshed = shop_assembly_repository.get_openings_with_items(session, [result.id])[0]
@@ -282,14 +294,16 @@ class ShopAssemblyMutations:
         replacement_pending to installed on the source checklist line, so the completion invariant
         holds throughout. It can only spend units the replacement pull actually delivered, and it
         refuses a leaf that has already shipped. Open to any signed-in user - it changes what an
-        assembled leaf is recorded as carrying, so it must not be reachable anonymously."""
-        require_user(info)
+        assembled leaf is recorded as carrying, so it must not be reachable anonymously, and the
+        person recorded as fitting it is the Clerk-authenticated caller (#427)."""
+        auth = require_user(info)
+        actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             result = shop_assembly_repository.install_replacement(
                 session,
                 uuid.UUID(str(input.shop_assembly_opening_item_id)),
                 input.quantity,
-                performed_by=input.performed_by,
+                performed_by=actor,
             )
             session.commit()
             refreshed = warehouse_repository.get_opening_item_details(session, result.id)
@@ -306,8 +320,10 @@ class ShopAssemblyMutations:
 
         Takes no checklist (#340): completion reads the per-item counts recordAssemblyProgress has
         been persisting, and is refused while any unit is still unaccounted for. Open to any signed-in
-        user - it writes inventory, so it must not be reachable anonymously."""
-        require_user(info)
+        user - it writes inventory, so it must not be reachable anonymously. Who completed the leaf is
+        the Clerk-authenticated caller (#427)."""
+        auth = require_user(info)
+        actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             result = shop_assembly_repository.complete_opening(
                 session,
@@ -315,7 +331,7 @@ class ShopAssemblyMutations:
                 input.aisle,
                 input.row,
                 input.bay,
-                completed_by=input.completed_by,
+                completed_by=actor,
             )
             session.commit()
             # Re-load with installed_hardware

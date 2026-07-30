@@ -150,15 +150,15 @@ export default function PickPage() {
 
   const handleSaveDraft = useCallback(() => {
     saveDraft({
-      variables: { pullRequestId: id, lines: toPickLines(sections, entries), enteredBy: displayName },
+      variables: { pullRequestId: id, lines: toPickLines(sections, entries) },
     });
-  }, [saveDraft, id, sections, entries, displayName]);
+  }, [saveDraft, id, sections, entries]);
 
   const handleConfirm = useCallback(() => {
     confirmPick({
-      variables: { pullRequestId: id, lines: toPickLines(sections, entries), pickedBy: displayName },
+      variables: { pullRequestId: id, lines: toPickLines(sections, entries) },
     });
-  }, [confirmPick, id, sections, entries, displayName]);
+  }, [confirmPick, id, sections, entries]);
 
   const handlePrint = useCallback(async () => {
     if (!pr) return;

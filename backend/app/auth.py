@@ -33,6 +33,13 @@ _CLERK_JWKS_URL = "https://api.clerk.com/v1/jwks"
 _JWKS_TTL_SECONDS = 3600.0
 _jwks_cache: dict[str, Any] = {"data": None, "fetched_at": 0.0}
 
+# Display names are looked up per audit-writing mutation since #427, which put a Clerk round-trip on
+# hot write paths that never had one - savePickDraft fires on every keystroke batch of a pick sheet.
+# A name only changes through `updateUserName` (an admin action, which invalidates this), so a short
+# TTL costs nothing in accuracy and keeps the picker's save at one Postgres transaction.
+_DISPLAY_NAME_TTL_SECONDS = 300.0
+_display_name_cache: dict[str, tuple[float, str]] = {}
+
 
 class AuthError(AppError):
     def __init__(self, message: str = "Authentication required"):
@@ -133,10 +140,28 @@ def require_user(info) -> dict:
 def resolve_display_name(user_id: str) -> str:
     """Full name (falling back to email, then the Clerk user id) for the acting user - issue #199's
     server-side received_by, so a receive records the Clerk-authenticated caller, not the relay's
-    Windows account. Mirrors the frontend's useIdentity() fullName-or-email convention."""
+    Windows account. Mirrors the frontend's useIdentity() fullName-or-email convention.
+
+    Issue #427 made this the source of EVERY actor stamped on an audit or history row, not just a
+    receive's. Before that each mutation took the name from its own arguments, so a signed-in user
+    could attribute their action to anyone: `completePullRequest(id, completedBy: "Someone Else")`
+    put that name on every opening the pull staged. The client no longer gets a say - the name comes
+    from the same Clerk token the gate already verified."""
+    cached = _display_name_cache.get(user_id)
+    now = time.monotonic()
+    if cached is not None and (now - cached[0]) < _DISPLAY_NAME_TTL_SECONDS:
+        return cached[1]
     profile = user_repository.get_user(user_id)
     full_name = f"{profile['first_name']} {profile['last_name']}".strip()
-    return full_name or profile["email"] or user_id
+    name = full_name or profile["email"] or user_id
+    _display_name_cache[user_id] = (now, name)
+    return name
+
+
+def invalidate_display_name(user_id: str) -> None:
+    """Drop a cached display name so a rename shows up on the next audit row instead of up to
+    `_DISPLAY_NAME_TTL_SECONDS` later. Called by `updateUserName`, the only thing that changes one."""
+    _display_name_cache.pop(user_id, None)
 
 
 def require_admin_request(request) -> dict:

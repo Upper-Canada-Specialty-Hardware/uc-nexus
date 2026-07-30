@@ -41,7 +41,6 @@ export default function MoveStockLocationModal({ item, onClose, onSuccess }: Pro
           newAisle: aisle.trim(),
           newRow: row.trim(),
           newBay: bay.trim(),
-          performedBy: 'Warehouse',
         },
       },
     });

@@ -386,7 +386,6 @@ export default function AssembleListPage() {
             setCompletingId(null);
             refetch();
           }}
-          completedBy={displayName}
         />
       )}
     </Box>
