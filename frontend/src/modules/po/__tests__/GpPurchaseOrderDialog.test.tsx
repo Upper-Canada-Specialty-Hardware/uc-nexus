@@ -89,9 +89,9 @@ const stockDraft: PurchaseOrder = {
 
 const projectDraft: PurchaseOrder = { ...stockDraft, projectId: 'p1' };
 
-// Buyer JSMITH is assigned to project p1 with cost code 310-000 designated (issue #216).
+// Buyer JSMITH is assigned to project p1 (issue #216). The assignment scopes projects only - cost
+// codes are not restricted per buyer, so every code the job's GP read returns is offered.
 interface AssignmentFixture {
-  costCodes: string[];
   projects: { id: string; projectId: string; description: string | null; __typename: string }[];
 }
 const assignedProjectRef = {
@@ -101,7 +101,6 @@ const assignedProjectRef = {
   __typename: 'Project',
 };
 const defaultAssignment: AssignmentFixture = {
-  costCodes: ['310-000'],
   projects: [assignedProjectRef],
 };
 
@@ -162,7 +161,6 @@ function baseMocks(
             ? [
                 {
                   buyerId: 'JSMITH',
-                  costCodes: assignment.costCodes,
                   projects: assignment.projects,
                   __typename: 'BuyerAssignment',
                 },
@@ -225,7 +223,7 @@ function nexusVendorsMock(): MockedResponse {
   };
 }
 
-// GP offers two codes for the job; only 310-000 is designated to JSMITH.
+// The two codes GP has active on the job. Both are offered - there is no per-buyer narrowing.
 function costCodesMock(): MockedResponse {
   return {
     request: { query: GET_GP_COST_CODES, variables: { company: 'UCS', job: 'JOB-100' } },
@@ -374,7 +372,7 @@ describe('GpPurchaseOrderDialog', () => {
 
   it('blocks registering a draft whose project the buyer is not assigned to', async () => {
     const { onSubmitted } = renderDialog({ registerPo: projectDraft }, [
-      ...baseMocks(true, { costCodes: ['310-000'], projects: [] }),
+      ...baseMocks(true, { projects: [] }),
       costCodesMock(),
     ]);
 
@@ -421,7 +419,7 @@ describe('GpPurchaseOrderDialog', () => {
     expect(calls[0]).toMatchObject({ input: { gpVendorId: 'V-ACE', taxDetailId: 'ON HST - P' } });
   });
 
-  it('registers a project draft with gpCompany, a designated cost code and an idempotency key', async () => {
+  it('registers a project draft with gpCompany, a cost code and an idempotency key', async () => {
     const calls: Record<string, unknown>[] = [];
     const registerMock: MockedResponse = {
       request: { query: REGISTER_PO_IN_GP, variables: () => true },
@@ -444,10 +442,7 @@ describe('GpPurchaseOrderDialog', () => {
     ).toBeInTheDocument();
     expect(calls).toHaveLength(0);
 
-    // Only the buyer's designated code is offered, not everything GP has for the job.
     const listbox = await openSelect('Cost code (required)');
-    expect(within(listbox).getByText('310-000 · Hardware')).toBeInTheDocument();
-    expect(within(listbox).queryByText(/520-000/)).toBeNull();
     fireEvent.click(within(listbox).getByText('310-000 · Hardware'));
     await closeSelect();
 
@@ -857,6 +852,17 @@ it('keeps Project locked on a draft imported against a project, and says why', a
   expect(
     await screen.findByText(/line items were imported against this project/i),
   ).toBeInTheDocument();
+});
+
+it('offers every cost code GP has on the job, not a per-buyer subset', async () => {
+  // The dropdown used to be filtered to the buyer's designated codes, so a purchaser saw a fraction of
+  // the job's codes and could not register against the rest. 520-000 is the code no designation listed.
+  renderDialog({ registerPo: projectDraft }, [...baseMocks(), costCodesMock()]);
+
+  const listbox = await openSelect('Cost code (required)');
+
+  expect(within(listbox).getByText('310-000 · Hardware')).toBeInTheDocument();
+  expect(within(listbox).getByText('520-000 · Electrical')).toBeInTheDocument();
 });
 
 it('says the relay is down rather than leaving the GP dropdowns silently dead', async () => {
