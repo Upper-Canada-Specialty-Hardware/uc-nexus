@@ -19,7 +19,7 @@ This is a tester's knowledge journal for UC Nexus. It documents how the app work
 > practice. If you are reading a stale copy of that guidance somewhere else - the global
 > `~/.claude/CLAUDE.md` said the same thing - this block supersedes it.
 
-- **Railway PR environments (the testing target)** (ENABLED 2026-07-29, `prDeploys` on the project; bot PRs like dependabot deliberately excluded): every non-draft PR gets a full ephemeral replica (frontend + backend + fresh empty Postgres, migrated on boot) named `uc-nexus-pr-<N>`. Do not wait for a Railway bot comment - none was observed; the URLs are derivable: `https://backend-uc-nexus-pr-<N>.up.railway.app` / `https://frontend-uc-nexus-pr-<N>.up.railway.app`. Substitute them into the sign-in flow below; verified live on PR #401 (`/health` 200, `/testing/clerk-sign-in` mints tokens, GraphQL serves the fresh DB). Data starts empty; seed via the import fixture. No PR open for what you need to test? Open a throwaway one - that is cheaper than the alternative. `VITE_GRAPHQL_URL` is a reference variable (`https://${{backend.RAILWAY_PUBLIC_DOMAIN}}/graphql`) so each environment self-wires; `TESTING_ENABLED` and Clerk keys inherit from production. **A PR that only touches one service's directory only deploys that service in its environment** (root-directory change filtering - PR #401 was backend-only and the frontend showed `latestDeployment: null`); trigger the missing one from the dashboard or via the API (`serviceInstanceDeployV2(environmentId, serviceId)`). Environments auto-delete when the PR closes.
+- **Railway PR environments (the testing target)** (ENABLED 2026-07-29, `prDeploys` on the project; bot PRs like dependabot deliberately excluded): every non-draft PR gets a full ephemeral replica (frontend + backend + fresh empty Postgres, migrated on boot) named `uc-nexus-pr-<N>`. Do not wait for a Railway bot comment - none was observed; the URLs are derivable: `https://backend-uc-nexus-pr-<N>.up.railway.app` / `https://frontend-uc-nexus-pr-<N>.up.railway.app`. Substitute them into the sign-in flow below; verified live on PR #401 (`/health` 200, `/testing/clerk-sign-in` mints tokens, GraphQL serves the fresh DB). Data starts empty; seed via the import fixture. No PR open for what you need to test? Open a throwaway one - that is cheaper than the alternative. `VITE_GRAPHQL_URL` is a reference variable (`https://${{backend.RAILWAY_PUBLIC_DOMAIN}}/graphql`) so each environment self-wires; `TESTING_ENABLED` and Clerk keys inherit from production. **That inheritance is a copy taken when the environment is created, not a live link** (#431): a variable added to production afterwards never reaches a PR environment that already exists, so set it on that environment's own backend service too and let it redeploy. Found the hard way with `RELAY_SEED_SECRET_HASH` on pr-430 - see the relay section below. **A PR that only touches one service's directory only deploys that service in its environment** (root-directory change filtering - PR #401 was backend-only and the frontend showed `latestDeployment: null`); trigger the missing one from the dashboard or via the API (`serviceInstanceDeployV2(environmentId, serviceId)`). Environments auto-delete when the PR closes.
 - **Local (manual fallback)**: frontend `http://localhost:5173`, backend `http://localhost:8000`. Run the backend with `poetry run uvicorn main:app --reload` (from `backend/`) and the frontend with `npm run dev` (from `frontend/`). Needs a local Postgres (not provided; the worktree-localdev adoption was dropped).
 - **Auth**: Clerk sign-in, automated via one-time sign-in tokens (no manual password/verification needed).
   - Backend endpoint `GET /testing/clerk-sign-in` generates the token (requires `TESTING_ENABLED=true`).
@@ -76,8 +76,15 @@ changes it. Two independent reasons, both addressed by #414 but neither automati
 2. Relay installs live in Postgres and a PR environment boots a fresh empty one, so the handshake is
    refused (4403) even if the relay does dial. Since #414 the backend seeds a trusted install on
    startup from `RELAY_SEED_SECRET_HASH` - the SHA-256 already in production's row, copyable from
-   Admin -> Relay Installs ("Seed hash" column). That variable has to be set on the environment PR
-   deploys are cloned from; it is deliberately refused in production.
+   Admin -> Relay Installs ("Seed hash" column). Where that variable goes is the part that catches
+   people out (#431):
+   - It belongs on the **production** backend service and stays there inert. PR environments are cloned
+     from production, so that is the only place a new one can inherit it from; production refuses to
+     seed and logs the refusal at INFO, which is the intended steady state, not something to tidy up.
+   - **Inheritance happens at environment creation only.** Setting it on production does nothing for a
+     PR environment that already exists - set it on that environment's own backend service as well.
+     Verified 2026-07-30: pr-430 predated the variable and stayed GP-blind until it had its own copy.
+   - Seeding runs at backend startup, so the variable only takes effect on that service's next deploy.
 
 Read the default state as a free test fixture rather than a limitation. The relay-down half of any
 GP-gated feature - disabled controls, "not connected" copy, held values still displaying, buttons that
@@ -88,10 +95,13 @@ A PR environment with a connected relay is pinned to **TUBC** and refuses every 
 `company_not_allowed_on_channel`, reads and writes alike. Reads and writes both work against TUBC;
 that pin is what makes serving writes off a test backend acceptable at all.
 
-What a PR environment still cannot show is a NEW op. The workstation runs a packaged build, so a PR
-that adds to `_OPS` answers `unknown_op` -> `RELAY_OP_UNSUPPORTED` there just as it does on production
-before the relay is rebuilt (its own distinct UI state, worth checking on purpose during the
-deploy-before-rebuild window).
+What a PR environment cannot show out of the box is a NEW op. The workstation runs a packaged build, so
+a PR that adds to `_OPS` answers `unknown_op` -> `RELAY_OP_UNSUPPORTED` there just as it does on
+production before the relay is rebuilt (its own distinct UI state, worth checking on purpose during the
+deploy-before-rebuild window). To exercise the op itself, build the PR's branch with
+`gh workflow run relay-release.yml --ref <branch>` and install that zip on the workstation for the
+session - the full procedure, including how the release build gets restored afterwards, is the
+"testing a PR that adds a new op" section of `relay/README.md`. It is a manual install by design.
 
 Verified on PR #412 (issue #409's buyer dropdown), in the default disconnected state: the field
 rendered `role="combobox"`, disabled, still showing the stored `mira`, with "The GP relay is not
