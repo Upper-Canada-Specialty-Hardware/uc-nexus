@@ -721,6 +721,165 @@ def list_cost_codes(conn, job_number: str) -> list[dict]:
     ]
 
 
+# --- GP job setup health (issue #425) --------------------------------------
+# Receiving PO0000070 in TUBC failed with eConnect 4612 "Invalid Account Index" from
+# taPopRcptLineInsert. The PO line had been stamped INVINDX=1617 at registration by the WennSoft PO
+# integration, copied straight out of JC00701 (job 23093, cost code 210-200-2). 1617 is not in
+# UBC/TUBC's account index master GL00105 at all - it is a UCSH index, left behind by the pre-2023
+# UCSH -> UBC job replication which copied JC00701 account indexes raw. Production UBC carries 1504
+# such rows across 62 jobs and TUBC, being a clone, mirrors them.
+#
+# The damage is invisible until receipt time: a job-cost PO against one of those jobs registers
+# perfectly and can then never be received. Repairing the data is accounting's job; the relay's job is
+# to make the breakage visible BEFORE somebody spends a PO on it, which is what these three reads do.
+#
+# Rule for "this job is set up": it has at least one active cost code, and every active cost code's
+# WS_Account_Index_1 is either 0 or present in GL00105. Index 0 passes deliberately - eConnect defaults
+# the account at receipt time, so only a non-zero dangling index is the proven failure mode.
+#
+# GL00105 is GP's account index master; ACTINDX is the surrogate key JC00701.WS_Account_Index_1 and
+# POP10110.INVINDX both point at.
+
+_ACTIVE_COST_CODE = "WS_Inactive = 0"
+
+
+def job_setup_health(conn, job_number: str | None = None) -> list[dict]:
+    """Read-only: the per-job GP setup verdict for EVERY job in the company (#425), or for one job
+    when `job_number` is given.
+
+    Two queries regardless of how many jobs there are, because the loop is a sync pass over the whole
+    job master and a per-job round trip over the relay socket would make it unusable:
+
+      1. the verdict: JC00102 left-joined to its active JC00701 rows, each left-joined to GL00105,
+         grouped by job. Driven off the JOB master rather than off JC00701 so a job with zero active
+         cost codes still comes back (it would simply be absent from a JC00701-driven grouping) - that
+         is rule one, and it is a real state: a job nobody has set a cost structure on yet.
+      2. the detail: the individual broken cost codes, so the quarantine banner can name what is wrong
+         rather than saying "something is". Only unhealthy jobs contribute rows, so on a healthy
+         company this returns nothing.
+
+    Returns one dict per job: job_number, ok, active_cost_code_count, and issues (a list of
+    {cost_code, account_index} for the dangling ones, empty when the job is healthy).
+
+    The single-job filter exists for the live re-check register_po_in_gp runs at submit time: reading
+    900 jobs to answer a question about one is the difference between a gate somebody keeps and a gate
+    somebody turns off."""
+    job = (job_number or "").strip() or None
+    cur = conn.cursor()
+
+    verdict_sql = (
+        "SELECT RTRIM(j.WS_Job_Number) AS job_number, "
+        "COUNT(c.WS_Job_Number) AS active_cost_codes, "
+        "SUM(CASE WHEN c.WS_Account_Index_1 <> 0 AND a.ACTINDX IS NULL THEN 1 ELSE 0 END) AS broken_cost_codes "
+        "FROM dbo.JC00102 j "
+        f"LEFT JOIN dbo.JC00701 c ON RTRIM(c.WS_Job_Number) = RTRIM(j.WS_Job_Number) AND c.{_ACTIVE_COST_CODE} "
+        "LEFT JOIN dbo.GL00105 a ON a.ACTINDX = c.WS_Account_Index_1 "
+    )
+    detail_sql = (
+        "SELECT RTRIM(c.WS_Job_Number) AS job_number, RTRIM(c.Cost_Code_Number_1) AS cc1, "
+        "RTRIM(c.Cost_Code_Number_2) AS cc2, c.Cost_Element AS elem, c.WS_Account_Index_1 AS account_index "
+        "FROM dbo.JC00701 c "
+        "LEFT JOIN dbo.GL00105 a ON a.ACTINDX = c.WS_Account_Index_1 "
+        f"WHERE c.{_ACTIVE_COST_CODE} AND c.WS_Account_Index_1 <> 0 AND a.ACTINDX IS NULL "
+    )
+    if job is None:
+        verdict_rows = cur.execute(verdict_sql + "GROUP BY RTRIM(j.WS_Job_Number) ORDER BY 1").fetchall()
+        detail_rows = cur.execute(detail_sql + "ORDER BY 1, 2, 3").fetchall()
+    else:
+        verdict_rows = cur.execute(
+            verdict_sql + "WHERE RTRIM(j.WS_Job_Number) = ? GROUP BY RTRIM(j.WS_Job_Number) ORDER BY 1", job
+        ).fetchall()
+        detail_rows = cur.execute(
+            detail_sql + "AND RTRIM(c.WS_Job_Number) = ? ORDER BY 1, 2, 3", job
+        ).fetchall()
+
+    issues_by_job: dict[str, list[dict]] = {}
+    for r in detail_rows:
+        # 'phase-step-element', the same shape list_cost_codes / the PO cost_code use, so the banner
+        # names a code the user can recognise from the register-PO dropdown.
+        cost_code = f"{r.cc1}-{r.cc2}-{int(r.elem)}"
+        issues_by_job.setdefault(r.job_number, []).append(
+            {"cost_code": cost_code, "account_index": int(r.account_index)}
+        )
+
+    out = []
+    for r in verdict_rows:
+        active = int(r.active_cost_codes or 0)
+        broken = int(r.broken_cost_codes or 0)
+        out.append(
+            {
+                "job_number": r.job_number,
+                "ok": active > 0 and broken == 0,
+                "active_cost_code_count": active,
+                "issues": issues_by_job.get(r.job_number, []),
+            }
+        )
+    return out
+
+
+def cost_code_account_index(conn, job_number: str, cost_code: str) -> int | None:
+    """Read-only: the GL account index (JC00701.WS_Account_Index_1) one active cost code on one job
+    carries (#425). None when there is no such active row - cost_code_on_job is the check for that and
+    runs first, so None here means the code went inactive between the two reads.
+
+    Split from the account_index_exists lookup below rather than answered by one join, because the
+    caller has to name the offending index in its error: "cost code 210-200-2 points at GL account
+    index 1617" is actionable in GP, "that cost code is broken" is not."""
+    cc1, cc2, cc3, cc4, cost_element = split_cost_code(cost_code)
+    row = conn.cursor().execute(
+        "SELECT WS_Account_Index_1 AS account_index FROM dbo.JC00701 "
+        "WHERE RTRIM(WS_Job_Number) = ? AND Cost_Code_Number_1 = ? AND Cost_Code_Number_2 = ? "
+        f"AND Cost_Code_Number_3 = ? AND Cost_Code_Number_4 = ? AND Cost_Element = ? AND {_ACTIVE_COST_CODE}",
+        job_number.strip(), cc1, cc2, cc3, cc4, cost_element,
+    ).fetchone()
+    if row is None or row.account_index is None:
+        return None
+    return int(row.account_index)
+
+
+def account_index_exists(conn, account_index: int) -> bool:
+    """Read-only: is account_index a real row in GP's account index master GL00105 (#425)?
+
+    Index 0 is answered True without a query. It is not an account - it is "GP, pick the account
+    yourself at posting time" - and eConnect honours that, so treating it as dangling would quarantine
+    every job that simply leaves the default in place."""
+    if not account_index:
+        return True
+    row = conn.cursor().execute(
+        "SELECT COUNT(*) AS n FROM dbo.GL00105 WHERE ACTINDX = ?", int(account_index)
+    ).fetchone()
+    return row.n > 0
+
+
+def po_lines_with_dangling_account(conn, po_number: str) -> list[dict]:
+    """Read-only: the PO's lines whose stamped POP10110.INVINDX is not in GL00105 (#425).
+
+    This is the exact condition taPopRcptLineInsert rejects with eConnect 4612 "Invalid Account
+    Index", read before the receipt is attempted so the warehouse user gets "this job's GP setup is
+    broken" instead of a bare error state. INVINDX was copied onto the line from JC00701 at
+    registration, so the account is already wrong by the time anyone opens the receive form - nothing
+    the receiver did causes this and nothing they can do fixes it.
+
+    Returns {ord, item, account_index, job} per broken line, empty when the PO is clean. The caller
+    narrows to the lines actually being received."""
+    rows = conn.cursor().execute(
+        "SELECT l.ORD AS ord, RTRIM(l.ITEMNMBR) AS item, l.INVINDX AS account_index, "
+        "RTRIM(l.JOBNUMBR) AS job FROM dbo.POP10110 l "
+        "LEFT JOIN dbo.GL00105 a ON a.ACTINDX = l.INVINDX "
+        "WHERE l.PONUMBER = ? AND l.INVINDX <> 0 AND a.ACTINDX IS NULL ORDER BY l.ORD",
+        po_number,
+    ).fetchall()
+    return [
+        {
+            "ord": int(r.ord),
+            "item": r.item,
+            "account_index": int(r.account_index),
+            "job": r.job or None,
+        }
+        for r in rows
+    ]
+
+
 # --- create a GP job (issue #380) ------------------------------------------
 # Nexus can adopt an existing GP job as a project; these originate one. The create-job form cannot be
 # composed from anything Nexus stores - customer, address codes, tax schedule, division and the

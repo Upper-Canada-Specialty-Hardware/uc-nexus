@@ -48,6 +48,7 @@ from app.models.shop_assembly import (
 from app.models.shop_assembly import (
     ShopAssemblyRequest as SARModel,
 )
+from app.repositories import project_repository
 
 
 def get_project_hardware_schedule(
@@ -631,6 +632,14 @@ def finalize_import_session(
 
     if project is None:
         raise NotFoundError(f"Project {project_id} not found")
+
+    # #425: quarantine gate. This one mutation is BOTH of Start a Task's write actions - it persists
+    # the schedule, and it creates the shop-assembly and shipping-out requests that reserve inventory
+    # against it. A project whose GP job cannot be received against must not accumulate any of that:
+    # the requests would reserve stock, the POs drafted off the schedule would be unregisterable, and
+    # someone would have to unpick all of it once accounting fixed the job. Passes when the verdict is
+    # null (never checked) - see require_gp_setup_ok.
+    project_repository.require_gp_setup_ok(session, project.id)
 
     # 2. Wipe AVAILABLE hardware items for this project — they are pure XML-derived rows
     # that will be regenerated from the current input. Existing IN_PO rows (attached to

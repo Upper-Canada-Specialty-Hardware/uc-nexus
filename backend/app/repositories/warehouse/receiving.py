@@ -25,6 +25,7 @@ from app.models.purchase_order import PurchaseOrder as POModel
 from app.models.receiving import ReceiveLineItem as ReceiveLineItemModel
 from app.models.receiving import ReceiveRecord as ReceiveRecordModel
 from app.models.vendor import Vendor as VendorModel
+from app.repositories import project_repository
 from app.services import notification_service
 from app.services.locking import lock_rows
 
@@ -61,6 +62,13 @@ def validate_receive_eligibility(
         raise ValidationError("received_by must be 1-100 characters", field="received_by")
     if not line_items_input:
         raise ValidationError("At least one line item is required", field="line_items")
+    # #425: the quarantine gate for receiving, and it belongs HERE rather than in create_receive.
+    # This runs before the GP receipt is posted; create_receive runs after GP has already committed
+    # it, and refusing there would leave a receipt in GP that Nexus will not book - the exact
+    # split-brain the GP-first ordering exists to avoid. A broken job cannot be received anyway
+    # (taPopRcptLineInsert rejects the line's account index with eConnect 4612), so this turns an
+    # unavoidable failure into one that names the cause.
+    project_repository.require_gp_setup_ok(session, po.project_id)
 
     poli_dict: dict[uuid.UUID, POLineItemModel] = {li.id: li for li in po.line_items}
     receipt_line_items: list[dict] = []

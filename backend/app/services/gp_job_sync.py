@@ -100,10 +100,79 @@ def _persist_missing(jobs: list[dict]) -> tuple[int, int]:
     return total, adopted
 
 
+def _persist_health(jobs: list[dict]) -> int:
+    """Stamp the relay's GP setup verdicts onto their projects (#425). Returns how many were stamped.
+
+    Its own session and its own commit, separate from _persist_missing's, so a health stamp that fails
+    cannot roll back the adoptions from the same pass. Adoption is the invariant this service exists
+    for; the verdict is an annotation on it."""
+    verdicts = {
+        str(job.get("job_number") or "").strip(): job for job in jobs if str(job.get("job_number") or "").strip()
+    }
+    if not verdicts:
+        return 0
+    with SessionLocal() as session:
+        stamped = project_repository.stamp_gp_setup_health(session, verdicts)
+        session.commit()
+    return stamped
+
+
+async def _stamp_setup_health(company: str) -> None:
+    """Ask the relay for every job's GP setup verdict and record it (#425).
+
+    Swallows everything. This runs inside the adoption pass and must never cost it: a relay too old
+    for the op, a GP read that times out, a malformed answer - all of them leave the existing stamps
+    exactly as they were, which is the correct fallback because a stale verdict is still a verdict and
+    the alternative (blanking it) would un-quarantine a broken project on a transient failure.
+
+    Logged at info without a traceback for the same reason the pass itself is: relays restart, get
+    updated and flap, and a stack trace per flap buries the one that matters."""
+    try:
+        result = await relay_gateway.relay_call(company, "job_setup_health")
+        jobs = (result or {}).get("jobs") or []
+        stamped = await asyncio.to_thread(_persist_health, jobs)
+        unhealthy = sum(1 for job in jobs if not job.get("ok"))
+        if unhealthy:
+            logger.info("gp job sync: %s of %s jobs have broken GP setup", unhealthy, stamped)
+    except Exception as e:  # noqa: BLE001 - a health check must never break job adoption
+        logger.info("gp job sync: could not read GP setup health this pass (%s); stamps left as they were", e)
+
+
+async def check_job_setup_live(company: str, job_number: str) -> dict | None:
+    """The live, authoritative GP setup verdict for ONE job (#425), or None when it could not be read.
+
+    The stamped verdict on the project is at most one poll interval old, and registering a PO is the
+    moment that gap matters most: the PO commits money to a job, and if the job's cost-code accounts
+    broke since the last pass the registration is what makes the unreceivable PO. So the register path
+    re-asks GP directly, using the op's single-job filter so the answer costs two indexed reads rather
+    than a sweep of the whole job master.
+
+    None means "could not check", NOT "healthy" - the caller decides what to do with that, and the
+    register path falls back to the stamped verdict rather than refusing. Bricking PO registration on
+    a relay blip while the stamp says healthy would trade a rare failure for a constant one."""
+    try:
+        result = await relay_gateway.relay_call(company, "job_setup_health", {"job": job_number})
+    except Exception as e:  # noqa: BLE001 - an unavailable check is not a failed job
+        logger.info("gp setup live check: could not read health for job %s (%s)", job_number, e)
+        return None
+    jobs = (result or {}).get("jobs") or []
+    for job in jobs:
+        if str(job.get("job_number") or "").strip() == job_number.strip():
+            return job
+    # GP does not know this job. Not a setup verdict - job_exists is the check for that, and the relay
+    # runs it inside create_po - so this stays "could not check" rather than becoming a refusal here.
+    return None
+
+
 async def run_once() -> tuple[int, int]:
-    """One sync pass: read GP's job master through the relay and create the projects that are missing.
+    """One sync pass: read GP's job master through the relay and create the projects that are missing,
+    then stamp each project with its GP setup verdict (#425).
+
     Returns (total, adopted). Raises RelayUnavailableError if no relay is connected - the admin
-    Sync from GP button surfaces that, while the loop below simply skips the pass."""
+    Sync from GP button surfaces that, while the loop below simply skips the pass.
+
+    The health check runs AFTER adoption, deliberately: a job GP has just started reporting gets its
+    project first and its verdict on the same pass, rather than a pass later."""
     company = relay_gateway.company
     if not company:
         raise RelayUnavailableError(
@@ -112,7 +181,9 @@ async def run_once() -> tuple[int, int]:
     result = await relay_gateway.relay_call(company, "list_jobs")
     jobs = (result or {}).get("jobs") or []
     # Off the event loop: the /relay-link read loop runs on it and must not block on Postgres.
-    return await asyncio.to_thread(_persist_missing, jobs)
+    counts = await asyncio.to_thread(_persist_missing, jobs)
+    await _stamp_setup_health(company)
+    return counts
 
 
 def run_once_blocking(timeout: float = RESET_SYNC_TIMEOUT_SECONDS) -> tuple[int, int] | None:

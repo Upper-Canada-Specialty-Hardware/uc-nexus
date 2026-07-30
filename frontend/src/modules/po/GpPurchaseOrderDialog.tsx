@@ -20,6 +20,8 @@ import { GET_BUYER_ASSIGNMENTS, GET_PROJECTS } from '../../graphql/shared';
 import { useIdentity } from '../../hooks/useIdentity';
 import VendorSelect from '../../components/VendorSelect';
 import type { Project } from '../../types/project';
+import { isGpSetupBroken } from '../../types/project';
+import GpSetupQuarantineBanner, { GpSetupBadge } from '../../components/GpSetupQuarantineBanner';
 import type { PurchaseOrder } from './index';
 import RelayStatusChip from '../../relay/RelayStatusChip';
 import { useRelayStatus } from '../../relay/useRelayStatus';
@@ -737,12 +739,21 @@ export default function GpPurchaseOrderDialog({
       )
     ) : null;
 
+  // #425: only REGISTER is blocked, not draft creation. A draft touches nothing in GP, and forbidding
+  // it would stop purchasing preparing the order that becomes registerable the moment accounting
+  // fixes the job. Registering is the act that stamps the bad account onto the PO line.
+  const gpSetupBlocksRegister = isRegister && isGpSetupBroken(selectedProject);
+
   const actions = (
     <Stack direction="row" spacing={1}>
       <Button onClick={onClose} disabled={busy}>
         Cancel
       </Button>
-      <Button variant="contained" onClick={handleSubmit} disabled={busy || lineItems.length === 0}>
+      <Button
+        variant="contained"
+        onClick={handleSubmit}
+        disabled={busy || lineItems.length === 0 || gpSetupBlocksRegister}
+      >
         {busy ? submitBusyLabel : submitIdleLabel}
       </Button>
     </Stack>
@@ -755,6 +766,7 @@ export default function GpPurchaseOrderDialog({
           <GpErrorAlert error={gpError} onClose={() => setGpError(null)} />
         </Box>
       )}
+      {isRegister && <GpSetupQuarantineBanner project={selectedProject} action="registering it in GP" dense />}
       {/* Issue #216: GP registration happens as YOUR buyer identity, against your assigned projects.
           Drafting (issue #256) is open to everyone, so these gate register mode only. */}
       {isRegister && !gpBuyerId ? (
@@ -787,9 +799,12 @@ export default function GpPurchaseOrderDialog({
           }
         >
           <MenuItem value="">No Project (stock PO)</MenuItem>
+          {/* #425: badged in the picker, not hidden from it. A quarantined project is still the right
+              project for a draft; what it cannot take is a registration. */}
           {projects.map((p) => (
-            <MenuItem key={p.id} value={p.id}>
+            <MenuItem key={p.id} value={p.id} sx={{ gap: 1 }}>
               {p.description || p.projectId}
+              <GpSetupBadge project={p} />
             </MenuItem>
           ))}
         </TextField>

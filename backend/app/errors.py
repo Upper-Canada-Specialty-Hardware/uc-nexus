@@ -17,8 +17,29 @@ class NotFoundError(AppError):
 
 
 class ConflictError(AppError):
-    def __init__(self, message: str, field: str | None = None):
-        super().__init__(message, "CONFLICT", field)
+    def __init__(self, message: str, field: str | None = None, code: str = "CONFLICT"):
+        super().__init__(message, code, field)
+
+
+class GpSetupInvalidError(ConflictError):
+    """This project's GP job is not set up well enough to act on (#425).
+
+    Its JC00701 cost codes point at GL account indexes that do not exist in the company's chart - the
+    residue of the pre-2023 UCSH -> UBC job copy, 1504 rows across 62 production jobs. A job-cost PO
+    on such a code registers cleanly and then fails FOREVER at receipt with eConnect 4612 "Invalid
+    Account Index", so the hardware arrives, gets counted, and cannot be booked in.
+
+    A conflict rather than a validation failure: nothing about the request is wrong. The state of the
+    world is, and no amount of re-entering the form fixes it - accounting has to repair GP. The
+    distinct code lets the frontend recognise a quarantine and show the banner naming the codes,
+    instead of rendering it as one more red toast the user is expected to act on.
+
+    `issues` carries the parsed {cost_code, account_index} pairs so a caller can reformat them; the
+    message already names them, because a raw GraphQL error is what most callers will show."""
+
+    def __init__(self, message: str, issues: list[dict] | None = None):
+        super().__init__(message, code="GP_SETUP_INVALID")
+        self.issues = issues or []
 
 
 class InsufficientInventoryError(AppError):

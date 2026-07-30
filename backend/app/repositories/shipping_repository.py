@@ -39,6 +39,7 @@ from app.models.shipping_out_request import (
     ShippingOutRequestItem,
 )
 from app.models.warehouse import Warehouse
+from app.repositories import project_repository
 from app.repositories.stock import _find_or_create_stock_row, _log_audit_event
 from app.services import notification_service
 from app.services.locking import lock_rows
@@ -160,6 +161,12 @@ def confirm_shipment(
             - hardware_category: str (for Loose type)
             - quantity: int
     """
+    # 0. #425: quarantine gate. Shipping out is the last thing a project does, and it is the point of
+    # no return - hardware leaves the building against a job whose costs cannot be booked. Blocked
+    # here for the same reason the earlier stages are: everything downstream of a broken GP job has to
+    # stop until accounting has repaired it, or the reconciliation gets worse the longer it runs.
+    project_repository.require_gp_setup_ok(session, project_id)
+
     # 1. Validate packing_slip_number
     if not packing_slip_number or len(packing_slip_number) < 1 or len(packing_slip_number) > 50:
         raise ValidationError("packing_slip_number must be 1-50 characters", field="packing_slip_number")

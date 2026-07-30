@@ -180,6 +180,10 @@ export const GET_PO_RECEIVING_DETAILS = gql`
       id
       poNumber
       requestNumber
+      # #425: the receive modal joins this to the projects list to find out whether the PO's GP job is
+      # quarantined. A broken job's receipt is rejected by eConnect with "Invalid Account Index", so
+      # the modal has to say so before the warehouse user finishes counting.
+      projectId
       gpCompany
       gpVendorId
       vendorNameSnapshot
