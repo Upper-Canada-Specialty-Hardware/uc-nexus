@@ -7,7 +7,7 @@ from datetime import date
 
 import strawberry
 
-from app.auth import require_admin, require_user
+from app.auth import current_user
 from app.database import SessionLocal
 from app.errors import (
     GpSetupInvalidError,
@@ -266,7 +266,6 @@ class POQueries:
     def purchase_orders(
         self, info: strawberry.Info, project_id: strawberry.ID | None = None, status: POStatus | None = None
     ) -> list[PurchaseOrder]:
-        require_user(info)
         with SessionLocal() as session:
             pid = uuid.UUID(str(project_id)) if project_id else None
             pos = po_repository.get_purchase_orders(session, pid, status)
@@ -276,7 +275,6 @@ class POQueries:
     def po_document_download_url(self, info: strawberry.Info, document_id: strawberry.ID) -> str:
         """Mints a presigned S3 URL, so the gate is the only thing standing between an anonymous
         caller and a supplier PO document (#415)."""
-        require_user(info)
         from app.services import storage
 
         with SessionLocal() as session:
@@ -285,7 +283,6 @@ class POQueries:
 
     @strawberry.field
     def purchase_order(self, info: strawberry.Info, id: strawberry.ID) -> PurchaseOrder | None:
-        require_user(info)
         with SessionLocal() as session:
             po = po_repository.get_purchase_order(session, uuid.UUID(str(id)))
             if po is None:
@@ -299,7 +296,6 @@ class POQueries:
 
         Its own field rather than a list on PurchaseOrder: the PO list renders dozens of POs and must
         never pay for this join, and the detail modal is the only place it is read."""
-        require_user(info)
         with SessionLocal() as session:
             return [
                 POOpening(
@@ -327,14 +323,12 @@ class POQueries:
         vendor_id: strawberry.ID,
         product_codes: list[str],
     ) -> list[PriorOrderAsForProduct]:
-        require_user(info)
         with SessionLocal() as session:
             result = po_repository.get_prior_order_as_values(session, uuid.UUID(str(vendor_id)), product_codes)
             return [PriorOrderAsForProduct(product_code=pc, values=vals) for pc, vals in result.items()]
 
     @strawberry.field
     def po_statistics(self, info: strawberry.Info, project_id: strawberry.ID | None = None) -> POStatistics:
-        require_user(info)
         with SessionLocal() as session:
             stats = po_repository.get_po_statistics(session, uuid.UUID(str(project_id)) if project_id else None)
             return POStatistics(
@@ -349,17 +343,15 @@ class POQueries:
 
     @strawberry.field
     def open_p_os(self, info: strawberry.Info, project_id: strawberry.ID | None = None) -> list[PurchaseOrder]:
-        require_user(info)
         with SessionLocal() as session:
             pos = po_repository.get_open_pos(session, uuid.UUID(str(project_id)) if project_id else None)
             return [po_to_type(po) for po in pos]
 
     @strawberry.field
     def po_document_settings(self, info: strawberry.Info) -> PODocumentSettings:
-        """The admin boilerplate for the generated supplier PO document (issue #230). require_user, not
+        """The admin boilerplate for the generated supplier PO document (issue #230). Signed-in, not
         admin: the PO user's generate form reads it to render the document. Get-or-creates the singleton
         with guideline defaults on first read, so it never returns null."""
-        require_user(info)
         with SessionLocal() as session:
             settings = po_document_settings_repository.get_settings(session)
             session.commit()
@@ -374,7 +366,6 @@ class POMutations:
         no buyer involved. Registering the draft into GP (register_po_in_gp) is the separate,
         conscious user action where GP vendor / buyer identity / cost code are captured and the
         issue #216 assignment gating applies."""
-        require_user(info)
         line_items_data = [
             {
                 "hardware_category": li.hardware_category,
@@ -428,7 +419,7 @@ class POMutations:
         would trade a rare bad PO for a constantly unusable button - and the relay's own create_po
         pre-check (cost_code_account_invalid) is still there as the last line of defence, running
         inside GP's own transaction where it cannot be stale at all."""
-        auth = require_user(info)
+        auth = current_user(info)
         # Issue #216: the PO is registered as the caller's own GP buyer identity, never a free pick.
         caller_buyer = await asyncio.to_thread(user_repository.get_user_gp_buyer_id, auth["user_id"])
         _assert_buyer_identity(caller_buyer, input.buyer_id)
@@ -574,7 +565,6 @@ class POMutations:
         shipping_cost: float | None = strawberry.UNSET,
         tariff_amount: float | None = strawberry.UNSET,
     ) -> PurchaseOrder:
-        require_user(info)
         from app.repositories.po_repository import _UNSET
 
         pid = uuid.UUID(str(project_id)) if project_id else _UNSET
@@ -598,7 +588,6 @@ class POMutations:
 
     @strawberry.mutation
     def mark_po_as_ordered(self, info: strawberry.Info, id: strawberry.ID) -> PurchaseOrder:
-        require_user(info)
         with SessionLocal() as session:
             po = po_repository.mark_po_as_ordered(session, uuid.UUID(str(id)))
             session.commit()
@@ -607,7 +596,6 @@ class POMutations:
 
     @strawberry.mutation
     def cancel_po(self, info: strawberry.Info, id: strawberry.ID) -> PurchaseOrder:
-        require_user(info)
         with SessionLocal() as session:
             po = po_repository.cancel_po(session, uuid.UUID(str(id)))
             session.commit()
@@ -618,7 +606,6 @@ class POMutations:
     def update_po_line_item_order_as(
         self, info: strawberry.Info, id: strawberry.ID, order_as: str | None = None
     ) -> POLineItem:
-        require_user(info)
         with SessionLocal() as session:
             poli = po_repository.update_line_item_order_as(session, uuid.UUID(str(id)), order_as)
             session.commit()
@@ -627,7 +614,6 @@ class POMutations:
 
     @strawberry.mutation
     def update_po_line_item_unit_cost(self, info: strawberry.Info, id: strawberry.ID, unit_cost: float) -> POLineItem:
-        require_user(info)
         with SessionLocal() as session:
             poli = po_repository.update_line_item_unit_cost(session, uuid.UUID(str(id)), unit_cost)
             session.commit()
@@ -645,7 +631,6 @@ class POMutations:
         document_type: PODocumentType,
         file_data_base64: str,
     ) -> PODocumentInfo:
-        require_user(info)
         from app.models.enums import PODocumentType as PODocTypeDB
 
         with SessionLocal() as session:
@@ -663,7 +648,6 @@ class POMutations:
 
     @strawberry.mutation
     def delete_po_document(self, info: strawberry.Info, document_id: strawberry.ID) -> bool:
-        require_user(info)
         with SessionLocal() as session:
             po_repository.delete_po_document(session, uuid.UUID(str(document_id)))
             session.commit()
@@ -675,7 +659,6 @@ class POMutations:
     ) -> PODocumentSettings:
         """Patch the single-row PO-document boilerplate (issue #230). Admin-only. Only fields the client
         actually sent (not UNSET) are written, so a partial edit leaves the rest intact."""
-        require_admin(info)
         fields = {
             name: getattr(input, name)
             for name in (
@@ -706,8 +689,7 @@ class POMutations:
         self, info: strawberry.Info, po_id: strawberry.ID, input: SavePODocumentDataInput
     ) -> PurchaseOrder:
         """Persist the generate-dialog capture for a PO (issue #230) and return the PO with its now-saved
-        documentData, so a re-open of the dialog pre-fills. require_user (any PO user generates)."""
-        require_user(info)
+        documentData, so a re-open of the dialog pre-fills. Signed-in (any PO user generates)."""
         pid = uuid.UUID(str(po_id))
         with SessionLocal() as session:
             po_repository.upsert_po_document_data(

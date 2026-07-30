@@ -2,6 +2,13 @@
 
 Resolver implementations live in the domain modules (schemas/po.py, schemas/warehouse.py, ...),
 mirroring app/repositories/. DTO builders live in schemas/converters.py.
+
+Every field on this type is a ROOT field, and every root field is authorized from
+ROOT_FIELD_POLICY in app/auth_policy.py - checked by the schema extension in main.py before the
+resolver runs, not by a line in the body (#423). A field with no entry there, and no place on the
+OPEN_OPERATIONS allowlist, is refused. So adding a resolver below means adding its policy entry;
+forgetting breaks the field rather than opening it, and `tests/test_resolver_gate_completeness.py`
+fails on it either way.
 """
 
 import strawberry

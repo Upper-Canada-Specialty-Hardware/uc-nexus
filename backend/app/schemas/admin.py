@@ -4,7 +4,6 @@ import uuid
 
 import strawberry
 
-from app.auth import require_admin
 from app.database import SessionLocal
 from app.repositories import admin_repository
 
@@ -19,7 +18,6 @@ class AdminQueries:
     ) -> list[OpeningHardwareStatus]:
         """Admin-gated (#415): only the admin Opening Status tab reads it, and it walks every opening
         in a project."""
-        require_admin(info)
         with SessionLocal() as session:
             rows = admin_repository.get_opening_hardware_status(
                 session, uuid.UUID(str(project_id)) if project_id else None

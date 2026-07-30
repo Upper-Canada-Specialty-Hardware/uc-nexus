@@ -15,6 +15,7 @@ from strawberry.extensions import SchemaExtension
 from strawberry.fastapi import GraphQLRouter
 
 from app.auth import get_context, require_admin_request
+from app.auth_policy import enforce_root_field
 from app.database import SessionLocal
 from app.errors import AppError
 from app.repositories import relay_repository
@@ -32,7 +33,30 @@ logger = logging.getLogger(__name__)
 ADOPT_HELLO_TIMEOUT_SECONDS = 5.0
 
 
-class ErrorHandlerExtension(SchemaExtension):
+class ResolverGuardExtension(SchemaExtension):
+    """The one hook every GraphQL field resolution passes through. It does two jobs.
+
+    1. **Authorizes root fields** against ROOT_FIELD_POLICY (app/auth_policy.py), before the resolver
+       runs. Deny-by-default: a field with no policy entry and no place on the open-operations
+       allowlist is refused, so #415's "a resolver that forgets its gate is public" cannot recur.
+       Only root fields are checked (`info.path.prev is None`) - a nested field is reachable only
+       through a root field that already passed, and checking every one would put a Clerk decision on
+       every node of every response.
+    2. **Maps AppError to GraphQLError**, publishing `extensions.code` (and `relayError` where the
+       error carries a detail body).
+
+    Both live in one extension rather than two on purpose:
+
+      - The gate's own refusals are AppErrors, and they MUST reach the browser as
+        `extensions.code = UNAUTHENTICATED` / `FORBIDDEN`; the frontend's Apollo link keys its token
+        re-mint and replay off exactly that (#429). Sharing one try/except makes that structural. As
+        two extensions it would depend on their order in the `extensions=[...]` list, which nothing
+        would fail on if someone swapped it.
+      - `resolve` is graphql-core middleware: it runs per FIELD, not per operation, including every
+        scalar of every row in a list of hundreds. A second extension would double that wrapper cost
+        for no functional gain.
+    """
+
     @staticmethod
     def _to_graphql_error(e: Exception) -> GraphQLError:
         if isinstance(e, AppError):
@@ -50,12 +74,28 @@ class ErrorHandlerExtension(SchemaExtension):
             return GraphQLError(message=e.message, extensions=extensions)
         return GraphQLError(message=str(e), extensions={"code": "NOT_IMPLEMENTED"})
 
+    @staticmethod
+    def _is_root_field(info: GraphQLResolveInfo) -> bool:
+        """A field selected directly on Query/Mutation, and ours rather than graphql-core's.
+
+        The `__`-prefixed introspection fields (`__schema`, `__type`, `__typename`) are root fields
+        too, and they are resolved by graphql-core's own resolvers, which this middleware also wraps.
+        They expose the schema's shape, never any data, and they were reachable before #423 - gating
+        them would break GraphiQL and every introspection-driven tool for no security gain.
+        """
+        return info.path.prev is None and not info.field_name.startswith("__")
+
     def resolve(self, _next: Callable, root: Any, info: GraphQLResolveInfo, *args, **kwargs):
         # For async resolvers _next() returns a coroutine that strawberry awaits *after* this method
         # returns, so a synchronous try/except here would never see the exception - the AppError -> code
         # mapping would be silently dropped. Handle the awaitable case in an async wrapper so both sync
         # and async resolvers get the extension pattern.
         try:
+            # Inside the try so a refusal is mapped by the same code path as any other AppError, and
+            # ahead of _next so the resolver body never starts for a caller who is about to be
+            # refused - the ordering #415's gates could only achieve by convention.
+            if self._is_root_field(info):
+                enforce_root_field(info.field_name, info.context)
             result = _next(root, info, *args, **kwargs)
         except (AppError, NotImplementedError) as e:
             raise self._to_graphql_error(e) from e
@@ -73,7 +113,7 @@ class ErrorHandlerExtension(SchemaExtension):
 schema = strawberry.Schema(
     query=Query,
     mutation=Mutation,
-    extensions=[ErrorHandlerExtension],
+    extensions=[ResolverGuardExtension],
 )
 
 graphql_app = GraphQLRouter(schema, context_getter=get_context)

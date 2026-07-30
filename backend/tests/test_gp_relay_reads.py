@@ -1,13 +1,15 @@
 """Query.gp_jobs/gp_vendors/gp_buyers/gp_cost_codes/relay_status: relay_call wiring + dict->type mapping.
 
 Plain `def test_...(): asyncio.run(...)` (matches test_relay_gateway.py) - resolvers are exercised
-directly against a Query instance with require_user monkeypatched out; Clerk auth itself needs no
-coverage here (no resolver-level auth test exists anywhere in this codebase yet)."""
+directly against a Query instance. Since #423 that needs no auth setup at all: the gate is a schema
+extension in front of the resolver, not a line inside it, so calling the body directly never touches
+Clerk. What each gp_* read REQUIRES is asserted against the policy table instead, below.
+"""
 
 import asyncio
 
-import pytest
-
+from app.auth import ADMIN_ROLE
+from app.auth_policy import ROOT_FIELD_POLICY, SIGNED_IN
 from app.schemas import relay as relay_module
 from app.schemas.queries import Query
 from app.services.relay_gateway import RelayGateway
@@ -15,13 +17,6 @@ from app.services.relay_gateway import RelayGateway
 
 class FakeInfo:
     context = {"request": None}
-
-
-@pytest.fixture(autouse=True)
-def _bypass_require_user(monkeypatch):
-    monkeypatch.setattr(relay_module, "require_user", lambda info: {"user_id": "test-user"})
-    # gp_employees is admin-gated (#392): the payroll roster is not ordinary working data.
-    monkeypatch.setattr(relay_module, "require_admin", lambda info: {"user_id": "test-admin", "roles": ["Admin"]})
 
 
 class FakeGateway:
@@ -134,25 +129,13 @@ def test_gp_buyers_detailed_maps_relay_result_to_type(monkeypatch):
     assert fake.calls == [("TUBC", "list_buyers_detailed", None)]
 
 
-def test_gp_buyers_detailed_requires_an_admin(monkeypatch):
-    # gp_buyers (bare ids) stays require_user; the descriptions are a staff roster by another name.
-    from app.auth import AuthError
-
-    def _deny(info):
-        raise AuthError("Admin role required")
-
-    monkeypatch.setattr(relay_module, "require_admin", _deny)
-
-    async def _never(*a, **k):
-        raise AssertionError("the relay must not be called for a non-admin")
-
-    monkeypatch.setattr(relay_module, "relay_gateway", type("G", (), {"relay_call": staticmethod(_never)})())
-
-    async def run():
-        return await Query().gp_buyers_detailed(FakeInfo(), company="TUBC")
-
-    with pytest.raises(AuthError):
-        asyncio.run(run())
+def test_gp_buyers_detailed_requires_an_admin():
+    """The bare-id `gpBuyers` backs the Create PO dropdown and stays open to any signed-in user; the
+    descriptions turn the same list into a staff roster, so that one is admin. Asserted against the
+    policy table because that is what decides it now - `test_resolver_auth_gates.py` covers that the
+    extension actually enforces the table."""
+    assert ROOT_FIELD_POLICY["gpBuyersDetailed"] == ADMIN_ROLE
+    assert ROOT_FIELD_POLICY["gpBuyers"] == SIGNED_IN
 
 
 def test_gp_cost_codes_maps_relay_result_to_type(monkeypatch):
@@ -240,26 +223,11 @@ def test_gp_employees_maps_relay_result_to_type(monkeypatch):
     assert fake.calls == [("TUBC", "list_employees", None)]
 
 
-def test_gp_employees_requires_an_admin(monkeypatch):
-    # Every other gp_* read is require_user; this one returns staff names, and its only consumer is
-    # the admin-only create-job dialog.
-    from app.auth import AuthError
-
-    def _deny(info):
-        raise AuthError("Admin role required")
-
-    monkeypatch.setattr(relay_module, "require_admin", _deny)
-
-    async def _never(*a, **k):
-        raise AssertionError("the relay must not be called for a non-admin")
-
-    monkeypatch.setattr(relay_module, "relay_gateway", type("G", (), {"relay_call": staticmethod(_never)})())
-
-    async def run():
-        return await Query().gp_employees(FakeInfo(), company="TUBC")
-
-    with pytest.raises(AuthError):
-        asyncio.run(run())
+def test_gp_employees_requires_an_admin():
+    """Every other gp_* read is open to any signed-in user; this one returns the payroll master with
+    staff names, and its only consumer is the admin-only create-job dialog."""
+    assert ROOT_FIELD_POLICY["gpEmployees"] == ADMIN_ROLE
+    assert ROOT_FIELD_POLICY["gpDivisions"] == SIGNED_IN
 
 
 def test_gp_divisions_passes_through_the_relay_list(monkeypatch):

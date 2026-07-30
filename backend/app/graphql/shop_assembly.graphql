@@ -269,8 +269,9 @@ input CompleteOpeningInput {
   completed_by: String
 }
 
-# Every field below is gated on an authenticated caller (require_user, #339) except where a
-# stronger role gate is noted. Adding the gate did not change any field's arguments.
+# Every field below is gated on an authenticated caller (#339) except where a stronger role
+# requirement is noted. The requirement lives in ROOT_FIELD_POLICY (app/auth_policy.py) and is
+# applied before the resolver runs (#423); it did not change any field's arguments.
 type Query {
   # projectId is optional; omit it for the cross-project view.
   assembleList(projectId: ID): [ShopAssemblyOpening!]!
@@ -294,7 +295,7 @@ type Query {
 type Mutation {
   # Self-assignment is open to any signed-in user; assigning to *another* user additionally
   # requires the Shop Assembly Manager role (#330).
-  # A manager (the require_role branch) may reassign an opening someone else is holding, including an
+  # A manager (the role-checked branch) may reassign an opening someone else is holding, including an
   # IN_PROGRESS one - progress is persisted, so the handoff is lossless (#340). A self-claim never
   # can: it takes the is-self branch, which does not pass allow_reassign.
   assignOpenings(input: AssignOpeningsInput!): [ShopAssemblyOpening!]!
@@ -315,7 +316,7 @@ type Mutation {
   # VALIDATION_ERROR if more than has arrived; INVALID_STATE_TRANSITION if the leaf is still on the
   # bench (record it as progress instead) or has already shipped (that is reallocation's problem).
   installReplacement(input: InstallReplacementInput!): OpeningItem!
-  # Accept gate (#293). Any signed-in user (require_user). Accept mints the warehouse PullRequest and
+  # Accept gate (#293). Any signed-in user. Accept mints the warehouse PullRequest and
   # is a **pure human gate** since #342: the hardware was reserved when the request was created, so
   # nothing is re-checked here. Reject is what releases that reservation. The approval is recorded
   # against the Clerk-authenticated caller (#427) - acceptedBy/rejectedBy are accepted and IGNORED,

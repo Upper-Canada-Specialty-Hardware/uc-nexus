@@ -11,7 +11,8 @@ import asyncio
 
 import pytest
 
-from app.auth import AuthError
+from app.auth import ADMIN_ROLE
+from app.auth_policy import ROOT_FIELD_POLICY
 from app.errors import RelayCallError, RelayUnavailableError, ValidationError
 from app.schemas import relay as relay_module
 from app.schemas.relay import RelayMutations
@@ -19,10 +20,6 @@ from app.schemas.relay import RelayMutations
 
 class _FakeInfo:
     context = {"request": None}
-
-
-def _as_admin(monkeypatch):
-    monkeypatch.setattr(relay_module, "require_admin", lambda info: {"user_id": "user_1", "roles": ["Admin"]})
 
 
 def _relay(monkeypatch, *, company="TUBC", result=None, raises=None):
@@ -45,25 +42,18 @@ def _create(**kwargs):
     return asyncio.run(RelayMutations().create_gp_buyer(_FakeInfo(), **fields))
 
 
-def test_requires_an_admin(monkeypatch):
-    # Registering a buyer writes to the accounting system of record.
-    def _deny(info):
-        raise AuthError("Admin role required")
+def test_requires_an_admin():
+    """Registering a buyer writes to the accounting system of record.
 
-    monkeypatch.setattr(relay_module, "require_admin", _deny)
-
-    async def _never(*a, **k):
-        raise AssertionError("the relay must not be called for a non-admin")
-
-    monkeypatch.setattr(relay_module.relay_gateway, "relay_call", _never)
-
-    with pytest.raises(AuthError):
-        _create()
+    Since #423 the gate is the policy table, applied by the schema extension before the resolver, so
+    the requirement is asserted where it is now decided; `test_resolver_auth_gates.py` covers that the
+    extension enforces the table and refuses before the body runs. The tests below therefore call the
+    resolver directly with no auth setup at all - what they are about is the guard order INSIDE the
+    body, which is unchanged."""
+    assert ROOT_FIELD_POLICY["createGpBuyer"] == ADMIN_ROLE
 
 
 def test_no_relay_stops_before_gp(monkeypatch):
-    _as_admin(monkeypatch)
-
     async def _never(*a, **k):
         raise AssertionError("the relay must not be called when none is connected")
 
@@ -75,7 +65,6 @@ def test_no_relay_stops_before_gp(monkeypatch):
 
 
 def test_sends_the_trimmed_buyer_to_the_relay(monkeypatch):
-    _as_admin(monkeypatch)
     calls = _relay(monkeypatch)
 
     _create(buyer_id="  newbuyer  ", description="  New Buyer  ")
@@ -85,7 +74,6 @@ def test_sends_the_trimmed_buyer_to_the_relay(monkeypatch):
 
 def test_company_defaults_to_the_connected_relays(monkeypatch):
     # The connected relay is enrolled for exactly one company, which is the only one it could write to.
-    _as_admin(monkeypatch)
     calls = _relay(monkeypatch, company="TUCSH")
 
     _create(company=None)
@@ -97,7 +85,6 @@ def test_answers_with_gps_stored_row_not_the_request(monkeypatch):
     # The relay reads POP00101 back after the write, and that row is what the dropdown will show on
     # its next refetch - so answering with the request echoed back could hand the dialog a buyer that
     # differs from the one everything else is about to see.
-    _as_admin(monkeypatch)
     _relay(monkeypatch, result={"buyer_id": "newbuyer", "description": "What GP Actually Kept"})
 
     buyer = _create(description="What Was Asked For")
@@ -107,7 +94,6 @@ def test_answers_with_gps_stored_row_not_the_request(monkeypatch):
 
 
 def test_blank_buyer_id_is_rejected_before_the_relay(monkeypatch):
-    _as_admin(monkeypatch)
     calls = _relay(monkeypatch)
 
     with pytest.raises(ValidationError) as exc:
@@ -119,7 +105,6 @@ def test_blank_buyer_id_is_rejected_before_the_relay(monkeypatch):
 
 def test_over_length_buyer_id_is_rejected_against_gps_own_width(monkeypatch):
     # BUYERID is char(15). Caught here rather than after a full round-trip returning invalid_payload.
-    _as_admin(monkeypatch)
     calls = _relay(monkeypatch)
 
     with pytest.raises(ValidationError) as exc:
@@ -130,7 +115,6 @@ def test_over_length_buyer_id_is_rejected_against_gps_own_width(monkeypatch):
 
 
 def test_over_length_description_is_rejected(monkeypatch):
-    _as_admin(monkeypatch)
     calls = _relay(monkeypatch)
 
     with pytest.raises(ValidationError) as exc:
@@ -141,7 +125,6 @@ def test_over_length_description_is_rejected(monkeypatch):
 
 
 def test_an_already_registered_buyer_surfaces_the_relays_own_message(monkeypatch):
-    _as_admin(monkeypatch)
     # Shaped as relay/errors.py error_body() builds it: {error, message, context}, always all three.
     detail = {
         "error": "buyer_already_exists",
@@ -160,7 +143,6 @@ def test_an_already_registered_buyer_surfaces_the_relays_own_message(monkeypatch
 
 
 def test_a_gp_refusal_surfaces_with_its_detail_intact(monkeypatch):
-    _as_admin(monkeypatch)
     # relay/errors.py econnect_error_body() nests the proc, the numeric state and its taErrorCode
     # description under `context` - that is the shape GpErrorAlert reads (error.relay.context.proc),
     # so asserting against a flattened one would prove nothing about what the alert renders.

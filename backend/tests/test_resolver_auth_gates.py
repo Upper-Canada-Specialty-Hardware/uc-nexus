@@ -1,382 +1,368 @@
-"""Gated resolvers call their gate before they act (#345, extended to the admin surface by #415).
+"""The schema extension refuses an unauthorized caller before the resolver runs (#345, #415, #423).
 
-Auth in this codebase is **opt-in per resolver** (CLAUDE.md): there is no middleware to catch a
-resolver that forgets, and `get_context` only stashes the request. That makes a dropped
-`require_user(info)` invisible - the resolver keeps working, it just works for anonymous callers
-too, which is exactly how `reportDeficiencyAtAssembly` came to mint replacement pull requests and
-write project inventory with no session at all.
+These were pin tests: one per resolver, each monkeypatching that resolver's gate with something that
+raised a sentinel, proving the body asked before it acted. They had to be written one at a time
+because the gate was a line inside each body, and a body that dropped its line failed here by name.
 
-These are pin tests, not behaviour tests. Each one replaces the gate with something that raises a
-sentinel and asserts the sentinel comes back out: if the gate runs, the call cannot proceed, so no
-database is needed and nothing about the resolver body is asserted. A refactor that drops a gate
-makes the resolver return (or fail differently) and the test goes red on that resolver by name.
+#423 moved the decision into `enforce_root_field` (app/auth_policy.py), called from
+ResolverGuardExtension before `_next`. Ordering is structural now: there is no body-level line left
+to drop, and no resolver-by-resolver list to keep in step with 161 of them. What is worth testing is
+the mechanism, once - so these run real operations through the real schema and assert what a caller
+gets back.
 
-`shopAssemblyMembers` and the manager branch of `assignOpenings` are role-gated rather than
-user-gated; both gates are pinned.
+The sentinel idea survives, inverted. Instead of stubbing the gate and watching it fire, each test
+stubs the thing the RESOLVER would touch first (`SessionLocal`, a repository call) so that if the
+body ever starts, it says so loudly. A refusal that arrives with the sentinel un-fired is a refusal
+that happened first.
 
-This file pins gates one at a time and proves the gate runs *first*, which is what a monkeypatched
-sentinel can show and a source scan cannot. It says nothing about resolvers nobody thought to list -
-that is `test_resolver_gate_completeness.py`, which walks every resolver in `app/schemas/` and fails
-on any that never asks. The two are complements: this one is depth, that one is coverage.
+`test_resolver_gate_completeness.py` is the complement: this file is behaviour, that one is coverage.
 """
 
-import uuid
+import asyncio
 
 import pytest
 
-from app.schemas import admin as admin_module
-from app.schemas import dashboard as dashboard_module
-from app.schemas import gp_outbox as gp_outbox_module
+from app import auth
+from app.auth import ADMIN_ROLE, SHOP_ASSEMBLY_MANAGER_ROLE
+from app.auth_policy import OPEN_OPERATIONS, ROOT_FIELD_POLICY, SIGNED_IN, enforce_root_field
+from app.errors import AppError
+from app.repositories import user_repository
 from app.schemas import relay as relay_module
 from app.schemas import shop_assembly as shop_assembly_module
-from app.schemas import stock as stock_module
-from app.schemas import user as user_module
-from app.schemas import vendor as vendor_module
 from app.schemas import warehouse as warehouse_module
-from app.schemas.admin import AdminQueries
-from app.schemas.dashboard import DashboardQueries
-from app.schemas.enums import DeficiencyResolution
-from app.schemas.gp_outbox import GpOutboxMutations, GpOutboxQueries
-from app.schemas.inputs import (
-    AssignOpeningsInput,
-    CompleteOpeningInput,
-    CreateVendorInput,
-    CreateWarehouseInput,
-    InstallReplacementInput,
-    OverrideInventoryQuantityInput,
-    PickLineInput,
-    RecordAssemblyProgressInput,
-    ReportDeficiencyAtAssemblyInput,
-    ReportInventoryDeficiencyInput,
-    ReportStockDeficiencyInput,
-    ResolveDeficiencyInput,
-    UpdateVendorInput,
-    UpdateWarehouseInput,
-)
-from app.schemas.relay import RelayMutations, RelayQueries
-from app.schemas.shop_assembly import ShopAssemblyMutations, ShopAssemblyQueries
-from app.schemas.stock import StockMutations
-from app.schemas.user import UserMutations, UserQueries
-from app.schemas.vendor import VendorMutations
-from app.schemas.warehouse import WarehouseMutations, WarehouseQueries
+from main import schema
 
 
-class _GateReached(Exception):
-    """Raised by the stubbed gate. Seeing it means the resolver asked before it acted."""
+class _ResolverRan(Exception):
+    """Raised by whatever the resolver body reaches for first. Seeing it means the gate let the call
+    through; never seeing it, on a query that was refused, means the gate ran first."""
 
 
-class FakeInfo:
-    def __init__(self, request=None):
-        self.context = {"request": request}
+class _FakeRequest:
+    def __init__(self, token: str | None = None):
+        self.headers = {"authorization": f"Bearer {token}"} if token else {}
 
 
-def _id() -> str:
-    return str(uuid.uuid4())
+def _execute(query: str, token: str | None = None, context: dict | None = None):
+    """Run an operation through the real schema, with a request that carries the given bearer token.
+
+    The context dict is the same one `get_context` builds per request, and the same one the gate
+    memoises on - so passing one in lets a test watch what a single request costs."""
+    ctx = context if context is not None else {"request": _FakeRequest(token)}
+    return asyncio.run(schema.execute(query, context_value=ctx))
 
 
-# (label, module the resolver resolves its gate from, callable taking no args)
-_USER_GATED = [
-    ("assembleList", shop_assembly_module, lambda: ShopAssemblyQueries().assemble_list(FakeInfo())),
-    ("myWork", shop_assembly_module, lambda: ShopAssemblyQueries().my_work(FakeInfo(), "user_1")),
-    ("replacementWork", shop_assembly_module, lambda: ShopAssemblyQueries().replacement_work(FakeInfo())),
-    (
-        "shopAssemblyRequests",
-        shop_assembly_module,
-        lambda: ShopAssemblyQueries().shop_assembly_requests(FakeInfo()),
-    ),
-    (
-        "assemblyPipelineSummaries",
-        shop_assembly_module,
-        lambda: ShopAssemblyQueries().assembly_pipeline_summaries(FakeInfo()),
-    ),
-    (
-        "assemblyPipeline",
-        shop_assembly_module,
-        lambda: ShopAssemblyQueries().assembly_pipeline(FakeInfo(), _id()),
-    ),
-    (
-        "acceptShopAssemblyRequest",
-        shop_assembly_module,
-        lambda: ShopAssemblyMutations().accept_shop_assembly_request(FakeInfo(), _id(), "acceptor"),
-    ),
-    (
-        "rejectShopAssemblyRequest",
-        shop_assembly_module,
-        lambda: ShopAssemblyMutations().reject_shop_assembly_request(FakeInfo(), _id(), "rejector"),
-    ),
-    (
-        "reopenShopAssemblyRequest",
-        shop_assembly_module,
-        lambda: ShopAssemblyMutations().reopen_shop_assembly_request(FakeInfo(), _id()),
-    ),
-    (
-        "assignOpenings",
-        shop_assembly_module,
-        lambda: ShopAssemblyMutations().assign_openings(
-            FakeInfo(),
-            AssignOpeningsInput(opening_ids=[_id()], assigned_to_user_id="user_1", assigned_to="Someone"),
-        ),
-    ),
-    (
-        "removeOpeningFromUser",
-        shop_assembly_module,
-        lambda: ShopAssemblyMutations().remove_opening_from_user(FakeInfo(), _id()),
-    ),
-    (
-        "recordAssemblyProgress",
-        shop_assembly_module,
-        lambda: ShopAssemblyMutations().record_assembly_progress(
-            FakeInfo(), RecordAssemblyProgressInput(opening_id=_id(), items=[])
-        ),
-    ),
-    (
-        "installReplacement",
-        shop_assembly_module,
-        lambda: ShopAssemblyMutations().install_replacement(
-            FakeInfo(), InstallReplacementInput(shop_assembly_opening_item_id=_id(), quantity=1)
-        ),
-    ),
-    (
-        "completeOpening",
-        shop_assembly_module,
-        lambda: ShopAssemblyMutations().complete_opening(FakeInfo(), CompleteOpeningInput(opening_id=_id())),
-    ),
-    (
-        "reportInventoryDeficiency",
-        stock_module,
-        lambda: StockMutations().report_inventory_deficiency(
-            FakeInfo(), ReportInventoryDeficiencyInput(inventory_location_id=_id(), quantity=1)
-        ),
-    ),
-    (
-        "reportStockDeficiency",
-        stock_module,
-        lambda: StockMutations().report_stock_deficiency(
-            FakeInfo(), ReportStockDeficiencyInput(stock_item_id=_id(), quantity=1)
-        ),
-    ),
-    (
-        "reportDeficiencyAtAssembly",
-        stock_module,
-        lambda: StockMutations().report_deficiency_at_assembly(
-            FakeInfo(), ReportDeficiencyAtAssemblyInput(shop_assembly_opening_item_id=_id(), quantity=1)
-        ),
-    ),
-    (
-        "resolveDeficiency",
-        stock_module,
-        lambda: StockMutations().resolve_deficiency(
-            FakeInfo(),
-            ResolveDeficiencyInput(
-                inventory_location_id=_id(),
-                resolution=DeficiencyResolution.REPAIR,
-                quantity=1,
-                reviewed_by="reviewer",
-            ),
-        ),
-    ),
-    # The pick (#367). confirmPick writes inventory; the other three attribute a user action or
-    # expose one project's per-location stock, so all four are gated for the same reasons the
-    # staging and cancel mutations next to them are.
-    (
-        "pullPickSheet",
-        warehouse_module,
-        lambda: WarehouseQueries().pull_pick_sheet(FakeInfo(), _id()),
-    ),
-    (
-        "startPullRequestPick",
-        warehouse_module,
-        lambda: WarehouseMutations().start_pull_request_pick(FakeInfo(), _id(), "picker"),
-    ),
-    (
-        "savePickDraft",
-        warehouse_module,
-        lambda: WarehouseMutations().save_pick_draft(
-            FakeInfo(),
-            _id(),
-            [PickLineInput(hardware_category="HINGE", product_code="HG-100", inventory_location_id=_id(), quantity=1)],
-            "picker",
-        ),
-    ),
-    (
-        "confirmPick",
-        warehouse_module,
-        lambda: WarehouseMutations().confirm_pick(
-            FakeInfo(),
-            _id(),
-            [PickLineInput(hardware_category="HINGE", product_code="HG-100", inventory_location_id=_id(), quantity=1)],
-            "picker",
-        ),
-    ),
-    (
-        "setPullItemFetched",
-        warehouse_module,
-        lambda: WarehouseMutations().set_pull_item_fetched(FakeInfo(), _id(), True, "picker"),
-    ),
-    # Both of these are reached from non-admin screens through a component that happens to live under
-    # modules/admin/, so they are user-gated and pinned here rather than in _ADMIN_GATED. Pinning the
-    # gate they actually use is what stops a future "tidy-up" from promoting them to require_admin and
-    # silently breaking a PO user's vendor add or the warehouse's count correction.
-    (
-        "createVendor",
-        vendor_module,
-        lambda: VendorMutations().create_vendor(FakeInfo(), CreateVendorInput(name="V")),
-    ),
-    (
-        "overrideInventoryQuantity",
-        warehouse_module,
-        lambda: WarehouseMutations().override_inventory_quantity(
-            FakeInfo(),
-            OverrideInventoryQuantityInput(inventory_location_id=_id(), new_quantity=1, reason_text="r"),
-        ),
-    ),
-]
+def _codes(result) -> set[str | None]:
+    return {(e.extensions or {}).get("code") for e in (result.errors or [])}
 
 
-# Admin-only resolvers. The adopt window (#353 PR B) deliberately weakens the /relay-link auth
-# boundary while it is open, so "is this actually admin-gated" is a security property, not a nicety.
-_ADMIN_GATED = [
-    ("relayAdoptWindow", relay_module, lambda: RelayQueries().relay_adopt_window(FakeInfo())),
-    ("armRelayAdopt", relay_module, lambda: RelayMutations().arm_relay_adopt(FakeInfo(), _id())),
-    ("disarmRelayAdopt", relay_module, lambda: RelayMutations().disarm_relay_adopt(FakeInfo())),
-    # #366: deleting an install revokes a relay credential outright, so the gate is the whole
-    # protection - there is nothing downstream to catch a non-admin caller.
-    ("deleteRelayInstall", relay_module, lambda: RelayMutations().delete_relay_install(FakeInfo(), _id())),
-    # #353 PR E: retrying an `ambiguous` queued write can duplicate a GP posting, and cancelling one
-    # abandons work somebody has already done. Both are admin-only.
-    (
-        "retryGpOutboxEntry",
-        gp_outbox_module,
-        lambda: GpOutboxMutations().retry_gp_outbox_entry(FakeInfo(), _id()),
-    ),
-    (
-        "cancelGpOutboxEntry",
-        gp_outbox_module,
-        lambda: GpOutboxMutations().cancel_gp_outbox_entry(FakeInfo(), _id()),
-    ),
-    # #415. All four user.py resolvers shipped with no gate at all. `updateUserRoles` is the one that
-    # matters most: it grants Admin/Manager, the role every other entry in this list is gated on, so
-    # an ungated copy is a self-service escalation into all of them. `users` returns every account's
-    # email, roles and GP buyer id.
-    ("users", user_module, lambda: UserQueries().users(FakeInfo())),
-    (
-        "updateUserRoles",
-        user_module,
-        lambda: UserMutations().update_user_roles(FakeInfo(), "user_1", ["Admin/Manager"]),
-    ),
-    (
-        "updateUserName",
-        user_module,
-        lambda: UserMutations().update_user_name(FakeInfo(), "user_1", "First", "Last"),
-    ),
-    (
-        "updateUserGpBuyerId",
-        user_module,
-        lambda: UserMutations().update_user_gp_buyer_id(FakeInfo(), "user_1", "donr"),
-    ),
-    # #415 sweep: the rest of the admin-only surface, all of it previously ungated. The warehouse and
-    # vendor writes are the ones with teeth - an anonymous caller could delete a warehouse, rewrite an
-    # inventory row's quantity outright, or merge every item at one location into another.
-    (
-        "openingHardwareStatus",
-        admin_module,
-        lambda: AdminQueries().opening_hardware_status(FakeInfo()),
-    ),
-    ("adminStats", dashboard_module, lambda: DashboardQueries().admin_stats(FakeInfo())),
-    (
-        "updateVendor",
-        vendor_module,
-        lambda: VendorMutations().update_vendor(FakeInfo(), _id(), UpdateVendorInput(name="V")),
-    ),
-    ("deleteVendor", vendor_module, lambda: VendorMutations().delete_vendor(FakeInfo(), _id())),
-    (
-        "locationDuplicates",
-        warehouse_module,
-        lambda: WarehouseQueries().location_duplicates(FakeInfo()),
-    ),
-    (
-        "mergeLocations",
-        warehouse_module,
-        lambda: WarehouseMutations().merge_locations(FakeInfo(), "A", "1", "1", "B", "2", "2"),
-    ),
-    (
-        "createWarehouse",
-        warehouse_module,
-        lambda: WarehouseMutations().create_warehouse(FakeInfo(), CreateWarehouseInput(name="W", code="W1")),
-    ),
-    (
-        "updateWarehouse",
-        warehouse_module,
-        lambda: WarehouseMutations().update_warehouse(FakeInfo(), _id(), UpdateWarehouseInput(name="W")),
-    ),
-    (
-        "deleteWarehouse",
-        warehouse_module,
-        lambda: WarehouseMutations().delete_warehouse(FakeInfo(), _id()),
-    ),
-]
-
-# Any signed-in user; the PO and receiving lists read the queue to show pending chips.
-_OUTBOX_USER_GATED = [
-    ("gpOutboxSummary", gp_outbox_module, lambda: GpOutboxQueries().gp_outbox_summary(FakeInfo())),
-    ("gpOutbox", gp_outbox_module, lambda: GpOutboxQueries().gp_outbox(FakeInfo())),
-]
+def _messages(result) -> set[str]:
+    return {e.message for e in (result.errors or [])}
 
 
-@pytest.mark.parametrize("label, module, call", _USER_GATED, ids=[row[0] for row in _USER_GATED])
-def test_resolver_requires_a_signed_in_user(label, module, call, monkeypatch):
-    def _gate(info):
-        raise _GateReached(label)
+@pytest.fixture
+def signed_in(monkeypatch):
+    """A verifiable token for user `u_caller`, with no roles unless a test grants some.
 
-    monkeypatch.setattr(module, "require_user", _gate)
-
-    with pytest.raises(_GateReached):
-        call()
-
-
-@pytest.mark.parametrize("label, module, call", _ADMIN_GATED, ids=[row[0] for row in _ADMIN_GATED])
-def test_resolver_requires_an_admin(label, module, call, monkeypatch):
-    def _gate(info):
-        raise _GateReached(label)
-
-    monkeypatch.setattr(module, "require_admin", _gate)
-
-    with pytest.raises(_GateReached):
-        call()
+    Patches `verify_clerk_token` rather than minting a real JWT: what is under test is the gate's
+    decision, not RS256, and the alternative is a JWKS round trip in a unit test."""
+    monkeypatch.setattr(auth, "verify_clerk_token", lambda token: {"sub": "u_caller"})
+    monkeypatch.setattr(user_repository, "get_user_roles", lambda user_id: [])
+    return "tok"
 
 
-@pytest.mark.parametrize("label, module, call", _OUTBOX_USER_GATED, ids=[row[0] for row in _OUTBOX_USER_GATED])
-def test_outbox_read_requires_a_signed_in_user(label, module, call, monkeypatch):
-    def _gate(info):
-        raise _GateReached(label)
+def _explodes(monkeypatch, module, attr="SessionLocal"):
+    """Make the resolver body's first move raise, so a body that runs cannot do so quietly."""
 
-    monkeypatch.setattr(module, "require_user", _gate)
+    def _boom(*args, **kwargs):
+        raise _ResolverRan(f"{module.__name__}.{attr}")
 
-    with pytest.raises(_GateReached):
-        call()
+    monkeypatch.setattr(module, attr, _boom)
 
 
-def test_shop_assembly_members_requires_the_manager_role(monkeypatch):
-    def _gate(info, role):
-        raise _GateReached(role)
+def test_anonymous_caller_is_refused_before_the_resolver_body_runs(monkeypatch):
+    """The #415 defect, restated as behaviour: no session, no work. `warehouses` is a plain
+    signed-in read, so the only thing standing between an anonymous POST and the database is this."""
+    _explodes(monkeypatch, warehouse_module)
 
-    monkeypatch.setattr(shop_assembly_module, "require_role", _gate)
+    result = _execute("{ warehouses { id } }")
 
-    with pytest.raises(_GateReached):
-        ShopAssemblyQueries().shop_assembly_members(FakeInfo())
+    assert _codes(result) == {"UNAUTHENTICATED"}
+    assert not any("SessionLocal" in m for m in _messages(result)), (
+        "the resolver body started before the caller was refused - the gate is no longer running first"
+    )
 
 
-def test_assigning_to_another_user_requires_the_manager_role(monkeypatch):
-    """The one gate that is conditional: self-assignment is open, assigning somebody else is not."""
+def test_the_refusal_carries_the_code_the_frontend_recovers_on():
+    """UNAUTHENTICATED is not decoration. The Apollo link re-mints the Clerk token and replays the
+    operation once on exactly this code (#429); FORBIDDEN it leaves alone. The extension raises these
+    inside the same try/except that maps AppError -> extensions.code, so the two cannot drift."""
+    result = _execute("{ warehouses { id } }")
 
-    def _role_gate(info, role):
-        raise _GateReached(role)
+    assert _codes(result) == {"UNAUTHENTICATED"}
+    assert _messages(result) == {"Authentication required"}
 
-    monkeypatch.setattr(shop_assembly_module, "require_user", lambda info: {"user_id": "caller"})
-    monkeypatch.setattr(shop_assembly_module, "require_role", _role_gate)
 
-    with pytest.raises(_GateReached):
-        ShopAssemblyMutations().assign_openings(
-            FakeInfo(),
-            AssignOpeningsInput(opening_ids=[_id()], assigned_to_user_id="somebody_else", assigned_to="Other"),
-        )
+def test_an_open_operation_is_reachable_without_a_session(monkeypatch):
+    """`enrollRelayInstall` is the whole allowlist. The relay calls it during setup, before it holds
+    any credential, so there is no Clerk session to gate on - it is authenticated by the single-use
+    enrollment token instead. Reaching the body is the assertion."""
+    assert set(OPEN_OPERATIONS) == {"enrollRelayInstall"}, (
+        "the open-operations allowlist changed; the new entry needs its own reachability test and a "
+        "reason that survives review"
+    )
+    _explodes(monkeypatch, relay_module)
+
+    result = _execute(
+        'mutation { enrollRelayInstall(input: {enrollmentToken: "t", hostname: "h", secret: "s"}) { ok } }'
+    )
+
+    assert any("SessionLocal" in m for m in _messages(result)), (
+        f"enrollRelayInstall did not reach its body: {_messages(result)}. The relay cannot enrol if "
+        f"this is gated on a Clerk session it does not have."
+    )
+
+
+def test_an_admin_field_refuses_a_signed_in_non_admin(monkeypatch, signed_in):
+    """`relayInstalls` lists relay credentials. A valid session is not enough for it, and the caller
+    must not get as far as the query."""
+    _explodes(monkeypatch, relay_module)
+
+    result = _execute("{ relayInstalls { id } }", token=signed_in)
+
+    assert _codes(result) == {"FORBIDDEN"}
+    assert _messages(result) == {f"{ADMIN_ROLE} role required"}
+    assert not any("SessionLocal" in m for m in _messages(result))
+
+
+def test_an_admin_field_admits_an_admin(monkeypatch, signed_in):
+    """The other half of the same check - a gate that refuses everyone is not a gate either."""
+    monkeypatch.setattr(user_repository, "get_user_roles", lambda user_id: [ADMIN_ROLE])
+    _explodes(monkeypatch, relay_module)
+
+    result = _execute("{ relayInstalls { id } }", token=signed_in)
+
+    assert any("SessionLocal" in m for m in _messages(result)), (
+        f"an Admin/Manager was refused relayInstalls: {_messages(result)}"
+    )
+
+
+def test_a_role_gated_field_refuses_someone_without_that_role(monkeypatch, signed_in):
+    """`shopAssemblyMembers` is Shop Assembly Manager-gated (#330), not admin - the one requirement in
+    the table that is neither SIGNED_IN nor Admin/Manager, so it is the one that proves the table can
+    express an arbitrary role."""
+    assert ROOT_FIELD_POLICY["shopAssemblyMembers"] == SHOP_ASSEMBLY_MANAGER_ROLE
+    # Roster-backed, so the roles come out of list_users rather than a per-user lookup.
+    monkeypatch.setattr(user_repository, "list_users", lambda: [{"id": "u_caller", "roles": ["Shop Assembly User"]}])
+    _explodes(monkeypatch, shop_assembly_module, "user_repository")
+
+    result = _execute("{ shopAssemblyMembers { id } }", token=signed_in)
+
+    assert _codes(result) == {"FORBIDDEN"}
+    assert _messages(result) == {f"{SHOP_ASSEMBLY_MANAGER_ROLE} role required"}
+
+
+def test_a_root_field_with_no_policy_entry_is_refused():
+    """Deny by default, which is the entire difference between #415's shape and this one. An operation
+    nobody wrote a policy for fails closed - the alternative default is what let `updateUserRoles`
+    ship reachable with no session at all."""
+    with pytest.raises(AppError) as excinfo:
+        enforce_root_field("someFieldNobodyGatedYet", {"request": _FakeRequest("tok")})
+
+    assert excinfo.value.code == "FORBIDDEN"
+    assert "someFieldNobodyGatedYet" in str(excinfo.value)
+
+
+# --- per-field pins ------------------------------------------------------------------------------
+#
+# The #415 shape had one pin per resolver, each asserting that body called its gate. These are the
+# replacement, and they are strictly stronger: they exercise the decision the caller actually gets
+# rather than the presence of a line, and they still fail by field name, which is what made the old
+# ones useful in review. Driven off ROOT_FIELD_POLICY so a field added to the table is covered the
+# moment it is added, and one removed stops being asserted about - neither needs a list here.
+
+_ROLE_GATED = sorted(f for f, requirement in ROOT_FIELD_POLICY.items() if requirement != SIGNED_IN)
+
+
+@pytest.mark.parametrize("field", sorted(ROOT_FIELD_POLICY), ids=sorted(ROOT_FIELD_POLICY))
+def test_every_gated_field_refuses_an_anonymous_caller(field):
+    """No session, no field. This is the property #415 established and #423 had to preserve while
+    moving where it is decided - a refactor that dropped a policy entry, or made SIGNED_IN mean
+    "anyone", fails here on the field it broke."""
+    with pytest.raises(AppError) as excinfo:
+        enforce_root_field(field, {"request": _FakeRequest()})
+
+    assert excinfo.value.code == "UNAUTHENTICATED", f"{field} let an anonymous caller through with {excinfo.value.code}"
+
+
+@pytest.mark.parametrize("field", _ROLE_GATED, ids=_ROLE_GATED)
+def test_every_role_gated_field_refuses_a_caller_without_the_role(field, monkeypatch):
+    """A signed-in session is not a role. Everything in this list guards something a plain warehouse
+    or assembly account has no business reaching - relay credentials, the Clerk roster, warehouse
+    and vendor writes, the GP job and buyer writes, and `updateUserRoles`, which grants the role the
+    rest of them are gated on."""
+    monkeypatch.setattr(auth, "verify_clerk_token", lambda token: {"sub": "u_caller"})
+    monkeypatch.setattr(user_repository, "get_user_roles", lambda user_id: ["Warehouse Staff"])
+    monkeypatch.setattr(user_repository, "list_users", lambda: [{"id": "u_caller", "roles": ["Warehouse Staff"]}])
+
+    with pytest.raises(AppError) as excinfo:
+        enforce_root_field(field, {"request": _FakeRequest("tok")})
+
+    assert excinfo.value.code == "FORBIDDEN", f"{field} admitted a caller holding only Warehouse Staff"
+    assert excinfo.value.message == f"{ROOT_FIELD_POLICY[field]} role required"
+
+
+@pytest.mark.parametrize("field", _ROLE_GATED, ids=_ROLE_GATED)
+def test_every_role_gated_field_admits_a_caller_holding_the_role(field, monkeypatch):
+    """The other direction, per field. A gate nobody can pass is the failure mode a deny-by-default
+    refactor invites: a typo in a role name, or a policy entry pointing at a role Clerk never grants,
+    locks the field for everyone and looks like working security until someone reports it."""
+    role = ROOT_FIELD_POLICY[field]
+    monkeypatch.setattr(auth, "verify_clerk_token", lambda token: {"sub": "u_caller"})
+    monkeypatch.setattr(user_repository, "get_user_roles", lambda user_id: [role])
+    monkeypatch.setattr(user_repository, "list_users", lambda: [{"id": "u_caller", "roles": [role]}])
+
+    enforce_root_field(field, {"request": _FakeRequest("tok")})
+
+
+@pytest.mark.parametrize("field", sorted(OPEN_OPERATIONS), ids=sorted(OPEN_OPERATIONS))
+def test_every_open_operation_is_reachable_without_a_session(field):
+    """The allowlist has to actually allow. `enrollRelayInstall` is the relay's only way in during
+    setup, before it holds any credential - gating it strands every new install."""
+    enforce_root_field(field, {"request": _FakeRequest()})
+
+
+def test_nested_fields_are_not_re_checked(monkeypatch, signed_in):
+    """Only root fields are gated (`info.path.prev is None`). A nested field is reachable only through
+    a root field that already passed, and checking each one would put a Clerk decision on every node
+    of every response - the reason the per-resolver shape was expensive in the first place."""
+    verifications = []
+    monkeypatch.setattr(auth, "verify_clerk_token", lambda token: (verifications.append(token), {"sub": "u_caller"})[1])
+    _explodes(monkeypatch, warehouse_module)
+
+    # `warehouses` selects several sub-fields; only the root one may be gated.
+    _execute("{ warehouses { id name code isActive } }", token=signed_in)
+
+    assert len(verifications) == 1
+
+
+def test_the_jwt_is_verified_once_for_a_query_hitting_several_root_fields(monkeypatch, signed_in):
+    """#415 verified per gate, so a page firing one query over five root fields paid five times. The
+    identity is a property of the request, so it is resolved once and memoised on the request's own
+    context."""
+    verifications = []
+    monkeypatch.setattr(auth, "verify_clerk_token", lambda token: (verifications.append(token), {"sub": "u_caller"})[1])
+    _explodes(monkeypatch, warehouse_module)
+    _explodes(monkeypatch, shop_assembly_module, "SessionLocal")
+
+    _execute(
+        "{ warehouses { id } pullRequests { id } vendors { id } assembleList { id } }",
+        token=signed_in,
+    )
+
+    assert len(verifications) == 1, f"the token was verified {len(verifications)} times for one request"
+
+
+def test_the_role_lookup_is_not_repeated_across_root_fields(monkeypatch, signed_in):
+    """Same argument, and the expensive half: roles live in Clerk publicMetadata rather than the
+    session token, so each `require_admin` was its own Clerk Backend API round trip. The admin
+    dashboard fires several admin queries; they now share one."""
+    role_lookups = []
+    monkeypatch.setattr(
+        user_repository, "get_user_roles", lambda user_id: (role_lookups.append(user_id), [ADMIN_ROLE])[1]
+    )
+    _explodes(monkeypatch, relay_module)
+
+    _execute("{ relayInstalls { id } relayAdoptWindow { label } }", token=signed_in)
+
+    assert len(role_lookups) == 1, f"roles were fetched {len(role_lookups)} times for one request"
+
+
+def test_two_requests_do_not_share_an_identity(monkeypatch):
+    """The memo lives on the context dict `get_context` builds per request, so it cannot outlive one.
+    A process-global cache would be the same optimisation and a much worse bug: one user's roles
+    served to another."""
+    monkeypatch.setattr(auth, "verify_clerk_token", lambda token: {"sub": f"u_{token}"})
+    monkeypatch.setattr(user_repository, "get_user_roles", lambda user_id: [ADMIN_ROLE] if user_id == "u_a" else [])
+    _explodes(monkeypatch, relay_module)
+
+    admitted = _execute("{ relayInstalls { id } }", token="a")
+    refused = _execute("{ relayInstalls { id } }", token="b")
+
+    assert any("SessionLocal" in m for m in _messages(admitted))
+    assert _codes(refused) == {"FORBIDDEN"}
+
+
+def test_admin_stats_authorizes_and_answers_with_one_clerk_call(monkeypatch, signed_in):
+    """The double round trip #423 called out. `adminStats` counts Clerk users, so it calls
+    `list_users` - which returns roles per user, the caller's included - and then paid for a separate
+    `get_user_roles` to authorize the very same caller. The gate now takes the roles out of that one
+    roster call (ROSTER_BACKED in app/auth_policy.py)."""
+    rosters = []
+    role_lookups = []
+    monkeypatch.setattr(
+        user_repository,
+        "list_users",
+        lambda: (rosters.append(1), [{"id": "u_caller", "roles": [ADMIN_ROLE]}])[1],
+    )
+    monkeypatch.setattr(user_repository, "get_user_roles", lambda user_id: (role_lookups.append(user_id), [])[1])
+    from app.schemas import dashboard as dashboard_module
+
+    _explodes(monkeypatch, dashboard_module)
+
+    result = _execute("{ adminStats { userCount } }", token=signed_in)
+
+    assert any("SessionLocal" in m for m in _messages(result)), (
+        f"adminStats was refused for an Admin/Manager: {_messages(result)}"
+    )
+    assert len(rosters) == 1, f"the Clerk roster was fetched {len(rosters)} times"
+    assert role_lookups == [], "adminStats still pays a separate per-user role lookup on top of the roster"
+
+
+def test_the_roster_is_not_fetched_for_a_field_that_does_not_need_it(monkeypatch, signed_in):
+    """The roster is the cheaper answer only where the body wanted it anyway. Every other admin field
+    stays on the single-user lookup rather than pulling every Clerk account to authorize one."""
+    rosters = []
+    monkeypatch.setattr(user_repository, "list_users", lambda: (rosters.append(1), [])[1])
+    monkeypatch.setattr(user_repository, "get_user_roles", lambda user_id: [ADMIN_ROLE])
+    _explodes(monkeypatch, relay_module)
+
+    _execute("{ relayInstalls { id } }", token=signed_in)
+
+    assert rosters == []
+
+
+def test_a_signed_in_field_costs_no_role_lookup(monkeypatch, signed_in):
+    """SIGNED_IN means identity only. Reading roles for it would put a Clerk round trip on every
+    warehouse and assembly screen in the app to learn something the gate does not use."""
+    assert ROOT_FIELD_POLICY["warehouses"] == SIGNED_IN
+    role_lookups = []
+    monkeypatch.setattr(user_repository, "get_user_roles", lambda user_id: (role_lookups.append(user_id), [])[1])
+    _explodes(monkeypatch, warehouse_module)
+
+    _execute("{ warehouses { id } }", token=signed_in)
+
+    assert role_lookups == []
+
+
+def test_the_user_management_page_reads_the_roster_it_was_authorized_from(monkeypatch, signed_in):
+    """`users` is the other roster-backed field: an admin-only read whose answer IS the roster the
+    gate checked the caller against."""
+    caller = {
+        "id": "u_caller",
+        "first_name": "A",
+        "last_name": "B",
+        "email": "a@b.c",
+        "roles": [ADMIN_ROLE],
+        "gp_buyer_id": None,
+        "image_url": "",
+    }
+    rosters = []
+    monkeypatch.setattr(user_repository, "list_users", lambda: (rosters.append(1), [caller])[1])
+    monkeypatch.setattr(user_repository, "get_user_roles", lambda user_id: pytest.fail("roster should answer this"))
+
+    result = _execute("{ users { id email } }", token=signed_in)
+
+    assert result.errors is None, f"users failed: {_messages(result)}"
+    assert result.data == {"users": [{"id": "u_caller", "email": "a@b.c"}]}
+    assert len(rosters) == 1

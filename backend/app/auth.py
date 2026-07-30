@@ -1,17 +1,32 @@
-"""Clerk authentication for GraphQL resolvers.
+"""Clerk authentication primitives: verify a token, resolve who the caller is, cache both per request.
 
-The backend has no global auth middleware; verification is opt-in per resolver via
-``require_admin(info)``. The Strawberry ``get_context`` getter only stashes the request,
-so ungated queries pay no JWT/JWKS/Clerk-API cost. Roles live in Clerk publicMetadata
-(not in the default session token), so we verify the token for identity (``sub``) and
-then look up roles through the Clerk Backend API.
+Roles live in Clerk publicMetadata rather than in the session token, so identity (the JWT's ``sub``)
+and authorization (roles) are two different lookups - the second one a Clerk Backend API call.
 
-Opt-in means a resolver that forgets to ask is silently public, which is how every resolver in
-``app/schemas/user.py`` - ``updateUserRoles`` among them - shipped reachable with no session at all
-(#415). Since that sweep the opt-in is enforced from outside: ``tests/test_resolver_gate_completeness``
-walks every ``@strawberry.field`` / ``@strawberry.mutation`` under ``app/schemas/`` and fails on any
-that calls none of the gates below, so leaving one open is now an explicit entry on that test's
-exemption list rather than an omission nobody notices.
+**This module no longer decides who may call what.** Until #423 every GraphQL resolver opened with
+its own ``require_user(info)`` / ``require_admin(info)`` line, which made "ungated" the silent
+default: a resolver that forgot the line still worked, it just also worked for anonymous callers.
+That is how all four resolvers in ``app/schemas/user.py``, ``updateUserRoles`` included, shipped
+reachable with no session at all (#415). The decision now lives in one table,
+``app/auth_policy.py``, and is enforced from the schema extension in main.py before any resolver
+runs - so an operation nobody wrote a policy for is REFUSED rather than public.
+
+What is left here is the machinery that table drives, plus the two things a resolver body still
+legitimately does for itself:
+
+  - ``current_user(info)`` - read the identity the extension already verified. A body needs it to
+    stamp the acting user on an audit row (#427) or to scope a read to the caller (#428). It is a
+    dict lookup, not a second verification.
+  - ``require_role(info, role)`` - a CONDITIONAL role check inside a body, for the one requirement
+    that is not a property of the field: ``assignOpenings`` lets anyone self-assign but only a Shop
+    Assembly Manager assign to somebody else (#330).
+
+``require_admin_request`` is separate again: the plain FastAPI routes in main.py have no Strawberry
+info to unwrap and no extension running for them, so they carry their own gate.
+
+Everything is memoised on the Strawberry context dict, which ``get_context`` builds fresh per
+request. A query hitting eight root fields verifies its JWT once and looks up roles at most once,
+where #415's shape paid for both per field.
 """
 
 import time
@@ -104,10 +119,15 @@ def verify_clerk_token(token: str) -> dict:
 
 
 async def get_context(request: Request) -> dict:
-    """Strawberry context_getter: stash the request so resolvers can verify on demand.
+    """Strawberry context_getter: stash the request, and give this request somewhere to memoise.
 
-    The request must be type-annotated; strawberry wraps this as a FastAPI dependency, so an
-    unannotated parameter would be treated as a query parameter and break every request.
+    The dict returned here is the whole per-request store the caches below use. Strawberry wraps this
+    as a FastAPI dependency, so it runs once per HTTP request and returns a NEW dict every time -
+    which is the reason one caller's verified identity or roles can never be served to another. A
+    module-level cache keyed by anything would not have that property.
+
+    The request must be type-annotated; an unannotated parameter would be treated by FastAPI as a
+    query parameter and break every request.
     """
     return {"request": request}
 
@@ -122,19 +142,84 @@ def _bearer_token(request) -> str | None:
     return value.strip()
 
 
-def require_user(info) -> dict:
-    """Enforce that the caller is an authenticated UC Nexus user (any role). Returns {user_id}.
-    No Clerk Backend API role lookup, so it's cheaper than require_admin."""
-    request = info.context["request"]
-    token = _bearer_token(request)
-    if not token:
-        raise AuthError("Authentication required")
+# Keys under which the per-request memos live on the context dict from get_context. Underscored so
+# they read as internal beside the "request" key resolvers do touch.
+_IDENTITY_KEY = "_auth_user_id"
+_ROLES_KEY = "_auth_roles"
+_ROSTER_KEY = "_auth_user_roster"
 
-    claims = verify_clerk_token(token)
-    user_id = claims.get("sub")
-    if not user_id:
-        raise AuthError("Authentication token has no subject")
-    return {"user_id": user_id}
+
+def authenticated_user_id(context) -> str:
+    """The caller's Clerk user id, verifying the request's JWT the first time and reusing it after.
+
+    Both outcomes are memoised, the refusal as well as the identity. A query naming eight root fields
+    resolves eight times through the extension, and an expired token should cost one JWKS/verify
+    round of work for the whole request rather than eight - the failure is a property of the request,
+    not of the field that happened to ask.
+    """
+    cached = context.get(_IDENTITY_KEY)
+    if isinstance(cached, AppError):
+        raise cached
+    if cached is not None:
+        return cached
+
+    try:
+        token = _bearer_token(context["request"])
+        if not token:
+            raise AuthError("Authentication required")
+        claims = verify_clerk_token(token)
+        user_id = claims.get("sub")
+        if not user_id:
+            raise AuthError("Authentication token has no subject")
+    except AppError as e:
+        context[_IDENTITY_KEY] = e
+        raise
+
+    context[_IDENTITY_KEY] = user_id
+    return user_id
+
+
+def caller_roles(context) -> list[str]:
+    """The caller's Clerk roles, looked up once per request.
+
+    Roles are in publicMetadata, not in the session token, so this is a Clerk Backend API call. Under
+    #415 every `require_admin(info)` made its own, meaning the admin landing page paid one per admin
+    query it fired; now the whole request shares this one.
+    """
+    roles = context.get(_ROLES_KEY)
+    if roles is None:
+        roles = context[_ROLES_KEY] = user_repository.get_user_roles(authenticated_user_id(context))
+    return roles
+
+
+def user_roster(context) -> list[dict]:
+    """Every Clerk user, once per request - the roster `users`, `adminStats` and `shopAssemblyMembers`
+    each need in full.
+
+    Loading it also fills the roles memo, because the roster carries roles per user and the caller is
+    one of them. That is what removes `adminStats`' second Clerk round trip: the gate's role lookup
+    and the resolver's own `list_users()` collapse into this single call (see ROSTER_BACKED in
+    app/auth_policy.py).
+    """
+    roster = context.get(_ROSTER_KEY)
+    if roster is None:
+        roster = context[_ROSTER_KEY] = user_repository.list_users()
+    return roster
+
+
+def current_user(info) -> dict:
+    """The authenticated caller, as {user_id}, for a resolver body that needs to know who asked.
+
+    This does NOT gate anything - by the time a body runs, `enforce_root_field` has already refused
+    everyone it was going to (app/auth_policy.py). It is the read of that verified identity, so the
+    bodies that stamp an actor on an audit row (#427) or scope a query to the caller's own buyer
+    assignment (#428) keep working without re-verifying the token.
+
+    It still raises rather than returning None when there is no identity, so calling it from an
+    operation on the OPEN_OPERATIONS allowlist - where no gate ran - fails loudly instead of
+    attributing the action to nobody.
+    """
+    return {"user_id": authenticated_user_id(info.context)}
 
 
 def resolve_display_name(user_id: str) -> str:
@@ -166,9 +251,14 @@ def invalidate_display_name(user_id: str) -> None:
 
 def require_admin_request(request) -> dict:
     """Enforce Admin/Manager on a bare FastAPI Request, for the plain HTTP routes in main.py that have
-    no Strawberry `info` to unwrap. Same verification as require_admin - identity from the Clerk JWT,
-    roles from the Clerk Backend API - so a route and a resolver cannot drift apart on what "admin"
-    means. Returns {user_id, roles}."""
+    no Strawberry `info` to unwrap and no schema extension running for them. Same two lookups the
+    GraphQL path makes - identity from the Clerk JWT, roles from the Clerk Backend API - so a route
+    and a root field cannot drift apart on what "admin" means. Returns {user_id, roles}.
+
+    Deliberately un-memoised: a plain route handles one request and makes one check, so there is no
+    second call to save, and taking the per-request store would mean inventing one for a Request that
+    never goes through `get_context`. `/testing/clerk-sign-in` and `/admin/reset-data` depend on this
+    path staying exactly as it was (#422)."""
     token = _bearer_token(request)
     if not token:
         raise AuthError("Authentication required")
@@ -184,26 +274,19 @@ def require_admin_request(request) -> dict:
     return {"user_id": user_id, "roles": roles}
 
 
-def require_admin(info) -> dict:
-    """Enforce that the caller holds the Admin/Manager role. Returns {user_id, roles}."""
-    return require_admin_request(info.context["request"])
-
-
 def require_role(info, role: str) -> dict:
-    """Enforce that the caller holds a specific role (looked up via the Clerk Backend API, like
-    require_admin). Returns {user_id, roles}. Use for role-gated resolvers other than Admin/Manager,
-    e.g. the shop-assembly manager assignment tools (#330)."""
-    request = info.context["request"]
-    token = _bearer_token(request)
-    if not token:
-        raise AuthError("Authentication required")
+    """Enforce a role from INSIDE a resolver body. Returns {user_id, roles}.
 
-    claims = verify_clerk_token(token)
-    user_id = claims.get("sub")
-    if not user_id:
-        raise AuthError("Authentication token has no subject")
+    Field-level role requirements belong in ROOT_FIELD_POLICY, not here - the extension applies them
+    before the body runs. This is for the requirement that is not a property of the field:
+    `assignOpenings` lets any signed-in user claim work for themselves and only a Shop Assembly
+    Manager hand it to somebody else (#330), so the check depends on the arguments and can only be
+    made once the body has them.
 
-    roles = user_repository.get_user_roles(user_id)
+    Reads the per-request role memo, so a body-level check on a field whose policy already resolved
+    roles adds no Clerk call.
+    """
+    roles = caller_roles(info.context)
     if role not in roles:
         raise ForbiddenError(f"{role} role required")
-    return {"user_id": user_id, "roles": roles}
+    return {"user_id": authenticated_user_id(info.context), "roles": roles}

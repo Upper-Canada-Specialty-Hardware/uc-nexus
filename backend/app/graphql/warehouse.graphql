@@ -549,7 +549,7 @@ type Query {
 type Mutation {
   createReceive(input: CreateReceiveInput!): ReceiveRecord!
   # Issue #427: the actor on every audit and history row is the Clerk-authenticated caller
-  # (require_user -> resolve_display_name), never an argument. The startedBy / enteredBy / pickedBy /
+  # (current_user -> resolve_display_name), never an argument. The startedBy / enteredBy / pickedBy /
   # fetchedBy / completedBy arguments below are accepted and IGNORED, and are nullable so they can
   # carry @deprecated; they exist only so a frontend from the previous deploy still validates, and
   # are dropped once none reference them.
