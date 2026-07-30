@@ -15,6 +15,26 @@ import os
 import pytest
 
 
+@pytest.fixture
+def clean_channel_states():
+    """Empty channel._STATES around a test. It is module-level and keyed by backend URL (#414), so a
+    test that marks a channel connected would otherwise leak that row into every later
+    channel_state_snapshot() assertion.
+
+    Imported inside the fixture, not at module scope: channel pulls in pyodbc and websockets, and a
+    conftest-level import would make the WHOLE relay suite fail to collect on a runner missing either,
+    for the sake of a fixture five tests use."""
+    from ucnexus_relay import channel
+
+    saved = dict(channel._STATES)
+    channel._STATES.clear()
+    try:
+        yield channel._STATES
+    finally:
+        channel._STATES.clear()
+        channel._STATES.update(saved)
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _never_hard_exit_the_test_runner():
     calls = []

@@ -6,7 +6,7 @@ import uuid
 
 import strawberry
 
-from app.auth import require_admin
+from app.auth import require_admin, require_user
 from app.database import SessionLocal
 from app.errors import (
     ConflictError,
@@ -47,7 +47,10 @@ async def _adopt_existing(job_number: str) -> Project:
 @strawberry.type
 class ProjectQueries:
     @strawberry.field
-    def projects(self) -> list[Project]:
+    def projects(self, info: strawberry.Info) -> list[Project]:
+        """The project picker every module reads, so require_user rather than the admin gate on
+        `admin_projects` below - same rows, fewer fields."""
+        require_user(info)
         with SessionLocal() as session:
             rows = project_repository.list_projects_with_opening_counts(session)
             return [project_to_type(p, include_openings=False, opening_count=count) for p, count in rows]
@@ -61,7 +64,8 @@ class ProjectQueries:
             return [project_to_type(p, include_openings=False, opening_count=count) for p, count in rows]
 
     @strawberry.field
-    def project_by_schedule_id(self, project_id: str) -> Project | None:
+    def project_by_schedule_id(self, info: strawberry.Info, project_id: str) -> Project | None:
+        require_user(info)
         with SessionLocal() as session:
             p = project_repository.get_project_by_schedule_id(session, project_id)
             if p is None:
@@ -69,9 +73,10 @@ class ProjectQueries:
             return project_to_type(p)
 
     @strawberry.field
-    def project_ship_to(self, project_id: strawberry.ID) -> ProjectShipTo | None:
+    def project_ship_to(self, info: strawberry.Info, project_id: strawberry.ID) -> ProjectShipTo | None:
         """The job-site address block for a project, by its UUID - the "deliver to site" ship-to option
         on the generated PO document (issue #230). A lean projection, kept off the PO list query."""
+        require_user(info)
         with SessionLocal() as session:
             p = project_repository.get_project(session, uuid.UUID(str(project_id)))
             if p is None:

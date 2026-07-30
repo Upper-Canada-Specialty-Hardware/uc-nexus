@@ -5,7 +5,7 @@ import uuid
 
 import strawberry
 
-from app.auth import require_user, resolve_display_name
+from app.auth import require_admin, require_user, resolve_display_name
 from app.database import SessionLocal
 from app.errors import RelayUnavailableError
 from app.repositories import warehouse as warehouse_repository
@@ -160,13 +160,16 @@ def _persist_create_receive(*, key, po_id, received_by, line_items_data, warehou
 @strawberry.type
 class WarehouseQueries:
     @strawberry.field
-    def po_receiving_details(self, po_id: strawberry.ID) -> PurchaseOrder:
+    def po_receiving_details(self, info: strawberry.Info, po_id: strawberry.ID) -> PurchaseOrder:
+        require_user(info)
         with SessionLocal() as session:
             po, receive_records = warehouse_repository.get_po_receiving_details(session, uuid.UUID(str(po_id)))
             return po_to_type(po, receive_records)
 
     @strawberry.field
-    def project_inventory_availability(self, project_id: strawberry.ID) -> list[InventoryAvailability]:
+    def project_inventory_availability(
+        self, info: strawberry.Info, project_id: strawberry.ID
+    ) -> list[InventoryAvailability]:
         """What each product in a project can still be claimed for (#342):
         `available = on_hand - deficient - reserved`.
 
@@ -175,6 +178,7 @@ class WarehouseQueries:
         finalize. Deliberately distinct from `inventoryHierarchy`'s availability, which is on-hand
         minus deficient: that answers "what is physically unspoken-for in the building", this
         answers "what may I claim". Two grouped scalar aggregates, no per-row work."""
+        require_user(info)
         with SessionLocal() as session:
             rows = warehouse_repository.get_project_availability(session, uuid.UUID(str(project_id)))
             return [
@@ -191,8 +195,12 @@ class WarehouseQueries:
 
     @strawberry.field
     def inventory_hierarchy(
-        self, project_id: strawberry.ID | None = None, warehouse_id: strawberry.ID | None = None
+        self,
+        info: strawberry.Info,
+        project_id: strawberry.ID | None = None,
+        warehouse_id: strawberry.ID | None = None,
     ) -> list[InventoryHierarchyNode]:
+        require_user(info)
         with SessionLocal() as session:
             hierarchy = warehouse_repository.get_inventory_hierarchy(
                 session,
@@ -221,8 +229,13 @@ class WarehouseQueries:
 
     @strawberry.field
     def inventory_items(
-        self, project_id: strawberry.ID | None = None, category: str = "", product_code: str = ""
+        self,
+        info: strawberry.Info,
+        project_id: strawberry.ID | None = None,
+        category: str = "",
+        product_code: str = "",
     ) -> list[InventoryItemDetail]:
+        require_user(info)
         with SessionLocal() as session:
             items = warehouse_repository.get_inventory_items(
                 session, uuid.UUID(str(project_id)) if project_id else None, category, product_code
@@ -238,7 +251,10 @@ class WarehouseQueries:
             ]
 
     @strawberry.field
-    def unlocated_inventory(self, project_id: strawberry.ID | None = None) -> list[InventoryItemDetail]:
+    def unlocated_inventory(
+        self, info: strawberry.Info, project_id: strawberry.ID | None = None
+    ) -> list[InventoryItemDetail]:
+        require_user(info)
         with SessionLocal() as session:
             items = warehouse_repository.get_unlocated_inventory(
                 session, uuid.UUID(str(project_id)) if project_id else None
@@ -254,7 +270,8 @@ class WarehouseQueries:
             ]
 
     @strawberry.field
-    def recent_receive_records(self, limit: int = 10) -> list[RecentReceiveRecord]:
+    def recent_receive_records(self, info: strawberry.Info, limit: int = 10) -> list[RecentReceiveRecord]:
+        require_user(info)
         with SessionLocal() as session:
             rows = warehouse_repository.get_recent_receive_records(session, limit)
             return [
@@ -267,7 +284,8 @@ class WarehouseQueries:
             ]
 
     @strawberry.field
-    def opening_items(self, project_id: strawberry.ID | None = None) -> list[OpeningItem]:
+    def opening_items(self, info: strawberry.Info, project_id: strawberry.ID | None = None) -> list[OpeningItem]:
+        require_user(info)
         with SessionLocal() as session:
             pid = uuid.UUID(str(project_id)) if project_id else None
             ois = warehouse_repository.get_opening_items(session, pid)
@@ -294,9 +312,12 @@ class WarehouseQueries:
             ]
 
     @strawberry.field
-    def opening_leaf_status(self, project_id: strawberry.ID | None = None) -> list[OpeningLeafStatus]:
+    def opening_leaf_status(
+        self, info: strawberry.Info, project_id: strawberry.ID | None = None
+    ) -> list[OpeningLeafStatus]:
         """Per-opening door-leaf rollup (#313). project_id scopes to one project (shipping view);
         omit it for the global shop-assembly view (rows carry project identity to group by)."""
+        require_user(info)
         with SessionLocal() as session:
             pid = uuid.UUID(str(project_id)) if project_id else None
             rows = warehouse_repository.get_opening_leaf_status(session, pid)
@@ -312,7 +333,8 @@ class WarehouseQueries:
             ]
 
     @strawberry.field
-    def opening_item_details(self, id: strawberry.ID) -> OpeningItemDetail:
+    def opening_item_details(self, info: strawberry.Info, id: strawberry.ID) -> OpeningItemDetail:
+        require_user(info)
         with SessionLocal() as session:
             from app.repositories import shop_assembly_repository
 
@@ -332,10 +354,12 @@ class WarehouseQueries:
     @strawberry.field
     def pull_requests(
         self,
+        info: strawberry.Info,
         project_id: strawberry.ID | None = None,
         source: PullRequestSource | None = None,
         status: PullRequestStatus | None = None,
     ) -> list[PullRequest]:
+        require_user(info)
         with SessionLocal() as session:
             prs = warehouse_repository.get_pull_requests(
                 session, uuid.UUID(str(project_id)) if project_id else None, source, status
@@ -358,7 +382,8 @@ class WarehouseQueries:
             ]
 
     @strawberry.field
-    def pull_request_details(self, id: strawberry.ID) -> PullRequest:
+    def pull_request_details(self, info: strawberry.Info, id: strawberry.ID) -> PullRequest:
+        require_user(info)
         with SessionLocal() as session:
             pr = warehouse_repository.get_pull_request_details(session, uuid.UUID(str(id)))
             staging = warehouse_repository.get_pull_staging_summaries(session, [pr.id])
@@ -406,36 +431,33 @@ class WarehouseQueries:
             return [shop_assembly_opening_to_type(o) for o in openings]
 
     @strawberry.field
-    def expected_deliveries(self, project_id: strawberry.ID | None = None) -> list[PurchaseOrder]:
-        with SessionLocal() as session:
-            pos = warehouse_repository.get_expected_deliveries(
-                session, uuid.UUID(str(project_id)) if project_id else None
-            )
-            return [po_to_type(po) for po in pos]
-
-    @strawberry.field
-    def back_ordered_items(self, project_id: strawberry.ID | None = None) -> list[BackOrderedItem]:
+    def back_ordered_items(
+        self, info: strawberry.Info, project_id: strawberry.ID | None = None
+    ) -> list[BackOrderedItem]:
+        require_user(info)
         with SessionLocal() as session:
             items = warehouse_repository.get_back_ordered_items(
                 session, uuid.UUID(str(project_id)) if project_id else None
             )
             return [
                 BackOrderedItem(
+                    po_line_item_id=strawberry.ID(str(item["po_line_item"].id)),
                     hardware_category=item["po_line_item"].hardware_category,
                     product_code=item["po_line_item"].product_code,
                     ordered_quantity=item["po_line_item"].ordered_quantity,
                     received_quantity=item["po_line_item"].received_quantity,
                     outstanding_quantity=item["outstanding_quantity"],
-                    unit_cost=float(item["po_line_item"].unit_cost),
                     po_number=item["po_number"],
                     vendor_name=item["vendor_name"],
                     expected_delivery_date=item["expected_delivery_date"],
+                    project_name=item["project_name"],
                 )
                 for item in items
             ]
 
     @strawberry.field
-    def warehouse_dashboard(self) -> WarehouseDashboard:
+    def warehouse_dashboard(self, info: strawberry.Info) -> WarehouseDashboard:
+        require_user(info)
         with SessionLocal() as session:
             d = warehouse_repository.get_warehouse_dashboard(session)
             return WarehouseDashboard(
@@ -450,7 +472,10 @@ class WarehouseQueries:
             )
 
     @strawberry.field
-    def project_progress_by_product(self, project_id: strawberry.ID) -> list[ProjectProgressByProduct]:
+    def project_progress_by_product(
+        self, info: strawberry.Info, project_id: strawberry.ID
+    ) -> list[ProjectProgressByProduct]:
+        require_user(info)
         with SessionLocal() as session:
             rows = warehouse_repository.get_project_progress_by_product(session, uuid.UUID(str(project_id)))
             return [
@@ -468,7 +493,10 @@ class WarehouseQueries:
             ]
 
     @strawberry.field
-    def inventory_by_vendor(self, project_id: strawberry.ID | None = None) -> list[VendorInventoryNode]:
+    def inventory_by_vendor(
+        self, info: strawberry.Info, project_id: strawberry.ID | None = None
+    ) -> list[VendorInventoryNode]:
+        require_user(info)
         with SessionLocal() as session:
             nodes = warehouse_repository.get_inventory_by_vendor(
                 session, uuid.UUID(str(project_id)) if project_id else None
@@ -494,11 +522,13 @@ class WarehouseQueries:
     @strawberry.field
     def location_contents(
         self,
+        info: strawberry.Info,
         aisle: str,
         row: str | None = None,
         bay: str | None = None,
         warehouse_id: strawberry.ID | None = None,
     ) -> LocationContents:
+        require_user(info)
         with SessionLocal() as session:
             data = warehouse_repository.get_location_contents(
                 session, aisle, row, bay, uuid.UUID(str(warehouse_id)) if warehouse_id else None
@@ -520,11 +550,13 @@ class WarehouseQueries:
     @strawberry.field
     def location_audit_history(
         self,
+        info: strawberry.Info,
         aisle: str,
         row: str | None = None,
         bay: str | None = None,
         limit: int = 10,
     ) -> list[AuditLogEntry]:
+        require_user(info)
         with SessionLocal() as session:
             entries = warehouse_repository.get_location_audit_history(session, aisle, row, bay, limit=limit)
             return [
@@ -542,7 +574,8 @@ class WarehouseQueries:
             ]
 
     @strawberry.field
-    def location_distinct_values(self) -> LocationDistinctValues:
+    def location_distinct_values(self, info: strawberry.Info) -> LocationDistinctValues:
+        require_user(info)
         with SessionLocal() as session:
             values = warehouse_repository.get_distinct_location_values(session)
             return LocationDistinctValues(
@@ -552,7 +585,10 @@ class WarehouseQueries:
             )
 
     @strawberry.field
-    def location_duplicates(self) -> list[LocationDuplicateGroup]:
+    def location_duplicates(self, info: strawberry.Info) -> list[LocationDuplicateGroup]:
+        """Admin-gated (#415): the admin Location Cleanup page is the only reader, and it is the
+        list `mergeLocations` acts on."""
+        require_admin(info)
         with SessionLocal() as session:
             groups = warehouse_repository.get_location_duplicates(session)
             return [
@@ -566,7 +602,10 @@ class WarehouseQueries:
             ]
 
     @strawberry.field
-    def location_utilization(self, warehouse_id: strawberry.ID | None = None) -> list[LocationUtilizationEntry]:
+    def location_utilization(
+        self, info: strawberry.Info, warehouse_id: strawberry.ID | None = None
+    ) -> list[LocationUtilizationEntry]:
+        require_user(info)
         with SessionLocal() as session:
             rows = warehouse_repository.get_location_utilization(
                 session, uuid.UUID(str(warehouse_id)) if warehouse_id else None
@@ -586,11 +625,13 @@ class WarehouseQueries:
     @strawberry.field
     def audit_log(
         self,
+        info: strawberry.Info,
         entity_id: strawberry.ID | None = None,
         entity_type: AuditEntityType | None = None,
         project_id: strawberry.ID | None = None,
         limit: int = 50,
     ) -> list[AuditLogEntry]:
+        require_user(info)
         with SessionLocal() as session:
             entries = warehouse_repository.get_audit_log(
                 session,
@@ -614,7 +655,10 @@ class WarehouseQueries:
             ]
 
     @strawberry.field
-    def warehouses(self, include_inactive: bool = True) -> list[Warehouse]:
+    def warehouses(self, info: strawberry.Info, include_inactive: bool = True) -> list[Warehouse]:
+        """require_user, not admin (#415): the receive, transfer and return dialogs all read this
+        list to populate a warehouse picker, so it is not admin-only even though its writes are."""
+        require_user(info)
         with SessionLocal() as session:
             return [
                 warehouse_to_type(w)
@@ -622,7 +666,8 @@ class WarehouseQueries:
             ]
 
     @strawberry.field
-    def warehouse(self, id: strawberry.ID) -> Warehouse | None:
+    def warehouse(self, info: strawberry.Info, id: strawberry.ID) -> Warehouse | None:
+        require_user(info)
         with SessionLocal() as session:
             w = warehouse_admin_repository.find_warehouse(session, uuid.UUID(str(id)))
             return warehouse_to_type(w) if w is not None else None
@@ -868,11 +913,14 @@ class WarehouseMutations:
             return pull_request_item_to_type(item)
 
     @strawberry.mutation
-    def complete_pull_request(self, id: strawberry.ID, completed_by: str | None = None) -> PullRequest:
+    def complete_pull_request(
+        self, info: strawberry.Info, id: strawberry.ID, completed_by: str | None = None
+    ) -> PullRequest:
         """Close the whole pull in one go. Since #343 this reads as "stage everything still
         outstanding and finish": any opening not yet confirmed individually is flipped to PULLED and
         stamped here. `completedBy` is optional and additive - it only names the actor on those
         stamps, so existing callers are unaffected."""
+        require_user(info)
         with SessionLocal() as session:
             pr = warehouse_repository.complete_pull_request(session, uuid.UUID(str(id)), completed_by=completed_by)
             session.commit()
@@ -954,8 +1002,9 @@ class WarehouseMutations:
     # Admin Corrections
     @strawberry.mutation
     def adjust_inventory_quantity(
-        self, inventory_location_id: strawberry.ID, adjustment: int, reason: str
+        self, info: strawberry.Info, inventory_location_id: strawberry.ID, adjustment: int, reason: str
     ) -> InventoryLocation:
+        require_user(info)
         with SessionLocal() as session:
             result = warehouse_repository.adjust_inventory_quantity(
                 session, uuid.UUID(str(inventory_location_id)), adjustment, reason
@@ -965,7 +1014,17 @@ class WarehouseMutations:
             return inventory_location_to_type(result)
 
     @strawberry.mutation
-    def override_inventory_quantity(self, input: OverrideInventoryQuantityInput) -> InventoryLocation:
+    def override_inventory_quantity(
+        self, info: strawberry.Info, input: OverrideInventoryQuantityInput
+    ) -> InventoryLocation:
+        """require_user, not admin. The Correction button on the warehouse Hardware Items tab is
+        rendered for everyone ("available to all users, not just admins", HardwareItemsTab.tsx), and it
+        opens `InventoryCorrectionModal`, which is what calls this. Admin-gating it would break the
+        warehouse's own count-correction workflow.
+
+        Gating it would also buy nothing while `adjustInventoryQuantity` next door stays open to any
+        signed-in user: the same end quantity is reachable by passing the delta instead."""
+        require_user(info)
         with SessionLocal() as session:
             result = warehouse_repository.override_inventory_quantity(
                 session,
@@ -984,11 +1043,13 @@ class WarehouseMutations:
     @strawberry.mutation
     def move_inventory_location(
         self,
+        info: strawberry.Info,
         inventory_location_id: strawberry.ID,
         new_aisle: str,
         new_row: str,
         new_bay: str,
     ) -> InventoryLocation:
+        require_user(info)
         with SessionLocal() as session:
             result = warehouse_repository.move_inventory_location(
                 session, uuid.UUID(str(inventory_location_id)), new_aisle, new_row, new_bay
@@ -998,7 +1059,10 @@ class WarehouseMutations:
             return inventory_location_to_type(result)
 
     @strawberry.mutation
-    def mark_inventory_unlocated(self, inventory_location_id: strawberry.ID) -> InventoryLocation:
+    def mark_inventory_unlocated(
+        self, info: strawberry.Info, inventory_location_id: strawberry.ID
+    ) -> InventoryLocation:
+        require_user(info)
         with SessionLocal() as session:
             result = warehouse_repository.mark_inventory_unlocated(session, uuid.UUID(str(inventory_location_id)))
             session.commit()
@@ -1008,11 +1072,13 @@ class WarehouseMutations:
     @strawberry.mutation
     def assign_inventory_location(
         self,
+        info: strawberry.Info,
         inventory_location_id: strawberry.ID,
         aisle: str,
         row: str,
         bay: str,
     ) -> InventoryLocation:
+        require_user(info)
         with SessionLocal() as session:
             result = warehouse_repository.assign_inventory_location(
                 session, uuid.UUID(str(inventory_location_id)), aisle, row, bay
@@ -1024,12 +1090,14 @@ class WarehouseMutations:
     @strawberry.mutation
     def move_opening_item_location(
         self,
+        info: strawberry.Info,
         opening_item_id: strawberry.ID,
         aisle: str,
         row: str,
         bay: str,
         warehouse_id: strawberry.ID | None = None,
     ) -> OpeningItem:
+        require_user(info)
         with SessionLocal() as session:
             result = warehouse_repository.move_opening_item_location(
                 session,
@@ -1044,7 +1112,8 @@ class WarehouseMutations:
             return opening_item_to_type(result)
 
     @strawberry.mutation
-    def mark_opening_item_unlocated(self, opening_item_id: strawberry.ID) -> OpeningItem:
+    def mark_opening_item_unlocated(self, info: strawberry.Info, opening_item_id: strawberry.ID) -> OpeningItem:
+        require_user(info)
         with SessionLocal() as session:
             result = warehouse_repository.mark_opening_item_unlocated(session, uuid.UUID(str(opening_item_id)))
             session.commit()
@@ -1054,11 +1123,13 @@ class WarehouseMutations:
     @strawberry.mutation
     def assign_opening_item_location(
         self,
+        info: strawberry.Info,
         opening_item_id: strawberry.ID,
         aisle: str,
         row: str,
         bay: str,
     ) -> OpeningItem:
+        require_user(info)
         with SessionLocal() as session:
             result = warehouse_repository.assign_opening_item_location(
                 session, uuid.UUID(str(opening_item_id)), aisle, row, bay
@@ -1070,6 +1141,7 @@ class WarehouseMutations:
     @strawberry.mutation
     def merge_locations(
         self,
+        info: strawberry.Info,
         from_aisle: str,
         from_row: str,
         from_bay: str,
@@ -1077,6 +1149,9 @@ class WarehouseMutations:
         to_row: str,
         to_bay: str,
     ) -> LocationMergeResult:
+        """Admin-gated (#415): rewrites the location of every inventory row, opening item and stock
+        item at the source location. It already stamps its audit rows "Admin/Manager"."""
+        require_admin(info)
         with SessionLocal() as session:
             counts = warehouse_repository.merge_locations(
                 session,
@@ -1097,7 +1172,8 @@ class WarehouseMutations:
 
     # Warehouses (admin)
     @strawberry.mutation
-    def create_warehouse(self, input: CreateWarehouseInput) -> Warehouse:
+    def create_warehouse(self, info: strawberry.Info, input: CreateWarehouseInput) -> Warehouse:
+        require_admin(info)
         with SessionLocal() as session:
             wh = warehouse_admin_repository.create_warehouse(
                 session,
@@ -1115,7 +1191,8 @@ class WarehouseMutations:
             return warehouse_to_type(wh)
 
     @strawberry.mutation
-    def update_warehouse(self, id: strawberry.ID, input: UpdateWarehouseInput) -> Warehouse:
+    def update_warehouse(self, info: strawberry.Info, id: strawberry.ID, input: UpdateWarehouseInput) -> Warehouse:
+        require_admin(info)
         with SessionLocal() as session:
             wh = warehouse_admin_repository.update_warehouse(
                 session,
@@ -1134,7 +1211,8 @@ class WarehouseMutations:
             return warehouse_to_type(wh)
 
     @strawberry.mutation
-    def delete_warehouse(self, id: strawberry.ID) -> bool:
+    def delete_warehouse(self, info: strawberry.Info, id: strawberry.ID) -> bool:
+        require_admin(info)
         with SessionLocal() as session:
             warehouse_admin_repository.delete_warehouse(session, uuid.UUID(str(id)))
             session.commit()

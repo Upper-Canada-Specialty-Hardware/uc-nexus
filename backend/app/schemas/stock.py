@@ -44,12 +44,14 @@ class StockQueries:
     @strawberry.field
     def stock_items(
         self,
+        info: strawberry.Info,
         product_code_contains: str | None = None,
         hardware_category: str | None = None,
         aisle: str | None = None,
         only_deficient: bool = False,
         warehouse_id: strawberry.ID | None = None,
     ) -> list[StockItem]:
+        require_user(info)
         with SessionLocal() as session:
             rows = stock_repository.get_stock_items(
                 session,
@@ -62,7 +64,8 @@ class StockQueries:
             return [stock_item_to_type(r) for r in rows]
 
     @strawberry.field
-    def stock_item(self, id: strawberry.ID) -> StockItem | None:
+    def stock_item(self, info: strawberry.Info, id: strawberry.ID) -> StockItem | None:
+        require_user(info)
         with SessionLocal() as session:
             try:
                 row = stock_repository.get_stock_item(session, uuid.UUID(str(id)))
@@ -73,9 +76,11 @@ class StockQueries:
     @strawberry.field
     def deficient_items(
         self,
+        info: strawberry.Info,
         project_id: strawberry.ID | None = None,
         source: DeficientItemSource | None = None,
     ) -> list[DeficientItemRow]:
+        require_user(info)
         with SessionLocal() as session:
             rows = stock_repository.get_deficient_items(
                 session,
@@ -87,10 +92,12 @@ class StockQueries:
     @strawberry.field
     def deficiency_reviews(
         self,
+        info: strawberry.Info,
         inventory_location_id: strawberry.ID | None = None,
         stock_item_id: strawberry.ID | None = None,
         project_id: strawberry.ID | None = None,
     ) -> list[DeficiencyReview]:
+        require_user(info)
         with SessionLocal() as session:
             rows = stock_repository.get_deficiency_reviews(
                 session,
@@ -101,7 +108,8 @@ class StockQueries:
             return [deficiency_review_to_type(r) for r in rows]
 
     @strawberry.field
-    def stock_matches_for_opening(self, opening_item_id: strawberry.ID) -> list[StockItem]:
+    def stock_matches_for_opening(self, info: strawberry.Info, opening_item_id: strawberry.ID) -> list[StockItem]:
+        require_user(info)
         with SessionLocal() as session:
             rows = stock_repository.get_stock_matches_for_opening(session, uuid.UUID(str(opening_item_id)))
             return [stock_item_to_type(r) for r in rows]
@@ -110,7 +118,8 @@ class StockQueries:
 @strawberry.type
 class StockMutations:
     @strawberry.mutation
-    def destock_inventory(self, input: DestockInventoryInput) -> StockItem:
+    def destock_inventory(self, info: strawberry.Info, input: DestockInventoryInput) -> StockItem:
+        require_user(info)
         with SessionLocal() as session:
             result = stock_repository.destock_inventory(
                 session,
@@ -128,7 +137,8 @@ class StockMutations:
             return stock_item_to_type(result)
 
     @strawberry.mutation
-    def transfer_inventory(self, input: TransferInventoryInput) -> TransferResult:
+    def transfer_inventory(self, info: strawberry.Info, input: TransferInventoryInput) -> TransferResult:
+        require_user(info)
         with SessionLocal() as session:
             result = stock_repository.transfer_inventory(
                 session,
@@ -149,7 +159,8 @@ class StockMutations:
             )
 
     @strawberry.mutation
-    def allocate_stock_to_project(self, input: AllocateStockToProjectInput) -> InventoryLocation:
+    def allocate_stock_to_project(self, info: strawberry.Info, input: AllocateStockToProjectInput) -> InventoryLocation:
+        require_user(info)
         with SessionLocal() as session:
             result = stock_repository.allocate_stock_to_project(
                 session,
@@ -168,7 +179,8 @@ class StockMutations:
             return inventory_location_to_type(result)
 
     @strawberry.mutation
-    def adjust_stock_quantity(self, input: AdjustStockQuantityInput) -> StockItem:
+    def adjust_stock_quantity(self, info: strawberry.Info, input: AdjustStockQuantityInput) -> StockItem:
+        require_user(info)
         with SessionLocal() as session:
             result = stock_repository.adjust_stock_quantity(
                 session,
@@ -182,7 +194,8 @@ class StockMutations:
             return stock_item_to_type(result)
 
     @strawberry.mutation
-    def move_stock_location(self, input: MoveStockLocationInput) -> StockItem:
+    def move_stock_location(self, info: strawberry.Info, input: MoveStockLocationInput) -> StockItem:
+        require_user(info)
         with SessionLocal() as session:
             result = stock_repository.move_stock_location(
                 session,
@@ -199,11 +212,13 @@ class StockMutations:
     @strawberry.mutation
     def assign_stock_item_location(
         self,
+        info: strawberry.Info,
         stock_item_id: strawberry.ID,
         aisle: str,
         row: str,
         bay: str,
     ) -> StockItem:
+        require_user(info)
         with SessionLocal() as session:
             result = stock_repository.assign_stock_item_location(
                 session,
@@ -218,7 +233,8 @@ class StockMutations:
             return stock_item_to_type(result)
 
     @strawberry.mutation
-    def mark_stock_item_unlocated(self, stock_item_id: strawberry.ID) -> StockItem:
+    def mark_stock_item_unlocated(self, info: strawberry.Info, stock_item_id: strawberry.ID) -> StockItem:
+        require_user(info)
         with SessionLocal() as session:
             result = stock_repository.mark_stock_item_unlocated(
                 session,
@@ -230,7 +246,8 @@ class StockMutations:
             return stock_item_to_type(result)
 
     @strawberry.mutation
-    def reclassify_stock_item(self, input: ReclassifyStockItemInput) -> ReclassifyStockResult:
+    def reclassify_stock_item(self, info: strawberry.Info, input: ReclassifyStockItemInput) -> ReclassifyStockResult:
+        require_user(info)
         with SessionLocal() as session:
             new_row, original = stock_repository.reclassify_stock_item(
                 session,

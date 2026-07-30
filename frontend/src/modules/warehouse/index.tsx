@@ -1,6 +1,5 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
 import WarehouseLanding from './WarehouseLanding';
-import DeliveriesView from './DeliveriesView';
 import InventoryView from './InventoryView';
 import LocationsTab from './LocationsTab';
 import ReceivingPage from './ReceivingPage';
@@ -20,8 +19,10 @@ export default function WarehouseModule() {
       <Route index element={<WarehouseLanding />} />
       <Route path="inventory" element={<InventoryView />} />
       <Route path="locations" element={<LocationsTab />} />
-      <Route path="deliveries" element={<DeliveriesView />} />
       <Route path="receiving" element={<ReceivingPage />} />
+      {/* Deliveries was its own page until its back-order grid moved onto Receiving; the redirect is
+          what keeps a bookmark or an old link working. */}
+      <Route path="deliveries" element={<Navigate to="/app/warehouse/receiving" replace />} />
       <Route path="put-away" element={<PutAwayTab />} />
       <Route path="pull-requests" element={<PullRequestQueue />} />
       {/* A page, not a modal (#367): the pick is the longest single piece of data entry in the app,

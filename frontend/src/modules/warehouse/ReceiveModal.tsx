@@ -25,7 +25,7 @@ import ConfirmDialog from '../../components/ConfirmDialog';
 import { useNavigate } from 'react-router-dom';
 import { GET_WAREHOUSES } from '../../graphql/shared';
 import { GET_PO_RECEIVING_DETAILS, CREATE_RECEIVE } from '../../graphql/warehouse';
-import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
+import { RECEIVE_REFETCH_QUERIES } from '../../graphql/refetch';
 import { useRelayStatus } from '../../relay/useRelayStatus';
 import { poVendorName } from '../po/poVendorName';
 import GpErrorAlert from '../../components/GpErrorAlert';
@@ -494,7 +494,7 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
         return next;
       });
       try {
-        await client.refetchQueries({ include: WAREHOUSE_REFETCH_QUERIES });
+        await client.refetchQueries({ include: RECEIVE_REFETCH_QUERIES });
       } catch {
         // a failed background refetch should not mask a successful receive
       }

@@ -14,7 +14,6 @@ export interface WarehouseDashboard {
   unlocatedCount: number;
   pendingPullShop: number;
   pendingPullShipping: number;
-  receivedLast7Days: number;
   backOrderedCount: number;
   deficientCount: number;
 }

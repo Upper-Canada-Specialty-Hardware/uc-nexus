@@ -29,7 +29,8 @@ from .types import (
 @strawberry.type
 class ShippingQueries:
     @strawberry.field
-    def ship_ready_items(self, project_id: strawberry.ID | None = None) -> ShipReadyItems:
+    def ship_ready_items(self, info: strawberry.Info, project_id: strawberry.ID | None = None) -> ShipReadyItems:
+        require_user(info)
         with SessionLocal() as session:
             data = shipping_repository.get_ship_ready_items(session, uuid.UUID(str(project_id)) if project_id else None)
             return ShipReadyItems(
@@ -46,7 +47,8 @@ class ShippingQueries:
             )
 
     @strawberry.field
-    def packing_slips(self, project_id: strawberry.ID | None = None) -> list[PackingSlip]:
+    def packing_slips(self, info: strawberry.Info, project_id: strawberry.ID | None = None) -> list[PackingSlip]:
+        require_user(info)
         with SessionLocal() as session:
             slips = shipping_repository.list_packing_slips(session, uuid.UUID(str(project_id)) if project_id else None)
             return [packing_slip_to_type(ps) for ps in slips]
@@ -54,6 +56,7 @@ class ShippingQueries:
     @strawberry.field
     def shipping_out_requests(
         self,
+        info: strawberry.Info,
         project_id: strawberry.ID | None = None,
         status: ShippingOutRequestStatus | None = None,
         reopenable_only: bool = False,
@@ -61,6 +64,7 @@ class ShippingQueries:
         """Accept UI (#293): shipping-out requests for a project, PENDING by default. reopenableOnly
         (#325) keeps only requests whose minted pull request is still PENDING - the Approved/reopen
         view uses it so it lists only requests Reopen can still act on."""
+        require_user(info)
         with SessionLocal() as session:
             reqs = shipping_repository.get_shipping_out_requests(
                 session, uuid.UUID(str(project_id)) if project_id else None, status, reopenable_only
@@ -68,7 +72,8 @@ class ShippingQueries:
             return [shipping_out_request_to_type(r) for r in reqs]
 
     @strawberry.field
-    def returnable_lines(self, packing_slip_id: strawberry.ID) -> list[ReturnableLine]:
+    def returnable_lines(self, info: strawberry.Info, packing_slip_id: strawberry.ID) -> list[ReturnableLine]:
+        require_user(info)
         with SessionLocal() as session:
             lines = shipping_repository.get_returnable_lines(session, uuid.UUID(str(packing_slip_id)))
             return [
@@ -130,7 +135,8 @@ class ShippingMutations:
             return shipping_out_request_to_type(refreshed)
 
     @strawberry.mutation
-    def confirm_shipment(self, input: ConfirmShipmentInput) -> PackingSlip:
+    def confirm_shipment(self, info: strawberry.Info, input: ConfirmShipmentInput) -> PackingSlip:
+        require_user(info)
         from app.models.enums import PullRequestItemType
 
         project_id = uuid.UUID(str(input.project_id))
@@ -163,7 +169,8 @@ class ShippingMutations:
             return packing_slip_to_type(refreshed)
 
     @strawberry.mutation
-    def create_shipment_return(self, input: CreateShipmentReturnInput) -> ShipmentReturn:
+    def create_shipment_return(self, info: strawberry.Info, input: CreateShipmentReturnInput) -> ShipmentReturn:
+        require_user(info)
         from app.models.enums import ReturnDisposition
 
         items_data = [
