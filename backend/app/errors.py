@@ -119,7 +119,7 @@ class RelayOpUnsupportedError(AppError):
 def validation_error_from_relay(e: RelayCallError) -> ValidationError:
     """Turn a relay refusal into a ValidationError that still carries the relay's error body.
 
-    main.py's ErrorHandlerExtension publishes `extensions.relayError` from whatever `.detail` the
+    main.py's ResolverGuardExtension publishes `extensions.relayError` from whatever `.detail` the
     raised error has, and ValidationError has no such field - so converting the error plainly would
     strip the GP proc, the error state and the taErrorCode description on the way to the browser, and
     the dialog's GpErrorAlert would render an empty detail table. That table is the whole point of

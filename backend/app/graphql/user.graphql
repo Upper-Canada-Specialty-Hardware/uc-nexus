@@ -2,15 +2,17 @@
 # Source of truth: Strawberry resolvers in app/schemas/user.py
 #
 # Users do not live in Postgres. They live in Clerk, and `app/repositories/user_repository.py` talks
-# to the Clerk Backend API - which is why roles are not a database enum and why `require_admin` /
-# `require_role` cost a network call while `require_user` does not (app/auth.py).
+# to the Clerk Backend API - which is why roles are not a database enum, and why a role requirement
+# costs a network call while a plain signed-in one does not. Since #423 that call is made once per
+# request rather than once per gated field (app/auth.py, app/auth_policy.py).
 #
 # This file existed only as a cross-reference from shop_assembly.graphql ("ClerkUser is in
 # user.graphql") until #344; the reference was dangling. It is written now so the pointer resolves.
 #
-# Every operation below is Admin/Manager-gated (#415). They were all reachable with no session until
-# then, which made updateUserRoles a self-service grant of the role that gates relay provisioning,
-# relay deletion, buyer assignments and the GP job/buyer writes.
+# Every operation below is Admin/Manager-gated (#415), now from ROOT_FIELD_POLICY in
+# app/auth_policy.py rather than a line in each resolver (#423). They were all reachable with no
+# session until #415, which made updateUserRoles a self-service grant of the role that gates relay
+# provisioning, relay deletion, buyer assignments and the GP job/buyer writes.
 
 # One Clerk account as the app sees it. `roles` comes from Clerk publicMetadata, not from the session
 # token, so it is fetched rather than decoded.

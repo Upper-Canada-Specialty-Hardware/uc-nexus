@@ -1,7 +1,7 @@
 """Stock pool + deficiency queries and mutations.
 
 Every mutation here writes an audit row, and since #427 the actor on it is the Clerk-authenticated
-caller (`require_user` -> `resolve_display_name`), never the request's own `performedBy`/`reviewedBy`
+caller (`current_user` -> `resolve_display_name`), never the request's own `performedBy`/`reviewedBy`
 field. Those input fields are still accepted so a frontend from the previous deploy keeps working;
 they are ignored. Before the change these rows carried whatever the client sent, defaulting to the
 literal strings "Admin/Manager" or "Warehouse" - which is what most of them actually stored, because
@@ -12,7 +12,7 @@ import uuid
 
 import strawberry
 
-from app.auth import require_user, resolve_display_name
+from app.auth import current_user, resolve_display_name
 from app.database import SessionLocal
 from app.repositories import stock as stock_repository
 
@@ -59,7 +59,6 @@ class StockQueries:
         only_deficient: bool = False,
         warehouse_id: strawberry.ID | None = None,
     ) -> list[StockItem]:
-        require_user(info)
         with SessionLocal() as session:
             rows = stock_repository.get_stock_items(
                 session,
@@ -73,7 +72,6 @@ class StockQueries:
 
     @strawberry.field
     def stock_item(self, info: strawberry.Info, id: strawberry.ID) -> StockItem | None:
-        require_user(info)
         with SessionLocal() as session:
             try:
                 row = stock_repository.get_stock_item(session, uuid.UUID(str(id)))
@@ -88,7 +86,6 @@ class StockQueries:
         project_id: strawberry.ID | None = None,
         source: DeficientItemSource | None = None,
     ) -> list[DeficientItemRow]:
-        require_user(info)
         with SessionLocal() as session:
             rows = stock_repository.get_deficient_items(
                 session,
@@ -105,7 +102,6 @@ class StockQueries:
         stock_item_id: strawberry.ID | None = None,
         project_id: strawberry.ID | None = None,
     ) -> list[DeficiencyReview]:
-        require_user(info)
         with SessionLocal() as session:
             rows = stock_repository.get_deficiency_reviews(
                 session,
@@ -117,7 +113,6 @@ class StockQueries:
 
     @strawberry.field
     def stock_matches_for_opening(self, info: strawberry.Info, opening_item_id: strawberry.ID) -> list[StockItem]:
-        require_user(info)
         with SessionLocal() as session:
             rows = stock_repository.get_stock_matches_for_opening(session, uuid.UUID(str(opening_item_id)))
             return [stock_item_to_type(r) for r in rows]
@@ -127,7 +122,7 @@ class StockQueries:
 class StockMutations:
     @strawberry.mutation
     def destock_inventory(self, info: strawberry.Info, input: DestockInventoryInput) -> StockItem:
-        auth = require_user(info)
+        auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             result = stock_repository.destock_inventory(
@@ -147,7 +142,7 @@ class StockMutations:
 
     @strawberry.mutation
     def transfer_inventory(self, info: strawberry.Info, input: TransferInventoryInput) -> TransferResult:
-        auth = require_user(info)
+        auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             result = stock_repository.transfer_inventory(
@@ -170,7 +165,7 @@ class StockMutations:
 
     @strawberry.mutation
     def allocate_stock_to_project(self, info: strawberry.Info, input: AllocateStockToProjectInput) -> InventoryLocation:
-        auth = require_user(info)
+        auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             result = stock_repository.allocate_stock_to_project(
@@ -191,7 +186,7 @@ class StockMutations:
 
     @strawberry.mutation
     def adjust_stock_quantity(self, info: strawberry.Info, input: AdjustStockQuantityInput) -> StockItem:
-        auth = require_user(info)
+        auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             result = stock_repository.adjust_stock_quantity(
@@ -207,7 +202,7 @@ class StockMutations:
 
     @strawberry.mutation
     def move_stock_location(self, info: strawberry.Info, input: MoveStockLocationInput) -> StockItem:
-        auth = require_user(info)
+        auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             result = stock_repository.move_stock_location(
@@ -231,7 +226,7 @@ class StockMutations:
         row: str,
         bay: str,
     ) -> StockItem:
-        auth = require_user(info)
+        auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             result = stock_repository.assign_stock_item_location(
@@ -248,7 +243,7 @@ class StockMutations:
 
     @strawberry.mutation
     def mark_stock_item_unlocated(self, info: strawberry.Info, stock_item_id: strawberry.ID) -> StockItem:
-        auth = require_user(info)
+        auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             result = stock_repository.mark_stock_item_unlocated(
@@ -262,7 +257,7 @@ class StockMutations:
 
     @strawberry.mutation
     def reclassify_stock_item(self, info: strawberry.Info, input: ReclassifyStockItemInput) -> ReclassifyStockResult:
-        auth = require_user(info)
+        auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             new_row, original = stock_repository.reclassify_stock_item(
@@ -289,7 +284,7 @@ class StockMutations:
     ) -> InventoryLocation:
         """Condemn units on a project inventory row. Open to any signed-in user - it makes stock
         unavailable to every other request in the project, so it must not be reachable anonymously."""
-        auth = require_user(info)
+        auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             il = stock_repository.report_inventory_deficiency(
@@ -307,7 +302,7 @@ class StockMutations:
     def report_stock_deficiency(self, info: strawberry.Info, input: ReportStockDeficiencyInput) -> StockItem:
         """Condemn units on a stock-pool row. Open to any signed-in user - same reasoning as
         reportInventoryDeficiency: it takes stock out of circulation."""
-        auth = require_user(info)
+        auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             si = stock_repository.report_stock_deficiency(
@@ -327,7 +322,7 @@ class StockMutations:
     ) -> SAReplacementResult:
         """Flag a unit deficient at the bench. Open to any signed-in user - it writes project
         inventory and mints a replacement pull request, so it must not be reachable anonymously."""
-        auth = require_user(info)
+        auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             il, pri = stock_repository.report_deficiency_at_assembly(
@@ -349,7 +344,7 @@ class StockMutations:
     def resolve_deficiency(self, info: strawberry.Info, input: ResolveDeficiencyInput) -> DeficiencyReview:
         """Disposition a condemned batch (scrap, repair, RMA, destock). Open to any signed-in user -
         it moves or writes off real stock, so it must not be reachable anonymously."""
-        auth = require_user(info)
+        auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             review = stock_repository.resolve_deficiency(

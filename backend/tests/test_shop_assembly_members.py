@@ -1,14 +1,19 @@
 """shopAssemblyMembers query (#330): the manager assignment picker.
 
-Covers the repository role filter, the resolver's dict->ClerkUser mapping, and the require_role gate
-that restricts the query to a Shop Assembly Manager. Resolver is exercised directly against a
-ShopAssemblyQueries instance (matches test_gp_relay_reads.py)."""
+Covers the repository role filter, the resolver's dict->ClerkUser mapping, and `require_role` - which
+since #423 is no longer the field's gate (that is the policy table, applied by the schema extension)
+but is still what `assignOpenings` calls in its body for the one requirement a field-level table
+cannot express: anyone may self-assign, only a manager may assign somebody else.
+
+Resolvers are exercised directly against a ShopAssemblyQueries / ShopAssemblyMutations instance
+(matches test_gp_relay_reads.py)."""
 
 import uuid
 
 import pytest
 
 from app.auth import SHOP_ASSEMBLY_MANAGER_ROLE, ForbiddenError, require_role
+from app.auth_policy import ROOT_FIELD_POLICY
 from app.repositories import shop_assembly_repository, user_repository
 from app.schemas import shop_assembly as shop_assembly_module
 from app.schemas.inputs import AssignOpeningsInput
@@ -37,7 +42,7 @@ class FakeInfo:
         self.context = {"request": request}
 
 
-def test_list_shop_assembly_members_filters_by_role(monkeypatch):
+def test_shop_assembly_members_filters_by_role():
     users = [
         _summary("mgr", ["Shop Assembly Manager"]),
         _summary("worker", ["Shop Assembly User"]),
@@ -46,30 +51,29 @@ def test_list_shop_assembly_members_filters_by_role(monkeypatch):
         _summary("admin", ["Admin/Manager"]),
         _summary("none", []),
     ]
-    monkeypatch.setattr(user_repository, "list_users", lambda: users)
 
-    members = user_repository.list_shop_assembly_members()
+    members = user_repository.shop_assembly_members(users)
 
     assert {m["id"] for m in members} == {"mgr", "worker", "both"}
 
 
-def test_resolver_gates_on_manager_role_and_maps_to_type(monkeypatch):
-    calls = []
-    monkeypatch.setattr(shop_assembly_module, "require_role", lambda info, role: calls.append(role))
-    monkeypatch.setattr(
-        user_repository,
-        "list_shop_assembly_members",
-        lambda: [_summary("mgr", ["Shop Assembly Manager"]), _summary("worker", ["Shop Assembly User"])],
-    )
+def test_resolver_maps_the_request_roster_to_type(monkeypatch):
+    """The roster comes from the request context - the same one the gate checked this caller's
+    Shop Assembly Manager role against (ROSTER_BACKED in app/auth_policy.py), so authorizing the
+    query and answering it are one Clerk call."""
+    roster = [_summary("mgr", ["Shop Assembly Manager"]), _summary("worker", ["Shop Assembly User"])]
+    monkeypatch.setattr(shop_assembly_module, "user_roster", lambda context: roster)
 
     result = ShopAssemblyQueries().shop_assembly_members(FakeInfo())
 
-    assert calls == [SHOP_ASSEMBLY_MANAGER_ROLE]
+    assert ROOT_FIELD_POLICY["shopAssemblyMembers"] == SHOP_ASSEMBLY_MANAGER_ROLE
     assert [u.id for u in result] == ["mgr", "worker"]
     assert result[0].email == "mgr@example.com"
 
 
 def test_require_role_forbids_when_role_absent(monkeypatch):
+    """`require_role` is the in-body check, not the field gate. It reads the request-scoped role memo,
+    so verify_clerk_token and get_user_roles are what it ends up calling on a cold context."""
     monkeypatch.setattr("app.auth.verify_clerk_token", lambda token: {"sub": "u1"})
     monkeypatch.setattr(user_repository, "get_user_roles", lambda uid: ["Shop Assembly User"])
 
@@ -115,7 +119,7 @@ def _assign_input(assigned_to_user_id):
 
 def test_assign_openings_self_assign_skips_manager_gate(monkeypatch):
     role_calls = []
-    monkeypatch.setattr(shop_assembly_module, "require_user", lambda info: {"user_id": "caller"})
+    monkeypatch.setattr(shop_assembly_module, "current_user", lambda info: {"user_id": "caller"})
     monkeypatch.setattr(shop_assembly_module, "require_role", lambda info, role: role_calls.append(role))
     _bypass_assign_db(monkeypatch)
 
@@ -126,7 +130,7 @@ def test_assign_openings_self_assign_skips_manager_gate(monkeypatch):
 
 def test_assign_openings_to_other_requires_manager_role(monkeypatch):
     role_calls = []
-    monkeypatch.setattr(shop_assembly_module, "require_user", lambda info: {"user_id": "caller"})
+    monkeypatch.setattr(shop_assembly_module, "current_user", lambda info: {"user_id": "caller"})
     monkeypatch.setattr(shop_assembly_module, "require_role", lambda info, role: role_calls.append(role))
     _bypass_assign_db(monkeypatch)
 

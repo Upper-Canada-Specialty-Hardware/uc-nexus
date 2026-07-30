@@ -84,12 +84,16 @@ def list_users() -> list[dict]:
     return users
 
 
-def list_shop_assembly_members() -> list[dict]:
-    """Shop-assembly team members (#330): the subset of Clerk users holding a shop-assembly role,
-    for the manager assignment picker. Reuses list_users() and filters client-side to keep one
-    source of the user summary shape."""
+def shop_assembly_members(users: list[dict]) -> list[dict]:
+    """Shop-assembly team members (#330): the subset of a Clerk roster holding a shop-assembly role,
+    for the manager assignment picker. Clerk has no server-side filter on publicMetadata, so this is
+    a client-side filter over the whole roster either way.
+
+    Takes the roster rather than fetching it so the resolver can pass the request-scoped one the auth
+    gate already loaded (#423) - `shopAssemblyMembers` is role-gated, and that check and this answer
+    now come out of the same single call to Clerk."""
     members = set(SHOP_ASSEMBLY_ROLES)
-    return [u for u in list_users() if members.intersection(u["roles"])]
+    return [u for u in users if members.intersection(u["roles"])]
 
 
 def get_user(user_id: str) -> dict:

@@ -5,7 +5,7 @@ import uuid
 
 import strawberry
 
-from app.auth import require_admin, require_user, resolve_display_name
+from app.auth import current_user, resolve_display_name
 from app.database import SessionLocal
 from app.errors import RelayUnavailableError
 from app.repositories import warehouse as warehouse_repository
@@ -162,7 +162,6 @@ def _persist_create_receive(*, key, po_id, received_by, line_items_data, warehou
 class WarehouseQueries:
     @strawberry.field
     def po_receiving_details(self, info: strawberry.Info, po_id: strawberry.ID) -> PurchaseOrder:
-        require_user(info)
         with SessionLocal() as session:
             po, receive_records = warehouse_repository.get_po_receiving_details(session, uuid.UUID(str(po_id)))
             return po_to_type(po, receive_records)
@@ -179,7 +178,6 @@ class WarehouseQueries:
         finalize. Deliberately distinct from `inventoryHierarchy`'s availability, which is on-hand
         minus deficient: that answers "what is physically unspoken-for in the building", this
         answers "what may I claim". Two grouped scalar aggregates, no per-row work."""
-        require_user(info)
         with SessionLocal() as session:
             rows = warehouse_repository.get_project_availability(session, uuid.UUID(str(project_id)))
             return [
@@ -201,7 +199,6 @@ class WarehouseQueries:
         project_id: strawberry.ID | None = None,
         warehouse_id: strawberry.ID | None = None,
     ) -> list[InventoryHierarchyNode]:
-        require_user(info)
         with SessionLocal() as session:
             hierarchy = warehouse_repository.get_inventory_hierarchy(
                 session,
@@ -236,7 +233,6 @@ class WarehouseQueries:
         category: str = "",
         product_code: str = "",
     ) -> list[InventoryItemDetail]:
-        require_user(info)
         with SessionLocal() as session:
             items = warehouse_repository.get_inventory_items(
                 session, uuid.UUID(str(project_id)) if project_id else None, category, product_code
@@ -255,7 +251,6 @@ class WarehouseQueries:
     def unlocated_inventory(
         self, info: strawberry.Info, project_id: strawberry.ID | None = None
     ) -> list[InventoryItemDetail]:
-        require_user(info)
         with SessionLocal() as session:
             items = warehouse_repository.get_unlocated_inventory(
                 session, uuid.UUID(str(project_id)) if project_id else None
@@ -272,7 +267,6 @@ class WarehouseQueries:
 
     @strawberry.field
     def recent_receive_records(self, info: strawberry.Info, limit: int = 10) -> list[RecentReceiveRecord]:
-        require_user(info)
         with SessionLocal() as session:
             rows = warehouse_repository.get_recent_receive_records(session, limit)
             return [
@@ -286,7 +280,6 @@ class WarehouseQueries:
 
     @strawberry.field
     def opening_items(self, info: strawberry.Info, project_id: strawberry.ID | None = None) -> list[OpeningItem]:
-        require_user(info)
         with SessionLocal() as session:
             pid = uuid.UUID(str(project_id)) if project_id else None
             ois = warehouse_repository.get_opening_items(session, pid)
@@ -318,7 +311,6 @@ class WarehouseQueries:
     ) -> list[OpeningLeafStatus]:
         """Per-opening door-leaf rollup (#313). project_id scopes to one project (shipping view);
         omit it for the global shop-assembly view (rows carry project identity to group by)."""
-        require_user(info)
         with SessionLocal() as session:
             pid = uuid.UUID(str(project_id)) if project_id else None
             rows = warehouse_repository.get_opening_leaf_status(session, pid)
@@ -335,7 +327,6 @@ class WarehouseQueries:
 
     @strawberry.field
     def opening_item_details(self, info: strawberry.Info, id: strawberry.ID) -> OpeningItemDetail:
-        require_user(info)
         with SessionLocal() as session:
             from app.repositories import shop_assembly_repository
 
@@ -360,7 +351,6 @@ class WarehouseQueries:
         source: PullRequestSource | None = None,
         status: PullRequestStatus | None = None,
     ) -> list[PullRequest]:
-        require_user(info)
         with SessionLocal() as session:
             prs = warehouse_repository.get_pull_requests(
                 session, uuid.UUID(str(project_id)) if project_id else None, source, status
@@ -384,7 +374,6 @@ class WarehouseQueries:
 
     @strawberry.field
     def pull_request_details(self, info: strawberry.Info, id: strawberry.ID) -> PullRequest:
-        require_user(info)
         with SessionLocal() as session:
             pr = warehouse_repository.get_pull_request_details(session, uuid.UUID(str(id)))
             staging = warehouse_repository.get_pull_staging_summaries(session, [pr.id])
@@ -405,7 +394,6 @@ class WarehouseQueries:
 
         Open to any signed-in user. It exposes real per-location inventory for one project, which is
         the same shape of information the warehouse inventory views already carry."""
-        require_user(info)
         with SessionLocal() as session:
             sheet = warehouse_repository.get_pick_sheet(session, uuid.UUID(str(pull_request_id)))
             pr = sheet.pull_request
@@ -426,7 +414,6 @@ class WarehouseQueries:
         run once per row of the pull-request queue, and the queue never needs it - only the detail
         view does. Returns an empty list for a shipping-out pull, a PR-REPL replacement pull, or a
         legacy pull, none of which have openings. Open to any signed-in user."""
-        require_user(info)
         with SessionLocal() as session:
             openings = warehouse_repository.get_pull_request_openings(session, uuid.UUID(str(pull_request_id)))
             return [shop_assembly_opening_to_type(o) for o in openings]
@@ -435,7 +422,6 @@ class WarehouseQueries:
     def back_ordered_items(
         self, info: strawberry.Info, project_id: strawberry.ID | None = None
     ) -> list[BackOrderedItem]:
-        require_user(info)
         with SessionLocal() as session:
             items = warehouse_repository.get_back_ordered_items(
                 session, uuid.UUID(str(project_id)) if project_id else None
@@ -458,7 +444,6 @@ class WarehouseQueries:
 
     @strawberry.field
     def warehouse_dashboard(self, info: strawberry.Info) -> WarehouseDashboard:
-        require_user(info)
         with SessionLocal() as session:
             d = warehouse_repository.get_warehouse_dashboard(session)
             return WarehouseDashboard(
@@ -476,7 +461,6 @@ class WarehouseQueries:
     def project_progress_by_product(
         self, info: strawberry.Info, project_id: strawberry.ID
     ) -> list[ProjectProgressByProduct]:
-        require_user(info)
         with SessionLocal() as session:
             rows = warehouse_repository.get_project_progress_by_product(session, uuid.UUID(str(project_id)))
             return [
@@ -497,7 +481,6 @@ class WarehouseQueries:
     def inventory_by_vendor(
         self, info: strawberry.Info, project_id: strawberry.ID | None = None
     ) -> list[VendorInventoryNode]:
-        require_user(info)
         with SessionLocal() as session:
             nodes = warehouse_repository.get_inventory_by_vendor(
                 session, uuid.UUID(str(project_id)) if project_id else None
@@ -529,7 +512,6 @@ class WarehouseQueries:
         bay: str | None = None,
         warehouse_id: strawberry.ID | None = None,
     ) -> LocationContents:
-        require_user(info)
         with SessionLocal() as session:
             data = warehouse_repository.get_location_contents(
                 session, aisle, row, bay, uuid.UUID(str(warehouse_id)) if warehouse_id else None
@@ -557,7 +539,6 @@ class WarehouseQueries:
         bay: str | None = None,
         limit: int = 10,
     ) -> list[AuditLogEntry]:
-        require_user(info)
         with SessionLocal() as session:
             entries = warehouse_repository.get_location_audit_history(session, aisle, row, bay, limit=limit)
             return [
@@ -576,7 +557,6 @@ class WarehouseQueries:
 
     @strawberry.field
     def location_distinct_values(self, info: strawberry.Info) -> LocationDistinctValues:
-        require_user(info)
         with SessionLocal() as session:
             values = warehouse_repository.get_distinct_location_values(session)
             return LocationDistinctValues(
@@ -589,7 +569,6 @@ class WarehouseQueries:
     def location_duplicates(self, info: strawberry.Info) -> list[LocationDuplicateGroup]:
         """Admin-gated (#415): the admin Location Cleanup page is the only reader, and it is the
         list `mergeLocations` acts on."""
-        require_admin(info)
         with SessionLocal() as session:
             groups = warehouse_repository.get_location_duplicates(session)
             return [
@@ -606,7 +585,6 @@ class WarehouseQueries:
     def location_utilization(
         self, info: strawberry.Info, warehouse_id: strawberry.ID | None = None
     ) -> list[LocationUtilizationEntry]:
-        require_user(info)
         with SessionLocal() as session:
             rows = warehouse_repository.get_location_utilization(
                 session, uuid.UUID(str(warehouse_id)) if warehouse_id else None
@@ -632,7 +610,6 @@ class WarehouseQueries:
         project_id: strawberry.ID | None = None,
         limit: int = 50,
     ) -> list[AuditLogEntry]:
-        require_user(info)
         with SessionLocal() as session:
             entries = warehouse_repository.get_audit_log(
                 session,
@@ -657,9 +634,8 @@ class WarehouseQueries:
 
     @strawberry.field
     def warehouses(self, info: strawberry.Info, include_inactive: bool = True) -> list[Warehouse]:
-        """require_user, not admin (#415): the receive, transfer and return dialogs all read this
+        """Signed-in, not admin (#415): the receive, transfer and return dialogs all read this
         list to populate a warehouse picker, so it is not admin-only even though its writes are."""
-        require_user(info)
         with SessionLocal() as session:
             return [
                 warehouse_to_type(w)
@@ -668,7 +644,6 @@ class WarehouseQueries:
 
     @strawberry.field
     def warehouse(self, info: strawberry.Info, id: strawberry.ID) -> Warehouse | None:
-        require_user(info)
         with SessionLocal() as session:
             w = warehouse_admin_repository.find_warehouse(session, uuid.UUID(str(id)))
             return warehouse_to_type(w) if w is not None else None
@@ -687,7 +662,7 @@ class WarehouseMutations:
         gpReceiptPostedRef guard); eligibility (over-receive, PO status, location sums) is validated
         before the GP receipt is posted; the DB and Clerk work is offloaded so no Postgres connection is
         held across the relay round-trip and the /relay-link read loop is never blocked on a sync call."""
-        user = require_user(info)
+        user = current_user(info)
         key = gp_idempotency.validate_key(input.idempotency_key)
 
         po_id = uuid.UUID(str(input.po_id))
@@ -790,7 +765,7 @@ class WarehouseMutations:
         Open to any signed-in user - it assigns the pull to the caller, so it must not be reachable
         anonymously. The pull is assigned to the Clerk-authenticated caller (#427), not to whatever
         `startedBy` said - the assignment is what the whole pick is then attributed to."""
-        auth = require_user(info)
+        auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             pr = warehouse_repository.start_pull_request_pick(session, uuid.UUID(str(id)), actor)
@@ -816,7 +791,7 @@ class WarehouseMutations:
 
         Open to any signed-in user - it attributes a user action, same rationale as
         `saveAssemblyProgress`. Who entered it is the Clerk-authenticated caller (#427)."""
-        auth = require_user(info)
+        auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             sheet = warehouse_repository.save_pick_draft(
@@ -860,7 +835,7 @@ class WarehouseMutations:
         The deduction is stamped with the Clerk-authenticated caller (#427): this is the audit row
         that says who took the stock off the rack, and it is worth nothing if the client picks the
         name on it."""
-        auth = require_user(info)
+        auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             result = warehouse_repository.confirm_pick(
@@ -916,7 +891,7 @@ class WarehouseMutations:
 
         Open to any signed-in user - it attributes a user action, and since #427 it attributes it to
         the Clerk-authenticated caller: the tick is a claim that a specific person has the leaf."""
-        auth = require_user(info)
+        auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             item = warehouse_repository.set_pull_item_fetched(session, uuid.UUID(str(item_id)), fetched, actor)
@@ -935,7 +910,7 @@ class WarehouseMutations:
         That stamp is the Clerk-authenticated caller as of #427. It was the client's `completedBy`
         string, which made this the clearest example of the bug: one call could put any name on every
         opening the pull staged, and the staging panel shows exactly that name."""
-        auth = require_user(info)
+        auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             pr = warehouse_repository.complete_pull_request(session, uuid.UUID(str(id)), completed_by=actor)
@@ -957,7 +932,7 @@ class WarehouseMutations:
 
         Open to any signed-in user - it makes hardware workable, so it must not be reachable
         anonymously. Each opening is stamped with the Clerk-authenticated caller (#427)."""
-        auth = require_user(info)
+        auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             result = warehouse_repository.stage_pull_openings(
@@ -992,7 +967,7 @@ class WarehouseMutations:
         Open to any signed-in user - it writes inventory, so it must not be reachable anonymously.
         The cancellation and every restock audit row it writes name the Clerk-authenticated caller
         (#427)."""
-        auth = require_user(info)
+        auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             result = warehouse_repository.cancel_pull_request(
@@ -1031,7 +1006,7 @@ class WarehouseMutations:
         the repository hardcoded it and there was no parameter to pass the truth through. `auditLog`,
         the location history panel and the recent-activity feed all read that column, so the one
         record of who altered a count was uniformly wrong."""
-        auth = require_user(info)
+        auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             result = warehouse_repository.adjust_inventory_quantity(
@@ -1045,14 +1020,14 @@ class WarehouseMutations:
     def override_inventory_quantity(
         self, info: strawberry.Info, input: OverrideInventoryQuantityInput
     ) -> InventoryLocation:
-        """require_user, not admin. The Correction button on the warehouse Hardware Items tab is
+        """Signed-in, not admin. The Correction button on the warehouse Hardware Items tab is
         rendered for everyone ("available to all users, not just admins", HardwareItemsTab.tsx), and it
         opens `InventoryCorrectionModal`, which is what calls this. Admin-gating it would break the
         warehouse's own count-correction workflow.
 
         Gating it would also buy nothing while `adjustInventoryQuantity` next door stays open to any
         signed-in user: the same end quantity is reachable by passing the delta instead."""
-        auth = require_user(info)
+        auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             result = warehouse_repository.override_inventory_quantity(
@@ -1080,7 +1055,7 @@ class WarehouseMutations:
     ) -> InventoryLocation:
         """Relocate a project inventory row, writing a MOVE audit row naming the caller (#427); it
         used to name "Admin/Manager" regardless of who moved the stock."""
-        auth = require_user(info)
+        auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             result = warehouse_repository.move_inventory_location(
@@ -1096,7 +1071,7 @@ class WarehouseMutations:
     ) -> InventoryLocation:
         """Clear a project inventory row's location, writing an UNLOCATE audit row naming the
         caller (#427)."""
-        auth = require_user(info)
+        auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             result = warehouse_repository.mark_inventory_unlocated(
@@ -1116,7 +1091,7 @@ class WarehouseMutations:
         bay: str,
     ) -> InventoryLocation:
         """Put a project inventory row away, writing a PUT_AWAY audit row naming the caller (#427)."""
-        auth = require_user(info)
+        auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             result = warehouse_repository.assign_inventory_location(
@@ -1137,7 +1112,7 @@ class WarehouseMutations:
         warehouse_id: strawberry.ID | None = None,
     ) -> OpeningItem:
         """Relocate an assembled leaf, writing a MOVE audit row naming the caller (#427)."""
-        auth = require_user(info)
+        auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             result = warehouse_repository.move_opening_item_location(
@@ -1156,7 +1131,7 @@ class WarehouseMutations:
     @strawberry.mutation
     def mark_opening_item_unlocated(self, info: strawberry.Info, opening_item_id: strawberry.ID) -> OpeningItem:
         """Clear an assembled leaf's location, writing an UNLOCATE audit row naming the caller (#427)."""
-        auth = require_user(info)
+        auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             result = warehouse_repository.mark_opening_item_unlocated(
@@ -1176,7 +1151,7 @@ class WarehouseMutations:
         bay: str,
     ) -> OpeningItem:
         """Put an assembled leaf away, writing a PUT_AWAY audit row naming the caller (#427)."""
-        auth = require_user(info)
+        auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             result = warehouse_repository.assign_opening_item_location(
@@ -1201,7 +1176,7 @@ class WarehouseMutations:
         item at the source location. Its audit rows name the admin who ran it (#427) rather than the
         literal "Admin/Manager" - the gate already proves the role, so the row may as well say which
         admin, given a merge can touch hundreds of rows at once."""
-        auth = require_admin(info)
+        auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             counts = warehouse_repository.merge_locations(
@@ -1224,7 +1199,6 @@ class WarehouseMutations:
     # Warehouses (admin)
     @strawberry.mutation
     def create_warehouse(self, info: strawberry.Info, input: CreateWarehouseInput) -> Warehouse:
-        require_admin(info)
         with SessionLocal() as session:
             wh = warehouse_admin_repository.create_warehouse(
                 session,
@@ -1243,7 +1217,6 @@ class WarehouseMutations:
 
     @strawberry.mutation
     def update_warehouse(self, info: strawberry.Info, id: strawberry.ID, input: UpdateWarehouseInput) -> Warehouse:
-        require_admin(info)
         with SessionLocal() as session:
             wh = warehouse_admin_repository.update_warehouse(
                 session,
@@ -1263,7 +1236,6 @@ class WarehouseMutations:
 
     @strawberry.mutation
     def delete_warehouse(self, info: strawberry.Info, id: strawberry.ID) -> bool:
-        require_admin(info)
         with SessionLocal() as session:
             warehouse_admin_repository.delete_warehouse(session, uuid.UUID(str(id)))
             session.commit()

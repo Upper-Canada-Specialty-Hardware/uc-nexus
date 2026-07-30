@@ -78,7 +78,7 @@ type Query {
 type Mutation {
   confirmShipment(input: ConfirmShipmentInput!): PackingSlip!
   createShipmentReturn(input: CreateShipmentReturnInput!): ShipmentReturn!
-  # Accept gate (#293). Any signed-in user (require_user). Accept mints the warehouse PullRequest;
+  # Accept gate (#293). Any signed-in user. Accept mints the warehouse PullRequest;
   # the warehouse approve handles shortfalls. The approval is recorded against the
   # Clerk-authenticated caller (#427) - acceptedBy/rejectedBy are accepted and IGNORED, kept only so
   # a frontend from the previous deploy still validates.
