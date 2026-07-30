@@ -31,6 +31,7 @@ import GpOutboxWatcher from '../relay/GpOutboxWatcher';
 import ConfirmDialog from './ConfirmDialog';
 import Sidebar, { NavRail } from './Sidebar';
 import { PageTransition } from '../motion';
+import { readAuthBridge } from '../authBridge';
 
 /** Breadcrumb segments that the auto-capitalizer gets wrong. */
 const CRUMB_LABELS: Record<string, string> = {
@@ -66,7 +67,18 @@ export default function AppLayout() {
       const base = import.meta.env.VITE_GRAPHQL_URL
         ? import.meta.env.VITE_GRAPHQL_URL.replace(/\/graphql$/, '')
         : '';
-      const res = await fetch(`${base}/admin/reset-data`, { method: 'POST' });
+      // The endpoint sits behind require_admin_request (#422), and this is a raw fetch the Apollo
+      // auth link never sees (it only covers /graphql) - so the Clerk token is attached by hand
+      // here, off the same bridge the link reads.
+      const token = (await readAuthBridge().getToken?.()) ?? null;
+      if (!token) {
+        window.alert('Reset failed: Clerk produced no session token. Sign in as an Admin and retry.');
+        return;
+      }
+      const res = await fetch(`${base}/admin/reset-data`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
       const json = await res.json();
       window.alert(res.ok ? json.message : `Error: ${JSON.stringify(json)}`);
     } catch (err) {
