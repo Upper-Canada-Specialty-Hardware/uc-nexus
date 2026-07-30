@@ -116,6 +116,24 @@ def test_channel_state_secret_rejected(tmp_path):
     assert ui.channel_state(p)["state"] == "secret_rejected"
 
 
+def test_channel_state_clean_close_reads_as_disconnected(tmp_path):
+    # issue #384: a socket that closed without raising is tagged closed_clean. An unrecognised category
+    # walks further back in the log and finds the 'channel connected' that OPENED the socket which just
+    # closed, so the panel would report a dead channel as connected.
+    p = _cfg(tmp_path, '[logging]\nfile = "relay.log"\n')
+    _log(
+        tmp_path,
+        {"asctime": "t1", "levelname": "INFO", "message": "channel connected"},
+        {
+            "asctime": "t2",
+            "levelname": "WARNING",
+            "message": "channel closed without an error; reconnecting",
+            "category": "closed_clean",
+        },
+    )
+    assert ui.channel_state(p)["state"] == "disconnected"
+
+
 def test_channel_state_unknown_without_log(tmp_path):
     p = _cfg(tmp_path, '[logging]\nfile = "relay.log"\n')
     assert ui.channel_state(p)["state"] == "unknown"

@@ -10,14 +10,28 @@ pending calls now happens only on a genuine disconnect (unregister), where the r
 A briefly half-dead incumbent is detected by the app-level heartbeat (issue #277): the /relay-link route
 pings the relay on a data message every HEARTBEAT_INTERVAL_SECONDS and, after HEARTBEAT_MAX_MISSED
 unanswered pings, closes the socket - which fires unregister, frees the slot, and flips relayStatus
-within ~a minute instead of the ~hour it took the platform to reap the dead TCP connection."""
+within ~a minute instead of the ~hour it took the platform to reap the dead TCP connection.
+
+Every connection-slot transition is logged (issue #384). On 2026-07-28 the relay dropped for ~5 minutes
+and reconnected on its own, and the backend logs could not say when it went, why, or how long it had
+been up: unregister wrote nothing, and the only relay line uvicorn emits is the access log for the
+accepted socket, so a socket held open for days produced exactly one log line for its whole lifetime.
+An absent disconnect line carries no information, so there was nothing to correlate against the relay's
+own logs. The gateway now names the disconnect and, crucially, says WHOSE fault it was: a heartbeat reap
+(we closed a relay that stopped answering) and a peer close (the socket went away under us) are different
+failures with different owners, and by the time unregister runs in the route's `finally` neither is
+distinguishable from the other."""
 
 import asyncio
+import logging
+import time
 import uuid
 
 from fastapi import WebSocket
 
 from app.errors import RelayCallError, RelayOpUnsupportedError, RelayTimeoutError, RelayUnavailableError
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
 
@@ -40,6 +54,14 @@ HEARTBEAT_MAX_MISSED_UNARMED = 4
 # tell a deploy from a network blip and reconnect immediately instead of backing off (#353 PR F).
 SERVICE_RESTART_CLOSE_CODE = 1012
 _SHUTDOWN_TIMEOUT_SECONDS = 2.0
+
+# Why the live socket went away (issue #384). unregister() is called from the /relay-link route's
+# `finally`, which by then cannot tell one ending from another - a heartbeat reap, the relay closing,
+# and the TCP connection dying all just end the read loop. So whichever path DECIDES the disconnect
+# stamps its reason on the gateway first, and unregister reports what it finds. No stamp means nobody
+# on this side decided, i.e. the peer closed or the socket dropped under us.
+DISCONNECT_REASON_PEER = "peer closed or socket dropped"
+DISCONNECT_REASON_SHUTDOWN = "closed for server shutdown"
 
 
 class RelayGateway:
@@ -64,6 +86,13 @@ class RelayGateway:
         # just falls back to the old disconnect-on-read behaviour.
         self._unanswered_pings = 0
         self._heartbeat_armed = False
+        # Disconnect diagnosability (issue #384). `_registered_at` is a monotonic stamp taken when the
+        # connection slot is claimed, so the disconnect line can report how long the socket was actually
+        # held - the difference between "it had been up for days" and "it never got past the handshake"
+        # is most of the diagnosis. `_disconnect_reason` is stamped by whichever path decided the
+        # disconnect (see DISCONNECT_REASON_* above); None at unregister time means the peer did.
+        self._registered_at: float | None = None
+        self._disconnect_reason: str | None = None
 
     @property
     def connected(self) -> bool:
@@ -94,6 +123,29 @@ class RelayGateway:
         takes the single connection slot when it's free; returns False (route closes the socket) when a
         relay is already connected, so the incumbent's in-flight calls are never disturbed."""
         if self._socket is not None and self._socket is not websocket:
+            # A refused reconnect is otherwise completely silent (issue #384), and it is exactly what a
+            # zombie incumbent looks like from the outside: the real relay dialling back in every few
+            # seconds and being turned away while a dead socket holds the slot, until the heartbeat
+            # reaps it up to HEARTBEAT_INTERVAL_SECONDS * HEARTBEAT_MAX_MISSED later. Name the incumbent
+            # and how long it has held the slot so that window is readable in the logs.
+            logger.warning(
+                "relay connection refused: slot already held (holder install=%s company=%s build=%s "
+                "held_seconds=%s, refused install=%s company=%s)",
+                self._install_id,
+                self._company,
+                self._build,
+                self._held_seconds(),
+                install_id,
+                company,
+                extra={
+                    "install_id": str(self._install_id) if self._install_id is not None else None,
+                    "company": self._company,
+                    "build": self._build,
+                    "held_seconds": self._held_seconds(),
+                    "refused_install_id": str(install_id) if install_id is not None else None,
+                    "refused_company": company,
+                },
+            )
             return False
         self._socket = websocket
         self._company = company
@@ -102,19 +154,74 @@ class RelayGateway:
         self._ops = None
         self._unanswered_pings = 0
         self._heartbeat_armed = False
+        self._registered_at = time.monotonic()
+        self._disconnect_reason = None
         return True
 
     def unregister(self, websocket: WebSocket) -> None:
-        """Called by the /relay-link route when its socket disconnects."""
-        if self._socket is websocket:
-            self._socket = None
-            self._company = None
-            self._install_id = None
-            self._build = None
-            self._ops = None
-            self._unanswered_pings = 0
-            self._heartbeat_armed = False
-            self._fail_all("relay disconnected")
+        """Called by the /relay-link route's `finally` when its socket disconnects, and by
+        close_for_shutdown once it has said goodbye.
+
+        The identity check is load-bearing, not defensive noise: a second relay refused at try_register
+        (the route closes it 4409) shares this gateway with the live one, so tearing that socket down
+        must not clear the incumbent's company/install/heartbeat state, consume its stamped disconnect
+        reason, or log the live connection away as if it had dropped.
+
+        Logs the disconnect (issue #384) with everything needed to correlate against the relay's own
+        logs: which install and company, which relay build (learned from the hello frame), how long the
+        socket was held, how many in-flight calls died with it, and - the part nothing else can
+        reconstruct after the fact - whether we reaped it or it went away on its own."""
+        if self._socket is not websocket:
+            return
+        reason = self._disconnect_reason or DISCONNECT_REASON_PEER
+        # A shutdown is not a relay failure: the deploy closed the socket on purpose and the relay is
+        # already reconnecting (close code 1012). Logging it at WARNING beside genuine drops would
+        # train everyone to ignore the warning that matters. Note that INFO is effectively dev-only
+        # here - uvicorn's default logging config configures only the `uvicorn*` loggers, so records
+        # from app modules reach an unconfigured root logger and render through logging.lastResort,
+        # which is WARNING-and-above - but a deploy is already visible in uvicorn's own shutdown lines.
+        level = logging.INFO if reason == DISCONNECT_REASON_SHUTDOWN else logging.WARNING
+        # The facts are repeated into the message rather than left to `extra` alone, for that same
+        # reason: lastResort renders "%(message)s" and drops every extra field, so anything not in the
+        # message is invisible in exactly the Railway logs this line exists to serve. `extra` is kept
+        # for whenever a structured handler is configured, matching how the rest of the backend logs.
+        logger.log(
+            level,
+            "relay disconnected: %s (install=%s company=%s build=%s held_seconds=%s pending_calls=%d)",
+            reason,
+            self._install_id,
+            self._company,
+            self._build,
+            self._held_seconds(),
+            len(self._pending),
+            extra={
+                "install_id": str(self._install_id) if self._install_id is not None else None,
+                "company": self._company,
+                "build": self._build,
+                "held_seconds": self._held_seconds(),
+                "reason": reason,
+                "pending_calls": len(self._pending),
+            },
+        )
+        self._socket = None
+        self._company = None
+        self._install_id = None
+        self._build = None
+        self._ops = None
+        self._unanswered_pings = 0
+        self._heartbeat_armed = False
+        self._registered_at = None
+        self._disconnect_reason = None
+        # The reason rides the error too: it lands on the failed GraphQL call and on any outbox row, so
+        # the person looking at "relay unavailable" in the UI sees the same cause as the log line.
+        self._fail_all(f"relay disconnected: {reason}")
+
+    def _held_seconds(self) -> float | None:
+        """How long the live socket has held the connection slot, None when nothing is registered.
+        Monotonic, so it survives a clock adjustment on the host (issue #384)."""
+        if self._registered_at is None:
+            return None
+        return round(time.monotonic() - self._registered_at, 1)
 
     def note_hello(self, build: object, ops: object) -> None:
         """Called by the route's read loop for the relay's one {"type": "hello", build, ops} frame,
@@ -150,7 +257,19 @@ class RelayGateway:
         (try_register -> close 4409) and failing every GP write for the duration."""
         self._unanswered_pings += 1
         limit = HEARTBEAT_MAX_MISSED if self._heartbeat_armed else HEARTBEAT_MAX_MISSED_UNARMED
-        return self._unanswered_pings >= limit
+        if self._unanswered_pings < limit:
+            return False
+        # Stamp the reason for the disconnect this return value is about to cause (issue #384). The
+        # heartbeat loop closes the socket on True, which ends the read loop and lands in the route's
+        # `finally` -> unregister, where nothing can tell a reap from the relay having dropped on its
+        # own. Recording it here is the only moment that knowledge exists. Counts come from the live
+        # constants so the line stays true if the limits are retuned.
+        self._disconnect_reason = (
+            f"reaped after {self._unanswered_pings} missed pings "
+            f"({'armed' if self._heartbeat_armed else 'unarmed'} limit {limit}, "
+            f"{HEARTBEAT_INTERVAL_SECONDS:g}s interval)"
+        )
+        return True
 
     async def close_for_shutdown(self) -> None:
         """Say goodbye to the relay before the process goes (#353 PR F).
@@ -165,6 +284,11 @@ class RelayGateway:
         socket = self._socket
         if socket is None:
             return
+        # Stamp before the goodbye, not after: the send/close below can wake the route's read loop and
+        # get it to unregister first, and either way this is the one path that knows the drop was ours
+        # and deliberate. Without the stamp a deploy reads in the logs exactly like a relay failure
+        # (issue #384).
+        self._disconnect_reason = DISCONNECT_REASON_SHUTDOWN
         try:
             await asyncio.wait_for(socket.send_json({"type": "going_away"}), timeout=_SHUTDOWN_TIMEOUT_SECONDS)
         except Exception:

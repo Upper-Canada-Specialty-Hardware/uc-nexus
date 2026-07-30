@@ -23,16 +23,22 @@ This is a tester's knowledge journal for UC Nexus. It documents how the app work
 - **Local (manual fallback)**: frontend `http://localhost:5173`, backend `http://localhost:8000`. Run the backend with `poetry run uvicorn main:app --reload` (from `backend/`) and the frontend with `npm run dev` (from `frontend/`). Needs a local Postgres (not provided; the worktree-localdev adoption was dropped).
 - **Auth**: Clerk sign-in, automated via one-time sign-in tokens (no manual password/verification needed).
   - Backend endpoint `GET /testing/clerk-sign-in` generates the token (requires `TESTING_ENABLED=true`).
+  - Since #422 the endpoint also requires a credential: an Admin/Manager `Authorization` bearer, or
+    the shared testing secret in an `X-Testing-Secret` header. The secret is the bootstrap path on a
+    fresh PR environment (no session exists there yet): its SHA-256 hex must sit in the backend's
+    `TESTING_SIGN_IN_SECRET_HASH` variable. Since #424 flipped `TESTING_ENABLED` off in production,
+    new PR environments inherit it off too - so for each PR environment you test on, set both
+    `TESTING_ENABLED=true` and a `TESTING_SIGN_IN_SECRET_HASH` you know the preimage of on that
+    environment's backend service (see `backend/.env.example` for the generator one-liner).
   - Navigate to the frontend URL with `?__clerk_ticket=TOKEN` to auto-authenticate.
   - Tokens are one-time use; fetch a fresh one each session. Works on any runtime with the same Clerk dev instance.
   - **Every environment inherits production Clerk keys**, so the accounts in a PR environment are real
     staff accounts and a session minted there is a real session. The Postgres data in a PR environment
     is disposable; the identities are not. Sign in as the account you were given, and do not mint
     tokens for colleagues' accounts to test role behaviour - ask instead.
-  - That this endpoint will mint a session for any email with no authentication is itself a
-    vulnerability, tracked in #422 / #424. Use it as the sanctioned test flow, but do not treat its
-    availability on a given host as evidence that the host is a test environment - production answers
-    it too, which is exactly the bug.
+  - The unauthenticated version of this endpoint was itself a vulnerability (#422 / #424), fixed by
+    the gates above. Do not treat the endpoint answering on a given host as evidence that the host is
+    a test environment - production answered it too, which is exactly what #424 shut off.
 - **Test XML file**: `testing/fixtures/contracterp-74.xml` - TITAN hardware schedule export, use for Import wizard testing (upload via `upload_file`)
 
 ### Every resolver needs a token now (#415)
@@ -248,11 +254,15 @@ import-created draft otherwise blocks the register dialog with per-line `Require
    const BACKEND  = `https://backend-uc-nexus-pr-${PR}.up.railway.app`;
    const FRONTEND = `https://frontend-uc-nexus-pr-${PR}.up.railway.app`;
    ```
-1. **Sign in**: Use `evaluate_script` to fetch a sign-in token and navigate with it:
+1. **Sign in**: Use `evaluate_script` to fetch a sign-in token and navigate with it. Since #422 the
+   fetch must carry the testing secret whose SHA-256 you set as `TESTING_SIGN_IN_SECRET_HASH` on the
+   PR environment's backend (see the Auth bullet in the Environment section):
    ```js
    (async () => {
      const PR = 420;  // <- the PR number under test
-     const resp = await fetch(`https://backend-uc-nexus-pr-${PR}.up.railway.app/testing/clerk-sign-in`);
+     const SECRET = '...';  // <- preimage of that environment's TESTING_SIGN_IN_SECRET_HASH
+     const resp = await fetch(`https://backend-uc-nexus-pr-${PR}.up.railway.app/testing/clerk-sign-in`,
+       { headers: { 'X-Testing-Secret': SECRET } });
      const { token } = await resp.json();
      window.location.href = `https://frontend-uc-nexus-pr-${PR}.up.railway.app/?__clerk_ticket=${token}&cb=${Date.now()}`;
      return 'Navigating with sign-in token...';
