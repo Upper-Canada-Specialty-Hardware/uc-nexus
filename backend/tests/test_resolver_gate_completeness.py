@@ -58,12 +58,12 @@ def _resolver_functions(tree: ast.Module):
                 break
 
 
-def _calls_a_gate(fn) -> bool:
+def _calls_a_gate(fn, gates=frozenset(_GATES)) -> bool:
     for node in ast.walk(fn):
         if isinstance(node, ast.Call):
             f = node.func
             name = f.id if isinstance(f, ast.Name) else (f.attr if isinstance(f, ast.Attribute) else None)
-            if name in _GATES:
+            if name in gates:
                 return True
     return False
 
@@ -161,4 +161,66 @@ def test_resolver_gates_before_it_acts(module, fn):
         f"{module}.{fn.name} (line {fn.lineno}) calls a gate, but not as its first statement. "
         f"Move the gate above everything else in the body - work done before it runs is work done "
         f"for an unauthenticated caller."
+    )
+
+
+# --- plain FastAPI routes in main.py (#422) -------------------------------------------------------
+#
+# The sweep above walks app/schemas/ only, so /testing/clerk-sign-in - a plain @app.get route that
+# mints a real Clerk session for any staff email - sat outside it with no auth at all. Routes get the
+# same treatment as resolvers: call a gate or appear below with a reason. There is no ordering check
+# here, and that is deliberate - the gated routes check TESTING_ENABLED before auth so a production
+# deployment refuses outright rather than leaking whether the credential would have been good enough.
+
+_MAIN_PY = Path(__file__).resolve().parent.parent / "main.py"
+
+# The only gate that fits a bare FastAPI Request. require_user/require_admin/require_role unwrap a
+# Strawberry Info and can never appear in a route, mirroring the exclusion note on _GATES above.
+_ROUTE_GATES = frozenset({"require_admin_request"})
+
+# route function name -> why it is deliberately reachable without require_admin_request.
+_ROUTE_EXEMPT: dict[str, str] = {
+    "health": "public liveness probe returning a constant; deploy healthchecks call it anonymously",
+    "relay_link": "authenticated by the enrolled relay's Bearer secret on the websocket handshake, not Clerk",
+}
+
+
+def _route_functions(tree: ast.Module):
+    """Yield every function decorated @app.<method>(...) - get/post/put/patch/delete/websocket."""
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        for dec in node.decorator_list:
+            target = dec.func if isinstance(dec, ast.Call) else dec
+            if (
+                isinstance(target, ast.Attribute)
+                and isinstance(target.value, ast.Name)
+                and target.value.id == "app"
+                and target.attr in {"get", "post", "put", "patch", "delete", "websocket"}
+            ):
+                yield node
+                break
+
+
+_ROUTES = list(_route_functions(ast.parse(_MAIN_PY.read_text(encoding="utf-8"))))
+
+
+def test_every_main_py_route_was_collected():
+    """Guard the guard, same shape as the module-collection test above: if the decorator predicate
+    regressed, the parametrized test below would silently shrink instead of failing."""
+    collected = {fn.name for fn in _ROUTES}
+    expected = {"health", "relay_link", "reset_data", "get_clerk_sign_in_token"}
+    missing = expected - collected
+    assert not missing, f"known main.py routes were not collected; the AST walk likely regressed: {sorted(missing)}"
+
+
+@pytest.mark.parametrize("fn", _ROUTES, ids=[fn.name for fn in _ROUTES])
+def test_route_calls_an_auth_gate(fn):
+    if fn.name in _ROUTE_EXEMPT:
+        pytest.skip(f"deliberately ungated: {_ROUTE_EXEMPT[fn.name]}")
+
+    assert _calls_a_gate(fn, _ROUTE_GATES), (
+        f"main.py route {fn.name} (line {fn.lineno}) has no require_admin_request call. Nothing else "
+        f"enforces auth on a plain FastAPI route - add the gate (or an equivalent explicit credential "
+        f"check alongside it), or add it to _ROUTE_EXEMPT in this file with a reason."
     )

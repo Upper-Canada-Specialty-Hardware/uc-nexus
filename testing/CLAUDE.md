@@ -19,20 +19,26 @@ This is a tester's knowledge journal for UC Nexus. It documents how the app work
 > practice. If you are reading a stale copy of that guidance somewhere else - the global
 > `~/.claude/CLAUDE.md` said the same thing - this block supersedes it.
 
-- **Railway PR environments (the testing target)** (ENABLED 2026-07-29, `prDeploys` on the project; bot PRs like dependabot deliberately excluded): every non-draft PR gets a full ephemeral replica (frontend + backend + fresh empty Postgres, migrated on boot) named `uc-nexus-pr-<N>`. Do not wait for a Railway bot comment - none was observed; the URLs are derivable: `https://backend-uc-nexus-pr-<N>.up.railway.app` / `https://frontend-uc-nexus-pr-<N>.up.railway.app`. Substitute them into the sign-in flow below; verified live on PR #401 (`/health` 200, `/testing/clerk-sign-in` mints tokens, GraphQL serves the fresh DB). Data starts empty; seed via the import fixture. No PR open for what you need to test? Open a throwaway one - that is cheaper than the alternative. `VITE_GRAPHQL_URL` is a reference variable (`https://${{backend.RAILWAY_PUBLIC_DOMAIN}}/graphql`) so each environment self-wires; `TESTING_ENABLED` and Clerk keys inherit from production. **A PR that only touches one service's directory only deploys that service in its environment** (root-directory change filtering - PR #401 was backend-only and the frontend showed `latestDeployment: null`); trigger the missing one from the dashboard or via the API (`serviceInstanceDeployV2(environmentId, serviceId)`). Environments auto-delete when the PR closes.
+- **Railway PR environments (the testing target)** (ENABLED 2026-07-29, `prDeploys` on the project; bot PRs like dependabot deliberately excluded): every non-draft PR gets a full ephemeral replica (frontend + backend + fresh empty Postgres, migrated on boot) named `uc-nexus-pr-<N>`. Do not wait for a Railway bot comment - none was observed; the URLs are derivable: `https://backend-uc-nexus-pr-<N>.up.railway.app` / `https://frontend-uc-nexus-pr-<N>.up.railway.app`. Substitute them into the sign-in flow below; verified live on PR #401 (`/health` 200, `/testing/clerk-sign-in` mints tokens, GraphQL serves the fresh DB). Data starts empty; seed via the import fixture. No PR open for what you need to test? Open a throwaway one - that is cheaper than the alternative. `VITE_GRAPHQL_URL` is a reference variable (`https://${{backend.RAILWAY_PUBLIC_DOMAIN}}/graphql`) so each environment self-wires; `TESTING_ENABLED` and Clerk keys inherit from production. **That inheritance is a copy taken when the environment is created, not a live link** (#431): a variable added to production afterwards never reaches a PR environment that already exists, so set it on that environment's own backend service too and let it redeploy. Found the hard way with `RELAY_SEED_SECRET_HASH` on pr-430 - see the relay section below. **A PR that only touches one service's directory only deploys that service in its environment** (root-directory change filtering - PR #401 was backend-only and the frontend showed `latestDeployment: null`); trigger the missing one from the dashboard or via the API (`serviceInstanceDeployV2(environmentId, serviceId)`). Environments auto-delete when the PR closes.
 - **Local (manual fallback)**: frontend `http://localhost:5173`, backend `http://localhost:8000`. Run the backend with `poetry run uvicorn main:app --reload` (from `backend/`) and the frontend with `npm run dev` (from `frontend/`). Needs a local Postgres (not provided; the worktree-localdev adoption was dropped).
 - **Auth**: Clerk sign-in, automated via one-time sign-in tokens (no manual password/verification needed).
   - Backend endpoint `GET /testing/clerk-sign-in` generates the token (requires `TESTING_ENABLED=true`).
+  - Since #422 the endpoint also requires a credential: an Admin/Manager `Authorization` bearer, or
+    the shared testing secret in an `X-Testing-Secret` header. The secret is the bootstrap path on a
+    fresh PR environment (no session exists there yet): its SHA-256 hex must sit in the backend's
+    `TESTING_SIGN_IN_SECRET_HASH` variable. Since #424 flipped `TESTING_ENABLED` off in production,
+    new PR environments inherit it off too - so for each PR environment you test on, set both
+    `TESTING_ENABLED=true` and a `TESTING_SIGN_IN_SECRET_HASH` you know the preimage of on that
+    environment's backend service (see `backend/.env.example` for the generator one-liner).
   - Navigate to the frontend URL with `?__clerk_ticket=TOKEN` to auto-authenticate.
   - Tokens are one-time use; fetch a fresh one each session. Works on any runtime with the same Clerk dev instance.
   - **Every environment inherits production Clerk keys**, so the accounts in a PR environment are real
     staff accounts and a session minted there is a real session. The Postgres data in a PR environment
     is disposable; the identities are not. Sign in as the account you were given, and do not mint
     tokens for colleagues' accounts to test role behaviour - ask instead.
-  - That this endpoint will mint a session for any email with no authentication is itself a
-    vulnerability, tracked in #422 / #424. Use it as the sanctioned test flow, but do not treat its
-    availability on a given host as evidence that the host is a test environment - production answers
-    it too, which is exactly the bug.
+  - The unauthenticated version of this endpoint was itself a vulnerability (#422 / #424), fixed by
+    the gates above. Do not treat the endpoint answering on a given host as evidence that the host is
+    a test environment - production answered it too, which is exactly what #424 shut off.
 - **Test XML file**: `testing/fixtures/contracterp-74.xml` - TITAN hardware schedule export, use for Import wizard testing (upload via `upload_file`)
 
 ### Every resolver needs a token now (#415)
@@ -70,8 +76,15 @@ changes it. Two independent reasons, both addressed by #414 but neither automati
 2. Relay installs live in Postgres and a PR environment boots a fresh empty one, so the handshake is
    refused (4403) even if the relay does dial. Since #414 the backend seeds a trusted install on
    startup from `RELAY_SEED_SECRET_HASH` - the SHA-256 already in production's row, copyable from
-   Admin -> Relay Installs ("Seed hash" column). That variable has to be set on the environment PR
-   deploys are cloned from; it is deliberately refused in production.
+   Admin -> Relay Installs ("Seed hash" column). Where that variable goes is the part that catches
+   people out (#431):
+   - It belongs on the **production** backend service and stays there inert. PR environments are cloned
+     from production, so that is the only place a new one can inherit it from; production refuses to
+     seed and logs the refusal at INFO, which is the intended steady state, not something to tidy up.
+   - **Inheritance happens at environment creation only.** Setting it on production does nothing for a
+     PR environment that already exists - set it on that environment's own backend service as well.
+     Verified 2026-07-30: pr-430 predated the variable and stayed GP-blind until it had its own copy.
+   - Seeding runs at backend startup, so the variable only takes effect on that service's next deploy.
 
 Read the default state as a free test fixture rather than a limitation. The relay-down half of any
 GP-gated feature - disabled controls, "not connected" copy, held values still displaying, buttons that
@@ -82,10 +95,13 @@ A PR environment with a connected relay is pinned to **TUBC** and refuses every 
 `company_not_allowed_on_channel`, reads and writes alike. Reads and writes both work against TUBC;
 that pin is what makes serving writes off a test backend acceptable at all.
 
-What a PR environment still cannot show is a NEW op. The workstation runs a packaged build, so a PR
-that adds to `_OPS` answers `unknown_op` -> `RELAY_OP_UNSUPPORTED` there just as it does on production
-before the relay is rebuilt (its own distinct UI state, worth checking on purpose during the
-deploy-before-rebuild window).
+What a PR environment cannot show out of the box is a NEW op. The workstation runs a packaged build, so
+a PR that adds to `_OPS` answers `unknown_op` -> `RELAY_OP_UNSUPPORTED` there just as it does on
+production before the relay is rebuilt (its own distinct UI state, worth checking on purpose during the
+deploy-before-rebuild window). To exercise the op itself, build the PR's branch with
+`gh workflow run relay-release.yml --ref <branch>` and install that zip on the workstation for the
+session - the full procedure, including how the release build gets restored afterwards, is the
+"testing a PR that adds a new op" section of `relay/README.md`. It is a manual install by design.
 
 Verified on PR #412 (issue #409's buyer dropdown), in the default disconnected state: the field
 rendered `role="combobox"`, disabled, still showing the stored `mira`, with "The GP relay is not
@@ -238,11 +254,15 @@ import-created draft otherwise blocks the register dialog with per-line `Require
    const BACKEND  = `https://backend-uc-nexus-pr-${PR}.up.railway.app`;
    const FRONTEND = `https://frontend-uc-nexus-pr-${PR}.up.railway.app`;
    ```
-1. **Sign in**: Use `evaluate_script` to fetch a sign-in token and navigate with it:
+1. **Sign in**: Use `evaluate_script` to fetch a sign-in token and navigate with it. Since #422 the
+   fetch must carry the testing secret whose SHA-256 you set as `TESTING_SIGN_IN_SECRET_HASH` on the
+   PR environment's backend (see the Auth bullet in the Environment section):
    ```js
    (async () => {
      const PR = 420;  // <- the PR number under test
-     const resp = await fetch(`https://backend-uc-nexus-pr-${PR}.up.railway.app/testing/clerk-sign-in`);
+     const SECRET = '...';  // <- preimage of that environment's TESTING_SIGN_IN_SECRET_HASH
+     const resp = await fetch(`https://backend-uc-nexus-pr-${PR}.up.railway.app/testing/clerk-sign-in`,
+       { headers: { 'X-Testing-Secret': SECRET } });
      const { token } = await resp.json();
      window.location.href = `https://frontend-uc-nexus-pr-${PR}.up.railway.app/?__clerk_ticket=${token}&cb=${Date.now()}`;
      return 'Navigating with sign-in token...';
