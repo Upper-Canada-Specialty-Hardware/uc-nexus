@@ -5,6 +5,9 @@ Every resolver here is Admin/Manager-gated (#415). `updateUserRoles` is the gran
 `createGpJob` and `createGpBuyer` - so an ungated copy let any caller mint the role that opens all of
 them. `users` is gated for the same reason a roster is not public: it returns every account's email,
 roles and GP buyer id. The three writes are only ever issued by the admin User Management page.
+
+The requirement itself lives in ROOT_FIELD_POLICY (app/auth_policy.py) since #423, not in these
+bodies - which is why nothing below opens with a gate call.
 """
 
 import strawberry
