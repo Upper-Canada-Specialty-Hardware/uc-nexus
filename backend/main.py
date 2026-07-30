@@ -383,14 +383,39 @@ def reset_data(request: Request):
 
 
 @app.get("/testing/clerk-sign-in")
-def get_clerk_sign_in_token(email: str = "jayp@ucsh.com"):
-    """Create a Clerk sign-in token for E2E testing. Only available when TESTING_ENABLED=true."""
+def get_clerk_sign_in_token(request: Request, email: str = "jayp@ucsh.com"):
+    """Create a Clerk sign-in token for E2E testing.
+
+    Gated twice, like /admin/reset-data (#422). TESTING_ENABLED keeps it off any deployment that is
+    not a test target, checked first so a production deployment refuses outright rather than leaking
+    whether the caller's credential would have been good enough. Then the caller must prove they are
+    already an Admin/Manager, or present the shared testing secret in X-Testing-Secret - the
+    bootstrap path for a fresh PR environment, where the whole point of this endpoint is that no
+    session exists yet. Auth is not optional here: every environment shares the production Clerk
+    instance, so what this mints is a real session for a real staff account, Admin/Manager included,
+    and with only the environment switch this route was a full impersonation primitive on any
+    deployment where the switch was left on."""
+    import hashlib
+    import hmac
+
     import httpx
 
-    from app.config import CLERK_SECRET_KEY, TESTING_ENABLED
+    from app.config import CLERK_SECRET_KEY, TESTING_ENABLED, TESTING_SIGN_IN_SECRET_HASH
 
     if not TESTING_ENABLED:
         return JSONResponse(status_code=403, content={"error": "Testing is not enabled"})
+
+    presented = (request.headers.get("x-testing-secret") or "").strip()
+    secret_ok = bool(TESTING_SIGN_IN_SECRET_HASH) and bool(presented)
+    if secret_ok:
+        digest = hashlib.sha256(presented.encode("utf-8")).hexdigest()
+        secret_ok = hmac.compare_digest(digest, TESTING_SIGN_IN_SECRET_HASH.strip().lower())
+    if not secret_ok:
+        try:
+            require_admin_request(request)
+        except AppError as e:
+            status = 403 if e.code == "FORBIDDEN" else 401
+            return JSONResponse(status_code=status, content={"error": str(e), "code": e.code})
 
     headers = {"Authorization": f"Bearer {CLERK_SECRET_KEY}"}
 

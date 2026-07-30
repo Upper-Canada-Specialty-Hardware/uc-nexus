@@ -4,11 +4,18 @@ Plain `def test_...(): asyncio.run(...)` throughout (no pytest-asyncio dependenc
 no async test infra yet, and this keeps that decision out of scope for this slice."""
 
 import asyncio
+import logging
+import uuid
 
 import pytest
 
 from app.errors import RelayCallError, RelayOpUnsupportedError, RelayTimeoutError, RelayUnavailableError
-from app.services.relay_gateway import RelayGateway
+from app.services.relay_gateway import (
+    DISCONNECT_REASON_PEER,
+    DISCONNECT_REASON_SHUTDOWN,
+    HEARTBEAT_MAX_MISSED,
+    RelayGateway,
+)
 
 
 class FakeWebSocket:
@@ -367,8 +374,6 @@ def test_relay_call_maps_an_unknown_op_reply_to_op_unsupported():
 
 
 def test_try_register_records_the_install_backing_the_connection():
-    import uuid
-
     gateway = RelayGateway()
     assert gateway.install_id is None
     install_id = uuid.uuid4()
@@ -377,8 +382,6 @@ def test_try_register_records_the_install_backing_the_connection():
 
 
 def test_unregister_clears_the_install_id():
-    import uuid
-
     gateway = RelayGateway()
     ws = FakeWebSocket()
     gateway.try_register("TUBC", ws, uuid.uuid4())
@@ -393,3 +396,178 @@ def test_an_older_caller_that_omits_the_install_id_still_registers():
     gateway = RelayGateway()
     assert gateway.try_register("TUBC", FakeWebSocket()) is True
     assert gateway.install_id is None
+
+
+# --- disconnect diagnosability (#384) -----------------------------------------------------------------
+# The relay dropped for ~5 minutes on 2026-07-28 and reconnected on its own, and the logs could not say
+# when it went, why, or for how long it had been up: unregister wrote nothing, so a socket held open for
+# days produced exactly one log line (uvicorn's access log for the accept) for its entire lifetime.
+
+
+def _records(caplog, level: int) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if r.levelno == level and r.name == "app.services.relay_gateway"]
+
+
+def test_unregister_logs_the_disconnect_with_the_identity_and_how_long_it_was_held(caplog):
+    gateway = RelayGateway()
+    ws = FakeWebSocket()
+    install_id = uuid.uuid4()
+    gateway.try_register("TUBC", ws, install_id)
+    gateway.note_hello("relay-v0.1.0-build.30", ["list_vendors"])
+
+    with caplog.at_level(logging.INFO, logger="app.services.relay_gateway"):
+        gateway.unregister(ws)
+
+    warnings = _records(caplog, logging.WARNING)
+    assert len(warnings) == 1
+    record = warnings[0]
+    # Everything a disconnect has to be correlated against the relay's own logs must be IN THE MESSAGE,
+    # not only in `extra`: uvicorn configures no root handler, so app records render through
+    # logging.lastResort as the bare message and every extra field is dropped in production.
+    assert str(install_id) in record.getMessage()
+    assert "TUBC" in record.getMessage()
+    assert "relay-v0.1.0-build.30" in record.getMessage()
+    assert "held_seconds=" in record.getMessage()
+    assert record.install_id == str(install_id)
+    assert record.company == "TUBC"
+    assert record.build == "relay-v0.1.0-build.30"
+    assert record.held_seconds >= 0
+
+
+def test_a_plain_disconnect_is_reported_as_peer_initiated(caplog):
+    # Nothing on this side decided the disconnect, so the socket went away under us - a different
+    # failure with a different owner than a reap, and the distinction is unrecoverable after the fact.
+    gateway = RelayGateway()
+    ws = FakeWebSocket()
+    gateway.try_register("TUBC", ws)
+
+    with caplog.at_level(logging.INFO, logger="app.services.relay_gateway"):
+        gateway.unregister(ws)
+
+    record = _records(caplog, logging.WARNING)[0]
+    assert record.reason == DISCONNECT_REASON_PEER
+    assert DISCONNECT_REASON_PEER in record.getMessage()
+
+
+def test_a_heartbeat_reap_is_reported_as_a_reap_with_the_miss_count(caplog):
+    # register_ping_miss returning True is what makes main.py's heartbeat close the socket, which ends
+    # the read loop and lands in the route's finally -> unregister. That moment is the only one that
+    # knows we killed it, so the reason is stamped there and read back here.
+    gateway = RelayGateway()
+    ws = FakeWebSocket()
+    gateway.try_register("TUBC", ws)
+    gateway.note_pong()  # arm the reaper, so the tighter armed limit applies
+    while not gateway.register_ping_miss():
+        pass
+
+    with caplog.at_level(logging.INFO, logger="app.services.relay_gateway"):
+        gateway.unregister(ws)
+
+    record = _records(caplog, logging.WARNING)[0]
+    assert record.reason.startswith("reaped after")
+    assert f"{HEARTBEAT_MAX_MISSED} missed pings" in record.reason
+    assert "armed" in record.reason
+    assert record.reason in record.getMessage()
+
+
+def test_a_reaped_reason_does_not_leak_into_the_next_connection(caplog):
+    # try_register clears the stamp, so a relay that reconnects and later drops on its own is not
+    # blamed for the previous connection's reap.
+    gateway = RelayGateway()
+    first_ws = FakeWebSocket()
+    gateway.try_register("TUBC", first_ws)
+    while not gateway.register_ping_miss():
+        pass
+    gateway.unregister(first_ws)
+
+    second_ws = FakeWebSocket()
+    gateway.try_register("TUBC", second_ws)
+    caplog.clear()  # drop the first connection's disconnect line; only the second one is under test
+    with caplog.at_level(logging.INFO, logger="app.services.relay_gateway"):
+        gateway.unregister(second_ws)
+
+    assert _records(caplog, logging.WARNING)[0].reason == DISCONNECT_REASON_PEER
+
+
+def test_the_failed_pending_calls_carry_the_disconnect_reason():
+    # The reason rides the RelayUnavailableError too, so "relay unavailable" in the UI and in an outbox
+    # row names the same cause as the log line.
+    async def run():
+        gateway = RelayGateway()
+        ws = FakeWebSocket()
+        gateway.try_register("TUBC", ws)
+        call_task = asyncio.create_task(gateway.relay_call("TUBC", "list_vendors", timeout=1))
+        while not ws.sent:
+            await asyncio.sleep(0)
+        while not gateway.register_ping_miss():
+            pass
+        gateway.unregister(ws)
+
+        with pytest.raises(RelayUnavailableError) as exc_info:
+            await call_task
+        assert "reaped after" in exc_info.value.message
+
+    asyncio.run(run())
+
+
+def test_unregistering_a_refused_socket_leaves_the_incumbent_alone(caplog):
+    # The 4409 path: a second relay is refused at try_register and torn down, sharing this gateway with
+    # the live one. unregister compares identity, so that teardown must not log the incumbent away,
+    # clear its company/install/build, or consume the reason stamped for its eventual disconnect.
+    gateway = RelayGateway()
+    live_ws = FakeWebSocket()
+    install_id = uuid.uuid4()
+    gateway.try_register("TUBC", live_ws, install_id)
+    gateway.note_hello("relay-v0.1.0-build.30", ["list_vendors"])
+    while not gateway.register_ping_miss():
+        pass
+
+    refused_ws = FakeWebSocket()
+    assert gateway.try_register("TUBC", refused_ws, uuid.uuid4()) is False
+    caplog.clear()  # the refusal logs a line of its own; what is under test is the teardown after it
+    with caplog.at_level(logging.INFO, logger="app.services.relay_gateway"):
+        gateway.unregister(refused_ws)
+
+    assert _records(caplog, logging.WARNING) == []  # nothing was disconnected
+    assert gateway.connected is True
+    assert gateway.company == "TUBC"
+    assert gateway.install_id == install_id
+    assert gateway.build == "relay-v0.1.0-build.30"
+
+    # ...and the incumbent's own disconnect still reports the reap it had already earned.
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="app.services.relay_gateway"):
+        gateway.unregister(live_ws)
+    assert _records(caplog, logging.WARNING)[0].reason.startswith("reaped after")
+
+
+def test_a_refused_connection_is_logged_against_the_incumbent(caplog):
+    # A refused reconnect is what a zombie incumbent looks like from outside - the real relay dialling
+    # back in every few seconds while a dead socket holds the slot - and it used to be silent.
+    gateway = RelayGateway()
+    gateway.try_register("TUBC", FakeWebSocket(), uuid.uuid4())
+
+    with caplog.at_level(logging.INFO, logger="app.services.relay_gateway"):
+        assert gateway.try_register("TUBC", FakeWebSocket()) is False
+
+    record = _records(caplog, logging.WARNING)[0]
+    assert "slot already held" in record.getMessage()
+    assert record.held_seconds >= 0
+
+
+def test_close_for_shutdown_does_not_log_the_relay_as_failed(caplog):
+    # A deploy closed the socket on purpose and the relay is already reconnecting (close code 1012).
+    # Logging that at WARNING beside genuine drops would train everyone to ignore the one that matters.
+    async def run():
+        gateway = RelayGateway()
+        ws = FakeWebSocket()
+        gateway.try_register("TUBC", ws)
+        with caplog.at_level(logging.INFO, logger="app.services.relay_gateway"):
+            await gateway.close_for_shutdown()
+
+        assert _records(caplog, logging.WARNING) == []
+        infos = _records(caplog, logging.INFO)
+        assert len(infos) == 1
+        assert infos[0].reason == DISCONNECT_REASON_SHUTDOWN
+
+    asyncio.run(run())
