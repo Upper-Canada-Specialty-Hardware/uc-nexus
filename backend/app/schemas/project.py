@@ -110,6 +110,11 @@ class ProjectMutations:
         dropdown and is quarantined by the #425 setup check on the next sync stamp. Splitting them
         into a second call would make that broken state reachable through a partial failure.
 
+        `cost_codes_provisioned` carries how many of them GP actually kept, so the dialog can be honest
+        about a selection that did not land. On the adopt path it is zero and means it: an already
+        existing job is left exactly as GP has it, the picked codes are NOT applied to it, and
+        created=false plus the zero count is how the client is told that.
+
         Admin-only. Creating a job writes to the accounting system of record.
         """
 
@@ -157,7 +162,9 @@ class ProjectMutations:
                 # amount of retrying can clear.
                 logger.info("create_gp_job: %s already in GP; adopting instead", input.job_number)
                 project = await _adopt_existing(input.job_number)
-                return CreateGpJobResult(project=project, created=False)
+                # Nothing was provisioned: the create never ran, and this path deliberately does not
+                # go on to write cost codes onto a job somebody else's setup already owns.
+                return CreateGpJobResult(project=project, created=False, cost_codes_provisioned=0)
             # GP said no - a closed fiscal period, an address code that isn't on the customer, a
             # division without accounts. The proc words those better than we could, so the message is
             # passed through to the dialog rather than replaced with a generic failure.
@@ -167,6 +174,11 @@ class ProjectMutations:
         # echoed back (see ops.create_job_op).
         job_number = str((result or {}).get("job_number") or input.job_number).strip()
         job_name = str((result or {}).get("job_name") or input.job_name).strip() or None
+        # The relay's verified read-back of JC00701, not len(payload["cost_codes"]). A relay older than
+        # #448 ignores the unknown cost_codes key entirely and answers without this field, so it reads
+        # as 0 - which is exactly what happened in GP, and how a silently dropped selection surfaces to
+        # the dialog instead of being reported as a provisioned job.
+        cost_codes_provisioned = int((result or {}).get("cost_codes_provisioned") or 0)
 
         def _persist() -> Project:
             with SessionLocal() as session:
@@ -177,14 +189,22 @@ class ProjectMutations:
 
         try:
             # Off the event loop: the /relay-link read loop runs on it and must not block on Postgres.
-            return CreateGpJobResult(project=await asyncio.to_thread(_persist), created=True)
+            return CreateGpJobResult(
+                project=await asyncio.to_thread(_persist),
+                created=True,
+                cost_codes_provisioned=cost_codes_provisioned,
+            )
         except ConflictError:
             # The sync adopted this job between GP committing and us persisting. Benign race, same as
             # the one _persist_missing swallows from the other side - the row we wanted exists.
             # GP still created the job on this call, so this is a real creation - only the Nexus row
             # was written by someone else first.
             logger.info("create_gp_job: %s was adopted by the sync first", job_number)
-            return CreateGpJobResult(project=await asyncio.to_thread(_load_project, job_number), created=True)
+            return CreateGpJobResult(
+                project=await asyncio.to_thread(_load_project, job_number),
+                created=True,
+                cost_codes_provisioned=cost_codes_provisioned,
+            )
         except Exception:
             # The job EXISTS in GP at this point - that call already committed. Losing the Nexus row is
             # recoverable rather than fatal: the sync adopts it on its next pass, and retrying the

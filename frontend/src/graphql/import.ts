@@ -213,6 +213,10 @@ export const CREATE_GP_JOB = gql`
   mutation CreateGpJob($input: CreateGpJobInput!) {
     createGpJob(input: $input) {
       created
+      # Issue #448: GP's own read-back count of what landed in JC00701. A relay older than #448 drops
+      # the unknown costCodes key without a word and answers a perfectly successful create, so a zero
+      # against a non-empty selection is the only way to detect the bare, quarantined job it just made.
+      costCodesProvisioned
       # id only: the dialog reads created, and the list is refreshed by refetchQueries, so the rest
       # of the project would be fetched and thrown away.
       project {

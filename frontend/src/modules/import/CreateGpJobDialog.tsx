@@ -376,6 +376,10 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
     () => new Set(selectedCostCodeEntries.map(costCodeKey)),
     [selectedCostCodeEntries],
   );
+  // The denominator of the counter. Mapped rows, not every row: an unmapped one can never be checked,
+  // so counting it made an untouched form - which has everything it is allowed to have selected -
+  // read as though the user had already deselected something.
+  const mappedCostCodeCount = useMemo(() => costCodeMaster.filter((c) => c.mapped).length, [costCodeMaster]);
 
   const toggleCostCode = useCallback((key: string) => {
     setDeselectedCostCodes((prev) => {
@@ -415,6 +419,11 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
   ].some((e) => isRelayOpUnsupported(e));
   // The optional section degrades on its own instead: pickers become free-text entry.
   const employeesUnavailable = Boolean(employeesError);
+  // #448: deliberately NOT folded into readsUnsupported. A relay too old for list_cost_code_master
+  // still creates jobs, and a job with no cost codes is a legal create - blocking the form would take
+  // away something #380 allowed. What it changes is the wording: the raw "does not support
+  // list_cost_code_master" says nothing a user can act on, whereas "update the relay" does.
+  const costCodeMasterUnsupported = isRelayOpUnsupported(costCodeMasterError);
 
   const refreshReads = useCallback(() => {
     void refetchCustomers();
@@ -440,15 +449,21 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
     billScopedToOwnCustomer,
   ]);
 
-  const [createGpJob, { loading }] = useMutation<{ createGpJob: { created: boolean; project: Pick<Project, 'id'> } }>(
-    CREATE_GP_JOB,
-    { refetchQueries: [{ query: GET_PROJECTS }] },
-  );
+  const [createGpJob, { loading }] = useMutation<{
+    createGpJob: { created: boolean; costCodesProvisioned: number; project: Pick<Project, 'id'> };
+  }>(CREATE_GP_JOB, { refetchQueries: [{ query: GET_PROJECTS }] });
+
+  // #448: the selection is derived from a master that is not there yet while the read is in flight, so
+  // a submit fired in that window sends costCodes: [] and creates exactly the bare, quarantined job
+  // this feature exists to prevent - and it looks like a normal success. Folded into requiredComplete
+  // rather than into `disabled` so it also stops handleSubmit, which re-checks the same flag.
+  const costCodesPending = division !== '' && costCodeMasterLoading;
 
   const requiredComplete =
     jobNumber.trim() !== '' &&
     jobName.trim() !== '' &&
     division !== '' &&
+    !costCodesPending &&
     customer !== null &&
     addressCodeOrBlank(jobAddressCode) !== '' &&
     addressCodeOrBlank(billtoAddressCode) !== '' &&
@@ -628,12 +643,32 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
       // `=== true`, not `!== false`: an absent or partial payload must not be read as a creation,
       // which is the very claim this branch exists to stop making.
       const created = response.data?.createGpJob?.created === true;
-      showToast(
-        created
-          ? `Job ${jobNumber.trim()} created in GP.`
-          : `Job ${jobNumber.trim()} already existed in GP and is now a project.`,
-        'success',
-      );
+      // #448: and the same rule one level down. GP's read-back count is what says the selection
+      // actually landed - a relay older than #448 drops the codes without a word and still answers a
+      // perfectly ordinary success, so a job that reports "created" can be the bare, quarantined one
+      // this feature exists to prevent. Both silent cases are told rather than dressed as a success:
+      // nobody would otherwise find out until the register-PO dropdown came up empty.
+      const provisioned = response.data?.createGpJob?.costCodesProvisioned ?? 0;
+      const asked = selectedCostCodeEntries.length;
+      const job = jobNumber.trim();
+      if (!created) {
+        // The job is somebody else's setup, left exactly as GP has it - the picked codes were not
+        // added to it, so the selection the user made here has gone nowhere.
+        showToast(
+          asked === 0
+            ? `Job ${job} already existed in GP and is now a project.`
+            : `Job ${job} already existed in GP and is now a project. The cost codes selected here were not applied to it.`,
+          asked === 0 ? 'success' : 'warning',
+        );
+      } else if (asked > 0 && provisioned === 0) {
+        showToast(
+          `Job ${job} was created in GP, but its cost codes were not provisioned - the relay on that workstation is ` +
+            `too old to add them. Add them in GP, and update the relay before creating another job.`,
+          'warning',
+        );
+      } else {
+        showToast(`Job ${job} created in GP.`, 'success');
+      }
       handleClose();
     } catch (err) {
       // GP's own words - a closed fiscal period, an address code not on the customer, a division with
@@ -674,7 +709,9 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
       : costCodeMasterLoading
         ? 'Reading the cost-code master from GP…'
         : costCodeMaster.length === 0 && !costCodeMasterError
-          ? 'GP reports no cost codes for this division.'
+          ? // The master is company-wide - the division only decides which of its codes have a GL
+            // account - so an empty one is not a fact about the division that was picked.
+            "GP's cost-code master is empty for this company, so there is nothing to provision."
           : null;
 
   return (
@@ -880,17 +917,18 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
           <Stack spacing={0.75}>
             <Stack direction="row" spacing={2} alignItems="baseline" justifyContent="space-between">
               <Typography sx={microLabelSx}>Cost codes</Typography>
-              {costCodeMaster.length > 0 && (
+              {mappedCostCodeCount > 0 && (
                 <Typography variant="caption" color="text.secondary" sx={tabularSx}>
-                  {`${selectedCostCodeEntries.length} of ${costCodeMaster.length} selected`}
+                  {`${selectedCostCodeEntries.length} of ${mappedCostCodeCount} selected`}
                 </Typography>
               )}
             </Stack>
 
             {costCodeMasterError && (
               <Alert severity="warning">
-                Could not read the cost codes from GP. The job can still be created, but it will have none until they
-                are added in GP. {costCodeMasterError.message}
+                {costCodeMasterUnsupported
+                  ? 'The connected relay is too old to offer cost codes. Update the relay on that workstation to pick them here. The job can still be created, but it will have none until they are added in GP.'
+                  : `Could not read the cost codes from GP. The job can still be created, but it will have none until they are added in GP. ${costCodeMasterError.message}`}
               </Alert>
             )}
 

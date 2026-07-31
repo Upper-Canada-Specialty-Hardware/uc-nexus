@@ -279,10 +279,17 @@ class CreateGpJobResult:
     `created` distinguishes the two ways this mutation succeeds. Normally GP creates the job and
     `created` is true. But when GP already holds that job number the mutation adopts it instead of
     dead-ending (the retry-after-ambiguous-failure path), and the caller has to be able to tell -
-    otherwise the UI reports a creation that never happened."""
+    otherwise the UI reports a creation that never happened.
+
+    `cost_codes_provisioned` is how many JC00701 rows GP really ended up with, read back by the relay
+    rather than counted from the request (#448). It exists because a relay older than #448 ignores the
+    unknown `cost_codes` key and creates the bare, quarantined job this feature exists to prevent -
+    silently, and with an otherwise perfectly successful reply. A zero against a non-empty selection is
+    the only signal of that, so the dialog can say the codes did not land instead of claiming they did."""
 
     project: "Project"
     created: bool
+    cost_codes_provisioned: int
 
 
 @strawberry.type

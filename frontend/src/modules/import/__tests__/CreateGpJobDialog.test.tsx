@@ -191,7 +191,7 @@ function typeInto(label: RegExp, value: string) {
 }
 
 /** Everything the proc requires, in the order the form asks for it. */
-async function fillRequired() {
+async function fillRequiredFields() {
   // Nothing is editable until the relay status resolves - the company it carries is what the GP
   // reads are keyed on.
   await waitFor(() => expect(screen.getByLabelText(/^Job number/)).toBeEnabled());
@@ -204,9 +204,15 @@ async function fillRequired() {
   await pickFromSelect(/^Bill-to address/, /MAIN/);
   await pickFromSelect(/^Tax schedule/, /Federal GST 5%/);
   typeInto(/^Created date/, '2025-09-15');
+}
+
+/** The above, plus the cost-code master the create waits on. What most tests want. */
+async function fillRequired() {
+  await fillRequiredFields();
   // #448: the cost-code master is read off the division and its mapped codes default to checked, and
   // they ride along on the create - so a submit fired before that lands carries a different payload.
-  await screen.findByText('2 of 3 selected');
+  // The counter is the master having landed, and the button stays disabled until it has.
+  await screen.findByText('2 of 2 selected');
 }
 
 /** The row's own checkbox: its accessible name is the label, which leads with GP's own spelling. */
@@ -322,6 +328,8 @@ test('an adopted job does not claim it was created', async () => {
       data: {
         createGpJob: {
           created: false,
+          // #448: an already-existing job is left as GP has it, so nothing was provisioned onto it.
+          costCodesProvisioned: 0,
           project: { id: 'project-1', __typename: 'Project' },
           __typename: 'CreateGpJobResult',
         },
@@ -491,6 +499,7 @@ test('a successful submit sends only the optional fields that were filled in', a
       data: {
         createGpJob: {
           created: true,
+          costCodesProvisioned: MAPPED_COST_CODES.length,
           project: { id: 'project-1', __typename: 'Project' },
           __typename: 'CreateGpJobResult',
         },
@@ -882,8 +891,16 @@ test('a duplicate address code shows the relay detail, stays open, and re-reads 
 
 // --- #448: provisioning the new job's cost codes -------------------------------------------------
 
-/** The create, with whatever cost codes the form settled on. Everything else is the fillRequired run. */
-function createJobMock(costCodes: { costCode: string; costElement: number }[]): MockedResponse {
+/**
+ * The create, with whatever cost codes the form settled on. Everything else is the fillRequired run.
+ *
+ * `costCodesProvisioned` defaults to agreeing with the request, which is the healthy relay. The whole
+ * point of the field is that it need not: a relay older than #448 drops the codes and answers zero.
+ */
+function createJobMock(
+  costCodes: { costCode: string; costElement: number }[],
+  { created = true, costCodesProvisioned = costCodes.length } = {},
+): MockedResponse {
   return {
     request: {
       query: CREATE_GP_JOB,
@@ -912,7 +929,8 @@ function createJobMock(costCodes: { costCode: string; costElement: number }[]): 
     result: {
       data: {
         createGpJob: {
-          created: true,
+          created,
+          costCodesProvisioned,
           project: { id: 'project-1', __typename: 'Project' },
           __typename: 'CreateGpJobResult',
         },
@@ -938,7 +956,9 @@ test('the division cost-code master arrives with the mapped codes checked and th
   expect(costCodeBox(/210-200-2/)).toBeDisabled();
   expect(costCodeBox(/210-200-2/)).not.toBeChecked();
   expect(screen.getByText(/No GP account for cost element 2 in this division/)).toBeInTheDocument();
-  expect(screen.getByText('2 of 3 selected')).toBeInTheDocument();
+  // Mapped rows are the denominator: the unmapped one can never be ticked, so counting it would make
+  // an untouched form - which has everything it is allowed to have - read as partly deselected.
+  expect(screen.getByText('2 of 2 selected')).toBeInTheDocument();
 });
 
 test('a cost code unchecked before the submit is left out of the create', async () => {
@@ -951,7 +971,7 @@ test('a cost code unchecked before the submit is left out of the create', async 
 
   fireEvent.click(costCodeBox(/310-000-3/));
   await waitFor(() => expect(costCodeBox(/310-000-3/)).not.toBeChecked());
-  expect(screen.getByText('1 of 3 selected')).toBeInTheDocument();
+  expect(screen.getByText('1 of 2 selected')).toBeInTheDocument();
 
   await waitFor(() => expect(createButton()).toBeEnabled());
   fireEvent.click(createButton());
@@ -970,7 +990,7 @@ test('a job with no cost codes can still be created, with a warning that it cann
 
   fireEvent.click(costCodeBox(/310-000-3/));
   fireEvent.click(costCodeBox(/520-000-2/));
-  await waitFor(() => expect(screen.getByText('0 of 3 selected')).toBeInTheDocument());
+  await waitFor(() => expect(screen.getByText('0 of 2 selected')).toBeInTheDocument());
 
   expect(screen.getByText(/blocked from GP purchasing until they are added in GP/)).toBeInTheDocument();
   expect(createButton()).toBeEnabled();
@@ -978,4 +998,110 @@ test('a job with no cost codes can still be created, with a warning that it cann
   fireEvent.click(createButton());
 
   expect(await screen.findByText(/Job NEXUS-380-T1 created in GP/)).toBeInTheDocument();
+});
+
+test('the create is held while the cost-code master is still in flight, so an empty selection cannot be sent', async () => {
+  // The selection is DERIVED from the master, so while that read is in flight there is nothing to
+  // derive and the form would send costCodes: [] - creating exactly the bare, quarantined job this
+  // feature exists to prevent, and reporting it as an ordinary success.
+  //
+  // The read is pinned open rather than merely slowed: a delay is a race against however long the
+  // other reads take under a loaded test run, and this has to be the read that holds the button. The
+  // other direction - it enables once the master lands - is what every fillRequired() test proves.
+  const masterInFlight: MockedResponse = { ...costCodeMasterReadMock, delay: INFINITE };
+
+  render(
+    <MockedProvider
+      mocks={[
+        relayStatusMock(true),
+        ...readMocks.filter((m) => m !== costCodeMasterReadMock),
+        masterInFlight,
+        projectsMock,
+        // servable on purpose: a button that stopped holding would then reach a toast the assertion
+        // below catches, rather than dying on an unmatched operation that looks the same as passing
+        createJobMock(MAPPED_COST_CODES),
+      ]}
+    >
+      <ToastProvider>
+        <CreateGpJobDialog open onClose={() => {}} />
+      </ToastProvider>
+    </MockedProvider>,
+  );
+
+  // every other required field is filled, so the disabled button is down to this read and nothing else
+  await fillRequiredFields();
+
+  expect(screen.getByText(/Reading the cost-code master from GP/)).toBeInTheDocument();
+  expect(createButton()).toBeDisabled();
+  // and a click in that window does nothing at all - no create, no toast
+  fireEvent.click(createButton());
+  await waitFor(() => expect(screen.queryByText(/created in GP/)).not.toBeInTheDocument());
+});
+
+test('a relay too old for the cost-code master says to update it rather than showing the raw op error', async () => {
+  // Deliberately NOT the hard readsUnsupported gate: a relay without list_cost_code_master still
+  // creates jobs, and an unprovisioned job is a legal create. Only the wording changes - "does not
+  // support list_cost_code_master" tells the user nothing they can act on.
+  const unsupportedMaster: MockedResponse = {
+    request: { query: GET_GP_COST_CODE_MASTER, variables: { company: COMPANY, division: 'VANCOUVER' } },
+    maxUsageCount: INFINITE,
+    result: {
+      errors: [
+        new GraphQLError('The connected relay does not support list_cost_code_master', {
+          extensions: { code: 'RELAY_OP_UNSUPPORTED' },
+        }),
+      ],
+    },
+  };
+
+  render(
+    <MockedProvider
+      mocks={[
+        relayStatusMock(true),
+        ...readMocks.filter((m) => m !== costCodeMasterReadMock),
+        unsupportedMaster,
+        projectsMock,
+      ]}
+    >
+      <ToastProvider>
+        <CreateGpJobDialog open onClose={() => {}} />
+      </ToastProvider>
+    </MockedProvider>,
+  );
+
+  await fillRequiredFields();
+
+  expect(await screen.findByText(/relay is too old to offer cost codes/i)).toBeInTheDocument();
+  expect(screen.queryByText(/does not support list_cost_code_master/)).not.toBeInTheDocument();
+  // the job itself is still creatable, so neither the hard banner nor a dead button appears
+  expect(screen.queryByText(/relay is too old to create jobs/i)).not.toBeInTheDocument();
+  await waitFor(() => expect(createButton()).toBeEnabled());
+});
+
+test('a create whose cost codes did not land warns instead of reporting a clean success', async () => {
+  // A relay older than #448 ignores the unknown costCodes key without a word and answers a perfectly
+  // ordinary success, having made the bare job the GP-setup check quarantines. GP's own read-back
+  // count is the only evidence of it, so a zero against a non-empty selection has to be said out loud.
+  const droppedByAnOldRelay = createJobMock(MAPPED_COST_CODES, { costCodesProvisioned: 0 });
+
+  renderDialog([droppedByAnOldRelay]);
+  await fillRequired();
+  await waitFor(() => expect(createButton()).toBeEnabled());
+  fireEvent.click(createButton());
+
+  expect(await screen.findByText(/cost codes were not provisioned/i)).toBeInTheDocument();
+  expect(screen.queryByText('Job NEXUS-380-T1 created in GP.')).not.toBeInTheDocument();
+});
+
+test('an adopted job says the cost codes picked here were not applied to it', async () => {
+  // The adopt path leaves the job exactly as GP has it - the selection is not applied to somebody
+  // else's setup. Saying only "already existed" would let the user believe their codes went on it.
+  const adopted = createJobMock(MAPPED_COST_CODES, { created: false, costCodesProvisioned: 0 });
+
+  renderDialog([adopted]);
+  await fillRequired();
+  await waitFor(() => expect(createButton()).toBeEnabled());
+  fireEvent.click(createButton());
+
+  expect(await screen.findByText(/were not applied to it/i)).toBeInTheDocument();
 });

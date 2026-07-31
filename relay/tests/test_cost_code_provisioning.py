@@ -23,7 +23,6 @@ from ucnexus_relay.ops import RelayOpError
 
 _MasterRow = namedtuple("_MasterRow", "cc1 cc2 alias descr elem ptype ttype account_index resolved")
 _ExecRow = namedtuple("_ExecRow", "error_state err_string")
-_CountRow = namedtuple("_CountRow", "n")
 
 REQUIRED = {
     "job_number": "NEXUS-448-T1",
@@ -51,20 +50,17 @@ class _FakeCursor:
         return self._conn.rows
 
     def fetchone(self):
-        if "JC00701" in self._sql:
-            return _CountRow(self._conn.active_cost_codes)  # the provisioning read-back
         return _ExecRow(self._conn.error_state, self._conn.err_string)
 
 
 class _FakeConn:
-    """Answers the master read from `rows`, any proc EXEC with (error_state, err_string) and the
-    JC00701 read-back with `active_cost_codes`. Keeps every (sql, params) for assertions."""
+    """Answers the master read from `rows` and any proc EXEC with (error_state, err_string). Keeps
+    every (sql, params) for assertions."""
 
-    def __init__(self, *rows, error_state=0, err_string="", active_cost_codes=0):
+    def __init__(self, *rows, error_state=0, err_string=""):
         self.rows = list(rows)
         self.error_state = error_state
         self.err_string = err_string
-        self.active_cost_codes = active_cost_codes
         self.calls: list[tuple[str, tuple]] = []
 
     def cursor(self):
@@ -105,6 +101,15 @@ def test_the_master_read_joins_the_division_mapping_and_the_chart():
     assert "LEFT JOIN dbo.GL00105 g ON g.ACTINDX = a.ACTINDX" in sql
 
 
+def test_four_segment_master_codes_are_filtered_out_in_sql():
+    """The write sends segments 1 and 2 only, so a code with a third or fourth segment cannot be
+    provisioned faithfully - offering it would provision a DIFFERENT JC00701 row than the picker named.
+    No row in this company has one, which is why the filter costs nothing and refuses to guess."""
+    conn = _FakeConn(_master_row())
+    list_cost_code_master(conn, "VANCOUVER")
+    assert "WHERE RTRIM(m.Cost_Code_Number_3) = '' AND RTRIM(m.Cost_Code_Number_4) = ''" in conn.sql()
+
+
 def test_the_division_is_bound_stripped():
     # Same normalization list_divisions applies, so a division read out of that picker matches here.
     conn = _FakeConn(_master_row())
@@ -117,6 +122,9 @@ def test_a_row_assembles_the_shape_the_picker_and_the_write_both_need():
     assert list_cost_code_master(conn, "VANCOUVER") == [
         {
             "cost_code": "210-200",
+            # The raw segments ride along beside the joined form so the write never has to re-split it.
+            "cost_code_number_1": "210",
+            "cost_code_number_2": "200",
             "alias": "HOLLOW MTL",
             "description": "Hollow metal",
             "cost_element": 2,
@@ -126,6 +134,33 @@ def test_a_row_assembles_the_shape_the_picker_and_the_write_both_need():
             "mapped": True,
         }
     ]
+
+
+def test_a_duplicate_code_and_element_pair_keeps_the_first_row():
+    """No duplicate pair exists in JC40202 at this customer, but one would break three things at once:
+    duplicate keys in the picker, an account that depends on SQL row order, and both copies rejected by
+    the duplicate-selection validator. Keeping the first row makes the answer deterministic."""
+    conn = _FakeConn(_master_row(account_index=96), _master_row(account_index=1401, alias="SECOND"))
+    rows = list_cost_code_master(conn, "VANCOUVER")
+    assert len(rows) == 1
+    assert rows[0]["account_index"] == 96
+    assert rows[0]["alias"] == "HOLLOW MTL"
+
+
+def test_the_dedupe_key_includes_the_cost_element():
+    # cost_element is part of the key, so 210-200 element 2 and element 5 are two separate codes and
+    # the dedupe must not collapse them.
+    conn = _FakeConn(_master_row(elem=2), _master_row(elem=5))
+    assert [r["cost_element"] for r in list_cost_code_master(conn, "VANCOUVER")] == [2, 5]
+
+
+def test_a_null_profit_or_transaction_type_degrades_to_the_procs_default():
+    """None are NULL live. If one ever is, it has to become the proc's own default rather than kill the
+    whole company's picker with a TypeError on int(None)."""
+    conn = _FakeConn(_master_row(ptype=None, ttype=None))
+    row = list_cost_code_master(conn, "VANCOUVER")[0]
+    assert row["profit_type_number"] == 0
+    assert row["type_of_transaction"] == 0
 
 
 def test_a_blank_alias_or_description_comes_back_as_none():
@@ -255,12 +290,15 @@ def _request(cost_codes=None, **overrides):
 
 
 def _stub_job_create(monkeypatch):
-    """Everything create_job_op does before provisioning, stubbed to succeed."""
+    """Everything create_job_op does around provisioning, stubbed to succeed. Returns the list each
+    econnect.create_job call is recorded into, so a test can assert the job proc never ran."""
+    job_calls: list[dict] = []
     monkeypatch.setattr(econnect, "job_exists", lambda c, j: False)
-    monkeypatch.setattr(econnect, "create_job", lambda c, **k: None)
+    monkeypatch.setattr(econnect, "create_job", lambda c, **k: job_calls.append(k))
     monkeypatch.setattr(
         econnect, "get_job", lambda c, j: {"job_number": REQUIRED["job_number"], "job_name": "Test job"}
     )
+    return job_calls
 
 
 def _stub_master(monkeypatch, *rows):
@@ -284,9 +322,27 @@ def _stub_writes(monkeypatch):
     return written
 
 
+def _stub_on_job(monkeypatch, *, missing=()):
+    """The per-code verification read, recorded. `missing` names the 'cc1-cc2-element' strings the
+    lookup answers False for - a code the proc claimed to write that no PO could then reference."""
+    verified: list[tuple[str, str]] = []
+
+    def _fake(conn, job_number, cost_code):
+        verified.append((job_number, cost_code))
+        return cost_code not in missing
+
+    monkeypatch.setattr(econnect, "cost_code_on_job", _fake)
+    return verified
+
+
 def _mapped(cost_code="210-200", element=2, **overrides):
+    # The segments default to the joined form split at its FIRST '-', which is how GP's own two-segment
+    # codes decompose; a fixture whose second segment contains a '-' overrides them explicitly.
+    cc1, _, cc2 = cost_code.partition("-")
     base = {
         "cost_code": cost_code,
+        "cost_code_number_1": cc1,
+        "cost_code_number_2": cc2,
         "alias": "HOLLOW MTL",
         "description": "Hollow metal",
         "cost_element": element,
@@ -304,22 +360,58 @@ def test_no_cost_codes_provisions_nothing(monkeypatch):
     _stub_job_create(monkeypatch)
     seen = _stub_master(monkeypatch)
     written = _stub_writes(monkeypatch)
+    verified = _stub_on_job(monkeypatch)
 
     response = ops.create_job_op(conn, company="TUBC", request=_request())
 
     assert response.cost_codes_provisioned == 0
     assert seen == []  # the master is not even read
     assert written == []
-    assert conn.calls == []  # and no read-back either
+    assert verified == []  # and nothing to verify afterwards
+    assert conn.calls == []
+
+
+def test_the_selection_is_resolved_before_the_job_proc_runs(monkeypatch):
+    """A stale picker selection has to refuse the create having written NOTHING, which is only true
+    while the master read and its refusals sit ahead of wsiJCJobMaster's dry run."""
+    order: list[str] = []
+    conn = _FakeConn()
+
+    def _job_exists(c, j):
+        order.append("job_exists")
+        return False
+
+    def _master(c, division):
+        order.append("master")
+        return [_mapped()]
+
+    def _create_job(c, **k):
+        order.append("create_job")
+
+    monkeypatch.setattr(econnect, "job_exists", _job_exists)
+    monkeypatch.setattr(econnect, "list_cost_code_master", _master)
+    monkeypatch.setattr(econnect, "create_job", _create_job)
+    monkeypatch.setattr(
+        econnect, "get_job", lambda c, j: {"job_number": REQUIRED["job_number"], "job_name": "Test job"}
+    )
+    _stub_writes(monkeypatch)
+    _stub_on_job(monkeypatch)
+
+    ops.create_job_op(
+        conn, company="TUBC", request=_request(cost_codes=[{"cost_code": "210-200", "cost_element": 2}])
+    )
+
+    assert order == ["job_exists", "master", "create_job", "create_job"]
 
 
 def test_every_validation_pass_precedes_the_first_real_write(monkeypatch):
     """The eleventh code failing after ten were written leaves a half-provisioned job that only a
     rollback saves; validating the whole selection first is what makes the rollback unnecessary."""
-    conn = _FakeConn(active_cost_codes=2)
+    conn = _FakeConn()
     _stub_job_create(monkeypatch)
     _stub_master(monkeypatch, _mapped(), _mapped(cost_code="310-000", element=3))
     written = _stub_writes(monkeypatch)
+    _stub_on_job(monkeypatch)
 
     request = _request(
         cost_codes=[
@@ -337,10 +429,11 @@ def test_every_validation_pass_precedes_the_first_real_write(monkeypatch):
 def test_the_master_is_read_for_the_jobs_own_division(monkeypatch):
     # The same cost element resolves to a different account in a different division, so the division
     # is what decides the account, not a filter on the list.
-    conn = _FakeConn(active_cost_codes=1)
+    conn = _FakeConn()
     _stub_job_create(monkeypatch)
     seen = _stub_master(monkeypatch, _mapped())
     _stub_writes(monkeypatch)
+    _stub_on_job(monkeypatch)
 
     ops.create_job_op(
         conn, company="TUBC", request=_request(cost_codes=[{"cost_code": "210-200", "cost_element": 2}])
@@ -351,12 +444,17 @@ def test_the_master_is_read_for_the_jobs_own_division(monkeypatch):
 
 def test_every_written_value_comes_from_the_master(monkeypatch):
     """Provenance (#427/#430): the request names which codes, GP's configuration says what they mean.
-    The account index especially - a caller that could send one could post a job's costs anywhere."""
-    conn = _FakeConn(active_cost_codes=1)
+    The account index especially - a caller that could send one could post a job's costs anywhere.
+
+    The segments included: this fixture's second segment contains a '-', so re-splitting the joined
+    'cc1-cc2' form the way econnect.split_cost_code does would write '2' where GP holds '2-00'. The
+    master row's own segment keys are what the write binds, so they win."""
+    conn = _FakeConn()
     _stub_job_create(monkeypatch)
     _stub_master(
         monkeypatch,
         _mapped(
+            cost_code="210-2-00",
             alias="FROM GP",
             description="What GP has on file",
             account_index=1401,
@@ -365,16 +463,19 @@ def test_every_written_value_comes_from_the_master(monkeypatch):
         ),
     )
     written = _stub_writes(monkeypatch)
+    _stub_on_job(monkeypatch)
 
     ops.create_job_op(
-        conn, company="TUBC", request=_request(cost_codes=[{"cost_code": "210-200", "cost_element": 2}])
+        conn, company="TUBC", request=_request(cost_codes=[{"cost_code": "210-2-00", "cost_element": 2}])
     )
 
+    # what a re-split would have produced, and did not
+    assert econnect.split_cost_code("210-2-00")[:2] == ("210", "2")
     assert written[0] == {
         "only_validate": True,
         "job_number": "NEXUS-448-T1",
         "cost_code_number_1": "210",
-        "cost_code_number_2": "200",
+        "cost_code_number_2": "2-00",
         "alias": "FROM GP",
         "description": "What GP has on file",
         "cost_element": 2,
@@ -386,7 +487,7 @@ def test_every_written_value_comes_from_the_master(monkeypatch):
 
 def test_a_code_that_is_not_in_the_master_is_refused(monkeypatch):
     conn = _FakeConn()
-    _stub_job_create(monkeypatch)
+    job_calls = _stub_job_create(monkeypatch)
     _stub_master(monkeypatch, _mapped())
     written = _stub_writes(monkeypatch)
 
@@ -400,6 +501,7 @@ def test_a_code_that_is_not_in_the_master_is_refused(monkeypatch):
     assert "JC40202" in exc.value.message
     assert "TUBC" in exc.value.message
     assert written == []
+    assert job_calls == []  # not even the dry run: the refusal costs the job nothing
 
 
 def test_the_same_code_under_a_different_element_is_a_different_code(monkeypatch):
@@ -422,7 +524,7 @@ def test_a_code_with_no_usable_account_is_refused(monkeypatch):
     """Provisioning it would manufacture the dangling JC00701 row #425 is about: the job would register
     POs and then fail forever at receipt with eConnect 4612."""
     conn = _FakeConn()
-    _stub_job_create(monkeypatch)
+    job_calls = _stub_job_create(monkeypatch)
     _stub_master(monkeypatch, _mapped(account_index=1617, mapped=False))
     written = _stub_writes(monkeypatch)
 
@@ -436,13 +538,14 @@ def test_a_code_with_no_usable_account_is_refused(monkeypatch):
     assert "VANCOUVER" in exc.value.message
     assert "JC40302" in exc.value.message
     assert written == []
+    assert job_calls == []
 
 
 def test_nothing_is_written_when_a_later_selection_is_bad(monkeypatch):
     # The whole selection is checked against the master before any pass runs, so one bad code cannot
     # get ten good ones written first.
     conn = _FakeConn()
-    _stub_job_create(monkeypatch)
+    job_calls = _stub_job_create(monkeypatch)
     _stub_master(monkeypatch, _mapped())
     written = _stub_writes(monkeypatch)
 
@@ -459,31 +562,39 @@ def test_nothing_is_written_when_a_later_selection_is_bad(monkeypatch):
         )
 
     assert written == []
+    assert job_calls == []
 
 
-def test_the_read_back_counts_the_rows_that_actually_landed(monkeypatch):
-    conn = _FakeConn(active_cost_codes=1)
-    _stub_job_create(monkeypatch)
-    _stub_master(monkeypatch, _mapped())
-    _stub_writes(monkeypatch)
-
-    ops.create_job_op(
-        conn, company="TUBC", request=_request(cost_codes=[{"cost_code": "210-200", "cost_element": 2}])
-    )
-
-    sql, params = conn.calls[-1]
-    assert "SELECT COUNT(*) AS n FROM dbo.JC00701" in sql
-    assert "WS_Inactive = 0" in sql
-    assert params == ("NEXUS-448-T1",)
-
-
-def test_a_short_read_back_raises_naming_both_counts(monkeypatch):
-    """taPoLine has a known err=0-but-no-row mode and this is the same class of proc, so a success
-    report is not evidence a row landed."""
-    conn = _FakeConn(active_cost_codes=1)
+def test_each_provisioned_code_is_verified_through_the_po_paths_own_lookup(monkeypatch):
+    """cost_code_on_job is the lookup /po runs before it lets a line name a cost code, so asking it is
+    what keeps "provisioned" and "reachable by a PO" from drifting apart. The three-segment string is
+    the shape the register-PO dropdown and /po both speak."""
+    conn = _FakeConn()
     _stub_job_create(monkeypatch)
     _stub_master(monkeypatch, _mapped(), _mapped(cost_code="310-000", element=3))
     _stub_writes(monkeypatch)
+    verified = _stub_on_job(monkeypatch)
+
+    request = _request(
+        cost_codes=[
+            {"cost_code": "210-200", "cost_element": 2},
+            {"cost_code": "310-000", "cost_element": 3},
+        ]
+    )
+    response = ops.create_job_op(conn, company="TUBC", request=request)
+
+    assert verified == [("NEXUS-448-T1", "210-200-2"), ("NEXUS-448-T1", "310-000-3")]
+    assert response.cost_codes_provisioned == 2
+
+
+def test_a_code_that_did_not_land_raises_naming_it(monkeypatch):
+    """taPoLine has a known err=0-but-no-row mode and this is the same class of proc, so a success
+    report is not evidence a row landed. Naming the code beats naming a count."""
+    conn = _FakeConn()
+    _stub_job_create(monkeypatch)
+    _stub_master(monkeypatch, _mapped(), _mapped(cost_code="310-000", element=3))
+    _stub_writes(monkeypatch)
+    _stub_on_job(monkeypatch, missing=("310-000-3",))
 
     request = _request(
         cost_codes=[
@@ -495,8 +606,8 @@ def test_a_short_read_back_raises_naming_both_counts(monkeypatch):
         ops.create_job_op(conn, company="TUBC", request=request)
 
     assert exc.value.proc == "wsiJCJobDetailMSTR"
-    assert "has 1 active" in str(exc.value)
-    assert "expected 2" in str(exc.value)
+    assert "310-000-3" in str(exc.value)
+    assert "NEXUS-448-T1" in str(exc.value)
 
 
 def test_provisioning_runs_only_after_the_job_itself_landed(monkeypatch):
@@ -518,10 +629,10 @@ def test_provisioning_runs_only_after_the_job_itself_landed(monkeypatch):
 
 
 def test_the_job_proc_never_receives_the_cost_code_selection(monkeypatch):
-    """cost_codes is a provisioning instruction for step 5, not a wsiJCJobMaster field. If it leaks
-    into the kwargs create_job_op builds for econnect.create_job, that function's unknown-field guard
-    refuses EVERY create - and the permissive `lambda c, **k` stubs in the other tests would never
-    notice, which is exactly how the bug shipped once already."""
+    """cost_codes is a provisioning instruction for steps 2 and 6, not a wsiJCJobMaster field. If it
+    leaks into the kwargs create_job_op builds for econnect.create_job, that function's unknown-field
+    guard refuses EVERY create - and the permissive `lambda c, **k` stubs in the other tests would
+    never notice, which is exactly how the bug shipped once already."""
     received: list[set] = []
     monkeypatch.setattr(econnect, "job_exists", lambda c, j: False)
     monkeypatch.setattr(econnect, "create_job", lambda c, **k: received.append(set(k)))
@@ -530,7 +641,8 @@ def test_the_job_proc_never_receives_the_cost_code_selection(monkeypatch):
     )
     _stub_master(monkeypatch, _mapped())
     _stub_writes(monkeypatch)
-    conn = _FakeConn(active_cost_codes=1)
+    _stub_on_job(monkeypatch)
+    conn = _FakeConn()
 
     ops.create_job_op(
         conn, company="TUBC", request=_request(cost_codes=[{"cost_code": "210-200", "cost_element": 2}])

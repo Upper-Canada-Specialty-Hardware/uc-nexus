@@ -416,8 +416,9 @@ class CreateJobResponse(BaseModel):
     job_number: str
     job_name: str
     company: str
-    # Issue #448: how many JC00701 cost codes were written onto the new job, verified by a read-back
-    # rather than counted off the request. 0 for a caller that sent none.
+    # Issue #448: how many JC00701 cost codes were written onto the new job. Each one is read back
+    # individually through the same lookup a PO uses, so this is not the request counted back at the
+    # caller. 0 for a caller that sent none.
     cost_codes_provisioned: int = 0
 
 
