@@ -17,7 +17,7 @@ from app.database import SessionLocal
 from app.errors import ConflictError, RelayCallError, RelayUnavailableError, ValidationError
 from app.models.project import Project as ProjectModel
 from app.schemas import project as project_module
-from app.schemas.inputs import CreateGpJobInput
+from app.schemas.inputs import CostCodeSelectionInput, CreateGpJobInput
 from app.schemas.project import ProjectMutations
 
 
@@ -162,6 +162,9 @@ def test_a_job_already_in_gp_is_adopted_rather_than_dead_ending(monkeypatch):
     assert result.project == "project:NEXUS-380-T1"
     # created=False is what stops the UI reporting a creation that never happened (#392)
     assert result.created is False
+    # and nothing was provisioned: the job GP already has keeps its own cost codes, so the dialog has
+    # to tell the user the selection was not applied rather than let it look like it was (#448)
+    assert result.cost_codes_provisioned == 0
     assert synced == [True]  # the sync pass is what gives the project GP's own job name
 
 
@@ -191,6 +194,80 @@ def test_sends_the_optional_fields_that_were_filled_in(monkeypatch):
     assert payload["estimator_id"] == "EST1"
     assert payload["use_tax_schedule"] == "GST 5%"
     assert payload["schedule_start_date"] == "2025-09-20"
+
+
+def test_sends_the_selected_cost_codes_for_provisioning(monkeypatch):
+    """The picked codes ride on the same create_job call as the job (#448), so GP provisions JC00701
+    in the transaction that creates JC00102 rather than in a second one that can fail on its own.
+
+    Only the number and the element go: the account index the row needs is GP's to resolve from
+    JC40302 at create time, and a client that could name it could name a wrong one."""
+    _no_persist(monkeypatch)
+    calls = _relay(monkeypatch)
+
+    _create(
+        cost_codes=[
+            CostCodeSelectionInput(cost_code=" 210-200 ", cost_element=2),
+            CostCodeSelectionInput(cost_code="310-000", cost_element=3),
+        ]
+    )
+
+    assert calls[0][2]["cost_codes"] == [
+        # stripped: GP's own code numbers are fixed-width and space-padded, and a picker value that
+        # arrived with the padding still on would be provisioned as a code nothing else matches
+        {"cost_code": "210-200", "cost_element": 2},
+        {"cost_code": "310-000", "cost_element": 3},
+    ]
+
+
+def test_a_job_with_no_cost_codes_sends_an_empty_list(monkeypatch):
+    """Not an omitted key. Empty is the honest payload for "no cost structure", which GP accepts and
+    the #425 setup check then quarantines the project for on the next sync stamp - a real state, and
+    one the dialog warns about rather than prevents."""
+    _no_persist(monkeypatch)
+    calls = _relay(monkeypatch)
+
+    _create()
+
+    assert calls[0][2]["cost_codes"] == []
+
+
+def test_the_created_job_reports_gps_own_provisioned_count(monkeypatch):
+    """What GP kept, read back out of JC00701 by the relay - not len(the selection) echoed back.
+
+    The relay writes the rows and then counts them, so this is the only number that has been anywhere
+    near GP. Sending back the request's own length would make the field agree with the client by
+    construction and therefore worth nothing."""
+    _no_persist(monkeypatch)
+    _relay(
+        monkeypatch,
+        result={"job_number": "NEXUS-380-T1", "job_name": "Test job", "cost_codes_provisioned": 2},
+    )
+
+    result = _create(
+        cost_codes=[
+            CostCodeSelectionInput(cost_code="310-000", cost_element=3),
+            CostCodeSelectionInput(cost_code="520-000", cost_element=2),
+        ]
+    )
+
+    assert result.created is True
+    assert result.cost_codes_provisioned == 2
+
+
+def test_a_relay_too_old_to_provision_reports_zero(monkeypatch):
+    """A pre-#448 relay ignores the unknown cost_codes key and answers a plain, successful create with
+    no such field - having made the bare, quarantined job this feature exists to prevent.
+
+    Zero is both the honest count and the only signal of that, since nothing else about the reply says
+    the selection was dropped. The dialog turns it into a warning rather than a success toast."""
+    _no_persist(monkeypatch)
+    _relay(monkeypatch, result={"job_number": "NEXUS-380-T1", "job_name": "Test job"})
+
+    result = _create(cost_codes=[CostCodeSelectionInput(cost_code="310-000", cost_element=3)])
+
+    assert result.created is True
+    assert result.cost_codes_provisioned == 0
 
 
 def test_the_sync_winning_the_race_is_not_an_error(monkeypatch):

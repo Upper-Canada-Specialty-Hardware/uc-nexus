@@ -192,12 +192,31 @@ export const GET_GP_DIVISIONS = gql`
   }
 `;
 
+// Issue #448: the company's cost-code master, read per division because `mapped` is a property of the
+// pair - it says whether THIS division has a GL account for that code's cost element. A job created
+// with no cost codes has an empty register-PO dropdown and is quarantined by the GP-setup check on the
+// next sync, so the create form provisions them up front rather than leaving it to accounting.
+export const GET_GP_COST_CODE_MASTER = gql`
+  query GpCostCodeMaster($company: String!, $division: String!) {
+    gpCostCodeMaster(company: $company, division: $division) {
+      costCode
+      description
+      costElement
+      mapped
+    }
+  }
+`;
+
 // Issue #392: `created` distinguishes GP actually creating the job from the mutation adopting one GP
 // already held, so the toast can stop claiming a creation that did not happen.
 export const CREATE_GP_JOB = gql`
   mutation CreateGpJob($input: CreateGpJobInput!) {
     createGpJob(input: $input) {
       created
+      # Issue #448: GP's own read-back count of what landed in JC00701. A relay older than #448 drops
+      # the unknown costCodes key without a word and answers a perfectly successful create, so a zero
+      # against a non-empty selection is the only way to detect the bare, quarantined job it just made.
+      costCodesProvisioned
       # id only: the dialog reads created, and the list is refreshed by refetchQueries, so the rest
       # of the project would be fetched and thrown away.
       project {

@@ -205,6 +205,24 @@ def _run_list_cost_codes(company: str, payload: dict) -> dict:
     return {"company": company, "job": job, "cost_codes": rows}
 
 
+def _run_list_cost_code_master(company: str, payload: dict) -> dict:
+    """The company's cost-code master, scoped to one division (#448) - what the create-project dialog
+    offers when it asks which cost codes the new job should get.
+
+    Division-scoped for the same reason _run_list_cost_codes is job-scoped: it is not a filter on the
+    list, it is what decides the GL account each code would be provisioned with (JC40302 maps
+    (Divisions, Cost_Element) -> ACTINDX), so answering without one would return codes with no account
+    at all. A missing or blank division answers missing_division, exactly as the job read answers
+    missing_job."""
+    ops.check_company_allowed(company)
+    division = (payload.get("division") or "").strip()
+    if not division:
+        raise ops.RelayOpError("missing_division", "division is required")
+    with db.get_read_connection(company) as conn:
+        rows = econnect.list_cost_code_master(conn, division)
+    return {"company": company, "division": division, "cost_codes": rows}
+
+
 def _run_list_jobs(company: str, payload: dict) -> dict:
     ops.check_company_allowed(company)
     with db.get_read_connection(company) as conn:
@@ -359,6 +377,9 @@ _OPS = {
     "list_buyers": _run_list_buyers,
     "list_tax_details": _run_list_tax_details,
     "list_cost_codes": _run_list_cost_codes,
+    # issue #448 - the company cost-code master, so a job created from Nexus can be provisioned with a
+    # cost structure instead of arriving with none (which #425 quarantines on sight).
+    "list_cost_code_master": _run_list_cost_code_master,
     "list_jobs": _run_list_jobs,
     "read_po_totals": _run_read_po_totals,
     "create_po": _run_create_po,
