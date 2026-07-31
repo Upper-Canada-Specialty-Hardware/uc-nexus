@@ -13,11 +13,14 @@ import {
   TableContainer,
   TableHead,
   TableRow,
+  ToggleButton,
+  ToggleButtonGroup,
 } from '@mui/material';
 import { useQuery } from '@apollo/client/react';
 import type { GridColDef, GridRowParams } from '@mui/x-data-grid';
 import DataTable from '../../components/DataTable';
 import ReceiveModal from './ReceiveModal';
+import ReceivingHistory from './ReceivingHistory';
 import { formatPoStatus, poStatusChipColor } from '../po/poStatus';
 import { GET_PROJECTS } from '../../graphql/shared';
 import {
@@ -62,10 +65,17 @@ interface RecentReceiveRecord {
     poId: string;
     receivedAt: string;
     receivedBy: string;
+    // #447: GP's number for the receipt this receive posted. Null on rows recorded before the
+    // column existed, and on the rare receive whose relay response carried no number.
+    receiptNumber: string | null;
   };
   poNumber: string | null;
   totalItemsReceived: number;
 }
+
+/** Which half of the page is showing. Receive is what is owed and how to book it; History is what
+ *  has already landed, which needs the completed POs the Receive view deliberately drops (#447). */
+type ReceivingView = 'receive' | 'history';
 
 interface BackOrderedItem {
   poLineItemId: string;
@@ -184,13 +194,17 @@ export default function ReceivingPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [modalPOIds, setModalPOIds] = useState<string[]>([]);
   const [selectedPOIds, setSelectedPOIds] = useState<string[]>([]);
+  const [view, setView] = useState<ReceivingView>('receive');
 
-  // Queries
+  // Queries. The three receiving lists are skipped while History is showing: they are a different
+  // question, and paying for all three on a page that is not displaying them is the whole cost of
+  // putting two views behind one route.
+  const showReceive = view === 'receive';
   const {
     data: openPOsData,
     loading: openPOsLoading,
     error: openPOsError,
-  } = useQuery<{ openPOs: OpenPO[] }>(GET_OPEN_POS);
+  } = useQuery<{ openPOs: OpenPO[] }>(GET_OPEN_POS, { skip: !showReceive });
 
   const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
 
@@ -200,6 +214,7 @@ export default function ReceivingPage() {
     error: recentError,
   } = useQuery<{ recentReceiveRecords: RecentReceiveRecord[] }>(GET_RECENT_RECEIVE_RECORDS, {
     variables: { limit: 10 },
+    skip: !showReceive,
   });
 
   // Cross-project on purpose, hence the explicit null: what is still owed is the same question
@@ -210,16 +225,18 @@ export default function ReceivingPage() {
     error: backOrderError,
   } = useQuery<{ backOrderedItems: BackOrderedItem[] }>(GET_BACK_ORDERED_ITEMS, {
     variables: { projectId: null },
+    skip: !showReceive,
   });
 
   // Project lookup
+  const projects = useMemo(() => projectsData?.projects ?? [], [projectsData]);
   const projectMap = useMemo(() => {
     const map = new Map<string, string>();
-    for (const p of projectsData?.projects ?? []) {
+    for (const p of projects) {
       map.set(p.id, p.description || p.projectId);
     }
     return map;
-  }, [projectsData]);
+  }, [projects]);
 
   // PO rows
   const poColumns: GridColDef[] = useMemo(
@@ -353,14 +370,46 @@ export default function ReceivingPage() {
 
   return (
     <Box sx={{ position: 'relative', minHeight: '60vh' }}>
-      <Typography variant="h5" sx={{ mb: 0.5 }}>
-        Receiving
-      </Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 2.5 }}>
-        Book hardware off a purchase order and into a rack location, and see what is still owed.
-        Every receipt posts to GP.
-      </Typography>
+      <Box
+        sx={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'flex-start',
+          gap: 2,
+          flexWrap: 'wrap',
+          mb: 2.5,
+        }}
+      >
+        <Box>
+          <Typography variant="h5" sx={{ mb: 0.5 }}>
+            Receiving
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            {showReceive
+              ? 'Book hardware off a purchase order and into a rack location, and see what is still owed. Every receipt posts to GP.'
+              : 'Every purchase order that reached GP, and what has landed against it. Open a row for its receipts.'}
+          </Typography>
+        </Box>
+        {/* Two views of the same dock, not two pages: what is owed, and what already arrived. The
+            History side keeps the completed POs the Receive side drops (#447). */}
+        <ToggleButtonGroup
+          size="small"
+          exclusive
+          value={view}
+          onChange={(_e, next: ReceivingView | null) => {
+            if (next) setView(next);
+          }}
+          aria-label="Receiving view"
+        >
+          <ToggleButton value="receive">Receive</ToggleButton>
+          <ToggleButton value="history">History</ToggleButton>
+        </ToggleButtonGroup>
+      </Box>
 
+      {!showReceive && <ReceivingHistory projects={projects} projectMap={projectMap} />}
+
+      {showReceive && (
+        <>
       {/* Pending POs Section */}
       <Box
         sx={{
@@ -490,6 +539,10 @@ export default function ReceivingPage() {
                   <TableCell>Date</TableCell>
                   <TableCell>Received By</TableCell>
                   <TableCell>PO Number</TableCell>
+                  {/* #447: the GP receipt, beside the PO it was posted against. This row is the
+                      last thing a receiver sees after booking one in, so it is where the number is
+                      most likely to be wanted. */}
+                  <TableCell>GP Receipt</TableCell>
                   <TableCell align="right">Items Received</TableCell>
                 </TableRow>
               </TableHead>
@@ -501,6 +554,9 @@ export default function ReceivingPage() {
                     </TableCell>
                     <TableCell>{record.receiveRecord.receivedBy}</TableCell>
                     <TableCell sx={monoSx}>{record.poNumber ?? '\u2014'}</TableCell>
+                    <TableCell sx={monoSx}>
+                      {record.receiveRecord.receiptNumber ?? '\u2014'}
+                    </TableCell>
                     <TableCell align="right">{record.totalItemsReceived}</TableCell>
                   </TableRow>
                 ))}
@@ -508,6 +564,8 @@ export default function ReceivingPage() {
             </Table>
           </TableContainer>
         </FadeIn>
+      )}
+        </>
       )}
 
       <ReceiveModal

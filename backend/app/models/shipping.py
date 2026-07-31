@@ -1,14 +1,43 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 
-from sqlalchemy import CheckConstraint, Enum, ForeignKey, Index, Integer, SmallInteger, String, Text
+from sqlalchemy import (
+    CheckConstraint,
+    Date,
+    Enum,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    SmallInteger,
+    String,
+    Text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from . import Base
-from .enums import PullRequestItemType, ReturnDisposition
+from .enums import PullRequestItemType, ReturnDisposition, ShipmentStatus
 
 
 class PackingSlip(Base):
+    """One shipment out of the warehouse, and the Delivery Request that goes with it (#447).
+
+    The header below is the paper form UC Hardware's shipping department fills in and the
+    construction site signs off on: when it is being picked up and delivered, who is shipping it and
+    how to reach them, where it is being collected from, the questions the site has to answer before
+    a truck is worth sending, and the two contacts. It is written once at confirm time and printed
+    from here every time afterwards, so a Delivery Request reprinted a year later says exactly what
+    the driver was handed.
+
+    Every header field is nullable. The form is filled in by a human against whatever the site has
+    told them, and a blank on the paper is a real answer ("nobody asked about a forklift"), not a
+    validation failure - so the schema records blanks rather than refusing them.
+
+    `status` is the journey (see ShipmentStatus): the header is editable only while SCHEDULED, and
+    the lifecycle stamps below are the record of who moved it and when.
+    """
+
     __tablename__ = "packing_slips"
     __table_args__ = (Index("ix_packing_slips_project", "project_id"),)
 
@@ -18,6 +47,52 @@ class PackingSlip(Base):
     shipped_by: Mapped[str] = mapped_column(String, nullable=False)
     shipped_at: Mapped[datetime] = mapped_column(nullable=False)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
+
+    status: Mapped[ShipmentStatus] = mapped_column(
+        Enum(
+            ShipmentStatus,
+            name="shipment_status",
+            create_constraint=True,
+        ),
+        nullable=False,
+    )
+
+    # --- Delivery Request header ---------------------------------------------------------------
+    # Dates the truck is expected, as days rather than instants: nobody schedules a pickup to the
+    # minute, and printing a timezone-shifted timestamp on a form would be actively misleading.
+    pickup_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    delivery_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    shipper_email: Mapped[str | None] = mapped_column(String, nullable=True)
+    shipper_phone: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Snapshot of the warehouse address, not a foreign key: the warehouse record can be edited or
+    # retired years after the truck left, and the form has to keep printing where it was sent.
+    pickup_location: Mapped[str | None] = mapped_column(Text, nullable=True)
+    carrier_tag_bol: Mapped[str | None] = mapped_column(String, nullable=True)
+    weight_lbs: Mapped[Decimal | None] = mapped_column(Numeric(10, 2), nullable=True)
+    delivery_address: Mapped[str | None] = mapped_column(Text, nullable=True)
+    special_instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The site questions. Free text rather than booleans on purpose - the answers that come back are
+    # "yes until 3pm" and "gate 4, ask for Dave", and squashing those to a checkbox loses the part
+    # the driver needs.
+    gate_number: Mapped[str | None] = mapped_column(String, nullable=True)
+    forklift_onsite: Mapped[str | None] = mapped_column(String, nullable=True)
+    material_coming_back: Mapped[str | None] = mapped_column(String, nullable=True)
+    site_material_included: Mapped[str | None] = mapped_column(String, nullable=True)
+    construction_temp_keys: Mapped[str | None] = mapped_column(String, nullable=True)
+    extra_frame_anchors: Mapped[str | None] = mapped_column(String, nullable=True)
+    contractor_contact_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    contractor_contact_phone: Mapped[str | None] = mapped_column(String, nullable=True)
+    ucsh_contact_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    ucsh_contact_phone: Mapped[str | None] = mapped_column(String, nullable=True)
+    sales_order_number: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    # --- Lifecycle stamps ------------------------------------------------------------------------
+    # Who confirmed each leg and when. The actor is the Clerk-authenticated caller (#427), never
+    # something the client named.
+    picked_up_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    picked_up_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    delivered_by: Mapped[str | None] = mapped_column(String, nullable=True)
 
     items: Mapped[list["PackingSlipItem"]] = relationship(back_populates="packing_slip")
 

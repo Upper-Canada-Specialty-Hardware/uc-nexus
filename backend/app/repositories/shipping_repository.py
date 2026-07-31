@@ -18,6 +18,7 @@ from app.models.enums import (
     PullRequestStatus,
     ReservationSource,
     ReturnDisposition,
+    ShipmentStatus,
     ShippingOutRequestStatus,
 )
 from app.models.inventory import InventoryLocation as InventoryLocationModel
@@ -137,16 +138,84 @@ def get_ship_ready_items(
     }
 
 
+# Every column of the Delivery Request header (#447), in the order the paper form asks for them.
+# Named once because two paths write it - `confirm_shipment` fills it in and `update_shipment_details`
+# rewrites it - and a field that reached one but not the other would silently stop being editable.
+DELIVERY_REQUEST_FIELDS = (
+    "pickup_date",
+    "delivery_date",
+    "shipper_email",
+    "shipper_phone",
+    "pickup_location",
+    "carrier_tag_bol",
+    "weight_lbs",
+    "delivery_address",
+    "special_instructions",
+    "gate_number",
+    "forklift_onsite",
+    "material_coming_back",
+    "site_material_included",
+    "construction_temp_keys",
+    "extra_frame_anchors",
+    "contractor_contact_name",
+    "contractor_contact_phone",
+    "ucsh_contact_name",
+    "ucsh_contact_phone",
+    "sales_order_number",
+)
+
+# packing_slips.weight_lbs is Numeric(10, 2): eight digits ahead of the decimal point and no more.
+# Anything at or above this is refused here rather than at flush time, where Postgres raises a raw
+# numeric overflow that aborts the entire transaction - on the confirm path that would take the whole
+# shipment down over a typo in one box of the form.
+_MAX_WEIGHT_LBS = 100000000
+
+
+def _apply_delivery_details(packing_slip: PackingSlip, details: dict | None) -> None:
+    """Write the whole Delivery Request header onto a slip, blanks included.
+
+    Full replace, every field, every time: a key the caller left out is written as null, not skipped.
+    That is what makes clearing a field possible at all - the alternative reading ("absent means
+    unchanged") leaves a Delivery Request that can be corrected but never emptied, so a phone number
+    typed against the wrong shipment could not be taken back off it.
+
+    Whitespace-only text is stored as null rather than as a string of spaces, so "blank" has one
+    representation and the printed form does not render an invisible answer.
+
+    The one value that is range-checked is the weight, because it is the one the column can refuse.
+    Left to the database it fails as an overflow at commit and rolls back the confirm that was
+    carrying it, so a mistyped weight would look like shipping being broken rather than like a bad
+    number in a box.
+    """
+    values = details or {}
+    weight = values.get("weight_lbs")
+    if weight is not None and (weight < 0 or weight >= _MAX_WEIGHT_LBS):
+        raise ValidationError(
+            f"weight_lbs must be between 0 and {_MAX_WEIGHT_LBS - 1}.99 pounds",
+            field="weight_lbs",
+        )
+    for field in DELIVERY_REQUEST_FIELDS:
+        value = values.get(field)
+        if isinstance(value, str):
+            value = value.strip() or None
+        setattr(packing_slip, field, value)
+
+
 def confirm_shipment(
     session: Session,
     project_id: uuid.UUID,
     packing_slip_number: str,
     shipped_by: str,
     items: list[dict],
+    details: dict | None = None,
 ) -> PackingSlip:
     """
     Confirm a shipment: create PackingSlip + PackingSlipItems, transition
     OpeningItem states to Shipped_Out.
+
+    The slip is born SCHEDULED (#447) and carries the Delivery Request header the shipping
+    department filled in. The status is documentation of the truck's journey and nothing else - this
+    call is still the moment the hardware is claimed, so what it does to inventory is unchanged.
 
     Args:
         session: SQLAlchemy session
@@ -160,6 +229,8 @@ def confirm_shipment(
             - product_code: str (for Loose type)
             - hardware_category: str (for Loose type)
             - quantity: int
+        details: the Delivery Request header (DELIVERY_REQUEST_FIELDS). Every field is optional -
+            the form is filled in against whatever the site has said, and a blank is a real answer.
     """
     # 0. #425: quarantine gate. Shipping out is the last thing a project does, and it is the point of
     # no return - hardware leaves the building against a job whose costs cannot be booked. Blocked
@@ -238,7 +309,9 @@ def confirm_shipment(
         project_id=project_id,
         shipped_by=shipped_by,
         shipped_at=now,
+        status=ShipmentStatus.SCHEDULED,
     )
+    _apply_delivery_details(packing_slip, details)
     session.add(packing_slip)
     session.flush()
 
@@ -287,6 +360,99 @@ def confirm_shipment(
     )
 
     return packing_slip
+
+
+# ---------------------------------------------------------------------------
+# The Delivery Request lifecycle (#447): SCHEDULED -> PICKED_UP -> DELIVERED.
+#
+# Documentation of the truck's journey, not of the hardware's. Nothing here moves inventory: the
+# claim was made when the shipment was confirmed, and these three states only record where the load
+# got to and who said so. The ladder is strict and one-way in both directions - a shipment cannot be
+# delivered before it has been collected, and neither leg can be walked back, because both are
+# statements about something that has already physically happened.
+# ---------------------------------------------------------------------------
+
+
+def _locked_packing_slip(session: Session, packing_slip_id: uuid.UUID) -> PackingSlip:
+    """The slip, row-locked for a header rewrite or a lifecycle stamp.
+
+    Locked for the same reason the return path locks it: two people looking at the Shipments page can
+    press the same button at the same time, and the state check has to be made against a row nobody
+    else is mid-transition on.
+    """
+    locked = lock_rows(session, PackingSlip, [packing_slip_id])
+    if not locked:
+        raise NotFoundError(f"Packing slip {packing_slip_id} not found")
+    return locked[0]
+
+
+def update_shipment_details(
+    session: Session,
+    packing_slip_id: uuid.UUID,
+    details: dict,
+) -> PackingSlip:
+    """Rewrite the Delivery Request header of a shipment that has not left yet (#447).
+
+    Refused unless the shipment is still SCHEDULED. Once it has been picked up a driver is carrying a
+    printed copy, and a record that no longer matches the paper in the cab is worse than one with a
+    typo in it - the site signs the paper, and any dispute is settled against what it says.
+
+    Full replace over `DELIVERY_REQUEST_FIELDS`: a field given as None is CLEARED. What is
+    deliberately not editable is everything that is not the paper form - the slip number, the
+    project, the items, and who shipped it and when. Those are the record of what left the building,
+    which is the one thing an edit must never be able to rewrite.
+    """
+    ps = _locked_packing_slip(session, packing_slip_id)
+    if ps.status != ShipmentStatus.SCHEDULED:
+        raise InvalidStateTransitionError(
+            f"Delivery Request {ps.packing_slip_number} can only be edited while Scheduled (current: {ps.status.value})"
+        )
+    _apply_delivery_details(ps, details)
+    return ps
+
+
+def mark_shipment_picked_up(
+    session: Session,
+    packing_slip_id: uuid.UUID,
+    actor: str,
+) -> PackingSlip:
+    """SCHEDULED -> PICKED_UP: the carrier has the load and the paper (#447).
+
+    Stamps who confirmed it and when, and closes the header to further edits. Deducts nothing - the
+    hardware left inventory when the shipment was confirmed.
+    """
+    ps = _locked_packing_slip(session, packing_slip_id)
+    if ps.status != ShipmentStatus.SCHEDULED:
+        raise InvalidStateTransitionError(
+            f"Delivery Request {ps.packing_slip_number} must be Scheduled to mark picked up "
+            f"(current: {ps.status.value})"
+        )
+    ps.status = ShipmentStatus.PICKED_UP
+    ps.picked_up_at = datetime.utcnow()
+    ps.picked_up_by = actor
+    return ps
+
+
+def mark_shipment_delivered(
+    session: Session,
+    packing_slip_id: uuid.UUID,
+    actor: str,
+) -> PackingSlip:
+    """PICKED_UP -> DELIVERED: the load reached the site (#447).
+
+    Only from PICKED_UP. A shipment cannot arrive somewhere it was never collected for, and letting
+    SCHEDULED jump straight here would quietly lose the fact that nobody ever recorded a pickup.
+    """
+    ps = _locked_packing_slip(session, packing_slip_id)
+    if ps.status != ShipmentStatus.PICKED_UP:
+        raise InvalidStateTransitionError(
+            f"Delivery Request {ps.packing_slip_number} must be Picked Up to mark delivered "
+            f"(current: {ps.status.value})"
+        )
+    ps.status = ShipmentStatus.DELIVERED
+    ps.delivered_at = datetime.utcnow()
+    ps.delivered_by = actor
+    return ps
 
 
 # ---------------------------------------------------------------------------

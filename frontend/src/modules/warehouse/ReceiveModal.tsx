@@ -99,10 +99,58 @@ interface WarehouseOption {
   isPrimary: boolean;
 }
 
+// What GP called the receipt that just posted for one PO (#447). `receiptNumber` is nullable on the
+// schema, so a receive that committed without one still gets a row here - the PO is named either way,
+// and the missing number reads as a gap rather than a missing PO.
+interface PostedReceipt {
+  poId: string;
+  poNumber: string | null;
+  receiptNumber: string | null;
+}
+
 const MAX_LOC_LEN = 20;
 
 function emptyDraft(quantity: number): LocationDraft {
   return { aisle: '', row: '', bay: '', quantity: String(quantity), deficient: '0' };
+}
+
+/**
+ * What GP called each receipt that posted (#447), one line per PO.
+ *
+ * Rendered per PO because a batch receive posts one receipt each - a single number would be wrong
+ * for all but one. `namePo` puts the PO number in front of it, which the caller asks for whenever
+ * the batch is not uniform: with a failure or a queued receipt in the same batch, "which PO is this
+ * the receipt for" is the whole question.
+ */
+function PostedReceiptLines({ receipts, namePo }: { receipts: PostedReceipt[]; namePo: boolean }) {
+  if (receipts.length === 0) return null;
+  return (
+    <Box sx={{ mt: 1, display: 'flex', flexDirection: 'column', gap: 0.25 }}>
+      {receipts.map((r) => (
+        <Typography key={r.poId} variant="body2">
+          {namePo && (
+            <Box component="span" sx={{ ...monoSx, mr: 0.75 }}>
+              {r.poNumber ?? 'PO'}
+            </Box>
+          )}
+          {r.receiptNumber ? (
+            <>
+              GP Receipt{' '}
+              <Box component="span" sx={{ ...monoSx, fontWeight: 700 }}>
+                {r.receiptNumber}
+              </Box>
+            </>
+          ) : (
+            // Committed in GP but the response carried no number. Saying so beats printing a dash
+            // the user reads as "nothing posted".
+            <Box component="span" sx={{ color: 'text.secondary' }}>
+              GP receipt number unavailable
+            </Box>
+          )}
+        </Typography>
+      ))}
+    </Box>
+  );
 }
 
 export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps) {
@@ -120,6 +168,15 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
   // How many POs' receipts went onto the GP outbox instead of posting (#353 PR E). Drives the amber
   // success copy: the work is accepted and must not be redone, but nothing is in inventory yet.
   const [queuedCount, setQueuedCount] = useState(0);
+  // GP's receipt numbers for what has posted so far (#447), one entry per committed PO. Shown
+  // because this is the only moment the number is in front of the person holding the packing slip -
+  // after the modal closes, finding it means opening GP. A queued PO contributes nothing: it has not
+  // posted, so GP has not numbered anything yet.
+  //
+  // Accumulated across submits rather than replaced. A batch that half-failed leaves the modal open
+  // on the POs that are left, and the retry's result set names only those - so replacing would drop
+  // the number of a PO that committed on the first press and can never be posted again.
+  const [postedReceipts, setPostedReceipts] = useState<PostedReceipt[]>([]);
   const [mutationError, setMutationError] = useState<string | null>(null);
   // Structured GP/eConnect detail for a failed receipt, shown persistently (issue #187) so the user can
   // screenshot it; mutationError carries the which-PO + retry-safe context line.
@@ -135,7 +192,11 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
   // #353 PR E: `queued` true means the GP relay was unreachable and the receipt is on the durable
   // outbox; `receiveRecord` is null because the UC Nexus receive is persisted with the GP write.
   const [createReceive] = useMutation<{
-    createReceive: { queued: boolean; outboxEntryId: string | null; receiveRecord: { id: string } | null };
+    createReceive: {
+      queued: boolean;
+      outboxEntryId: string | null;
+      receiveRecord: { id: string; receiptNumber: string | null } | null;
+    };
   }>(CREATE_RECEIVE);
 
   // One idempotency key per PO, reused across retries so re-posting a PO that already committed in GP is
@@ -204,6 +265,7 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
       setGpError(null);
       setSucceeded(false);
       setLineLocations({});
+      setPostedReceipts([]);
       // Fresh open = fresh action set; drop any keys held from a prior batch.
       idempotencyKeysRef.current = {};
       fetchPODetails(poIds);
@@ -438,6 +500,10 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
     // POs whose receipt was accepted but is waiting on the GP relay (#353 PR E). Tracked separately
     // from `completed` because nothing has been persisted for these yet - no inventory, no refetch.
     const queued: string[] = [];
+    // GP's receipt number per committed PO (#447), collected as the calls return so the success
+    // screen can name them. Only the committed ones land here - a queued receipt has not posted, so
+    // there is no GP number to show yet.
+    const receipts: PostedReceipt[] = [];
     let failureMessage: string | null = null;
     let capturedGpError: GpError | null = null;
 
@@ -489,6 +555,11 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
             queued.push(poId);
             continue;
           }
+          receipts.push({
+            poId,
+            poNumber: details?.poNumber ?? null,
+            receiptNumber: res.data?.createReceive?.receiveRecord?.receiptNumber ?? null,
+          });
         } catch (err: unknown) {
           // Keep this PO's key so the retry reuses it - the GP receipt may have committed even if the
           // mutation reported failure, and reusing the key makes the retry safe.
@@ -507,6 +578,18 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
       }
     } finally {
       setSubmitting(false);
+    }
+
+    // Recorded before any early return below. A GP receipt number exists exactly once - it is
+    // whatever GP answered on the way in - and a batch that fails on its third PO has already
+    // committed the first two. Publishing the numbers only in the all-green case is what lost them:
+    // the user was shown a failure and no way back to what did post.
+    if (receipts.length > 0) {
+      setPostedReceipts((prev) => {
+        const byPo = new Map(prev.map((r) => [r.poId, r]));
+        for (const r of receipts) byPo.set(r.poId, r);
+        return [...byPo.values()];
+      });
     }
 
     // Drop the committed POs' quantities so a retry of the remaining ones can't re-post them, and refresh
@@ -568,6 +651,7 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
     setSucceeded(false);
     setConfirmOpen(false);
     setLineLocations({});
+    setPostedReceipts([]);
     onClose();
   }, [onClose]);
 
@@ -809,16 +893,27 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
             Queued — the GP relay is offline. {queuedCount === 1 ? 'This receipt' : `These ${queuedCount} receipts`} will
             post automatically when it reconnects; you don't need to redo it. The hardware will appear in inventory
             once it posts.
+            {/* A batch can be part queued and part posted - the relay can drop between two POs. The
+                ones that made it still have GP numbers, and this is still the only place to read
+                them. */}
+            <PostedReceiptLines receipts={postedReceipts} namePo />
           </Alert>
         )}
         {succeeded && queuedCount === 0 && (
           <Alert severity="success" sx={{ mb: 2 }}>
             Receive completed successfully! {receivedCount} items added to inventory.
+            {/* #447: GP numbered the receipt on the way in, and this is the only moment it is in
+                front of the person holding the packing slip. */}
+            <PostedReceiptLines receipts={postedReceipts} namePo={postedReceipts.length > 1} />
           </Alert>
         )}
         {mutationError && (
           <Alert severity="error" sx={{ mb: gpError ? 1 : 2 }}>
             {mutationError}
+            {/* The POs ahead of the failure committed, and their receipts are in GP under these
+                numbers whatever happens to the rest of the batch. The modal stays open on the
+                remainder, so without this the numbers would only ever be readable in GP. */}
+            <PostedReceiptLines receipts={postedReceipts} namePo />
           </Alert>
         )}
         {gpError && (

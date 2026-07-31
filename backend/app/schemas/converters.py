@@ -121,6 +121,8 @@ def receive_record_to_type(rr) -> ReceiveRecord:
         po_id=strawberry.ID(str(rr.po_id)),
         received_at=rr.received_at,
         received_by=rr.received_by,
+        receipt_number=rr.receipt_number,
+        batch_number=rr.batch_number,
         created_at=rr.created_at,
         line_items=[receive_line_item_to_type(rli) for rli in rr.line_items],
     )
@@ -877,13 +879,44 @@ def packing_slip_item_to_type(psi) -> PackingSlipItem:
 
 
 def packing_slip_to_type(ps) -> PackingSlip:
+    """The shipment and its whole Delivery Request header (#447).
+
+    Shared by the list read, the confirm and the three lifecycle mutations, which is deliberate: they
+    all answer with the same PackingSlip, and Apollo normalises on `id`, so a mutation returning a
+    narrower shape than the list would leave the row it just changed half-stale in the cache.
+    """
     return PackingSlip(
         id=strawberry.ID(str(ps.id)),
         packing_slip_number=ps.packing_slip_number,
         project_id=strawberry.ID(str(ps.project_id)),
+        status=ps.status,
         shipped_by=ps.shipped_by,
         shipped_at=ps.shipped_at,
         created_at=ps.created_at,
+        pickup_date=ps.pickup_date,
+        delivery_date=ps.delivery_date,
+        shipper_email=ps.shipper_email,
+        shipper_phone=ps.shipper_phone,
+        pickup_location=ps.pickup_location,
+        carrier_tag_bol=ps.carrier_tag_bol,
+        weight_lbs=float(ps.weight_lbs) if ps.weight_lbs is not None else None,
+        delivery_address=ps.delivery_address,
+        special_instructions=ps.special_instructions,
+        gate_number=ps.gate_number,
+        forklift_onsite=ps.forklift_onsite,
+        material_coming_back=ps.material_coming_back,
+        site_material_included=ps.site_material_included,
+        construction_temp_keys=ps.construction_temp_keys,
+        extra_frame_anchors=ps.extra_frame_anchors,
+        contractor_contact_name=ps.contractor_contact_name,
+        contractor_contact_phone=ps.contractor_contact_phone,
+        ucsh_contact_name=ps.ucsh_contact_name,
+        ucsh_contact_phone=ps.ucsh_contact_phone,
+        sales_order_number=ps.sales_order_number,
+        picked_up_at=ps.picked_up_at,
+        picked_up_by=ps.picked_up_by,
+        delivered_at=ps.delivered_at,
+        delivered_by=ps.delivered_by,
         items=[packing_slip_item_to_type(i) for i in ps.items],
     )
 

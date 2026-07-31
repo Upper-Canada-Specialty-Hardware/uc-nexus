@@ -84,6 +84,7 @@ export default function ShippingModule() {
         onClose={() => setCartOpen(false)}
         projectId={projectId}
         projectName={projectName}
+        jobNumber={selectedProject !== 'all' ? selectedProject.projectId : undefined}
         project={gpSetupProject}
       />
     </Box>

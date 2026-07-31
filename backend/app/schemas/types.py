@@ -24,6 +24,7 @@ from .enums import (
     PullStatus,
     ReconciliationStatus,
     ReturnDisposition,
+    ShipmentStatus,
     ShippingOutRequestStatus,
     ShopAssemblyRequestStatus,
 )
@@ -373,6 +374,10 @@ class ReceiveRecord:
     po_id: strawberry.ID
     received_at: datetime
     received_by: str
+    # GP's identifiers for the receipt this receive posted (#447). Null on rows created before the
+    # columns existed, and on the rare receive whose relay response carried no number.
+    receipt_number: str | None
+    batch_number: str | None
     created_at: datetime
     line_items: list[ReceiveLineItem]
 
@@ -382,6 +387,27 @@ class RecentReceiveRecord:
     receive_record: ReceiveRecord
     po_number: str | None
     total_items_received: int
+
+
+@strawberry.type
+class ReceivingHistoryPO:
+    """One row of the Receiving History list (#447): a GP-registered PO and how much of it landed.
+
+    Scalars only, deliberately. The row expands to its individual receives through the existing
+    `poReceivingDetails` query, fetched when the user opens it - so the list itself never carries a
+    child collection, and a cross-project history of every PO in the database stays one query.
+    """
+
+    id: strawberry.ID
+    po_number: str | None
+    request_number: str
+    status: POStatus
+    vendor_name: str | None
+    project_id: strawberry.ID | None
+    ordered_total: int
+    received_total: int
+    receive_count: int
+    last_received_at: datetime | None
 
 
 @strawberry.type
@@ -979,12 +1005,45 @@ class PackingSlipItem:
 
 @strawberry.type
 class PackingSlip:
+    """A shipment and the Delivery Request that travels with it (#447).
+
+    The header below is the paper form the site signs, so every field of it survives out of
+    `packingSlips` unchanged and the document can be reprinted years later exactly as issued. Blanks
+    come back as null, which is what the form said too.
+    """
+
     id: strawberry.ID
     packing_slip_number: str
     project_id: strawberry.ID
+    # Where the truck has got to. The header is editable only while SCHEDULED.
+    status: ShipmentStatus
     shipped_by: str
     shipped_at: datetime
     created_at: datetime
+    pickup_date: date | None
+    delivery_date: date | None
+    shipper_email: str | None
+    shipper_phone: str | None
+    pickup_location: str | None
+    carrier_tag_bol: str | None
+    weight_lbs: float | None
+    delivery_address: str | None
+    special_instructions: str | None
+    gate_number: str | None
+    forklift_onsite: str | None
+    material_coming_back: str | None
+    site_material_included: str | None
+    construction_temp_keys: str | None
+    extra_frame_anchors: str | None
+    contractor_contact_name: str | None
+    contractor_contact_phone: str | None
+    ucsh_contact_name: str | None
+    ucsh_contact_phone: str | None
+    sales_order_number: str | None
+    picked_up_at: datetime | None
+    picked_up_by: str | None
+    delivered_at: datetime | None
+    delivered_by: str | None
     items: list[PackingSlipItem]
 
 
