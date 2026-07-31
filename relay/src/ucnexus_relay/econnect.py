@@ -246,10 +246,12 @@ def cost_code_on_job(conn, job_number: str, cost_code: str) -> bool:
     """Read-only: is cost_code an ACTIVE cost code on job_number in the cost-code detail master
     JC00701? Matches the same six-column key the WennSoft proc uses (WS_Job_Number +
     Cost_Code_Number_1..4 + Cost_Element), splitting cost_code with the identical split_cost_code
-    the wsi call uses, and filtering WS_Inactive = 0 so it accepts exactly the codes the /cost-codes
-    dropdown (list_cost_codes) offers - an inactive code the dropdown hides must not slip past this
-    pre-check and then fail mid-orchestration with the raw eConnect error the pre-check exists to
-    prevent. /po pre-checks this so a code not on the job returns a clean cost_code_not_on_job."""
+    the wsi call uses, and filtering WS_Inactive = 0 - an inactive code the dropdown hides must not
+    slip past this pre-check and then fail mid-orchestration with the raw eConnect error the
+    pre-check exists to prevent. The /cost-codes dropdown (list_cost_codes) also hides codes whose
+    account index dangles; those pass HERE and are refused by the cost_code_account_invalid guard
+    right after, so every code the dropdown hides is still refused by one pre-check or the other.
+    /po pre-checks this so a code not on the job returns a clean cost_code_not_on_job."""
     cc1, cc2, cc3, cc4, cost_element = split_cost_code(cost_code)
     row = conn.cursor().execute(
         "SELECT COUNT(*) AS n FROM dbo.JC00701 "
