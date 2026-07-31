@@ -156,10 +156,12 @@ def create_app() -> FastAPI:
 
     @app.get("/cost-codes", response_model=models.CostCodesResponse)
     def cost_codes(job: str, company: str | None = None, _=Depends(auth.verify_token)):
-        """Active cost codes for one job (JC00701) for the Create PO cost-code dropdown. Cost codes
-        are per-job and each carries its own Cost_Element, so the dropdown and the /po cost_code must
-        come from here rather than a static list with a hardcoded element. `job` is the GP job number
-        (UC Nexus project_id). A job with no cost codes returns an empty list (the UI shows that)."""
+        """Active, account-usable cost codes for one job (JC00701) for the Create PO cost-code
+        dropdown. Cost codes are per-job and each carries its own Cost_Element, so the dropdown and
+        the /po cost_code must come from here rather than a static list with a hardcoded element.
+        Codes whose account index dangles (#425) are excluded - the create_po guard would refuse
+        them, so they must not be selectable. `job` is the GP job number (UC Nexus project_id). A
+        job with no usable cost codes returns an empty list (the UI shows that)."""
         company = company or get_settings().gp.default_company
         _check_company(company)
         job = job.strip()
