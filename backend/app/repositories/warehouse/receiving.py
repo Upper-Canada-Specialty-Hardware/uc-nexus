@@ -617,25 +617,31 @@ def get_receiving_history_pos(session: Session, project_id: uuid.UUID | None = N
     the database one SELECT at a time. Each PO's individual receives are NOT returned: the row
     expands on demand through the existing `poReceivingDetails` query, so a page of a hundred POs
     costs a hundred rows rather than every receive line ever recorded.
+
+    When a project is named, the filter goes into the aggregates as well as the outer query. Filtering
+    only the outside still makes both subqueries group the whole of po_line_items and receive_records
+    first and then throw nearly all of it away, so someone reconciling one job would pay for every
+    receive ever recorded against every other job. The cross-project call keeps the unfiltered shape,
+    because there it genuinely wants all of it.
     """
-    line_totals = (
-        select(
-            POLineItemModel.po_id.label("po_id"),
-            func.coalesce(func.sum(POLineItemModel.ordered_quantity), 0).label("ordered_total"),
-            func.coalesce(func.sum(POLineItemModel.received_quantity), 0).label("received_total"),
-        )
-        .group_by(POLineItemModel.po_id)
-        .subquery()
-    )
-    receive_totals = (
-        select(
-            ReceiveRecordModel.po_id.label("po_id"),
-            func.count(ReceiveRecordModel.id).label("receive_count"),
-            func.max(ReceiveRecordModel.received_at).label("last_received_at"),
-        )
-        .group_by(ReceiveRecordModel.po_id)
-        .subquery()
-    )
+    project_po_ids = select(POModel.id).where(POModel.project_id == project_id) if project_id is not None else None
+
+    line_totals_stmt = select(
+        POLineItemModel.po_id.label("po_id"),
+        func.coalesce(func.sum(POLineItemModel.ordered_quantity), 0).label("ordered_total"),
+        func.coalesce(func.sum(POLineItemModel.received_quantity), 0).label("received_total"),
+    ).group_by(POLineItemModel.po_id)
+    receive_totals_stmt = select(
+        ReceiveRecordModel.po_id.label("po_id"),
+        func.count(ReceiveRecordModel.id).label("receive_count"),
+        func.max(ReceiveRecordModel.received_at).label("last_received_at"),
+    ).group_by(ReceiveRecordModel.po_id)
+    if project_po_ids is not None:
+        line_totals_stmt = line_totals_stmt.where(POLineItemModel.po_id.in_(project_po_ids))
+        receive_totals_stmt = receive_totals_stmt.where(ReceiveRecordModel.po_id.in_(project_po_ids))
+
+    line_totals = line_totals_stmt.subquery()
+    receive_totals = receive_totals_stmt.subquery()
 
     stmt = (
         select(
@@ -666,9 +672,12 @@ def get_receiving_history_pos(session: Session, project_id: uuid.UUID | None = N
                 ]
             ),
         )
-        # Most recently received first, then the never-received POs - which are the ones somebody is
-        # about to receive, so they belong at the top of what is left rather than buried.
-        .order_by(receive_totals.c.last_received_at.desc().nulls_first(), POModel.po_number.desc())
+        # Most recently received first, with the never-received POs last. This list answers the
+        # history question, so the rows with history on them are what belongs at the top; sorting the
+        # nulls first buries every actual receipt under a wall of POs nothing has landed against yet.
+        # Those are not lost - the Receive side's own "POs Awaiting Receipt" table is where somebody
+        # about to receive goes looking, and it puts them at the top of that view.
+        .order_by(receive_totals.c.last_received_at.desc().nulls_last(), POModel.po_number.desc())
     )
     if project_id is not None:
         stmt = stmt.where(POModel.project_id == project_id)

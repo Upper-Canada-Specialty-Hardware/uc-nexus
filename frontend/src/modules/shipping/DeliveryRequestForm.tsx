@@ -23,6 +23,7 @@ import {
   isWeightInvalid,
   primaryWarehouse,
   warehouseAddressLines,
+  WEIGHT_ERROR,
   type DeliveryDetails,
   type PackingSlipHeader,
   type WarehouseAddress,
@@ -127,7 +128,9 @@ export default function DeliveryRequestForm({
     variables: { includeInactive: false },
     skip: !open,
   });
-  const defaultPickupLocation = useMemo(
+  // One source, two independent uses: the letterhead's Division Address box is UC Hardware's own
+  // address and never moves, while PICKUP LOCATION merely starts here and is the shipper's to edit.
+  const divisionAddress = useMemo(
     () => warehouseAddressLines(primaryWarehouse(warehousesData?.warehouses ?? [])),
     [warehousesData],
   );
@@ -148,10 +151,10 @@ export default function DeliveryRequestForm({
   const effectiveDetails = useMemo<DeliveryDetails>(
     () => ({
       ...details,
-      pickupLocation: touched.pickupLocation ? details.pickupLocation : defaultPickupLocation,
+      pickupLocation: touched.pickupLocation ? details.pickupLocation : divisionAddress,
       shipperEmail: touched.shipperEmail ? details.shipperEmail : defaultShipperEmail,
     }),
-    [details, touched, defaultPickupLocation, defaultShipperEmail],
+    [details, touched, divisionAddress, defaultShipperEmail],
   );
 
   // A shipment contradicts the cached ship-ready stock, the leaf rollup and the warehouse
@@ -182,7 +185,7 @@ export default function DeliveryRequestForm({
     }
 
     if (isWeightInvalid(effectiveDetails.weightLbs)) {
-      setError('Weight must be a number.');
+      setError(WEIGHT_ERROR);
       return;
     }
 
@@ -295,6 +298,7 @@ export default function DeliveryRequestForm({
           })}
           shipper={result.shippedBy}
           materialLines={buildMaterialLines(openingItems, looseItems)}
+          divisionAddress={divisionAddress}
           values={deliveryDetailsInput(sentDetailsRef.current)}
         />
       ).toBlob();
@@ -306,7 +310,7 @@ export default function DeliveryRequestForm({
     } finally {
       setGeneratingPdf(false);
     }
-  }, [result, projectName, jobNumber, showToast]);
+  }, [result, projectName, jobNumber, divisionAddress, showToast]);
 
   const resetForm = useCallback(() => {
     setView('form');

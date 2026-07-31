@@ -25,10 +25,14 @@ Two pieces:
 `status` is NOT NULL with a server default of DELIVERED, so existing slips backfill terminal. That is
 the honest reading of them: every one predates the lifecycle and describes hardware that left the
 building long ago, and landing them SCHEDULED would put a pile of historical shipments back on the
-Shipments page presenting Mark Picked Up buttons for trucks that came and went. The default is left
-on the column (precedent: migration 036) rather than dropped, so the one thing it can ever affect
-again - an insert that does not name a status - degrades to "this is history" instead of failing.
-New rows come from `confirm_shipment`, which names SCHEDULED explicitly.
+Shipments page presenting Mark Picked Up buttons for trucks that came and went. The default exists to
+backfill those pre-existing rows and nothing else; it is left on the column (precedent: migration
+036) rather than dropped purely because dropping it is a second DDL statement for no gain. It does
+NOT catch an insert that forgets to name a status: the SQLAlchemy model declares no default, so an
+unset `status` is rendered as an explicit NULL in the INSERT, the server default never applies, and
+the NOT NULL constraint refuses the row. That is the behaviour we want - an ORM insert must always
+name a status, and one that does not fails loudly rather than quietly filing a new shipment as
+already delivered. `confirm_shipment` names SCHEDULED explicitly.
 
 There is no backfill for the header columns and there cannot be: the data only ever existed on paper
 in a filing cabinet. Null means "shipped before Nexus recorded this", which the Delivery Request

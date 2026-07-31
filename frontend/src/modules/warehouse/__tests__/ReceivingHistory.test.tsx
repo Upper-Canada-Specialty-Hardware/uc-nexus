@@ -163,6 +163,40 @@ it('says the filter matched nothing rather than that no PO exists', async () => 
   expect(await screen.findByText(/No purchase orders match this filter/)).toBeInTheDocument();
 });
 
+// --- paging --------------------------------------------------------------------------------------
+
+it('paints the first 25 POs and keeps the rest behind a show-more', async () => {
+  // This is the one warehouse view that keeps CLOSED POs, so it is the one that grows without bound.
+  const rows = Array.from({ length: 30 }, (_, i) =>
+    historyPo({ id: `po-${i}`, poNumber: `PO000${String(i).padStart(4, '0')}` }),
+  );
+  renderHistory([historyMock(rows)]);
+
+  expect(await screen.findByText('PO0000000')).toBeInTheDocument();
+  expect(screen.getByText('PO0000024')).toBeInTheDocument();
+  expect(screen.queryByText('PO0000025')).not.toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole('button', { name: /Show 5 more of 5/ }));
+
+  expect(await screen.findByText('PO0000029')).toBeInTheDocument();
+});
+
+it('pages the filtered list, not the raw one', async () => {
+  // A search that matches a PO on the second page has to bring it onto the first.
+  const rows = Array.from({ length: 30 }, (_, i) =>
+    historyPo({ id: `po-${i}`, poNumber: `PO000${String(i).padStart(4, '0')}` }),
+  );
+  renderHistory([historyMock(rows)]);
+
+  expect(await screen.findByText('PO0000000')).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText('Search PO or vendor'), {
+    target: { value: 'PO0000029' },
+  });
+
+  expect(await screen.findByText('PO0000029')).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /Show/ })).not.toBeInTheDocument();
+});
+
 // --- expansion -----------------------------------------------------------------------------------
 
 it('does not fetch a PO s receives until its row is expanded', async () => {

@@ -30,7 +30,7 @@ describe('buildMaterialLines', () => {
     ]);
   });
 
-  it('counts loose hardware in units, singular at one', () => {
+  it('counts loose hardware in units, singular at one, and names the opening it was pulled for', () => {
     expect(
       buildMaterialLines([], [
         {
@@ -40,16 +40,30 @@ describe('buildMaterialLines', () => {
           quantity: 1,
         },
         {
-          openingNumber: '0019-EX',
+          openingNumber: '0021-EX',
           productCode: 'SIL-6309-DAY',
           hardwareCategory: 'Privacy Screen 9 Panel',
           quantity: 3,
         },
       ]),
     ).toEqual([
-      '(1) Unit of SIL-6307-DAY - Privacy Screen 7 Panel',
-      '(3) Units of SIL-6309-DAY - Privacy Screen 9 Panel',
+      '(1) Unit of SIL-6307-DAY - Privacy Screen 7 Panel (Opening 0019-EX)',
+      '(3) Units of SIL-6309-DAY - Privacy Screen 9 Panel (Opening 0021-EX)',
     ]);
+  });
+
+  it('leaves the opening off loose hardware that was not pulled against one', () => {
+    // Stock hardware added at the dock has no opening, and an empty bracket says nothing.
+    expect(
+      buildMaterialLines([], [
+        {
+          openingNumber: '',
+          productCode: 'AD8406',
+          hardwareCategory: 'Locksets',
+          quantity: 2,
+        },
+      ]),
+    ).toEqual(['(2) Units of AD8406 - Locksets']);
   });
 
   it('keeps assembled leaves ahead of loose hardware', () => {
@@ -75,7 +89,7 @@ describe('buildMaterialLines', () => {
     ]);
     expect(lines).toEqual([
       '(1) Unit of Opening 0019-EX Leaf 1',
-      '(2) Units of AD8406 - Locksets',
+      '(2) Units of AD8406 - Locksets (Opening 0019-EX)',
     ]);
   });
 });
@@ -106,6 +120,14 @@ describe('isWeightInvalid', () => {
     expect(isWeightInvalid('420')).toBe(false);
     expect(isWeightInvalid('420.5')).toBe(false);
     expect(isWeightInvalid('heavy')).toBe(true);
+  });
+
+  it('refuses a weight the column cannot hold', () => {
+    // weight_lbs is Numeric(10, 2), and the backend refuses the same bounds - catching it here beats
+    // rejecting a Delivery Request that has already been filled in.
+    expect(isWeightInvalid('99999999.99')).toBe(false);
+    expect(isWeightInvalid('100000000')).toBe(true);
+    expect(isWeightInvalid('-1')).toBe(true);
   });
 });
 

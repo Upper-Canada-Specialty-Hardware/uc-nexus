@@ -223,6 +223,25 @@ def test_a_soft_deleted_po_is_not_history(db_session):
     assert _row_for(db_session, po, project.id) is None
 
 
+def test_the_most_recently_received_po_leads_the_list(db_session):
+    """The ordering is the whole reading of this list. It answers "what did we receive", so the POs
+    with receipts on them come first, newest at the top, and the ones nothing has landed against sink
+    to the bottom rather than pushing every actual receipt off the first screen. Somebody about to
+    receive is not looking here anyway - the Receive side's own POs Awaiting Receipt table is where
+    that PO surfaces."""
+    project = _make_project(db_session)
+    recent, recent_li = _make_po_with_line(db_session, project.id, ordered=10)
+    older, older_li = _make_po_with_line(db_session, project.id, ordered=10)
+    never, _ = _make_po_with_line(db_session, project.id, ordered=10)
+    _receive(db_session, recent, recent_li, 1).received_at = datetime(2026, 6, 1, 9, 0, 0)
+    _receive(db_session, older, older_li, 1).received_at = datetime(2026, 1, 1, 9, 0, 0)
+    db_session.flush()
+
+    order = [r["id"] for r in warehouse_repository.get_receiving_history_pos(db_session, project.id)]
+
+    assert order == [recent.id, older.id, never.id]
+
+
 def test_the_project_filter_narrows_to_that_project(db_session):
     """Cross-project by default - whoever is standing at the dock receives for everyone - with the
     filter for the case where somebody is reconciling one job."""
@@ -238,3 +257,25 @@ def test_the_project_filter_narrows_to_that_project(db_session):
     # No filter: both are visible.
     assert _row_for(db_session, po_a) is not None
     assert _row_for(db_session, po_b) is not None
+
+
+def test_the_project_filter_still_totals_correctly(db_session):
+    """The filter is pushed into the grouped subqueries, not applied only to the outer query, so that
+    a one-job page does not group every line item and every receive in the database first. That is an
+    optimisation the numbers must survive: the aggregates are computed over a narrowed set of POs, and
+    they have to come back identical to what the cross-project call reports for the same PO."""
+    a = _make_project(db_session)
+    b = _make_project(db_session)
+    po_a, li_a = _make_po_with_line(db_session, a.id, ordered=10)
+    po_b, li_b = _make_po_with_line(db_session, b.id, ordered=20)
+    _receive(db_session, po_a, li_a, 4)
+    _receive(db_session, po_a, li_a, 2)
+    _receive(db_session, po_b, li_b, 7)
+    db_session.flush()
+
+    scoped = _row_for(db_session, po_a, a.id)
+    unscoped = _row_for(db_session, po_a)
+
+    assert (scoped["ordered_total"], scoped["received_total"], scoped["receive_count"]) == (10, 6, 2)
+    # The other project's receives are not counted in, and dropping them did not lose any of ours.
+    assert scoped == unscoped

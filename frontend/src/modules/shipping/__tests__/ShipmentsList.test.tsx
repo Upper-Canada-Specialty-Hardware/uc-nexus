@@ -7,7 +7,7 @@ import {
   MARK_SHIPMENT_DELIVERED,
   MARK_SHIPMENT_PICKED_UP,
 } from '../../../graphql/shipping';
-import { GET_PROJECTS } from '../../../graphql/shared';
+import { GET_PROJECTS, GET_WAREHOUSES } from '../../../graphql/shared';
 
 vi.setConfig({ testTimeout: 30_000 });
 configure({ asyncUtilTimeout: 10_000 });
@@ -119,9 +119,36 @@ const projectsMock: MockedResponse = {
   },
 };
 
+// The Division Address box on a reprinted Delivery Request comes from the primary warehouse, not
+// from the shipment - the list reads it for the same reason the confirm form does.
+const warehousesMock: MockedResponse = {
+  request: { query: GET_WAREHOUSES, variables: { includeInactive: false } },
+  maxUsageCount: INFINITE,
+  result: {
+    data: {
+      warehouses: [
+        {
+          __typename: 'Warehouse',
+          id: 'w-1',
+          name: 'Coast Meridian',
+          code: 'CM',
+          address: '1120 1725 Coast Meridian Road',
+          city: 'Port Coquitlam',
+          province: 'BC',
+          postalCode: 'V3C 3T7',
+          isPrimary: true,
+          isActive: true,
+          createdAt: '2026-01-01T00:00:00Z',
+          updatedAt: '2026-01-01T00:00:00Z',
+        },
+      ],
+    },
+  },
+};
+
 function renderList(mocks: MockedResponse[]) {
   render(
-    <MockedProvider mocks={[projectsMock, ...mocks]}>
+    <MockedProvider mocks={[projectsMock, warehousesMock, ...mocks]}>
       <ToastProvider>
         <ShipmentsList />
       </ToastProvider>
@@ -260,6 +287,50 @@ describe('ShipmentsList', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Mark delivered' }));
 
     await waitFor(() => expect(screen.getByText('Delivered')).toBeInTheDocument());
+  });
+
+  it('says the load failed rather than that nothing has shipped', async () => {
+    // The empty state and a failed query are opposite answers, and only one of them is safe to give
+    // somebody reconciling paperwork.
+    renderList([
+      {
+        request: { query: GET_PACKING_SLIPS, variables: { projectId: null } },
+        maxUsageCount: INFINITE,
+        error: new Error('backend unreachable'),
+      },
+    ]);
+
+    expect(await screen.findByText(/Error loading shipments/)).toBeInTheDocument();
+    expect(screen.queryByText('No shipments match this search.')).not.toBeInTheDocument();
+  });
+
+  it('keeps a dirty edit dialog open on a backdrop click', async () => {
+    renderList([packingSlipsMock([slip()])]);
+    await screen.findByText('PS-0019');
+    await expandRow('PS-0019');
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.change(within(dialog).getByLabelText(/Carrier \/ Tag \/ BOL/i), {
+      target: { value: 'BOL-9999' },
+    });
+    // A backdrop click is a mousedown and a click on the dialog's container, which is what MUI
+    // matches on ("started and ended on the same element") before it calls onClose with
+    // reason: 'backdropClick'. A bare click never reaches that branch.
+    const container = document.querySelector('.MuiDialog-container') as Element;
+    fireEvent.mouseDown(container);
+    fireEvent.click(container);
+
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(within(screen.getByRole('dialog')).getByLabelText(/Carrier \/ Tag \/ BOL/i)).toHaveValue(
+      'BOL-9999',
+    );
+
+    // Cancel is an explicit dismissal and is never refused.
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() =>
+      expect(screen.queryByText('Edit Delivery Request PS-0019')).not.toBeInTheDocument(),
+    );
   });
 
   it('opens the edit dialog on the stored Delivery Request', async () => {

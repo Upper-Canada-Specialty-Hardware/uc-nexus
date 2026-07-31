@@ -2,6 +2,7 @@
 import {
   Alert,
   Box,
+  Button,
   Chip,
   Collapse,
   CircularProgress,
@@ -30,6 +31,12 @@ const ICON = { size: 18, strokeWidth: 1.75 } as const;
 
 // Expander + PO + vendor + project + status + received-of-ordered + receives + last received.
 const HISTORY_COLUMN_COUNT = 8;
+
+// How many POs the table paints before the "show more" tail, the same page size ShipmentsList uses.
+// This view is the one warehouse surface that keeps CLOSED POs, so it is also the one that grows
+// without bound - a year of receiving is thousands of rows, and none of them past the first screen
+// is what the user came for.
+const PAGE = 25;
 
 // The page's placeholder for "no value", the same escape ReceivingPage writes it as.
 const DASH = '\u2014';
@@ -98,7 +105,10 @@ function ReceivesPanel({ poId }: { poId: string }) {
     poReceivingDetails: { id: string; receiveRecords: ReceiveRecord[] };
   }>(GET_PO_RECEIVING_DETAILS, { variables: { poId } });
 
-  if (loading) {
+  // Only while there is nothing to show, the same guard the list above uses. The app's default is
+  // cache-and-network, so `loading` is true again on every re-expand while the cached receives are
+  // already rendered - spinning over them would make re-opening a row flash.
+  if (loading && !data) {
     return (
       <Box sx={{ display: 'flex', justifyContent: 'center', py: 2 }}>
         <CircularProgress size={22} />
@@ -259,6 +269,7 @@ export default function ReceivingHistory({ projects, projectMap }: ReceivingHist
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState('');
   const [projectFilter, setProjectFilter] = useState('');
+  const [shown, setShown] = useState(PAGE);
 
   // cache-and-network, because this view is unmounted while the user is receiving. A receive that
   // just posted has to show up the moment they switch over here, and RECEIVE_REFETCH_QUERIES does
@@ -280,6 +291,10 @@ export default function ReceivingHistory({ projects, projectMap }: ReceivingHist
       [po.poNumber, po.requestNumber, po.vendorName].some((v) => v?.toLowerCase().includes(needle)),
     );
   }, [data, search]);
+
+  // Paged after the filters, not before: a search that matches one PO on page nine has to bring it
+  // onto the first page, which it only does if the slice is taken from what survived the filter.
+  const visible = useMemo(() => rows.slice(0, shown), [rows, shown]);
 
   const toggle = useCallback((id: string) => {
     setExpandedIds((prev) => {
@@ -310,7 +325,10 @@ export default function ReceivingHistory({ projects, projectMap }: ReceivingHist
           size="small"
           label="Search PO or vendor"
           value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          onChange={(e) => {
+            setSearch(e.target.value);
+            setShown(PAGE);
+          }}
           sx={{ minWidth: 240 }}
         />
         <TextField
@@ -318,7 +336,10 @@ export default function ReceivingHistory({ projects, projectMap }: ReceivingHist
           size="small"
           label="Project"
           value={projectFilter}
-          onChange={(e) => setProjectFilter(e.target.value)}
+          onChange={(e) => {
+            setProjectFilter(e.target.value);
+            setShown(PAGE);
+          }}
           sx={{ minWidth: 220 }}
         >
           <MenuItem value="">All projects</MenuItem>
@@ -366,7 +387,7 @@ export default function ReceivingHistory({ projects, projectMap }: ReceivingHist
               </TableRow>
             </TableHead>
             <TableBody>
-              {rows.map((po) => (
+              {visible.map((po) => (
                 <HistoryRow
                   key={po.id}
                   po={po}
@@ -378,6 +399,12 @@ export default function ReceivingHistory({ projects, projectMap }: ReceivingHist
             </TableBody>
           </Table>
         </TableContainer>
+      )}
+
+      {rows.length > visible.length && (
+        <Button size="small" variant="text" onClick={() => setShown((n) => n + PAGE)} sx={{ mt: 1 }}>
+          Show {Math.min(PAGE, rows.length - visible.length)} more of {rows.length - visible.length}
+        </Button>
       )}
     </Box>
   );

@@ -130,11 +130,23 @@ function textOrNull(value: string): string | null {
   return trimmed === '' ? null : trimmed;
 }
 
-/** True when the weight box holds something that is not a number, which is the one typed field. */
+/**
+ * The widest weight the column can hold: `weight_lbs` is Numeric(10, 2), so eight digits before the
+ * point and two after. The backend refuses anything past it, and a shipment rejected on the weight
+ * box after the whole Delivery Request has been filled in is the worst place to find that out.
+ */
+export const MAX_WEIGHT_LBS = 99999999.99;
+
+/** True when the weight box holds something the shipment cannot be booked with. */
 export function isWeightInvalid(weightLbs: string): boolean {
   const trimmed = weightLbs.trim();
-  return trimmed !== '' && !Number.isFinite(Number(trimmed));
+  if (trimmed === '') return false;
+  const value = Number(trimmed);
+  return !Number.isFinite(value) || value < 0 || value > MAX_WEIGHT_LBS;
 }
+
+/** What the form says when the weight box is refused, in both the confirm and the edit. */
+export const WEIGHT_ERROR = `Weight must be a number between 0 and ${MAX_WEIGHT_LBS}.`;
 
 /**
  * Form state to the wire. Every key is always present, blanks as null: a Delivery Request field the
@@ -223,6 +235,10 @@ function units(quantity: number): string {
  * what it is. An assembled leaf is one unit of a named door leaf; loose hardware is a count of a
  * product code. The two never merge - the warehouse hands over a rack of leaves and a box of parts,
  * and the driver counts them separately.
+ *
+ * A loose line names its opening too. Loose hardware is pulled against one, and the site takes
+ * delivery opening by opening: without it the form says four locksets arrived and not which door
+ * they belong to, which is exactly the question the paper is signed to answer.
  */
 export function buildMaterialLines(
   openingItems: MaterialOpeningItem[],
@@ -234,8 +250,9 @@ export function buildMaterialLines(
     return `(1) Unit of Opening ${item.openingNumber}${leaf}${where ? ` - ${where}` : ''}`;
   });
   for (const item of looseItems) {
+    const opening = item.openingNumber?.trim() ? ` (Opening ${item.openingNumber})` : '';
     lines.push(
-      `(${item.quantity}) ${units(item.quantity)} of ${item.productCode} - ${item.hardwareCategory}`,
+      `(${item.quantity}) ${units(item.quantity)} of ${item.productCode} - ${item.hardwareCategory}${opening}`,
     );
   }
   return lines;

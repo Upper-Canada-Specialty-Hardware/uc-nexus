@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Alert, Button, CircularProgress, Stack } from '@mui/material';
 import { useMutation } from '@apollo/client/react';
 import Modal from '../../components/Modal';
@@ -9,6 +9,7 @@ import {
   deliveryDetailsInput,
   detailsFromSlip,
   isWeightInvalid,
+  WEIGHT_ERROR,
   type DeliveryDetails,
   type PackingSlipHeader,
 } from './deliveryRequest';
@@ -28,7 +29,8 @@ interface Props {
  */
 export default function EditShipmentDialog({ slip, onClose }: Props) {
   const { showToast } = useToast();
-  const [details, setDetails] = useState<DeliveryDetails>(() => detailsFromSlip(slip));
+  const stored = useMemo(() => detailsFromSlip(slip), [slip]);
+  const [details, setDetails] = useState<DeliveryDetails>(stored);
   const [error, setError] = useState<string | null>(null);
 
   const [updateShipment, { loading }] = useMutation(UPDATE_SHIPMENT_DETAILS, {
@@ -39,10 +41,21 @@ export default function EditShipmentDialog({ slip, onClose }: Props) {
     onError: (err) => setError(err.message),
   });
 
+  // Twenty fields against the shipment as it is stored. Anything typed here is gone the moment the
+  // dialog unmounts, so a stray click on the backdrop or an Escape aimed at something else would
+  // silently discard the whole correction - the same reason the Receive modal and the Transfer
+  // dialog swallow the key once they hold entry. In flight counts as dirty too: the save is the
+  // thing that would be abandoned.
+  const dirty = useMemo(
+    () => (Object.keys(stored) as (keyof DeliveryDetails)[]).some((k) => details[k] !== stored[k]),
+    [details, stored],
+  );
+  const blockDismissal = dirty || loading;
+
   const handleSubmit = () => {
     setError(null);
     if (isWeightInvalid(details.weightLbs)) {
-      setError('Weight must be a number.');
+      setError(WEIGHT_ERROR);
       return;
     }
     updateShipment({
@@ -50,10 +63,18 @@ export default function EditShipmentDialog({ slip, onClose }: Props) {
     });
   };
 
+  // Cancel and the title-bar X arrive with no reason and always close; a backdrop click or Escape is
+  // refused while there is something to lose.
+  const handleDismiss = (_event?: object, reason?: 'backdropClick' | 'escapeKeyDown') => {
+    if (reason && blockDismissal) return;
+    onClose();
+  };
+
   return (
     <Modal
       open
-      onClose={onClose}
+      onClose={handleDismiss}
+      disableEscapeKeyDown={blockDismissal}
       title={`Edit Delivery Request ${slip.packingSlipNumber}`}
       actions={
         <>

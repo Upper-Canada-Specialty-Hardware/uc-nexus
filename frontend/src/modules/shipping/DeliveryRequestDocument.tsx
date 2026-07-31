@@ -173,6 +173,14 @@ export interface DeliveryRequestDocumentProps {
   date: string;
   shipper: string;
   materialLines: string[];
+  /**
+   * UC Hardware's own address for the letterhead box, newline-separated. Separate from the pickup
+   * location on purpose: the two happen to read the same when a shipment leaves the primary
+   * warehouse, but PICKUP LOCATION is a field the shipper edits per shipment, and typing a
+   * customer's yard into it must not rewrite the division's own address on the letterhead. Blank
+   * prints an empty box, which is what the paper form does when nobody filled it in.
+   */
+  divisionAddress: string;
   values: DeliveryRequestValues;
 }
 
@@ -183,9 +191,10 @@ export default function DeliveryRequestDocument({
   date,
   shipper,
   materialLines,
+  divisionAddress,
   values,
 }: DeliveryRequestDocumentProps) {
-  const divisionLines = (values.pickupLocation ?? '').split('\n').filter((l) => l.trim() !== '');
+  const divisionLines = divisionAddress.split('\n').filter((l) => l.trim() !== '');
   // The material block keeps a few spare lines: a partial ship gets items added at the dock.
   const material = [...materialLines];
   while (material.length < 6) material.push('');

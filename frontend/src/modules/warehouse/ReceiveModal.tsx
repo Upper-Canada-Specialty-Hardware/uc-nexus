@@ -114,6 +114,45 @@ function emptyDraft(quantity: number): LocationDraft {
   return { aisle: '', row: '', bay: '', quantity: String(quantity), deficient: '0' };
 }
 
+/**
+ * What GP called each receipt that posted (#447), one line per PO.
+ *
+ * Rendered per PO because a batch receive posts one receipt each - a single number would be wrong
+ * for all but one. `namePo` puts the PO number in front of it, which the caller asks for whenever
+ * the batch is not uniform: with a failure or a queued receipt in the same batch, "which PO is this
+ * the receipt for" is the whole question.
+ */
+function PostedReceiptLines({ receipts, namePo }: { receipts: PostedReceipt[]; namePo: boolean }) {
+  if (receipts.length === 0) return null;
+  return (
+    <Box sx={{ mt: 1, display: 'flex', flexDirection: 'column', gap: 0.25 }}>
+      {receipts.map((r) => (
+        <Typography key={r.poId} variant="body2">
+          {namePo && (
+            <Box component="span" sx={{ ...monoSx, mr: 0.75 }}>
+              {r.poNumber ?? 'PO'}
+            </Box>
+          )}
+          {r.receiptNumber ? (
+            <>
+              GP Receipt{' '}
+              <Box component="span" sx={{ ...monoSx, fontWeight: 700 }}>
+                {r.receiptNumber}
+              </Box>
+            </>
+          ) : (
+            // Committed in GP but the response carried no number. Saying so beats printing a dash
+            // the user reads as "nothing posted".
+            <Box component="span" sx={{ color: 'text.secondary' }}>
+              GP receipt number unavailable
+            </Box>
+          )}
+        </Typography>
+      ))}
+    </Box>
+  );
+}
+
 export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps) {
   const { showToast } = useToast();
   const navigate = useNavigate();
@@ -129,10 +168,14 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
   // How many POs' receipts went onto the GP outbox instead of posting (#353 PR E). Drives the amber
   // success copy: the work is accepted and must not be redone, but nothing is in inventory yet.
   const [queuedCount, setQueuedCount] = useState(0);
-  // GP's receipt numbers for what just posted (#447), one entry per committed PO. Shown on the
-  // success screen because this is the only moment the number is in front of the person holding the
-  // packing slip - after the modal closes, finding it means opening GP. Empty for a queued receipt:
-  // nothing has posted, so GP has not numbered anything yet.
+  // GP's receipt numbers for what has posted so far (#447), one entry per committed PO. Shown
+  // because this is the only moment the number is in front of the person holding the packing slip -
+  // after the modal closes, finding it means opening GP. A queued PO contributes nothing: it has not
+  // posted, so GP has not numbered anything yet.
+  //
+  // Accumulated across submits rather than replaced. A batch that half-failed leaves the modal open
+  // on the POs that are left, and the retry's result set names only those - so replacing would drop
+  // the number of a PO that committed on the first press and can never be posted again.
   const [postedReceipts, setPostedReceipts] = useState<PostedReceipt[]>([]);
   const [mutationError, setMutationError] = useState<string | null>(null);
   // Structured GP/eConnect detail for a failed receipt, shown persistently (issue #187) so the user can
@@ -222,6 +265,7 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
       setGpError(null);
       setSucceeded(false);
       setLineLocations({});
+      setPostedReceipts([]);
       // Fresh open = fresh action set; drop any keys held from a prior batch.
       idempotencyKeysRef.current = {};
       fetchPODetails(poIds);
@@ -536,6 +580,18 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
       setSubmitting(false);
     }
 
+    // Recorded before any early return below. A GP receipt number exists exactly once - it is
+    // whatever GP answered on the way in - and a batch that fails on its third PO has already
+    // committed the first two. Publishing the numbers only in the all-green case is what lost them:
+    // the user was shown a failure and no way back to what did post.
+    if (receipts.length > 0) {
+      setPostedReceipts((prev) => {
+        const byPo = new Map(prev.map((r) => [r.poId, r]));
+        for (const r of receipts) byPo.set(r.poId, r);
+        return [...byPo.values()];
+      });
+    }
+
     // Drop the committed POs' quantities so a retry of the remaining ones can't re-post them, and refresh
     // inventory/stock/dashboard counts to reflect what did land.
     if (completed.length > 0) {
@@ -564,7 +620,6 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
 
     setReceivedCount(totalItemsToReceive);
     setQueuedCount(queued.length);
-    setPostedReceipts(receipts);
     if (queued.length > 0) {
       showToast(
         `Queued — the GP relay is offline. ${queued.length === 1 ? 'This receipt' : 'These receipts'} will post automatically when it reconnects.`,
@@ -838,46 +893,27 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
             Queued — the GP relay is offline. {queuedCount === 1 ? 'This receipt' : `These ${queuedCount} receipts`} will
             post automatically when it reconnects; you don't need to redo it. The hardware will appear in inventory
             once it posts.
+            {/* A batch can be part queued and part posted - the relay can drop between two POs. The
+                ones that made it still have GP numbers, and this is still the only place to read
+                them. */}
+            <PostedReceiptLines receipts={postedReceipts} namePo />
           </Alert>
         )}
         {succeeded && queuedCount === 0 && (
           <Alert severity="success" sx={{ mb: 2 }}>
             Receive completed successfully! {receivedCount} items added to inventory.
             {/* #447: GP numbered the receipt on the way in, and this is the only moment it is in
-                front of the person holding the packing slip. Rendered per PO because a batch
-                receive posts one receipt each - a single number would be wrong for all but one. */}
-            {postedReceipts.length > 0 && (
-              <Box sx={{ mt: 1, display: 'flex', flexDirection: 'column', gap: 0.25 }}>
-                {postedReceipts.map((r) => (
-                  <Typography key={r.poId} variant="body2">
-                    {postedReceipts.length > 1 && (
-                      <Box component="span" sx={{ ...monoSx, mr: 0.75 }}>
-                        {r.poNumber ?? 'PO'}
-                      </Box>
-                    )}
-                    {r.receiptNumber ? (
-                      <>
-                        GP Receipt{' '}
-                        <Box component="span" sx={{ ...monoSx, fontWeight: 700 }}>
-                          {r.receiptNumber}
-                        </Box>
-                      </>
-                    ) : (
-                      // Committed in GP but the response carried no number. Saying so beats printing
-                      // a dash the user reads as "nothing posted".
-                      <Box component="span" sx={{ color: 'text.secondary' }}>
-                        GP receipt number unavailable
-                      </Box>
-                    )}
-                  </Typography>
-                ))}
-              </Box>
-            )}
+                front of the person holding the packing slip. */}
+            <PostedReceiptLines receipts={postedReceipts} namePo={postedReceipts.length > 1} />
           </Alert>
         )}
         {mutationError && (
           <Alert severity="error" sx={{ mb: gpError ? 1 : 2 }}>
             {mutationError}
+            {/* The POs ahead of the failure committed, and their receipts are in GP under these
+                numbers whatever happens to the rest of the batch. The modal stays open on the
+                remainder, so without this the numbers would only ever be readable in GP. */}
+            <PostedReceiptLines receipts={postedReceipts} namePo />
           </Alert>
         )}
         {gpError && (

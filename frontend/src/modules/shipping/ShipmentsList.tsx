@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useMemo, useState } from 'react';
 import {
+  Alert,
   Box,
   Button,
   Chip,
@@ -39,7 +40,7 @@ import {
 } from 'lucide-react';
 import { useMutation, useQuery } from '@apollo/client/react';
 import { pdf } from '@react-pdf/renderer';
-import { GET_PROJECTS } from '../../graphql/shared';
+import { GET_PROJECTS, GET_WAREHOUSES } from '../../graphql/shared';
 import {
   GET_PACKING_SLIPS,
   MARK_SHIPMENT_DELIVERED,
@@ -50,10 +51,13 @@ import ReturnShipmentDialog, { type ReturnSlip } from './ReturnShipmentDialog';
 import EditShipmentDialog from './EditShipmentDialog';
 import DeliveryRequestDocument from './DeliveryRequestDocument';
 import {
+  primaryWarehouse,
   shipmentStatusDisplay,
   slipMaterialLines,
   valuesFromSlip,
+  warehouseAddressLines,
   type PackingSlip,
+  type WarehouseAddress,
 } from './deliveryRequest';
 import { leafLabel } from '../../utils/leaf';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
@@ -126,10 +130,10 @@ export default function ShipmentsList({ projectId, heading }: Props) {
   );
   const [generatingFor, setGeneratingFor] = useState<string | null>(null);
 
-  const { data, loading, refetch } = useQuery<{ packingSlips: PackingSlip[] }>(GET_PACKING_SLIPS, {
-    variables: { projectId: projectId ?? null },
-    fetchPolicy: 'cache-and-network',
-  });
+  const { data, loading, error, refetch } = useQuery<{ packingSlips: PackingSlip[] }>(
+    GET_PACKING_SLIPS,
+    { variables: { projectId: projectId ?? null }, fetchPolicy: 'cache-and-network' },
+  );
 
   // Read in both modes, not just the global one: the project column and filter only matter to the
   // all-projects view, but the Delivery Request PDF prints PROJECT and JOB NUMBER either way, and
@@ -140,6 +144,17 @@ export default function ShipmentsList({ projectId, heading }: Props) {
     for (const p of projectsData?.projects ?? []) map.set(p.id, p);
     return map;
   }, [projectsData]);
+
+  // The letterhead's Division Address, which is UC Hardware's own address rather than anything the
+  // shipment stores - a reprint years later still has to carry it, and the slip only remembers where
+  // the truck was sent from.
+  const { data: warehousesData } = useQuery<{ warehouses: WarehouseAddress[] }>(GET_WAREHOUSES, {
+    variables: { includeInactive: false },
+  });
+  const divisionAddress = useMemo(
+    () => warehouseAddressLines(primaryWarehouse(warehousesData?.warehouses ?? [])),
+    [warehousesData],
+  );
 
   const projectLabel = useCallback(
     (id: string) => {
@@ -187,6 +202,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
             date={parseServerDate(slip.shippedAt).toLocaleDateString(undefined, LONG_DATE)}
             shipper={slip.shippedBy}
             materialLines={slipMaterialLines(slip.items)}
+            divisionAddress={divisionAddress}
             values={valuesFromSlip(slip)}
           />,
         ).toBlob();
@@ -197,7 +213,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
         setGeneratingFor(null);
       }
     },
-    [projectsById, showToast],
+    [projectsById, divisionAddress, showToast],
   );
 
   const handleLifecycle = useCallback(async () => {
@@ -269,12 +285,17 @@ export default function ShipmentsList({ projectId, heading }: Props) {
         )}
       </Stack>
 
+      {/* A failed load is not an empty list. Without this branch the table falls straight through to
+          "No shipments match this search.", which reads as "this project has never shipped" - the
+          one answer that is never safe to give somebody reconciling paperwork. */}
       {loading && !data ? (
         <Stack spacing={0.5}>
           {Array.from({ length: 5 }).map((_, i) => (
             <Skeleton key={i} height={38} />
           ))}
         </Stack>
+      ) : error && !data ? (
+        <Alert severity="error">Error loading shipments: {error.message}</Alert>
       ) : (
         <TableContainer component={Paper} variant="outlined">
           <Table size="small">

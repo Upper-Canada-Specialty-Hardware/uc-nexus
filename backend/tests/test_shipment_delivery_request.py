@@ -17,7 +17,7 @@ from decimal import Decimal
 
 import pytest
 
-from app.errors import InvalidStateTransitionError
+from app.errors import InvalidStateTransitionError, ValidationError
 from app.models.enums import OpeningItemState, PullRequestItemType, ShipmentStatus
 from app.models.opening_item import OpeningItem
 from app.models.project import Project
@@ -197,6 +197,56 @@ def test_update_shipment_details_refused_once_the_paper_has_left(db_session, sta
         shipping_repository.update_shipment_details(db_session, slip.id, FULL_DETAILS)
 
     assert slip.gate_number == "Gate 1"
+
+
+# --- the weight bound ---------------------------------------------------------------------------
+
+
+def test_confirm_shipment_refuses_a_weight_the_column_cannot_hold(db_session):
+    """weight_lbs is Numeric(10, 2), so eight digits is the ceiling. Caught in the repository because
+    the alternative is a raw Postgres numeric overflow at commit, which rolls back the confirm - a
+    fat-fingered weight would abort the whole shipment instead of pointing at the box it came from."""
+    project = _make_project(db_session)
+    oi = _ship_ready_opening_item(db_session, project.id)
+
+    with pytest.raises(ValidationError) as exc:
+        shipping_repository.confirm_shipment(
+            db_session,
+            project_id=project.id,
+            packing_slip_number=f"PS-{uuid.uuid4().hex[:8]}",
+            shipped_by="shipper",
+            items=[{"item_type": PullRequestItemType.OPENING_ITEM, "opening_item_id": oi.id, "quantity": 1}],
+            details={**FULL_DETAILS, "weight_lbs": 100000000.0},
+        )
+
+    assert exc.value.field == "weight_lbs"
+
+
+@pytest.mark.parametrize("weight", [100000000.0, -1.0])
+def test_update_shipment_details_refuses_a_weight_out_of_range(db_session, weight):
+    """Both ends. Too big overflows the column; negative is not a weight at all, and a load recorded
+    at minus a ton is the kind of number that reaches a carrier's invoice."""
+    project = _make_project(db_session)
+    slip = _make_slip(db_session, project.id, gate_number="Gate 1")
+
+    with pytest.raises(ValidationError) as exc:
+        shipping_repository.update_shipment_details(db_session, slip.id, {**FULL_DETAILS, "weight_lbs": weight})
+
+    assert exc.value.field == "weight_lbs"
+    # Refused before anything was written, so the rest of the header is untouched.
+    assert slip.gate_number == "Gate 1"
+
+
+def test_the_largest_weight_the_column_holds_is_accepted(db_session):
+    """The boundary is inclusive on the legal side. The check exists to stop an overflow, not to
+    second-guess a heavy load, so the largest value Numeric(10, 2) can store goes through."""
+    project = _make_project(db_session)
+    slip = _make_slip(db_session, project.id)
+
+    shipping_repository.update_shipment_details(db_session, slip.id, {**FULL_DETAILS, "weight_lbs": 99999999.99})
+    _round_trip(db_session, slip)
+
+    assert slip.weight_lbs == Decimal("99999999.99")
 
 
 # --- the lifecycle ------------------------------------------------------------------------------

@@ -49,6 +49,8 @@ _SCHEMAS_DIR = Path(__file__).resolve().parent.parent / "app" / "schemas"
 # Field names that mean "the person who did this", across the audit log, the pull/request lifecycle
 # stamps and the shipping documents. Kept as a flat vocabulary rather than per-module lists so a new
 # mutation inherits the rule by naming its column the way every other one does.
+# `picked_up_by` / `delivered_by` are the Delivery Request journey stamps (#447). Nobody is standing
+# over the driver typing, so those names are exactly the ones a client would be tempted to send.
 ACTOR_NAMES = {
     "accepted_by",
     "approved_by",
@@ -56,10 +58,12 @@ ACTOR_NAMES = {
     "cancelled_by",
     "completed_by",
     "created_by",
+    "delivered_by",
     "entered_by",
     "fetched_by",
     "performed_by",
     "picked_by",
+    "picked_up_by",
     "received_by",
     "rejected_by",
     "requested_by",

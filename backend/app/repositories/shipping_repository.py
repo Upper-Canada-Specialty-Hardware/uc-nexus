@@ -164,6 +164,12 @@ DELIVERY_REQUEST_FIELDS = (
     "sales_order_number",
 )
 
+# packing_slips.weight_lbs is Numeric(10, 2): eight digits ahead of the decimal point and no more.
+# Anything at or above this is refused here rather than at flush time, where Postgres raises a raw
+# numeric overflow that aborts the entire transaction - on the confirm path that would take the whole
+# shipment down over a typo in one box of the form.
+_MAX_WEIGHT_LBS = 100000000
+
 
 def _apply_delivery_details(packing_slip: PackingSlip, details: dict | None) -> None:
     """Write the whole Delivery Request header onto a slip, blanks included.
@@ -175,8 +181,19 @@ def _apply_delivery_details(packing_slip: PackingSlip, details: dict | None) -> 
 
     Whitespace-only text is stored as null rather than as a string of spaces, so "blank" has one
     representation and the printed form does not render an invisible answer.
+
+    The one value that is range-checked is the weight, because it is the one the column can refuse.
+    Left to the database it fails as an overflow at commit and rolls back the confirm that was
+    carrying it, so a mistyped weight would look like shipping being broken rather than like a bad
+    number in a box.
     """
     values = details or {}
+    weight = values.get("weight_lbs")
+    if weight is not None and (weight < 0 or weight >= _MAX_WEIGHT_LBS):
+        raise ValidationError(
+            f"weight_lbs must be between 0 and {_MAX_WEIGHT_LBS - 1}.99 pounds",
+            field="weight_lbs",
+        )
     for field in DELIVERY_REQUEST_FIELDS:
         value = values.get(field)
         if isinstance(value, str):
