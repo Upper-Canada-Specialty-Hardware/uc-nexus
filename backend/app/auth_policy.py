@@ -131,12 +131,14 @@ ROOT_FIELD_POLICY: dict[str, str] = {
     "syncGpJobs": ADMIN_ROLE,
     "updateProject": ADMIN_ROLE,
     # --- relay.py -------------------------------------------------------------------------
-    # The gp_* reads are signed-in because every PO screen needs them. The two exceptions are the
-    # ones that return staff rosters by another name: `gpBuyersDetailed` (buyer ids with names) and
-    # `gpEmployees`. Everything that provisions, adopts or deletes a relay install is admin - those
-    # are relay credentials.
+    # The gp_* reads are signed-in because every PO screen needs them. Three exceptions: two return
+    # staff rosters by another name (`gpBuyersDetailed`, buyer ids with names, and `gpEmployees`), and
+    # `gpCostCodeMaster` has exactly one consumer, the admin-only create-job dialog, so it sits at the
+    # bar the `createGpJob` it feeds already sets. Everything that provisions, adopts or deletes a
+    # relay install is admin - those are relay credentials.
     "gpBuyers": SIGNED_IN,
     "gpBuyersDetailed": ADMIN_ROLE,
+    "gpCostCodeMaster": ADMIN_ROLE,
     "gpCostCodes": SIGNED_IN,
     "gpCustomerAddresses": SIGNED_IN,
     "gpCustomers": SIGNED_IN,
@@ -153,6 +155,7 @@ ROOT_FIELD_POLICY: dict[str, str] = {
     "suggestVendorForManufacturer": SIGNED_IN,
     "armRelayAdopt": ADMIN_ROLE,
     "createGpBuyer": ADMIN_ROLE,
+    "createGpCustomerAddress": ADMIN_ROLE,
     "deleteRelayInstall": ADMIN_ROLE,
     "disarmRelayAdopt": ADMIN_ROLE,
     "provisionRelayInstall": ADMIN_ROLE,

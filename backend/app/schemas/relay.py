@@ -22,6 +22,7 @@ from app.services.relay_gateway import gateway as relay_gateway
 
 from .converters import (
     gp_buyer_to_type,
+    gp_cost_code_master_entry_to_type,
     gp_cost_code_to_type,
     gp_customer_address_to_type,
     gp_customer_to_type,
@@ -32,10 +33,11 @@ from .converters import (
     gp_vendor_to_type,
     relay_install_to_type,
 )
-from .inputs import EnrollRelayInstallInput
+from .inputs import CreateGpCustomerAddressInput, EnrollRelayInstallInput
 from .types import (
     GpBuyer,
     GpCostCode,
+    GpCostCodeMasterEntry,
     GpCustomer,
     GpCustomerAddress,
     GpEmployee,
@@ -54,6 +56,25 @@ from .types import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Every field of a GP customer address, as (input attribute, GraphQL field, label, GP column width,
+# required). The widths are taCreateCustomerAddress's own parameter widths - char(15) CUSTNMBR /
+# ADRSCODE, char(60) ADDRESS1 / ADDRESS2 / COUNTRY, char(35) CITY, char(29) STATE, char(10) ZIPCODE -
+# and the required four are what make the row an address anyone could ship hardware to.
+#
+# The GraphQL name is carried alongside because that is what the error's `field` extension has to be
+# for a dialog to anchor the message to the input the user typed it into; the resolver's own argument
+# names are snake_case and mean nothing to the client.
+_GP_ADDRESS_FIELDS = (
+    ("customer_number", "customerNumber", "A GP customer number", 15, True),
+    ("address_code", "addressCode", "An address code", 15, True),
+    ("address1", "address1", "A street address", 60, True),
+    ("address2", "address2", "A second address line", 60, False),
+    ("city", "city", "A city", 35, True),
+    ("state", "state", "A state or province", 29, False),
+    ("zip_code", "zipCode", "A postal or ZIP code", 10, False),
+    ("country", "country", "A country", 60, False),
+)
 
 
 @strawberry.type
@@ -125,6 +146,25 @@ class RelayQueries:
         """Active per-job cost codes (JC00701) via the connected relay, for the Create PO cost-code dropdown."""
         result = await relay_gateway.relay_call(company, "list_cost_codes", {"job": job})
         return [gp_cost_code_to_type(c) for c in result["cost_codes"]]
+
+    @strawberry.field
+    async def gp_cost_code_master(
+        self, info: strawberry.Info, company: str, division: str
+    ) -> list[GpCostCodeMasterEntry]:
+        """GP's cost code master (JC40202) for one division, via the connected relay - the create-job
+        dialog's cost-code picker (#448).
+
+        Not gpCostCodes, which reads the codes already on a job (JC00701). wsiJCJobMaster creates a job
+        with none of those at all, so this is the list a new job's codes are chosen FROM, and the pick
+        is provisioned in the same GP transaction as the job.
+
+        Scoped to a division because that is what decides whether a code is usable at all: the GL
+        account comes from JC40302's (division, cost element) mapping, and a code the division has no
+        usable account for comes back mapped=false for the picker to render disabled rather than hide.
+        Hiding it would leave the user hunting for a code they can see in GP; disabling it says the
+        division is what needs fixing."""
+        result = await relay_gateway.relay_call(company, "list_cost_code_master", {"division": division})
+        return [gp_cost_code_master_entry_to_type(c) for c in result["cost_codes"]]
 
     @strawberry.field
     async def gp_tax_details(self, info: strawberry.Info, company: str) -> list[GpTaxDetail]:
@@ -299,6 +339,86 @@ class RelayMutations:
                 "description": (result or {}).get("description") or None,
             }
         )
+
+    @strawberry.mutation
+    async def create_gp_customer_address(
+        self, info: strawberry.Info, input: CreateGpCustomerAddressInput
+    ) -> GpCustomerAddress:
+        """Add an address code to a GP customer through the relay's taCreateCustomerAddress op (#444).
+
+        The create-job dialog picks its job and bill-to addresses out of gpCustomerAddresses, and the
+        job proc validates both against that customer's own addresses - so a site GP had never been
+        told about meant abandoning the dialog, opening GP to add the address, and starting over. This
+        is the write half of that picker, and its only consumer.
+
+        No company argument, unlike createGpBuyer: the connected relay is enrolled for exactly one GP
+        company, which is the only one this could be written to anyway, and that is how createGpJob
+        resolves it in the dialog this feeds.
+
+        Nothing is persisted in Nexus. The address lives in GP, and gpCustomerAddresses is how it comes
+        back - which is why the answer here is GP's own stored row rather than the input echoed back.
+
+        Admin-only, and creating only: the relay pins taCreateCustomerAddress's UpdateIfExists to 0, so
+        this can never overwrite an address accounting maintains in GP.
+        """
+
+        company = relay_gateway.company
+        if not company:
+            raise RelayUnavailableError(
+                "The GP relay is not connected, so this address cannot be created in GP. Start the relay and try again."
+            )
+
+        # Trimmed and bounded here as well as in the relay's CreateCustomerAddressRequest, for the
+        # reason create_gp_buyer gives above: the relay's model is the server-side truth, but it can
+        # only report a rejection as a whole pydantic dump after a full round-trip, with no field for a
+        # dialog to anchor it to. The dialog checks these too, so what this catches is a caller that
+        # isn't the dialog - and GP's own char widths are the honest thing to report against.
+        cleaned: dict[str, str | None] = {}
+        for attr, gql_field, label, limit, required in _GP_ADDRESS_FIELDS:
+            value = (getattr(input, attr) or "").strip()
+            if attr == "address_code":
+                # Uppercased here as well as in the relay's model. GP's own codes are uppercase
+                # ('MAIN', 'PRIMARY'), so this is what lands in RM00102 either way - doing it on this
+                # side too means the payload this backend logs is the row GP stores rather than
+                # whatever case the value happened to be typed in.
+                value = value.upper()
+            if required and not value:
+                raise ValidationError(f"{label} is required.", field=gql_field)
+            if len(value) > limit:
+                raise ValidationError(f"{label} is at most {limit} characters in GP.", field=gql_field)
+            # An untouched optional stays absent rather than becoming a blank string, so the relay is
+            # never guessing at what the user left empty.
+            cleaned[attr] = value if required else (value or None)
+
+        payload = {
+            "customer": cleaned["customer_number"],
+            "address_code": cleaned["address_code"],
+            "address1": cleaned["address1"],
+            "address2": cleaned["address2"],
+            "city": cleaned["city"],
+            "state": cleaned["state"],
+            "zip_code": cleaned["zip_code"],
+            "country": cleaned["country"],
+        }
+
+        try:
+            result = await relay_gateway.relay_call(company, "create_customer_address", payload)
+        except RelayCallError as e:
+            # GP said no - a customer that does not exist, a code already on this customer, a value GP
+            # will not take. The relay words those better than a generic failure would, and the detail
+            # body carries the proc + error state the dialog's error alert renders, which is what
+            # validation_error_from_relay preserves.
+            raise validation_error_from_relay(e) from e
+
+        # GP's stored row, read back from RM00102 by the relay. That row is what gpCustomerAddresses
+        # will serve on its next refetch, so answering with anything else could hand the dialog an
+        # address that differs from the one it is about to see in the picker.
+        #
+        # Subscripted bare, with no fallback to the input: a relay whose response shape has drifted
+        # must fail here, loudly, the way every sibling resolver does. Falling back would answer with
+        # the caller's own values dressed up as GP's stored row - a well-formed success reporting an
+        # address nobody has confirmed landed, which is exactly the echo the docstring forbids.
+        return gp_customer_address_to_type(result["address"])
 
     @strawberry.mutation
     def provision_relay_install(self, info: strawberry.Info, label: str, company: str) -> RelayInstallProvision:

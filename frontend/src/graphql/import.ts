@@ -149,6 +149,22 @@ export const GET_GP_CUSTOMER_ADDRESSES = gql`
   }
 `;
 
+// Issue #444: an address the job needs but GP does not hold yet. No company argument - the backend
+// uses the connected relay's own company, the same one the reads above are keyed on. The selected
+// fields deliberately mirror gpCustomerAddresses above: the dialog writes the returned row straight
+// into that query's cache entry, which is what lets the picker offer the new code immediately rather
+// than only once a re-read of GP has landed.
+export const CREATE_GP_CUSTOMER_ADDRESS = gql`
+  mutation CreateGpCustomerAddress($input: CreateGpCustomerAddressInput!) {
+    createGpCustomerAddress(input: $input) {
+      addressCode
+      address1
+      city
+      state
+    }
+  }
+`;
+
 // Issue #392: the job proc validates Estimator/WS Manager against the payroll master, so they are
 // pickers, not free text.
 export const GET_GP_EMPLOYEES = gql`
@@ -176,12 +192,31 @@ export const GET_GP_DIVISIONS = gql`
   }
 `;
 
+// Issue #448: the company's cost-code master, read per division because `mapped` is a property of the
+// pair - it says whether THIS division has a GL account for that code's cost element. A job created
+// with no cost codes has an empty register-PO dropdown and is quarantined by the GP-setup check on the
+// next sync, so the create form provisions them up front rather than leaving it to accounting.
+export const GET_GP_COST_CODE_MASTER = gql`
+  query GpCostCodeMaster($company: String!, $division: String!) {
+    gpCostCodeMaster(company: $company, division: $division) {
+      costCode
+      description
+      costElement
+      mapped
+    }
+  }
+`;
+
 // Issue #392: `created` distinguishes GP actually creating the job from the mutation adopting one GP
 // already held, so the toast can stop claiming a creation that did not happen.
 export const CREATE_GP_JOB = gql`
   mutation CreateGpJob($input: CreateGpJobInput!) {
     createGpJob(input: $input) {
       created
+      # Issue #448: GP's own read-back count of what landed in JC00701. A relay older than #448 drops
+      # the unknown costCodes key without a word and answers a perfectly successful create, so a zero
+      # against a non-empty selection is the only way to detect the bare, quarantined job it just made.
+      costCodesProvisioned
       # id only: the dialog reads created, and the list is refreshed by refetchQueries, so the rest
       # of the project would be fetched and thrown away.
       project {

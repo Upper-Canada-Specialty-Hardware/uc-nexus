@@ -235,6 +235,124 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
     )
 
 
+def _resolve_cost_code_selection(conn, *, company: str, request: models.CreateJobRequest) -> list[dict]:
+    """Resolve the requested cost codes against the company master (issue #448) and return the master
+    rows the write step will provision from. Writes nothing.
+
+    Runs BEFORE the job proc, not after it. The selection is checked against GP's own tables, so a
+    stale picker or a made-up code is a refusal that must cost nothing - and it only costs nothing if
+    it happens before wsiJCJobMaster has created anything. Rolling the job back afterwards would work,
+    but "the create failed and nothing was written" is a promise the ordering keeps rather than one the
+    transaction has to rescue.
+
+    Every value provisioned comes from the company master, never from the request. The selection names
+    which codes the job gets; the alias, description, profit type, transaction type and above all the
+    GL account index are read out of JC40202/JC40302 here. That is the same provenance rule #427 and
+    #430 settled for actors and accounts elsewhere: GP's configuration decides, and a caller that could
+    send an account index could post a job's costs anywhere in the chart.
+
+    Two refusals:
+      - a code that is not in JC40202 at all. The picker is fed from that table, so this is a stale
+        client or a made-up code, and the proc would take it and create a cost code the company's own
+        setup has never heard of.
+      - a code JC40302 has no usable account for in this job's division. Provisioning it would
+        manufacture exactly the dangling JC00701 row #425 is about - the job would register POs and
+        then fail forever at receipt with eConnect 4612.
+
+    An empty selection short-circuits without reading the master at all: that is what every pre-#448
+    caller sends, and for them the create path has to be exactly what it was."""
+    if not request.cost_codes:
+        return []
+
+    master = {
+        (row["cost_code"], row["cost_element"]): row
+        for row in econnect.list_cost_code_master(conn, request.division)
+    }
+
+    chosen = []
+    for selection in request.cost_codes:
+        row = master.get((selection.cost_code, selection.cost_element))
+        if row is None:
+            raise RelayOpError(
+                "cost_code_not_in_master",
+                f"cost code '{selection.cost_code}' element {selection.cost_element} is not in the "
+                f"cost-code master (JC40202) for GP company {company}",
+                cost_code=selection.cost_code,
+                cost_element=selection.cost_element,
+            )
+        if not row["mapped"]:
+            raise RelayOpError(
+                "cost_code_unmapped",
+                f"cost code '{selection.cost_code}' element {selection.cost_element} has no usable GL "
+                f"account for division '{request.division}' in {company}: JC40302 maps no account index "
+                f"for that cost element, or the one it maps does not exist in the chart (GL00105). A job "
+                f"provisioned with it could register POs and never receive them.",
+                cost_code=selection.cost_code,
+                cost_element=selection.cost_element,
+                division=request.division,
+            )
+        chosen.append(row)
+    return chosen
+
+
+def _write_cost_codes(conn, *, request: models.CreateJobRequest, chosen: list[dict]) -> int:
+    """Write the resolved cost codes onto the job just created (issue #448) and return how many landed.
+    Runs inside the caller's transaction, so the job and its cost structure commit together or neither
+    does - a job that exists with half its codes is the state this whole feature exists to avoid, since
+    #425's quarantine would hold it and nobody would know why.
+
+    The rows come from _resolve_cost_code_selection, which already refused anything the master does not
+    know or cannot account for, so by here there is nothing left to reject on our side.
+
+    Validate ALL of them before writing ANY of them, the same reason create_job_op dry-runs the job
+    proc: the eleventh code failing after ten were written leaves a partially provisioned job that only
+    a rollback saves, and the rollback is what the dry run makes unnecessary.
+
+    The segments are bound straight off the master row (cost_code_number_1 / _2) rather than re-split
+    out of the joined 'cc1-cc2' form. Re-splitting a segment that itself contains a '-' would provision
+    a different row than the one the picker named, and the master already hands over exactly what GP
+    stores.
+
+    Then verify EACH code through econnect.cost_code_on_job - the same lookup /po runs before it lets a
+    line reference a cost code. taPoLine has a known err=0-but-no-row silent-failure mode and this is
+    the same class of proc, so a success report is not evidence a row landed. Checking per code through
+    the PO path's own lookup means "provisioned" and "reachable by a PO" cannot drift apart: a row that
+    landed but that lookup cannot find is a row no PO could ever use, and that is a failure whether or
+    not JC00701 has something in it. It also needs no assumption about rows this call did not write,
+    which a COUNT of the job's whole active set does - that count is only correct while nothing else
+    ever seeds JC00701 for a new job."""
+    if not chosen:
+        return 0
+
+    for only_validate in (True, False):
+        for row in chosen:
+            econnect.create_job_cost_code(
+                conn,
+                only_validate=only_validate,
+                job_number=request.job_number,
+                cost_code_number_1=row["cost_code_number_1"],
+                cost_code_number_2=row["cost_code_number_2"],
+                alias=row["alias"] or "",
+                description=row["description"] or "",
+                cost_element=row["cost_element"],
+                account_index=row["account_index"],
+                profit_type_number=row["profit_type_number"],
+                type_of_transaction=row["type_of_transaction"],
+            )
+
+    for row in chosen:
+        # 'phase-step-element', the shape the register-PO dropdown (list_cost_codes) and the /po
+        # cost_code speak, so this asks the question a PO will ask, in the words a PO will ask it in.
+        cost_code = f"{row['cost_code']}-{row['cost_element']}"
+        if not econnect.cost_code_on_job(conn, request.job_number, cost_code):
+            raise econnect.EConnectError(
+                f"wsiJCJobDetailMSTR reported success but cost code {cost_code} is not on job "
+                f"{request.job_number} in JC00701",
+                proc="wsiJCJobDetailMSTR",
+            )
+    return len(chosen)
+
+
 def create_job_op(conn, *, company: str, request: models.CreateJobRequest) -> models.CreateJobResponse:
     """Create a GP job (issue #380): pre-check, dry run, real call. The caller commits.
 
@@ -242,24 +360,38 @@ def create_job_op(conn, *, company: str, request: models.CreateJobRequest) -> mo
        the proc, and this turns that into a clean job_already_exists the dialog can show. It also makes a
        retry after an ambiguous failure safe: if the first attempt actually committed and the reply was
        lost, the retry says "already exists" instead of attempting a second create.
-    2. OnlyValidate=1. The proc validates everything - division accounts, customer, both address codes,
+    2. Resolve the cost-code selection against JC40202/JC40302 (issue #448, see
+       _resolve_cost_code_selection). Read-only, and deliberately ahead of the job proc: a selection GP's
+       own master does not recognise is a stale picker, and refusing it here means the create fails
+       having written nothing at all - which is what step 3's dry run promises for the job's own fields
+       and what the selection deserves for the same reason. A no-op when no cost codes were selected,
+       which is what every pre-#448 caller sends.
+    3. OnlyValidate=1. The proc validates everything - division accounts, customer, both address codes,
        tax schedule, open fiscal period - and reports the FIRST problem in its own words. Running it
        first means a rejected create fails having written nothing, and the user reads GP's actual
        objection rather than a generic failure.
-    3. The real call, same parameters.
-    4. Read the row back from JC00102 and answer with GP's stored job number and name, NOT the request
+    4. The real call, same parameters.
+    5. Read the row back from JC00102 and answer with GP's stored job number and name, NOT the request
        echoed back. The backend snapshots that name onto the project, and what GP kept is the honest
        thing to snapshot - WS_Job_Name is char(31), so a longer name is truncated on write and the
        request no longer describes the job. It also proves the row landed.
+    6. Write the resolved cost codes onto it (see _write_cost_codes). wsiJCJobMaster writes the JC00102
+       row and nothing else, so without this the job is created into #425's quarantine - no active cost
+       codes - and its register-PO dropdown is empty. Inside the SAME transaction the caller commits, so
+       the job and its cost structure land together or not at all.
 
     Both passes raise econnect.EConnectError carrying the proc's message (see econnect.create_job)."""
-    fields = request.model_dump(exclude={"company"})
+    # cost_codes is a provisioning instruction for steps 2 and 6, not a wsiJCJobMaster field - leaving
+    # it in would trip create_job's unknown-field guard on every call (#448).
+    fields = request.model_dump(exclude={"company", "cost_codes"})
 
     if econnect.job_exists(conn, request.job_number):
         raise RelayOpError(
             "job_already_exists",
             f"job '{request.job_number}' already exists in GP company {company} (JC00102)",
         )
+
+    chosen_cost_codes = _resolve_cost_code_selection(conn, company=company, request=request)
 
     econnect.create_job(conn, only_validate=True, **fields)
     econnect.create_job(conn, only_validate=False, **fields)
@@ -272,10 +404,77 @@ def create_job_op(conn, *, company: str, request: models.CreateJobRequest) -> mo
             proc="wsiJCJobMaster",
         )
 
+    provisioned = _write_cost_codes(conn, request=request, chosen=chosen_cost_codes)
+
     return models.CreateJobResponse(
         job_number=created["job_number"],
         job_name=created["job_name"] or request.job_name,
         company=company,
+        cost_codes_provisioned=provisioned,
+    )
+
+
+def _address_code_already_exists(company: str, request: models.CreateCustomerAddressRequest) -> RelayOpError:
+    """The one sentence a duplicate address code is reported with, wherever it is detected. Both halves
+    of create_customer_address_op's duplicate guard raise it, so a race loser reads identically to a
+    caller who lost the race by a full second - the user is looking at the same situation either way."""
+    return RelayOpError(
+        "address_code_already_exists",
+        f"customer '{request.customer_number}' already has address code '{request.address_code}' "
+        f"in GP company {company} (RM00102)",
+    )
+
+
+def create_customer_address_op(
+    conn, *, company: str, request: models.CreateCustomerAddressRequest
+) -> models.CreateCustomerAddressResponse:
+    """Add an address code to a GP customer (issue #444): pre-check, create, read back. The caller
+    commits.
+
+    The same three beats as create_buyer_op, and here they carry more weight. taCreateCustomerAddress
+    has NO OnlyValidate parameter, so there is no dry-run pass to fall back on the way create_job_op
+    has - the duplicate guard is ours to build, and it is what lets econnect.create_customer_address
+    pin UpdateIfExists to 0 (see that docstring: overwriting an address accounting already maintains is
+    the one outcome this feature must never produce).
+
+    That guard is in two parts, because the pre-check alone is check-then-act. It is the first line and
+    answers almost every duplicate, including the important one: if a first attempt committed and the
+    reply was lost, pressing Create again reads as "that customer already has this address code" rather
+    than as a raw eConnect state for something that already worked. But between that SELECT and the
+    EXEC, a second Nexus caller or somebody in GP's own Customer Address Maintenance window can save the
+    same code, and then the proc is what refuses it. So an eConnect failure re-runs the check on the way
+    out: if the row is there now, the race is what happened, and it is worded the same as if the
+    pre-check had caught it. Anything else re-raises untouched.
+
+    The read-back guards the err=0-but-nothing-landed case create_po_line has a known mode for, and
+    answers with GP's stored row - which is exactly what list_customer_addresses will serve the picker
+    on its next refetch, so answering with anything else could hand the dialog an address that differs
+    from the one everything else is about to see."""
+    if econnect.customer_address_exists(conn, request.customer_number, request.address_code):
+        raise _address_code_already_exists(company, request)
+
+    try:
+        econnect.create_customer_address(conn, request.model_dump(exclude={"company"}))
+    except econnect.EConnectError as e:
+        # One extra SELECT on a path that has already failed, and it is what turns "eConnect state 350"
+        # into a sentence naming the customer and the code. Chained from the original so the raw GP
+        # failure is still in the traceback for anyone reading relay.log.
+        if econnect.customer_address_exists(conn, request.customer_number, request.address_code):
+            raise _address_code_already_exists(company, request) from e
+        raise
+
+    created = econnect.get_customer_address(conn, request.customer_number, request.address_code)
+    if created is None:
+        raise econnect.EConnectError(
+            f"taCreateCustomerAddress reported success but address '{request.address_code}' is not in "
+            f"RM00102 for customer '{request.customer_number}'",
+            proc="taCreateCustomerAddress",
+        )
+
+    return models.CreateCustomerAddressResponse(
+        company=company,
+        customer=request.customer_number,
+        address=models.CustomerAddressOut(**created),
     )
 
 

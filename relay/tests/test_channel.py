@@ -70,6 +70,34 @@ def test_list_cost_codes_routes_to_econnect_and_strips_job(monkeypatch):
     }
 
 
+def test_list_cost_code_master_requires_division():
+    # The division is not a filter on the list - it is what decides the GL account each code would be
+    # provisioned with (JC40302), so there is no sensible answer without one.
+    reply = channel._dispatch("list_cost_code_master", "TUBC", {})
+    assert reply["ok"] is False
+    assert reply["error"]["error"] == "missing_division"
+
+
+def test_list_cost_code_master_routes_to_econnect_and_strips_division(monkeypatch):
+    seen = {}
+
+    def _fake(conn, division):
+        seen["division"] = division
+        return [{"cost_code": "210-200", "cost_element": 2, "mapped": True}]
+
+    monkeypatch.setattr(econnect, "list_cost_code_master", _fake)
+    reply = channel._dispatch("list_cost_code_master", "TUBC", {"division": " VANCOUVER "})
+    assert seen["division"] == "VANCOUVER"
+    assert reply == {
+        "ok": True,
+        "result": {
+            "company": "TUBC",
+            "division": "VANCOUVER",
+            "cost_codes": [{"cost_code": "210-200", "cost_element": 2, "mapped": True}],
+        },
+    }
+
+
 def test_list_jobs_routes_to_econnect(monkeypatch):
     monkeypatch.setattr(econnect, "list_jobs", lambda conn: [{"job_number": "80003", "job_name": "Test"}])
     reply = channel._dispatch("list_jobs", "TUBC", {})
@@ -268,7 +296,13 @@ def test_create_job_success_returns_the_response_body(monkeypatch):
     monkeypatch.setattr(ops, "create_job_op", _fake)
     reply = channel._dispatch("create_job", "TUBC", _JOB_PAYLOAD)
     assert reply["ok"] is True
-    assert reply["result"] == {"job_number": "NEXUS-380-T1", "job_name": "Test job", "company": "TUBC"}
+    # cost_codes_provisioned rides along on every create_job reply (#448); 0 when none were selected.
+    assert reply["result"] == {
+        "job_number": "NEXUS-380-T1",
+        "job_name": "Test job",
+        "company": "TUBC",
+        "cost_codes_provisioned": 0,
+    }
 
 
 def test_create_job_already_exists_translates_cleanly(monkeypatch):
@@ -327,6 +361,113 @@ def test_create_buyer_already_exists_translates_cleanly(monkeypatch):
 
 def test_create_buyer_invalid_payload_translates_cleanly():
     reply = channel._dispatch("create_buyer", "TUBC", {"buyer_id": "   "})
+    assert reply["ok"] is False
+    assert reply["error"]["error"] == "invalid_payload"
+
+
+# --- customer address create (issue #444) ---
+#
+# The customer key is the whole of what this handler decides. `customer` is what the read op takes and
+# what the backend sends; `customer_number` is what the model and the proc parameter call it. Both are
+# accepted, they must agree, and neither being usable is a clean missing_customer rather than a pydantic
+# dump - the read half of this same picker answers that way and the write half should not differ.
+
+_ADDRESS_PAYLOAD = {
+    "address_code": "TOWER5",
+    "address1": "1055 Dunsmuir St",
+    "city": "Vancouver",
+}
+
+
+def _stub_address_op(monkeypatch) -> list:
+    """Record the request the handler built, and answer with a response shaped off it."""
+    from ucnexus_relay.models import CreateCustomerAddressResponse, CustomerAddressOut
+
+    seen: list = []
+
+    def _fake(conn, *, company, request):
+        seen.append(request)
+        return CreateCustomerAddressResponse(
+            company=company,
+            customer=request.customer_number,
+            address=CustomerAddressOut(
+                address_code=request.address_code,
+                address1=request.address1,
+                city=request.city,
+                state=request.state or None,
+            ),
+        )
+
+    monkeypatch.setattr(ops, "create_customer_address_op", _fake)
+    return seen
+
+
+def test_create_customer_address_takes_the_customer_key_the_read_op_uses(monkeypatch):
+    seen = _stub_address_op(monkeypatch)
+    reply = channel._dispatch("create_customer_address", "TUBC", {**_ADDRESS_PAYLOAD, "customer": "ELL100"})
+    assert reply["ok"] is True
+    assert seen[0].customer_number == "ELL100"
+    assert reply["result"]["customer"] == "ELL100"
+
+
+def test_create_customer_address_also_takes_customer_number(monkeypatch):
+    seen = _stub_address_op(monkeypatch)
+    reply = channel._dispatch(
+        "create_customer_address", "TUBC", {**_ADDRESS_PAYLOAD, "customer_number": "ELL100"}
+    )
+    assert reply["ok"] is True
+    assert seen[0].customer_number == "ELL100"
+
+
+def test_create_customer_address_accepts_both_keys_when_they_agree(monkeypatch):
+    seen = _stub_address_op(monkeypatch)
+    reply = channel._dispatch(
+        "create_customer_address",
+        "TUBC",
+        {**_ADDRESS_PAYLOAD, "customer": " ELL100 ", "customer_number": "ELL100"},
+    )
+    assert reply["ok"] is True
+    assert seen[0].customer_number == "ELL100"
+
+
+def test_create_customer_address_refuses_two_customers_that_disagree(monkeypatch):
+    # Not a preference to resolve: a caller that has lost track of which customer it is filing this
+    # address under would otherwise put a job site on somebody else's account in GP.
+    seen = _stub_address_op(monkeypatch)
+    reply = channel._dispatch(
+        "create_customer_address",
+        "TUBC",
+        {**_ADDRESS_PAYLOAD, "customer": "ELL100", "customer_number": "BOSA01"},
+    )
+    assert reply["ok"] is False
+    assert reply["error"]["error"] == "invalid_payload"
+    assert "disagree" in reply["error"]["message"]
+    assert seen == []
+
+
+def test_create_customer_address_requires_a_customer(monkeypatch):
+    seen = _stub_address_op(monkeypatch)
+    reply = channel._dispatch("create_customer_address", "TUBC", dict(_ADDRESS_PAYLOAD))
+    assert reply["ok"] is False
+    assert reply["error"]["error"] == "missing_customer"
+    assert seen == []
+
+
+def test_create_customer_address_refuses_a_blank_customer(monkeypatch):
+    # Same answer _run_list_customer_addresses gives, rather than a multi-line pydantic dump.
+    seen = _stub_address_op(monkeypatch)
+    reply = channel._dispatch("create_customer_address", "TUBC", {**_ADDRESS_PAYLOAD, "customer": "   "})
+    assert reply["ok"] is False
+    assert reply["error"]["error"] == "missing_customer"
+    assert seen == []
+
+
+def test_create_customer_address_invalid_payload_translates_cleanly(monkeypatch):
+    # An unknown key is refused by the model (extra="forbid"), not silently dropped.
+    _stub_address_op(monkeypatch)
+    reply = channel._dispatch(
+        "create_customer_address", "TUBC", {**_ADDRESS_PAYLOAD, "customer": "ELL100", "address3": "Floor 3"}
+    )
     assert reply["ok"] is False
     assert reply["error"]["error"] == "invalid_payload"
 

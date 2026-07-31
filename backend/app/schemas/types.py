@@ -209,6 +209,25 @@ class GpCostCode:
 
 
 @strawberry.type
+class GpCostCodeMasterEntry:
+    """One code from GP's cost code MASTER (JC40202), for the create-job cost-code picker (#448).
+
+    Not GpCostCode above, which is a code already on a job (JC00701). This is the catalogue those rows
+    are provisioned from, so it carries the one thing the per-job read has no use for: whether the
+    division the job is being created under actually has a GL account for this code's cost element.
+
+    `mapped` false means it does not - either JC40302 has no row for that (division, cost element), or
+    the row it has points at an account index that is not in GL00105. The second case is the stale
+    sandbox defence: a dangling index is exactly what #425 quarantines a job for, so provisioning a
+    code with one would create the broken job this picker exists to prevent."""
+
+    cost_code: str  # two-segment number 'cc1-cc2' e.g. '210-200'
+    description: str | None
+    cost_element: int
+    mapped: bool
+
+
+@strawberry.type
 class GpCustomer:
     """A GP customer (RM00101) read live via the relay, for the create-job customer picker (#380)."""
 
@@ -260,10 +279,17 @@ class CreateGpJobResult:
     `created` distinguishes the two ways this mutation succeeds. Normally GP creates the job and
     `created` is true. But when GP already holds that job number the mutation adopts it instead of
     dead-ending (the retry-after-ambiguous-failure path), and the caller has to be able to tell -
-    otherwise the UI reports a creation that never happened."""
+    otherwise the UI reports a creation that never happened.
+
+    `cost_codes_provisioned` is how many JC00701 rows GP really ended up with, read back by the relay
+    rather than counted from the request (#448). It exists because a relay older than #448 ignores the
+    unknown `cost_codes` key and creates the bare, quarantined job this feature exists to prevent -
+    silently, and with an otherwise perfectly successful reply. A zero against a non-empty selection is
+    the only signal of that, so the dialog can say the codes did not land instead of claiming they did."""
 
     project: "Project"
     created: bool
+    cost_codes_provisioned: int
 
 
 @strawberry.type

@@ -205,6 +205,24 @@ def _run_list_cost_codes(company: str, payload: dict) -> dict:
     return {"company": company, "job": job, "cost_codes": rows}
 
 
+def _run_list_cost_code_master(company: str, payload: dict) -> dict:
+    """The company's cost-code master, scoped to one division (#448) - what the create-project dialog
+    offers when it asks which cost codes the new job should get.
+
+    Division-scoped for the same reason _run_list_cost_codes is job-scoped: it is not a filter on the
+    list, it is what decides the GL account each code would be provisioned with (JC40302 maps
+    (Divisions, Cost_Element) -> ACTINDX), so answering without one would return codes with no account
+    at all. A missing or blank division answers missing_division, exactly as the job read answers
+    missing_job."""
+    ops.check_company_allowed(company)
+    division = (payload.get("division") or "").strip()
+    if not division:
+        raise ops.RelayOpError("missing_division", "division is required")
+    with db.get_read_connection(company) as conn:
+        rows = econnect.list_cost_code_master(conn, division)
+    return {"company": company, "division": division, "cost_codes": rows}
+
+
 def _run_list_jobs(company: str, payload: dict) -> dict:
     ops.check_company_allowed(company)
     with db.get_read_connection(company) as conn:
@@ -305,6 +323,42 @@ def _run_create_job(company: str, payload: dict) -> dict:
             raise
 
 
+def _run_create_customer_address(company: str, payload: dict) -> dict:
+    """Add an address code to a GP customer (#444) - the write half of _run_list_customer_addresses.
+
+    The customer arrives under the key `customer`, as it does on the read op: the two halves of the same
+    picker should not disagree about what the customer key is called. `customer_number` is accepted too,
+    since that is the name the model and the proc parameter use.
+
+    A payload carrying BOTH with different values is refused rather than resolved. There is no reading
+    of that which is a preference to honour - it is a caller that has lost track of which customer it is
+    creating an address under, and silently picking one would file a job site against somebody else's
+    account in GP, where nothing downstream would ever question it.
+
+    A missing or blank customer answers missing_customer, exactly as _run_list_customer_addresses does.
+    Letting the model raise it instead would surface the same mistake as a multi-line pydantic dump on
+    the write half of a picker whose read half answers in one clean sentence."""
+    ops.check_company_allowed(company)
+    fields = dict(payload)
+    customer = fields.pop("customer", None)
+    if customer is not None:
+        stated = fields.get("customer_number")
+        if stated is not None and str(stated).strip() != str(customer).strip():
+            raise ops.RelayOpError("invalid_payload", "customer and customer_number disagree")
+        fields["customer_number"] = customer
+    if not str(fields.get("customer_number") or "").strip():
+        raise ops.RelayOpError("missing_customer", "customer is required")
+    request = models.CreateCustomerAddressRequest(company=company, **fields)
+    with db.get_connection(company) as conn:
+        try:
+            response = ops.create_customer_address_op(conn, company=company, request=request)
+            conn.commit()
+            return response.model_dump(mode="json")
+        except Exception:
+            conn.rollback()
+            raise
+
+
 def _run_create_receipt(company: str, payload: dict) -> dict:
     ops.check_company_allowed(company)
     request = models.ReceiptRequest(company=company, **payload)
@@ -323,6 +377,9 @@ _OPS = {
     "list_buyers": _run_list_buyers,
     "list_tax_details": _run_list_tax_details,
     "list_cost_codes": _run_list_cost_codes,
+    # issue #448 - the company cost-code master, so a job created from Nexus can be provisioned with a
+    # cost structure instead of arriving with none (which #425 quarantines on sight).
+    "list_cost_code_master": _run_list_cost_code_master,
     "list_jobs": _run_list_jobs,
     "read_po_totals": _run_read_po_totals,
     "create_po": _run_create_po,
@@ -340,6 +397,9 @@ _OPS = {
     # buyer so linking a Nexus account to a GP buyer identity never needs GP opened.
     "list_buyers_detailed": _run_list_buyers_detailed,
     "create_buyer": _run_create_buyer,
+    # issue #444 - the create-job dialog can add a job site that was never entered in GP, instead of
+    # dead-ending on an address picker that has no code for it.
+    "create_customer_address": _run_create_customer_address,
     # issue #425 - jobs replicated from UCSH carry GL account indexes that do not exist in UBC, so a
     # PO against them registers and can never be received. This is how Nexus finds out which ones.
     "job_setup_health": _run_job_setup_health,
