@@ -65,6 +65,7 @@ from .types import (
     PullRequestItem,
     PurchaseOrder,
     ReceiveRecord,
+    ReceivingHistoryPO,
     RecentReceiveRecord,
     RestockedLine,
     ShopAssemblyOpening,
@@ -145,9 +146,30 @@ def _receive_outbox_identity(po_id: uuid.UUID) -> tuple[uuid.UUID | None, str]:
 
 
 def _persist_create_receive(*, key, po_id, received_by, line_items_data, warehouse_id, relay_result) -> ReceiveRecord:
+    """Persist the Nexus receive for a GP receipt that has already posted.
+
+    The single persist path for both directions: the resolver calls it after a live relay_call, and
+    gp_outbox_worker._persist_create_receive_from_context calls it when a queued receipt finally
+    drains. Anything read off `relay_result` therefore has to be read here, or the outbox path
+    silently records less than the live one.
+
+    `receipt_number` / `batch_number` are GP's identifiers for the receipt (#447). `.get` rather than
+    indexing: a relay old enough to predate them, or a stubbed result in a test, returns a dict
+    without the keys, and a missing GP number is worth a null column rather than a failed receive
+    against hardware that is physically on the shelf. The fallback is read into its own name rather
+    than reassigned - `relay_result` itself is handed to the idempotency ledger, which treats None as
+    "this phase recorded nothing, keep what is there" and would take an empty dict as an erasure.
+    """
+    gp_receipt = relay_result or {}
     with SessionLocal() as session:
         receive_record = warehouse_repository.create_receive(
-            session, po_id, received_by, line_items_data, warehouse_id=warehouse_id
+            session,
+            po_id,
+            received_by,
+            line_items_data,
+            warehouse_id=warehouse_id,
+            receipt_number=gp_receipt.get("receipt_number"),
+            batch_number=gp_receipt.get("batch_number"),
         )
         # Capture the id before commit: expire_on_commit would make receive_record.id raise
         # DetachedInstanceError once the session block closes.
@@ -275,6 +297,35 @@ class WarehouseQueries:
                     total_items_received=sum(rli.quantity_received for rli in rr.line_items),
                 )
                 for rr, po in rows
+            ]
+
+    @strawberry.field
+    def receiving_history_pos(
+        self, info: strawberry.Info, project_id: strawberry.ID | None = None
+    ) -> list[ReceivingHistoryPO]:
+        """Every GP-registered PO with what has landed against it (#447).
+
+        The complement to `openPOs` and `backOrderedItems`, which answer "what is still owed" and so
+        drop a PO the moment it is complete. Reconciling a delivery against GP needs the completed
+        ones, which is why CLOSED is in scope here and nowhere else on this page. One row per PO,
+        built from grouped aggregates in the repository - the per-PO receives come from
+        `poReceivingDetails` when a row is expanded, not from here."""
+        with SessionLocal() as session:
+            pid = uuid.UUID(str(project_id)) if project_id else None
+            return [
+                ReceivingHistoryPO(
+                    id=strawberry.ID(str(row["id"])),
+                    po_number=row["po_number"],
+                    request_number=row["request_number"],
+                    status=row["status"],
+                    vendor_name=row["vendor_name"],
+                    project_id=strawberry.ID(str(row["project_id"])) if row["project_id"] else None,
+                    ordered_total=row["ordered_total"],
+                    received_total=row["received_total"],
+                    receive_count=row["receive_count"],
+                    last_received_at=row["last_received_at"],
+                )
+                for row in warehouse_repository.get_receiving_history_pos(session, pid)
             ]
 
     @strawberry.field

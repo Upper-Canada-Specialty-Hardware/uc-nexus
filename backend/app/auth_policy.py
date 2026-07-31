@@ -170,6 +170,13 @@ ROOT_FIELD_POLICY: dict[str, str] = {
     "createShipmentReturn": SIGNED_IN,
     "rejectShippingOutRequest": SIGNED_IN,
     "reopenShippingOutRequest": SIGNED_IN,
+    # The Delivery Request lifecycle (#447), SIGNED_IN for the same reason confirmShipment is: the
+    # shipping department, the warehouse and the office all work the same Shipments page, so no one
+    # role's module owns the callers. The lifecycle mutations move nothing - they record where the
+    # truck got to - and the edit is refused on state rather than on role.
+    "updateShipmentDetails": SIGNED_IN,
+    "markShipmentPickedUp": SIGNED_IN,
+    "markShipmentDelivered": SIGNED_IN,
     # --- shop_assembly.py -----------------------------------------------------------------
     # `assignOpenings` is SIGNED_IN here on purpose: its role requirement is CONDITIONAL. Anyone may
     # self-assign from the "Assign to me" board; assigning to somebody else is Shop Assembly
@@ -247,6 +254,7 @@ ROOT_FIELD_POLICY: dict[str, str] = {
     "pullRequestDetails": SIGNED_IN,
     "pullRequestOpenings": SIGNED_IN,
     "pullRequests": SIGNED_IN,
+    "receivingHistoryPos": SIGNED_IN,
     "recentReceiveRecords": SIGNED_IN,
     "unlocatedInventory": SIGNED_IN,
     "warehouse": SIGNED_IN,

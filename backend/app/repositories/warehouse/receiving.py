@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import and_, exists, or_, select
+from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import InvalidStateTransitionError, NotFoundError, ValidationError
@@ -122,6 +122,9 @@ def create_receive(
     received_by: str,
     line_items_input: list[dict],
     warehouse_id: uuid.UUID | None = None,
+    *,
+    receipt_number: str | None = None,
+    batch_number: str | None = None,
 ) -> ReceiveRecordModel:
     """
     Create a ReceiveRecord with ReceiveLineItems and InventoryLocations.
@@ -135,6 +138,12 @@ def create_receive(
             - po_line_item_id: uuid.UUID
             - quantity_received: int
             - locations: list[dict] each with aisle, row, bay, quantity
+        receipt_number: GP's RCT###### for the receipt this receive posted (#447), taken from the
+            relay's create_receipt response. Keyword-only and defaulted so the many tests and the
+            reset fixtures that create receives without a GP round trip keep working; in the running
+            app it is always present, because receiving is GP-first and nothing is persisted here
+            until GP has already numbered the receipt.
+        batch_number: the GP batch that receipt landed in, from the same response.
     Returns:
         The created ReceiveRecord with line_items loaded.
     """
@@ -210,6 +219,8 @@ def create_receive(
         po_id=po_id,
         received_at=now,
         received_by=received_by,
+        receipt_number=receipt_number,
+        batch_number=batch_number,
     )
     session.add(receive_record)
     session.flush()
@@ -588,6 +599,94 @@ def get_back_ordered_items(session: Session, project_id: uuid.UUID | None = None
             "outstanding_quantity": row[0].ordered_quantity - row[0].received_quantity,
         }
         for row in rows
+    ]
+
+
+def get_receiving_history_pos(session: Session, project_id: uuid.UUID | None = None) -> list[dict]:
+    """Every PO that has reached GP, with how much of it has landed (#447).
+
+    The Receiving page's other lists answer "what is still owed". This answers "what did we receive,
+    and against what" - the reconciliation question, which needs the fully-received POs the open
+    lists deliberately drop. Scope is therefore GP-registered and beyond (GP_REGISTERED,
+    VENDOR_CONFIRMED, PARTIALLY_RECEIVED, CLOSED), excluding DRAFT and CANCELLED: a PO that never
+    reached GP can have no receipts, and a cancelled one is not history anybody reconciles.
+
+    Three grouped aggregates, one row per PO, no relationship iteration. The obvious shape - load the
+    POs and walk `po.line_items` / `po.receive_records` per row - is the N+1 in the perf rules, and
+    this list is cross-project by default, so it is exactly the resolver that would find every PO in
+    the database one SELECT at a time. Each PO's individual receives are NOT returned: the row
+    expands on demand through the existing `poReceivingDetails` query, so a page of a hundred POs
+    costs a hundred rows rather than every receive line ever recorded.
+    """
+    line_totals = (
+        select(
+            POLineItemModel.po_id.label("po_id"),
+            func.coalesce(func.sum(POLineItemModel.ordered_quantity), 0).label("ordered_total"),
+            func.coalesce(func.sum(POLineItemModel.received_quantity), 0).label("received_total"),
+        )
+        .group_by(POLineItemModel.po_id)
+        .subquery()
+    )
+    receive_totals = (
+        select(
+            ReceiveRecordModel.po_id.label("po_id"),
+            func.count(ReceiveRecordModel.id).label("receive_count"),
+            func.max(ReceiveRecordModel.received_at).label("last_received_at"),
+        )
+        .group_by(ReceiveRecordModel.po_id)
+        .subquery()
+    )
+
+    stmt = (
+        select(
+            POModel.id,
+            POModel.po_number,
+            POModel.request_number,
+            POModel.status,
+            POModel.project_id,
+            # The same fallback po_to_type applies: the snapshot taken at GP push time, and the local
+            # vendor row only for PO rows old enough to predate that column.
+            func.coalesce(POModel.vendor_name_snapshot, VendorModel.name).label("vendor_name"),
+            func.coalesce(line_totals.c.ordered_total, 0).label("ordered_total"),
+            func.coalesce(line_totals.c.received_total, 0).label("received_total"),
+            func.coalesce(receive_totals.c.receive_count, 0).label("receive_count"),
+            receive_totals.c.last_received_at,
+        )
+        .outerjoin(VendorModel, POModel.vendor_id == VendorModel.id)
+        .outerjoin(line_totals, line_totals.c.po_id == POModel.id)
+        .outerjoin(receive_totals, receive_totals.c.po_id == POModel.id)
+        .where(
+            POModel.deleted_at.is_(None),
+            POModel.status.in_(
+                [
+                    POStatus.GP_REGISTERED,
+                    POStatus.VENDOR_CONFIRMED,
+                    POStatus.PARTIALLY_RECEIVED,
+                    POStatus.CLOSED,
+                ]
+            ),
+        )
+        # Most recently received first, then the never-received POs - which are the ones somebody is
+        # about to receive, so they belong at the top of what is left rather than buried.
+        .order_by(receive_totals.c.last_received_at.desc().nulls_first(), POModel.po_number.desc())
+    )
+    if project_id is not None:
+        stmt = stmt.where(POModel.project_id == project_id)
+
+    return [
+        {
+            "id": row.id,
+            "po_number": row.po_number,
+            "request_number": row.request_number,
+            "status": row.status,
+            "vendor_name": row.vendor_name,
+            "project_id": row.project_id,
+            "ordered_total": int(row.ordered_total or 0),
+            "received_total": int(row.received_total or 0),
+            "receive_count": int(row.receive_count or 0),
+            "last_received_at": row.last_received_at,
+        }
+        for row in session.execute(stmt).all()
     ]
 
 

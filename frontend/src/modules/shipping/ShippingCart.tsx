@@ -5,7 +5,7 @@ import {
 } from '@mui/material';
 import { ShoppingCart, Trash2 } from 'lucide-react';
 import { useCart } from '../../contexts/CartContext';
-import PackingSlipForm from './PackingSlipForm';
+import DeliveryRequestForm from './DeliveryRequestForm';
 import GpSetupQuarantineBanner from '../../components/GpSetupQuarantineBanner';
 import { isGpSetupBroken, type GpSetupStatus } from '../../types/project';
 import { leafSuffix } from '../../utils/leaf';
@@ -17,6 +17,8 @@ interface ShippingCartProps {
   onClose: () => void;
   projectId: string | undefined;
   projectName: string;
+  /** The project's business id, printed as JOB NUMBER on the Delivery Request (#447). */
+  jobNumber?: string;
   // #425: the selected project's GP setup verdict, passed down rather than re-queried - the module
   // shell already holds the project object the user picked. Undefined in the All Projects view, where
   // there is no single job to be broken.
@@ -28,16 +30,17 @@ export default function ShippingCart({
   onClose,
   projectId,
   projectName,
+  jobNumber,
   project,
 }: ShippingCartProps) {
   const { items, removeItem, clearCart, itemCount } = useCart();
-  const [packingSlipOpen, setPackingSlipOpen] = useState(false);
+  const [deliveryRequestOpen, setDeliveryRequestOpen] = useState(false);
 
   const openingItems = items.filter((i) => i.itemType === 'Opening_Item');
   const looseItems = items.filter((i) => i.itemType === 'Loose');
 
   const handleShipped = () => {
-    setPackingSlipOpen(false);
+    setDeliveryRequestOpen(false);
     onClose();
   };
 
@@ -184,7 +187,7 @@ export default function ShippingCart({
               <Button
                 variant="contained"
                 size="small"
-                onClick={() => setPackingSlipOpen(true)}
+                onClick={() => setDeliveryRequestOpen(true)}
                 disabled={itemCount === 0 || isGpSetupBroken(project)}
                 sx={{ flexGrow: 1 }}
               >
@@ -195,12 +198,13 @@ export default function ShippingCart({
         </Box>
       </Drawer>
 
-      <PackingSlipForm
-        open={packingSlipOpen}
-        onClose={() => setPackingSlipOpen(false)}
+      <DeliveryRequestForm
+        open={deliveryRequestOpen}
+        onClose={() => setDeliveryRequestOpen(false)}
         onShipped={handleShipped}
         projectId={projectId}
         projectName={projectName}
+        jobNumber={jobNumber}
       />
     </>
   );

@@ -8,9 +8,9 @@ import { isGpSetupBroken, type GpSetupStatus } from '../../types/project';
 import ShippingCart from '../../modules/shipping/ShippingCart';
 import { CartProvider, useCart } from '../../contexts/CartContext';
 
-// ShippingCart mounts PackingSlipForm (closed), which reaches for Clerk and the PDF renderer. Neither
-// runs under jsdom and neither is what is under test here - same two stubs PackingSlipForm's own suite
-// installs.
+// ShippingCart mounts DeliveryRequestForm (closed), which reaches for Clerk and the PDF renderer.
+// Neither runs under jsdom and neither is what is under test here - same two stubs
+// DeliveryRequestForm's own suite installs.
 vi.mock('../../hooks/useIdentity', () => ({
   useIdentity: () => ({
     displayName: 'Me',

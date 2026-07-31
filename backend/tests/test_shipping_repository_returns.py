@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy import select
 
 from app.errors import ValidationError
-from app.models.enums import OpeningItemState, PullRequestItemType, ReturnDisposition
+from app.models.enums import OpeningItemState, PullRequestItemType, ReturnDisposition, ShipmentStatus
 from app.models.inventory import InventoryLocation
 from app.models.opening_item import OpeningItem
 from app.models.project import Project
@@ -266,3 +266,6 @@ def test_confirm_shipment_stamps_leaf_on_opening_item_line(db_session):
 
     db_session.refresh(oi)
     assert oi.state == OpeningItemState.SHIPPED_OUT
+    # The #447 lifecycle sits on top of this, not in front of it: the slip starts SCHEDULED and the
+    # claim on the hardware is still made here, at confirm time.
+    assert slip.status == ShipmentStatus.SCHEDULED

@@ -15,15 +15,48 @@ export const GET_SHIP_READY_ITEMS = gql`
   }
 `;
 
+// Every field of the Delivery Request a shipment carries (#447), in one place. The confirm, the
+// list read and the three lifecycle mutations all return a PackingSlip, and they have to return the
+// SAME PackingSlip: Apollo normalises on `id`, so a mutation that answered with a narrower selection
+// than the list reads would leave the row it just changed half-stale in the cache.
+const PACKING_SLIP_FIELDS = `
+  id
+  packingSlipNumber
+  projectId
+  status
+  shippedBy
+  shippedAt
+  createdAt
+  pickupDate
+  deliveryDate
+  shipperEmail
+  shipperPhone
+  pickupLocation
+  carrierTagBol
+  weightLbs
+  deliveryAddress
+  specialInstructions
+  gateNumber
+  forkliftOnsite
+  materialComingBack
+  siteMaterialIncluded
+  constructionTempKeys
+  extraFrameAnchors
+  contractorContactName
+  contractorContactPhone
+  ucshContactName
+  ucshContactPhone
+  salesOrderNumber
+  pickedUpAt
+  pickedUpBy
+  deliveredAt
+  deliveredBy
+`;
+
 export const GET_PACKING_SLIPS = gql`
   query GetPackingSlips($projectId: ID) {
     packingSlips(projectId: $projectId) {
-      id
-      packingSlipNumber
-      projectId
-      shippedBy
-      shippedAt
-      createdAt
+      ${PACKING_SLIP_FIELDS}
       items {
         id
         itemType
@@ -54,22 +87,45 @@ export const GET_RETURNABLE_LINES = gql`
 export const CONFIRM_SHIPMENT = gql`
   mutation ConfirmShipment($input: ConfirmShipmentInput!) {
     confirmShipment(input: $input) {
-      id
-      packingSlipNumber
-      projectId
-      shippedBy
-      shippedAt
-      createdAt
+      ${PACKING_SLIP_FIELDS}
       items {
         id
         packingSlipId
         itemType
         openingItemId
         openingNumber
+        leaf
         productCode
         hardwareCategory
         quantity
       }
+    }
+  }
+`;
+
+// The Delivery Request is editable only while the shipment is still SCHEDULED - once it has been
+// picked up, the paper is out of the building and the record has to match it. The backend enforces
+// that; the list hides the button.
+export const UPDATE_SHIPMENT_DETAILS = gql`
+  mutation UpdateShipmentDetails($input: UpdateShipmentDetailsInput!) {
+    updateShipmentDetails(input: $input) {
+      ${PACKING_SLIP_FIELDS}
+    }
+  }
+`;
+
+export const MARK_SHIPMENT_PICKED_UP = gql`
+  mutation MarkShipmentPickedUp($id: ID!) {
+    markShipmentPickedUp(id: $id) {
+      ${PACKING_SLIP_FIELDS}
+    }
+  }
+`;
+
+export const MARK_SHIPMENT_DELIVERED = gql`
+  mutation MarkShipmentDelivered($id: ID!) {
+    markShipmentDelivered(id: $id) {
+      ${PACKING_SLIP_FIELDS}
     }
   }
 `;

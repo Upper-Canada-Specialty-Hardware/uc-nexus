@@ -99,6 +99,15 @@ interface WarehouseOption {
   isPrimary: boolean;
 }
 
+// What GP called the receipt that just posted for one PO (#447). `receiptNumber` is nullable on the
+// schema, so a receive that committed without one still gets a row here - the PO is named either way,
+// and the missing number reads as a gap rather than a missing PO.
+interface PostedReceipt {
+  poId: string;
+  poNumber: string | null;
+  receiptNumber: string | null;
+}
+
 const MAX_LOC_LEN = 20;
 
 function emptyDraft(quantity: number): LocationDraft {
@@ -120,6 +129,11 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
   // How many POs' receipts went onto the GP outbox instead of posting (#353 PR E). Drives the amber
   // success copy: the work is accepted and must not be redone, but nothing is in inventory yet.
   const [queuedCount, setQueuedCount] = useState(0);
+  // GP's receipt numbers for what just posted (#447), one entry per committed PO. Shown on the
+  // success screen because this is the only moment the number is in front of the person holding the
+  // packing slip - after the modal closes, finding it means opening GP. Empty for a queued receipt:
+  // nothing has posted, so GP has not numbered anything yet.
+  const [postedReceipts, setPostedReceipts] = useState<PostedReceipt[]>([]);
   const [mutationError, setMutationError] = useState<string | null>(null);
   // Structured GP/eConnect detail for a failed receipt, shown persistently (issue #187) so the user can
   // screenshot it; mutationError carries the which-PO + retry-safe context line.
@@ -135,7 +149,11 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
   // #353 PR E: `queued` true means the GP relay was unreachable and the receipt is on the durable
   // outbox; `receiveRecord` is null because the UC Nexus receive is persisted with the GP write.
   const [createReceive] = useMutation<{
-    createReceive: { queued: boolean; outboxEntryId: string | null; receiveRecord: { id: string } | null };
+    createReceive: {
+      queued: boolean;
+      outboxEntryId: string | null;
+      receiveRecord: { id: string; receiptNumber: string | null } | null;
+    };
   }>(CREATE_RECEIVE);
 
   // One idempotency key per PO, reused across retries so re-posting a PO that already committed in GP is
@@ -438,6 +456,10 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
     // POs whose receipt was accepted but is waiting on the GP relay (#353 PR E). Tracked separately
     // from `completed` because nothing has been persisted for these yet - no inventory, no refetch.
     const queued: string[] = [];
+    // GP's receipt number per committed PO (#447), collected as the calls return so the success
+    // screen can name them. Only the committed ones land here - a queued receipt has not posted, so
+    // there is no GP number to show yet.
+    const receipts: PostedReceipt[] = [];
     let failureMessage: string | null = null;
     let capturedGpError: GpError | null = null;
 
@@ -489,6 +511,11 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
             queued.push(poId);
             continue;
           }
+          receipts.push({
+            poId,
+            poNumber: details?.poNumber ?? null,
+            receiptNumber: res.data?.createReceive?.receiveRecord?.receiptNumber ?? null,
+          });
         } catch (err: unknown) {
           // Keep this PO's key so the retry reuses it - the GP receipt may have committed even if the
           // mutation reported failure, and reusing the key makes the retry safe.
@@ -537,6 +564,7 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
 
     setReceivedCount(totalItemsToReceive);
     setQueuedCount(queued.length);
+    setPostedReceipts(receipts);
     if (queued.length > 0) {
       showToast(
         `Queued — the GP relay is offline. ${queued.length === 1 ? 'This receipt' : 'These receipts'} will post automatically when it reconnects.`,
@@ -568,6 +596,7 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
     setSucceeded(false);
     setConfirmOpen(false);
     setLineLocations({});
+    setPostedReceipts([]);
     onClose();
   }, [onClose]);
 
@@ -814,6 +843,36 @@ export default function ReceiveModal({ open, onClose, poIds }: ReceiveModalProps
         {succeeded && queuedCount === 0 && (
           <Alert severity="success" sx={{ mb: 2 }}>
             Receive completed successfully! {receivedCount} items added to inventory.
+            {/* #447: GP numbered the receipt on the way in, and this is the only moment it is in
+                front of the person holding the packing slip. Rendered per PO because a batch
+                receive posts one receipt each - a single number would be wrong for all but one. */}
+            {postedReceipts.length > 0 && (
+              <Box sx={{ mt: 1, display: 'flex', flexDirection: 'column', gap: 0.25 }}>
+                {postedReceipts.map((r) => (
+                  <Typography key={r.poId} variant="body2">
+                    {postedReceipts.length > 1 && (
+                      <Box component="span" sx={{ ...monoSx, mr: 0.75 }}>
+                        {r.poNumber ?? 'PO'}
+                      </Box>
+                    )}
+                    {r.receiptNumber ? (
+                      <>
+                        GP Receipt{' '}
+                        <Box component="span" sx={{ ...monoSx, fontWeight: 700 }}>
+                          {r.receiptNumber}
+                        </Box>
+                      </>
+                    ) : (
+                      // Committed in GP but the response carried no number. Saying so beats printing
+                      // a dash the user reads as "nothing posted".
+                      <Box component="span" sx={{ color: 'text.secondary' }}>
+                        GP receipt number unavailable
+                      </Box>
+                    )}
+                  </Typography>
+                ))}
+              </Box>
+            )}
           </Alert>
         )}
         {mutationError && (

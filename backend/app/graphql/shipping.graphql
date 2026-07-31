@@ -42,6 +42,88 @@ type ShippingOutRequest {
   items: [ShippingOutRequestItem!]!
 }
 
+# --- Delivery Request (#447) ---
+# A shipment is the paper form the shipping department fills in and the site signs off on, plus a
+# lifecycle for the truck's journey. No inventory moves between the states - confirmShipment is still
+# what claims the hardware. The header is editable only while SCHEDULED, because once the shipment is
+# picked up a driver is carrying a printed copy the record has to keep matching.
+
+enum ShipmentStatus {
+  SCHEDULED
+  PICKED_UP
+  DELIVERED
+}
+
+type PackingSlip {
+  id: ID!
+  packingSlipNumber: String!
+  projectId: ID!
+  status: ShipmentStatus!
+  shippedBy: String!
+  shippedAt: DateTime!
+  createdAt: DateTime!
+  # The Delivery Request header. Every field is nullable: a blank on the paper form is a real
+  # answer, and slips confirmed before #447 have nothing to backfill from.
+  pickupDate: Date
+  deliveryDate: Date
+  shipperEmail: String
+  shipperPhone: String
+  # Snapshot of the warehouse address, not a reference - the warehouse record can be edited or
+  # retired long after the truck left, and the form has to keep printing where it was sent.
+  pickupLocation: String
+  carrierTagBol: String
+  weightLbs: Float
+  deliveryAddress: String
+  specialInstructions: String
+  # The site questions, free text: the answers that come back are "yes until 3pm" and "gate 4, ask
+  # for Dave", which a checkbox would lose the useful half of.
+  gateNumber: String
+  forkliftOnsite: String
+  materialComingBack: String
+  siteMaterialIncluded: String
+  constructionTempKeys: String
+  extraFrameAnchors: String
+  contractorContactName: String
+  contractorContactPhone: String
+  ucshContactName: String
+  ucshContactPhone: String
+  salesOrderNumber: String
+  pickedUpAt: DateTime
+  pickedUpBy: String
+  deliveredAt: DateTime
+  deliveredBy: String
+  items: [PackingSlipItem!]!
+}
+
+input UpdateShipmentDetailsInput {
+  id: ID!
+  # Full replace: every field is applied as given and null CLEARS. The client sends all of them on
+  # every edit, blanks as explicit nulls, or a field could never be emptied once filled.
+  pickupDate: Date
+  deliveryDate: Date
+  shipperEmail: String
+  shipperPhone: String
+  pickupLocation: String
+  carrierTagBol: String
+  weightLbs: Float
+  deliveryAddress: String
+  specialInstructions: String
+  gateNumber: String
+  forkliftOnsite: String
+  materialComingBack: String
+  siteMaterialIncluded: String
+  constructionTempKeys: String
+  extraFrameAnchors: String
+  contractorContactName: String
+  contractorContactPhone: String
+  ucshContactName: String
+  ucshContactPhone: String
+  salesOrderNumber: String
+}
+
+# ConfirmShipmentInput carries projectId, packingSlipNumber, items and the same header fields as
+# UpdateShipmentDetailsInput above, all optional.
+
 # --- Ship-ready / packing slips / returns (existing) ---
 
 type ShipReadyItems {
@@ -78,6 +160,13 @@ type Query {
 type Mutation {
   confirmShipment(input: ConfirmShipmentInput!): PackingSlip!
   createShipmentReturn(input: CreateShipmentReturnInput!): ShipmentReturn!
+  # Delivery Request lifecycle (#447). Any signed-in user. All three answer with the same PackingSlip
+  # the list reads, so Apollo's normalised cache updates the row in place.
+  # updateShipmentDetails is refused unless the shipment is still SCHEDULED; markShipmentDelivered
+  # only from PICKED_UP. The actor stamped on each leg is the Clerk-authenticated caller (#427).
+  updateShipmentDetails(input: UpdateShipmentDetailsInput!): PackingSlip!
+  markShipmentPickedUp(id: ID!): PackingSlip!
+  markShipmentDelivered(id: ID!): PackingSlip!
   # Accept gate (#293). Any signed-in user. Accept mints the warehouse PullRequest;
   # the warehouse approve handles shortfalls. The approval is recorded against the
   # Clerk-authenticated caller (#427). The acceptedBy/rejectedBy arguments lingered as ignored

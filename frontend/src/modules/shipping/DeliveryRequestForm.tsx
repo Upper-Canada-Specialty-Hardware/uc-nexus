@@ -1,45 +1,55 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useMemo } from 'react';
 import {
   Dialog, DialogTitle, DialogContent, DialogActions, Button, TextField,
   Typography, Box, CircularProgress, Alert,
 } from '@mui/material';
 import { CheckCircle2 } from 'lucide-react';
-import { useMutation, useApolloClient } from '@apollo/client/react';
+import { useMutation, useApolloClient, useQuery } from '@apollo/client/react';
 import { pdf } from '@react-pdf/renderer';
 import { useIdentity } from '../../hooks/useIdentity';
 import { useCart, type CartItem } from '../../contexts/CartContext';
 import { useToast } from '../../components/Toast';
 import { useNavigate } from 'react-router-dom';
 import { CONFIRM_SHIPMENT } from '../../graphql/shipping';
+import { GET_WAREHOUSES } from '../../graphql/shared';
 import { SHIPPING_REFETCH_QUERIES, SHIPPING_STALE_ROOT_FIELDS } from '../../graphql/refetch';
 import { extractGpError } from '../../graphql/gpError';
-import PackingSlipDocument from './PackingSlipDocument';
+import DeliveryRequestDocument from './DeliveryRequestDocument';
+import DeliveryRequestFields from './DeliveryRequestFields';
+import {
+  buildMaterialLines,
+  deliveryDetailsInput,
+  EMPTY_DELIVERY_DETAILS,
+  isWeightInvalid,
+  primaryWarehouse,
+  warehouseAddressLines,
+  type DeliveryDetails,
+  type PackingSlipHeader,
+  type WarehouseAddress,
+} from './deliveryRequest';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import { StaggerItem, StaggerList } from '../../motion';
 import { parseServerDate } from '../../utils/serverDate';
 
-interface PackingSlipFormProps {
+interface DeliveryRequestFormProps {
   open: boolean;
   onClose: () => void;
   onShipped: () => void;
   projectId: string | undefined;
   projectName: string;
+  /** The project's own business id, printed as JOB NUMBER. */
+  jobNumber?: string;
 }
 
 interface ShipmentResult {
-  confirmShipment: {
-    id: string;
-    packingSlipNumber: string;
-    projectId: string;
-    shippedBy: string;
-    shippedAt: string;
-    createdAt: string;
+  confirmShipment: PackingSlipHeader & {
     items: Array<{
       id: string;
       packingSlipId: string;
       itemType: string;
       openingItemId: string | null;
       openingNumber: string | null;
+      leaf: number | null;
       productCode: string | null;
       hardwareCategory: string | null;
       quantity: number;
@@ -67,8 +77,25 @@ function describeConfirmError(err: unknown): string {
   return STALE_CART_CODES.has(gp.code ?? '') ? `${gp.message}${REFRESHED_SUFFIX}` : gp.message;
 }
 
-export default function PackingSlipForm({ open, onClose, onShipped, projectId, projectName }: PackingSlipFormProps) {
-  const { displayName } = useIdentity();
+/**
+ * The last step of shipping out (#447): the whole Delivery Request, captured at the moment the
+ * shipment is confirmed.
+ *
+ * This used to take a packing slip number and nothing else, and printed a packing slip. That was
+ * never the paper the driver carried - the Delivery Request is, and it is the document the site
+ * signs. Capturing it here rather than after the fact is what makes the confirmation and the
+ * printed form one act: the shipment is booked against the dates, the contacts and the eight site
+ * answers that were true when the hardware left.
+ */
+export default function DeliveryRequestForm({
+  open,
+  onClose,
+  onShipped,
+  projectId,
+  projectName,
+  jobNumber = '',
+}: DeliveryRequestFormProps) {
+  const { displayName, user } = useIdentity();
   const { items, clearCart } = useCart();
   const { showToast } = useToast();
   const navigate = useNavigate();
@@ -76,15 +103,56 @@ export default function PackingSlipForm({ open, onClose, onShipped, projectId, p
 
   const [view, setView] = useState<'form' | 'success'>('form');
   const [packingSlipNumber, setPackingSlipNumber] = useState('');
+  const [details, setDetails] = useState<DeliveryDetails>(EMPTY_DELIVERY_DETAILS);
+  // Which fields the user has taken over from the prefill. Two prefilled fields, so this is what
+  // lets somebody clear the pickup location and have it stay cleared.
+  const [touched, setTouched] = useState<Partial<Record<keyof DeliveryDetails, boolean>>>({});
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ShipmentResult['confirmShipment'] | null>(null);
   const [generatingPdf, setGeneratingPdf] = useState(false);
 
   // Snapshot cart items at confirm time so they survive clearCart
   const cartSnapshotRef = useRef<CartItem[]>([]);
+  // What was actually sent, kept for the PDF: the success view prints the Delivery Request that was
+  // recorded, not whatever is left in the inputs behind it.
+  const sentDetailsRef = useRef<DeliveryDetails>(EMPTY_DELIVERY_DETAILS);
 
   const openingItemCount = items.filter((i) => i.itemType === 'Opening_Item').length;
   const looseItemCount = items.filter((i) => i.itemType === 'Loose').length;
+
+  // The PICKUP LOCATION snapshot is composed from the primary warehouse rather than referenced,
+  // because the shipment has to keep printing the address the truck was sent to (see
+  // warehouseAddressLines). Skipped while the dialog is closed - it is mounted behind the cart.
+  const { data: warehousesData } = useQuery<{ warehouses: WarehouseAddress[] }>(GET_WAREHOUSES, {
+    variables: { includeInactive: false },
+    skip: !open,
+  });
+  const defaultPickupLocation = useMemo(
+    () => warehouseAddressLines(primaryWarehouse(warehousesData?.warehouses ?? [])),
+    [warehousesData],
+  );
+  const defaultShipperEmail = user?.primaryEmailAddress?.emailAddress ?? '';
+
+  const patchDetails = useCallback((patch: Partial<DeliveryDetails>) => {
+    setDetails((prev) => ({ ...prev, ...patch }));
+    setTouched((prev) => {
+      const next = { ...prev };
+      for (const key of Object.keys(patch) as (keyof DeliveryDetails)[]) next[key] = true;
+      return next;
+    });
+  }, []);
+
+  // The two prefilled fields are derived rather than written into state, so an address that only
+  // arrives once the warehouses query answers still lands in a form the user has already started
+  // filling in - and a field they have edited is never overwritten by it.
+  const effectiveDetails = useMemo<DeliveryDetails>(
+    () => ({
+      ...details,
+      pickupLocation: touched.pickupLocation ? details.pickupLocation : defaultPickupLocation,
+      shipperEmail: touched.shipperEmail ? details.shipperEmail : defaultShipperEmail,
+    }),
+    [details, touched, defaultPickupLocation, defaultShipperEmail],
+  );
 
   // A shipment contradicts the cached ship-ready stock, the leaf rollup and the warehouse
   // opening-item states, and none of those re-read on their own - which is why the Ship view behind
@@ -92,9 +160,9 @@ export default function PackingSlipForm({ open, onClose, onShipped, projectId, p
   //
   // Not awaited. `awaitRefetchQueries` folds the refetches into the mutate promise
   // (QueryInfo.markMutationResult -> Promise.all), so one slow or failed refetch would reject a
-  // shipment that already committed: no success view, no packing-slip PDF, and a retry that can only
-  // fail on the duplicate slip number. The shipment is the thing that must be reported truthfully;
-  // the grid behind the modal can catch up on its own.
+  // shipment that already committed: no success view, no Delivery Request PDF, and a retry that can
+  // only fail on the duplicate slip number. The shipment is the thing that must be reported
+  // truthfully; the grid behind the modal can catch up on its own.
   const [confirmShipment, { loading: confirming }] = useMutation<ShipmentResult>(CONFIRM_SHIPMENT, {
     update(cache) {
       for (const fieldName of SHIPPING_STALE_ROOT_FIELDS) {
@@ -113,6 +181,11 @@ export default function PackingSlipForm({ open, onClose, onShipped, projectId, p
       return;
     }
 
+    if (isWeightInvalid(effectiveDetails.weightLbs)) {
+      setError('Weight must be a number.');
+      return;
+    }
+
     // ConfirmShipmentInput.projectId is ID! but the shipping module leaves it undefined in its
     // "All Projects" mode, where the Ship view still lists items and lets them into the cart. Say so
     // here rather than shipping an undefined variable and surfacing a coercion error.
@@ -123,6 +196,7 @@ export default function PackingSlipForm({ open, onClose, onShipped, projectId, p
 
     // Snapshot the cart items before mutation (cart gets cleared later)
     cartSnapshotRef.current = [...items];
+    sentDetailsRef.current = effectiveDetails;
 
     const shipmentItems = items.map((item) => {
       if (item.itemType === 'Opening_Item') {
@@ -148,6 +222,7 @@ export default function PackingSlipForm({ open, onClose, onShipped, projectId, p
             projectId,
             packingSlipNumber,
             items: shipmentItems,
+            ...deliveryDetailsInput(effectiveDetails),
           },
         },
       });
@@ -173,7 +248,16 @@ export default function PackingSlipForm({ open, onClose, onShipped, projectId, p
       }
       setError(describeConfirmError(err));
     }
-  }, [confirmShipment, items, packingSlipNumber, projectId, displayName, showToast, clearCart, client]);
+  }, [
+    confirmShipment,
+    items,
+    packingSlipNumber,
+    effectiveDetails,
+    projectId,
+    showToast,
+    clearCart,
+    client,
+  ]);
 
   const handleViewPdf = useCallback(async () => {
     if (!result) return;
@@ -200,13 +284,18 @@ export default function PackingSlipForm({ open, onClose, onShipped, projectId, p
         }));
 
       const blob = await pdf(
-        <PackingSlipDocument
+        <DeliveryRequestDocument
           packingSlipNumber={result.packingSlipNumber}
           projectName={projectName}
-          shippedBy={result.shippedBy}
-          shippedAt={parseServerDate(result.shippedAt).toLocaleString()}
-          openingItems={openingItems}
-          looseItems={looseItems}
+          jobNumber={jobNumber}
+          date={parseServerDate(result.shippedAt).toLocaleDateString(undefined, {
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric',
+          })}
+          shipper={result.shippedBy}
+          materialLines={buildMaterialLines(openingItems, looseItems)}
+          values={deliveryDetailsInput(sentDetailsRef.current)}
         />
       ).toBlob();
 
@@ -217,29 +306,32 @@ export default function PackingSlipForm({ open, onClose, onShipped, projectId, p
     } finally {
       setGeneratingPdf(false);
     }
-  }, [result, projectName, showToast]);
+  }, [result, projectName, jobNumber, showToast]);
+
+  const resetForm = useCallback(() => {
+    setView('form');
+    setPackingSlipNumber('');
+    setDetails(EMPTY_DELIVERY_DETAILS);
+    setTouched({});
+    setError(null);
+    setResult(null);
+  }, []);
 
   // The cart is emptied the moment the shipment succeeds rather than here, so the Ship view never
   // shows a shipped leaf as still carted. These calls stay as the backstop for any path that reaches
   // the success view without that clear having run; clearCart is idempotent.
   const handleShipMore = useCallback(() => {
     clearCart();
-    setView('form');
-    setPackingSlipNumber('');
-    setError(null);
-    setResult(null);
+    resetForm();
     onShipped();
-  }, [clearCart, onShipped]);
+  }, [clearCart, resetForm, onShipped]);
 
   const handleReturnHome = useCallback(() => {
     clearCart();
-    setView('form');
-    setPackingSlipNumber('');
-    setError(null);
-    setResult(null);
+    resetForm();
     onClose();
     navigate('/app');
-  }, [clearCart, navigate, onClose]);
+  }, [clearCart, resetForm, navigate, onClose]);
 
   const handleClose = () => {
     if (view === 'form') {
@@ -248,23 +340,34 @@ export default function PackingSlipForm({ open, onClose, onShipped, projectId, p
   };
 
   return (
-    <Dialog open={open} onClose={handleClose} maxWidth="sm" fullWidth>
+    <Dialog open={open} onClose={handleClose} maxWidth="md" fullWidth>
       {view === 'form' ? (
         <>
-          <DialogTitle>Create Packing Slip</DialogTitle>
+          <DialogTitle>Delivery Request</DialogTitle>
           <DialogContent>
-            <TextField
-              label="Packing Slip Number"
-              value={packingSlipNumber}
-              onChange={(e) => setPackingSlipNumber(e.target.value)}
-              fullWidth
-              margin="normal"
-              helperText="1-50 characters: letters, numbers, hyphens, underscores"
-              error={!!error && error.includes('Packing slip')}
-              slotProps={{ input: { sx: monoSx } }}
-            />
+            <Box sx={{ pt: 1 }}>
+              <DeliveryRequestFields
+                details={effectiveDetails}
+                onChange={patchDetails}
+                shipperName={displayName}
+                disabled={confirming}
+                leadingShipmentField={
+                  <TextField
+                    label="Packing Slip Number"
+                    value={packingSlipNumber}
+                    onChange={(e) => setPackingSlipNumber(e.target.value)}
+                    fullWidth
+                    required
+                    disabled={confirming}
+                    helperText="1-50 characters: letters, numbers, hyphens, underscores"
+                    error={!!error && error.includes('Packing slip')}
+                    slotProps={{ input: { sx: monoSx } }}
+                  />
+                }
+              />
+            </Box>
 
-            <Box sx={{ mt: 2 }}>
+            <Box sx={{ mt: 3 }}>
               <Typography sx={{ ...microLabelSx, pb: 0.5, borderBottom: '2px solid', borderColor: 'text.primary' }}>
                 Cart Summary
               </Typography>
@@ -342,7 +445,7 @@ export default function PackingSlipForm({ open, onClose, onShipped, projectId, p
           </DialogContent>
           <DialogActions>
             <Button onClick={handleViewPdf} disabled={generatingPdf}>
-              {generatingPdf ? 'Generating...' : 'View Packing Slip'}
+              {generatingPdf ? 'Generating...' : 'View Delivery Request'}
             </Button>
             <Button onClick={handleShipMore}>Ship More Items</Button>
             <Button variant="contained" onClick={handleReturnHome}>
