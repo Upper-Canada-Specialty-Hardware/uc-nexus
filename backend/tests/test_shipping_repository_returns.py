@@ -30,6 +30,8 @@ def _make_slip(session, project_id) -> PackingSlip:
         project_id=project_id,
         shipped_by="shipper",
         shipped_at=datetime.utcnow(),
+        # Returns come back from site, so the fixture slip is already through its journey (#447).
+        status=ShipmentStatus.DELIVERED,
     )
     session.add(ps)
     session.flush()
