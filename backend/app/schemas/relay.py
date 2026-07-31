@@ -22,6 +22,7 @@ from app.services.relay_gateway import gateway as relay_gateway
 
 from .converters import (
     gp_buyer_to_type,
+    gp_cost_code_master_entry_to_type,
     gp_cost_code_to_type,
     gp_customer_address_to_type,
     gp_customer_to_type,
@@ -36,6 +37,7 @@ from .inputs import CreateGpCustomerAddressInput, EnrollRelayInstallInput
 from .types import (
     GpBuyer,
     GpCostCode,
+    GpCostCodeMasterEntry,
     GpCustomer,
     GpCustomerAddress,
     GpEmployee,
@@ -144,6 +146,25 @@ class RelayQueries:
         """Active per-job cost codes (JC00701) via the connected relay, for the Create PO cost-code dropdown."""
         result = await relay_gateway.relay_call(company, "list_cost_codes", {"job": job})
         return [gp_cost_code_to_type(c) for c in result["cost_codes"]]
+
+    @strawberry.field
+    async def gp_cost_code_master(
+        self, info: strawberry.Info, company: str, division: str
+    ) -> list[GpCostCodeMasterEntry]:
+        """GP's cost code master (JC40202) for one division, via the connected relay - the create-job
+        dialog's cost-code picker (#448).
+
+        Not gpCostCodes, which reads the codes already on a job (JC00701). wsiJCJobMaster creates a job
+        with none of those at all, so this is the list a new job's codes are chosen FROM, and the pick
+        is provisioned in the same GP transaction as the job.
+
+        Scoped to a division because that is what decides whether a code is usable at all: the GL
+        account comes from JC40302's (division, cost element) mapping, and a code the division has no
+        usable account for comes back mapped=false for the picker to render disabled rather than hide.
+        Hiding it would leave the user hunting for a code they can see in GP; disabling it says the
+        division is what needs fixing."""
+        result = await relay_gateway.relay_call(company, "list_cost_code_master", {"division": division})
+        return [gp_cost_code_master_entry_to_type(c) for c in result["cost_codes"]]
 
     @strawberry.field
     async def gp_tax_details(self, info: strawberry.Info, company: str) -> list[GpTaxDetail]:

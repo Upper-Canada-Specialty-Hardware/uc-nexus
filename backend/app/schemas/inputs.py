@@ -13,6 +13,23 @@ from .enums import (
 
 
 @strawberry.input
+class CostCodeSelectionInput:
+    """One cost code to provision on a job at the moment it is created (#448).
+
+    This names WHICH code out of GP's own master (JC40202) to put on the job, and nothing else. Every
+    value that lands in JC00701 - the alias, the description, and above all the GL account index -
+    is read from GP's config at create time: the account comes from JC40302's (division, cost element)
+    mapping, never from Nexus configuration and never from anything the user typed. That is the same
+    provenance principle #427 and #430 settled for everything Nexus writes into GP.
+
+    The cost element travels with the number because the master is keyed on both - the same code
+    number exists once per element, and the account mapping is per element too."""
+
+    cost_code: str
+    cost_element: int
+
+
+@strawberry.input
 class CreateGpJobInput:
     """Originate a job in GP through the WennSoft job proc, which then becomes a UC Nexus project
     (#380).
@@ -22,7 +39,13 @@ class CreateGpJobInput:
     defaulted) is left alone, except the eight below that the issue asks to expose.
 
     None on an optional field means "not sent", so GP keeps its own default. That is deliberately
-    different from sending a blank string, which would overwrite it."""
+    different from sending a blank string, which would overwrite it.
+
+    `cost_codes` is the one thing here that is not a wsiJCJobMaster parameter: the proc creates a job
+    with zero JC00701 rows, so the codes are provisioned alongside it (#448). An empty list is
+    accepted and means exactly that - a job with no cost structure, which leaves the register-PO
+    cost-code dropdown empty and quarantines the project on the next gp_job_sync stamp (rule one of
+    the #425 setup check) until somebody adds codes in GP."""
 
     job_number: str
     job_name: str
@@ -43,6 +66,8 @@ class CreateGpJobInput:
     schedule_start_date: date | None = None
     scheduled_completion_date: date | None = None
     bid_due_date: date | None = None
+
+    cost_codes: list[CostCodeSelectionInput] = strawberry.field(default_factory=list)
 
 
 @strawberry.input

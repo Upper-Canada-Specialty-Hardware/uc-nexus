@@ -317,6 +317,31 @@ _JOB_OPTIONAL_STRINGS = (
 )
 
 
+class JobCostCodeSelection(BaseModel):
+    """One cost code to put on the job being created (issue #448).
+
+    Only the two identifying fields are sent. Everything else the JC00701 row needs - the alias, the
+    description, the profit and transaction types, and above all the GL account index - is read out of
+    the company master (JC40202/JC40302) by the relay at provisioning time. That is the #427/#430
+    provenance rule: the caller names WHICH cost codes the job gets, GP's own configuration decides what
+    they mean. A client that could send an account index could put a job's costs on any account in the
+    chart, and nothing downstream would ever question it.
+
+    cost_code is the 'cc1-cc2' shape list_cost_code_master returns and the register-PO dropdown already
+    speaks; cost_element is the code's own element, which varies by code and is part of its identity -
+    the same 'cc1-cc2' can exist under more than one element."""
+
+    cost_code: str = Field(..., max_length=15)
+    cost_element: int
+
+    @model_validator(mode="after")
+    def normalize(self):
+        self.cost_code = (self.cost_code or "").strip()
+        if not self.cost_code:
+            raise ValueError("cost_code is required")
+        return self
+
+
 class CreateJobRequest(BaseModel):
     """The 8 fields wsiJCJobMaster actually requires, plus the 8 it accepts but does not demand.
 
@@ -349,13 +374,24 @@ class CreateJobRequest(BaseModel):
     scheduled_completion_date: date | None = None
     bid_due_date: date | None = None
 
+    # Issue #448: the cost codes to provision onto the new job, in the order they should be written.
+    # Empty is valid and is what every caller before #448 sends - the job is then created exactly as it
+    # was, with no JC00701 rows - so nothing about the create path changes for a caller that ignores it.
+    cost_codes: list[JobCostCodeSelection] = Field(default_factory=list)
+
     @model_validator(mode="after")
     def normalize(self):
         """Trim every string, then reject a required one that trimmed to nothing. A whitespace-only job
         number would otherwise reach GP as blank and fail deep inside the proc; an untrimmed one would
         not match the job_exists pre-check that makes a retry safe. Optional fields that trim to blank
         become None, i.e. not sent - a user who opened the optional section and typed nothing must not
-        thereby overwrite a GP default with an empty string."""
+        thereby overwrite a GP default with an empty string.
+
+        A cost code selected twice is refused rather than de-duplicated. wsiJCJobDetailMSTR writes with
+        UpdateIfExists=1, so the second write would land on the same JC00701 row and succeed, and the
+        job would come back reporting one more code provisioned than it has - the read-back count in
+        create_job_op would then fail a create that actually worked. It is also not a request anyone
+        means to make."""
         for name in _JOB_REQUIRED_STRINGS:
             value = (getattr(self, name) or "").strip()
             if not value:
@@ -364,6 +400,15 @@ class CreateJobRequest(BaseModel):
         for name in _JOB_OPTIONAL_STRINGS:
             value = (getattr(self, name) or "").strip()
             setattr(self, name, value or None)
+        seen: set[tuple[str, int]] = set()
+        for selection in self.cost_codes:
+            key = (selection.cost_code, selection.cost_element)
+            if key in seen:
+                raise ValueError(
+                    f"cost code '{selection.cost_code}' element {selection.cost_element} is selected "
+                    f"more than once"
+                )
+            seen.add(key)
         return self
 
 
@@ -371,6 +416,10 @@ class CreateJobResponse(BaseModel):
     job_number: str
     job_name: str
     company: str
+    # Issue #448: how many JC00701 cost codes were written onto the new job. Each one is read back
+    # individually through the same lookup a PO uses, so this is not the request counted back at the
+    # caller. 0 for a caller that sent none.
+    cost_codes_provisioned: int = 0
 
 
 # --- create a GP customer address (issue #444) ---

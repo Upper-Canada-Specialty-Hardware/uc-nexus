@@ -20,6 +20,7 @@ from .types import (
     DeficientItemRow,
     GpBuyer,
     GpCostCode,
+    GpCostCodeMasterEntry,
     GpCustomer,
     GpCustomerAddress,
     GpEmployee,
@@ -191,6 +192,18 @@ def gp_buyer_to_type(b: dict) -> GpBuyer:
 
 def gp_cost_code_to_type(c: dict) -> GpCostCode:
     return GpCostCode(cost_code=c["cost_code"], description=c.get("description"), cost_element=c["cost_element"])
+
+
+def gp_cost_code_master_entry_to_type(c: dict) -> GpCostCodeMasterEntry:
+    # The master row carries more than the picker needs (alias, profit type, transaction type, the
+    # account index itself). Only what the dialog shows and sends back is mapped: the account is GP's
+    # to resolve at create time, so handing it to the client would invite it being sent back.
+    return GpCostCodeMasterEntry(
+        cost_code=c["cost_code"],
+        description=c.get("description"),
+        cost_element=c["cost_element"],
+        mapped=bool(c["mapped"]),
+    )
 
 
 def gp_tax_detail_to_type(t: dict) -> GpTaxDetail:
