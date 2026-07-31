@@ -37,7 +37,14 @@ export const RECEIVE_REFETCH_QUERIES = [
 //
 // Refetched. GetOpeningLeafStatus is cache-and-network but stays mounted for the whole flow, so
 // nothing re-triggers it on its own and the rollup keeps its pre-shipment count.
-export const SHIPPING_REFETCH_QUERIES = ['GetOpeningLeafStatus'];
+//
+// GetPackingSlips is here for the same reason. A confirm CREATES a shipment, and a list gaining a
+// row is the one case normalisation cannot cover: the mutation's PackingSlip is written to the cache
+// but no watcher holds a reference to it, so a ShipmentsList mounted elsewhere in the module keeps
+// showing the list it read before. Refetched rather than evicted because it is a list somebody is
+// looking at - eviction transiently empties every mounted watcher, and this one would flash "No
+// shipments match this search." on its way to showing the shipment that was just booked.
+export const SHIPPING_REFETCH_QUERIES = ['GetOpeningLeafStatus', 'GetPackingSlips'];
 
 // Evicted. Both are read cache-first by a query that may not be active when a shipment is confirmed,
 // which is precisely what refetchQueries cannot reach:
@@ -47,9 +54,10 @@ export const SHIPPING_REFETCH_QUERIES = ['GetOpeningLeafStatus'];
 //   with the Ship view unmounted - refetchQueries would silently skip it there.
 // - openingItems: warehouse Opening Items is another module entirely, never active at ship time.
 //
-// Absent on purpose: packingSlips (ShipmentsList reads cache-and-network, so its next mount already
-// goes to the network) and notifications (NotificationBell polls every 30s and mounts two instances
-// with different variables, so listing it costs two round-trips for a badge that self-corrects).
+// Absent on purpose: packingSlips, which is refetched by name above rather than evicted (a mounted
+// ShipmentsList must not flash empty), and notifications (NotificationBell polls every 30s and
+// mounts two instances with different variables, so listing it costs two round-trips for a badge
+// that self-corrects).
 export const SHIPPING_STALE_ROOT_FIELDS = ['shipReadyItems', 'openingItems'];
 
 // The pipeline read (#344). It is a route of its own inside the shop-assembly module, so it is by
@@ -239,6 +247,10 @@ export const GP_OUTBOX_DRAINED_STALE_ROOT_FIELDS = [
   'purchaseOrder',
   'poReceivingDetails',
   'recentReceiveRecords',
+  // The History view's list (#447), which is the row above the panel poReceivingDetails fills. Both
+  // or neither: evicting only the detail updates an expanded panel with the drained receipt while
+  // the row directly above it keeps its pre-drain receive count and last-received date.
+  'receivingHistoryPos',
   // A receipt that finally posts is a receipt that closes back-ordered lines and moves the PO's
   // received quantities, and since #416 both readings sit on the same page - the one the user is
   // most likely on when the drain lands. Evicting one without the other is what would let the

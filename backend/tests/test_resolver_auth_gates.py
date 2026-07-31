@@ -19,6 +19,7 @@ that happened first.
 """
 
 import asyncio
+import uuid
 
 import pytest
 
@@ -28,6 +29,7 @@ from app.auth_policy import OPEN_OPERATIONS, ROOT_FIELD_POLICY, SIGNED_IN, enfor
 from app.errors import AppError
 from app.repositories import user_repository
 from app.schemas import relay as relay_module
+from app.schemas import shipping as shipping_module
 from app.schemas import shop_assembly as shop_assembly_module
 from app.schemas import warehouse as warehouse_module
 from main import schema
@@ -230,6 +232,63 @@ def test_every_open_operation_is_reachable_without_a_session(field):
     """The allowlist has to actually allow. `enrollRelayInstall` is the relay's only way in during
     setup, before it holds any credential - gating it strands every new install."""
     enforce_root_field(field, {"request": _FakeRequest()})
+
+
+def test_receiving_history_is_a_plain_signed_in_read(monkeypatch, signed_in):
+    """#447's new root field, in both directions through the real schema.
+
+    The parametrized pins above already prove it refuses an anonymous caller, because it is in
+    ROOT_FIELD_POLICY - but they call `enforce_root_field` directly, so nothing there would notice a
+    SIGNED_IN field that was gated so hard no warehouse account could reach it. The Receiving page is
+    warehouse-facing and cross-project, so the requirement is identity and nothing more: every
+    frontend caller is not in one role's module, which is the rule for choosing SIGNED_IN over a role
+    name."""
+    assert ROOT_FIELD_POLICY["receivingHistoryPos"] == SIGNED_IN
+    _explodes(monkeypatch, warehouse_module)
+
+    refused = _execute("{ receivingHistoryPos { id } }")
+    admitted = _execute("{ receivingHistoryPos { id } }", token=signed_in)
+
+    assert _codes(refused) == {"UNAUTHENTICATED"}
+    assert not any("SessionLocal" in m for m in _messages(refused))
+    assert any("SessionLocal" in m for m in _messages(admitted)), (
+        f"a signed-in caller was refused receivingHistoryPos: {_messages(admitted)}"
+    )
+
+
+_SLIP_ID = uuid.uuid4()
+_DELIVERY_REQUEST_MUTATIONS = {
+    "updateShipmentDetails": f'updateShipmentDetails(input: {{id: "{_SLIP_ID}"}}) {{ id }}',
+    "markShipmentPickedUp": f'markShipmentPickedUp(id: "{_SLIP_ID}") {{ id }}',
+    "markShipmentDelivered": f'markShipmentDelivered(id: "{_SLIP_ID}") {{ id }}',
+}
+
+
+@pytest.mark.parametrize("field", sorted(_DELIVERY_REQUEST_MUTATIONS), ids=sorted(_DELIVERY_REQUEST_MUTATIONS))
+def test_the_delivery_request_mutations_are_plain_signed_in_writes(field, monkeypatch, signed_in):
+    """#447's three new mutations, in both directions through the real schema.
+
+    The parametrized pins prove they refuse an anonymous caller because they are in
+    ROOT_FIELD_POLICY - but they call `enforce_root_field` directly, so nothing there would catch a
+    SIGNED_IN field gated so hard that no shipping account could reach it. The Shipments page is
+    worked by the shipping department, the warehouse and the office alike, so no one role's module
+    owns the callers and the requirement is identity only. The edit is refused on *state*, not on
+    role: a shipment that has been picked up is closed to everybody."""
+    assert ROOT_FIELD_POLICY[field] == SIGNED_IN
+    # `current_user` is the first thing the picked-up/delivered bodies touch, and SessionLocal the
+    # first thing the edit touches, so patch both - either one firing means the body started.
+    _explodes(monkeypatch, shipping_module, "current_user")
+    _explodes(monkeypatch, shipping_module, "SessionLocal")
+    operation = f"mutation {{ {_DELIVERY_REQUEST_MUTATIONS[field]} }}"
+
+    refused = _execute(operation)
+    admitted = _execute(operation, token=signed_in)
+
+    assert _codes(refused) == {"UNAUTHENTICATED"}
+    assert not any("shipping" in m for m in _messages(refused))
+    assert any("shipping" in m for m in _messages(admitted)), (
+        f"a signed-in caller was refused {field}: {_messages(admitted)}"
+    )
 
 
 def test_nested_fields_are_not_re_checked(monkeypatch, signed_in):

@@ -17,6 +17,7 @@ const ROOT_FIELD_OF_QUERY: Record<string, string> = {
   GetReplacementWork: 'replacementWork',
   GetPullRequests: 'pullRequests',
   GetOpeningLeafStatus: 'openingLeafStatus',
+  GetPackingSlips: 'packingSlips',
   GetInventoryHierarchy: 'inventoryHierarchy',
   GetInventoryByVendor: 'inventoryByVendor',
   GetUnlocatedInventory: 'unlocatedInventory',
@@ -56,6 +57,20 @@ it('refetches the Assemble List after a progress save rather than evicting it', 
   expect(refetch.PIPELINE_STALE_ROOT_FIELDS).not.toContain('assembleList');
   // The constant that used to carry that eviction is gone for good.
   expect('ASSEMBLY_PROGRESS_STALE_ROOT_FIELDS' in refetch).toBe(false);
+});
+
+it('refetches the shipments list after a confirm rather than evicting it', () => {
+  // A confirm adds a row, which normalisation cannot deliver to a watcher that never held the new
+  // entity. Refetch, not evict: ShipmentsList may be mounted, and eviction empties it for a beat.
+  expect(refetch.SHIPPING_REFETCH_QUERIES).toContain('GetPackingSlips');
+  expect(refetch.SHIPPING_STALE_ROOT_FIELDS).not.toContain('packingSlips');
+});
+
+it('refreshes the receiving history when the GP outbox drains', () => {
+  // The row and the panel behind it are one reading: the expanded receives and the count on the row
+  // come from different queries, so evicting one without the other makes them disagree.
+  expect(refetch.GP_OUTBOX_DRAINED_STALE_ROOT_FIELDS).toContain('receivingHistoryPos');
+  expect(refetch.GP_OUTBOX_DRAINED_STALE_ROOT_FIELDS).toContain('poReceivingDetails');
 });
 
 it('invalidates both request queues when a pull is cancelled', () => {

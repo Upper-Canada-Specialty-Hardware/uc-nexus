@@ -122,7 +122,7 @@ function poDetailsMock(overrides: Record<string, unknown> = {}): MockedResponse 
 
 // #353 PR E: createReceive returns a wrapper. `queued` false is the online path - the receipt
 // reached GP and the UC Nexus receive was persisted with it.
-function createReceiveData(quantityReceived: number) {
+function createReceiveData(quantityReceived: number, receiptNumber: string | null = null) {
   return {
     createReceive: {
       __typename: 'CreateReceiveResult',
@@ -134,6 +134,8 @@ function createReceiveData(quantityReceived: number) {
         poId: 'po-1',
         receivedAt: '2026-07-16T10:00:00Z',
         receivedBy: 'Warehouse',
+        receiptNumber,
+        batchNumber: null,
         createdAt: '2026-07-16T10:00:00Z',
         lineItems: [
           {
@@ -174,13 +176,56 @@ function offlineRelayMock(): MockedResponse {
   };
 }
 
-function renderModal(extraMocks: MockedResponse[] = [], relay: MockedResponse = relayMock()) {
+// A second PO for the batch flows, with one line still owed so it contributes a Receive Now cell.
+function secondPoDetailsMock(): MockedResponse {
+  return {
+    request: { query: GET_PO_RECEIVING_DETAILS, variables: { poId: 'po-2' } },
+    result: {
+      data: {
+        poReceivingDetails: {
+          __typename: 'PurchaseOrder',
+          id: 'po-2',
+          poNumber: 'PO-456',
+          requestNumber: 'RQ-78',
+          gpCompany: 'UCSH',
+          gpVendorId: 'GPV-1',
+          vendorNameSnapshot: 'Acme Hardware',
+          vendor: { __typename: 'Vendor', id: 'v-1', name: 'Acme Hardware', contactName: null },
+          notes: null,
+          status: 'ORDERED',
+          lineItems: [
+            {
+              __typename: 'POLineItem',
+              id: 'li-3',
+              poId: 'po-2',
+              hardwareCategory: 'Closers',
+              productCode: 'CL-300',
+              classification: null,
+              orderedQuantity: 4,
+              receivedQuantity: 0,
+              unitCost: 40,
+              orderAs: null,
+              gpLineOrd: 1,
+            },
+          ],
+          receiveRecords: [],
+        },
+      },
+    },
+  };
+}
+
+function renderModal(
+  extraMocks: MockedResponse[] = [],
+  relay: MockedResponse = relayMock(),
+  poIds: string[] = ['po-1'],
+) {
   const onClose = vi.fn();
   render(
     <MockedProvider mocks={[relay, warehousesMock(), ...extraMocks]}>
       <MemoryRouter>
         <ToastProvider>
-          <ReceiveModal open onClose={onClose} poIds={['po-1']} />
+          <ReceiveModal open onClose={onClose} poIds={poIds} />
         </ToastProvider>
       </MemoryRouter>
     </MockedProvider>,
@@ -358,6 +403,40 @@ describe('ReceiveModal', () => {
     expect(onClose).not.toHaveBeenCalled();
     // still on the editing actions, so the user can retry
     expect(await screen.findByRole('button', { name: 'Complete Receive' }, SLOW)).toBeInTheDocument();
+  });
+
+  it('keeps the GP receipt numbers of the POs that committed when a later one fails', async () => {
+    // A batch commits PO by PO, and the numbers GP gave the ones that landed are real whatever
+    // happens to the rest. They used to be published only in the all-green case, so a batch that
+    // failed on its second PO showed the user an error and no way back to what had posted.
+    const committed: MockedResponse<Record<string, unknown>, CreateReceiveVars> = {
+      request: { query: CREATE_RECEIVE, variables: () => true },
+      result: { data: createReceiveData(3, 'RCT0000123') },
+    };
+    const failed: MockedResponse = {
+      request: { query: CREATE_RECEIVE, variables: () => true },
+      error: new Error('GP receipt rejected'),
+    };
+    renderModal([poDetailsMock(), secondPoDetailsMock(), committed, failed], relayMock(), [
+      'po-1',
+      'po-2',
+    ]);
+    await screen.findByText('HG-100', undefined, SLOW);
+    await screen.findByText('CL-300', undefined, SLOW);
+
+    const [firstQty, secondQty] = screen.getAllByRole('grid').map((g) => within(g).getByRole('spinbutton'));
+    fireEvent.change(firstQty, { target: { value: '3' } });
+    fireEvent.change(secondQty, { target: { value: '4' } });
+    fillLocation(0, 'A1', 'B2', 'C3');
+    fillLocation(1, 'A2', 'B3', 'C4');
+    await submitViaConfirm();
+
+    await screen.findByText(/Receiving PO-456 failed/, undefined, SLOW);
+    expect(screen.getByText('RCT0000123')).toBeInTheDocument();
+    // Named, because half the batch is not in GP and "which PO is this the receipt for" is the
+    // whole question.
+    expect(screen.getByText('PO-123')).toBeInTheDocument();
+    expect(screen.queryByText(/Receive completed successfully/)).toBeNull();
   });
 
   it('reuses the same idempotency key when retrying a failed PO', async () => {

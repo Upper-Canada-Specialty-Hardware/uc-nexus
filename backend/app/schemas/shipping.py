@@ -15,7 +15,7 @@ from .converters import (
     shipping_out_request_to_type,
 )
 from .enums import ShippingOutRequestStatus
-from .inputs import ConfirmShipmentInput, CreateShipmentReturnInput
+from .inputs import ConfirmShipmentInput, CreateShipmentReturnInput, UpdateShipmentDetailsInput
 from .types import (
     PackingSlip,
     ReturnableLine,
@@ -24,6 +24,15 @@ from .types import (
     ShipReadyItems,
     ShipReadyLooseItem,
 )
+
+
+def _delivery_details(input) -> dict:
+    """The Delivery Request header off a mutation input, keyed the way the repository writes it.
+
+    Read off `DELIVERY_REQUEST_FIELDS` rather than listed here, so the confirm input, the edit input
+    and the columns cannot drift apart: a field added to the header reaches both mutations or neither.
+    """
+    return {field: getattr(input, field) for field in shipping_repository.DELIVERY_REQUEST_FIELDS}
 
 
 @strawberry.type
@@ -135,11 +144,15 @@ class ShippingMutations:
 
     @strawberry.mutation
     def confirm_shipment(self, info: strawberry.Info, input: ConfirmShipmentInput) -> PackingSlip:
-        """Cut the packing slip for what actually went on the truck.
+        """Cut the packing slip for what actually went on the truck, and write its Delivery Request.
 
         `shippedBy` is printed on the slip and shown in the shipments grid, so it is the record of
         who released the hardware. It is the Clerk-authenticated caller as of #427; the input field
-        that used to name it was dropped in #438."""
+        that used to name it was dropped in #438.
+
+        The slip is born SCHEDULED (#447), carrying the header the shipping department filled in.
+        What this does to inventory is unchanged - the states that follow document the truck's
+        journey, not the hardware's."""
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         from app.models.enums import PullRequestItemType
@@ -168,7 +181,56 @@ class ShippingMutations:
                 input.packing_slip_number,
                 actor,
                 items_data,
+                _delivery_details(input),
             )
+            session.commit()
+            refreshed = shipping_repository.get_packing_slip(session, ps.id)
+            return packing_slip_to_type(refreshed)
+
+    @strawberry.mutation
+    def update_shipment_details(self, info: strawberry.Info, input: UpdateShipmentDetailsInput) -> PackingSlip:
+        """Correct the Delivery Request of a shipment that has not left yet (#447).
+
+        Refused once the shipment is past SCHEDULED: from the moment it is picked up a driver holds a
+        printed copy, and the stored record has to keep matching the paper the site will sign.
+
+        Full replace over the header - a field sent as null is cleared. Nothing about what shipped is
+        touched."""
+        with SessionLocal() as session:
+            ps = shipping_repository.update_shipment_details(
+                session,
+                uuid.UUID(str(input.id)),
+                _delivery_details(input),
+            )
+            session.commit()
+            refreshed = shipping_repository.get_packing_slip(session, ps.id)
+            return packing_slip_to_type(refreshed)
+
+    @strawberry.mutation
+    def mark_shipment_picked_up(self, info: strawberry.Info, id: strawberry.ID) -> PackingSlip:
+        """The carrier has the load: SCHEDULED -> PICKED_UP (#447).
+
+        Moves no inventory - the hardware was claimed when the shipment was confirmed. Recorded
+        against the Clerk-authenticated caller (#427), which is also what closes the header to
+        further edits."""
+        auth = current_user(info)
+        actor = resolve_display_name(auth["user_id"])
+        with SessionLocal() as session:
+            ps = shipping_repository.mark_shipment_picked_up(session, uuid.UUID(str(id)), actor)
+            session.commit()
+            refreshed = shipping_repository.get_packing_slip(session, ps.id)
+            return packing_slip_to_type(refreshed)
+
+    @strawberry.mutation
+    def mark_shipment_delivered(self, info: strawberry.Info, id: strawberry.ID) -> PackingSlip:
+        """The load reached the site: PICKED_UP -> DELIVERED (#447).
+
+        Only from PICKED_UP, so a shipment can never be recorded as arriving somewhere it was never
+        collected for. Recorded against the Clerk-authenticated caller (#427)."""
+        auth = current_user(info)
+        actor = resolve_display_name(auth["user_id"])
+        with SessionLocal() as session:
+            ps = shipping_repository.mark_shipment_delivered(session, uuid.UUID(str(id)), actor)
             session.commit()
             refreshed = shipping_repository.get_packing_slip(session, ps.id)
             return packing_slip_to_type(refreshed)

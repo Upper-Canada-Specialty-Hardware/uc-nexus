@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from app.models.enums import HardwareItemState, POStatus, PullRequestItemType
+from app.models.enums import HardwareItemState, POStatus, PullRequestItemType, ShipmentStatus
 from app.models.hardware import HardwareItem
 from app.models.project import Opening, Project
 from app.models.purchase_order import POLineItem, PurchaseOrder
@@ -112,6 +112,8 @@ def _make_packing_slip(session, project_id: uuid.UUID) -> PackingSlip:
         project_id=project_id,
         shipped_by="tester",
         shipped_at=datetime.utcnow(),
+        # Progress sums shipped quantities, so the fixture slip is already out the door (#447).
+        status=ShipmentStatus.DELIVERED,
     )
     session.add(ps)
     session.flush()

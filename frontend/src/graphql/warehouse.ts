@@ -157,6 +157,10 @@ export const GET_RECENT_RECEIVE_RECORDS = gql`
         poId
         receivedAt
         receivedBy
+        # #447: GP's number for the receipt this receive posted, so the recent-activity row can be
+        # matched against GP without going back through the PO and the timestamp.
+        receiptNumber
+        batchNumber
         createdAt
         lineItems {
           id
@@ -170,6 +174,31 @@ export const GET_RECENT_RECEIVE_RECORDS = gql`
       }
       poNumber
       totalItemsReceived
+    }
+  }
+`;
+
+/**
+ * Every GP-registered PO with what has landed against it (#447) - the Receiving page's History view.
+ *
+ * Deliberately the complement of GET_OPEN_POS and GET_BACK_ORDERED_ITEMS, which answer "what is
+ * still owed" and so drop a PO the moment it is complete. Reconciling a delivery needs the finished
+ * ones. Scalars only: expanding a row fetches that PO's receives through GET_PO_RECEIVING_DETAILS,
+ * so the list stays one row per PO however many receives are behind it.
+ */
+export const GET_RECEIVING_HISTORY_POS = gql`
+  query GetReceivingHistoryPos($projectId: ID) {
+    receivingHistoryPos(projectId: $projectId) {
+      id
+      poNumber
+      requestNumber
+      status
+      vendorName
+      projectId
+      orderedTotal
+      receivedTotal
+      receiveCount
+      lastReceivedAt
     }
   }
 `;
@@ -210,9 +239,15 @@ export const GET_PO_RECEIVING_DETAILS = gql`
         id
         receivedAt
         receivedBy
+        # #447: the History view expands a PO through this query, and each receive names the GP
+        # receipt it posted.
+        receiptNumber
+        batchNumber
         lineItems {
           id
           poLineItemId
+          hardwareCategory
+          productCode
           quantityReceived
         }
       }
@@ -510,6 +545,10 @@ export const CREATE_RECEIVE = gql`
         poId
         receivedAt
         receivedBy
+        # #447: what the success screen shows back so the user can write the GP receipt on the
+        # packing slip without going and looking it up.
+        receiptNumber
+        batchNumber
         createdAt
         lineItems {
           id

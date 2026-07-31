@@ -493,9 +493,74 @@ class ShipmentItemInput:
 
 @strawberry.input
 class ConfirmShipmentInput:
+    """What went on the truck, plus the Delivery Request written for it (#447).
+
+    Every header field is optional and stays optional. The form is filled in against whatever the
+    site has told the shipping department, and a blank on it is a real answer - refusing the
+    shipment because nobody knew the gate number would stop hardware leaving over paperwork.
+    """
+
     project_id: strawberry.ID
     packing_slip_number: str
     items: list[ShipmentItemInput] = strawberry.field(default_factory=list)
+    pickup_date: date | None = None
+    delivery_date: date | None = None
+    shipper_email: str | None = None
+    shipper_phone: str | None = None
+    pickup_location: str | None = None
+    carrier_tag_bol: str | None = None
+    weight_lbs: float | None = None
+    delivery_address: str | None = None
+    special_instructions: str | None = None
+    gate_number: str | None = None
+    forklift_onsite: str | None = None
+    material_coming_back: str | None = None
+    site_material_included: str | None = None
+    construction_temp_keys: str | None = None
+    extra_frame_anchors: str | None = None
+    contractor_contact_name: str | None = None
+    contractor_contact_phone: str | None = None
+    ucsh_contact_name: str | None = None
+    ucsh_contact_phone: str | None = None
+    sales_order_number: str | None = None
+
+
+@strawberry.input
+class UpdateShipmentDetailsInput:
+    """Correct the Delivery Request of a shipment that has not been picked up yet (#447).
+
+    **Full replace.** Every header field is applied exactly as given, and a field given as null is
+    CLEARED. The client sends all of them on every edit, blanks as explicit nulls, because the
+    alternative reading - "absent means leave it alone" - gives a form that can be corrected but
+    never emptied, so a phone number typed against the wrong shipment could not be taken back off it.
+
+    Only the paper form is here. The slip number, the project, the items, and who shipped it and when
+    are the record of what left the building, and an edit must never be able to rewrite that. The
+    backend also refuses the whole call once the shipment is past SCHEDULED, because from then on a
+    driver is carrying a printed copy that the stored record has to keep matching.
+    """
+
+    id: strawberry.ID
+    pickup_date: date | None = None
+    delivery_date: date | None = None
+    shipper_email: str | None = None
+    shipper_phone: str | None = None
+    pickup_location: str | None = None
+    carrier_tag_bol: str | None = None
+    weight_lbs: float | None = None
+    delivery_address: str | None = None
+    special_instructions: str | None = None
+    gate_number: str | None = None
+    forklift_onsite: str | None = None
+    material_coming_back: str | None = None
+    site_material_included: str | None = None
+    construction_temp_keys: str | None = None
+    extra_frame_anchors: str | None = None
+    contractor_contact_name: str | None = None
+    contractor_contact_phone: str | None = None
+    ucsh_contact_name: str | None = None
+    ucsh_contact_phone: str | None = None
+    sales_order_number: str | None = None
 
 
 @strawberry.input

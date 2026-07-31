@@ -9,11 +9,16 @@ import {
 import { X } from 'lucide-react';
 import type { ReactNode } from 'react';
 
-interface ModalProps extends Omit<DialogProps, 'title'> {
+interface ModalProps extends Omit<DialogProps, 'title' | 'onClose'> {
   title: string;
   children: ReactNode;
   actions?: ReactNode;
-  onClose: () => void;
+  /**
+   * Dismissal. MUI hands the reason along as the second argument, which is how a dialog holding
+   * unsaved input refuses a backdrop click the way `disableEscapeKeyDown` refuses Escape. The
+   * title-bar X calls it with no reason at all, so an explicit close is never refused.
+   */
+  onClose: (event?: object, reason?: 'backdropClick' | 'escapeKeyDown') => void;
 }
 
 export default function Modal({ title, children, actions, onClose, ...props }: ModalProps) {
@@ -30,7 +35,7 @@ export default function Modal({ title, children, actions, onClose, ...props }: M
       <DialogTitle sx={{ fontWeight: 700, pr: 6, py: 1.75 }}>
         {title}
         <IconButton
-          onClick={onClose}
+          onClick={() => onClose()}
           aria-label="Close"
           size="small"
           sx={{ position: 'absolute', right: 12, top: 12, color: 'text.secondary' }}

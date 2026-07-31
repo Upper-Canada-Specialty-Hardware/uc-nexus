@@ -6,6 +6,11 @@ type ReceiveRecord {
   po_id: ID!
   received_at: DateTime!
   received_by: String!
+  # GP's identifiers for the receipt this receive posted (#447), off the relay's create_receipt
+  # response. Null for receives recorded before the columns existed - there is no mapping in either
+  # system to backfill them from.
+  receipt_number: String
+  batch_number: String
   created_at: DateTime!
   line_items: [ReceiveLineItem!]!
 }
@@ -340,6 +345,8 @@ type ShipReadyLooseItem {
   available_quantity: Int!
 }
 
+# Pre-#447 core only. The current definition - status and the whole Delivery Request header - is in
+# shipping.graphql, which is where the shipping module's reference lives.
 type PackingSlip {
   id: ID!
   packing_slip_number: String!
@@ -502,6 +509,21 @@ type RecentReceiveRecord {
   total_items_received: Int!
 }
 
+# One row of the Receiving History list (#447). Scalars only: the row expands to its own receives
+# through poReceivingDetails on demand, so the list never carries a child collection.
+type ReceivingHistoryPO {
+  id: ID!
+  po_number: String
+  request_number: String!
+  status: POStatus!
+  vendor_name: String
+  project_id: ID
+  ordered_total: Int!
+  received_total: Int!
+  receive_count: Int!
+  last_received_at: DateTime
+}
+
 type ProjectProgressByProduct {
   hardware_category: String!
   product_code: String!
@@ -521,6 +543,9 @@ type Query {
   inventoryItems(projectId: ID, category: String!, productCode: String!): [InventoryItemDetail!]!
   unlocatedInventory(projectId: ID): [InventoryItemDetail!]!
   recentReceiveRecords(limit: Int! = 10): [RecentReceiveRecord!]!
+  # Every GP-registered PO with what has landed against it, including the complete ones openPOs and
+  # backOrderedItems drop (#447). The reconciliation view, not the what-is-owed view.
+  receivingHistoryPos(projectId: ID): [ReceivingHistoryPO!]!
   openingItems(projectId: ID): [OpeningItem!]!
   openingItemDetails(id: ID!): OpeningItemDetail!
   pullRequests(projectId: ID, source: PullRequestSource, status: PullRequestStatus): [PullRequest!]!

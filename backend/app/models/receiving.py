@@ -8,13 +8,29 @@ from . import Base
 
 
 class ReceiveRecord(Base):
+    """One posting of hardware off a PO and onto the racks.
+
+    `receipt_number` and `batch_number` are GP's identifiers for the receipt this receive posted
+    (#447). Receiving is GP-first: the relay runs the eConnect receipt, GP mints an RCT###### and the
+    batch it lands in, and only then does Nexus persist this row. Until #447 the backend read both off
+    the relay response and threw them away, so a warehouse question that starts in Nexus ("which
+    receive was this?") had to be answered by hand in GP. They are nullable because rows created
+    before #447 have no value to backfill - GP holds the receipts but not the mapping back to these
+    ids - and because a null has to stay distinguishable from a receipt GP never numbered.
+    """
+
     __tablename__ = "receive_records"
-    __table_args__ = (Index("ix_receive_records_po_id", "po_id"),)
+    __table_args__ = (
+        Index("ix_receive_records_po_id", "po_id"),
+        Index("ix_receive_records_receipt_number", "receipt_number"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     po_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("purchase_orders.id"), nullable=False)
     received_at: Mapped[datetime] = mapped_column(nullable=False)
     received_by: Mapped[str] = mapped_column(String, nullable=False)
+    receipt_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    batch_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
 
     line_items: Mapped[list["ReceiveLineItem"]] = relationship(back_populates="receive_record")
