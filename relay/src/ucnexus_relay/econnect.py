@@ -1106,6 +1106,164 @@ def create_job(conn, *, only_validate: bool = False, **fields) -> None:
         )
 
 
+# --- provision a job's cost codes (issue #448) ------------------------------
+# wsiJCJobMaster creates the JC00102 row and NOTHING else: a job born from create_job above has zero
+# JC00701 cost codes. Everything downstream that matters runs off JC00701 - the register-PO cost-code
+# dropdown (list_cost_codes) is empty, and job_setup_health's first rule ("has at least one active cost
+# code") fails, so #425's quarantine holds the project the moment it is created. Until now the fix was
+# to open GP and add the codes by hand, which is most of what creating the job from Nexus was meant to
+# avoid. These two functions are the read that offers the company's cost codes and the write that puts
+# the chosen ones on the job.
+
+
+def list_cost_code_master(conn, division: str) -> list[dict]:
+    """Read-only: the company's cost-code master JC40202, each row carrying the GL account index it
+    would be provisioned with FOR THIS DIVISION.
+
+    JC40202 is the company-wide template - the same list GP's own Job Cost setup offers when somebody
+    adds cost codes to a job by hand. It holds the code segments, the alias, the description, the cost
+    element, the profit type and the transaction type, and every one of those is copied onto the
+    JC00701 row verbatim. What it does NOT hold is the account: JC40202 has an ACTINDX column, it is 0
+    on every row in this company, and treating it as the mapping would provision an entire job's cost
+    structure with no accounts at all.
+
+    The account comes from JC40302, which maps (Divisions, Cost_Element) -> ACTINDX. That is the only
+    legitimate source of it, and it is the same provenance rule #427 and #430 settled everywhere else:
+    GP's own configuration decides, never Nexus config and never something the user typed. The job's
+    division is therefore an input to this read, not a display detail - the same cost element resolves
+    to a different account in a different division.
+
+    The GL00105 join is the defence one level up from #425. That issue is JC00701 rows pointing at
+    account indexes this company does not have; here the same thing can be true of the DIVISION mapping
+    itself in a sandbox cloned from another company, and provisioning off it would manufacture fresh
+    dangling rows rather than inherit them.
+
+    `mapped` is the verdict the caller filters on: the JC40302 row exists AND its index is either 0 or
+    present in GL00105. That is exactly account_index_exists' rule and exactly what list_cost_codes
+    already applies to the register-PO dropdown, so a code this read calls mapped provisions into a
+    JC00701 row those guards accept by construction - the job cannot be created into the quarantine the
+    provisioning exists to prevent. Index 0 passes deliberately: it means "GP picks the account at
+    posting time", not "unmapped".
+
+    Returns one dict per code: cost_code ('cc1-cc2', the shape list_cost_codes and the /po cost_code
+    use), alias, description, cost_element, profit_type_number, type_of_transaction, account_index (None
+    when the element has no JC40302 row at all) and mapped. Unmapped codes are returned rather than
+    filtered out, so the picker can show them greyed with a reason instead of silently offering a
+    shorter list than GP does."""
+    rows = conn.cursor().execute(
+        "SELECT RTRIM(m.Cost_Code_Number_1) AS cc1, RTRIM(m.Cost_Code_Number_2) AS cc2, "
+        "RTRIM(m.Cost_Code_Alias) AS alias, RTRIM(m.Cost_Code_Description) AS descr, "
+        "m.Cost_Element AS elem, m.Profit_Type_Number AS ptype, m.Type_of_Transaction AS ttype, "
+        "a.ACTINDX AS account_index, g.ACTINDX AS resolved "
+        "FROM dbo.JC40202 m "
+        "LEFT JOIN dbo.JC40302 a ON RTRIM(a.Divisions) = ? AND a.Cost_Element = m.Cost_Element "
+        "LEFT JOIN dbo.GL00105 g ON g.ACTINDX = a.ACTINDX "
+        "ORDER BY m.Cost_Code_Number_1, m.Cost_Code_Number_2, m.Cost_Element",
+        division.strip(),
+    ).fetchall()
+    out = []
+    for r in rows:
+        account_index = None if r.account_index is None else int(r.account_index)
+        out.append(
+            {
+                "cost_code": f"{r.cc1}-{r.cc2}",
+                "alias": r.alias or None,
+                "description": r.descr or None,
+                "cost_element": int(r.elem),
+                "profit_type_number": int(r.ptype),
+                "type_of_transaction": int(r.ttype),
+                "account_index": account_index,
+                # No JC40302 row -> nothing to provision with. A row whose index is non-zero but absent
+                # from GL00105 is the stale-sandbox case above and is just as unusable.
+                "mapped": account_index is not None and (account_index == 0 or r.resolved is not None),
+            }
+        )
+    return out
+
+
+def create_job_cost_code(
+    conn,
+    *,
+    only_validate: bool = False,
+    job_number: str,
+    cost_code_number_1: str,
+    cost_code_number_2: str,
+    alias: str,
+    description: str,
+    cost_element: int,
+    account_index: int,
+    profit_type_number: int,
+    type_of_transaction: int,
+) -> None:
+    """Put ONE cost code on a GP job through the WennSoft cost-code proc wsiJCJobDetailMSTR - the
+    JC00701 write, and the missing half of create_job above (see this section's header for why a job
+    with no cost codes is a job nobody can raise a PO against).
+
+    Nine inputs are sent; the proc's remaining ones are left defaulted, the same treatment create_job
+    gives wsiJCJobMaster's 215 - an unset optional is absent from the EXEC, not an explicit NULL. The
+    row this produces was compared field for field against one added through GP's own Job Cost Code
+    Maintenance window and is identical, which is what makes provisioning from Nexus equivalent to
+    doing it by hand rather than merely similar to it.
+
+    JC00102 is deliberately untouched: cost-code provisioning writes no estimate, no committed cost and
+    no rollup, so there is nothing on the job header for it to update. Those totals accrue later, from
+    the PO and receipt path.
+
+    only_validate drives @I_vOnlyValidate for the same reason create_job takes it: the dry run has to
+    exercise the exact statement the real call will make, or it validates something else. The caller
+    runs the whole selection through validation before writing any of it, so a job cannot end up with
+    half its cost structure.
+
+    @I_vReturnErrorText=1 makes the proc fill @oErrString, and that text rides out on proc_message - the
+    WennSoft procs number their error states independently of DYNAMICS.taErrorCode, so a lookup there
+    returns an unrelated GP description (see EConnectError)."""
+    sql = """
+    DECLARE @err int = 0;
+    DECLARE @err_str varchar(255) = '';
+    EXEC dbo.wsiJCJobDetailMSTR
+        @I_vWSJobNumber         = ?,
+        @I_vWSCostCodeNumber1   = ?,
+        @I_vWSCostCodeNumber2   = ?,
+        @I_vCostCodeAlias       = ?,
+        @I_vCostCodeDescription = ?,
+        @I_vCostElement         = ?,
+        @I_vWSAccountIndex1     = ?,
+        @I_vProfitTypeNumber    = ?,
+        @I_vTypeofTransaction   = ?,
+        -- literal, not a caller parameter: every value written here comes from JC40202/JC40302, so a
+        -- retry after a lost reply rewrites the identical row instead of failing on a duplicate.
+        @I_vUpdateIfExists      = 1,
+        @I_vOnlyValidate        = ?,
+        @I_vReturnErrorText     = 1,
+        @O_iErrorState          = @err OUTPUT,
+        @oErrString             = @err_str OUTPUT;
+    SELECT @err AS error_state, @err_str AS err_string;
+    """
+    row = conn.cursor().execute(
+        sql,
+        job_number,
+        cost_code_number_1,
+        cost_code_number_2,
+        alias,
+        description,
+        cost_element,
+        account_index,
+        profit_type_number,
+        type_of_transaction,
+        1 if only_validate else 0,
+    ).fetchone()
+    if row.error_state != 0:
+        message = (row.err_string or "").strip()
+        pass_label = "validation" if only_validate else "create"
+        raise EConnectError(
+            f"wsiJCJobDetailMSTR {pass_label} failed for job {job_number} cost code "
+            f"{cost_code_number_1}-{cost_code_number_2}-{cost_element}: {message}",
+            proc="wsiJCJobDetailMSTR",
+            error_state=row.error_state,
+            proc_message=message or None,
+        )
+
+
 # --- create a GP customer address (issue #444) ------------------------------
 # The create-job form picks its job address and bill-to address out of RM00102 (list_customer_addresses
 # above), so a site that was never entered in GP meant stopping the job creation, opening GP, adding the

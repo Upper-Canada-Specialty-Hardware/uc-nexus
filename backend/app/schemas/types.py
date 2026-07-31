@@ -209,6 +209,25 @@ class GpCostCode:
 
 
 @strawberry.type
+class GpCostCodeMasterEntry:
+    """One code from GP's cost code MASTER (JC40202), for the create-job cost-code picker (#448).
+
+    Not GpCostCode above, which is a code already on a job (JC00701). This is the catalogue those rows
+    are provisioned from, so it carries the one thing the per-job read has no use for: whether the
+    division the job is being created under actually has a GL account for this code's cost element.
+
+    `mapped` false means it does not - either JC40302 has no row for that (division, cost element), or
+    the row it has points at an account index that is not in GL00105. The second case is the stale
+    sandbox defence: a dangling index is exactly what #425 quarantines a job for, so provisioning a
+    code with one would create the broken job this picker exists to prevent."""
+
+    cost_code: str  # two-segment number 'cc1-cc2' e.g. '210-200'
+    description: str | None
+    cost_element: int
+    mapped: bool
+
+
+@strawberry.type
 class GpCustomer:
     """A GP customer (RM00101) read live via the relay, for the create-job customer picker (#380)."""
 

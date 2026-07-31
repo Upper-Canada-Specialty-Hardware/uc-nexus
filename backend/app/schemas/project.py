@@ -105,6 +105,11 @@ class ProjectMutations:
         nothing to retry from the still-open dialog. Queuing would buy latency tolerance nobody needs
         and add an ambiguous-write class that does not otherwise exist here.
 
+        The selected cost codes are provisioned in the SAME GP transaction as the job (#448), because
+        the proc alone leaves JC00701 empty - a job with no cost codes has an empty register-PO
+        dropdown and is quarantined by the #425 setup check on the next sync stamp. Splitting them
+        into a second call would make that broken state reachable through a partial failure.
+
         Admin-only. Creating a job writes to the accounting system of record.
         """
 
@@ -133,6 +138,12 @@ class ProjectMutations:
                 input.scheduled_completion_date.isoformat() if input.scheduled_completion_date else None
             ),
             "bid_due_date": input.bid_due_date.isoformat() if input.bid_due_date else None,
+            # Only the code number and its element travel (#448). Everything else the JC00701 row
+            # needs - alias, description, and the GL account index above all - the relay reads out of
+            # GP's own master inside the same transaction, so nothing here can dictate an account.
+            "cost_codes": [
+                {"cost_code": c.cost_code.strip(), "cost_element": c.cost_element} for c in input.cost_codes
+            ],
         }
 
         try:

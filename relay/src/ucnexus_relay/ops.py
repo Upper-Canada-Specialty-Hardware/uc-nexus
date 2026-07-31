@@ -235,6 +235,96 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
     )
 
 
+def _provision_cost_codes(conn, *, company: str, request: models.CreateJobRequest) -> int:
+    """Write the requested cost codes onto the job just created (issue #448), and return how many
+    landed. Runs inside the caller's transaction, so the job and its cost structure commit together or
+    neither does - a job that exists with half its codes is the state this whole feature exists to
+    avoid, since #425's quarantine would hold it and nobody would know why.
+
+    Every value written comes from the company master, never from the request. The selection names
+    which codes the job gets; the alias, description, profit type, transaction type and above all the
+    GL account index are read out of JC40202/JC40302 here. That is the same provenance rule #427 and
+    #430 settled for actors and accounts elsewhere: GP's configuration decides, and a caller that could
+    send an account index could post a job's costs anywhere in the chart.
+
+    Two refusals, both before anything is written:
+      - a code that is not in JC40202 at all. The picker is fed from that table, so this is a stale
+        client or a made-up code, and the proc would take it and create a cost code the company's own
+        setup has never heard of.
+      - a code JC40302 has no usable account for in this job's division. Provisioning it would
+        manufacture exactly the dangling JC00701 row #425 is about - the job would register POs and
+        then fail forever at receipt with eConnect 4612.
+
+    Then validate ALL of them before writing ANY of them, the same reason create_job_op dry-runs the
+    job proc: the eleventh code failing after ten were written leaves a partially provisioned job that
+    only a rollback saves, and the rollback is what the dry run makes unnecessary.
+
+    Finally count the active JC00701 rows back. taPoLine has a known err=0-but-no-row silent-failure
+    mode and this is the same class of proc, so a success report is not evidence a row landed. Counting
+    the job's whole active set works because the job was created seconds ago by wsiJCJobMaster, which
+    writes no cost codes at all - every row there is one of these."""
+    master = {
+        (row["cost_code"], row["cost_element"]): row
+        for row in econnect.list_cost_code_master(conn, request.division)
+    }
+
+    chosen = []
+    for selection in request.cost_codes:
+        row = master.get((selection.cost_code, selection.cost_element))
+        if row is None:
+            raise RelayOpError(
+                "cost_code_not_in_master",
+                f"cost code '{selection.cost_code}' element {selection.cost_element} is not in the "
+                f"cost-code master (JC40202) for GP company {company}",
+                cost_code=selection.cost_code,
+                cost_element=selection.cost_element,
+            )
+        if not row["mapped"]:
+            raise RelayOpError(
+                "cost_code_unmapped",
+                f"cost code '{selection.cost_code}' element {selection.cost_element} has no usable GL "
+                f"account for division '{request.division}' in {company}: JC40302 maps no account index "
+                f"for that cost element, or the one it maps does not exist in the chart (GL00105). A job "
+                f"provisioned with it could register POs and never receive them.",
+                cost_code=selection.cost_code,
+                cost_element=selection.cost_element,
+                division=request.division,
+            )
+        chosen.append(row)
+
+    for only_validate in (True, False):
+        for row in chosen:
+            # split_cost_code is what the PO path splits with, so the segments provisioned here and the
+            # segments a PO later looks the code up by cannot drift.
+            cc1, cc2, _cc3, _cc4, _element = econnect.split_cost_code(row["cost_code"])
+            econnect.create_job_cost_code(
+                conn,
+                only_validate=only_validate,
+                job_number=request.job_number,
+                cost_code_number_1=cc1,
+                cost_code_number_2=cc2,
+                alias=row["alias"] or "",
+                description=row["description"] or "",
+                cost_element=row["cost_element"],
+                account_index=row["account_index"],
+                profit_type_number=row["profit_type_number"],
+                type_of_transaction=row["type_of_transaction"],
+            )
+
+    landed = conn.cursor().execute(
+        "SELECT COUNT(*) AS n FROM dbo.JC00701 WHERE RTRIM(WS_Job_Number) = ? AND WS_Inactive = 0",
+        request.job_number,
+    ).fetchone()
+    expected = len(chosen)
+    if landed.n != expected:
+        raise econnect.EConnectError(
+            f"wsiJCJobDetailMSTR reported success but job {request.job_number} has {landed.n} active "
+            f"cost codes in JC00701, expected {expected}",
+            proc="wsiJCJobDetailMSTR",
+        )
+    return expected
+
+
 def create_job_op(conn, *, company: str, request: models.CreateJobRequest) -> models.CreateJobResponse:
     """Create a GP job (issue #380): pre-check, dry run, real call. The caller commits.
 
@@ -251,9 +341,16 @@ def create_job_op(conn, *, company: str, request: models.CreateJobRequest) -> mo
        echoed back. The backend snapshots that name onto the project, and what GP kept is the honest
        thing to snapshot - WS_Job_Name is char(31), so a longer name is truncated on write and the
        request no longer describes the job. It also proves the row landed.
+    5. Provision the requested cost codes (issue #448, see _provision_cost_codes). wsiJCJobMaster
+       writes the JC00102 row and nothing else, so without this the job is created into #425's
+       quarantine - no active cost codes - and its register-PO dropdown is empty. Inside the SAME
+       transaction the caller commits, so the job and its cost structure land together or not at all.
+       Skipped entirely when no cost codes were selected, which is what every pre-#448 caller sends.
 
     Both passes raise econnect.EConnectError carrying the proc's message (see econnect.create_job)."""
-    fields = request.model_dump(exclude={"company"})
+    # cost_codes is a provisioning instruction for step 5, not a wsiJCJobMaster field - leaving it in
+    # would trip create_job's unknown-field guard on every call (#448).
+    fields = request.model_dump(exclude={"company", "cost_codes"})
 
     if econnect.job_exists(conn, request.job_number):
         raise RelayOpError(
@@ -272,10 +369,15 @@ def create_job_op(conn, *, company: str, request: models.CreateJobRequest) -> mo
             proc="wsiJCJobMaster",
         )
 
+    provisioned = 0
+    if request.cost_codes:
+        provisioned = _provision_cost_codes(conn, company=company, request=request)
+
     return models.CreateJobResponse(
         job_number=created["job_number"],
         job_name=created["job_name"] or request.job_name,
         company=company,
+        cost_codes_provisioned=provisioned,
     )
 
 

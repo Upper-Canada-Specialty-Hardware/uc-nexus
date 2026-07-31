@@ -155,6 +155,62 @@ def test_gp_cost_codes_maps_relay_result_to_type(monkeypatch):
     assert fake.calls == [("TUBC", "list_cost_codes", {"job": "1001"})]
 
 
+def test_gp_cost_code_master_scopes_the_call_to_the_division(monkeypatch):
+    """The master is read per division because the division is what decides whether a code is usable:
+    the GL account comes from JC40302's (division, cost element) mapping, so the same code number is
+    provisionable under one division and not another."""
+    fake = _install_fake_gateway(
+        monkeypatch,
+        {
+            "company": "TUBC",
+            "division": "VANCOUVER",
+            "cost_codes": [
+                {
+                    "cost_code": "210-200",
+                    "alias": "210-200-2",
+                    "description": "Supply Hardware",
+                    "cost_element": 2,
+                    "profit_type_number": 2,
+                    "type_of_transaction": 1,
+                    "account_index": 96,
+                    "mapped": True,
+                },
+                {
+                    "cost_code": "310-000",
+                    "alias": "310-000-3",
+                    "description": None,
+                    "cost_element": 3,
+                    "profit_type_number": 2,
+                    "type_of_transaction": 1,
+                    "account_index": 0,
+                    "mapped": False,
+                },
+            ],
+        },
+    )
+
+    async def run():
+        return await Query().gp_cost_code_master(FakeInfo(), company="TUBC", division="VANCOUVER")
+
+    codes = asyncio.run(run())
+    # mapped=False survives rather than being filtered out - the picker disables it, and a code that
+    # simply vanished would send the user hunting for one they can see in GP (#448)
+    assert [(c.cost_code, c.description, c.cost_element, c.mapped) for c in codes] == [
+        ("210-200", "Supply Hardware", 2, True),
+        ("310-000", None, 3, False),
+    ]
+    # list_cost_code_master (JC40202, the catalogue), not list_cost_codes (JC00701, one job's rows)
+    assert fake.calls == [("TUBC", "list_cost_code_master", {"division": "VANCOUVER"})]
+
+
+def test_gp_cost_code_master_requires_an_admin():
+    """Its only consumer is the admin-only create-job dialog, so it sits at the bar the createGpJob it
+    feeds already sets. `gpCostCodes` - the per-job read behind the register-PO dropdown - stays open
+    to any signed-in user, because every PO screen needs it."""
+    assert ROOT_FIELD_POLICY["gpCostCodeMaster"] == ADMIN_ROLE
+    assert ROOT_FIELD_POLICY["gpCostCodes"] == SIGNED_IN
+
+
 def test_relay_status_resolver_reads_gateway_connected(monkeypatch):
     gateway = RelayGateway()
     monkeypatch.setattr(relay_module, "relay_gateway", gateway)

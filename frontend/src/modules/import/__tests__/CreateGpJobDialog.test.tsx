@@ -6,6 +6,7 @@ import CreateGpJobDialog from '../CreateGpJobDialog';
 import {
   CREATE_GP_CUSTOMER_ADDRESS,
   CREATE_GP_JOB,
+  GET_GP_COST_CODE_MASTER,
   GET_GP_CUSTOMERS,
   GET_GP_CUSTOMER_ADDRESSES,
   GET_GP_DIVISIONS,
@@ -66,6 +67,37 @@ const employeesReadMock: MockedResponse = {
   },
 };
 
+function costCodeEntry(costCode: string, description: string, costElement: number, mapped: boolean) {
+  return { costCode, description, costElement, mapped, __typename: 'GpCostCodeMasterEntry' };
+}
+
+/**
+ * #448: the cost-code master as it applies to VANCOUVER. 210-200 is unmapped - the division has no GL
+ * account for that code's cost element - and provisioning it is exactly what the GP-setup check
+ * quarantines a project for, so it is the row the picker has to refuse to send.
+ *
+ * Named like employeesReadMock so a test needing a different master can swap it out by identity.
+ */
+const costCodeMasterReadMock: MockedResponse = {
+  request: { query: GET_GP_COST_CODE_MASTER, variables: { company: COMPANY, division: 'VANCOUVER' } },
+  maxUsageCount: INFINITE,
+  result: {
+    data: {
+      gpCostCodeMaster: [
+        costCodeEntry('310-000', 'Hardware', 3, true),
+        costCodeEntry('520-000', 'Electrical', 2, true),
+        costCodeEntry('210-200', 'Site labour', 2, false),
+      ],
+    },
+  },
+};
+
+/** What the form defaults to sending: every mapped code in the master, in master order. */
+const MAPPED_COST_CODES = [
+  { costCode: '310-000', costElement: 3 },
+  { costCode: '520-000', costElement: 2 },
+];
+
 const readMocks: MockedResponse[] = [
   {
     request: { query: GET_GP_CUSTOMERS, variables: { company: COMPANY } },
@@ -98,6 +130,7 @@ const readMocks: MockedResponse[] = [
     },
   },
   addressesReadMock,
+  costCodeMasterReadMock,
 ];
 
 const projectsMock: MockedResponse = {
@@ -171,6 +204,14 @@ async function fillRequired() {
   await pickFromSelect(/^Bill-to address/, /MAIN/);
   await pickFromSelect(/^Tax schedule/, /Federal GST 5%/);
   typeInto(/^Created date/, '2025-09-15');
+  // #448: the cost-code master is read off the division and its mapped codes default to checked, and
+  // they ride along on the create - so a submit fired before that lands carries a different payload.
+  await screen.findByText('2 of 3 selected');
+}
+
+/** The row's own checkbox: its accessible name is the label, which leads with GP's own spelling. */
+function costCodeBox(code: RegExp) {
+  return screen.getByRole('checkbox', { name: code });
 }
 
 function createButton() {
@@ -265,6 +306,7 @@ test('an adopted job does not claim it was created', async () => {
           billtoAddressCode: 'MAIN',
           taxScheduleId: 'GST 5%',
           createdDate: '2025-09-15',
+          costCodes: MAPPED_COST_CODES,
           estimatorId: null,
           wsManagerId: null,
           wsProjectNumber: null,
@@ -382,6 +424,7 @@ test("a GP rejection is shown in the proc's own words and the dialog stays open"
           billtoAddressCode: 'MAIN',
           taxScheduleId: 'GST 5%',
           createdDate: '2025-09-15',
+          costCodes: MAPPED_COST_CODES,
           estimatorId: null,
           wsManagerId: null,
           wsProjectNumber: null,
@@ -432,6 +475,7 @@ test('a successful submit sends only the optional fields that were filled in', a
           billtoAddressCode: 'MAIN',
           taxScheduleId: 'GST 5%',
           createdDate: '2025-09-15',
+          costCodes: MAPPED_COST_CODES,
           estimatorId: 'IANB',
           scheduleStartDate: '2025-09-20',
           wsManagerId: null,
@@ -834,4 +878,104 @@ test('a duplicate address code shows the relay detail, stays open, and re-reads 
   // Closing here would throw away a whole address over one wrong code, so it stays open and typed in.
   expect(screen.getByLabelText(/^Address code/)).toHaveValue('MAIN');
   expect(screen.getByLabelText(/^Address 1/)).toHaveValue('77 New Rd');
+});
+
+// --- #448: provisioning the new job's cost codes -------------------------------------------------
+
+/** The create, with whatever cost codes the form settled on. Everything else is the fillRequired run. */
+function createJobMock(costCodes: { costCode: string; costElement: number }[]): MockedResponse {
+  return {
+    request: {
+      query: CREATE_GP_JOB,
+      variables: {
+        input: {
+          jobNumber: 'NEXUS-380-T1',
+          jobName: 'Test job',
+          division: 'VANCOUVER',
+          customerNumber: 'ELL100',
+          jobAddressCode: 'MAIN',
+          billtoAddressCode: 'MAIN',
+          taxScheduleId: 'GST 5%',
+          createdDate: '2025-09-15',
+          costCodes,
+          estimatorId: null,
+          wsManagerId: null,
+          wsProjectNumber: null,
+          billCustomerNumber: null,
+          useTaxSchedule: null,
+          scheduleStartDate: null,
+          scheduledCompletionDate: null,
+          bidDueDate: null,
+        },
+      },
+    },
+    result: {
+      data: {
+        createGpJob: {
+          created: true,
+          project: { id: 'project-1', __typename: 'Project' },
+          __typename: 'CreateGpJobResult',
+        },
+      },
+    },
+  };
+}
+
+test('the division cost-code master arrives with the mapped codes checked and the unmapped one unusable', async () => {
+  // Accounting provisions a job wholesale, so select-all is the default. The unmapped code is the
+  // exception, and not because it is unwanted: the division has no GL account for its cost element, so
+  // putting it on the job is what the GP-setup check quarantines the project for.
+  renderDialog();
+  await waitFor(() => expect(screen.getByLabelText(/^Job number/)).toBeEnabled());
+
+  // whether a code has an account is a fact about the division, so there is nothing to show yet
+  expect(screen.getByText(/Pick a division first/)).toBeInTheDocument();
+
+  await pickFromSelect(/^Division/, /VANCOUVER/);
+
+  await waitFor(() => expect(costCodeBox(/310-000-3/)).toBeChecked());
+  expect(costCodeBox(/520-000-2/)).toBeChecked();
+  expect(costCodeBox(/210-200-2/)).toBeDisabled();
+  expect(costCodeBox(/210-200-2/)).not.toBeChecked();
+  expect(screen.getByText(/No GP account for cost element 2 in this division/)).toBeInTheDocument();
+  expect(screen.getByText('2 of 3 selected')).toBeInTheDocument();
+});
+
+test('a cost code unchecked before the submit is left out of the create', async () => {
+  // The mock matches on exact variables, so this IS the assertion on the payload: the code that was
+  // unchecked is gone, and the one that stayed travels as GP's own pair rather than the display key.
+  const success = createJobMock([{ costCode: '520-000', costElement: 2 }]);
+
+  renderDialog([success]);
+  await fillRequired();
+
+  fireEvent.click(costCodeBox(/310-000-3/));
+  await waitFor(() => expect(costCodeBox(/310-000-3/)).not.toBeChecked());
+  expect(screen.getByText('1 of 3 selected')).toBeInTheDocument();
+
+  await waitFor(() => expect(createButton()).toBeEnabled());
+  fireEvent.click(createButton());
+
+  expect(await screen.findByText(/Job NEXUS-380-T1 created in GP/)).toBeInTheDocument();
+});
+
+test('a job with no cost codes can still be created, with a warning that it cannot buy', async () => {
+  // An unprovisioned job is a legal create - it is what GP does on its own - so the button stays
+  // usable. What it must not be is silent: nothing else in Nexus explains an empty register-PO
+  // cost-code dropdown until purchasing hits it.
+  const success = createJobMock([]);
+
+  renderDialog([success]);
+  await fillRequired();
+
+  fireEvent.click(costCodeBox(/310-000-3/));
+  fireEvent.click(costCodeBox(/520-000-2/));
+  await waitFor(() => expect(screen.getByText('0 of 3 selected')).toBeInTheDocument());
+
+  expect(screen.getByText(/blocked from GP purchasing until they are added in GP/)).toBeInTheDocument();
+  expect(createButton()).toBeEnabled();
+
+  fireEvent.click(createButton());
+
+  expect(await screen.findByText(/Job NEXUS-380-T1 created in GP/)).toBeInTheDocument();
 });

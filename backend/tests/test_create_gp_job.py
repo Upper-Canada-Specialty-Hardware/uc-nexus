@@ -17,7 +17,7 @@ from app.database import SessionLocal
 from app.errors import ConflictError, RelayCallError, RelayUnavailableError, ValidationError
 from app.models.project import Project as ProjectModel
 from app.schemas import project as project_module
-from app.schemas.inputs import CreateGpJobInput
+from app.schemas.inputs import CostCodeSelectionInput, CreateGpJobInput
 from app.schemas.project import ProjectMutations
 
 
@@ -191,6 +191,42 @@ def test_sends_the_optional_fields_that_were_filled_in(monkeypatch):
     assert payload["estimator_id"] == "EST1"
     assert payload["use_tax_schedule"] == "GST 5%"
     assert payload["schedule_start_date"] == "2025-09-20"
+
+
+def test_sends_the_selected_cost_codes_for_provisioning(monkeypatch):
+    """The picked codes ride on the same create_job call as the job (#448), so GP provisions JC00701
+    in the transaction that creates JC00102 rather than in a second one that can fail on its own.
+
+    Only the number and the element go: the account index the row needs is GP's to resolve from
+    JC40302 at create time, and a client that could name it could name a wrong one."""
+    _no_persist(monkeypatch)
+    calls = _relay(monkeypatch)
+
+    _create(
+        cost_codes=[
+            CostCodeSelectionInput(cost_code=" 210-200 ", cost_element=2),
+            CostCodeSelectionInput(cost_code="310-000", cost_element=3),
+        ]
+    )
+
+    assert calls[0][2]["cost_codes"] == [
+        # stripped: GP's own code numbers are fixed-width and space-padded, and a picker value that
+        # arrived with the padding still on would be provisioned as a code nothing else matches
+        {"cost_code": "210-200", "cost_element": 2},
+        {"cost_code": "310-000", "cost_element": 3},
+    ]
+
+
+def test_a_job_with_no_cost_codes_sends_an_empty_list(monkeypatch):
+    """Not an omitted key. Empty is the honest payload for "no cost structure", which GP accepts and
+    the #425 setup check then quarantines the project for on the next sync stamp - a real state, and
+    one the dialog warns about rather than prevents."""
+    _no_persist(monkeypatch)
+    calls = _relay(monkeypatch)
+
+    _create()
+
+    assert calls[0][2]["cost_codes"] == []
 
 
 def test_the_sync_winning_the_race_is_not_an_error(monkeypatch):

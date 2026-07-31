@@ -70,6 +70,34 @@ def test_list_cost_codes_routes_to_econnect_and_strips_job(monkeypatch):
     }
 
 
+def test_list_cost_code_master_requires_division():
+    # The division is not a filter on the list - it is what decides the GL account each code would be
+    # provisioned with (JC40302), so there is no sensible answer without one.
+    reply = channel._dispatch("list_cost_code_master", "TUBC", {})
+    assert reply["ok"] is False
+    assert reply["error"]["error"] == "missing_division"
+
+
+def test_list_cost_code_master_routes_to_econnect_and_strips_division(monkeypatch):
+    seen = {}
+
+    def _fake(conn, division):
+        seen["division"] = division
+        return [{"cost_code": "210-200", "cost_element": 2, "mapped": True}]
+
+    monkeypatch.setattr(econnect, "list_cost_code_master", _fake)
+    reply = channel._dispatch("list_cost_code_master", "TUBC", {"division": " VANCOUVER "})
+    assert seen["division"] == "VANCOUVER"
+    assert reply == {
+        "ok": True,
+        "result": {
+            "company": "TUBC",
+            "division": "VANCOUVER",
+            "cost_codes": [{"cost_code": "210-200", "cost_element": 2, "mapped": True}],
+        },
+    }
+
+
 def test_list_jobs_routes_to_econnect(monkeypatch):
     monkeypatch.setattr(econnect, "list_jobs", lambda conn: [{"job_number": "80003", "job_name": "Test"}])
     reply = channel._dispatch("list_jobs", "TUBC", {})
@@ -268,7 +296,13 @@ def test_create_job_success_returns_the_response_body(monkeypatch):
     monkeypatch.setattr(ops, "create_job_op", _fake)
     reply = channel._dispatch("create_job", "TUBC", _JOB_PAYLOAD)
     assert reply["ok"] is True
-    assert reply["result"] == {"job_number": "NEXUS-380-T1", "job_name": "Test job", "company": "TUBC"}
+    # cost_codes_provisioned rides along on every create_job reply (#448); 0 when none were selected.
+    assert reply["result"] == {
+        "job_number": "NEXUS-380-T1",
+        "job_name": "Test job",
+        "company": "TUBC",
+        "cost_codes_provisioned": 0,
+    }
 
 
 def test_create_job_already_exists_translates_cleanly(monkeypatch):

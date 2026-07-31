@@ -94,9 +94,15 @@ running the same eConnect logic the HTTP routes use (`ops.py` holds the shared `
 blank to run HTTP-only, as before. op dispatch (`_OPS` in `channel.py`, which is also what the relay
 advertises to the backend on connect so an out-of-date relay is caught before the round-trip):
 - reads: `list_vendors`, `list_buyers`, `list_buyers_detailed`, `list_tax_details`, `list_cost_codes`,
-  `list_jobs`, `list_customers`, `list_customer_addresses`, `list_tax_schedules`, `list_divisions`,
-  `list_employees`, `read_po_totals`
+  `list_cost_code_master`, `list_jobs`, `list_customers`, `list_customer_addresses`,
+  `list_tax_schedules`, `list_divisions`, `list_employees`, `read_po_totals`
 - writes: `create_po`, `create_receipt`, `create_job`, `create_buyer`
+
+`create_job` also provisions the job's cost codes (#448): `wsiJCJobMaster` writes only the `JC00102`
+row, so a job created without them has no `JC00701` cost structure at all - an empty register-PO
+dropdown and an instant #425 quarantine - and the codes named in the request's `cost_codes` are written
+with `wsiJCJobDetailMSTR` in the same transaction, every value taken from the company master
+(`JC40202`, account index from `JC40302` for the job's division) rather than from the request.
 
 reconnects with exponential backoff on drop; the `websockets` client's default 20s ping/pong keeps the
 channel alive through a corporate proxy's idle timeout.

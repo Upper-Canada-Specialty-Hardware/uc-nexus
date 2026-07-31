@@ -192,6 +192,21 @@ export const GET_GP_DIVISIONS = gql`
   }
 `;
 
+// Issue #448: the company's cost-code master, read per division because `mapped` is a property of the
+// pair - it says whether THIS division has a GL account for that code's cost element. A job created
+// with no cost codes has an empty register-PO dropdown and is quarantined by the GP-setup check on the
+// next sync, so the create form provisions them up front rather than leaving it to accounting.
+export const GET_GP_COST_CODE_MASTER = gql`
+  query GpCostCodeMaster($company: String!, $division: String!) {
+    gpCostCodeMaster(company: $company, division: $division) {
+      costCode
+      description
+      costElement
+      mapped
+    }
+  }
+`;
+
 // Issue #392: `created` distinguishes GP actually creating the job from the mutation adopting one GP
 // already held, so the toast can stop claiming a creation that did not happen.
 export const CREATE_GP_JOB = gql`
