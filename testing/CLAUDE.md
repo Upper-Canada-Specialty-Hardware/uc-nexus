@@ -573,6 +573,17 @@ covered is its normal resting state and a short pick on one is not an integrity 
 3. Assign storage locations (aisle/bay/bin)
 - Receiving auto-transitions PO status (ORDERED -> PARTIALLY_RECEIVED -> CLOSED)
 
+**Receive/History toggle since #447** (PR #450): the page header carries a two-button toggle. The
+Receive side is everything below; the History side is the Receiving History view - every PO that
+reached GP including CLOSED ones, one row per PO (PO #, vendor, project, status chip, "N of M"
+received, receive count, last received), text search + project filter, chevron-expandable. A row's
+receives load lazily on first expand via the existing `poReceivingDetails` query and show each
+receive's GP receipt number, batch, timestamp, receiver and line quantities. Receipt numbers also
+show in the receive success dialog ("GP Receipt ...") and as a GP RECEIPT column in Recent Activity.
+Receives predating #447 render a dash. TUBC mints receipt numbers prefixed `RC` (e.g. RC0000054),
+not the `RCT` prefix the UC Connects docs describe - assert on the number GP actually returned, not
+on the prefix.
+
 Three sections since #416, in this order: **POs Awaiting Receipt**, **Back-Ordered Items**, **Recent
 Activity**. The back-order grid is line-level and cross-project (no project landing step), carries a
 Project column that reads "Stock PO" for a project-less PO, and chips how late or soon each line is
@@ -883,6 +894,29 @@ so you will see all of them regardless of your role):
 
 - Shows opening items and loose items ready to ship
 - Create packing slips, confirm shipments
+
+**The confirm step is the Delivery Request form since #447** (PR #450). Confirming a cart opens a
+sectioned dialog (Shipment / Shipper / Pickup location / Deliver To questionnaire / Contacts), not
+the old slip-number-only form. Shipper name is read-only from the signed-in identity and the email
+prefills from it; pickup location prefills from the primary warehouse and is name-only when the
+seeded warehouse has no address fields. Everything except the slip number is optional. The success
+view's "View Delivery Request" opens the generated PDF (client-side react-pdf), which replicates the
+paper Delivery Request form; a shipment's document is reprintable later from the shipments list and
+regenerates from the STORED fields, so an edit shows up on the next print.
+
+**Shipments carry a lifecycle since #447**: SCHEDULED -> PICKED_UP -> DELIVERED, strict one-way; the
+states document the truck's journey only and move no inventory. The Shipments page
+(`/app/warehouse/shipments`) is expandable rows now, not a DataGrid: row = slip #, project, status
+chip, shipped by, created, pick-up, delivery, carrier; expansion = the item lines plus the actions,
+each status-gated - Delivery Request (always), Edit (SCHEDULED only, full-replace semantics, a
+cleared field really clears), Mark Picked Up (SCHEDULED), Mark Delivered (PICKED_UP), Return
+(unchanged). Lifecycle/edit mutations return the whole header, so the row updates through the Apollo
+cache with no reload - assert on the row, do not wait for a refetch.
+
+**Loose hardware only becomes ship-ready when its SHIPPING_OUT pull is COMPLETED.** Confirming the
+pick leaves the pull IN_PROGRESS with phase "Picked - ready to mark pulled" and the Ship tab's Loose
+Hardware grid stays empty; "Mark as Pulled" in the pull detail modal is what completes it. Budget for
+that extra step when scripting the chain.
 
 **Incomplete-leaf guard in the Start-a-Task shipping wizard (#341).** On the Shipping PRs step, an
 assembled leaf that is still owed hardware carries an amber "Incomplete - awaiting replacement" chip
