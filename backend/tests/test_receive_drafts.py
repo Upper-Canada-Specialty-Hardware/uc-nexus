@@ -362,14 +362,21 @@ def approve_env(monkeypatch):
 
 
 class _CommittedFixture:
-    """A committed project / PO / draft, plus the ids needed to clean it all up afterwards."""
+    """A committed project / PO / draft, plus what is needed to clean it all up afterwards.
 
-    def __init__(self, project_id, po_id, po_number, po_line_item_id, draft_id):
+    `stock_item_ids_before` is the stock pool as it stood when the fixture was built. A stock-PO
+    receive either creates a stock row or merges into an existing one, and only the ids that appeared
+    afterwards are this test's to delete - `StockItem` carries no PO number to key on, because stock
+    is fungible by design.
+    """
+
+    def __init__(self, project_id, po_id, po_number, po_line_item_id, draft_id, stock_item_ids_before):
         self.project_id = project_id
         self.po_id = po_id
         self.po_number = po_number
         self.po_line_item_id = po_line_item_id
         self.draft_id = draft_id
+        self.stock_item_ids_before = stock_item_ids_before
 
 
 @pytest.fixture
@@ -380,11 +387,22 @@ def committed(_migrate_database):
     created: list[_CommittedFixture] = []
 
     def _build(*, with_project=True, ordered=10, quantity=4):
+        from sqlalchemy import select
+
+        from app.models.stock_item import StockItem
+
         with SessionLocal() as session:
             project = _make_project(session) if with_project else None
             po, li = _make_po(session, project.id if project else None, ordered=ordered)
             draft = _draft(session, po, li, quantity)
-            fixture = _CommittedFixture(project.id if project else None, po.id, po.po_number, li.id, draft.id)
+            fixture = _CommittedFixture(
+                project.id if project else None,
+                po.id,
+                po.po_number,
+                li.id,
+                draft.id,
+                set(session.scalars(select(StockItem.id)).all()),
+            )
             session.commit()
         created.append(fixture)
         return fixture
@@ -429,9 +447,13 @@ def _cleanup(fixtures) -> None:
                 session.execute(delete(InventoryAuditLog).where(InventoryAuditLog.project_id == f.project_id))
                 session.execute(delete(Notification).where(Notification.project_id == f.project_id))
             else:
-                # A stock PO receives into the pool. Scoped to this fixture's own PO number so a
-                # shared dev database keeps whatever else is in it.
-                session.execute(delete(StockItem).where(StockItem.po_number == f.po_number))
+                # A stock PO receives into the pool. StockItem carries no PO number - stock is
+                # fungible - so what this test created is whatever appeared since the fixture was
+                # built. A receive that MERGED into an existing row leaves no new id and is left
+                # alone, which is the right call: that row is not ours to delete.
+                new_stock = set(session.scalars(select(StockItem.id)).all()) - f.stock_item_ids_before
+                if new_stock:
+                    session.execute(delete(StockItem).where(StockItem.id.in_(new_stock)))
             session.execute(delete(POLineItemModel).where(POLineItemModel.po_id == f.po_id))
             session.execute(delete(POModel).where(POModel.id == f.po_id))
             if f.project_id is not None:
