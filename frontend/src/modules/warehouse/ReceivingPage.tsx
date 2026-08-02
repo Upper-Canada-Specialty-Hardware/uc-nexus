@@ -23,7 +23,6 @@ import DataTable from '../../components/DataTable';
 import ReceiveModal from './ReceiveModal';
 import ReceivingHistory from './ReceivingHistory';
 import MyReceiveDraftsView from './MyReceiveDraftsView';
-import type { ReceiveDraft } from './receiveDraftTypes';
 import { useIdentity } from '../../hooks/useIdentity';
 import { formatPoStatus, poStatusChipColor } from '../po/poStatus';
 import { GET_PROJECTS } from '../../graphql/shared';
@@ -31,7 +30,7 @@ import {
   GET_BACK_ORDERED_ITEMS,
   GET_OPEN_POS,
   GET_RECENT_RECEIVE_RECORDS,
-  GET_RECEIVE_DRAFTS,
+  GET_PENDING_DRAFT_SUMMARIES,
 } from '../../graphql/warehouse';
 import { poVendorName } from '../po/poVendorName';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
@@ -255,9 +254,11 @@ export default function ReceivingPage() {
 
   // Everybody's pending drafts, for the "already counted" chip on the PO rows. Scoped to PENDING
   // rather than mine, because the point of the chip is to stop a SECOND person re-counting a
-  // delivery that is already in the queue.
-  const { data: pendingDraftsData } = useQuery<{ receiveDrafts: ReceiveDraft[] }>(GET_RECEIVE_DRAFTS, {
-    variables: { status: 'PENDING_APPROVAL' },
+  // delivery that is already in the queue. Scalars only - this needs a count per PO, not every
+  // line and rack row of every draft in the system.
+  const { data: pendingDraftsData } = useQuery<{
+    receiveDrafts: { id: string; poId: string; totalQuantity: number }[];
+  }>(GET_PENDING_DRAFT_SUMMARIES, {
     skip: !showReceive,
     fetchPolicy: 'cache-and-network',
   });

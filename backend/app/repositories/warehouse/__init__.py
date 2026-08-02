@@ -76,6 +76,7 @@ from .pull_requests import (
     start_pull_request_pick,
 )
 from .receive_decisions import (
+    any_untargeted_decision_pending,
     create_decision_for_receive,
     decide_receive_decision,
     get_pending_decisions_for_user,
@@ -88,7 +89,6 @@ from .receive_drafts import (
     delete_receive_draft,
     get_receive_draft,
     get_receive_drafts,
-    json_line_items_for_outbox,
     mark_approved,
     reject_receive_draft,
     release_approval_claim,
@@ -120,6 +120,7 @@ from .reservations import (
 __all__ = [
     "PLACED_PO_STATUSES",
     "ApprovalContext",
+    "any_untargeted_decision_pending",
     "CancelBlocker",
     "CancelResult",
     "ConfirmPickResult",
@@ -188,7 +189,6 @@ __all__ = [
     "get_reserved_total",
     "get_unlocated_inventory",
     "get_warehouse_dashboard",
-    "json_line_items_for_outbox",
     "mark_approved",
     "mark_inventory_unlocated",
     "mark_opening_item_unlocated",

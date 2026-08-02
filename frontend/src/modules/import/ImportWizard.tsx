@@ -796,17 +796,20 @@ export default function ImportWizard({
 
   // --- Deep link (keep-or-ship "Ship out now") ---
   //
-  // Two effects rather than one, because they wait on different things: the purpose can be set the
-  // moment the wizard opens, but starting from the persisted schedule has to wait for the eager
-  // fetch above to answer. Both are consumed once - a ref rather than a state flag, so re-running
-  // them cannot fight the user who has since chosen something else.
+  // Three effects rather than one, because they wait on different things: the purpose can be set the
+  // moment the wizard opens, starting from the persisted schedule has to wait for the eager fetch
+  // above to answer, and skipping the upload step has to wait for the hydrate. Each is consumed
+  // once - a ref rather than a state flag, so re-running one cannot fight the user who has since
+  // walked back and chosen something else.
   const seededPurposeRef = useRef(false);
   const autoStartedRef = useRef(false);
+  const advancedRef = useRef(false);
 
   useEffect(() => {
     if (!open) {
       seededPurposeRef.current = false;
       autoStartedRef.current = false;
+      advancedRef.current = false;
       return;
     }
     if (seededPurposeRef.current || !initialPurpose) return;
@@ -832,8 +835,13 @@ export default function ImportWizard({
   useEffect(() => {
     // Once hydrated with a purpose already chosen, both of the upload step's jobs are done - drop
     // the user straight on the openings they came to pick.
+    //
+    // One-shot, like its two siblings. Without the guard this fires again the moment the user walks
+    // Back to the upload step, bouncing them forward and making that step unreachable for the rest
+    // of the session - which is the only place to choose a different schedule source.
     if (!open || !autoStartFromLatest || !hydratedFromPersisted || !purpose) return;
-    if (activeStepId !== 'upload') return;
+    if (advancedRef.current || activeStepId !== 'upload') return;
+    advancedRef.current = true;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- advance past the steps the deep link answered
     setActiveStepId('openings');
   }, [open, autoStartFromLatest, hydratedFromPersisted, purpose, activeStepId]);

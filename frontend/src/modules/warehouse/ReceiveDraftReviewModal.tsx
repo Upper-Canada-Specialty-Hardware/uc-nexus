@@ -145,6 +145,13 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
     setPosted(null);
     setQueued(false);
     setRejectReason('');
+    // An approval that died ambiguously left the draft claimed under a key the browser no longer
+    // holds - a reload, or a different manager picking it up. Resuming with the SAME key is the only
+    // way through the idempotency ledger to the receipt GP may already have posted; a fresh key
+    // would be a second approval.
+    if (draft.approvalIdempotencyKey) {
+      idempotencyKeyRef.current[draft.id] = draft.approvalIdempotencyKey;
+    }
   }, [open, draft]);
 
   // Relay presence: the approval posts a GP receipt. Advisory, not a blocker (#376) - an unreachable
@@ -203,6 +210,11 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
       // Save the edits FIRST, so what gets approved is what is on screen. A failure here stops
       // everything: nothing has reached GP, and approving the un-edited draft would silently post
       // numbers the reviewer had just changed.
+      //
+      // Marked clean on success, and that matters on the retry path: a draft claimed by a failed
+      // approval is APPROVING, which the backend refuses to edit. Leaving it dirty would make every
+      // retry re-send the update, fail on that refusal, and never reach the same-key approve that is
+      // the actual way out.
       if (isDirty) {
         await updateDraft({
           variables: {
@@ -213,6 +225,7 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
             },
           },
         });
+        setInitialSignature(JSON.stringify([receiveQuantities, lineLocations, warehouseId]));
       }
 
       const idempotencyKey = (idempotencyKeyRef.current[draft.id] ??= crypto.randomUUID());

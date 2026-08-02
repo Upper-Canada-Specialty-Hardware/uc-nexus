@@ -436,6 +436,11 @@ class ReceiveDraft:
     reviewed_by: str | None
     reviewed_at: datetime | None
     rejection_reason: str | None
+    # The key an in-flight approval is holding this draft under. Exposed so a reviewer whose approval
+    # died ambiguously (a dispatched disconnect, a timeout - GP may hold the receipt) can retry with
+    # the SAME key and resume through the idempotency ledger. Without it the key lives only in the
+    # browser tab that started the approval, and a reload would strand the draft in APPROVING.
+    approval_idempotency_key: str | None
     receive_record_id: strawberry.ID | None
     outbox_entry_id: strawberry.ID | None
     total_quantity: int

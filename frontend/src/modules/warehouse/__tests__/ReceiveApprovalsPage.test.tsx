@@ -38,6 +38,7 @@ function draft(overrides: Record<string, unknown> = {}) {
     reviewedBy: null,
     reviewedAt: null,
     rejectionReason: null,
+    approvalIdempotencyKey: null,
     receiveRecordId: null,
     outboxEntryId: null,
     totalQuantity: 4,

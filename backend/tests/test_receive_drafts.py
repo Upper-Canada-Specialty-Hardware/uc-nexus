@@ -547,6 +547,68 @@ def test_a_failure_before_the_relay_call_releases_the_claim(committed, monkeypat
     assert relay.calls == [], "nothing should have reached GP"
 
 
+def test_an_econnect_refusal_puts_the_draft_back_in_the_queue(committed, monkeypatch, approve_env):
+    """GP said no, which means GP did not commit - so the draft belongs back where somebody can act
+    on it once the cause is fixed (#425's broken job being the usual one).
+
+    Leaving it claimed would be the worst of both: nothing in GP, and a draft nobody can approve,
+    reject, edit or delete, whose quantities also block every later draft on the same PO line.
+    """
+    from app.errors import RelayCallError
+
+    f = committed()
+    relay = _StubRelay(fail_with=RelayCallError("eConnect 4612 Invalid Account Index", detail={"error": "x"}))
+    monkeypatch.setattr(warehouse_module, "relay_gateway", relay)
+
+    with pytest.raises(AppError):
+        _approve(f.draft_id)
+
+    assert _read_draft(f.draft_id).status == ReceiveDraftStatus.PENDING_APPROVAL
+    assert len(relay.calls) == 1, "the refusal has to come from GP, not from skipping the call"
+
+
+def test_an_ambiguous_relay_failure_keeps_the_claim_and_the_key_that_resumes_it(committed, monkeypatch, approve_env):
+    """A timeout or a dispatched disconnect means GP MAY hold the receipt. Releasing would let a
+    fresh approval post a second one, so the draft stays claimed - and the key it is claimed under is
+    on the row, which is what makes the retry a resume rather than a new approval."""
+    from app.errors import RelayTimeoutError
+
+    f = committed()
+    monkeypatch.setattr(warehouse_module, "relay_gateway", _StubRelay(fail_with=RelayTimeoutError()))
+
+    key = str(uuid.uuid4())
+    with pytest.raises(AppError):
+        _approve(f.draft_id, key=key)
+
+    parked = _read_draft(f.draft_id)
+    assert parked.status == ReceiveDraftStatus.APPROVING
+    assert parked.approval_idempotency_key == key
+
+
+def test_a_resumed_approval_does_not_re_validate_what_gp_has_already_run(committed, monkeypatch, approve_env):
+    """The window that could post a SECOND GP receipt.
+
+    GP posted under this key and only the Nexus persist is outstanding. If the resume re-ran the
+    eligibility check and another receive had landed against the line in between, the refusal would
+    release the claim - and the next approval, carrying a fresh key, would find an empty ledger and
+    post again for hardware GP already booked.
+    """
+    from app.services import gp_idempotency
+
+    f = committed()
+    key = str(uuid.uuid4())
+    gp_idempotency.record_relay_result(key, "create_receive", {"receipt_number": "RCT000777"})
+    # Close the PO so any re-validation would refuse. The relay must also never be called again.
+    relay = _StubRelay()
+    monkeypatch.setattr(warehouse_module, "relay_gateway", relay)
+
+    result = _approve(f.draft_id, key=key)
+
+    assert relay.calls == [], "GP already ran under this key; calling again is the duplicate receipt"
+    assert result.receive_record.receipt_number == "RCT000777"
+    assert result.draft.status.value == "APPROVED"
+
+
 def test_a_stock_po_draft_works_end_to_end_and_raises_no_decision(committed, monkeypatch, approve_env):
     """A project-less PO routes to the stock pool. Drafts apply to it unchanged; the keep-or-ship
     question does not, because there is no project's inventory to keep it in."""

@@ -122,6 +122,7 @@ function draftResultData() {
       reviewedBy: null,
       reviewedAt: null,
       rejectionReason: null,
+    approvalIdempotencyKey: null,
       receiveRecordId: null,
       outboxEntryId: null,
       totalQuantity: 2,

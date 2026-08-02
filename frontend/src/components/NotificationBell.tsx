@@ -20,16 +20,18 @@ import { parseServerDate } from '../utils/serverDate';
 /**
  * Where a notification takes you, for the types that have one place to go.
  *
- * Only the person-targeted signals are here, and that is the point: "your draft was sent back" and
- * "you have to say where this shipment goes" both name one screen that one person has to open. The
- * audience-wide types (a pull unblocked, a shipment completed) are read by several people from
- * several places, so navigating on them would be a guess.
+ * A type earns an entry when every reader of it would open the same screen: "your draft was sent
+ * back" and "say where this shipment goes" each name one person's one screen, and "a receive is
+ * waiting for approval" names the manager queue its whole audience works from. The rest (a pull
+ * unblocked, a shipment completed) are read by several people from several places, so navigating on
+ * them would be a guess.
  *
  * An unmapped type keeps the old behaviour - mark read, stay put.
  */
 const NOTIFICATION_LINKS: Record<string, string> = {
   RECEIVE_DECISION_REQUIRED: '/app/po/decisions',
   RECEIVE_DRAFT_REJECTED: '/app/warehouse/receiving?view=drafts',
+  RECEIVE_DRAFT_SUBMITTED: '/app/warehouse/receive-approvals',
 };
 
 interface Notification {

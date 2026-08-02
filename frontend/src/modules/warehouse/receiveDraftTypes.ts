@@ -24,6 +24,9 @@ export interface ReceiveDraft {
   reviewedBy: string | null;
   reviewedAt: string | null;
   rejectionReason: string | null;
+  /** The key an in-flight approval holds this draft under. Set while APPROVING; a retry has to carry
+   *  it to resume through the idempotency ledger rather than start a second approval. */
+  approvalIdempotencyKey: string | null;
   receiveRecordId: string | null;
   outboxEntryId: string | null;
   totalQuantity: number;

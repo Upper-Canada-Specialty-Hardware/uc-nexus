@@ -45,6 +45,7 @@ function draft(overrides: Partial<ReceiveDraft> = {}): ReceiveDraft {
     reviewedBy: null,
     reviewedAt: null,
     rejectionReason: null,
+    approvalIdempotencyKey: null,
     receiveRecordId: null,
     outboxEntryId: null,
     totalQuantity: 2,
@@ -362,6 +363,62 @@ describe('ReceiveDraftReviewModal', () => {
 
     await vi.waitFor(() => expect(onClose).toHaveBeenCalled(), SLOW);
     expect(captured).toEqual({ input: { draftId: 'draft-1', reason: 'Count is two boxes short' } });
+  });
+
+  it('resumes a parked approval with the key the draft is still claimed under', async () => {
+    // An approval that died ambiguously - a dispatched disconnect, a timeout - leaves the draft
+    // APPROVING and GP possibly holding the receipt. The key it was claimed under is the only route
+    // back through the idempotency ledger, and it does not survive the browser tab that started it,
+    // so the draft carries it.
+    let captured: ApproveVars | null = null;
+    const approveMock: MockedResponse<Record<string, unknown>, ApproveVars> = {
+      request: { query: APPROVE_RECEIVE_DRAFT, variables: () => true },
+      result: (vars) => {
+        captured = vars;
+        return { data: approveResult(false, 'RCT0000123') };
+      },
+    };
+    await openModal([approveMock], draft({ status: 'APPROVING', approvalIdempotencyKey: 'held-key-1' }));
+
+    await approveViaConfirm();
+    await screen.findByText(/Approved\./, undefined, SLOW);
+
+    expect(captured!.input.idempotencyKey).toBe('held-key-1');
+  });
+
+  it('does not re-send the edit on a retry, so the same-key approve is reachable', async () => {
+    // The backend refuses to edit an APPROVING draft. A retry that still thought itself dirty would
+    // fail on that refusal every time and never reach the approve that is the actual way out.
+    let updateCalls = 0;
+    const updateMock: MockedResponse<Record<string, unknown>, UpdateVars> = {
+      request: { query: UPDATE_RECEIVE_DRAFT, variables: () => true },
+      maxUsageCount: Number.POSITIVE_INFINITY,
+      result: () => {
+        updateCalls += 1;
+        return { data: { updateReceiveDraft: { ...draft(), __typename: 'ReceiveDraft' } } };
+      },
+    };
+    const failThenPass: MockedResponse[] = [
+      {
+        request: { query: APPROVE_RECEIVE_DRAFT, variables: () => true },
+        error: new Error('relay disconnected'),
+      },
+      {
+        request: { query: APPROVE_RECEIVE_DRAFT, variables: () => true },
+        result: { data: approveResult(false, 'RCT0000123') },
+      },
+    ];
+    await openModal([updateMock, ...failThenPass]);
+
+    fireEvent.change(within(screen.getByRole('grid')).getByRole('spinbutton'), { target: { value: '3' } });
+    fireEvent.change(screen.getByLabelText('Qty'), { target: { value: '3' } });
+    await approveViaConfirm();
+    await screen.findByText(/Approving this receive failed/, undefined, SLOW);
+
+    await approveViaConfirm();
+    await screen.findByText(/Approved\./, undefined, SLOW);
+
+    expect(updateCalls).toBe(1);
   });
 
   it('blocks approval when the reviewer raises the count past what the PO still owes', async () => {

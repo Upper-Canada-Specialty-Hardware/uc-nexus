@@ -146,14 +146,18 @@ export default function ReceiveApprovalsPage() {
               </TableRow>
             </TableHead>
             <TableBody>
-              {drafts.map((draft) => (
+              {drafts.map((draft) => {
+                const openable = draft.status === 'PENDING_APPROVAL' || draft.status === 'APPROVING';
+                return (
                 <TableRow
                   key={draft.id}
                   hover
-                  // Only a pending draft can be acted on. A rejected one is back with its author, so
-                  // the row is read-only here rather than opening a review nobody may complete.
-                  sx={{ cursor: draft.status === 'PENDING_APPROVAL' ? 'pointer' : 'default' }}
-                  onClick={() => draft.status === 'PENDING_APPROVAL' && setOpenDraft(draft)}
+                  // Pending drafts open for review. APPROVING ones open too, and deliberately: that
+                  // is a draft whose approval died somewhere ambiguous, and the only way out is a
+                  // retry carrying the key it is still claimed under. A rejected draft is back with
+                  // its author, so it stays read-only here.
+                  sx={{ cursor: openable ? 'pointer' : 'default' }}
+                  onClick={() => openable && setOpenDraft(draft)}
                 >
                   <TableCell sx={monoSx}>{draft.poNumber ?? DASH}</TableCell>
                   <TableCell>
@@ -178,10 +182,16 @@ export default function ReceiveApprovalsPage() {
                     {draft.status === 'REJECTED' && (
                       <Chip size="small" color="error" label={`Rejected by ${draft.reviewedBy ?? 'a reviewer'}`} />
                     )}
-                    {draft.status === 'APPROVING' && <Chip size="small" label="Posting to GP…" />}
+                    {/* Not a progress spinner: an approval holds this status only while its relay
+                        call is in flight, so a row still showing it is one whose approval died and
+                        needs retrying. */}
+                    {draft.status === 'APPROVING' && (
+                      <Chip size="small" color="warning" variant="outlined" label="Posting to GP — retry" />
+                    )}
                   </TableCell>
                 </TableRow>
-              ))}
+                );
+              })}
             </TableBody>
           </Table>
         </TableContainer>

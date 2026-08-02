@@ -7,7 +7,7 @@ import strawberry
 
 from app.auth import ADMIN_ROLE, WAREHOUSE_MANAGER_ROLE, caller_roles, current_user, resolve_display_name
 from app.database import SessionLocal
-from app.errors import RelayUnavailableError
+from app.errors import RelayCallError, RelayOpUnsupportedError, RelayTimeoutError, RelayUnavailableError
 from app.repositories import user_repository, warehouse_admin_repository
 from app.repositories import warehouse as warehouse_repository
 from app.services import gp_idempotency, gp_outbox_enqueue, gp_po
@@ -266,15 +266,27 @@ def _claim_draft_for_approval(draft_id, reviewer_user_id, reviewer_name, key):
 
     Committing here rather than at the end is the whole point: the claim has to be visible to another
     request while this one is waiting on the relay, which is exactly the window a second approver
-    would otherwise post a duplicate GP receipt in. Returns the context the GP pipeline needs, plus
-    the JSON copy of it for a queued receipt's outbox row - both read inside this session, so nothing
-    detached is touched afterwards.
+    would otherwise post a duplicate GP receipt in.
     """
     with SessionLocal() as session:
         ctx = warehouse_repository.claim_for_approval(session, draft_id, reviewer_user_id, reviewer_name, key)
-        json_lines = warehouse_repository.json_line_items_for_outbox(session, draft_id)
         session.commit()
-    return ctx, json_lines
+    return ctx
+
+
+def _json_line_items(line_items_data: list[dict]) -> list[dict]:
+    """The claimed lines with their UUIDs stringified, for a queued approval's outbox persist_context.
+
+    Derived from the context the claim already built rather than re-read: the outbox row is JSON, and
+    the only difference from what is in hand is the id type."""
+    return [
+        {
+            "po_line_item_id": str(li["po_line_item_id"]),
+            "quantity_received": li["quantity_received"],
+            "locations": li["locations"],
+        }
+        for li in line_items_data
+    ]
 
 
 def _release_draft_claim(draft_id, key) -> None:
@@ -335,14 +347,20 @@ class WarehouseQueries:
     def my_receive_decisions(self, info: strawberry.Info) -> list[ReceiveDecision]:
         """Shipments waiting on this caller to say where they go.
 
-        The caller's own GP buyer id is resolved once, here, for the fallback arm that covers POs
-        raised before `created_by_user_id` existed. One Clerk call for the person asking, rather than
-        a roster sweep - and specifically NOT inside the receive persist, where a Clerk outage would
-        roll back a GP receipt that had already posted.
+        The caller's own GP buyer id answers the fallback arm - the POs raised before
+        `created_by_user_id` existed - and it costs a Clerk round trip, so it is fetched only when
+        such a PO is actually outstanding. This query is on the PO list, which is one of the
+        most-visited pages in the app; paying Clerk on every mount for a fallback that matches
+        nothing would be the wrong default. It is also specifically NOT resolved inside the receive
+        persist, where a Clerk outage would roll back a GP receipt that had already posted.
         """
         user = current_user(info)
-        gp_buyer_id = user_repository.get_user_gp_buyer_id(user["user_id"])
         with SessionLocal() as session:
+            gp_buyer_id = (
+                user_repository.get_user_gp_buyer_id(user["user_id"])
+                if warehouse_repository.any_untargeted_decision_pending(session)
+                else None
+            )
             rows = warehouse_repository.get_pending_decisions_for_user(session, user["user_id"], gp_buyer_id)
             return [receive_decision_to_type(d, po, rr) for d, po, rr in rows]
 
@@ -958,11 +976,14 @@ class WarehouseMutations:
           on the draft's review fields. Neither comes from the client (#427).
         - The claim (`_claim_draft_for_approval`) is committed before the relay call, because a
           database lock cannot span a network round trip. It is what makes a second approver bounce
-          off instead of posting a duplicate receipt, and it is why a failure BEFORE the relay call
-          releases it - a draft parked in APPROVING for a validation error nobody can see would be a
-          worse outcome than the error itself.
-        - A DISPATCHED relay failure deliberately does NOT release: GP may hold the receipt, so the
-          draft stays claimed and only a retry with the same key may resume it.
+          off instead of posting a duplicate receipt.
+        - Whether a failure releases that claim is decided by ONE question: can GP be holding the
+          receipt? Everything that answers "no" - validation, an eConnect refusal, a relay too old
+          for the op - releases, because a draft parked where nobody can act on it is worse than the
+          error itself. Everything ambiguous - a dispatched disconnect, a timeout - keeps the claim,
+          because releasing it invites a second receipt for hardware GP may already have booked.
+          A parked draft is recoverable: `approvalIdempotencyKey` is on the type, so the reviewer's
+          retry resumes through the ledger rather than starting a new approval.
         """
         user = current_user(info)
         key = gp_idempotency.validate_key(input.idempotency_key)
@@ -977,35 +998,49 @@ class WarehouseMutations:
             return ApproveReceiveDraftResult(queued=False, outbox_entry_id=None, receive_record=record, draft=draft)
 
         reviewer_name = await asyncio.to_thread(resolve_display_name, user["user_id"])
-        ctx, json_line_items = await asyncio.to_thread(
-            _claim_draft_for_approval, draft_id, user["user_id"], reviewer_name, key
-        )
+        ctx = await asyncio.to_thread(_claim_draft_for_approval, draft_id, user["user_id"], reviewer_name, key)
+        # GP has ALREADY run under this key and only the persist is outstanding. Re-validating here
+        # would be re-asking a question GP has answered: the world can have moved since (another
+        # receive against the line), and a refusal would release the claim for a receipt that is
+        # sitting in GP - after which a fresh key would post a second one.
+        resuming = state is not None and state.relay_result is not None
 
-        try:
-            gp_company, payload = await asyncio.to_thread(
-                _prepare_create_receive,
-                po_id=ctx.po_id,
-                received_by=ctx.author_name,
-                line_items_data=ctx.line_items_data,
-            )
-        except Exception:
-            # Nothing reached GP, so the draft belongs back in the queue with the reason surfaced to
-            # the reviewer rather than parked in a state only a retry can clear.
-            await asyncio.to_thread(_release_draft_claim, draft_id, key)
-            raise
-
-        if state is not None and state.relay_result is not None:
+        if resuming:
             relay_result = state.relay_result
         else:
             try:
+                gp_company, payload = await asyncio.to_thread(
+                    _prepare_create_receive,
+                    po_id=ctx.po_id,
+                    received_by=ctx.author_name,
+                    line_items_data=ctx.line_items_data,
+                )
+            except Exception:
+                # Nothing reached GP, so the draft belongs back in the queue with the reason surfaced
+                # to the reviewer.
+                await asyncio.to_thread(_release_draft_claim, draft_id, key)
+                raise
+
+            try:
                 relay_result = await relay_gateway.relay_call(gp_company, "create_receipt", payload)
+            except (RelayCallError, RelayOpUnsupportedError):
+                # The relay answered: eConnect refused it, or this build cannot run the op. Either
+                # way GP did not commit, so the draft goes back in the queue for whoever fixes the
+                # cause - the #425 quarantine being the usual one.
+                await asyncio.to_thread(_release_draft_claim, draft_id, key)
+                raise
+            except RelayTimeoutError:
+                # Ambiguous: the job was on the wire and GP may have posted it. Keep the claim so
+                # nobody else approves it, and let the same key resume.
+                raise
             except RelayUnavailableError as e:
                 # #353 PR E: the receipt never left the backend, so GP cannot have posted it - queue
                 # it rather than failing a warehouse user who has already counted the hardware. A
-                # DISPATCHED failure is re-raised: GP may hold the receipt, and a blind retry would
-                # double-count inventory.
+                # DISPATCHED failure is re-raised WITH the claim held: GP may hold the receipt, and a
+                # blind retry would double-count inventory.
                 if not gp_outbox_enqueue.may_enqueue(e):
                     raise
+                json_line_items = _json_line_items(ctx.line_items_data)
                 project_id, label = await asyncio.to_thread(_receive_outbox_identity, ctx.po_id)
                 entry_id = await asyncio.to_thread(
                     gp_outbox_enqueue.enqueue,
@@ -1067,7 +1102,6 @@ class WarehouseMutations:
 
         user = current_user(info)
         actor_name = resolve_display_name(user["user_id"])
-        gp_buyer_id = user_repository.get_user_gp_buyer_id(user["user_id"])
         decision_id = uuid.UUID(str(input.decision_id))
         with SessionLocal() as session:
             warehouse_repository.decide_receive_decision(
@@ -1076,7 +1110,10 @@ class WarehouseMutations:
                 ReceiveDecisionChoiceDB(input.decision.value),
                 user["user_id"],
                 actor_name,
-                gp_buyer_id,
+                # Deferred: only a decision with no stamped target needs the caller's GP buyer id,
+                # and reaching Clerk for one that has a target would make an outage there refuse a
+                # decision that depends on nothing from it.
+                lambda: user_repository.get_user_gp_buyer_id(user["user_id"]),
                 ADMIN_ROLE in caller_roles(info.context),
             )
             session.commit()

@@ -554,6 +554,9 @@ const RECEIVE_DRAFT_FIELDS = `
   reviewedBy
   reviewedAt
   rejectionReason
+  # What an in-flight approval is holding the draft under, so a reviewer whose approval died
+  # ambiguously can retry with the SAME key and resume rather than start a second one.
+  approvalIdempotencyKey
   receiveRecordId
   outboxEntryId
   totalQuantity
@@ -572,6 +575,20 @@ const RECEIVE_DRAFT_FIELDS = `
 export const GET_RECEIVE_DRAFTS = gql`
   query GetReceiveDrafts($status: ReceiveDraftStatus, $poId: ID, $mine: Boolean) {
     receiveDrafts(status: $status, poId: $poId, mine: $mine) { ${RECEIVE_DRAFT_FIELDS} }
+  }
+`;
+
+// Scalars only, for the Receiving page's "already counted" chip and the approvals badge. Those want
+// a count per PO and nothing else, and the full selection above would make the backend build every
+// line and rack row of every pending draft in the system on each page load (CLAUDE.md perf rule 3).
+// Apollo normalises both on `id`, so this coexists with the full read rather than competing with it.
+export const GET_PENDING_DRAFT_SUMMARIES = gql`
+  query GetPendingDraftSummaries {
+    receiveDrafts(status: PENDING_APPROVAL) {
+      id
+      poId
+      totalQuantity
+    }
   }
 `;
 

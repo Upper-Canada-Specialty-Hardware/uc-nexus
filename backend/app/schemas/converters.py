@@ -168,6 +168,7 @@ def receive_draft_to_type(draft, po) -> ReceiveDraft:
         reviewed_by=draft.reviewed_by_name,
         reviewed_at=draft.reviewed_at,
         rejection_reason=draft.rejection_reason,
+        approval_idempotency_key=draft.approval_idempotency_key,
         receive_record_id=strawberry.ID(str(draft.receive_record_id)) if draft.receive_record_id else None,
         outbox_entry_id=(
             strawberry.ID(str(draft.approved_outbox_entry_id)) if draft.approved_outbox_entry_id else None
@@ -180,6 +181,9 @@ def receive_draft_to_type(draft, po) -> ReceiveDraft:
 
 
 def receive_decision_to_type(decision, po, receive_record) -> ReceiveDecision:
+    """`receive_record` is not optional: `receive_decisions.receive_record_id` is a NOT NULL foreign
+    key, and every field below reads through it. Guarding one of them and not the rest would only
+    move an AttributeError a line further down while implying the null is handled."""
     return ReceiveDecision(
         id=strawberry.ID(str(decision.id)),
         status=decision.status,
@@ -188,7 +192,8 @@ def receive_decision_to_type(decision, po, receive_record) -> ReceiveDecision:
         po_number=po.po_number if po is not None else None,
         project_id=strawberry.ID(str(decision.project_id)),
         receive_record_id=strawberry.ID(str(decision.receive_record_id)),
-        receipt_number=receive_record.receipt_number if receive_record is not None else None,
+        # Null while the approval is queued on the outbox - GP has not numbered the receipt yet.
+        receipt_number=receive_record.receipt_number,
         received_at=receive_record.received_at,
         received_by=receive_record.received_by,
         created_at=decision.created_at,

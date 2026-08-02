@@ -1,14 +1,13 @@
-import { Alert, Box, Typography } from '@mui/material';
+import { Box, Typography } from '@mui/material';
 import { monoSx } from '../../theme';
 
 /**
- * What a posted (or queued) GP receipt looks like when it comes back.
+ * What a posted GP receipt looks like when it comes back.
  *
- * These moved here from ReceiveModal when receives were split into a draft and an approval: posting
- * to GP happens at approval now, so the panels that report it belong to the approval screen. The
- * copy is unchanged - it is what the relay-offline path has been telling people since #353 PR E, and
- * the GP receipt number it shows is the one moment that number is in front of the person holding the
- * packing slip (#447).
+ * This moved here from ReceiveModal when receives were split into a draft and an approval: posting
+ * to GP happens at approval now, so what reports it belongs beside the approval screen. The GP
+ * receipt number it shows is the one moment that number is in front of anybody without opening GP
+ * (#447).
  */
 
 /**
@@ -58,40 +57,8 @@ export function PostedReceiptLines({ receipts, namePo }: { receipts: PostedRecei
   );
 }
 
-/** The relay was down: the receipt is on the durable outbox and will post itself (#353 PR E). */
-export function ReceiveQueuedAlert({
-  count = 1,
-  receipts = [],
-}: {
-  count?: number;
-  receipts?: PostedReceipt[];
-}) {
-  return (
-    <Alert severity="warning" sx={{ mb: 2 }}>
-      Queued — the GP relay is offline. {count === 1 ? 'This receipt' : `These ${count} receipts`} will post
-      automatically when it reconnects; you don't need to redo it. The hardware will appear in inventory once it
-      posts.
-      {/* A batch can be part queued and part posted - the relay can drop between two POs. The ones
-          that made it still have GP numbers, and this is still the only place to read them. */}
-      <PostedReceiptLines receipts={receipts} namePo />
-    </Alert>
-  );
-}
-
-/** It posted: GP numbered the receipt and the hardware is in inventory. */
-export function ReceivePostedAlert({
-  itemCount,
-  receipts,
-}: {
-  itemCount: number;
-  receipts: PostedReceipt[];
-}) {
-  return (
-    <Alert severity="success" sx={{ mb: 2 }}>
-      Receive completed successfully! {itemCount} items added to inventory.
-      {/* #447: GP numbered the receipt on the way in, and this is the only moment it is in front of
-          the person holding the packing slip. */}
-      <PostedReceiptLines receipts={receipts} namePo={receipts.length > 1} />
-    </Alert>
-  );
-}
+// There were wrapper components here for the queued and posted alerts. They had exactly one
+// possible caller, ReceiveDraftReviewModal, which renders both inline because its copy is about
+// approving one draft rather than completing a batch - so the wrappers were dead the day they were
+// written and their copy had already started to drift from the live version. Deleted rather than
+// adopted: one place to change a string beats two that agree today.

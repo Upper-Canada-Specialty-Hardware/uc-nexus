@@ -69,18 +69,6 @@ def _line_items_data(draft: ReceiveDraftModel) -> list[dict]:
     ]
 
 
-def _json_line_items_data(draft: ReceiveDraftModel) -> list[dict]:
-    """`_line_items_data` with the UUIDs stringified, for the outbox row's JSON persist_context."""
-    return [
-        {
-            "po_line_item_id": str(li.po_line_item_id),
-            "quantity_received": li.quantity_received,
-            "locations": [dict(loc) for loc in (li.locations or [])],
-        }
-        for li in draft.line_items
-    ]
-
-
 def _get_draft(session: Session, draft_id: uuid.UUID) -> ReceiveDraftModel:
     stmt = (
         select(ReceiveDraftModel)
@@ -266,6 +254,11 @@ def update_receive_draft(
 
     Validation runs against the AUTHOR's name, not the editor's: `received_by` belongs to whoever
     counted the hardware, and a manager correcting a quantity does not take that over.
+
+    A None `warehouse_id` means "not being changed", not "clear it". The GraphQL input defaults it to
+    null, so treating it as an assignment would let a caller sending only corrected quantities
+    silently move the delivery to whatever `get_primary_warehouse_id` returns at approval - hardware
+    booked into the wrong building with nothing reported.
     """
     draft = _get_draft(session, draft_id)
     _assert_can_edit(draft, actor_user_id, actor_is_manager)
@@ -277,7 +270,8 @@ def update_receive_draft(
         .first()
     )
 
-    draft.warehouse_id = warehouse_id
+    if warehouse_id is not None:
+        draft.warehouse_id = warehouse_id
     _write_lines(session, draft, po, line_items_input)
     session.refresh(draft)
     return draft
@@ -374,10 +368,19 @@ def _assert_no_conflicting_claim(session: Session, draft: ReceiveDraftModel) -> 
     So the claim measures this draft against every OTHER draft that is APPROVING or APPROVED-but-not-
     yet-persisted (queued on the outbox). Drafts that already persisted are not counted: their units
     are in `POLineItem.received_quantity`, which the eligibility check reads directly.
+
+    The PO lines are locked FOR UPDATE first, and that lock is what makes this a check rather than a
+    guess. Two approvals racing on the same line each UPDATE a different draft row, so neither blocks
+    the other, and neither has committed by the time it reads - under READ COMMITTED both would see
+    the other as still PENDING and both would post a receipt. Locking the line they have in common
+    serializes them. It is held only until the claim commits, which is before any relay call.
     """
     wanted: dict[uuid.UUID, int] = {}
     for li in draft.line_items:
         wanted[li.po_line_item_id] = wanted.get(li.po_line_item_id, 0) + li.quantity_received
+    if not wanted:
+        return
+    lock_rows(session, POLineItemModel, list(wanted))
 
     rows = session.execute(
         select(
@@ -473,11 +476,6 @@ def claim_for_approval(
         author_name=draft.created_by_name,
         line_items_data=_line_items_data(draft),
     )
-
-
-def json_line_items_for_outbox(session: Session, draft_id: uuid.UUID) -> list[dict]:
-    """The claimed draft's lines as JSON, for a queued approval's outbox persist_context."""
-    return _json_line_items_data(_get_draft(session, draft_id))
 
 
 def release_approval_claim(session: Session, draft_id: uuid.UUID, idempotency_key: str) -> None:

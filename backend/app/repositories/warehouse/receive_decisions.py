@@ -11,7 +11,7 @@ takes the answered decision and deep-links into Start a Task, where that identit
 import uuid
 from datetime import datetime
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import ConflictError, InvalidStateTransitionError, NotFoundError
@@ -86,6 +86,26 @@ def create_decision_for_receive(
     return decision
 
 
+def any_untargeted_decision_pending(session: Session) -> bool:
+    """Whether any pending decision still needs the GP-buyer fallback to find its owner.
+
+    The fallback exists for POs raised before `created_by_user_id` did, and answering it costs a
+    Clerk round trip for the caller's own gpBuyerId. Once those POs are worked through this is false
+    forever and the read never touches Clerk again - which matters because the decisions query is on
+    the PO list, i.e. one of the most-visited pages in the app.
+    """
+    return bool(
+        session.scalar(
+            select(
+                exists().where(
+                    ReceiveDecisionModel.status == ReceiveDecisionStatus.PENDING,
+                    ReceiveDecisionModel.target_user_id.is_(None),
+                )
+            )
+        )
+    )
+
+
 def get_pending_decisions_for_user(
     session: Session,
     user_id: str,
@@ -95,8 +115,9 @@ def get_pending_decisions_for_user(
 
     Two arms. The first is the stamped target - every PO raised since the column existed. The second
     is the fallback for the ones before it: the PO's GP buyer, matched against the caller's OWN
-    gpBuyerId, which the resolver looked up once for this request. It is a *filter on the caller*, not
-    a search across users, which is what keeps it to a single Clerk call.
+    gpBuyerId. It is a *filter on the caller*, not a search across users, which is what keeps it to a
+    single Clerk call - and `any_untargeted_decision_pending` is what lets the resolver skip even
+    that when no pre-column PO is outstanding.
     """
     stmt = (
         select(ReceiveDecisionModel, POModel, ReceiveRecordModel)
@@ -132,7 +153,7 @@ def decide_receive_decision(
     choice: ReceiveDecisionChoice,
     actor_user_id: str,
     actor_name: str,
-    actor_gp_buyer_id: str | None,
+    load_actor_gp_buyer_id,
     actor_is_admin: bool,
 ) -> ReceiveDecisionModel:
     """Record the answer.
@@ -140,6 +161,11 @@ def decide_receive_decision(
     Whoever the question was addressed to answers it, resolved the same two ways the read does. An
     admin may answer any of them, which is the escape hatch for the person who raised the PO having
     left - otherwise their decisions would sit pending forever with nobody able to clear them.
+
+    `load_actor_gp_buyer_id` is a callable, not a value, because resolving it is a Clerk round trip
+    and it is only an input on the fallback arm - a decision with a stamped target needs nothing from
+    Clerk, and every PO raised since that column existed has one. Passing the value eagerly would put
+    a Clerk outage in front of decisions that never depended on Clerk.
     """
     lock_rows(session, ReceiveDecisionModel, [decision_id])
     decision = session.get(ReceiveDecisionModel, decision_id)
@@ -150,11 +176,10 @@ def decide_receive_decision(
         raise InvalidStateTransitionError(f"This shipment decision has already been answered ({answer})")
 
     po = session.get(POModel, decision.po_id)
-    is_target = (
-        decision.target_user_id == actor_user_id
-        if decision.target_user_id
-        else _same_buyer(po.buyer_id if po else None, actor_gp_buyer_id)
-    )
+    if decision.target_user_id:
+        is_target = decision.target_user_id == actor_user_id
+    else:
+        is_target = _same_buyer(po.buyer_id if po else None, load_actor_gp_buyer_id())
     if not is_target and not actor_is_admin:
         raise ConflictError("This decision is for the person who raised the PO")
 
