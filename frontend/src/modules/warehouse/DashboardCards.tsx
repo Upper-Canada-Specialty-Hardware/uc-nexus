@@ -16,6 +16,8 @@ export interface WarehouseDashboard {
   pendingPullShipping: number;
   backOrderedCount: number;
   deficientCount: number;
+  /** Counted receives waiting on a Warehouse Manager. */
+  pendingReceiveDraftCount: number;
 }
 
 function formatCurrency(value: number): string {

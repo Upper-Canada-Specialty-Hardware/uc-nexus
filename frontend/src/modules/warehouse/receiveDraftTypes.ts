@@ -1,0 +1,33 @@
+import type { ReceiveDraftLineItem } from './receiveLines';
+
+/**
+ * A counted receive as the backend returns it, shared by every screen that lists or opens one.
+ *
+ * `status` is the whole state machine: PENDING_APPROVAL is waiting on a manager, APPROVING means one
+ * is mid-approval with the GP round trip in flight, APPROVED is done, REJECTED is back with its
+ * author. An APPROVED draft with a null `receiveRecordId` is not a contradiction - the relay was
+ * down, the receipt is on the GP outbox, and the record appears when it drains.
+ */
+export type ReceiveDraftStatus = 'PENDING_APPROVAL' | 'APPROVING' | 'APPROVED' | 'REJECTED';
+
+export interface ReceiveDraft {
+  id: string;
+  status: ReceiveDraftStatus;
+  poId: string;
+  poNumber: string | null;
+  projectId: string | null;
+  warehouseId: string | null;
+  /** Clerk id of whoever counted the hardware - what the author-only actions key on. */
+  createdByUserId: string;
+  /** Their display name, which becomes the receive's receivedBy at approval. */
+  createdBy: string;
+  reviewedBy: string | null;
+  reviewedAt: string | null;
+  rejectionReason: string | null;
+  receiveRecordId: string | null;
+  outboxEntryId: string | null;
+  totalQuantity: number;
+  createdAt: string;
+  updatedAt: string;
+  lineItems: ReceiveDraftLineItem[];
+}

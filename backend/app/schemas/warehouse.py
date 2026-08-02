@@ -5,11 +5,11 @@ import uuid
 
 import strawberry
 
-from app.auth import current_user, resolve_display_name
+from app.auth import ADMIN_ROLE, WAREHOUSE_MANAGER_ROLE, caller_roles, current_user, resolve_display_name
 from app.database import SessionLocal
 from app.errors import RelayUnavailableError
+from app.repositories import user_repository, warehouse_admin_repository
 from app.repositories import warehouse as warehouse_repository
-from app.repositories import warehouse_admin_repository
 from app.services import gp_idempotency, gp_outbox_enqueue, gp_po
 from app.services.relay_gateway import gateway as relay_gateway
 
@@ -22,27 +22,40 @@ from .converters import (
     po_to_type,
     pull_request_item_to_type,
     pull_request_to_type,
+    receive_decision_to_type,
+    receive_draft_to_type,
     receive_record_to_type,
     shop_assembly_opening_to_type,
     stock_item_to_type,
     warehouse_to_type,
 )
-from .enums import AuditEntityType, LeafStatus, PickOutcome, PullRequestSource, PullRequestStatus
+from .enums import (
+    AuditEntityType,
+    LeafStatus,
+    PickOutcome,
+    PullRequestSource,
+    PullRequestStatus,
+    ReceiveDraftStatus,
+)
 from .inputs import (
+    ApproveReceiveDraftInput,
     CancelPullRequestInput,
-    CreateReceiveInput,
+    CreateReceiveDraftInput,
     CreateWarehouseInput,
+    DecideReceiveDecisionInput,
     OverrideInventoryQuantityInput,
     PickLineInput,
+    RejectReceiveDraftInput,
     StagePullOpeningsInput,
+    UpdateReceiveDraftInput,
     UpdateWarehouseInput,
 )
 from .types import (
+    ApproveReceiveDraftResult,
     AuditLogEntry,
     BackOrderedItem,
     CancelPullRequestResult,
     ConfirmPickResult,
-    CreateReceiveResult,
     InventoryAvailability,
     InventoryHierarchyNode,
     InventoryItemDetail,
@@ -64,6 +77,8 @@ from .types import (
     PullRequest,
     PullRequestItem,
     PurchaseOrder,
+    ReceiveDecision,
+    ReceiveDraft,
     ReceiveRecord,
     ReceivingHistoryPO,
     RecentReceiveRecord,
@@ -145,7 +160,9 @@ def _receive_outbox_identity(po_id: uuid.UUID) -> tuple[uuid.UUID | None, str]:
     return project_id, f"Receive against PO {number or po_id}"
 
 
-def _persist_create_receive(*, key, po_id, received_by, line_items_data, warehouse_id, relay_result) -> ReceiveRecord:
+def _persist_create_receive(
+    *, key, po_id, received_by, line_items_data, warehouse_id, relay_result, receive_draft_id=None
+) -> ReceiveRecord:
     """Persist the Nexus receive for a GP receipt that has already posted.
 
     The single persist path for both directions: the resolver calls it after a live relay_call, and
@@ -159,6 +176,11 @@ def _persist_create_receive(*, key, po_id, received_by, line_items_data, warehou
     against hardware that is physically on the shelf. The fallback is read into its own name rather
     than reassigned - `relay_result` itself is handed to the idempotency ledger, which treats None as
     "this phase recorded nothing, keep what is there" and would take an empty dict as an erasure.
+
+    `receive_draft_id` links the draft this receive was approved from, in the SAME transaction as the
+    inventory credit and the ledger stamp - so a draft can never read as approved without the receive
+    that proves it, or the other way round. Defaulted because the outbox can still hold rows enqueued
+    before drafts existed.
     """
     gp_receipt = relay_result or {}
     with SessionLocal() as session:
@@ -174,9 +196,99 @@ def _persist_create_receive(*, key, po_id, received_by, line_items_data, warehou
         # Capture the id before commit: expire_on_commit would make receive_record.id raise
         # DetachedInstanceError once the session block closes.
         receive_id = receive_record.id
+        if receive_draft_id is not None:
+            warehouse_repository.mark_approved(session, receive_draft_id, receive_record_id=receive_id)
         gp_idempotency.stamp_result_id(session, key, "create_receive", relay_result, str(receive_id))
         session.commit()
     return _load_receive_type(receive_id)
+
+
+def _receive_line_items_data(line_items) -> list[dict]:
+    """GraphQL receive lines -> the dict shape the repositories and the outbox context speak."""
+    return [
+        {
+            "po_line_item_id": uuid.UUID(str(li.po_line_item_id)),
+            "quantity_received": li.quantity_received,
+            "locations": [
+                {
+                    "aisle": loc.aisle,
+                    "row": loc.row,
+                    "bay": loc.bay,
+                    "quantity": loc.quantity,
+                    "deficient_quantity": loc.deficient_quantity,
+                }
+                for loc in li.locations
+            ],
+        }
+        for li in line_items
+    ]
+
+
+def _is_warehouse_manager(info) -> bool:
+    """Whether the caller may act on somebody else's draft. Reads the per-request role memo, so this
+    adds no Clerk call on a field whose policy already resolved roles."""
+    roles = set(caller_roles(info.context))
+    return bool(roles & {ADMIN_ROLE, WAREHOUSE_MANAGER_ROLE})
+
+
+def _load_draft_type(draft_id: uuid.UUID) -> ReceiveDraft:
+    with SessionLocal() as session:
+        draft, po = warehouse_repository.get_receive_draft(session, draft_id)
+        return receive_draft_to_type(draft, po)
+
+
+def _load_decision(session, decision_id: uuid.UUID):
+    """(decision, po, receive_record) for one decision, with the receive's lines eager-loaded - the
+    decision card lists everything that came in on that shipment."""
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    from app.models.purchase_order import PurchaseOrder as POModel
+    from app.models.receive_decision import ReceiveDecision as ReceiveDecisionModel
+    from app.models.receiving import ReceiveRecord as ReceiveRecordModel
+
+    decision = session.get(ReceiveDecisionModel, decision_id)
+    po = session.get(POModel, decision.po_id)
+    receive_record = (
+        session.scalars(
+            select(ReceiveRecordModel)
+            .options(selectinload(ReceiveRecordModel.line_items))
+            .where(ReceiveRecordModel.id == decision.receive_record_id)
+        )
+        .unique()
+        .first()
+    )
+    return decision, po, receive_record
+
+
+def _claim_draft_for_approval(draft_id, reviewer_user_id, reviewer_name, key):
+    """Take the approval claim and COMMIT it, before anything talks to GP.
+
+    Committing here rather than at the end is the whole point: the claim has to be visible to another
+    request while this one is waiting on the relay, which is exactly the window a second approver
+    would otherwise post a duplicate GP receipt in. Returns the context the GP pipeline needs, plus
+    the JSON copy of it for a queued receipt's outbox row - both read inside this session, so nothing
+    detached is touched afterwards.
+    """
+    with SessionLocal() as session:
+        ctx = warehouse_repository.claim_for_approval(session, draft_id, reviewer_user_id, reviewer_name, key)
+        json_lines = warehouse_repository.json_line_items_for_outbox(session, draft_id)
+        session.commit()
+    return ctx, json_lines
+
+
+def _release_draft_claim(draft_id, key) -> None:
+    with SessionLocal() as session:
+        warehouse_repository.release_approval_claim(session, draft_id, key)
+        session.commit()
+
+
+def _mark_draft_queued(draft_id, outbox_entry_id) -> None:
+    """The approval reached the outbox rather than GP. The draft is finished from the reviewer's side
+    - what it must not be is approvable again, which would enqueue a second receipt."""
+    with SessionLocal() as session:
+        warehouse_repository.mark_approved(session, draft_id, outbox_entry_id=uuid.UUID(str(outbox_entry_id)))
+        session.commit()
 
 
 @strawberry.type
@@ -186,6 +298,53 @@ class WarehouseQueries:
         with SessionLocal() as session:
             po, receive_records = warehouse_repository.get_po_receiving_details(session, uuid.UUID(str(po_id)))
             return po_to_type(po, receive_records)
+
+    @strawberry.field
+    def receive_drafts(
+        self,
+        info: strawberry.Info,
+        status: ReceiveDraftStatus | None = None,
+        po_id: strawberry.ID | None = None,
+        mine: bool = False,
+    ) -> list[ReceiveDraft]:
+        """Counted receives waiting on (or returned from) approval, newest first.
+
+        `mine` scopes to the caller's own drafts - what a warehouse user needs to see is the state of
+        their own counts, and what a manager needs is everybody's. Signed-in rather than
+        manager-gated for the same reason: a rejected draft is only actionable by its author.
+        """
+        from app.models.enums import ReceiveDraftStatus as ReceiveDraftStatusDB
+
+        user = current_user(info)
+        with SessionLocal() as session:
+            rows = warehouse_repository.get_receive_drafts(
+                session,
+                status=ReceiveDraftStatusDB(status.value) if status is not None else None,
+                po_id=uuid.UUID(str(po_id)) if po_id else None,
+                created_by_user_id=user["user_id"] if mine else None,
+            )
+            return [receive_draft_to_type(draft, po) for draft, po in rows]
+
+    @strawberry.field
+    def receive_draft(self, info: strawberry.Info, id: strawberry.ID) -> ReceiveDraft:
+        with SessionLocal() as session:
+            draft, po = warehouse_repository.get_receive_draft(session, uuid.UUID(str(id)))
+            return receive_draft_to_type(draft, po)
+
+    @strawberry.field
+    def my_receive_decisions(self, info: strawberry.Info) -> list[ReceiveDecision]:
+        """Shipments waiting on this caller to say where they go.
+
+        The caller's own GP buyer id is resolved once, here, for the fallback arm that covers POs
+        raised before `created_by_user_id` existed. One Clerk call for the person asking, rather than
+        a roster sweep - and specifically NOT inside the receive persist, where a Clerk outage would
+        roll back a GP receipt that had already posted.
+        """
+        user = current_user(info)
+        gp_buyer_id = user_repository.get_user_gp_buyer_id(user["user_id"])
+        with SessionLocal() as session:
+            rows = warehouse_repository.get_pending_decisions_for_user(session, user["user_id"], gp_buyer_id)
+            return [receive_decision_to_type(d, po, rr) for d, po, rr in rows]
 
     @strawberry.field
     def project_inventory_availability(
@@ -701,49 +860,139 @@ class WarehouseQueries:
 
 @strawberry.type
 class WarehouseMutations:
-    # Receiving
+    # Receiving: a counted delivery becomes a draft, and approving it is what reaches GP.
     @strawberry.mutation
-    async def create_receive(self, info: strawberry.Info, input: CreateReceiveInput) -> CreateReceiveResult:
-        """Issue #199: GP-first, server-side. Posts the GP receipt via relay_call (create_receipt)
-        BEFORE persisting the UC Nexus receive, and received_by is the acting UC Nexus user resolved
-        from the Clerk token - not a client-supplied string, and not the relay's Windows account.
+    def create_receive_draft(self, info: strawberry.Info, input: CreateReceiveDraftInput) -> ReceiveDraft:
+        """Record what somebody counted off a truck, for a Warehouse Manager to approve.
 
-        Issue #202 #1/#3: idempotency_key makes a retry a no-op in GP (replacing the deleted client-side
-        gpReceiptPostedRef guard); eligibility (over-receive, PO status, location sums) is validated
-        before the GP receipt is posted; the DB and Clerk work is offloaded so no Postgres connection is
-        held across the relay round-trip and the /relay-link read loop is never blocked on a sync call."""
+        Nothing here touches GP or inventory - that is the point of the split. The eligibility rules
+        still run (over-receive, PO status, location sums, the #425 GP-setup quarantine), because a
+        draft nobody could ever approve is worth refusing in front of the person holding the packing
+        slip rather than hours later in somebody else's queue.
+
+        The author is the Clerk-authenticated caller (#199/#427): their display name is captured here
+        and becomes `ReceiveRecord.received_by` at approval, so the receive records who did the
+        receiving rather than who signed it off.
+        """
+        user = current_user(info)
+        author_name = resolve_display_name(user["user_id"])
+        with SessionLocal() as session:
+            draft = warehouse_repository.create_receive_draft(
+                session,
+                uuid.UUID(str(input.po_id)),
+                _receive_line_items_data(input.line_items),
+                user["user_id"],
+                author_name,
+                warehouse_id=uuid.UUID(str(input.warehouse_id)) if input.warehouse_id else None,
+                idempotency_key=(input.idempotency_key or "").strip() or None,
+            )
+            draft_id = draft.id
+            session.commit()
+        return _load_draft_type(draft_id)
+
+    @strawberry.mutation
+    def update_receive_draft(self, info: strawberry.Info, input: UpdateReceiveDraftInput) -> ReceiveDraft:
+        """Correct a draft: a manager fixing a count before approving it, or its author answering a
+        rejection. Author-or-manager is decided in the body, because it depends on whose draft it is."""
+        user = current_user(info)
+        draft_id = uuid.UUID(str(input.draft_id))
+        with SessionLocal() as session:
+            warehouse_repository.update_receive_draft(
+                session,
+                draft_id,
+                _receive_line_items_data(input.line_items),
+                user["user_id"],
+                _is_warehouse_manager(info),
+                warehouse_id=uuid.UUID(str(input.warehouse_id)) if input.warehouse_id else None,
+            )
+            session.commit()
+        return _load_draft_type(draft_id)
+
+    @strawberry.mutation
+    def resubmit_receive_draft(self, info: strawberry.Info, id: strawberry.ID) -> ReceiveDraft:
+        """Put a rejected draft back in the approval queue. Its author only."""
+        user = current_user(info)
+        draft_id = uuid.UUID(str(id))
+        with SessionLocal() as session:
+            warehouse_repository.resubmit_receive_draft(session, draft_id, user["user_id"])
+            session.commit()
+        return _load_draft_type(draft_id)
+
+    @strawberry.mutation
+    def reject_receive_draft(self, info: strawberry.Info, input: RejectReceiveDraftInput) -> ReceiveDraft:
+        """Send a draft back to its author with a reason. The reviewer is the Clerk-authenticated
+        caller (#427)."""
+        user = current_user(info)
+        reviewer_name = resolve_display_name(user["user_id"])
+        draft_id = uuid.UUID(str(input.draft_id))
+        with SessionLocal() as session:
+            warehouse_repository.reject_receive_draft(session, draft_id, input.reason, user["user_id"], reviewer_name)
+            session.commit()
+        return _load_draft_type(draft_id)
+
+    @strawberry.mutation
+    def delete_receive_draft(self, info: strawberry.Info, id: strawberry.ID) -> bool:
+        """Throw away a count that should not have been entered. Refused once approval has started."""
+        user = current_user(info)
+        with SessionLocal() as session:
+            warehouse_repository.delete_receive_draft(
+                session, uuid.UUID(str(id)), user["user_id"], _is_warehouse_manager(info)
+            )
+            session.commit()
+        return True
+
+    @strawberry.mutation
+    async def approve_receive_draft(
+        self, info: strawberry.Info, input: ApproveReceiveDraftInput
+    ) -> ApproveReceiveDraftResult:
+        """Approve a drafted receive: post the GP receipt, then book it into UC Nexus.
+
+        This is `createReceive` (#199/#202) with a claim in front of it - the pipeline is otherwise
+        untouched, and deliberately so. GP-first ordering, the idempotency ledger, the outbox fallback
+        for an unreachable relay and the re-validation before anything is posted all behave exactly as
+        they did when this ran at submission time.
+
+        What the split adds:
+
+        - `received_by` is the DRAFT AUTHOR's name, read off the draft. The approver's identity goes
+          on the draft's review fields. Neither comes from the client (#427).
+        - The claim (`_claim_draft_for_approval`) is committed before the relay call, because a
+          database lock cannot span a network round trip. It is what makes a second approver bounce
+          off instead of posting a duplicate receipt, and it is why a failure BEFORE the relay call
+          releases it - a draft parked in APPROVING for a validation error nobody can see would be a
+          worse outcome than the error itself.
+        - A DISPATCHED relay failure deliberately does NOT release: GP may hold the receipt, so the
+          draft stays claimed and only a retry with the same key may resume it.
+        """
         user = current_user(info)
         key = gp_idempotency.validate_key(input.idempotency_key)
-
-        po_id = uuid.UUID(str(input.po_id))
-        line_items_data = [
-            {
-                "po_line_item_id": uuid.UUID(str(li.po_line_item_id)),
-                "quantity_received": li.quantity_received,
-                "locations": [
-                    {
-                        "aisle": loc.aisle,
-                        "row": loc.row,
-                        "bay": loc.bay,
-                        "quantity": loc.quantity,
-                        "deficient_quantity": loc.deficient_quantity,
-                    }
-                    for loc in li.locations
-                ],
-            }
-            for li in input.line_items
-        ]
-        warehouse_id = uuid.UUID(str(input.warehouse_id)) if input.warehouse_id else None
+        draft_id = uuid.UUID(str(input.draft_id))
 
         state = await asyncio.to_thread(gp_idempotency.load, key)
         if state is not None and state.result_id is not None:
+            # Fully finished under this key already. The draft link was written in the same
+            # transaction as the receive, so there is nothing to repair - just answer with it.
             record = await asyncio.to_thread(_load_receive_type, uuid.UUID(state.result_id))
-            return CreateReceiveResult(queued=False, outbox_entry_id=None, receive_record=record)
+            draft = await asyncio.to_thread(_load_draft_type, draft_id)
+            return ApproveReceiveDraftResult(queued=False, outbox_entry_id=None, receive_record=record, draft=draft)
 
-        received_by = await asyncio.to_thread(resolve_display_name, user["user_id"])
-        gp_company, payload = await asyncio.to_thread(
-            _prepare_create_receive, po_id=po_id, received_by=received_by, line_items_data=line_items_data
+        reviewer_name = await asyncio.to_thread(resolve_display_name, user["user_id"])
+        ctx, json_line_items = await asyncio.to_thread(
+            _claim_draft_for_approval, draft_id, user["user_id"], reviewer_name, key
         )
+
+        try:
+            gp_company, payload = await asyncio.to_thread(
+                _prepare_create_receive,
+                po_id=ctx.po_id,
+                received_by=ctx.author_name,
+                line_items_data=ctx.line_items_data,
+            )
+        except Exception:
+            # Nothing reached GP, so the draft belongs back in the queue with the reason surfaced to
+            # the reviewer rather than parked in a state only a retry can clear.
+            await asyncio.to_thread(_release_draft_claim, draft_id, key)
+            raise
 
         if state is not None and state.relay_result is not None:
             relay_result = state.relay_result
@@ -757,7 +1006,7 @@ class WarehouseMutations:
                 # double-count inventory.
                 if not gp_outbox_enqueue.may_enqueue(e):
                     raise
-                project_id, label = await asyncio.to_thread(_receive_outbox_identity, po_id)
+                project_id, label = await asyncio.to_thread(_receive_outbox_identity, ctx.po_id)
                 entry_id = await asyncio.to_thread(
                     gp_outbox_enqueue.enqueue,
                     idempotency_key=key,
@@ -766,39 +1015,73 @@ class WarehouseMutations:
                     company=gp_company,
                     payload=payload,
                     persist_context={
-                        "po_id": str(po_id),
-                        "received_by": received_by,
-                        "warehouse_id": str(warehouse_id) if warehouse_id else None,
-                        "line_items_data": [
-                            {
-                                "po_line_item_id": str(li["po_line_item_id"]),
-                                "quantity_received": li["quantity_received"],
-                                "locations": li["locations"],
-                            }
-                            for li in line_items_data
-                        ],
+                        "po_id": str(ctx.po_id),
+                        "received_by": ctx.author_name,
+                        "warehouse_id": str(ctx.warehouse_id) if ctx.warehouse_id else None,
+                        "line_items_data": json_line_items,
+                        # The worker links the draft when it drains, on the same helper this resolver
+                        # calls - so the two routes into the persist cannot record different things.
+                        "receive_draft_id": str(draft_id),
                     },
                     # Same entity_key as register_po_in_gp so a receipt can never be drained ahead of
                     # the registration of the PO it is against.
-                    entity_key=f"po:{po_id}",
+                    entity_key=f"po:{ctx.po_id}",
                     label=label,
                     project_id=project_id,
                     requested_by=user["user_id"],
                 )
+                await asyncio.to_thread(_mark_draft_queued, draft_id, entry_id)
+                draft = await asyncio.to_thread(_load_draft_type, draft_id)
                 # Nothing is in inventory yet - the persist is deferred with the GP write.
-                return CreateReceiveResult(queued=True, outbox_entry_id=strawberry.ID(entry_id), receive_record=None)
+                return ApproveReceiveDraftResult(
+                    queued=True,
+                    outbox_entry_id=strawberry.ID(entry_id),
+                    receive_record=None,
+                    draft=draft,
+                )
             await asyncio.to_thread(gp_idempotency.record_relay_result, key, "create_receive", relay_result)
 
         record = await asyncio.to_thread(
             _persist_create_receive,
             key=key,
-            po_id=po_id,
-            received_by=received_by,
-            line_items_data=line_items_data,
-            warehouse_id=warehouse_id,
+            po_id=ctx.po_id,
+            received_by=ctx.author_name,
+            line_items_data=ctx.line_items_data,
+            warehouse_id=ctx.warehouse_id,
             relay_result=relay_result,
+            receive_draft_id=draft_id,
         )
-        return CreateReceiveResult(queued=False, outbox_entry_id=None, receive_record=record)
+        draft = await asyncio.to_thread(_load_draft_type, draft_id)
+        return ApproveReceiveDraftResult(queued=False, outbox_entry_id=None, receive_record=record, draft=draft)
+
+    @strawberry.mutation
+    def decide_receive_decision(self, info: strawberry.Info, input: DecideReceiveDecisionInput) -> ReceiveDecision:
+        """Answer the keep-or-ship question a landed shipment raised.
+
+        Recording the answer is all this does. SHIP_OUT does not build a shipping-out request: only
+        the hardware schedule knows which opening and leaf a fungible quantity is owed to, so the
+        frontend takes the recorded choice and deep-links into Start a Task, where that identity is
+        re-attached (docs/HARDWARE_IDENTITY_LIFECYCLE.md).
+        """
+        from app.models.enums import ReceiveDecisionChoice as ReceiveDecisionChoiceDB
+
+        user = current_user(info)
+        actor_name = resolve_display_name(user["user_id"])
+        gp_buyer_id = user_repository.get_user_gp_buyer_id(user["user_id"])
+        decision_id = uuid.UUID(str(input.decision_id))
+        with SessionLocal() as session:
+            warehouse_repository.decide_receive_decision(
+                session,
+                decision_id,
+                ReceiveDecisionChoiceDB(input.decision.value),
+                user["user_id"],
+                actor_name,
+                gp_buyer_id,
+                ADMIN_ROLE in caller_roles(info.context),
+            )
+            session.commit()
+            decision, po, receive_record = _load_decision(session, decision_id)
+            return receive_decision_to_type(decision, po, receive_record)
 
     # Pull Requests - the pick (#367)
     @strawberry.mutation

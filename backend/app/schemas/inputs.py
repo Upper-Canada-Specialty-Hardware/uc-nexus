@@ -7,6 +7,7 @@ from .enums import (
     DeficiencyResolution,
     DestockSource,
     PullRequestItemType,
+    ReceiveDecisionChoice,
     ReturnDisposition,
     TransferSourceType,
 )
@@ -468,17 +469,56 @@ class LocationInput:
 
 
 @strawberry.input
-class CreateReceiveInput:
-    """Issue #199: GP-first, server-side. received_by is no longer a client-supplied field - the
-    resolver resolves the acting UC Nexus user from the Clerk token instead."""
+class CreateReceiveDraftInput:
+    """A counted delivery, submitted for a Warehouse Manager to approve.
+
+    The same shape `CreateReceiveInput` had before receives were split in two, minus nothing: what
+    the person counting the truck enters did not change, only when it reaches GP. The author is the
+    Clerk-authenticated caller (#199/#427), never a client-supplied name.
+    """
 
     po_id: strawberry.ID
     warehouse_id: strawberry.ID | None = None
     line_items: list[ReceiveLineItemInput] = strawberry.field(default_factory=list)
-    # Issue #202 #1: client-generated key (one per user action, re-sent on retry) that makes this
-    # GP-first receive idempotent - a retry returns the already-created receive instead of posting a
-    # SECOND GP receipt (replacing the deleted client-side gpReceiptPostedRef guard).
+    # Client-generated, one per submit action and re-sent on retry, so a network timeout that
+    # actually committed cannot leave two drafts against one PO.
     idempotency_key: str = ""
+
+
+@strawberry.input
+class UpdateReceiveDraftInput:
+    """Rewrite what a draft says was counted - a manager correcting it before approval, or its author
+    fixing what a rejection asked them to. Replaces the lines wholesale."""
+
+    draft_id: strawberry.ID
+    warehouse_id: strawberry.ID | None = None
+    line_items: list[ReceiveLineItemInput] = strawberry.field(default_factory=list)
+
+
+@strawberry.input
+class RejectReceiveDraftInput:
+    draft_id: strawberry.ID
+    # Required by the resolver, not by the schema: an empty string is a typed error naming the field,
+    # which is a better answer than a GraphQL validation failure the dialog cannot attach to an input.
+    reason: str = ""
+
+
+@strawberry.input
+class ApproveReceiveDraftInput:
+    """Approve a draft, which is what posts the GP receipt and credits inventory.
+
+    Issue #202 #1: the idempotency key (one per user action, re-sent on retry) is what makes a retry
+    a no-op in GP rather than a second receipt. It is also the draft's approval claim - a retry
+    carrying the same key resumes an approval that died mid-flight instead of conflicting with it."""
+
+    draft_id: strawberry.ID
+    idempotency_key: str = ""
+
+
+@strawberry.input
+class DecideReceiveDecisionInput:
+    decision_id: strawberry.ID
+    decision: ReceiveDecisionChoice
 
 
 @strawberry.input

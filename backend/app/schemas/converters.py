@@ -54,6 +54,11 @@ from .types import (
     PullRequest,
     PullRequestItem,
     PurchaseOrder,
+    ReceiveDecision,
+    ReceiveDecisionLine,
+    ReceiveDraft,
+    ReceiveDraftLineItem,
+    ReceiveDraftLocation,
     ReceiveLineItem,
     ReceiveRecord,
     RelayInstallInfo,
@@ -125,6 +130,77 @@ def receive_record_to_type(rr) -> ReceiveRecord:
         batch_number=rr.batch_number,
         created_at=rr.created_at,
         line_items=[receive_line_item_to_type(rli) for rli in rr.line_items],
+    )
+
+
+def receive_draft_line_item_to_type(li) -> ReceiveDraftLineItem:
+    return ReceiveDraftLineItem(
+        id=strawberry.ID(str(li.id)),
+        po_line_item_id=strawberry.ID(str(li.po_line_item_id)),
+        hardware_category=li.hardware_category,
+        product_code=li.product_code,
+        quantity_received=li.quantity_received,
+        locations=[
+            ReceiveDraftLocation(
+                aisle=loc.get("aisle") or "",
+                row=loc.get("row") or "",
+                bay=loc.get("bay") or "",
+                quantity=loc.get("quantity") or 0,
+                deficient_quantity=loc.get("deficient_quantity") or 0,
+            )
+            for loc in (li.locations or [])
+        ],
+    )
+
+
+def receive_draft_to_type(draft, po) -> ReceiveDraft:
+    """The draft plus the PO fields every consumer renders beside it. `po` is passed in rather than
+    walked off a relationship so a list read stays one query."""
+    return ReceiveDraft(
+        id=strawberry.ID(str(draft.id)),
+        status=draft.status,
+        po_id=strawberry.ID(str(draft.po_id)),
+        po_number=po.po_number if po is not None else None,
+        project_id=strawberry.ID(str(po.project_id)) if po is not None and po.project_id else None,
+        warehouse_id=strawberry.ID(str(draft.warehouse_id)) if draft.warehouse_id else None,
+        created_by_user_id=draft.created_by_user_id,
+        created_by=draft.created_by_name,
+        reviewed_by=draft.reviewed_by_name,
+        reviewed_at=draft.reviewed_at,
+        rejection_reason=draft.rejection_reason,
+        receive_record_id=strawberry.ID(str(draft.receive_record_id)) if draft.receive_record_id else None,
+        outbox_entry_id=(
+            strawberry.ID(str(draft.approved_outbox_entry_id)) if draft.approved_outbox_entry_id else None
+        ),
+        total_quantity=sum(li.quantity_received for li in draft.line_items),
+        created_at=draft.created_at,
+        updated_at=draft.updated_at,
+        line_items=[receive_draft_line_item_to_type(li) for li in draft.line_items],
+    )
+
+
+def receive_decision_to_type(decision, po, receive_record) -> ReceiveDecision:
+    return ReceiveDecision(
+        id=strawberry.ID(str(decision.id)),
+        status=decision.status,
+        decision=decision.decision,
+        po_id=strawberry.ID(str(decision.po_id)),
+        po_number=po.po_number if po is not None else None,
+        project_id=strawberry.ID(str(decision.project_id)),
+        receive_record_id=strawberry.ID(str(decision.receive_record_id)),
+        receipt_number=receive_record.receipt_number if receive_record is not None else None,
+        received_at=receive_record.received_at,
+        received_by=receive_record.received_by,
+        created_at=decision.created_at,
+        decided_at=decision.decided_at,
+        line_items=[
+            ReceiveDecisionLine(
+                hardware_category=li.hardware_category,
+                product_code=li.product_code,
+                quantity_received=li.quantity_received,
+            )
+            for li in receive_record.line_items
+        ],
     )
 
 
@@ -340,6 +416,7 @@ def po_to_type(po, receive_records=None) -> PurchaseOrder:
         # existed; every PO created going forward carries its own snapshot.
         vendor_name_snapshot=po.vendor_name_snapshot or (vendor.name if vendor is not None else None),
         buyer_id=po.buyer_id,
+        created_by_user_id=po.created_by_user_id,
         vendor=vendor_to_type(vendor) if vendor is not None else None,
         vendor_quote_number=po.vendor_quote_number,
         shipping_cost=float(po.shipping_cost) if po.shipping_cost is not None else None,

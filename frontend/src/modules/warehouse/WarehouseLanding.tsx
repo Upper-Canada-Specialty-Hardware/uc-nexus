@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { Alert, Box, Typography, Card, CardActionArea, Grid, Skeleton } from '@mui/material';
 import {
   Boxes,
+  ClipboardCheck,
   ClipboardList,
   Download,
   Inbox,
@@ -12,6 +13,7 @@ import {
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@apollo/client/react';
+import { useIdentity } from '../../hooks/useIdentity';
 import { GET_WAREHOUSE_DASHBOARD } from '../../graphql/warehouse';
 import DashboardCards, { type WarehouseDashboard } from './DashboardCards';
 import { microLabelSx, tabularSx } from '../../theme';
@@ -29,9 +31,27 @@ interface Destination {
 
 const CELL = { xs: 12, sm: 6, md: 4, lg: 3 } as const;
 
-function buildDestinations(d: WarehouseDashboard | undefined): Destination[] {
+function buildDestinations(d: WarehouseDashboard | undefined, canReview: boolean): Destination[] {
   const pendingPulls = d ? d.pendingPullShop + d.pendingPullShipping : 0;
   return [
+    // Manager-only, and first: it is the one card on this page that is somebody waiting on you.
+    ...(canReview
+      ? [
+          {
+            label: 'Receive Approvals',
+            path: '/app/warehouse/receive-approvals',
+            icon: <ClipboardCheck size={18} strokeWidth={1.75} />,
+            caption: 'Review and post counted receives',
+            metric: d
+              ? {
+                  value: d.pendingReceiveDraftCount,
+                  noun: 'to approve',
+                  attention: d.pendingReceiveDraftCount > 0,
+                }
+              : undefined,
+          },
+        ]
+      : []),
     {
       label: 'Inventory',
       path: '/app/warehouse/inventory',
@@ -144,6 +164,8 @@ function DestinationCard({ dest, onClick }: { dest: Destination; onClick: () => 
 
 export default function WarehouseLanding() {
   const navigate = useNavigate();
+  const { hasRole, isAdmin } = useIdentity();
+  const canReview = isAdmin || hasRole('Warehouse Manager');
   // One dashboard query for the whole page: the two gauges below and every card count come from it.
   const { data, loading: queryLoading, error } = useQuery<{ warehouseDashboard: WarehouseDashboard }>(
     GET_WAREHOUSE_DASHBOARD,
@@ -151,7 +173,7 @@ export default function WarehouseLanding() {
   );
   const dashboard = data?.warehouseDashboard;
   const loading = queryLoading && !data;
-  const destinations = buildDestinations(dashboard);
+  const destinations = buildDestinations(dashboard, canReview);
 
   return (
     <Box>

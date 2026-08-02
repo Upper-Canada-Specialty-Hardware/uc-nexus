@@ -30,6 +30,21 @@ export const RECEIVE_REFETCH_QUERIES = [
   'GetRecentReceiveRecords',
 ];
 
+// What a draft-lifecycle write invalidates: create, edit, resubmit, reject, delete. Nothing in
+// inventory moves at any of them - a draft is a count somebody wrote down - so the only stale read is
+// the draft lists themselves, and every call site has one mounted (the approvals queue, or the
+// author's My Drafts view). Refetching by name is self-scoping, so naming both surfaces costs
+// nothing for whichever one is not live.
+export const RECEIVE_DRAFT_REFETCH_QUERIES = ['GetReceiveDrafts', 'GetWarehouseDashboard'];
+
+// What APPROVING a draft invalidates. Approval is where the posting moment went, so it inherits the
+// whole meaning of RECEIVE_REFETCH_QUERIES - inventory summaries, the Receiving page's own lists -
+// and adds the queue the approve button was pressed in. De-duplicated because the two lists overlap
+// on the dashboard, and a name listed twice is a query refetched twice.
+export const RECEIVE_APPROVE_REFETCH_QUERIES = [
+  ...new Set([...RECEIVE_REFETCH_QUERIES, ...RECEIVE_DRAFT_REFETCH_QUERIES]),
+];
+
 // What confirmShipment invalidates (#337). The two lists are deliberately DISJOINT: evicting a root
 // field that a mounted query also refetches makes Apollo fire a repair fetch for the incomplete
 // cache diff on top of the explicit refetch, so the heaviest shipping resolvers would run twice
@@ -261,4 +276,11 @@ export const GP_OUTBOX_DRAINED_STALE_ROOT_FIELDS = [
   'inventoryHierarchy',
   'inventoryByVendor',
   'projectInventoryAvailability',
+  // A queued approval persists NOTHING until the drain: no receive record, no inventory, and no
+  // keep-or-ship decision for the person who raised the PO. The drain is when all three appear, and
+  // it lands while the browser is on an arbitrary route - so the draft's own status (APPROVED with a
+  // receipt now, rather than APPROVED and still syncing) and the decision that came with it are only
+  // reachable this way.
+  'receiveDrafts',
+  'myReceiveDecisions',
 ];

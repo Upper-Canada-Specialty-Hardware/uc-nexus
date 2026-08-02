@@ -350,7 +350,17 @@ const shippingOpeningItemsMock: MockedResponse = {
 // ---- Harness ----
 
 function renderWizard(
-  { project = firstImportProject, mocks = [] }: { project?: Project; mocks?: MockedResponse[] } = {},
+  {
+    project = firstImportProject,
+    mocks = [],
+    initialPurpose,
+    autoStartFromLatest,
+  }: {
+    project?: Project;
+    mocks?: MockedResponse[];
+    initialPurpose?: 'po' | 'assembly' | 'shipping';
+    autoStartFromLatest?: boolean;
+  } = {},
 ) {
   const onClose = vi.fn();
   render(
@@ -358,7 +368,13 @@ function renderWizard(
       <MemoryRouter>
         <WizardProvider>
           <ToastProvider>
-            <ImportWizard open project={project} onClose={onClose} />
+            <ImportWizard
+              open
+              project={project}
+              onClose={onClose}
+              initialPurpose={initialPurpose}
+              autoStartFromLatest={autoStartFromLatest}
+            />
           </ToastProvider>
         </WizardProvider>
       </MemoryRouter>
@@ -607,5 +623,117 @@ describe('ImportWizard step transitions', () => {
     expect(screen.getByRole('heading', { name: 'Classification' })).toBeInTheDocument();
     expect(screen.getByText('0 of 2 items classified')).toBeInTheDocument();
     expect(nextButton()).toBeDisabled();
+  });
+});
+
+// The keep-or-ship decision's "Ship out now" lands here: the project is chosen, the purpose is
+// shipping, and the schedule the hardware was bought against is already imported - so the two steps
+// in front of the openings are answers the user has already given somewhere else.
+describe('ImportWizard deep link', () => {
+  // Enough of a persisted schedule for the hydrate to be legal: hardwareItems non-empty is what
+  // makes `canStartFromLatest` true, and the project block is what the mapper reads first.
+  const scheduleWithItems: MockedResponse = {
+    request: { query: GET_PROJECT_HARDWARE_SCHEDULE, variables: { projectId: 'proj-1' } },
+    maxUsageCount: Number.POSITIVE_INFINITY,
+    result: {
+      data: {
+        projectHardwareSchedule: {
+          project: {
+            projectId: 'P-100',
+            description: 'Test Project',
+            jobSiteName: null,
+            address: null,
+            city: null,
+            state: null,
+            zip: null,
+            contractor: null,
+            projectManager: null,
+            application: null,
+            submittalJobNo: null,
+            submittalAssignmentCount: null,
+            estimatorCode: null,
+            titanUserId: null,
+          },
+          openings: [],
+          hardwareItems: [
+            {
+              openingNumber: 'O-1',
+              productCode: 'HNG-100',
+              materialId: 'M-1',
+              leaf: null,
+              hardwareCategory: 'Hinges',
+              itemQuantity: 3,
+              unitCost: 10,
+              unitPrice: null,
+              listPrice: null,
+              vendorDiscount: null,
+              markupPct: null,
+              vendorNo: 'VEND-A',
+              manufacturer: null,
+              phaseCode: null,
+              itemCategoryCode: null,
+              productGroupCode: null,
+              submittalId: null,
+              state: 'AVAILABLE',
+            },
+          ],
+        },
+      },
+    },
+  };
+
+  it('preselects the shipping purpose on a re-import project', async () => {
+    renderWizard({
+      project: reimportProject,
+      mocks: [...reimportMocks],
+      initialPurpose: 'shipping',
+    });
+    await flushApollo();
+    clickNext();
+
+    expect(screen.getByRole('radio', { name: /Pull Request for Shipping Out/i })).toBeChecked();
+  });
+
+  it('leaves the purpose unset on a project with no schedule, rather than checking a disabled option', async () => {
+    // Shipping needs an existing schedule. Silently checking it on a first import would land the
+    // user on a radio they cannot use with nothing saying why.
+    renderWizard({ project: firstImportProject, initialPurpose: 'shipping' });
+    clickNext();
+
+    expect(screen.getByRole('radio', { name: /Pull Request for Shipping Out/i })).not.toBeChecked();
+    expect(nextButton()).toBeDisabled();
+  });
+
+  it('starts from the persisted schedule instead of asking for a file', async () => {
+    const hydrate = vi.fn();
+    mockedUseParser.mockReturnValue(
+      makeParser({ state: 'idle', parseResult: null, hydrate, progress: { percent: 0, phase: '' } }),
+    );
+    renderWizard({
+      project: reimportProject,
+      mocks: [availabilityMock, scheduleWithItems],
+      initialPurpose: 'shipping',
+      autoStartFromLatest: true,
+    });
+    await flushApollo();
+
+    expect(hydrate).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the upload step when the project has no persisted schedule', async () => {
+    const hydrate = vi.fn();
+    mockedUseParser.mockReturnValue(
+      makeParser({ state: 'idle', parseResult: null, hydrate, progress: { percent: 0, phase: '' } }),
+    );
+    renderWizard({
+      project: reimportProject,
+      mocks: reimportMocks, // projectHardwareSchedule: null
+      initialPurpose: 'shipping',
+      autoStartFromLatest: true,
+    });
+    await flushApollo();
+
+    expect(hydrate).not.toHaveBeenCalled();
+    expect(screen.getByRole('heading', { name: 'Hardware Schedule' })).toBeInTheDocument();
   });
 });

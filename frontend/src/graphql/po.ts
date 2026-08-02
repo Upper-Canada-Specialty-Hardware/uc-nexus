@@ -505,3 +505,43 @@ export const GET_PO_OPENINGS = gql`
     }
   }
 `;
+
+// --- Keep-or-ship decisions ---
+//
+// When a receive is approved and booked, the person who raised the PO is asked where the shipment
+// goes: the project's inventory, or straight back out to site. Scoped to the caller server-side (the
+// PO's recorded originator, falling back to its GP buyer matched against the caller's own gpBuyerId
+// for POs raised before that was recorded), so there is no user argument to pass.
+export const GET_MY_RECEIVE_DECISIONS = gql`
+  query GetMyReceiveDecisions {
+    myReceiveDecisions {
+      id
+      status
+      poId
+      poNumber
+      projectId
+      receiveRecordId
+      # Null while the approval is still queued on the GP outbox - GP has not numbered it yet.
+      receiptNumber
+      receivedAt
+      receivedBy
+      createdAt
+      lineItems {
+        hardwareCategory
+        productCode
+        quantityReceived
+      }
+    }
+  }
+`;
+
+export const DECIDE_RECEIVE_DECISION = gql`
+  mutation DecideReceiveDecision($input: DecideReceiveDecisionInput!) {
+    decideReceiveDecision(input: $input) {
+      id
+      status
+      decision
+      decidedAt
+    }
+  }
+`;

@@ -197,6 +197,84 @@ def test_a_transient_persist_error_is_retried(_migrate_database, monkeypatch):
         _delete(row_id)
 
 
+def test_a_queued_receipt_forwards_the_draft_it_was_approved_from(_migrate_database, monkeypatch):
+    """The approval that queued this row is only half done until the drain closes it.
+
+    Both halves go through the same `_persist_create_receive`, which is what links the draft to the
+    receive in the same transaction as the inventory credit. The worker's job is just to carry the id
+    across, so what this pins is that it reads the key at all - a typo here would silently leave every
+    queued approval unlinked, and nothing else in the pipeline would notice.
+    """
+    draft_id = uuid.uuid4()
+    row_id, _key = _enqueue_committed()
+    try:
+        from app.database import SessionLocal
+        from app.models.gp_outbox import GpWriteOutbox
+
+        with SessionLocal() as session:
+            row = session.get(GpWriteOutbox, row_id)
+            row.persist_context = {
+                "po_id": str(uuid.uuid4()),
+                "received_by": "Wendy Warehouse",
+                "warehouse_id": None,
+                "line_items_data": [],
+                "receive_draft_id": str(draft_id),
+            }
+            session.commit()
+
+        captured = {}
+        _stub_relay(monkeypatch, result={"receipt_number": "RCT1"})
+        # The real adapter, with only the persist itself stubbed - so what is asserted is the
+        # rehydration the adapter does, not a handler the test wrote.
+        monkeypatch.setattr("app.schemas.warehouse._persist_create_receive", lambda **kw: captured.update(kw))
+        monkeypatch.setitem(
+            gp_outbox_worker._HANDLERS,
+            "create_receive",
+            gp_outbox_worker._persist_create_receive_from_context,
+        )
+        asyncio.run(gp_outbox_worker._drain_one(row_id))
+
+        assert _read(row_id)["status"] == "SUCCEEDED"
+        assert captured["receive_draft_id"] == draft_id
+        assert captured["received_by"] == "Wendy Warehouse"
+    finally:
+        _delete(row_id)
+
+
+def test_a_receipt_queued_before_drafts_existed_still_drains(_migrate_database, monkeypatch):
+    """The outbox can hold rows from the previous deploy. Their context has no draft id, and reading
+    it with `.get` is what keeps them replaying exactly as they used to."""
+    row_id, _key = _enqueue_committed()
+    try:
+        from app.database import SessionLocal
+        from app.models.gp_outbox import GpWriteOutbox
+
+        with SessionLocal() as session:
+            row = session.get(GpWriteOutbox, row_id)
+            row.persist_context = {
+                "po_id": str(uuid.uuid4()),
+                "received_by": "Wendy Warehouse",
+                "warehouse_id": None,
+                "line_items_data": [],
+            }
+            session.commit()
+
+        captured = {}
+        _stub_relay(monkeypatch, result={"receipt_number": "RCT1"})
+        monkeypatch.setattr("app.schemas.warehouse._persist_create_receive", lambda **kw: captured.update(kw))
+        monkeypatch.setitem(
+            gp_outbox_worker._HANDLERS,
+            "create_receive",
+            gp_outbox_worker._persist_create_receive_from_context,
+        )
+        asyncio.run(gp_outbox_worker._drain_one(row_id))
+
+        assert _read(row_id)["status"] == "SUCCEEDED"
+        assert captured["receive_draft_id"] is None
+    finally:
+        _delete(row_id)
+
+
 @pytest.mark.parametrize(
     "env, expected",
     [("true", True), ("1", True), ("", True), ("false", False), ("0", False), ("no", False)],

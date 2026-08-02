@@ -52,6 +52,11 @@ SHOP_ASSEMBLY_MANAGER_RECIPIENT_ROLE = "SHOP_ASSEMBLY_MANAGER"
 # approved. It is the warehouse that approves a pull, so it is the warehouse that needs telling.
 WAREHOUSE_RECIPIENT_ROLE = "WAREHOUSE"
 
+# Recipient role for "a counted receive is waiting on approval". The manager audience rather than the
+# whole warehouse, for the same reason as the shop-assembly one above: approving is a decision only
+# managers can make, and the person who submitted it already knows it is there.
+WAREHOUSE_MANAGER_RECIPIENT_ROLE = "WAREHOUSE_MANAGER"
+
 
 def has_unread_notification_for_pull(
     session: Session,

@@ -11,10 +11,26 @@ import {
   Divider,
 } from '@mui/material';
 import { Bell, BellOff } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation } from '@apollo/client/react';
 import { GET_NOTIFICATIONS, MARK_NOTIFICATION_AS_READ } from '../graphql/shared';
 import { microLabelSx } from '../theme';
 import { parseServerDate } from '../utils/serverDate';
+
+/**
+ * Where a notification takes you, for the types that have one place to go.
+ *
+ * Only the person-targeted signals are here, and that is the point: "your draft was sent back" and
+ * "you have to say where this shipment goes" both name one screen that one person has to open. The
+ * audience-wide types (a pull unblocked, a shipment completed) are read by several people from
+ * several places, so navigating on them would be a guess.
+ *
+ * An unmapped type keeps the old behaviour - mark read, stay put.
+ */
+const NOTIFICATION_LINKS: Record<string, string> = {
+  RECEIVE_DECISION_REQUIRED: '/app/po/decisions',
+  RECEIVE_DRAFT_REJECTED: '/app/warehouse/receiving?view=drafts',
+};
 
 interface Notification {
   id: string;
@@ -42,6 +58,7 @@ function formatTimeAgo(dateString: string): string {
 
 export default function NotificationBell() {
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
+  const navigate = useNavigate();
 
   const { data } = useQuery<{ notifications: Notification[] }>(
     GET_NOTIFICATIONS,
@@ -88,6 +105,11 @@ export default function NotificationBell() {
           },
         ],
       });
+    }
+    const to = NOTIFICATION_LINKS[notification.type];
+    if (to) {
+      navigate(to);
+      handleClose();
     }
   };
 
