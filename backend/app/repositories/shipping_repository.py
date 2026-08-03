@@ -326,6 +326,13 @@ def confirm_shipment(
             opening_number=oi.opening_number if oi else None,
             # Snapshot the door leaf (#311): the slip is an immutable record of which leaf shipped.
             leaf=oi.leaf if oi else None,
+            # And where it was going (#452), for the same reason. The Delivery Request printed at
+            # confirm names each leaf's placement off the cart; without these columns the reprint
+            # rebuilt its material lines from the stored items and dropped that suffix, so one
+            # shipment produced two different documents.
+            building=oi.building if oi else None,
+            floor=oi.floor if oi else None,
+            location=oi.location if oi else None,
             product_code=oi.installed_hardware[0].product_code if oi and oi.installed_hardware else "",
             hardware_category=oi.installed_hardware[0].hardware_category if oi and oi.installed_hardware else "",
             quantity=1,

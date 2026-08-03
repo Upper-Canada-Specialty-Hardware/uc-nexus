@@ -365,6 +365,11 @@ type PackingSlipItem {
   opening_number: String
   # Door leaf (#335), snapshotted from the shipped OpeningItem. Null on a LOOSE line.
   leaf: Int
+  # Where the leaf was going (#452), snapshotted at confirm so a reprinted Delivery Request prints
+  # the same MATERIAL DESCRIPTION the driver was handed. Null on a LOOSE line and on pre-#452 rows.
+  building: String
+  floor: String
+  location: String
   product_code: String!
   hardware_category: String!
   quantity: Int!
@@ -606,11 +611,9 @@ input LocationInput {
   deficient_quantity: Int! = 0
 }
 
-input ConfirmShipmentInput {
-  project_id: ID!
-  packing_slip_number: String!
-  items: [ShipmentItemInput!]!
-}
+# ConfirmShipmentInput is defined in shipping.graphql, alongside the Delivery Request header block
+# it carries. It was duplicated here without that header for the whole of #447, which is the drift
+# #453 is about.
 
 input ShipmentItemInput {
   item_type: PullRequestItemType!
