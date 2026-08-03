@@ -769,7 +769,14 @@ async def run_forever(stop_event: asyncio.Event | None = None) -> None:
                     # tick - and an operator grepping relay.log sees the edit they just made.
                     logger.info(
                         "backend channels configured" if known is None else "backend channels changed",
-                        extra={"urls": urls, "added": sorted(set(urls) - (known or set()))},
+                        extra={
+                            "urls": urls,
+                            "added": sorted(set(urls) - (known or set())),
+                            # Named as well as added: a removal otherwise logs `added: []` and leaves
+                            # the operator to diff the URL list against the previous line to see what
+                            # they just took out.
+                            "removed": sorted((known or set()) - set(urls)),
+                        },
                     )
                     _warn_if_no_primary(urls)
                     known = set(urls)
