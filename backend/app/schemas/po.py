@@ -365,7 +365,12 @@ class POMutations:
         """Issue #256: manual PO creation lands as a plain DRAFT - no relay round-trip, no GP fields,
         no buyer involved. Registering the draft into GP (register_po_in_gp) is the separate,
         conscious user action where GP vendor / buyer identity / cost code are captured and the
-        issue #216 assignment gating applies."""
+        issue #216 assignment gating applies.
+
+        The caller is recorded as the request's originator, from the Clerk token rather than an
+        argument (#427). A receive against this PO later asks them whether the shipment stays in the
+        project's inventory or ships straight out."""
+        auth = current_user(info)
         line_items_data = [
             {
                 "hardware_category": li.hardware_category,
@@ -387,6 +392,7 @@ class POMutations:
                 shipping_cost=input.shipping_cost,
                 tariff_amount=input.tariff_amount,
                 preferred_delivery_date=input.preferred_delivery_date,
+                created_by_user_id=auth["user_id"],
             )
             session.commit()
             return po_to_type(po_repository.reload_po(session, po.id))

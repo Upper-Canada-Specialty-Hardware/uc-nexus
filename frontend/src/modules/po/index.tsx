@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
 import {
+  Alert,
   Box,
   Typography,
   ButtonBase,
@@ -34,7 +35,7 @@ import {
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { useQuery } from '@apollo/client/react';
-import { GET_PURCHASE_ORDERS, GET_PO_STATISTICS } from '../../graphql/po';
+import { GET_PURCHASE_ORDERS, GET_PO_STATISTICS, GET_MY_RECEIVE_DECISIONS } from '../../graphql/po';
 import { GET_GP_OUTBOX } from '../../graphql/shared';
 import { GET_PROJECTS } from '../../graphql/shared';
 import type { Project } from '../../types/project';
@@ -48,6 +49,7 @@ import { isStatusCardActive, toggleStatusCard } from './statusCardFilter';
 import { Routes, Route, useNavigate } from 'react-router-dom';
 import { useIdentity } from '../../hooks/useIdentity';
 import PODocumentSettingsPage from './PODocumentSettingsPage';
+import ReceiveDecisionsPage from './ReceiveDecisionsPage';
 import { monoSx, tabularSx, microLabelSx } from '../../theme';
 import { AnimatedNumber, FadeIn, StaggerItem, StaggerList, springs } from '../../motion';
 import { parseServerDate } from '../../utils/serverDate';
@@ -750,6 +752,14 @@ function POListPage() {
     return ids;
   }, [outboxData]);
 
+  // Shipments this user has to say where to put. Scoped to the caller server-side, so the count is
+  // either zero or theirs.
+  const { data: decisionsData } = useQuery<{ myReceiveDecisions: { id: string }[] }>(
+    GET_MY_RECEIVE_DECISIONS,
+    { fetchPolicy: 'cache-and-network' },
+  );
+  const pendingDecisionCount = decisionsData?.myReceiveDecisions?.length ?? 0;
+
   const toggleExpand = (id: string) => {
     setExpandedIds((prev) => {
       const next = new Set(prev);
@@ -870,6 +880,25 @@ function POListPage() {
           Create PO
         </Button>
       </Box>
+
+      {/* Hardware this user ordered has landed and is waiting on them to say where it goes. It sits
+          above the status strip because it is the one thing on this page somebody else is blocked
+          on - the PO list itself keeps until they have answered. */}
+      {pendingDecisionCount > 0 && (
+        <Alert
+          severity="warning"
+          sx={{ mb: 2.5 }}
+          action={
+            <Button color="inherit" size="small" onClick={() => navigate('/app/po/decisions')}>
+              Review
+            </Button>
+          }
+        >
+          {pendingDecisionCount === 1
+            ? '1 shipment is waiting on your keep-or-ship decision.'
+            : `${pendingDecisionCount} shipments are waiting on your keep-or-ship decision.`}
+        </Alert>
+      )}
 
       {/* Status strip. Clicking a segment filters the table to that status (#316) - the count and the
           list it describes are the same thing, so reading one and then hunting the filter row for the
@@ -1082,6 +1111,9 @@ export default function POModule() {
     <Routes>
       <Route index element={<POListPage />} />
       <Route path="document-settings" element={<PODocumentSettingsPage />} />
+      {/* Scoped to the caller server-side, so no role gate: whoever raised a PO owes the answer,
+          and that person may hold only the import role. */}
+      <Route path="decisions" element={<ReceiveDecisionsPage />} />
     </Routes>
   );
 }

@@ -6,6 +6,9 @@ type PurchaseOrder {
   po_number: String!
   project_id: ID!
   status: POStatus!
+  # Clerk user id of whoever raised the request. Null on POs from before it was recorded; a receive
+  # against this PO asks this person whether the shipment stays in inventory or ships out.
+  created_by_user_id: String
   vendor_name: String
   vendor_contact: String
   expected_delivery_date: Date

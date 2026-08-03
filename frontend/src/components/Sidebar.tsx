@@ -49,7 +49,7 @@ const SIDEBAR_ITEMS: SidebarItem[] = [
     label: 'Warehouse',
     path: '/app/warehouse',
     icon: <Warehouse {...ICON_PROPS} />,
-    requiredRoles: ['Warehouse Staff'],
+    requiredRoles: ['Warehouse Staff', 'Warehouse Manager'],
   },
   {
     label: 'Shop Assembly',

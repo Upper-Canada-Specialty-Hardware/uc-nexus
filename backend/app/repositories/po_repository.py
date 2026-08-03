@@ -155,6 +155,7 @@ def create_po(
     shipping_cost: float | None = None,
     tariff_amount: float | None = None,
     preferred_delivery_date=None,
+    created_by_user_id: str | None = None,
 ) -> PurchaseOrder:
     """Create a manual PO with line items. No hardware items are created.
 
@@ -200,6 +201,9 @@ def create_po(
             vendor_name_snapshot.strip() if vendor_name_snapshot and vendor_name_snapshot.strip() else None
         ),
         buyer_id=buyer_id.strip() if buyer_id and buyer_id.strip() else None,
+        # Who raised the request, from the caller's Clerk token. It is what a receive against this PO
+        # later asks "inventory or ship out?" of.
+        created_by_user_id=created_by_user_id,
         shipping_cost=_coerce_order_cost(shipping_cost, "shipping_cost"),
         tariff_amount=_coerce_order_cost(tariff_amount, "tariff_amount"),
         # Issue #216/#256: the PM's requested date, captured at request creation.

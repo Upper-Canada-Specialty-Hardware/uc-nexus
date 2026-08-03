@@ -22,6 +22,9 @@ from .enums import (
     PullRequestSource,
     PullRequestStatus,
     PullStatus,
+    ReceiveDecisionChoice,
+    ReceiveDecisionStatus,
+    ReceiveDraftStatus,
     ReconciliationStatus,
     ReturnDisposition,
     ShipmentStatus,
@@ -390,6 +393,90 @@ class RecentReceiveRecord:
 
 
 @strawberry.type
+class ReceiveDraftLocation:
+    aisle: str
+    row: str
+    bay: str
+    quantity: int
+    deficient_quantity: int
+
+
+@strawberry.type
+class ReceiveDraftLineItem:
+    id: strawberry.ID
+    po_line_item_id: strawberry.ID
+    hardware_category: str
+    product_code: str
+    quantity_received: int
+    locations: list[ReceiveDraftLocation]
+
+
+@strawberry.type
+class ReceiveDraft:
+    """A counted delivery waiting on a Warehouse Manager. Nothing here has reached GP.
+
+    `poNumber` and `projectId` are denormalized off the PO because every consumer - the approvals
+    queue, the author's own list, the PO row's pending chip - renders them beside the draft, and
+    resolving them through a relationship would be one SELECT per row.
+
+    `createdBy` is the person who counted the hardware and whose name lands on the ReceiveRecord at
+    approval; `reviewedBy` is whoever approved or rejected it. `receiveRecordId` null on an APPROVED
+    draft is not a contradiction: the relay was down, the receipt is on the GP outbox, and the record
+    appears when it drains.
+    """
+
+    id: strawberry.ID
+    status: ReceiveDraftStatus
+    po_id: strawberry.ID
+    po_number: str | None
+    project_id: strawberry.ID | None
+    warehouse_id: strawberry.ID | None
+    created_by_user_id: str
+    created_by: str
+    reviewed_by: str | None
+    reviewed_at: datetime | None
+    rejection_reason: str | None
+    # The key an in-flight approval is holding this draft under. Exposed so a reviewer whose approval
+    # died ambiguously (a dispatched disconnect, a timeout - GP may hold the receipt) can retry with
+    # the SAME key and resume through the idempotency ledger. Without it the key lives only in the
+    # browser tab that started the approval, and a reload would strand the draft in APPROVING.
+    approval_idempotency_key: str | None
+    receive_record_id: strawberry.ID | None
+    outbox_entry_id: strawberry.ID | None
+    total_quantity: int
+    created_at: datetime
+    updated_at: datetime
+    line_items: list[ReceiveDraftLineItem]
+
+
+@strawberry.type
+class ReceiveDecisionLine:
+    hardware_category: str
+    product_code: str
+    quantity_received: int
+
+
+@strawberry.type
+class ReceiveDecision:
+    """The keep-or-ship question a landed shipment raises for whoever ordered it."""
+
+    id: strawberry.ID
+    status: ReceiveDecisionStatus
+    decision: ReceiveDecisionChoice | None
+    po_id: strawberry.ID
+    po_number: str | None
+    project_id: strawberry.ID
+    receive_record_id: strawberry.ID
+    # Null while the approval is still queued on the GP outbox - GP has not numbered the receipt yet.
+    receipt_number: str | None
+    received_at: datetime
+    received_by: str
+    created_at: datetime
+    decided_at: datetime | None
+    line_items: list[ReceiveDecisionLine]
+
+
+@strawberry.type
 class ReceivingHistoryPO:
     """One row of the Receiving History list (#447): a GP-registered PO and how much of it landed.
 
@@ -524,6 +611,8 @@ class PurchaseOrder:
     gp_vendor_id: str | None
     vendor_name_snapshot: str | None
     buyer_id: str | None
+    # Clerk user id of whoever raised this PO request. Null on POs from before it was recorded.
+    created_by_user_id: str | None
     vendor: Vendor | None
     vendor_quote_number: str | None
     shipping_cost: float | None
@@ -1477,6 +1566,8 @@ class WarehouseDashboard:
     received_last_7_days: int
     back_ordered_count: int
     deficient_count: int
+    # Counted receives waiting on a Warehouse Manager.
+    pending_receive_draft_count: int
 
 
 @strawberry.type
@@ -1680,10 +1771,15 @@ class RegisterPOResult:
 
 
 @strawberry.type
-class CreateReceiveResult:
-    """#353 PR E. `receiveRecord` is null when `queued` - the UC Nexus receive is persisted with the
-    GP write, so nothing is in inventory yet."""
+class ApproveReceiveDraftResult:
+    """What approving a draft did.
+
+    Same wrapper `CreateReceiveResult` was (#353 PR E), because approval is where that pipeline moved
+    to: `queued` true means the relay was unreachable and the receipt is on the durable outbox, so
+    `receiveRecord` is null and nothing is in inventory yet. The draft is APPROVED either way - what
+    it must never be is approvable twice."""
 
     queued: bool
+    draft: ReceiveDraft
     receive_record: ReceiveRecord | None = None
     outbox_entry_id: strawberry.ID | None = None

@@ -24,7 +24,7 @@ import uuid
 import pytest
 
 from app import auth
-from app.auth import ADMIN_ROLE, SHOP_ASSEMBLY_MANAGER_ROLE
+from app.auth import ADMIN_ROLE, SHOP_ASSEMBLY_MANAGER_ROLE, WAREHOUSE_MANAGER_ROLE
 from app.auth_policy import OPEN_OPERATIONS, ROOT_FIELD_POLICY, SIGNED_IN, enforce_root_field
 from app.errors import AppError
 from app.repositories import user_repository
@@ -164,6 +164,32 @@ def test_a_role_gated_field_refuses_someone_without_that_role(monkeypatch, signe
     assert _messages(result) == {f"{SHOP_ASSEMBLY_MANAGER_ROLE} role required"}
 
 
+@pytest.mark.parametrize("field", ["approveReceiveDraft", "rejectReceiveDraft"])
+def test_approving_a_receive_draft_takes_either_manager_role(field, monkeypatch, signed_in):
+    """The any-of requirement, in all three directions.
+
+    Approving a drafted receive is what posts the GP receipt and credits inventory, so it is the one
+    receiving action gated on a role rather than identity - and two roles satisfy it, which is the
+    reason ROOT_FIELD_POLICY entries may be a frozenset at all. There is no implicit admin bypass in
+    this codebase, so Admin/Manager has to be named in the set to hold; a warehouse account that only
+    counts trucks must not hold it either way.
+    """
+    assert ROOT_FIELD_POLICY[field] == frozenset({ADMIN_ROLE, WAREHOUSE_MANAGER_ROLE})
+
+    def _roles(roles):
+        monkeypatch.setattr(user_repository, "get_user_roles", lambda user_id: roles)
+
+    _roles(["Warehouse Staff"])
+    with pytest.raises(AppError) as excinfo:
+        enforce_root_field(field, {"request": _FakeRequest("tok")})
+    assert excinfo.value.code == "FORBIDDEN"
+    assert excinfo.value.message == f"{ADMIN_ROLE} or {WAREHOUSE_MANAGER_ROLE} role required"
+
+    for role in (WAREHOUSE_MANAGER_ROLE, ADMIN_ROLE):
+        _roles([role])
+        enforce_root_field(field, {"request": _FakeRequest("tok")})
+
+
 def test_a_root_field_with_no_policy_entry_is_refused():
     """Deny by default, which is the entire difference between #415's shape and this one. An operation
     nobody wrote a policy for fails closed - the alternative default is what let `updateUserRoles`
@@ -184,6 +210,25 @@ def test_a_root_field_with_no_policy_entry_is_refused():
 # moment it is added, and one removed stops being asserted about - neither needs a list here.
 
 _ROLE_GATED = sorted(f for f, requirement in ROOT_FIELD_POLICY.items() if requirement != SIGNED_IN)
+
+
+def _acceptable_roles(field: str) -> list[str]:
+    """Every role that satisfies a field, so the any-of entries are proved once per role rather than
+    once per field. A bare string is a one-element list of itself."""
+    requirement = ROOT_FIELD_POLICY[field]
+    return sorted(requirement) if isinstance(requirement, frozenset) else [requirement]
+
+
+def _expected_refusal(field: str) -> str:
+    requirement = ROOT_FIELD_POLICY[field]
+    if isinstance(requirement, frozenset):
+        return f"{' or '.join(sorted(requirement))} role required"
+    return f"{requirement} role required"
+
+
+# One case per (field, acceptable role): an any-of requirement is only proved by showing EACH of its
+# roles gets in. A frozenset where one name is a typo would otherwise pass on the other one.
+_ROLE_GATED_CASES = [(field, role) for field in _ROLE_GATED for role in _acceptable_roles(field)]
 
 
 @pytest.mark.parametrize("field", sorted(ROOT_FIELD_POLICY), ids=sorted(ROOT_FIELD_POLICY))
@@ -211,15 +256,15 @@ def test_every_role_gated_field_refuses_a_caller_without_the_role(field, monkeyp
         enforce_root_field(field, {"request": _FakeRequest("tok")})
 
     assert excinfo.value.code == "FORBIDDEN", f"{field} admitted a caller holding only Warehouse Staff"
-    assert excinfo.value.message == f"{ROOT_FIELD_POLICY[field]} role required"
+    assert excinfo.value.message == _expected_refusal(field)
 
 
-@pytest.mark.parametrize("field", _ROLE_GATED, ids=_ROLE_GATED)
-def test_every_role_gated_field_admits_a_caller_holding_the_role(field, monkeypatch):
-    """The other direction, per field. A gate nobody can pass is the failure mode a deny-by-default
-    refactor invites: a typo in a role name, or a policy entry pointing at a role Clerk never grants,
-    locks the field for everyone and looks like working security until someone reports it."""
-    role = ROOT_FIELD_POLICY[field]
+@pytest.mark.parametrize("field,role", _ROLE_GATED_CASES, ids=[f"{f}-{r}" for f, r in _ROLE_GATED_CASES])
+def test_every_role_gated_field_admits_a_caller_holding_the_role(field, role, monkeypatch):
+    """The other direction, per field and - for an any-of requirement - per role in it. A gate nobody
+    can pass is the failure mode a deny-by-default refactor invites: a typo in a role name, or a
+    policy entry pointing at a role Clerk never grants, locks the field for everyone and looks like
+    working security until someone reports it."""
     monkeypatch.setattr(auth, "verify_clerk_token", lambda token: {"sub": "u_caller"})
     monkeypatch.setattr(user_repository, "get_user_roles", lambda user_id: [role])
     monkeypatch.setattr(user_repository, "list_users", lambda: [{"id": "u_caller", "roles": [role]}])

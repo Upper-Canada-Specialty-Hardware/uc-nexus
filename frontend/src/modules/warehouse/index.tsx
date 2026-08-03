@@ -3,6 +3,7 @@ import WarehouseLanding from './WarehouseLanding';
 import InventoryView from './InventoryView';
 import LocationsTab from './LocationsTab';
 import ReceivingPage from './ReceivingPage';
+import ReceiveApprovalsPage from './ReceiveApprovalsPage';
 import PullRequestQueue from './PullRequestQueue';
 import PickPage from './PickPage';
 import PutAwayTab from './PutAwayTab';
@@ -20,6 +21,9 @@ export default function WarehouseModule() {
       <Route path="inventory" element={<InventoryView />} />
       <Route path="locations" element={<LocationsTab />} />
       <Route path="receiving" element={<ReceivingPage />} />
+      {/* The manager's queue of counted receives waiting to be posted. Self-gated on the Warehouse
+          Manager role: the route is reachable, the page says what it needs. */}
+      <Route path="receive-approvals" element={<ReceiveApprovalsPage />} />
       {/* Deliveries was its own page until its back-order grid moved onto Receiving; the redirect is
           what keeps a bookmark or an old link working. */}
       <Route path="deliveries" element={<Navigate to="/app/warehouse/receiving" replace />} />

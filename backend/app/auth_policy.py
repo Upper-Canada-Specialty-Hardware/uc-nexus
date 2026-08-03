@@ -30,6 +30,7 @@ import logging
 from app.auth import (
     ADMIN_ROLE,
     SHOP_ASSEMBLY_MANAGER_ROLE,
+    WAREHOUSE_MANAGER_ROLE,
     ForbiddenError,
     authenticated_user_id,
     caller_roles,
@@ -64,13 +65,16 @@ OPEN_OPERATIONS: dict[str, str] = {
     "enrollRelayInstall": "authenticated by the single-use enrollment token, not Clerk",
 }
 
-# Every root field in the schema -> what it requires. SIGNED_IN is any authenticated user; anything
-# else is a Clerk role name the caller must hold.
+# Every root field in the schema -> what it requires. SIGNED_IN is any authenticated user; a bare
+# string is a Clerk role name the caller must hold; a frozenset is satisfied by ANY ONE of the role
+# names in it, for the requirement that is genuinely a choice ("a Warehouse Manager or an admin may
+# approve this receive") rather than a single role with an implicit admin bypass - there is no such
+# bypass anywhere in this table, and adding one silently would be the more dangerous shorthand.
 #
 # Grouped by the app/schemas/ module that defines the resolver, queries before mutations within each
 # group, so this reads as the same map the modules do. The values were lifted from the gate each
 # resolver body called before #423 - this table is that decision, moved, not re-derived.
-ROOT_FIELD_POLICY: dict[str, str] = {
+ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     # --- admin.py -------------------------------------------------------------------------
     "openingHardwareStatus": ADMIN_ROLE,
     # --- buyer.py -------------------------------------------------------------------------
@@ -247,6 +251,7 @@ ROOT_FIELD_POLICY: dict[str, str] = {
     "openingItemDetails": SIGNED_IN,
     "openingItems": SIGNED_IN,
     "openingLeafStatus": SIGNED_IN,
+    "myReceiveDecisions": SIGNED_IN,
     "poReceivingDetails": SIGNED_IN,
     "projectInventoryAvailability": SIGNED_IN,
     "projectProgressByProduct": SIGNED_IN,
@@ -254,6 +259,8 @@ ROOT_FIELD_POLICY: dict[str, str] = {
     "pullRequestDetails": SIGNED_IN,
     "pullRequestOpenings": SIGNED_IN,
     "pullRequests": SIGNED_IN,
+    "receiveDraft": SIGNED_IN,
+    "receiveDrafts": SIGNED_IN,
     "receivingHistoryPos": SIGNED_IN,
     "recentReceiveRecords": SIGNED_IN,
     "unlocatedInventory": SIGNED_IN,
@@ -261,13 +268,21 @@ ROOT_FIELD_POLICY: dict[str, str] = {
     "warehouseDashboard": SIGNED_IN,
     "warehouses": SIGNED_IN,
     "adjustInventoryQuantity": SIGNED_IN,
+    # Approving a draft is what posts the GP receipt and credits inventory, so it is the one receiving
+    # action that needs a role. Rejecting it is the same authority used the other way. Everything else
+    # about a draft - creating, editing, resubmitting, deleting - is SIGNED_IN, because the body
+    # decides it from whose draft it is (author, or a manager overriding), which no field-level
+    # requirement can express.
+    "approveReceiveDraft": frozenset({ADMIN_ROLE, WAREHOUSE_MANAGER_ROLE}),
     "assignInventoryLocation": SIGNED_IN,
     "assignOpeningItemLocation": SIGNED_IN,
     "cancelPullRequest": SIGNED_IN,
     "completePullRequest": SIGNED_IN,
     "confirmPick": SIGNED_IN,
-    "createReceive": SIGNED_IN,
+    "createReceiveDraft": SIGNED_IN,
     "createWarehouse": ADMIN_ROLE,
+    "decideReceiveDecision": SIGNED_IN,
+    "deleteReceiveDraft": SIGNED_IN,
     "deleteWarehouse": ADMIN_ROLE,
     "markInventoryUnlocated": SIGNED_IN,
     "markOpeningItemUnlocated": SIGNED_IN,
@@ -275,10 +290,13 @@ ROOT_FIELD_POLICY: dict[str, str] = {
     "moveInventoryLocation": SIGNED_IN,
     "moveOpeningItemLocation": SIGNED_IN,
     "overrideInventoryQuantity": SIGNED_IN,
+    "rejectReceiveDraft": frozenset({ADMIN_ROLE, WAREHOUSE_MANAGER_ROLE}),
+    "resubmitReceiveDraft": SIGNED_IN,
     "savePickDraft": SIGNED_IN,
     "setPullItemFetched": SIGNED_IN,
     "stagePullOpenings": SIGNED_IN,
     "startPullRequestPick": SIGNED_IN,
+    "updateReceiveDraft": SIGNED_IN,
     "updateWarehouse": ADMIN_ROLE,
 }
 
@@ -325,6 +343,13 @@ def enforce_root_field(field_name: str, context) -> None:
 
     if requirement == SIGNED_IN:
         authenticated_user_id(context)
+        return
+
+    if isinstance(requirement, frozenset):
+        # Any one of them satisfies the field. Sorted in the message so the refusal reads the same
+        # every time - a set's iteration order is not something an error string should expose.
+        if not requirement & set(_roles_for(context, field_name)):
+            raise ForbiddenError(f"{' or '.join(sorted(requirement))} role required")
         return
 
     if requirement not in _roles_for(context, field_name):

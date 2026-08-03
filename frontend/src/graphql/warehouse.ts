@@ -403,6 +403,7 @@ export const GET_WAREHOUSE_DASHBOARD = gql`
       pendingPullShipping
       backOrderedCount
       deficientCount
+      pendingReceiveDraftCount
     }
   }
 `;
@@ -532,14 +533,105 @@ export const ADJUST_INVENTORY_QUANTITY = gql`
   }
 `;
 
-// #353 PR E: the result is now a wrapper. `queued` true means the GP relay was unreachable and the
-// receipt is on the durable outbox - `receiveRecord` is null because the UC Nexus receive is
-// persisted together with the GP write, so nothing is in inventory yet.
-export const CREATE_RECEIVE = gql`
-  mutation CreateReceive($input: CreateReceiveInput!) {
-    createReceive(input: $input) {
+// --- Drafted receives and the approval that posts them ---
+//
+// A receive is two actions now. `createReceiveDraft` records what somebody counted and reaches
+// neither GP nor inventory; `approveReceiveDraft` is the GP-first pipeline `createReceive` used to
+// be, moved behind a Warehouse Manager.
+
+// Shared selection so a draft read from a mutation result is cache-identical to the queue's rows.
+const RECEIVE_DRAFT_FIELDS = `
+  id
+  status
+  poId
+  poNumber
+  projectId
+  warehouseId
+  # The Clerk id and the display name of whoever counted the hardware. The id is what "my drafts"
+  # and the author-only actions key on; the name is what the manager's queue shows.
+  createdByUserId
+  createdBy
+  reviewedBy
+  reviewedAt
+  rejectionReason
+  # What an in-flight approval is holding the draft under, so a reviewer whose approval died
+  # ambiguously can retry with the SAME key and resume rather than start a second one.
+  approvalIdempotencyKey
+  receiveRecordId
+  outboxEntryId
+  totalQuantity
+  createdAt
+  updatedAt
+  lineItems {
+    id
+    poLineItemId
+    hardwareCategory
+    productCode
+    quantityReceived
+    locations { aisle row bay quantity deficientQuantity }
+  }
+`;
+
+export const GET_RECEIVE_DRAFTS = gql`
+  query GetReceiveDrafts($status: ReceiveDraftStatus, $poId: ID, $mine: Boolean) {
+    receiveDrafts(status: $status, poId: $poId, mine: $mine) { ${RECEIVE_DRAFT_FIELDS} }
+  }
+`;
+
+// Scalars only, for the Receiving page's "already counted" chip and the approvals badge. Those want
+// a count per PO and nothing else, and the full selection above would make the backend build every
+// line and rack row of every pending draft in the system on each page load (CLAUDE.md perf rule 3).
+// Apollo normalises both on `id`, so this coexists with the full read rather than competing with it.
+export const GET_PENDING_DRAFT_SUMMARIES = gql`
+  query GetPendingDraftSummaries {
+    receiveDrafts(status: PENDING_APPROVAL) {
+      id
+      poId
+      totalQuantity
+    }
+  }
+`;
+
+export const CREATE_RECEIVE_DRAFT = gql`
+  mutation CreateReceiveDraft($input: CreateReceiveDraftInput!) {
+    createReceiveDraft(input: $input) { ${RECEIVE_DRAFT_FIELDS} }
+  }
+`;
+
+export const UPDATE_RECEIVE_DRAFT = gql`
+  mutation UpdateReceiveDraft($input: UpdateReceiveDraftInput!) {
+    updateReceiveDraft(input: $input) { ${RECEIVE_DRAFT_FIELDS} }
+  }
+`;
+
+export const RESUBMIT_RECEIVE_DRAFT = gql`
+  mutation ResubmitReceiveDraft($id: ID!) {
+    resubmitReceiveDraft(id: $id) { ${RECEIVE_DRAFT_FIELDS} }
+  }
+`;
+
+export const REJECT_RECEIVE_DRAFT = gql`
+  mutation RejectReceiveDraft($input: RejectReceiveDraftInput!) {
+    rejectReceiveDraft(input: $input) { ${RECEIVE_DRAFT_FIELDS} }
+  }
+`;
+
+export const DELETE_RECEIVE_DRAFT = gql`
+  mutation DeleteReceiveDraft($id: ID!) {
+    deleteReceiveDraft(id: $id)
+  }
+`;
+
+// Deliberately the same wrapper the old CREATE_RECEIVE returned (#353 PR E), because it reports the
+// same moment: `queued` true means the GP relay was unreachable and the receipt is on the durable
+// outbox - `receiveRecord` is null because the UC Nexus receive is persisted together with the GP
+// write, so nothing is in inventory yet.
+export const APPROVE_RECEIVE_DRAFT = gql`
+  mutation ApproveReceiveDraft($input: ApproveReceiveDraftInput!) {
+    approveReceiveDraft(input: $input) {
       queued
       outboxEntryId
+      draft { ${RECEIVE_DRAFT_FIELDS} }
       receiveRecord {
         id
         poId

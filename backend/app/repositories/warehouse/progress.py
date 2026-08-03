@@ -118,6 +118,11 @@ def get_warehouse_dashboard(session: Session) -> dict:
         or 0
     )
 
+    # Counted receives waiting on a Warehouse Manager - the approvals badge.
+    from .receive_drafts import count_pending_drafts
+
+    pending_drafts = count_pending_drafts(session)
+
     return {
         "total_item_count": int(inv_stats[0]),
         "total_value": float(inv_stats[1]),
@@ -127,6 +132,7 @@ def get_warehouse_dashboard(session: Session) -> dict:
         "received_last_7_days": int(received_recent),
         "back_ordered_count": int(back_ordered),
         "deficient_count": int(deficient_project) + int(deficient_stock),
+        "pending_receive_draft_count": int(pending_drafts),
     }
 
 

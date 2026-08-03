@@ -1,27 +1,73 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button } from '@mui/material';
 import { Plus } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
+import { useQuery } from '@apollo/client/react';
 import ProjectLandingPage from '../../components/ProjectLandingPage';
 import CreateGpJobDialog from './CreateGpJobDialog';
 import ImportWizard from './ImportWizard';
 import { useIdentity } from '../../hooks/useIdentity';
+import { GET_PROJECTS } from '../../graphql/shared';
 import type { Project } from '../../types/project';
+import type { ImportPurpose } from './types';
+
+/** How the wizard was opened, when something else chose for the user. */
+interface DeepLinkIntent {
+  purpose?: ImportPurpose;
+  fromLatest: boolean;
+}
+
+const PURPOSES: ImportPurpose[] = ['po', 'assembly', 'shipping'];
 
 export default function ImportModule() {
   const { isAdmin } = useIdentity();
   const [createOpen, setCreateOpen] = useState(false);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [wizardOpen, setWizardOpen] = useState(false);
+  const [intent, setIntent] = useState<DeepLinkIntent | null>(null);
+
+  // `?projectId=&purpose=shipping&source=latest` - what "Ship out now" on a keep-or-ship decision
+  // navigates to. The params are consumed and cleared, so closing the wizard does not re-open it.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
+  const consumedRef = useRef(false);
+
+  const projectIdParam = searchParams.get('projectId');
+  const purposeParam = searchParams.get('purpose');
+  const sourceParam = searchParams.get('source');
+  const projects = projectsData?.projects;
+
+  useEffect(() => {
+    if (!projectIdParam || consumedRef.current || !projects) return;
+    const project = projects.find((p) => p.id === projectIdParam);
+    // A project id that matches nothing is a stale link. Clear it and leave the user on the landing
+    // page rather than opening a wizard on the wrong project.
+    consumedRef.current = true;
+    if (project) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot open from the URL
+      setSelectedProject(project);
+      setIntent({
+        purpose: PURPOSES.includes(purposeParam as ImportPurpose)
+          ? (purposeParam as ImportPurpose)
+          : undefined,
+        fromLatest: sourceParam === 'latest',
+      });
+      setWizardOpen(true);
+    }
+    setSearchParams({}, { replace: true });
+  }, [projectIdParam, purposeParam, sourceParam, projects, setSearchParams]);
 
   const handleSelect = (project: Project | null) => {
     if (!project) return;
     setSelectedProject(project);
+    setIntent(null);
     setWizardOpen(true);
   };
 
   const handleWizardClose = () => {
     setWizardOpen(false);
     setSelectedProject(null);
+    setIntent(null);
   };
 
   return (
@@ -54,6 +100,8 @@ export default function ImportModule() {
           open={wizardOpen}
           project={selectedProject}
           onClose={handleWizardClose}
+          initialPurpose={intent?.purpose}
+          autoStartFromLatest={intent?.fromLatest}
         />
       )}
     </>

@@ -803,6 +803,9 @@ def finalize_import_session(
                 notes=po_draft.get("notes"),
                 # Issue #216: the PM's requested date, captured at PO-request creation.
                 preferred_delivery_date=po_draft.get("preferred_delivery_date"),
+                # Whoever finalized this wizard session, from the resolver's Clerk token. It is who a
+                # receive against this PO later asks "inventory or ship out?".
+                created_by_user_id=input_data.get("created_by_user_id"),
             )
             session.add(po)
             session.flush()

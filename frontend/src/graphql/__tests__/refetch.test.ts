@@ -26,6 +26,8 @@ const ROOT_FIELD_OF_QUERY: Record<string, string> = {
   GetDeficiencyReviews: 'deficiencyReviews',
   GetWarehouseDashboard: 'warehouseDashboard',
   GetProjectProgressByProduct: 'projectProgressByProduct',
+  GetReceiveDrafts: 'receiveDrafts',
+  GetMyReceiveDecisions: 'myReceiveDecisions',
 };
 
 const PAIRS: [string, string[], string[]][] = [
@@ -39,6 +41,33 @@ const PAIRS: [string, string[], string[]][] = [
   ['pull staging', refetch.PULL_STAGING_REFETCH_QUERIES, refetch.PULL_STAGING_STALE_ROOT_FIELDS],
   ['pull cancel', refetch.PULL_CANCEL_REFETCH_QUERIES, refetch.PULL_CANCEL_STALE_ROOT_FIELDS],
 ];
+
+it('refetches a draft list after a draft write and never evicts it in the same breath', () => {
+  // A draft write moves nothing in inventory, so the only stale read is the list itself - and one is
+  // always mounted, since the write is launched from it.
+  expect(refetch.RECEIVE_DRAFT_REFETCH_QUERIES).toContain('GetReceiveDrafts');
+  expect(refetch.RECEIVE_APPROVE_REFETCH_QUERIES).toContain('GetReceiveDrafts');
+});
+
+it('makes approval inherit the whole meaning of a receive, without refetching anything twice', () => {
+  // Approval is where the posting moment went, so everything a receive used to invalidate it now
+  // invalidates. The two source lists overlap on the dashboard, and a name listed twice is a query
+  // fetched twice.
+  for (const op of refetch.RECEIVE_REFETCH_QUERIES) {
+    expect(refetch.RECEIVE_APPROVE_REFETCH_QUERIES).toContain(op);
+  }
+  expect(new Set(refetch.RECEIVE_APPROVE_REFETCH_QUERIES).size).toBe(
+    refetch.RECEIVE_APPROVE_REFETCH_QUERIES.length,
+  );
+});
+
+it('refreshes the drafts and the decisions when the GP outbox drains', () => {
+  // A queued approval persists NOTHING until the drain: no receive record, no inventory, and no
+  // keep-or-ship decision. The drain is when all three appear, and it lands while the browser is on
+  // an arbitrary route - which is exactly what refetchQueries cannot reach.
+  expect(refetch.GP_OUTBOX_DRAINED_STALE_ROOT_FIELDS).toContain('receiveDrafts');
+  expect(refetch.GP_OUTBOX_DRAINED_STALE_ROOT_FIELDS).toContain('myReceiveDecisions');
+});
 
 describe('refetch/evict lists stay disjoint', () => {
   it.each(PAIRS)('%s', (_label, refetched, evicted) => {

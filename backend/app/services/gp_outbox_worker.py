@@ -87,6 +87,9 @@ def _persist_create_receive_from_context(context: dict, relay_result: dict, key:
         line_items_data=line_items_data,
         warehouse_id=uuid.UUID(context["warehouse_id"]) if context.get("warehouse_id") else None,
         relay_result=relay_result,
+        # The draft this receipt was approved from, so the drain closes the loop the approval opened.
+        # .get() so a row queued before receives had drafts replays exactly as it used to.
+        receive_draft_id=uuid.UUID(context["receive_draft_id"]) if context.get("receive_draft_id") else None,
     )
 
 
