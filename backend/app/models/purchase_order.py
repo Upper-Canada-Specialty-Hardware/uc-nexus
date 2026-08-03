@@ -69,6 +69,12 @@ class PurchaseOrder(Base):
     # GP BUYERID (POP00101, char 15) picked in the Create/Register PO dialog and sent to GP at push
     # time. Persisted so the generated PO document (issue #230) can pre-fill the Buyer field.
     buyer_id: Mapped[str | None] = mapped_column(String(15), nullable=True)
+    # Clerk user id of the person who raised this PO request - the import wizard user who finalized
+    # it, or the caller of createDraftPo. Taken from the authenticated caller, never an argument
+    # (#427). It exists so a receive against this PO can ask its originator where the hardware should
+    # go (ReceiveDecision); NULL on every PO raised before that question existed, which the decision
+    # read answers by falling back to buyer_id.
+    created_by_user_id: Mapped[str | None] = mapped_column(String, nullable=True)
     vendor_quote_number: Mapped[str | None] = mapped_column(String, nullable=True)
     # Issue #156: optional order-time dollar costs captured during the ordering action (Create PO
     # dialog), editable on the PO afterward. Null means "not entered"; 0 is a valid entered value.

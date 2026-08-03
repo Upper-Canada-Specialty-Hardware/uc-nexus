@@ -43,6 +43,10 @@ from app.repositories import user_repository
 
 ADMIN_ROLE = "Admin/Manager"
 SHOP_ASSEMBLY_MANAGER_ROLE = "Shop Assembly Manager"
+# The role that may approve or reject a drafted receive - the second pair of eyes between a counted
+# truck and a posted GP receipt. Admin/Manager satisfies the same fields, which is why those entries
+# in ROOT_FIELD_POLICY are a frozenset of both rather than this name alone.
+WAREHOUSE_MANAGER_ROLE = "Warehouse Manager"
 
 _CLERK_JWKS_URL = "https://api.clerk.com/v1/jwks"
 _JWKS_TTL_SECONDS = 3600.0
@@ -290,3 +294,17 @@ def require_role(info, role: str) -> dict:
     if role not in roles:
         raise ForbiddenError(f"{role} role required")
     return {"user_id": authenticated_user_id(info.context), "roles": roles}
+
+
+def require_any_role(info, roles: frozenset[str]) -> dict:
+    """`require_role` for a requirement satisfied by any one of several roles. Returns {user_id, roles}.
+
+    Same rule about where requirements belong: if the field ALWAYS needs one of these, put the
+    frozenset in ROOT_FIELD_POLICY and let the extension apply it. This is for the conditional case -
+    `updateReceiveDraft` lets the draft's own author edit it and otherwise needs a Warehouse Manager
+    or an admin, which is only decidable once the body knows whose draft it is.
+    """
+    caller = caller_roles(info.context)
+    if not roles & set(caller):
+        raise ForbiddenError(f"{' or '.join(sorted(roles))} role required")
+    return {"user_id": authenticated_user_id(info.context), "roles": caller}

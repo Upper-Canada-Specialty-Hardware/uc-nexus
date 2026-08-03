@@ -57,6 +57,49 @@ class OpeningItemState(str, enum.Enum):
     SHIPPED_OUT = "SHIPPED_OUT"
 
 
+class ReceiveDraftStatus(str, enum.Enum):
+    """Where a counted-but-not-yet-posted receive is in the approval loop.
+
+    A receive used to be one action: the relay posted the GP receipt and Nexus credited inventory in
+    the same call. It is now two, split at the point where the count stops being one person's word.
+    The draft is Nexus-only - nothing reaches GP and nothing lands on a shelf - until a Warehouse
+    Manager has looked at it.
+
+    APPROVING is a claim, not a resting state. The GP write is a relay round trip, and a database
+    lock cannot be held across it (see the create_receipt call in schemas/warehouse.py), so approve
+    stamps this status in its own committed transaction first. That is what makes a second approver
+    bounce off instead of posting a duplicate GP receipt. A draft parked here is one whose approval
+    died mid-flight; retrying with the same idempotency key resumes it.
+
+    APPROVED with a null receive_record_id is not a contradiction: the relay was offline, the receipt
+    is on the durable outbox, and the ReceiveRecord appears when it drains. The draft is finished
+    either way - what it must never be is approvable a second time.
+    """
+
+    PENDING_APPROVAL = "PENDING_APPROVAL"
+    APPROVING = "APPROVING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+
+
+class ReceiveDecisionStatus(str, enum.Enum):
+    PENDING = "PENDING"
+    DECIDED = "DECIDED"
+
+
+class ReceiveDecisionChoice(str, enum.Enum):
+    """What the person who raised the PO wants done with a shipment that just landed.
+
+    Recording the choice is all this does. SHIP_OUT does not create a shipping-out request: only the
+    hardware schedule knows which opening and leaf a fungible quantity is owed to, so re-attaching
+    that identity stays where it lives - Start a Task, which the frontend deep-links into once the
+    choice is recorded. See docs/HARDWARE_IDENTITY_LIFECYCLE.md.
+    """
+
+    KEEP_IN_INVENTORY = "KEEP_IN_INVENTORY"
+    SHIP_OUT = "SHIP_OUT"
+
+
 class ShopAssemblyRequestStatus(str, enum.Enum):
     PENDING = "PENDING"
     APPROVED = "APPROVED"
@@ -164,6 +207,17 @@ class NotificationType(str, enum.Enum):
     # The outbox absorbs an offline relay silently and by design, so this is the one outcome a human
     # has to be told about - without it, "queued" and "quietly dead" look identical from the floor.
     GP_WRITE_FAILED = "GP_WRITE_FAILED"
+    # A counted receive is waiting on a Warehouse Manager. Addressed to the manager audience, not the
+    # floor: everyone who can approve needs to know there is a queue, and the person who submitted it
+    # already knows.
+    RECEIVE_DRAFT_SUBMITTED = "RECEIVE_DRAFT_SUBMITTED"
+    # A manager sent a draft back. Person-targeted (the author's Clerk user id in recipient_role),
+    # because a rejection is owed to exactly the person who has to act on it.
+    RECEIVE_DRAFT_REJECTED = "RECEIVE_DRAFT_REJECTED"
+    # Hardware somebody ordered has landed and they have to say where it goes - project inventory or
+    # straight back out to site. Person-targeted at the PO's creator: this is a purchasing decision
+    # about their own order, and broadcasting it would make it nobody's.
+    RECEIVE_DECISION_REQUIRED = "RECEIVE_DECISION_REQUIRED"
 
 
 class AuditEntityType(str, enum.Enum):

@@ -17,16 +17,20 @@ import {
   ToggleButtonGroup,
 } from '@mui/material';
 import { useQuery } from '@apollo/client/react';
+import { Link as RouterLink, useSearchParams } from 'react-router-dom';
 import type { GridColDef, GridRowParams } from '@mui/x-data-grid';
 import DataTable from '../../components/DataTable';
 import ReceiveModal from './ReceiveModal';
 import ReceivingHistory from './ReceivingHistory';
+import MyReceiveDraftsView from './MyReceiveDraftsView';
+import { useIdentity } from '../../hooks/useIdentity';
 import { formatPoStatus, poStatusChipColor } from '../po/poStatus';
 import { GET_PROJECTS } from '../../graphql/shared';
 import {
   GET_BACK_ORDERED_ITEMS,
   GET_OPEN_POS,
   GET_RECENT_RECEIVE_RECORDS,
+  GET_PENDING_DRAFT_SUMMARIES,
 } from '../../graphql/warehouse';
 import { poVendorName } from '../po/poVendorName';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
@@ -73,9 +77,12 @@ interface RecentReceiveRecord {
   totalItemsReceived: number;
 }
 
-/** Which half of the page is showing. Receive is what is owed and how to book it; History is what
- *  has already landed, which needs the completed POs the Receive view deliberately drops (#447). */
-type ReceivingView = 'receive' | 'history';
+/** Which part of the dock is showing. Receive is what is owed and how to count it in; My Drafts is
+ *  what the user has counted and is waiting on a manager to post; History is what already landed,
+ *  which needs the completed POs the Receive view deliberately drops (#447). */
+type ReceivingView = 'receive' | 'drafts' | 'history';
+
+const RECEIVING_VIEWS: ReceivingView[] = ['receive', 'drafts', 'history'];
 
 interface BackOrderedItem {
   poLineItemId: string;
@@ -194,11 +201,28 @@ export default function ReceivingPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [modalPOIds, setModalPOIds] = useState<string[]>([]);
   const [selectedPOIds, setSelectedPOIds] = useState<string[]>([]);
-  const [view, setView] = useState<ReceivingView>('receive');
+  const { hasRole, isAdmin } = useIdentity();
+  const canReview = isAdmin || hasRole('Warehouse Manager');
 
-  // Queries. The three receiving lists are skipped while History is showing: they are a different
-  // question, and paying for all three on a page that is not displaying them is the whole cost of
-  // putting two views behind one route.
+  // The view lives in the URL so it can be linked to: the receive modal's success action sends the
+  // user to their drafts, and the bell's rejection notification lands on the same view.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const paramView = searchParams.get('view');
+  const view: ReceivingView = RECEIVING_VIEWS.includes(paramView as ReceivingView)
+    ? (paramView as ReceivingView)
+    : 'receive';
+  const setView = useCallback(
+    (next: ReceivingView) => {
+      // replace, not push: flipping a tab is not a navigation step somebody wants to walk back
+      // through one at a time.
+      setSearchParams(next === 'receive' ? {} : { view: next }, { replace: true });
+    },
+    [setSearchParams],
+  );
+
+  // Queries. The three receiving lists are skipped unless the Receive view is showing: they are a
+  // different question, and paying for all three on a page that is not displaying them is the whole
+  // cost of putting several views behind one route.
   const showReceive = view === 'receive';
   const {
     data: openPOsData,
@@ -227,6 +251,27 @@ export default function ReceivingPage() {
     variables: { projectId: null },
     skip: !showReceive,
   });
+
+  // Everybody's pending drafts, for the "already counted" chip on the PO rows. Scoped to PENDING
+  // rather than mine, because the point of the chip is to stop a SECOND person re-counting a
+  // delivery that is already in the queue. Scalars only - this needs a count per PO, not every
+  // line and rack row of every draft in the system.
+  const { data: pendingDraftsData } = useQuery<{
+    receiveDrafts: { id: string; poId: string; totalQuantity: number }[];
+  }>(GET_PENDING_DRAFT_SUMMARIES, {
+    skip: !showReceive,
+    fetchPolicy: 'cache-and-network',
+  });
+  const pendingDraftsByPoId = useMemo(() => {
+    const map = new Map<string, { id: string; totalQuantity: number }[]>();
+    for (const d of pendingDraftsData?.receiveDrafts ?? []) {
+      const list = map.get(d.poId) ?? [];
+      list.push({ id: d.id, totalQuantity: d.totalQuantity });
+      map.set(d.poId, list);
+    }
+    return map;
+  }, [pendingDraftsData]);
+  const pendingDraftCount = pendingDraftsData?.receiveDrafts?.length ?? 0;
 
   // Project lookup
   const projects = useMemo(() => projectsData?.projects ?? [], [projectsData]);
@@ -297,7 +342,22 @@ export default function ReceivingPage() {
               : status === 'VENDOR_CONFIRMED'
                 ? 'Confirmed'
                 : formatPoStatus(status);
-          return <Chip label={label} color={poStatusChipColor(status)} size="small" />;
+          const pendingDrafts = params.row.pendingDraftCount as number;
+          return (
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, height: '100%' }}>
+              <Chip label={label} color={poStatusChipColor(status)} size="small" />
+              {/* Somebody has already counted a delivery against this PO. Not a block - two
+                  deliveries on one PO is ordinary - but re-counting the same one is not. */}
+              {pendingDrafts > 0 && (
+                <Chip
+                  label={pendingDrafts === 1 ? 'Draft pending' : `${pendingDrafts} drafts pending`}
+                  color="warning"
+                  size="small"
+                  variant="outlined"
+                />
+              )}
+            </Box>
+          );
         },
       },
     ],
@@ -323,9 +383,10 @@ export default function ReceivingPage() {
           pendingLines,
           pendingQty,
           status: po.status,
+          pendingDraftCount: pendingDraftsByPoId.get(po.id)?.length ?? 0,
         };
       }),
-    [openPOsData, projectMap],
+    [openPOsData, projectMap, pendingDraftsByPoId],
   );
 
   const backOrderRows = useMemo(
@@ -385,28 +446,44 @@ export default function ReceivingPage() {
             Receiving
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            {showReceive
-              ? 'Book hardware off a purchase order and into a rack location, and see what is still owed. Every receipt posts to GP.'
-              : 'Every purchase order that reached GP, and what has landed against it. Open a row for its receipts.'}
+            {view === 'receive' &&
+              'Count hardware off a purchase order and into a rack location, and see what is still owed. Receives are submitted as drafts and post to GP when a Warehouse Manager approves them.'}
+            {view === 'drafts' &&
+              'Your counted receives, waiting on a Warehouse Manager. Nothing here has reached GP or inventory yet.'}
+            {view === 'history' &&
+              'Every purchase order that reached GP, and what has landed against it. Open a row for its receipts.'}
           </Typography>
         </Box>
-        {/* Two views of the same dock, not two pages: what is owed, and what already arrived. The
-            History side keeps the completed POs the Receive side drops (#447). */}
-        <ToggleButtonGroup
-          size="small"
-          exclusive
-          value={view}
-          onChange={(_e, next: ReceivingView | null) => {
-            if (next) setView(next);
-          }}
-          aria-label="Receiving view"
-        >
-          <ToggleButton value="receive">Receive</ToggleButton>
-          <ToggleButton value="history">History</ToggleButton>
-        </ToggleButtonGroup>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+          {/* The manager's queue is a different screen, not a fourth tab: it works everybody's
+              drafts, while these three views are all about this user's dock. */}
+          {canReview && (
+            <Button size="small" variant="outlined" component={RouterLink} to="/app/warehouse/receive-approvals">
+              Approvals
+              {pendingDraftsByPoId.size > 0 && ` (${pendingDraftCount})`}
+            </Button>
+          )}
+          {/* Three views of the same dock, not three pages: what is owed, what you have counted, and
+              what already arrived. The History side keeps the completed POs the Receive side drops
+              (#447). */}
+          <ToggleButtonGroup
+            size="small"
+            exclusive
+            value={view}
+            onChange={(_e, next: ReceivingView | null) => {
+              if (next) setView(next);
+            }}
+            aria-label="Receiving view"
+          >
+            <ToggleButton value="receive">Receive</ToggleButton>
+            <ToggleButton value="drafts">My Drafts</ToggleButton>
+            <ToggleButton value="history">History</ToggleButton>
+          </ToggleButtonGroup>
+        </Box>
       </Box>
 
-      {!showReceive && <ReceivingHistory projects={projects} projectMap={projectMap} />}
+      {view === 'drafts' && <MyReceiveDraftsView />}
+      {view === 'history' && <ReceivingHistory projects={projects} projectMap={projectMap} />}
 
       {showReceive && (
         <>
@@ -572,6 +649,7 @@ export default function ReceivingPage() {
         open={modalOpen}
         onClose={handleCloseModal}
         poIds={modalPOIds}
+        pendingDraftsByPoId={pendingDraftsByPoId}
       />
     </Box>
   );

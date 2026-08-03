@@ -29,6 +29,9 @@ import { useGpBuyers } from './useGpBuyers';
 const ALL_ROLES = [
   'Hardware Schedule Import',
   'Warehouse Staff',
+  // Approves and posts the receives Warehouse Staff count in. Backed by WAREHOUSE_MANAGER_ROLE in
+  // backend/app/auth.py - the two strings have to match exactly.
+  'Warehouse Manager',
   'PO User',
   'Shipping Out',
   'Shop Assembly Manager',

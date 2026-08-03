@@ -3,12 +3,17 @@ import { MockedProvider, type MockedResponse } from '@apollo/client/testing/reac
 import { MemoryRouter } from 'react-router-dom';
 import { ToastProvider } from '../../../components/Toast';
 import ReceiveModal from '../ReceiveModal';
-import { GET_PO_RECEIVING_DETAILS, CREATE_RECEIVE } from '../../../graphql/warehouse';
-import { GET_WAREHOUSES, GET_RELAY_STATUS } from '../../../graphql/shared';
+import { GET_PO_RECEIVING_DETAILS, CREATE_RECEIVE_DRAFT } from '../../../graphql/warehouse';
+import { GET_WAREHOUSES } from '../../../graphql/shared';
 
-// variables shape the component sends on CreateReceive (type alias, not interface, so it
+// This dialog counts a delivery in. It used to post the GP receipt too, and everything about that
+// round trip - the relay chip, the queued-outbox panel, the GP receipt number, the eConnect error -
+// moved to the approval, so those assertions now live in ReceiveDraftReviewModal.test.tsx. What is
+// left here is the data entry and the one output it has: a draft was submitted.
+
+// variables shape the component sends on CreateReceiveDraft (type alias, not interface, so it
 // satisfies Apollo's OperationVariables constraint)
-type CreateReceiveVars = {
+type CreateDraftVars = {
   input: {
     poId: string;
     warehouseId: string | null;
@@ -22,24 +27,6 @@ type CreateReceiveVars = {
 };
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-
-function relayMock(): MockedResponse {
-  return {
-    request: { query: GET_RELAY_STATUS },
-    result: {
-      data: {
-        relayStatus: {
-          __typename: 'RelayStatus',
-          connected: true,
-          company: 'UCSH',
-          build: null,
-          installId: null,
-        },
-      },
-    },
-    maxUsageCount: Number.POSITIVE_INFINITY,
-  };
-}
 
 function warehousesMock(): MockedResponse {
   return {
@@ -120,59 +107,29 @@ function poDetailsMock(overrides: Record<string, unknown> = {}): MockedResponse 
   };
 }
 
-// #353 PR E: createReceive returns a wrapper. `queued` false is the online path - the receipt
-// reached GP and the UC Nexus receive was persisted with it.
-function createReceiveData(quantityReceived: number, receiptNumber: string | null = null) {
+function draftResultData() {
   return {
-    createReceive: {
-      __typename: 'CreateReceiveResult',
-      queued: false,
+    createReceiveDraft: {
+      __typename: 'ReceiveDraft',
+      id: 'draft-1',
+      status: 'PENDING_APPROVAL',
+      poId: 'po-1',
+      poNumber: 'PO-123',
+      projectId: 'proj-1',
+      warehouseId: 'wh-1',
+      createdByUserId: 'u_author',
+      createdBy: 'Wendy Warehouse',
+      reviewedBy: null,
+      reviewedAt: null,
+      rejectionReason: null,
+    approvalIdempotencyKey: null,
+      receiveRecordId: null,
       outboxEntryId: null,
-      receiveRecord: {
-        __typename: 'ReceiveRecord',
-        id: 'rr-1',
-        poId: 'po-1',
-        receivedAt: '2026-07-16T10:00:00Z',
-        receivedBy: 'Warehouse',
-        receiptNumber,
-        batchNumber: null,
-        createdAt: '2026-07-16T10:00:00Z',
-        lineItems: [
-          {
-            __typename: 'ReceiveLineItem',
-            id: 'rli-1',
-            receiveRecordId: 'rr-1',
-            poLineItemId: 'li-1',
-            hardwareCategory: 'Hinges',
-            productCode: 'HG-100',
-            quantityReceived,
-            createdAt: '2026-07-16T10:00:00Z',
-          },
-        ],
-      },
+      totalQuantity: 2,
+      createdAt: '2026-08-02T10:00:00Z',
+      updatedAt: '2026-08-02T10:00:00Z',
+      lineItems: [],
     },
-  };
-}
-
-// The relay reported as DOWN. Used to drive the real offline path rather than mocking past it: the
-// queued outcome only ever happens when the relay is unreachable, so a test that reports it connected
-// and just stubs a queued mutation result never touches the gate that decides whether a user can get
-// there at all (#376).
-function offlineRelayMock(): MockedResponse {
-  return {
-    request: { query: GET_RELAY_STATUS },
-    result: {
-      data: {
-        relayStatus: {
-          __typename: 'RelayStatus',
-          connected: false,
-          company: null,
-          build: null,
-          installId: null,
-        },
-      },
-    },
-    maxUsageCount: Number.POSITIVE_INFINITY,
   };
 }
 
@@ -217,15 +174,20 @@ function secondPoDetailsMock(): MockedResponse {
 
 function renderModal(
   extraMocks: MockedResponse[] = [],
-  relay: MockedResponse = relayMock(),
   poIds: string[] = ['po-1'],
+  pendingDraftsByPoId?: Map<string, { id: string; totalQuantity: number }[]>,
 ) {
   const onClose = vi.fn();
   render(
-    <MockedProvider mocks={[relay, warehousesMock(), ...extraMocks]}>
+    <MockedProvider mocks={[warehousesMock(), ...extraMocks]}>
       <MemoryRouter>
         <ToastProvider>
-          <ReceiveModal open onClose={onClose} poIds={poIds} />
+          <ReceiveModal
+            open
+            onClose={onClose}
+            poIds={poIds}
+            pendingDraftsByPoId={pendingDraftsByPoId}
+          />
         </ToastProvider>
       </MemoryRouter>
     </MockedProvider>,
@@ -238,19 +200,10 @@ function renderModal(
 // queries until the transition finishes
 const SLOW = { timeout: 5000 };
 
-// render + wait for the PO grid and the relay-connected chip
+// render + wait for the PO grid
 async function openModal(extraMocks: MockedResponse[] = []) {
   const result = renderModal(extraMocks);
   await screen.findByText('HG-100', undefined, SLOW);
-  await screen.findByText('GP relay connected', undefined, SLOW);
-  return result;
-}
-
-// render + wait for the PO grid and the offline-relay warning
-async function openModalRelayOffline(extraMocks: MockedResponse[] = []) {
-  const result = renderModal(extraMocks, offlineRelayMock());
-  await screen.findByText('HG-100', undefined, SLOW);
-  await screen.findByText(/GP relay offline/, undefined, SLOW);
   return result;
 }
 
@@ -260,8 +213,8 @@ function receiveNowInput() {
   return within(screen.getByRole('grid')).getByRole('spinbutton');
 }
 
-function completeButton() {
-  return screen.getByRole('button', { name: 'Complete Receive' });
+function submitButton() {
+  return screen.getByRole('button', { name: 'Submit for Approval' });
 }
 
 function setReceiveQty(value: string) {
@@ -278,8 +231,8 @@ function fillLocation(idx: number, aisle: string, row: string, bay: string, qty?
 }
 
 async function submitViaConfirm() {
-  fireEvent.click(await screen.findByRole('button', { name: 'Complete Receive' }, SLOW));
-  fireEvent.click(await screen.findByRole('button', { name: 'Receive' }, SLOW));
+  fireEvent.click(await screen.findByRole('button', { name: 'Submit for Approval' }, SLOW));
+  fireEvent.click(await screen.findByRole('button', { name: 'Submit' }, SLOW));
 }
 
 // DataGrid renders are slow under jsdom, and slower still when the whole suite runs in parallel -
@@ -302,22 +255,31 @@ describe('ReceiveModal', () => {
     expect(within(fullRow).getByText('Fully Received')).toBeInTheDocument();
     expect(within(fullRow).queryByRole('spinbutton')).toBeNull();
 
-    expect(completeButton()).toBeDisabled();
+    expect(submitButton()).toBeDisabled();
+  });
+
+  it('says nothing about the GP relay, because drafting never touches it', async () => {
+    // The relay chip and its offline warning moved to the approval. Leaving them here would tell a
+    // warehouse user that whether they can write down what arrived depends on GP being up.
+    await openModal([poDetailsMock()]);
+
+    expect(screen.queryByText(/GP relay/)).toBeNull();
+    expect(screen.queryByText(/queued/i)).toBeNull();
   });
 
   it('enables submit only after a quantity is entered and every unit is placed in a row', async () => {
     await openModal([poDetailsMock()]);
 
-    expect(completeButton()).toBeDisabled();
+    expect(submitButton()).toBeDisabled();
 
     setReceiveQty('3');
     expect(screen.getByText(/placing 3/)).toBeInTheDocument();
     // row fields still blank, so put-away is incomplete
-    expect(completeButton()).toBeDisabled();
+    expect(submitButton()).toBeDisabled();
 
     fillLocation(0, 'A1', 'B2', 'C3');
     expect(screen.getByText('all placed')).toBeInTheDocument();
-    expect(completeButton()).toBeEnabled();
+    expect(submitButton()).toBeEnabled();
   });
 
   it('blocks receiving more than the pending quantity', async () => {
@@ -326,13 +288,13 @@ describe('ReceiveModal', () => {
     setReceiveQty('5'); // pending is only 3
     expect(screen.getByText('Max: 3')).toBeInTheDocument();
     fillLocation(0, 'A1', 'B2', 'C3'); // put-away itself is valid at 5 placed
-    expect(completeButton()).toBeDisabled();
+    expect(submitButton()).toBeDisabled();
 
     // dropping back within pending (and matching the row qty) makes it submittable
     setReceiveQty('3');
     fireEvent.change(screen.getByLabelText('Qty'), { target: { value: '3' } });
     expect(screen.queryByText('Max: 3')).toBeNull();
-    expect(completeButton()).toBeEnabled();
+    expect(submitButton()).toBeEnabled();
   });
 
   it('requires the row split to sum to the received quantity', async () => {
@@ -341,24 +303,26 @@ describe('ReceiveModal', () => {
     setReceiveQty('3');
     fillLocation(0, 'A1', 'B2', 'C3', '2');
     expect(screen.getByText('1 unplaced')).toBeInTheDocument();
-    expect(completeButton()).toBeDisabled();
+    expect(submitButton()).toBeDisabled();
 
     fireEvent.click(screen.getByRole('button', { name: /add location/i }));
     fillLocation(1, 'A2', 'B2', 'C4', '1');
     expect(screen.getByText('all placed')).toBeInTheDocument();
-    expect(completeButton()).toBeEnabled();
+    expect(submitButton()).toBeEnabled();
   });
 
-  it('fires CREATE_RECEIVE with the receive input shape and shows the success state', async () => {
-    let captured: CreateReceiveVars | null = null;
-    const receiveMock: MockedResponse<Record<string, unknown>, CreateReceiveVars> = {
-      request: { query: CREATE_RECEIVE, variables: () => true },
+  it('fires CREATE_RECEIVE_DRAFT with the receive input shape and shows the submitted state', async () => {
+    // The input shape is unchanged from when this posted straight to GP - the same counted lines and
+    // rack rows, now recorded rather than posted - so the assertion is the same one it always was.
+    let captured: CreateDraftVars | null = null;
+    const draftMock: MockedResponse<Record<string, unknown>, CreateDraftVars> = {
+      request: { query: CREATE_RECEIVE_DRAFT, variables: () => true },
       result: (vars) => {
         captured = vars;
-        return { data: createReceiveData(2) };
+        return { data: draftResultData() };
       },
     };
-    const { onClose } = await openModal([poDetailsMock(), receiveMock]);
+    const { onClose } = await openModal([poDetailsMock(), draftMock]);
     await screen.findByText(/Main \(MAIN\)/, undefined, SLOW); // default warehouse selected
 
     setReceiveQty('2');
@@ -366,7 +330,7 @@ describe('ReceiveModal', () => {
     fireEvent.change(screen.getByLabelText('Deficient'), { target: { value: '1' } });
     await submitViaConfirm();
 
-    await screen.findByText(/Receive completed successfully! 2 items added to inventory/, undefined, SLOW);
+    await screen.findByText(/Submitted for approval\. 2 items across 1 PO/, undefined, SLOW);
     expect(captured).toEqual({
       input: {
         poId: 'po-1',
@@ -381,46 +345,105 @@ describe('ReceiveModal', () => {
         ],
       },
     });
-    expect(await screen.findByRole('button', { name: 'Put Away Items' }, SLOW)).toBeInTheDocument();
+    // Nothing is in inventory and GP has numbered nothing, so neither may be claimed.
+    expect(screen.queryByText(/added to inventory/)).toBeNull();
+    expect(screen.queryByText(/GP Receipt/)).toBeNull();
+    expect(await screen.findByRole('button', { name: 'View My Drafts' }, SLOW)).toBeInTheDocument();
     expect(onClose).not.toHaveBeenCalled();
   });
 
   it('keeps the modal open and surfaces the error when the mutation fails', async () => {
-    const receiveMock: MockedResponse = {
-      request: { query: CREATE_RECEIVE, variables: () => true },
-      error: new Error('GP receipt rejected'),
+    const draftMock: MockedResponse = {
+      request: { query: CREATE_RECEIVE_DRAFT, variables: () => true },
+      error: new Error('draft rejected'),
     };
-    const { onClose } = await openModal([poDetailsMock(), receiveMock]);
+    const { onClose } = await openModal([poDetailsMock(), draftMock]);
 
     setReceiveQty('3');
     fillLocation(0, 'A1', 'B2', 'C3');
     await submitViaConfirm();
 
-    await screen.findByText(/Receiving PO-123 failed - see the GP error detail below/, undefined, SLOW);
-    expect(screen.getByText('GP could not complete the receipt')).toBeInTheDocument();
-    expect(screen.getByText('GP receipt rejected')).toBeInTheDocument();
-    expect(screen.queryByText(/Receive completed successfully/)).toBeNull();
+    await screen.findByText(/Submitting PO-123 failed/, undefined, SLOW);
+    expect(screen.queryByText(/Submitted for approval/)).toBeNull();
     expect(onClose).not.toHaveBeenCalled();
     // still on the editing actions, so the user can retry
-    expect(await screen.findByRole('button', { name: 'Complete Receive' }, SLOW)).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Submit for Approval' }, SLOW)).toBeInTheDocument();
   });
 
-  it('keeps the GP receipt numbers of the POs that committed when a later one fails', async () => {
-    // A batch commits PO by PO, and the numbers GP gave the ones that landed are real whatever
-    // happens to the rest. They used to be published only in the all-green case, so a batch that
-    // failed on its second PO showed the user an error and no way back to what had posted.
-    const committed: MockedResponse<Record<string, unknown>, CreateReceiveVars> = {
-      request: { query: CREATE_RECEIVE, variables: () => true },
-      result: { data: createReceiveData(3, 'RCT0000123') },
+  it('reuses the same idempotency key when retrying a failed PO', async () => {
+    // A retry after a timeout that actually committed must not leave two counts of one delivery in
+    // the approval queue.
+    const keys: string[] = [];
+    const failMock: MockedResponse<Record<string, unknown>, CreateDraftVars> = {
+      request: {
+        query: CREATE_RECEIVE_DRAFT,
+        variables: (vars) => {
+          keys.push(vars.input.idempotencyKey);
+          return true;
+        },
+      },
+      error: new Error('network blip'),
     };
-    const failed: MockedResponse = {
-      request: { query: CREATE_RECEIVE, variables: () => true },
-      error: new Error('GP receipt rejected'),
+    const successMock: MockedResponse<Record<string, unknown>, CreateDraftVars> = {
+      request: { query: CREATE_RECEIVE_DRAFT, variables: () => true },
+      result: (vars) => {
+        keys.push(vars.input.idempotencyKey);
+        return { data: draftResultData() };
+      },
     };
-    renderModal([poDetailsMock(), secondPoDetailsMock(), committed, failed], relayMock(), [
-      'po-1',
-      'po-2',
-    ]);
+    await openModal([poDetailsMock(), failMock, successMock]);
+
+    setReceiveQty('3');
+    fillLocation(0, 'A1', 'B2', 'C3');
+    await submitViaConfirm();
+    await screen.findByText(/Submitting PO-123 failed/, undefined, SLOW);
+
+    await submitViaConfirm();
+    await screen.findByText(/Submitted for approval\. 3 items/, undefined, SLOW);
+
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toMatch(UUID_RE);
+    expect(keys[1]).toBe(keys[0]);
+  });
+
+  it('warns without blocking when a PO already has a draft awaiting approval', async () => {
+    // Two deliveries against one PO is ordinary; re-counting the same one is not. The backend's
+    // approval claim is the enforcement point, so this only has to be visible.
+    const pending = new Map([['po-1', [{ id: 'draft-9', totalQuantity: 2 }]]]);
+    renderModal([poDetailsMock()], ['po-1'], pending);
+    await screen.findByText('HG-100', undefined, SLOW);
+
+    expect(screen.getByText(/already has a receive awaiting approval \(2 units\)/)).toBeInTheDocument();
+
+    setReceiveQty('3');
+    fillLocation(0, 'A1', 'B2', 'C3');
+    expect(submitButton()).toBeEnabled();
+  });
+
+  it('blocks receiving a PO that is not GP-registered', async () => {
+    // Still a hard block, unlike the GP-job quarantine: such a draft could never be approved at all,
+    // and pushing the PO to GP is a different user's job.
+    await openModal([poDetailsMock({ gpCompany: null })]);
+
+    expect(screen.getByText(/isn't registered in GP yet/)).toBeInTheDocument();
+
+    // even a fully valid receive stays blocked
+    setReceiveQty('3');
+    fillLocation(0, 'A1', 'B2', 'C3');
+    expect(submitButton()).toBeDisabled();
+  });
+
+  it('counts a multi-PO batch into one draft per PO', async () => {
+    const seen: string[] = [];
+    const draftMock: MockedResponse<Record<string, unknown>, CreateDraftVars> = {
+      request: { query: CREATE_RECEIVE_DRAFT, variables: () => true },
+      maxUsageCount: 2,
+      result: (vars) => {
+        seen.push(vars.input.poId);
+        return { data: draftResultData() };
+      },
+    };
+    renderModal([poDetailsMock(), secondPoDetailsMock(), draftMock], ['po-1', 'po-2']);
     await screen.findByText('HG-100', undefined, SLOW);
     await screen.findByText('CL-300', undefined, SLOW);
 
@@ -431,130 +454,7 @@ describe('ReceiveModal', () => {
     fillLocation(1, 'A2', 'B3', 'C4');
     await submitViaConfirm();
 
-    await screen.findByText(/Receiving PO-456 failed/, undefined, SLOW);
-    expect(screen.getByText('RCT0000123')).toBeInTheDocument();
-    // Named, because half the batch is not in GP and "which PO is this the receipt for" is the
-    // whole question.
-    expect(screen.getByText('PO-123')).toBeInTheDocument();
-    expect(screen.queryByText(/Receive completed successfully/)).toBeNull();
-  });
-
-  it('reuses the same idempotency key when retrying a failed PO', async () => {
-    const keys: string[] = [];
-    const failMock: MockedResponse<Record<string, unknown>, CreateReceiveVars> = {
-      request: {
-        query: CREATE_RECEIVE,
-        variables: (vars) => {
-          keys.push(vars.input.idempotencyKey);
-          return true;
-        },
-      },
-      error: new Error('gp temporarily down'),
-    };
-    const successMock: MockedResponse<Record<string, unknown>, CreateReceiveVars> = {
-      request: { query: CREATE_RECEIVE, variables: () => true },
-      result: (vars) => {
-        keys.push(vars.input.idempotencyKey);
-        return { data: createReceiveData(3) };
-      },
-    };
-    await openModal([poDetailsMock(), failMock, successMock]);
-
-    setReceiveQty('3');
-    fillLocation(0, 'A1', 'B2', 'C3');
-    await submitViaConfirm();
-    await screen.findByText(/Receiving PO-123 failed/, undefined, SLOW);
-
-    await submitViaConfirm();
-    await screen.findByText(/Receive completed successfully! 3 items added to inventory/, undefined, SLOW);
-
-    expect(keys).toHaveLength(2);
-    expect(keys[0]).toMatch(UUID_RE);
-    expect(keys[1]).toBe(keys[0]);
-  });
-
-  it('shows the queued outcome and keeps the idempotency key when the GP relay is offline', async () => {
-    // #353 PR E: an offline relay no longer fails the receive - it is accepted onto the outbox. The
-    // key must NOT be cleared: the outbox row owns it, and reusing it is what makes a resubmit return
-    // the same queued entry instead of queueing a second receipt.
-    const keys: string[] = [];
-    const queuedMock: MockedResponse<Record<string, unknown>, CreateReceiveVars> = {
-      request: { query: CREATE_RECEIVE, variables: () => true },
-      maxUsageCount: 2,
-      result: (vars) => {
-        keys.push(vars.input.idempotencyKey);
-        return {
-          data: {
-            createReceive: {
-              __typename: 'CreateReceiveResult',
-              queued: true,
-              outboxEntryId: 'outbox-1',
-              receiveRecord: null,
-            },
-          },
-        };
-      },
-    };
-    await openModal([poDetailsMock(), queuedMock]);
-
-    setReceiveQty('3');
-    fillLocation(0, 'A1', 'B2', 'C3');
-    await submitViaConfirm();
-
-    await screen.findByText(/Queued — the GP relay is offline/, undefined, SLOW);
-    // Not an inventory claim: nothing has been persisted yet.
-    expect(screen.queryByText(/items added to inventory/)).toBeNull();
-    expect(keys).toHaveLength(1);
-    expect(keys[0]).toMatch(UUID_RE);
-  });
-
-  it('lets a receive be submitted while the GP relay is offline, and queues it', async () => {
-    // #376: the queued outcome above was unreachable in the running app. Complete Receive was disabled
-    // on !relayConnected - exactly the condition that produces a queued receipt - so the outbox path,
-    // its amber panel and this behaviour existed only under a mock. The relay state is advisory now:
-    // a warehouse user who has counted the hardware can record it, and it posts itself later.
-    const queuedMock: MockedResponse<Record<string, unknown>, CreateReceiveVars> = {
-      request: { query: CREATE_RECEIVE, variables: () => true },
-      result: {
-        data: {
-          createReceive: {
-            __typename: 'CreateReceiveResult',
-            queued: true,
-            outboxEntryId: 'outbox-9',
-            receiveRecord: null,
-          },
-        },
-      },
-    };
-    await openModalRelayOffline([poDetailsMock(), queuedMock]);
-
-    setReceiveQty('3');
-    fillLocation(0, 'A1', 'B2', 'C3');
-    expect(completeButton()).toBeEnabled(); // the gate that used to make this unreachable
-
-    await submitViaConfirm();
-
-    await screen.findByText(/Queued — the GP relay is offline/, undefined, SLOW);
-    expect(screen.queryByText(/items added to inventory/)).toBeNull();
-  });
-
-  it('still blocks a receive on the things that are genuinely invalid while the relay is offline', async () => {
-    // the relay going advisory must not weaken the real validation - an empty receive is still refused.
-    await openModalRelayOffline([poDetailsMock()]);
-
-    expect(completeButton()).toBeDisabled(); // nothing entered yet
-    setReceiveQty('3');
-    expect(completeButton()).toBeDisabled(); // put-away location still missing
-  });
-
-  it('blocks receiving a PO that is not GP-registered', async () => {
-    await openModal([poDetailsMock({ gpCompany: null })]);
-
-    expect(screen.getByText(/isn't registered in GP yet/)).toBeInTheDocument();
-
-    // even a fully valid receive stays blocked
-    setReceiveQty('3');
-    fillLocation(0, 'A1', 'B2', 'C3');
-    expect(completeButton()).toBeDisabled();
+    await screen.findByText(/Submitted for approval\. 7 items across 2 POs/, undefined, SLOW);
+    expect(seen).toEqual(['po-1', 'po-2']);
   });
 });

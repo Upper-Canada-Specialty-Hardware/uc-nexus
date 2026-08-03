@@ -27,13 +27,14 @@ from pathlib import Path
 
 import pytest
 
-from app.auth import ADMIN_ROLE, SHOP_ASSEMBLY_MANAGER_ROLE
+from app.auth import ADMIN_ROLE, SHOP_ASSEMBLY_MANAGER_ROLE, WAREHOUSE_MANAGER_ROLE
 from app.auth_policy import OPEN_OPERATIONS, ROOT_FIELD_POLICY, ROSTER_BACKED, SIGNED_IN
 from main import schema
 
 # The requirements a policy entry may name. A typo'd role - "Admin/Manger" - would otherwise be a
 # field nobody can call, since the check is a membership test against what Clerk returns.
-_VALID_REQUIREMENTS = {SIGNED_IN, ADMIN_ROLE, SHOP_ASSEMBLY_MANAGER_ROLE}
+_VALID_REQUIREMENTS = {SIGNED_IN, ADMIN_ROLE, SHOP_ASSEMBLY_MANAGER_ROLE, WAREHOUSE_MANAGER_ROLE}
+_VALID_ROLES = _VALID_REQUIREMENTS - {SIGNED_IN}
 
 _graphql_schema = schema._schema
 _ROOT_FIELDS = set(_graphql_schema.query_type.fields) | set(_graphql_schema.mutation_type.fields)
@@ -88,9 +89,21 @@ def test_no_field_is_both_gated_and_open():
 @pytest.mark.parametrize("field", sorted(ROOT_FIELD_POLICY), ids=sorted(ROOT_FIELD_POLICY))
 def test_policy_requirement_is_one_the_gate_understands(field):
     requirement = ROOT_FIELD_POLICY[field]
+    if isinstance(requirement, frozenset):
+        # An any-of requirement. Empty would refuse everyone, and SIGNED_IN inside a set is
+        # meaningless - the gate reads it as a role name and nobody holds a role called "@signed-in".
+        assert requirement, f"{field} requires an empty frozenset, which no caller can ever satisfy."
+        unknown = sorted(requirement - _VALID_ROLES)
+        assert not unknown, (
+            f"{field} may be satisfied by {unknown}, which are not roles this codebase grants "
+            f"({sorted(_VALID_ROLES)}). The gate tests membership against what Clerk returns, so a "
+            f"requirement nobody can hold locks the field for everyone."
+        )
+        return
+
     assert requirement in _VALID_REQUIREMENTS, (
         f"{field} requires {requirement!r}, which is neither SIGNED_IN nor a role this codebase "
-        f"grants ({sorted(_VALID_REQUIREMENTS - {SIGNED_IN})}). The gate tests membership against "
+        f"grants ({sorted(_VALID_ROLES)}). The gate tests membership against "
         f"what Clerk returns, so a requirement nobody can hold locks the field for everyone."
     )
 

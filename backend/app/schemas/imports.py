@@ -5,6 +5,7 @@ from dataclasses import replace
 
 import strawberry
 
+from app.auth import current_user
 from app.database import SessionLocal
 from app.errors import InventoryShortfallError
 from app.repositories import (
@@ -230,6 +231,10 @@ class ImportMutations:
             else None,
             "replace_schedule": input.replace_schedule,
             "acknowledge_incomplete_leaves": input.acknowledge_incomplete_leaves,
+            # Whoever finalized the wizard owns the PO requests it mints, from the Clerk token rather
+            # than an argument (#427). A receive against one of those POs later asks them whether the
+            # shipment stays in the project's inventory or ships straight out.
+            "created_by_user_id": current_user(info)["user_id"],
         }
 
         with SessionLocal() as session:

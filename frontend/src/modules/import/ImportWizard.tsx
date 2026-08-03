@@ -182,9 +182,22 @@ interface ImportWizardProps {
   open: boolean;
   project: Project;
   onClose: () => void;
+  /** Preselect the purpose when the wizard was opened from somewhere that already knows it - the
+   *  keep-or-ship decision's "Ship out now" being the only such caller today. */
+  initialPurpose?: ImportPurpose;
+  /** Skip the upload step by loading the project's last persisted schedule, when there is one. Same
+   *  caller: they came from a decision about hardware on an existing project, so the schedule that
+   *  hardware was bought against is by definition already imported. */
+  autoStartFromLatest?: boolean;
 }
 
-export default function ImportWizard({ open, project, onClose }: ImportWizardProps) {
+export default function ImportWizard({
+  open,
+  project,
+  onClose,
+  initialPurpose,
+  autoStartFromLatest,
+}: ImportWizardProps) {
   const { showToast } = useToast();
   const { setTotalSteps, reset: resetWizardContext } = useWizard();
   const navigate = useNavigate();
@@ -780,6 +793,58 @@ export default function ImportWizard({ open, project, onClose }: ImportWizardPro
     parser.hydrate(mapScheduleResponseToParseResult(persisted));
     setHydratedFromPersisted(true);
   }, [parser, scheduleData]);
+
+  // --- Deep link (keep-or-ship "Ship out now") ---
+  //
+  // Three effects rather than one, because they wait on different things: the purpose can be set the
+  // moment the wizard opens, starting from the persisted schedule has to wait for the eager fetch
+  // above to answer, and skipping the upload step has to wait for the hydrate. Each is consumed
+  // once - a ref rather than a state flag, so re-running one cannot fight the user who has since
+  // walked back and chosen something else.
+  const seededPurposeRef = useRef(false);
+  const autoStartedRef = useRef(false);
+  const advancedRef = useRef(false);
+
+  useEffect(() => {
+    if (!open) {
+      seededPurposeRef.current = false;
+      autoStartedRef.current = false;
+      advancedRef.current = false;
+      return;
+    }
+    if (seededPurposeRef.current || !initialPurpose) return;
+    // 'shipping' and 'assembly' both need an existing schedule. Silently setting one on a project
+    // that has none would land the user on a disabled radio with no explanation, so leave the step
+    // to explain itself instead.
+    if (initialPurpose !== 'po' && !isReimport) return;
+    seededPurposeRef.current = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot seed from the deep link
+    setPurpose(initialPurpose);
+  }, [open, initialPurpose, isReimport]);
+
+  useEffect(() => {
+    if (!open || !autoStartFromLatest || autoStartedRef.current) return;
+    // Wait for the persisted schedule; if the project turns out to have none, the upload step stays
+    // where it is and the user picks a file, which is the honest fallback.
+    if (!canStartFromLatest || parser.state !== 'idle') return;
+    autoStartedRef.current = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- pressing "use last schedule" for the user; there is no external event to hang it off
+    handleLoadFromLatest();
+  }, [open, autoStartFromLatest, canStartFromLatest, parser.state, handleLoadFromLatest]);
+
+  useEffect(() => {
+    // Once hydrated with a purpose already chosen, both of the upload step's jobs are done - drop
+    // the user straight on the openings they came to pick.
+    //
+    // One-shot, like its two siblings. Without the guard this fires again the moment the user walks
+    // Back to the upload step, bouncing them forward and making that step unreachable for the rest
+    // of the session - which is the only place to choose a different schedule source.
+    if (!open || !autoStartFromLatest || !hydratedFromPersisted || !purpose) return;
+    if (advancedRef.current || activeStepId !== 'upload') return;
+    advancedRef.current = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- advance past the steps the deep link answered
+    setActiveStepId('openings');
+  }, [open, autoStartFromLatest, hydratedFromPersisted, purpose, activeStepId]);
 
   const resetDownstreamWizardState = useCallback(() => {
     setPurpose(null);
