@@ -66,6 +66,44 @@ describe('buildMaterialLines', () => {
     ).toEqual(['(2) Units of AD8406 - Locksets']);
   });
 
+  it('reprints the placement a shipped leaf was stored with, so the copy matches the original', () => {
+    // #452: the reprint is what gets pulled up in a site dispute. It used to rebuild the material
+    // lines without the placement suffix, so one shipment produced two different documents.
+    expect(
+      slipMaterialLines([
+        {
+          id: '1',
+          itemType: 'OPENING_ITEM',
+          openingNumber: '0019-EX',
+          leaf: 2,
+          building: 'A',
+          floor: '1',
+          location: 'Rm 101',
+          productCode: null,
+          hardwareCategory: null,
+          quantity: 1,
+        },
+      ]),
+    ).toEqual(['(1) Unit of Opening 0019-EX Leaf 2 - A / 1 / Rm 101']);
+  });
+
+  it('prints a slip cut before the placement was stored exactly as it was issued', () => {
+    // Pre-#452 rows have no placement, and a reprint must not invent one by chasing the OpeningItem.
+    expect(
+      slipMaterialLines([
+        {
+          id: '1',
+          itemType: 'OPENING_ITEM',
+          openingNumber: '0019-EX',
+          leaf: 2,
+          productCode: null,
+          hardwareCategory: null,
+          quantity: 1,
+        },
+      ]),
+    ).toEqual(['(1) Unit of Opening 0019-EX Leaf 2']);
+  });
+
   it('keeps assembled leaves ahead of loose hardware', () => {
     const lines = slipMaterialLines([
       {

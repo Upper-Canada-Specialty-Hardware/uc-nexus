@@ -365,6 +365,11 @@ type PackingSlipItem {
   opening_number: String
   # Door leaf (#335), snapshotted from the shipped OpeningItem. Null on a LOOSE line.
   leaf: Int
+  # Where the leaf was going (#452), snapshotted at confirm so a reprinted Delivery Request prints
+  # the same MATERIAL DESCRIPTION the driver was handed. Null on a LOOSE line and on pre-#452 rows.
+  building: String
+  floor: String
+  location: String
   product_code: String!
   hardware_category: String!
   quantity: Int!
