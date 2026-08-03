@@ -7,7 +7,7 @@ performance rules in CLAUDE.md before adding a field that walks a new relationsh
 import strawberry
 
 from app.models.project import Project as ProjectModel
-from app.repositories import project_repository
+from app.repositories import project_repository, shipping_repository
 
 from .enums import GpOutboxStatus, PipelineStage
 from .types import (
@@ -969,7 +969,16 @@ def packing_slip_to_type(ps) -> PackingSlip:
     Shared by the list read, the confirm and the three lifecycle mutations, which is deliberate: they
     all answer with the same PackingSlip, and Apollo normalises on `id`, so a mutation returning a
     narrower shape than the list would leave the row it just changed half-stale in the cache.
+
+    The header is copied off `DELIVERY_REQUEST_FIELDS` rather than named field by field (#453). Named
+    here, a twenty-first field that reached the column and the input but not this function would read
+    back as null on every query while the write looked like it had worked - and nothing about that
+    fails a build.
     """
+    header = {field: getattr(ps, field) for field in shipping_repository.DELIVERY_REQUEST_FIELDS}
+    # The one header column that is not already a GraphQL scalar: weight_lbs is Numeric(10, 2), which
+    # comes back as Decimal, and Strawberry's Float will not take one.
+    header["weight_lbs"] = float(header["weight_lbs"]) if header["weight_lbs"] is not None else None
     return PackingSlip(
         id=strawberry.ID(str(ps.id)),
         packing_slip_number=ps.packing_slip_number,
@@ -978,26 +987,7 @@ def packing_slip_to_type(ps) -> PackingSlip:
         shipped_by=ps.shipped_by,
         shipped_at=ps.shipped_at,
         created_at=ps.created_at,
-        pickup_date=ps.pickup_date,
-        delivery_date=ps.delivery_date,
-        shipper_email=ps.shipper_email,
-        shipper_phone=ps.shipper_phone,
-        pickup_location=ps.pickup_location,
-        carrier_tag_bol=ps.carrier_tag_bol,
-        weight_lbs=float(ps.weight_lbs) if ps.weight_lbs is not None else None,
-        delivery_address=ps.delivery_address,
-        special_instructions=ps.special_instructions,
-        gate_number=ps.gate_number,
-        forklift_onsite=ps.forklift_onsite,
-        material_coming_back=ps.material_coming_back,
-        site_material_included=ps.site_material_included,
-        construction_temp_keys=ps.construction_temp_keys,
-        extra_frame_anchors=ps.extra_frame_anchors,
-        contractor_contact_name=ps.contractor_contact_name,
-        contractor_contact_phone=ps.contractor_contact_phone,
-        ucsh_contact_name=ps.ucsh_contact_name,
-        ucsh_contact_phone=ps.ucsh_contact_phone,
-        sales_order_number=ps.sales_order_number,
+        **header,
         picked_up_at=ps.picked_up_at,
         picked_up_by=ps.picked_up_by,
         delivered_at=ps.delivered_at,

@@ -95,34 +95,45 @@ type PackingSlip {
   items: [PackingSlipItem!]!
 }
 
-input UpdateShipmentDetailsInput {
-  id: ID!
-  # Full replace: every field is applied as given and null CLEARS. The client sends all of them on
-  # every edit, blanks as explicit nulls, or a field could never be emptied once filled.
-  pickupDate: Date
-  deliveryDate: Date
-  shipperEmail: String
-  shipperPhone: String
-  pickupLocation: String
-  carrierTagBol: String
-  weightLbs: Float
-  deliveryAddress: String
-  specialInstructions: String
-  gateNumber: String
-  forkliftOnsite: String
-  materialComingBack: String
-  siteMaterialIncluded: String
-  constructionTempKeys: String
-  extraFrameAnchors: String
-  contractorContactName: String
-  contractorContactPhone: String
-  ucshContactName: String
-  ucshContactPhone: String
-  salesOrderNumber: String
+# --- The Delivery Request header, once (#453) ---------------------------------------------------
+# Both inputs below carry EVERY field in this block, all optional. It is a shared Strawberry base
+# (DeliveryRequestHeaderInput in app/schemas/inputs.py) whose fields are flattened into each
+# subclass, so the real schema shows them on both inputs and has no type of this name.
+#
+#   pickupDate: Date
+#   deliveryDate: Date
+#   shipperEmail: String
+#   shipperPhone: String
+#   pickupLocation: String
+#   carrierTagBol: String
+#   weightLbs: Float
+#   deliveryAddress: String
+#   specialInstructions: String
+#   gateNumber: String
+#   forkliftOnsite: String
+#   materialComingBack: String
+#   siteMaterialIncluded: String
+#   constructionTempKeys: String
+#   extraFrameAnchors: String
+#   contractorContactName: String
+#   contractorContactPhone: String
+#   ucshContactName: String
+#   ucshContactPhone: String
+#   salesOrderNumber: String
+
+input ConfirmShipmentInput {
+  projectId: ID!
+  packingSlipNumber: String!
+  items: [ShipmentItemInput!]!
+  # + every field of the Delivery Request header block above.
 }
 
-# ConfirmShipmentInput carries projectId, packingSlipNumber, items and the same header fields as
-# UpdateShipmentDetailsInput above, all optional.
+input UpdateShipmentDetailsInput {
+  id: ID!
+  # + every field of the Delivery Request header block above. Full replace: each is applied as given
+  # and null CLEARS. The client sends all of them on every edit, blanks as explicit nulls, or a field
+  # could never be emptied once filled.
+}
 
 # --- Ship-ready / packing slips / returns (existing) ---
 
