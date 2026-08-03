@@ -4,7 +4,8 @@ export interface CartItem {
   id: string;
   itemType: 'Loose' | 'Opening_Item';
   openingItemId?: string;
-  openingNumber?: string;
+  /** Null on loose stock requested straight off inventory (#451) - it is owed to the job. */
+  openingNumber?: string | null;
   // Door leaf (#311) for an assembled opening item; null/undefined for loose or legacy.
   leaf?: number | null;
   hardwareCategory?: string;

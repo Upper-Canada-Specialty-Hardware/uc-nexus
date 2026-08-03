@@ -779,7 +779,9 @@ class PullRequestItem:
     id: strawberry.ID
     pull_request_id: strawberry.ID
     item_type: PullRequestItemType
-    opening_number: str
+    # Null on a line whose request was raised straight off inventory (#451) - shelf stock carries no
+    # opening. Schedule-driven lines keep theirs.
+    opening_number: str | None
     opening_item_id: strawberry.ID | None
     # Deficient shop-assembly checklist item this line replaces (#339). Set only on PR-REPL lines.
     sa_opening_item_id: strawberry.ID | None
@@ -1050,7 +1052,8 @@ class ShippingOutRequestItem:
     id: strawberry.ID
     shipping_out_request_id: strawberry.ID
     item_type: PullRequestItemType
-    opening_number: str
+    # Null on a line raised straight off inventory (#451) - shelf stock carries no opening.
+    opening_number: str | None
     opening_item_id: strawberry.ID | None
     # Door leaf this request line is for (#335): 1 or 2 on an OPENING_ITEM line, null on LOOSE.
     leaf: int | None
@@ -1240,7 +1243,9 @@ class InventoryHierarchyNode:
 
 @strawberry.type
 class ShipReadyLooseItem:
-    opening_number: str
+    # Null on stock pulled by a request raised straight off inventory (#451) - it is owed to the
+    # project, not to a door.
+    opening_number: str | None
     hardware_category: str
     product_code: str
     available_quantity: int
@@ -1354,7 +1359,9 @@ class PickSheetLeaf:
     Every leaf is listed, never summarised into "and N more": the picker is building carts per leaf,
     so the list of leaves *is* the work, and a truncated one sends them back to another screen."""
 
-    opening_number: str
+    # Null on an unattributed line (#451): the units are owed to the project, not to a door, so
+    # there is no cart to name and the picker just puts them on the shipment.
+    opening_number: str | None
     leaf: int | None
     quantity: int
 
@@ -1410,7 +1417,7 @@ class PickSheetFetchItem:
 
     pull_request_item_id: strawberry.ID
     opening_item_id: strawberry.ID | None
-    opening_number: str
+    opening_number: str | None
     leaf: int | None
     aisle: str | None
     row: str | None

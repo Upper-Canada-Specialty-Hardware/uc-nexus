@@ -175,6 +175,10 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "acceptShippingOutRequest": SIGNED_IN,
     "confirmShipment": SIGNED_IN,
     "createShipmentReturn": SIGNED_IN,
+    # Raising and correcting a request from the Shipping module (#451). SIGNED_IN like the accept
+    # beside them: the same people work this board, and both are gated on request state, not role.
+    "createShippingOutRequest": SIGNED_IN,
+    "editShippingOutRequest": SIGNED_IN,
     "rejectShippingOutRequest": SIGNED_IN,
     "reopenShippingOutRequest": SIGNED_IN,
     # The Delivery Request lifecycle (#447), SIGNED_IN for the same reason confirmShipment is: the

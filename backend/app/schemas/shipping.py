@@ -6,7 +6,7 @@ import strawberry
 
 from app.auth import current_user, resolve_display_name
 from app.database import SessionLocal
-from app.repositories import shipping_coverage, shipping_repository
+from app.repositories import shipping_coverage, shipping_repository, shipping_requests
 
 from .converters import (
     opening_item_to_type,
@@ -15,7 +15,14 @@ from .converters import (
     shipping_out_request_to_type,
 )
 from .enums import LeafStatus, ShippingOutRequestStatus
-from .inputs import ConfirmShipmentInput, CreateShipmentReturnInput, UpdateShipmentDetailsInput
+from .inputs import (
+    ConfirmShipmentInput,
+    CreateShipmentReturnInput,
+    CreateShippingOutRequestInput,
+    EditShippingOutRequestInput,
+    ShippingOutPRDraftItemInput,
+    UpdateShipmentDetailsInput,
+)
 from .types import (
     PackingSlip,
     ReturnableLine,
@@ -136,8 +143,76 @@ class ShippingQueries:
             ]
 
 
+def _request_items(items: list[ShippingOutPRDraftItemInput]) -> list[dict]:
+    """Request lines off a mutation input, keyed the way the repository builds them."""
+    return [
+        {
+            "item_type": item.item_type.value,
+            "opening_number": item.opening_number,
+            "opening_item_id": str(item.opening_item_id) if item.opening_item_id else None,
+            "leaf": item.leaf,
+            "hardware_category": item.hardware_category,
+            "product_code": item.product_code,
+            "requested_quantity": item.requested_quantity,
+        }
+        for item in items
+    ]
+
+
 @strawberry.type
 class ShippingMutations:
+    @strawberry.mutation
+    def create_shipping_out_request(
+        self, info: strawberry.Info, input: CreateShippingOutRequestInput
+    ) -> ShippingOutRequest:
+        """Raise a shipping-out request from the Shipping module, off project inventory (#451).
+
+        The schedule is not the only reason hardware goes to site. Before this, stock the schedule
+        never accounted for could only be sent by walking back through the import wizard and finding
+        an opening to hang it on, so the request said something about the job that was not true.
+
+        Everything past composition is identical to the Start-a-Task path - same guards, same
+        reservation of what the loose lines claim (#342), same PENDING request somebody then
+        accepts. Recorded against the Clerk-authenticated caller (#427).
+        """
+        auth = current_user(info)
+        actor = resolve_display_name(auth["user_id"])
+        with SessionLocal() as session:
+            created = shipping_requests.create_shipping_out_requests(
+                session,
+                uuid.UUID(str(input.project_id)),
+                [{"request_number": input.request_number, "items": _request_items(input.items)}],
+                created_by=actor,
+                acknowledge_incomplete_leaves=input.acknowledge_incomplete_leaves,
+            )
+            session.commit()
+            refreshed = shipping_repository.get_shipping_out_request(session, created[0].id)
+            return shipping_out_request_to_type(refreshed)
+
+    @strawberry.mutation
+    def edit_shipping_out_request(
+        self, info: strawberry.Info, input: EditShippingOutRequestInput
+    ) -> ShippingOutRequest:
+        """Rewrite a PENDING request's lines (#451).
+
+        The point is that a request can be corrected before anyone accepts it: a line was missed, a
+        quantity was wrong, the site asked for one more box. Refused once accepted, because the
+        lines are on a warehouse pull by then and the floor may be picking against a printed sheet.
+
+        Full replace over the item list, re-gated against availability with the request's own claim
+        released first - so reducing a line is never refused for stock it already holds.
+        """
+        with SessionLocal() as session:
+            req = shipping_requests.replace_shipping_out_request_items(
+                session,
+                uuid.UUID(str(input.id)),
+                _request_items(input.items),
+                acknowledge_incomplete_leaves=input.acknowledge_incomplete_leaves,
+            )
+            session.commit()
+            refreshed = shipping_repository.get_shipping_out_request(session, req.id)
+            return shipping_out_request_to_type(refreshed)
+
     @strawberry.mutation
     def accept_shipping_out_request(self, info: strawberry.Info, id: strawberry.ID) -> ShippingOutRequest:
         """Accept a PENDING shipping-out request (#293). Open to any signed-in user. Mints the

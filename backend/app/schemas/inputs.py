@@ -198,7 +198,9 @@ class ClassificationInput:
 @strawberry.input
 class ShippingOutPRDraftItemInput:
     item_type: PullRequestItemType
-    opening_number: str
+    # Optional since #451: a LOOSE line raised straight off project inventory has no opening to
+    # name - shelf stock belongs to the project, not to a door. Schedule-driven lines still send it.
+    opening_number: str | None = None
     opening_item_id: strawberry.ID | None = None
     # Door leaf (#335): set on OPENING_ITEM lines from the assembled OpeningItem. Null on LOOSE.
     leaf: int | None = None
@@ -211,6 +213,37 @@ class ShippingOutPRDraftItemInput:
 class ShippingOutPRDraftInput:
     request_number: str
     items: list[ShippingOutPRDraftItemInput] = strawberry.field(default_factory=list)
+
+
+@strawberry.input
+class CreateShippingOutRequestInput:
+    """Raise a shipping-out request from the Shipping module rather than from Start a Task (#451).
+
+    Same entity, same guards, same reservations - only the composer differs. This one exists because
+    the schedule is not the only reason hardware goes to site: the shipping department is asked for
+    stock the schedule never accounted for, and before this the only way to send it was to walk back
+    through the import wizard.
+    """
+
+    project_id: strawberry.ID
+    request_number: str
+    items: list[ShippingOutPRDraftItemInput] = strawberry.field(default_factory=list)
+    # The caller has seen the "this leaf is short" warning and still wants it on the request (#341).
+    acknowledge_incomplete_leaves: bool = False
+
+
+@strawberry.input
+class EditShippingOutRequestInput:
+    """Rewrite a PENDING request's lines to exactly `items` (#451).
+
+    Full replace, not a diff: the client sends the request it wants rather than the steps to get
+    there, so there is no ordering in which it can transiently over-claim. Emptying it is refused -
+    reject the request instead.
+    """
+
+    id: strawberry.ID
+    items: list[ShippingOutPRDraftItemInput] = strawberry.field(default_factory=list)
+    acknowledge_incomplete_leaves: bool = False
 
 
 @strawberry.input

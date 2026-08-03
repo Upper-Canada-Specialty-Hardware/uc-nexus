@@ -53,7 +53,11 @@ interface OpeningItem {
 }
 
 interface LooseItem {
-  openingNumber: string;
+  /**
+   * Null for stock pulled by a request raised straight off inventory (#451): those units are owed
+   * to the project rather than to a door, so there is no opening to print.
+   */
+  openingNumber: string | null;
   hardwareCategory: string;
   productCode: string;
   availableQuantity: number;
@@ -469,7 +473,15 @@ export default function ShipReadyBrowser({ projectId }: ShipReadyBrowserProps) {
 
   const looseColumns = useMemo<GridColDef[]>(
     () => [
-      { field: 'openingNumber', headerName: 'Opening #', flex: 1, cellClassName: 'mono-cell' },
+      {
+        field: 'openingNumber',
+        headerName: 'Opening #',
+        flex: 1,
+        cellClassName: 'mono-cell',
+        // Stock pulled by a request raised off inventory has no opening (#451). Saying so beats a
+        // blank cell, which reads as missing data rather than as "owed to the job".
+        valueFormatter: (value: string | null) => value || 'Unattributed',
+      },
       { field: 'productCode', headerName: 'Product Code', flex: 1, cellClassName: 'mono-cell' },
       { field: 'hardwareCategory', headerName: 'Hardware Category', flex: 1 },
       { field: 'availableQuantity', headerName: 'Available Qty', flex: 0.7, type: 'number' },

@@ -8,7 +8,8 @@
 import type { PullRequest } from './PullRequestQueue';
 
 export interface PickSheetLeaf {
-  openingNumber: string;
+  /** Null on an unattributed line (#451): the units are owed to the project, not to a door. */
+  openingNumber: string | null;
   leaf: number | null;
   quantity: number;
 }
@@ -46,7 +47,7 @@ export interface PickSheetSection {
 export interface PickSheetFetchItem {
   pullRequestItemId: string;
   openingItemId: string | null;
-  openingNumber: string;
+  openingNumber: string | null;
   leaf: number | null;
   aisle: string | null;
   row: string | null;

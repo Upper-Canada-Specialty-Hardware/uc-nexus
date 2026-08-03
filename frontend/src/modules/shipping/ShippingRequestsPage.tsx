@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   Alert,
   Box,
+  Button,
   Chip,
   Link,
   Table,
@@ -13,6 +14,7 @@ import {
   ToggleButtonGroup,
   Typography,
 } from '@mui/material';
+import { Pencil, Plus } from 'lucide-react';
 import { Link as RouterLink } from 'react-router-dom';
 import { useQuery } from '@apollo/client/react';
 import {
@@ -22,6 +24,7 @@ import {
   REOPEN_SHIPPING_OUT_REQUEST,
 } from '../../graphql/shipping';
 import RequestsReviewPage from '../../components/RequestsReviewPage';
+import RequestBuilderDialog from './RequestBuilderDialog';
 import { leafLabel } from '../../utils/leaf';
 import { monoSx } from '../../theme';
 
@@ -29,6 +32,7 @@ interface ShippingRequestItem {
   id: string;
   itemType: string;
   openingNumber: string | null;
+  openingItemId: string | null;
   /** Door leaf (#335): set on assembled-leaf lines, null on loose hardware. */
   leaf: number | null;
   hardwareCategory: string | null;
@@ -55,6 +59,8 @@ interface Props {
 
 export default function ShippingRequestsPage({ projectId }: Props) {
   const [view, setView] = useState<'PENDING' | 'APPROVED'>('PENDING');
+  // `null` = the builder is composing a new request; a request = editing that one; undefined = shut.
+  const [builder, setBuilder] = useState<ShippingOutRequest | null | undefined>(undefined);
   const { data, loading, refetch } = useQuery<{ shippingOutRequests: ShippingOutRequest[] }>(
     GET_SHIPPING_OUT_REQUESTS,
     {
@@ -62,6 +68,19 @@ export default function ShippingRequestsPage({ projectId }: Props) {
       fetchPolicy: 'cache-and-network',
     },
   );
+
+  // Leaves the pending queue already holds, so the builder does not offer one twice and let the
+  // server refuse it. Not exhaustive - a leaf on an accepted request whose pull is still open is
+  // claimed too, and that one the server catches.
+  const claimedOpeningItemIds = useMemo(() => {
+    const claimed = new Set<string>();
+    for (const req of data?.shippingOutRequests ?? []) {
+      for (const item of req.items) {
+        if (item.itemType === 'OPENING_ITEM' && item.openingItemId) claimed.add(item.openingItemId);
+      }
+    }
+    return claimed;
+  }, [data]);
 
   return (
     <Box>
@@ -80,7 +99,7 @@ export default function ShippingRequestsPage({ projectId }: Props) {
         title="Shipping Requests"
         description={
           view === 'PENDING'
-            ? 'Pending requests from Start a Task. Loose hardware was reserved when the request was created, so accepting is purely your approval: it creates the warehouse pull request. Rejecting releases the reservation.'
+            ? 'Pending requests, from Start a Task or raised here off project inventory. Loose hardware was reserved when the request was created, so accepting is purely your approval: it creates the warehouse pull request. Rejecting releases the reservation, and a pending request can still be edited.'
             : 'Accepted requests whose warehouse pull has not started yet. Reopen one to undo the accept and send it back to Pending.'
         }
         emptyMessage={view === 'PENDING' ? 'No pending shipping requests.' : 'No shipping requests can be reopened.'}
@@ -92,6 +111,32 @@ export default function ShippingRequestsPage({ projectId }: Props) {
         reopenMutation={REOPEN_SHIPPING_OUT_REQUEST}
         mode={view === 'APPROVED' ? 'approved' : 'pending'}
         onChanged={refetch}
+        headerAction={
+          // Only where there is a project to read inventory from: the all-projects view has no one
+          // pool to compose against.
+          projectId ? (
+            <Button
+              size="small"
+              variant="outlined"
+              startIcon={<Plus size={16} strokeWidth={1.75} />}
+              onClick={() => setBuilder(null)}
+            >
+              New request
+            </Button>
+          ) : undefined
+        }
+        renderExtraActions={(req) =>
+          projectId ? (
+            <Button
+              variant="outlined"
+              color="primary"
+              startIcon={<Pencil size={18} strokeWidth={1.75} />}
+              onClick={() => setBuilder(req)}
+            >
+              Edit
+            </Button>
+          ) : null
+        }
         note={
           view === 'PENDING' ? (
             <Alert severity="info">
@@ -141,6 +186,21 @@ export default function ShippingRequestsPage({ projectId }: Props) {
           )
         }
       />
+
+      {projectId && builder !== undefined && (
+        // Keyed on what it is composing, and mounted only while open, so its draft state is seeded
+        // once at mount. Re-seeding a live dialog from props would let a background refetch of the
+        // list underneath overwrite edits the user is halfway through.
+        <RequestBuilderDialog
+          key={builder?.id ?? 'new'}
+          open
+          onClose={() => setBuilder(undefined)}
+          projectId={projectId}
+          request={builder ?? undefined}
+          claimedOpeningItemIds={claimedOpeningItemIds}
+          onSaved={refetch}
+        />
+      )}
     </Box>
   );
 }

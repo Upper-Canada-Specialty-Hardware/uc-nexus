@@ -15,7 +15,9 @@ type ShippingOutRequestItem {
   id: ID!
   shippingOutRequestId: ID!
   itemType: PullRequestItemType!
-  openingNumber: String!
+  # Null on a line raised straight off project inventory (#451): shelf stock belongs to the project,
+  # not to a door, so there is nothing to attribute. Schedule-driven lines keep their opening.
+  openingNumber: String
   openingItemId: ID
   # Door leaf (#335): set on OPENING_ITEM lines from the assembled OpeningItem, null on LOOSE.
   leaf: Int
@@ -143,7 +145,8 @@ type ShipReadyItems {
 }
 
 type ShipReadyLooseItem {
-  openingNumber: String!
+  # Null for stock pulled by a request raised off inventory (#451). Sorted last, as its own group.
+  openingNumber: String
   hardwareCategory: String!
   productCode: String!
   availableQuantity: Int!
@@ -204,7 +207,45 @@ type Query {
   shippingOutRequests(projectId: ID, status: ShippingOutRequestStatus, reopenableOnly: Boolean! = false): [ShippingOutRequest!]!
 }
 
+# --- Raising and correcting a request from the Shipping module (#451) ---------------------------
+# The schedule is not the only reason hardware goes to site. These two compose the same entity
+# Start a Task mints, under the same guards and the same reservations - only the composer differs.
+
+input ShippingOutPRDraftItemInput {
+  itemType: PullRequestItemType!
+  # Optional: a LOOSE line raised off inventory has no opening to name.
+  openingNumber: String
+  openingItemId: ID
+  leaf: Int
+  hardwareCategory: String
+  productCode: String
+  requestedQuantity: Int! = 1
+}
+
+input CreateShippingOutRequestInput {
+  projectId: ID!
+  requestNumber: String!
+  items: [ShippingOutPRDraftItemInput!]!
+  # The caller has seen the "this leaf is short" warning and wants it on the request anyway (#341).
+  acknowledgeIncompleteLeaves: Boolean! = false
+}
+
+input EditShippingOutRequestInput {
+  id: ID!
+  # FULL REPLACE. The request ends up with exactly these lines. Emptying it is refused - reject it.
+  items: [ShippingOutPRDraftItemInput!]!
+  acknowledgeIncompleteLeaves: Boolean! = false
+}
+
 type Mutation {
+  # Raise a request off project inventory (#451), no wizard. PENDING, reserving what its loose
+  # lines claim, exactly as the Start-a-Task path does.
+  createShippingOutRequest(input: CreateShippingOutRequestInput!): ShippingOutRequest!
+  # Correct a PENDING request before anyone accepts it (#451). Refused once accepted: the lines are
+  # on a warehouse pull by then and the floor may be picking against a printed sheet. Re-gated
+  # against availability with the request's own claim released first, so reducing a line is never
+  # refused for stock it already holds.
+  editShippingOutRequest(input: EditShippingOutRequestInput!): ShippingOutRequest!
   confirmShipment(input: ConfirmShipmentInput!): PackingSlip!
   createShipmentReturn(input: CreateShipmentReturnInput!): ShipmentReturn!
   # Delivery Request lifecycle (#447). Any signed-in user. All three answer with the same PackingSlip

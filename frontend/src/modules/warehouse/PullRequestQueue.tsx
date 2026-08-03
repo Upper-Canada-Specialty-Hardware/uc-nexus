@@ -17,7 +17,8 @@ export interface PullRequestItem {
   id: string;
   pullRequestId: string;
   itemType: string;
-  openingNumber: string;
+  /** Null on a line whose request was raised straight off inventory (#451). */
+  openingNumber: string | null;
   openingItemId: string | null;
   /** Door leaf this pull line is for (#311): 1 or 2, or null for legacy / leaf-agnostic lines. */
   leaf: number | null;
