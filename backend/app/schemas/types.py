@@ -1247,6 +1247,51 @@ class ShipReadyLooseItem:
 
 
 @strawberry.type
+class ShippingCoverageLine:
+    """One product a door leaf is owed, and where those units currently are (#451)."""
+
+    hardware_category: str
+    product_code: str
+    # SITE_HARDWARE ships loose by definition; SHOP_HARDWARE should have been fitted at the bench.
+    # Null means the schedule was never classified, which the builder shows as its own group rather
+    # than guessing on the user's behalf.
+    classification: Classification | None
+    # What the schedule says this leaf takes.
+    owed_quantity: int
+    # What is physically bolted onto the assembled leaf. Always 0 for site hardware, and for a leaf
+    # that has not been assembled yet.
+    installed_quantity: int
+    # What still has to travel loose alongside the leaf: `owed - installed`. For shop hardware that
+    # is exactly what shop assembly skipped.
+    suggested_quantity: int
+    # Placed with a vendor and not yet received, project-wide for this product. Not an allocation to
+    # this leaf - it is the answer to "is more coming, or is this all there will ever be".
+    on_order_quantity: int
+
+
+@strawberry.type
+class ShippingCoverageLeaf:
+    """What one door leaf of a selected opening still owes the site (#451).
+
+    Availability is deliberately absent: `projectInventoryAvailability` is the single answer to
+    "what may I claim" (#342) and the creation gate is applied against that number, so the builder
+    joins the two by (hardwareCategory, productCode) rather than reading a second figure from here
+    that could disagree with the one it is held to.
+    """
+
+    opening_number: str
+    # Null only for a legacy opening no leaf data resolves anywhere.
+    leaf: int | None
+    status: LeafStatus
+    # The assembled unit that IS this leaf, when there is one.
+    opening_item_id: strawberry.ID | None
+    # The request number already holding this leaf, if a live shipping-out request claimed it. Such
+    # a leaf cannot go on a second request - one physical leaf ships once.
+    claimed_by_request_number: str | None
+    lines: list[ShippingCoverageLine]
+
+
+@strawberry.type
 class ShipReadyItems:
     opening_items: list[OpeningItem]
     loose_items: list[ShipReadyLooseItem]

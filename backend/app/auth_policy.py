@@ -168,6 +168,9 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "packingSlips": SIGNED_IN,
     "returnableLines": SIGNED_IN,
     "shipReadyItems": SIGNED_IN,
+    # Read-only coverage for the shipping-out builder (#451). SIGNED_IN because its caller is the
+    # Start-a-Task wizard, which every module's users reach.
+    "shippingCoverage": SIGNED_IN,
     "shippingOutRequests": SIGNED_IN,
     "acceptShippingOutRequest": SIGNED_IN,
     "confirmShipment": SIGNED_IN,

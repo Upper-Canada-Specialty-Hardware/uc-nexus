@@ -8,20 +8,30 @@ import {
   FormControlLabel,
   IconButton,
   Paper,
+  Stack,
   TextField,
   Typography,
 } from '@mui/material';
 import { Plus, Trash2 } from 'lucide-react';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import type {
-  AggregatedHardwareItem,
   AssembledLeafCandidate,
   AvailabilityShortfall,
+  CoverageGroup,
   InventoryAvailabilityRow,
+  LooseCoverageRow,
   ShippingPRDraft,
   ShippingPRItem,
 } from './types';
-import { aggregationKey, itemGroupKey, shippingPRItemKey } from './types';
+import {
+  COVERAGE_GROUP_HINT,
+  COVERAGE_GROUP_LABEL,
+  COVERAGE_GROUP_ORDER,
+  coverageGroup,
+  itemGroupKey,
+  looseCoverageItem,
+  shippingPRItemKey,
+} from './types';
 import { leafSuffix } from '../../utils/leaf';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import { StaggerItem, StaggerList } from '../../motion';
@@ -50,22 +60,37 @@ interface ShippingPRsStepProps {
   shippingPRDrafts: ShippingPRDraft[];
   /** Assembled door leaves (OpeningItems) on the selected openings, still in inventory (#335). */
   assembledLeaves: AssembledLeafCandidate[];
-  /** Loose hardware still in inventory for the selected openings. */
-  looseItems: AggregatedHardwareItem[];
+  /**
+   * Loose hardware the selected openings still owe the site (#451), derived from the schedule
+   * rather than from what happens to be on a shelf: site hardware, plus shop hardware assembly
+   * skipped. Each row is one (opening, category, product) line the request can carry.
+   */
+  looseRows: LooseCoverageRow[];
   /** The assembled-unit lookup is still in flight, so an empty list means nothing yet. */
   leavesLoading: boolean;
   /** The assembled-unit lookup failed; an empty list here is not a real "nothing to ship". */
   leavesError: boolean;
+  /** The coverage lookup is still in flight; the loose list below is not final. */
+  coverageLoading: boolean;
+  /** The coverage lookup failed, so what these openings owe is unknown rather than nothing. */
+  coverageError: boolean;
   onAddPR: () => void;
   onRemovePR: (index: number) => void;
   onUpdatePR: (index: number, requestNumber: string) => void;
   onTogglePRItem: (prIndex: number, item: ShippingPRItem) => void;
+  /** Add, re-quantify or (at 0) drop one loose line on a draft. */
+  onSetPRItemQuantity: (prIndex: number, item: ShippingPRItem, quantity: number) => void;
   /**
    * Reservation-aware availability per (category|product) for this project (#342). A LOOSE line
    * claims fungible stock, so it can only be ticked while the claim fits; an assembled leaf
    * claimed its hardware at shop assembly and reserves nothing, so leaf selection is unaffected.
    */
   availabilityByCombo: Map<string, InventoryAvailabilityRow>;
+  /**
+   * What every draft in this session already asks for per combo. Rows read their own headroom off
+   * this, so two openings wanting the same product cannot each be offered the last unit.
+   */
+  requestedByCombo: Map<string, number>;
   /** Combos the current selection would over-claim. Non-empty blocks the step. */
   availabilityShortfalls: AvailabilityShortfall[];
   /** The availability lookup has not answered yet, so the counts below are not final. */
@@ -95,17 +120,29 @@ function installedSummary(leaf: AssembledLeafCandidate): string {
   return parts.length > 3 ? `${shown} +${parts.length - 3} more` : shown;
 }
 
+/** "leaf 1: 2, leaf 2: 2" - where an aggregated loose quantity came from. */
+function perLeafSummary(row: LooseCoverageRow): string {
+  if (row.perLeaf.length <= 1) return '';
+  return row.perLeaf
+    .map((entry) => (entry.leaf == null ? `unassigned: ${entry.quantity}` : `leaf ${entry.leaf}: ${entry.quantity}`))
+    .join(', ');
+}
+
 export default function ShippingPRsStep({
   shippingPRDrafts,
   assembledLeaves,
-  looseItems,
+  looseRows,
   leavesLoading,
   leavesError,
+  coverageLoading,
+  coverageError,
   onAddPR,
   onRemovePR,
   onUpdatePR,
   onTogglePRItem,
+  onSetPRItemQuantity,
   availabilityByCombo,
+  requestedByCombo,
   availabilityShortfalls,
   availabilityLoading,
   availabilityError,
@@ -171,8 +208,40 @@ export default function ShippingPRsStep({
     [shippingPRDrafts],
   );
 
+  const looseRowsByGroup = useMemo(() => {
+    const groups = new Map<CoverageGroup, LooseCoverageRow[]>();
+    for (const row of looseRows) {
+      const group = coverageGroup(row);
+      const bucket = groups.get(group);
+      if (bucket) bucket.push(row);
+      else groups.set(group, [row]);
+    }
+    return groups;
+  }, [looseRows]);
+
+  /**
+   * How many more units of one combo this particular line may claim. Project availability net of
+   * what every OTHER line in the session already asks for, so the same product wanted by two
+   * openings is not offered twice over, and capped by what the leaf is actually owed - the point is
+   * to cover the schedule, not to empty the shelf.
+   */
+  const headroomFor = useCallback(
+    (row: LooseCoverageRow, alreadyOnThisLine: number) => {
+      const key = itemGroupKey({ hardware_category: row.hardwareCategory, product_code: row.productCode });
+      const available = availabilityByCombo.get(key)?.availableQuantity ?? 0;
+      const demandElsewhere = (requestedByCombo.get(key) ?? 0) - alreadyOnThisLine;
+      return Math.min(row.suggestedQuantity, Math.max(0, available - demandElsewhere));
+    },
+    [availabilityByCombo, requestedByCombo],
+  );
+
   const nothingToShip =
-    !leavesLoading && !leavesError && assembledLeaves.length === 0 && looseItems.length === 0;
+    !leavesLoading &&
+    !leavesError &&
+    !coverageLoading &&
+    !coverageError &&
+    assembledLeaves.length === 0 &&
+    looseRows.length === 0;
 
   return (
     <Box>
@@ -184,8 +253,15 @@ export default function ShippingPRsStep({
           "nothing to ship" - that is the dead end #335 was about. */}
       {leavesError && (
         <Alert severity="error" sx={{ mb: 2 }}>
-          Could not load this project's assembled door leaves. Any leaf that is ready to ship is
+          Could not load this project&apos;s assembled door leaves. Any leaf that is ready to ship is
           missing from the list below, so go back and retry before creating a request.
+        </Alert>
+      )}
+
+      {coverageError && (
+        <Alert severity="error" sx={{ mb: 2 }}>
+          Could not work out what the selected openings still owe the site, so the loose hardware
+          below is missing rather than genuinely empty. Go back and retry before creating a request.
         </Alert>
       )}
 
@@ -236,6 +312,10 @@ export default function ShippingPRsStep({
       <StaggerList count={shippingPRDrafts.length}>
       {shippingPRDrafts.map((draft, prIdx) => {
         const selectedKeys = new Set(draft.items.map(shippingPRItemKey));
+        const quantityByKey = new Map(draft.items.map((item) => [shippingPRItemKey(item), item.requestedQuantity]));
+        const leafCount = draft.items.filter((i) => i.itemType === 'OPENING_ITEM').length;
+        const looseLines = draft.items.filter((i) => i.itemType === 'LOOSE');
+        const looseUnits = looseLines.reduce((sum, i) => sum + i.requestedQuantity, 0);
         return (
           <StaggerItem key={prIdx}>
           <Paper variant="outlined" sx={{ p: 2, mb: 2 }}>
@@ -275,11 +355,32 @@ export default function ShippingPRsStep({
               />
             </Box>
 
-            <Typography variant="body2" sx={{ ...tabularSx, mb: 1, fontWeight: 600 }}>
-              Select items ({draft.items.length} selected):
-            </Typography>
+            {/* What is on this request so far, before the offer lists below. The point of the
+                builder is that the two are read together: this is what you have, that is what the
+                leaves you picked still owe. */}
+            <Box
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 1,
+                flexWrap: 'wrap',
+                mb: 1.5,
+                p: 1,
+                bgcolor: 'action.hover',
+                borderRadius: 1,
+              }}
+            >
+              <Typography sx={microLabelSx}>On this request</Typography>
+              <Chip size="small" label={`${leafCount} door leaf/leaves`} />
+              <Chip size="small" label={`${looseLines.length} loose line(s), ${looseUnits} unit(s)`} />
+              {draft.items.length === 0 && (
+                <Typography variant="caption" color="text.secondary">
+                  Nothing selected yet.
+                </Typography>
+              )}
+            </Box>
 
-            <Box sx={{ maxHeight: 320, overflowY: 'auto' }}>
+            <Box sx={{ maxHeight: 420, overflowY: 'auto' }}>
               {/* Assembled door leaves (#335). Each one ships as itself: the hardware was tagged onto
                   it at shop assembly and left loose inventory then, so this is a move, not a pull
                   against stock. */}
@@ -355,76 +456,186 @@ export default function ShippingPRsStep({
                 </>
               )}
 
-              {/* Loose hardware. Aggregated leaf-agnostically on purpose: loose stock is fungible and
-                  carries no leaf until a pull tags it onto one. Quantity is what is actually
-                  available, not what the schedule calls for. */}
-              {looseItems.length > 0 && (
-                <>
-                  <Typography
-                    sx={{
-                      ...microLabelSx,
-                      display: 'block',
-                      mt: assembledLeaves.length > 0 ? 1.5 : 0,
-                      mb: 0.5,
-                    }}
-                  >
-                    Loose hardware
-                  </Typography>
-                  {looseItems.map((hi) => {
-                    const item: ShippingPRItem = {
-                      itemType: 'LOOSE',
-                      openingNumber: hi.opening_number,
-                      hardwareCategory: hi.hardware_category,
-                      productCode: hi.product_code,
-                      requestedQuantity: hi.item_quantity,
-                    };
-                    const availability = availabilityByCombo.get(itemGroupKey(hi));
-                    const available = availability?.availableQuantity ?? 0;
-                    const reserved = availability?.reservedQuantity ?? 0;
-                    // Not over-claimed until the numbers are real: while the lookup is in flight
-                    // every combo reads 0 available, and a row of red "0 available" captions on a
-                    // perfectly valid selection is a false alarm the user cannot act on.
-                    const overClaimed =
-                      !availabilityError && !availabilityLoading && hi.item_quantity > available;
-                    return (
-                      <FormControlLabel
-                        key={aggregationKey(hi)}
-                        control={
-                          <Checkbox
-                            size="small"
-                            checked={selectedKeys.has(shippingPRItemKey(item))}
-                            onChange={() => onTogglePRItem(prIdx, item)}
-                          />
-                        }
-                        label={
-                          <Box>
-                            <Typography variant="body2" sx={{ ...monoSx, ...tabularSx }}>
-                              Opening: {hi.opening_number} | Product: {hi.product_code} | Category:{' '}
-                              {hi.hardware_category} | Qty: {hi.item_quantity}
-                            </Typography>
-                            {/* Reservation-aware availability (#342), per line, so an over-selection
-                                is visible at the checkbox and not only in the summary alert. */}
-                            <Typography
-                              variant="caption"
-                              color={overClaimed ? 'error.main' : 'text.secondary'}
-                            >
-                              {availabilityError
-                                ? 'Availability unknown'
-                                : availabilityLoading
-                                  ? 'Checking availability...'
-                                  : `${available} available` +
-                                    (reserved > 0
-                                      ? ` (${reserved} reserved by other requests)`
-                                      : '')}
-                            </Typography>
-                          </Box>
-                        }
-                        sx={{ display: 'flex', alignItems: 'flex-start', mb: 0.5 }}
-                      />
-                    );
-                  })}
-                </>
+              {/* Loose hardware, grouped by why it is being offered (#451). The schedule is what
+                  knows a leaf takes a closer and a set of hinges; the leaf itself only knows what
+                  was bolted onto it. Both are read here so the shipper is told what is missing
+                  rather than having to remember it. */}
+              {coverageLoading && (
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1.5 }}>
+                  Working out what these openings still owe...
+                </Typography>
               )}
+
+              {COVERAGE_GROUP_ORDER.map((group) => {
+                const rows = looseRowsByGroup.get(group) ?? [];
+                if (rows.length === 0) return null;
+
+                // "Add everything here that is actually on the shelf" - the one-click version of
+                // the row-by-row decision, capped the same way so it can never create a shortfall.
+                // Two openings in this group can want the same product, and `requestedByCombo` only
+                // refreshes after the click, so what earlier rows took is tracked here.
+                const addAll = () => {
+                  const takenThisClick = new Map<string, number>();
+                  for (const row of rows) {
+                    const comboKey = itemGroupKey({
+                      hardware_category: row.hardwareCategory,
+                      product_code: row.productCode,
+                    });
+                    const onThisLine = quantityByKey.get(shippingPRItemKey(looseCoverageItem(row, 1))) ?? 0;
+                    const target = headroomFor(row, onThisLine) - (takenThisClick.get(comboKey) ?? 0);
+                    // Never reduce a quantity the user set by hand - this button only fills in.
+                    if (target <= onThisLine) continue;
+                    takenThisClick.set(comboKey, (takenThisClick.get(comboKey) ?? 0) + (target - onThisLine));
+                    onSetPRItemQuantity(prIdx, looseCoverageItem(row, target), target);
+                  }
+                };
+
+                const anyAddable = rows.some(
+                  (row) =>
+                    headroomFor(row, quantityByKey.get(shippingPRItemKey(looseCoverageItem(row, 1))) ?? 0) > 0,
+                );
+
+                return (
+                  <Box key={group} sx={{ mt: 1.5 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1 }}>
+                      <Typography sx={{ ...microLabelSx, display: 'block' }}>
+                        {COVERAGE_GROUP_LABEL[group]}
+                      </Typography>
+                      <Button
+                        size="small"
+                        onClick={addAll}
+                        disabled={!anyAddable || availabilityLoading || availabilityError}
+                      >
+                        Add all available
+                      </Button>
+                    </Box>
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+                      {COVERAGE_GROUP_HINT[group]}
+                    </Typography>
+
+                    {rows.map((row) => {
+                      const key = shippingPRItemKey(looseCoverageItem(row, 1));
+                      const onThisLine = quantityByKey.get(key) ?? 0;
+                      const headroom = headroomFor(row, onThisLine);
+                      const comboKey = itemGroupKey({
+                        hardware_category: row.hardwareCategory,
+                        product_code: row.productCode,
+                      });
+                      const availability = availabilityByCombo.get(comboKey);
+                      const available = availability?.availableQuantity ?? 0;
+                      const reserved = availability?.reservedQuantity ?? 0;
+                      const breakdown = perLeafSummary(row);
+                      const numbersKnown = !availabilityError && !availabilityLoading;
+
+                      return (
+                        <Box
+                          key={key}
+                          sx={{
+                            display: 'flex',
+                            alignItems: 'flex-start',
+                            justifyContent: 'space-between',
+                            gap: 1.5,
+                            py: 0.75,
+                            borderBottom: '1px solid',
+                            borderColor: 'divider',
+                          }}
+                        >
+                          <Box sx={{ minWidth: 0 }}>
+                            <Typography variant="body2" sx={{ ...monoSx, ...tabularSx }}>
+                              {row.openingNumber} | {row.productCode} | {row.hardwareCategory}
+                            </Typography>
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flexWrap: 'wrap', mt: 0.25 }}>
+                              <Chip size="small" variant="outlined" label={`owed ${row.suggestedQuantity}`} />
+                              {onThisLine > 0 && (
+                                <Chip size="small" color="primary" label={`in this request ${onThisLine}`} />
+                              )}
+                              {numbersKnown && available > 0 && (
+                                <Chip
+                                  size="small"
+                                  color="success"
+                                  variant="outlined"
+                                  // Reserved is named on the chip rather than hidden in a tooltip:
+                                  // "2 in inventory" when the schedule wants 4 is a question the
+                                  // shipper has to answer, and "3 spoken for" is the answer.
+                                  label={
+                                    reserved > 0
+                                      ? `${available} in inventory (${reserved} spoken for)`
+                                      : `${available} in inventory`
+                                  }
+                                />
+                              )}
+                              {/* "On the way" is the answer to "should I wait?", which is a
+                                  different question from "can I send it now" - so it is shown
+                                  whether or not there is stock on the shelf. */}
+                              {row.onOrderQuantity > 0 && (
+                                <Chip
+                                  size="small"
+                                  color="info"
+                                  variant="outlined"
+                                  label={`${row.onOrderQuantity} on the way`}
+                                />
+                              )}
+                              {numbersKnown && available === 0 && row.onOrderQuantity === 0 && (
+                                <Chip size="small" color="warning" variant="outlined" label="none ordered" />
+                              )}
+                            </Box>
+                            {breakdown && (
+                              <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                                {breakdown}
+                              </Typography>
+                            )}
+                          </Box>
+
+                          <Stack direction="row" spacing={1} alignItems="center" sx={{ flexShrink: 0 }}>
+                            {onThisLine > 0 ? (
+                              <>
+                                <TextField
+                                  size="small"
+                                  label="Qty"
+                                  type="number"
+                                  value={onThisLine}
+                                  onChange={(e) => {
+                                    const next = Number.parseInt(e.target.value, 10);
+                                    onSetPRItemQuantity(
+                                      prIdx,
+                                      looseCoverageItem(row, Number.isNaN(next) ? 0 : next),
+                                      Number.isNaN(next) ? 0 : next,
+                                    );
+                                  }}
+                                  inputProps={{ min: 0, max: Math.max(headroom, onThisLine) }}
+                                  sx={{ width: 92 }}
+                                />
+                                <IconButton
+                                  size="small"
+                                  color="error"
+                                  aria-label={`Remove ${row.productCode} from shipping PR ${prIdx + 1}`}
+                                  onClick={() => onSetPRItemQuantity(prIdx, looseCoverageItem(row, 0), 0)}
+                                >
+                                  <Trash2 size={16} strokeWidth={1.75} />
+                                </IconButton>
+                              </>
+                            ) : (
+                              <Button
+                                size="small"
+                                variant="outlined"
+                                disabled={headroom <= 0 || !numbersKnown}
+                                onClick={() => onSetPRItemQuantity(prIdx, looseCoverageItem(row, headroom), headroom)}
+                              >
+                                {/* The number is part of the promise: "Add 2" says what pressing it
+                                    will put on the request. It is dropped while the counts are
+                                    unknown rather than printed from a stale map, because a button
+                                    that names a quantity nothing has verified is worse than one
+                                    that does not. */}
+                                {numbersKnown && headroom > 0 ? `Add ${headroom}` : 'Add'}
+                              </Button>
+                            )}
+                          </Stack>
+                        </Box>
+                      );
+                    })}
+                  </Box>
+                );
+              })}
             </Box>
           </Paper>
           </StaggerItem>

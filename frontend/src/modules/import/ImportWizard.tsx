@@ -35,7 +35,7 @@ import { useNavigate } from 'react-router-dom';
 import { GET_PROJECT_EXCLUDED_ITEMS, GET_PROJECT_HARDWARE_SCHEDULE, RECONCILE_SCHEDULE, FINALIZE_IMPORT_SESSION } from '../../graphql/import';
 import { GET_PROJECTS } from '../../graphql/shared';
 import { GET_OPENING_ITEMS, GET_PROJECT_INVENTORY_AVAILABILITY, GET_PULL_REQUESTS } from '../../graphql/warehouse';
-import { GET_SHIPPING_OUT_REQUESTS } from '../../graphql/shipping';
+import { GET_SHIPPING_COVERAGE, GET_SHIPPING_OUT_REQUESTS } from '../../graphql/shipping';
 import { RESERVATION_STALE_ROOT_FIELDS } from '../../graphql/refetch';
 import type { ClassificationRow } from './ClassificationGrid';
 import type {
@@ -44,11 +44,13 @@ import type {
   ImportPurpose,
   InventoryAvailabilityRow,
   ReconciliationRow,
+  ShippingCoverageLeaf,
   ShippingPRDraft,
   ShippingPRItem,
 } from './types';
 import {
   aggregationKey,
+  buildLooseCoverageRows,
   classificationKey,
   computeAvailabilityShortfalls,
   itemGroupKey,
@@ -533,18 +535,27 @@ export default function ImportWizard({
       .sort((a, b) => a.openingNumber.localeCompare(b.openingNumber) || (a.leaf ?? 0) - (b.leaf ?? 0));
   }, [purpose, openingItemsData, selectedOpenings, claimedOpeningItemIds]);
 
-  // Loose hardware the user can ship, quantity clamped to what reconciliation says is actually
-  // received and unpulled. Without the clamp a partly-received product would request its full
-  // schedule quantity and short the pull.
-  const looseShippingCandidates = useMemo<AggregatedHardwareItem[]>(() => {
-    if (purpose !== 'shipping' || !isReimport) return aggregatedHardwareItems;
-    return aggregatedHardwareItems
-      .map((hi) => ({
-        ...hi,
-        item_quantity: Math.min(hi.item_quantity, receivedQtyByKey.get(aggregationKey(hi)) ?? 0),
-      }))
-      .filter((hi) => hi.item_quantity > 0);
-  }, [purpose, isReimport, aggregatedHardwareItems, receivedQtyByKey]);
+  // What the selected openings still owe the site (#451). The schedule is the only thing that knows
+  // a leaf takes a closer and three hinges; the assembled leaf only knows what was bolted onto it,
+  // and neither knows what is still at the vendor. The server joins the three and answers per leaf.
+  const shippingCoverageActive = open && purpose === 'shipping' && !!existingProjectId && selectedOpenings.size > 0;
+  const {
+    data: coverageData,
+    loading: coverageLoading,
+    error: coverageError,
+  } = useQuery<{ shippingCoverage: ShippingCoverageLeaf[] }>(GET_SHIPPING_COVERAGE, {
+    variables: { projectId: existingProjectId, openingNumbers: Array.from(selectedOpenings) },
+    skip: !shippingCoverageActive,
+    fetchPolicy: 'cache-and-network',
+  });
+
+  // The loose lines the shipping step offers: one per (opening, category, product), summed over the
+  // opening's leaves because a LOOSE line carries no leaf - loose stock is fungible until a pull
+  // tags it onto one (docs/HARDWARE_IDENTITY_LIFECYCLE.md).
+  const looseCoverageRows = useMemo(
+    () => (purpose === 'shipping' ? buildLooseCoverageRows(coverageData?.shippingCoverage ?? []) : []),
+    [purpose, coverageData],
+  );
 
   // Every line the shipping step can currently offer, keyed the same way draft lines are.
   const shippingCandidateKeys = useMemo(() => {
@@ -559,32 +570,37 @@ export default function ImportWizard({
         }),
       );
     }
-    for (const hi of looseShippingCandidates) {
+    for (const row of looseCoverageRows) {
       keys.add(
         shippingPRItemKey({
           itemType: 'LOOSE',
-          openingNumber: hi.opening_number,
-          hardwareCategory: hi.hardware_category,
-          productCode: hi.product_code,
-          requestedQuantity: hi.item_quantity,
+          openingNumber: row.openingNumber,
+          hardwareCategory: row.hardwareCategory,
+          productCode: row.productCode,
+          requestedQuantity: row.suggestedQuantity,
         }),
       );
     }
     return keys;
-  }, [assembledLeafCandidates, looseShippingCandidates]);
+  }, [assembledLeafCandidates, looseCoverageRows]);
 
   // What the shipping step shows and what finalize submits: draft lines whose candidate is still on
   // offer. A line can stop being offered because the user stepped back and de-selected its opening,
   // or because someone else claimed the leaf; it then has no checkbox left to untick, so without
   // this it would sit invisible on the draft and still be submitted. Derived rather than pruned in
   // an effect, so re-selecting the opening brings the user's tick back.
+  //
+  // Held off until BOTH offer lookups have answered. Either one still in flight means an empty
+  // candidate set, and pruning against that would silently drop every line the user had already
+  // picked - a refetch (stepping back and forward) would empty their request.
+  const shippingOffersResolved = openingItemsData !== undefined && (!shippingCoverageActive || coverageData !== undefined);
   const effectiveShippingPRDrafts = useMemo(() => {
-    if (purpose !== 'shipping') return shippingPRDrafts;
+    if (purpose !== 'shipping' || !shippingOffersResolved) return shippingPRDrafts;
     return shippingPRDrafts.map((draft) => {
       const kept = draft.items.filter((item) => shippingCandidateKeys.has(shippingPRItemKey(item)));
       return kept.length === draft.items.length ? draft : { ...draft, items: kept };
     });
-  }, [purpose, shippingPRDrafts, shippingCandidateKeys]);
+  }, [purpose, shippingPRDrafts, shippingCandidateKeys, shippingOffersResolved]);
 
   // ---- Reservation-aware availability (#342) ----
 
@@ -1018,6 +1034,35 @@ export default function ImportWizard({
       }),
     );
   }, []);
+
+  // Set how much of one loose line a draft asks for (#451). Zero removes it, which is what makes
+  // the quantity box and the remove button the same operation - clearing the field and pressing the
+  // bin have to mean the same thing, or the user has two ways to reach two different states.
+  const setShippingPRItemQuantity = useCallback(
+    (prIndex: number, item: ShippingPRItem, quantity: number) => {
+      const key = shippingPRItemKey(item);
+      setShippingPRDrafts((prev) =>
+        prev.map((draft, i) => {
+          if (i !== prIndex) return draft;
+          const existingIdx = draft.items.findIndex((existing) => shippingPRItemKey(existing) === key);
+          if (quantity <= 0) {
+            return existingIdx >= 0
+              ? { ...draft, items: draft.items.filter((_, idx) => idx !== existingIdx) }
+              : draft;
+          }
+          const next = { ...item, requestedQuantity: quantity };
+          if (existingIdx >= 0) {
+            return {
+              ...draft,
+              items: draft.items.map((existing, idx) => (idx === existingIdx ? next : existing)),
+            };
+          }
+          return { ...draft, items: [...draft.items, next] };
+        }),
+      );
+    },
+    [],
+  );
 
   // ---- Finalize ----
 
@@ -1673,14 +1718,18 @@ export default function ImportWizard({
             <ShippingPRsStep
               shippingPRDrafts={effectiveShippingPRDrafts}
               assembledLeaves={assembledLeafCandidates}
-              looseItems={looseShippingCandidates}
+              looseRows={looseCoverageRows}
               leavesLoading={openingItemsLoading}
               leavesError={openingItemsError !== undefined}
+              coverageLoading={coverageLoading && coverageData === undefined}
+              coverageError={coverageError !== undefined}
               onAddPR={addShippingPR}
               onRemovePR={removeShippingPR}
               onUpdatePR={updateShippingPR}
               onTogglePRItem={toggleShippingPRItem}
+              onSetPRItemQuantity={setShippingPRItemQuantity}
               availabilityByCombo={availabilityByCombo}
+              requestedByCombo={requestedByCombo}
               availabilityShortfalls={availabilityShortfalls}
               availabilityLoading={availabilityLoading && availabilityData === undefined}
               availabilityError={availabilityError !== undefined}

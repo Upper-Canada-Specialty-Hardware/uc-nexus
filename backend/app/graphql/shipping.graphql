@@ -149,6 +149,40 @@ type ShipReadyLooseItem {
   availableQuantity: Int!
 }
 
+# --- Coverage for the shipping-out builder (#451) ---
+# What the openings the user just picked still owe the site, leaf by leaf. Three sources the
+# builder could not join on its own: the schedule (owed), the assembled leaf (installed), and the
+# open purchase orders (on order).
+#
+# Availability is NOT here. projectInventoryAvailability is the single answer to "what may I claim"
+# (#342) and the creation gate is applied against it; the builder joins the two by
+# (hardwareCategory, productCode) rather than reading a second figure that could disagree.
+
+type ShippingCoverageLine {
+  hardwareCategory: String!
+  productCode: String!
+  # Null = never classified. Grouped as "unclassified" rather than guessed at.
+  classification: Classification
+  owedQuantity: Int!
+  # Bolted onto the assembled leaf. Always 0 for site hardware and for an unassembled leaf.
+  installedQuantity: Int!
+  # owed - installed: what still travels loose. For shop hardware, exactly what assembly skipped.
+  suggestedQuantity: Int!
+  # Placed with a vendor, not yet received, project-wide. Not an allocation to this leaf.
+  onOrderQuantity: Int!
+}
+
+type ShippingCoverageLeaf {
+  openingNumber: String!
+  # Null only for a legacy opening no leaf data resolves anywhere.
+  leaf: Int
+  status: LeafStatus!
+  openingItemId: ID
+  # Set when a live shipping-out request already holds this leaf - it cannot go on a second one.
+  claimedByRequestNumber: String
+  lines: [ShippingCoverageLine!]!
+}
+
 type ReturnableLine {
   packingSlipItemId: ID!
   openingNumber: String
@@ -163,6 +197,8 @@ type Query {
   shipReadyItems(projectId: ID): ShipReadyItems!
   packingSlips(projectId: ID): [PackingSlip!]!
   returnableLines(packingSlipId: ID!): [ReturnableLine!]!
+  # Shipping-out builder coverage (#451): one row per door leaf of the given openings.
+  shippingCoverage(projectId: ID!, openingNumbers: [String!]!): [ShippingCoverageLeaf!]!
   # Accept UI (#293): shipping-out requests, PENDING by default.
   # reopenableOnly (#325): keep only requests whose minted PR is still PENDING (the Approved/reopen view).
   shippingOutRequests(projectId: ID, status: ShippingOutRequestStatus, reopenableOnly: Boolean! = false): [ShippingOutRequest!]!

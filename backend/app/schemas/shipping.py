@@ -6,7 +6,7 @@ import strawberry
 
 from app.auth import current_user, resolve_display_name
 from app.database import SessionLocal
-from app.repositories import shipping_repository
+from app.repositories import shipping_coverage, shipping_repository
 
 from .converters import (
     opening_item_to_type,
@@ -14,12 +14,14 @@ from .converters import (
     shipment_return_to_type,
     shipping_out_request_to_type,
 )
-from .enums import ShippingOutRequestStatus
+from .enums import LeafStatus, ShippingOutRequestStatus
 from .inputs import ConfirmShipmentInput, CreateShipmentReturnInput, UpdateShipmentDetailsInput
 from .types import (
     PackingSlip,
     ReturnableLine,
     ShipmentReturn,
+    ShippingCoverageLeaf,
+    ShippingCoverageLine,
     ShippingOutRequest,
     ShipReadyItems,
     ShipReadyLooseItem,
@@ -76,6 +78,45 @@ class ShippingQueries:
                 session, uuid.UUID(str(project_id)) if project_id else None, status, reopenable_only
             )
             return [shipping_out_request_to_type(r) for r in reqs]
+
+    @strawberry.field
+    def shipping_coverage(
+        self,
+        info: strawberry.Info,
+        project_id: strawberry.ID,
+        opening_numbers: list[str],
+    ) -> list[ShippingCoverageLeaf]:
+        """What the selected openings still owe the site, leaf by leaf (#451).
+
+        The shipping-out builder asks this the moment openings are picked, so it can tell the user
+        what belongs with them beyond the assembled leaves themselves: the site hardware that never
+        goes near the bench, and the shop hardware assembly had to skip. See
+        `app.repositories.shipping_coverage` for how each number is derived.
+        """
+        with SessionLocal() as session:
+            leaves = shipping_coverage.get_shipping_coverage(session, uuid.UUID(str(project_id)), opening_numbers)
+            return [
+                ShippingCoverageLeaf(
+                    opening_number=leaf["opening_number"],
+                    leaf=leaf["leaf"],
+                    status=LeafStatus(leaf["status"]),
+                    opening_item_id=(strawberry.ID(str(leaf["opening_item_id"])) if leaf["opening_item_id"] else None),
+                    claimed_by_request_number=leaf["claimed_by_request_number"],
+                    lines=[
+                        ShippingCoverageLine(
+                            hardware_category=line["hardware_category"],
+                            product_code=line["product_code"],
+                            classification=line["classification"],
+                            owed_quantity=line["owed_quantity"],
+                            installed_quantity=line["installed_quantity"],
+                            suggested_quantity=line["suggested_quantity"],
+                            on_order_quantity=line["on_order_quantity"],
+                        )
+                        for line in leaf["lines"]
+                    ],
+                )
+                for leaf in leaves
+            ]
 
     @strawberry.field
     def returnable_lines(self, info: strawberry.Info, packing_slip_id: strawberry.ID) -> list[ReturnableLine]:

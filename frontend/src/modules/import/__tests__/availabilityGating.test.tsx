@@ -3,8 +3,8 @@ import { render, screen, fireEvent, within } from '@testing-library/react';
 import ShopAssemblyStep from '../ShopAssemblyStep';
 import ShippingPRsStep from '../ShippingPRsStep';
 import type {
-  AggregatedHardwareItem,
   InventoryAvailabilityRow,
+  LooseCoverageRow,
   ShippingPRDraft,
 } from '../types';
 import { computeAvailabilityShortfalls } from '../types';
@@ -230,25 +230,17 @@ describe('ShopAssemblyStep allocator', () => {
 
 // ---- shipping step ----
 
-function looseItem(overrides: Partial<AggregatedHardwareItem> = {}): AggregatedHardwareItem {
+function looseRow(overrides: Partial<LooseCoverageRow> = {}): LooseCoverageRow {
   return {
-    opening_number: 'A01',
-    product_code: 'HG-100',
-    hardware_category: 'HINGE',
-    item_quantity: 4,
-    unit_cost: 10,
-    unit_price: null,
-    list_price: null,
-    vendor_discount: null,
-    markup_pct: null,
-    vendor_no: null,
-    manufacturer: null,
-    phase_code: null,
-    item_category_code: null,
-    product_group_code: null,
-    submittal_id: null,
+    openingNumber: 'A01',
+    hardwareCategory: 'HINGE',
+    productCode: 'HG-100',
+    classification: 'SITE_HARDWARE',
+    suggestedQuantity: 4,
+    onOrderQuantity: 0,
+    perLeaf: [{ leaf: 1, quantity: 4 }],
     ...overrides,
-  } as AggregatedHardwareItem;
+  };
 }
 
 const SHIP_DRAFT: ShippingPRDraft = {
@@ -264,20 +256,27 @@ const SHIP_DRAFT: ShippingPRDraft = {
   ],
 };
 
+const EMPTY_SHIP_DRAFT: ShippingPRDraft = { requestNumber: 'SOR-1', items: [] };
+
 function renderShipping(overrides: Record<string, unknown> = {}) {
   render(
     <ShippingPRsStep
       shippingPRDrafts={[SHIP_DRAFT]}
       assembledLeaves={[]}
-      looseItems={[looseItem()]}
+      looseRows={[looseRow()]}
       leavesLoading={false}
       leavesError={false}
+      coverageLoading={false}
+      coverageError={false}
       onAddPR={vi.fn()}
       onRemovePR={vi.fn()}
       onUpdatePR={vi.fn()}
       onTogglePRItem={vi.fn()}
+      onSetPRItemQuantity={vi.fn()}
       availabilityByCombo={availability([{ onHandQuantity: 10, availableQuantity: 10 }])}
+      requestedByCombo={new Map([['HINGE|HG-100', 4]])}
       availabilityShortfalls={[]}
+      availabilityLoading={false}
       availabilityError={false}
       onAcknowledgeIncompleteLeaf={vi.fn()}
       onNext={vi.fn()}
@@ -294,7 +293,7 @@ describe('ShippingPRsStep availability gating', () => {
         { onHandQuantity: 10, reservedQuantity: 4, availableQuantity: 6 },
       ]),
     });
-    expect(screen.getByText('6 available (4 reserved by other requests)')).toBeInTheDocument();
+    expect(screen.getByText('6 in inventory (4 spoken for)')).toBeInTheDocument();
     expect(nextButton()).toBeEnabled();
   });
 
@@ -320,21 +319,101 @@ describe('ShippingPRsStep availability gating', () => {
     expect(screen.getByText(/Assembled door leaves are unaffected/)).toBeInTheDocument();
   });
 
-  it('blocks and says the counts are unknown when the lookup failed', () => {
-    renderShipping({ availabilityError: true });
+  it('blocks and refuses to offer an Add when the lookup failed', () => {
+    // An unknown count must not read as "fine", and it must not read as a real headroom either -
+    // an enabled Add would put a number on the request that was never checked against anything.
+    renderShipping({ shippingPRDrafts: [EMPTY_SHIP_DRAFT], availabilityError: true });
     expect(nextButton()).toBeDisabled();
-    expect(screen.getByText('Availability unknown')).toBeInTheDocument();
+    expect(screen.getByText(/Could not read this project's available inventory/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Add$/ })).toBeDisabled();
+  });
+});
+
+describe('ShippingPRsStep coverage builder (#451)', () => {
+  it('offers only what is free once the rest of the session has claimed its share', () => {
+    // 6 free, 4 already asked for by another line: this row may take the remaining 2, not the 4 the
+    // schedule owes. Offering 4 would build a request the step then has to refuse.
+    const onSetPRItemQuantity = vi.fn();
+    renderShipping({
+      shippingPRDrafts: [EMPTY_SHIP_DRAFT],
+      onSetPRItemQuantity,
+      availabilityByCombo: availability([{ onHandQuantity: 10, availableQuantity: 6 }]),
+      requestedByCombo: new Map([['HINGE|HG-100', 4]]),
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add 2' }));
+    expect(onSetPRItemQuantity).toHaveBeenCalledTimes(1);
+    expect(onSetPRItemQuantity.mock.calls[0][1]).toMatchObject({
+      itemType: 'LOOSE',
+      openingNumber: 'A01',
+      productCode: 'HG-100',
+    });
+    expect(onSetPRItemQuantity.mock.calls[0][2]).toBe(2);
   });
 
-  it('still lets a loose line be ticked - the gate is on the step, not the checkbox', () => {
-    // Blocking the tick would make it impossible to see the combined effect of a selection, which is
-    // what the per-combo shortfall list is for.
-    const onTogglePRItem = vi.fn();
+  it('never offers more than the leaf is owed, however full the shelf is', () => {
     renderShipping({
-      onTogglePRItem,
-      availabilityByCombo: availability([{ onHandQuantity: 1, availableQuantity: 1 }]),
+      shippingPRDrafts: [EMPTY_SHIP_DRAFT],
+      requestedByCombo: new Map(),
+      availabilityByCombo: availability([{ onHandQuantity: 99, availableQuantity: 99 }]),
     });
-    fireEvent.click(screen.getAllByRole('checkbox')[0]);
-    expect(onTogglePRItem).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('button', { name: 'Add 4' })).toBeEnabled();
+  });
+
+  it('says what is on the way when there is nothing on the shelf', () => {
+    // The distinction the shipper needs: "wait for it" is a different answer from "it was never
+    // ordered", and an empty shelf alone does not tell them which one they are looking at.
+    renderShipping({
+      shippingPRDrafts: [EMPTY_SHIP_DRAFT],
+      requestedByCombo: new Map(),
+      looseRows: [looseRow({ onOrderQuantity: 4 })],
+      availabilityByCombo: availability([{ availableQuantity: 0 }]),
+    });
+    expect(screen.getByText('4 on the way')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Add$/ })).toBeDisabled();
+    expect(screen.queryByText('none ordered')).not.toBeInTheDocument();
+  });
+
+  it('calls out hardware nobody has ordered at all', () => {
+    renderShipping({
+      shippingPRDrafts: [EMPTY_SHIP_DRAFT],
+      requestedByCombo: new Map(),
+      availabilityByCombo: availability([{ availableQuantity: 0 }]),
+    });
+    expect(screen.getByText('none ordered')).toBeInTheDocument();
+  });
+
+  it('separates site hardware from shop hardware assembly skipped', () => {
+    renderShipping({
+      shippingPRDrafts: [EMPTY_SHIP_DRAFT],
+      requestedByCombo: new Map(),
+      looseRows: [
+        looseRow(),
+        looseRow({ productCode: 'CLO-9', classification: 'SHOP_HARDWARE' }),
+        looseRow({ productCode: 'UNK-1', classification: null }),
+      ],
+    });
+    expect(screen.getByText('Site hardware')).toBeInTheDocument();
+    expect(screen.getByText('Shop hardware not assembled onto the leaf')).toBeInTheDocument();
+    expect(screen.getByText('Unclassified hardware')).toBeInTheDocument();
+  });
+
+  it('adds a whole group at once without over-claiming a product two rows want', () => {
+    // Both rows are the same product, and there are only 3 free. The second row must see what the
+    // first just took - `requestedByCombo` cannot, because it only refreshes after the click.
+    const onSetPRItemQuantity = vi.fn();
+    renderShipping({
+      shippingPRDrafts: [EMPTY_SHIP_DRAFT],
+      requestedByCombo: new Map(),
+      onSetPRItemQuantity,
+      looseRows: [looseRow({ openingNumber: 'A01' }), looseRow({ openingNumber: 'A02' })],
+      availabilityByCombo: availability([{ onHandQuantity: 3, availableQuantity: 3 }]),
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add all available' }));
+    expect(onSetPRItemQuantity.mock.calls.map((call) => call[2])).toEqual([3]);
+  });
+
+  it('summarises what the request holds so far', () => {
+    renderShipping();
+    expect(screen.getByText('1 loose line(s), 4 unit(s)')).toBeInTheDocument();
   });
 });

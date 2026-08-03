@@ -126,6 +126,134 @@ export function computeAvailabilityShortfalls(
   return rows;
 }
 
+// ---- Shipping-out coverage (#451) ----------------------------------------------------------
+//
+// The shipping request is created off the hardware schedule, so Nexus can tell the user what
+// belongs with the leaves they picked rather than making them remember. `shippingCoverage` answers
+// that per leaf; these types shape it for the builder.
+
+export type HardwareClassification = 'SITE_HARDWARE' | 'SHOP_HARDWARE';
+export type CoverageLeafStatus = 'NOT_ASSEMBLED' | 'IN_INVENTORY' | 'SHIP_READY' | 'SHIPPED_OUT';
+
+export interface ShippingCoverageLine {
+  hardwareCategory: string;
+  productCode: string;
+  /** Null when the schedule was never classified - shown as its own group, never guessed at. */
+  classification: HardwareClassification | null;
+  /** What the schedule says this leaf takes. */
+  owedQuantity: number;
+  /** What is bolted onto the assembled leaf. Always 0 for site hardware and unassembled leaves. */
+  installedQuantity: number;
+  /** `owed - installed`: what still has to travel loose beside the leaf. */
+  suggestedQuantity: number;
+  /** Ordered from a vendor and not yet received, project-wide. Not an allocation to this leaf. */
+  onOrderQuantity: number;
+}
+
+export interface ShippingCoverageLeaf {
+  openingNumber: string;
+  leaf: number | null;
+  status: CoverageLeafStatus;
+  openingItemId: string | null;
+  /** A live shipping request already holds this leaf - one physical leaf ships once. */
+  claimedByRequestNumber: string | null;
+  lines: ShippingCoverageLine[];
+}
+
+/**
+ * One loose line the builder offers, which is a coverage line summed over an opening's leaves.
+ *
+ * The aggregation is not cosmetic: a LOOSE request line is keyed by (opening, category, product)
+ * and carries no leaf, because loose stock is fungible and only a pull tags it onto one
+ * (docs/HARDWARE_IDENTITY_LIFECYCLE.md). Two leaves of a pair each owed two hinges are therefore
+ * one request line for four, not two lines that would collide on the same key. `perLeaf` keeps the
+ * breakdown for display so the user can still see where the four came from.
+ */
+export interface LooseCoverageRow {
+  openingNumber: string;
+  hardwareCategory: string;
+  productCode: string;
+  classification: HardwareClassification | null;
+  suggestedQuantity: number;
+  onOrderQuantity: number;
+  perLeaf: Array<{ leaf: number | null; quantity: number }>;
+}
+
+/** Group heading a loose row belongs under, which is what tells the user *why* it is being offered. */
+export type CoverageGroup = 'SITE' | 'SHOP_SKIPPED' | 'UNCLASSIFIED';
+
+export function coverageGroup(row: { classification: HardwareClassification | null }): CoverageGroup {
+  if (row.classification === 'SITE_HARDWARE') return 'SITE';
+  if (row.classification === 'SHOP_HARDWARE') return 'SHOP_SKIPPED';
+  return 'UNCLASSIFIED';
+}
+
+export const COVERAGE_GROUP_LABEL: Record<CoverageGroup, string> = {
+  SITE: 'Site hardware',
+  SHOP_SKIPPED: 'Shop hardware not assembled onto the leaf',
+  UNCLASSIFIED: 'Unclassified hardware',
+};
+
+export const COVERAGE_GROUP_HINT: Record<CoverageGroup, string> = {
+  SITE: 'Installed at site, so it never went through shop assembly and always travels loose.',
+  SHOP_SKIPPED:
+    'Should have been fitted at the bench. Assembly skipped these units, so they still have to go loose.',
+  UNCLASSIFIED:
+    'The schedule never said whether these are site or shop hardware. Shown so nothing owed goes unnoticed.',
+};
+
+export const COVERAGE_GROUP_ORDER: CoverageGroup[] = ['SITE', 'SHOP_SKIPPED', 'UNCLASSIFIED'];
+
+/**
+ * Turn per-leaf coverage into the loose lines the builder can offer, one per
+ * (opening, category, product). Lines with nothing left to send are dropped - a leaf whose shop
+ * hardware was fully fitted owes nothing loose, and offering it a zero would be noise.
+ */
+export function buildLooseCoverageRows(leaves: ShippingCoverageLeaf[]): LooseCoverageRow[] {
+  const rows = new Map<string, LooseCoverageRow>();
+  for (const leaf of leaves) {
+    for (const line of leaf.lines) {
+      if (line.suggestedQuantity <= 0) continue;
+      const key = `${leaf.openingNumber}|${line.hardwareCategory}|${line.productCode}`;
+      const existing = rows.get(key);
+      if (existing) {
+        existing.suggestedQuantity += line.suggestedQuantity;
+        existing.perLeaf.push({ leaf: leaf.leaf, quantity: line.suggestedQuantity });
+        // A product that reads site on one leaf and shop on the other is a schedule inconsistency,
+        // not something to average. Keep the first non-null so the row still lands in a real group.
+        existing.classification = existing.classification ?? line.classification;
+      } else {
+        rows.set(key, {
+          openingNumber: leaf.openingNumber,
+          hardwareCategory: line.hardwareCategory,
+          productCode: line.productCode,
+          classification: line.classification,
+          suggestedQuantity: line.suggestedQuantity,
+          onOrderQuantity: line.onOrderQuantity,
+          perLeaf: [{ leaf: leaf.leaf, quantity: line.suggestedQuantity }],
+        });
+      }
+    }
+  }
+  return Array.from(rows.values()).sort(
+    (a, b) =>
+      a.openingNumber.localeCompare(b.openingNumber) ||
+      a.hardwareCategory.localeCompare(b.hardwareCategory) ||
+      a.productCode.localeCompare(b.productCode),
+  );
+}
+
+/** The draft line a loose coverage row becomes when it is added at `quantity`. */
+export function looseCoverageItem(row: LooseCoverageRow, quantity: number): ShippingPRItem {
+  return {
+    itemType: 'LOOSE',
+    openingNumber: row.openingNumber,
+    hardwareCategory: row.hardwareCategory,
+    productCode: row.productCode,
+    requestedQuantity: quantity,
+  };
+}
+
 export function hardwareItemKey(hi: ParsedHardwareItem) {
   return `${hi.opening_number}|${hi.product_code}|${hi.material_id}`;
 }

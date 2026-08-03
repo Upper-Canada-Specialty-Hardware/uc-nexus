@@ -16,6 +16,31 @@ export const GET_SHIP_READY_ITEMS = gql`
   }
 `;
 
+// What the openings picked in Start a Task still owe the site, leaf by leaf (#451). Joins three
+// things the builder cannot see on its own: the schedule (owed), the assembled leaf (installed) and
+// the open purchase orders (on order). Availability is deliberately NOT here - it comes from
+// projectInventoryAvailability, the single number the creation gate is applied against (#342).
+export const GET_SHIPPING_COVERAGE = gql`
+  query GetShippingCoverage($projectId: ID!, $openingNumbers: [String!]!) {
+    shippingCoverage(projectId: $projectId, openingNumbers: $openingNumbers) {
+      openingNumber
+      leaf
+      status
+      openingItemId
+      claimedByRequestNumber
+      lines {
+        hardwareCategory
+        productCode
+        classification
+        owedQuantity
+        installedQuantity
+        suggestedQuantity
+        onOrderQuantity
+      }
+    }
+  }
+`;
+
 // What shipped, and the journey it went on. The Delivery Request header sits between them, and is
 // spliced in from DELIVERY_REQUEST_FIELDS rather than listed again (#453): a header field missing
 // from this selection saves fine, reads back undefined and prints blank on the form, which is a
