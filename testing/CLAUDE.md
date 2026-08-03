@@ -247,7 +247,18 @@ happily reserve them) while every schedule row stays `Gap Remaining`, so Reconci
 
 To seed stock that *counts*, run the wizard with purpose **Create Purchase Orders** over the openings
 you intend to assemble, then register + receive that PO. Its lines are bound to the schedule items, so
-receiving flips them to `In Inventory: N` and the gate opens. Keep the GP footprint small by using the
+receiving flips them to `In Inventory: N` and the gate opens.
+
+**A wizard-created PO loses that binding if you register it by calling `registerPoInGp` yourself.** The
+mutation *replaces* the draft's line items with the set you send (that is its documented job - the
+register dialog is allowed to edit them), so hand-built `lineItems` produce lines with no link back to
+the schedule rows. The PO registers, GP takes it, the receive posts and inventory appears - and every
+schedule item is still `PO_DRAFTED`, so the assembly gate refuses exactly as it does for a
+Create-PO-dialog PO. Verified 2026-08-03 on pr-460: two POs (PO0000082, PO0000083) and two receipts
+landed in TUBC and `projectInventoryAvailability` showed all four products, while
+`openingHardwareStatus` for the opening still read `PO_DRAFTED` across the board. Drive the register
+**dialog** when the schedule linkage matters; scripting the mutation is only safe when all you want is
+stock in the pool. Keep the GP footprint small by using the
 Reconciliation step's own checkboxes (PO purpose only): `Deselect All`, then tick just the one product
 you want, and at the PO step check a single manufacturer card. Fill **Order As** on that step - an
 import-created draft otherwise blocks the register dialog with per-line `Required` errors.
