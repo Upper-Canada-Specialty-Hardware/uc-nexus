@@ -532,17 +532,27 @@ class ShipmentItemInput:
 
 
 @strawberry.input
-class ConfirmShipmentInput:
-    """What went on the truck, plus the Delivery Request written for it (#447).
+class DeliveryRequestHeaderInput:
+    """The Delivery Request header, on both of the mutations that write it (#453).
 
-    Every header field is optional and stays optional. The form is filled in against whatever the
-    site has told the shipping department, and a blank on it is a real answer - refusing the
-    shipment because nobody knew the gate number would stop hardware leaving over paperwork.
+    A base rather than the same twenty fields typed out under each input. Two paths write this
+    header - `confirmShipment` fills it in and `updateShipmentDetails` rewrites it - and a field
+    that reached one but not the other is a field the shipping department can set and never
+    correct, or correct and never set. Neither breaks the build or any test, so the drift is
+    silent until somebody notices a box on the paper that will not stick.
+
+    The names have to match `shipping_repository.DELIVERY_REQUEST_FIELDS` as well as the count:
+    that tuple is what reads the header back off either input, so a field named differently here is
+    a field the resolver quietly never persists.
+
+    Every field is optional and stays optional. The form is filled in against whatever the site has
+    told the shipping department, and a blank on it is a real answer - refusing a shipment because
+    nobody knew the gate number would stop hardware leaving over paperwork.
+
+    Not a GraphQL input type of its own: Strawberry flattens these fields into each subclass, so
+    the schema shows twenty fields on both inputs and nothing named DeliveryRequestHeaderInput.
     """
 
-    project_id: strawberry.ID
-    packing_slip_number: str
-    items: list[ShipmentItemInput] = strawberry.field(default_factory=list)
     pickup_date: date | None = None
     delivery_date: date | None = None
     shipper_email: str | None = None
@@ -566,7 +576,16 @@ class ConfirmShipmentInput:
 
 
 @strawberry.input
-class UpdateShipmentDetailsInput:
+class ConfirmShipmentInput(DeliveryRequestHeaderInput):
+    """What went on the truck, plus the Delivery Request written for it (#447)."""
+
+    project_id: strawberry.ID
+    packing_slip_number: str
+    items: list[ShipmentItemInput] = strawberry.field(default_factory=list)
+
+
+@strawberry.input
+class UpdateShipmentDetailsInput(DeliveryRequestHeaderInput):
     """Correct the Delivery Request of a shipment that has not been picked up yet (#447).
 
     **Full replace.** Every header field is applied exactly as given, and a field given as null is
@@ -581,26 +600,6 @@ class UpdateShipmentDetailsInput:
     """
 
     id: strawberry.ID
-    pickup_date: date | None = None
-    delivery_date: date | None = None
-    shipper_email: str | None = None
-    shipper_phone: str | None = None
-    pickup_location: str | None = None
-    carrier_tag_bol: str | None = None
-    weight_lbs: float | None = None
-    delivery_address: str | None = None
-    special_instructions: str | None = None
-    gate_number: str | None = None
-    forklift_onsite: str | None = None
-    material_coming_back: str | None = None
-    site_material_included: str | None = None
-    construction_temp_keys: str | None = None
-    extra_frame_anchors: str | None = None
-    contractor_contact_name: str | None = None
-    contractor_contact_phone: str | None = None
-    ucsh_contact_name: str | None = None
-    ucsh_contact_phone: str | None = None
-    sales_order_number: str | None = None
 
 
 @strawberry.input

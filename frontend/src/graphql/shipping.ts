@@ -1,4 +1,5 @@
 import { gql } from '@apollo/client/core';
+import { DELIVERY_REQUEST_FIELDS } from '../types/deliveryRequestFields';
 
 export const GET_SHIP_READY_ITEMS = gql`
   query GetShipReadyItems($projectId: ID) {
@@ -15,43 +16,31 @@ export const GET_SHIP_READY_ITEMS = gql`
   }
 `;
 
+// What shipped, and the journey it went on. The Delivery Request header sits between them, and is
+// spliced in from DELIVERY_REQUEST_FIELDS rather than listed again (#453): a header field missing
+// from this selection saves fine, reads back undefined and prints blank on the form, which is a
+// failure no build or test catches.
+const SLIP_IDENTITY_FIELDS = [
+  'id',
+  'packingSlipNumber',
+  'projectId',
+  'status',
+  'shippedBy',
+  'shippedAt',
+  'createdAt',
+] as const;
+
+const SLIP_LIFECYCLE_FIELDS = ['pickedUpAt', 'pickedUpBy', 'deliveredAt', 'deliveredBy'] as const;
+
 // Every field of the Delivery Request a shipment carries (#447), in one place. The confirm, the
 // list read and the three lifecycle mutations all return a PackingSlip, and they have to return the
 // SAME PackingSlip: Apollo normalises on `id`, so a mutation that answered with a narrower selection
 // than the list reads would leave the row it just changed half-stale in the cache.
-const PACKING_SLIP_FIELDS = `
-  id
-  packingSlipNumber
-  projectId
-  status
-  shippedBy
-  shippedAt
-  createdAt
-  pickupDate
-  deliveryDate
-  shipperEmail
-  shipperPhone
-  pickupLocation
-  carrierTagBol
-  weightLbs
-  deliveryAddress
-  specialInstructions
-  gateNumber
-  forkliftOnsite
-  materialComingBack
-  siteMaterialIncluded
-  constructionTempKeys
-  extraFrameAnchors
-  contractorContactName
-  contractorContactPhone
-  ucshContactName
-  ucshContactPhone
-  salesOrderNumber
-  pickedUpAt
-  pickedUpBy
-  deliveredAt
-  deliveredBy
-`;
+const PACKING_SLIP_FIELDS = [
+  ...SLIP_IDENTITY_FIELDS,
+  ...DELIVERY_REQUEST_FIELDS,
+  ...SLIP_LIFECYCLE_FIELDS,
+].join('\n  ');
 
 export const GET_PACKING_SLIPS = gql`
   query GetPackingSlips($projectId: ID) {

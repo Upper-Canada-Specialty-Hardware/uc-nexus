@@ -606,11 +606,9 @@ input LocationInput {
   deficient_quantity: Int! = 0
 }
 
-input ConfirmShipmentInput {
-  project_id: ID!
-  packing_slip_number: String!
-  items: [ShipmentItemInput!]!
-}
+# ConfirmShipmentInput is defined in shipping.graphql, alongside the Delivery Request header block
+# it carries. It was duplicated here without that header for the whole of #447, which is the drift
+# #453 is about.
 
 input ShipmentItemInput {
   item_type: PullRequestItemType!

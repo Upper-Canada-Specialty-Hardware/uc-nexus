@@ -8,6 +8,12 @@
 // document generated at the end of the shipping wizard IS that form, so every field the form
 // captures has to survive into the PDF and back out of `packingSlips` unchanged.
 
+import {
+  DELIVERY_REQUEST_FIELDS,
+  WEIGHT_FIELD,
+  type DeliveryRequestField,
+} from '../../types/deliveryRequestFields';
+
 export type ShipmentStatus = 'SCHEDULED' | 'PICKED_UP' | 'DELIVERED';
 
 type ChipColor = 'default' | 'info' | 'warning' | 'success';
@@ -32,8 +38,21 @@ export interface PackingSlipItem {
   quantity: number;
 }
 
-/** Everything a PackingSlip carries apart from its items. */
-export interface PackingSlipHeader {
+/**
+ * The header fields as the server takes them and as the PDF prints them: blanks are null, and the
+ * weight is a number. `deliveryDetailsInput` produces exactly this, which is why the same object can
+ * be spread into a mutation input and handed to the document.
+ *
+ * Derived from `DELIVERY_REQUEST_FIELDS` rather than typed out (#453), as is every shape below it.
+ * Adding the twenty-first field to that list is what makes it exist here, in the form state, in the
+ * two converters and in the GraphQL selection at once.
+ */
+export type DeliveryRequestValues = {
+  [K in Exclude<DeliveryRequestField, typeof WEIGHT_FIELD>]: string | null;
+} & { [K in typeof WEIGHT_FIELD]: number | null };
+
+/** Everything a PackingSlip carries apart from its items: what shipped, the header, the journey. */
+export type PackingSlipHeader = {
   id: string;
   packingSlipNumber: string;
   projectId: string;
@@ -41,89 +60,22 @@ export interface PackingSlipHeader {
   shippedBy: string;
   shippedAt: string;
   createdAt: string;
-  pickupDate: string | null;
-  deliveryDate: string | null;
-  shipperEmail: string | null;
-  shipperPhone: string | null;
-  pickupLocation: string | null;
-  carrierTagBol: string | null;
-  weightLbs: number | null;
-  deliveryAddress: string | null;
-  specialInstructions: string | null;
-  gateNumber: string | null;
-  forkliftOnsite: string | null;
-  materialComingBack: string | null;
-  siteMaterialIncluded: string | null;
-  constructionTempKeys: string | null;
-  extraFrameAnchors: string | null;
-  contractorContactName: string | null;
-  contractorContactPhone: string | null;
-  ucshContactName: string | null;
-  ucshContactPhone: string | null;
-  salesOrderNumber: string | null;
   pickedUpAt: string | null;
   pickedUpBy: string | null;
   deliveredAt: string | null;
   deliveredBy: string | null;
-}
+} & DeliveryRequestValues;
 
-export interface PackingSlip extends PackingSlipHeader {
+export type PackingSlip = PackingSlipHeader & {
   items: PackingSlipItem[];
-}
-
-/**
- * The header fields as the server takes them and as the PDF prints them: blanks are null, and the
- * weight is a number. `deliveryDetailsInput` produces exactly this, which is why the same object can
- * be spread into a mutation input and handed to the document.
- */
-export interface DeliveryRequestValues {
-  pickupDate: string | null;
-  deliveryDate: string | null;
-  shipperEmail: string | null;
-  shipperPhone: string | null;
-  pickupLocation: string | null;
-  carrierTagBol: string | null;
-  weightLbs: number | null;
-  deliveryAddress: string | null;
-  specialInstructions: string | null;
-  gateNumber: string | null;
-  forkliftOnsite: string | null;
-  materialComingBack: string | null;
-  siteMaterialIncluded: string | null;
-  constructionTempKeys: string | null;
-  extraFrameAnchors: string | null;
-  contractorContactName: string | null;
-  contractorContactPhone: string | null;
-  ucshContactName: string | null;
-  ucshContactPhone: string | null;
-  salesOrderNumber: string | null;
-}
+};
 
 /** The same fields as form state: every one a string, because that is what an input holds. */
-export type DeliveryDetails = { [K in keyof DeliveryRequestValues]: string };
+export type DeliveryDetails = { [K in DeliveryRequestField]: string };
 
-export const EMPTY_DELIVERY_DETAILS: DeliveryDetails = {
-  pickupDate: '',
-  deliveryDate: '',
-  shipperEmail: '',
-  shipperPhone: '',
-  pickupLocation: '',
-  carrierTagBol: '',
-  weightLbs: '',
-  deliveryAddress: '',
-  specialInstructions: '',
-  gateNumber: '',
-  forkliftOnsite: '',
-  materialComingBack: '',
-  siteMaterialIncluded: '',
-  constructionTempKeys: '',
-  extraFrameAnchors: '',
-  contractorContactName: '',
-  contractorContactPhone: '',
-  ucshContactName: '',
-  ucshContactPhone: '',
-  salesOrderNumber: '',
-};
+export const EMPTY_DELIVERY_DETAILS: DeliveryDetails = Object.fromEntries(
+  DELIVERY_REQUEST_FIELDS.map((field) => [field, '']),
+) as DeliveryDetails;
 
 function textOrNull(value: string): string | null {
   const trimmed = value.trim();
@@ -153,55 +105,22 @@ export const WEIGHT_ERROR = `Weight must be a number between 0 and ${MAX_WEIGHT_
  * user cleared has to travel as an explicit null, or an edit could never empty one.
  */
 export function deliveryDetailsInput(details: DeliveryDetails): DeliveryRequestValues {
-  const weight = details.weightLbs.trim();
-  return {
-    pickupDate: textOrNull(details.pickupDate),
-    deliveryDate: textOrNull(details.deliveryDate),
-    shipperEmail: textOrNull(details.shipperEmail),
-    shipperPhone: textOrNull(details.shipperPhone),
-    pickupLocation: textOrNull(details.pickupLocation),
-    carrierTagBol: textOrNull(details.carrierTagBol),
-    weightLbs: weight === '' || !Number.isFinite(Number(weight)) ? null : Number(weight),
-    deliveryAddress: textOrNull(details.deliveryAddress),
-    specialInstructions: textOrNull(details.specialInstructions),
-    gateNumber: textOrNull(details.gateNumber),
-    forkliftOnsite: textOrNull(details.forkliftOnsite),
-    materialComingBack: textOrNull(details.materialComingBack),
-    siteMaterialIncluded: textOrNull(details.siteMaterialIncluded),
-    constructionTempKeys: textOrNull(details.constructionTempKeys),
-    extraFrameAnchors: textOrNull(details.extraFrameAnchors),
-    contractorContactName: textOrNull(details.contractorContactName),
-    contractorContactPhone: textOrNull(details.contractorContactPhone),
-    ucshContactName: textOrNull(details.ucshContactName),
-    ucshContactPhone: textOrNull(details.ucshContactPhone),
-    salesOrderNumber: textOrNull(details.salesOrderNumber),
-  };
+  const values = Object.fromEntries(
+    DELIVERY_REQUEST_FIELDS.map((field) => [field, textOrNull(details[field])]),
+  ) as unknown as DeliveryRequestValues;
+  // The weight is the one field the server does not take as text.
+  const weight = details[WEIGHT_FIELD].trim();
+  values[WEIGHT_FIELD] = weight === '' || !Number.isFinite(Number(weight)) ? null : Number(weight);
+  return values;
 }
 
 /** The stored shipment as the edit dialog's form state. */
 export function detailsFromSlip(slip: PackingSlipHeader): DeliveryDetails {
-  return {
-    pickupDate: slip.pickupDate ?? '',
-    deliveryDate: slip.deliveryDate ?? '',
-    shipperEmail: slip.shipperEmail ?? '',
-    shipperPhone: slip.shipperPhone ?? '',
-    pickupLocation: slip.pickupLocation ?? '',
-    carrierTagBol: slip.carrierTagBol ?? '',
-    weightLbs: slip.weightLbs != null ? String(slip.weightLbs) : '',
-    deliveryAddress: slip.deliveryAddress ?? '',
-    specialInstructions: slip.specialInstructions ?? '',
-    gateNumber: slip.gateNumber ?? '',
-    forkliftOnsite: slip.forkliftOnsite ?? '',
-    materialComingBack: slip.materialComingBack ?? '',
-    siteMaterialIncluded: slip.siteMaterialIncluded ?? '',
-    constructionTempKeys: slip.constructionTempKeys ?? '',
-    extraFrameAnchors: slip.extraFrameAnchors ?? '',
-    contractorContactName: slip.contractorContactName ?? '',
-    contractorContactPhone: slip.contractorContactPhone ?? '',
-    ucshContactName: slip.ucshContactName ?? '',
-    ucshContactPhone: slip.ucshContactPhone ?? '',
-    salesOrderNumber: slip.salesOrderNumber ?? '',
-  };
+  const details = Object.fromEntries(
+    DELIVERY_REQUEST_FIELDS.map((field) => [field, slip[field] ?? '']),
+  ) as DeliveryDetails;
+  details[WEIGHT_FIELD] = slip[WEIGHT_FIELD] != null ? String(slip[WEIGHT_FIELD]) : '';
+  return details;
 }
 
 /** The stored shipment as the PDF prints it. */
