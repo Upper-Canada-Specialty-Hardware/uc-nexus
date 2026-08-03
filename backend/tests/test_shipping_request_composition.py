@@ -250,13 +250,15 @@ def test_reducing_a_line_is_not_gated_against_stock_it_already_holds(db_session)
 
 
 def test_an_edit_that_over_claims_is_refused_and_leaves_the_original_claim(db_session):
+    # The edit deletes the old lines and releases the old claim BEFORE the gate, so what happens
+    # when the gate refuses is the whole question: the caller must be left holding what it had.
+    # A savepoint is exactly the shape of the resolver's transaction - it commits only on success.
     project = _project(db_session)
     _stock(db_session, project, qty=4)
     req = _create(db_session, project, [_loose(qty=2)])
 
-    with pytest.raises(InventoryShortfallError):
+    with pytest.raises(InventoryShortfallError), db_session.begin_nested():
         shipping_requests.replace_shipping_out_request_items(db_session, req.id, [_loose(qty=9)])
-    db_session.rollback()
 
     refreshed = shipping_repository.get_shipping_out_request(db_session, req.id)
     assert [(i.product_code, i.requested_quantity) for i in refreshed.items] == [("HG-100", 2)]

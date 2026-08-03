@@ -201,6 +201,10 @@ def replace_shipping_out_request_items(
         needs,
     )
     session.flush()
+    # The rows were written by id rather than by appending to the collection, so `req.items` still
+    # holds the set that was just deleted. Expiring it makes the returned object tell the truth about
+    # what the request now contains, rather than relying on the caller's commit to expire it.
+    session.expire(req, ["items"])
     return req
 
 
@@ -370,8 +374,11 @@ def _build_item(
                 f"cannot be requested for shipping",
                 field="opening_item_id",
             )
-        # The leaf IS an opening, so its identity comes off the row rather than off the client.
+        # The leaf IS an opening and IS a leaf, so both come off the row rather than off the client.
+        # A composer that names neither still produces a line a pair reads as two distinct entries.
         opening_number = opening_number or oi.opening_number
+        if item_input.get("leaf") is None:
+            item_input = {**item_input, "leaf": oi.leaf}
     elif not item_input.get("hardware_category") or not item_input.get("product_code"):
         raise ValidationError(
             f"Shipping-out request {request_number}: a loose line must name a hardware category and product code",
