@@ -263,6 +263,38 @@ Reconciliation step's own checkboxes (PO purpose only): `Deselect All`, then tic
 you want, and at the PO step check a single manufacturer card. Fill **Order As** on that step - an
 import-created draft otherwise blocks the register dialog with per-line `Required` errors.
 
+**The register dialog's Register button is silently inert while validation fails, and the buyer rule
+is the one that catches you.** `validate()` in `GpPurchaseOrderDialog.tsx` refuses with
+`Buyer <id> is not assigned to this project` when `registerProjectAllowed` is false, and a fresh PR
+environment has an EMPTY `buyerAssignments` table - so the very first registration on any new
+environment hits it. The button is not disabled and no toast fires; the only signal is the alert
+already sitting at the top of the dialog, which reads like a warning rather than a blocker. If a
+click produces no network request at all, that is what happened. Fix it properly at Admin -> Buyers
+-> Add Buyer (pick the GP buyer your account is linked to, add the project), not by scripting the
+mutation.
+
+**A wizard PO over a whole opening can be rejected by GP with eConnect 9191.** Observed 2026-08-03 on
+pr-463 registering both POs off opening `0501-EX` of `contracterp-74.xml` against TUBC:
+
+```
+GP PROC   taPoLine
+ERROR STATE 9191
+DESCRIPTION Invalid PO Status (POLNESTA), the line item cannot be manually released
+```
+
+Both POs failed identically, with a fresh PO number each and the relay connected and serving reads
+(vendors, cost codes and tax details all loaded live in the same dialog). It is therefore a GP-side
+condition, not a relay outage and not the buyer rule above. **There is no non-relay path to
+inventory**, so when this happens every scenario downstream of "hardware exists" is unrunnable in
+that environment - re-scope rather than improvising. What still works and is worth using:
+
+- `markPoAsOrdered` moves a DRAFT with a PO number and a Nexus vendor straight to `GP_REGISTERED`
+  with no relay involvement (`po_repository.py`). That is enough to exercise anything keyed on a
+  *placed* PO - on-order quantities, back-order reads - without touching GP. It does NOT create a
+  receipt, so it seeds no inventory.
+- The stock pool is not an escape hatch: there is no `createStockItem`. Stock only enters through a
+  receive, or out of project inventory via `destockInventory`, so it has the same root dependency.
+
 ## Getting Started (Every Session)
 
 0. **Pick the environment first.** Testing runs against the PR environment for the PR you are working on. Set `PR` once and let both URLs derive from it, so there is no production URL in the snippet to fat-finger:
