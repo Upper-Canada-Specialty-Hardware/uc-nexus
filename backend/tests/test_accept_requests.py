@@ -509,10 +509,19 @@ def test_accept_shipping_out_carries_leaf_onto_opening_item_pull_lines(db_sessio
 
 
 def test_accept_shipping_out_falls_back_to_opening_item_leaf(db_session):
-    """Requests written before shipping_out_request_items.leaf existed still label their leaves."""
+    """Requests written before shipping_out_request_items.leaf existed still label their leaves.
+
+    The legacy state is written directly rather than composed, because since #451 no creation path
+    can produce it any more: an OPENING_ITEM line takes its leaf off the assembled row when the
+    composer does not name one. What is pinned here is the accept's fallback over rows that are
+    ALREADY null in the database, which is exactly the population that predates the column.
+    """
     project, leaf1, leaf2 = _seed_pair(db_session)
     result = _finalize_shipping_leaves(db_session, project, [leaf1, leaf2], send_leaf=False)
     req = result["shipping_out_requests"][0]
+    db_session.flush()
+    for item in req.items:
+        item.leaf = None
     db_session.flush()
     assert {i.leaf for i in req.items} == {None}
 
