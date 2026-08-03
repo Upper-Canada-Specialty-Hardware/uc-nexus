@@ -107,8 +107,9 @@ def _serve(argv: list[str]) -> int:
 
     async def _run() -> None:
         # the outbound channel is additive to the existing inbound HTTP server - a blank
-        # [channel].backend_url makes channel.run_forever() a no-op, so this is safe on a relay that
-        # hasn't been reconfigured for it yet.
+        # [channel].backend_url leaves channel.run_forever() supervising nothing, so this is safe on a
+        # relay that hasn't been reconfigured for it yet. it keeps watching config.toml either way
+        # (#456), so a URL added later comes up without a restart.
         #
         # Skip the channel entirely when unenrolled (no secret): the backend refuses it pre-accept, so
         # running it would just spam secret-rejected retries. serve still binds the local HTTP server so

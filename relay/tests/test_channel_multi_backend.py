@@ -10,8 +10,10 @@ thing standing between a PR environment and a live GP company is `_dispatch` ref
 """
 
 import asyncio
+import contextlib
 import json
 import logging
+from pathlib import Path
 
 import pytest
 
@@ -162,22 +164,24 @@ def test_run_forever_starts_one_channel_per_configured_url(monkeypatch, tmp_path
 
     async def fake_run_channel(url, stop_event=None):
         started.append(url)
+        await _forever()
 
     monkeypatch.setattr(channel, "_run_channel", fake_run_channel)
     _use_backend_urls(monkeypatch, tmp_path, [PRODUCTION_BACKEND_URL, PR_URL])
-    asyncio.run(channel.run_forever())
+    asyncio.run(_supervise_for_one_tick(monkeypatch))
     assert started == [PRODUCTION_BACKEND_URL, PR_URL]
 
 
-def test_run_forever_is_a_no_op_when_no_backend_is_configured(monkeypatch, tmp_path):
+def test_run_forever_starts_nothing_when_no_backend_is_configured(monkeypatch, tmp_path):
     started: list[str] = []
 
     async def fake_run_channel(url, stop_event=None):
         started.append(url)
+        await _forever()
 
     monkeypatch.setattr(channel, "_run_channel", fake_run_channel)
     _use_backend_urls(monkeypatch, tmp_path, [])
-    asyncio.run(channel.run_forever())
+    asyncio.run(_supervise_for_one_tick(monkeypatch))
     assert started == []
 
 
@@ -189,10 +193,11 @@ def test_one_channel_raising_does_not_take_the_others_down(monkeypatch, tmp_path
             raise RuntimeError("PR environment went away mid-run")
         await asyncio.sleep(0)
         finished.append(url)
+        await _forever()
 
     monkeypatch.setattr(channel, "_run_channel", fake_run_channel)
     _use_backend_urls(monkeypatch, tmp_path, [PRODUCTION_BACKEND_URL, PR_URL])
-    asyncio.run(channel.run_forever())  # must not raise
+    asyncio.run(_supervise_for_one_tick(monkeypatch))  # must not raise
     assert finished == [PRODUCTION_BACKEND_URL]
 
 
@@ -200,29 +205,178 @@ def test_a_stop_event_reaches_every_channel(monkeypatch, tmp_path):
     seen: list[tuple[str, bool]] = []
 
     async def fake_run_channel(url, stop_event=None):
-        seen.append((url, stop_event is not None and stop_event.is_set()))
+        seen.append((url, stop_event is not None))
+        await _forever()
 
     monkeypatch.setattr(channel, "_run_channel", fake_run_channel)
     _use_backend_urls(monkeypatch, tmp_path, [PRODUCTION_BACKEND_URL, PR_URL])
-
-    async def run():
-        stop = asyncio.Event()
-        stop.set()
-        await channel.run_forever(stop)
-
-    asyncio.run(run())
+    asyncio.run(_supervise_for_one_tick(monkeypatch))
     assert seen == [(PRODUCTION_BACKEND_URL, True), (PR_URL, True)]
 
 
-def _use_backend_urls(monkeypatch, tmp_path, urls: list[str]) -> None:
+# --- reconcile (#456) -------------------------------------------------------------------------------
+# The supervisor keeps its channel set in step with config.toml, so adding or removing a Railway
+# preview environment takes effect on its own. What used to be needed instead was a click on the
+# desktop app's Restart Relay button, which an agent editing config.toml cannot do - and on an empty
+# preview database nothing is testable until the channel is up, because the project list itself comes
+# from GP.
+
+
+def test_a_url_added_to_config_gets_a_channel_without_a_restart(monkeypatch, tmp_path):
+    started: list[str] = []
+
+    async def fake_run_channel(url, stop_event=None):
+        started.append(url)
+        await _forever()
+
+    monkeypatch.setattr(channel, "_run_channel", fake_run_channel)
+    cfg = _use_backend_urls(monkeypatch, tmp_path, [PRODUCTION_BACKEND_URL])
+
+    async def run():
+        stop, task = _start_supervisor(monkeypatch)
+        await _tick()
+        assert started == [PRODUCTION_BACKEND_URL]  # the PR environment is not in config.toml yet
+
+        _write_backend_urls(cfg, [PRODUCTION_BACKEND_URL, PR_URL])
+        await _tick()
+        await _stop(stop, task)
+
+    asyncio.run(run())
+    assert started == [PRODUCTION_BACKEND_URL, PR_URL]
+    # And production was never dropped to pick the new one up - it is still the same one channel.
+    assert started.count(PRODUCTION_BACKEND_URL) == 1
+
+
+def test_a_url_removed_from_config_has_its_channel_cancelled(monkeypatch, tmp_path, clean_channel_states):
+    """A closed PR's environment is torn down, and its URL then retries forever against a backend
+    that no longer exists. Removing the line has to be enough to stop it."""
+    cancelled: list[str] = []
+
+    async def fake_run_channel(url, stop_event=None):
+        try:
+            await _forever()
+        except asyncio.CancelledError:
+            cancelled.append(url)
+            raise
+
+    monkeypatch.setattr(channel, "_run_channel", fake_run_channel)
+    cfg = _use_backend_urls(monkeypatch, tmp_path, [PRODUCTION_BACKEND_URL, PR_URL])
+
+    async def run():
+        stop, task = _start_supervisor(monkeypatch)
+        await _tick()
+        assert PR_URL in channel._STATES
+
+        _write_backend_urls(cfg, [PRODUCTION_BACKEND_URL])
+        await _tick()
+        # Read the state HERE, before shutting the supervisor down: shutting down cancels every
+        # remaining channel, which would make production look retired too.
+        observed = (list(cancelled), dict(channel._STATES))
+        await _stop(stop, task)
+        return observed
+
+    cancelled_by_reconcile, states = asyncio.run(run())
+    assert cancelled_by_reconcile == [PR_URL]
+    # Its /health row goes with it, or the desktop app keeps listing a backend nobody is dialling.
+    assert PR_URL not in states
+    assert PRODUCTION_BACKEND_URL in states
+
+
+def test_a_config_that_will_not_parse_leaves_the_running_channels_alone(
+    monkeypatch, tmp_path, clean_channel_states
+):
+    """Hand-editing config.toml on a running relay is the documented way to add a test backend, so a
+    save caught mid-write is a live possibility. It must not take production's channel down - there
+    would then be no way back without the restart this whole change exists to remove."""
+    cancelled: list[str] = []
+
+    async def fake_run_channel(url, stop_event=None):
+        try:
+            await _forever()
+        except asyncio.CancelledError:
+            cancelled.append(url)
+            raise
+
+    monkeypatch.setattr(channel, "_run_channel", fake_run_channel)
+    cfg = _use_backend_urls(monkeypatch, tmp_path, [PRODUCTION_BACKEND_URL])
+
+    async def run():
+        stop, task = _start_supervisor(monkeypatch)
+        await _tick()
+
+        cfg.write_text('[channel]\nbackend_url = ["wss://half-writ', encoding="utf-8")
+        await _tick()
+        survived_the_bad_parse = list(cancelled)
+
+        _write_backend_urls(cfg, [PRODUCTION_BACKEND_URL, PR_URL])
+        await _tick()
+        observed = (survived_the_bad_parse, dict(channel._STATES))
+        await _stop(stop, task)
+        return observed
+
+    cancelled_by_reconcile, states = asyncio.run(run())
+    assert cancelled_by_reconcile == []  # still up, still dialling production
+    # And the finished edit is picked up once it parses, so a mid-write save costs one interval and
+    # not the channel.
+    assert PR_URL in states
+
+
+async def _forever() -> None:
+    """Stand in for a healthy channel: _run_channel never returns on its own."""
+    await asyncio.Event().wait()
+
+
+async def _tick() -> None:
+    """Let the supervisor run one reconcile pass. The interval is patched to 0, so yielding to the
+    loop a few times is enough for it to come round again and for the tasks it spawns to start."""
+    for _ in range(6):
+        await asyncio.sleep(0)
+
+
+def _start_supervisor(monkeypatch) -> tuple[asyncio.Event, asyncio.Task]:
+    monkeypatch.setattr(channel, "CHANNEL_RECONCILE_SECONDS", 0)
+    stop = asyncio.Event()
+    return stop, asyncio.create_task(channel.run_forever(stop))
+
+
+async def _stop(stop: asyncio.Event, task: asyncio.Task) -> None:
+    stop.set()
+    await _tick()
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+async def _supervise_for_one_tick(monkeypatch) -> None:
+    stop, task = _start_supervisor(monkeypatch)
+    await _tick()
+    await _stop(stop, task)
+
+
+def _write_backend_urls(cfg: Path, urls: list[str]) -> None:
+    rendered = ", ".join(f'"{u}"' for u in urls)
+    cfg.write_text(f'[auth]\nshared_secret = "s3cret"\n\n[channel]\nbackend_url = [{rendered}]\n', encoding="utf-8")
+
+
+def _use_backend_urls(monkeypatch, tmp_path, urls: list[str]) -> Path:
     """Point get_settings at a config.toml carrying exactly these backend URLs. Writing a real file
     rather than stubbing get_settings keeps the TOML round-trip (which is where a list would break)
-    inside the test."""
-    rendered = ", ".join(f'"{u}"' for u in urls)
+    inside the test - and since #456 it is also what lets a test EDIT the file under a running
+    supervisor, which is the whole behaviour being checked.
+
+    The stub carries `cache_clear` because the supervisor drops the lru_cache before every read, for
+    exactly the reason these tests rely on: without it a re-read returns the file as it was the first
+    time it was parsed."""
     cfg = tmp_path / "config.toml"
-    cfg.write_text(f'[auth]\nshared_secret = "s3cret"\n\n[channel]\nbackend_url = [{rendered}]\n', encoding="utf-8")
+    _write_backend_urls(cfg, urls)
     get_settings.cache_clear()
-    monkeypatch.setattr(channel, "get_settings", lambda *a, **k: get_settings(str(cfg)))
+
+    def stub(*a, **k):
+        return get_settings(str(cfg))
+
+    stub.cache_clear = get_settings.cache_clear
+    monkeypatch.setattr(channel, "get_settings", stub)
+    return cfg
 
 
 # --- /health snapshot ------------------------------------------------------------------------------
@@ -375,38 +529,59 @@ def test_run_forever_warns_when_no_channel_is_production(monkeypatch, tmp_path, 
     # URL. Every channel is then sandbox-pinned and all real GP work is refused, which is otherwise
     # visible only as an INFO field.
     async def fake_run_channel(url, stop_event=None):
-        return
+        await _forever()
 
     monkeypatch.setattr(channel, "_run_channel", fake_run_channel)
     _use_backend_urls(monkeypatch, tmp_path, [PR_URL])
     with caplog.at_level(logging.WARNING):
-        asyncio.run(channel.run_forever())
+        asyncio.run(_supervise_for_one_tick(monkeypatch))
     assert any("no production channel configured" in r.message for r in caplog.records)
 
 
 def test_run_forever_is_quiet_when_production_is_present(monkeypatch, tmp_path, caplog):
     async def fake_run_channel(url, stop_event=None):
-        return
+        await _forever()
 
     monkeypatch.setattr(channel, "_run_channel", fake_run_channel)
     _use_backend_urls(monkeypatch, tmp_path, [PRODUCTION_BACKEND_URL, PR_URL])
     with caplog.at_level(logging.WARNING):
-        asyncio.run(channel.run_forever())
+        asyncio.run(_supervise_for_one_tick(monkeypatch))
     assert not any("no production channel configured" in r.message for r in caplog.records)
 
 
+def test_the_no_production_warning_is_not_repeated_on_every_tick(monkeypatch, tmp_path, caplog):
+    """The supervisor re-reads config.toml every few seconds since #456. A warning that fired on each
+    pass would bury relay.log within a day, so it is tied to the URL SET changing, not to the read."""
+
+    async def fake_run_channel(url, stop_event=None):
+        await _forever()
+
+    monkeypatch.setattr(channel, "_run_channel", fake_run_channel)
+    _use_backend_urls(monkeypatch, tmp_path, [PR_URL])
+
+    async def run():
+        stop, task = _start_supervisor(monkeypatch)
+        for _ in range(5):
+            await _tick()
+        await _stop(stop, task)
+
+    with caplog.at_level(logging.WARNING):
+        asyncio.run(run())
+    assert len([r for r in caplog.records if "no production channel configured" in r.message]) == 1
+
+
 def test_a_channel_that_escapes_its_retry_loop_is_logged_and_marked_failed(monkeypatch, tmp_path, caplog):
-    # asyncio.gather returns only once EVERY awaitable finishes, and the siblings loop forever - so an
-    # aggregated result is never reached. The log has to come from the per-channel wrapper or a dead
-    # channel is invisible.
+    # Nothing awaits these tasks while they are healthy, so the log has to come from the per-channel
+    # wrapper or a dead channel is invisible.
     async def fake_run_channel(url, stop_event=None):
         if url == PR_URL:
             raise RuntimeError("boom")
+        await _forever()
 
     monkeypatch.setattr(channel, "_run_channel", fake_run_channel)
     _use_backend_urls(monkeypatch, tmp_path, [PRODUCTION_BACKEND_URL, PR_URL])
     with caplog.at_level(logging.ERROR):
-        asyncio.run(channel.run_forever())
+        asyncio.run(_supervise_for_one_tick(monkeypatch))
     assert any("exited unexpectedly" in r.message for r in caplog.records)
     assert channel._STATES[PR_URL]["state"] == "failed"
 
