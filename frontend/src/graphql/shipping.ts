@@ -62,6 +62,9 @@ export const GET_PACKING_SLIPS = gql`
         itemType
         openingNumber
         leaf
+        building
+        floor
+        location
         productCode
         hardwareCategory
         quantity
@@ -95,6 +98,9 @@ export const CONFIRM_SHIPMENT = gql`
         openingItemId
         openingNumber
         leaf
+        building
+        floor
+        location
         productCode
         hardwareCategory
         quantity

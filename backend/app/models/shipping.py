@@ -119,6 +119,14 @@ class PackingSlipItem(Base):
     # Door leaf this shipped line is for (#311): OPENING_ITEM rows stamp from the OpeningItem.leaf.
     # Immutable record on the slip. Null = legacy / loose.
     leaf: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    # Where the leaf was going, snapshotted off the OpeningItem at confirm time (#452). The Delivery
+    # Request prints these after the opening number, and a reprint years later has to say what the
+    # driver's copy said - so they are copied onto the slip rather than followed back to the
+    # OpeningItem, which can be re-placed or re-assembled long afterwards. Null on a LOOSE line
+    # (fungible hardware has no placement) and on rows written before #452.
+    building: Mapped[str | None] = mapped_column(String, nullable=True)
+    floor: Mapped[str | None] = mapped_column(String, nullable=True)
+    location: Mapped[str | None] = mapped_column(String, nullable=True)
     product_code: Mapped[str] = mapped_column(String, nullable=False)
     hardware_category: Mapped[str] = mapped_column(String, nullable=False)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
