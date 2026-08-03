@@ -69,6 +69,11 @@ function slip(overrides: Record<string, unknown> = {}) {
         itemType: 'OPENING_ITEM',
         openingNumber: '0019-EX',
         leaf: 1,
+        // Snapshotted at confirm (#452), so a reprinted Delivery Request names the same placement
+        // the driver's copy did.
+        building: 'A',
+        floor: '1',
+        location: 'Rm 101',
         productCode: null,
         hardwareCategory: null,
         quantity: 1,
@@ -79,6 +84,9 @@ function slip(overrides: Record<string, unknown> = {}) {
         itemType: 'LOOSE',
         openingNumber: '0019-EX',
         leaf: null,
+        building: null,
+        floor: null,
+        location: null,
         productCode: 'SIL-40002-228',
         hardwareCategory: 'Silentia Folding Screen Caster w/Brake',
         quantity: 37,
