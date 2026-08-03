@@ -1087,6 +1087,12 @@ class PackingSlipItem:
     opening_number: str | None
     # Door leaf this shipped line was for (#311): 1 or 2, or null (loose / legacy).
     leaf: int | None
+    # Where the leaf was going, as the slip recorded it at confirm time (#452). The Delivery Request
+    # prints these after the opening number, so a reprint says what the driver's copy said. Null on a
+    # LOOSE line and on rows written before #452.
+    building: str | None
+    floor: str | None
+    location: str | None
     product_code: str
     hardware_category: str
     quantity: int

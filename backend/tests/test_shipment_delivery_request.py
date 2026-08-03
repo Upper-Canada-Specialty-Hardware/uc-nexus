@@ -71,7 +71,7 @@ def _make_slip(session, project_id, *, status=ShipmentStatus.SCHEDULED, **header
     return ps
 
 
-def _ship_ready_opening_item(session, project_id) -> OpeningItem:
+def _ship_ready_opening_item(session, project_id, **placement) -> OpeningItem:
     oi = OpeningItem(
         id=uuid.uuid4(),
         project_id=project_id,
@@ -82,6 +82,7 @@ def _ship_ready_opening_item(session, project_id) -> OpeningItem:
         quantity=1,
         assembly_completed_at=datetime.utcnow(),
         state=OpeningItemState.SHIP_READY,
+        **placement,
     )
     session.add(oi)
     session.flush()
@@ -147,6 +148,39 @@ def test_confirm_shipment_takes_no_delivery_request_at_all(db_session):
 
     assert slip.status == ShipmentStatus.SCHEDULED
     assert set(_header(slip).values()) == {None}
+
+
+def test_confirm_shipment_snapshots_where_the_shipped_leaf_was_going(db_session):
+    """The slip records the leaf's placement, not just which leaf it was (#452).
+
+    The Delivery Request cut at confirm time prints building / floor / location after the opening
+    number. Without these columns the reprint rebuilt its material lines from the stored items and
+    dropped that suffix, so one shipment produced two different documents - and the reprint is the
+    copy pulled up in a site dispute.
+
+    Snapshotted rather than followed back to the OpeningItem for the same reason `leaf` is: the row
+    it came from can be re-placed or re-assembled years after the truck left, and the paper the site
+    signed has to keep saying where the leaf was headed on the day it went."""
+    project = _make_project(db_session)
+    oi = _ship_ready_opening_item(db_session, project.id, building="A", floor="1", location="Rm 101")
+
+    slip = shipping_repository.confirm_shipment(
+        db_session,
+        project_id=project.id,
+        packing_slip_number=f"PS-{uuid.uuid4().hex[:8]}",
+        shipped_by="shipper",
+        items=[{"item_type": PullRequestItemType.OPENING_ITEM, "opening_item_id": oi.id, "quantity": 1}],
+    )
+    _round_trip(db_session, slip)
+
+    (item,) = slip.items
+    assert (item.building, item.floor, item.location) == ("A", "1", "Rm 101")
+
+    # And it stays what it was when the truck left, however the leaf is re-placed afterwards.
+    oi.building, oi.floor, oi.location = "B", "2", "Rm 202"
+    db_session.flush()
+    db_session.expire(item)
+    assert (item.building, item.floor, item.location) == ("A", "1", "Rm 101")
 
 
 # --- editing the header -------------------------------------------------------------------------

@@ -27,6 +27,11 @@ export interface PackingSlipItem {
   itemType: string;
   openingNumber: string | null;
   leaf?: number | null;
+  // Where the leaf was going, as the slip recorded it at confirm (#452). Null on a loose line and on
+  // anything shipped before #452, which is why a reprint of an old slip still prints without it.
+  building?: string | null;
+  floor?: string | null;
+  location?: string | null;
   productCode: string | null;
   hardwareCategory: string | null;
   quantity: number;
@@ -258,11 +263,24 @@ export function buildMaterialLines(
   return lines;
 }
 
-/** The same block built from a stored shipment's items, for a Delivery Request reprinted later. */
+/**
+ * The same block built from a stored shipment's items, for a Delivery Request reprinted later.
+ *
+ * The placement comes off the slip's own snapshot rather than the OpeningItem it was taken from
+ * (#452). A reprint is the copy pulled up in a site dispute, so it has to print what the driver was
+ * handed - and this used to drop the suffix entirely, which made one shipment produce two different
+ * documents. Slips written before #452 have no placement stored and still print without it.
+ */
 export function slipMaterialLines(items: PackingSlipItem[]): string[] {
   const openingItems = items
     .filter((i) => i.itemType === 'OPENING_ITEM')
-    .map((i) => ({ openingNumber: i.openingNumber ?? '', leaf: i.leaf ?? null }));
+    .map((i) => ({
+      openingNumber: i.openingNumber ?? '',
+      leaf: i.leaf ?? null,
+      building: i.building ?? null,
+      floor: i.floor ?? null,
+      location: i.location ?? null,
+    }));
   const looseItems = items
     .filter((i) => i.itemType === 'LOOSE')
     .map((i) => ({
