@@ -11,6 +11,10 @@ now supervises one independent reconnecting channel per configured URL, and prod
 never dropped to test a PR. The same enrolled secret authenticates on all of them (the backend matches
 on its hash, and a PR environment is seeded with that hash rather than issued a credential of its own).
 
+That set is reconciled against config.toml on a tick rather than read once (issue #456), so adding or
+removing a preview environment needs no restart - see `run_forever` for why that mattered enough to
+build.
+
 Which backend a channel points at decides what it may reach: the production URL is unrestricted, every
 other URL is pinned to the sandbox company (config.NON_PRIMARY_ALLOWED_COMPANIES). Reads and writes
 are both served on a test channel - a PR that touches GP has to be verifiable before it merges - and
@@ -100,6 +104,15 @@ def register_channels(urls: list[str]) -> None:
     the key set stops changing under channel_state_snapshot once startup is done."""
     for url in urls:
         _STATES.setdefault(url, dict(_UNKNOWN_STATE))
+
+
+def forget_channel(url: str) -> None:
+    """Drop a channel's state row, once its URL has left config.toml and its task is reaped (#456).
+
+    Without this a torn-down PR environment would keep its row on /health forever, so the desktop
+    app's channel panel would go on listing a backend nobody is dialling any more - which reads as a
+    broken connection rather than a removed one."""
+    _STATES.pop(url, None)
 
 
 def _mark_connected(url: str) -> None:
@@ -651,26 +664,40 @@ async def _run_channel(url: str, stop_event: asyncio.Event | None = None) -> Non
         await asyncio.sleep(backoff)
 
 
-async def run_forever(stop_event: asyncio.Event | None = None) -> None:
-    """Supervise one reconnecting channel per configured backend URL. Intended to run as a single
-    background asyncio task alongside the relay's existing HTTP server (see cli.py); an empty
-    [channel].backend_url disables it entirely - the relay just runs the HTTP server, as before.
+# How often the supervisor re-reads config.toml to see which backends it should be dialling (#456).
+# The cost of a tick is one small TOML parse - the same one _run_channel already pays on every
+# reconnect attempt - so this is set by how long somebody should have to wait for a channel to come
+# up, not by what the parse costs. Ten seconds is under the time it takes to alt-tab back to the
+# browser, which is the point: adding a PR environment stops being a thing you wait on.
+CHANNEL_RECONCILE_SECONDS = 10.0
 
-    The URL LIST is read once, here, and a change to it takes effect on the next serve restart (the
-    desktop app's Restart Relay button). That is deliberately unlike the secret, which is re-read on
-    every reconnect: a re-enrolment has to self-heal a relay nobody can walk over to, whereas adding a
-    PR environment is something the person editing config.toml is already standing at the machine for.
-    Spawning and reaping channel tasks on every retry to avoid one restart is not worth the machinery."""
-    urls = get_settings().channel.backend_urls
-    if not urls:
-        logger.info("channel disabled (no [channel] backend_url configured)")
-        return
 
-    if not any(is_primary_backend_url(url) for url in urls):
-        # Loud, because the likeliest cause is a typo in a hand-added backend_url list rather than a
-        # deliberate choice: production is then just another restricted channel and every real UBC/UCSH
-        # job is refused with company_not_allowed_on_channel. A dev checkout pointed at localhost hits
-        # this legitimately, which is why it warns rather than refusing to start.
+def _configured_urls() -> list[str] | None:
+    """The backend URLs config.toml currently names, or None if it could not be read.
+
+    Guarded and returning None rather than raising, for the reason _run_channel re-reads the secret
+    the same way: hand-editing config.toml on a running relay is the documented way to add a test
+    backend (#414), so catching a save mid-write or a missing bracket is a live possibility. Letting
+    that propagate would kill the supervisor, taking production's channel with it - and no amount of
+    fixing the file afterwards would bring it back without a serve restart, which is the thing #456
+    exists to stop needing. None means "keep whatever is running"."""
+    try:
+        get_settings.cache_clear()
+        return get_settings().channel.backend_urls
+    except Exception as e:
+        logger.warning(
+            "could not re-read config.toml; leaving the current channels alone",
+            extra={"category": "config_unreadable", "error": str(e)},
+        )
+        return None
+
+
+def _warn_if_no_primary(urls: list[str]) -> None:
+    """Loud, because the likeliest cause is a typo in a hand-added backend_url list rather than a
+    deliberate choice: production is then just another restricted channel and every real UBC/UCSH job
+    is refused with company_not_allowed_on_channel. A dev checkout pointed at localhost hits this
+    legitimately, which is why it warns rather than refusing to start."""
+    if urls and not any(is_primary_backend_url(url) for url in urls):
         logger.warning(
             "no production channel configured - EVERY channel is restricted to the sandbox company. "
             "if this is a workstation, check [channel] backend_url matches the production URL exactly, "
@@ -678,15 +705,35 @@ async def run_forever(stop_event: asyncio.Event | None = None) -> None:
             extra={"category": "no_primary_channel", "urls": urls, "expected": PRODUCTION_BACKEND_URL},
         )
 
-    logger.info("starting backend channels", extra={"urls": urls})
-    register_channels(urls)  # so /health lists every channel from the first poll, before any dials
+
+async def run_forever(stop_event: asyncio.Event | None = None) -> None:
+    """Hold up one reconnecting channel per configured backend URL, and keep that set in step with
+    config.toml. Intended to run as a single background asyncio task alongside the relay's existing
+    HTTP server (see cli.py); with no [channel] backend_url configured it simply runs no channels.
+
+    The URL list used to be read once, so adding or removing a backend took a serve restart - the
+    desktop app's Restart Relay button. That was the wrong shape for the thing it was blocking (#456).
+    Testing a change against a Railway PR environment means adding its URL, and on an empty preview
+    database nothing is testable at all until the channel is up: the project list itself comes from
+    GP. An agent can edit config.toml and read relay.log; it cannot click a button in a tray app. So
+    the one manual step sat in the middle of an otherwise unattended loop, and a session on #455 spent
+    thirty minutes idle waiting for that click.
+
+    Now the URL set is reconciled on a tick, the way the secret is already re-read on every reconnect:
+    a URL that appears gets a channel, a URL that disappears has its channel cancelled and its /health
+    row dropped. Teardown matters as much as setup - a closed PR's environment otherwise retries
+    forever against a backend that no longer exists.
+
+    What is deliberately NOT reconciled is a channel that died: the task set is diffed against the URL
+    set, not against liveness. `_run_channel` catches per attempt and is not supposed to exit, so one
+    that does is a bug worth seeing in the log rather than papering over with a respawn loop."""
+    tasks: dict[str, asyncio.Task] = {}
+    known: set[str] | None = None
 
     async def _supervised(url: str) -> None:
         """Log a channel that escapes its own retry loop. _run_channel is not supposed to - it catches
-        Exception per attempt - but if it ever does, the log has to happen HERE. Doing it from the
-        gather() below cannot work: gather returns only once EVERY awaitable is done, and the siblings
-        loop forever, so an aggregated result is never reached and a dead channel would be visible
-        only as a stale 'disconnected' on /health with nothing in relay.log."""
+        Exception per attempt - but if it ever does, the log has to happen HERE, because nothing else
+        awaits these tasks while they are healthy."""
         try:
             await _run_channel(url, stop_event)
         except asyncio.CancelledError:
@@ -698,13 +745,59 @@ async def run_forever(stop_event: asyncio.Event | None = None) -> None:
             )
             _mark_disconnected(url, "failed")
 
-    tasks = [asyncio.create_task(_supervised(url), name=f"channel:{url}") for url in urls]
+    async def _reconcile(urls: list[str]) -> None:
+        for url in urls:
+            if url not in tasks:
+                register_channels([url])  # so /health lists it from the next poll, before any dial
+                tasks[url] = asyncio.create_task(_supervised(url), name=f"channel:{url}")
+        retired = [(url, tasks.pop(url)) for url in list(tasks) if url not in urls]
+        for _, task in retired:
+            task.cancel()
+        if retired:
+            # Await the cancellations before dropping the state rows, so a task still unwinding cannot
+            # re-insert its own key through _mark_disconnected and leave a ghost channel on /health.
+            await asyncio.gather(*(task for _, task in retired), return_exceptions=True)
+            for url, _ in retired:
+                forget_channel(url)
+
     try:
-        await asyncio.gather(*tasks, return_exceptions=True)
+        while True:
+            urls = _configured_urls()
+            if urls is not None:
+                if known != set(urls):
+                    # Only on a change, so a steady relay logs this once at startup rather than every
+                    # tick - and an operator grepping relay.log sees the edit they just made.
+                    logger.info(
+                        "backend channels configured" if known is None else "backend channels changed",
+                        extra={
+                            "urls": urls,
+                            "added": sorted(set(urls) - (known or set())),
+                            # Named as well as added: a removal otherwise logs `added: []` and leaves
+                            # the operator to diff the URL list against the previous line to see what
+                            # they just took out.
+                            "removed": sorted((known or set()) - set(urls)),
+                        },
+                    )
+                    _warn_if_no_primary(urls)
+                    known = set(urls)
+                await _reconcile(urls)
+            if stop_event is not None and stop_event.is_set():
+                return
+            if stop_event is None:
+                await asyncio.sleep(CHANNEL_RECONCILE_SECONDS)
+            else:
+                # Wait on the event rather than sleeping through it, so shutdown is not held up for
+                # most of a tick.
+                try:
+                    await asyncio.wait_for(stop_event.wait(), CHANNEL_RECONCILE_SECONDS)
+                except asyncio.TimeoutError:
+                    pass
+                if stop_event.is_set():
+                    return
     finally:
         # Reap them rather than just cancelling: cli.py cancels THIS task on shutdown, and a bare
         # cancel() would leave the children pending as the loop closes ("Task was destroyed but it is
         # pending"). CancelledError is a BaseException, so a cancelled child is not logged above.
-        for task in tasks:
+        for task in tasks.values():
             task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.gather(*tasks.values(), return_exceptions=True)

@@ -150,12 +150,19 @@ that environment's own backend service as well (verified 2026-07-30: pr-430 pred
 could not read GP until it had its own copy). seeding runs at backend startup, so either way the change
 lands on that service's next deploy.
 
-the URL list is read once at `serve` start, so adding or removing a test backend needs a relay restart
-(the app's Restart Relay button). the enrolled secret is still re-read on every reconnect, unchanged,
-and a config.toml that fails to parse mid-edit no longer kills the channel - it retries with the last
-good settings. the setup wizard preserves a hand-added `[channel]` block, so re-running it will not
-silently drop the URL. remove the URL when the PR closes - a torn-down environment retries forever
-otherwise (quietly: a non-production channel logs a repeated failure once, then at DEBUG).
+**adding or removing a URL takes effect on its own, within about ten seconds (#456).** the supervisor
+re-reads config.toml on a tick and reconciles its channel set against it: a URL that appears gets a
+channel, a URL that disappears has its channel cancelled and its `/health` row dropped. no restart, and
+production's channel is never touched either way. it used to need the app's Restart Relay button, which
+is a click nobody could automate - and since a preview environment's database is empty, nothing at all
+is testable there until the channel is up, because the project list comes from GP.
+
+still remove the URL when the PR closes: the channel goes away when you do, and until then a torn-down
+environment retries forever (quietly - a non-production channel logs a repeated failure once, then at
+DEBUG). the enrolled secret is re-read on every reconnect as before, and a config.toml caught mid-write
+kills neither: the channels keep dialling with the last good settings and the finished edit lands on the
+next tick. the setup wizard preserves a hand-added `[channel]` block, so re-running it will not silently
+drop the URL.
 
 the ops newer than `create_po` / `create_receipt` are channel-only - they have no HTTP route, because
 the browser hop is no longer the live path.
