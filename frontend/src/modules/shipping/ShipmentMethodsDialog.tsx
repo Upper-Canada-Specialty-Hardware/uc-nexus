@@ -79,6 +79,25 @@ export default function ShipmentMethodsDialog({ open, onClose }: Props) {
 
   const methods = data?.shipmentMethods ?? [];
 
+  /**
+   * Add the new method at the end of the list.
+   *
+   * The position comes off the highest sortOrder in use, not the row count: the count is short by
+   * every deleted row, so after any delete the next method would be minted onto a value another one
+   * already holds and the dropdown order would stop being stable. Retired methods count too - they
+   * hold their place for the day they are reactivated.
+   *
+   * One entry point for both the button and Enter, so the in-flight guard cannot be on one and not
+   * the other. Without it a fast double-Enter fires two creates and the second comes back as a name
+   * conflict the user did nothing to cause.
+   */
+  const submitNew = () => {
+    const name = newName.trim();
+    if (!name || creating) return;
+    const sortOrder = methods.reduce((highest, m) => Math.max(highest, m.sortOrder + 1), 0);
+    createMethod({ variables: { name, sortOrder } });
+  };
+
   return (
     <>
       <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
@@ -99,9 +118,7 @@ export default function ShipmentMethodsDialog({ open, onClose }: Props) {
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && newName.trim()) {
-                    createMethod({ variables: { name: newName.trim(), sortOrder: methods.length } });
-                  }
+                  if (e.key === 'Enter') submitNew();
                 }}
                 fullWidth
               />
@@ -109,9 +126,7 @@ export default function ShipmentMethodsDialog({ open, onClose }: Props) {
                 variant="outlined"
                 startIcon={<Plus size={16} strokeWidth={1.75} />}
                 disabled={!newName.trim() || creating}
-                onClick={() =>
-                  createMethod({ variables: { name: newName.trim(), sortOrder: methods.length } })
-                }
+                onClick={submitNew}
               >
                 Add
               </Button>
