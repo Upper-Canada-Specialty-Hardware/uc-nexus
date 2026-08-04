@@ -205,9 +205,12 @@ class ShippingQueries:
         """
         pid = uuid.UUID(str(project_id))
         with SessionLocal() as session:
-            pool = shipment_containers.build_staged_pool(session, pid)
-            containers = shipment_containers.get_containers(session, pid, open_only=True)
+            # Both reads are done here and handed to the pool builder, which would otherwise repeat
+            # them internally - `get_ship_ready_items` alone is three statements plus a selectinload,
+            # and this is the workspace's main read (CLAUDE.md perf rules).
             ready = shipping_repository.get_ship_ready_items(session, pid)
+            containers = shipment_containers.get_containers(session, pid, open_only=True)
+            pool = shipment_containers.build_staged_pool(session, pid, ready=ready, containers=containers)
             by_id = {oi.id: oi for oi in ready["opening_items"]}
             return StagingPool(
                 leaves=[
@@ -223,23 +226,23 @@ class ShippingQueries:
                     for oi_id, holder in pool["leaves"].items()
                     if oi_id in by_id
                 ],
+                # The opening comes off the pool key rather than being looked up by product. The
+                # workspace row IS the (opening, category, product) bucket the confirm checks
+                # availability on, so a product staged for two openings is two rows - one wearing
+                # an arbitrary opening number would be refused at confirm, or would book units
+                # against a door they were never pulled for.
                 loose_items=[
                     StagedLooseItem(
-                        opening_number=next(
-                            (
-                                li["opening_number"]
-                                for li in ready["loose_items"]
-                                if (li["hardware_category"], li["product_code"]) == key
-                            ),
-                            None,
-                        ),
-                        hardware_category=key[0],
-                        product_code=key[1],
+                        opening_number=key[0],
+                        hardware_category=key[1],
+                        product_code=key[2],
                         staged_quantity=counts["staged"],
                         placed_quantity=counts["placed"],
                         unplaced_quantity=max(0, counts["staged"] - counts["placed"]),
                     )
-                    for key, counts in sorted(pool["loose"].items())
+                    for key, counts in sorted(
+                        pool["loose"].items(), key=lambda pair: tuple(str(part) for part in pair[0])
+                    )
                 ],
                 containers=[_container_to_type(c) for c in containers],
             )

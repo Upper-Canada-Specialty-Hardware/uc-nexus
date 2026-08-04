@@ -354,3 +354,111 @@ def test_a_container_from_another_project_cannot_join_the_shipment(db_session):
 def test_a_missing_container_is_a_not_found(db_session):
     with pytest.raises(NotFoundError):
         containers.rename_container(db_session, uuid.uuid4(), "Skid 1")
+
+
+# --- two openings, one product -------------------------------------------------------------------
+# The staged pool is grouped by (opening, category, product), and so is the availability check the
+# confirm applies. A container path keyed on the product alone reads as harmless until the same
+# product is staged for two openings, at which point the two numbers become one and disagree with
+# what the confirm will accept.
+
+
+def _pool_loose(session, project):
+    return containers.build_staged_pool(session, project.id)["loose"]
+
+
+def test_two_openings_staging_one_product_are_two_quantities(db_session):
+    project = _project(db_session)
+    _staged_loose(db_session, project, qty=4, opening="101")
+    _staged_loose(db_session, project, qty=3, opening="102")
+
+    pool = _pool_loose(db_session, project)
+    assert pool[("101", "HINGE", "HG-100")]["staged"] == 4
+    assert pool[("102", "HINGE", "HG-100")]["staged"] == 3
+
+
+def test_placing_one_openings_units_leaves_the_others_alone(db_session):
+    # Keyed on the product alone, placing 4 for 101 would read as 4 placed against the 3 staged for
+    # 102 as well, and the second placement would be refused with stock sitting on the floor.
+    project = _project(db_session)
+    _staged_loose(db_session, project, qty=4, opening="101")
+    _staged_loose(db_session, project, qty=3, opening="102")
+    box = _container(db_session, project, kind=ShipmentContainerType.BOX, name="Box 1")
+
+    containers.set_container_items(db_session, box.id, [_loose_item(4, opening="101")])
+
+    pool = _pool_loose(db_session, project)
+    assert pool[("101", "HINGE", "HG-100")]["placed"] == 4
+    assert pool[("102", "HINGE", "HG-100")]["placed"] == 0
+
+
+def test_one_openings_staged_stock_cannot_cover_another_openings_placement(db_session):
+    project = _project(db_session)
+    _staged_loose(db_session, project, qty=4, opening="101")
+    box = _container(db_session, project, kind=ShipmentContainerType.BOX, name="Box 1")
+
+    with pytest.raises(ValidationError, match="for opening 102"):
+        containers.set_container_items(db_session, box.id, [_loose_item(1, opening="102")])
+
+
+def test_the_same_pull_split_over_two_pulls_sums_rather_than_replacing(db_session):
+    # Two completed pulls for the same opening and product are two rows out of get_ship_ready_items.
+    project = _project(db_session)
+    _staged_loose(db_session, project, qty=4, opening="101")
+    _staged_loose(db_session, project, qty=2, opening="101")
+    box = _container(db_session, project, kind=ShipmentContainerType.BOX, name="Box 1")
+
+    containers.set_container_items(db_session, box.id, [_loose_item(6, opening="101")])
+
+    assert _pool_loose(db_session, project)[("101", "HINGE", "HG-100")]["staged"] == 6
+
+
+def test_a_product_can_be_split_across_two_containers(db_session):
+    project = _project(db_session)
+    _staged_loose(db_session, project, qty=4, opening="101")
+    first = _container(db_session, project, kind=ShipmentContainerType.BOX, name="Box 1")
+    second = _container(db_session, project, kind=ShipmentContainerType.BOX, name="Box 2")
+
+    containers.set_container_items(db_session, first.id, [_loose_item(2)])
+    containers.set_container_items(db_session, second.id, [_loose_item(2)])
+
+    pool = _pool_loose(db_session, project)
+    assert pool[("101", "HINGE", "HG-100")]["placed"] == 4
+
+
+def test_unattributed_stock_is_its_own_bucket(db_session):
+    # A pull raised straight off inventory has no opening to attribute (#451), and those units are
+    # not everyone's to spend.
+    project = _project(db_session)
+    _staged_loose(db_session, project, qty=3, opening=None)
+    _staged_loose(db_session, project, qty=2, opening="101")
+    box = _container(db_session, project, kind=ShipmentContainerType.BOX, name="Box 1")
+
+    containers.set_container_items(db_session, box.id, [_loose_item(3, opening=None)])
+
+    pool = _pool_loose(db_session, project)
+    assert pool[(None, "HINGE", "HG-100")]["placed"] == 3
+    assert pool[("101", "HINGE", "HG-100")]["placed"] == 0
+
+
+def test_the_same_container_named_twice_ships_once(db_session):
+    # Building the item list twice doubles every loose quantity on the slip, and makes the confirm's
+    # distinct-leaf count disagree with the ids it was handed - reported as the leaf not existing.
+    project = _project(db_session)
+    _staged_loose(db_session, project, qty=4, opening="101")
+    oi = _leaf(db_session, project)
+    box = _container(db_session, project, kind=ShipmentContainerType.BOX, name="Box 1")
+    containers.set_container_items(db_session, box.id, [_leaf_item(oi), _loose_item(4)])
+
+    slip = containers.confirm_shipment_from_containers(
+        db_session,
+        project.id,
+        [box.id, box.id],
+        packing_slip_number=f"PS-{uuid.uuid4().hex[:6]}",
+        shipped_by="shipper",
+        details=None,
+    )
+    db_session.flush()
+
+    quantities = sorted((i.item_type, i.quantity) for i in slip.items)
+    assert quantities == [(PullRequestItemType.LOOSE, 4), (PullRequestItemType.OPENING_ITEM, 1)]

@@ -32,6 +32,21 @@ from app.models.shipment_container import (
 STACKED_TYPES = (ShipmentContainerType.SKID, ShipmentContainerType.DOOR_CART)
 
 
+def loose_key(opening_number: str | None, hardware_category: str, product_code: str) -> tuple[str | None, str, str]:
+    """How a staged loose quantity is identified, everywhere on this path.
+
+    The opening is part of it because `get_ship_ready_items` groups the staged pool that way and
+    `confirm_shipment` checks availability that way. Keying containers on the product alone reads as
+    harmless right up until two openings stage the same product: the pool would report one of the two
+    quantities as if it were the total, and a placement the staging rules accepted would be refused
+    at confirm - or booked against an opening it was never pulled for.
+
+    Null is a real value here, not a missing one. A pull raised straight off inventory has no opening
+    to attribute (#451), and those units are their own bucket rather than everyone's.
+    """
+    return (opening_number, hardware_category, product_code)
+
+
 def get_containers(session: Session, project_id: uuid.UUID, *, open_only: bool = True) -> list[ShipmentContainer]:
     """Containers for one project, items eagerly loaded (the type builder walks them).
 
@@ -115,7 +130,7 @@ def set_container_items(
     staged_pool = build_staged_pool(session, container.project_id)
 
     leaf_ids: set[uuid.UUID] = set()
-    loose_wanted: dict[tuple[str, str], int] = {}
+    loose_wanted: dict[tuple[str | None, str, str], int] = {}
     for item in items:
         item_type = PullRequestItemType(item["item_type"])
         if item_type == PullRequestItemType.OPENING_ITEM:
@@ -129,7 +144,7 @@ def set_container_items(
                 raise ValidationError("The same door leaf cannot be placed twice in one container.", field="items")
             leaf_ids.add(oi_id)
         else:
-            key = (item["hardware_category"], item["product_code"])
+            key = loose_key(item.get("opening_number"), item["hardware_category"], item["product_code"])
             loose_wanted[key] = loose_wanted.get(key, 0) + int(item.get("quantity", 1))
 
     if container.container_type is ShipmentContainerType.SKID and len(leaf_ids) > MAX_LEAVES_PER_SKID:
@@ -195,7 +210,10 @@ def confirm_shipment_from_containers(
     if not container_ids:
         raise ValidationError("Pick at least one container to ship.", field="containerIds")
 
-    containers = [_open_container(session, cid) for cid in container_ids]
+    # Deduplicated before loading. The same id twice builds the item list twice, which doubles every
+    # loose quantity on the slip and makes `confirm_shipment`'s leaf count disagree with the number
+    # of distinct leaves it found - reported as the leaf not existing.
+    containers = [_open_container(session, cid) for cid in dict.fromkeys(container_ids)]
     for container in containers:
         if container.project_id != project_id:
             raise ValidationError(f"{container.name} belongs to another project.", field="containerIds")
@@ -232,27 +250,41 @@ def confirm_shipment_from_containers(
     return slip
 
 
-def build_staged_pool(session: Session, project_id: uuid.UUID) -> dict:
+def build_staged_pool(
+    session: Session,
+    project_id: uuid.UUID,
+    *,
+    ready: dict | None = None,
+    containers: list[ShipmentContainer] | None = None,
+) -> dict:
     """What this project has staged, and how much of it is already in an open container.
 
     `{"leaves": {opening_item_id: placed_in_container_id | None},
-      "loose": {(category, product): {"staged": n, "placed": n}}}`
+      "loose": {(opening, category, product): {"staged": n, "placed": n}}}`
 
     The staged side comes from `get_ship_ready_items`, which is the existing definition of what is
     out of inventory and not yet shipped; this only adds where it has been put since.
+
+    `ready` and `containers` are accepted so a caller that has already read them - the workspace
+    query renders all three - can hand them over instead of paying for the same two reads twice.
+    `get_ship_ready_items` alone is three statements plus a selectinload.
     """
     from app.repositories import shipping_repository
 
-    ready = shipping_repository.get_ship_ready_items(session, project_id)
-    pool = {
-        "leaves": {oi.id: None for oi in ready["opening_items"]},
-        "loose": {
-            (li["hardware_category"], li["product_code"]): {"staged": li["available_quantity"], "placed": 0}
-            for li in ready["loose_items"]
-        },
-    }
+    if ready is None:
+        ready = shipping_repository.get_ship_ready_items(session, project_id)
+    if containers is None:
+        containers = get_containers(session, project_id, open_only=True)
 
-    for container in get_containers(session, project_id, open_only=True):
+    pool: dict = {"leaves": {oi.id: None for oi in ready["opening_items"]}, "loose": {}}
+    for li in ready["loose_items"]:
+        # Summed, not assigned. Two openings staging the same product are two rows here, and the last
+        # one winning would publish one opening's quantity as if it were the whole floor.
+        key = loose_key(li["opening_number"], li["hardware_category"], li["product_code"])
+        bucket = pool["loose"].setdefault(key, {"staged": 0, "placed": 0})
+        bucket["staged"] += li["available_quantity"]
+
+    for container in containers:
         for item in container.items:
             if item.item_type == PullRequestItemType.OPENING_ITEM and item.opening_item_id is not None:
                 # Only stamp a leaf the pool already knows about. A container can outlive its
@@ -262,7 +294,7 @@ def build_staged_pool(session: Session, project_id: uuid.UUID) -> dict:
                 if item.opening_item_id in pool["leaves"]:
                     pool["leaves"][item.opening_item_id] = container.id
             elif item.item_type == PullRequestItemType.LOOSE:
-                key = (item.hardware_category, item.product_code)
+                key = loose_key(item.opening_number, item.hardware_category, item.product_code)
                 bucket = pool["loose"].setdefault(key, {"staged": 0, "placed": 0})
                 bucket["placed"] += item.quantity
     return pool
@@ -295,7 +327,7 @@ def _check_leaves_available(
 def _check_loose_available(
     session: Session,
     container: ShipmentContainer,
-    wanted: dict[tuple[str, str], int],
+    wanted: dict[tuple[str | None, str, str], int],
     staged_pool: dict,
 ) -> None:
     """Loose placements cannot exceed what is staged, counting what OTHER open containers hold.
@@ -303,19 +335,21 @@ def _check_loose_available(
     This container's own current contents are added back before comparing, so re-saving a container
     unchanged - or trimming it - is never refused for the units it is already holding.
     """
-    held_here: dict[tuple[str, str], int] = {}
+    held_here: dict[tuple[str | None, str, str], int] = {}
     for item in container.items:
         if item.item_type == PullRequestItemType.LOOSE:
-            key = (item.hardware_category, item.product_code)
+            key = loose_key(item.opening_number, item.hardware_category, item.product_code)
             held_here[key] = held_here.get(key, 0) + item.quantity
 
-    for key, quantity in sorted(wanted.items()):
+    for key, quantity in sorted(wanted.items(), key=lambda pair: tuple(str(part) for part in pair[0])):
+        opening_number, category, product = key
         bucket = staged_pool["loose"].get(key, {"staged": 0, "placed": 0})
         free = bucket["staged"] - bucket["placed"] + held_here.get(key, 0)
         if quantity > free:
+            owed_to = f" for opening {opening_number}" if opening_number else ""
             raise ValidationError(
-                f"{key[0]} {key[1]}: {quantity} placed but only {max(0, free)} staged and unplaced. "
-                "Ship what is staged, or pull more first.",
+                f"{category} {product}{owed_to}: {quantity} placed but only {max(0, free)} staged and "
+                "unplaced. Ship what is staged, or pull more first.",
                 field="items",
             )
 

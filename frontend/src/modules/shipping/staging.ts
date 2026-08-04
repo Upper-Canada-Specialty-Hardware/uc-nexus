@@ -82,6 +82,26 @@ export function canTakeAnotherLeaf(container: Container): boolean {
   return container.containerType !== 'SKID' || leafCount(container) < MAX_LEAVES_PER_SKID;
 }
 
+/**
+ * Whether a container line and a staged pool row are the same loose stock.
+ *
+ * The opening is part of it, not decoration. `get_ship_ready_items` groups the staged pool by
+ * (opening, category, product) and `confirmShipment` checks availability the same way, so two
+ * openings staging the same product are two separate quantities - merging them here would top up a
+ * line booked against the wrong door.
+ */
+export function sameLooseStock(
+  item: ContainerItem,
+  row: { openingNumber: string | null; hardwareCategory: string; productCode: string },
+): boolean {
+  return (
+    item.itemType === 'LOOSE' &&
+    item.openingNumber === row.openingNumber &&
+    item.hardwareCategory === row.hardwareCategory &&
+    item.productCode === row.productCode
+  );
+}
+
 /** The payload `setContainerItems` takes: the list order is what becomes `position`. */
 export function toItemsInput(items: ContainerItem[]) {
   return items.map((i) => ({

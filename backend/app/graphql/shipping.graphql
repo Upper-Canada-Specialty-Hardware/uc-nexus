@@ -209,6 +209,108 @@ type ShipmentMethod {
   updatedAt: DateTime!
 }
 
+# --- Staging workspace and containers (#451) ----------------------------------------------------
+# The staging pool is everything a completed shipping pull put on the floor: assembled leaves at
+# SHIP_READY, and loose quantities picked but not yet shipped. Containers are how that pool gets
+# arranged into what physically goes on the truck, built up over hours or days and then confirmed as
+# one shipment. Nothing here moves inventory - the hardware left when its pull was picked (#367).
+#
+# A container is open while packingSlipId is null and shipped once it is stamped. There is no status
+# column: the slip IS the lifecycle, so a container cannot read as shipped without one.
+
+enum ShipmentContainerType {
+  SKID
+  DOOR_CART
+  BOX
+  ENVELOPE
+  BUNDLE
+}
+
+type ShipmentContainerItem {
+  id: ID!
+  shipmentContainerId: ID!
+  itemType: PullRequestItemType!
+  openingItemId: ID
+  # Null on loose stock pulled by a request raised off inventory (#451).
+  openingNumber: String
+  leaf: Int
+  hardwareCategory: String!
+  productCode: String!
+  quantity: Int!
+  # Load order. 0 is loaded first, which on a skid is the bottom of the stack. Only meaningful for
+  # SKID and DOOR_CART, the two that are unloaded in reverse.
+  position: Int!
+}
+
+type ShipmentContainer {
+  id: ID!
+  projectId: ID!
+  containerType: ShipmentContainerType!
+  name: String!
+  # Set when this container shipped. Null means open, and open is the only thing that can be edited.
+  packingSlipId: ID
+  createdBy: String!
+  createdAt: DateTime!
+  updatedAt: DateTime!
+  items: [ShipmentContainerItem!]!
+}
+
+type StagedLeaf {
+  openingItemId: ID!
+  openingNumber: String!
+  leaf: Int
+  building: String
+  floor: String
+  location: String
+  # The container holding it, or null if it is still loose on the floor. One leaf, one container.
+  placedInContainerId: ID
+}
+
+type StagedLooseItem {
+  # Part of this row's identity, not a label: get_ship_ready_items groups the staged pool by
+  # (opening, category, product) and confirmShipment checks availability the same way, so a product
+  # staged for two openings is two rows here.
+  openingNumber: String
+  hardwareCategory: String!
+  productCode: String!
+  stagedQuantity: Int!
+  placedQuantity: Int!
+  unplacedQuantity: Int!
+}
+
+type StagingPool {
+  leaves: [StagedLeaf!]!
+  looseItems: [StagedLooseItem!]!
+  containers: [ShipmentContainer!]!
+}
+
+input ContainerItemInput {
+  itemType: PullRequestItemType!
+  openingItemId: ID
+  # Part of a loose placement's identity, not decoration: it is what confirmShipment checks the
+  # units against. Send back the openingNumber of the StagedLooseItem row the units came from.
+  openingNumber: String
+  leaf: Int
+  hardwareCategory: String! = ""
+  productCode: String! = ""
+  quantity: Int! = 1
+}
+
+input SetContainerItemsInput {
+  containerId: ID!
+  # FULL REPLACE, and the list order IS the stacking order - position comes from the index, so the
+  # caller never computes it. One batch call rather than place/remove/reorder as three, because a
+  # drag-and-drop surface already holds the whole list.
+  items: [ContainerItemInput!]!
+}
+
+input ConfirmShipmentFromContainersInput {
+  projectId: ID!
+  packingSlipNumber: String!
+  containerIds: [ID!]!
+  # + every field of the Delivery Request header block above.
+}
+
 type ReturnableLine {
   packingSlipItemId: ID!
   openingNumber: String
@@ -228,6 +330,10 @@ type Query {
   # activeOnly is what the Delivery Request form passes; the management screen leaves it off so a
   # retired method stays visible to reactivate.
   shipmentMethods(activeOnly: Boolean! = false): [ShipmentMethod!]!
+  # The staging workspace's whole read (#451): what is on the floor and where it has been put. One
+  # query rather than two, because two could disagree about whether a leaf has been loaded and that
+  # disagreement is the mistake containers exist to prevent.
+  stagingPool(projectId: ID!): StagingPool!
   # Accept UI (#293): shipping-out requests, PENDING by default.
   # reopenableOnly (#325): keep only requests whose minted PR is still PENDING (the Approved/reopen view).
   shippingOutRequests(projectId: ID, status: ShippingOutRequestStatus, reopenableOnly: Boolean! = false): [ShippingOutRequest!]!
@@ -277,6 +383,18 @@ type Mutation {
   createShipmentMethod(name: String!, sortOrder: Int! = 0): ShipmentMethod!
   updateShipmentMethod(id: ID!, name: String, isActive: Boolean, sortOrder: Int): ShipmentMethod!
   deleteShipmentMethod(id: ID!): Boolean!
+  # Containers (#451). All four refuse a container that has already shipped - it is part of that
+  # shipment's record. Delete returns the container's contents to the unplaced pool.
+  createShipmentContainer(projectId: ID!, containerType: ShipmentContainerType!, name: String!): ShipmentContainer!
+  renameShipmentContainer(id: ID!, name: String!): ShipmentContainer!
+  deleteShipmentContainer(id: ID!): Boolean!
+  # Re-gated inside the write transaction against the pool as it is at save time, not as it was when
+  # the screen was drawn: a skid's leaf cap, one leaf per open container, and loose placements
+  # against what is staged and unplaced.
+  setContainerItems(input: SetContainerItemsInput!): ShipmentContainer!
+  # Ship the named containers as one shipment, then stamp the slip onto each so they read as shipped.
+  # A thin wrapper over confirmShipment, which still owns every rule about what may leave.
+  confirmShipmentFromContainers(input: ConfirmShipmentFromContainersInput!): PackingSlip!
   confirmShipment(input: ConfirmShipmentInput!): PackingSlip!
   createShipmentReturn(input: CreateShipmentReturnInput!): ShipmentReturn!
   # Delivery Request lifecycle (#447). Any signed-in user. All three answer with the same PackingSlip
