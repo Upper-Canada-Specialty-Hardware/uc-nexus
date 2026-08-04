@@ -258,6 +258,7 @@ export default function DeliveryRequestDocument({
         <StackedField label="PICKUP LOCATION:" value={values.pickupLocation} minLines={3} />
 
         <Field label="PHONE NUMBER:" value={values.shipperPhone} />
+        <Field label="SHIPMENT METHOD:" value={values.shipmentMethod} />
         <Field label="CARRIER/TAG/BOL:" value={values.carrierTagBol} />
 
         <View style={styles.sectionRow}>

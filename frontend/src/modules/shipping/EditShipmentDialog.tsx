@@ -5,6 +5,7 @@ import Modal from '../../components/Modal';
 import { useToast } from '../../components/Toast';
 import { UPDATE_SHIPMENT_DETAILS } from '../../graphql/shipping';
 import DeliveryRequestFields from './DeliveryRequestFields';
+import { useShipmentMethods } from './useShipmentMethods';
 import {
   deliveryDetailsInput,
   detailsFromSlip,
@@ -32,6 +33,7 @@ export default function EditShipmentDialog({ slip, onClose }: Props) {
   const stored = useMemo(() => detailsFromSlip(slip), [slip]);
   const [details, setDetails] = useState<DeliveryDetails>(stored);
   const [error, setError] = useState<string | null>(null);
+  const shipmentMethods = useShipmentMethods();
 
   const [updateShipment, { loading }] = useMutation(UPDATE_SHIPMENT_DETAILS, {
     onCompleted: () => {
@@ -99,6 +101,7 @@ export default function EditShipmentDialog({ slip, onClose }: Props) {
           onChange={(patch) => setDetails((prev) => ({ ...prev, ...patch }))}
           shipperName={slip.shippedBy}
           disabled={loading}
+          shipmentMethods={shipmentMethods}
         />
       </Stack>
     </Modal>

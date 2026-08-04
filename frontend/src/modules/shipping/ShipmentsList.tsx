@@ -232,7 +232,9 @@ export default function ShipmentsList({ projectId, heading }: Props) {
     }
   }, [lifecycle, markPickedUp, markDelivered, showToast]);
 
-  const columnCount = isGlobal ? 8 : 7;
+  // Slip #, [project], status, shipped by, created, pick-up, delivery, method, carrier. The
+  // expansion row spans all of them plus the chevron, so this has to move with the header.
+  const columnCount = isGlobal ? 9 : 8;
 
   return (
     <FadeIn>
@@ -309,6 +311,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
                 <TableCell>Created</TableCell>
                 <TableCell>Pick-up</TableCell>
                 <TableCell>Delivery</TableCell>
+                <TableCell>Method</TableCell>
                 <TableCell>Carrier / Tag / BOL</TableCell>
               </TableRow>
             </TableHead>
@@ -359,6 +362,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
                       </TableCell>
                       <TableCell sx={tabularSx}>{formatDay(slip.pickupDate)}</TableCell>
                       <TableCell sx={tabularSx}>{formatDay(slip.deliveryDate)}</TableCell>
+                      <TableCell>{slip.shipmentMethod || '-'}</TableCell>
                       <TableCell>{slip.carrierTagBol || '-'}</TableCell>
                     </TableRow>
                     <TableRow>

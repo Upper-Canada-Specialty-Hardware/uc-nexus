@@ -1,12 +1,13 @@
 import { useState } from 'react';
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import { Box, Typography, Badge, IconButton, Button, ToggleButton, ToggleButtonGroup } from '@mui/material';
-import { ArrowLeft, ShoppingCart } from 'lucide-react';
+import { ArrowLeft, ShoppingCart, Truck } from 'lucide-react';
 import { useCart } from '../../contexts/CartContext';
 import ShipReadyBrowser from './ShipReadyBrowser';
 import ShipmentsList from './ShipmentsList';
 import ShippingCart from './ShippingCart';
 import ShippingRequestsPage from './ShippingRequestsPage';
+import ShipmentMethodsDialog from './ShipmentMethodsDialog';
 import ProjectLandingPage from '../../components/ProjectLandingPage';
 import GpSetupQuarantineBanner from '../../components/GpSetupQuarantineBanner';
 import type { Project } from '../../types/project';
@@ -14,6 +15,7 @@ import type { Project } from '../../types/project';
 export default function ShippingModule() {
   const [selectedProject, setSelectedProject] = useState<Project | 'all' | null>(null);
   const [cartOpen, setCartOpen] = useState(false);
+  const [methodsOpen, setMethodsOpen] = useState(false);
   const { itemCount } = useCart();
   const navigate = useNavigate();
   const location = useLocation();
@@ -65,6 +67,11 @@ export default function ShippingModule() {
             <ToggleButton value="ship">Ship</ToggleButton>
             <ToggleButton value="returns">Returns</ToggleButton>
           </ToggleButtonGroup>
+          {/* The method list is maintained by the same people who pick from it on the Delivery
+              Request (#451), so it lives here rather than behind Admin. */}
+          <IconButton onClick={() => setMethodsOpen(true)} aria-label="Manage shipment methods">
+            <Truck size={18} strokeWidth={1.75} />
+          </IconButton>
           <IconButton onClick={() => setCartOpen(true)} aria-label="Open shipping cart">
             <Badge badgeContent={itemCount} color="primary">
               <ShoppingCart size={18} strokeWidth={1.75} />
@@ -87,6 +94,7 @@ export default function ShippingModule() {
         jobNumber={selectedProject !== 'all' ? selectedProject.projectId : undefined}
         project={gpSetupProject}
       />
+      <ShipmentMethodsDialog open={methodsOpen} onClose={() => setMethodsOpen(false)} />
     </Box>
   );
 }

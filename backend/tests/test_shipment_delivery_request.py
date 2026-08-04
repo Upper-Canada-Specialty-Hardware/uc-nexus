@@ -31,6 +31,7 @@ FULL_DETAILS = {
     "shipper_email": "shipping@example.com",
     "shipper_phone": "555-0100",
     "pickup_location": "UC Hardware\n12 Depot Rd\nToronto ON M1M 1M1",
+    "shipment_method": "Our truck",
     "carrier_tag_bol": "BOL-4471",
     "weight_lbs": 812.5,
     "delivery_address": "40 Site Blvd\nMississauga ON",

@@ -67,6 +67,10 @@ class PackingSlip(Base):
     # Snapshot of the warehouse address, not a foreign key: the warehouse record can be edited or
     # retired years after the truck left, and the form has to keep printing where it was sent.
     pickup_location: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # How the load travelled (#451). A snapshot of the chosen ShipmentMethod's name, not a foreign
+    # key, for the same reason `pickup_location` beside it is a snapshot: the method can be renamed
+    # or retired years later and the reprint has to keep saying what the driver was told.
+    shipment_method: Mapped[str | None] = mapped_column(String, nullable=True)
     carrier_tag_bol: Mapped[str | None] = mapped_column(String, nullable=True)
     weight_lbs: Mapped[Decimal | None] = mapped_column(Numeric(10, 2), nullable=True)
     delivery_address: Mapped[str | None] = mapped_column(Text, nullable=True)
