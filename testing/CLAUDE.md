@@ -316,6 +316,27 @@ rest with `classification = null`. Anything reading Site/Shop - the #451 coverag
 shop-assembly filter - then sees them as unclassified. Re-run the PO purpose over the opening and
 classify the whole grid to restore it.
 
+### A stacked PR gets NO CI, and backend tests are the thing you lose
+
+`.github/workflows/ci.yml` triggers on `push`/`pull_request` to **master only**. A PR based on
+another feature branch - the shape a stack of dependent PRs takes - therefore runs no Frontend, no
+Backend, no Migration Integrity and no Relay job at all. `gh pr checks` on it shows only the two
+Railway deploys, both green, which reads exactly like a healthy PR.
+
+That matters most for the backend, because there is no local Postgres: `pytest` skips ~470 of ~600
+tests here, so CI is the only thing that ever runs them. A stacked backend change is effectively
+unverified until it reaches master.
+
+The cheap fix is a throwaway **draft PR from the top of the stack to master**, which runs the whole
+stack's suite in one go; close it once green. Done on the #451 stack (PR #466) and it immediately
+caught two failures that all three stacked PRs were reporting as clean:
+
+- migration 083 creating its enum twice, because the column referenced a bare `postgresql.ENUM`,
+  which emits its own `CREATE TYPE` during `create_table` on top of the explicit `.create()`. Fresh
+  database -> `DuplicateObject` -> Migration Integrity dead AND every backend test dead, since they
+  all build the schema. Pass `create_type=False` on the column's reference.
+- a delivery-request fixture one field short after `DELIVERY_REQUEST_FIELDS` grew.
+
 ## Getting Started (Every Session)
 
 0. **Pick the environment first.** Testing runs against the PR environment for the PR you are working on. Set `PR` once and let both URLs derive from it, so there is no production URL in the snippet to fat-finger:

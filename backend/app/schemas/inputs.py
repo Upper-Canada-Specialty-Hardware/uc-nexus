@@ -216,6 +216,32 @@ class ShippingOutPRDraftInput:
 
 
 @strawberry.input
+class ContainerItemInput:
+    """One placement in a container (#451). Order in the list IS the stacking order."""
+
+    item_type: PullRequestItemType
+    opening_item_id: strawberry.ID | None = None
+    opening_number: str | None = None
+    leaf: int | None = None
+    hardware_category: str = ""
+    product_code: str = ""
+    quantity: int = 1
+
+
+@strawberry.input
+class SetContainerItemsInput:
+    """Rewrite one container's contents to exactly these placements, in this order (#451).
+
+    A batch rather than place / remove / reorder as three calls: a drag-and-drop surface already
+    holds the whole list, and saving it in pieces leaves a moment where the stack is in an order
+    nobody chose.
+    """
+
+    container_id: strawberry.ID
+    items: list[ContainerItemInput] = strawberry.field(default_factory=list)
+
+
+@strawberry.input
 class CreateShippingOutRequestInput:
     """Raise a shipping-out request from the Shipping module rather than from Start a Task (#451).
 
@@ -618,6 +644,20 @@ class ConfirmShipmentInput(DeliveryRequestHeaderInput):
     project_id: strawberry.ID
     packing_slip_number: str
     items: list[ShipmentItemInput] = strawberry.field(default_factory=list)
+
+
+@strawberry.input
+class ConfirmShipmentFromContainersInput(DeliveryRequestHeaderInput):
+    """Ship whole containers as one shipment (#451).
+
+    The container flow's confirm. Same Delivery Request header as `ConfirmShipmentInput` above and
+    the same slip at the far end - only where the items come from differs, which is why this carries
+    container ids instead of a hand-built item list.
+    """
+
+    project_id: strawberry.ID
+    packing_slip_number: str
+    container_ids: list[strawberry.ID] = strawberry.field(default_factory=list)
 
 
 @strawberry.input
