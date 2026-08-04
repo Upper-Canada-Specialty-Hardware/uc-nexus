@@ -591,6 +591,9 @@ class DeliveryRequestHeaderInput:
     shipper_email: str | None = None
     shipper_phone: str | None = None
     pickup_location: str | None = None
+    # The name of a ShipmentMethod, snapshotted onto the slip (#451). Sent as a string rather than
+    # an id so a shipment keeps printing the method it left under after that method is renamed.
+    shipment_method: str | None = None
     carrier_tag_bol: str | None = None
     weight_lbs: float | None = None
     delivery_address: str | None = None

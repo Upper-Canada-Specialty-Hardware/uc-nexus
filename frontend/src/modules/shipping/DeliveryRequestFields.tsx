@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { Box, Stack, TextField, Typography } from '@mui/material';
+import { Box, MenuItem, Stack, TextField, Typography } from '@mui/material';
 import { microLabelSx, monoSx } from '../../theme';
 import type { DeliveryDetails } from './deliveryRequest';
 
@@ -48,6 +48,11 @@ interface Props {
   disabled?: boolean;
   /** The Shipment section's leading field. Only the create form has a slip number to take. */
   leadingShipmentField?: ReactNode;
+  /**
+   * Active shipment methods (#451). Empty is a real state - a company that has not set any up yet -
+   * and the field degrades to free text rather than blocking the booking.
+   */
+  shipmentMethods?: { id: string; name: string }[];
 }
 
 export default function DeliveryRequestFields({
@@ -56,6 +61,7 @@ export default function DeliveryRequestFields({
   shipperName,
   disabled = false,
   leadingShipmentField,
+  shipmentMethods = [],
 }: Props) {
   const set = (field: keyof DeliveryDetails) => (value: string) => onChange({ [field]: value });
 
@@ -85,6 +91,36 @@ export default function DeliveryRequestFields({
               slotProps={{ inputLabel: { shrink: true } }}
             />
           </Stack>
+          {/* The managed list (#451). A free-text fallback rather than a strict select: the list is
+              maintained by the same department filling this in, and a method nobody has added yet
+              must not be able to stop a shipment being booked. */}
+          <TextField
+            label="Shipment method"
+            select={shipmentMethods.length > 0}
+            value={details.shipmentMethod}
+            onChange={(e) => set('shipmentMethod')(e.target.value)}
+            disabled={disabled}
+            fullWidth
+            helperText={
+              shipmentMethods.length === 0
+                ? 'No shipment methods have been set up yet - add them from the Shipping module.'
+                : undefined
+            }
+            slotProps={{ select: { displayEmpty: true } }}
+          >
+            {shipmentMethods.length > 0 && <MenuItem value="">(none)</MenuItem>}
+            {/* A slip booked under a method that has since been retired keeps showing it, or the
+                edit form would silently blank the value the moment it was opened. */}
+            {shipmentMethods.every((m) => m.name !== details.shipmentMethod) &&
+              details.shipmentMethod !== '' && (
+                <MenuItem value={details.shipmentMethod}>{details.shipmentMethod}</MenuItem>
+              )}
+            {shipmentMethods.map((m) => (
+              <MenuItem key={m.id} value={m.name}>
+                {m.name}
+              </MenuItem>
+            ))}
+          </TextField>
           <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
             <TextField
               label="Carrier / Tag / BOL"
