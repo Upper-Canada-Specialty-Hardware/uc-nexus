@@ -27,6 +27,7 @@ from .enums import (
     ReceiveDraftStatus,
     ReconciliationStatus,
     ReturnDisposition,
+    ShipmentContainerType,
     ShipmentStatus,
     ShippingOutRequestStatus,
     ShopAssemblyRequestStatus,
@@ -1252,6 +1253,83 @@ class ShipReadyLooseItem:
     hardware_category: str
     product_code: str
     available_quantity: int
+
+
+@strawberry.type
+class ShipmentContainerItem:
+    """One thing placed in a container, and where in the stack it sits (#451)."""
+
+    id: strawberry.ID
+    shipment_container_id: strawberry.ID
+    item_type: PullRequestItemType
+    opening_item_id: strawberry.ID | None
+    opening_number: str | None
+    leaf: int | None
+    hardware_category: str
+    product_code: str
+    quantity: int
+    # Stacking order. Only meaningful on a skid or a door cart - the two loaded in a sequence
+    # somebody reverses at the far end. Position 0 is loaded FIRST, so on a skid it is the bottom.
+    position: int
+
+
+@strawberry.type
+class ShipmentContainer:
+    """A skid, door cart, box, envelope or bundle the warehouse loads (#451).
+
+    `packingSlipId` is the whole lifecycle: null while it is being built and can be changed, stamped
+    once its shipment is confirmed and from then on history.
+    """
+
+    id: strawberry.ID
+    project_id: strawberry.ID
+    container_type: ShipmentContainerType
+    name: str
+    packing_slip_id: strawberry.ID | None
+    created_by: str
+    created_at: datetime
+    updated_at: datetime
+    items: list[ShipmentContainerItem]
+
+
+@strawberry.type
+class StagedLooseItem:
+    """One loose product staged for shipping, and how much of it is already in a container (#451)."""
+
+    opening_number: str | None
+    hardware_category: str
+    product_code: str
+    staged_quantity: int
+    placed_quantity: int
+    # staged - placed: what is still loose on the floor waiting to be put somewhere.
+    unplaced_quantity: int
+
+
+@strawberry.type
+class StagedLeaf:
+    """One assembled leaf staged for shipping, and the container holding it if any (#451)."""
+
+    opening_item_id: strawberry.ID
+    opening_number: str
+    leaf: int | None
+    building: str | None
+    floor: str | None
+    location: str | None
+    placed_in_container_id: strawberry.ID | None
+
+
+@strawberry.type
+class StagingPool:
+    """Everything a project has staged for shipping, and where it has been put (#451).
+
+    The left-hand side of the staging workspace reads `unplaced*`; the container cards read
+    `containers`. One query rather than two so the two halves can never disagree about whether a
+    leaf has been loaded.
+    """
+
+    leaves: list[StagedLeaf]
+    loose_items: list[StagedLooseItem]
+    containers: list[ShipmentContainer]
 
 
 @strawberry.type

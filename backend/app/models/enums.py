@@ -51,6 +51,21 @@ class PullPickLineState(str, enum.Enum):
     APPLIED = "APPLIED"
 
 
+class ShipmentContainerType(str, enum.Enum):
+    """What the warehouse physically loads a shipment into (#451).
+
+    SKID and DOOR_CART are the two that carry an ordered stack somebody has to unload in reverse, so
+    they are the ones whose `position` means anything. The other three hold things whose order does
+    not matter.
+    """
+
+    SKID = "SKID"
+    DOOR_CART = "DOOR_CART"
+    BOX = "BOX"
+    ENVELOPE = "ENVELOPE"
+    BUNDLE = "BUNDLE"
+
+
 class OpeningItemState(str, enum.Enum):
     IN_INVENTORY = "IN_INVENTORY"
     SHIP_READY = "SHIP_READY"
