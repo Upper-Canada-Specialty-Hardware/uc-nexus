@@ -20,7 +20,7 @@ import pytest
 from sqlalchemy import select
 
 from app.errors import ConflictError, NotFoundError, ValidationError
-from app.models.enums import POStatus, ReservationSource
+from app.models.enums import HardwareItemState, POStatus, ReservationSource
 from app.models.hardware import HardwareItem
 from app.models.inventory import InventoryLocation
 from app.models.inventory_item_type import CustomInventoryItemValue, InventoryItemType
@@ -135,6 +135,7 @@ def test_a_code_already_on_an_imported_schedule_is_refused(db_session):
             hardware_category="GASKETS",
             product_code="GK-1",
             item_quantity=1,
+            state=HardwareItemState.AVAILABLE,
         )
     )
     db_session.flush()
