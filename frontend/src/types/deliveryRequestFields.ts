@@ -1,4 +1,4 @@
-// The twenty fields of the Delivery Request header, named once for the whole frontend (#453).
+// The Delivery Request header's fields, named once for the whole frontend (#453).
 //
 // Two places need this list and they are on opposite sides of the Apollo boundary: `graphql/shipping.ts`
 // builds the GraphQL selection every PackingSlip read and mutation shares, and
@@ -7,7 +7,7 @@
 // other - a module importing the shared GraphQL layer is the direction this codebase runs in, and
 // the reverse would invert it.
 //
-// A twenty-first field used to be able to drift in two directions, and neither broke the build or
+// A new field used to be able to drift in two directions, and neither broke the build or
 // any test:
 //   - missing from the backend tuple -> GraphQL accepts it and never persists or clears it
 //   - missing from the selection     -> saves, reads back undefined, prints blank on the form
@@ -22,6 +22,9 @@ export const DELIVERY_REQUEST_FIELDS = [
   'shipperEmail',
   'shipperPhone',
   'pickupLocation',
+  // How the load travels (#451). Chosen from the managed ShipmentMethod list but stored as its
+  // name, so a method renamed or retired later cannot rewrite an already-shipped slip.
+  'shipmentMethod',
   'carrierTagBol',
   'weightLbs',
   'deliveryAddress',

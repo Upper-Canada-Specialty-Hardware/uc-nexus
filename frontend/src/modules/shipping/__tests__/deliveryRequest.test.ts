@@ -7,6 +7,7 @@ import {
   slipMaterialLines,
   warehouseAddressLines,
 } from '../deliveryRequest';
+import { DELIVERY_REQUEST_FIELDS } from '../../../types/deliveryRequestFields';
 
 describe('buildMaterialLines', () => {
   it('writes an assembled leaf as one unit of a named opening', () => {
@@ -135,7 +136,10 @@ describe('buildMaterialLines', () => {
 describe('deliveryDetailsInput', () => {
   it('sends every field, blanks as null, so a cleared field clears', () => {
     const input = deliveryDetailsInput(EMPTY_DELIVERY_DETAILS);
-    expect(Object.keys(input)).toHaveLength(20);
+    // Counted off the shared list rather than hard-coded: the point of #453 is that adding a header
+    // field reaches every derived shape at once, and a literal here would make each addition look
+    // like a regression instead.
+    expect(Object.keys(input).sort()).toEqual([...DELIVERY_REQUEST_FIELDS].sort());
     expect(Object.values(input).every((v) => v === null)).toBe(true);
   });
 

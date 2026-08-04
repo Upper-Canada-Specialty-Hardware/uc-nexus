@@ -27,6 +27,7 @@ from .receive_decision import ReceiveDecision  # noqa: E402, F401
 from .receive_draft import ReceiveDraft, ReceiveDraftLineItem  # noqa: E402, F401
 from .receiving import ReceiveLineItem, ReceiveRecord  # noqa: E402, F401
 from .relay_install import RelayInstall  # noqa: E402, F401
+from .shipment_method import ShipmentMethod  # noqa: E402, F401
 from .shipping import (  # noqa: E402, F401
     PackingSlip,
     PackingSlipItem,
