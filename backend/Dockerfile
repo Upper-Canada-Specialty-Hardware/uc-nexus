@@ -1,3 +1,5 @@
+# Throwaway marker: exists only so this PR touches backend/ and Railway spawns a backend service in
+# the preview environment. Delete with the PR.
 FROM python:3.11-slim
 
 WORKDIR /app

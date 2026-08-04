@@ -1,3 +1,5 @@
+# Throwaway marker: exists only so this PR touches frontend/ and Railway spawns a frontend service in
+# the preview environment. Delete with the PR.
 FROM node:20-alpine AS build
 
 WORKDIR /app
