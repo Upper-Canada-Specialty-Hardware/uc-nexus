@@ -1147,6 +1147,10 @@ class PackingSlip:
     delivered_at: datetime | None
     delivered_by: str | None
     items: list[PackingSlipItem]
+    # How the load was physically arranged (#451). Empty for a slip cut before containers existed, so
+    # the Delivery Request falls back to a flat material list rather than printing nothing. `items` is
+    # still the record of what shipped; this is what the person unloading the truck reads.
+    containers: list["ShipmentContainer"]
 
 
 @strawberry.type

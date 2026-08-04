@@ -63,17 +63,15 @@ export const SHIPPING_REFETCH_QUERIES = ['GetOpeningLeafStatus', 'GetPackingSlip
 
 // Evicted. Both are read cache-first by a query that may not be active when a shipment is confirmed,
 // which is precisely what refetchQueries cannot reach:
-// - shipReadyItems: the Ship view is usually mounted behind the dialog, and eviction makes its
-//   watcher re-run (an incomplete cache diff repairs itself by refetching). But the cart drawer is
-//   rendered outside <Routes>, so a shipment can also be confirmed from the Requests/Returns tab
-//   with the Ship view unmounted - refetchQueries would silently skip it there.
+// - stagingPool: confirming from the staging workspace leaves it mounted, but a shipment can also be
+//   confirmed and then navigated away from, and the pool has to be right when it is next opened.
 // - openingItems: warehouse Opening Items is another module entirely, never active at ship time.
 //
 // Absent on purpose: packingSlips, which is refetched by name above rather than evicted (a mounted
 // ShipmentsList must not flash empty), and notifications (NotificationBell polls every 30s and
 // mounts two instances with different variables, so listing it costs two round-trips for a badge
 // that self-corrects).
-export const SHIPPING_STALE_ROOT_FIELDS = ['shipReadyItems', 'openingItems'];
+export const SHIPPING_STALE_ROOT_FIELDS = ['stagingPool', 'shipReadyItems', 'openingItems'];
 
 // The pipeline read (#344). It is a route of its own inside the shop-assembly module, so it is by
 // definition NOT mounted while anybody is accepting a request, staging a cart, saving progress,

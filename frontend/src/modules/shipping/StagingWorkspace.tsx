@@ -5,6 +5,7 @@ import {
   Button,
   Chip,
   IconButton,
+  InputAdornment,
   MenuItem,
   Paper,
   Stack,
@@ -31,7 +32,7 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { ChevronDown, ChevronUp, GripVertical, Package, Plus, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronUp, GripVertical, Package, Plus, Search, Trash2 } from 'lucide-react';
 import { useMutation, useQuery } from '@apollo/client/react';
 import {
   CREATE_SHIPMENT_CONTAINER,
@@ -58,6 +59,8 @@ import {
   type StagingPool,
 } from './staging';
 import { leafSuffix } from '../../utils/leaf';
+import { isGpSetupBroken, type GpSetupStatus } from '../../types/project';
+import GpSetupQuarantineBanner from '../../components/GpSetupQuarantineBanner';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 
 const CONTAINER_TYPES: ContainerType[] = ['SKID', 'DOOR_CART', 'BOX', 'ENVELOPE', 'BUNDLE'];
@@ -71,6 +74,8 @@ const containerDropId = (id: string) => `container:${id}`;
 
 interface Props {
   projectId: string | undefined;
+  /** The project, for the #425 GP-setup quarantine gate on confirming a shipment. */
+  project?: GpSetupStatus | null;
 }
 
 /**
@@ -86,10 +91,14 @@ interface Props {
  * a door leaf on the wrong skid - so the up/down buttons and the "Place in" menu are the reliable
  * path and the drag is the fast one.
  */
-export default function StagingWorkspace({ projectId }: Props) {
+export default function StagingWorkspace({ projectId, project = null }: Props) {
   const { showToast } = useToast();
   const [newType, setNewType] = useState<ContainerType>('SKID');
   const [newName, setNewName] = useState('');
+  // The pool is long on a real job - hundreds of leaves and dozens of products - and the container
+  // being loaded needs one of them. Filters the unplaced side only; a container's own contents stay
+  // visible, because hiding half a skid while you search is how something gets loaded twice.
+  const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [confirmDelete, setConfirmDelete] = useState<Container | null>(null);
   const [shipOpen, setShipOpen] = useState(false);
@@ -103,8 +112,38 @@ export default function StagingWorkspace({ projectId }: Props) {
 
   const pool = data?.stagingPool;
   const containers = useMemo(() => pool?.containers ?? [], [pool]);
-  const unplacedLeaves = useMemo(() => (pool?.leaves ?? []).filter((l) => !l.placedInContainerId), [pool]);
-  const unplacedLoose = useMemo(() => (pool?.looseItems ?? []).filter((l) => l.unplacedQuantity > 0), [pool]);
+  const term = search.trim().toLowerCase();
+  const allUnplacedLeaves = useMemo(
+    () => (pool?.leaves ?? []).filter((l) => !l.placedInContainerId),
+    [pool],
+  );
+  const allUnplacedLoose = useMemo(
+    () => (pool?.looseItems ?? []).filter((l) => l.unplacedQuantity > 0),
+    [pool],
+  );
+  const unplacedLeaves = useMemo(
+    () =>
+      allUnplacedLeaves.filter(
+        (l) =>
+          !term ||
+          l.openingNumber.toLowerCase().includes(term) ||
+          [l.building, l.floor, l.location].filter(Boolean).join(' ').toLowerCase().includes(term),
+      ),
+    [allUnplacedLeaves, term],
+  );
+  const unplacedLoose = useMemo(
+    () =>
+      allUnplacedLoose.filter(
+        (l) =>
+          !term ||
+          l.productCode.toLowerCase().includes(term) ||
+          l.hardwareCategory.toLowerCase().includes(term) ||
+          (l.openingNumber ?? '').toLowerCase().includes(term),
+      ),
+    [allUnplacedLoose, term],
+  );
+  const hidden =
+    allUnplacedLeaves.length - unplacedLeaves.length + (allUnplacedLoose.length - unplacedLoose.length);
 
   const onError = useCallback((e: { message: string }) => showToast(e.message, 'error'), [showToast]);
   const afterChange = useCallback(() => refetch(), [refetch]);
@@ -312,6 +351,9 @@ export default function StagingWorkspace({ projectId }: Props) {
       onDragEnd={handleDragEnd}
     >
       <Box>
+        {/* Beside the button it blocks, not only at the top of the module: the ship button going
+            grey with the explanation a screen away is how #425 gets read as a bug. */}
+        <GpSetupQuarantineBanner project={project} action="shipping from it" dense />
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 2, mb: 2 }}>
           <Typography variant="body2" color="text.secondary">
             Everything pulled for shipping and not yet sent. Put it into the skids, carts and boxes
@@ -319,7 +361,9 @@ export default function StagingWorkspace({ projectId }: Props) {
           </Typography>
           <Button
             variant="contained"
-            disabled={selectedContainers.length === 0}
+            // #425: a job whose GP cost codes point at accounts this company does not have cannot be
+            // received against, so it must not be shipped from either.
+            disabled={selectedContainers.length === 0 || isGpSetupBroken(project)}
             onClick={() => setShipOpen(true)}
           >
             Ship {selectedContainers.length || ''} container{selectedContainers.length === 1 ? '' : 's'}
@@ -332,16 +376,45 @@ export default function StagingWorkspace({ projectId }: Props) {
               Staged, not yet in a container
             </Typography>
 
+            {(allUnplacedLeaves.length > 0 || allUnplacedLoose.length > 0 || term !== '') && (
+              <TextField
+                size="small"
+                fullWidth
+                placeholder="Search opening, product or category"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                sx={{ mb: 1.5 }}
+                slotProps={{
+                  input: {
+                    startAdornment: (
+                      <InputAdornment position="start">
+                        <Search size={16} strokeWidth={1.75} />
+                      </InputAdornment>
+                    ),
+                  },
+                }}
+              />
+            )}
+
             {loading && !pool && (
               <Typography variant="body2" color="text.secondary">
                 Reading the staging pool...
               </Typography>
             )}
 
-            {pool && unplacedLeaves.length === 0 && unplacedLoose.length === 0 && (
+            {pool && allUnplacedLeaves.length === 0 && allUnplacedLoose.length === 0 && (
               <Alert severity="info">
                 Nothing is waiting to be loaded. Hardware arrives here once its shipping pull has
                 been picked and marked as pulled.
+              </Alert>
+            )}
+
+            {/* Filtered to nothing is a different state from an empty floor, and saying so is what
+                stops someone concluding the pull never arrived. */}
+            {pool && hidden > 0 && unplacedLeaves.length === 0 && unplacedLoose.length === 0 && (
+              <Alert severity="info">
+                Nothing staged matches &ldquo;{search.trim()}&rdquo;. {hidden} item(s) are hidden by
+                the search.
               </Alert>
             )}
 
@@ -639,6 +712,9 @@ function ContainerCard({
             {container.name}
           </Typography>
           <Chip size="small" variant="outlined" label={CONTAINER_TYPE_LABEL[container.containerType]} />
+          {container.items.length > 0 && (
+            <Chip size="small" variant="outlined" label={`${container.items.length} item(s)`} />
+          )}
           {container.containerType === 'SKID' && (
             <Chip
               size="small"

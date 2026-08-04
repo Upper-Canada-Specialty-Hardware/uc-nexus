@@ -462,3 +462,78 @@ def test_the_same_container_named_twice_ships_once(db_session):
 
     quantities = sorted((i.item_type, i.quantity) for i in slip.items)
     assert quantities == [(PullRequestItemType.LOOSE, 4), (PullRequestItemType.OPENING_ITEM, 1)]
+
+
+# --- the slip remembers how it was loaded --------------------------------------------------------
+# `items` says what shipped; the Delivery Request also has to say which skid to open and in what
+# order it was stacked, which is only answerable from the containers themselves.
+
+
+def test_a_shipped_slip_carries_its_containers(db_session):
+    project = _project(db_session)
+    _staged_loose(db_session, project, qty=2, opening="101")
+    oi = _leaf(db_session, project)
+    skid = _container(db_session, project, name="Skid 1")
+    box = _container(db_session, project, kind=ShipmentContainerType.BOX, name="Box 1")
+    containers.set_container_items(db_session, skid.id, [_leaf_item(oi)])
+    containers.set_container_items(db_session, box.id, [_loose_item(2)])
+
+    slip = containers.confirm_shipment_from_containers(
+        db_session,
+        project.id,
+        [skid.id, box.id],
+        packing_slip_number=f"PS-{uuid.uuid4().hex[:6]}",
+        shipped_by="shipper",
+        details=None,
+    )
+    db_session.flush()
+    db_session.refresh(slip)
+
+    assert sorted(c.name for c in slip.containers) == ["Box 1", "Skid 1"]
+    by_name = {c.name: c for c in slip.containers}
+    assert [i.item_type for i in by_name["Skid 1"].items] == [PullRequestItemType.OPENING_ITEM]
+    assert [i.quantity for i in by_name["Box 1"].items] == [2]
+
+
+def test_the_stacking_order_survives_onto_the_slip(db_session):
+    # Position is the whole point of a skid section on the Delivery Request. If it did not come back
+    # with the slip, a reprint would list the stack in an arbitrary order.
+    project = _project(db_session)
+    first = _leaf(db_session, project, opening="101", leaf=1)
+    second = _leaf(db_session, project, opening="101", leaf=2)
+    skid = _container(db_session, project, name="Skid 1")
+    containers.set_container_items(db_session, skid.id, [_leaf_item(second), _leaf_item(first)])
+
+    slip = containers.confirm_shipment_from_containers(
+        db_session,
+        project.id,
+        [skid.id],
+        packing_slip_number=f"PS-{uuid.uuid4().hex[:6]}",
+        shipped_by="shipper",
+        details=None,
+    )
+    db_session.flush()
+    db_session.refresh(slip)
+
+    loaded = sorted(slip.containers[0].items, key=lambda i: i.position)
+    assert [i.leaf for i in loaded] == [2, 1]
+
+
+def test_a_slip_cut_without_containers_simply_has_none(db_session):
+    # Every shipment before #451, and the returns path, still have to read back.
+    from app.repositories import shipping_repository
+
+    project = _project(db_session)
+    oi = _leaf(db_session, project)
+    slip = shipping_repository.confirm_shipment(
+        db_session,
+        project.id,
+        f"PS-{uuid.uuid4().hex[:6]}",
+        "shipper",
+        [{"item_type": "OPENING_ITEM", "opening_item_id": oi.id, "quantity": 1}],
+        None,
+    )
+    db_session.flush()
+    db_session.refresh(slip)
+
+    assert slip.containers == []

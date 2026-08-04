@@ -7,7 +7,6 @@ import { ThemeProvider, CssBaseline } from '@mui/material';
 import theme from './theme';
 import client from './apollo';
 import { WizardProvider } from './contexts/WizardContext';
-import { CartProvider } from './contexts/CartContext';
 import { AuthRecoveryProvider } from './contexts/AuthRecoveryContext';
 import { ToastProvider } from './components/Toast';
 import { MotionProvider } from './motion';
@@ -34,15 +33,13 @@ createRoot(document.getElementById('root')!).render(
           <MotionProvider>
             <BrowserRouter>
               <WizardProvider>
-                <CartProvider>
-                  <ToastProvider>
-                    {/* Inside ClerkProvider (it reads useAuth) and the theme (it renders a dialog),
-                        and above App so the re-auth prompt outlives whatever route blanked. */}
-                    <AuthRecoveryProvider>
-                      <App />
-                    </AuthRecoveryProvider>
-                  </ToastProvider>
-                </CartProvider>
+                <ToastProvider>
+                  {/* Inside ClerkProvider (it reads useAuth) and the theme (it renders a dialog),
+                      and above App so the re-auth prompt outlives whatever route blanked. */}
+                  <AuthRecoveryProvider>
+                    <App />
+                  </AuthRecoveryProvider>
+                </ToastProvider>
               </WizardProvider>
             </BrowserRouter>
           </MotionProvider>

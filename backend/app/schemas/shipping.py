@@ -15,6 +15,7 @@ from app.repositories import (
 )
 
 from .converters import (
+    container_to_type,
     opening_item_to_type,
     packing_slip_to_type,
     shipment_return_to_type,
@@ -36,7 +37,6 @@ from .types import (
     PackingSlip,
     ReturnableLine,
     ShipmentContainer,
-    ShipmentContainerItem,
     ShipmentMethod,
     ShipmentReturn,
     ShippingCoverageLeaf,
@@ -48,34 +48,6 @@ from .types import (
     StagedLooseItem,
     StagingPool,
 )
-
-
-def _container_to_type(c) -> ShipmentContainer:
-    return ShipmentContainer(
-        id=strawberry.ID(str(c.id)),
-        project_id=strawberry.ID(str(c.project_id)),
-        container_type=c.container_type,
-        name=c.name,
-        packing_slip_id=strawberry.ID(str(c.packing_slip_id)) if c.packing_slip_id else None,
-        created_by=c.created_by,
-        created_at=c.created_at,
-        updated_at=c.updated_at,
-        items=[
-            ShipmentContainerItem(
-                id=strawberry.ID(str(i.id)),
-                shipment_container_id=strawberry.ID(str(i.shipment_container_id)),
-                item_type=i.item_type,
-                opening_item_id=strawberry.ID(str(i.opening_item_id)) if i.opening_item_id else None,
-                opening_number=i.opening_number,
-                leaf=i.leaf,
-                hardware_category=i.hardware_category,
-                product_code=i.product_code,
-                quantity=i.quantity,
-                position=i.position,
-            )
-            for i in sorted(c.items, key=lambda i: i.position)
-        ],
-    )
 
 
 def _container_items_input(items) -> list[dict]:
@@ -244,7 +216,7 @@ class ShippingQueries:
                         pool["loose"].items(), key=lambda pair: tuple(str(part) for part in pair[0])
                     )
                 ],
-                containers=[_container_to_type(c) for c in containers],
+                containers=[container_to_type(c) for c in containers],
             )
 
     @strawberry.field
@@ -367,7 +339,7 @@ class ShippingMutations:
             )
             session.commit()
             session.refresh(container)
-            return _container_to_type(container)
+            return container_to_type(container)
 
     @strawberry.mutation
     def rename_shipment_container(self, info: strawberry.Info, id: strawberry.ID, name: str) -> ShipmentContainer:
@@ -376,7 +348,7 @@ class ShippingMutations:
             container = shipment_containers.rename_container(session, uuid.UUID(str(id)), name)
             session.commit()
             session.refresh(container)
-            return _container_to_type(container)
+            return container_to_type(container)
 
     @strawberry.mutation
     def delete_shipment_container(self, info: strawberry.Info, id: strawberry.ID) -> bool:
@@ -401,7 +373,7 @@ class ShippingMutations:
             )
             session.commit()
             session.refresh(updated)
-            return _container_to_type(updated)
+            return container_to_type(updated)
 
     @strawberry.mutation
     def confirm_shipment_from_containers(

@@ -1,11 +1,15 @@
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import CheckConstraint, Enum, ForeignKey, Index, Integer, SmallInteger, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from . import Base
 from .enums import PullRequestItemType, ShipmentContainerType
+
+if TYPE_CHECKING:
+    from .shipping import PackingSlip
 
 # A skid is loaded by hand and a stack taller than this is not safe to strap or to lift. It is a
 # physical limit on the object, not a policy, which is why it lives beside the model rather than in
@@ -62,6 +66,7 @@ class ShipmentContainer(Base):
     items: Mapped[list["ShipmentContainerItem"]] = relationship(
         back_populates="container", cascade="all, delete-orphan"
     )
+    packing_slip: Mapped["PackingSlip | None"] = relationship("PackingSlip", back_populates="containers")
 
 
 class ShipmentContainerItem(Base):

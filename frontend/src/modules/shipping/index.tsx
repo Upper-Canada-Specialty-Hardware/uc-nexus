@@ -1,11 +1,8 @@
 import { useState } from 'react';
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
-import { Box, Typography, Badge, IconButton, Button, ToggleButton, ToggleButtonGroup } from '@mui/material';
-import { ArrowLeft, ShoppingCart, Truck } from 'lucide-react';
-import { useCart } from '../../contexts/CartContext';
-import ShipReadyBrowser from './ShipReadyBrowser';
+import { Box, Typography, IconButton, Button, ToggleButton, ToggleButtonGroup } from '@mui/material';
+import { ArrowLeft, Truck } from 'lucide-react';
 import ShipmentsList from './ShipmentsList';
-import ShippingCart from './ShippingCart';
 import ShippingRequestsPage from './ShippingRequestsPage';
 import ShipmentMethodsDialog from './ShipmentMethodsDialog';
 import StagingWorkspace from './StagingWorkspace';
@@ -13,20 +10,25 @@ import ProjectLandingPage from '../../components/ProjectLandingPage';
 import GpSetupQuarantineBanner from '../../components/GpSetupQuarantineBanner';
 import type { Project } from '../../types/project';
 
+/**
+ * Shipping out, in the order the work happens (#451): a request is raised and accepted, the warehouse
+ * pulls it onto the staging floor, the floor is arranged into containers, and the containers go on a
+ * truck.
+ *
+ * Staging replaced a session cart. The cart held a shipment in one browser tab for as long as nobody
+ * refreshed, which is not how a skid gets loaded - that takes hours or days, and more than one
+ * person. Containers are rows in the database, so the arrangement survives both.
+ */
 export default function ShippingModule() {
   const [selectedProject, setSelectedProject] = useState<Project | 'all' | null>(null);
-  const [cartOpen, setCartOpen] = useState(false);
   const [methodsOpen, setMethodsOpen] = useState(false);
-  const { itemCount } = useCart();
   const navigate = useNavigate();
   const location = useLocation();
   const view = location.pathname.endsWith('/returns')
     ? 'returns'
     : location.pathname.endsWith('/requests')
       ? 'requests'
-      : location.pathname.endsWith('/staging')
-        ? 'staging'
-        : 'ship';
+      : 'staging';
 
   if (selectedProject === null) {
     return (
@@ -41,7 +43,7 @@ export default function ShippingModule() {
   const projectName =
     selectedProject === 'all' ? 'All Projects' : (selectedProject.description || selectedProject.projectId);
   // #425: only meaningful for a single project. The All Projects view spans every job, so there is no
-  // one verdict to show and no single action to block - the cart is scoped to a project either way.
+  // one verdict to show and no single action to block.
   const gpSetupProject = selectedProject !== 'all' ? selectedProject : null;
 
   return (
@@ -63,12 +65,11 @@ export default function ShippingModule() {
             exclusive
             value={view}
             onChange={(_, v) => {
-              if (v) navigate(`/app/shipping/${v === 'ship' ? 'browse' : v}`);
+              if (v) navigate(`/app/shipping/${v}`);
             }}
           >
             <ToggleButton value="requests">Requests</ToggleButton>
             <ToggleButton value="staging">Staging</ToggleButton>
-            <ToggleButton value="ship">Ship</ToggleButton>
             <ToggleButton value="returns">Returns</ToggleButton>
           </ToggleButtonGroup>
           {/* The method list is maintained by the same people who pick from it on the Delivery
@@ -76,29 +77,21 @@ export default function ShippingModule() {
           <IconButton onClick={() => setMethodsOpen(true)} aria-label="Manage shipment methods">
             <Truck size={18} strokeWidth={1.75} />
           </IconButton>
-          <IconButton onClick={() => setCartOpen(true)} aria-label="Open shipping cart">
-            <Badge badgeContent={itemCount} color="primary">
-              <ShoppingCart size={18} strokeWidth={1.75} />
-            </Badge>
-          </IconButton>
         </Box>
       </Box>
       <GpSetupQuarantineBanner project={gpSetupProject} action="shipping from it" />
       <Routes>
         <Route path="requests" element={<ShippingRequestsPage projectId={projectId} />} />
-        <Route path="staging" element={<StagingWorkspace projectId={projectId} />} />
-        <Route path="browse" element={<ShipReadyBrowser projectId={projectId} />} />
+        <Route
+          path="staging"
+          element={<StagingWorkspace projectId={projectId} project={gpSetupProject} />}
+        />
         <Route path="returns" element={<ShipmentsList projectId={projectId} />} />
-        <Route index element={<Navigate to="browse" replace />} />
+        {/* `browse` was the ship-ready browser feeding the cart. Anyone holding that link lands on
+            the workspace that replaced it rather than on a blank route. */}
+        <Route path="browse" element={<Navigate to="../staging" replace />} />
+        <Route index element={<Navigate to="staging" replace />} />
       </Routes>
-      <ShippingCart
-        open={cartOpen}
-        onClose={() => setCartOpen(false)}
-        projectId={projectId}
-        projectName={projectName}
-        jobNumber={selectedProject !== 'all' ? selectedProject.projectId : undefined}
-        project={gpSetupProject}
-      />
       <ShipmentMethodsDialog open={methodsOpen} onClose={() => setMethodsOpen(false)} />
     </Box>
   );
