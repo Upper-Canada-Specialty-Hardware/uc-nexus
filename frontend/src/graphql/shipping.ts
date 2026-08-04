@@ -169,11 +169,29 @@ const SLIP_LIFECYCLE_FIELDS = ['pickedUpAt', 'pickedUpBy', 'deliveredAt', 'deliv
 // list read and the three lifecycle mutations all return a PackingSlip, and they have to return the
 // SAME PackingSlip: Apollo normalises on `id`, so a mutation that answered with a narrower selection
 // than the list reads would leave the row it just changed half-stale in the cache.
-const PACKING_SLIP_FIELDS = [
-  ...SLIP_IDENTITY_FIELDS,
-  ...DELIVERY_REQUEST_FIELDS,
-  ...SLIP_LIFECYCLE_FIELDS,
-].join('\n  ');
+// How the load was physically arranged (#451), spliced in for the same reason the header is: a
+// document that read a slip without its containers would print a Delivery Request that silently
+// lost the stacking order, and nothing would fail. Items come back in load order from the server.
+const SLIP_CONTAINER_FIELDS = `
+  containers {
+    id
+    containerType
+    name
+    items {
+      id
+      itemType
+      openingNumber
+      leaf
+      hardwareCategory
+      productCode
+      quantity
+      position
+    }
+  }`;
+
+const PACKING_SLIP_FIELDS =
+  [...SLIP_IDENTITY_FIELDS, ...DELIVERY_REQUEST_FIELDS, ...SLIP_LIFECYCLE_FIELDS].join('\n  ') +
+  SLIP_CONTAINER_FIELDS;
 
 export const GET_PACKING_SLIPS = gql`
   query GetPackingSlips($projectId: ID) {

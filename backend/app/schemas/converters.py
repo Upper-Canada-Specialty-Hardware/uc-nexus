@@ -63,6 +63,8 @@ from .types import (
     ReceiveRecord,
     RelayInstallInfo,
     ReplacementWorkItem,
+    ShipmentContainer,
+    ShipmentContainerItem,
     ShipmentReturn,
     ShipmentReturnItem,
     ShippingOutRequest,
@@ -963,6 +965,41 @@ def packing_slip_item_to_type(psi) -> PackingSlipItem:
     )
 
 
+def container_to_type(c) -> ShipmentContainer:
+    """One container and its contents, in load order (#451).
+
+    Items are sorted by `position` here rather than left in whatever order the relationship loaded
+    them: position 0 is what went on first, which on a skid is the bottom of the stack, and a
+    Delivery Request that printed the stack in a different order every time would be worse than one
+    that printed no order at all.
+    """
+    return ShipmentContainer(
+        id=strawberry.ID(str(c.id)),
+        project_id=strawberry.ID(str(c.project_id)),
+        container_type=c.container_type,
+        name=c.name,
+        packing_slip_id=strawberry.ID(str(c.packing_slip_id)) if c.packing_slip_id else None,
+        created_by=c.created_by,
+        created_at=c.created_at,
+        updated_at=c.updated_at,
+        items=[
+            ShipmentContainerItem(
+                id=strawberry.ID(str(i.id)),
+                shipment_container_id=strawberry.ID(str(i.shipment_container_id)),
+                item_type=i.item_type,
+                opening_item_id=strawberry.ID(str(i.opening_item_id)) if i.opening_item_id else None,
+                opening_number=i.opening_number,
+                leaf=i.leaf,
+                hardware_category=i.hardware_category,
+                product_code=i.product_code,
+                quantity=i.quantity,
+                position=i.position,
+            )
+            for i in sorted(c.items, key=lambda i: i.position)
+        ],
+    )
+
+
 def packing_slip_to_type(ps) -> PackingSlip:
     """The shipment and its whole Delivery Request header (#447).
 
@@ -993,6 +1030,7 @@ def packing_slip_to_type(ps) -> PackingSlip:
         delivered_at=ps.delivered_at,
         delivered_by=ps.delivered_by,
         items=[packing_slip_item_to_type(i) for i in ps.items],
+        containers=[container_to_type(c) for c in ps.containers],
     )
 
 

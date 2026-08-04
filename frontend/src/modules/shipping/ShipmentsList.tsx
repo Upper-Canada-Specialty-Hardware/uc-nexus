@@ -33,6 +33,7 @@ import {
   ChevronRight,
   CornerUpLeft,
   FileText,
+  Package,
   PackageCheck,
   Pencil,
   Search,
@@ -59,7 +60,8 @@ import {
   type PackingSlip,
   type WarehouseAddress,
 } from './deliveryRequest';
-import { leafLabel } from '../../utils/leaf';
+import { CONTAINER_TYPE_LABEL, isStacked } from './staging';
+import { leafLabel, leafSuffix } from '../../utils/leaf';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import { FadeIn } from '../../motion';
 import { parseServerDate, parseServerDay } from '../../utils/serverDate';
@@ -201,7 +203,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
             jobNumber={project?.projectId ?? ''}
             date={parseServerDate(slip.shippedAt).toLocaleDateString(undefined, LONG_DATE)}
             shipper={slip.shippedBy}
-            materialLines={slipMaterialLines(slip.items)}
+            materialLines={slipMaterialLines(slip.items, slip.containers)}
             divisionAddress={divisionAddress}
             values={valuesFromSlip(slip)}
           />,
@@ -408,6 +410,69 @@ export default function ShipmentsList({ projectId, heading }: Props) {
                                 ))}
                               </TableBody>
                             </Table>
+
+                            {/* How the load was arranged (#451). Absent on slips cut before
+                                containers existed, which is why this is conditional rather than an
+                                empty section. */}
+                            {(slip.containers ?? []).length > 0 && (
+                              <Box sx={{ mb: 2 }}>
+                                <Typography
+                                  sx={{
+                                    ...microLabelSx,
+                                    pb: 0.5,
+                                    mb: 1,
+                                    borderBottom: '2px solid',
+                                    borderColor: 'text.primary',
+                                  }}
+                                >
+                                  Containers ({(slip.containers ?? []).length})
+                                </Typography>
+                                <Stack spacing={1.5}>
+                                  {(slip.containers ?? []).map((container) => {
+                                    const stacked = isStacked(container.containerType);
+                                    const ordered = [...container.items].sort(
+                                      (a, b) => a.position - b.position,
+                                    );
+                                    return (
+                                      <Box key={container.id}>
+                                        <Box
+                                          sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}
+                                        >
+                                          <Package size={16} strokeWidth={1.75} />
+                                          <Typography variant="body2" sx={{ ...monoSx, fontWeight: 700 }}>
+                                            {container.name}
+                                          </Typography>
+                                          <Chip
+                                            size="small"
+                                            variant="outlined"
+                                            label={CONTAINER_TYPE_LABEL[container.containerType]}
+                                          />
+                                          {stacked && ordered.length > 1 && (
+                                            <Typography variant="caption" color="text.secondary">
+                                              loaded in this order, first on at the bottom
+                                            </Typography>
+                                          )}
+                                        </Box>
+                                        <Stack spacing={0.25} sx={{ pl: 3 }}>
+                                          {ordered.map((item, index) => (
+                                            <Typography
+                                              key={item.id}
+                                              variant="body2"
+                                              sx={{ ...monoSx, ...tabularSx }}
+                                            >
+                                              {stacked && `${index + 1}. `}
+                                              {item.itemType === 'OPENING_ITEM'
+                                                ? `${item.openingNumber ?? ''}${leafSuffix(item.leaf ?? null)}`
+                                                : `${item.productCode} × ${item.quantity}`}
+                                            </Typography>
+                                          ))}
+                                        </Stack>
+                                      </Box>
+                                    );
+                                  })}
+                                </Stack>
+                              </Box>
+                            )}
 
                             <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
                               <Button

@@ -133,6 +133,77 @@ describe('buildMaterialLines', () => {
   });
 });
 
+describe('containers on the Delivery Request', () => {
+  const leaf = {
+    id: 'ci-1',
+    itemType: 'OPENING_ITEM',
+    openingNumber: '0019-EX',
+    leaf: 1,
+    hardwareCategory: null,
+    productCode: null,
+    quantity: 1,
+    position: 0,
+  };
+  const loose = {
+    id: 'ci-2',
+    itemType: 'LOOSE',
+    openingNumber: '0019-EX',
+    leaf: null,
+    hardwareCategory: 'Locksets',
+    productCode: 'AD8406',
+    quantity: 2,
+    position: 1,
+  };
+
+  it('prints a skid as a numbered stacking list, first on at the bottom', () => {
+    expect(
+      slipMaterialLines([], [{ id: 'c1', containerType: 'SKID', name: 'Skid 1', items: [loose, leaf] }]),
+    ).toEqual([
+      'SKID 1 (Skid)',
+      '  1. (1) Unit of Opening 0019-EX Leaf 1',
+      '  2. (2) Units of AD8406 - Locksets (Opening 0019-EX)',
+    ]);
+  });
+
+  it('leaves an unstacked container unnumbered - a box is a set, not an order', () => {
+    expect(
+      slipMaterialLines([], [{ id: 'c1', containerType: 'BOX', name: 'Box 1', items: [loose] }]),
+    ).toEqual(['BOX 1 (Box)', '  (2) Units of AD8406 - Locksets (Opening 0019-EX)']);
+  });
+
+  it('sorts by position rather than trusting the order it was handed', () => {
+    const [, first] = slipMaterialLines([], [
+      { id: 'c1', containerType: 'SKID', name: 'Skid 1', items: [{ ...loose, position: 5 }, { ...leaf, position: 2 }] },
+    ]);
+    expect(first).toBe('  1. (1) Unit of Opening 0019-EX Leaf 1');
+  });
+
+  it('says so when a container went out empty', () => {
+    expect(
+      slipMaterialLines([], [{ id: 'c1', containerType: 'BOX', name: 'Box 1', items: [] }]),
+    ).toEqual(['BOX 1 (Box)', '  (empty)']);
+  });
+
+  it('falls back to the flat list for a slip cut before containers existed', () => {
+    // The slip still has to print. An empty containers array is not "no material".
+    const lines = slipMaterialLines(
+      [
+        {
+          id: '1',
+          itemType: 'OPENING_ITEM',
+          openingNumber: '0019-EX',
+          leaf: 1,
+          productCode: null,
+          hardwareCategory: null,
+          quantity: 1,
+        },
+      ],
+      [],
+    );
+    expect(lines).toEqual(['(1) Unit of Opening 0019-EX Leaf 1']);
+  });
+});
+
 describe('deliveryDetailsInput', () => {
   it('sends every field, blanks as null, so a cleared field clears', () => {
     const input = deliveryDetailsInput(EMPTY_DELIVERY_DETAILS);

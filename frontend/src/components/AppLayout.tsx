@@ -7,7 +7,6 @@ import {
   Box,
   Button,
   IconButton,
-  Badge,
   Breadcrumbs,
   Link,
   Tooltip,
@@ -17,14 +16,12 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Menu as MenuIcon,
-  ShoppingCart,
   Moon,
   Sun,
   ChevronRight,
 } from 'lucide-react';
 import { useColorScheme } from '@mui/material/styles';
 import { UserButton } from '@clerk/clerk-react';
-import { useCart } from '../contexts/CartContext';
 import NotificationBell from './NotificationBell';
 import GpQueueChip from '../relay/GpQueueChip';
 import GpOutboxWatcher from '../relay/GpOutboxWatcher';
@@ -43,7 +40,6 @@ const RAIL_COLLAPSED_KEY = 'uc-nexus-rail-collapsed';
 
 export default function AppLayout() {
   const { mode, setMode } = useColorScheme();
-  const { itemCount } = useCart();
   const navigate = useNavigate();
   const location = useLocation();
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
@@ -153,14 +149,6 @@ export default function AppLayout() {
           >
             {resetting ? 'Resetting…' : 'DevAction: drop and rebuild schema'}
           </Button>
-
-          {location.pathname.includes('/shipping') && itemCount > 0 && (
-            <IconButton color="inherit" sx={{ mr: 0.5 }} aria-label="Shipping cart">
-              <Badge badgeContent={itemCount} color="error">
-                <ShoppingCart size={20} strokeWidth={1.75} />
-              </Badge>
-            </IconButton>
-          )}
 
           {/* #353 PR E: only renders when the GP write queue is non-empty, so the bar is unchanged
               in the normal case. */}
