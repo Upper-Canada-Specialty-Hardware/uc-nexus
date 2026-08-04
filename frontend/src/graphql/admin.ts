@@ -36,18 +36,77 @@ export const GET_ADMIN_PROJECTS = gql`
   }
 `;
 
-export const GET_OPENING_HARDWARE_STATUS = gql`
-  query GetOpeningHardwareStatus($projectId: ID) {
-    openingHardwareStatus(projectId: $projectId) {
+// One row per opening of ONE project. Deliberately counts only - the per-hardware detail travels
+// through GET_ADMIN_OPENING_DEEP_DIVE when a row is expanded, so opening a project with a large
+// schedule does not ship the whole schedule to the browser.
+export const GET_ADMIN_OPENING_STATUSES = gql`
+  query GetAdminOpeningStatuses($projectId: ID!) {
+    adminOpeningStatuses(projectId: $projectId) {
       openingNumber
       building
       floor
       location
-      items {
+      leafCount
+      stage
+      owedUnits
+      shippedUnits
+      stagedUnits
+      assembledUnits
+      pulledUnits
+      shippedLooseUnits
+      pulledForShippingUnits
+      orderedUnits
+      poDraftedUnits
+      notPurchasedUnits
+      leaves {
+        leaf
+        status
+      }
+    }
+  }
+`;
+
+// Every unit of one opening's hardware, partitioned across the lifecycle. The seven per-line
+// quantities sum to owedQuantity - one unit is only ever in one of them.
+export const GET_ADMIN_OPENING_DEEP_DIVE = gql`
+  query GetAdminOpeningDeepDive($projectId: ID!, $openingNumber: String!) {
+    adminOpeningDeepDive(projectId: $projectId, openingNumber: $openingNumber) {
+      openingNumber
+      leafCount
+      leaves {
+        leaf
+        status
+      }
+      leafClaims {
+        leaf
+        requestNumber
+      }
+      lines {
+        leaf
         hardwareCategory
         productCode
-        itemQuantity
-        status
+        owedQuantity
+        shippedOnLeaf
+        shippedLoose
+        staged
+        pulledForShipping
+        assembledInInventory
+        pulledForAssembly
+        ordered
+        poDrafted
+        notPurchased
+        poLines {
+          poNumber
+          status
+          orderedQuantity
+          receivedQuantity
+        }
+      }
+      loose {
+        hardwareCategory
+        productCode
+        pulledForShipping
+        shippedLoose
       }
     }
   }

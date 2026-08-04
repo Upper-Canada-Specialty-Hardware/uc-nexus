@@ -51,7 +51,7 @@ function formatDateTime(value: string | null): string {
  * the safe default - this asks the person who ordered it whether that is where it should stay, or
  * whether the site is waiting on it and it should go straight back out.
  *
- * "Ship out now" records the choice and then hands over to Start a Task. It deliberately does not
+ * "Ship out now" records the choice and then hands over to Start a Request. It deliberately does not
  * build the shipping request itself: inventory is fungible by the time it is received, and only the
  * hardware schedule knows which opening and leaf a quantity is owed to
  * (docs/HARDWARE_IDENTITY_LIFECYCLE.md). Re-attaching that identity is what the wizard is for.
@@ -200,7 +200,7 @@ export default function ReceiveDecisionsPage() {
                   </Button>
                 </Stack>
                 <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>
-                  Shipping out opens Start a Task on this project, where you pick which openings the
+                  Shipping out opens Start a Request on this project, where you pick which openings the
                   hardware is going to.
                 </Typography>
               </CardContent>

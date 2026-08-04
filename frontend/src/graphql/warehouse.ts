@@ -4,7 +4,7 @@ import { gql } from '@apollo/client/core';
  * What each product in a project can still be CLAIMED for (#342):
  * `availableQuantity = onHandQuantity - deficientQuantity - reservedQuantity`.
  *
- * This is the exact number the Start-a-Task creation gate applies server-side, so the wizard can
+ * This is the exact number the Start-a-Request creation gate applies server-side, so the wizard can
  * block an over-selection with per-combo detail before submission instead of bouncing the whole
  * finalize. Deliberately NOT the same as `inventoryHierarchy`'s availability (on-hand minus
  * deficient), which answers "what is physically unspoken-for in the building".

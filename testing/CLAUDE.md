@@ -66,7 +66,7 @@ Consequences when driving the app by script:
   `Admin/Manager role required`. Getting `Authentication required` from inside a signed-in page means
   your helper dropped the header, not that the session died.
 - Admin-gated reads worth knowing, because a non-admin session gets FORBIDDEN rather than an empty
-  list: `users`, `adminStats`, `openingHardwareStatus`, `locationDuplicates`. Their writes too -
+  list: `users`, `adminStats`, `adminOpeningStatuses`, `adminOpeningDeepDive`, `locationDuplicates`. Their writes too -
   the vendor and warehouse CRUD, `overrideInventoryQuantity`, `mergeLocations`.
 - `require_admin` costs a Clerk Backend API round-trip per call (`require_user` does not), so a page
   hitting several admin resolvers at once is legitimately slower than the equivalent user page.
@@ -255,8 +255,10 @@ register dialog is allowed to edit them), so hand-built `lineItems` produce line
 the schedule rows. The PO registers, GP takes it, the receive posts and inventory appears - and every
 schedule item is still `PO_DRAFTED`, so the assembly gate refuses exactly as it does for a
 Create-PO-dialog PO. Verified 2026-08-03 on pr-460: two POs (PO0000082, PO0000083) and two receipts
-landed in TUBC and `projectInventoryAvailability` showed all four products, while
-`openingHardwareStatus` for the opening still read `PO_DRAFTED` across the board. Drive the register
+landed in TUBC and `projectInventoryAvailability` showed all four products, while the opening's
+hardware still read as unpurchased across the board (`openingHardwareStatus` at the time, which
+called it `PO_DRAFTED`; `adminOpeningDeepDive` now reports the same severed binding honestly, as
+`notPurchased`). Drive the register
 **dialog** when the schedule linkage matters; scripting the mutation is only safe when all you want is
 stock in the pool. Keep the GP footprint small by using the
 Reconciliation step's own checkboxes (PO purpose only): `Deselect All`, then tick just the one product
@@ -407,7 +409,10 @@ caught two failures that all three stacked PRs were reporting as clean:
 ```
 /                          -> Clerk Sign-In
 /app                       -> Module Selector (6 module cards)
-/app/import                -> Hardware Schedule Import wizard
+/app/import                -> Start a Request (project landing -> hardware schedule wizard). NOT in the
+                              sidebar since #471 - reached from the "Start a Request" button in the PO,
+                              Shop Assembly and Shipping headers, which append ?purpose=po|assembly|shipping
+                              (Shipping also passes ?projectId=, so its button opens the wizard directly)
 /app/po                    -> Purchase Orders (project landing -> PO list)
 /app/warehouse             -> Warehouse landing (stat cards + Go-to cards for sub-routes)
 /app/warehouse/inventory   -> Inventory (hardware/opening items by project)
@@ -438,7 +443,7 @@ step. Everything in it is exercisable against Railway.
 
 | # | What happens | Where you do it | What changes underneath |
 | --- | --- | --- | --- |
-| 1 | **Request** a leaf for shop assembly | Import -> Start a Task | A PENDING `ShopAssemblyRequest`, and the hardware is **reserved** on the spot (#342). Creating over-subscribed is refused whole, naming every short combo |
+| 1 | **Request** a leaf for shop assembly | Shop Assembly -> Start a Request | A PENDING `ShopAssemblyRequest`, and the hardware is **reserved** on the spot (#342). Creating over-subscribed is refused whole, naming every short combo |
 | 2 | **Accept** it | Shop Assembly -> Requests | A PENDING warehouse pull. A pure human gate - nothing is re-checked, nothing is spent. Rejecting instead is what releases the claim |
 | 3a | **Start the pick** | Warehouse -> Pull Requests -> Start pick | The pull is claimed and opened. **Nothing moves**, and there is no sufficiency gate - a pull with an empty shelf still opens (#367) |
 | 3b | **Confirm the pick** | The pick page, `/pull-requests/:id/pick` | The picker dictates a quantity per location; confirming deducts *those rows* and consumes the claim, atomically. This is the only moment inventory moves |
@@ -457,7 +462,7 @@ Two things a fresh reader gets wrong every time:
   on the same pull is still on the shelf. A row with no buttons on the Assemble List is not broken;
   its cart is not built yet.
 - **Reserved is not deducted.** Between steps 1 and 3b the hardware is claimed but still on the shelf,
-  so the Warehouse inventory number and the Start-a-Task availability number legitimately disagree.
+  so the Warehouse inventory number and the Start-a-Request availability number legitimately disagree.
 - **Started is not picked either (#367).** A pull sits IN_PROGRESS from the moment somebody presses
   Start pick, which is *before* any stock has moved. `Status` alone can no longer tell you whether
   the hardware has left - the queue's **Phase** column and `pickedAt` are what answer that.
@@ -512,7 +517,7 @@ concluding the resolver is broken.
 
 To produce one cheaply - the whole run is a couple of minutes and touches nothing else:
 
-1. Start a Task -> project card -> **Use last uploaded schedule** -> Purpose **Create Purchase Orders**.
+1. Purchase Orders -> **Start a Request** -> project card -> **Use last uploaded schedule** -> Purpose **Create Purchase Orders** (already preselected by the button).
 2. Select Openings: tick 2 openings via `document.querySelector('.MuiDataGrid-row[data-id="0501-EX"] input[type=checkbox]').click()`. Prefer openings whose Hand column shows a pair (`RHRA/LHR`) so the section has more than one leaf to show.
 3. Reconciliation: **Deselect All**, then tick exactly one product row (`data-id` is `"<category>|<productCode>"`). That is what keeps the PO to one line and one manufacturer group.
 4. Classification: click By UCSH + Shop on each row (both counters must fill).
@@ -556,9 +561,12 @@ Two consequences when testing:
 - Doc math: each line ext = ordered x unitCost; Subtotal = sum of ext; Order Total = Subtotal + Freight + Miscellaneous + Tax. The item column shows `hardwareCategory` (main line) + `orderAs` (Reference line). Boilerplate (tax numbers, mandatory bullets, signature, footer) always prints; the FSC / USA-tariff / customs blocks print only when their toggle is on.
 - Company-wide boilerplate lives at the PO module's Document Settings page (`/app/po/document-settings`, "Document Settings" button in the PO list header - it moved out of Admin); the per-PO gaps are captured in this dialog.
 
-### Import Module
+### Import Module (Start a Request)
 
-**Entry**: `/app/import` -> Opens the Import Hardware Schedule wizard (full-screen dialog)
+**Entry**: the **Start a Request** button in the PO, Shop Assembly or Shipping header (#471 - it has
+no sidebar entry of its own). That lands on `/app/import`, a project picker; choosing a project opens
+the wizard (full-screen dialog) with the originating module's purpose already selected on step 2. A
+bare `/app/import` still works if typed, it just asks for the purpose like it always did.
 
 **Wizard Steps**:
 1. Upload File — drag/drop or browse for XML file from TITAN
@@ -620,7 +628,7 @@ the wizard, and it changes what "it worked" looks like at every downstream step.
   naming every short combo, and **nothing at all is created** - no request, no reservations, no
   openings. Useful for exercising the gate without walking the wizard.
 - To make a shortfall on demand: create one request that claims most of a product, then start a
-  second Start a Task for the same product. The second one is short *even though the shelf count is
+  second request for the same product through Start a Request. The second one is short *even though the shelf count is
   unchanged* - that is the reservation working, and `reserved by other requests` in the message is
   how to tell it from genuinely absent stock.
 - Other creation-time refusals (all `VALIDATION_ERROR`): a request with zero openings; an opening
@@ -1003,7 +1011,7 @@ pick leaves the pull IN_PROGRESS with phase "Picked - ready to mark pulled" and 
 Hardware grid stays empty; "Mark as Pulled" in the pull detail modal is what completes it. Budget for
 that extra step when scripting the chain.
 
-**Incomplete-leaf guard in the Start-a-Task shipping wizard (#341).** On the Shipping PRs step, an
+**Incomplete-leaf guard in the Start-a-Request shipping wizard (#341).** On the Shipping PRs step, an
 assembled leaf that is still owed hardware carries an amber "Incomplete - awaiting replacement" chip
 and a "<n> unit(s) still awaiting replacement" caption.
 
@@ -1022,7 +1030,12 @@ and a "<n> unit(s) still awaiting replacement" caption.
 
 **Sub-routes**:
 - Project Purchasing Progress (`/app/admin/project-purchasing-progress`)
-- Opening Status (`/app/admin/opening-status`)
+- Opening Status (`/app/admin/opening-status`) - project-scoped and loads nothing until a project is
+  picked. One row per opening (stage chip + procured fraction + per-leaf chips); expanding a row
+  fires `adminOpeningDeepDive` for that opening alone and shows every hardware line partitioned
+  across not purchased / drafted / on order / pulled for assembly / assembled / staged / pulled for
+  shipping / shipped. There is no "received" bucket by design - inventory is fungible on receipt, so
+  the PO line's received/ordered fill is shown as context instead.
 - Vendors (`/app/admin/vendors`) — vendor CRUD
 - Warehouses (`/app/admin/warehouses`) — warehouse CRUD (PR #158, issue #88); see below
 - Projects (`/app/admin/projects`) — edit project details + OSSA flag (see below)
@@ -1159,7 +1172,7 @@ queries/mutations and every action are unchanged, but a lot of chrome moved:
   bar; state persists in localStorage `uc-nexus-rail-collapsed`). The hamburger-opens-drawer flow
   now exists only below the `md` breakpoint. Sub-items (incl. the new Pipeline entry) expand under
   the active module. The `<- Warehouse` / `<- Projects` back buttons are gone - breadcrumbs (now
-  labelled "Purchase Orders", "Start a Task") are the way back.
+  labelled "Purchase Orders", "Start a Request") are the way back.
 - **Icons are lucide (stroke) not Material (filled)**; icon-only buttons gained aria-labels
   (e.g. `Open <PO> details`). Snapshot selectors keyed on Material icon `data-testid`s will miss.
 - **Stat values animate** (count-up over ~0.5s on mount). A snapshot taken immediately after

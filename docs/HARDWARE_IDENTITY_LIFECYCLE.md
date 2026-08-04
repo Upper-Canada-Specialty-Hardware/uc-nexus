@@ -53,7 +53,7 @@ Confirming the pull's **pick** deducts that quantity from the `inventory_locatio
 warehouse user names (§3b). The physical hardware never changed; what changed is that it now belongs
 to a leaf.
 
-This is why both request types are created from the hardware schedule through **Start a Task**. The
+This is why both request types are created from the hardware schedule through **Start a Request**. The
 schedule is the only thing that knows which leaf of which opening a quantity is owed to. Inventory
 cannot answer that question, because it deliberately forgot.
 

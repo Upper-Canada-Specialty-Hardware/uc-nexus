@@ -31,6 +31,7 @@ import {
   ChevronRight,
   ChevronsUpDown,
   ChevronsDownUp,
+  ClipboardPlus,
   Settings,
 } from 'lucide-react';
 import { motion } from 'motion/react';
@@ -853,7 +854,7 @@ function POListPage() {
 
   return (
     <Box>
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 1, mb: 2 }}>
         <Typography variant="h5" sx={{ flex: 1 }}>
           Purchase Orders
         </Typography>
@@ -868,6 +869,17 @@ function POListPage() {
             Document Settings
           </Button>
         )}
+        {/* #471: raising a PO off the hardware schedule used to be its own sidebar destination. It
+            is an action of this module, so it is a button here - no role gate, because whoever can
+            work this screen can raise one, and the schedule is what knows what is still owed. */}
+        <Button
+          variant="outlined"
+          size="small"
+          startIcon={<ClipboardPlus {...ICON} />}
+          onClick={() => navigate('/app/import?purpose=po')}
+        >
+          Start a Request
+        </Button>
         {/* Issue #256: creating a PO lands as a DRAFT (no GP involved), so no relay gating here -
             the relay is only needed later, to register the draft into GP. This is the screen's one
             filled accent: the thing you came here to do. */}

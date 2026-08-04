@@ -623,7 +623,7 @@ def finalize_import_session(
     if project is None:
         raise NotFoundError(f"Project {project_id} not found")
 
-    # #425: quarantine gate. This one mutation is BOTH of Start a Task's write actions - it persists
+    # #425: quarantine gate. This one mutation is BOTH of Start a Request's write actions - it persists
     # the schedule, and it creates the shop-assembly and shipping-out requests that reserve inventory
     # against it. A project whose GP job cannot be received against must not accumulate any of that:
     # the requests would reserve stock, the POs drafted off the schedule would be unregisterable, and
@@ -935,7 +935,7 @@ def finalize_import_session(
         )
     session.flush()
 
-    # 6. Shipping-out requests (#293): Start a Task mints a PENDING ShippingOutRequest, NOT a
+    # 6. Shipping-out requests (#293): Start a Request mints a PENDING ShippingOutRequest, NOT a
     # PullRequest. A signed-in user accepts it later, which mints the warehouse PullRequest.
     #
     # Every guard and the reservation gate live in shipping_requests (#451), because the Shipping
@@ -951,7 +951,7 @@ def finalize_import_session(
     )
 
     # 7. Shop-assembly request + openings (#293)
-    # Start a Task mints a PENDING ShopAssemblyRequest (NO PullRequest). The ShopAssemblyOpening/Item
+    # Start a Request mints a PENDING ShopAssemblyRequest (NO PullRequest). The ShopAssemblyOpening/Item
     # rows hang off the SAR via shop_assembly_request_id; their pull_request_id stays NULL until a
     # signed-in user accepts the request (accept mints the PR and backfills pull_request_id).
     # Since #342 the inventory gate lives HERE, at creation, and creating the request reserves the

@@ -275,7 +275,7 @@ class ShippingMutations:
         never accounted for could only be sent by walking back through the import wizard and finding
         an opening to hang it on, so the request said something about the job that was not true.
 
-        Everything past composition is identical to the Start-a-Task path - same guards, same
+        Everything past composition is identical to the Start-a-Request path - same guards, same
         reservation of what the loose lines claim (#342), same PENDING request somebody then
         accepts. Recorded against the Clerk-authenticated caller (#427).
         """

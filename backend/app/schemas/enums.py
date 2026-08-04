@@ -195,6 +195,30 @@ class LeafStatus(enum.Enum):
 
 
 @strawberry.enum
+class OpeningStage(enum.Enum):
+    """One opening's headline stage on the admin Opening Status page.
+
+    Derived, never stored - like LeafStatus above. It names the FURTHEST BEHIND thing still
+    outstanding rather than the furthest along, because the question the page answers is "what is
+    holding this opening up": an opening whose leaf 1 has shipped while leaf 2 was never bought reads
+    ORDERING. The per-bucket unit counts beside it are the truth; this is the scanning aid.
+    """
+
+    # The schedule lists nothing for this opening, and nothing has ever shipped for it.
+    NO_HARDWARE = "NO_HARDWARE"
+    # Every unit is still unbought.
+    NOT_STARTED = "NOT_STARTED"
+    # Something is unbought or only on a draft PO.
+    ORDERING = "ORDERING"
+    # Everything is on a placed PO, but units are still waiting to reach a leaf.
+    ASSEMBLY = "ASSEMBLY"
+    # Every leaf is assembled; hardware is still in the building.
+    SHIPPING = "SHIPPING"
+    # Every leaf has shipped out.
+    COMPLETE = "COMPLETE"
+
+
+@strawberry.enum
 class GpOutboxStatus(enum.Enum):
     """Where a queued GP write has got to (#353 PR E). Stored as a String + CHECK rather than a PG
     enum (precedent: migration 065), so this list can grow without an ALTER TYPE."""

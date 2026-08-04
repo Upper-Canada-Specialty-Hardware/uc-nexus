@@ -1,6 +1,6 @@
 """Tests for the downstream accept gate (#293 workstream B).
 
-Start-a-Task mints request entities (ShopAssemblyRequest / ShippingOutRequest) PENDING; a signed-in
+Start-a-Request mints request entities (ShopAssemblyRequest / ShippingOutRequest) PENDING; a signed-in
 user accepts them, which mints the existing warehouse PullRequest (PENDING). These exercise the
 repository layer directly (the resolvers only add require_user + commit on top).
 """

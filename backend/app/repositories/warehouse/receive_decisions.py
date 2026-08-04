@@ -5,7 +5,7 @@ makes it appear on both routes into that persist: the online approval and the ou
 a receipt that was queued while the relay was down. Answering it records a choice and nothing else -
 SHIP_OUT does not build a shipping-out request, because only the hardware schedule knows which
 opening and leaf a fungible quantity is owed to (docs/HARDWARE_IDENTITY_LIFECYCLE.md). The frontend
-takes the answered decision and deep-links into Start a Task, where that identity gets re-attached.
+takes the answered decision and deep-links into Start a Request, where that identity gets re-attached.
 """
 
 import uuid

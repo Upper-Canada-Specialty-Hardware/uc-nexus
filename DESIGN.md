@@ -126,7 +126,7 @@ Density flexes by station, within the one language:
 - **Operational tables (PO, warehouse):** the ledger is the screen - 2px header rule, mono
   identifiers, right-aligned tabular counts, inline filters, status tags, row hover with a clear
   affordance.
-- **Guided wizard (import / Start a Task):** linear and calm; one decision per step; step content
+- **Guided wizard (import / Start a Request):** linear and calm; one decision per step; step content
   transitions quickly.
 - **Master-detail (shop assembly, shipping, locations):** compact list rail plus a wide detail pane;
   the rail collapse is animated so the space handoff reads as physical.
