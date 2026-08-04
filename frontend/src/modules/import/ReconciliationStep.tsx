@@ -13,6 +13,10 @@ interface ReconciliationStepProps {
   isReimport: boolean;
   purpose: ImportPurpose;
   reconcileLoading: boolean;
+  /** Why the reconcile read failed, or null. Shown rather than swallowed: with no rows the PO purpose
+   *  auto-selects nothing, so Next stays disabled and a silent failure reads as a broken wizard. */
+  reconcileError: string | null;
+  onRetryReconcile: () => void;
   reconciliationRows: ReconciliationRow[];
   selectedHardwareItems: ParsedHardwareItem[];
   allHardwareItems: ParsedHardwareItem[];
@@ -112,6 +116,8 @@ export default function ReconciliationStep({
   isReimport,
   purpose,
   reconcileLoading,
+  reconcileError,
+  onRetryReconcile,
   reconciliationRows,
   selectedHardwareItems,
   allHardwareItems,
@@ -156,6 +162,11 @@ export default function ReconciliationStep({
   // Aggregate reconciliation rows per (category, product) across the project
   const aggregatedProductRows = useMemo<ProductReconRow[]>(() => {
     const map = new Map<string, ProductReconRow>();
+    // Deduped alongside the rows rather than with `underlyingOpeningKeys.includes`, which is a scan
+    // of every key already collected for that product on every row. A schedule-wide selection puts
+    // thousands of openings behind one product, and the scan turns quadratic there - enough to hang
+    // the tab for the whole aggregation.
+    const openingKeysByProduct = new Map<string, Set<string>>();
     for (const row of reconciliationRows) {
       const productKey = `${row.hardwareCategory}|${row.productCode}`;
       const openingKey = `${row.openingNumber}|${row.productCode}|${row.hardwareCategory}`;
@@ -175,10 +186,9 @@ export default function ReconciliationStep({
           overCommitAmount: 0,
         };
         map.set(productKey, entry);
+        openingKeysByProduct.set(productKey, new Set());
       }
-      if (!entry.underlyingOpeningKeys.includes(openingKey)) {
-        entry.underlyingOpeningKeys.push(openingKey);
-      }
+      openingKeysByProduct.get(productKey)!.add(openingKey);
       entry.statusBreakdown.set(
         row.status,
         (entry.statusBreakdown.get(row.status) ?? 0) + row.quantity,
@@ -186,6 +196,7 @@ export default function ReconciliationStep({
     }
     const rows = Array.from(map.values());
     for (const row of rows) {
+      row.underlyingOpeningKeys = Array.from(openingKeysByProduct.get(row.id) ?? []);
       row.qtyAvailable = computeAvailableQty(purpose, row.statusBreakdown);
       row.existingCommitted = COMMITTED_STATUSES.reduce(
         (sum, s) => sum + (row.statusBreakdown.get(s) ?? 0),
@@ -402,7 +413,21 @@ export default function ReconciliationStep({
         </Box>
       )}
 
-      {isReimport && !reconcileLoading && aggregatedProductRows.length > 0 && (
+      {isReimport && !reconcileLoading && reconcileError && (
+        <Alert
+          severity="error"
+          sx={{ mb: 2 }}
+          action={
+            <Button color="inherit" size="small" onClick={onRetryReconcile}>
+              Retry
+            </Button>
+          }
+        >
+          Reconciliation could not be loaded, so there is nothing to carry forward. {reconcileError}
+        </Alert>
+      )}
+
+      {isReimport && !reconcileLoading && !reconcileError && aggregatedProductRows.length > 0 && (
         <>
           {/* PO: checkbox controls */}
           {showCheckboxes && (
@@ -476,7 +501,7 @@ export default function ReconciliationStep({
         </>
       )}
 
-      {isReimport && !reconcileLoading && reconciliationRows.length === 0 && (
+      {isReimport && !reconcileLoading && !reconcileError && reconciliationRows.length === 0 && (
         <Alert severity="info">No existing records found for selected items.</Alert>
       )}
 
