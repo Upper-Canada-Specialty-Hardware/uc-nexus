@@ -6,7 +6,12 @@ import strawberry
 
 from app.auth import current_user, resolve_display_name
 from app.database import SessionLocal
-from app.repositories import shipping_coverage, shipping_repository, shipping_requests
+from app.repositories import (
+    shipment_method_repository,
+    shipping_coverage,
+    shipping_repository,
+    shipping_requests,
+)
 
 from .converters import (
     opening_item_to_type,
@@ -26,6 +31,7 @@ from .inputs import (
 from .types import (
     PackingSlip,
     ReturnableLine,
+    ShipmentMethod,
     ShipmentReturn,
     ShippingCoverageLeaf,
     ShippingCoverageLine,
@@ -33,6 +39,17 @@ from .types import (
     ShipReadyItems,
     ShipReadyLooseItem,
 )
+
+
+def _shipment_method_to_type(m) -> ShipmentMethod:
+    return ShipmentMethod(
+        id=strawberry.ID(str(m.id)),
+        name=m.name,
+        is_active=m.is_active,
+        sort_order=m.sort_order,
+        created_at=m.created_at,
+        updated_at=m.updated_at,
+    )
 
 
 def _delivery_details(input) -> dict:
@@ -126,6 +143,16 @@ class ShippingQueries:
             ]
 
     @strawberry.field
+    def shipment_methods(self, info: strawberry.Info, active_only: bool = False) -> list[ShipmentMethod]:
+        """How a load can travel (#451). `activeOnly` is what the Delivery Request form passes; the
+        management screen leaves it off so a retired method can still be seen and reactivated."""
+        with SessionLocal() as session:
+            return [
+                _shipment_method_to_type(m)
+                for m in shipment_method_repository.get_shipment_methods(session, active_only=active_only)
+            ]
+
+    @strawberry.field
     def returnable_lines(self, info: strawberry.Info, packing_slip_id: strawberry.ID) -> list[ReturnableLine]:
         with SessionLocal() as session:
             lines = shipping_repository.get_returnable_lines(session, uuid.UUID(str(packing_slip_id)))
@@ -212,6 +239,49 @@ class ShippingMutations:
             session.commit()
             refreshed = shipping_repository.get_shipping_out_request(session, req.id)
             return shipping_out_request_to_type(refreshed)
+
+    @strawberry.mutation
+    def create_shipment_method(self, info: strawberry.Info, name: str, sort_order: int = 0) -> ShipmentMethod:
+        """Add a way a load can travel (#451). Names are unique case-insensitively, so the list
+        cannot grow two spellings of the same carrier."""
+        with SessionLocal() as session:
+            method = shipment_method_repository.create_shipment_method(session, name=name, sort_order=sort_order)
+            session.commit()
+            session.refresh(method)
+            return _shipment_method_to_type(method)
+
+    @strawberry.mutation
+    def update_shipment_method(
+        self,
+        info: strawberry.Info,
+        id: strawberry.ID,
+        name: str | None = None,
+        is_active: bool | None = None,
+        sort_order: int | None = None,
+    ) -> ShipmentMethod:
+        """Rename, retire or reorder a method (#451). Only what is sent is changed.
+
+        A rename does not touch the shipments that already went out under the old name - each one
+        holds its own copy - so this only changes what future shipments are offered."""
+        with SessionLocal() as session:
+            method = shipment_method_repository.update_shipment_method(
+                session, uuid.UUID(str(id)), name=name, is_active=is_active, sort_order=sort_order
+            )
+            session.commit()
+            session.refresh(method)
+            return _shipment_method_to_type(method)
+
+    @strawberry.mutation
+    def delete_shipment_method(self, info: strawberry.Info, id: strawberry.ID) -> bool:
+        """Drop a method from the list (#451).
+
+        No shipment references it - each snapshotted the name it shipped under - so this changes
+        what can be picked next and never what was picked before. Retiring is the better move for a
+        carrier that may come back; this is for a row that was a mistake."""
+        with SessionLocal() as session:
+            shipment_method_repository.delete_shipment_method(session, uuid.UUID(str(id)))
+            session.commit()
+            return True
 
     @strawberry.mutation
     def accept_shipping_out_request(self, info: strawberry.Info, id: strawberry.ID) -> ShippingOutRequest:

@@ -16,6 +16,7 @@ import { SHIPPING_REFETCH_QUERIES, SHIPPING_STALE_ROOT_FIELDS } from '../../grap
 import { extractGpError } from '../../graphql/gpError';
 import DeliveryRequestDocument from './DeliveryRequestDocument';
 import DeliveryRequestFields from './DeliveryRequestFields';
+import { useShipmentMethods } from './useShipmentMethods';
 import {
   buildMaterialLines,
   deliveryDetailsInput,
@@ -101,6 +102,7 @@ export default function DeliveryRequestForm({
   const { showToast } = useToast();
   const navigate = useNavigate();
   const client = useApolloClient();
+  const shipmentMethods = useShipmentMethods(!open);
 
   const [view, setView] = useState<'form' | 'success'>('form');
   const [packingSlipNumber, setPackingSlipNumber] = useState('');
@@ -355,6 +357,7 @@ export default function DeliveryRequestForm({
                 onChange={patchDetails}
                 shipperName={displayName}
                 disabled={confirming}
+                shipmentMethods={shipmentMethods}
                 leadingShipmentField={
                   <TextField
                     label="Packing Slip Number"

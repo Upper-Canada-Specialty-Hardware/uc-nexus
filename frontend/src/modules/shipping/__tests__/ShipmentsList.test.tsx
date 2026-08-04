@@ -35,6 +35,7 @@ const HEADER = {
   shipperEmail: 'darrenw@ucsh.com',
   shipperPhone: '604 235 2609',
   pickupLocation: 'Coast Meridian\n1120 1725 Coast Meridian Road',
+  shipmentMethod: 'Our truck',
   carrierTagBol: 'BOL-8891',
   weightLbs: 420,
   deliveryAddress: '6775 Bell McKinnon Rd., Duncan, BC',

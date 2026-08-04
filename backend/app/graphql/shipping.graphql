@@ -73,6 +73,9 @@ type PackingSlip {
   # Snapshot of the warehouse address, not a reference - the warehouse record can be edited or
   # retired long after the truck left, and the form has to keep printing where it was sent.
   pickupLocation: String
+  # How the load travelled (#451): a snapshot of the ShipmentMethod name, not a reference, so a
+  # renamed or retired method cannot rewrite what an already-shipped slip says.
+  shipmentMethod: String
   carrierTagBol: String
   weightLbs: Float
   deliveryAddress: String
@@ -107,6 +110,7 @@ type PackingSlip {
 #   shipperEmail: String
 #   shipperPhone: String
 #   pickupLocation: String
+#   shipmentMethod: String
 #   carrierTagBol: String
 #   weightLbs: Float
 #   deliveryAddress: String
@@ -186,6 +190,21 @@ type ShippingCoverageLeaf {
   lines: [ShippingCoverageLine!]!
 }
 
+# --- Shipment methods (#451) ---
+# The shipping department's own list of how a load can travel. Documentation, not an entity anything
+# downstream reasons about - nothing joins to it and the slip keeps a string copy of the name.
+
+type ShipmentMethod {
+  id: ID!
+  name: String!
+  # Retiring is isActive=false, never a delete: the form offers only active methods while shipments
+  # that went out under it keep printing their own snapshot.
+  isActive: Boolean!
+  sortOrder: Int!
+  createdAt: DateTime!
+  updatedAt: DateTime!
+}
+
 type ReturnableLine {
   packingSlipItemId: ID!
   openingNumber: String
@@ -202,6 +221,9 @@ type Query {
   returnableLines(packingSlipId: ID!): [ReturnableLine!]!
   # Shipping-out builder coverage (#451): one row per door leaf of the given openings.
   shippingCoverage(projectId: ID!, openingNumbers: [String!]!): [ShippingCoverageLeaf!]!
+  # activeOnly is what the Delivery Request form passes; the management screen leaves it off so a
+  # retired method stays visible to reactivate.
+  shipmentMethods(activeOnly: Boolean! = false): [ShipmentMethod!]!
   # Accept UI (#293): shipping-out requests, PENDING by default.
   # reopenableOnly (#325): keep only requests whose minted PR is still PENDING (the Approved/reopen view).
   shippingOutRequests(projectId: ID, status: ShippingOutRequestStatus, reopenableOnly: Boolean! = false): [ShippingOutRequest!]!
@@ -246,6 +268,11 @@ type Mutation {
   # against availability with the request's own claim released first, so reducing a line is never
   # refused for stock it already holds.
   editShippingOutRequest(input: EditShippingOutRequestInput!): ShippingOutRequest!
+  # Shipment method list management (#451). A rename never touches shipments already sent under the
+  # old name; delete is safe for the same reason - no shipment references the row.
+  createShipmentMethod(name: String!, sortOrder: Int! = 0): ShipmentMethod!
+  updateShipmentMethod(id: ID!, name: String, isActive: Boolean, sortOrder: Int): ShipmentMethod!
+  deleteShipmentMethod(id: ID!): Boolean!
   confirmShipment(input: ConfirmShipmentInput!): PackingSlip!
   createShipmentReturn(input: CreateShipmentReturnInput!): ShipmentReturn!
   # Delivery Request lifecycle (#447). Any signed-in user. All three answer with the same PackingSlip

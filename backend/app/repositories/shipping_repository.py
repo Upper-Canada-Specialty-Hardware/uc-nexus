@@ -149,6 +149,7 @@ DELIVERY_REQUEST_FIELDS = (
     "shipper_email",
     "shipper_phone",
     "pickup_location",
+    "shipment_method",
     "carrier_tag_bol",
     "weight_lbs",
     "delivery_address",

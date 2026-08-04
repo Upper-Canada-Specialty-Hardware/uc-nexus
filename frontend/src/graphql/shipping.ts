@@ -16,6 +16,36 @@ export const GET_SHIP_READY_ITEMS = gql`
   }
 `;
 
+// The shipping department's list of how a load can travel (#451). `activeOnly` is what the Delivery
+// Request form passes; the management screen leaves it off so a retired method stays visible.
+const SHIPMENT_METHOD_FIELDS = 'id name isActive sortOrder createdAt updatedAt';
+
+export const GET_SHIPMENT_METHODS = gql`
+  query GetShipmentMethods($activeOnly: Boolean) {
+    shipmentMethods(activeOnly: $activeOnly) { ${SHIPMENT_METHOD_FIELDS} }
+  }
+`;
+
+export const CREATE_SHIPMENT_METHOD = gql`
+  mutation CreateShipmentMethod($name: String!, $sortOrder: Int) {
+    createShipmentMethod(name: $name, sortOrder: $sortOrder) { ${SHIPMENT_METHOD_FIELDS} }
+  }
+`;
+
+export const UPDATE_SHIPMENT_METHOD = gql`
+  mutation UpdateShipmentMethod($id: ID!, $name: String, $isActive: Boolean, $sortOrder: Int) {
+    updateShipmentMethod(id: $id, name: $name, isActive: $isActive, sortOrder: $sortOrder) {
+      ${SHIPMENT_METHOD_FIELDS}
+    }
+  }
+`;
+
+export const DELETE_SHIPMENT_METHOD = gql`
+  mutation DeleteShipmentMethod($id: ID!) {
+    deleteShipmentMethod(id: $id)
+  }
+`;
+
 // Composing a request from the Shipping module rather than from Start a Task (#451). Both answer
 // with the whole request, so the pending list updates through the Apollo cache.
 const SHIPPING_OUT_REQUEST_FIELDS = `
