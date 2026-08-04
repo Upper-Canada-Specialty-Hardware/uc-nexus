@@ -563,7 +563,7 @@ enum ReceiveDecisionStatus {
 
 enum ReceiveDecisionChoice {
   KEEP_IN_INVENTORY
-  # Records the choice only. Building the shipping-out request stays in Start a Task, which the
+  # Records the choice only. Building the shipping-out request stays in Start a Request, which the
   # frontend deep-links into - only the schedule knows which opening a fungible quantity is owed to.
   SHIP_OUT
 }

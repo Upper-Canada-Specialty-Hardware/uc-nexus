@@ -1,6 +1,6 @@
 """Add INVENTORY_SHORTFALL to the notification_type enum (#224)
 
-The two inventory-sufficiency gates (import "Start a Task" and warehouse approve_pull_request)
+The two inventory-sufficiency gates (import "Start a Request" and warehouse approve_pull_request)
 notify the PO with a "couldn't be fulfilled - backfill needed" signal carrying the shortfall
 detail. That signal is a new notification type.
 

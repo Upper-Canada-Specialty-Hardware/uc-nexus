@@ -113,7 +113,7 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
   });
 
   // Rejecting RELEASES the request's inventory reservation (#342), so the project's availability
-  // changes for everyone. The reader is the Start a Task wizard in another module, never mounted
+  // changes for everyone. The reader is the Start a Request wizard in another module, never mounted
   // here, which is exactly what an eviction reaches and refetchQueries does not.
   const [rejectRequest] = useMutation(rejectMutation, {
     update(cache) {

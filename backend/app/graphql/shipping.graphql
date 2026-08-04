@@ -2,7 +2,7 @@
 # Source of truth: Strawberry resolvers in app/schemas/shipping.py
 
 # --- Shipping-out request (accept gate, #293) ---
-# Start-a-Task mints a PENDING ShippingOutRequest; a signed-in user accepts it, which mints the
+# Start-a-Request mints a PENDING ShippingOutRequest; a signed-in user accepts it, which mints the
 # warehouse PullRequest (SHIPPING_OUT, PENDING) from the request's items and stamps pullRequestId.
 
 enum ShippingOutRequestStatus {
@@ -344,7 +344,7 @@ type Query {
 
 # --- Raising and correcting a request from the Shipping module (#451) ---------------------------
 # The schedule is not the only reason hardware goes to site. These two compose the same entity
-# Start a Task mints, under the same guards and the same reservations - only the composer differs.
+# Start a Request mints, under the same guards and the same reservations - only the composer differs.
 
 input ShippingOutPRDraftItemInput {
   itemType: PullRequestItemType!
@@ -374,7 +374,7 @@ input EditShippingOutRequestInput {
 
 type Mutation {
   # Raise a request off project inventory (#451), no wizard. PENDING, reserving what its loose
-  # lines claim, exactly as the Start-a-Task path does.
+  # lines claim, exactly as the Start-a-Request path does.
   createShippingOutRequest(input: CreateShippingOutRequestInput!): ShippingOutRequest!
   # Correct a PENDING request before anyone accepts it (#451). Refused once accepted: the lines are
   # on a warehouse pull by then and the floor may be picking against a printed sheet. Re-gated

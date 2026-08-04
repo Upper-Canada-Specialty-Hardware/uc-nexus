@@ -368,7 +368,7 @@ export default function ImportWizard({
     };
   }>(FINALIZE_IMPORT_SESSION, {
     // The request this creates RESERVES inventory (#342), so the availability the wizard gates on
-    // is stale the moment it succeeds. Evicted rather than refetched: a second Start a Task in the
+    // is stale the moment it succeeds. Evicted rather than refetched: a second Start a Request in the
     // same session would otherwise open on the cache-first half of its cache-and-network read and
     // let a selection through against pre-reservation numbers.
     update(cache) {
