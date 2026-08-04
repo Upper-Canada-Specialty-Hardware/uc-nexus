@@ -44,6 +44,7 @@ import {
 } from './receiveLines';
 import type { ReceiveDraft } from './receiveDraftTypes';
 import { monoSx } from '../../theme';
+import { parseServerDate } from '../../utils/serverDate';
 
 interface WarehouseOption {
   id: string;
@@ -341,7 +342,7 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
         disableEscapeKeyDown={isDirty && !succeeded}
       >
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          Counted by <strong>{draft.createdBy}</strong> on {new Date(draft.createdAt).toLocaleString()}
+          Counted by <strong>{draft.createdBy}</strong> on {parseServerDate(draft.createdAt).toLocaleString()}
           {draft.totalQuantity > 0 && ` · ${draft.totalQuantity} units submitted`}
         </Typography>
 

@@ -430,4 +430,41 @@ describe('ReceiveDraftReviewModal', () => {
     expect(screen.getByText('Max: 3')).toBeInTheDocument();
     expect(approveButton()).toBeDisabled();
   });
+
+  it('names what put-away still needs instead of claiming all placed over blank rack fields', async () => {
+    // Quantities that sum correctly used to be the whole of "all placed" - blank the Aisle and the
+    // caption kept claiming done while approval stayed disabled with nothing saying why (#474).
+    await openModal();
+
+    fireEvent.change(screen.getByLabelText('Aisle'), { target: { value: '' } });
+
+    expect(screen.getByText('needs aisle · row · bay')).toBeInTheDocument();
+    expect(screen.queryByText('all placed')).toBeNull();
+    expect(approveButton()).toBeDisabled();
+  });
+
+  describe('the counted-at timestamp (#474)', () => {
+    // The backend serializes naive UTC with no zone suffix, and new Date() reads that as LOCAL -
+    // this modal showed a 3:48 PM count as 7:48 PM while the approvals queue, which parses through
+    // parseServerDate, showed it right. Forced behind UTC per the serverDate.test.ts pattern,
+    // because on a UTC runner the buggy parse and the fixed one agree and the test proves nothing.
+    const ORIGINAL_TZ = process.env.TZ;
+    beforeAll(() => {
+      process.env.TZ = 'America/Toronto';
+    });
+    afterAll(() => {
+      process.env.TZ = ORIGINAL_TZ;
+    });
+
+    it('renders the zoneless server instant as UTC converted to local', async () => {
+      // Not ceremony: if the forced zone stops taking effect, this fails rather than the test
+      // silently passing against the bug. August, so the offset is EDT's 240.
+      expect(new Date(2026, 7, 1).getTimezoneOffset()).toBe(240);
+
+      await openModal([], draft({ createdAt: '2026-08-02T19:48:32' }));
+
+      const expected = new Date('2026-08-02T19:48:32Z').toLocaleString();
+      expect(screen.getByText(/Counted by/)).toHaveTextContent(`on ${expected}`);
+    });
+  });
 });
