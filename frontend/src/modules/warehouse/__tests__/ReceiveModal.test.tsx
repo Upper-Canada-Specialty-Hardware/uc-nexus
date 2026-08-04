@@ -274,7 +274,11 @@ describe('ReceiveModal', () => {
 
     setReceiveQty('3');
     expect(screen.getByText(/placing 3/)).toBeInTheDocument();
-    // row fields still blank, so put-away is incomplete
+    // Row fields still blank, so put-away is incomplete - and the caption says so. The quantity
+    // defaults to the full count, so this used to read "all placed" while submit stayed disabled
+    // with nothing naming what was missing (#474).
+    expect(screen.getByText('needs aisle · row · bay')).toBeInTheDocument();
+    expect(screen.queryByText('all placed')).toBeNull();
     expect(submitButton()).toBeDisabled();
 
     fillLocation(0, 'A1', 'B2', 'C3');

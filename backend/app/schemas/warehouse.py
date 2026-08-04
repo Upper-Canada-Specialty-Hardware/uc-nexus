@@ -682,6 +682,7 @@ class WarehouseQueries:
                 received_last_7_days=d["received_last_7_days"],
                 back_ordered_count=d["back_ordered_count"],
                 deficient_count=d["deficient_count"],
+                pending_receive_draft_count=d["pending_receive_draft_count"],
             )
 
     @strawberry.field

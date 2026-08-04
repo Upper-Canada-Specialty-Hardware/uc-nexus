@@ -8,6 +8,7 @@ import {
   MAX_LOC_LEN,
   draftsForLine,
   emptyDraft,
+  locationIncomplete,
   type LocationDraft,
   type PODetailLineItem,
   type PODetails,
@@ -221,6 +222,10 @@ export default function ReceiveLinesEditor({
     const drafts = draftsFor(li.id, receiveNow);
     const placed = drafts.reduce((s, d) => s + (Number(d.quantity) || 0), 0);
     const remaining = receiveNow - placed;
+    // "all placed" only when the line would actually pass validatePutAway's location check -
+    // quantities that add up with Aisle/Row/Bay still blank used to claim done while submit stayed
+    // disabled with nothing saying why (#474).
+    const needsLocation = remaining === 0 && drafts.some(locationIncomplete);
     return (
       <Paper key={li.id} variant="outlined" sx={{ p: 1.5 }}>
         <Box
@@ -240,9 +245,9 @@ export default function ReceiveLinesEditor({
           </Typography>
           <Typography
             variant="caption"
-            sx={{ ...microLabelSx, color: remaining === 0 ? 'success.main' : 'error.main' }}
+            sx={{ ...microLabelSx, color: remaining === 0 && !needsLocation ? 'success.main' : 'error.main' }}
           >
-            {remaining === 0 ? 'all placed' : `${remaining} unplaced`}
+            {remaining !== 0 ? `${remaining} unplaced` : needsLocation ? 'needs aisle · row · bay' : 'all placed'}
           </Typography>
         </Box>
         <Stack spacing={1}>
