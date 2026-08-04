@@ -17,6 +17,7 @@ import {
 } from '@mui/material';
 import { Search, Trash2 } from 'lucide-react';
 import { useMutation, useQuery } from '@apollo/client/react';
+import { CombinedGraphQLErrors } from '@apollo/client/errors';
 import { CREATE_SHIPPING_OUT_REQUEST, EDIT_SHIPPING_OUT_REQUEST } from '../../graphql/shipping';
 import { GET_OPENING_ITEMS, GET_PROJECT_INVENTORY_AVAILABILITY } from '../../graphql/warehouse';
 import { RESERVATION_STALE_ROOT_FIELDS } from '../../graphql/refetch';
@@ -35,10 +36,28 @@ export interface BuilderLine {
   requestedQuantity: number;
 }
 
+/**
+ * One line's own identity, which is what the "on this request" list renders and removes on. A LOOSE
+ * line keeps its opening here: a request raised from Start a Task carries one line per opening for
+ * the same product, and collapsing them would make the trash button remove whichever one came first.
+ */
 function lineKey(line: BuilderLine): string {
   return line.itemType === 'OPENING_ITEM'
     ? `OI|${line.openingItemId}`
     : `LOOSE|${line.openingNumber ?? ''}|${line.hardwareCategory}|${line.productCode}`;
+}
+
+/**
+ * Whether a line is the inventory picker's row. The picker deals in products, not openings -
+ * inventory is fungible and a shelf row knows nothing about which door a unit is owed to - so it has
+ * to match every line for a product however many openings the request happens to have spread it
+ * across. Matching on the full key instead would leave a seeded line invisible to the picker, and
+ * clicking Add would append a second line for the same product.
+ */
+function isLooseFor(line: BuilderLine, hardwareCategory: string, productCode: string): boolean {
+  return (
+    line.itemType === 'LOOSE' && line.hardwareCategory === hardwareCategory && line.productCode === productCode
+  );
 }
 
 interface AvailabilityRow {
@@ -121,6 +140,9 @@ export default function RequestBuilderDialog({
   );
   const [search, setSearch] = useState('');
   const [error, setError] = useState<string | null>(null);
+  // The backend's own words about which leaves are short and why, held while the user decides
+  // whether to send them anyway (#341). Null when there is nothing to decide.
+  const [shortLeavesPrompt, setShortLeavesPrompt] = useState<string | null>(null);
 
   const { data: availabilityData, loading: availabilityLoading } = useQuery<{
     projectInventoryAvailability: AvailabilityRow[];
@@ -152,18 +174,94 @@ export default function RequestBuilderDialog({
    * How much of a product this request may still take. Project availability is already net of every
    * OTHER request's claim (#342); an edit also has to add back what this request itself is holding,
    * or trimming a line would read as asking for more.
+   *
+   * Every held line counts, not the first one found. A request from Start a Task holds one line per
+   * opening, availability is already net of all of them, and adding back only one would cap the box
+   * below what the request is sitting on right now.
    */
   const headroomFor = useCallback(
     (row: AvailabilityRow) => {
       if (!editing) return row.availableQuantity;
-      const held =
-        request?.items.find(
-          (item) => item.hardwareCategory === row.hardwareCategory && item.productCode === row.productCode,
-        )?.requestedQuantity ?? 0;
+      const held = (request?.items ?? [])
+        .filter(
+          (item) =>
+            item.itemType !== 'OPENING_ITEM' &&
+            item.hardwareCategory === row.hardwareCategory &&
+            item.productCode === row.productCode,
+        )
+        .reduce((sum, item) => sum + item.requestedQuantity, 0);
       return row.availableQuantity + held;
     },
     [editing, request],
   );
+
+  /** What this request holds of each product, summed over however many openings carry it. */
+  const looseTotals = useMemo(() => {
+    const totals = new Map<string, number>();
+    for (const line of lines) {
+      if (line.itemType !== 'LOOSE' || !line.hardwareCategory || !line.productCode) continue;
+      const key = `${line.hardwareCategory}|${line.productCode}`;
+      totals.set(key, (totals.get(key) ?? 0) + line.requestedQuantity);
+    }
+    return totals;
+  }, [lines]);
+
+  /**
+   * Set the request's total for one product to `total`, spreading the change over the lines that
+   * already carry it.
+   *
+   * Growth lands on the last matching line so a schedule-attributed line keeps its opening, and
+   * shrinking eats the newest lines first for the same reason - the lines seeded from Start a Task
+   * are the last to lose units, because they are the ones that know which door the units are owed
+   * to. A product not on the request yet becomes a new line with no opening, which is what shelf
+   * stock genuinely is (docs/HARDWARE_IDENTITY_LIFECYCLE.md).
+   */
+  const setLooseTotal = useCallback((row: AvailabilityRow, total: number) => {
+    setLines((prev) => {
+      const held = prev
+        .filter((line) => isLooseFor(line, row.hardwareCategory, row.productCode))
+        .reduce((sum, line) => sum + line.requestedQuantity, 0);
+      const target = Math.max(0, total);
+      if (target === held) return prev;
+
+      if (target > held) {
+        const grow = target - held;
+        const lastIndex = prev.reduce(
+          (found, line, index) => (isLooseFor(line, row.hardwareCategory, row.productCode) ? index : found),
+          -1,
+        );
+        if (lastIndex < 0) {
+          return [
+            ...prev,
+            {
+              itemType: 'LOOSE',
+              hardwareCategory: row.hardwareCategory,
+              productCode: row.productCode,
+              requestedQuantity: grow,
+            },
+          ];
+        }
+        return prev.map((line, index) =>
+          index === lastIndex ? { ...line, requestedQuantity: line.requestedQuantity + grow } : line,
+        );
+      }
+
+      let toRemove = held - target;
+      const next: BuilderLine[] = [];
+      for (let index = prev.length - 1; index >= 0; index -= 1) {
+        const line = prev[index];
+        if (toRemove > 0 && isLooseFor(line, row.hardwareCategory, row.productCode)) {
+          const take = Math.min(toRemove, line.requestedQuantity);
+          toRemove -= take;
+          const left = line.requestedQuantity - take;
+          if (left > 0) next.unshift({ ...line, requestedQuantity: left });
+          continue;
+        }
+        next.unshift(line);
+      }
+      return next;
+    });
+  }, []);
 
   const inventoryRows = useMemo(() => {
     const term = search.trim().toLowerCase();
@@ -203,20 +301,39 @@ export default function RequestBuilderDialog({
     },
   };
 
+  /**
+   * A refusal the user can answer by confirming, rather than one they have to go and fix.
+   *
+   * The backend names the input it wants set (#341), which is the only thing that separates this
+   * from the two refusals beside it - a leaf already on another request and a leaf still on the
+   * bench also blame `opening_item_id`, and neither of those becomes true because someone clicked a
+   * button. Sending the acknowledgment unconditionally would mean this warning could never reach the
+   * user at all: a leaf awaiting a replacement, or carrying units that were never pulled, would go
+   * onto the request silently.
+   */
+  const handleFailure = (e: Error) => {
+    if (CombinedGraphQLErrors.is(e) && e.errors?.[0]?.extensions?.field === 'acknowledge_incomplete_leaves') {
+      setShortLeavesPrompt(e.message);
+      return;
+    }
+    setError(e.message);
+  };
+
   const [createRequest, { loading: creating }] = useMutation(CREATE_SHIPPING_OUT_REQUEST, {
     ...cacheUpdate,
     onCompleted: () => settle('Shipping request created'),
-    onError: (e) => setError(e.message),
+    onError: (e) => handleFailure(e),
   });
 
   const [editRequest, { loading: saving }] = useMutation(EDIT_SHIPPING_OUT_REQUEST, {
     ...cacheUpdate,
     onCompleted: () => settle('Shipping request updated'),
-    onError: (e) => setError(e.message),
+    onError: (e) => handleFailure(e),
   });
 
-  const submit = () => {
+  const send = (acknowledgeIncompleteLeaves: boolean) => {
     setError(null);
+    setShortLeavesPrompt(null);
     const items = lines.map((line) => ({
       itemType: line.itemType,
       openingNumber: line.openingNumber ?? null,
@@ -227,11 +344,11 @@ export default function RequestBuilderDialog({
       requestedQuantity: line.requestedQuantity,
     }));
     if (editing) {
-      editRequest({ variables: { input: { id: request.id, items, acknowledgeIncompleteLeaves: true } } });
+      editRequest({ variables: { input: { id: request.id, items, acknowledgeIncompleteLeaves } } });
     } else {
       createRequest({
         variables: {
-          input: { projectId, requestNumber: requestNumber.trim(), items, acknowledgeIncompleteLeaves: true },
+          input: { projectId, requestNumber: requestNumber.trim(), items, acknowledgeIncompleteLeaves },
         },
       });
     }
@@ -241,6 +358,7 @@ export default function RequestBuilderDialog({
   const canSubmit = lines.length > 0 && (editing || requestNumber.trim() !== '') && !busy;
 
   return (
+    <>
     <Dialog open={open} onClose={busy ? undefined : onClose} maxWidth="md" fullWidth>
       <DialogTitle>{editing ? `Edit ${request.requestNumber}` : 'New shipping request'}</DialogTitle>
       <DialogContent>
@@ -330,13 +448,7 @@ export default function RequestBuilderDialog({
             )}
             <Stack spacing={0.5}>
               {inventoryRows.map((row) => {
-                const line: BuilderLine = {
-                  itemType: 'LOOSE',
-                  hardwareCategory: row.hardwareCategory,
-                  productCode: row.productCode,
-                  requestedQuantity: 1,
-                };
-                const current = selected.get(lineKey(line))?.requestedQuantity ?? 0;
+                const current = looseTotals.get(`${row.hardwareCategory}|${row.productCode}`) ?? 0;
                 const headroom = headroomFor(row);
                 return (
                   <Box
@@ -374,13 +486,13 @@ export default function RequestBuilderDialog({
                         value={current}
                         onChange={(e) => {
                           const next = Number.parseInt(e.target.value, 10);
-                          setQuantity(line, Number.isNaN(next) ? 0 : next);
+                          setLooseTotal(row, Number.isNaN(next) ? 0 : next);
                         }}
                         inputProps={{ min: 0, max: headroom }}
                         sx={{ width: 92, flexShrink: 0 }}
                       />
                     ) : (
-                      <Button size="small" variant="outlined" onClick={() => setQuantity(line, 1)}>
+                      <Button size="small" variant="outlined" onClick={() => setLooseTotal(row, 1)}>
                         Add
                       </Button>
                     )}
@@ -446,10 +558,29 @@ export default function RequestBuilderDialog({
         <Button onClick={onClose} disabled={busy}>
           Cancel
         </Button>
-        <Button variant="contained" onClick={submit} disabled={!canSubmit}>
+        <Button variant="contained" onClick={() => send(false)} disabled={!canSubmit}>
           {editing ? 'Save changes' : 'Create request'}
         </Button>
       </DialogActions>
     </Dialog>
+
+    {/* Short-shipping is a real workflow, so this warns and confirms rather than blocking - but it
+        has to be a decision someone made, which is why the request is sent once without the
+        acknowledgment first and only re-sent with it once this is answered (#341). */}
+    <Dialog open={shortLeavesPrompt !== null} onClose={busy ? undefined : () => setShortLeavesPrompt(null)}>
+      <DialogTitle>Ship these leaves short?</DialogTitle>
+      <DialogContent>
+        <Typography variant="body2">{shortLeavesPrompt}</Typography>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={() => setShortLeavesPrompt(null)} disabled={busy}>
+          Wait for the hardware
+        </Button>
+        <Button variant="contained" color="warning" onClick={() => send(true)} disabled={busy}>
+          Send them short
+        </Button>
+      </DialogActions>
+    </Dialog>
+    </>
   );
 }

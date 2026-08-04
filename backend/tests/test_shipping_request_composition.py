@@ -316,3 +316,65 @@ def test_an_edited_request_carries_its_new_lines_onto_the_pull(db_session):
         select(PullRequestItem).where(PullRequestItem.pull_request_id == accepted.pull_request_id)
     ).all()
     assert [(line.opening_number, line.requested_quantity) for line in lines] == [(None, 5)]
+
+
+# --- one physical leaf, named once --------------------------------------------------------------
+# The already-on-a-live-request guard only sees claims that were committed before this call, so a
+# leaf named twice inside a single call slips past it entirely.
+
+
+def _leaf_line(oi):
+    return {
+        "item_type": "OPENING_ITEM",
+        "opening_number": oi.opening_number,
+        "opening_item_id": str(oi.id),
+        "requested_quantity": 1,
+    }
+
+
+def test_one_request_cannot_name_the_same_leaf_twice(db_session):
+    project = _project(db_session)
+    leaf = _leaf(db_session, project)
+
+    with pytest.raises(ValidationError, match="named more than once"):
+        _create(db_session, project, [_leaf_line(leaf), _leaf_line(leaf)])
+
+
+def test_two_drafts_in_one_call_cannot_split_a_leaf_between_them(db_session):
+    # Both would be minted live, and each would hold the same physical leaf - exactly the state the
+    # already-claimed guard exists to prevent, reached by a route it cannot see.
+    project = _project(db_session)
+    leaf = _leaf(db_session, project)
+
+    with pytest.raises(ValidationError, match="named more than once"):
+        shipping_requests.create_shipping_out_requests(
+            db_session,
+            project.id,
+            [
+                {"request_number": "SOR-D1", "items": [_leaf_line(leaf)]},
+                {"request_number": "SOR-D2", "items": [_leaf_line(leaf)]},
+            ],
+            created_by="Shipper",
+        )
+
+    assert db_session.scalars(select(OpeningItem).where(OpeningItem.id == leaf.id)).first() is not None
+
+
+def test_an_edit_cannot_name_the_same_leaf_twice_either(db_session):
+    project = _project(db_session)
+    _stock(db_session, project, qty=10)
+    leaf = _leaf(db_session, project)
+    req = _create(db_session, project, [_loose(qty=2)])
+
+    with pytest.raises(ValidationError, match="named more than once"):
+        shipping_requests.replace_shipping_out_request_items(db_session, req.id, [_leaf_line(leaf), _leaf_line(leaf)])
+
+
+def test_two_different_leaves_on_one_request_are_fine(db_session):
+    project = _project(db_session)
+    first = _leaf(db_session, project, opening="101", leaf=1)
+    second = _leaf(db_session, project, opening="101", leaf=2)
+
+    req = _create(db_session, project, [_leaf_line(first), _leaf_line(second)])
+
+    assert sorted(i.leaf for i in req.items) == [1, 2]

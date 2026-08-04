@@ -578,6 +578,16 @@ export default function ShippingPRsStep({
                               {numbersKnown && available === 0 && row.onOrderQuantity === 0 && (
                                 <Chip size="small" color="warning" variant="outlined" label="none ordered" />
                               )}
+                              {/* Why the offer is smaller than the schedule. Without it, a user who
+                                  counts the schedule and counts this row is left with a gap and no
+                                  explanation for it. */}
+                              {row.spokenForQuantity > 0 && (
+                                <Chip
+                                  size="small"
+                                  variant="outlined"
+                                  label={`${row.spokenForQuantity} already sent or on a request`}
+                                />
+                              )}
                             </Box>
                             {breakdown && (
                               <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>

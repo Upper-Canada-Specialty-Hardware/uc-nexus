@@ -1266,8 +1266,12 @@ class ShippingCoverageLine:
     # What is physically bolted onto the assembled leaf. Always 0 for site hardware, and for a leaf
     # that has not been assembled yet.
     installed_quantity: int
-    # What still has to travel loose alongside the leaf: `owed - installed`. For shop hardware that
-    # is exactly what shop assembly skipped.
+    # What this opening has already been sent, or is in the middle of being sent, of this product -
+    # shipped slips, staged pulls, and lines on live requests. The schedule never shrinks when
+    # hardware goes out, so without this term a leaf shipped last month is offered again in full.
+    spoken_for_quantity: int
+    # What still has to travel loose alongside the leaf: `owed - installed - spoken for`. For shop
+    # hardware that is exactly what shop assembly skipped and nobody has sent since.
     suggested_quantity: int
     # Placed with a vendor and not yet received, project-wide for this product. Not an allocation to
     # this leaf - it is the answer to "is more coming, or is this all there will ever be".

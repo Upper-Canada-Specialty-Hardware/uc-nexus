@@ -64,6 +64,7 @@ export const GET_SHIPPING_COVERAGE = gql`
         classification
         owedQuantity
         installedQuantity
+        spokenForQuantity
         suggestedQuantity
         onOrderQuantity
       }

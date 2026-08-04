@@ -16,18 +16,26 @@ this list on its own:
     that was skipped (unavailable at assembly time) never did, so it still has to go loose.
   - **On order** is the purchase orders that have been placed but not fully received.
 
+  - **Spoken for** is what the opening has already been sent, or is in the middle of being sent.
+
 Site hardware is never installed at the bench at all - it goes to site loose by definition - so the
-single formula `suggested = owed - installed` covers all three classifications and degrades
-correctly for hardware that was never classified.
+single formula `suggested = owed - installed - spoken for` covers all three classifications and
+degrades correctly for hardware that was never classified.
+
+That last term is what keeps the panel honest over time. `owed` is the schedule, and the schedule
+does not shrink when hardware actually goes out - so without it, an opening whose site hardware was
+pulled and shipped last month is offered again in full, and the only thing left standing between
+that and a second set leaving the building is project-wide availability, which is not this opening's
+to spend.
 
 What this deliberately does NOT return is availability. `projectInventoryAvailability` already
 answers "what may I claim" (#342) and the creation gate is applied against *that* number; a second
 availability figure computed here at a slightly different instant is exactly the drift that would
 let the panel say 3 and the shortfall alert say 2. The caller joins the two by combo key.
 
-Query budget is fixed at six regardless of how many openings are selected (CLAUDE.md perf rules):
+Query budget is fixed at nine regardless of how many openings are selected (CLAUDE.md perf rules):
 openings, schedule items (grouped), assembled units + their hardware (selectinload), live shipping
-claims, and the on-order aggregate.
+claims, the on-order aggregate, and the three grouped reads behind "spoken for".
 """
 
 import uuid
@@ -35,12 +43,24 @@ import uuid
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.models.enums import Classification, OpeningItemState, POStatus
+from app.models.enums import (
+    Classification,
+    OpeningItemState,
+    POStatus,
+    PullRequestItemType,
+    PullRequestSource,
+    PullRequestStatus,
+    ShippingOutRequestStatus,
+)
 from app.models.hardware import HardwareItem as HardwareItemModel
 from app.models.opening_item import OpeningItem as OpeningItemModel
 from app.models.project import Opening as OpeningModel
+from app.models.pull_request import PullRequest as PullRequestModel
+from app.models.pull_request import PullRequestItem as PullRequestItemModel
 from app.models.purchase_order import POLineItem as POLineItemModel
 from app.models.purchase_order import PurchaseOrder as PurchaseOrderModel
+from app.models.shipping import PackingSlip, PackingSlipItem
+from app.models.shipping_out_request import ShippingOutRequest, ShippingOutRequestItem
 
 # A PO counts as "on the way" once it has been placed with the vendor and until it is closed out.
 # DRAFT is excluded on purpose: nobody has ordered it, so promising it to a shipper would be a lie.
@@ -83,6 +103,7 @@ def get_shipping_coverage(
     schedule = _schedule_lines(session, project_id, opening_number_by_id)
     assembled = _assembled_units(session, project_id, list(leaf_count_by_number))
     on_order = _on_order_quantities(session, project_id)
+    spoken_for = _spoken_for_quantities(session, project_id, list(leaf_count_by_number))
 
     from app.repositories.shipping_repository import find_live_shipping_claims
 
@@ -99,6 +120,11 @@ def get_shipping_coverage(
         leaves = _enumerate_leaves(leaf_count_by_number[opening_number], owed, units)
         owed = _fold_leafless_lines(owed, leaves)
         unit_by_leaf = _match_units_to_leaves(units, leaves)
+        # A loose line carries an opening but never a leaf, so what has been sent is only ever known
+        # per opening. Leaves consume it in order, and `_coverage_lines` spends this budget down as
+        # it goes - so an opening owed one lock per leaf that has already sent one reads as covered
+        # on leaf 1 and still owing on leaf 2, rather than as covered or owing on both.
+        budget = dict(spoken_for.get(opening_number, {}))
 
         for leaf in leaves:
             unit = unit_by_leaf.get(leaf)
@@ -110,7 +136,7 @@ def get_shipping_coverage(
                     "status": _leaf_status(unit),
                     "opening_item_id": unit.id if unit is not None else None,
                     "claimed_by_request_number": claims.get(unit.id) if unit is not None else None,
-                    "lines": _coverage_lines(owed.get(leaf, {}), installed, on_order),
+                    "lines": _coverage_lines(owed.get(leaf, {}), installed, on_order, budget),
                 }
             )
     return rows
@@ -221,6 +247,121 @@ def _on_order_quantities(session: Session, project_id: uuid.UUID) -> dict[tuple[
     return {(category, code): int(total or 0) for category, code, total in rows if total}
 
 
+def _spoken_for_quantities(
+    session: Session,
+    project_id: uuid.UUID,
+    opening_numbers: list[str],
+) -> dict[str, dict[tuple[str, str], int]]:
+    """Loose units each opening has already been sent, or is in the middle of being sent.
+
+    Keyed {opening: {(category, product): quantity}} - per opening rather than per leaf, because a
+    loose line carries an opening and never a leaf (docs/HARDWARE_IDENTITY_LIFECYCLE.md). Identity is
+    re-attached at the pull, and only down to the opening.
+
+    Three sources, arranged so nothing is counted twice:
+
+      - **Shipped**: `PackingSlipItem`, the units that have physically left.
+      - **Staged**: what completed SHIPPING_OUT pulls fulfilled but no slip has consumed yet - the
+        same pool `get_ship_ready_items` publishes. `max(shipped, fulfilled)` folds these two
+        together without double-counting their overlap, because a shipped unit was fulfilled first.
+      - **In flight**: lines on pulls still being picked, plus lines on PENDING requests that have
+        not minted a pull yet. A request stops counting the moment it is accepted, because the
+        accept copies its lines onto a pull the previous term already counts.
+
+    Cancelled pulls and rejected requests are absent throughout: they released their claim, so the
+    units are back on the shelf and the opening is owed them again.
+    """
+    if not opening_numbers:
+        return {}
+
+    shipped: dict[tuple[str, str, str], int] = {}
+    for opening_number, category, code, quantity in session.execute(
+        select(
+            PackingSlipItem.opening_number,
+            PackingSlipItem.hardware_category,
+            PackingSlipItem.product_code,
+            func.sum(PackingSlipItem.quantity),
+        )
+        .join(PackingSlip, PackingSlipItem.packing_slip_id == PackingSlip.id)
+        .where(
+            PackingSlip.project_id == project_id,
+            PackingSlipItem.item_type == PullRequestItemType.LOOSE,
+            PackingSlipItem.opening_number.in_(opening_numbers),
+        )
+        .group_by(
+            PackingSlipItem.opening_number,
+            PackingSlipItem.hardware_category,
+            PackingSlipItem.product_code,
+        )
+    ).all():
+        if category and code:
+            shipped[(opening_number, category, code)] = int(quantity or 0)
+
+    fulfilled: dict[tuple[str, str, str], int] = {}
+    in_flight: dict[tuple[str, str, str], int] = {}
+    for opening_number, category, code, status, quantity in session.execute(
+        select(
+            PullRequestItemModel.opening_number,
+            PullRequestItemModel.hardware_category,
+            PullRequestItemModel.product_code,
+            PullRequestModel.status,
+            func.sum(PullRequestItemModel.requested_quantity),
+        )
+        .join(PullRequestModel, PullRequestItemModel.pull_request_id == PullRequestModel.id)
+        .where(
+            PullRequestModel.project_id == project_id,
+            PullRequestModel.source == PullRequestSource.SHIPPING_OUT,
+            PullRequestModel.status != PullRequestStatus.CANCELLED,
+            PullRequestItemModel.item_type == PullRequestItemType.LOOSE,
+            PullRequestItemModel.opening_number.in_(opening_numbers),
+        )
+        .group_by(
+            PullRequestItemModel.opening_number,
+            PullRequestItemModel.hardware_category,
+            PullRequestItemModel.product_code,
+            PullRequestModel.status,
+        )
+    ).all():
+        if not category or not code:
+            continue
+        key = (opening_number, category, code)
+        bucket = fulfilled if status == PullRequestStatus.COMPLETED else in_flight
+        bucket[key] = bucket.get(key, 0) + int(quantity or 0)
+
+    for opening_number, category, code, quantity in session.execute(
+        select(
+            ShippingOutRequestItem.opening_number,
+            ShippingOutRequestItem.hardware_category,
+            ShippingOutRequestItem.product_code,
+            func.sum(ShippingOutRequestItem.requested_quantity),
+        )
+        .join(ShippingOutRequest, ShippingOutRequestItem.shipping_out_request_id == ShippingOutRequest.id)
+        .where(
+            ShippingOutRequest.project_id == project_id,
+            ShippingOutRequest.status == ShippingOutRequestStatus.PENDING,
+            ShippingOutRequestItem.item_type == PullRequestItemType.LOOSE,
+            ShippingOutRequestItem.opening_number.in_(opening_numbers),
+        )
+        .group_by(
+            ShippingOutRequestItem.opening_number,
+            ShippingOutRequestItem.hardware_category,
+            ShippingOutRequestItem.product_code,
+        )
+    ).all():
+        if not category or not code:
+            continue
+        key = (opening_number, category, code)
+        in_flight[key] = in_flight.get(key, 0) + int(quantity or 0)
+
+    out: dict[str, dict[tuple[str, str], int]] = {}
+    for key in set(shipped) | set(fulfilled) | set(in_flight):
+        opening_number, category, code = key
+        total = max(shipped.get(key, 0), fulfilled.get(key, 0)) + in_flight.get(key, 0)
+        if total > 0:
+            out.setdefault(opening_number, {})[(category, code)] = total
+    return out
+
+
 def _enumerate_leaves(
     leaf_count: int | None,
     owed: dict[int | None, dict],
@@ -316,10 +457,15 @@ def _coverage_lines(
     owed_lines: dict[tuple[str, str], dict],
     installed: dict[tuple[str, str], int],
     on_order: dict[tuple[str, str], int],
+    budget: dict[tuple[str, str], int],
 ) -> list[dict]:
     """One row per product this leaf is owed, plus anything installed on it the schedule no longer
     lists - a leaf that was assembled off an older revision still has that hardware on it, and
     hiding the line would make the leaf look emptier than it is.
+
+    `budget` is the opening's remaining spoken-for units and is spent down here, so calling this for
+    each leaf of an opening in turn shares one budget across them rather than charging every leaf the
+    opening's whole history.
     """
     keys = sorted(set(owed_lines) | set(installed))
     lines = []
@@ -327,6 +473,16 @@ def _coverage_lines(
         owed_line = owed_lines.get(key)
         owed_quantity = owed_line["owed_quantity"] if owed_line else 0
         installed_quantity = installed.get(key, 0)
+        # Site hardware is never fitted at the bench, so `installed` is 0 for it and this is its
+        # whole owed quantity. Shop hardware nets off what assembly actually fitted, leaving exactly
+        # what was skipped. Floored at 0: a leaf carrying more than the current schedule asks for is
+        # over-supplied, not owed a negative quantity.
+        outstanding = max(0, owed_quantity - installed_quantity)
+        # Then net off what this opening has already sent, taking no more of the budget than this
+        # leaf could have accounted for.
+        spoken_for = min(outstanding, budget.get(key, 0))
+        if spoken_for:
+            budget[key] -= spoken_for
         lines.append(
             {
                 "hardware_category": key[0],
@@ -334,11 +490,8 @@ def _coverage_lines(
                 "classification": _dominant_classification(owed_line),
                 "owed_quantity": owed_quantity,
                 "installed_quantity": installed_quantity,
-                # Site hardware is never fitted at the bench, so `installed` is 0 for it and this is
-                # its whole owed quantity. Shop hardware nets off what assembly actually fitted,
-                # leaving exactly what was skipped. Floored at 0: a leaf carrying more than the
-                # current schedule asks for is over-supplied, not owed a negative quantity.
-                "suggested_quantity": max(0, owed_quantity - installed_quantity),
+                "spoken_for_quantity": spoken_for,
+                "suggested_quantity": outstanding - spoken_for,
                 "on_order_quantity": on_order.get(key, 0),
             }
         )

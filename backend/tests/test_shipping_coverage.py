@@ -11,11 +11,24 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from app.models.enums import Classification, HardwareItemState, OpeningItemState, POStatus
+from app.models.enums import (
+    Classification,
+    HardwareItemState,
+    OpeningItemState,
+    POStatus,
+    PullRequestItemType,
+    PullRequestSource,
+    PullRequestStatus,
+    ShipmentStatus,
+    ShippingOutRequestStatus,
+)
 from app.models.hardware import HardwareItem
 from app.models.opening_item import OpeningItem, OpeningItemHardware
 from app.models.project import Opening, Project
+from app.models.pull_request import PullRequest, PullRequestItem
 from app.models.purchase_order import POLineItem, PurchaseOrder
+from app.models.shipping import PackingSlip, PackingSlipItem
+from app.models.shipping_out_request import ShippingOutRequest, ShippingOutRequestItem
 from app.repositories import shipping_coverage, warehouse_admin_repository
 
 
@@ -323,3 +336,205 @@ def test_unknown_and_unselected_openings_are_simply_absent(db_session):
     assert [r["opening_number"] for r in _coverage(db_session, project, ["101"])] == ["101"]
     assert _coverage(db_session, project, ["nope"]) == []
     assert _coverage(db_session, project, []) == []
+
+
+# --- What the opening has already been sent ------------------------------------------------------
+# `owed` is the schedule, and the schedule does not shrink when hardware goes out the door. Without
+# these, an opening whose site hardware shipped last month is offered in full again, and the only
+# thing between that and a second set leaving the building is project-wide availability - which
+# belongs to the whole job, not to this opening.
+
+
+def _slip(session, project, *, opening_number="101", code="HG-100", cat="HINGE", qty=1):
+    slip = PackingSlip(
+        id=uuid.uuid4(),
+        packing_slip_number=f"PS-{uuid.uuid4().hex[:8]}",
+        project_id=project.id,
+        shipped_by="tester",
+        shipped_at=datetime.utcnow(),
+        status=ShipmentStatus.SCHEDULED,
+    )
+    session.add(slip)
+    session.flush()
+    session.add(
+        PackingSlipItem(
+            id=uuid.uuid4(),
+            packing_slip_id=slip.id,
+            item_type=PullRequestItemType.LOOSE,
+            opening_number=opening_number,
+            hardware_category=cat,
+            product_code=code,
+            quantity=qty,
+        )
+    )
+    session.flush()
+    return slip
+
+
+def _pull(session, project, *, status, opening_number="101", code="HG-100", cat="HINGE", qty=1):
+    pull = PullRequest(
+        id=uuid.uuid4(),
+        request_number=f"PR-{uuid.uuid4().hex[:8]}",
+        project_id=project.id,
+        source=PullRequestSource.SHIPPING_OUT,
+        status=status,
+        requested_by="tester",
+    )
+    session.add(pull)
+    session.flush()
+    session.add(
+        PullRequestItem(
+            id=uuid.uuid4(),
+            pull_request_id=pull.id,
+            item_type=PullRequestItemType.LOOSE,
+            opening_number=opening_number,
+            hardware_category=cat,
+            product_code=code,
+            requested_quantity=qty,
+        )
+    )
+    session.flush()
+    return pull
+
+
+def _request(session, project, *, status, opening_number="101", code="HG-100", cat="HINGE", qty=1):
+    req = ShippingOutRequest(
+        id=uuid.uuid4(),
+        request_number=f"SOR-{uuid.uuid4().hex[:8]}",
+        project_id=project.id,
+        status=status,
+        created_by="tester",
+    )
+    session.add(req)
+    session.flush()
+    session.add(
+        ShippingOutRequestItem(
+            id=uuid.uuid4(),
+            shipping_out_request_id=req.id,
+            item_type=PullRequestItemType.LOOSE,
+            opening_number=opening_number,
+            hardware_category=cat,
+            product_code=code,
+            requested_quantity=qty,
+        )
+    )
+    session.flush()
+    return req
+
+
+def _site_opening(session, project, *, qty, leaf_count=1):
+    opening = _opening(session, project, leaf_count=leaf_count)
+    for leaf in range(1, leaf_count + 1):
+        _hardware(session, project, opening, leaf=leaf, qty=qty, classification=Classification.SITE_HARDWARE)
+    return opening
+
+
+def test_hardware_already_shipped_is_not_offered_again(db_session):
+    project = _project(db_session)
+    _site_opening(db_session, project, qty=2)
+    _pull(db_session, project, status=PullRequestStatus.COMPLETED, qty=2)
+    _slip(db_session, project, qty=2)
+
+    line = _line(_coverage(db_session, project)[0])
+    assert (line["owed_quantity"], line["spoken_for_quantity"], line["suggested_quantity"]) == (2, 2, 0)
+
+
+def test_a_partial_shipment_leaves_only_the_remainder_on_offer(db_session):
+    project = _project(db_session)
+    _site_opening(db_session, project, qty=5)
+    _pull(db_session, project, status=PullRequestStatus.COMPLETED, qty=2)
+    _slip(db_session, project, qty=2)
+
+    line = _line(_coverage(db_session, project)[0])
+    assert (line["spoken_for_quantity"], line["suggested_quantity"]) == (2, 3)
+
+
+def test_units_pulled_but_not_yet_loaded_are_not_offered_twice(db_session):
+    # A completed pull moved the stock to the staging floor. It is not on a slip yet, and it is also
+    # not free to promise a second time.
+    project = _project(db_session)
+    _site_opening(db_session, project, qty=4)
+    _pull(db_session, project, status=PullRequestStatus.COMPLETED, qty=3)
+
+    assert _line(_coverage(db_session, project)[0])["suggested_quantity"] == 1
+
+
+def test_a_shipped_unit_is_counted_once_not_twice(db_session):
+    # The pull fulfilled it and the slip then consumed it. Counting both would read as 4 of 4 owed
+    # already gone when only 2 ever moved.
+    project = _project(db_session)
+    _site_opening(db_session, project, qty=4)
+    _pull(db_session, project, status=PullRequestStatus.COMPLETED, qty=2)
+    _slip(db_session, project, qty=2)
+
+    assert _line(_coverage(db_session, project)[0])["spoken_for_quantity"] == 2
+
+
+def test_a_pull_still_being_picked_counts_as_spoken_for(db_session):
+    project = _project(db_session)
+    _site_opening(db_session, project, qty=4)
+    _pull(db_session, project, status=PullRequestStatus.IN_PROGRESS, qty=3)
+
+    assert _line(_coverage(db_session, project)[0])["suggested_quantity"] == 1
+
+
+def test_a_pending_request_counts_but_an_accepted_one_is_left_to_its_pull(db_session):
+    # The accept copies the request's lines onto a pull, so counting both would double the claim.
+    project = _project(db_session)
+    _site_opening(db_session, project, qty=4)
+    _request(db_session, project, status=ShippingOutRequestStatus.PENDING, qty=2)
+    _request(db_session, project, status=ShippingOutRequestStatus.APPROVED, qty=2)
+    _pull(db_session, project, status=PullRequestStatus.PENDING, qty=2)
+
+    assert _line(_coverage(db_session, project)[0])["spoken_for_quantity"] == 4
+
+
+def test_a_cancelled_pull_gives_the_units_back(db_session):
+    project = _project(db_session)
+    _site_opening(db_session, project, qty=3)
+    _pull(db_session, project, status=PullRequestStatus.CANCELLED, qty=3)
+
+    assert _line(_coverage(db_session, project)[0])["suggested_quantity"] == 3
+
+
+def test_a_rejected_request_gives_the_units_back(db_session):
+    project = _project(db_session)
+    _site_opening(db_session, project, qty=3)
+    _request(db_session, project, status=ShippingOutRequestStatus.REJECTED, qty=3)
+
+    assert _line(_coverage(db_session, project)[0])["suggested_quantity"] == 3
+
+
+def test_a_shop_assembly_pull_is_not_a_shipment(db_session):
+    # Hardware pulled to the bench was fitted onto the leaf. That is `installed`, and counting it
+    # here as well would net the same units off twice.
+    project = _project(db_session)
+    _site_opening(db_session, project, qty=3)
+    pull = _pull(db_session, project, status=PullRequestStatus.COMPLETED, qty=3)
+    pull.source = PullRequestSource.SHOP_ASSEMBLY
+    db_session.flush()
+
+    assert _line(_coverage(db_session, project)[0])["suggested_quantity"] == 3
+
+
+def test_what_one_opening_sent_does_not_cover_another(db_session):
+    project = _project(db_session)
+    _site_opening(db_session, project, qty=2)
+    other = _opening(db_session, project, number="102", leaf_count=1)
+    _hardware(db_session, project, other, leaf=1, qty=2, classification=Classification.SITE_HARDWARE)
+    _pull(db_session, project, status=PullRequestStatus.COMPLETED, opening_number="101", qty=2)
+
+    rows = {row["opening_number"]: row for row in _coverage(db_session, project, ["101", "102"])}
+    assert _line(rows["101"])["suggested_quantity"] == 0
+    assert _line(rows["102"])["suggested_quantity"] == 2
+
+
+def test_leaves_share_one_openings_sent_units_rather_than_each_paying_them(db_session):
+    # A loose line carries an opening and never a leaf, so what went out is only ever known per
+    # opening. Charging every leaf the whole history would zero a pair that has sent one leaf worth.
+    project = _project(db_session)
+    _site_opening(db_session, project, qty=1, leaf_count=2)
+    _pull(db_session, project, status=PullRequestStatus.COMPLETED, qty=1)
+
+    rows = _coverage(db_session, project)
+    assert [_line(row)["suggested_quantity"] for row in rows] == [0, 1]

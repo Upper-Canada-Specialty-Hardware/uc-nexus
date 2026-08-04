@@ -116,6 +116,7 @@ class ShippingQueries:
                             classification=line["classification"],
                             owed_quantity=line["owed_quantity"],
                             installed_quantity=line["installed_quantity"],
+                            spoken_for_quantity=line["spoken_for_quantity"],
                             suggested_quantity=line["suggested_quantity"],
                             on_order_quantity=line["on_order_quantity"],
                         )

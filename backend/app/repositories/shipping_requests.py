@@ -58,6 +58,7 @@ def create_shipping_out_requests(
             )
 
     opening_items_by_id = _load_referenced_leaves(session, drafts)
+    _guard_unique_leaves(drafts, opening_items_by_id)
     _guard_leaves(
         session,
         project_id,
@@ -165,6 +166,7 @@ def replace_shipping_out_request_items(
     from app.repositories import warehouse as warehouse_repository
 
     opening_items_by_id = _load_referenced_leaves(session, [{"items": items}])
+    _guard_unique_leaves([{"items": items}], opening_items_by_id)
     # Leaves already on THIS request are not a conflict with themselves, so they are excluded from
     # the duplicate guard - an edit that keeps a leaf and changes a loose line must not be refused
     # for holding what it already holds.
@@ -246,6 +248,50 @@ def _load_referenced_leaves(session: Session, drafts: list[dict]) -> dict[uuid.U
     return {oi.id: oi for oi in session.scalars(select(OpeningItemModel).where(OpeningItemModel.id.in_(ids))).all()}
 
 
+# The input a caller has to set to get past the incomplete-leaf refusal below. It is named as the
+# error's `field` so the browser can tell that one refusal apart from the two beneath it, which name
+# `opening_item_id` and are not answerable by confirming anything.
+ACKNOWLEDGE_FIELD = "acknowledge_incomplete_leaves"
+
+
+def _guard_unique_leaves(
+    drafts: list[dict],
+    opening_items_by_id: dict[uuid.UUID, OpeningItemModel],
+) -> None:
+    """One physical leaf, named once, across everything this call is about to write.
+
+    The guards below only see claims that were already committed, and `_load_referenced_leaves`
+    collapses the ids into a set - so on its own, nothing here notices a leaf named twice inside a
+    single call. Two OPENING_ITEM lines on one request would mint two lines that both move it; two
+    drafts in one finalize would mint two live requests holding it, which is precisely what the
+    already-on-a-live-request guard exists to prevent.
+    """
+    seen: set[uuid.UUID] = set()
+    repeated: set[uuid.UUID] = set()
+    for draft in drafts:
+        for item in draft.get("items", []):
+            raw = item.get("opening_item_id")
+            if not raw:
+                continue
+            oi_id = uuid.UUID(str(raw))
+            if oi_id in seen:
+                repeated.add(oi_id)
+            seen.add(oi_id)
+
+    if repeated:
+        detail = ", ".join(
+            sorted(
+                leaf_label(opening_items_by_id[oi_id]) if oi_id in opening_items_by_id else str(oi_id)
+                for oi_id in repeated
+            )
+        )
+        raise ValidationError(
+            f"These assembled leaves are named more than once: {detail}. One physical leaf ships on "
+            "one line of one request.",
+            field="opening_item_id",
+        )
+
+
 def _guard_leaves(
     session: Session,
     project_id: uuid.UUID,
@@ -297,7 +343,7 @@ def _guard_leaves(
                     "These assembled leaves are incomplete - hardware they should carry is either "
                     f"awaiting a replacement or was never pulled: {', '.join(sorted(labels))}. "
                     "Confirm you want to ship them short, or wait for the hardware.",
-                    field="opening_item_id",
+                    field=ACKNOWLEDGE_FIELD,
                 )
 
     from app.repositories import shipping_repository

@@ -169,7 +169,11 @@ type ShippingCoverageLine {
   owedQuantity: Int!
   # Bolted onto the assembled leaf. Always 0 for site hardware and for an unassembled leaf.
   installedQuantity: Int!
-  # owed - installed: what still travels loose. For shop hardware, exactly what assembly skipped.
+  # Already sent, or on its way out: shipped slips, staged pulls, lines on live requests. The
+  # schedule does not shrink when hardware goes out, so without this a shipped leaf is re-offered.
+  spokenForQuantity: Int!
+  # owed - installed - spoken for: what still travels loose. For shop hardware, what assembly
+  # skipped and nobody has sent since.
   suggestedQuantity: Int!
   # Placed with a vendor, not yet received, project-wide. Not an allocation to this leaf.
   onOrderQuantity: Int!

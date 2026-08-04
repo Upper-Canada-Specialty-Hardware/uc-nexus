@@ -144,7 +144,9 @@ export interface ShippingCoverageLine {
   owedQuantity: number;
   /** What is bolted onto the assembled leaf. Always 0 for site hardware and unassembled leaves. */
   installedQuantity: number;
-  /** `owed - installed`: what still has to travel loose beside the leaf. */
+  /** Already sent or on its way out for this opening: shipped, staged, or on a live request. */
+  spokenForQuantity: number;
+  /** `owed - installed - spoken for`: what still has to travel loose beside the leaf. */
   suggestedQuantity: number;
   /** Ordered from a vendor and not yet received, project-wide. Not an allocation to this leaf. */
   onOrderQuantity: number;
@@ -175,6 +177,12 @@ export interface LooseCoverageRow {
   productCode: string;
   classification: HardwareClassification | null;
   suggestedQuantity: number;
+  /**
+   * Units of this row the opening has already been sent, or is in the middle of being sent. Only
+   * ever a caption: it is why the offer is smaller than the schedule, so a user who counts the
+   * schedule and counts the offer is not left with an unexplained gap.
+   */
+  spokenForQuantity: number;
   onOrderQuantity: number;
   perLeaf: Array<{ leaf: number | null; quantity: number }>;
 }
@@ -218,6 +226,7 @@ export function buildLooseCoverageRows(leaves: ShippingCoverageLeaf[]): LooseCov
       const existing = rows.get(key);
       if (existing) {
         existing.suggestedQuantity += line.suggestedQuantity;
+        existing.spokenForQuantity += line.spokenForQuantity;
         existing.perLeaf.push({ leaf: leaf.leaf, quantity: line.suggestedQuantity });
         // A product that reads site on one leaf and shop on the other is a schedule inconsistency,
         // not something to average. Keep the first non-null so the row still lands in a real group.
@@ -229,6 +238,7 @@ export function buildLooseCoverageRows(leaves: ShippingCoverageLeaf[]): LooseCov
           productCode: line.productCode,
           classification: line.classification,
           suggestedQuantity: line.suggestedQuantity,
+          spokenForQuantity: line.spokenForQuantity,
           onOrderQuantity: line.onOrderQuantity,
           perLeaf: [{ leaf: leaf.leaf, quantity: line.suggestedQuantity }],
         });

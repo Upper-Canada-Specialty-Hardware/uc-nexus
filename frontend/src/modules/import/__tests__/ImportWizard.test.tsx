@@ -355,6 +355,7 @@ function coverageLine(overrides: Record<string, unknown> = {}) {
     classification: 'SHOP_HARDWARE',
     owedQuantity: 3,
     installedQuantity: 3,
+    spokenForQuantity: 0,
     suggestedQuantity: 0,
     onOrderQuantity: 0,
     ...overrides,

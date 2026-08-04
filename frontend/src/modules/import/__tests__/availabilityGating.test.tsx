@@ -237,6 +237,7 @@ function looseRow(overrides: Partial<LooseCoverageRow> = {}): LooseCoverageRow {
     productCode: 'HG-100',
     classification: 'SITE_HARDWARE',
     suggestedQuantity: 4,
+    spokenForQuantity: 0,
     onOrderQuantity: 0,
     perLeaf: [{ leaf: 1, quantity: 4 }],
     ...overrides,
