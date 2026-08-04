@@ -702,6 +702,98 @@ describe('ImportWizard step transitions', () => {
   });
 });
 
+// A reconcile that fails takes the PO purpose's Next button with it: the button is gated on the
+// auto-selected gap rows, and there are none when the query returned nothing. Before this the error
+// was console-only and the step rendered its ordinary "nothing found" notice, so the wizard looked
+// like it had simply decided there was nothing to do.
+describe('ImportWizard reconciliation failure', () => {
+  const RECONCILE_VARIABLES = {
+    projectId: 'proj-1',
+    items: [
+      { openingNumber: 'O-1', hardwareCategory: 'Hinges', productCode: 'HNG-100', quantityNeeded: 3 },
+      { openingNumber: 'O-2', hardwareCategory: 'Locks', productCode: 'LCK-200', quantityNeeded: 1 },
+    ],
+  };
+
+  const failingReconcileMock: MockedResponse = {
+    request: { query: RECONCILE_SCHEDULE, variables: RECONCILE_VARIABLES },
+    error: new Error('stack depth limit exceeded'),
+  };
+
+  // O-1's hinges come back split across two buckets, which is what the server does when part of a
+  // combo is already on order. Both rows carry the same (opening, product, category) key, so this
+  // also pins that the aggregation still counts that key once.
+  const succeedingReconcileMock: MockedResponse = {
+    request: { query: RECONCILE_SCHEDULE, variables: RECONCILE_VARIABLES },
+    result: {
+      data: {
+        reconcileSchedule: [
+          {
+            __typename: 'ReconciliationResult',
+            openingNumber: 'O-1',
+            hardwareCategory: 'Hinges',
+            productCode: 'HNG-100',
+            quantity: 2,
+            status: 'NOT_COVERED',
+          },
+          {
+            __typename: 'ReconciliationResult',
+            openingNumber: 'O-1',
+            hardwareCategory: 'Hinges',
+            productCode: 'HNG-100',
+            quantity: 1,
+            status: 'ORDERED',
+          },
+          {
+            __typename: 'ReconciliationResult',
+            openingNumber: 'O-2',
+            hardwareCategory: 'Locks',
+            productCode: 'LCK-200',
+            quantity: 1,
+            status: 'NOT_COVERED',
+          },
+        ],
+      },
+    },
+  };
+
+  async function walkToReconciliation(mocks: MockedResponse[]) {
+    renderWizard({ project: reimportProject, mocks: [...reimportBaseMocks, ...mocks] });
+    await flushApollo();
+    clickNext();
+    fireEvent.click(screen.getByRole('radio', { name: /Create Purchase Orders/i }));
+    clickNext();
+    fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
+    clickNext();
+    await flushApollo();
+  }
+
+  it('says the reconcile failed instead of reporting nothing found', async () => {
+    await walkToReconciliation([failingReconcileMock]);
+
+    expect(screen.getByRole('heading', { name: 'Reconciliation' })).toBeInTheDocument();
+    expect(screen.getByText(/stack depth limit exceeded/)).toBeInTheDocument();
+    expect(screen.queryByText('No existing records found for selected items.')).not.toBeInTheDocument();
+    expect(nextButton()).toBeDisabled();
+  });
+
+  it('recovers in place when the retry succeeds', async () => {
+    await walkToReconciliation([failingReconcileMock, succeedingReconcileMock]);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await flushApollo();
+
+    expect(screen.queryByText(/stack depth limit exceeded/)).not.toBeInTheDocument();
+    // Two products, each seen once despite O-1's two status rows, and both pre-selected off their
+    // remaining gap.
+    expect(screen.getByText('2 of 2 product(s) selected')).toBeInTheDocument();
+    expect(nextButton()).toBeEnabled();
+
+    clickNext();
+    expect(screen.getByRole('heading', { name: 'Classification' })).toBeInTheDocument();
+  });
+});
+
 // The keep-or-ship decision's "Ship out now" lands here: the project is chosen, the purpose is
 // shipping, and the schedule the hardware was bought against is already imported - so the two steps
 // in front of the openings are answers the user has already given somewhere else.

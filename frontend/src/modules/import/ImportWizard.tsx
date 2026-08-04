@@ -303,7 +303,7 @@ export default function ImportWizard({
 
   // ---- Apollo ----
 
-  const [reconcileSchedule, { data: reconcileData, loading: reconcileLoading }] = useLazyQuery<{
+  const [reconcileSchedule, { data: reconcileData, loading: reconcileLoading, error: reconcileError }] = useLazyQuery<{
     reconcileSchedule: ReconciliationRow[];
   }>(RECONCILE_SCHEDULE);
 
@@ -888,6 +888,35 @@ export default function ImportWizard({
     setHydratedFromPersisted(false);
   }, [parser, resetDownstreamWizardState]);
 
+  /** Ask the server to reconcile the selected openings against what the project already has.
+   *
+   *  Lives outside `handleNext` so the Reconciliation step can re-run it in place after a failure.
+   *  The query can fail on its own merits (it is the heaviest read in the wizard), and without a
+   *  retry the only way back was Back-then-Next, which reads as "the wizard is stuck".
+   */
+  const runReconcile = useCallback(() => {
+    if (!isReimport) return;
+    // Aggregate by (opening, category, product) to avoid duplicate entries
+    const itemMap = new Map<string, { openingNumber: string; hardwareCategory: string; productCode: string; quantityNeeded: number }>();
+    for (const hi of selectedHardwareItems) {
+      const key = `${hi.opening_number}|${hi.hardware_category}|${hi.product_code}`;
+      const existing = itemMap.get(key);
+      if (existing) {
+        existing.quantityNeeded += hi.item_quantity;
+      } else {
+        itemMap.set(key, {
+          openingNumber: hi.opening_number,
+          hardwareCategory: hi.hardware_category,
+          productCode: hi.product_code,
+          quantityNeeded: hi.item_quantity,
+        });
+      }
+    }
+    reconcileSchedule({
+      variables: { projectId: existingProjectId, items: Array.from(itemMap.values()) },
+    });
+  }, [isReimport, existingProjectId, selectedHardwareItems, reconcileSchedule]);
+
   const handleNext = useCallback(async () => {
     const currentIndex = steps.findIndex((s) => s.id === effectiveStepId);
     const nextStep = steps[currentIndex + 1];
@@ -895,32 +924,11 @@ export default function ImportWizard({
 
     if (effectiveStepId === 'openings') {
       setSelectedReconItems(new Set());
-    }
-
-    if (effectiveStepId === 'openings' && isReimport) {
-      // Aggregate by (opening, category, product) to avoid duplicate entries
-      const itemMap = new Map<string, { openingNumber: string; hardwareCategory: string; productCode: string; quantityNeeded: number }>();
-      for (const hi of selectedHardwareItems) {
-        const key = `${hi.opening_number}|${hi.hardware_category}|${hi.product_code}`;
-        const existing = itemMap.get(key);
-        if (existing) {
-          existing.quantityNeeded += hi.item_quantity;
-        } else {
-          itemMap.set(key, {
-            openingNumber: hi.opening_number,
-            hardwareCategory: hi.hardware_category,
-            productCode: hi.product_code,
-            quantityNeeded: hi.item_quantity,
-          });
-        }
-      }
-      reconcileSchedule({
-        variables: { projectId: existingProjectId, items: Array.from(itemMap.values()) },
-      });
+      runReconcile();
     }
 
     setActiveStepId(nextStep.id);
-  }, [effectiveStepId, steps, isReimport, existingProjectId, selectedHardwareItems, reconcileSchedule]);
+  }, [effectiveStepId, steps, runReconcile]);
 
   const handleBack = useCallback(() => {
     const currentIndex = steps.findIndex((s) => s.id === effectiveStepId);
@@ -1649,6 +1657,8 @@ export default function ImportWizard({
               isReimport={isReimport}
               purpose={purpose!}
               reconcileLoading={reconcileLoading}
+              reconcileError={reconcileError?.message ?? null}
+              onRetryReconcile={runReconcile}
               reconciliationRows={reconciliationRows}
               selectedHardwareItems={selectedHardwareItems}
               allHardwareItems={hardwareItems}
