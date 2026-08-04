@@ -371,7 +371,7 @@ class WarehouseQueries:
         """What each product in a project can still be claimed for (#342):
         `available = on_hand - deficient - reserved`.
 
-        This is the number the Start-a-Task creation gate applies, exposed so the wizard can block an
+        This is the number the Start-a-Request creation gate applies, exposed so the wizard can block an
         over-selection with per-combo detail *before* submission rather than bouncing the whole
         finalize. Deliberately distinct from `inventoryHierarchy`'s availability, which is on-hand
         minus deficient: that answers "what is physically unspoken-for in the building", this
@@ -1095,7 +1095,7 @@ class WarehouseMutations:
 
         Recording the answer is all this does. SHIP_OUT does not build a shipping-out request: only
         the hardware schedule knows which opening and leaf a fungible quantity is owed to, so the
-        frontend takes the recorded choice and deep-links into Start a Task, where that identity is
+        frontend takes the recorded choice and deep-links into Start a Request, where that identity is
         re-attached (docs/HARDWARE_IDENTITY_LIFECYCLE.md).
         """
         from app.models.enums import ReceiveDecisionChoice as ReceiveDecisionChoiceDB

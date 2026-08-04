@@ -152,7 +152,7 @@ it('adds back what the request already holds when working out an edit headroom',
   expect(await screen.findByText('9 free (4 spoken for)')).toBeInTheDocument();
 });
 
-/** A request raised from Start a Task: one loose line per opening, all for the same product. */
+/** A request raised from Start a Request: one loose line per opening, all for the same product. */
 const SCHEDULE_RAISED = {
   id: 'req-1',
   requestNumber: 'SOR-1',

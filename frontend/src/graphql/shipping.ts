@@ -93,7 +93,7 @@ export const DELETE_SHIPMENT_METHOD = gql`
   }
 `;
 
-// Composing a request from the Shipping module rather than from Start a Task (#451). Both answer
+// Composing a request from the Shipping module rather than from Start a Request (#451). Both answer
 // with the whole request, so the pending list updates through the Apollo cache.
 const SHIPPING_OUT_REQUEST_FIELDS = `
   id
@@ -123,7 +123,7 @@ export const EDIT_SHIPPING_OUT_REQUEST = gql`
   }
 `;
 
-// What the openings picked in Start a Task still owe the site, leaf by leaf (#451). Joins three
+// What the openings picked in Start a Request still owe the site, leaf by leaf (#451). Joins three
 // things the builder cannot see on its own: the schedule (owed), the assembled leaf (installed) and
 // the open purchase orders (on order). Availability is deliberately NOT here - it comes from
 // projectInventoryAvailability, the single number the creation gate is applied against (#342).

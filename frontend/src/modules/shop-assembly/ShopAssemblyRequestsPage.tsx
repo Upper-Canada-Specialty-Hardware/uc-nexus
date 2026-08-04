@@ -81,7 +81,7 @@ export default function ShopAssemblyRequestsPage() {
         title="Shop Assembly Requests"
         description={
           view === 'PENDING'
-            ? 'Pending requests from Start a Task. The hardware was reserved when the request was created, so accepting is purely your approval: it creates the warehouse pull request. Rejecting releases the reservation.'
+            ? 'Pending requests from Start a Request. The hardware was reserved when the request was created, so accepting is purely your approval: it creates the warehouse pull request. Rejecting releases the reservation.'
             : 'Accepted requests whose warehouse pull has not started yet. Reopen one to undo the accept and send it back to Pending.'
         }
         emptyMessage={

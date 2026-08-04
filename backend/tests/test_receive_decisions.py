@@ -181,7 +181,7 @@ def test_without_a_gp_buyer_identity_only_the_stamped_decisions_are_owed(db_sess
 @pytest.mark.parametrize("choice", [ReceiveDecisionChoice.KEEP_IN_INVENTORY, ReceiveDecisionChoice.SHIP_OUT])
 def test_answering_records_the_choice_and_nothing_else(db_session, choice):
     """SHIP_OUT deliberately creates no shipping-out request: only the schedule knows which opening a
-    fungible quantity is owed to, so the frontend deep-links into Start a Task from here."""
+    fungible quantity is owed to, so the frontend deep-links into Start a Request from here."""
     from app.models.shipping_out_request import ShippingOutRequest
 
     project = _make_project(db_session)

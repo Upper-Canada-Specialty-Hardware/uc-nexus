@@ -1,6 +1,6 @@
 """Creating and editing shipping-out requests, from either of the two places they are raised (#451).
 
-Start a Task raises one off the hardware schedule; the Shipping module raises one straight off
+Start a Request raises one off the hardware schedule; the Shipping module raises one straight off
 project inventory, for the loose stock a schedule line never accounted for. Both land here, because
 every guard below is a property of the request itself and not of the screen that composed it: one
 physical leaf ships once, a leaf still on the bench cannot leave the building, an empty request has

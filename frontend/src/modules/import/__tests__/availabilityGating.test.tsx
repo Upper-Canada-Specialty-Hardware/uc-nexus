@@ -11,7 +11,7 @@ import { computeAvailabilityShortfalls } from '../types';
 import type { Allocation } from '../allocation';
 
 /**
- * Reservation-aware availability gating in Start a Task (#342), and the allocator that replaced the
+ * Reservation-aware availability gating in Start a Request (#342), and the allocator that replaced the
  * all-or-nothing half of it.
  *
  * Creating a shipping-out request still RESERVES what it needs and is still refused whole if it does
