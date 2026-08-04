@@ -46,6 +46,38 @@ This is a tester's knowledge journal for UC Nexus. It documents how the app work
     the gates above. Do not treat the endpoint answering on a given host as evidence that the host is
     a test environment - production answered it too, which is exactly what #424 shut off.
 - **Test XML file**: `testing/fixtures/contracterp-74.xml` - TITAN hardware schedule export, use for Import wizard testing (upload via `upload_file`)
+- **Fixture: assembled door leaves without the pull cycle** (`POST /testing/seed-ship-ready-leaves`,
+  #470). Takes `project_id`, `count` (1-200) and an optional `opening_prefix` (default `FIXT`) on the
+  query string, and writes that many `OpeningItem` rows straight at `SHIP_READY`, so they appear in
+  the shipping staging pool as unplaced Door leaves immediately. Behind the same double gate as
+  `/testing/clerk-sign-in` - `TESTING_ENABLED`, then an Admin/Manager bearer or the
+  `X-Testing-Secret` header.
+
+  It exists because some states are not reachable by hand. A skid's 30-leaf ceiling is the case that
+  forced it: 30 leaves through the UI is 30 openings each taken through purchase, receipt, a shop
+  assembly pull, a pick, assembly, a shipping pull and a second pick. Use it for anything keyed on
+  *how many* leaves are staged.
+
+  What it does NOT give you is a leaf with a real history - no pull request, no assembly record, no
+  inventory ever deducted, and the installed hardware is one placeholder line. Anything testing the
+  chain that produces a leaf still has to drive that chain. It also seeds no loose hardware; that
+  side only arrives via a COMPLETED shipping-out pull.
+
+  ```js
+  (async () => {
+    const SECRET = '...';  // preimage of this environment's TESTING_SIGN_IN_SECRET_HASH
+    const r = await fetch(
+      `https://backend-uc-nexus-pr-478.up.railway.app/testing/seed-ship-ready-leaves?project_id=${PID}&count=31`,
+      { method: 'POST', headers: { 'X-Testing-Secret': SECRET } });
+    return await r.json();  // { created, warehouse_id, leaves: [{opening_item_id, opening_number, leaf}] }
+  })()
+  ```
+
+  Opening numbers are issued from the highest `FIXT-NNNN` the project already holds, so calling it
+  twice tops the pool up rather than colliding on `uq_opening_items_live_leaf`.
+
+  Verified on pr-478: 31 leaves minted in one call, all 31 in the staging pool as unplaced Door
+  leaves on the next fetch, no pull request or assembly record behind any of them.
 
 ### Every resolver needs a token now (#415)
 
@@ -1008,6 +1040,41 @@ cache with no reload - assert on the row, do not wait for a refetch.
 pick leaves the pull IN_PROGRESS with phase "Picked - ready to mark pulled" and the Ship tab's Loose
 Hardware grid stays empty; "Mark as Pulled" in the pull detail modal is what completes it. Budget for
 that extra step when scripting the chain.
+
+**Driving the staging workspace's drag: only the CONTAINER rows have a keyboard path.** Verified on
+pr-478 (#470). The two draggable kinds behave differently and it costs an hour to find out the hard
+way:
+
+- A row **inside a container** is `useSortable`, and the `KeyboardSensor` is wired with
+  `sortableKeyboardCoordinates`. Focus its `Reorder <leaf> in <container>` handle, press Space to
+  lift, and **one** arrow press moves it to the next droppable - the `aria-live` region names the
+  target, either a bare item uuid or `container:<uuid>`. Space drops it. This is how you exercise a
+  cross-container move.
+- A row **in the staging pool** is plain `useDraggable`. `sortableKeyboardCoordinates` has no
+  sortable context for it, so **the arrow keys do nothing at all** - the live region stays on
+  "Picked up draggable item leaf:<id>" no matter how many presses. Real presses and dispatched
+  `KeyboardEvent`s both. There is no keyboard drag out of the pool; use its "Place in" menu, which
+  is the equal-weight partner by design.
+
+Consequence for coverage: any guard that only fires on a **pool → container** drag cannot be driven
+from this harness at all (MCP pointer drag does not work against dnd-kit either). `placeLeaf`'s
+full-skid guard is the one that sits there - and the Place-in menu disables a full skid rather than
+letting the click through, so nothing reaches it. Its predicate (`canTakeAnotherLeaf`) and its exact
+message are both observable on the cross-container path, which is the honest substitute.
+
+**The 30-leaf skid ceiling, verified live on pr-478** with 31 leaves minted by the fixture route:
+- the card chip reads `30/30 leaves` and switches to MUI `colorWarning` (below the cap it is
+  `colorDefault`)
+- the Place-in menu renders the option as `Skid 3 (full)` and marks it `disabled`
+- a cross-container drag of another leaf onto it is refused with the toast
+  `Skid 3 already holds 30 leaves - start another skid.` and **neither** container changes
+- `setContainerItems` driven straight at the API with 31 leaves fails
+  `VALIDATION_ERROR` / `field: items`, "A skid holds at most 30 door leaves; this one would carry
+  31. Start another skid.", and the skid still holds exactly 30 - the rewrite is atomic, nothing
+  lands partially
+
+The toast auto-dismisses, so read it with a `MutationObserver` on `.MuiAlert-message` armed BEFORE
+the drop rather than polling after; a poll 2.5s later comes back empty and reads like no toast fired.
 
 **Incomplete-leaf guard in the Start-a-Request shipping wizard (#341).** On the Shipping PRs step, an
 assembled leaf that is still owed hardware carries an amber "Incomplete - awaiting replacement" chip
