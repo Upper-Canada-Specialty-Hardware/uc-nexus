@@ -29,6 +29,16 @@ depends_on = None
 
 
 def upgrade() -> None:
+    postgresql.ENUM(
+        "SKID",
+        "DOOR_CART",
+        "BOX",
+        "ENVELOPE",
+        "BUNDLE",
+        name="shipment_container_type",
+    ).create(op.get_bind(), checkfirst=True)
+    # Created above, so the column's reference must NOT try again - a bare postgresql.ENUM defaults
+    # to emitting its own CREATE TYPE during create_table, which is a DuplicateObject on a fresh DB.
     container_type = postgresql.ENUM(
         "SKID",
         "DOOR_CART",
@@ -36,8 +46,8 @@ def upgrade() -> None:
         "ENVELOPE",
         "BUNDLE",
         name="shipment_container_type",
+        create_type=False,
     )
-    container_type.create(op.get_bind(), checkfirst=True)
 
     op.create_table(
         "shipment_containers",
