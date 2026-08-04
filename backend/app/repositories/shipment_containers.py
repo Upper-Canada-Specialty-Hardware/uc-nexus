@@ -255,7 +255,12 @@ def build_staged_pool(session: Session, project_id: uuid.UUID) -> dict:
     for container in get_containers(session, project_id, open_only=True):
         for item in container.items:
             if item.item_type == PullRequestItemType.OPENING_ITEM and item.opening_item_id is not None:
-                pool["leaves"][item.opening_item_id] = container.id
+                # Only stamp a leaf the pool already knows about. A container can outlive its
+                # contents' staged state - the cart on the Ship tab can still ship a leaf out from
+                # under a skid while both paths exist - and inventing a key here would make that
+                # phantom look like a legitimately placed leaf and let it be placed again.
+                if item.opening_item_id in pool["leaves"]:
+                    pool["leaves"][item.opening_item_id] = container.id
             elif item.item_type == PullRequestItemType.LOOSE:
                 key = (item.hardware_category, item.product_code)
                 bucket = pool["loose"].setdefault(key, {"staged": 0, "placed": 0})
