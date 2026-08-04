@@ -45,10 +45,13 @@ import { useToast } from '../../components/Toast';
 import ContainerShipmentForm from './ContainerShipmentForm';
 import {
   canTakeAnotherLeaf,
+  containerDropId,
   CONTAINER_TYPE_LABEL,
+  dropTargetContainer,
   isStacked,
   leafCount,
   MAX_LEAVES_PER_SKID,
+  planContainerDrag,
   sameLooseStock,
   toItemsInput,
   type Container,
@@ -67,10 +70,11 @@ const CONTAINER_TYPES: ContainerType[] = ['SKID', 'DOOR_CART', 'BOX', 'ENVELOPE'
 
 // Drag ids are prefixed so one handler can tell what was picked up without a lookup table. The loose
 // id carries the opening because that is part of which stock the row is (see `sameLooseStock`).
+// `containerDropId` is the third of these and lives in `staging.ts`, next to the drag decision that
+// has to recognise it.
 const poolLeafId = (id: string) => `leaf:${id}`;
 const poolLooseId = (row: StagedLooseItem) =>
   `loose:${row.openingNumber ?? ''}|${row.hardwareCategory}|${row.productCode}`;
-const containerDropId = (id: string) => `container:${id}`;
 
 interface Props {
   projectId: string | undefined;
@@ -281,42 +285,29 @@ export default function StagingWorkspace({ projectId, project = null }: Props) {
       const activeId = String(active.id);
       const overId = String(over.id);
 
-      // The drop target, whether the pointer landed on a container card or on one of its rows.
-      const target =
-        containers.find((c) => containerDropId(c.id) === overId) ??
-        containers.find((c) => c.items.some((i) => i.id === overId));
-
-      const owner = containers.find((c) => c.items.some((i) => i.id === activeId));
-      if (owner) {
-        // Same container: a restack.
-        if (!target || target.id === owner.id) {
-          const from = owner.items.findIndex((i) => i.id === activeId);
-          const to = owner.items.findIndex((i) => i.id === overId);
-          if (to >= 0 && from !== to) save(owner, arrayMove(owner.items, from, to));
-          return;
+      // Anything already in a container: the decision is `planContainerDrag`'s, including the
+      // cross-container move this screen mostly exists for. Null means it came off the pool instead,
+      // which needs the pool rows and so stays here.
+      const plan = planContainerDrag(containers, activeId, overId);
+      if (plan) {
+        if (plan.action === 'refuse') {
+          showToast(
+            `${plan.target.name} already holds ${MAX_LEAVES_PER_SKID} leaves - start another skid.`,
+            'warning',
+          );
+        } else if (plan.action === 'reorder') {
+          save(plan.container, plan.items);
+        } else if (plan.action === 'move') {
+          // The order matters and the await is load-bearing: adding first would be refused for a
+          // leaf still recorded in the skid it is leaving.
+          await save(plan.source, plan.sourceItems);
+          await save(plan.target, plan.targetItems);
         }
-        // A different container: the move this screen mostly exists for. Two saves, and the order
-        // matters - adding first would be refused for a leaf that is still recorded in the skid it
-        // is leaving, so the source is emptied and awaited before the target is written.
-        const moving = owner.items.find((i) => i.id === activeId);
-        if (!moving) return;
-        if (moving.itemType === 'OPENING_ITEM' && !canTakeAnotherLeaf(target)) {
-          showToast(`${target.name} already holds ${MAX_LEAVES_PER_SKID} leaves - start another skid.`, 'warning');
-          return;
-        }
-        await save(owner, owner.items.filter((i) => i.id !== activeId));
-        const existing =
-          moving.itemType === 'LOOSE' ? target.items.find((i) => sameLooseStock(i, moving)) : undefined;
-        await save(
-          target,
-          existing
-            ? target.items.map((i) => (i === existing ? { ...i, quantity: i.quantity + moving.quantity } : i))
-            : [...target.items, { ...moving, id: 'new', position: target.items.length }],
-        );
         return;
       }
 
       // Otherwise it came from the pool.
+      const target = dropTargetContainer(containers, overId);
       if (!target) return;
       if (activeId.startsWith('leaf:')) {
         const leaf = unplacedLeaves.find((l) => poolLeafId(l.openingItemId) === activeId);

@@ -138,9 +138,13 @@ def test_roster_backed_fields_are_role_gated():
 
 _MAIN_PY = Path(__file__).resolve().parent.parent / "main.py"
 
-# The only gate that fits a bare FastAPI Request. The GraphQL path's helpers unwrap a Strawberry Info
+# The two gates that fit a bare FastAPI Request. The GraphQL path's helpers unwrap a Strawberry Info
 # or a Strawberry context and can never appear in a route.
-_ROUTE_GATES = frozenset({"require_admin_request"})
+#
+# `require_testing_request` is `require_admin_request` with the TESTING_ENABLED check and the
+# X-Testing-Secret bootstrap path in front of it - strictly narrower, never wider, so a route calling
+# it is at least as gated as one calling the admin check alone (#470).
+_ROUTE_GATES = frozenset({"require_admin_request", "require_testing_request"})
 
 # route function name -> why it is deliberately reachable without require_admin_request.
 _ROUTE_EXEMPT: dict[str, str] = {
@@ -183,7 +187,13 @@ def test_every_main_py_route_was_collected():
     """Guard the guard, same shape as the root-field count above: if the decorator predicate
     regressed, the parametrized test below would silently shrink instead of failing."""
     collected = {fn.name for fn in _ROUTES}
-    expected = {"health", "relay_link", "reset_data", "get_clerk_sign_in_token"}
+    expected = {
+        "health",
+        "relay_link",
+        "reset_data",
+        "get_clerk_sign_in_token",
+        "seed_ship_ready_leaves",
+    }
     missing = expected - collected
     assert not missing, f"known main.py routes were not collected; the AST walk likely regressed: {sorted(missing)}"
 
