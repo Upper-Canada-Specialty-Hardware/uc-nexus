@@ -65,7 +65,11 @@ class ShippingOutRequestItem(Base):
         ),
         nullable=False,
     )
-    opening_number: Mapped[str] = mapped_column(String, nullable=False)
+    # Null on a line raised straight off project inventory (#451). Inventory carries no opening - a
+    # hinge on a shelf belongs to the project, not to a door - so a line composed from a shelf has
+    # nothing to attribute. Schedule-driven lines keep the opening they came off, which is what the
+    # pick sheet groups its carts by.
+    opening_number: Mapped[str | None] = mapped_column(String, nullable=True)
     opening_item_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("opening_items.id"), nullable=True)
     # Door leaf this request line is for (#311/#335): OPENING_ITEM lines snapshot the assembled
     # OpeningItem.leaf so a pair reads as two distinct lines before anyone accepts the request.

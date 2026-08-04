@@ -145,7 +145,13 @@ export default function ShippingCart({
                             >
                               <ListItemText
                                 primary={`${item.productCode} (${item.hardwareCategory})`}
-                                secondary={`Opening ${item.openingNumber} - Qty: ${item.quantity}`}
+                                // No opening on stock that was requested straight off inventory
+                                // (#451) - it is owed to the job, not to a door.
+                                secondary={
+                                  item.openingNumber
+                                    ? `Opening ${item.openingNumber} - Qty: ${item.quantity}`
+                                    : `Unattributed - Qty: ${item.quantity}`
+                                }
                                 slotProps={{
                                   primary: { sx: monoSx },
                                   secondary: { sx: tabularSx },

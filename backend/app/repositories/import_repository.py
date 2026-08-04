@@ -9,7 +9,7 @@ from math import floor
 from sqlalchemy import and_, delete, func, or_, select, tuple_
 from sqlalchemy.orm import Session, selectinload
 
-from app.errors import ConflictError, InventoryShortfallError, NotFoundError, ValidationError
+from app.errors import ConflictError, NotFoundError, ValidationError
 from app.models.enums import (
     AssemblyStatus,
     Classification,
@@ -49,6 +49,7 @@ from app.models.shop_assembly import (
     ShopAssemblyRequest as SARModel,
 )
 from app.repositories import project_repository
+from app.repositories import shipping_requests as _shipping_requests
 
 
 def get_project_hardware_schedule(
@@ -312,11 +313,6 @@ def reconcile_schedule(
     return results
 
 
-def _leaf_label(oi: OpeningItemModel) -> str:
-    """ "Opening 0019-EX Leaf 2", or just the opening number for a legacy whole-opening unit."""
-    return f"Opening {oi.opening_number} Leaf {oi.leaf}" if oi.leaf is not None else f"Opening {oi.opening_number}"
-
-
 def _opening_leaf_label(opening_number: str, leaf: int | None) -> str:
     """Same label, built from the raw pair rather than from a materialized OpeningItem."""
     return f"Opening {opening_number} Leaf {leaf}" if leaf is not None else f"Opening {opening_number}"
@@ -342,34 +338,16 @@ def _gate_on_available_inventory(
     label: str,
     request_number: str | None,
 ) -> None:
-    """The creation-time inventory gate (#342). Refuses the whole finalize with a typed
-    `InventoryShortfallError` naming every short combo if the selection does not fit inside
+    """The creation-time inventory gate (#342), which now lives beside the arithmetic it applies.
 
-        available = on-hand - deficient - active reservations
-
-    Whole-request, never partial: the creator is being asked to make one decision about one
-    selection, so they get the entire list of what does not fit and refine the selection once. This
-    replaces the shortfall that used to surface at accept, where nobody could do anything about it.
-
-    The inventory rows are locked (`lock=True`) for the rest of the finalize transaction, so two
-    creators racing for the last hinge serialise: the second one sees the first one's reservation
-    rather than both passing on the same stock.
+    Kept as a name here because the shop-assembly finalize below reads better calling it, and
+    because every test that pins the gate's behaviour names it.
     """
     from app.repositories import warehouse as warehouse_repository
-    from app.services import notification_service
 
-    result = warehouse_repository.check_inventory_sufficiency(
-        session, project_id, needs, lock=True, reservation_aware=True
+    warehouse_repository.gate_on_available_inventory(
+        session, project_id, needs, label=label, request_number=request_number
     )
-    if not result.sufficient:
-        raise InventoryShortfallError(
-            f"Cannot create this {label} - the hardware it needs is not available. "
-            + notification_service.format_shortfall_lines(result.shortfalls)
-            + ". Reduce the selection, or wait for stock to be received or another request to be released.",
-            shortfalls=result.shortfalls,
-            project_id=project_id,
-            request_number=request_number,
-        )
 
 
 def _allocated_quantity(item_input: dict) -> int:
@@ -947,226 +925,18 @@ def finalize_import_session(
 
     # 6. Shipping-out requests (#293): Start a Task mints a PENDING ShippingOutRequest, NOT a
     # PullRequest. A signed-in user accepts it later, which mints the warehouse PullRequest.
-    created_shipping_requests: list[ShippingOutRequestModel] = []
-    if shipping_pr_drafts:
-        # #335: pre-load every OpeningItem an OPENING_ITEM line points at, so each line can be
-        # checked against the real row rather than trusting the id the client sent. One query for
-        # the whole finalize.
-        referenced_oi_ids = {
-            uuid.UUID(str(item["opening_item_id"]))
-            for pr_draft in shipping_pr_drafts
-            for item in pr_draft.get("items", [])
-            if item.get("opening_item_id")
-        }
-        opening_items_by_id: dict[uuid.UUID, OpeningItemModel] = {}
-        if referenced_oi_ids:
-            opening_items_by_id = {
-                oi.id: oi
-                for oi in session.scalars(
-                    select(OpeningItemModel).where(OpeningItemModel.id.in_(referenced_oi_ids))
-                ).all()
-            }
-
-        # Incomplete-leaf guard (#341). A leaf can be physically short of the hardware list it ships
-        # under for two unrelated reasons, and the shipper needs to see both because the remedies are
-        # not the same:
-        #   - **awaiting replacement** - a unit arrived and failed. A replacement pull already exists;
-        #     waiting is a real option.
-        #   - **never pulled** - the unit was never available when the request was sent, so it was
-        #     allocated 0 and no pull was ever raised for it. Waiting does nothing; that gap is
-        #     closed by purchasing and, later, by reallocation.
-        # The business decision is warn + confirm, never silent and never a hard block: deliberate
-        # short-shipping is a real workflow, it just has to be a decision someone made. Refused here
-        # unless the caller says explicitly that it knows, and the wizard's confirm sets that flag.
-        #
-        # One grouped scalar aggregate for every referenced leaf, not a per-line count and not one
-        # query per reading.
-        if referenced_oi_ids and not acknowledge_incomplete_leaves:
-            from app.repositories import shop_assembly_repository
-
-            shortfalls = shop_assembly_repository.get_leaf_shortfalls(session, list(referenced_oi_ids))
-            if shortfalls:
-                # Name every flagged leaf, not just the first: the user is being asked to make a
-                # decision, and they can only make it once if they can see the whole list. Each leaf
-                # carries whichever of the two counts is non-zero, so "waiting will fix this" and
-                # "waiting will not" are distinguishable per leaf rather than lumped together.
-                labels = []
-                for oi_id, shortfall in shortfalls.items():
-                    oi = opening_items_by_id.get(oi_id)
-                    if oi is None:
-                        continue
-                    parts = []
-                    if shortfall.awaiting_replacement:
-                        parts.append(f"{shortfall.awaiting_replacement} unit(s) awaiting replacement")
-                    if shortfall.never_pulled:
-                        parts.append(f"{shortfall.never_pulled} unit(s) never pulled")
-                    labels.append(f"{_leaf_label(oi)} ({', '.join(parts)})")
-                detail = ", ".join(sorted(labels))
-                raise ValidationError(
-                    "These assembled leaves are incomplete - hardware they should carry is either "
-                    f"awaiting a replacement or was never pulled: {detail}. Confirm you want to ship "
-                    "them short, or wait for the hardware.",
-                    field="opening_item_id",
-                )
-
-        # --- request-integrity guards (#342) ---------------------------------------------------
-        # Degenerate request: a request with no lines has nothing to accept, nothing to pull, and
-        # nothing to reserve. It is refused at creation rather than left on the accept board.
-        for pr_draft in shipping_pr_drafts:
-            if not pr_draft.get("items"):
-                raise ValidationError(
-                    f"Shipping-out request {pr_draft['request_number']} has no items - "
-                    "select at least one assembled leaf or loose line.",
-                    field="items",
-                )
-
-        # Duplicate in-flight guard: one physical leaf can sit on exactly one live request. The
-        # wizard already hides claimed leaves, but a stale tab or a non-UI caller must not be able to
-        # send the same leaf out twice.
-        from app.repositories import shipping_repository as _shipping_repository
-        from app.repositories import shop_assembly_repository as _sa_repository
-
-        if referenced_oi_ids:
-            claims = _shipping_repository.find_live_shipping_claims(
-                session, project.id, opening_item_ids=list(referenced_oi_ids)
-            )["by_opening_item"]
-            if claims:
-                detail = ", ".join(
-                    sorted(
-                        f"{_leaf_label(opening_items_by_id[oi_id])} (on {request_number})"
-                        for oi_id, request_number in claims.items()
-                        if oi_id in opening_items_by_id
-                    )
-                )
-                raise ValidationError(
-                    f"These assembled leaves are already on a live shipping-out request: {detail}. "
-                    "Reject or complete that request first.",
-                    field="opening_item_id",
-                )
-
-            # Cross-request-type conflict: the same leaf cannot be on its way out the door and still
-            # inside a live shop-assembly work unit.
-            leaf_specs = [
-                (oi.opening_number, oi.opening_id, oi.leaf)
-                for oi in opening_items_by_id.values()
-                if oi.project_id == project.id
-            ]
-            in_assembly = _sa_repository.find_in_flight_assembly_leaves(session, leaf_specs)
-            if in_assembly:
-                detail = ", ".join(
-                    sorted(
-                        f"{_opening_leaf_label(num, leaf)}"
-                        + (f" (on shop-assembly request {request_number})" if request_number else "")
-                        for num, leaf, request_number in in_assembly
-                    )
-                )
-                raise ValidationError(
-                    f"These leaves are still in shop assembly: {detail}. They cannot be shipped "
-                    "until that work unit is finished or its request is rejected.",
-                    field="opening_item_id",
-                )
-
-        # Reservation gate: LOOSE lines claim fungible stock, so they must fit inside what is
-        # actually free right now (on-hand - deficient - other requests' reservations). OPENING_ITEM
-        # lines claim nothing - an assembled leaf left fungible inventory when it was built, and it
-        # ships as itself (docs/HARDWARE_IDENTITY_LIFECYCLE.md). Checked across every draft in this
-        # finalize at once, because they are all created in one transaction and therefore compete.
-        loose_needs_by_draft: dict[int, list[tuple[str, str, int]]] = {}
-        for idx, pr_draft in enumerate(shipping_pr_drafts):
-            loose_needs_by_draft[idx] = [
-                (
-                    item["hardware_category"],
-                    item["product_code"],
-                    item.get("requested_quantity", 1),
-                )
-                for item in pr_draft.get("items", [])
-                if PullRequestItemType(item["item_type"]) == PullRequestItemType.LOOSE
-                and item.get("hardware_category")
-                and item.get("product_code")
-            ]
-        all_loose_needs = [need for needs in loose_needs_by_draft.values() for need in needs]
-        if all_loose_needs:
-            _gate_on_available_inventory(
-                session,
-                project.id,
-                all_loose_needs,
-                label="shipping-out request",
-                request_number=shipping_pr_drafts[0]["request_number"],
-            )
-
-        for draft_index, pr_draft in enumerate(shipping_pr_drafts):
-            # Validate uniqueness against the request entity's own number space.
-            existing_req = session.scalars(
-                select(ShippingOutRequestModel).where(
-                    ShippingOutRequestModel.request_number == pr_draft["request_number"]
-                )
-            ).first()
-            if existing_req is not None:
-                raise ConflictError(
-                    f"Shipping-out request {pr_draft['request_number']} already exists",
-                    field="request_number",
-                )
-
-            req = ShippingOutRequestModel(
-                id=uuid.uuid4(),
-                request_number=pr_draft["request_number"],
-                project_id=project.id,
-                status=ShippingOutRequestStatus.PENDING,
-                created_by="Hardware Schedule Import",
-            )
-            session.add(req)
-            session.flush()
-
-            for item_input in pr_draft.get("items", []):
-                item_type = PullRequestItemType(item_input["item_type"])
-                opening_item_id = item_input.get("opening_item_id")
-                # #335: an OPENING_ITEM line ships an already-assembled leaf, so it MUST name a real
-                # OpeningItem of this project that is still in inventory. An id that is missing,
-                # foreign, or already pulled/shipped would mint a line that either does nothing
-                # (approve skips it, complete never flips a leaf) or moves someone else's leaf.
-                if item_type == PullRequestItemType.OPENING_ITEM:
-                    label = f"Shipping-out request {pr_draft['request_number']}, opening {item_input['opening_number']}"
-                    if not opening_item_id:
-                        raise ValidationError(
-                            f"{label}: an assembled-opening line must reference an opening item",
-                            field="opening_item_id",
-                        )
-                    oi = opening_items_by_id.get(uuid.UUID(str(opening_item_id)))
-                    if oi is None or oi.project_id != project.id:
-                        raise ValidationError(
-                            f"{label}: opening item {opening_item_id} does not belong to this project",
-                            field="opening_item_id",
-                        )
-                    if oi.state != OpeningItemState.IN_INVENTORY:
-                        raise ValidationError(
-                            f"{label}: {_leaf_label(oi)} is {oi.state.value}, not in inventory, so it "
-                            f"cannot be requested for shipping",
-                            field="opening_item_id",
-                        )
-                req_item = ShippingOutRequestItemModel(
-                    id=uuid.uuid4(),
-                    shipping_out_request_id=req.id,
-                    item_type=item_type,
-                    opening_number=item_input["opening_number"],
-                    opening_item_id=(uuid.UUID(str(opening_item_id)) if opening_item_id else None),
-                    leaf=item_input.get("leaf"),
-                    hardware_category=item_input.get("hardware_category"),
-                    product_code=item_input.get("product_code"),
-                    requested_quantity=item_input.get("requested_quantity", 1),
-                )
-                session.add(req_item)
-
-            # The request now holds its claim on loose stock until the pull that spends it is
-            # approved (#342). Nothing for the OPENING_ITEM lines - see the gate above.
-            warehouse_repository.create_reservations(
-                session,
-                project.id,
-                ReservationSource.SHIPPING_OUT_REQUEST,
-                req.id,
-                loose_needs_by_draft[draft_index],
-            )
-
-            created_shipping_requests.append(req)
+    #
+    # Every guard and the reservation gate live in shipping_requests (#451), because the Shipping
+    # module raises requests straight off inventory now and both paths have to be held to the same
+    # rules - a leaf that cannot ship twice does not become shippable twice by being asked from a
+    # different screen.
+    created_shipping_requests = _shipping_requests.create_shipping_out_requests(
+        session,
+        project.id,
+        shipping_pr_drafts or [],
+        created_by="Hardware Schedule Import",
+        acknowledge_incomplete_leaves=acknowledge_incomplete_leaves,
+    )
 
     # 7. Shop-assembly request + openings (#293)
     # Start a Task mints a PENDING ShopAssemblyRequest (NO PullRequest). The ShopAssemblyOpening/Item

@@ -263,6 +263,59 @@ Reconciliation step's own checkboxes (PO purpose only): `Deselect All`, then tic
 you want, and at the PO step check a single manufacturer card. Fill **Order As** on that step - an
 import-created draft otherwise blocks the register dialog with per-line `Required` errors.
 
+**The register dialog's Register button is silently inert while validation fails, and the buyer rule
+is the one that catches you.** `validate()` in `GpPurchaseOrderDialog.tsx` refuses with
+`Buyer <id> is not assigned to this project` when `registerProjectAllowed` is false, and a fresh PR
+environment has an EMPTY `buyerAssignments` table - so the very first registration on any new
+environment hits it. The button is not disabled and no toast fires; the only signal is the alert
+already sitting at the top of the dialog, which reads like a warning rather than a blocker. If a
+click produces no network request at all, that is what happened. Fix it properly at Admin -> Buyers
+-> Add Buyer (pick the GP buyer your account is linked to, add the project), not by scripting the
+mutation.
+
+**A MULTI-LINE PO fails GP registration with eConnect 9191. A single-line one succeeds.** Isolated
+2026-08-03 on pr-463 against TUBC:
+
+```
+GP PROC   taPoLine
+ERROR STATE 9191
+DESCRIPTION Invalid PO Status (POLNESTA), the line item cannot be manually released
+```
+
+Four registrations, same dialog, same vendor / cost code / tax detail, relay connected throughout:
+
+| Lines | Product codes | Result |
+| --- | --- | --- |
+| 5 | Pemko, all with embedded `"` | 9191 |
+| 3 | SARGENT, one code 35 chars | 9191 |
+| 1 | `6042 112 US32D` | **PO0000084** |
+| 3 | `MKA` / `M62BD` / `AQD2`, all short and clean | 9191 |
+| 1 | `MKA` | **PO0000085** |
+
+So it is neither the item codes nor their length - **it is the line count**, which points at the
+relay's `taPoLine` sequencing rather than at GP data or at the schedule. Worth a bug of its own; the
+register dialog's own Remove-line-item buttons are the workaround, and receiving is unaffected.
+
+Until that is fixed, seed inventory one product at a time: register a single-line PO, receive it,
+approve it, repeat. Two of those took about ten minutes end to end and were enough to drive a
+shop-assembly request, an assembled leaf and two shipping-out requests.
+
+Two other things that still hold when GP is refusing outright:
+
+- `markPoAsOrdered` moves a DRAFT with a PO number and a Nexus vendor straight to `GP_REGISTERED`
+  with no relay involvement (`po_repository.py`). That is enough to exercise anything keyed on a
+  *placed* PO - on-order quantities, back-order reads - without touching GP. It does NOT create a
+  receipt, so it seeds no inventory.
+- The stock pool is not an escape hatch: there is no `createStockItem`. Stock only enters through a
+  receive, or out of project inventory via `destockInventory`, so it has the same root dependency.
+
+**A re-import wipes the classification of every item it does not re-classify.** `finalize_import_session`
+re-persists the selected openings' hardware items with whatever the Classification step sent, so a
+run whose step only lists the one item needing ordering (the assembly purpose does this) leaves the
+rest with `classification = null`. Anything reading Site/Shop - the #451 coverage groups, the
+shop-assembly filter - then sees them as unclassified. Re-run the PO purpose over the opening and
+classify the whole grid to restore it.
+
 ## Getting Started (Every Session)
 
 0. **Pick the environment first.** Testing runs against the PR environment for the PR you are working on. Set `PR` once and let both URLs derive from it, so there is no production URL in the snippet to fat-finger:

@@ -60,6 +60,13 @@ interface RequestsReviewPageProps<TRequest extends ReviewableRequest> {
   renderDetails: (req: TRequest) => ReactNode;
   /** Optional standing note under the description (e.g. where accepted requests get processed). */
   note?: ReactNode;
+  /**
+   * Extra actions beside Accept/Reject on a pending request - shipping's Edit lives here (#451).
+   * Only rendered in pending mode: an accepted request's lines are already on a warehouse pull.
+   */
+  renderExtraActions?: (req: TRequest) => ReactNode;
+  /** Rendered above the list, right of the heading (e.g. shipping's "New request"). */
+  headerAction?: ReactNode;
 }
 
 /**
@@ -84,6 +91,8 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
   renderSummary,
   renderDetails,
   note,
+  renderExtraActions,
+  headerAction,
 }: RequestsReviewPageProps<TRequest>) {
   const { showToast } = useToast();
   // Which request is mid-flight, and which action - drives per-button spinners while every button on
@@ -146,6 +155,7 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
         {loaded && requests.length > 0 && (
           <Chip size="small" label={`${requests.length} in queue`} />
         )}
+        {headerAction && <Box sx={{ ml: 'auto' }}>{headerAction}</Box>}
       </Box>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
         {description}
@@ -255,6 +265,7 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
                           >
                             Reject
                           </Button>
+                          {renderExtraActions?.(req)}
                         </Stack>
                       )}
                     </Stack>

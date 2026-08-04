@@ -129,8 +129,10 @@ def get_ship_ready_items(
                 }
             )
 
-    # Sort loose items by opening_number
-    loose_items.sort(key=lambda x: x["opening_number"])
+    # Sort by opening, with the unattributed lines (#451) last: they belong to the project rather
+    # than to any door, so they read as a trailing "everything else" group rather than jumping the
+    # queue ahead of opening 0101. `or ""` alone would sort them first, which is the wrong end.
+    loose_items.sort(key=lambda x: (x["opening_number"] is None, x["opening_number"] or ""))
 
     return {
         "opening_items": opening_items,
