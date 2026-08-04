@@ -7,7 +7,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { ToastProvider } from '../../../components/Toast';
 import { CartProvider, useCart, type CartItem } from '../../../contexts/CartContext';
 import DeliveryRequestForm from '../DeliveryRequestForm';
-import { CONFIRM_SHIPMENT, GET_SHIP_READY_ITEMS } from '../../../graphql/shipping';
+import { CONFIRM_SHIPMENT, GET_SHIP_READY_ITEMS, GET_SHIPMENT_METHODS } from '../../../graphql/shipping';
 import { GET_WAREHOUSES } from '../../../graphql/shared';
 
 // MUI Dialog under jsdom is slow, and slower still when the whole suite runs in parallel - the same
@@ -60,6 +60,7 @@ const BLANK_DETAILS = {
   shipperEmail: null as string | null,
   shipperPhone: null as string | null,
   pickupLocation: null as string | null,
+  shipmentMethod: null as string | null,
   carrierTagBol: null as string | null,
   weightLbs: null as number | null,
   deliveryAddress: null as string | null,
@@ -222,9 +223,18 @@ function seededCache() {
   return cache;
 }
 
+// The form reads the shipment-method list on open (#451). Folded in here rather than added to every
+// mock list below: an empty list is the state these tests want - the method field degrades to free
+// text and none of them assert on it - and a missing mock would fail each one on an unrelated query.
+const shipmentMethodsMock: MockedResponse = {
+  request: { query: GET_SHIPMENT_METHODS, variables: { activeOnly: true } },
+  maxUsageCount: Number.POSITIVE_INFINITY,
+  result: { data: { shipmentMethods: [] } },
+};
+
 function renderForm(mocks: MockedResponse[], cache: InMemoryCache, withShipReadyProbe = false) {
   render(
-    <MockedProvider mocks={mocks} cache={cache}>
+    <MockedProvider mocks={[shipmentMethodsMock, ...mocks]} cache={cache}>
       <MemoryRouter>
         <ToastProvider>
           <CartProvider>

@@ -1123,6 +1123,9 @@ class PackingSlip:
     shipper_email: str | None
     shipper_phone: str | None
     pickup_location: str | None
+    # How the load travelled (#451). A snapshot of the method's name, so a renamed or retired method
+    # cannot rewrite what an already-shipped slip says.
+    shipment_method: str | None
     carrier_tag_bol: str | None
     weight_lbs: float | None
     delivery_address: str | None
@@ -1249,6 +1252,23 @@ class ShipReadyLooseItem:
     hardware_category: str
     product_code: str
     available_quantity: int
+
+
+@strawberry.type
+class ShipmentMethod:
+    """How a load can travel, as the shipping department maintains it (#451).
+
+    Retiring one flips `isActive` rather than deleting it: the Delivery Request form offers only
+    active methods, while shipments that already went out under it keep printing their own snapshot
+    of the name.
+    """
+
+    id: strawberry.ID
+    name: str
+    is_active: bool
+    sort_order: int
+    created_at: datetime
+    updated_at: datetime
 
 
 @strawberry.type
