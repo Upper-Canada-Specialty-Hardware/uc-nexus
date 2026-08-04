@@ -66,7 +66,7 @@ Consequences when driving the app by script:
   `Admin/Manager role required`. Getting `Authentication required` from inside a signed-in page means
   your helper dropped the header, not that the session died.
 - Admin-gated reads worth knowing, because a non-admin session gets FORBIDDEN rather than an empty
-  list: `users`, `adminStats`, `openingHardwareStatus`, `locationDuplicates`. Their writes too -
+  list: `users`, `adminStats`, `adminOpeningStatuses`, `adminOpeningDeepDive`, `locationDuplicates`. Their writes too -
   the vendor and warehouse CRUD, `overrideInventoryQuantity`, `mergeLocations`.
 - `require_admin` costs a Clerk Backend API round-trip per call (`require_user` does not), so a page
   hitting several admin resolvers at once is legitimately slower than the equivalent user page.
@@ -255,8 +255,10 @@ register dialog is allowed to edit them), so hand-built `lineItems` produce line
 the schedule rows. The PO registers, GP takes it, the receive posts and inventory appears - and every
 schedule item is still `PO_DRAFTED`, so the assembly gate refuses exactly as it does for a
 Create-PO-dialog PO. Verified 2026-08-03 on pr-460: two POs (PO0000082, PO0000083) and two receipts
-landed in TUBC and `projectInventoryAvailability` showed all four products, while
-`openingHardwareStatus` for the opening still read `PO_DRAFTED` across the board. Drive the register
+landed in TUBC and `projectInventoryAvailability` showed all four products, while the opening's
+hardware still read as unpurchased across the board (`openingHardwareStatus` at the time, which
+called it `PO_DRAFTED`; `adminOpeningDeepDive` now reports the same severed binding honestly, as
+`notPurchased`). Drive the register
 **dialog** when the schedule linkage matters; scripting the mutation is only safe when all you want is
 stock in the pool. Keep the GP footprint small by using the
 Reconciliation step's own checkboxes (PO purpose only): `Deselect All`, then tick just the one product
@@ -1028,7 +1030,12 @@ and a "<n> unit(s) still awaiting replacement" caption.
 
 **Sub-routes**:
 - Project Purchasing Progress (`/app/admin/project-purchasing-progress`)
-- Opening Status (`/app/admin/opening-status`)
+- Opening Status (`/app/admin/opening-status`) - project-scoped and loads nothing until a project is
+  picked. One row per opening (stage chip + procured fraction + per-leaf chips); expanding a row
+  fires `adminOpeningDeepDive` for that opening alone and shows every hardware line partitioned
+  across not purchased / drafted / on order / pulled for assembly / assembled / staged / pulled for
+  shipping / shipped. There is no "received" bucket by design - inventory is fungible on receipt, so
+  the PO line's received/ordered fill is shown as context instead.
 - Vendors (`/app/admin/vendors`) — vendor CRUD
 - Warehouses (`/app/admin/warehouses`) — warehouse CRUD (PR #158, issue #88); see below
 - Projects (`/app/admin/projects`) — edit project details + OSSA flag (see below)
