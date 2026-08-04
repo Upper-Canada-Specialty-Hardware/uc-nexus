@@ -55,10 +55,21 @@ def get_item_types(session: Session, *, active_only: bool = False) -> list[Inven
 
 
 def get_item_type(session: Session, type_id: uuid.UUID) -> InventoryItemType:
+    """One type with its attributes, re-read rather than served from the identity map.
+
+    `populate_existing` is what makes "add an attribute, then return the type" correct. Adding one
+    goes through this function first (to check the type exists), which loads `.attributes` as it
+    stood *before* the insert; without this flag the eager loader would leave that already-populated
+    collection alone on the way back out, and the caller would be handed a type missing the very
+    attribute it just created. A commit in between happens to hide it - expiry forces the reload -
+    but that makes the answer depend on whether somebody committed, which is not a property this
+    function should have.
+    """
     item_type = session.scalars(
         select(InventoryItemType)
         .options(selectinload(InventoryItemType.attributes))
         .where(InventoryItemType.id == type_id)
+        .execution_options(populate_existing=True)
     ).first()
     if item_type is None:
         raise NotFoundError(f"Inventory item type {type_id} not found")
@@ -216,6 +227,8 @@ def get_items(
 
 
 def get_item(session: Session, item_id: uuid.UUID) -> CustomInventoryItem:
+    """One catalogued product with its values. `populate_existing` for the reason `get_item_type`
+    carries it: a write that re-reads its own subject has to see what it just wrote."""
     item = session.scalars(
         select(CustomInventoryItem)
         .options(
@@ -223,6 +236,7 @@ def get_item(session: Session, item_id: uuid.UUID) -> CustomInventoryItem:
             selectinload(CustomInventoryItem.item_type),
         )
         .where(CustomInventoryItem.id == item_id)
+        .execution_options(populate_existing=True)
     ).first()
     if item is None:
         raise NotFoundError(f"Custom inventory item {item_id} not found")

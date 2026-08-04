@@ -20,7 +20,7 @@ import pytest
 from sqlalchemy import select
 
 from app.errors import ConflictError, NotFoundError, ValidationError
-from app.models.enums import ReservationSource
+from app.models.enums import POStatus, ReservationSource
 from app.models.inventory import InventoryLocation
 from app.models.inventory_item_type import CustomInventoryItemValue, InventoryItemType
 from app.models.project import Project
@@ -81,7 +81,7 @@ def test_a_code_already_carrying_hardware_is_refused(db_session):
     """The check that earns its keep. Hardware categories come off the TITAN schedule and are
     registered nowhere, so the only evidence HINGE is taken is that something was bought under it.
     A type created on such a code would show every hinge in the building as one of its own items."""
-    po = PurchaseOrder(id=uuid.uuid4(), request_number=f"REQ-{uuid.uuid4().hex[:6]}")
+    po = PurchaseOrder(id=uuid.uuid4(), request_number=f"REQ-{uuid.uuid4().hex[:6]}", status=POStatus.DRAFT)
     db_session.add(po)
     db_session.flush()
     db_session.add(
@@ -348,7 +348,14 @@ def test_a_frame_travels_the_hardware_pipeline_untouched(db_session):
     warehouse_id = warehouse_admin_repository.get_primary_warehouse_id(db_session)
 
     # Bought: an ordinary PO line, carrying the type code as its hardware category.
-    po = PurchaseOrder(id=uuid.uuid4(), request_number=f"REQ-{uuid.uuid4().hex[:6]}", project_id=project.id)
+    po = PurchaseOrder(
+        id=uuid.uuid4(),
+        request_number=f"REQ-{uuid.uuid4().hex[:6]}",
+        project_id=project.id,
+        status=POStatus.GP_REGISTERED,
+        po_number=f"PO{uuid.uuid4().hex[:6]}",
+        gp_company="TEST",
+    )
     db_session.add(po)
     db_session.flush()
     db_session.add(
