@@ -779,7 +779,9 @@ class PullRequestItem:
     id: strawberry.ID
     pull_request_id: strawberry.ID
     item_type: PullRequestItemType
-    opening_number: str
+    # Null on a line whose request was raised straight off inventory (#451) - shelf stock carries no
+    # opening. Schedule-driven lines keep theirs.
+    opening_number: str | None
     opening_item_id: strawberry.ID | None
     # Deficient shop-assembly checklist item this line replaces (#339). Set only on PR-REPL lines.
     sa_opening_item_id: strawberry.ID | None
@@ -1050,7 +1052,8 @@ class ShippingOutRequestItem:
     id: strawberry.ID
     shipping_out_request_id: strawberry.ID
     item_type: PullRequestItemType
-    opening_number: str
+    # Null on a line raised straight off inventory (#451) - shelf stock carries no opening.
+    opening_number: str | None
     opening_item_id: strawberry.ID | None
     # Door leaf this request line is for (#335): 1 or 2 on an OPENING_ITEM line, null on LOOSE.
     leaf: int | None
@@ -1240,10 +1243,61 @@ class InventoryHierarchyNode:
 
 @strawberry.type
 class ShipReadyLooseItem:
-    opening_number: str
+    # Null on stock pulled by a request raised straight off inventory (#451) - it is owed to the
+    # project, not to a door.
+    opening_number: str | None
     hardware_category: str
     product_code: str
     available_quantity: int
+
+
+@strawberry.type
+class ShippingCoverageLine:
+    """One product a door leaf is owed, and where those units currently are (#451)."""
+
+    hardware_category: str
+    product_code: str
+    # SITE_HARDWARE ships loose by definition; SHOP_HARDWARE should have been fitted at the bench.
+    # Null means the schedule was never classified, which the builder shows as its own group rather
+    # than guessing on the user's behalf.
+    classification: Classification | None
+    # What the schedule says this leaf takes.
+    owed_quantity: int
+    # What is physically bolted onto the assembled leaf. Always 0 for site hardware, and for a leaf
+    # that has not been assembled yet.
+    installed_quantity: int
+    # What this opening has already been sent, or is in the middle of being sent, of this product -
+    # shipped slips, staged pulls, and lines on live requests. The schedule never shrinks when
+    # hardware goes out, so without this term a leaf shipped last month is offered again in full.
+    spoken_for_quantity: int
+    # What still has to travel loose alongside the leaf: `owed - installed - spoken for`. For shop
+    # hardware that is exactly what shop assembly skipped and nobody has sent since.
+    suggested_quantity: int
+    # Placed with a vendor and not yet received, project-wide for this product. Not an allocation to
+    # this leaf - it is the answer to "is more coming, or is this all there will ever be".
+    on_order_quantity: int
+
+
+@strawberry.type
+class ShippingCoverageLeaf:
+    """What one door leaf of a selected opening still owes the site (#451).
+
+    Availability is deliberately absent: `projectInventoryAvailability` is the single answer to
+    "what may I claim" (#342) and the creation gate is applied against that number, so the builder
+    joins the two by (hardwareCategory, productCode) rather than reading a second figure from here
+    that could disagree with the one it is held to.
+    """
+
+    opening_number: str
+    # Null only for a legacy opening no leaf data resolves anywhere.
+    leaf: int | None
+    status: LeafStatus
+    # The assembled unit that IS this leaf, when there is one.
+    opening_item_id: strawberry.ID | None
+    # The request number already holding this leaf, if a live shipping-out request claimed it. Such
+    # a leaf cannot go on a second request - one physical leaf ships once.
+    claimed_by_request_number: str | None
+    lines: list[ShippingCoverageLine]
 
 
 @strawberry.type
@@ -1309,7 +1363,9 @@ class PickSheetLeaf:
     Every leaf is listed, never summarised into "and N more": the picker is building carts per leaf,
     so the list of leaves *is* the work, and a truncated one sends them back to another screen."""
 
-    opening_number: str
+    # Null on an unattributed line (#451): the units are owed to the project, not to a door, so
+    # there is no cart to name and the picker just puts them on the shipment.
+    opening_number: str | None
     leaf: int | None
     quantity: int
 
@@ -1365,7 +1421,7 @@ class PickSheetFetchItem:
 
     pull_request_item_id: strawberry.ID
     opening_item_id: strawberry.ID | None
-    opening_number: str
+    opening_number: str | None
     leaf: int | None
     aisle: str | None
     row: str | None

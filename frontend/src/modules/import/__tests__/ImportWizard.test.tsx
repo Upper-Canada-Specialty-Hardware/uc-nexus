@@ -14,7 +14,7 @@ import {
   GET_PROJECT_INVENTORY_AVAILABILITY,
   GET_PULL_REQUESTS,
 } from '../../../graphql/warehouse';
-import { GET_SHIPPING_OUT_REQUESTS } from '../../../graphql/shipping';
+import { GET_SHIPPING_COVERAGE, GET_SHIPPING_OUT_REQUESTS } from '../../../graphql/shipping';
 import {
   useHardwareScheduleParser,
   type UseHardwareScheduleParserReturn,
@@ -347,6 +347,73 @@ const shippingOpeningItemsMock: MockedResponse = {
   },
 };
 
+function coverageLine(overrides: Record<string, unknown> = {}) {
+  return {
+    __typename: 'ShippingCoverageLine',
+    hardwareCategory: 'Hinges',
+    productCode: 'HNG-100',
+    classification: 'SHOP_HARDWARE',
+    owedQuantity: 3,
+    installedQuantity: 3,
+    spokenForQuantity: 0,
+    suggestedQuantity: 0,
+    onOrderQuantity: 0,
+    ...overrides,
+  };
+}
+
+// What the two selected openings still owe (#451), matching the fixtures above: O-1's hinges went
+// onto its two leaves and are owed nothing further, O-2's lock is site hardware still to send.
+const shippingCoverageMock: MockedResponse = {
+  request: {
+    query: GET_SHIPPING_COVERAGE,
+    variables: { projectId: 'proj-1', openingNumbers: ['O-1', 'O-2'] },
+  },
+  maxUsageCount: Number.POSITIVE_INFINITY,
+  result: {
+    data: {
+      shippingCoverage: [
+        {
+          __typename: 'ShippingCoverageLeaf',
+          openingNumber: 'O-1',
+          leaf: 1,
+          status: 'IN_INVENTORY',
+          openingItemId: 'oi-leaf-1',
+          claimedByRequestNumber: null,
+          lines: [coverageLine()],
+        },
+        {
+          __typename: 'ShippingCoverageLeaf',
+          openingNumber: 'O-1',
+          leaf: 2,
+          status: 'IN_INVENTORY',
+          openingItemId: 'oi-leaf-2',
+          claimedByRequestNumber: null,
+          lines: [coverageLine()],
+        },
+        {
+          __typename: 'ShippingCoverageLeaf',
+          openingNumber: 'O-2',
+          leaf: null,
+          status: 'NOT_ASSEMBLED',
+          openingItemId: null,
+          claimedByRequestNumber: null,
+          lines: [
+            coverageLine({
+              hardwareCategory: 'Locks',
+              productCode: 'LCK-200',
+              classification: 'SITE_HARDWARE',
+              owedQuantity: 1,
+              installedQuantity: 0,
+              suggestedQuantity: 1,
+            }),
+          ],
+        },
+      ],
+    },
+  },
+};
+
 // ---- Harness ----
 
 function renderWizard(
@@ -510,7 +577,13 @@ describe('ImportWizard step transitions', () => {
   it('offers assembled door leaves per leaf and drops their hardware from the loose list', async () => {
     renderWizard({
       project: reimportProject,
-      mocks: [...reimportBaseMocks, shippingReconcileMock, shippingOpeningItemsMock, ...claimMocks()],
+      mocks: [
+        ...reimportBaseMocks,
+        shippingReconcileMock,
+        shippingOpeningItemsMock,
+        shippingCoverageMock,
+        ...claimMocks(),
+      ],
     });
     await flushApollo();
     clickNext();
@@ -523,23 +596,26 @@ describe('ImportWizard step transitions', () => {
 
     expect(screen.getByRole('heading', { name: 'Reconciliation' })).toBeInTheDocument();
     clickNext();
+    await flushApollo();
 
     expect(screen.getByRole('heading', { name: 'Shipping Pull Requests' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /Add Shipping PR/i }));
+    await flushApollo();
 
     // One row per assembled leaf, and the SHIP_READY unit is not offered.
     expect(screen.getByText('Opening O-1 - Leaf 1')).toBeInTheDocument();
     expect(screen.getByText('Opening O-1 - Leaf 2')).toBeInTheDocument();
     expect(screen.getAllByText(/Opening O-1 - Leaf/)).toHaveLength(2);
 
-    // The hinges live on those leaves now, so they are not offered as loose stock; the lock still is.
-    expect(screen.queryByText(/Product: HNG-100/)).not.toBeInTheDocument();
-    expect(screen.getByText(/Product: LCK-200/)).toBeInTheDocument();
+    // The hinges live on those leaves now, so the coverage owes nothing loose for them; the lock is
+    // site hardware that never went near the bench, so it is still owed and still offered.
+    expect(screen.getByText('O-2 | LCK-200 | Locks')).toBeInTheDocument();
+    expect(screen.queryByText(/^O-1 \| HNG-100/)).not.toBeInTheDocument();
 
     // Ticking a leaf records a selection on the draft.
     const checkboxes = screen.getAllByRole('checkbox');
     fireEvent.click(checkboxes[0]);
-    expect(screen.getByText('Select items (1 selected):')).toBeInTheDocument();
+    expect(screen.getByText('1 door leaf/leaves')).toBeInTheDocument();
     expect(nextButton()).toBeDisabled(); // still needs a PR number
 
     fireEvent.change(screen.getByRole('textbox', { name: /PR Number/i }), {

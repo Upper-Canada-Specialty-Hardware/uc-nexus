@@ -30,15 +30,20 @@ function renderStep(leaves: AssembledLeafCandidate[], overrides: Record<string, 
     <ShippingPRsStep
       shippingPRDrafts={[EMPTY_DRAFT]}
       assembledLeaves={leaves}
-      looseItems={[]}
+      looseRows={[]}
       leavesLoading={false}
       leavesError={false}
+      coverageLoading={false}
+      coverageError={false}
       onAddPR={vi.fn()}
       onRemovePR={vi.fn()}
       onUpdatePR={vi.fn()}
       onTogglePRItem={onTogglePRItem}
+      onSetPRItemQuantity={vi.fn()}
       availabilityByCombo={new Map()}
+      requestedByCombo={new Map()}
       availabilityShortfalls={[]}
+      availabilityLoading={false}
       availabilityError={false}
       onAcknowledgeIncompleteLeaf={onAcknowledgeIncompleteLeaf}
       onNext={vi.fn()}

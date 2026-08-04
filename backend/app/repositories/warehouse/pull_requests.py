@@ -9,7 +9,13 @@ from datetime import datetime
 from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.errors import ConflictError, InvalidStateTransitionError, NotFoundError, ValidationError
+from app.errors import (
+    ConflictError,
+    InvalidStateTransitionError,
+    InventoryShortfallError,
+    NotFoundError,
+    ValidationError,
+)
 from app.models.enums import (
     AssemblyStatus,
     AuditAction,
@@ -212,6 +218,39 @@ def check_inventory_sufficiency(
     return SufficiencyResult(shortfalls=shortfalls, inventory_by_combo=dict(inv_by_combo))
 
 
+def gate_on_available_inventory(
+    session: Session,
+    project_id: uuid.UUID,
+    needs: list[tuple[str, str, int]],
+    *,
+    label: str,
+    request_number: str | None,
+) -> None:
+    """The creation-time inventory gate (#342): refuse the whole request unless every line fits.
+
+    Whole-request, never partial. The creator is being asked to make one decision about one
+    selection, so they get the entire list of what does not fit and refine it once - this is what
+    replaced the shortfall that used to surface at accept, where nobody could do anything about it.
+
+    The rows are locked for the rest of the transaction, so two creators racing for the last hinge
+    serialise: the second sees the first one's reservation rather than both passing on the same
+    stock. It lives here, beside the arithmetic it applies, because both request types and both
+    screens that raise them gate identically - only the noun in the message differs.
+    """
+    from app.services import notification_service
+
+    result = check_inventory_sufficiency(session, project_id, needs, lock=True, reservation_aware=True)
+    if not result.sufficient:
+        raise InventoryShortfallError(
+            f"Cannot create this {label} - the hardware it needs is not available. "
+            + notification_service.format_shortfall_lines(result.shortfalls)
+            + ". Reduce the selection, or wait for stock to be received or another request to be released.",
+            shortfalls=result.shortfalls,
+            project_id=project_id,
+            request_number=request_number,
+        )
+
+
 def _is_replacement_pull(session: Session, pr: PullRequestModel) -> bool:
     """Structural test for a PR-REPL pull: at least one line carries `sa_opening_item_id` (#339).
 
@@ -330,7 +369,7 @@ class PickSheetLeaf:
     """One door leaf a section's units are owed to. Every leaf is listed, never summarised: the
     picker is building carts per leaf, and "and 6 more" is exactly the information they need."""
 
-    opening_number: str
+    opening_number: str | None
     leaf: int | None
     quantity: int
 
@@ -393,7 +432,7 @@ class PickSheetFetchItem:
 
     pull_request_item_id: uuid.UUID
     opening_item_id: uuid.UUID | None
-    opening_number: str
+    opening_number: str | None
     leaf: int | None
     aisle: str | None
     row: str | None

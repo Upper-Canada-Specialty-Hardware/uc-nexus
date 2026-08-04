@@ -26,6 +26,9 @@ export function leafIdentity(
   openingNumber: string | null | undefined,
   leaf: number | null | undefined,
 ): string {
-  const opening = openingNumber || 'Opening';
+  // A line raised straight off inventory carries no opening (#451). Saying so is the point: the
+  // picker is being told these units are owed to the job rather than to a door, so there is no cart
+  // to build them into. The old placeholder read "Opening", which claimed the opposite.
+  const opening = openingNumber || 'Unattributed';
   return leaf != null ? `${opening} · L${leaf}` : opening;
 }

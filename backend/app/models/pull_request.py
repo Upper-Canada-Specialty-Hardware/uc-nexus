@@ -94,7 +94,10 @@ class PullRequestItem(Base):
         ),
         nullable=False,
     )
-    opening_number: Mapped[str] = mapped_column(String, nullable=False)
+    # Null on a line copied from a shipping-out request that was raised straight off inventory
+    # (#451) - a hinge on a shelf belongs to the project, not to a door. The pick sheet groups its
+    # carts by this, so an unattributed line simply has no cart to name.
+    opening_number: Mapped[str | None] = mapped_column(String, nullable=True)
     opening_item_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("opening_items.id"), nullable=True)
     # The deficient shop-assembly checklist item this line replaces (#339). Set only on PR-REPL
     # replacement lines minted by report_deficiency_at_assembly, so a replacement pull can be traced
