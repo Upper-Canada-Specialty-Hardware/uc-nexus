@@ -22,6 +22,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import ConflictError, NotFoundError, ValidationError
+from app.models.hardware import HardwareItem
 from app.models.inventory import InventoryLocation
 from app.models.inventory_item_type import (
     CustomInventoryItem,
@@ -147,7 +148,7 @@ def create_attribute(session: Session, *, type_id: uuid.UUID, name: str, sort_or
     name = (name or "").strip()
     if not name:
         raise ValidationError("An attribute needs a name.", field="name")
-    get_item_type(session, type_id)
+    _require_active_type(session, type_id)
     _check_attribute_name_free(session, type_id, name)
 
     attribute = InventoryItemAttribute(
@@ -212,7 +213,9 @@ def get_items(
     stmt = (
         select(CustomInventoryItem)
         .options(
-            selectinload(CustomInventoryItem.values),
+            # `.values` is not enough: `_item_to_type` reads `v.attribute.name` off every value, so
+            # without the chained load that is one SELECT per value (CLAUDE.md's N+1 rule).
+            selectinload(CustomInventoryItem.values).selectinload(CustomInventoryItemValue.attribute),
             selectinload(CustomInventoryItem.item_type),
         )
         .order_by(CustomInventoryItem.product_code.asc())
@@ -222,7 +225,10 @@ def get_items(
     if active_only:
         stmt = stmt.where(CustomInventoryItem.is_active.is_(True))
     if product_code_contains:
-        stmt = stmt.where(CustomInventoryItem.product_code.ilike(f"%{product_code_contains.strip()}%"))
+        # Escaped: an unescaped % or _ from the caller turns "find FR_1" into a wildcard search that
+        # quietly returns rows the user did not ask for.
+        needle = _escape_like(product_code_contains.strip())
+        stmt = stmt.where(CustomInventoryItem.product_code.ilike(f"%{needle}%", escape="\\"))
     return list(session.scalars(stmt).unique().all())
 
 
@@ -232,7 +238,9 @@ def get_item(session: Session, item_id: uuid.UUID) -> CustomInventoryItem:
     item = session.scalars(
         select(CustomInventoryItem)
         .options(
-            selectinload(CustomInventoryItem.values),
+            # `.values` is not enough: `_item_to_type` reads `v.attribute.name` off every value, so
+            # without the chained load that is one SELECT per value (CLAUDE.md's N+1 rule).
+            selectinload(CustomInventoryItem.values).selectinload(CustomInventoryItemValue.attribute),
             selectinload(CustomInventoryItem.item_type),
         )
         .where(CustomInventoryItem.id == item_id)
@@ -256,7 +264,7 @@ def create_item(
     product_code = (product_code or "").strip()
     if not product_code:
         raise ValidationError("An item needs a product code.", field="product_code")
-    get_item_type(session, type_id)
+    _require_active_type(session, type_id)
 
     existing = session.scalars(
         select(CustomInventoryItem).where(
@@ -308,7 +316,6 @@ def update_item(
     if values is not None:
         _apply_values(session, item, values)
     session.flush()
-    session.refresh(item)
     return item
 
 
@@ -362,6 +369,24 @@ def _apply_values(session: Session, item: CustomInventoryItem, values: list[dict
             current.value = text
 
 
+def _require_active_type(session: Session, type_id: uuid.UUID) -> InventoryItemType:
+    """The type must exist AND still be live to be catalogued under.
+
+    Retiring a type takes it out of every picker, so the only way to reach this with a retired one is
+    a stale tab or a direct call - and both should be told no rather than quietly growing the catalog
+    of something the warehouse has stopped using.
+    """
+    item_type = get_item_type(session, type_id)
+    if not item_type.is_active:
+        raise ConflictError(f"The type {item_type.name} is retired; reactivate it first.", field="type_id")
+    return item_type
+
+
+def _escape_like(raw: str) -> str:
+    r"""Escape LIKE metacharacters so a search for "50%" means "50%" and not "anything after 50"."""
+    return raw.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _normalize_code(raw: str) -> str:
     """ "Door Sweeps" -> DOOR_SWEEPS. Predictable enough that a user can guess what their type will
     be called on the inventory screen before they press save."""
@@ -399,6 +424,10 @@ def _check_code_free(session: Session, code: str) -> None:
     bought and received. A type created on a code already carrying hardware would show every hinge in
     the building as an uncatalogued item of that type, which reads as data corruption to the person
     looking at the screen.
+
+    `hardware_items` is swept first because it is where a category ENTERS the system: a schedule can
+    be imported long before anything is ordered against it, and checking only the downstream tables
+    would happily hand out a code that the next PO raised off that schedule will collide with.
     """
     existing = session.scalars(select(InventoryItemType).where(InventoryItemType.code == code)).first()
     if existing is not None:
@@ -407,6 +436,7 @@ def _check_code_free(session: Session, code: str) -> None:
     in_use = session.execute(
         select(1).where(
             or_(
+                select(HardwareItem.id).where(func.upper(HardwareItem.hardware_category) == code).exists(),
                 select(POLineItem.id).where(func.upper(POLineItem.hardware_category) == code).exists(),
                 select(InventoryLocation.id).where(func.upper(InventoryLocation.hardware_category) == code).exists(),
                 select(StockItem.id).where(func.upper(StockItem.hardware_category) == code).exists(),

@@ -657,6 +657,17 @@ export default function HardwareItemsTab({ projectId }: HardwareItemsTabProps) {
     return [...aisleSet].sort();
   }, [groupBy, hierarchy, vendorHierarchy]);
 
+  // What a group is searchable by: its raw category code AND, for a non-schedule type, the display
+  // name the header actually shows (#454). Without the second, searching the word on screen -
+  // "Frames" - filters that group out, because the underlying label is FRAME.
+  const groupSearchText = useCallback(
+    (label: string) => {
+      const itemType = groupBy === 'category' ? typesByCode.get(label) : undefined;
+      return itemType ? `${label} ${itemType.name}`.toLowerCase() : label.toLowerCase();
+    },
+    [groupBy, typesByCode],
+  );
+
   // Filter hierarchy
   const filteredGroups = useMemo(() => {
     const search = debouncedSearch.toLowerCase();
@@ -664,7 +675,7 @@ export default function HardwareItemsTab({ projectId }: HardwareItemsTabProps) {
       .filter((group) => {
         if (groupBy === 'category' && categoryFilter && group.label !== categoryFilter) return false;
         if (search) {
-          const labelMatch = group.label.toLowerCase().includes(search);
+          const labelMatch = groupSearchText(group.label).includes(search);
           const productMatch = group.productCodes.some((pc) =>
             pc.productCode.toLowerCase().includes(search),
           );
@@ -674,7 +685,7 @@ export default function HardwareItemsTab({ projectId }: HardwareItemsTabProps) {
       })
       .map((group) => {
         if (search) {
-          const labelMatch = group.label.toLowerCase().includes(search);
+          const labelMatch = groupSearchText(group.label).includes(search);
           if (labelMatch) return group;
           return {
             ...group,
@@ -694,7 +705,7 @@ export default function HardwareItemsTab({ projectId }: HardwareItemsTabProps) {
         return group;
       })
       .filter((group) => group.productCodes.length > 0);
-  }, [activeGroups, debouncedSearch, categoryFilter, aisleFilter, groupBy]);
+  }, [activeGroups, debouncedSearch, categoryFilter, aisleFilter, groupBy, groupSearchText]);
 
   const grandTotals = useMemo(() => {
     const totalQty = filteredGroups.reduce((sum, g) => sum + g.totalQuantity, 0);

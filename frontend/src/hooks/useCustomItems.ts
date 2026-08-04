@@ -88,7 +88,7 @@ export function useCustomInventoryItems(options?: {
   );
   const items = useMemo(() => data?.customInventoryItems ?? [], [data]);
   const byKey = useMemo(
-    () => new Map(items.map((i) => [`${i.hardwareCategory}::${i.productCode}`, i])),
+    () => new Map(items.map((i) => [catalogKey(i.hardwareCategory, i.productCode), i])),
     [items],
   );
   return { items, byKey, loading, refetch };

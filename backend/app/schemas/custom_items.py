@@ -250,7 +250,10 @@ class CustomItemMutations:
         type_id: strawberry.ID,
         product_code: str,
         description: str | None = None,
-        values: list[CustomInventoryItemValueInput] = strawberry.field(default_factory=list),
+        # `| None = None`, not `strawberry.field(default_factory=list)`: that helper is for input-type
+        # ATTRIBUTES, and on a resolver argument it renders as required non-null in the SDL while
+        # handing the resolver the StrawberryField object itself when a caller omits it.
+        values: list[CustomInventoryItemValueInput] | None = None,
     ) -> CustomInventoryItem:
         """Catalog a product (#454). The values may cover any subset of the type's attributes."""
         with SessionLocal() as session:
@@ -259,7 +262,7 @@ class CustomItemMutations:
                 type_id=uuid.UUID(str(type_id)),
                 product_code=product_code,
                 description=description,
-                values=_values_input(values),
+                values=_values_input(values or []),
             )
             item_id = item.id
             session.commit()

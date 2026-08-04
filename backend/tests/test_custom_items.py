@@ -21,9 +21,10 @@ from sqlalchemy import select
 
 from app.errors import ConflictError, NotFoundError, ValidationError
 from app.models.enums import POStatus, ReservationSource
+from app.models.hardware import HardwareItem
 from app.models.inventory import InventoryLocation
 from app.models.inventory_item_type import CustomInventoryItemValue, InventoryItemType
-from app.models.project import Project
+from app.models.project import Opening, Project
 from app.models.purchase_order import POLineItem, PurchaseOrder
 from app.models.stock_item import StockItem
 from app.repositories import custom_items_repository as catalog
@@ -116,6 +117,30 @@ def test_a_code_already_on_stock_is_refused(db_session):
 
     with pytest.raises(ConflictError):
         _type(db_session, name="Shims", code="SHIM")
+
+
+def test_a_code_already_on_an_imported_schedule_is_refused(db_session):
+    """The earliest place a category appears. A schedule can be imported long before anything is
+    ordered against it, so checking only the downstream tables would hand out a code that the next
+    PO raised off that schedule collides with."""
+    project = _project(db_session)
+    opening = Opening(id=uuid.uuid4(), project_id=project.id, opening_number="101")
+    db_session.add(opening)
+    db_session.flush()
+    db_session.add(
+        HardwareItem(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            opening_id=opening.id,
+            hardware_category="GASKETS",
+            product_code="GK-1",
+            item_quantity=1,
+        )
+    )
+    db_session.flush()
+
+    with pytest.raises(ConflictError):
+        _type(db_session, name="Gaskets X", code="GASKETS")
 
 
 def test_renaming_a_type_leaves_its_code_alone(db_session):
@@ -303,6 +328,42 @@ def test_a_value_for_another_types_attribute_is_refused(db_session):
 def test_an_item_on_a_type_that_does_not_exist_is_refused(db_session):
     with pytest.raises(NotFoundError):
         catalog.create_item(db_session, type_id=uuid.uuid4(), product_code="NOPE")
+
+
+def test_a_retired_type_takes_no_new_items_or_attributes(db_session):
+    """Retiring takes a type out of every picker, so the only way to reach these with a retired one
+    is a stale tab or a direct call - and both should be told no rather than quietly growing the
+    catalog of something the warehouse has stopped using."""
+    retired = _type(db_session, name="Retired For Items")
+    catalog.update_item_type(db_session, retired.id, is_active=False)
+
+    with pytest.raises(ConflictError):
+        catalog.create_item(db_session, type_id=retired.id, product_code="RT-1")
+    with pytest.raises(ConflictError):
+        catalog.create_attribute(db_session, type_id=retired.id, name="Too Late")
+
+
+def test_creating_an_item_with_no_values_at_all_is_allowed(db_session):
+    """The `values` argument is optional on the mutation, so the repository has to accept its
+    absence rather than assume a list is always handed over."""
+    frames = _type(db_session, name="Frames M")
+    item = catalog.create_item(db_session, type_id=frames.id, product_code="FR-NOVALS")
+    assert catalog.get_item(db_session, item.id).values == []
+
+
+def test_a_search_term_containing_like_metacharacters_is_taken_literally(db_session):
+    """Unescaped, "%" would match everything and "_" would match any single character - so a search
+    would quietly return rows the user did not ask for."""
+    frames = _type(db_session, name="Frames N")
+    catalog.create_item(db_session, type_id=frames.id, product_code="FR-50%-A")
+    catalog.create_item(db_session, type_id=frames.id, product_code="FR-999-B")
+
+    hits = catalog.get_items(db_session, type_id=frames.id, product_code_contains="50%")
+    assert [i.product_code for i in hits] == ["FR-50%-A"]
+
+    catalog.create_item(db_session, type_id=frames.id, product_code="FRX1")
+    underscore = catalog.get_items(db_session, type_id=frames.id, product_code_contains="FR_")
+    assert [i.product_code for i in underscore] == []
 
 
 def test_retiring_an_item_hides_it_from_the_picker_only(db_session):

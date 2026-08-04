@@ -15,7 +15,7 @@ import {
   Typography,
 } from '@mui/material';
 import { DataGrid, type GridColDef, type GridRowParams } from '@mui/x-data-grid';
-import { Plus, RotateCcw, Tag } from 'lucide-react';
+import { Plus, RotateCcw, Tag, X } from 'lucide-react';
 import { useMutation } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import { useToast } from '../../components/Toast';
@@ -257,7 +257,9 @@ function TypePanel({
     createAttribute({ variables: { typeId: type.id, name, sortOrder } });
   };
 
-  const activeAttributes = type.attributes.filter((a) => a.isActive);
+  // Memoised, so `columns` below has a stable dependency and DataGrid is not handed a fresh
+  // `columns` identity on every render.
+  const activeAttributes = useMemo(() => type.attributes.filter((a) => a.isActive), [type.attributes]);
 
   const columns = useMemo<GridColDef[]>(() => {
     const base: GridColDef[] = [
@@ -361,13 +363,20 @@ function TypePanel({
               label={attribute.name}
               variant={attribute.isActive ? 'filled' : 'outlined'}
               size="small"
+              // Retire and reactivate must not look alike: an undo arrow on a live attribute reads
+              // as "restore", and clicking it to restore something would retire it instead. Retiring
+              // is an X, bringing one back is the undo arrow.
               onDelete={
                 attribute.isActive
                   ? () => updateAttribute({ variables: { id: attribute.id, isActive: false } })
                   : undefined
               }
               deleteIcon={
-                attribute.isActive ? <RotateCcw size={14} strokeWidth={1.75} /> : undefined
+                attribute.isActive ? (
+                  <Tooltip title={`Retire ${attribute.name}`}>
+                    <X size={14} strokeWidth={1.75} aria-label={`Retire ${attribute.name}`} />
+                  </Tooltip>
+                ) : undefined
               }
               icon={
                 attribute.isActive ? undefined : (
@@ -465,12 +474,17 @@ function TypeForm({
 
   // Mirrors the backend's `_normalize_code`. Shown, not sent: the server derives it again from the
   // name, so the preview can never disagree with what is stored.
+  //
+  // The character class has to match Python's `str.isalnum()`, which is true for accented and
+  // non-Latin letters - `[^A-Z0-9]` is not, so "Größe" would preview as GR_SSE and store as GRÖSSE.
+  // A code is immutable, so a user shown the wrong one is stuck with it. \p{L}\p{N} with the u flag
+  // is the equivalent class.
   const previewCode = useMemo(
     () =>
       name
         .trim()
         .toUpperCase()
-        .replace(/[^A-Z0-9]/g, '_')
+        .replace(/[^\p{L}\p{N}]/gu, '_')
         .replace(/_+/g, '_')
         .replace(/^_|_$/g, '')
         .slice(0, 50),
@@ -578,21 +592,39 @@ function ItemForm({
   });
   const saving = creating || updating;
 
-  const submit = () => {
-    if (saving) return;
-    // Send every active attribute, including the blanked ones: a value the user cleared has to
-    // reach the server as an empty string to be deleted, and omitting it would silently keep it.
-    const valuePayload = activeAttributes.map((attribute) => ({
+  // Send every active attribute, including the blanked ones: a value the user cleared has to reach
+  // the server as an empty string to be deleted, and omitting it would silently keep it.
+  const valuePayload = () =>
+    activeAttributes.map((attribute) => ({
       attributeId: attribute.id,
       value: values[attribute.id] ?? '',
     }));
 
+  /** Retire or reactivate, carrying whatever is on the form with it.
+   *
+   * This mutation closes the dialog on success, so sending only `isActive` would drop a description
+   * or attribute value the user had already typed - silently, since the refetch then overwrites the
+   * local state with the server's. Saving both is what the user means by pressing it. */
+  const toggleActive = () => {
+    if (!item || saving) return;
+    updateItem({
+      variables: {
+        id: item.id,
+        isActive: !item.isActive,
+        description: description.trim() || null,
+        values: valuePayload(),
+      },
+    });
+  };
+
+  const submit = () => {
+    if (saving) return;
     if (item) {
       updateItem({
         variables: {
           id: item.id,
           description: description.trim() || null,
-          values: valuePayload,
+          values: valuePayload(),
         },
       });
       return;
@@ -603,7 +635,7 @@ function ItemForm({
         typeId: type.id,
         productCode: productCode.trim(),
         description: description.trim() || null,
-        values: valuePayload,
+        values: valuePayload(),
       },
     });
   };
@@ -651,11 +683,7 @@ function ItemForm({
       )}
 
       {item && (
-        <Button
-          size="small"
-          sx={{ alignSelf: 'flex-start' }}
-          onClick={() => updateItem({ variables: { id: item.id, isActive: !item.isActive } })}
-        >
+        <Button size="small" sx={{ alignSelf: 'flex-start' }} disabled={saving} onClick={toggleActive}>
           {item.isActive ? 'Retire item' : 'Reactivate item'}
         </Button>
       )}

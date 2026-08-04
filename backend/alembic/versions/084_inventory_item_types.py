@@ -94,22 +94,42 @@ def upgrade() -> None:
     )
     op.create_index("ix_custom_inventory_item_values_item_id", "custom_inventory_item_values", ["item_id"])
 
+    # Seed only the codes nothing already uses as a hardware category. On a fresh database that is
+    # all three; on one where somebody has been buying under a category literally spelled FRAME, the
+    # seeded type would silently adopt that stock into its catalog and claim a code that can never be
+    # changed or deleted afterwards. Skipping is the safe half of that trade: the warehouse can
+    # create the type by hand under a name that does not collide.
+    bind = op.get_bind()
+    taken = {
+        row[0]
+        for row in bind.execute(
+            sa.text(
+                """
+                SELECT DISTINCT UPPER(hardware_category) FROM hardware_items
+                UNION SELECT DISTINCT UPPER(hardware_category) FROM po_line_items
+                UNION SELECT DISTINCT UPPER(hardware_category) FROM inventory_locations
+                UNION SELECT DISTINCT UPPER(hardware_category) FROM stock_items
+                """
+            )
+        )
+    }
+
     now = datetime.utcnow()
-    op.bulk_insert(
-        types,
-        [
-            {
-                "id": uuid.uuid4(),
-                "code": code,
-                "name": name,
-                "is_active": True,
-                "sort_order": order,
-                "created_at": now,
-                "updated_at": now,
-            }
-            for code, name, order in SEEDED_TYPES
-        ],
-    )
+    rows = [
+        {
+            "id": uuid.uuid4(),
+            "code": code,
+            "name": name,
+            "is_active": True,
+            "sort_order": order,
+            "created_at": now,
+            "updated_at": now,
+        }
+        for code, name, order in SEEDED_TYPES
+        if code not in taken
+    ]
+    if rows:
+        op.bulk_insert(types, rows)
 
 
 def downgrade() -> None:
