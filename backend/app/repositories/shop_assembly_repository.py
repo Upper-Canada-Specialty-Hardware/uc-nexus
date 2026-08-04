@@ -5,7 +5,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import and_, func, or_, select, true, tuple_
+from sqlalchemy import and_, func, or_, select, true
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
@@ -866,16 +866,16 @@ def get_replacement_work(
         return []
 
     # One batched lookup of the assembled leaves rather than one per row: the pending set is small,
-    # but "small today" is how N+1s get written. Keyed on (project, opening) rather than on the leaf
-    # as well, because a legacy null leaf has to match only a null leaf and SQL's `IN` over tuples
-    # cannot express that - the leaf match and `find_assembled_leaf`'s tie-break (a live row beats a
-    # shipped one, latest assembly wins among equals, via `_leaf_wins`) are applied in Python below,
-    # so both call sites resolve a re-assembled leaf identically.
-    keys = {(proj_id, opening.opening_id) for _item, opening, proj_id in rows}
+    # but "small today" is how N+1s get written. Filtered on `opening_id` alone - an opening id is a
+    # globally unique FK, so neither the project nor the leaf narrows it further, and a
+    # row-constructor `IN` over tuples is the shape that overflowed Postgres' parser stack in
+    # reconcile_schedule. The leaf could not be filtered here anyway: a legacy null leaf has to match
+    # only a null leaf, which SQL's `IN` cannot express. So the leaf match and `find_assembled_leaf`'s
+    # tie-break (a live row beats a shipped one, latest assembly wins among equals, via `_leaf_wins`)
+    # are applied in Python below, and both call sites resolve a re-assembled leaf identically.
+    opening_ids = {opening.opening_id for _item, opening, _proj_id in rows}
     leaf_by_key: dict[tuple[uuid.UUID, uuid.UUID, int | None], OpeningItemModel] = {}
-    for oi in session.scalars(
-        select(OpeningItemModel).where(tuple_(OpeningItemModel.project_id, OpeningItemModel.opening_id).in_(keys))
-    ).all():
+    for oi in session.scalars(select(OpeningItemModel).where(OpeningItemModel.opening_id.in_(opening_ids))).all():
         key = (oi.project_id, oi.opening_id, oi.leaf)
         incumbent = leaf_by_key.get(key)
         if incumbent is None or _leaf_wins(oi, incumbent):
