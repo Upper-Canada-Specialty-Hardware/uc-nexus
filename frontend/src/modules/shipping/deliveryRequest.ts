@@ -13,6 +13,7 @@ import {
   WEIGHT_FIELD,
   type DeliveryRequestField,
 } from '../../types/deliveryRequestFields';
+import { CONTAINER_TYPE_LABEL, isStacked, type ContainerType } from './staging';
 
 export type ShipmentStatus = 'SCHEDULED' | 'PICKED_UP' | 'DELIVERED';
 
@@ -41,6 +42,27 @@ export interface PackingSlipItem {
   productCode: string | null;
   hardwareCategory: string | null;
   quantity: number;
+}
+
+/** One placement inside a shipped container, as the slip stored it (#451). */
+export interface SlipContainerItem {
+  id: string;
+  itemType: string;
+  openingNumber: string | null;
+  leaf?: number | null;
+  hardwareCategory: string | null;
+  productCode: string | null;
+  quantity: number;
+  /** Load order. 0 went on first, which on a skid is the bottom of the stack. */
+  position: number;
+}
+
+/** One container a shipment went out in, with its contents (#451). */
+export interface SlipContainer {
+  id: string;
+  containerType: ContainerType;
+  name: string;
+  items: SlipContainerItem[];
 }
 
 /**
@@ -73,6 +95,7 @@ export type PackingSlipHeader = {
 
 export type PackingSlip = PackingSlipHeader & {
   items: PackingSlipItem[];
+  containers: SlipContainer[];
 };
 
 /** The same fields as form state: every one a string, because that is what an input holds. */
@@ -190,7 +213,12 @@ export function buildMaterialLines(
  * handed - and this used to drop the suffix entirely, which made one shipment produce two different
  * documents. Slips written before #452 have no placement stored and still print without it.
  */
-export function slipMaterialLines(items: PackingSlipItem[]): string[] {
+export function slipMaterialLines(items: PackingSlipItem[], containers?: SlipContainer[]): string[] {
+  // A shipment built out of containers prints as containers (#451) - that is how it arrives, and the
+  // flat list cannot say which skid to open. Slips with none fall through to the flat block, which
+  // covers everything cut before containers existed.
+  if (containers && containers.length > 0) return containerMaterialLines(containers);
+
   const openingItems = items
     .filter((i) => i.itemType === 'OPENING_ITEM')
     .map((i) => ({
@@ -209,6 +237,46 @@ export function slipMaterialLines(items: PackingSlipItem[]): string[] {
       quantity: i.quantity,
     }));
   return buildMaterialLines(openingItems, looseItems);
+}
+
+/** One line of a container's contents, in the same wording the flat material block uses. */
+function containerItemLine(item: SlipContainerItem): string {
+  if (item.itemType === 'OPENING_ITEM') {
+    const leaf = item.leaf != null ? ` Leaf ${item.leaf}` : '';
+    return `(1) Unit of Opening ${item.openingNumber ?? ''}${leaf}`;
+  }
+  const opening = item.openingNumber?.trim() ? ` (Opening ${item.openingNumber})` : '';
+  return `(${item.quantity}) ${units(item.quantity)} of ${item.productCode ?? ''} - ${item.hardwareCategory ?? ''}${opening}`;
+}
+
+/**
+ * The MATERIAL DESCRIPTION block as containers, which is how the load actually arrives (#451).
+ *
+ * A flat list tells the driver what is on the truck; it does not tell the person unloading which
+ * skid to open or what order it was stacked in. Each container gets a heading and its contents
+ * beneath, and a stacked type (skid, door cart) numbers them - position 0 went on first, so it is at
+ * the bottom and comes off last. Unstacked types are a set and print unnumbered rather than implying
+ * an order nobody loaded to.
+ *
+ * Returns an empty array when the slip has no containers, which is the signal to fall back to the
+ * flat list: shipments cut before containers existed, or by any path that never built one, still
+ * have to print.
+ */
+export function containerMaterialLines(containers: SlipContainer[]): string[] {
+  const lines: string[] = [];
+  for (const container of containers) {
+    lines.push(`${container.name.toUpperCase()} (${CONTAINER_TYPE_LABEL[container.containerType]})`);
+    const ordered = [...container.items].sort((a, b) => a.position - b.position);
+    const stacked = isStacked(container.containerType);
+    if (ordered.length === 0) {
+      lines.push('  (empty)');
+      continue;
+    }
+    ordered.forEach((item, index) => {
+      lines.push(`  ${stacked ? `${index + 1}. ` : ''}${containerItemLine(item)}`);
+    });
+  }
+  return lines;
 }
 
 // ---- Pickup location ------------------------------------------------------

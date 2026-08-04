@@ -93,6 +93,8 @@ function slip(overrides: Record<string, unknown> = {}) {
         quantity: 37,
       },
     ],
+    // How the load was arranged (#451). Every slip read carries it now, so the fixture does too.
+    containers: [],
     ...overrides,
   };
 }

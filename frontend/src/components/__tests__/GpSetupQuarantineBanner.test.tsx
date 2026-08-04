@@ -1,16 +1,14 @@
-import { useEffect } from 'react';
-import { render, screen } from '@testing-library/react';
-import { MockedProvider } from '@apollo/client/testing/react';
+import { render, screen, waitFor } from '@testing-library/react';
+import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
 import { MemoryRouter } from 'react-router-dom';
 import GpSetupQuarantineBanner, { GpSetupBadge } from '../GpSetupQuarantineBanner';
 import { ToastProvider } from '../Toast';
 import { isGpSetupBroken, type GpSetupStatus } from '../../types/project';
-import ShippingCart from '../../modules/shipping/ShippingCart';
-import { CartProvider, useCart } from '../../contexts/CartContext';
+import StagingWorkspace from '../../modules/shipping/StagingWorkspace';
+import { GET_STAGING_POOL } from '../../graphql/shipping';
 
-// ShippingCart mounts DeliveryRequestForm (closed), which reaches for Clerk and the PDF renderer.
-// Neither runs under jsdom and neither is what is under test here - same two stubs
-// DeliveryRequestForm's own suite installs.
+// StagingWorkspace mounts the confirm form (closed), which reaches for Clerk and the PDF renderer.
+// Neither runs under jsdom and neither is what is under test here.
 vi.mock('../../hooks/useIdentity', () => ({
   useIdentity: () => ({
     displayName: 'Me',
@@ -133,51 +131,84 @@ describe('GpSetupBadge', () => {
  * One real screen, to prove the banner is wired to an action and not just rendered next to one.
  * Shipping out is the last stage of the pipeline and the point of no return - hardware leaves the
  * building against a job whose costs cannot be booked - so its primary action is the one to pin.
+ * That action is now "Ship n containers" on the staging workspace (#451), which replaced the cart.
  */
-describe('ShippingCart under quarantine', () => {
-  /**
-   * The cart is loaded first. An empty cart already disables Proceed to Ship, so asserting on an
-   * empty one would pass whether the quarantine were wired up or not - the healthy control below is
-   * what makes the blocked case mean anything.
-   */
-  function LoadedCart({ project }: { project: GpSetupStatus | null }) {
-    const { addItem, itemCount } = useCart();
-    useEffect(() => {
-      if (itemCount === 0) {
-        addItem({ id: 'c1', itemType: 'Loose', openingNumber: 'A01', productCode: 'HG-100', quantity: 1 });
-      }
-    }, [addItem, itemCount]);
-    if (itemCount === 0) return null;
-    return (
-      <ShippingCart open onClose={() => {}} projectId="p1" projectName="Broken Job" project={project} />
-    );
+describe('Staging workspace under quarantine', () => {
+  const PROJECT_ID = 'p1';
+
+  // A loaded container, selected. An empty workspace already disables the ship button, so asserting
+  // on an empty one would pass whether the quarantine were wired up or not - the healthy control
+  // below is what makes the blocked case mean anything.
+  function poolMock(): MockedResponse {
+    return {
+      request: { query: GET_STAGING_POOL, variables: { projectId: PROJECT_ID } },
+      maxUsageCount: Number.POSITIVE_INFINITY,
+      result: {
+        data: {
+          stagingPool: {
+            __typename: 'StagingPool',
+            leaves: [],
+            looseItems: [],
+            containers: [
+              {
+                __typename: 'ShipmentContainer',
+                id: 'c-1',
+                projectId: PROJECT_ID,
+                containerType: 'BOX',
+                name: 'Box 1',
+                packingSlipId: null,
+                createdBy: 'tester',
+                items: [
+                  {
+                    __typename: 'ShipmentContainerItem',
+                    id: 'ci-1',
+                    itemType: 'LOOSE',
+                    openingItemId: null,
+                    openingNumber: 'A01',
+                    leaf: null,
+                    hardwareCategory: 'HINGE',
+                    productCode: 'HG-100',
+                    quantity: 1,
+                    position: 0,
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      },
+    };
   }
 
-  function renderCart(project: GpSetupStatus | null) {
-    return render(
-      <MockedProvider mocks={[]}>
+  async function renderWorkspace(project: GpSetupStatus | null) {
+    render(
+      <MockedProvider mocks={[poolMock()]}>
         <MemoryRouter>
           <ToastProvider>
-            <CartProvider>
-              <LoadedCart project={project} />
-            </CartProvider>
+            <StagingWorkspace projectId={PROJECT_ID} project={project} />
           </ToastProvider>
         </MemoryRouter>
       </MockedProvider>,
     );
+    // Select the container, or the ship button is disabled for having nothing on the truck.
+    const include = await screen.findByRole('checkbox', { name: /Include Box 1/i });
+    include.click();
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Ship 1 container/i })).toBeInTheDocument(),
+    );
   }
 
-  it('disables Proceed to Ship on a quarantined project and explains why', () => {
-    renderCart(BROKEN);
+  it('disables the shipment on a quarantined project and explains why', async () => {
+    await renderWorkspace(BROKEN);
 
     expect(screen.getByTestId('gp-setup-quarantine-banner')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Proceed to Ship' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /Ship 1 container/i })).toBeDisabled();
   });
 
-  it('leaves a loaded cart shippable when the project has never been checked', () => {
-    renderCart({ projectId: '23090', gpSetupOk: null });
+  it('leaves a loaded container shippable when the project has never been checked', async () => {
+    await renderWorkspace({ projectId: '23090', gpSetupOk: null });
 
     expect(screen.queryByTestId('gp-setup-quarantine-banner')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Proceed to Ship' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: /Ship 1 container/i })).toBeEnabled();
   });
 });

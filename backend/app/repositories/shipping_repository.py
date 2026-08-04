@@ -29,6 +29,7 @@ from app.models.pull_request import (
 from app.models.pull_request import (
     PullRequestItem as PullRequestItemModel,
 )
+from app.models.shipment_container import ShipmentContainer
 from app.models.shipping import (
     PackingSlip,
     PackingSlipItem,
@@ -475,8 +476,20 @@ def list_packing_slips(
     session: Session,
     project_id: uuid.UUID | None = None,
 ) -> list[PackingSlip]:
-    """List confirmed packing slips (newest first), optionally scoped to one project."""
-    stmt = select(PackingSlip).options(selectinload(PackingSlip.items)).order_by(PackingSlip.shipped_at.desc())
+    """List confirmed packing slips (newest first), optionally scoped to one project.
+
+    Containers and their items are eagerly loaded because `packing_slip_to_type` walks them to build
+    the per-container sections the Delivery Request prints - lazy loading here is two extra queries
+    per slip on a list view (CLAUDE.md perf rules).
+    """
+    stmt = (
+        select(PackingSlip)
+        .options(
+            selectinload(PackingSlip.items),
+            selectinload(PackingSlip.containers).selectinload(ShipmentContainer.items),
+        )
+        .order_by(PackingSlip.shipped_at.desc())
+    )
     if project_id is not None:
         stmt = stmt.where(PackingSlip.project_id == project_id)
     return list(session.scalars(stmt).unique().all())
@@ -697,8 +710,20 @@ def create_shipment_return(
 
 
 def get_packing_slip(session: Session, packing_slip_id: uuid.UUID) -> PackingSlip | None:
-    """Single packing slip with items eagerly loaded (mutation response reload)."""
-    stmt = select(PackingSlip).options(selectinload(PackingSlip.items)).where(PackingSlip.id == packing_slip_id)
+    """Single packing slip with items and containers eagerly loaded (mutation response reload).
+
+    Containers are loaded here too because every mutation that answers with a slip hands it to
+    `packing_slip_to_type`, which walks them - and a lazy load after the session closes is a
+    DetachedInstanceError rather than a slow query.
+    """
+    stmt = (
+        select(PackingSlip)
+        .options(
+            selectinload(PackingSlip.items),
+            selectinload(PackingSlip.containers).selectinload(ShipmentContainer.items),
+        )
+        .where(PackingSlip.id == packing_slip_id)
+    )
     return session.scalars(stmt).unique().first()
 
 

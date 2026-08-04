@@ -98,6 +98,9 @@ type PackingSlip {
   deliveredAt: DateTime
   deliveredBy: String
   items: [PackingSlipItem!]!
+  # How the load was physically arranged (#451), items in load order within each. Empty for a slip
+  # cut before containers existed, so the Delivery Request falls back to a flat material list.
+  containers: [ShipmentContainer!]!
 }
 
 # --- The Delivery Request header, once (#453) ---------------------------------------------------

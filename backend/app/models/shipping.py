@@ -1,6 +1,7 @@
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     CheckConstraint,
@@ -18,6 +19,9 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from . import Base
 from .enums import PullRequestItemType, ReturnDisposition, ShipmentStatus
+
+if TYPE_CHECKING:
+    from .shipment_container import ShipmentContainer
 
 
 class PackingSlip(Base):
@@ -99,6 +103,16 @@ class PackingSlip(Base):
     delivered_by: Mapped[str | None] = mapped_column(String, nullable=True)
 
     items: Mapped[list["PackingSlipItem"]] = relationship(back_populates="packing_slip")
+
+    # The containers this shipment went out in (#451), empty for a slip cut before containers existed
+    # or by any path that did not build one. `items` stays the record of WHAT shipped; this is how it
+    # was physically arranged, which is what the Delivery Request has to print for the person
+    # unloading it.
+    containers: Mapped[list["ShipmentContainer"]] = relationship(
+        "ShipmentContainer",
+        back_populates="packing_slip",
+        order_by="ShipmentContainer.created_at",
+    )
 
 
 class PackingSlipItem(Base):
