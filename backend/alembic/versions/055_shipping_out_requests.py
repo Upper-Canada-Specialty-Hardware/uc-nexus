@@ -1,6 +1,6 @@
 """shipping_out_requests + shipping_out_request_items (accept gate, #293 workstream B)
 
-Adds the two-entity "accept" gate for the shipping-out path: Start-a-Task mints a
+Adds the two-entity "accept" gate for the shipping-out path: Start-a-Request mints a
 ShippingOutRequest (PENDING); a signed-in user accepts it, which mints the existing warehouse
 PullRequest (SHIPPING_OUT, PENDING) and stamps pull_request_id. Mirrors the shop-assembly path,
 which reuses the pre-existing ShopAssemblyRequest tables.

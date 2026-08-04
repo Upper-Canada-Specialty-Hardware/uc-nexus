@@ -172,7 +172,7 @@ export const PICK_CONFIRM_REFETCH_QUERIES = ['GetPullPickSheet', 'GetPullRequest
 
 // Evicted, and disjoint from the list above (see the note at the top of this file). Every one of
 // these is read by a view that is not mounted while somebody is picking: the warehouse inventory
-// summaries behind the pick page, the Start-a-Task wizard's availability (the consumed reservation
+// summaries behind the pick page, the Start-a-Request wizard's availability (the consumed reservation
 // and the deduction both change what may be claimed), and the assembly floor's work lists, which
 // #343 made sensitive to the pull moving.
 export const PICK_CONFIRM_STALE_ROOT_FIELDS = [
@@ -227,7 +227,7 @@ export const PULL_STAGING_STALE_ROOT_FIELDS = ['assembleList', 'myWork', ...PIPE
 export const PULL_CANCEL_REFETCH_QUERIES = ['GetPullRequests', ...WAREHOUSE_REFETCH_QUERIES];
 
 // Evicted. All three are read by modules that are not mounted at cancel time: the assembly floor's
-// two work lists, the Start-a-Task wizard's availability (the re-created reservation changes what
+// two work lists, the Start-a-Request wizard's availability (the re-created reservation changes what
 // may be claimed), and the accept queue that the source request has just rejoined.
 export const PULL_CANCEL_STALE_ROOT_FIELDS = [
   'assembleList',

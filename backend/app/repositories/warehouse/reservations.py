@@ -122,7 +122,7 @@ def get_reserved_total(session: Session, source: ReservationSource, request_id: 
 
 
 def get_project_availability(session: Session, project_id: uuid.UUID) -> list[dict]:
-    """Per-combo availability for one project, as the Start-a-Task wizard needs it: what is on hand,
+    """Per-combo availability for one project, as the Start-a-Request wizard needs it: what is on hand,
     what of it is condemned, what other requests have claimed, and what is therefore left to claim.
 
     Two grouped scalar aggregates merged by combo key - one over `inventory_locations`, one over

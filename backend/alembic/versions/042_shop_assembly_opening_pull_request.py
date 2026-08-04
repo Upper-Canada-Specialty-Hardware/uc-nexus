@@ -1,7 +1,7 @@
 """Re-parent shop_assembly_openings from SAR to the shop-assembly PullRequest
 
 Adds shop_assembly_openings.pull_request_id (FK -> pull_requests) and relaxes
-shop_assembly_request_id to nullable, so openings created directly from Start a Task
+shop_assembly_request_id to nullable, so openings created directly from Start a Request
 hang off a PullRequest instead of a SAR (#222).
 
 Revision ID: 042
@@ -46,7 +46,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # PR-parented openings (Start a Task, #222) have shop_assembly_request_id NULL, so
+    # PR-parented openings (Start a Request, #222) have shop_assembly_request_id NULL, so
     # re-tightening it to NOT NULL would abort. Refuse rather than silently drop or orphan
     # them - the operator must remove them before downgrading past 042.
     bind = op.get_bind()

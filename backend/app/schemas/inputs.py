@@ -243,7 +243,7 @@ class SetContainerItemsInput:
 
 @strawberry.input
 class CreateShippingOutRequestInput:
-    """Raise a shipping-out request from the Shipping module rather than from Start a Task (#451).
+    """Raise a shipping-out request from the Shipping module rather than from Start a Request (#451).
 
     Same entity, same guards, same reservations - only the composer differs. This one exists because
     the schedule is not the only reason hardware goes to site: the shipping department is asked for

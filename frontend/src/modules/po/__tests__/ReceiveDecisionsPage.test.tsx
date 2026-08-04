@@ -7,7 +7,7 @@ import { GET_MY_RECEIVE_DECISIONS, DECIDE_RECEIVE_DECISION } from '../../../grap
 import { GET_PROJECTS } from '../../../graphql/shared';
 
 // The keep-or-ship question, answered. The one behaviour worth pinning beyond "the mutation fires"
-// is the navigation contract: "Ship out now" hands over to Start a Task, and it must only do that
+// is the navigation contract: "Ship out now" hands over to Start a Request, and it must only do that
 // once the choice is actually recorded - otherwise the user builds a shipment against a question
 // that is still open.
 
@@ -84,7 +84,7 @@ function renderPage(extraMocks: MockedResponse[] = [], decisions = [decision()])
         <ToastProvider>
           <Routes>
             <Route path="/app/po/decisions" element={<ReceiveDecisionsPage />} />
-            <Route path="/app/import" element={<div>Start a Task</div>} />
+            <Route path="/app/import" element={<div>Start a Request</div>} />
           </Routes>
           <LocationProbe />
         </ToastProvider>
@@ -148,7 +148,7 @@ describe('ReceiveDecisionsPage', () => {
     expect(screen.getByTestId('location')).toHaveTextContent('/app/po/decisions');
   });
 
-  it('records "ship out" and then hands over to Start a Task, scoped to the project', async () => {
+  it('records "ship out" and then hands over to Start a Request, scoped to the project', async () => {
     const decideMock: MockedResponse<Record<string, unknown>, DecideVars> = {
       request: { query: DECIDE_RECEIVE_DECISION, variables: () => true },
       result: {
@@ -168,7 +168,7 @@ describe('ReceiveDecisionsPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Ship out now' }));
 
-    await screen.findByText('Start a Task', undefined, SLOW);
+    await screen.findByText('Start a Request', undefined, SLOW);
     expect(screen.getByTestId('location')).toHaveTextContent(
       '/app/import?projectId=proj-1&purpose=shipping&source=latest',
     );

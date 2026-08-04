@@ -1213,7 +1213,7 @@ class Notification:
 class FinalizeImportResult:
     project: Project
     purchase_orders: list[PurchaseOrder]
-    # #293: Start a Task now mints request entities (PENDING), not PullRequests. A signed-in user
+    # #293: Start a Request now mints request entities (PENDING), not PullRequests. A signed-in user
     # accepts them downstream, which mints the warehouse PullRequest.
     shipping_out_requests: list[ShippingOutRequest]
     shop_assembly_request: ShopAssemblyRequest | None
@@ -1443,7 +1443,7 @@ class InventoryShortfall:
 class InventoryAvailability:
     """What one (hardware_category, product_code) in a project can still be claimed for (#342).
 
-    `available = on_hand - deficient - reserved`, floored at 0 - the exact number the Start-a-Task
+    `available = on_hand - deficient - reserved`, floored at 0 - the exact number the Start-a-Request
     creation gate applies, so the wizard can block an over-selection before submission instead of
     letting the user find out from a rejected finalize. Note this is deliberately NOT the same as
     the warehouse inventory view's "available", which is on-hand minus deficient: that view answers

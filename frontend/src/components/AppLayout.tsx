@@ -33,7 +33,7 @@ import { readAuthBridge } from '../authBridge';
 /** Breadcrumb segments that the auto-capitalizer gets wrong. */
 const CRUMB_LABELS: Record<string, string> = {
   po: 'Purchase Orders',
-  import: 'Start a Task',
+  import: 'Start a Request',
 };
 
 const RAIL_COLLAPSED_KEY = 'uc-nexus-rail-collapsed';

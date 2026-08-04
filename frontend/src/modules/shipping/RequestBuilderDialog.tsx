@@ -38,7 +38,7 @@ export interface BuilderLine {
 
 /**
  * One line's own identity, which is what the "on this request" list renders and removes on. A LOOSE
- * line keeps its opening here: a request raised from Start a Task carries one line per opening for
+ * line keeps its opening here: a request raised from Start a Request carries one line per opening for
  * the same product, and collapsing them would make the trash button remove whichever one came first.
  */
 function lineKey(line: BuilderLine): string {
@@ -175,7 +175,7 @@ export default function RequestBuilderDialog({
    * OTHER request's claim (#342); an edit also has to add back what this request itself is holding,
    * or trimming a line would read as asking for more.
    *
-   * Every held line counts, not the first one found. A request from Start a Task holds one line per
+   * Every held line counts, not the first one found. A request from Start a Request holds one line per
    * opening, availability is already net of all of them, and adding back only one would cap the box
    * below what the request is sitting on right now.
    */
@@ -211,7 +211,7 @@ export default function RequestBuilderDialog({
    * already carry it.
    *
    * Growth lands on the last matching line so a schedule-attributed line keeps its opening, and
-   * shrinking eats the newest lines first for the same reason - the lines seeded from Start a Task
+   * shrinking eats the newest lines first for the same reason - the lines seeded from Start a Request
    * are the last to lose units, because they are the ones that know which door the units are owed
    * to. A product not on the request yet becomes a new line with no opening, which is what shelf
    * stock genuinely is (docs/HARDWARE_IDENTITY_LIFECYCLE.md).
@@ -291,7 +291,7 @@ export default function RequestBuilderDialog({
   };
 
   // Creating or editing MOVES a reservation (#342), so the project's availability changes for
-  // everyone - including the Start a Task wizard in another module that is never mounted here.
+  // everyone - including the Start a Request wizard in another module that is never mounted here.
   const cacheUpdate = {
     update(cache: { evict: (o: { id: string; fieldName: string }) => void; gc: () => void }) {
       for (const fieldName of RESERVATION_STALE_ROOT_FIELDS) {
