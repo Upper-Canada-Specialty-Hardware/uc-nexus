@@ -55,7 +55,7 @@ function PickerBody({
   onClose: () => void;
   onPick: (item: CustomInventoryItem) => void;
 }) {
-  const { types } = useInventoryItemTypes({ activeOnly: true });
+  const { types, loading: typesLoading } = useInventoryItemTypes({ activeOnly: true });
   const [pickedTypeId, setPickedTypeId] = useState<string | null>(null);
   const [selected, setSelected] = useState<CustomInventoryItem | null>(null);
 
@@ -80,8 +80,12 @@ function PickerBody({
       </Alert>
 
       {types.length === 0 ? (
+        // Distinguish "still loading" from "genuinely none": the empty state sends the user off to
+        // another screen, which is the wrong instruction to give while the list is in flight.
         <Typography variant="body2" color="text.secondary">
-          No active item types. Add one in Warehouse &rarr; Custom Items first.
+          {typesLoading
+            ? 'Loading item types…'
+            : 'No active item types. Add one in Warehouse → Custom Items first.'}
         </Typography>
       ) : (
         <>
