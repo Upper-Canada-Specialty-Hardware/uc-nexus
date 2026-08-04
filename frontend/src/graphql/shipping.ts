@@ -16,6 +16,53 @@ export const GET_SHIP_READY_ITEMS = gql`
   }
 `;
 
+// The staging workspace (#451): what is staged, and which container it has been put in. One query
+// for both halves so they can never disagree about whether a leaf has been loaded.
+const CONTAINER_FIELDS = `
+  id projectId containerType name packingSlipId createdBy createdAt updatedAt
+  items {
+    id shipmentContainerId itemType openingItemId openingNumber leaf
+    hardwareCategory productCode quantity position
+  }
+`;
+
+export const GET_STAGING_POOL = gql`
+  query GetStagingPool($projectId: ID!) {
+    stagingPool(projectId: $projectId) {
+      leaves { openingItemId openingNumber leaf building floor location placedInContainerId }
+      looseItems { openingNumber hardwareCategory productCode stagedQuantity placedQuantity unplacedQuantity }
+      containers { ${CONTAINER_FIELDS} }
+    }
+  }
+`;
+
+export const CREATE_SHIPMENT_CONTAINER = gql`
+  mutation CreateShipmentContainer($projectId: ID!, $containerType: ShipmentContainerType!, $name: String!) {
+    createShipmentContainer(projectId: $projectId, containerType: $containerType, name: $name) {
+      ${CONTAINER_FIELDS}
+    }
+  }
+`;
+
+export const RENAME_SHIPMENT_CONTAINER = gql`
+  mutation RenameShipmentContainer($id: ID!, $name: String!) {
+    renameShipmentContainer(id: $id, name: $name) { ${CONTAINER_FIELDS} }
+  }
+`;
+
+export const DELETE_SHIPMENT_CONTAINER = gql`
+  mutation DeleteShipmentContainer($id: ID!) {
+    deleteShipmentContainer(id: $id)
+  }
+`;
+
+// Full replace over one container's contents; the list order IS the stacking order.
+export const SET_CONTAINER_ITEMS = gql`
+  mutation SetContainerItems($input: SetContainerItemsInput!) {
+    setContainerItems(input: $input) { ${CONTAINER_FIELDS} }
+  }
+`;
+
 // The shipping department's list of how a load can travel (#451). `activeOnly` is what the Delivery
 // Request form passes; the management screen leaves it off so a retired method stays visible.
 const SHIPMENT_METHOD_FIELDS = 'id name isActive sortOrder createdAt updatedAt';
@@ -165,6 +212,30 @@ export const GET_RETURNABLE_LINES = gql`
 export const CONFIRM_SHIPMENT = gql`
   mutation ConfirmShipment($input: ConfirmShipmentInput!) {
     confirmShipment(input: $input) {
+      ${PACKING_SLIP_FIELDS}
+      items {
+        id
+        packingSlipId
+        itemType
+        openingItemId
+        openingNumber
+        leaf
+        building
+        floor
+        location
+        productCode
+        hardwareCategory
+        quantity
+      }
+    }
+  }
+`;
+
+// The container flow's confirm (#451): the same slip, composed from whole containers instead of a
+// hand-built item list.
+export const CONFIRM_SHIPMENT_FROM_CONTAINERS = gql`
+  mutation ConfirmShipmentFromContainers($input: ConfirmShipmentFromContainersInput!) {
+    confirmShipmentFromContainers(input: $input) {
       ${PACKING_SLIP_FIELDS}
       items {
         id

@@ -8,6 +8,7 @@ import ShipmentsList from './ShipmentsList';
 import ShippingCart from './ShippingCart';
 import ShippingRequestsPage from './ShippingRequestsPage';
 import ShipmentMethodsDialog from './ShipmentMethodsDialog';
+import StagingWorkspace from './StagingWorkspace';
 import ProjectLandingPage from '../../components/ProjectLandingPage';
 import GpSetupQuarantineBanner from '../../components/GpSetupQuarantineBanner';
 import type { Project } from '../../types/project';
@@ -23,7 +24,9 @@ export default function ShippingModule() {
     ? 'returns'
     : location.pathname.endsWith('/requests')
       ? 'requests'
-      : 'ship';
+      : location.pathname.endsWith('/staging')
+        ? 'staging'
+        : 'ship';
 
   if (selectedProject === null) {
     return (
@@ -64,6 +67,7 @@ export default function ShippingModule() {
             }}
           >
             <ToggleButton value="requests">Requests</ToggleButton>
+            <ToggleButton value="staging">Staging</ToggleButton>
             <ToggleButton value="ship">Ship</ToggleButton>
             <ToggleButton value="returns">Returns</ToggleButton>
           </ToggleButtonGroup>
@@ -82,6 +86,7 @@ export default function ShippingModule() {
       <GpSetupQuarantineBanner project={gpSetupProject} action="shipping from it" />
       <Routes>
         <Route path="requests" element={<ShippingRequestsPage projectId={projectId} />} />
+        <Route path="staging" element={<StagingWorkspace projectId={projectId} />} />
         <Route path="browse" element={<ShipReadyBrowser projectId={projectId} />} />
         <Route path="returns" element={<ShipmentsList projectId={projectId} />} />
         <Route index element={<Navigate to="browse" replace />} />
