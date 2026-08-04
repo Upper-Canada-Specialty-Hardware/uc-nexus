@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import inspect
 import logging
+import uuid
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from typing import Any
@@ -14,7 +15,7 @@ from graphql import GraphQLError, GraphQLResolveInfo
 from strawberry.extensions import SchemaExtension
 from strawberry.fastapi import GraphQLRouter
 
-from app.auth import get_context, require_admin_request
+from app.auth import get_context, require_admin_request, require_testing_request
 from app.auth_policy import enforce_root_field
 from app.database import SessionLocal
 from app.errors import AppError
@@ -435,27 +436,13 @@ def get_clerk_sign_in_token(request: Request, email: str = "jayp@ucsh.com"):
     instance, so what this mints is a real session for a real staff account, Admin/Manager included,
     and with only the environment switch this route was a full impersonation primitive on any
     deployment where the switch was left on."""
-    import hashlib
-    import hmac
-
     import httpx
 
-    from app.config import CLERK_SECRET_KEY, TESTING_ENABLED, TESTING_SIGN_IN_SECRET_HASH
+    from app.config import CLERK_SECRET_KEY
 
-    if not TESTING_ENABLED:
-        return JSONResponse(status_code=403, content={"error": "Testing is not enabled"})
-
-    presented = (request.headers.get("x-testing-secret") or "").strip()
-    secret_ok = bool(TESTING_SIGN_IN_SECRET_HASH) and bool(presented)
-    if secret_ok:
-        digest = hashlib.sha256(presented.encode("utf-8")).hexdigest()
-        secret_ok = hmac.compare_digest(digest, TESTING_SIGN_IN_SECRET_HASH.strip().lower())
-    if not secret_ok:
-        try:
-            require_admin_request(request)
-        except AppError as e:
-            status = 403 if e.code == "FORBIDDEN" else 401
-            return JSONResponse(status_code=status, content={"error": str(e), "code": e.code})
+    refusal = require_testing_request(request)
+    if refusal is not None:
+        return refusal
 
     headers = {"Authorization": f"Bearer {CLERK_SECRET_KEY}"}
 
@@ -481,3 +468,37 @@ def get_clerk_sign_in_token(request: Request, email: str = "jayp@ucsh.com"):
     token_resp.raise_for_status()
     data = token_resp.json()
     return {"token": data["token"], "url": data.get("url", ""), "user_id": user_id}
+
+
+@app.post("/testing/seed-ship-ready-leaves")
+def seed_ship_ready_leaves(request: Request, project_id: str, count: int = 1, opening_prefix: str = "FIXT"):
+    """Put `count` assembled door leaves straight into a project's staging pool, at SHIP_READY (#470).
+
+    The skid's thirty-leaf ceiling had never been seen enforced, on the frontend or in a browser at
+    all, because reaching it by hand is thirty openings each taken through purchase, receipt, a shop
+    assembly pull, a pick, assembly, a shipping pull and a second pick. This is the only way the
+    `n/30` chip, the greyed-out Place-in entry and the refusal toast get exercised against a running
+    system rather than read.
+
+    Same double gate as `/testing/clerk-sign-in` and for the same reason (#422): a fixture that
+    fabricates physical objects has to be unreachable anywhere that is not a test target, and
+    TESTING_ENABLED alone is an environment switch rather than auth."""
+    from app.services import testing_fixtures
+
+    refusal = require_testing_request(request)
+    if refusal is not None:
+        return refusal
+
+    try:
+        pid = uuid.UUID(project_id)
+    except ValueError:
+        return JSONResponse(status_code=400, content={"error": f"{project_id} is not a project id"})
+
+    try:
+        with SessionLocal() as session:
+            result = testing_fixtures.seed_ship_ready_leaves(session, pid, count, opening_prefix=opening_prefix)
+            session.commit()
+    except AppError as e:
+        return JSONResponse(status_code=400, content={"error": str(e), "code": e.code})
+
+    return result

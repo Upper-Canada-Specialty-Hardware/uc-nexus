@@ -278,6 +278,53 @@ def require_admin_request(request) -> dict:
     return {"user_id": user_id, "roles": roles}
 
 
+def require_testing_request(request):
+    """The double gate every `/testing/*` route carries (#422). Returns None to let the call through,
+    or the JSONResponse to return as the refusal.
+
+    TESTING_ENABLED first, and that ordering is the point: a production deployment refuses outright
+    rather than leaking whether the caller's credential would have been good enough. Then either an
+    Admin/Manager bearer, or the shared testing secret in X-Testing-Secret - the bootstrap path for a
+    fresh PR environment, where no session exists yet and minting one is the whole reason the route
+    is there.
+
+    A returned refusal rather than a raise, because these routes answer with a body FastAPI hands
+    back verbatim, and the two refusals do not share one status. Named alongside `require_admin_request`
+    and listed in that test's `_ROUTE_GATES`, so a `/testing/*` route added without it fails
+    `test_route_calls_an_auth_gate` (#470).
+
+    One definition rather than a copy per route: a fixture that mints rows and a route that mints
+    sessions are equally unsafe off a test target, and the second one written by hand is where the
+    ordering or the compare_digest goes missing.
+
+    The config read is function-local on purpose - the tests monkeypatch `app.config` attributes, and
+    a module-level import would bind the values at import time, before any of that runs."""
+    import hashlib
+    import hmac
+
+    from fastapi.responses import JSONResponse
+
+    from app.config import TESTING_ENABLED, TESTING_SIGN_IN_SECRET_HASH
+
+    if not TESTING_ENABLED:
+        return JSONResponse(status_code=403, content={"error": "Testing is not enabled"})
+
+    presented = (request.headers.get("x-testing-secret") or "").strip()
+    secret_ok = bool(TESTING_SIGN_IN_SECRET_HASH) and bool(presented)
+    if secret_ok:
+        digest = hashlib.sha256(presented.encode("utf-8")).hexdigest()
+        secret_ok = hmac.compare_digest(digest, TESTING_SIGN_IN_SECRET_HASH.strip().lower())
+    if secret_ok:
+        return None
+
+    try:
+        require_admin_request(request)
+    except AppError as e:
+        status = 403 if e.code == "FORBIDDEN" else 401
+        return JSONResponse(status_code=status, content={"error": str(e), "code": e.code})
+    return None
+
+
 def require_role(info, role: str) -> dict:
     """Enforce a role from INSIDE a resolver body. Returns {user_id, roles}.
 
