@@ -76,7 +76,10 @@ OPEN_OPERATIONS: dict[str, str] = {
 # resolver body called before #423 - this table is that decision, moved, not re-derived.
 ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     # --- admin.py -------------------------------------------------------------------------
-    "openingHardwareStatus": ADMIN_ROLE,
+    # Both walk a whole project's openings and put purchasing next to fulfilment, which is the
+    # admin Opening Status page and nothing else.
+    "adminOpeningStatuses": ADMIN_ROLE,
+    "adminOpeningDeepDive": ADMIN_ROLE,
     # --- buyer.py -------------------------------------------------------------------------
     # `buyerAssignments` is the PO dialog's read of the CALLER's own row, so any signed-in user;
     # `allBuyerAssignments` is the whole table (which buyer owns which project) and is admin (#428).
