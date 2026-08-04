@@ -167,8 +167,6 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     # --- shipping.py ----------------------------------------------------------------------
     "packingSlips": SIGNED_IN,
     "returnableLines": SIGNED_IN,
-    # The shipping department's own list of how a load travels (#451). SIGNED_IN like the rest of
-    # shipping: it is documentation the same people maintain and consume, and it gates nothing.
     # The staging workspace and its containers (#451). SIGNED_IN like the rest of shipping - the
     # warehouse and the shipping department both load a truck, and neither owns the screen.
     "stagingPool": SIGNED_IN,
@@ -177,6 +175,8 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "deleteShipmentContainer": SIGNED_IN,
     "setContainerItems": SIGNED_IN,
     "confirmShipmentFromContainers": SIGNED_IN,
+    # The shipping department's own list of how a load travels (#451). SIGNED_IN like the rest of
+    # shipping: it is documentation the same people maintain and consume, and it gates nothing.
     "shipmentMethods": SIGNED_IN,
     "createShipmentMethod": SIGNED_IN,
     "updateShipmentMethod": SIGNED_IN,
