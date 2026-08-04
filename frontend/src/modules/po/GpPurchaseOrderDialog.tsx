@@ -11,7 +11,7 @@ import {
   TextField,
   Typography,
 } from '@mui/material';
-import { Trash2, Plus, RefreshCw } from 'lucide-react';
+import { Trash2, Plus, RefreshCw, Tag } from 'lucide-react';
 import { useApolloClient, useMutation, useQuery } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import { useToast } from '../../components/Toast';
@@ -29,6 +29,7 @@ import { poVendorName } from './poVendorName';
 import { computeManufacturerVendorHint, type ManufacturerSuggestion } from './manufacturerVendorHint';
 import GpErrorAlert from '../../components/GpErrorAlert';
 import { extractGpError, isRelayOpUnsupported, type GpError } from '../../graphql/gpError';
+import CustomItemPicker from './CustomItemPicker';
 import { monoSx, microLabelSx } from '../../theme';
 
 const ICON = { size: 18, strokeWidth: 1.75 } as const;
@@ -51,6 +52,10 @@ interface LineItemRow {
   // Issue #232: the line's derived manufacturer (register mode, from the imported HardwareItem). Absent
   // for a manually added row - drives the vendor suggestion, not editable here.
   manufacturer?: string | null;
+  // Set when the row came from the custom-item catalog (#454). Its category and product code are then
+  // read-only: they are the pair the warehouse will receive the stock under, and a hand-edit here
+  // would produce inventory whose catalog entry cannot be found.
+  catalogItemId?: string;
 }
 
 interface GpVendorOption {
@@ -160,6 +165,8 @@ export default function GpPurchaseOrderDialog({
   const [lineItems, setLineItems] = useState<LineItemRow[]>([{ key: 1, ...EMPTY_LINE_ITEM }]);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [gpBusy, setGpBusy] = useState(false);
+  // The custom-item catalog picker (#454), for ordering something that was never on a schedule.
+  const [customPickerOpen, setCustomPickerOpen] = useState(false);
   // A GP/eConnect failure from create/register, shown persistently and in detail (issue #187) so the end
   // user can screenshot it. Distinct from the field-level `errors` map.
   const [gpError, setGpError] = useState<GpError | null>(null);
@@ -472,6 +479,34 @@ export default function GpPurchaseOrderDialog({
     setLineItems((prev) => [...prev, { key: nextKey, ...EMPTY_LINE_ITEM }]);
     setNextKey((k) => k + 1);
   }, [nextKey]);
+
+  /**
+   * Append a line for something catalogued rather than scheduled - a frame, a specialty (#454).
+   *
+   * The category and product code come off the catalog verbatim and the row locks them, because
+   * they are the pair the warehouse receives the stock under: edited by hand here, the stock would
+   * land under a code whose catalog entry cannot be found. Quantity and cost stay the buyer's.
+   * `orderAs` seeds from the description because that is what a vendor is asked for, and stays
+   * editable for the vendor that calls it something else.
+   */
+  const addCatalogLineItem = useCallback(
+    (item: { id: string; hardwareCategory: string; productCode: string; description: string | null }) => {
+      setLineItems((prev) => [
+        ...prev,
+        {
+          ...EMPTY_LINE_ITEM,
+          key: nextKey,
+          hardwareCategory: item.hardwareCategory,
+          productCode: item.productCode,
+          orderAs: item.description ?? item.productCode,
+          catalogItemId: item.id,
+        },
+      ]);
+      setNextKey((k) => k + 1);
+      setCustomPickerOpen(false);
+    },
+    [nextKey],
+  );
 
   const removeLineItem = useCallback((key: number) => {
     setLineItems((prev) => prev.filter((li) => li.key !== key));
@@ -1088,10 +1123,29 @@ export default function GpPurchaseOrderDialog({
         <Typography component="h3" sx={microLabelSx}>
           Line Items
         </Typography>
-        <Button size="small" variant="outlined" startIcon={<Plus {...ICON} />} onClick={addLineItem}>
-          Add Item
-        </Button>
+        <Stack direction="row" spacing={1}>
+          {/* Frames, specialties and consumables are catalogued, not scheduled (#454), so they are
+              picked rather than typed - which is what keeps the received stock matched to its
+              catalog entry. */}
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<Tag {...ICON} />}
+            onClick={() => setCustomPickerOpen(true)}
+          >
+            Add Custom Item
+          </Button>
+          <Button size="small" variant="outlined" startIcon={<Plus {...ICON} />} onClick={addLineItem}>
+            Add Item
+          </Button>
+        </Stack>
       </Box>
+
+      <CustomItemPicker
+        open={customPickerOpen}
+        onClose={() => setCustomPickerOpen(false)}
+        onPick={addCatalogLineItem}
+      />
 
       {errors.lineItems && (
         <Typography variant="body2" color="error" sx={{ mb: 1 }}>
@@ -1129,13 +1183,17 @@ export default function GpPurchaseOrderDialog({
             alignItems: 'start',
           }}
         >
+          {/* A catalogued row holds the pair the warehouse will receive the stock under, so both
+              fields are read-only on it (#454). */}
           <TextField
             size="small"
             value={li.hardwareCategory}
             onChange={(e) => updateLineItem(li.key, 'hardwareCategory', e.target.value)}
             error={!!errors[`li_${idx}_cat`]}
-            helperText={errors[`li_${idx}_cat`]}
+            helperText={errors[`li_${idx}_cat`] ?? (li.catalogItemId ? 'From catalog' : undefined)}
             placeholder="e.g. Hinges"
+            disabled={Boolean(li.catalogItemId)}
+            sx={li.catalogItemId ? MONO_FIELD_SX : undefined}
           />
           <TextField
             size="small"
@@ -1144,6 +1202,7 @@ export default function GpPurchaseOrderDialog({
             error={!!errors[`li_${idx}_code`]}
             helperText={errors[`li_${idx}_code`]}
             placeholder="e.g. AB123"
+            disabled={Boolean(li.catalogItemId)}
             sx={MONO_FIELD_SX}
           />
           <TextField

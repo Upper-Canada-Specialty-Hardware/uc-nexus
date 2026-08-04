@@ -35,6 +35,7 @@ import ReclassifyStockModal from './stock/ReclassifyStockModal';
 import AllocateStockModal from './stock/AllocateStockModal';
 import ReportStockDeficiencyModal from './stock/ReportStockDeficiencyModal';
 import { microLabelSx, monoSx } from '../../theme';
+import { useInventoryItemTypes } from '../../hooks/useCustomItems';
 
 interface WarehouseOption {
   id: string;
@@ -81,6 +82,9 @@ export default function StockPoolView() {
     },
   );
 
+  // Degrades to an empty map: without it the Category column reads exactly as it did before (#454).
+  const { byCode: typesByCode } = useInventoryItemTypes();
+
   const { data: warehousesData } = useQuery<{ warehouses: WarehouseOption[] }>(GET_WAREHOUSES, {
     variables: { includeInactive: true },
   });
@@ -104,7 +108,26 @@ export default function StockPoolView() {
   };
 
   const columns: GridColDef<StockItem>[] = [
-    { field: 'hardwareCategory', headerName: 'Category', flex: 1, minWidth: 140 },
+    {
+      field: 'hardwareCategory',
+      headerName: 'Category',
+      flex: 1,
+      minWidth: 140,
+      // Non-schedule stock carries its item type's code here (#454); show the type's name where the
+      // code is one, so "FRAME" reads as "Frames" without the code stopping being the truth.
+      renderCell: ({ value }) => {
+        const code = value as string;
+        const itemType = typesByCode.get(code);
+        return itemType ? (
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+            <span>{itemType.name}</span>
+            <Chip size="small" variant="outlined" label={code} />
+          </Box>
+        ) : (
+          <span>{code}</span>
+        );
+      },
+    },
     {
       field: 'productCode',
       headerName: 'Product Code',

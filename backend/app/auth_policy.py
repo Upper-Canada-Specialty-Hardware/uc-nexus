@@ -84,6 +84,19 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "buyerAssignments": SIGNED_IN,
     "deleteBuyerAssignment": ADMIN_ROLE,
     "saveBuyerAssignment": ADMIN_ROLE,
+    # --- custom_items.py ------------------------------------------------------------------
+    # The catalog of non-schedule inventory - frames, specialties, consumables (#454). SIGNED_IN
+    # throughout: the issue puts maintenance in warehouse users' hands and there is no Clerk role for
+    # a plain warehouse user, the reads are consumed by the PO dialog and the inventory screens as
+    # well as by the management page, and nothing here moves stock or reaches GP. It is description.
+    "inventoryItemTypes": SIGNED_IN,
+    "customInventoryItems": SIGNED_IN,
+    "createInventoryItemType": SIGNED_IN,
+    "updateInventoryItemType": SIGNED_IN,
+    "createInventoryItemAttribute": SIGNED_IN,
+    "updateInventoryItemAttribute": SIGNED_IN,
+    "createCustomInventoryItem": SIGNED_IN,
+    "updateCustomInventoryItem": SIGNED_IN,
     # --- dashboard.py ---------------------------------------------------------------------
     "adminStats": ADMIN_ROLE,
     "homeDashboardStats": SIGNED_IN,

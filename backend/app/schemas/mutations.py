@@ -14,6 +14,7 @@ fails on it either way.
 import strawberry
 
 from .buyer import BuyerMutations
+from .custom_items import CustomItemMutations
 from .gp_outbox import GpOutboxMutations
 from .imports import ImportMutations
 from .notification import NotificationMutations
@@ -31,6 +32,7 @@ from .warehouse import WarehouseMutations
 @strawberry.type
 class Mutation(
     BuyerMutations,
+    CustomItemMutations,
     GpOutboxMutations,
     ImportMutations,
     NotificationMutations,

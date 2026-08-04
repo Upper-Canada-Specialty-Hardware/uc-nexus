@@ -30,6 +30,12 @@ import DestockInventoryModal from './stock/DestockInventoryModal';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { AnimatedNumber } from '../../motion';
 import { parseServerDate } from '../../utils/serverDate';
+import {
+  catalogKey,
+  useCustomInventoryItems,
+  useInventoryItemTypes,
+  type CustomInventoryItem,
+} from '../../hooks/useCustomItems';
 
 interface InventoryItem {
   id: string;
@@ -120,12 +126,18 @@ function GroupSummary({
   quantityLabel,
   totalQuantity,
   totalValue,
+  badge,
+  detail,
 }: {
   name: string;
   mono?: boolean;
   quantityLabel: string;
   totalQuantity: number;
   totalValue: number;
+  /** A chip beside the name - the item type a non-schedule category belongs to (#454). */
+  badge?: string;
+  /** A second line under the name - a catalogued item's attribute values (#454). */
+  detail?: string;
 }) {
   return (
     <Box
@@ -138,12 +150,22 @@ function GroupSummary({
         flexWrap: 'wrap',
       }}
     >
-      <Typography
-        title={name}
-        sx={{ fontWeight: 600, flex: 1, minWidth: 0, ...(mono ? monoSx : {}) }}
-      >
-        {name}
-      </Typography>
+      <Box sx={{ flex: 1, minWidth: 0 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0 }}>
+          <Typography
+            title={name}
+            sx={{ fontWeight: 600, minWidth: 0, ...(mono ? monoSx : {}) }}
+          >
+            {name}
+          </Typography>
+          {badge && <Chip size="small" variant="outlined" label={badge} />}
+        </Box>
+        {detail && (
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+            {detail}
+          </Typography>
+        )}
+      </Box>
       <Box sx={{ display: 'flex', gap: 3, flexShrink: 0, textAlign: 'right' }}>
         <Box>
           <Typography component="div" sx={microLabelSx}>
@@ -249,12 +271,15 @@ function ProductCodeDetail({
   productCode,
   totalQuantity,
   totalValue,
+  catalogItem,
 }: {
   projectId: string | undefined;
   category: string;
   productCode: string;
   totalQuantity: number;
   totalValue: number;
+  /** The catalog entry for this `(category, code)` pair, when it is non-schedule stock (#454). */
+  catalogItem?: CustomInventoryItem;
 }) {
   const [expanded, setExpanded] = useState(false);
   const hasFetched = useRef(false);
@@ -462,6 +487,18 @@ function ProductCodeDetail({
             quantityLabel="Qty"
             totalQuantity={totalQuantity}
             totalValue={totalValue}
+            // What the schedule would have said if this had been on one: the catalogued
+            // description and attribute values for a frame, specialty or consumable (#454).
+            detail={
+              catalogItem
+                ? [
+                    catalogItem.description,
+                    ...catalogItem.values.map((v) => `${v.attributeName}: ${v.value}`),
+                  ]
+                    .filter(Boolean)
+                    .join(' · ') || undefined
+                : undefined
+            }
           />
         </AccordionSummary>
         <AccordionDetails>
@@ -549,6 +586,13 @@ export default function HardwareItemsTab({ projectId }: HardwareItemsTabProps) {
   const [aisleFilter, setAisleFilter] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [groupBy, setGroupBy] = useState<GroupBy>('category');
+
+  // Non-schedule stock - frames, specialties, consumables (#454) - carries its type's code as its
+  // hardware category, so a category group whose label is a known type code IS that type, and the
+  // catalog can describe every product code under it. Both queries degrade to empty: without them
+  // this page renders exactly what it rendered before the catalog existed.
+  const { byCode: typesByCode } = useInventoryItemTypes();
+  const { byKey: catalogByKey } = useCustomInventoryItems();
 
   const { data, loading, error } = useQuery<{
     inventoryHierarchy: CategoryGroup[];
@@ -711,7 +755,7 @@ export default function HardwareItemsTab({ projectId }: HardwareItemsTabProps) {
               <MenuItem value="">All Categories</MenuItem>
               {categories.map((cat) => (
                 <MenuItem key={cat} value={cat}>
-                  {cat}
+                  {typesByCode.get(cat)?.name ?? cat}
                 </MenuItem>
               ))}
             </Select>
@@ -781,30 +825,40 @@ export default function HardwareItemsTab({ projectId }: HardwareItemsTabProps) {
       )}
 
       {/* Accordion hierarchy */}
-      {filteredGroups.map((group) => (
-        <Accordion key={group.label} disableGutters elevation={0} sx={ACCORDION_SX}>
-          <AccordionSummary expandIcon={<ChevronDown size={18} strokeWidth={1.75} />}>
-            <GroupSummary
-              name={group.label}
-              quantityLabel="Total"
-              totalQuantity={group.totalQuantity}
-              totalValue={group.totalValue}
-            />
-          </AccordionSummary>
-          <AccordionDetails>
-            {group.productCodes.map((pc) => (
-              <ProductCodeDetail
-                key={pc.productCode}
-                projectId={projectId}
-                category={pc.items[0]?.hardwareCategory ?? ''}
-                productCode={pc.productCode}
-                totalQuantity={pc.totalQuantity}
-                totalValue={pc.totalValue}
+      {filteredGroups.map((group) => {
+        // Only in category mode: a vendor group's label is a vendor name, which will never be a
+        // type code, and matching it against one would be a coincidence rather than a fact.
+        const itemType = groupBy === 'category' ? typesByCode.get(group.label) : undefined;
+        return (
+          <Accordion key={group.label} disableGutters elevation={0} sx={ACCORDION_SX}>
+            <AccordionSummary expandIcon={<ChevronDown size={18} strokeWidth={1.75} />}>
+              <GroupSummary
+                name={itemType ? itemType.name : group.label}
+                badge={itemType ? itemType.code : undefined}
+                quantityLabel="Total"
+                totalQuantity={group.totalQuantity}
+                totalValue={group.totalValue}
               />
-            ))}
-          </AccordionDetails>
-        </Accordion>
-      ))}
+            </AccordionSummary>
+            <AccordionDetails>
+              {group.productCodes.map((pc) => {
+                const category = pc.items[0]?.hardwareCategory ?? '';
+                return (
+                  <ProductCodeDetail
+                    key={pc.productCode}
+                    projectId={projectId}
+                    category={category}
+                    productCode={pc.productCode}
+                    totalQuantity={pc.totalQuantity}
+                    totalValue={pc.totalValue}
+                    catalogItem={catalogByKey.get(catalogKey(category, pc.productCode))}
+                  />
+                );
+              })}
+            </AccordionDetails>
+          </Accordion>
+        );
+      })}
     </Box>
   );
 }
