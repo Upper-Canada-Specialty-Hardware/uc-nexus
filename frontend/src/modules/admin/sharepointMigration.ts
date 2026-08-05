@@ -12,6 +12,7 @@ export interface SharepointInventoryItem {
   partNumber: string;
   scheduledPartNumber: string;
   partCategory: string;
+  /** SharePoint's own kind-of-stock column: Door Hardware, Door, Frame, Specialties, Consumable. */
   inventoryType: string;
   locations: string;
   stockQty: number;
@@ -19,6 +20,47 @@ export interface SharepointInventoryItem {
   projectInventoryQty: number;
   projectNumber: string;
   projectName: string;
+  // Descriptive columns. Meaningless for schedule hardware (the schedule describes that), but for a
+  // frame or a specialty they are the whole description - and #454's attribute values are where
+  // they belong. Optional so a caller that does not select them still type-checks.
+  partDescription?: string;
+  finish?: string;
+  rating?: string;
+  mounting?: string;
+  heightInches?: string;
+  widthInches?: string;
+}
+
+/** A Nexus non-schedule entity type (#454). `code` is what reaches `hardware_category`. */
+export interface InventoryItemTypeOption {
+  id: string;
+  code: string;
+  name: string;
+}
+
+/**
+ * The SharePoint `Inventory Type` values that describe non-schedule stock, and nothing else.
+ *
+ * "Door Hardware" is deliberately absent: that IS schedule hardware and keeps its Part Category 1.
+ * Blank is absent for the same reason - an unclassified row is not evidence of anything.
+ */
+export const NON_SCHEDULE_SP_TYPES = ['Frame', 'Specialties', 'Consumable', 'Door'] as const;
+
+/**
+ * Auto-match a SharePoint Inventory Type to a Nexus type, by code or name, singular or plural.
+ *
+ * SharePoint says "Specialties" where Nexus seeds code SPECIALTY / name "Specialties", and "Frame"
+ * where Nexus has FRAME / "Frames" - so neither a code match nor a name match alone covers it.
+ * Everything is still confirmable in the wizard; this only decides what is pre-selected.
+ */
+export function autoMatchItemType(
+  spType: string,
+  types: InventoryItemTypeOption[],
+): InventoryItemTypeOption | null {
+  const norm = (v: string) => v.trim().toUpperCase().replace(/(IES|S)$/, '');
+  const target = norm(spType);
+  if (!target) return null;
+  return types.find((t) => norm(t.code) === target || norm(t.name) === target) ?? null;
 }
 
 export interface ParsedLocation {
@@ -189,6 +231,26 @@ export interface MigrationEntry {
   bay: string | null;
 }
 
+/** SharePoint Inventory Type -> the Nexus type it becomes. A key mapped to null stays as-is. */
+export type ItemTypeResolutions = Map<string, InventoryItemTypeOption | null>;
+
+/**
+ * The hardware_category a row should carry.
+ *
+ * A row whose SharePoint type is mapped to a Nexus entity type carries that type's CODE, because
+ * that is how #454 makes non-schedule stock recognisable everywhere downstream - the type rides in
+ * hardware_category. Everything else keeps Part Category 1.
+ */
+export function categoryFor(
+  item: SharepointInventoryItem,
+  itemTypeResolutions: ItemTypeResolutions,
+  emptyCategoryLabel: string | null,
+): string | null {
+  const mapped = itemTypeResolutions.get(item.inventoryType.trim());
+  if (mapped) return mapped.code;
+  return item.partCategory.trim() || emptyCategoryLabel;
+}
+
 export interface BuildEntriesArgs {
   candidates: CandidateRow[];
   /** Keyed by the raw Locations string. A key with no entry is treated as excluded. */
@@ -198,6 +260,8 @@ export interface BuildEntriesArgs {
   /** What empty Part Category 1 rows become. Null excludes them. */
   emptyCategoryLabel: string | null;
   defaultWarehouseId: string;
+  /** Absent is the same as "nothing mapped": every row keeps its Part Category 1. */
+  itemTypeResolutions?: ItemTypeResolutions;
 }
 
 export interface BuildEntriesResult {
@@ -219,13 +283,14 @@ export function buildEntries({
   projectResolutions,
   emptyCategoryLabel,
   defaultWarehouseId,
+  itemTypeResolutions = new Map(),
 }: BuildEntriesArgs): BuildEntriesResult {
   const entries: MigrationEntry[] = [];
   const excludedCounts = new Map<string, number>();
   const drop = (reason: string) => excludedCounts.set(reason, (excludedCounts.get(reason) ?? 0) + 1);
 
   for (const c of candidates) {
-    const category = c.item.partCategory.trim() || emptyCategoryLabel;
+    const category = categoryFor(c.item, itemTypeResolutions, emptyCategoryLabel);
     if (!category) {
       drop('No part category');
       continue;
@@ -392,4 +457,99 @@ export function mergeResolutions<K, V>(auto: Map<K, V>, overrides: Map<K, V>): M
   const out = new Map(auto);
   for (const [k, v] of overrides) out.set(k, v);
   return out;
+}
+
+/** Every distinct SharePoint Inventory Type among the candidates, with how many rows carry it. */
+export function distinctItemTypes(
+  candidates: CandidateRow[],
+): { spType: string; rowCount: number; isNonSchedule: boolean }[] {
+  const counts = new Map<string, number>();
+  for (const c of candidates) {
+    const t = c.item.inventoryType.trim();
+    if (!t) continue;
+    counts.set(t, (counts.get(t) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([spType, rowCount]) => ({
+      spType,
+      rowCount,
+      isNonSchedule: (NON_SCHEDULE_SP_TYPES as readonly string[]).includes(spType),
+    }))
+    .sort((a, b) => b.rowCount - a.rowCount);
+}
+
+/** The type mapping the wizard proposes on its own: the non-schedule types it can auto-match. */
+export function autoItemTypeResolutions(
+  spTypes: ReturnType<typeof distinctItemTypes>,
+  types: InventoryItemTypeOption[],
+): ItemTypeResolutions {
+  const out: ItemTypeResolutions = new Map();
+  for (const t of spTypes) {
+    if (!t.isNonSchedule) continue;
+    const match = autoMatchItemType(t.spType, types);
+    if (match) out.set(t.spType, match);
+  }
+  return out;
+}
+
+export interface CatalogItem {
+  typeId: string;
+  productCode: string;
+  description: string | null;
+  values: { attributeName: string; value: string }[];
+}
+
+/** SharePoint's descriptive columns, and the attribute each becomes on the type. */
+const CATALOG_ATTRIBUTES: { key: keyof SharepointInventoryItem; name: string }[] = [
+  { key: 'finish', name: 'Finish' },
+  { key: 'rating', name: 'Rating' },
+  { key: 'mounting', name: 'Mounting' },
+  { key: 'heightInches', name: 'Height (in)' },
+  { key: 'widthInches', name: 'Width (in)' },
+];
+
+/**
+ * The catalog rows to create for the non-schedule stock being migrated (#454).
+ *
+ * One per (type, product code) - a catalog entry describes a PRODUCT, so the several SharePoint
+ * rows holding the same part on different shelves collapse to one. First non-empty value wins, on
+ * the same reasoning: if two rows disagree about a product's finish, that is a data question for a
+ * human, and picking one is no worse than picking the other.
+ *
+ * Only rows whose type the user actually mapped are included. Schedule hardware is never
+ * catalogued: the hardware schedule is its description.
+ */
+export function buildCatalogItems(
+  candidates: CandidateRow[],
+  itemTypeResolutions: ItemTypeResolutions,
+): CatalogItem[] {
+  const byKey = new Map<string, CatalogItem>();
+  for (const c of candidates) {
+    const mapped = itemTypeResolutions.get(c.item.inventoryType.trim());
+    if (!mapped) continue;
+
+    const productCode = productCodeFor(c.item);
+    if (!productCode) continue;
+
+    const key = `${mapped.id}|${productCode.toLowerCase()}`;
+    let entry = byKey.get(key);
+    if (!entry) {
+      entry = { typeId: mapped.id, productCode, description: null, values: [] };
+      byKey.set(key, entry);
+    }
+
+    if (!entry.description) {
+      // Part Description is the sentence about the product; Part Category 1 is the shelf label the
+      // type code has just replaced, so it is worth keeping as the fallback description rather than
+      // losing outright.
+      entry.description = (c.item.partDescription || '').trim() || c.item.partCategory.trim() || null;
+    }
+    for (const { key: field, name } of CATALOG_ATTRIBUTES) {
+      const value = ((c.item[field] as string | undefined) || '').trim();
+      if (value && !entry.values.some((v) => v.attributeName === name)) {
+        entry.values.push({ attributeName: name, value });
+      }
+    }
+  }
+  return [...byKey.values()];
 }

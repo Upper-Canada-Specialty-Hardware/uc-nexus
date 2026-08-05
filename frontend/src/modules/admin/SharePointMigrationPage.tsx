@@ -34,18 +34,24 @@ import { GET_PROJECTS, GET_WAREHOUSES } from '../../graphql/shared';
 import { useToast } from '../../components/Toast';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { FadeIn } from '../../motion';
+import { useInventoryItemTypes } from '../../hooks/useCustomItems';
 import {
   toCandidates,
   distinctLocations,
   distinctProjects,
+  distinctItemTypes,
   emptyCategoryCount,
   autoLocationResolutions,
   autoProjectResolutions,
+  autoItemTypeResolutions,
   mergeResolutions,
   buildEntries,
+  buildCatalogItems,
   type SharepointInventoryItem,
   type LocationResolution,
   type NexusProject,
+  type InventoryItemTypeOption,
+  type ItemTypeResolutions,
 } from './sharepointMigration';
 
 interface SnapshotData {
@@ -63,7 +69,7 @@ interface Warehouse {
   isActive: boolean;
 }
 
-const STEPS = ['Fetch', 'Locations', 'Projects', 'Categories', 'Review'] as const;
+const STEPS = ['Fetch', 'Locations', 'Projects', 'Types', 'Categories', 'Review'] as const;
 
 const UNCATEGORIZED = 'Uncategorized';
 
@@ -82,12 +88,16 @@ export default function SharePointMigrationPage() {
     variables: { includeInactive: false },
   });
   const { data: projData } = useQuery<{ projects: NexusProject[] }>(GET_PROJECTS);
+  const { types: itemTypes } = useInventoryItemTypes({ activeOnly: true });
 
   const [migrate, { loading: migrating }] = useMutation(MIGRATE_SHAREPOINT_INVENTORY);
   const [result, setResult] = useState<{
     stockItems: number;
     projectLocations: number;
     totalUnits: number;
+    catalogItemsCreated: number;
+    catalogItemsSkipped: number;
+    catalogAttributesCreated: number;
   } | null>(null);
 
   const items = useMemo(
@@ -104,6 +114,7 @@ export default function SharePointMigrationPage() {
   const candidates = useMemo(() => toCandidates(items), [items]);
   const locations = useMemo(() => distinctLocations(candidates), [candidates]);
   const spProjects = useMemo(() => distinctProjects(candidates), [candidates]);
+  const spItemTypes = useMemo(() => distinctItemTypes(candidates), [candidates]);
   const emptyCategories = useMemo(() => emptyCategoryCount(candidates), [candidates]);
 
   // State holds only what the user has overridden. The answers the parser and the project matcher
@@ -113,6 +124,7 @@ export default function SharePointMigrationPage() {
     new Map(),
   );
   const [projectOverrides, setProjectOverrides] = useState<Map<string, string | null>>(new Map());
+  const [itemTypeOverrides, setItemTypeOverrides] = useState<ItemTypeResolutions>(new Map());
   const [emptyCategoryLabel, setEmptyCategoryLabel] = useState<string | null>(UNCATEGORIZED);
 
   const locationResolutions = useMemo(
@@ -124,6 +136,14 @@ export default function SharePointMigrationPage() {
     () => mergeResolutions(autoProjectResolutions(spProjects, projects), projectOverrides),
     [spProjects, projects, projectOverrides],
   );
+  const typeOptions: InventoryItemTypeOption[] = useMemo(
+    () => itemTypes.map((t) => ({ id: t.id, code: t.code, name: t.name })),
+    [itemTypes],
+  );
+  const itemTypeResolutions = useMemo(
+    () => mergeResolutions(autoItemTypeResolutions(spItemTypes, typeOptions), itemTypeOverrides),
+    [spItemTypes, typeOptions, itemTypeOverrides],
+  );
 
   const built = useMemo(
     () =>
@@ -133,8 +153,21 @@ export default function SharePointMigrationPage() {
         projectResolutions,
         emptyCategoryLabel,
         defaultWarehouseId,
+        itemTypeResolutions,
       }),
-    [candidates, locationResolutions, projectResolutions, emptyCategoryLabel, defaultWarehouseId],
+    [
+      candidates,
+      locationResolutions,
+      projectResolutions,
+      emptyCategoryLabel,
+      defaultWarehouseId,
+      itemTypeResolutions,
+    ],
+  );
+
+  const catalogItems = useMemo(
+    () => buildCatalogItems(candidates, itemTypeResolutions),
+    [candidates, itemTypeResolutions],
   );
 
   const setLocation = useCallback(
@@ -169,6 +202,12 @@ export default function SharePointMigrationPage() {
               row: e.row,
               bay: e.bay,
             })),
+            catalogItems: catalogItems.map((c) => ({
+              typeId: c.typeId,
+              productCode: c.productCode,
+              description: c.description,
+              values: c.values.map((v) => ({ attributeName: v.attributeName, value: v.value })),
+            })),
           },
         },
       });
@@ -181,7 +220,7 @@ export default function SharePointMigrationPage() {
     } catch (e) {
       showToast(e instanceof Error ? e.message : 'Migration failed', 'error');
     }
-  }, [built.entries, migrate, showToast]);
+  }, [built.entries, catalogItems, migrate, showToast]);
 
   if (loading && !data) {
     return (
@@ -239,6 +278,16 @@ export default function SharePointMigrationPage() {
               <AlertTitle>Migration complete</AlertTitle>
               {result.totalUnits} units across {result.stockItems} stock rows and{' '}
               {result.projectLocations} project inventory rows.
+              {(result.catalogItemsCreated > 0 || result.catalogItemsSkipped > 0) && (
+                <>
+                  {' '}
+                  Catalogued {result.catalogItemsCreated} non-schedule products
+                  {result.catalogAttributesCreated > 0 &&
+                    ` (${result.catalogAttributesCreated} new attributes)`}
+                  {result.catalogItemsSkipped > 0 && `, ${result.catalogItemsSkipped} already present`}
+                  .
+                </>
+              )}
             </Alert>
             <Stack direction="row" spacing={1}>
               <Button variant="contained" onClick={() => navigate('/app/warehouse')}>
@@ -461,6 +510,82 @@ export default function SharePointMigrationPage() {
             <Card variant="outlined">
               <CardContent>
                 <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                  SharePoint records what kind of stock each row is, and Nexus has entity types for
+                  the non-schedule kinds. A mapped type replaces the part category with the type
+                  code, which is how frames, specialties and consumables are recognised downstream -
+                  and their descriptions are catalogued rather than lost. Door Hardware belongs to a
+                  hardware schedule and is left alone.
+                </Typography>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>SharePoint type</TableCell>
+                      <TableCell align="right">Rows</TableCell>
+                      <TableCell>Nexus entity type</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {spItemTypes.map((t) => {
+                      const mapped = itemTypeResolutions.get(t.spType);
+                      return (
+                        <TableRow key={t.spType} hover>
+                          <TableCell>
+                            {t.spType}
+                            {!t.isNonSchedule && (
+                              <Chip
+                                size="small"
+                                label="schedule hardware"
+                                variant="outlined"
+                                sx={{ ml: 1 }}
+                              />
+                            )}
+                          </TableCell>
+                          <TableCell align="right" sx={tabularSx}>
+                            {t.rowCount}
+                          </TableCell>
+                          <TableCell>
+                            <Select
+                              size="small"
+                              displayEmpty
+                              value={mapped?.id ?? ''}
+                              onChange={(e) => {
+                                const v = e.target.value as string;
+                                setItemTypeOverrides((prev) =>
+                                  new Map(prev).set(
+                                    t.spType,
+                                    typeOptions.find((o) => o.id === v) ?? null,
+                                  ),
+                                );
+                              }}
+                              sx={{ minWidth: 260 }}
+                            >
+                              <MenuItem value="">
+                                <em>Keep the part category</em>
+                              </MenuItem>
+                              {typeOptions.map((o) => (
+                                <MenuItem key={o.id} value={o.id}>
+                                  {o.name} ({o.code})
+                                </MenuItem>
+                              ))}
+                            </Select>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+                <Alert severity="info" sx={{ mt: 2 }}>
+                  {catalogItems.length} non-schedule products will be catalogued with their
+                  description, finish, rating, mounting and size where SharePoint records them.
+                </Alert>
+              </CardContent>
+            </Card>
+          )}
+
+          {step === 4 && (
+            <Card variant="outlined">
+              <CardContent>
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
                   {emptyCategories} rows have no part category. Nexus matches inventory to a hardware
                   schedule on category and product code together, so these need a value or they will
                   be skipped.
@@ -490,7 +615,7 @@ export default function SharePointMigrationPage() {
             </Card>
           )}
 
-          {step === 4 && (
+          {step === 5 && (
             <Card variant="outlined">
               <CardContent>
                 <Stack direction="row" spacing={3} sx={{ mb: 2, flexWrap: 'wrap' }}>

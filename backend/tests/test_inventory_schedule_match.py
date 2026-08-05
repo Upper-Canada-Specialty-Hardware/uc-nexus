@@ -195,3 +195,25 @@ def test_by_vendor_hierarchy_builds_and_never_flags(db_session, monkeypatch):
         for pc in n.product_codes:
             assert pc.matches_schedule is True
             assert pc.total_available_quantity == 0
+
+
+def test_non_schedule_type_codes_are_never_flagged(db_session, monkeypatch):
+    """Frames, specialties and consumables (#454) are absent from every schedule by design.
+
+    Their type code rides in hardware_category, so measuring them against a hardware schedule would
+    flag all of them forever - which is what makes a warning worth ignoring.
+    """
+    from app.repositories import custom_items_repository
+    from app.schemas.warehouse import WarehouseQueries
+
+    item_type = custom_items_repository.get_item_types(db_session, active_only=True)[0]
+    project = _make_project(db_session)
+    _add_schedule_item(db_session, project, category="Hinge", code="BB1279")
+    _add_inventory(db_session, project, category=item_type.code, code="FR-101")
+    _add_inventory(db_session, project, category="Washroom", code="GRAB-42")
+    _borrow(monkeypatch, db_session)
+
+    flat = _flat(WarehouseQueries().inventory_hierarchy(None, project_id=str(project.id)))
+    assert flat[(item_type.code, "FR-101")] is True
+    # An ordinary category still off the schedule is still flagged - the rule narrowed, not vanished.
+    assert flat[("Washroom", "GRAB-42")] is False

@@ -536,6 +536,12 @@ export const GET_SHAREPOINT_INVENTORY_SNAPSHOT = gql`
         projectInventoryQty
         projectNumber
         projectName
+        partDescription
+        finish
+        rating
+        mounting
+        heightInches
+        widthInches
       }
     }
   }
@@ -547,6 +553,9 @@ export const MIGRATE_SHAREPOINT_INVENTORY = gql`
       stockItems
       projectLocations
       totalUnits
+      catalogItemsCreated
+      catalogItemsSkipped
+      catalogAttributesCreated
     }
   }
 `;

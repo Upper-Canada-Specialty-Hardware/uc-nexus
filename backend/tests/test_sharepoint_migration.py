@@ -219,3 +219,81 @@ def test_both_migration_fields_are_admin_only():
 
     assert ROOT_FIELD_POLICY["sharepointInventorySnapshot"] == ADMIN_ROLE
     assert ROOT_FIELD_POLICY["migrateSharepointInventory"] == ADMIN_ROLE
+
+
+# --- non-schedule entity types (#454) ----------------------------------------------------------
+
+
+def _specialty_type(session):
+    from app.repositories import custom_items_repository
+
+    return custom_items_repository.get_item_types(session, active_only=True)[0]
+
+
+def test_catalog_items_are_created_with_their_attribute_values(db_session):
+    """The descriptive half of the migration: without it the quantities arrive and the words do not."""
+    from app.repositories import custom_items_repository
+
+    t = _specialty_type(db_session)
+    result = migration_repo.migrate_catalog_items(
+        db_session,
+        [
+            {
+                "type_id": t.id,
+                "product_code": "GRAB-42",
+                "description": "Bariatric Grab Bar, 42in",
+                "values": [
+                    {"attribute_name": "Finish", "value": "Satin"},
+                    {"attribute_name": "Rating", "value": "80A"},
+                ],
+            }
+        ],
+    )
+    db_session.flush()
+
+    assert result["items_created"] == 1
+    # The seeded types carry no attributes, so the source's columns become them.
+    assert result["attributes_created"] == 2
+    item = custom_items_repository.get_items(db_session, type_id=t.id)[0]
+    assert item.product_code == "GRAB-42"
+    assert {v.attribute.name: v.value for v in item.values} == {"Finish": "Satin", "Rating": "80A"}
+
+
+def test_an_attribute_is_reused_across_items_rather_than_duplicated(db_session):
+    t = _specialty_type(db_session)
+    result = migration_repo.migrate_catalog_items(
+        db_session,
+        [
+            {"type_id": t.id, "product_code": "A-1", "values": [{"attribute_name": "Finish", "value": "Satin"}]},
+            {"type_id": t.id, "product_code": "A-2", "values": [{"attribute_name": "Finish", "value": "Bronze"}]},
+        ],
+    )
+    assert result["items_created"] == 2
+    assert result["attributes_created"] == 1
+
+
+def test_a_product_code_already_catalogued_is_skipped_not_refused(db_session):
+    """Re-running, or migrating a code the warehouse already entered by hand, is not an error."""
+    t = _specialty_type(db_session)
+    migration_repo.migrate_catalog_items(db_session, [{"type_id": t.id, "product_code": "GRAB-42"}])
+    db_session.flush()
+    result = migration_repo.migrate_catalog_items(db_session, [{"type_id": t.id, "product_code": "GRAB-42"}])
+
+    assert result == {"items_created": 0, "items_skipped": 1, "attributes_created": 0}
+
+
+def test_blank_attribute_values_are_not_recorded(db_session):
+    t = _specialty_type(db_session)
+    result = migration_repo.migrate_catalog_items(
+        db_session,
+        [{"type_id": t.id, "product_code": "A-1", "values": [{"attribute_name": "Finish", "value": "  "}]}],
+    )
+    assert result["attributes_created"] == 0
+
+
+def test_no_catalog_items_is_a_no_op(db_session):
+    assert migration_repo.migrate_catalog_items(db_session, []) == {
+        "items_created": 0,
+        "items_skipped": 0,
+        "attributes_created": 0,
+    }

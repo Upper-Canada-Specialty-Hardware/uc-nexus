@@ -41,6 +41,14 @@ _FIELDS = (
     "Project_x0020_Inventory_x0020_Qt",
     "Project_x0020_Number_x0020_Temp",
     "Project_x0020_Name_x0020_Temp",
+    # Descriptive columns. Only meaningful for non-schedule stock - a frame or a specialty is
+    # described by these and by nothing else, since no hardware schedule describes it (#454).
+    "Part_x0020_Description",
+    "Finish",
+    "Rating",
+    "Mounting",
+    "Height_x0020_in_x0020_inches",
+    "Width_x0020_in_x0020_inches",
 )
 
 _PAGE_SIZE = 2000

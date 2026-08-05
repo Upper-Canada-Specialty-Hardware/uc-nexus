@@ -907,5 +907,25 @@ class MigrationEntryInput:
 
 
 @strawberry.input
+class MigrationCatalogValueInput:
+    # By NAME, not id: the seeded types start with no attributes, and which of the source's
+    # descriptive columns carry data is not knowable before the list is read.
+    attribute_name: str
+    value: str
+
+
+@strawberry.input
+class MigrationCatalogItemInput:
+    """One non-schedule product to catalog alongside its quantities (#454)."""
+
+    type_id: strawberry.ID
+    product_code: str
+    description: str | None = None
+    values: list[MigrationCatalogValueInput] | None = None
+
+
+@strawberry.input
 class MigrateSharepointInventoryInput:
     entries: list[MigrationEntryInput]
+    # Deduplicated by the wizard to one per (type, product code); quantities live on `entries`.
+    catalog_items: list[MigrationCatalogItemInput] | None = None

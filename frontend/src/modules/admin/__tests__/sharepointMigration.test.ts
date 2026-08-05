@@ -6,12 +6,18 @@ import {
   toCandidates,
   extractProjectNumber,
   autoMatchProject,
+  autoMatchItemType,
+  distinctItemTypes,
+  autoItemTypeResolutions,
+  buildCatalogItems,
+  categoryFor,
   buildEntries,
   distinctLocations,
   distinctProjects,
   emptyCategoryCount,
   type SharepointInventoryItem,
   type LocationResolution,
+  type InventoryItemTypeOption,
 } from '../sharepointMigration';
 
 function item(overrides: Partial<SharepointInventoryItem> = {}): SharepointInventoryItem {
@@ -326,5 +332,153 @@ describe('emptyCategoryCount', () => {
       item({ projectInventoryQty: 1 }),
     ]);
     expect(emptyCategoryCount(candidates)).toBe(2);
+  });
+});
+
+// --- non-schedule entity types (#454) ----------------------------------------------------------
+
+const TYPES: InventoryItemTypeOption[] = [
+  { id: 't-frame', code: 'FRAME', name: 'Frames' },
+  { id: 't-spec', code: 'SPECIALTY', name: 'Specialties' },
+  { id: 't-cons', code: 'CONSUMABLE', name: 'Consumables' },
+];
+
+describe('autoMatchItemType', () => {
+  it('matches SharePoint plural against the Nexus singular code', () => {
+    // SharePoint says "Specialties", Nexus seeds code SPECIALTY - neither an exact code nor an
+    // exact name match, which is why the comparison is normalized.
+    expect(autoMatchItemType('Specialties', TYPES)?.code).toBe('SPECIALTY');
+  });
+
+  it('matches SharePoint singular against the Nexus plural name', () => {
+    expect(autoMatchItemType('Frame', TYPES)?.code).toBe('FRAME');
+  });
+
+  it('matches a value that is already the code', () => {
+    expect(autoMatchItemType('CONSUMABLE', TYPES)?.code).toBe('CONSUMABLE');
+  });
+
+  it('returns null for schedule hardware and for blanks', () => {
+    expect(autoMatchItemType('Door Hardware', TYPES)).toBeNull();
+    expect(autoMatchItemType('', TYPES)).toBeNull();
+  });
+});
+
+describe('distinctItemTypes', () => {
+  it('counts rows per SharePoint type and marks which are non-schedule', () => {
+    const candidates = toCandidates([
+      item({ inventoryType: 'Specialties', projectInventoryQty: 1 }),
+      item({ inventoryType: 'Specialties', projectInventoryQty: 1 }),
+      item({ inventoryType: 'Door Hardware', projectInventoryQty: 1 }),
+    ]);
+    const result = distinctItemTypes(candidates);
+    expect(result[0]).toMatchObject({ spType: 'Specialties', rowCount: 2, isNonSchedule: true });
+    expect(result[1]).toMatchObject({ spType: 'Door Hardware', isNonSchedule: false });
+  });
+
+  it('ignores rows with no type at all', () => {
+    expect(distinctItemTypes(toCandidates([item({ inventoryType: '', stockQty: 1 })]))).toEqual([]);
+  });
+});
+
+describe('autoItemTypeResolutions', () => {
+  it('proposes a mapping only for the non-schedule types', () => {
+    const candidates = toCandidates([
+      item({ inventoryType: 'Specialties', projectInventoryQty: 1 }),
+      item({ inventoryType: 'Door Hardware', projectInventoryQty: 1 }),
+    ]);
+    const auto = autoItemTypeResolutions(distinctItemTypes(candidates), TYPES);
+    expect(auto.get('Specialties')?.code).toBe('SPECIALTY');
+    expect(auto.has('Door Hardware')).toBe(false);
+  });
+});
+
+describe('categoryFor', () => {
+  const mapped = new Map([['Specialties', TYPES[1]]]);
+
+  it('uses the type code when the row type is mapped', () => {
+    // This is the whole point: the type rides in hardware_category (#454).
+    expect(categoryFor(item({ inventoryType: 'Specialties' }), mapped, 'Uncategorized')).toBe('SPECIALTY');
+  });
+
+  it('keeps the part category for schedule hardware', () => {
+    expect(categoryFor(item({ inventoryType: 'Door Hardware' }), mapped, 'Uncategorized')).toBe(
+      'Surface Closer',
+    );
+  });
+
+  it('falls back to the empty-category label when neither applies', () => {
+    expect(
+      categoryFor(item({ inventoryType: 'Door Hardware', partCategory: '' }), mapped, 'Uncategorized'),
+    ).toBe('Uncategorized');
+  });
+});
+
+describe('buildEntries with a mapped entity type', () => {
+  it('writes the type code as the hardware category', () => {
+    const { entries } = buildEntries({
+      candidates: toCandidates([item({ inventoryType: 'Specialties', stockQty: 2 })]),
+      locationResolutions: new Map([
+        ['A-62R', { excluded: false, warehouseId: 'wh1', aisle: 'A', row: '62', bay: 'R' }],
+      ]),
+      projectResolutions: new Map(),
+      emptyCategoryLabel: 'Uncategorized',
+      defaultWarehouseId: 'wh1',
+      itemTypeResolutions: new Map([['Specialties', TYPES[1]]]),
+    });
+    expect(entries[0].hardwareCategory).toBe('SPECIALTY');
+  });
+});
+
+describe('buildCatalogItems', () => {
+  const mapped = new Map([['Specialties', TYPES[1]]]);
+
+  it('catalogs a mapped product with its description and attribute values', () => {
+    const candidates = toCandidates([
+      item({
+        inventoryType: 'Specialties',
+        scheduledPartNumber: '',
+        partNumber: 'GRAB-42',
+        partDescription: 'Bariatric Grab Bar, 42in',
+        finish: 'Satin',
+        rating: '80A',
+        stockQty: 4,
+      }),
+    ]);
+    const catalog = buildCatalogItems(candidates, mapped);
+    expect(catalog).toHaveLength(1);
+    expect(catalog[0]).toMatchObject({ typeId: 't-spec', productCode: 'GRAB-42', description: 'Bariatric Grab Bar, 42in' });
+    expect(catalog[0].values).toEqual([
+      { attributeName: 'Finish', value: 'Satin' },
+      { attributeName: 'Rating', value: '80A' },
+    ]);
+  });
+
+  it('collapses several rows of one product into one catalog entry', () => {
+    // A catalog row describes a PRODUCT; the same part on three shelves is still one product.
+    const candidates = toCandidates([
+      item({ inventoryType: 'Specialties', partNumber: 'GRAB-42', scheduledPartNumber: '', locations: 'A-1', stockQty: 2 }),
+      item({ inventoryType: 'Specialties', partNumber: 'GRAB-42', scheduledPartNumber: '', locations: 'B-2', stockQty: 3 }),
+    ]);
+    expect(buildCatalogItems(candidates, mapped)).toHaveLength(1);
+  });
+
+  it('falls back to the part category when there is no part description', () => {
+    const candidates = toCandidates([
+      item({ inventoryType: 'Specialties', partCategory: 'Washroom', partDescription: '', stockQty: 1 }),
+    ]);
+    expect(buildCatalogItems(candidates, mapped)[0].description).toBe('Washroom');
+  });
+
+  it('catalogs nothing for an unmapped type', () => {
+    const candidates = toCandidates([item({ inventoryType: 'Door Hardware', stockQty: 1 })]);
+    expect(buildCatalogItems(candidates, mapped)).toEqual([]);
+  });
+
+  it('omits attributes SharePoint left blank', () => {
+    const candidates = toCandidates([
+      item({ inventoryType: 'Specialties', finish: '', rating: '', stockQty: 1 }),
+    ]);
+    expect(buildCatalogItems(candidates, mapped)[0].values).toEqual([]);
   });
 });

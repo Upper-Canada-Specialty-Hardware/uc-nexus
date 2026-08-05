@@ -2069,6 +2069,13 @@ class SharepointInventoryItem:
     project_inventory_qty: int
     project_number: str
     project_name: str
+    # What describes a non-schedule product, since no hardware schedule does (#454).
+    part_description: str
+    finish: str
+    rating: str
+    mounting: str
+    height_inches: str
+    width_inches: str
 
 
 @strawberry.type
@@ -2084,3 +2091,8 @@ class MigrationResult:
     stock_items: int
     project_locations: int
     total_units: int
+    # Non-schedule products catalogued (#454). `skipped` is codes already in the catalog, which is
+    # a normal outcome rather than a failure.
+    catalog_items_created: int = 0
+    catalog_items_skipped: int = 0
+    catalog_attributes_created: int = 0

@@ -54,6 +54,12 @@ class SharepointMigrationQueries:
                 project_inventory_qty=_to_int(r.get("Project_x0020_Inventory_x0020_Qt")),
                 project_number=_to_str(r.get("Project_x0020_Number_x0020_Temp")),
                 project_name=_to_str(r.get("Project_x0020_Name_x0020_Temp")),
+                part_description=_to_str(r.get("Part_x0020_Description")),
+                finish=_to_str(r.get("Finish")),
+                rating=_to_str(r.get("Rating")),
+                mounting=_to_str(r.get("Mounting")),
+                height_inches=_to_str(r.get("Height_x0020_in_x0020_inches")),
+                width_inches=_to_str(r.get("Width_x0020_in_x0020_inches")),
             )
             for r in rows
         ]
@@ -84,11 +90,26 @@ class SharepointMigrationMutations:
             }
             for e in input.entries
         ]
+        catalog_items = [
+            {
+                "type_id": uuid.UUID(str(c.type_id)),
+                "product_code": c.product_code,
+                "description": c.description,
+                "values": [{"attribute_name": v.attribute_name, "value": v.value} for v in (c.values or [])],
+            }
+            for c in (input.catalog_items or [])
+        ]
         with SessionLocal() as session:
+            # Catalog first: it is the description of what the quantities below are, and doing it in
+            # the same transaction means a failure either way leaves neither behind.
+            catalog = sharepoint_migration_repository.migrate_catalog_items(session, catalog_items)
             result = sharepoint_migration_repository.migrate_inventory(session, entries, actor)
             session.commit()
             return MigrationResult(
                 stock_items=result["stock_items"],
                 project_locations=result["project_locations"],
                 total_units=result["total_units"],
+                catalog_items_created=catalog["items_created"],
+                catalog_items_skipped=catalog["items_skipped"],
+                catalog_attributes_created=catalog["attributes_created"],
             )
