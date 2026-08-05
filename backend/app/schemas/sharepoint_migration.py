@@ -36,8 +36,11 @@ def _to_str(value) -> str:
 @strawberry.type
 class SharepointMigrationQueries:
     @strawberry.field
-    def sharepoint_inventory_snapshot(self, info: strawberry.Info) -> SharepointInventorySnapshot:
-        rows = sharepoint_inventory.fetch_inventory_items()
+    async def sharepoint_inventory_snapshot(self, info: strawberry.Info) -> SharepointInventorySnapshot:
+        # Async because graphql-core runs a sync resolver inline on the event loop - there is no
+        # threadpool under it - so a multi-page Graph read in a `def` would freeze every other
+        # request to the backend for its whole duration.
+        rows = await sharepoint_inventory.fetch_inventory_items()
         items = [
             SharepointInventoryItem(
                 sp_item_id=_to_str(r.get("sp_item_id")),

@@ -173,10 +173,43 @@ def test_validation_failure_names_the_offending_entry(db_session):
 
 
 def test_has_any_inventory_tracks_the_rerun_warning(db_session):
+    # Both sides: a helper that returned True unconditionally would pass on the second assert alone.
+    assert migration_repo.has_any_inventory(db_session) is False
     wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
     migration_repo.migrate_inventory(db_session, [_entry(wh)], ACTOR)
     db_session.flush()
     assert migration_repo.has_any_inventory(db_session) is True
+
+
+def test_an_over_long_location_is_a_named_validation_error(db_session):
+    """aisle/row/bay are String(20); without an explicit check this dies as a raw 500 mid-batch."""
+    wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
+    with pytest.raises(ValidationError) as e:
+        migration_repo.migrate_inventory(db_session, [_entry(wh, aisle="Warehouse Overflow Rack")], ACTOR)
+    assert "aisle" in e.value.message and "20 characters" in e.value.message
+
+
+def test_identity_fields_are_written_stripped(db_session):
+    """A trailing space is a distinct identity that could never match a schedule pair."""
+    wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
+    migration_repo.migrate_inventory(
+        db_session, [_entry(wh, hardware_category=" Hinge ", product_code=" BB1279 ")], ACTOR
+    )
+    row = db_session.query(StockItem).filter_by(product_code="BB1279").one()
+    assert row.hardware_category == "Hinge"
+
+
+def test_stock_items_counts_rows_not_entries(db_session):
+    """Two entries for one part on one shelf merge into a single StockItem, and must report as one."""
+    wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
+    result = migration_repo.migrate_inventory(
+        db_session,
+        [_entry(wh, product_code="SAME-1", quantity=3), _entry(wh, product_code="SAME-1", quantity=4)],
+        ACTOR,
+    )
+    assert result["stock_items"] == 1
+    assert result["total_units"] == 7
+    assert db_session.query(StockItem).filter_by(product_code="SAME-1").one().quantity == 7
 
 
 def test_both_migration_fields_are_admin_only():

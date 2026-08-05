@@ -12,8 +12,8 @@ The site and list IDs are constants rather than settings because there is exactl
 migration reads, and it is retired once the migration has run.
 """
 
+import asyncio
 import logging
-import threading
 import time
 
 import httpx
@@ -51,7 +51,9 @@ _REFRESH_BUFFER_SECONDS = 300
 
 _token: str | None = None
 _token_expires_at: float = 0.0
-_token_lock = threading.Lock()
+# asyncio, not threading: this is awaited from the event loop, and a threading.Lock held across an
+# await would block every other request rather than just the second caller of this function.
+_token_lock = asyncio.Lock()
 
 
 class SharePointUnavailableError(AppError):
@@ -77,7 +79,19 @@ def _require_credentials() -> None:
         )
 
 
-def _get_token() -> str:
+def invalidate_token() -> None:
+    """Drop the cached token so the next call re-acquires.
+
+    Called when Graph rejects a token mid-read. Without it an expired client secret keeps a dead
+    token cached for its full hour, so the wizard's Retry button re-sends the same rejected
+    credential and the failure looks permanent when it is one refresh away from recoverable.
+    """
+    global _token, _token_expires_at
+    _token = None
+    _token_expires_at = 0.0
+
+
+async def _get_token() -> str:
     """Acquire (or reuse) an app-only Graph token.
 
     Locked because two concurrent wizard fetches would otherwise both hit the token endpoint; the
@@ -85,22 +99,23 @@ def _get_token() -> str:
     """
     global _token, _token_expires_at
 
-    with _token_lock:
+    async with _token_lock:
         if _token and time.time() < _token_expires_at - _REFRESH_BUFFER_SECONDS:
             return _token
 
         _require_credentials()
         try:
-            resp = httpx.post(
-                f"https://login.microsoftonline.com/{config.AZURE_TENANT_ID}/oauth2/v2.0/token",
-                data={
-                    "client_id": config.AZURE_CLIENT_ID,
-                    "client_secret": config.AZURE_CLIENT_SECRET,
-                    "scope": "https://graph.microsoft.com/.default",
-                    "grant_type": "client_credentials",
-                },
-                timeout=30,
-            )
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    f"https://login.microsoftonline.com/{config.AZURE_TENANT_ID}/oauth2/v2.0/token",
+                    data={
+                        "client_id": config.AZURE_CLIENT_ID,
+                        "client_secret": config.AZURE_CLIENT_SECRET,
+                        "scope": "https://graph.microsoft.com/.default",
+                        "grant_type": "client_credentials",
+                    },
+                    timeout=30,
+                )
             resp.raise_for_status()
         except httpx.HTTPStatusError as e:
             # A 401 here is almost always an expired client secret, which is worth saying out loud
@@ -119,25 +134,34 @@ def _get_token() -> str:
         return _token
 
 
-def fetch_inventory_items() -> list[dict]:
+async def fetch_inventory_items() -> list[dict]:
     """Every row of the SharePoint inventory list, as flat `fields` dicts plus the SharePoint id.
 
     Returns the raw list verbatim - no filtering, no quantity interpretation. Deciding which rows
     carry migratable stock is the wizard's job, and doing it here would hide the source totals the
     first wizard step reports.
+
+    Async because the migration is one-shot and non-idempotent, so a partial read is the expensive
+    kind of wrong: this is the only chance to get the row set right. Blocking the event loop for the
+    length of a multi-page Graph read would also freeze every other request to the backend, which is
+    why every other external-system resolver here (the relay gp_* calls, registerPoInGp,
+    syncGpJobs) is async too.
     """
-    token = _get_token()
+    token = await _get_token()
     select = ",".join(_FIELDS)
     url = f"{GRAPH_BASE}/sites/{SITE_ID}/lists/{LIST_ID}/items?$expand=fields($select={select})&$top={_PAGE_SIZE}"
 
     items: list[dict] = []
-    with httpx.Client(headers={"Authorization": f"Bearer {token}"}, timeout=120) as client:
+    async with httpx.AsyncClient(headers={"Authorization": f"Bearer {token}"}, timeout=120) as client:
         for _ in range(_MAX_PAGES):
             try:
-                resp = client.get(url)
+                resp = await client.get(url)
                 resp.raise_for_status()
             except httpx.HTTPStatusError as e:
                 logger.warning("Graph list read failed: %s %s", e.response.status_code, e.response.text[:400])
+                if e.response.status_code in (401, 403):
+                    # The cached token is what was just refused; keeping it makes Retry re-send it.
+                    invalidate_token()
                 raise SharePointUnavailableError(
                     f"Microsoft Graph returned {e.response.status_code} reading the inventory list."
                 ) from e
@@ -154,7 +178,15 @@ def fetch_inventory_items() -> list[dict]:
                 break
             url = next_link
         else:
-            logger.warning("fetch_inventory_items hit the %d-page cap at %d rows", _MAX_PAGES, len(items))
+            # Refuse rather than return short. Graph honours $top=2000 on this list today (3.5k rows
+            # arrive in two pages), but if it ever pages smaller, a truncated list that LOOKS
+            # complete is the worst outcome available: the wizard would report a smaller source
+            # total, migrate a subset, and leave the remainder unmigratable because a second run
+            # duplicates everything the first one wrote.
+            raise SharePointUnavailableError(
+                f"The SharePoint list did not finish paging within {_MAX_PAGES} pages "
+                f"({len(items)} rows read). Refusing to migrate a partial list."
+            )
 
     logger.info("Fetched %d SharePoint inventory rows", len(items))
     return items

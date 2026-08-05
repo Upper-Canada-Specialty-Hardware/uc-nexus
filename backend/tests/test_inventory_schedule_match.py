@@ -117,3 +117,62 @@ def test_a_project_with_no_schedule_matches_nothing(db_session):
     _add_inventory(db_session, project, category="Hinge", code="BB1279")
 
     assert warehouse_repository.get_scheduled_pairs(db_session, project.id) == set()
+
+
+# --- the resolver wiring, which is the behaviour the flag actually exists for -------------------
+
+
+def _hierarchy(project_id=None):
+    """Call the real resolver the way the schema does."""
+    from app.schemas.warehouse import WarehouseQueries
+
+    return WarehouseQueries().inventory_hierarchy(None, project_id=project_id)
+
+
+def test_resolver_flags_a_pair_absent_from_the_schedule(db_session, monkeypatch):
+    project = _make_project(db_session)
+    _add_schedule_item(db_session, project, category="Hinge", code="BB1279")
+    _add_inventory(db_session, project, category="Washroom", code="GRAB-BAR-42")
+    db_session.commit()
+
+    nodes = _hierarchy(str(project.id))
+    flat = {(n.hardware_category, pc.product_code): pc.matches_schedule for n in nodes for pc in n.product_codes}
+    assert flat[("Washroom", "GRAB-BAR-42")] is False
+
+
+def test_resolver_does_not_flag_a_pair_the_schedule_names(db_session):
+    project = _make_project(db_session)
+    _add_schedule_item(db_session, project, category="Hinge", code="BB1279")
+    _add_inventory(db_session, project, category="Hinge", code="BB1279")
+    db_session.commit()
+
+    nodes = _hierarchy(str(project.id))
+    flat = {(n.hardware_category, pc.product_code): pc.matches_schedule for n in nodes for pc in n.product_codes}
+    assert flat[("Hinge", "BB1279")] is True
+
+
+def test_unscoped_hierarchy_never_flags(db_session):
+    """No project, no single schedule to compare against - so the answer is unknown, not False."""
+    project = _make_project(db_session)
+    _add_inventory(db_session, project, category="Washroom", code="GRAB-BAR-42")
+    db_session.commit()
+
+    nodes = _hierarchy(None)
+    assert nodes
+    assert all(pc.matches_schedule for n in nodes for pc in n.product_codes)
+
+
+def test_by_vendor_hierarchy_builds_and_never_flags(db_session):
+    """It also regressions the omitted-required-argument crash: this raised TypeError on every call."""
+    from app.schemas.warehouse import WarehouseQueries
+
+    project = _make_project(db_session)
+    _add_inventory(db_session, project, category="Washroom", code="GRAB-BAR-42")
+    db_session.commit()
+
+    nodes = WarehouseQueries().inventory_by_vendor(None, project_id=str(project.id))
+    assert nodes
+    for n in nodes:
+        for pc in n.product_codes:
+            assert pc.matches_schedule is True
+            assert pc.total_available_quantity == 0

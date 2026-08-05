@@ -507,7 +507,10 @@ function ProductCodeDetail({
                 : undefined
             }
           />
-          {!matchesSchedule && (
+          {/* Catalogued non-schedule stock - frames, specialties, consumables (#454) - is absent
+              from every hardware schedule by design, so flagging it would fire on all of it forever.
+              The catalog entry IS its description, which is what `detail` above already shows. */}
+          {!matchesSchedule && !catalogItem && (
             <Tooltip title="This category and product code pair is not on the project's hardware schedule, so no shop assembly or shipping out request can claim it.">
               <Chip
                 size="small"

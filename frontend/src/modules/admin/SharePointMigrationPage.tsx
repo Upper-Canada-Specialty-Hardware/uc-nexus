@@ -334,10 +334,9 @@ export default function SharePointMigrationPage() {
                                 displayEmpty
                                 value={r?.warehouseId ?? defaultWarehouseId}
                                 onChange={(e) =>
-                                  setLocation(loc.raw, {
-                                    warehouseId: e.target.value as string,
-                                    excluded: false,
-                                  })
+                                  // Inclusion is the Include button's job alone - see the note on
+                                  // the aisle/row/bay fields below.
+                                  setLocation(loc.raw, { warehouseId: e.target.value as string })
                                 }
                                 sx={{ minWidth: 130 }}
                               >
@@ -353,10 +352,13 @@ export default function SharePointMigrationPage() {
                                 <TextField
                                   size="small"
                                   value={r?.[field] ?? ''}
+                                  inputProps={{ maxLength: 20 }}
                                   onChange={(e) =>
+                                    // Only the Include button changes inclusion. Typing a shelf into
+                                    // a location the user deliberately excluded must not quietly put
+                                    // its rows back in the batch.
                                     setLocation(loc.raw, {
                                       [field]: e.target.value || null,
-                                      excluded: false,
                                     } as Partial<LocationResolution>)
                                   }
                                   sx={{ width: 72 }}

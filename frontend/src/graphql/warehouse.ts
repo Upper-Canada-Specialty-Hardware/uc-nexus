@@ -309,6 +309,10 @@ export const GET_INVENTORY_BY_VENDOR = gql`
         productCode
         totalQuantity
         totalValue
+        # Always true here - this hierarchy is not project-scoped, so there is no single schedule to
+        # compare against. Selected anyway so the field is never undefined on the client, where a
+        # negated check would then flag every row in the by-vendor view.
+        matchesSchedule
         items {
           id projectId poLineItemId receiveLineItemId
           hardwareCategory productCode quantity

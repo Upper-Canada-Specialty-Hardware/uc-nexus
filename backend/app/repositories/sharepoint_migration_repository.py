@@ -21,7 +21,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.errors import NotFoundError, ValidationError
+from app.models.inventory import InventoryLocation
 from app.models.project import Project as ProjectModel
+from app.models.stock_item import StockItem
 from app.models.warehouse import Warehouse
 from app.repositories import stock as stock_repository
 
@@ -48,18 +50,24 @@ def migrate_inventory(session: Session, entries: list[dict], performed_by: str) 
     _validate_entries(session, entries)
 
     now = datetime.utcnow()
-    stock_items = 0
+    # Stock rows, not stock ENTRIES: receive_into_stock merges into an existing row for the same
+    # (warehouse, category, code, aisle, row, bay), so two SharePoint rows for one part on one shelf
+    # are one StockItem. Counting entries would report a number the warehouse view cannot reproduce.
+    stock_row_ids: set[uuid.UUID] = set()
     project_locations = 0
     total_units = 0
 
     for index, entry in enumerate(entries):
-        category = entry["hardware_category"]
-        code = entry["product_code"]
+        # Written stripped, not just validated stripped: a trailing space makes a distinct identity
+        # that can never match a schedule pair, and this is a public admin mutation rather than
+        # something only the wizard calls.
+        category = entry["hardware_category"].strip()
+        code = entry["product_code"].strip()
         quantity = entry["quantity"]
         warehouse_id = entry["warehouse_id"]
-        aisle = entry.get("aisle")
-        row = entry.get("row")
-        bay = entry.get("bay")
+        aisle = _clean_location(entry.get("aisle"))
+        row = _clean_location(entry.get("row"))
+        bay = _clean_location(entry.get("bay"))
 
         try:
             stock_row = stock_repository.receive_into_stock(
@@ -92,7 +100,7 @@ def migrate_inventory(session: Session, entries: list[dict], performed_by: str) 
                 )
                 project_locations += 1
             else:
-                stock_items += 1
+                stock_row_ids.add(stock_row.id)
 
             total_units += quantity
         except (ValidationError, NotFoundError) as e:
@@ -106,15 +114,25 @@ def migrate_inventory(session: Session, entries: list[dict], performed_by: str) 
     logger.info(
         "SharePoint migration by %s: %d stock rows, %d project locations, %d units",
         performed_by,
-        stock_items,
+        len(stock_row_ids),
         project_locations,
         total_units,
     )
     return {
-        "stock_items": stock_items,
+        "stock_items": len(stock_row_ids),
         "project_locations": project_locations,
         "total_units": total_units,
     }
+
+
+# stock_items / inventory_locations store aisle, row and bay as String(20).
+_MAX_LOCATION_PART = 20
+
+
+def _clean_location(value: str | None) -> str | None:
+    """Trim a location part, treating blank as absent."""
+    cleaned = (value or "").strip()
+    return cleaned or None
 
 
 def _validate_entries(session: Session, entries: list[dict]) -> None:
@@ -141,6 +159,17 @@ def _validate_entries(session: Session, entries: list[dict]) -> None:
         if warehouse_id is None:
             raise ValidationError(f"{label}: warehouse_id is required", field="warehouse_id")
         warehouse_ids.add(warehouse_id)
+
+        # receive_into_stock does not check these (allocate_stock_to_project does), and the columns
+        # are String(20). Without this an over-long aisle reaches the flush and dies as a
+        # StringDataRightTruncation - a raw 500 naming no entry, against a batch of thousands.
+        for part in ("aisle", "row", "bay"):
+            value = _clean_location(entry.get(part))
+            if value is not None and len(value) > _MAX_LOCATION_PART:
+                raise ValidationError(
+                    f"{label}: {part} must be {_MAX_LOCATION_PART} characters or fewer",
+                    field=part,
+                )
 
         if destination == DESTINATION_PROJECT:
             project_id = entry.get("project_id")
@@ -174,10 +203,11 @@ def has_any_inventory(session: Session) -> bool:
 
     The migration has no idempotency marker, so running it twice doubles everything it wrote. This
     is what the first step warns on.
-    """
-    from app.models.inventory import InventoryLocation
-    from app.models.stock_item import StockItem
 
+    Deliberately broad, and it will be true on any environment that has ever received a PO - this
+    answers "is this database empty", not "has this migration run". It is a prompt to check, not a
+    verdict; the honest version of the latter needs a persisted marker, which nothing writes yet.
+    """
     has_locations = session.scalar(select(InventoryLocation.id).limit(1)) is not None
     if has_locations:
         return True
