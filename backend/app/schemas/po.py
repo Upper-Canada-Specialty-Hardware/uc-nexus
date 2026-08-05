@@ -588,14 +588,6 @@ class POMutations:
             return po_to_type(po_repository.reload_po(session, po.id))
 
     @strawberry.mutation
-    def mark_po_as_ordered(self, info: strawberry.Info, id: strawberry.ID) -> PurchaseOrder:
-        with SessionLocal() as session:
-            po = po_repository.mark_po_as_ordered(session, uuid.UUID(str(id)))
-            session.commit()
-            session.refresh(po)
-            return po_to_type(po)
-
-    @strawberry.mutation
     def cancel_po(self, info: strawberry.Info, id: strawberry.ID) -> PurchaseOrder:
         with SessionLocal() as session:
             po = po_repository.cancel_po(session, uuid.UUID(str(id)))

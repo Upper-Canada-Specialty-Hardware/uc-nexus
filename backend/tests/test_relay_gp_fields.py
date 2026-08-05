@@ -1,8 +1,5 @@
 """PO GP-sync fields (uc nexus <-> relay, schema + api changes)."""
 
-import pytest
-
-from app.errors import ValidationError
 from app.models.enums import POStatus
 from app.repositories import po_repository
 
@@ -70,27 +67,25 @@ def test_create_po_stores_gp_vendor_snapshot(db_session):
     assert po.status == POStatus.GP_REGISTERED
 
 
-# --- #509: GP_REGISTERED implies a GP vendor, on every path ---------------------------------------
+# --- #509: registering in GP is the only way a PO becomes GP_REGISTERED --------------------------
 
 
-def test_mark_po_as_ordered_refuses_a_po_with_no_gp_vendor(db_session):
-    """GP_REGISTERED means the PO exists in GP, so it has to name the GP vendor it was placed with.
-    This path used to gate on the local vendor link - never a GP vendor - which let a PO through
-    showing a blank vendor in the PO list, back-order grid, awaiting-receipt table and history, with
-    nothing able to fill it in afterwards."""
-    po = po_repository.create_po(db_session, line_items=[_line_item()])
-    po_repository.update_po(db_session, po.id, po_number="PO777001")
+def test_no_mutation_can_fake_a_gp_registered_po(db_session):
+    """`markPoAsOrdered` is gone (#509). It flipped a DRAFT to GP_REGISTERED without ever contacting
+    GP, gated only on the local vendor link - so its rule was "you may fabricate a GP-registered PO
+    provided you attach an invented vendor", which is the thing this change removes. It had no
+    frontend caller either: nothing reachable by clicking could produce that state, so it was a
+    seeding backdoor rather than a real path.
+
+    GP_REGISTERED now comes from exactly two places, both of which carry a real PM00200 vendor:
+    `register_po_in_gp` after the relay push, and `create_po`'s GP-first branch for callers already
+    holding a GP result."""
+    assert not hasattr(po_repository, "mark_po_as_ordered")
+
+    draft = po_repository.create_po(db_session, line_items=[_line_item()])
+    po_repository.update_po(db_session, draft.id, po_number="PO777001")
     db_session.flush()
-
-    with pytest.raises(ValidationError) as exc:
-        po_repository.mark_po_as_ordered(db_session, po.id)
-    assert exc.value.field == "gp_vendor_id"
-    db_session.refresh(po)
-    assert po.status == POStatus.DRAFT
-
-
-def test_mark_po_as_ordered_still_requires_a_po_number(db_session):
-    po = po_repository.create_po(db_session, line_items=[_line_item()])
-    with pytest.raises(ValidationError) as exc:
-        po_repository.mark_po_as_ordered(db_session, po.id)
-    assert exc.value.field == "po_number"
+    db_session.refresh(draft)
+    # A PO number alone never advances the status - only a GP round trip does.
+    assert draft.status == POStatus.DRAFT
+    assert draft.gp_vendor_id is None

@@ -640,45 +640,6 @@ def update_po(
     return po
 
 
-def mark_po_as_ordered(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
-    """
-    - Validate exists + not soft-deleted (NotFoundError)
-    - Validate status == Draft (InvalidStateTransitionError)
-    - Validate po_number is not None (ValidationError)
-    - Validate gp_vendor_id is not None (ValidationError)
-    - Set status=GP_Registered, ordered_at=datetime.utcnow()
-    - Return updated PO
-
-    GP_REGISTERED means "this PO exists in GP", so it has to carry the GP vendor it was placed with -
-    the same invariant `create_po` gates its GP-first branch on and `register_po_in_gp` raises for.
-    This path was the only one that did not enforce it: it used to require the local vendor link
-    instead, which was never a GP vendor at all, so it let a PO reach GP_REGISTERED with a blank
-    vendor in every view that names one (#509). The old link is gone with the table, and there is no
-    field left that could fill the vendor in afterwards - which is correct, because a GP vendor comes
-    from GP, not from a Nexus edit.
-    """
-    po = get_purchase_order(session, po_id)
-    if po is None:
-        raise NotFoundError(f"Purchase order {po_id} not found")
-
-    if po.status != POStatus.DRAFT:
-        raise InvalidStateTransitionError(f"Cannot mark PO as ordered from {po.status.value} status; must be Draft")
-
-    if po.po_number is None:
-        raise ValidationError("PO number is required before marking as ordered", field="po_number")
-
-    if po.gp_vendor_id is None:
-        raise ValidationError(
-            "The GP vendor is required before marking as ordered; register the PO in GP instead",
-            field="gp_vendor_id",
-        )
-
-    po.status = POStatus.GP_REGISTERED
-    po.ordered_at = datetime.utcnow()
-
-    return po
-
-
 def cancel_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
     """
     - Validate exists + not soft-deleted (NotFoundError)

@@ -302,22 +302,23 @@ Until that is fixed, seed inventory one product at a time: register a single-lin
 approve it, repeat. Two of those took about ten minutes end to end and were enough to drive a
 shop-assembly request, an assembled leaf and two shipping-out requests.
 
-Two other things that still hold when GP is refusing outright:
+Two other things worth knowing when GP is refusing outright:
 
-- `markPoAsOrdered` moves a DRAFT straight to `GP_REGISTERED` with no relay involvement
-  (`po_repository.py`), which is enough to exercise anything keyed on a *placed* PO - on-order
-  quantities, back-order reads - without touching GP. It does NOT create a receipt, so it seeds no
-  inventory.
+- **There is no way to fake a placed PO, and that is deliberate (#509).** `markPoAsOrdered` used to
+  flip a DRAFT straight to `GP_REGISTERED` with no relay involvement, and earlier revisions of this
+  file advertised it as the way to exercise on-order quantities and back-order reads without GP. It
+  is deleted. Its only guard was the local vendor link - never a GP vendor, just an invented one -
+  and it had no frontend caller, so nothing reachable by clicking could ever produce that state. A
+  seeding backdoor is not an end-to-end test; if a surface cannot be reached by clicking, the honest
+  answer is that it needs a relay-connected run, not a fabricated row.
 
-  **Since #509 it requires `gp_vendor_id` as well as a PO number**, because GP_REGISTERED means the
-  PO exists in GP and so must name the GP vendor it was placed with. It used to require the local
-  vendor link, which was never a GP vendor, so it produced POs that rendered a blank vendor
-  everywhere. Nothing reachable without a relay can set `gp_vendor_id` (`createDraftPo` and
-  `updatePo` both refuse to - a GP vendor comes from GP), so **this shortcut no longer works on a
-  relay-less PR environment**. To seed a placed PO there you now need either a relay-connected
-  `registerPoInGp`, or a direct DB write.
-- The stock pool is not an escape hatch: there is no `createStockItem`. Stock only enters through a
-  receive, or out of project inventory via `destockInventory`, so it has the same root dependency.
+  `GP_REGISTERED` now comes only from `registerPoInGp` (relay push, real PM00200 vendor) or
+  `create_po`'s GP-first branch for a caller already holding a GP result. So on a relay-less PR
+  environment there are no placed POs at all, and POs Awaiting Receipt, back-order reads and
+  receiving history are legitimately empty there.
+- The stock pool is not an escape hatch either: there is no `createStockItem`. Stock only enters
+  through a receive, or out of project inventory via `destockInventory`, so it has the same root
+  dependency.
 
 **A re-import wipes the classification of every item it does not re-classify.** `finalize_import_session`
 re-persists the selected openings' hardware items with whatever the Classification step sent, so a
@@ -516,7 +517,9 @@ Two things a fresh reader gets wrong every time:
   POs have one at all.
 - Documents section with upload capability
 - Receiving history
-- Actions: Edit (header fields + line item Order As/costs), Mark as Ordered, Cancel PO
+- Actions: Edit (header fields + line item Order As/costs), Register in GP, Cancel PO. There is no
+  "Mark as Ordered" button and there has not been one for some time - the mutation behind it was
+  deleted outright in #509
 
 **Only a wizard-created PO has an "Openings on this PO" section**, and its absence is not a bug. The
 link is `HardwareItem.po_line_item_id`, which only the Import wizard's Create-Purchase-Orders path
@@ -544,7 +547,10 @@ DRAFT -> ORDERED -> VENDOR_CONFIRMED -> PARTIALLY_RECEIVED -> CLOSED
                                     \-> PARTIALLY_RECEIVED -> CLOSED
   \-> CANCELLED (from DRAFT, ORDERED, or VENDOR_CONFIRMED)
 ```
-- **Mark as Ordered** requires: PO number (and nothing else, since #509)
+- **DRAFT -> GP_REGISTERED** happens only by registering the PO in GP (`registerPoInGp`, relay
+  required), or via `create_po`'s GP-first branch for a caller already holding a GP result. Both
+  carry a real PM00200 vendor. #509 deleted `markPoAsOrdered`, which used to fake this transition
+  with no relay and no GP vendor
 - **VENDOR_CONFIRMED** auto-triggers when ORDERED PO has both vendor quote number and vendor acknowledgement document; auto-reverts if either is removed
 - **Receiving** a PO without a project will show error: "PO must be associated with a project before receiving"
 
