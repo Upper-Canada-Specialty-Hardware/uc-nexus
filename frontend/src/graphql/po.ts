@@ -462,25 +462,6 @@ export const UPDATE_PO_DOCUMENT_SETTINGS = gql`
   }
 `;
 
-// Which door openings and leaves this PO's hardware was bought for (#302). Read only by the PO detail
-// modal - the PO list must never pay for this join.
-export const GET_PO_OPENINGS = gql`
-  query GetPoOpenings($poId: ID!) {
-    poOpenings(poId: $poId) {
-      openingNumber
-      leaf
-      building
-      floor
-      location
-      items {
-        hardwareCategory
-        productCode
-        quantity
-      }
-    }
-  }
-`;
-
 // --- Keep-or-ship decisions ---
 //
 // When a receive is approved and booked, the person who raised the PO is asked where the shipment
