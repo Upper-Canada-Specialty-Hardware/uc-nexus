@@ -18,7 +18,6 @@ import { useToast } from '../../components/Toast';
 import { CREATE_DRAFT_PO, REGISTER_PO_IN_GP, GET_GP_COST_CODES, GET_GP_VENDORS, GET_GP_TAX_DETAILS, SUGGEST_VENDOR_FOR_MANUFACTURER } from '../../graphql/po';
 import { GET_BUYER_ASSIGNMENTS, GET_PROJECTS } from '../../graphql/shared';
 import { useIdentity } from '../../hooks/useIdentity';
-import VendorSelect from '../../components/VendorSelect';
 import type { Project } from '../../types/project';
 import { isGpSetupBroken } from '../../types/project';
 import GpSetupQuarantineBanner, { GpSetupBadge } from '../../components/GpSetupQuarantineBanner';
@@ -157,8 +156,8 @@ export default function GpPurchaseOrderDialog({
   const [taxDetailId, setTaxDetailId] = useState('');
   const [miscellaneous, setMiscellaneous] = useState('');
   const [tradeDiscount, setTradeDiscount] = useState('');
-  // Issue #256: create mode drafts carry an optional Nexus vendor link + the PM's preferred date.
-  const [vendorId, setVendorId] = useState<string | null>(null);
+  // Issue #256: create mode drafts carry the PM's preferred date. No vendor - GP owns those, and the
+  // GP vendor is picked at register time (#509).
   const [preferredDeliveryDate, setPreferredDeliveryDate] = useState('');
   const [costCode, setCostCode] = useState('');
   const [nextKey, setNextKey] = useState(2);
@@ -404,7 +403,6 @@ export default function GpPurchaseOrderDialog({
       setTaxDetailId('');
       setMiscellaneous('');
       setTradeDiscount('');
-      setVendorId(null);
       setPreferredDeliveryDate('');
       setLineItems([{ key: 1, ...EMPTY_LINE_ITEM }]);
       setNextKey(2);
@@ -655,7 +653,6 @@ export default function GpPurchaseOrderDialog({
           variables: {
             input: {
               projectId: projectId || null,
-              vendorId: vendorId || null,
               notes: notes.trim() || null,
               preferredDeliveryDate: preferredDeliveryDate || null,
               shippingCost: shippingCostValue,
@@ -697,7 +694,6 @@ export default function GpPurchaseOrderDialog({
     gpBuyerId,
     lineItems,
     projectId,
-    vendorId,
     preferredDeliveryDate,
     gpVendorId,
     gpVendorName,
@@ -886,12 +882,9 @@ export default function GpPurchaseOrderDialog({
             {manufacturerHintNode}
           </Box>
         ) : (
-          /* Issue #256: a draft carries an optional Nexus vendor link + the PM's preferred date; the
-             GP vendor is picked later, at register time. */
+          /* Issue #256: a draft carries the PM's preferred date. There is no vendor field - GP owns
+             vendors, and the GP one is picked later, at register time (#509). */
           <Stack direction="row" spacing={2}>
-            <Box sx={{ flex: 1 }}>
-              <VendorSelect value={vendorId} onChange={setVendorId} />
-            </Box>
             <TextField
               label="Preferred delivery date"
               type="date"

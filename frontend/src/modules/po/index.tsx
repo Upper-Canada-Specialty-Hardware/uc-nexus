@@ -105,14 +105,6 @@ export interface PODocumentInfo {
   downloadUrl: string;
 }
 
-export interface VendorRef {
-  id: string;
-  name: string;
-  contactName: string | null;
-  email: string | null;
-  phone: string | null;
-}
-
 export interface PODocumentData {
   id: string;
   poId: string;
@@ -143,7 +135,6 @@ export interface PurchaseOrder {
   gpVendorId: string | null;
   vendorNameSnapshot: string | null;
   buyerId: string | null;
-  vendor: VendorRef | null;
   vendorQuoteNumber: string | null;
   shippingCost: number | null;
   tariffAmount: number | null;

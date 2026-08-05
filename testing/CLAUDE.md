@@ -67,7 +67,7 @@ Consequences when driving the app by script:
   your helper dropped the header, not that the session died.
 - Admin-gated reads worth knowing, because a non-admin session gets FORBIDDEN rather than an empty
   list: `users`, `adminStats`, `adminOpeningStatuses`, `adminOpeningDeepDive`, `locationDuplicates`. Their writes too -
-  the vendor and warehouse CRUD, `overrideInventoryQuantity`, `mergeLocations`.
+  the warehouse CRUD, `overrideInventoryQuantity`, `mergeLocations`.
 - `require_admin` costs a Clerk Backend API round-trip per call (`require_user` does not), so a page
   hitting several admin resolvers at once is legitimately slower than the equivalent user page.
 
@@ -302,14 +302,23 @@ Until that is fixed, seed inventory one product at a time: register a single-lin
 approve it, repeat. Two of those took about ten minutes end to end and were enough to drive a
 shop-assembly request, an assembled leaf and two shipping-out requests.
 
-Two other things that still hold when GP is refusing outright:
+Two other things worth knowing when GP is refusing outright:
 
-- `markPoAsOrdered` moves a DRAFT with a PO number and a Nexus vendor straight to `GP_REGISTERED`
-  with no relay involvement (`po_repository.py`). That is enough to exercise anything keyed on a
-  *placed* PO - on-order quantities, back-order reads - without touching GP. It does NOT create a
-  receipt, so it seeds no inventory.
-- The stock pool is not an escape hatch: there is no `createStockItem`. Stock only enters through a
-  receive, or out of project inventory via `destockInventory`, so it has the same root dependency.
+- **There is no way to fake a placed PO, and that is deliberate (#509).** `markPoAsOrdered` used to
+  flip a DRAFT straight to `GP_REGISTERED` with no relay involvement, and earlier revisions of this
+  file advertised it as the way to exercise on-order quantities and back-order reads without GP. It
+  is deleted. Its only guard was the local vendor link - never a GP vendor, just an invented one -
+  and it had no frontend caller, so nothing reachable by clicking could ever produce that state. A
+  seeding backdoor is not an end-to-end test; if a surface cannot be reached by clicking, the honest
+  answer is that it needs a relay-connected run, not a fabricated row.
+
+  `GP_REGISTERED` now comes only from `registerPoInGp` (relay push, real PM00200 vendor) or
+  `create_po`'s GP-first branch for a caller already holding a GP result. So on a relay-less PR
+  environment there are no placed POs at all, and POs Awaiting Receipt, back-order reads and
+  receiving history are legitimately empty there.
+- The stock pool is not an escape hatch either: there is no `createStockItem`. Stock only enters
+  through a receive, or out of project inventory via `destockInventory`, so it has the same root
+  dependency.
 
 **A re-import wipes the classification of every item it does not re-classify.** `finalize_import_session`
 re-persists the selected openings' hardware items with whatever the Classification step sent, so a
@@ -491,14 +500,16 @@ Two things a fresh reader gets wrong every time:
 **Create PO Dialog** (manual PO creation, issue #256 - draft-first, NO relay needed):
 - Title "Create PO Request (Draft)"; the Create PO button works with the relay offline
 - Project selector (optional, all projects — buyer assignments only gate the register step)
-- Vendor (Nexus vendor strict-select, optional) + Preferred delivery date
+- Preferred delivery date. There is NO vendor field (#509): GP owns vendors, and the GP one is picked
+  at register time
 - Shipping costs / Tariffs (optional), Notes
 - Line items grid: Hardware Category, Product Code, Qty, Unit Cost, Order As (REQUIRED per line; no Classification column - the PM sets site/shop at import)
 - "Add Item" button to add rows, delete button per row (minimum 1 item)
 - Submit ("Create Draft") creates a DRAFT PO with auto-generated request number (PO-REQ-XXX); no GP push. Registering into GP is the separate "Register in GP" action on the draft (relay + buyer identity required there)
 
 **PO Detail Modal**:
-- Shows: status chip, PO number, vendor info, quote #, dates, "No Project" label if project-less
+- Shows: status chip, PO number, vendor (the GP `vendorNameSnapshot`, blank on an unregistered
+  draft), quote #, dates, "No Project" label if project-less
 - Line items grid: product code, hardware category, Order As, classification, ordered/received qty, unit cost, line total
 - "Openings on this PO" section (#302), between Line Items and Documents - one row per (opening, leaf)
   the PO's hardware was bought for: opening number, a `Leaf N` chip, the hardware ordered against it
@@ -506,7 +517,9 @@ Two things a fresh reader gets wrong every time:
   POs have one at all.
 - Documents section with upload capability
 - Receiving history
-- Actions: Edit (header fields + line item Order As/costs), Mark as Ordered, Cancel PO
+- Actions: Edit (header fields + line item Order As/costs), Register in GP, Cancel PO. There is no
+  "Mark as Ordered" button and there has not been one for some time - the mutation behind it was
+  deleted outright in #509
 
 **Only a wizard-created PO has an "Openings on this PO" section**, and its absence is not a bug. The
 link is `HardwareItem.po_line_item_id`, which only the Import wizard's Create-Purchase-Orders path
@@ -521,7 +534,7 @@ To produce one cheaply - the whole run is a couple of minutes and touches nothin
 2. Select Openings: tick 2 openings via `document.querySelector('.MuiDataGrid-row[data-id="0501-EX"] input[type=checkbox]').click()`. Prefer openings whose Hand column shows a pair (`RHRA/LHR`) so the section has more than one leaf to show.
 3. Reconciliation: **Deselect All**, then tick exactly one product row (`data-id` is `"<category>|<productCode>"`). That is what keeps the PO to one line and one manufacturer group.
 4. Classification: click By UCSH + Shop on each row (both counters must fill).
-5. Purchase Orders: tick the single manufacturer card's checkbox. Vendor is optional here - leave it blank, the draft still creates.
+5. Purchase Orders: tick the single manufacturer card's checkbox. The card carries only a preferred date and notes - there is no vendor field to fill (#509).
 6. Finalize -> Finish Import Session -> Finalize -> **View Purchase Orders**, then the `Open <PO-REQ-NNN> details` button.
 
 The per-leaf quantities in the section sum to the line item's Ordered Qty - that is the cheapest
@@ -534,7 +547,10 @@ DRAFT -> ORDERED -> VENDOR_CONFIRMED -> PARTIALLY_RECEIVED -> CLOSED
                                     \-> PARTIALLY_RECEIVED -> CLOSED
   \-> CANCELLED (from DRAFT, ORDERED, or VENDOR_CONFIRMED)
 ```
-- **Mark as Ordered** requires: PO number + vendor name
+- **DRAFT -> GP_REGISTERED** happens only by registering the PO in GP (`registerPoInGp`, relay
+  required), or via `create_po`'s GP-first branch for a caller already holding a GP result. Both
+  carry a real PM00200 vendor. #509 deleted `markPoAsOrdered`, which used to fake this transition
+  with no relay and no GP vendor
 - **VENDOR_CONFIRMED** auto-triggers when ORDERED PO has both vendor quote number and vendor acknowledgement document; auto-reverts if either is removed
 - **Receiving** a PO without a project will show error: "PO must be associated with a project before receiving"
 
@@ -1026,7 +1042,7 @@ and a "<n> unit(s) still awaiting replacement" caption.
 
 ### Admin Module
 
-**Entry**: `/app/admin` -> Admin landing: stat cards (Vendors, Users, Hardware Items, Openings) + "Go to" cards for each sub-route.
+**Entry**: `/app/admin` -> Admin landing: stat cards (Users, Hardware Items, Openings) + "Go to" cards for each sub-route.
 
 **Sub-routes**:
 - Project Purchasing Progress (`/app/admin/project-purchasing-progress`)
@@ -1036,7 +1052,6 @@ and a "<n> unit(s) still awaiting replacement" caption.
   across not purchased / drafted / on order / pulled for assembly / assembled / staged / pulled for
   shipping / shipped. There is no "received" bucket by design - inventory is fungible on receipt, so
   the PO line's received/ordered fill is shown as context instead.
-- Vendors (`/app/admin/vendors`) — vendor CRUD
 - Warehouses (`/app/admin/warehouses`) — warehouse CRUD (PR #158, issue #88); see below
 - Projects (`/app/admin/projects`) — edit project details + OSSA flag (see below)
 - User Management (`/app/admin/users`) — assign Clerk roles
@@ -1080,7 +1095,7 @@ Inventory quantity corrections are NOT here — they live in the Warehouse modul
 - Import wizard step order for "Create Purchase Orders" purpose: Upload File -> Purpose -> Select Openings/Hardware -> Reconciliation -> Classification -> Purchase Orders -> Finalize (7 steps total).
 - For a first-time import (new project, no existing data), the Reconciliation step has no data to display — it just shows "New project — all items will be ordered fresh." The step is effectively a pass-through; do NOT use `wait_for` to wait for reconciliation data. Just click Next immediately.
 - Classification step grouping: Clicking "Add group level" creates a Level 1 dropdown pre-set to "Hardware Category" with a remove (X) button. Shows accordion rows per group with item counts, "By UCSH All" and "By Others All" bulk buttons on the right, and a collapse/expand chevron. Each group shows a chip: "0/N classified" (grey, unclassified), "All By Others" (orange/amber), or "All By UCSH" (green). With 26548 items the snapshot is too large — use evaluate_script to find and click buttons. Classification counter turns green when all items are classified.
-- Purchase Orders step (step 6 of 7): Shows N vendor(s) each as an expandable card with checkbox, Vendor Contact field, PO Total, and a line items grid showing Product Code, Hardware Category, Total Qty, Unit Cost, Total Cost, Order As columns. Vendors default unchecked. Only By UCSH items appear (By Others items are excluded). With the contracterp-74.xml file, 41 vendors appear.
+- Purchase Orders step (step 6 of 7): Shows N manufacturer group(s) each as an expandable card with checkbox, Preferred delivery date, Notes, PO Total, and a line items grid showing Product Code, Hardware Category, Total Qty, Unit Cost, Total Cost, Order As columns. Since #509 there is no vendor field on the card - the group is a TITAN manufacturer, and the GP vendor is picked at register time. Groups default unchecked. Only By UCSH items appear (By Others items are excluded). With the contracterp-74.xml file, 41 groups appear.
 - Purchase Orders step: The Next button is DISABLED until at least one vendor checkbox is checked. All vendors start unchecked by default. To check all 41 vendors programmatically: use evaluate_script to call `.click()` on each `.MuiCheckbox-root` span inside each `.MuiPaper-outlined.MuiPaper-rounded` card (skip index 0 which may be a header). This triggers React's event handlers properly (direct DOM checkbox manipulation does NOT update React state).
 - "By Others" classification in the ALD group correctly EXCLUDES those items from vendor PO cards. Items that appear under vendor "Aluminum Door By Others" (vendor name, not classification) with ALD hardware category are separate — they are items from that vendor that were classified as "By UCSH". The vendor name and the hardware category name can both contain "ALD" but refer to different things.
 - Finalize step (step 7 of 7): Shows "Review & Finalize" with Import Summary (project name, opening count, hardware item count, PO count). "Finish Import Session" button opens a "Finalize Import" MUI dialog with Cancel and Finalize buttons. After clicking Finalize, shows "Finalizing import session..." progress text, then a success overlay dialog with "Import session completed successfully!", project name, POs created count, and "View Purchase Orders" / "View Warehouse" / "Return to Home" buttons.
@@ -1100,7 +1115,7 @@ Inventory quantity corrections are NOT here — they live in the Warehouse modul
 - A DataGrid driven by a `cache-and-network` query (e.g. the admin Projects grid) can render "0–0 of 0" for a beat on first mount before data arrives, so `take_snapshot` immediately after navigation may catch the empty state. Re-snapshot or `wait_for` a known row value before asserting the grid is empty.
 - MUI `spinbutton` (number input) fields with a pre-filled value will APPEND when driven by `fill` or `fill_form` - "3" becomes "31" if you try to fill "1". Always click the field first, then `Control+A` to select all, then `fill` with the desired value. Alternatively use `evaluate_script` to set the value directly.
 - The Transfer dialog success toast is very brief - by the time `take_snapshot` runs after the click, it may already be gone. Confirm success by observing the grid data (dialog closed + new/updated row present) rather than waiting for the toast text.
-- Vendor combobox in PO create/edit is NOT freeSolo - it's a strict select-from-list that pulls from the vendors DB table. Typing a new vendor name shows "No options" and pressing Escape or Enter won't commit it. You must first create the vendor via Admin > Vendors, then it appears in the PO vendor dropdown. The PO create dialog's vendor field also appears to accept free-text input visually, but the value is not saved if no matching vendor exists in DB.
+- There is no vendor field in PO create/edit at all since #509, and no Admin > Vendors page behind it - the local vendors table is gone. The only vendor a PO carries is the GP one (PM00200), chosen in the Register in GP dialog from the live `gpVendors` list, so a draft shows a blank vendor until it is registered. `/app/admin/vendors` now falls through to the Admin landing like any other unknown sub-route.
 - Receiving wizard: after selecting POs and clicking "Receive N Selected", the Receive modal opens. The "Receive Now" spinbutton defaults to 0. Using `fill` fails (value doesn't stick on React controlled spinbutton). Use `evaluate_script` to focus the input, then `press_key` ArrowUp to increment. ArrowUp from 0 goes directly to the max (pending qty) in one press.
 - Receiving wizard: "Assign locations & flag deficient units now" toggle appears only AFTER entering a Receive Now quantity > 0. Turn it on to get the Aisle/Bay/Bin text fields (regular textbox, not autocomplete). `fill_form` works fine on these.
 - Transfer dialog Aisle/Bay/Bin: these are comboboxes with autocomplete="list". Use `evaluate_script` to set the underlying input value (native value setter + `input` event). This reliably sets the values without triggering dropdown selection. The Transfer button enables once all three fields are filled.

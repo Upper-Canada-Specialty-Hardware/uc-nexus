@@ -6,19 +6,10 @@ from decimal import Decimal
 import pytest
 
 from app.errors import NotFoundError
-from app.models.vendor import Vendor
 from app.repositories import po_repository
 
 
-def _make_vendor(session) -> Vendor:
-    v = Vendor(id=uuid.uuid4(), name=f"Acme-{uuid.uuid4().hex[:6]}")
-    session.add(v)
-    session.flush()
-    return v
-
-
 def _make_po(session, *, buyer_id: str | None = None):
-    vendor = _make_vendor(session)
     return po_repository.create_po(
         session,
         line_items=[
@@ -31,7 +22,6 @@ def _make_po(session, *, buyer_id: str | None = None):
                 "order_as": "ML2010",
             }
         ],
-        vendor_id=vendor.id,
         buyer_id=buyer_id,
     )
 

@@ -141,7 +141,6 @@ def _assert_buyer_identity(caller_gp_buyer_id: str | None, input_buyer_id: str) 
 def _prepare_register_po(
     *,
     po_id,
-    vendor_id,
     gp_vendor_id,
     buyer_id,
     cost_code,
@@ -154,13 +153,12 @@ def _prepare_register_po(
 ) -> dict:
     """Read-only pre-flight for register_po_in_gp: confirm the PO is a registerable DRAFT, resolve the
     job number, pre-validate, and build the relay create_po payload (po_number=None; GP assigns it).
-    A lean scalar read - the resolver never needs the PO's documents/vendor here."""
+    A lean scalar read - the resolver never needs the PO's documents here."""
     from sqlalchemy import select
 
     from app.models.enums import POStatus
     from app.models.project import Project as ProjectModel
     from app.models.purchase_order import PurchaseOrder as POModel
-    from app.models.vendor import Vendor as VendorModel
 
     with SessionLocal() as session:
         po = session.scalars(select(POModel).where(POModel.id == po_id, POModel.deleted_at.is_(None))).first()
@@ -168,11 +166,6 @@ def _prepare_register_po(
             raise NotFoundError(f"Purchase order {po_id} not found")
         if po.status != POStatus.DRAFT:
             raise InvalidStateTransitionError(f"Only a Draft PO can be registered in GP; this one is {po.status.value}")
-
-        if vendor_id is not None:
-            vendor = session.get(VendorModel, vendor_id)
-            if vendor is None:
-                raise NotFoundError(f"Vendor {vendor_id} not found")
 
         # #316: a draft with no project may be given one here, and it has to take effect BEFORE the
         # payload is built - the GP job number and the issue #216 buyer gating both key off it, so
@@ -232,7 +225,6 @@ def _persist_register_po(
     vendor_name_snapshot,
     gp_result,
     line_items_data,
-    vendor_id,
     cost_code,
     buyer_id,
     shipping_cost,
@@ -248,7 +240,6 @@ def _persist_register_po(
             po_number=gp_result["po_number"],
             gp_company=gp_result["company"],
             line_items=line_items_data,
-            vendor_id=vendor_id,
             cost_code=cost_code,
             buyer_id=buyer_id,
             shipping_cost=shipping_cost,
@@ -320,11 +311,23 @@ class POQueries:
     def prior_order_as_values(
         self,
         info: strawberry.Info,
-        vendor_id: strawberry.ID,
         product_codes: list[str],
+        project_id: strawberry.ID | None = None,
     ) -> list[PriorOrderAsForProduct]:
+        """What these product codes have been ordered as before ON THIS PROJECT, most recent first,
+        so the buyer is offered the job's own alias instead of retyping it (#509).
+
+        Project, not vendor: the vendor that used to scope this was the local contact record, which
+        is gone with the table, and the GP vendor is not chosen until register time. Project, not
+        global: `order_as` is the GP line's item number, so a global list would offer one supplier's
+        catalogue number while raising a PO for another. A null project_id means a stock PO and
+        scopes to the other project-less POs."""
         with SessionLocal() as session:
-            result = po_repository.get_prior_order_as_values(session, uuid.UUID(str(vendor_id)), product_codes)
+            result = po_repository.get_prior_order_as_values(
+                session,
+                uuid.UUID(str(project_id)) if project_id else None,
+                product_codes,
+            )
             return [PriorOrderAsForProduct(product_code=pc, values=vals) for pc, vals in result.items()]
 
     @strawberry.field
@@ -387,7 +390,6 @@ class POMutations:
                 session,
                 line_items=line_items_data,
                 project_id=uuid.UUID(str(input.project_id)) if input.project_id else None,
-                vendor_id=uuid.UUID(str(input.vendor_id)) if input.vendor_id else None,
                 notes=input.notes,
                 shipping_cost=input.shipping_cost,
                 tariff_amount=input.tariff_amount,
@@ -432,7 +434,6 @@ class POMutations:
         key = gp_idempotency.validate_key(input.idempotency_key)
 
         pid = uuid.UUID(str(input.po_id))
-        vendor_id = uuid.UUID(str(input.vendor_id)) if input.vendor_id else None
         # #316: only meaningful for a draft that has no project; the repository ignores it otherwise.
         register_project_id = uuid.UUID(str(input.project_id)) if input.project_id else None
         line_items_data = [
@@ -456,7 +457,6 @@ class POMutations:
         payload = await asyncio.to_thread(
             _prepare_register_po,
             po_id=pid,
-            vendor_id=vendor_id,
             gp_vendor_id=input.gp_vendor_id,
             buyer_id=input.buyer_id,
             cost_code=input.cost_code,
@@ -500,7 +500,6 @@ class POMutations:
             "gp_vendor_id": input.gp_vendor_id,
             "vendor_name_snapshot": input.gp_vendor_name,
             "line_items_data": line_items_data,
-            "vendor_id": str(vendor_id) if vendor_id else None,
             "cost_code": input.cost_code,
             "buyer_id": input.buyer_id,
             "shipping_cost": input.shipping_cost,
@@ -547,7 +546,6 @@ class POMutations:
             vendor_name_snapshot=input.gp_vendor_name,
             gp_result=gp_result,
             line_items_data=line_items_data,
-            vendor_id=vendor_id,
             cost_code=input.cost_code,
             buyer_id=input.buyer_id,
             shipping_cost=input.shipping_cost,
@@ -560,7 +558,6 @@ class POMutations:
         self,
         info: strawberry.Info,
         id: strawberry.ID,
-        vendor_id: strawberry.ID | None = None,
         expected_delivery_date: date | None = None,
         preferred_delivery_date: date | None = None,
         po_number: str | None = None,
@@ -574,12 +571,10 @@ class POMutations:
         from app.repositories.po_repository import _UNSET
 
         pid = uuid.UUID(str(project_id)) if project_id else _UNSET
-        vid = uuid.UUID(str(vendor_id)) if vendor_id else _UNSET
         with SessionLocal() as session:
             po = po_repository.update_po(
                 session,
                 uuid.UUID(str(id)),
-                vendor_id=vid,
                 expected_delivery_date=expected_delivery_date,
                 preferred_delivery_date=preferred_delivery_date,
                 po_number=po_number,
@@ -591,14 +586,6 @@ class POMutations:
             )
             session.commit()
             return po_to_type(po_repository.reload_po(session, po.id))
-
-    @strawberry.mutation
-    def mark_po_as_ordered(self, info: strawberry.Info, id: strawberry.ID) -> PurchaseOrder:
-        with SessionLocal() as session:
-            po = po_repository.mark_po_as_ordered(session, uuid.UUID(str(id)))
-            session.commit()
-            session.refresh(po)
-            return po_to_type(po)
 
     @strawberry.mutation
     def cancel_po(self, info: strawberry.Info, id: strawberry.ID) -> PurchaseOrder:

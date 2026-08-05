@@ -212,7 +212,6 @@ export const GET_PROJECT_PROGRESS_BY_PRODUCT = gql`
 export const GET_ADMIN_STATS = gql`
   query GetAdminStats {
     adminStats {
-      vendorCount
       userCount
       hardwareItemCount
       openingCount
@@ -303,42 +302,6 @@ export const UPDATE_USER_ROLES = gql`
       gpBuyerId
       imageUrl
     }
-  }
-`;
-
-export const CREATE_VENDOR = gql`
-  mutation CreateVendor($input: CreateVendorInput!) {
-    createVendor(input: $input) {
-      id
-      name
-      contactName
-      email
-      phone
-      notes
-      createdAt
-      updatedAt
-    }
-  }
-`;
-
-export const UPDATE_VENDOR = gql`
-  mutation UpdateVendor($id: ID!, $input: UpdateVendorInput!) {
-    updateVendor(id: $id, input: $input) {
-      id
-      name
-      contactName
-      email
-      phone
-      notes
-      createdAt
-      updatedAt
-    }
-  }
-`;
-
-export const DELETE_VENDOR = gql`
-  mutation DeleteVendor($id: ID!) {
-    deleteVendor(id: $id)
   }
 `;
 

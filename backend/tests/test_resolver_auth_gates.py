@@ -359,8 +359,12 @@ def test_the_jwt_is_verified_once_for_a_query_hitting_several_root_fields(monkey
     _explodes(monkeypatch, warehouse_module)
     _explodes(monkeypatch, shop_assembly_module, "SessionLocal")
 
+    # Three schema modules, and `stockItems` is deliberately NOT exploded: the memoisation this test
+    # is named for is cross-module, so at least one field has to reach a real resolver. (It was
+    # `vendors` until #509 removed it; a fourth warehouse field would have collapsed the test to two
+    # modules, all of them patched.)
     _execute(
-        "{ warehouses { id } pullRequests { id } vendors { id } assembleList { id } }",
+        "{ warehouses { id } pullRequests { id } stockItems { id } assembleList { id } }",
         token=signed_in,
     )
 

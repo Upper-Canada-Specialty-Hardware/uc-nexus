@@ -3,14 +3,12 @@ import { Box, Typography, Card, CardActionArea, Grid } from '@mui/material';
 import {
   ClipboardList,
   Eye,
-  Store,
   Warehouse,
   Folder,
   Users,
   SprayCan,
   Router,
   IdCard,
-  Building2,
   Boxes,
   DoorOpen,
 } from 'lucide-react';
@@ -23,7 +21,6 @@ import { AnimatedNumber, StaggerList, StaggerItem, FadeIn } from '../../motion';
 
 interface AdminStatsData {
   adminStats: {
-    vendorCount: number;
     userCount: number;
     hardwareItemCount: number;
     openingCount: number;
@@ -75,7 +72,6 @@ interface SubRoute {
 const SUB_ROUTES: SubRoute[] = [
   { label: 'Project Purchasing Progress', path: '/app/admin/project-purchasing-progress', icon: <ClipboardList {...CARD_ICON} /> },
   { label: 'Opening Status', path: '/app/admin/opening-status', icon: <Eye {...CARD_ICON} />, countKey: 'openingCount' },
-  { label: 'Vendors', path: '/app/admin/vendors', icon: <Store {...CARD_ICON} />, countKey: 'vendorCount' },
   { label: 'Warehouses', path: '/app/admin/warehouses', icon: <Warehouse {...CARD_ICON} /> },
   { label: 'Projects', path: '/app/admin/projects', icon: <Folder {...CARD_ICON} /> },
   { label: 'User Management', path: '/app/admin/users', icon: <Users {...CARD_ICON} />, countKey: 'userCount' },
@@ -104,12 +100,9 @@ export default function AdminLanding() {
 
       <Box sx={{ display: 'flex', gap: 1.5, mb: 3, flexWrap: 'wrap' }}>
         {loading && !s ? (
-          Array.from({ length: 4 }).map((_, i) => <StatCardSkeleton key={i} />)
+          Array.from({ length: 3 }).map((_, i) => <StatCardSkeleton key={i} />)
         ) : s ? (
-          <StaggerList count={4}>
-            <StaggerItem style={{ flex: '1 1 0', minWidth: 130, display: 'flex' }}>
-              <StatCard icon={<Building2 {...TILE_ICON} />} label="Vendors" value={s.vendorCount} />
-            </StaggerItem>
+          <StaggerList count={3}>
             <StaggerItem style={{ flex: '1 1 0', minWidth: 130, display: 'flex' }}>
               <StatCard icon={<Users {...TILE_ICON} />} label="Users" value={s.userCount} />
             </StaggerItem>

@@ -179,7 +179,6 @@ class POLineItemOrderAsInput:
 @strawberry.input
 class PODraftInput:
     po_number: str | None = None
-    vendor_id: strawberry.ID | None = None
     notes: str | None = None
     # Issue #216: the PM's requested date, captured at PO-request creation.
     preferred_delivery_date: date | None = None
@@ -340,8 +339,6 @@ class CreateDraftPOInput:
 
     line_items: list[CreatePOLineItemInput]
     project_id: strawberry.ID | None = None
-    # Optional link to a UC Nexus vendor record (contact info).
-    vendor_id: strawberry.ID | None = None
     notes: str | None = None
     # Issue #216: the PM's requested date, captured at request creation.
     preferred_delivery_date: date | None = None
@@ -370,8 +367,9 @@ class RegisterPOInput:
     from it."""
 
     po_id: strawberry.ID
-    # The GP vendor picked live from the gpVendors(company) list (issue #200 - there's no local
-    # vendor-to-GP mirror anymore). Snapshotted onto the PO for display.
+    # The GP vendor picked live from the gpVendors(company) list - the only vendor identity a PO has
+    # (#200 dropped the sync'd mirror, #509 the local contact table). Snapshotted onto the PO for
+    # display.
     gp_vendor_id: str
     gp_vendor_name: str
     gp_company: str
@@ -379,8 +377,6 @@ class RegisterPOInput:
     # per-workstation buyer fallback never decides it for a server-brokered call.
     buyer_id: str
     line_items: list[RegisterPOLineItemInput]
-    # Optional link to a UC Nexus vendor record (contact info), independent of the GP vendor above.
-    vendor_id: strawberry.ID | None = None
     # #316: attach a project to a draft that has none - a manually created stock PO, whose only chance
     # to gain one is here. Ignored when the PO already has a project (enforced in the repository, not
     # just the dialog): its lines were imported against that project's hardware schedule.
@@ -407,24 +403,6 @@ class EnrollRelayInstallInput:
     enrollment_token: str
     hostname: str
     secret: str
-
-
-@strawberry.input
-class CreateVendorInput:
-    name: str
-    contact_name: str | None = None
-    email: str | None = None
-    phone: str | None = None
-    notes: str | None = None
-
-
-@strawberry.input
-class UpdateVendorInput:
-    name: str | None = None
-    contact_name: str | None = None
-    email: str | None = None
-    phone: str | None = None
-    notes: str | None = None
 
 
 @strawberry.input

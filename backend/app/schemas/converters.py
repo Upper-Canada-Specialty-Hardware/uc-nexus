@@ -73,7 +73,6 @@ from .types import (
     ShopAssemblyOpeningItem,
     ShopAssemblyRequest,
     StockItem,
-    Vendor,
     Warehouse,
 )
 
@@ -223,19 +222,6 @@ def po_document_to_type(doc) -> PODocumentInfo:
         document_type=doc.document_type,
         uploaded_at=doc.uploaded_at,
         download_url=storage.generate_presigned_url(doc.s3_key),
-    )
-
-
-def vendor_to_type(v) -> Vendor:
-    return Vendor(
-        id=strawberry.ID(str(v.id)),
-        name=v.name,
-        contact_name=v.contact_name,
-        email=v.email,
-        phone=v.phone,
-        notes=v.notes,
-        created_at=v.created_at,
-        updated_at=v.updated_at,
     )
 
 
@@ -405,7 +391,6 @@ def buyer_assignment_to_type(a) -> BuyerAssignment:
 
 def po_to_type(po, receive_records=None) -> PurchaseOrder:
     documents = getattr(po, "documents", None) or []
-    vendor = getattr(po, "vendor", None)
     # Read document_data ONLY if the caller eager-loaded it (in __dict__): a bare attribute access would
     # lazy-load, turning list resolvers that don't need it into an N+1. get_purchase_orders /
     # get_purchase_order selectinload it (that's what the generate dialog reads); everything else gets None.
@@ -419,12 +404,11 @@ def po_to_type(po, receive_records=None) -> PurchaseOrder:
         cost_code=po.cost_code,
         gp_company=po.gp_company,
         gp_vendor_id=po.gp_vendor_id,
-        # dev data is disposable - the local-vendor fallback only covers rows from before this column
-        # existed; every PO created going forward carries its own snapshot.
-        vendor_name_snapshot=po.vendor_name_snapshot or (vendor.name if vendor is not None else None),
+        # The GP vendor pick, the only vendor a PO has. Null on a DRAFT that has not been registered
+        # into GP yet, which the UI renders as an empty vendor rather than inventing a stand-in.
+        vendor_name_snapshot=po.vendor_name_snapshot,
         buyer_id=po.buyer_id,
         created_by_user_id=po.created_by_user_id,
-        vendor=vendor_to_type(vendor) if vendor is not None else None,
         vendor_quote_number=po.vendor_quote_number,
         shipping_cost=float(po.shipping_cost) if po.shipping_cost is not None else None,
         tariff_amount=float(po.tariff_amount) if po.tariff_amount is not None else None,

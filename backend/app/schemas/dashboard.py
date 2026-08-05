@@ -44,7 +44,6 @@ class DashboardQueries:
         with SessionLocal() as session:
             d = dashboard_repository.get_admin_stats(session, user_count=len(users))
             return AdminStats(
-                vendor_count=d["vendor_count"],
                 user_count=d["user_count"],
                 hardware_item_count=d["hardware_item_count"],
                 opening_count=d["opening_count"],

@@ -9,7 +9,6 @@ from app.models.hardware import HardwareItem
 from app.models.project import Opening, Project
 from app.models.purchase_order import POLineItem, PurchaseOrder
 from app.models.shipping import PackingSlip, PackingSlipItem
-from app.models.vendor import Vendor
 from app.repositories import warehouse as warehouse_repository
 
 
@@ -29,13 +28,6 @@ def _make_opening(session, project_id: uuid.UUID, opening_number: str = "A01") -
     session.add(o)
     session.flush()
     return o
-
-
-def _make_vendor(session) -> Vendor:
-    v = Vendor(id=uuid.uuid4(), name=f"V-{uuid.uuid4().hex[:6]}")
-    session.add(v)
-    session.flush()
-    return v
 
 
 def _make_hardware_item(
@@ -65,7 +57,6 @@ def _make_po(
     session,
     *,
     project_id: uuid.UUID,
-    vendor_id: uuid.UUID,
     status: POStatus,
     deleted_at: datetime | None = None,
 ) -> PurchaseOrder:
@@ -73,7 +64,6 @@ def _make_po(
         id=uuid.uuid4(),
         request_number=f"REQ-{uuid.uuid4().hex[:8]}",
         project_id=project_id,
-        vendor_id=vendor_id,
         status=status,
         deleted_at=deleted_at,
     )
@@ -181,13 +171,12 @@ def test_aggregates_required_across_openings(db_session):
 def test_counts_ordered_received_for_placed_pos(db_session):
     project = _make_project(db_session)
     opening = _make_opening(db_session, project.id)
-    vendor = _make_vendor(db_session)
     _make_hardware_item(
         db_session, project_id=project.id, opening_id=opening.id, product_code="HG-100", item_quantity=10
     )
 
     for status in (POStatus.GP_REGISTERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED, POStatus.CLOSED):
-        po = _make_po(db_session, project_id=project.id, vendor_id=vendor.id, status=status)
+        po = _make_po(db_session, project_id=project.id, status=status)
         _make_line_item(db_session, po_id=po.id, product_code="HG-100", ordered_quantity=2, received_quantity=1)
 
     rows = warehouse_repository.get_project_progress_by_product(db_session, project.id)
@@ -199,18 +188,16 @@ def test_counts_ordered_received_for_placed_pos(db_session):
 def test_excludes_draft_and_cancelled_pos_from_ordered_received(db_session):
     project = _make_project(db_session)
     opening = _make_opening(db_session, project.id)
-    vendor = _make_vendor(db_session)
     _make_hardware_item(
         db_session, project_id=project.id, opening_id=opening.id, product_code="HG-100", item_quantity=10
     )
 
-    draft = _make_po(db_session, project_id=project.id, vendor_id=vendor.id, status=POStatus.DRAFT)
+    draft = _make_po(db_session, project_id=project.id, status=POStatus.DRAFT)
     _make_line_item(db_session, po_id=draft.id, product_code="HG-100", ordered_quantity=5, received_quantity=0)
 
     cancelled = _make_po(
         db_session,
         project_id=project.id,
-        vendor_id=vendor.id,
         status=POStatus.CANCELLED,
         deleted_at=datetime.utcnow(),
     )
@@ -225,7 +212,6 @@ def test_excludes_draft_and_cancelled_pos_from_ordered_received(db_session):
 def test_excludes_soft_deleted_pos(db_session):
     project = _make_project(db_session)
     opening = _make_opening(db_session, project.id)
-    vendor = _make_vendor(db_session)
     _make_hardware_item(
         db_session, project_id=project.id, opening_id=opening.id, product_code="HG-100", item_quantity=10
     )
@@ -233,7 +219,6 @@ def test_excludes_soft_deleted_pos(db_session):
     po = _make_po(
         db_session,
         project_id=project.id,
-        vendor_id=vendor.id,
         status=POStatus.GP_REGISTERED,
         deleted_at=datetime.utcnow(),
     )
@@ -248,12 +233,11 @@ def test_omits_product_codes_not_in_schedule(db_session):
     """PO line items for codes not present in the schedule should not introduce rows."""
     project = _make_project(db_session)
     opening = _make_opening(db_session, project.id)
-    vendor = _make_vendor(db_session)
     _make_hardware_item(
         db_session, project_id=project.id, opening_id=opening.id, product_code="HG-100", item_quantity=5
     )
 
-    po = _make_po(db_session, project_id=project.id, vendor_id=vendor.id, status=POStatus.GP_REGISTERED)
+    po = _make_po(db_session, project_id=project.id, status=POStatus.GP_REGISTERED)
     _make_line_item(db_session, po_id=po.id, product_code="HG-100", ordered_quantity=3)
     _make_line_item(db_session, po_id=po.id, product_code="UNKNOWN", ordered_quantity=9)
 
@@ -269,14 +253,13 @@ def test_scoped_by_project(db_session):
     p2 = _make_project(db_session)
     o1 = _make_opening(db_session, p1.id, "A01")
     o2 = _make_opening(db_session, p2.id, "B01")
-    vendor = _make_vendor(db_session)
 
     _make_hardware_item(db_session, project_id=p1.id, opening_id=o1.id, product_code="HG-100", item_quantity=5)
     _make_hardware_item(db_session, project_id=p2.id, opening_id=o2.id, product_code="HG-100", item_quantity=99)
 
-    po_p2 = _make_po(db_session, project_id=p2.id, vendor_id=vendor.id, status=POStatus.GP_REGISTERED)
+    po_p2 = _make_po(db_session, project_id=p2.id, status=POStatus.GP_REGISTERED)
     _make_line_item(db_session, po_id=po_p2.id, product_code="HG-100", ordered_quantity=99, received_quantity=42)
-    draft_p2 = _make_po(db_session, project_id=p2.id, vendor_id=vendor.id, status=POStatus.DRAFT)
+    draft_p2 = _make_po(db_session, project_id=p2.id, status=POStatus.DRAFT)
     _make_line_item(db_session, po_id=draft_p2.id, product_code="HG-100", ordered_quantity=11)
     ps_p2 = _make_packing_slip(db_session, p2.id)
     _make_packing_slip_item(db_session, packing_slip_id=ps_p2.id, product_code="HG-100", quantity=7)
@@ -328,16 +311,15 @@ def test_counts_po_drafted_only_from_draft_pos(db_session):
     """po_drafted comes from DRAFT POs and does NOT contribute to ordered/received."""
     project = _make_project(db_session)
     opening = _make_opening(db_session, project.id)
-    vendor = _make_vendor(db_session)
     _make_hardware_item(
         db_session, project_id=project.id, opening_id=opening.id, product_code="HG-100", item_quantity=10
     )
 
-    d1 = _make_po(db_session, project_id=project.id, vendor_id=vendor.id, status=POStatus.DRAFT)
+    d1 = _make_po(db_session, project_id=project.id, status=POStatus.DRAFT)
     _make_line_item(db_session, po_id=d1.id, product_code="HG-100", ordered_quantity=4)
-    d2 = _make_po(db_session, project_id=project.id, vendor_id=vendor.id, status=POStatus.DRAFT)
+    d2 = _make_po(db_session, project_id=project.id, status=POStatus.DRAFT)
     _make_line_item(db_session, po_id=d2.id, product_code="HG-100", ordered_quantity=3)
-    placed = _make_po(db_session, project_id=project.id, vendor_id=vendor.id, status=POStatus.GP_REGISTERED)
+    placed = _make_po(db_session, project_id=project.id, status=POStatus.GP_REGISTERED)
     _make_line_item(db_session, po_id=placed.id, product_code="HG-100", ordered_quantity=5, received_quantity=2)
 
     rows = warehouse_repository.get_project_progress_by_product(db_session, project.id)
@@ -352,19 +334,18 @@ def test_back_ordered_excludes_closed_pos(db_session):
     """back_ordered = sum(ordered - received) for placed POs that are NOT CLOSED."""
     project = _make_project(db_session)
     opening = _make_opening(db_session, project.id)
-    vendor = _make_vendor(db_session)
     _make_hardware_item(
         db_session, project_id=project.id, opening_id=opening.id, product_code="HG-100", item_quantity=20
     )
 
     # GP_REGISTERED with partial receipt → contributes 4 (10 - 6)
-    p1 = _make_po(db_session, project_id=project.id, vendor_id=vendor.id, status=POStatus.GP_REGISTERED)
+    p1 = _make_po(db_session, project_id=project.id, status=POStatus.GP_REGISTERED)
     _make_line_item(db_session, po_id=p1.id, product_code="HG-100", ordered_quantity=10, received_quantity=6)
     # PARTIALLY_RECEIVED → contributes 2 (5 - 3)
-    p2 = _make_po(db_session, project_id=project.id, vendor_id=vendor.id, status=POStatus.PARTIALLY_RECEIVED)
+    p2 = _make_po(db_session, project_id=project.id, status=POStatus.PARTIALLY_RECEIVED)
     _make_line_item(db_session, po_id=p2.id, product_code="HG-100", ordered_quantity=5, received_quantity=3)
     # CLOSED → contributes 0 even though ordered - received > 0
-    p3 = _make_po(db_session, project_id=project.id, vendor_id=vendor.id, status=POStatus.CLOSED)
+    p3 = _make_po(db_session, project_id=project.id, status=POStatus.CLOSED)
     _make_line_item(db_session, po_id=p3.id, product_code="HG-100", ordered_quantity=7, received_quantity=4)
 
     rows = warehouse_repository.get_project_progress_by_product(db_session, project.id)

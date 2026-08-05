@@ -16,7 +16,6 @@ from app.models.hardware import HardwareItem
 from app.models.project import Opening, Project
 from app.models.pull_request import PullRequest
 from app.models.purchase_order import POLineItem, PurchaseOrder
-from app.models.vendor import Vendor
 
 OPEN_PO_STATUSES = (
     POStatus.GP_REGISTERED,
@@ -97,8 +96,6 @@ def get_shop_assembly_stats(session: Session) -> dict:
 
 def get_admin_stats(session: Session, user_count: int) -> dict:
     """KPIs for the Admin landing. `user_count` is injected since users live in Clerk."""
-    vendor_count = session.scalar(select(func.count()).select_from(Vendor)) or 0
-
     # Distinct (category, code) pairs via subquery — portable across dialects.
     distinct_pairs_subq = (
         select(HardwareItem.hardware_category, HardwareItem.product_code)
@@ -110,7 +107,6 @@ def get_admin_stats(session: Session, user_count: int) -> dict:
     opening_count = session.scalar(select(func.count()).select_from(Opening)) or 0
 
     return {
-        "vendor_count": int(vendor_count),
         "user_count": int(user_count),
         "hardware_item_count": int(hardware_item_count),
         "opening_count": int(opening_count),
