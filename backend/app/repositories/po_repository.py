@@ -881,7 +881,7 @@ _DOC_DATA_TEXT_FIELDS = (
     "buyer_name",
     "ship_to",
     "shipping_method",
-    "proposal_number",
+    "quotation_number",
     "tax_label",
 )
 _DOC_DATA_MONEY_FIELDS = ("freight", "miscellaneous", "tax_amount", "tariff_amount")

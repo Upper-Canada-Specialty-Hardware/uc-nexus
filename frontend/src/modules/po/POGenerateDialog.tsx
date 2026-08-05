@@ -145,7 +145,7 @@ function GenerateForm({ po, settings, buyers, gpTotals, projectNumber, onClose, 
   const [currency, setCurrency] = useState(dd?.currency ?? 'CAD');
   const [shipTo, setShipTo] = useState(dd?.shipTo ?? '');
   const [shippingMethod, setShippingMethod] = useState(dd?.shippingMethod ?? '');
-  const [proposalNumber, setProposalNumber] = useState(dd?.proposalNumber ?? '');
+  const [quotationNumber, setQuotationNumber] = useState(dd?.quotationNumber ?? '');
   // Required-by: saved override, else the vendor's expected date, else the PM's preferred date
   // (issue #216 - pre-send, expected doesn't exist yet, so the doc asks for the preferred date).
   const [requiredBy, setRequiredBy] = useState(
@@ -190,7 +190,7 @@ function GenerateForm({ po, settings, buyers, gpTotals, projectNumber, onClose, 
       currency,
       shipTo: shipTo || null,
       shippingMethod: shippingMethod || null,
-      proposalNumber: proposalNumber || null,
+      quotationNumber: quotationNumber || null,
       freight: num(freight),
       miscellaneous: num(miscellaneous),
       taxAmount: num(taxAmount),
@@ -201,7 +201,7 @@ function GenerateForm({ po, settings, buyers, gpTotals, projectNumber, onClose, 
       includeUsaTariff,
       includeCustoms,
     }),
-    [vendorAddress, buyerName, currency, shipTo, shippingMethod, proposalNumber, freight,
+    [vendorAddress, buyerName, currency, shipTo, shippingMethod, quotationNumber, freight,
       miscellaneous, taxAmount, taxLabel, tariffAmount, requiredBy, includeFsc, includeUsaTariff, includeCustoms],
   );
 
@@ -211,7 +211,7 @@ function GenerateForm({ po, settings, buyers, gpTotals, projectNumber, onClose, 
       poNumber: po.poNumber ?? po.requestNumber,
       date: formatDocDate(po.orderedAt) || new Date().toLocaleDateString(),
       requiredBy: requiredByLabel,
-      proposalNumber: proposalNumber || null,
+      quotationNumber: quotationNumber || null,
       companyFromAddress: settings.companyFromAddress,
       vendorName: poVendorName(po) || '-',
       vendorAddress: vendorAddress || null,
@@ -247,7 +247,7 @@ function GenerateForm({ po, settings, buyers, gpTotals, projectNumber, onClose, 
       includeUsaTariff,
       includeCustoms,
     };
-  }, [po, proposalNumber, settings, vendorAddress, shipTo, shippingMethod, buyerName, currency, projectNumber,
+  }, [po, quotationNumber, settings, vendorAddress, shipTo, shippingMethod, buyerName, currency, projectNumber,
     requiredBy, freight, miscellaneous, taxAmount, taxLabel, tariffAmount, includeFsc, includeUsaTariff, includeCustoms]);
 
   const persist = useCallback(async () => {
@@ -350,7 +350,7 @@ function GenerateForm({ po, settings, buyers, gpTotals, projectNumber, onClose, 
           <SectionHeading>Header details</SectionHeading>
           <Stack direction="row" spacing={2}>
             <TextField
-              label="Proposal #" value={proposalNumber} onChange={(e) => setProposalNumber(e.target.value)}
+              label="Quote #" value={quotationNumber} onChange={(e) => setQuotationNumber(e.target.value)}
               fullWidth size="small"
             />
             <TextField
