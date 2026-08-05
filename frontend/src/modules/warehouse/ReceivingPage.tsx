@@ -323,7 +323,7 @@ export default function ReceivingPage() {
       },
       {
         field: 'pendingQty',
-        headerName: 'Pending Qty',
+        headerName: 'Back Order',
         flex: 0.6,
         type: 'number',
       },
