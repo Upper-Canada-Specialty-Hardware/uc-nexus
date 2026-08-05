@@ -78,7 +78,12 @@ changes it. Two independent reasons, both addressed by #414 but neither automati
 
 1. The relay dials whatever `[channel] backend_url` in its `config.toml` names. Since #414 that takes
    a LIST, so a PR backend can be added *alongside* production rather than replacing it - but somebody
-   has to add it, and the relay needs a restart to pick it up.
+   has to add it. **No restart is needed since #456**: the channel supervisor re-reads `config.toml`
+   every `CHANNEL_RECONCILE_SECONDS` (10s) and starts a channel for any URL that appeared, so adding
+   a line to `extra_backend_urls` brings the channel up within seconds and never touches production's.
+   Verified 2026-08-05 on pr-510: added the URL, `relayStatus` went `connected: true` (TUBC,
+   build.55) on the first poll after the save. Add to `extra_backend_urls` ONLY - never retype
+   `backend_url`, which is what pins production to the sandbox company list.
 2. Relay installs live in Postgres and a PR environment boots a fresh empty one, so the handshake is
    refused (4403) even if the relay does dial. Since #414 the backend seeds a trusted install on
    startup from `RELAY_SEED_SECRET_HASH` - the SHA-256 already in production's row, copyable from
