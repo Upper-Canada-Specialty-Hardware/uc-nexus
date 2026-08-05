@@ -224,7 +224,9 @@ function VendorGroupCard({
       >
         {/* Header row */}
         <Box className="po-head">Order As</Box>
-        <Box className="po-head">Product Code</Box>
+        {/* TITAN's scheduled part number, read-only from the schedule. "Order As" beside it is the
+            vendor-facing alias the buyer types. Data field stays productCode (#482). */}
+        <Box className="po-head">Scheduled Part Number</Box>
         <Box className="po-head">Hardware Category</Box>
         <Box className="po-head" sx={{ textAlign: 'right' }}>
           Total Qty
