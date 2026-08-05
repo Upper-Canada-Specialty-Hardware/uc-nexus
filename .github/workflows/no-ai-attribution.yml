@@ -60,10 +60,16 @@ jobs:
             exit 0
           fi
 
+          # Tracked paths carrying the vendor name are legitimate to cite in a
+          # message - CLAUDE.md sits at the repo root, testing/ has its own, and
+          # .claude/ is checked in. Blank those tokens out before matching so
+          # "updated testing/CLAUDE.md" reads clean while a bare mention does not.
+          PATHS='([A-Za-z0-9_.-]+/)*CLAUDE\.md|\.claude/[A-Za-z0-9_./-]*'
+
           failed=0
           for c in $range; do
             meta=$(git show -s --format='%an <%ae>%n%cn <%ce>%n%B' "$c")
-            bad=$(echo "$meta" | grep -inE "$PAT" | head -3 || true)
+            bad=$(echo "$meta" | sed -E "s#$PATHS##gI" | grep -inE "$PAT" | head -3 || true)
             if [ -n "$bad" ]; then
               echo "::error::$(git show -s --format='%h %s' "$c")"
               echo "$bad" | sed 's/^/    /'
