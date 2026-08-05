@@ -42,7 +42,7 @@ def test_upsert_creates_document_data(db_session):
         buyer_name="Norm Jung",
         currency="USD",
         ship_to="Affix ship-to label",
-        proposal_number="0038515-R1",
+        quotation_number="0038515-R1",
         freight=100,
         miscellaneous=25.5,
         tax_amount=200,
@@ -81,9 +81,9 @@ def test_upsert_coerces_invalid_currency_to_cad(db_session):
 
 def test_upsert_blank_text_becomes_none(db_session):
     po = _make_po(db_session)
-    data = po_repository.upsert_po_document_data(db_session, po.id, vendor_address="   ", proposal_number="")
+    data = po_repository.upsert_po_document_data(db_session, po.id, vendor_address="   ", quotation_number="")
     assert data.vendor_address is None
-    assert data.proposal_number is None
+    assert data.quotation_number is None
 
 
 def test_upsert_blank_tax_label_keeps_default(db_session):

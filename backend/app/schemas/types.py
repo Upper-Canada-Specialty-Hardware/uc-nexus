@@ -510,7 +510,7 @@ class PODocumentData:
     currency: str
     ship_to: str | None
     shipping_method: str | None
-    proposal_number: str | None
+    quotation_number: str | None
     freight: float
     miscellaneous: float
     tax_amount: float

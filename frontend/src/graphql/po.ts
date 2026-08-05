@@ -43,7 +43,7 @@ export const GET_PURCHASE_ORDERS = gql`
         currency
         shipTo
         shippingMethod
-        proposalNumber
+        quotationNumber
         freight
         miscellaneous
         taxAmount
@@ -426,7 +426,7 @@ export const SAVE_PO_DOCUMENT_DATA = gql`
         currency
         shipTo
         shippingMethod
-        proposalNumber
+        quotationNumber
         freight
         miscellaneous
         taxAmount

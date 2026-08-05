@@ -113,7 +113,7 @@ export interface PODocumentData {
   currency: string;
   shipTo: string | null;
   shippingMethod: string | null;
-  proposalNumber: string | null;
+  quotationNumber: string | null;
   freight: number;
   miscellaneous: number;
   taxAmount: number;
