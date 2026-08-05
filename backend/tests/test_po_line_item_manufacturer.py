@@ -37,7 +37,6 @@ def _import_draft_with_manufacturer(session, project, *, manufacturer):
             "po_drafts": [
                 {
                     "po_number": None,
-                    "vendor_id": None,
                     "notes": None,
                     "hardware_item_refs": [
                         {"opening_number": "A01", "product_code": "HG-100", "hardware_category": "HINGE"},

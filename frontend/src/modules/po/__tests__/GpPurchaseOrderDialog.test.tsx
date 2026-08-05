@@ -15,7 +15,6 @@ import {
   GET_BUYER_ASSIGNMENTS,
   GET_PROJECTS,
   GET_RELAY_STATUS,
-  GET_VENDORS,
 } from '../../../graphql/shared';
 
 // DataGrid-heavy dialogs render slowly under jsdom, slower still when the whole suite runs in
@@ -56,7 +55,6 @@ const stockDraft: PurchaseOrder = {
   gpVendorId: null,
   vendorNameSnapshot: 'Ace Hardware Co',
   buyerId: null,
-  vendor: null,
   vendorQuoteNumber: null,
   shippingCost: null,
   tariffAmount: null,
@@ -197,31 +195,6 @@ function baseMocks(
   ];
 }
 
-// Nexus vendors for the create-mode VendorSelect autocomplete (issue #272: a draft links a Nexus
-// vendor, not a GP one).
-function nexusVendorsMock(): MockedResponse {
-  return {
-    request: { query: GET_VENDORS },
-    result: {
-      data: {
-        vendors: [
-          {
-            id: 'v-1',
-            name: 'Ace Hardware Co',
-            contactName: null,
-            email: null,
-            phone: null,
-            notes: null,
-            createdAt: '2026-07-01T12:00:00Z',
-            updatedAt: '2026-07-01T12:00:00Z',
-            __typename: 'Vendor',
-          },
-        ],
-      },
-    },
-    maxUsageCount: INFINITE,
-  };
-}
 
 // The two codes GP has active on the job. Both are offered - there is no per-buyer narrowing.
 function costCodesMock(): MockedResponse {
@@ -256,7 +229,6 @@ function registerData() {
         costCode: '310-000-3',
         gpVendorId: 'V-ACE',
         vendorNameSnapshot: 'Ace Hardware Co',
-        vendor: null,
       },
     },
   };
@@ -278,7 +250,6 @@ function queuedRegisterData() {
         costCode: '310-000-3',
         gpVendorId: 'V-ACE',
         vendorNameSnapshot: 'Ace Hardware Co',
-        vendor: null,
       },
     },
   };
@@ -664,7 +635,6 @@ describe('GpPurchaseOrderDialog', () => {
               gpCompany: null,
               gpVendorId: null,
               vendorNameSnapshot: null,
-              vendor: null,
               notes: 'rush order',
               preferredDeliveryDate: '2026-09-15',
               createdAt: '2026-07-02T12:00:00Z',
@@ -680,7 +650,6 @@ describe('GpPurchaseOrderDialog', () => {
     // Issue #272: drafting never touches GP, so a downed relay must not block it.
     const { onSubmitted } = renderDialog({ relayConnected: false }, [
       ...baseMocks(false),
-      nexusVendorsMock(),
       createDraftMock,
     ]);
 
@@ -690,15 +659,14 @@ describe('GpPurchaseOrderDialog', () => {
     expect(screen.queryByText('GP purchase order')).toBeNull();
     expect(screen.queryByLabelText('Buyer (you)')).toBeNull();
     expect(screen.queryByLabelText('GP Vendor')).toBeNull();
+    // And no plain "Vendor" field either (#509): GP owns vendors, so a draft names none at all
+    // rather than linking a Nexus-local record that has no PM00200 counterpart.
+    expect(screen.queryByLabelText('Vendor')).toBeNull();
 
     // Any project is draftable (buyer gating applies at registration, not drafting).
     const projectListbox = await openSelect('Project (Optional)');
     fireEvent.click(await within(projectListbox).findByText('Main St Job'));
     await closeSelect();
-
-    // Optional Nexus vendor link via the vendor autocomplete.
-    fireEvent.mouseDown(screen.getByLabelText('Vendor'));
-    fireEvent.click(await screen.findByText('Ace Hardware Co'));
 
     fireEvent.change(screen.getByLabelText('Preferred delivery date'), {
       target: { value: '2026-09-15' },
@@ -719,7 +687,6 @@ describe('GpPurchaseOrderDialog', () => {
     expect(calls[0]).toEqual({
       input: {
         projectId: 'p1',
-        vendorId: 'v-1',
         notes: 'rush order',
         preferredDeliveryDate: '2026-09-15',
         shippingCost: null,

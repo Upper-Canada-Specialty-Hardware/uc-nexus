@@ -143,7 +143,6 @@ class ImportMutations:
             "po_drafts": [
                 {
                     "po_number": po.po_number,
-                    "vendor_id": str(po.vendor_id) if po.vendor_id else None,
                     "notes": po.notes,
                     "preferred_delivery_date": po.preferred_delivery_date,
                     "hardware_item_refs": [

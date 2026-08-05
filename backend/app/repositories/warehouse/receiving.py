@@ -24,7 +24,6 @@ from app.models.purchase_order import POLineItem as POLineItemModel
 from app.models.purchase_order import PurchaseOrder as POModel
 from app.models.receiving import ReceiveLineItem as ReceiveLineItemModel
 from app.models.receiving import ReceiveRecord as ReceiveRecordModel
-from app.models.vendor import Vendor as VendorModel
 from app.repositories import project_repository
 from app.services import notification_service
 from app.services.locking import lock_rows
@@ -546,13 +545,12 @@ def get_po_receiving_details(session: Session, po_id: uuid.UUID) -> tuple[POMode
     Returns:
         Tuple of (po, receive_records)
     """
-    # Look up PO with line_items, documents, and vendor
+    # Look up PO with line_items and documents
     stmt = (
         select(POModel)
         .options(
             selectinload(POModel.line_items),
             selectinload(POModel.documents),
-            selectinload(POModel.vendor),
         )
         .where(POModel.id == po_id)
     )
@@ -583,15 +581,13 @@ def get_back_ordered_items(session: Session, project_id: uuid.UUID | None = None
         select(
             POLineItemModel,
             POModel.po_number,
-            # The fallback po_to_type applies everywhere a vendor is named: the snapshot taken at GP
-            # push time, and the local vendor row only for POs old enough to predate that column.
-            func.coalesce(POModel.vendor_name_snapshot, VendorModel.name),
+            # The GP vendor frozen on at push time - the only vendor a PO names (#509).
+            POModel.vendor_name_snapshot,
             POModel.expected_delivery_date,
             ProjectModel.description,
             ProjectModel.project_id,
         )
         .join(POModel, POLineItemModel.po_id == POModel.id)
-        .outerjoin(VendorModel, POModel.vendor_id == VendorModel.id)
         .outerjoin(ProjectModel, POModel.project_id == ProjectModel.id)
         .where(
             POModel.status.in_([POStatus.GP_REGISTERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED]),
@@ -666,15 +662,13 @@ def get_receiving_history_pos(session: Session, project_id: uuid.UUID | None = N
             POModel.request_number,
             POModel.status,
             POModel.project_id,
-            # The same fallback po_to_type applies: the snapshot taken at GP push time, and the local
-            # vendor row only for PO rows old enough to predate that column.
-            func.coalesce(POModel.vendor_name_snapshot, VendorModel.name).label("vendor_name"),
+            # The GP vendor frozen on at push time - the only vendor a PO names (#509).
+            POModel.vendor_name_snapshot.label("vendor_name"),
             func.coalesce(line_totals.c.ordered_total, 0).label("ordered_total"),
             func.coalesce(line_totals.c.received_total, 0).label("received_total"),
             func.coalesce(receive_totals.c.receive_count, 0).label("receive_count"),
             receive_totals.c.last_received_at,
         )
-        .outerjoin(VendorModel, POModel.vendor_id == VendorModel.id)
         .outerjoin(line_totals, line_totals.c.po_id == POModel.id)
         .outerjoin(receive_totals, receive_totals.c.po_id == POModel.id)
         .where(

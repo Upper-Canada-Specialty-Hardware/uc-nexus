@@ -144,7 +144,6 @@ def create_po(
     session: Session,
     line_items: list[dict],
     project_id: uuid.UUID | None = None,
-    vendor_id: uuid.UUID | None = None,
     notes: str | None = None,
     cost_code: str | None = None,
     po_number: str | None = None,
@@ -164,8 +163,10 @@ def create_po(
     below (po_number + gp_company present, advancing DRAFT -> GP_REGISTERED in the same commit)
     remains for callers that already hold a GP result.
 
-    gp_vendor_id/vendor_name_snapshot are the GP vendor picked live from gpVendors at push time
-    (issue #200 - there is no local vendor-to-GP mirror), frozen onto the PO for display."""
+    gp_vendor_id/vendor_name_snapshot are the GP vendor picked live from gpVendors at push time,
+    frozen onto the PO for display. They are the only vendor a PO carries - GP owns vendors, and
+    Nexus keeps no vendor records of its own (#200 dropped the sync'd mirror, #509 the local contact
+    table)."""
     if not line_items:
         raise ValidationError("At least one line item is required", field="line_items")
 
@@ -177,13 +178,6 @@ def create_po(
         if project is None:
             raise NotFoundError(f"Project {project_id} not found")
 
-    if vendor_id is not None:
-        from app.models.vendor import Vendor as VendorModel
-
-        vendor = session.get(VendorModel, vendor_id)
-        if vendor is None:
-            raise NotFoundError(f"Vendor {vendor_id} not found")
-
     request_number = generate_next_request_number(session)
 
     cleaned_cost_code = cost_code.strip() if cost_code and cost_code.strip() else None
@@ -192,7 +186,6 @@ def create_po(
         id=uuid.uuid4(),
         request_number=request_number,
         project_id=project_id,
-        vendor_id=vendor_id,
         status=POStatus.DRAFT,
         notes=notes,
         cost_code=cleaned_cost_code,
@@ -246,8 +239,8 @@ def create_po(
         _assert_po_number_available(session, cleaned_number, project_id=project_id, exclude_po_id=po.id)
         po.po_number = cleaned_number
         po.gp_company = gp_company.strip() if gp_company and gp_company.strip() else None
-        # gp_vendor_id (not the optional local vendor_id link) is what proves this PO is backed by a
-        # real GP vendor - issue #200 decoupled the two, so GP-registration must gate on the former.
+        # gp_vendor_id is what proves this PO is backed by a real GP vendor, so GP-registration gates
+        # on it.
         if po.gp_vendor_id is not None:
             po.status = POStatus.GP_REGISTERED
             po.ordered_at = datetime.utcnow()
@@ -275,7 +268,6 @@ def register_po_in_gp(
     po_number: str,
     gp_company: str,
     line_items: list[dict],
-    vendor_id: uuid.UUID | None = None,
     cost_code: str | None = None,
     buyer_id: str | None = None,
     shipping_cost: float | None = None,
@@ -291,9 +283,8 @@ def register_po_in_gp(
     each GP line - stamp GP's returned PONUMBER + company, and advance DRAFT -> GP_REGISTERED. All in one
     commit. A GP failure never reaches here, so on failure the PO stays Draft and untouched.
 
-    gp_vendor_id/vendor_name_snapshot are the GP vendor picked live from gpVendors at push time (issue
-    #200 - there is no local vendor-to-GP mirror). vendor_id optionally links a UC Nexus vendor record
-    (contact info) and, when given, must exist - it carries no GP-linkage meaning anymore.
+    gp_vendor_id/vendor_name_snapshot are the GP vendor picked live from gpVendors at push time, and
+    are the only vendor identity involved - Nexus keeps no vendor records of its own.
 
     project_id (#316) attaches a project to a draft that has none - a manually created stock PO, whose
     only chance to gain one is here, since Project appears nowhere else after creation. It is IGNORED
@@ -310,12 +301,6 @@ def register_po_in_gp(
         raise InvalidStateTransitionError(f"Only a Draft PO can be registered in GP; this one is {po.status.value}")
     if not line_items:
         raise ValidationError("At least one line item is required", field="line_items")
-
-    if vendor_id is not None:
-        from app.models.vendor import Vendor as VendorModel
-
-        if session.get(VendorModel, vendor_id) is None:
-            raise NotFoundError(f"Vendor {vendor_id} not found")
 
     # #316: adopt a project only onto a draft that has none. Assigned before the duplicate-PO-number
     # check below, which scopes uniqueness by project.
@@ -409,8 +394,6 @@ def register_po_in_gp(
         for poli in removed:
             session.delete(poli)
 
-    if vendor_id is not None:
-        po.vendor_id = vendor_id
     po.gp_vendor_id = cleaned_gp_vendor_id
     po.vendor_name_snapshot = cleaned_vendor_name_snapshot
     if buyer_id and buyer_id.strip():
@@ -441,7 +424,7 @@ def register_po_in_gp(
 def get_purchase_orders(
     session: Session, project_id: uuid.UUID | None = None, status: POStatus | None = None
 ) -> list[PurchaseOrder]:
-    """Filter by optional project_id + status + deleted_at IS NULL; eagerly load line_items, documents, vendor."""
+    """Filter by optional project_id + status + deleted_at IS NULL; eagerly load line_items, documents."""
     stmt = (
         select(PurchaseOrder)
         .options(
@@ -450,7 +433,6 @@ def get_purchase_orders(
             selectinload(PurchaseOrder.line_items).selectinload(POLineItem.hardware_items),
             selectinload(PurchaseOrder.documents),
             selectinload(PurchaseOrder.document_data),
-            selectinload(PurchaseOrder.vendor),
         )
         .where(PurchaseOrder.deleted_at.is_(None))
         .order_by(PurchaseOrder.created_at.desc())
@@ -463,7 +445,7 @@ def get_purchase_orders(
 
 
 def get_purchase_order(session: Session, po_id: uuid.UUID) -> PurchaseOrder | None:
-    """Single PO by id + deleted_at IS NULL, eagerly load line_items, documents, vendor."""
+    """Single PO by id + deleted_at IS NULL, eagerly load line_items, documents."""
     stmt = (
         select(PurchaseOrder)
         .options(
@@ -472,7 +454,6 @@ def get_purchase_order(session: Session, po_id: uuid.UUID) -> PurchaseOrder | No
             selectinload(PurchaseOrder.line_items).selectinload(POLineItem.hardware_items),
             selectinload(PurchaseOrder.documents),
             selectinload(PurchaseOrder.document_data),
-            selectinload(PurchaseOrder.vendor),
         )
         .where(
             PurchaseOrder.id == po_id,
@@ -484,14 +465,13 @@ def get_purchase_order(session: Session, po_id: uuid.UUID) -> PurchaseOrder | No
 
 def get_open_pos(session: Session, project_id: uuid.UUID | None = None) -> list[PurchaseOrder]:
     """Open POs (GP-Registered / Vendor-Confirmed / Partially-Received), oldest ordered_at first, for
-    the receiving picker. Lean load - line_items/documents/vendor only, no nested hardware_items and
-    no document_data (the derived line manufacturer resolves to None here by design)."""
+    the receiving picker. Lean load - line_items/documents only, no nested hardware_items and no
+    document_data (the derived line manufacturer resolves to None here by design)."""
     stmt = (
         select(PurchaseOrder)
         .options(
             selectinload(PurchaseOrder.line_items),
             selectinload(PurchaseOrder.documents),
-            selectinload(PurchaseOrder.vendor),
         )
         .where(
             PurchaseOrder.deleted_at.is_(None),
@@ -511,14 +491,13 @@ def get_open_pos(session: Session, project_id: uuid.UUID | None = None) -> list[
 
 
 def reload_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder | None:
-    """Re-read a PO with the relationships every mutation response needs (line_items, documents,
-    vendor). No deleted_at filter - callers hold an id they just wrote."""
+    """Re-read a PO with the relationships every mutation response needs (line_items, documents). No
+    deleted_at filter - callers hold an id they just wrote."""
     stmt = (
         select(PurchaseOrder)
         .options(
             selectinload(PurchaseOrder.line_items),
             selectinload(PurchaseOrder.documents),
-            selectinload(PurchaseOrder.vendor),
         )
         .where(PurchaseOrder.id == po_id)
     )
@@ -579,7 +558,6 @@ def get_po_statistics(session: Session, project_id: uuid.UUID | None = None) -> 
 def update_po(
     session: Session,
     po_id: uuid.UUID,
-    vendor_id=_UNSET,
     expected_delivery_date=None,
     preferred_delivery_date=None,
     po_number: str | None = None,
@@ -594,7 +572,7 @@ def update_po(
     - Validate status in (Draft, GP_Registered, Vendor_Confirmed) (InvalidStateTransitionError)
     - Validate no ReceiveRecords exist (InvalidStateTransitionError)
     - Validate po_number uniqueness within project if provided
-    - Update only provided fields (vendor_id/project_id use _UNSET sentinel)
+    - Update only provided fields (project_id uses the _UNSET sentinel)
     - Return updated PO
     """
     po = get_purchase_order(session, po_id)
@@ -618,18 +596,6 @@ def update_po(
         if project is None:
             raise NotFoundError(f"Project {project_id} not found")
         po.project_id = project_id
-
-    # Update vendor_id if provided (sentinel _UNSET means "not provided")
-    if vendor_id is not _UNSET:
-        if vendor_id is None:
-            po.vendor_id = None
-        else:
-            from app.models.vendor import Vendor as VendorModel
-
-            vendor = session.get(VendorModel, vendor_id)
-            if vendor is None:
-                raise NotFoundError(f"Vendor {vendor_id} not found")
-            po.vendor_id = vendor_id
 
     if po_number is not None:
         # Validate uniqueness scoped to project (or globally for project-less POs)
@@ -670,37 +636,6 @@ def update_po(
         has_vendor_ack = any(doc.document_type == PODocumentType.VENDOR_ACKNOWLEDGEMENT for doc in (po.documents or []))
         if po.vendor_quote_number is None or not has_vendor_ack:
             po.status = POStatus.GP_REGISTERED
-
-    return po
-
-
-def mark_po_as_ordered(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
-    """
-    - Validate exists + not soft-deleted (NotFoundError)
-    - Validate status == Draft (InvalidStateTransitionError)
-    - Validate po_number is not None (ValidationError)
-    - Validate vendor_id is not None (ValidationError)
-    - Set status=GP_Registered, ordered_at=datetime.utcnow()
-    - Return updated PO
-    """
-    po = get_purchase_order(session, po_id)
-    if po is None:
-        raise NotFoundError(f"Purchase order {po_id} not found")
-
-    if po.status != POStatus.DRAFT:
-        raise InvalidStateTransitionError(f"Cannot mark PO as ordered from {po.status.value} status; must be Draft")
-
-    if po.po_number is None:
-        raise ValidationError("PO number is required before marking as ordered", field="po_number")
-
-    if po.vendor_id is None:
-        raise ValidationError(
-            "Vendor is required before marking as ordered",
-            field="vendor_id",
-        )
-
-    po.status = POStatus.GP_REGISTERED
-    po.ordered_at = datetime.utcnow()
 
     return po
 
@@ -790,13 +725,28 @@ def update_line_item_unit_cost(
 
 def get_prior_order_as_values(
     session: Session,
-    vendor_id: uuid.UUID,
+    project_id: uuid.UUID | None,
     product_codes: list[str],
 ) -> dict[str, list[str]]:
     """
-    For a given vendor + set of product codes, return distinct non-empty
-    `order_as` values from po_line_items, grouped by product_code,
-    ranked by most recent line item updated_at.
+    For a project + set of product codes, return distinct non-empty `order_as` values from
+    po_line_items, grouped by product_code, ranked by most recent line item updated_at.
+
+    Scoped by PROJECT (#509). What a part is "ordered as" is remembered per job: on this project we
+    call this part X, so offer X again rather than making the buyer retype it. It is deliberately
+    neither of the two things it looks like:
+
+    - not global. `order_as` becomes the GP line's item number (`gp_po.build_create_po_payload`), so
+      it is a supplier-facing catalogue value; offering every alias ever used for a product code
+      would suggest one vendor's SKU while raising a PO for another.
+    - not vendor-scoped. It used to be filtered by the local vendor link, which is gone with the
+      table (GP owns vendors), and the GP vendor is not chosen until register time - long after the
+      import wizard needs these.
+
+    A project scope also bounds the query: the wizard fires it once per manufacturer card, and
+    without a scope every one of those is a full scan of every PO line ever written.
+
+    project_id=None scopes to project-less (stock) POs, which is what a stock PO should see.
 
     Excludes CANCELLED POs and soft-deleted POs. Caps each list at 20.
     """
@@ -808,7 +758,7 @@ def get_prior_order_as_values(
         select(POLineItem.product_code, POLineItem.order_as, last_used)
         .join(PurchaseOrder, PurchaseOrder.id == POLineItem.po_id)
         .where(
-            PurchaseOrder.vendor_id == vendor_id,
+            PurchaseOrder.project_id == project_id if project_id is not None else PurchaseOrder.project_id.is_(None),
             POLineItem.product_code.in_(product_codes),
             POLineItem.order_as.isnot(None),
             func.trim(POLineItem.order_as) != "",

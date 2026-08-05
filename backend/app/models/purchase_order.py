@@ -21,7 +21,6 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from . import Base
 from .enums import Classification, PODocumentType, POStatus
-from .vendor import Vendor
 
 if TYPE_CHECKING:
     from .hardware import HardwareItem
@@ -51,9 +50,6 @@ class PurchaseOrder(Base):
     po_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
     request_number: Mapped[str] = mapped_column(String(50), nullable=False)
     project_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("projects.id"), nullable=True)
-    vendor_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("vendors.id", ondelete="RESTRICT"), nullable=True, index=True
-    )
     status: Mapped[POStatus] = mapped_column(Enum(POStatus, name="po_status", create_constraint=True), nullable=False)
     # GP cost code chosen per-PO (the issue #121 dropdown, 'phase-step-element' e.g. '210-200-2'),
     # applied to every job-cost line when pushed to GP. Null for stock POs / not-yet-pushed.
@@ -61,9 +57,11 @@ class PurchaseOrder(Base):
     # GP company this PO was created in (TUBC/TUCSH for the POC). Recorded at GP registration with the
     # returned po_number; a relay /receipt needs it to target the right company DB. Null until pushed.
     gp_company: Mapped[str | None] = mapped_column(String(15), nullable=True)
-    # GP VENDORID (char 15) this PO was pushed to, picked live from PM00200 at push time (issue #200 -
-    # there is no local vendor-to-GP mirror anymore). vendor_name_snapshot is that same pick's display
-    # name, frozen at push time since the GP vendor list isn't re-fetched just to render a PO.
+    # GP VENDORID (char 15) this PO was pushed to, picked live from PM00200 at push time. GP is the
+    # only vendor authority - Nexus keeps no vendor records of its own (#200 dropped the sync'd
+    # mirror, #509 the local contact table). vendor_name_snapshot is that same pick's display name,
+    # frozen at push time since the GP vendor list isn't re-fetched just to render a PO. A DRAFT that
+    # has not been registered yet has neither, and shows no vendor at all.
     gp_vendor_id: Mapped[str | None] = mapped_column(String(15), nullable=True)
     vendor_name_snapshot: Mapped[str | None] = mapped_column(String, nullable=True)
     # GP BUYERID (POP00101, char 15) picked in the Create/Register PO dialog and sent to GP at push
@@ -91,7 +89,6 @@ class PurchaseOrder(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    vendor: Mapped[Vendor | None] = relationship()
     line_items: Mapped[list["POLineItem"]] = relationship(back_populates="purchase_order")
     documents: Mapped[list["PODocument"]] = relationship(back_populates="purchase_order")
     document_data: Mapped["PODocumentData | None"] = relationship(back_populates="purchase_order", uselist=False)

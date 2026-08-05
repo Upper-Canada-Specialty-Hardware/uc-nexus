@@ -12,7 +12,6 @@ from sqlalchemy import select
 from app.models.hardware import HardwareItem
 from app.models.project import Opening, Project
 from app.models.purchase_order import PurchaseOrder
-from app.models.vendor import Vendor
 from app.repositories import import_repository, po_repository
 
 
@@ -66,9 +65,6 @@ def _hw(opening_number: str, product_code: str, qty: int = 1) -> dict:
 
 
 def _import_po(session, project: Project) -> PurchaseOrder:
-    vendor = Vendor(id=uuid.uuid4(), name=f"V-{uuid.uuid4().hex[:6]}")
-    session.add(vendor)
-    session.flush()
     import_repository.finalize_import_session(
         session,
         {
@@ -81,7 +77,6 @@ def _import_po(session, project: Project) -> PurchaseOrder:
             "po_drafts": [
                 {
                     "po_number": None,
-                    "vendor_id": str(vendor.id),
                     "notes": None,
                     "hardware_item_refs": [
                         {"opening_number": "A01", "product_code": "HG-100", "hardware_category": "HINGE"},

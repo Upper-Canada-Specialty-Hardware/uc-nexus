@@ -26,13 +26,6 @@ export const GET_PURCHASE_ORDERS = gql`
       gpVendorId
       vendorNameSnapshot
       buyerId
-      vendor {
-        id
-        name
-        contactName
-        email
-        phone
-      }
       vendorQuoteNumber
       shippingCost
       tariffAmount
@@ -213,21 +206,14 @@ export const GET_PROJECT_SHIP_TO = gql`
 `;
 
 export const UPDATE_PO = gql`
-  mutation UpdatePO($id: ID!, $vendorId: ID, $expectedDeliveryDate: Date, $preferredDeliveryDate: Date, $poNumber: String, $vendorQuoteNumber: String, $notes: String, $shippingCost: Float, $tariffAmount: Float) {
-    updatePo(id: $id, vendorId: $vendorId, expectedDeliveryDate: $expectedDeliveryDate, preferredDeliveryDate: $preferredDeliveryDate, poNumber: $poNumber, vendorQuoteNumber: $vendorQuoteNumber, notes: $notes, shippingCost: $shippingCost, tariffAmount: $tariffAmount) {
+  mutation UpdatePO($id: ID!, $expectedDeliveryDate: Date, $preferredDeliveryDate: Date, $poNumber: String, $vendorQuoteNumber: String, $notes: String, $shippingCost: Float, $tariffAmount: Float) {
+    updatePo(id: $id, expectedDeliveryDate: $expectedDeliveryDate, preferredDeliveryDate: $preferredDeliveryDate, poNumber: $poNumber, vendorQuoteNumber: $vendorQuoteNumber, notes: $notes, shippingCost: $shippingCost, tariffAmount: $tariffAmount) {
       id
       poNumber
       requestNumber
       status
       gpVendorId
       vendorNameSnapshot
-      vendor {
-        id
-        name
-        contactName
-        email
-        phone
-      }
       vendorQuoteNumber
       shippingCost
       tariffAmount
@@ -330,10 +316,6 @@ export const REGISTER_PO_IN_GP = gql`
         costCode
         gpVendorId
         vendorNameSnapshot
-        vendor {
-          id
-          name
-        }
       }
     }
   }
@@ -350,13 +332,6 @@ export const CREATE_DRAFT_PO = gql`
       gpCompany
       gpVendorId
       vendorNameSnapshot
-      vendor {
-        id
-        name
-        contactName
-        email
-        phone
-      }
       notes
       preferredDeliveryDate
       createdAt

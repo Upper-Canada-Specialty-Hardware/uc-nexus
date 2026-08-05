@@ -99,18 +99,6 @@ class HardwareItem:
 
 
 @strawberry.type
-class Vendor:
-    id: strawberry.ID
-    name: str
-    contact_name: str | None
-    email: str | None
-    phone: str | None
-    notes: str | None
-    created_at: datetime
-    updated_at: datetime
-
-
-@strawberry.type
 class RelayInstallProvision:
     """Result of provisioning a relay install. enrollment_token is shown ONCE - it never comes back."""
 
@@ -615,7 +603,6 @@ class PurchaseOrder:
     buyer_id: str | None
     # Clerk user id of whoever raised this PO request. Null on POs from before it was recorded.
     created_by_user_id: str | None
-    vendor: Vendor | None
     vendor_quote_number: str | None
     shipping_cost: float | None
     tariff_amount: float | None
@@ -1972,7 +1959,6 @@ class ShopAssemblyStats:
 
 @strawberry.type
 class AdminStats:
-    vendor_count: int
     user_count: int
     hardware_item_count: int
     opening_count: int
