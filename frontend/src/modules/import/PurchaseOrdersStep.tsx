@@ -330,7 +330,7 @@ export default function PurchaseOrdersStep({
         Purchase Orders
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, mb: 3 }}>
-        {vendorGroups.size} manufacturer group(s). Select which to create purchase orders for, and pick a vendor (the company you buy from). PO numbers can be assigned later from Microsoft GP.
+        {vendorGroups.size} manufacturer group(s). Select which to create purchase order requests for. The GP vendor to buy from, and the PO number, are chosen later when the request is registered in Microsoft GP.
       </Typography>
 
       <StaggerList count={sortedVendors.length}>
