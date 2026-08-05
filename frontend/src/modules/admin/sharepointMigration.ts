@@ -267,6 +267,8 @@ export interface BuildEntriesArgs {
 export interface BuildEntriesResult {
   entries: MigrationEntry[];
   excluded: { reason: string; count: number }[];
+  /** The candidates that survived every exclusion, for callers that must agree with `entries`. */
+  kept: CandidateRow[];
 }
 
 /**
@@ -286,6 +288,7 @@ export function buildEntries({
   itemTypeResolutions = new Map(),
 }: BuildEntriesArgs): BuildEntriesResult {
   const entries: MigrationEntry[] = [];
+  const kept: CandidateRow[] = [];
   const excludedCounts = new Map<string, number>();
   const drop = (reason: string) => excludedCounts.set(reason, (excludedCounts.get(reason) ?? 0) + 1);
 
@@ -334,11 +337,13 @@ export function buildEntries({
       row: resolution.row,
       bay: resolution.bay,
     });
+    kept.push(c);
   }
 
   return {
     entries,
     excluded: [...excludedCounts.entries()].map(([reason, count]) => ({ reason, count })),
+    kept,
   };
 }
 
@@ -518,6 +523,10 @@ const CATALOG_ATTRIBUTES: { key: keyof SharepointInventoryItem; name: string }[]
  *
  * Only rows whose type the user actually mapped are included. Schedule hardware is never
  * catalogued: the hardware schedule is its description.
+ *
+ * Pass the candidates that SURVIVED exclusion (`buildEntries().kept`), not every candidate:
+ * cataloguing a product whose quantities were excluded would describe stock the migration did not
+ * bring, which is not what the completion screen claims it did.
  */
 export function buildCatalogItems(
   candidates: CandidateRow[],

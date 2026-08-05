@@ -87,7 +87,11 @@ export default function SharePointMigrationPage() {
   const { data: whData } = useQuery<{ warehouses: Warehouse[] }>(GET_WAREHOUSES, {
     variables: { includeInactive: false },
   });
-  const { data: projData } = useQuery<{ projects: NexusProject[] }>(GET_PROJECTS);
+  // cache-and-network: the project list gates the whole Projects step, and a cached empty list
+  // from before a sync would silently drop every project row from the migration.
+  const { data: projData } = useQuery<{ projects: NexusProject[] }>(GET_PROJECTS, {
+    fetchPolicy: 'cache-and-network',
+  });
   const { types: itemTypes } = useInventoryItemTypes({ activeOnly: true });
 
   const [migrate, { loading: migrating }] = useMutation(MIGRATE_SHAREPOINT_INVENTORY);
@@ -165,9 +169,10 @@ export default function SharePointMigrationPage() {
     ],
   );
 
+  // From what survived, not from every candidate - the catalog must describe what actually migrated.
   const catalogItems = useMemo(
-    () => buildCatalogItems(candidates, itemTypeResolutions),
-    [candidates, itemTypeResolutions],
+    () => buildCatalogItems(built.kept, itemTypeResolutions),
+    [built.kept, itemTypeResolutions],
   );
 
   const setLocation = useCallback(

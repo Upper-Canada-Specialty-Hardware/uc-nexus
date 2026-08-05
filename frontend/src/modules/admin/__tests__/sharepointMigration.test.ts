@@ -433,6 +433,27 @@ describe('buildEntries with a mapped entity type', () => {
 describe('buildCatalogItems', () => {
   const mapped = new Map([['Specialties', TYPES[1]]]);
 
+  it('only catalogs what survived exclusion, via buildEntries().kept', () => {
+    // Cataloguing a product whose quantities were excluded would describe stock the migration did
+    // not bring - which is exactly what the completion screen would then be wrong about.
+    const candidates = toCandidates([
+      item({ inventoryType: 'Specialties', partNumber: 'KEPT', scheduledPartNumber: '', locations: 'A-62R', stockQty: 1 }),
+      item({ inventoryType: 'Specialties', partNumber: 'DROPPED', scheduledPartNumber: '', locations: 'SHIPPED', stockQty: 1 }),
+    ]);
+    const built = buildEntries({
+      candidates,
+      locationResolutions: new Map([
+        ['A-62R', { excluded: false, warehouseId: 'wh1', aisle: 'A', row: '62', bay: 'R' }],
+      ]),
+      projectResolutions: new Map(),
+      emptyCategoryLabel: 'Uncategorized',
+      defaultWarehouseId: 'wh1',
+      itemTypeResolutions: mapped,
+    });
+    const catalog = buildCatalogItems(built.kept, mapped);
+    expect(catalog.map((c) => c.productCode)).toEqual(['KEPT']);
+  });
+
   it('catalogs a mapped product with its description and attribute values', () => {
     const candidates = toCandidates([
       item({
