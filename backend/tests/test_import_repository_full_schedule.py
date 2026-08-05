@@ -23,7 +23,6 @@ from app.models.shop_assembly import (
     ShopAssemblyRequest,
 )
 from app.models.stock_item import StockItem
-from app.models.vendor import Vendor
 from app.repositories import import_repository, shop_assembly_repository, warehouse_admin_repository
 
 
@@ -69,13 +68,6 @@ def _make_project(session, project_id: str = "PROJ-001") -> Project:
     session.add(p)
     session.flush()
     return p
-
-
-def _make_vendor(session, name: str = "Acme") -> Vendor:
-    v = Vendor(id=uuid.uuid4(), name=f"{name}-{uuid.uuid4().hex[:6]}")
-    session.add(v)
-    session.flush()
-    return v
 
 
 def _opening_input(opening_number: str, **overrides) -> dict:
@@ -154,7 +146,6 @@ def test_persists_full_schedule_as_available_when_no_pos(db_session):
 def test_persists_full_schedule_with_mixed_po_and_available(db_session):
     """Items in PO drafts become IN_PO; remaining items become AVAILABLE."""
     project = _make_project(db_session)
-    vendor = _make_vendor(db_session)
     db_session.commit()
 
     import_repository.finalize_import_session(
@@ -170,7 +161,6 @@ def test_persists_full_schedule_with_mixed_po_and_available(db_session):
             "po_drafts": [
                 {
                     "po_number": "PO-1",
-                    "vendor_id": str(vendor.id),
                     "notes": None,
                     "hardware_item_refs": [
                         {"opening_number": "A01", "product_code": "HG-100", "hardware_category": "HINGE"},
@@ -195,7 +185,6 @@ def test_persists_full_schedule_with_mixed_po_and_available(db_session):
 def test_resume_does_not_duplicate_in_po_items(db_session):
     """Re-running finalize with same input must not create duplicate AVAILABLE rows for items already IN_PO."""
     project = _make_project(db_session)
-    vendor = _make_vendor(db_session)
     db_session.commit()
 
     base_input = {
@@ -205,7 +194,6 @@ def test_resume_does_not_duplicate_in_po_items(db_session):
         "po_drafts": [
             {
                 "po_number": "PO-1",
-                "vendor_id": str(vendor.id),
                 "notes": None,
                 "hardware_item_refs": [
                     {"opening_number": "A01", "product_code": "HG-100", "hardware_category": "HINGE"},
@@ -236,7 +224,6 @@ def test_resume_does_not_duplicate_in_po_items(db_session):
 def test_replace_schedule_wipes_all_hardware_items(db_session):
     """replace_schedule=True wipes all HardwareItems including IN_PO, then recreates from new input."""
     project = _make_project(db_session)
-    vendor = _make_vendor(db_session)
     db_session.commit()
 
     import_repository.finalize_import_session(
@@ -251,7 +238,6 @@ def test_replace_schedule_wipes_all_hardware_items(db_session):
             "po_drafts": [
                 {
                     "po_number": "PO-1",
-                    "vendor_id": str(vendor.id),
                     "notes": None,
                     "hardware_item_refs": [
                         {"opening_number": "A01", "product_code": "HG-100", "hardware_category": "HINGE"},
@@ -572,7 +558,6 @@ def test_existing_openings_updated_on_replace(db_session):
 def test_get_project_hardware_schedule_returns_all_items(db_session):
     """get_project_hardware_schedule must return the full persisted set (including AVAILABLE)."""
     project = _make_project(db_session)
-    vendor = _make_vendor(db_session)
     db_session.commit()
 
     import_repository.finalize_import_session(
@@ -588,7 +573,6 @@ def test_get_project_hardware_schedule_returns_all_items(db_session):
             "po_drafts": [
                 {
                     "po_number": "PO-1",
-                    "vendor_id": str(vendor.id),
                     "notes": None,
                     "hardware_item_refs": [
                         {"opening_number": "A01", "product_code": "HG-100", "hardware_category": "HINGE"},
@@ -684,7 +668,6 @@ def test_leaf_po_ref_attaches_both_leaf_rows_to_one_line(db_session):
     """A leaf-agnostic PO ref claims every leaf row for the combo: both leaf HardwareItems land
     IN_PO on one PO line, whose ordered_quantity sums across the leaves."""
     project = _make_project(db_session)
-    vendor = _make_vendor(db_session)
     db_session.commit()
 
     import_repository.finalize_import_session(
@@ -699,7 +682,6 @@ def test_leaf_po_ref_attaches_both_leaf_rows_to_one_line(db_session):
             "po_drafts": [
                 {
                     "po_number": "PO-1",
-                    "vendor_id": str(vendor.id),
                     "notes": None,
                     "hardware_item_refs": [
                         {"opening_number": "PR1", "product_code": "HG-100", "hardware_category": "HINGE"},

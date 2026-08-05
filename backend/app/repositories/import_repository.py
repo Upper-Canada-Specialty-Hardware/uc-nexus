@@ -773,23 +773,15 @@ def finalize_import_session(
             request_number = f"PO-REQ-{next_seq:03d}"
             next_seq += 1
 
-            # Resolve vendor_id (validate FK target exists if provided)
-            vendor_id_str = po_draft.get("vendor_id")
-            vendor_id = uuid.UUID(vendor_id_str) if vendor_id_str else None
-            if vendor_id is not None:
-                from app.models.vendor import Vendor as VendorModel
-
-                if session.get(VendorModel, vendor_id) is None:
-                    raise NotFoundError(f"Vendor {vendor_id} not found")
-
-            # Create PO
+            # Create PO. No vendor: the wizard groups drafts by the TITAN manufacturer, which is not
+            # a vendor - the GP vendor (PM00200) is picked later, at register time, and is the only
+            # vendor a PO ever carries (#509).
             po = POModel(
                 id=uuid.uuid4(),
                 po_number=po_number,
                 request_number=request_number,
                 project_id=project.id,
                 status=POStatus.DRAFT,
-                vendor_id=vendor_id,
                 notes=po_draft.get("notes"),
                 # Issue #216: the PM's requested date, captured at PO-request creation.
                 preferred_delivery_date=po_draft.get("preferred_delivery_date"),

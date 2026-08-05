@@ -12,7 +12,6 @@ from app.models.enums import HardwareItemState, POStatus
 from app.models.hardware import HardwareItem
 from app.models.project import Opening, Project
 from app.models.purchase_order import POLineItem, PurchaseOrder
-from app.models.vendor import Vendor
 from app.repositories import buyer_repository, import_repository, po_repository
 from app.schemas import po as po_schema
 
@@ -27,13 +26,6 @@ def _make_project(session) -> Project:
     session.add(p)
     session.flush()
     return p
-
-
-def _make_vendor(session, name: str = "Acme") -> Vendor:
-    v = Vendor(id=uuid.uuid4(), name=f"{name}-{uuid.uuid4().hex[:6]}")
-    session.add(v)
-    session.flush()
-    return v
 
 
 def _opening_input(opening_number: str) -> dict:
@@ -78,7 +70,7 @@ def _hardware_item_input(opening_number: str, product_code: str) -> dict:
     }
 
 
-def _import_draft_po(session, project: Project, imported_vendor: Vendor) -> PurchaseOrder:
+def _import_draft_po(session, project: Project) -> PurchaseOrder:
     """Create a realistic imported Draft PO with two line items, each backed by a HardwareItem (the import
     path links HardwareItem.po_line_item_id but never sets po_number, so it lands as DRAFT)."""
     import_repository.finalize_import_session(
@@ -93,7 +85,6 @@ def _import_draft_po(session, project: Project, imported_vendor: Vendor) -> Purc
             "po_drafts": [
                 {
                     "po_number": None,
-                    "vendor_id": str(imported_vendor.id),
                     "notes": None,
                     "hardware_item_refs": [
                         {"opening_number": "A01", "product_code": "HG-100", "hardware_category": "HINGE"},
@@ -117,18 +108,14 @@ def _import_draft_po(session, project: Project, imported_vendor: Vendor) -> Purc
 
 def test_register_keeps_all_lines_and_advances(db_session):
     project = _make_project(db_session)
-    imported_vendor = _make_vendor(db_session, "Imported")
-    po = _import_draft_po(db_session, project, imported_vendor)
+    po = _import_draft_po(db_session, project)
     lines = {li.product_code: li for li in po.line_items}
-
-    gp_vendor = _make_vendor(db_session, "GP Vendor")
 
     po_repository.register_po_in_gp(
         db_session,
         po.id,
         gp_vendor_id="GPV1",
         vendor_name_snapshot="GP Vendor",
-        vendor_id=gp_vendor.id,
         po_number="  PO0000099  ",
         gp_company="  TUBC  ",
         cost_code="  210-200-2  ",
@@ -159,7 +146,6 @@ def test_register_keeps_all_lines_and_advances(db_session):
     assert po.status == POStatus.GP_REGISTERED
     assert po.po_number == "PO0000099"  # trimmed
     assert po.gp_company == "TUBC"
-    assert po.vendor_id == gp_vendor.id
     assert po.gp_vendor_id == "GPV1"
     assert po.vendor_name_snapshot == "GP Vendor"
     assert po.cost_code == "210-200-2"
@@ -173,20 +159,16 @@ def test_register_keeps_all_lines_and_advances(db_session):
 
 def test_register_add_edit_and_remove_lines(db_session):
     project = _make_project(db_session)
-    imported_vendor = _make_vendor(db_session, "Imported")
-    po = _import_draft_po(db_session, project, imported_vendor)
+    po = _import_draft_po(db_session, project)
     lines = {li.product_code: li for li in po.line_items}
     kept_id = lines["HG-100"].id
     dropped_id = lines["HG-200"].id
-
-    gp_vendor = _make_vendor(db_session, "GP Vendor")
 
     po_repository.register_po_in_gp(
         db_session,
         po.id,
         gp_vendor_id="GPV1",
         vendor_name_snapshot="GP Vendor",
-        vendor_id=gp_vendor.id,
         po_number="PO0000100",
         gp_company="TUBC",
         cost_code="310-000-3",
@@ -242,11 +224,8 @@ def test_register_add_edit_and_remove_lines(db_session):
 
 def test_register_rejects_non_draft(db_session):
     project = _make_project(db_session)
-    imported_vendor = _make_vendor(db_session, "Imported")
-    po = _import_draft_po(db_session, project, imported_vendor)
+    po = _import_draft_po(db_session, project)
     lines = {li.product_code: li for li in po.line_items}
-    gp_vendor = _make_vendor(db_session, "GP Vendor")
-
     payload = [
         {
             "id": str(li.id),
@@ -265,7 +244,6 @@ def test_register_rejects_non_draft(db_session):
         po.id,
         gp_vendor_id="GPV1",
         vendor_name_snapshot="GP Vendor",
-        vendor_id=gp_vendor.id,
         po_number="PO0000101",
         gp_company="TUBC",
         line_items=payload,
@@ -278,7 +256,6 @@ def test_register_rejects_non_draft(db_session):
             po.id,
             gp_vendor_id="GPV1",
             vendor_name_snapshot="GP Vendor",
-            vendor_id=gp_vendor.id,
             po_number="PO0000101",
             gp_company="TUBC",
             line_items=payload,
@@ -289,8 +266,7 @@ def test_register_rejects_blank_gp_vendor_id(db_session):
     # issue #200: the GP vendor is picked live and sent explicitly - there's no local mirror to fall
     # back on, so a blank id must be rejected server-side rather than silently registering ungrounded.
     project = _make_project(db_session)
-    imported_vendor = _make_vendor(db_session, "Imported")
-    po = _import_draft_po(db_session, project, imported_vendor)
+    po = _import_draft_po(db_session, project)
     lines = list(po.line_items)
 
     with pytest.raises(ValidationError):
@@ -319,7 +295,6 @@ def test_register_rejects_duplicate_po_number_in_project(db_session):
     # a reused GP number must surface as a clean ValidationError before commit, not a raw
     # IntegrityError that aborts the txn and orphans the GP PO the relay already created.
     project = _make_project(db_session)
-    gp_vendor = _make_vendor(db_session, "GP Vendor")
     line = {
         "hardware_category": "HINGE",
         "product_code": "HG-1",
@@ -333,14 +308,13 @@ def test_register_rejects_duplicate_po_number_in_project(db_session):
         db_session,
         line_items=[line],
         project_id=project.id,
-        vendor_id=gp_vendor.id,
         po_number="PO-DUP-1",
         gp_company="TUBC",
         gp_vendor_id="GPV1",
         vendor_name_snapshot="GP Vendor",
     )
     # a second draft in the same project can't be registered under the same number
-    draft = po_repository.create_po(db_session, line_items=[line], project_id=project.id, vendor_id=gp_vendor.id)
+    draft = po_repository.create_po(db_session, line_items=[line], project_id=project.id)
     assert draft.status == POStatus.DRAFT
     draft_line = draft.line_items[0]
 
@@ -350,7 +324,6 @@ def test_register_rejects_duplicate_po_number_in_project(db_session):
             draft.id,
             gp_vendor_id="GPV1",
             vendor_name_snapshot="GP Vendor",
-            vendor_id=gp_vendor.id,
             po_number="PO-DUP-1",
             gp_company="TUBC",
             line_items=[
@@ -369,18 +342,14 @@ def test_register_rejects_duplicate_po_number_in_project(db_session):
 
 def test_register_requires_order_as(db_session):
     project = _make_project(db_session)
-    imported_vendor = _make_vendor(db_session, "Imported")
-    po = _import_draft_po(db_session, project, imported_vendor)
+    po = _import_draft_po(db_session, project)
     lines = list(po.line_items)
-    gp_vendor = _make_vendor(db_session, "GP Vendor")
-
     with pytest.raises(ValidationError):
         po_repository.register_po_in_gp(
             db_session,
             po.id,
             gp_vendor_id="GPV1",
             vendor_name_snapshot="GP Vendor",
-            vendor_id=gp_vendor.id,
             po_number="PO0000102",
             gp_company="TUBC",
             line_items=[
@@ -456,12 +425,10 @@ def test_prepare_register_po_attaches_manufacturer_per_line(monkeypatch, db_sess
     project = _make_project(db_session)
     _add_hardware_item(db_session, project, hardware_category="HINGE", product_code="HG-100", manufacturer="SCHLAGE")
     _add_hardware_item(db_session, project, hardware_category="LOCK", product_code="LK-200", manufacturer="SARGENT")
-    gp_vendor = _make_vendor(db_session, "GP Vendor")
     draft = po_repository.create_po(
         db_session,
         line_items=[_register_line("HINGE", "HG-100", "ALIAS-100"), _register_line("LOCK", "LK-200", "ALIAS-200")],
         project_id=project.id,
-        vendor_id=gp_vendor.id,
     )
     assert draft.status == POStatus.DRAFT
     _assign_buyer(db_session, "mira", project)
@@ -469,7 +436,6 @@ def test_prepare_register_po_attaches_manufacturer_per_line(monkeypatch, db_sess
 
     payload = po_schema._prepare_register_po(
         po_id=draft.id,
-        vendor_id=None,
         gp_vendor_id="GPV1",
         buyer_id="mira",
         cost_code="210-200-2",
@@ -485,19 +451,16 @@ def test_prepare_register_po_accepts_any_cost_code(monkeypatch, db_session):
     'not designated to buyer' ValidationError on field cost_code."""
     project = _make_project(db_session)
     _add_hardware_item(db_session, project, hardware_category="HINGE", product_code="HG-100", manufacturer="SCHLAGE")
-    gp_vendor = _make_vendor(db_session, "GP Vendor")
     draft = po_repository.create_po(
         db_session,
         line_items=[_register_line("HINGE", "HG-100", "ALIAS-100")],
         project_id=project.id,
-        vendor_id=gp_vendor.id,
     )
     _assign_buyer(db_session, "mira", project)
     _use_test_session(monkeypatch, db_session)
 
     payload = po_schema._prepare_register_po(
         po_id=draft.id,
-        vendor_id=None,
         gp_vendor_id="GPV1",
         buyer_id="mira",
         cost_code="900-000-9",  # 'Misc.' - never in anyone's designated list
@@ -527,12 +490,10 @@ def test_prepare_register_po_disagreeing_items_take_first_non_null_and_log(monke
         manufacturer="SARGENT",
         created_at=datetime(2026, 1, 1, 0, 0, 2),
     )
-    gp_vendor = _make_vendor(db_session, "GP Vendor")
     draft = po_repository.create_po(
         db_session,
         line_items=[_register_line("HINGE", "HG-100", "ALIAS-100")],
         project_id=project.id,
-        vendor_id=gp_vendor.id,
     )
     _assign_buyer(db_session, "mira", project)
     _use_test_session(monkeypatch, db_session)
@@ -540,7 +501,6 @@ def test_prepare_register_po_disagreeing_items_take_first_non_null_and_log(monke
     with caplog.at_level(logging.WARNING):
         payload = po_schema._prepare_register_po(
             po_id=draft.id,
-            vendor_id=None,
             gp_vendor_id="GPV1",
             buyer_id="mira",
             cost_code="210-200-2",
@@ -615,7 +575,7 @@ def test_register_ignores_a_project_override_on_a_po_that_already_has_one(db_ses
     # so a direct GraphQL call gets the same guarantee.
     original = _make_project(db_session)
     other = _make_project(db_session)
-    po = _import_draft_po(db_session, original, _make_vendor(db_session, "Imported"))
+    po = _import_draft_po(db_session, original)
 
     _register(db_session, po, project_id=other.id)
 

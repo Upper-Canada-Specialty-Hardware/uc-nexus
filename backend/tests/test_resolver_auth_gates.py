@@ -360,7 +360,7 @@ def test_the_jwt_is_verified_once_for_a_query_hitting_several_root_fields(monkey
     _explodes(monkeypatch, shop_assembly_module, "SessionLocal")
 
     _execute(
-        "{ warehouses { id } pullRequests { id } vendors { id } assembleList { id } }",
+        "{ warehouses { id } pullRequests { id } backOrderedItems { poNumber } assembleList { id } }",
         token=signed_in,
     )
 

@@ -264,17 +264,9 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "updateUserGpBuyerId": ADMIN_ROLE,
     "updateUserName": ADMIN_ROLE,
     "updateUserRoles": ADMIN_ROLE,
-    # --- vendor.py ------------------------------------------------------------------------
-    # `createVendor` is signed-in, not admin: it is reached from the PO screens through a component
-    # that happens to live under modules/admin/. Promoting it breaks a PO user's vendor add.
-    "vendor": SIGNED_IN,
-    "vendors": SIGNED_IN,
-    "createVendor": SIGNED_IN,
-    "deleteVendor": ADMIN_ROLE,
-    "updateVendor": ADMIN_ROLE,
     # --- warehouse.py ---------------------------------------------------------------------
-    # `overrideInventoryQuantity` is signed-in for the same reason as `createVendor`: it is the
-    # warehouse's count correction, not an admin tool, despite where the component lives.
+    # `overrideInventoryQuantity` is signed-in despite living under an admin-looking component: it is
+    # the warehouse's own count correction, not an admin tool.
     "auditLog": SIGNED_IN,
     "backOrderedItems": SIGNED_IN,
     "inventoryByVendor": SIGNED_IN,

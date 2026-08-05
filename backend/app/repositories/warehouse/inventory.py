@@ -15,7 +15,6 @@ from app.models.project import Opening as OpeningModel
 from app.models.project import Project as ProjectModel
 from app.models.purchase_order import POLineItem as POLineItemModel
 from app.models.purchase_order import PurchaseOrder as POModel
-from app.models.vendor import Vendor as VendorModel
 
 from .audit import _log_audit_event
 from .locations import _normalize_and_validate_location_fields
@@ -184,18 +183,22 @@ def get_unlocated_inventory(session: Session, project_id: uuid.UUID | None = Non
 
 
 def get_inventory_by_vendor(session: Session, project_id: uuid.UUID | None = None) -> list[dict]:
-    """Group inventory by vendor name (via PO.vendor_id → Vendor), then product_code."""
+    """Group inventory by the GP vendor the hardware was bought from, then product_code.
+
+    The name is the PO's `vendor_name_snapshot` - the PM00200 vendor frozen on at GP-push time, which
+    since #509 is the only vendor a PO has. Stock-allocated rows have no PO behind them and a
+    never-registered draft has no snapshot yet; both land under "No Vendor".
+    """
     stmt = (
-        select(InventoryLocationModel, POLineItemModel.unit_cost, VendorModel.name)
+        select(InventoryLocationModel, POLineItemModel.unit_cost, POModel.vendor_name_snapshot)
         .outerjoin(POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id)
         .outerjoin(POModel, POLineItemModel.po_id == POModel.id)
-        .outerjoin(VendorModel, POModel.vendor_id == VendorModel.id)
         # Hide rows fully emptied by destock/allocation (kept in DB for FK integrity).
         .where(InventoryLocationModel.quantity > 0)
     )
     if project_id is not None:
         stmt = stmt.where(InventoryLocationModel.project_id == project_id)
-    stmt = stmt.order_by(VendorModel.name, InventoryLocationModel.product_code)
+    stmt = stmt.order_by(POModel.vendor_name_snapshot, InventoryLocationModel.product_code)
     rows = list(session.execute(stmt).all())
 
     vendor_map: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))

@@ -58,7 +58,8 @@ def _persist_register_po_from_context(context: dict, relay_result: dict, key: st
         vendor_name_snapshot=context.get("vendor_name_snapshot"),
         gp_result=relay_result,
         line_items_data=context["line_items_data"],
-        vendor_id=uuid.UUID(context["vendor_id"]) if context.get("vendor_id") else None,
+        # A row queued before #509 still carries a `vendor_id` key here. Nothing reads it now, and an
+        # unread key replays cleanly - which is why this is a drop rather than a context migration.
         cost_code=context.get("cost_code"),
         buyer_id=context.get("buyer_id"),
         shipping_cost=context.get("shipping_cost"),

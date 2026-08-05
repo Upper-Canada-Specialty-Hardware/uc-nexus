@@ -25,7 +25,6 @@ from .shipping import ShippingMutations
 from .shop_assembly import ShopAssemblyMutations
 from .stock import StockMutations
 from .user import UserMutations
-from .vendor import VendorMutations
 from .warehouse import WarehouseMutations
 
 
@@ -43,7 +42,6 @@ class Mutation(
     ShopAssemblyMutations,
     StockMutations,
     UserMutations,
-    VendorMutations,
     WarehouseMutations,
 ):
     pass

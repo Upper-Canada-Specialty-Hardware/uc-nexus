@@ -23,8 +23,8 @@ export const GET_PROJECTS = gql`
 `;
 
 export const GET_PRIOR_ORDER_AS_VALUES = gql`
-  query GetPriorOrderAsValues($vendorId: ID!, $productCodes: [String!]!) {
-    priorOrderAsValues(vendorId: $vendorId, productCodes: $productCodes) {
+  query GetPriorOrderAsValues($productCodes: [String!]!) {
+    priorOrderAsValues(productCodes: $productCodes) {
       productCode
       values
     }
@@ -41,21 +41,6 @@ export const GET_NOTIFICATIONS = gql`
       message
       isRead
       createdAt
-    }
-  }
-`;
-
-export const GET_VENDORS = gql`
-  query GetVendors {
-    vendors {
-      id
-      name
-      contactName
-      email
-      phone
-      notes
-      createdAt
-      updatedAt
     }
   }
 `;

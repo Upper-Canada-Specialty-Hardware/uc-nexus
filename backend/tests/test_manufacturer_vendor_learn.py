@@ -176,7 +176,6 @@ def test_register_po_in_gp_learns_manufacturer_mapping(db_session):
             "po_drafts": [
                 {
                     "po_number": None,
-                    "vendor_id": None,
                     "notes": None,
                     "hardware_item_refs": [
                         {"opening_number": "A01", "product_code": "HG-100", "hardware_category": "HINGE"},

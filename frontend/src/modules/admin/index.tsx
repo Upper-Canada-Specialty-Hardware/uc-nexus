@@ -3,7 +3,6 @@ import ProjectPurchasingProgressPage from './ProjectPurchasingProgressPage';
 import OpeningStatusTab from './OpeningStatusTab';
 import UserManagementPage from './UserManagementPage';
 import BuyersPage from './BuyersPage';
-import VendorsPage from './VendorsPage';
 import WarehousesPage from './WarehousesPage';
 import ProjectsPage from './ProjectsPage';
 import LocationCleanupPage from './LocationCleanupPage';
@@ -18,7 +17,6 @@ export default function AdminModule() {
       <Route index element={<AdminLanding />} />
       <Route path="project-purchasing-progress" element={<ProjectPurchasingProgressPage />} />
       <Route path="opening-status" element={<OpeningStatusTab />} />
-      <Route path="vendors" element={<VendorsPage />} />
       <Route path="warehouses" element={<WarehousesPage />} />
       <Route path="projects" element={<ProjectsPage />} />
       <Route path="users" element={<UserManagementPage />} />

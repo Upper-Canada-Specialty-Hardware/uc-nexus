@@ -223,7 +223,7 @@ export default function ImportWizard({
   // Action step state
   const [selectedVendors, setSelectedVendors] = useState<Set<string>>(new Set());
   const [vendorPOInfo, setVendorPOInfo] = useState<
-    Map<string, { vendorId: string | null; notes: string; preferredDeliveryDate: string }>
+    Map<string, { notes: string; preferredDeliveryDate: string }>
   >(new Map());
   const [unitCostOverrides, setUnitCostOverrides] = useState<Map<string, number>>(new Map());
   const [classifications, setClassifications] = useState<Map<string, string>>(new Map());
@@ -957,15 +957,11 @@ export default function ImportWizard({
 
   // Manufacturer-group PO info
   const updateVendorPO = useCallback(
-    (manufacturerKey: string, field: 'vendorId' | 'notes' | 'preferredDeliveryDate', value: string | null) => {
+    (manufacturerKey: string, field: 'notes' | 'preferredDeliveryDate', value: string | null) => {
       setVendorPOInfo((prev) => {
         const next = new Map(prev);
-        const existing = next.get(manufacturerKey) ?? { vendorId: null, notes: '', preferredDeliveryDate: '' };
-        if (field === 'vendorId') {
-          next.set(manufacturerKey, { ...existing, vendorId: value });
-        } else {
-          next.set(manufacturerKey, { ...existing, [field]: value ?? '' });
-        }
+        const existing = next.get(manufacturerKey) ?? { notes: '', preferredDeliveryDate: '' };
+        next.set(manufacturerKey, { ...existing, [field]: value ?? '' });
         return next;
       });
     },
@@ -1148,7 +1144,7 @@ export default function ImportWizard({
               // Filter out BY_OTHERS items from this vendor's PO draft
               const inScopeItems = items.filter((hi) => !isByOthers(hi));
               if (inScopeItems.length === 0) return null;
-              const info = vendorPOInfo.get(vendor) ?? { vendorId: null, notes: '', preferredDeliveryDate: '' };
+              const info = vendorPOInfo.get(vendor) ?? { notes: '', preferredDeliveryDate: '' };
               // Collect aliases for this manufacturer group's aggregated line items
               const seenKeys = new Set<string>();
               const lineItemAliases: Array<{ hardwareCategory: string; productCode: string; orderAs: string }> = [];
@@ -1168,7 +1164,6 @@ export default function ImportWizard({
               }
               return {
                 poNumber: null,
-                vendorId: info.vendorId,
                 notes: info.notes || null,
                 preferredDeliveryDate: info.preferredDeliveryDate || null,
                 hardwareItemRefs: inScopeItems.map((hi) => ({
