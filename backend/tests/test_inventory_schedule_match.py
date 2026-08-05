@@ -9,6 +9,7 @@ units are unclaimable until someone reconciles the two. This flag is what surfac
 import uuid
 from datetime import datetime
 
+from app.models.enums import HardwareItemState
 from app.models.hardware import HardwareItem
 from app.models.inventory import InventoryLocation
 from app.models.project import Opening, Project
@@ -40,6 +41,7 @@ def _add_schedule_item(session, project, *, category, code):
             hardware_category=category,
             product_code=code,
             item_quantity=1,
+            state=HardwareItemState.AVAILABLE,
         )
     )
     session.flush()
