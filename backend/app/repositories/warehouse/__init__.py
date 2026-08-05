@@ -17,6 +17,7 @@ from .inventory import (
     get_opening_items,
     get_opening_leaf_counts,
     get_opening_leaf_status,
+    get_scheduled_pairs,
     get_unlocated_inventory,
     override_inventory_quantity,
 )
@@ -164,6 +165,7 @@ __all__ = [
     "get_distinct_location_values",
     "get_inventory_by_vendor",
     "get_inventory_hierarchy",
+    "get_scheduled_pairs",
     "get_inventory_items",
     "get_location_audit_history",
     "get_location_contents",

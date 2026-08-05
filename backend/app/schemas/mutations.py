@@ -21,6 +21,7 @@ from .notification import NotificationMutations
 from .po import POMutations
 from .project import ProjectMutations
 from .relay import RelayMutations
+from .sharepoint_migration import SharepointMigrationMutations
 from .shipping import ShippingMutations
 from .shop_assembly import ShopAssemblyMutations
 from .stock import StockMutations
@@ -39,6 +40,7 @@ class Mutation(
     POMutations,
     ProjectMutations,
     RelayMutations,
+    SharepointMigrationMutations,
     ShippingMutations,
     ShopAssemblyMutations,
     StockMutations,

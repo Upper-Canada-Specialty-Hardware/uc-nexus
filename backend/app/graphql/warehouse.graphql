@@ -67,6 +67,11 @@ type ProductCodeNode {
   # Computed on both hierarchies since #344 reconciliation; the by-vendor one supplies 0.
   total_available_quantity: Int!
   total_value: Float!
+  # False when this (category, code) is absent from the project's imported hardware schedule, so no
+  # shop-assembly or shipping-out request can ever claim it - both builders start from the schedule
+  # and match the exact pair. True whenever the answer is unknown: the by-vendor hierarchy, and the
+  # unscoped inventoryHierarchy where there is no single schedule to compare against.
+  matches_schedule: Boolean!
 }
 
 type InventoryItemDetail {

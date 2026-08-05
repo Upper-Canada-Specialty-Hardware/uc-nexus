@@ -28,6 +28,14 @@ TESTING_SIGN_IN_SECRET_HASH = os.getenv("TESTING_SIGN_IN_SECRET_HASH", "")
 # app/services/relay_seed.py uses it as the production kill-switch for credential seeding.
 RAILWAY_ENVIRONMENT_NAME = os.getenv("RAILWAY_ENVIRONMENT_NAME", "")
 
+# Microsoft Entra app registration used to read the legacy SharePoint inventory list during the
+# one-time migration (app-only client credentials, application-type Sites.ReadWrite.All). Blank on
+# an environment that has not been given them, which leaves the migration wizard refusing with a
+# configuration error rather than the app failing to boot.
+AZURE_TENANT_ID = os.getenv("AZURE_TENANT_ID", "")
+AZURE_CLIENT_ID = os.getenv("AZURE_CLIENT_ID", "")
+AZURE_CLIENT_SECRET = os.getenv("AZURE_CLIENT_SECRET", "")
+
 # SHA-256 hex of the workstation relay's long-lived Bearer secret - the same digest already sitting in
 # production's relay_installs.secret_hash, copied from Admin -> Relay Installs. Set ONLY on the Railway
 # environment that PR deploys duplicate, so a PR backend can accept the one relay that exists without a

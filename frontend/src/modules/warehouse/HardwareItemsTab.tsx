@@ -14,10 +14,11 @@ import {
   Alert,
   Button,
   Chip,
+  Tooltip,
   ToggleButton,
   ToggleButtonGroup,
 } from '@mui/material';
-import { ChevronDown } from 'lucide-react';
+import { ChevronDown, TriangleAlert } from 'lucide-react';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useQuery, useLazyQuery, useMutation } from '@apollo/client/react';
 import { GET_INVENTORY_HIERARCHY, GET_INVENTORY_ITEMS, GET_INVENTORY_BY_VENDOR, REPORT_INVENTORY_DEFICIENCY } from '../../graphql/warehouse';
@@ -60,6 +61,10 @@ interface ProductCodeGroup {
   productCode: string;
   totalQuantity: number;
   totalValue: number;
+  // False when this (category, code) appears nowhere in the project's hardware schedule. Both pull
+  // request builders start from the schedule and match the exact pair, so these units cannot be
+  // claimed by shop assembly or shipping out until the spelling is reconciled.
+  matchesSchedule: boolean;
   items: InventoryItem[];
 }
 
@@ -272,6 +277,7 @@ function ProductCodeDetail({
   totalQuantity,
   totalValue,
   catalogItem,
+  matchesSchedule,
 }: {
   projectId: string | undefined;
   category: string;
@@ -280,6 +286,7 @@ function ProductCodeDetail({
   totalValue: number;
   /** The catalog entry for this `(category, code)` pair, when it is non-schedule stock (#454). */
   catalogItem?: CustomInventoryItem;
+  matchesSchedule: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const hasFetched = useRef(false);
@@ -500,6 +507,18 @@ function ProductCodeDetail({
                 : undefined
             }
           />
+          {!matchesSchedule && (
+            <Tooltip title="This category and product code pair is not on the project's hardware schedule, so no shop assembly or shipping out request can claim it.">
+              <Chip
+                size="small"
+                color="warning"
+                variant="outlined"
+                icon={<TriangleAlert size={14} strokeWidth={1.75} />}
+                label="Not on schedule"
+                sx={{ ml: 1, flexShrink: 0 }}
+              />
+            </Tooltip>
+          )}
         </AccordionSummary>
         <AccordionDetails>
           {loading && !data && (
@@ -863,6 +882,7 @@ export default function HardwareItemsTab({ projectId }: HardwareItemsTabProps) {
                     totalQuantity={pc.totalQuantity}
                     totalValue={pc.totalValue}
                     catalogItem={catalogByKey.get(catalogKey(category, pc.productCode))}
+                    matchesSchedule={pc.matchesSchedule}
                   />
                 );
               })}

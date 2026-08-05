@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.errors import NotFoundError, ValidationError
 from app.models.enums import AuditAction, AuditEntityType
+from app.models.hardware import HardwareItem as HardwareItemModel
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.opening_item import OpeningItem as OpeningItemModel
 from app.models.project import Opening as OpeningModel
@@ -516,3 +517,18 @@ def override_inventory_quantity(
         )
 
     return il
+
+
+def get_scheduled_pairs(session: Session, project_id: uuid.UUID) -> set[tuple[str, str]]:
+    """Every (hardware_category, product_code) the project's imported schedule knows about.
+
+    One grouped query, no relationship walking - this is called once per hierarchy request and its
+    result is checked in Python against nodes already in memory, so it never becomes an N+1 (see the
+    GraphQL/SQLAlchemy performance rules in CLAUDE.md).
+    """
+    rows = session.execute(
+        select(HardwareItemModel.hardware_category, HardwareItemModel.product_code)
+        .where(HardwareItemModel.project_id == project_id)
+        .distinct()
+    ).all()
+    return {(cat, code) for cat, code in rows}

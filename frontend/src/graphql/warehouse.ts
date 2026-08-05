@@ -34,6 +34,7 @@ export const GET_INVENTORY_HIERARCHY = gql`
         totalQuantity
         totalAvailableQuantity
         totalValue
+        matchesSchedule
         items {
           id
           projectId

@@ -398,11 +398,17 @@ class WarehouseQueries:
         warehouse_id: strawberry.ID | None = None,
     ) -> list[InventoryHierarchyNode]:
         with SessionLocal() as session:
+            pid = uuid.UUID(str(project_id)) if project_id else None
             hierarchy = warehouse_repository.get_inventory_hierarchy(
                 session,
-                uuid.UUID(str(project_id)) if project_id else None,
+                pid,
                 uuid.UUID(str(warehouse_id)) if warehouse_id else None,
             )
+            # One extra query for the whole response, only when the view is scoped to a project.
+            # Unscoped, "on the schedule" has no meaning - the rows span projects - so every node
+            # keeps the permissive default rather than being flagged against a schedule it was
+            # never compared to.
+            scheduled = warehouse_repository.get_scheduled_pairs(session, pid) if pid else None
             return [
                 InventoryHierarchyNode(
                     hardware_category=cat_node["hardware_category"],
@@ -413,6 +419,11 @@ class WarehouseQueries:
                             total_quantity=pc_node["total_quantity"],
                             total_available_quantity=pc_node["total_available_quantity"],
                             total_value=pc_node["total_value"],
+                            matches_schedule=(
+                                True
+                                if scheduled is None
+                                else (cat_node["hardware_category"], pc_node["product_code"]) in scheduled
+                            ),
                         )
                         for pc_node in cat_node["product_codes"]
                     ],
@@ -721,6 +732,10 @@ class WarehouseQueries:
                             product_code=pc["product_code"],
                             items=[inventory_location_to_type(il) for il in pc["items"]],
                             total_quantity=pc["total_quantity"],
+                            # This hierarchy groups by vendor across projects and has never computed
+                            # the available split; 0 is the documented placeholder. It was omitted
+                            # entirely until now, which made every call raise TypeError.
+                            total_available_quantity=0,
                             total_value=pc["total_value"],
                         )
                         for pc in node["product_codes"]
