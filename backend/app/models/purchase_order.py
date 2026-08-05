@@ -177,7 +177,8 @@ class PODocumentData(Base):
     ship_to: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Shipping method line for the header row (e.g. "LOCAL DELIVERY", "Supply by your freight company").
     shipping_method: Mapped[str | None] = mapped_column(String, nullable=True)
-    proposal_number: Mapped[str | None] = mapped_column(String, nullable=True)
+    # The vendor's quotation this PO is placed against. Renders as "Quote #" on the document (#507).
+    quotation_number: Mapped[str | None] = mapped_column(String, nullable=True)
     # GP-computed totals lines Nexus can't derive without a relay read - captured from the user.
     freight: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=Decimal("0"))
     miscellaneous: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=Decimal("0"))

@@ -457,7 +457,7 @@ class SavePODocumentDataInput:
     currency: str = "CAD"
     ship_to: str | None = None
     shipping_method: str | None = None
-    proposal_number: str | None = None
+    quotation_number: str | None = None
     freight: float = 0
     miscellaneous: float = 0
     tax_amount: float = 0

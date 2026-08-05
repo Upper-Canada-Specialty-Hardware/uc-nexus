@@ -693,7 +693,7 @@ class POMutations:
                 currency=input.currency,
                 ship_to=input.ship_to,
                 shipping_method=input.shipping_method,
-                proposal_number=input.proposal_number,
+                quotation_number=input.quotation_number,
                 freight=input.freight,
                 miscellaneous=input.miscellaneous,
                 tax_amount=input.tax_amount,

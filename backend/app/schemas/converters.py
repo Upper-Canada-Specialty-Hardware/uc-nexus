@@ -331,7 +331,7 @@ def po_document_data_to_type(d) -> PODocumentData:
         currency=d.currency,
         ship_to=d.ship_to,
         shipping_method=d.shipping_method,
-        proposal_number=d.proposal_number,
+        quotation_number=d.quotation_number,
         freight=float(d.freight),
         miscellaneous=float(d.miscellaneous),
         tax_amount=float(d.tax_amount),
