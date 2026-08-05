@@ -645,12 +645,17 @@ def mark_po_as_ordered(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
     - Validate exists + not soft-deleted (NotFoundError)
     - Validate status == Draft (InvalidStateTransitionError)
     - Validate po_number is not None (ValidationError)
+    - Validate gp_vendor_id is not None (ValidationError)
     - Set status=GP_Registered, ordered_at=datetime.utcnow()
     - Return updated PO
 
-    A GP PO number is the whole requirement. There used to be a second one - a local vendor link -
-    but GP owns vendors and Nexus no longer records them (#509); the GP vendor arrives with the
-    register_po_in_gp push, which is a different path from this one.
+    GP_REGISTERED means "this PO exists in GP", so it has to carry the GP vendor it was placed with -
+    the same invariant `create_po` gates its GP-first branch on and `register_po_in_gp` raises for.
+    This path was the only one that did not enforce it: it used to require the local vendor link
+    instead, which was never a GP vendor at all, so it let a PO reach GP_REGISTERED with a blank
+    vendor in every view that names one (#509). The old link is gone with the table, and there is no
+    field left that could fill the vendor in afterwards - which is correct, because a GP vendor comes
+    from GP, not from a Nexus edit.
     """
     po = get_purchase_order(session, po_id)
     if po is None:
@@ -661,6 +666,12 @@ def mark_po_as_ordered(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
 
     if po.po_number is None:
         raise ValidationError("PO number is required before marking as ordered", field="po_number")
+
+    if po.gp_vendor_id is None:
+        raise ValidationError(
+            "The GP vendor is required before marking as ordered; register the PO in GP instead",
+            field="gp_vendor_id",
+        )
 
     po.status = POStatus.GP_REGISTERED
     po.ordered_at = datetime.utcnow()
@@ -753,16 +764,28 @@ def update_line_item_unit_cost(
 
 def get_prior_order_as_values(
     session: Session,
+    project_id: uuid.UUID | None,
     product_codes: list[str],
 ) -> dict[str, list[str]]:
     """
-    For a set of product codes, return distinct non-empty `order_as` values from po_line_items,
-    grouped by product_code, ranked by most recent line item updated_at.
+    For a project + set of product codes, return distinct non-empty `order_as` values from
+    po_line_items, grouped by product_code, ranked by most recent line item updated_at.
 
-    Scoped by product code alone (#509). This used to be scoped by the local vendor link as well,
-    which meant the suggestions only appeared once someone had picked one; that record is gone, and
-    the GP vendor a PO ends up on is not known until register time - long after the import wizard
-    needs these. What a part was last ordered as is a property of the part, not of who sold it.
+    Scoped by PROJECT (#509). What a part is "ordered as" is remembered per job: on this project we
+    call this part X, so offer X again rather than making the buyer retype it. It is deliberately
+    neither of the two things it looks like:
+
+    - not global. `order_as` becomes the GP line's item number (`gp_po.build_create_po_payload`), so
+      it is a supplier-facing catalogue value; offering every alias ever used for a product code
+      would suggest one vendor's SKU while raising a PO for another.
+    - not vendor-scoped. It used to be filtered by the local vendor link, which is gone with the
+      table (GP owns vendors), and the GP vendor is not chosen until register time - long after the
+      import wizard needs these.
+
+    A project scope also bounds the query: the wizard fires it once per manufacturer card, and
+    without a scope every one of those is a full scan of every PO line ever written.
+
+    project_id=None scopes to project-less (stock) POs, which is what a stock PO should see.
 
     Excludes CANCELLED POs and soft-deleted POs. Caps each list at 20.
     """
@@ -774,6 +797,7 @@ def get_prior_order_as_values(
         select(POLineItem.product_code, POLineItem.order_as, last_used)
         .join(PurchaseOrder, PurchaseOrder.id == POLineItem.po_id)
         .where(
+            PurchaseOrder.project_id == project_id if project_id is not None else PurchaseOrder.project_id.is_(None),
             POLineItem.product_code.in_(product_codes),
             POLineItem.order_as.isnot(None),
             func.trim(POLineItem.order_as) != "",

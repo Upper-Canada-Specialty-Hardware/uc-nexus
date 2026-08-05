@@ -389,7 +389,8 @@ export default function PODetailModal({
   const { data: priorData } = useQuery<{
     priorOrderAsValues: { productCode: string; values: string[] }[];
   }>(GET_PRIOR_ORDER_AS_VALUES, {
-    variables: { productCodes: distinctProductCodes },
+    // Scoped to this PO's project (#509); null on a stock PO, which scopes to the other stock POs.
+    variables: { projectId: po.projectId ?? null, productCodes: distinctProductCodes },
     skip: !canEditItems || distinctProductCodes.length === 0,
   });
 

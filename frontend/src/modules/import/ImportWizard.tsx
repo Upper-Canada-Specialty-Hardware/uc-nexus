@@ -1683,6 +1683,7 @@ export default function ImportWizard({
           {/* ============ Step: Purchase Orders ============ */}
           {effectiveStepId === 'purchase-orders' && (
             <PurchaseOrdersStep
+              projectId={project.id}
               vendorGroups={vendorGroups}
               vendorPOInfo={vendorPOInfo}
               selectedVendors={selectedVendors}

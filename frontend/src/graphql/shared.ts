@@ -23,8 +23,8 @@ export const GET_PROJECTS = gql`
 `;
 
 export const GET_PRIOR_ORDER_AS_VALUES = gql`
-  query GetPriorOrderAsValues($productCodes: [String!]!) {
-    priorOrderAsValues(productCodes: $productCodes) {
+  query GetPriorOrderAsValues($projectId: ID, $productCodes: [String!]!) {
+    priorOrderAsValues(projectId: $projectId, productCodes: $productCodes) {
       productCode
       values
     }

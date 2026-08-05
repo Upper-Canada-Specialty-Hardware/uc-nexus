@@ -304,11 +304,18 @@ shop-assembly request, an assembled leaf and two shipping-out requests.
 
 Two other things that still hold when GP is refusing outright:
 
-- `markPoAsOrdered` moves a DRAFT with a PO number straight to `GP_REGISTERED` with no relay
-  involvement (`po_repository.py`). A PO number is now the only requirement - #509 dropped the second
-  one, a local vendor link, along with the table behind it. That is enough to exercise anything keyed on a
-  *placed* PO - on-order quantities, back-order reads - without touching GP. It does NOT create a
-  receipt, so it seeds no inventory.
+- `markPoAsOrdered` moves a DRAFT straight to `GP_REGISTERED` with no relay involvement
+  (`po_repository.py`), which is enough to exercise anything keyed on a *placed* PO - on-order
+  quantities, back-order reads - without touching GP. It does NOT create a receipt, so it seeds no
+  inventory.
+
+  **Since #509 it requires `gp_vendor_id` as well as a PO number**, because GP_REGISTERED means the
+  PO exists in GP and so must name the GP vendor it was placed with. It used to require the local
+  vendor link, which was never a GP vendor, so it produced POs that rendered a blank vendor
+  everywhere. Nothing reachable without a relay can set `gp_vendor_id` (`createDraftPo` and
+  `updatePo` both refuse to - a GP vendor comes from GP), so **this shortcut no longer works on a
+  relay-less PR environment**. To seed a placed PO there you now need either a relay-connected
+  `registerPoInGp`, or a direct DB write.
 - The stock pool is not an escape hatch: there is no `createStockItem`. Stock only enters through a
   receive, or out of project inventory via `destockInventory`, so it has the same root dependency.
 

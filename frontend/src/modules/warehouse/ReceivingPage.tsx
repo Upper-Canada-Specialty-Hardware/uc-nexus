@@ -51,7 +51,6 @@ interface OpenPO {
   projectId: string | null;
   status: string;
   vendorNameSnapshot: string | null;
-  vendor: { id: string; name: string } | null;
   orderedAt: string | null;
   expectedDeliveryDate: string | null;
   lineItems: OpenPOLineItem[];

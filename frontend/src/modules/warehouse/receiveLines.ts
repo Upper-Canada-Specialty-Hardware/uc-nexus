@@ -34,7 +34,6 @@ export interface PODetails {
   // that was registered there (has a gpCompany + poNumber). See isPoGpRegistered.
   gpCompany: string | null;
   vendorNameSnapshot: string | null;
-  vendor: { id: string; name: string; contactName: string | null } | null;
   notes: string | null;
   status: string;
   lineItems: PODetailLineItem[];

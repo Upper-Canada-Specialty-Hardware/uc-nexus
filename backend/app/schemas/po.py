@@ -312,13 +312,22 @@ class POQueries:
         self,
         info: strawberry.Info,
         product_codes: list[str],
+        project_id: strawberry.ID | None = None,
     ) -> list[PriorOrderAsForProduct]:
-        """What these product codes have been ordered as before, most recent first, so the wizard can
-        offer a past alias instead of making the buyer retype it. Keyed on the product code alone
-        (#509): the vendor that used to scope this was the local contact record, which is gone, and
-        the GP vendor isn't chosen until register time - long after these suggestions are needed."""
+        """What these product codes have been ordered as before ON THIS PROJECT, most recent first,
+        so the buyer is offered the job's own alias instead of retyping it (#509).
+
+        Project, not vendor: the vendor that used to scope this was the local contact record, which
+        is gone with the table, and the GP vendor is not chosen until register time. Project, not
+        global: `order_as` is the GP line's item number, so a global list would offer one supplier's
+        catalogue number while raising a PO for another. A null project_id means a stock PO and
+        scopes to the other project-less POs."""
         with SessionLocal() as session:
-            result = po_repository.get_prior_order_as_values(session, product_codes)
+            result = po_repository.get_prior_order_as_values(
+                session,
+                uuid.UUID(str(project_id)) if project_id else None,
+                product_codes,
+            )
             return [PriorOrderAsForProduct(product_code=pc, values=vals) for pc, vals in result.items()]
 
     @strawberry.field

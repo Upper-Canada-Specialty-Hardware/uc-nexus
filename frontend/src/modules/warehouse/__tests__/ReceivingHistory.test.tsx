@@ -51,7 +51,6 @@ function detailsMock(poId: string, receiveRecords: unknown[]): MockedResponse {
           gpCompany: 'TUBC',
           gpVendorId: 'V1',
           vendorNameSnapshot: 'Acme Hardware',
-          vendor: null,
           notes: null,
           status: 'PARTIALLY_RECEIVED',
           lineItems: [],

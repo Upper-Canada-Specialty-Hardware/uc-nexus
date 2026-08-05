@@ -29,6 +29,8 @@ interface PriorOrderAsQueryData {
 // ---- Props ----
 
 interface PurchaseOrdersStepProps {
+  /** The wizard's project - order-as memory is scoped to it (#509). */
+  projectId: string;
   vendorGroups: Map<string, AggregatedHardwareItem[]>;
   vendorPOInfo: Map<string, { notes: string; preferredDeliveryDate: string }>;
   selectedVendors: Set<string>;
@@ -84,6 +86,7 @@ function aggregateLineItems(
 // ---- Vendor Group Card (per-manufacturer subcomponent so useQuery is hook-safe) ----
 
 interface VendorGroupCardProps {
+  projectId: string;
   vendor: string;
   items: AggregatedHardwareItem[];
   info: { notes: string; preferredDeliveryDate: string };
@@ -101,6 +104,7 @@ interface VendorGroupCardProps {
 }
 
 function VendorGroupCard({
+  projectId,
   vendor,
   items,
   info,
@@ -122,10 +126,11 @@ function VendorGroupCard({
     [aggregated],
   );
 
-  // Keyed on product code alone (#509). It used to need a Nexus vendor picked first, so the
-  // suggestions were usually absent at the one moment they are useful.
+  // Scoped to the project (#509) - what a part is ordered as is remembered per job. It used to need
+  // a Nexus vendor picked first, so the suggestions were usually absent at the one moment they are
+  // useful; the project is known here, and it also bounds a query the wizard fires once per card.
   const { data: priorData } = useQuery<PriorOrderAsQueryData>(GET_PRIOR_ORDER_AS_VALUES, {
-    variables: { productCodes },
+    variables: { projectId, productCodes },
     skip: productCodes.length === 0,
   });
 
@@ -297,6 +302,7 @@ function VendorGroupCard({
 // ---- Component ----
 
 export default function PurchaseOrdersStep({
+  projectId,
   vendorGroups,
   vendorPOInfo,
   selectedVendors,
@@ -334,6 +340,7 @@ export default function PurchaseOrdersStep({
           return (
             <StaggerItem key={vendor}>
               <VendorGroupCard
+                projectId={projectId}
                 vendor={vendor}
                 items={items}
                 info={info}

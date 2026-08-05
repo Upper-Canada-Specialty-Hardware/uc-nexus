@@ -11,8 +11,14 @@ off purchase_orders.vendor_id, carrying no GP meaning. It read as a second vendo
 page created and deleted rows, and any signed-in PO user could invent a vendor that has no PM00200
 counterpart. That is the drift 040 set out to end.
 
-The backfill copies the local name into vendor_name_snapshot wherever the snapshot is null, so rows
-predating 040 keep the display name they were rendering through the FK fallback.
+The backfill copies the local name into vendor_name_snapshot for POs that actually reached GP and
+predate 040, so they keep the display name they were rendering through the FK fallback.
+
+It is deliberately scoped to those: a DRAFT that was never registered has no GP vendor, and writing
+a Nexus-local name into the GP snapshot column would make it look like one. That would contradict
+the invariant the rest of this change establishes - vendor_name_snapshot IS the PM00200 pick, and a
+draft shows no vendor at all - and the PO list would render an invented vendor as if GP had returned
+it. Those drafts keep a null snapshot, which is the honest answer.
 """
 
 import sqlalchemy as sa
@@ -33,6 +39,7 @@ def upgrade() -> None:
         FROM vendors v
         WHERE v.id = purchase_orders.vendor_id
           AND purchase_orders.vendor_name_snapshot IS NULL
+          AND purchase_orders.status <> 'DRAFT'
         """
     )
 
