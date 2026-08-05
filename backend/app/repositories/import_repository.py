@@ -6,7 +6,7 @@ from datetime import datetime
 from decimal import Decimal
 from math import floor
 
-from sqlalchemy import and_, delete, func, or_, select, tuple_
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import ConflictError, NotFoundError, ValidationError
@@ -132,7 +132,14 @@ def reconcile_schedule(
     if not lifecycle_items:
         return results
 
-    pairs = list({(item["opening_number"], item["product_code"]) for item in lifecycle_items})
+    # The (opening, product) pairs this call is asking about. Matching happens in Python rather than
+    # as a SQL `tuple_(...).in_(pairs)` predicate: Postgres expands a row-constructor IN list into a
+    # nested expression tree and parses it recursively, so a full-schedule selection (thousands of
+    # openings x their hardware) overflowed `max_stack_depth` and the whole reconcile failed with
+    # StatementTooComplex. Every query below is already scoped to the project and indexed on it, so
+    # the predicate only ever trimmed rows the loops can skip just as cheaply - and at the scale that
+    # broke it, it trimmed nothing at all.
+    pair_set = {(item["opening_number"], item["product_code"]) for item in lifecycle_items}
 
     # ---- Bulk Query 1: HardwareItems linked to non-cancelled, non-deleted POs ----
     hi_stmt = (
@@ -151,12 +158,14 @@ def reconcile_schedule(
             HardwareItemModel.project_id == project_id,
             POModel.status != POStatus.CANCELLED,
             POModel.deleted_at.is_(None),
-            tuple_(OpeningModel.opening_number, HardwareItemModel.product_code).in_(pairs),
         )
     )
     hi_by_pair: dict[tuple[str, str], list] = defaultdict(list)
     for row in session.execute(hi_stmt).all():
-        hi_by_pair[(row.opening_number, row.product_code)].append(row)
+        pair = (row.opening_number, row.product_code)
+        if pair not in pair_set:
+            continue
+        hi_by_pair[pair].append(row)
 
     # ---- Bulk Query 2: PullRequest aggregates ----
     pr_stmt = (
@@ -171,7 +180,6 @@ def reconcile_schedule(
         .where(
             PullRequestModel.project_id == project_id,
             PullRequestModel.status != PullRequestStatus.CANCELLED,
-            tuple_(PullRequestItemModel.opening_number, PullRequestItemModel.product_code).in_(pairs),
         )
         .group_by(
             PullRequestItemModel.opening_number,
@@ -182,7 +190,10 @@ def reconcile_schedule(
     )
     pr_by_pair: dict[tuple[str, str], list] = defaultdict(list)
     for row in session.execute(pr_stmt).all():
-        pr_by_pair[(row.opening_number, row.product_code)].append(row)
+        pair = (row.opening_number, row.product_code)
+        if pair not in pair_set:
+            continue
+        pr_by_pair[pair].append(row)
 
     # ---- Bulk Query 3: OpeningItemHardware shipped + assembled sums ----
     oi_stmt = (
@@ -198,7 +209,6 @@ def reconcile_schedule(
             OpeningItemModel.state.in_(
                 [OpeningItemState.SHIPPED_OUT, OpeningItemState.IN_INVENTORY, OpeningItemState.SHIP_READY]
             ),
-            tuple_(OpeningItemModel.opening_number, OpeningItemHardwareModel.product_code).in_(pairs),
         )
         .group_by(
             OpeningItemModel.opening_number,
@@ -210,6 +220,8 @@ def reconcile_schedule(
     assembled_by_pair: dict[tuple[str, str], int] = defaultdict(int)
     for row in session.execute(oi_stmt).all():
         key = (row.opening_number, row.product_code)
+        if key not in pair_set:
+            continue
         if row.state == OpeningItemState.SHIPPED_OUT:
             shipped_by_pair[key] += row.qty or 0
         else:
@@ -611,7 +623,7 @@ def finalize_import_session(
     if project is None:
         raise NotFoundError(f"Project {project_id} not found")
 
-    # #425: quarantine gate. This one mutation is BOTH of Start a Task's write actions - it persists
+    # #425: quarantine gate. This one mutation is BOTH of Start a Request's write actions - it persists
     # the schedule, and it creates the shop-assembly and shipping-out requests that reserve inventory
     # against it. A project whose GP job cannot be received against must not accumulate any of that:
     # the requests would reserve stock, the POs drafted off the schedule would be unregisterable, and
@@ -923,7 +935,7 @@ def finalize_import_session(
         )
     session.flush()
 
-    # 6. Shipping-out requests (#293): Start a Task mints a PENDING ShippingOutRequest, NOT a
+    # 6. Shipping-out requests (#293): Start a Request mints a PENDING ShippingOutRequest, NOT a
     # PullRequest. A signed-in user accepts it later, which mints the warehouse PullRequest.
     #
     # Every guard and the reservation gate live in shipping_requests (#451), because the Shipping
@@ -939,7 +951,7 @@ def finalize_import_session(
     )
 
     # 7. Shop-assembly request + openings (#293)
-    # Start a Task mints a PENDING ShopAssemblyRequest (NO PullRequest). The ShopAssemblyOpening/Item
+    # Start a Request mints a PENDING ShopAssemblyRequest (NO PullRequest). The ShopAssemblyOpening/Item
     # rows hang off the SAR via shop_assembly_request_id; their pull_request_id stays NULL until a
     # signed-in user accepts the request (accept mints the PR and backfills pull_request_id).
     # Since #342 the inventory gate lives HERE, at creation, and creating the request reserves the

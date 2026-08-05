@@ -72,6 +72,12 @@ export function draftsForLine(
   return lineLocations[lineId] ?? [emptyDraft(receiveNow)];
 }
 
+/** A row without all three rack coordinates cannot be put away. Shared with the editor's per-line
+ *  status caption, so what the caption calls done is exactly what validatePutAway will accept. */
+export function locationIncomplete(d: LocationDraft): boolean {
+  return !d.aisle.trim() || !d.row.trim() || !d.bay.trim();
+}
+
 /**
  * Put-away is mandatory: every received unit must land in a valid row and each row's deficient count
  * must be within its quantity. Mirrors the backend contract in warehouse_repository.create_receive
@@ -88,7 +94,7 @@ export function validatePutAway(
     for (const d of draftsForLine(lineLocations, li.id, receiveNow)) {
       const q = Number(d.quantity);
       const def = Number(d.deficient || '0');
-      if (!d.aisle.trim() || !d.row.trim() || !d.bay.trim()) return false;
+      if (locationIncomplete(d)) return false;
       if (!Number.isInteger(q) || q < 1) return false;
       if (!Number.isInteger(def) || def < 0 || def > q) return false;
       placed += q;

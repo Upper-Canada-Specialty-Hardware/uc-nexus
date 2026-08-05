@@ -107,7 +107,7 @@ class ReceiveDecisionChoice(str, enum.Enum):
 
     Recording the choice is all this does. SHIP_OUT does not create a shipping-out request: only the
     hardware schedule knows which opening and leaf a fungible quantity is owed to, so re-attaching
-    that identity stays where it lives - Start a Task, which the frontend deep-links into once the
+    that identity stays where it lives - Start a Request, which the frontend deep-links into once the
     choice is recorded. See docs/HARDWARE_IDENTITY_LIFECYCLE.md.
     """
 

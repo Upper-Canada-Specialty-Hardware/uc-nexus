@@ -27,7 +27,7 @@ enum ShopAssemblyRequestStatus {
 
 type ShopAssemblyOpening {
   id: ID!
-  # Legacy SAR parent, nullable since #222 - openings created from Start a Task hang off the
+  # Legacy SAR parent, nullable since #222 - openings created from Start a Request hang off the
   # PullRequest below. Still written for new rows (import stamps both), which is what lets a request's
   # openings be found after a cancellation nulls pull_request_id (#343).
   shop_assembly_request_id: ID

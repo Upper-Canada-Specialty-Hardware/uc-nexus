@@ -1,6 +1,6 @@
 """Tests for the hard inventory-sufficiency gates and the shared helper (#224 / #293 / #342).
 
-Gate 1 moved twice. It started at import "Start a Task", moved to accept in #293, and moved back to
+Gate 1 moved twice. It started at import "Start a Request", moved to accept in #293, and moved back to
 creation in #342 - this time as a *reservation*: creating a request gates on
 `on-hand - deficient - other requests' reservations` and writes its own claim. Accept is now a pure
 human gate that re-checks nothing, because the hardware is already this request's.

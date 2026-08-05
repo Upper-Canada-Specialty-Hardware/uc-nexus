@@ -14,6 +14,7 @@ from .enums import (
     LeafStatus,
     NotificationType,
     OpeningItemState,
+    OpeningStage,
     PickOutcome,
     PipelineStage,
     PODocumentType,
@@ -1213,7 +1214,7 @@ class Notification:
 class FinalizeImportResult:
     project: Project
     purchase_orders: list[PurchaseOrder]
-    # #293: Start a Task now mints request entities (PENDING), not PullRequests. A signed-in user
+    # #293: Start a Request now mints request entities (PENDING), not PullRequests. A signed-in user
     # accepts them downstream, which mints the warehouse PullRequest.
     shipping_out_requests: list[ShippingOutRequest]
     shop_assembly_request: ShopAssemblyRequest | None
@@ -1443,7 +1444,7 @@ class InventoryShortfall:
 class InventoryAvailability:
     """What one (hardware_category, product_code) in a project can still be claimed for (#342).
 
-    `available = on_hand - deficient - reserved`, floored at 0 - the exact number the Start-a-Task
+    `available = on_hand - deficient - reserved`, floored at 0 - the exact number the Start-a-Request
     creation gate applies, so the wizard can block an over-selection before submission instead of
     letting the user find out from a rejected finalize. Note this is deliberately NOT the same as
     the warehouse inventory view's "available", which is on-hand minus deficient: that view answers
@@ -1611,20 +1612,110 @@ class ReconciliationResult:
 
 
 @strawberry.type
-class OpeningHardwareStatusItem:
-    hardware_category: str
-    product_code: str
-    item_quantity: int
+class AdminPoLineRef:
+    """The PO line one schedule row is bound to, carried as context for the ordered bucket.
+
+    `received_quantity` is that LINE's fill, project-wide, and is NOT this opening's units having
+    arrived - inventory is fungible on receipt, so a receipt cannot be attributed back to an opening.
+    See app/repositories/opening_deep_dive.py.
+    """
+
+    po_number: str
     status: str
+    ordered_quantity: int
+    received_quantity: int
 
 
 @strawberry.type
-class OpeningHardwareStatus:
+class AdminOpeningLine:
+    """One product one door leaf is owed, partitioned across the lifecycle.
+
+    The eight quantities sum to `owed_quantity`: every unit lands in exactly one of them, furthest
+    along wins. A line with `owed_quantity` 0 and something installed is hardware fitted off an older
+    schedule revision - shown rather than hidden, so the leaf does not read emptier than it is.
+
+    `shipped_loose` and `pulled_for_shipping` are this leaf's share of an opening-level budget. A
+    loose line carries an opening and never a leaf, so the opening's leaves consume it in order -
+    which is what lets site hardware, that never touches a leaf, stop reading as merely "ordered"
+    once it has physically shipped.
+    """
+
+    leaf: int | None
+    hardware_category: str
+    product_code: str
+    owed_quantity: int
+    shipped_on_leaf: int
+    shipped_loose: int
+    staged: int
+    pulled_for_shipping: int
+    assembled_in_inventory: int
+    pulled_for_assembly: int
+    ordered: int
+    po_drafted: int
+    not_purchased: int
+    po_lines: list[AdminPoLineRef]
+
+
+@strawberry.type
+class AdminLooseLine:
+    """Loose units of this opening that no leaf of it could account for.
+
+    Normally empty. It fills when more of a product went out loose than the current schedule says the
+    opening takes - an over-ship, or hardware sent against a since-revised schedule.
+    """
+
+    hardware_category: str
+    product_code: str
+    pulled_for_shipping: int
+    shipped_loose: int
+
+
+@strawberry.type
+class AdminLeafClaim:
+    """A live shipping-out request holding one leaf, by request number."""
+
+    leaf: int | None
+    request_number: str
+
+
+@strawberry.type
+class AdminOpeningStatus:
+    """One opening's row in the admin project list: the lifecycle partition rolled up to totals.
+
+    These totals are the sums of the same per-line partition `adminOpeningDeepDive` returns, so the
+    row and its detail agree by construction rather than by two computations happening to match.
+    """
+
     opening_number: str
     building: str | None
     floor: str | None
     location: str | None
-    items: list[OpeningHardwareStatusItem]
+    leaf_count: int | None
+    stage: OpeningStage
+    owed_units: int
+    shipped_units: int
+    staged_units: int
+    assembled_units: int
+    pulled_units: int
+    shipped_loose_units: int
+    pulled_for_shipping_units: int
+    ordered_units: int
+    po_drafted_units: int
+    not_purchased_units: int
+    leaves: list["OpeningLeafState"]
+
+
+@strawberry.type
+class AdminOpeningDeepDive:
+    opening_number: str
+    building: str | None
+    floor: str | None
+    location: str | None
+    leaf_count: int | None
+    leaves: list["OpeningLeafState"]
+    leaf_claims: list[AdminLeafClaim]
+    lines: list[AdminOpeningLine]
+    loose: list[AdminLooseLine]
 
 
 @strawberry.type

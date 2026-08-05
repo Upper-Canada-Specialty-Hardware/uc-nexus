@@ -9,7 +9,7 @@ from .enums import PullRequestItemType, ShippingOutRequestStatus
 
 
 class ShippingOutRequest(Base):
-    """A shipping-out task minted by Start-a-Task (#293). It waits PENDING until any signed-in user
+    """A shipping-out task minted by Start-a-Request (#293). It waits PENDING until any signed-in user
     accepts it, at which point the accept mints the warehouse PullRequest (SHIPPING_OUT, PENDING) and
     stamps pull_request_id. Mirrors ShopAssemblyRequest, but its items live here (there are no
     ShopAssemblyOpening rows to hang the PR off), so pull_request_id is the only link to its PR."""

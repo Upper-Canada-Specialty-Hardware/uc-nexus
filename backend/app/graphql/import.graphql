@@ -142,7 +142,7 @@ input ReconciliationItemInput {
   quantity_needed: Int!
 }
 
-# #293: Start a Task mints request entities (PENDING), not PullRequests. A signed-in user accepts
+# #293: Start a Request mints request entities (PENDING), not PullRequests. A signed-in user accepts
 # them downstream, which mints the warehouse PullRequest. ShippingOutRequest is defined in
 # shipping.graphql; ShopAssemblyRequest in shop_assembly.graphql.
 type FinalizeImportResult {

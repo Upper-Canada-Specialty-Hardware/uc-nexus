@@ -110,7 +110,7 @@ def require_gp_setup_ok(session: Session, project_id: uuid.UUID | None) -> None:
     """Refuse to act on a project whose GP job setup is known broken (#425).
 
     The single server-side quarantine gate, called by every action that would put work into GP or
-    commit hardware to a job: schedule import / Start a Task (finalize_import_session), registering a
+    commit hardware to a job: schedule import / Start a Request (finalize_import_session), registering a
     PO, receiving against one, and confirming a shipment. It is server-side because the frontend
     banner is a courtesy - a stale tab, a replayed mutation or a direct GraphQL call must hit the same
     wall.

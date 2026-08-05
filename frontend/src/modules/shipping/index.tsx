@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import { Box, Typography, IconButton, Button, ToggleButton, ToggleButtonGroup } from '@mui/material';
-import { ArrowLeft, Truck } from 'lucide-react';
+import { ArrowLeft, ClipboardPlus, Truck } from 'lucide-react';
 import ShipmentsList from './ShipmentsList';
 import ShippingRequestsPage from './ShippingRequestsPage';
 import ShipmentMethodsDialog from './ShipmentMethodsDialog';
@@ -48,7 +48,16 @@ export default function ShippingModule() {
 
   return (
     <Box>
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+      <Box
+        sx={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          flexWrap: 'wrap',
+          gap: 1,
+          mb: 2,
+        }}
+      >
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
           <Button
             size="small"
@@ -72,6 +81,25 @@ export default function ShippingModule() {
             <ToggleButton value="staging">Staging</ToggleButton>
             <ToggleButton value="returns">Returns</ToggleButton>
           </ToggleButtonGroup>
+          {/* #471. The builder on the Requests board raises a request off project inventory; this
+              one goes off the hardware schedule, which is what knows an opening is still owed a
+              closer nobody has received yet. A project is already chosen here, so it is handed over
+              and the wizard opens on it - except under All Projects, where there is no one job to
+              open on and the user picks. */}
+          <Button
+            variant="outlined"
+            size="small"
+            startIcon={<ClipboardPlus size={18} strokeWidth={1.75} />}
+            onClick={() =>
+              navigate(
+                projectId
+                  ? `/app/import?projectId=${projectId}&purpose=shipping`
+                  : '/app/import?purpose=shipping',
+              )
+            }
+          >
+            Start a Request
+          </Button>
           {/* The method list is maintained by the same people who pick from it on the Delivery
               Request (#451), so it lives here rather than behind Admin. */}
           <IconButton onClick={() => setMethodsOpen(true)} aria-label="Manage shipment methods">

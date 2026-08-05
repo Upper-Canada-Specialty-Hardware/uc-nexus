@@ -76,7 +76,10 @@ OPEN_OPERATIONS: dict[str, str] = {
 # resolver body called before #423 - this table is that decision, moved, not re-derived.
 ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     # --- admin.py -------------------------------------------------------------------------
-    "openingHardwareStatus": ADMIN_ROLE,
+    # Both walk a whole project's openings and put purchasing next to fulfilment, which is the
+    # admin Opening Status page and nothing else.
+    "adminOpeningStatuses": ADMIN_ROLE,
+    "adminOpeningDeepDive": ADMIN_ROLE,
     # --- buyer.py -------------------------------------------------------------------------
     # `buyerAssignments` is the PO dialog's read of the CALLER's own row, so any signed-in user;
     # `allBuyerAssignments` is the whole table (which buyer owns which project) and is admin (#428).
@@ -196,7 +199,7 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "deleteShipmentMethod": SIGNED_IN,
     "shipReadyItems": SIGNED_IN,
     # Read-only coverage for the shipping-out builder (#451). SIGNED_IN because its caller is the
-    # Start-a-Task wizard, which every module's users reach.
+    # Start-a-Request wizard, which every module's users reach.
     "shippingCoverage": SIGNED_IN,
     "shippingOutRequests": SIGNED_IN,
     "acceptShippingOutRequest": SIGNED_IN,

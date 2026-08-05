@@ -738,8 +738,8 @@ def get_shipment_return(session: Session, shipment_return_id: uuid.UUID) -> Ship
 
 
 # ---------------------------------------------------------------------------
-# Shipping-out requests (#293): the accept gate between Start-a-Task and the warehouse pull.
-# Start-a-Task mints a PENDING ShippingOutRequest; a signed-in user accepts it, which mints the
+# Shipping-out requests (#293): the accept gate between Start-a-Request and the warehouse pull.
+# Start-a-Request mints a PENDING ShippingOutRequest; a signed-in user accepts it, which mints the
 # existing warehouse PullRequest (SHIPPING_OUT, PENDING) that the warehouse approves unchanged.
 # ---------------------------------------------------------------------------
 

@@ -13,7 +13,6 @@ import {
 } from '@mui/material';
 import {
   House,
-  ClipboardPlus,
   ReceiptText,
   Warehouse,
   Wrench,
@@ -31,14 +30,11 @@ interface SidebarItem {
 
 const ICON_PROPS = { size: 19, strokeWidth: 1.75 } as const;
 
+// Raising a request is not a destination (#471) - it is something you do from the module you already
+// work in, so each of PO, Shop Assembly and Shipping carries its own "Start a Request" button and
+// /app/import is reached through those rather than from here.
 const SIDEBAR_ITEMS: SidebarItem[] = [
   { label: 'Home', path: '/app', icon: <House {...ICON_PROPS} />, requiredRoles: [] },
-  {
-    label: 'Start a task',
-    path: '/app/import',
-    icon: <ClipboardPlus {...ICON_PROPS} />,
-    requiredRoles: ['Hardware Schedule Import'],
-  },
   {
     label: 'Purchase Orders',
     path: '/app/po',

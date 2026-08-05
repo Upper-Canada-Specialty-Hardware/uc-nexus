@@ -1,7 +1,8 @@
 import type { ReactNode } from 'react';
-import { Box, Typography, Card, CardActionArea, Grid } from '@mui/material';
+import { Box, Button, Typography, Card, CardActionArea, Grid } from '@mui/material';
 import {
   ClipboardCheck,
+  ClipboardPlus,
   Hammer,
   UserCheck,
   User,
@@ -129,9 +130,22 @@ export default function ShopAssemblyLanding() {
   return (
     <Box>
       <FadeIn>
-        <Typography variant="h5" sx={{ mb: 2 }}>
-          Shop Assembly
-        </Typography>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+          <Typography variant="h5" sx={{ flex: 1 }}>
+            Shop Assembly
+          </Typography>
+          {/* #471: requesting hardware to the bench is an action of this module, not a separate
+              destination. It goes off the hardware schedule, which is the only thing that knows
+              which leaf a fungible quantity is owed to. */}
+          <Button
+            variant="outlined"
+            size="small"
+            startIcon={<ClipboardPlus size={18} strokeWidth={1.75} />}
+            onClick={() => navigate('/app/import?purpose=assembly')}
+          >
+            Start a Request
+          </Button>
+        </Box>
       </FadeIn>
 
       {/* A row of gauges, not one card spread across the page: three readings of the same bench,

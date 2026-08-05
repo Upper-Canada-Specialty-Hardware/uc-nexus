@@ -583,7 +583,9 @@ def get_back_ordered_items(session: Session, project_id: uuid.UUID | None = None
         select(
             POLineItemModel,
             POModel.po_number,
-            VendorModel.name,
+            # The fallback po_to_type applies everywhere a vendor is named: the snapshot taken at GP
+            # push time, and the local vendor row only for POs old enough to predate that column.
+            func.coalesce(POModel.vendor_name_snapshot, VendorModel.name),
             POModel.expected_delivery_date,
             ProjectModel.description,
             ProjectModel.project_id,
