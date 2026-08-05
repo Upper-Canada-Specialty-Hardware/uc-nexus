@@ -15,6 +15,7 @@ import strawberry
 
 from .admin import AdminQueries
 from .buyer import BuyerQueries
+from .custom_items import CustomItemQueries
 from .dashboard import DashboardQueries
 from .gp_outbox import GpOutboxQueries
 from .imports import ImportQueries
@@ -34,6 +35,7 @@ from .warehouse import WarehouseQueries
 class Query(
     AdminQueries,
     BuyerQueries,
+    CustomItemQueries,
     DashboardQueries,
     GpOutboxQueries,
     ImportQueries,

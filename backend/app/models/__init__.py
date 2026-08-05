@@ -13,6 +13,12 @@ from .gp_outbox import GpWriteOutbox  # noqa: E402, F401
 from .gp_write import GpWriteIdempotency  # noqa: E402, F401
 from .hardware import HardwareItem  # noqa: E402, F401
 from .inventory import InventoryLocation  # noqa: E402, F401
+from .inventory_item_type import (  # noqa: E402, F401
+    CustomInventoryItem,
+    CustomInventoryItemValue,
+    InventoryItemAttribute,
+    InventoryItemType,
+)
 from .inventory_reservation import InventoryReservation  # noqa: E402, F401
 from .manufacturer_vendor_map import ManufacturerVendorMap  # noqa: E402, F401
 from .notification import Notification  # noqa: E402, F401

@@ -7,6 +7,7 @@ import {
   Download,
   Inbox,
   MapPin,
+  Tag,
   TriangleAlert,
   Undo2,
   Warehouse,
@@ -109,6 +110,12 @@ function buildDestinations(d: WarehouseDashboard | undefined, canReview: boolean
       path: '/app/warehouse/shipments',
       icon: <Undo2 size={18} strokeWidth={1.75} />,
       caption: 'Shipment history and returns',
+    },
+    {
+      label: 'Custom Items',
+      path: '/app/warehouse/custom-items',
+      icon: <Tag size={18} strokeWidth={1.75} />,
+      caption: 'Frames, specialties and consumables',
     },
   ];
 }

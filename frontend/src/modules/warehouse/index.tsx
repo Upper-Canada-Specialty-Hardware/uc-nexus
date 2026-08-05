@@ -10,6 +10,7 @@ import PutAwayTab from './PutAwayTab';
 import StockPoolView from './StockPoolView';
 import DeficientItemsReview from './DeficientItemsReview';
 import ShipmentsPage from './ShipmentsPage';
+import CustomItemsPage from './CustomItemsPage';
 
 // No per-page "back to Warehouse" affordance: the app shell's breadcrumbs and the persistent nav
 // rail both already carry the way back, and a third one stacked above every page's own header was
@@ -33,6 +34,10 @@ export default function WarehouseModule() {
           it is done against a printed sheet, and it has to survive a reload. */}
       <Route path="pull-requests/:id/pick" element={<PickPage />} />
       <Route path="stock-pool" element={<StockPoolView />} />
+      {/* The catalog for inventory the hardware schedule never describes - frames, specialties,
+          consumables (#454). In Warehouse rather than Admin because the people who know a frame's
+          fire rating are the people receiving it. */}
+      <Route path="custom-items" element={<CustomItemsPage />} />
       <Route path="deficient-items" element={<DeficientItemsReview />} />
       <Route path="shipments" element={<ShipmentsPage />} />
       <Route path="*" element={<Navigate to="" replace />} />
