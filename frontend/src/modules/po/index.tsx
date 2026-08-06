@@ -188,6 +188,7 @@ type SortField =
   | 'poNumber'
   | 'status'
   | 'vendor'
+  | 'createdAt'
   | 'orderedAt'
   | 'itemsCount';
 
@@ -201,6 +202,8 @@ interface FilterState {
   poSearch: string;
   statuses: Set<string>;
   vendorSearch: string;
+  createdFrom: string;
+  createdTo: string;
   orderedFrom: string;
   orderedTo: string;
   itemsMin: string;
@@ -211,6 +214,8 @@ const EMPTY_FILTER_STATE: FilterState = {
   poSearch: '',
   statuses: new Set(),
   vendorSearch: '',
+  createdFrom: '',
+  createdTo: '',
   orderedFrom: '',
   orderedTo: '',
   itemsMin: '',
@@ -245,6 +250,11 @@ function matchesFilter(po: PurchaseOrder, f: FilterState): boolean {
   if (f.statuses.size > 0 && !f.statuses.has(po.status)) return false;
   if (f.vendorSearch) {
     if (!poVendorName(po).toLowerCase().includes(f.vendorSearch.toLowerCase())) return false;
+  }
+  if (f.createdFrom || f.createdTo) {
+    const d = po.createdAt.substring(0, 10);
+    if (f.createdFrom && d < f.createdFrom) return false;
+    if (f.createdTo && d > f.createdTo) return false;
   }
   if (f.orderedFrom || f.orderedTo) {
     if (!po.orderedAt) return false;
@@ -297,6 +307,10 @@ function comparePOs(
       bv = poVendorName(b).toLowerCase();
       aNull = !av;
       bNull = !bv;
+      break;
+    case 'createdAt':
+      av = a.createdAt;
+      bv = b.createdAt;
       break;
     case 'orderedAt':
       av = a.orderedAt ?? '';
@@ -523,6 +537,32 @@ function FilterRow({ filterState, onChange, projects }: FilterRowProps) {
           <TextField
             size="small"
             type="date"
+            value={filterState.createdFrom}
+            onChange={(e) => onChange((s) => ({ ...s, createdFrom: e.target.value }))}
+            inputProps={{ 'aria-label': 'Created from' }}
+            sx={{ flex: 1 }}
+          />
+          <Typography component="span" sx={{ ...microLabelSx, flexShrink: 0 }}>
+            To
+          </Typography>
+          <TextField
+            size="small"
+            type="date"
+            value={filterState.createdTo}
+            onChange={(e) => onChange((s) => ({ ...s, createdTo: e.target.value }))}
+            inputProps={{ 'aria-label': 'Created to' }}
+            sx={{ flex: 1 }}
+          />
+        </Box>
+      </TableCell>
+      <TableCell>
+        <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
+          <Typography component="span" sx={{ ...microLabelSx, flexShrink: 0 }}>
+            From
+          </Typography>
+          <TextField
+            size="small"
+            type="date"
             value={filterState.orderedFrom}
             onChange={(e) => onChange((s) => ({ ...s, orderedFrom: e.target.value }))}
             inputProps={{ 'aria-label': 'Ordered from' }}
@@ -559,7 +599,7 @@ function FilterRow({ filterState, onChange, projects }: FilterRowProps) {
 
 // --- Single PO row + collapsible line-item panel ---
 
-const PO_TABLE_COLUMN_COUNT = 9;
+const PO_TABLE_COLUMN_COUNT = 10;
 
 interface POTableRowProps {
   po: PurchaseOrder;
@@ -666,7 +706,10 @@ function POTableRow({
           </Box>
         </TableCell>
         <TableCell>{poVendorName(po) || '-'}</TableCell>
-        <TableCell sx={hugSx}>
+        <TableCell sx={{ ...hugSx, ...tabularSx }}>
+          {parseServerDate(po.createdAt).toLocaleDateString()}
+        </TableCell>
+        <TableCell sx={{ ...hugSx, ...tabularSx }}>
           {po.orderedAt ? parseServerDate(po.orderedAt).toLocaleDateString() : '-'}
         </TableCell>
         <TableCell sx={{ ...hugSx, ...tabularSx }} align="right">
@@ -1022,6 +1065,12 @@ function POListPage() {
                 field="vendor"
                 label="Vendor"
                 hug={false}
+                sortState={sortState}
+                onSort={handleSortClick}
+              />
+              <SortHeader
+                field="createdAt"
+                label="Creation Date"
                 sortState={sortState}
                 onSort={handleSortClick}
               />
