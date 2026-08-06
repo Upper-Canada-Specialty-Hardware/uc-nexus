@@ -231,8 +231,38 @@ export interface MigrationEntry {
   bay: string | null;
 }
 
-/** SharePoint Inventory Type -> the Nexus type it becomes. A key mapped to null stays as-is. */
-export type ItemTypeResolutions = Map<string, InventoryItemTypeOption | null>;
+/** Chosen against a SharePoint type whose rows should not migrate at all. */
+export const EXCLUDE_ITEM_TYPE = 'EXCLUDE';
+
+/**
+ * What the user decided about one SharePoint Inventory Type.
+ *
+ * A Nexus type replaces the part category; `EXCLUDE_ITEM_TYPE` drops the rows; null keeps the part
+ * category, which is only a legitimate answer for schedule hardware - see `isNonScheduleSpType`.
+ */
+export type ItemTypeResolution = InventoryItemTypeOption | typeof EXCLUDE_ITEM_TYPE | null;
+
+/** SharePoint Inventory Type -> what happens to its rows. */
+export type ItemTypeResolutions = Map<string, ItemTypeResolution>;
+
+/** Whether a resolution names a Nexus type, as opposed to excluding or keeping the category. */
+export function isMappedType(
+  resolution: ItemTypeResolution | undefined,
+): resolution is InventoryItemTypeOption {
+  return !!resolution && resolution !== EXCLUDE_ITEM_TYPE;
+}
+
+/**
+ * Whether SharePoint's label describes non-schedule stock, and therefore needs a Nexus entity type.
+ *
+ * The distinction decides what a blank answer means. "Door Hardware" left blank keeps its Part
+ * Category 1 and migrates, because the hardware schedule describes it. A non-schedule type left
+ * blank is an open question rather than a default: nothing in Nexus describes that stock, so it
+ * either gets a type or it does not come across.
+ */
+export function isNonScheduleSpType(spType: string): boolean {
+  return (NON_SCHEDULE_SP_TYPES as readonly string[]).includes(spType.trim());
+}
 
 /**
  * The hardware_category a row should carry.
@@ -247,7 +277,7 @@ export function categoryFor(
   emptyCategoryLabel: string | null,
 ): string | null {
   const mapped = itemTypeResolutions.get(item.inventoryType.trim());
-  if (mapped) return mapped.code;
+  if (isMappedType(mapped)) return mapped.code;
   return item.partCategory.trim() || emptyCategoryLabel;
 }
 
@@ -293,6 +323,22 @@ export function buildEntries({
   const drop = (reason: string) => excludedCounts.set(reason, (excludedCounts.get(reason) ?? 0) + 1);
 
   for (const c of candidates) {
+    // The type decision comes first, and an undecided non-schedule type drops the row rather than
+    // falling back to its part category. SharePoint's Inventory Type is the only thing that says
+    // what kind of stock a row is, so a value Nexus has no type for is a question about the source
+    // data - the Types step asks it rather than migrating the rows under whatever category they
+    // happened to carry.
+    const spType = c.item.inventoryType.trim();
+    const typeResolution = itemTypeResolutions.get(spType);
+    if (typeResolution === EXCLUDE_ITEM_TYPE) {
+      drop(`${spType || 'No inventory type'}: excluded`);
+      continue;
+    }
+    if (isNonScheduleSpType(spType) && !isMappedType(typeResolution)) {
+      drop(`${spType}: awaiting a Nexus type`);
+      continue;
+    }
+
     const category = categoryFor(c.item, itemTypeResolutions, emptyCategoryLabel);
     if (!category) {
       drop('No part category');
@@ -483,6 +529,26 @@ export function distinctItemTypes(
     .sort((a, b) => b.rowCount - a.rowCount);
 }
 
+/**
+ * The non-schedule SharePoint types still waiting on a decision, with the rows riding on each.
+ *
+ * Non-empty means the migration is not safe to run: those rows would be dropped for a reason nobody
+ * chose. "Door" is the live example - SharePoint has the label, Nexus seeds no matching entity type,
+ * and the four rows filed under it are aerosol paint cans, so the answer is a human's to give.
+ */
+export function unresolvedItemTypes(
+  spTypes: ReturnType<typeof distinctItemTypes>,
+  resolutions: ItemTypeResolutions,
+): { spType: string; rowCount: number }[] {
+  return spTypes
+    .filter((t) => t.isNonSchedule)
+    .filter((t) => {
+      const resolution = resolutions.get(t.spType);
+      return resolution !== EXCLUDE_ITEM_TYPE && !isMappedType(resolution);
+    })
+    .map(({ spType, rowCount }) => ({ spType, rowCount }));
+}
+
 /** The type mapping the wizard proposes on its own: the non-schedule types it can auto-match. */
 export function autoItemTypeResolutions(
   spTypes: ReturnType<typeof distinctItemTypes>,
@@ -535,7 +601,7 @@ export function buildCatalogItems(
   const byKey = new Map<string, CatalogItem>();
   for (const c of candidates) {
     const mapped = itemTypeResolutions.get(c.item.inventoryType.trim());
-    if (!mapped) continue;
+    if (!isMappedType(mapped)) continue;
 
     const productCode = productCodeFor(c.item);
     if (!productCode) continue;

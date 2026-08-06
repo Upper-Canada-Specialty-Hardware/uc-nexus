@@ -15,9 +15,12 @@ import {
   distinctLocations,
   distinctProjects,
   emptyCategoryCount,
+  unresolvedItemTypes,
+  EXCLUDE_ITEM_TYPE,
   type SharepointInventoryItem,
   type LocationResolution,
   type InventoryItemTypeOption,
+  type ItemTypeResolutions,
 } from '../sharepointMigration';
 
 function item(overrides: Partial<SharepointInventoryItem> = {}): SharepointInventoryItem {
@@ -501,5 +504,86 @@ describe('buildCatalogItems', () => {
       item({ inventoryType: 'Specialties', finish: '', rating: '', stockQty: 1 }),
     ]);
     expect(buildCatalogItems(candidates, mapped)[0].values).toEqual([]);
+  });
+
+  it('catalogs nothing for a type the user excluded', () => {
+    const candidates = toCandidates([item({ inventoryType: 'Specialties', stockQty: 1 })]);
+    const excluded: ItemTypeResolutions = new Map([['Specialties', EXCLUDE_ITEM_TYPE]]);
+    expect(buildCatalogItems(candidates, excluded)).toEqual([]);
+  });
+});
+
+describe('a non-schedule type with no Nexus equivalent', () => {
+  // "Door" is the live case: SharePoint has the label, migration 084 seeds no matching type, and
+  // the rows filed under it are aerosol paint cans. The wizard has to ask rather than guess.
+  const doorRow = () => toCandidates([item({ inventoryType: 'Door', stockQty: 4 })]);
+  const args = (itemTypeResolutions: ItemTypeResolutions) => ({
+    candidates: doorRow(),
+    locationResolutions: new Map<string, LocationResolution>([
+      ['A-62R', { excluded: false, warehouseId: 'w1', aisle: 'A', row: '62', bay: 'R' }],
+    ]),
+    projectResolutions: new Map<string, string | null>(),
+    emptyCategoryLabel: 'Uncategorized',
+    defaultWarehouseId: 'w1',
+    itemTypeResolutions,
+  });
+
+  it('holds its rows out of the migration until somebody decides', () => {
+    const built = buildEntries(args(new Map()));
+    expect(built.entries).toEqual([]);
+    expect(built.excluded).toEqual([{ reason: 'Door: awaiting a Nexus type', count: 1 }]);
+  });
+
+  it('drops the rows on an explicit exclusion, and says so', () => {
+    const built = buildEntries(args(new Map([['Door', EXCLUDE_ITEM_TYPE]])));
+    expect(built.entries).toEqual([]);
+    expect(built.excluded).toEqual([{ reason: 'Door: excluded', count: 1 }]);
+  });
+
+  it('migrates the rows under the type the user assigns', () => {
+    const built = buildEntries(args(new Map([['Door', TYPES[0]]])));
+    expect(built.entries).toHaveLength(1);
+    expect(built.entries[0].hardwareCategory).toBe('FRAME');
+  });
+
+  it('never blocks schedule hardware, which the schedule already describes', () => {
+    const built = buildEntries({
+      ...args(new Map()),
+      candidates: toCandidates([item({ inventoryType: 'Door Hardware', stockQty: 4 })]),
+    });
+    expect(built.entries).toHaveLength(1);
+    expect(built.entries[0].hardwareCategory).toBe('Surface Closer');
+  });
+});
+
+describe('unresolvedItemTypes', () => {
+  const spTypes = () =>
+    distinctItemTypes(
+      toCandidates([
+        item({ inventoryType: 'Door', stockQty: 1 }),
+        item({ inventoryType: 'Specialties', stockQty: 1 }),
+        item({ inventoryType: 'Door Hardware', stockQty: 1 }),
+      ]),
+    );
+
+  it('reports a non-schedule type nobody has answered', () => {
+    expect(unresolvedItemTypes(spTypes(), new Map([['Specialties', TYPES[1]]]))).toEqual([
+      { spType: 'Door', rowCount: 1 },
+    ]);
+  });
+
+  it('is satisfied by an explicit exclusion as much as by a type', () => {
+    const resolved: ItemTypeResolutions = new Map([
+      ['Specialties', TYPES[1]],
+      ['Door', EXCLUDE_ITEM_TYPE],
+    ]);
+    expect(unresolvedItemTypes(spTypes(), resolved)).toEqual([]);
+  });
+
+  it('never asks about schedule hardware', () => {
+    const onlySchedule = distinctItemTypes(
+      toCandidates([item({ inventoryType: 'Door Hardware', stockQty: 1 })]),
+    );
+    expect(unresolvedItemTypes(onlySchedule, new Map())).toEqual([]);
   });
 });

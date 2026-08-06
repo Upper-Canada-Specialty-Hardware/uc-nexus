@@ -47,6 +47,9 @@ import {
   mergeResolutions,
   buildEntries,
   buildCatalogItems,
+  unresolvedItemTypes,
+  isMappedType,
+  EXCLUDE_ITEM_TYPE,
   type SharepointInventoryItem,
   type LocationResolution,
   type NexusProject,
@@ -256,6 +259,11 @@ export default function SharePointMigrationPage() {
   const stockEntries = built.entries.filter((e) => e.destination === 'STOCK');
   const unresolvedLocations = locations.filter((l) => !locationResolutions.has(l.raw));
   const unresolvedProjects = spProjects.filter((p) => !projectResolutions.has(p.key));
+  // Unlike an unmapped location or project, this one BLOCKS the migration rather than just
+  // shrinking it: a SharePoint type Nexus has no equivalent for means the source data is telling us
+  // something nobody has read yet, and the rows would otherwise migrate under whatever part
+  // category they happened to carry.
+  const undecidedTypes = unresolvedItemTypes(spItemTypes, itemTypeResolutions);
 
   return (
     <Box>
@@ -521,6 +529,21 @@ export default function SharePointMigrationPage() {
                   and their descriptions are catalogued rather than lost. Door Hardware belongs to a
                   hardware schedule and is left alone.
                 </Typography>
+                {undecidedTypes.length > 0 && (
+                  <Alert severity="warning" sx={{ mb: 2 }}>
+                    <AlertTitle>
+                      {undecidedTypes.map((t) => t.spType).join(', ')} has no Nexus entity type
+                    </AlertTitle>
+                    SharePoint files{' '}
+                    {undecidedTypes
+                      .map((t) => `${t.rowCount} row${t.rowCount === 1 ? '' : 's'}`)
+                      .join(', ')}{' '}
+                    under a kind of stock Nexus has no type for, so nothing here would describe them.
+                    Give each one an entity type or exclude it - the migration will not run until you
+                    do. If the rows turn out to be mislabelled at the source, correct them in
+                    SharePoint and re-fetch rather than filing them under the wrong type here.
+                  </Alert>
+                )}
                 <Table size="small">
                   <TableHead>
                     <TableRow>
@@ -531,7 +554,10 @@ export default function SharePointMigrationPage() {
                   </TableHead>
                   <TableBody>
                     {spItemTypes.map((t) => {
-                      const mapped = itemTypeResolutions.get(t.spType);
+                      const resolution = itemTypeResolutions.get(t.spType);
+                      const mapped = isMappedType(resolution) ? resolution : null;
+                      const excluded = resolution === EXCLUDE_ITEM_TYPE;
+                      const undecided = t.isNonSchedule && !mapped && !excluded;
                       return (
                         <TableRow key={t.spType} hover>
                           <TableCell>
@@ -544,6 +570,15 @@ export default function SharePointMigrationPage() {
                                 sx={{ ml: 1 }}
                               />
                             )}
+                            {undecided && (
+                              <Chip
+                                size="small"
+                                color="warning"
+                                label="needs a decision"
+                                variant="outlined"
+                                sx={{ ml: 1 }}
+                              />
+                            )}
                           </TableCell>
                           <TableCell align="right" sx={tabularSx}>
                             {t.rowCount}
@@ -552,26 +587,37 @@ export default function SharePointMigrationPage() {
                             <Select
                               size="small"
                               displayEmpty
-                              value={mapped?.id ?? ''}
+                              error={undecided}
+                              value={excluded ? EXCLUDE_ITEM_TYPE : (mapped?.id ?? '')}
                               onChange={(e) => {
                                 const v = e.target.value as string;
                                 setItemTypeOverrides((prev) =>
                                   new Map(prev).set(
                                     t.spType,
-                                    typeOptions.find((o) => o.id === v) ?? null,
+                                    v === EXCLUDE_ITEM_TYPE
+                                      ? EXCLUDE_ITEM_TYPE
+                                      : (typeOptions.find((o) => o.id === v) ?? null),
                                   ),
                                 );
                               }}
                               sx={{ minWidth: 260 }}
                             >
+                              {/* Keeping the part category is only an answer for schedule hardware.
+                                  A non-schedule type has to be named or dropped, so offering the
+                                  fallback there would be offering the silent migration back. */}
                               <MenuItem value="">
-                                <em>Keep the part category</em>
+                                <em>
+                                  {t.isNonSchedule ? 'Choose a type…' : 'Keep the part category'}
+                                </em>
                               </MenuItem>
                               {typeOptions.map((o) => (
                                 <MenuItem key={o.id} value={o.id}>
                                   {o.name} ({o.code})
                                 </MenuItem>
                               ))}
+                              <MenuItem value={EXCLUDE_ITEM_TYPE}>
+                                <em>Exclude these rows</em>
+                              </MenuItem>
                             </Select>
                           </TableCell>
                         </TableRow>
@@ -676,6 +722,16 @@ export default function SharePointMigrationPage() {
                     </TableBody>
                   </Table>
                 </Box>
+                {undecidedTypes.length > 0 && (
+                  <Alert severity="warning" sx={{ mt: 2 }}>
+                    <AlertTitle>Go back to Types first</AlertTitle>
+                    {undecidedTypes
+                      .map((t) => `${t.spType} (${t.rowCount})`)
+                      .join(', ')}{' '}
+                    still needs an entity type or an explicit exclusion. Those rows are held out of
+                    the count above and the migration cannot run until each one is answered.
+                  </Alert>
+                )}
                 {migrating && <LinearProgress sx={{ mt: 2 }} />}
               </CardContent>
             </Card>
@@ -692,7 +748,7 @@ export default function SharePointMigrationPage() {
             ) : (
               <Button
                 variant="contained"
-                disabled={built.entries.length === 0 || migrating}
+                disabled={built.entries.length === 0 || migrating || undecidedTypes.length > 0}
                 onClick={handleCommit}
               >
                 Migrate {built.entries.length} entries
