@@ -1,7 +1,7 @@
 """Packing slip pinned to a receive draft
 
-Revision ID: 087
-Revises: 086
+Revision ID: 088
+Revises: 087
 Create Date: 2026-08-06
 
 A receive draft is a count made against a piece of paper that came off the truck (#504). Nothing
@@ -18,14 +18,16 @@ pinned to the count it belongs to.
 ALTER TYPE ... ADD VALUE cannot run inside a transaction block on older PostgreSQL and cannot be
 reversed, so the downgrade drops the column and leaves the enum value in place. An orphaned enum
 member is harmless; removing one means rewriting the type and every column that uses it.
+
+Numbered 088 behind #493's 087: both were written against 086 while neither had landed.
 """
 
 import sqlalchemy as sa
 
 from alembic import op
 
-revision = "087"
-down_revision = "086"
+revision = "088"
+down_revision = "087"
 branch_labels = None
 depends_on = None
 
