@@ -58,6 +58,7 @@ import {
   shippingPRItemKey,
   toClassificationInputs,
 } from './types';
+import type { ParsedHardwareItem } from '../../types/hardwareSchedule';
 import type { Project } from '../../types/project';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import { FadeIn, StaggerItem, StaggerList } from '../../motion';
@@ -268,7 +269,11 @@ export default function ImportWizard({
       { id: 'openings', label: 'Select Openings' },
       { id: 'reconciliation', label: 'Reconciliation' },
     ];
-    if (purpose === 'po' || purpose === 'assembly') {
+    // #492: only the PO purpose asks. A shop-assembly request runs against a project whose schedule
+    // is already classified, so re-asking forced the user to re-answer a question the system knows -
+    // and answering it differently than the original import is exactly the drift. The assembly
+    // purpose seeds its classifications from the persisted items instead (see below).
+    if (purpose === 'po') {
       base.push({ id: 'classification', label: 'Classification' });
     }
     if (purpose === 'po') base.push({ id: 'purchase-orders', label: 'Purchase Orders' });
@@ -403,6 +408,7 @@ export default function ImportWizard({
       }
     });
   }, [isReimport, parsedHardwareItems, existingProjectId, fetchExcludedItems]);
+
 
   // ---- Derived Data ----
 
@@ -631,6 +637,30 @@ export default function ImportWizard({
     return map;
   }, [availabilityData]);
 
+  // #492: with no Classification step for this purpose, an item nobody ever classified has no
+  // SITE/SHOP answer anywhere - it is silently not shop work. Counting them here lets the step say
+  // so rather than leaving the user to wonder why an opening they picked produced nothing.
+  // #492: with no Classification step for the assembly purpose, the Site/Shop answer comes off the
+  // persisted item - the value a PO request wrote. Resolved at the read site rather than seeded into
+  // state, so the wizard's own map (the exclusion table's BY_OTHERS entries) still wins and no
+  // effect has to write state during render.
+  const resolveClassification = useCallback(
+    (hi: ParsedHardwareItem) => classifications.get(classificationKey(hi)) ?? hi.classification ?? '',
+    [classifications],
+  );
+
+  const unclassifiedShopCandidates = useMemo(() => {
+    if (purpose !== 'assembly' || !parsed) return [];
+    const seen = new Set<string>();
+    for (const hi of parsed.hardwareItems) {
+      if (!selectedOpenings.has(hi.opening_number)) continue;
+      const cls = resolveClassification(hi);
+      if (cls === 'SITE_HARDWARE' || cls === 'SHOP_HARDWARE' || cls === 'BY_OTHERS') continue;
+      seen.add(`${hi.hardware_category} ${hi.product_code}`);
+    }
+    return Array.from(seen).sort();
+  }, [purpose, parsed, selectedOpenings, resolveClassification]);
+
   // The shop-assembly work units this wizard would submit: one per (opening, leaf) with its
   // SHOP_HARDWARE items aggregated. Derived once and used by BOTH the availability gate and
   // buildFinalizeInput, so the numbers the user is held to are by construction the numbers that get
@@ -643,7 +673,7 @@ export default function ImportWizard({
       .flatMap((opening) => {
         const shopItems = selectedItems.filter((hi) => {
           if (hi.opening_number !== opening.opening_number) return false;
-          return classifications.get(classificationKey(hi)) === 'SHOP_HARDWARE';
+          return resolveClassification(hi) === 'SHOP_HARDWARE';
         });
         if (shopItems.length === 0) return [];
         // One SAR opening per door leaf (#311): group SHOP_HARDWARE by leaf, then aggregate each
@@ -690,7 +720,7 @@ export default function ImportWizard({
           items: Array.from(aggMap.values()),
         }));
       });
-  }, [purpose, parsed, selectedOpenings, classifications]);
+  }, [purpose, parsed, selectedOpenings, resolveClassification]);
 
   // The exact payload the shop-assembly finalize sends: the included, non-empty leaves with both
   // numbers per line. Derived from the same drafts the allocator step renders, so what the user was
@@ -1728,6 +1758,7 @@ export default function ImportWizard({
               availabilityLoading={availabilityLoading && availabilityData === undefined}
               availabilityError={availabilityError !== undefined}
               allocationStale={allocationStale}
+              unclassifiedItems={unclassifiedShopCandidates}
               onNext={handleNext}
               onBack={handleBack}
             />

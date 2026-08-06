@@ -68,6 +68,11 @@ interface ShopAssemblyStepProps {
    * finalize and the allocation has been re-derived from fresh numbers (#342 race).
    */
   allocationStale: boolean;
+  /**
+   * Selected items with no persisted SITE/SHOP answer (#492). They are not shop work and are absent
+   * from openingDrafts; naming them beats leaving the user to wonder where an opening went.
+   */
+  unclassifiedItems?: string[];
   onNext: () => void;
   onBack: () => void;
 }
@@ -86,6 +91,7 @@ export default function ShopAssemblyStep({
   availabilityLoading,
   availabilityError,
   allocationStale,
+  unclassifiedItems = [],
   onNext,
   onBack,
 }: ShopAssemblyStepProps) {
@@ -281,6 +287,17 @@ export default function ShopAssemblyStep({
           already reserved - so a shortfall can mean the stock is here but spoken for. The short
           units are not pulled and not owed to the assembler; purchasing is told about them when the
           request is sent.
+        </Alert>
+      )}
+
+      {unclassifiedItems.length > 0 && (
+        <Alert severity="info" sx={{ mb: 2 }}>
+          {unclassifiedItems.length} item{unclassifiedItems.length === 1 ? '' : 's'} on the selected
+          openings {unclassifiedItems.length === 1 ? 'has' : 'have'} never been classified as Site or
+          Shop hardware, so {unclassifiedItems.length === 1 ? 'it is' : 'they are'} not included:{' '}
+          {unclassifiedItems.slice(0, 6).join(', ')}
+          {unclassifiedItems.length > 6 ? `, and ${unclassifiedItems.length - 6} more` : ''}. Classify
+          them through a PO request first.
         </Alert>
       )}
 
