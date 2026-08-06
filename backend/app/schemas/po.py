@@ -191,8 +191,16 @@ def _prepare_register_po(
 
         manufacturers = _resolve_line_manufacturers(session, effective_project_id, line_items_data)
 
+    # #488: job POs carry the project number as a suffix, so two purchasers registering at the same
+    # moment produce visibly distinct, traceable numbers. A stock PO has no project and gets none.
+    po_number_suffix = job_number or None
+
     gp_po.validate_create_po_inputs(
-        job_number=job_number, cost_code=cost_code, po_number=None, line_items=line_items_data
+        job_number=job_number,
+        cost_code=cost_code,
+        po_number=None,
+        line_items=line_items_data,
+        po_number_suffix=po_number_suffix,
     )
     payload = gp_po.build_create_po_payload(
         vendor_gp_id=gp_vendor_id,
@@ -202,6 +210,7 @@ def _prepare_register_po(
         cost_code=cost_code,
         po_number=None,
         line_items=line_items_data,
+        po_number_suffix=po_number_suffix,
         # Issue #257: freight maps from the PO's shipping_cost; misc + trade discount are new inputs.
         tax_detail_id=tax_detail_id,
         freight_amount=shipping_cost,

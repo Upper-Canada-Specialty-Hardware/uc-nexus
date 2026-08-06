@@ -30,6 +30,7 @@ def validate_create_po_inputs(
     cost_code: str | None,
     po_number: str | None,
     line_items: list[dict],
+    po_number_suffix: str | None = None,
 ) -> None:
     """Field-level pre-checks for a create_po push, run BEFORE the relay round-trip so a bad request
     fails with a clean AppError instead of the relay's opaque invalid_payload (the pydantic models on
@@ -41,6 +42,19 @@ def validate_create_po_inputs(
     if po_number is not None and po_number.strip():
         if len(po_number.strip()) > _MAX_PO_NUMBER:
             raise ValidationError(f"PO number must be at most {_MAX_PO_NUMBER} characters", field="po_number")
+
+    # #488: GP reserves the number and the relay appends '-<project>'. GP's PONUMBER is char(17), so
+    # a long project number overflows. Caught here as well as at the relay so it fails in the
+    # register dialog rather than after the WS hop. 'PO' + 7 digits = 9, leaving 7 for '-' + suffix.
+    if po_number_suffix and (po_number is None or not po_number.strip()):
+        composed_length = 9 + 1 + len(po_number_suffix.strip())
+        if composed_length > _MAX_PO_NUMBER:
+            raise ValidationError(
+                f"Project number '{po_number_suffix.strip()}' is too long to append to a GP PO "
+                f"number: the result would be {composed_length} characters and GP holds "
+                f"{_MAX_PO_NUMBER}.",
+                field="po_number",
+            )
 
     is_job = job_number is not None
     if is_job and not (cost_code and cost_code.strip()):
@@ -68,6 +82,7 @@ def build_create_po_payload(
     cost_code: str | None,
     po_number: str | None,
     line_items: list[dict],
+    po_number_suffix: str | None = None,
     tax_detail_id: str | None = None,
     freight_amount: float | None = None,
     misc_amount: float | None = None,
@@ -119,6 +134,9 @@ def build_create_po_payload(
         },
         "lines": lines,
         "po_number": po_number,
+        # #488: the relay composes '<reserved>-<suffix>' when it reserves the number itself. Ignored
+        # when po_number is explicit, which is taken as given.
+        "po_number_suffix": po_number_suffix,
     }
 
 
