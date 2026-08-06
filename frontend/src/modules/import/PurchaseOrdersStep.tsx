@@ -1,8 +1,10 @@
 import { useMemo } from 'react';
-import { Box, Button, Checkbox, FormControlLabel, InputAdornment, Paper, TextField, Typography } from '@mui/material';
+import { Box, Button, Checkbox, FormControlLabel, InputAdornment, MenuItem, Paper, TextField, Typography } from '@mui/material';
 import { useQuery } from '@apollo/client/react';
 import OrderAsAutocomplete from '../../components/OrderAsAutocomplete';
 import { GET_PRIOR_ORDER_AS_VALUES } from '../../graphql/shared';
+import { GET_GP_COST_CODES } from '../../graphql/po';
+import { useRelayStatus } from '../../relay/useRelayStatus';
 import type { AggregatedHardwareItem } from './types';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import { StaggerItem, StaggerList } from '../../motion';
@@ -15,6 +17,14 @@ interface AggregatedLineItem {
   totalQuantity: number;
   unitCost: number;
   totalCost: number;
+}
+
+// #490: the job's live GP cost codes, fetched once for the step and shared across every card
+// rather than per card - it is one job, so it is one list.
+interface GpCostCode {
+  costCode: string;
+  costElement: string;
+  description: string | null;
 }
 
 interface PriorOrderAsForProduct {
@@ -31,15 +41,17 @@ interface PriorOrderAsQueryData {
 interface PurchaseOrdersStepProps {
   /** The wizard's project - order-as memory is scoped to it (#509). */
   projectId: string;
+  /** The GP job number (#490). Cost codes are per job, so the live list is keyed on it. */
+  jobNumber: string | null;
   vendorGroups: Map<string, AggregatedHardwareItem[]>;
-  vendorPOInfo: Map<string, { notes: string; preferredDeliveryDate: string }>;
+  vendorPOInfo: Map<string, { notes: string; preferredDeliveryDate: string; costCode: string }>;
   selectedVendors: Set<string>;
   unitCostOverrides: Map<string, number>;
   orderAsValues: Map<string, string>;
   onToggleVendor: (vendor: string) => void;
   onUpdateVendorPO: (
     manufacturerKey: string,
-    field: 'notes' | 'preferredDeliveryDate',
+    field: 'notes' | 'preferredDeliveryDate' | 'costCode',
     value: string | null,
   ) => void;
   onUpdateUnitCost: (vendor: string, productCode: string, hardwareCategory: string, newCost: number) => void;
@@ -89,14 +101,15 @@ interface VendorGroupCardProps {
   projectId: string;
   vendor: string;
   items: AggregatedHardwareItem[];
-  info: { notes: string; preferredDeliveryDate: string };
+  info: { notes: string; preferredDeliveryDate: string; costCode: string };
+  costCodes: GpCostCode[];
   isSelected: boolean;
   unitCostOverrides: Map<string, number>;
   orderAsValues: Map<string, string>;
   onToggleVendor: (vendor: string) => void;
   onUpdateVendorPO: (
     manufacturerKey: string,
-    field: 'notes' | 'preferredDeliveryDate',
+    field: 'notes' | 'preferredDeliveryDate' | 'costCode',
     value: string | null,
   ) => void;
   onUpdateUnitCost: (vendor: string, productCode: string, hardwareCategory: string, newCost: number) => void;
@@ -108,6 +121,7 @@ function VendorGroupCard({
   vendor,
   items,
   info,
+  costCodes,
   isSelected,
   unitCostOverrides,
   orderAsValues,
@@ -180,6 +194,27 @@ function VendorGroupCard({
           sx={{ width: 190 }}
           slotProps={{ inputLabel: { shrink: true } }}
         />
+        {costCodes.length > 0 && (
+          <TextField
+            select
+            label="Cost code"
+            size="small"
+            disabled={!isSelected}
+            value={info.costCode}
+            onChange={(e) => onUpdateVendorPO(vendor, 'costCode', e.target.value)}
+            sx={{ width: 260, '& .MuiSelect-select': monoSx }}
+            helperText="Optional, carried to GP registration"
+          >
+            <MenuItem value="">
+              <em>None</em>
+            </MenuItem>
+            {costCodes.map((c) => (
+              <MenuItem key={`${c.costCode}-${c.costElement}`} value={`${c.costCode}-${c.costElement}`}>
+                {c.description ? `${c.costCode} · ${c.description}` : c.costCode}
+              </MenuItem>
+            ))}
+          </TextField>
+        )}
         <TextField
           label="Notes"
           size="small"
@@ -305,6 +340,7 @@ function VendorGroupCard({
 
 export default function PurchaseOrdersStep({
   projectId,
+  jobNumber,
   vendorGroups,
   vendorPOInfo,
   selectedVendors,
@@ -320,6 +356,18 @@ export default function PurchaseOrdersStep({
   const canProceed = useMemo(() => {
     return selectedVendors.size > 0;
   }, [selectedVendors]);
+
+  // #490: one job, so one cost-code read for the whole step rather than one per manufacturer card.
+  // Relay down or job absent -> empty list -> the cards render no cost-code field at all, and the
+  // code is picked at GP registration as before.
+  const relay = useRelayStatus({});
+  const company = relay.company ?? '';
+  const { data: costCodesData } = useQuery<{ gpCostCodes: GpCostCode[] }>(GET_GP_COST_CODES, {
+    variables: { company, job: jobNumber ?? '' },
+    skip: relay.connected !== true || !company || !jobNumber,
+    fetchPolicy: 'cache-first',
+  });
+  const costCodes = useMemo(() => costCodesData?.gpCostCodes ?? [], [costCodesData]);
 
   const sortedVendors = useMemo(
     () => Array.from(vendorGroups.entries()).sort(([a], [b]) => a.localeCompare(b)),
@@ -337,7 +385,7 @@ export default function PurchaseOrdersStep({
 
       <StaggerList count={sortedVendors.length}>
         {sortedVendors.map(([vendor, items]) => {
-          const info = vendorPOInfo.get(vendor) ?? { notes: '', preferredDeliveryDate: '' };
+          const info = vendorPOInfo.get(vendor) ?? { notes: '', preferredDeliveryDate: '', costCode: '' };
           const isSelected = selectedVendors.has(vendor);
           return (
             <StaggerItem key={vendor}>
@@ -346,6 +394,7 @@ export default function PurchaseOrdersStep({
                 vendor={vendor}
                 items={items}
                 info={info}
+                costCodes={costCodes}
                 isSelected={isSelected}
                 unitCostOverrides={unitCostOverrides}
                 orderAsValues={orderAsValues}

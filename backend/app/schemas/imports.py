@@ -145,6 +145,7 @@ class ImportMutations:
                     "po_number": po.po_number,
                     "notes": po.notes,
                     "preferred_delivery_date": po.preferred_delivery_date,
+                    "cost_code": po.cost_code,
                     "hardware_item_refs": [
                         {
                             "opening_number": ref.opening_number,

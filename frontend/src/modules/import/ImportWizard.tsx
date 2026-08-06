@@ -225,8 +225,10 @@ export default function ImportWizard({
 
   // Action step state
   const [selectedVendors, setSelectedVendors] = useState<Set<string>>(new Set());
+  // #490: costCode joins notes and the preferred date as a per-manufacturer-card value, so the
+  // buyer can record the GP cost code with the request instead of only at registration.
   const [vendorPOInfo, setVendorPOInfo] = useState<
-    Map<string, { notes: string; preferredDeliveryDate: string }>
+    Map<string, { notes: string; preferredDeliveryDate: string; costCode: string }>
   >(new Map());
   const [unitCostOverrides, setUnitCostOverrides] = useState<Map<string, number>>(new Map());
   const [classifications, setClassifications] = useState<Map<string, string>>(new Map());
@@ -1000,10 +1002,10 @@ export default function ImportWizard({
 
   // Manufacturer-group PO info
   const updateVendorPO = useCallback(
-    (manufacturerKey: string, field: 'notes' | 'preferredDeliveryDate', value: string | null) => {
+    (manufacturerKey: string, field: 'notes' | 'preferredDeliveryDate' | 'costCode', value: string | null) => {
       setVendorPOInfo((prev) => {
         const next = new Map(prev);
-        const existing = next.get(manufacturerKey) ?? { notes: '', preferredDeliveryDate: '' };
+        const existing = next.get(manufacturerKey) ?? { notes: '', preferredDeliveryDate: '', costCode: '' };
         next.set(manufacturerKey, { ...existing, [field]: value ?? '' });
         return next;
       });
@@ -1183,7 +1185,7 @@ export default function ImportWizard({
               // Filter out BY_OTHERS items from this vendor's PO draft
               const inScopeItems = items.filter((hi) => !isByOthers(hi));
               if (inScopeItems.length === 0) return null;
-              const info = vendorPOInfo.get(vendor) ?? { notes: '', preferredDeliveryDate: '' };
+              const info = vendorPOInfo.get(vendor) ?? { notes: '', preferredDeliveryDate: '', costCode: '' };
               // Collect aliases for this manufacturer group's aggregated line items
               const seenKeys = new Set<string>();
               const lineItemAliases: Array<{ hardwareCategory: string; productCode: string; orderAs: string }> = [];
@@ -1205,6 +1207,7 @@ export default function ImportWizard({
                 poNumber: null,
                 notes: info.notes || null,
                 preferredDeliveryDate: info.preferredDeliveryDate || null,
+                costCode: info.costCode || null,
                 hardwareItemRefs: inScopeItems.map((hi) => ({
                   openingNumber: hi.opening_number,
                   productCode: hi.product_code,
@@ -1737,6 +1740,7 @@ export default function ImportWizard({
           {effectiveStepId === 'purchase-orders' && (
             <PurchaseOrdersStep
               projectId={project.id}
+              jobNumber={project.projectId ?? null}
               vendorGroups={vendorGroups}
               vendorPOInfo={vendorPOInfo}
               selectedVendors={selectedVendors}

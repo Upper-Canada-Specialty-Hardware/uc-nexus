@@ -387,6 +387,7 @@ class POMutations:
                 tariff_amount=input.tariff_amount,
                 preferred_delivery_date=input.preferred_delivery_date,
                 created_by_user_id=auth["user_id"],
+                cost_code=input.cost_code,
             )
             session.commit()
             return po_to_type(po_repository.reload_po(session, po.id))

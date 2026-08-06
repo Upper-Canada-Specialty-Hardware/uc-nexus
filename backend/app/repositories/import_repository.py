@@ -786,6 +786,9 @@ def finalize_import_session(
                 notes=po_draft.get("notes"),
                 # Issue #216: the PM's requested date, captured at PO-request creation.
                 preferred_delivery_date=po_draft.get("preferred_delivery_date"),
+                # #490: the buyer's cost-code pick, if the relay was up to offer the job's list.
+                # Register still validates against GP - this is a default, not a decision.
+                cost_code=(po_draft.get("cost_code") or None),
                 # Whoever finalized this wizard session, from the resolver's Clerk token. It is who a
                 # receive against this PO later asks "inventory or ship out?".
                 created_by_user_id=input_data.get("created_by_user_id"),
