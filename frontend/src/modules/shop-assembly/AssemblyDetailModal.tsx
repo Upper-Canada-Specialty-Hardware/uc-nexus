@@ -78,9 +78,6 @@ export default function AssemblyDetailModal({
   onCompleted,
 }: AssemblyDetailModalProps) {
   const { showToast } = useToast();
-  const [aisle, setAisle] = useState('');
-  const [row, setRow] = useState('');
-  const [bay, setBay] = useState('');
   const [confirmOpen, setConfirmOpen] = useState(false);
 
   // Draft installed counts, keyed by item id, held as strings so a half-typed field is not coerced to
@@ -136,11 +133,6 @@ export default function AssemblyDetailModal({
     onError: (err) => showToast(err.message, 'error'),
   });
 
-  const validateField = (value: string): boolean => {
-    if (value === '') return true;
-    return value.length >= 1 && value.length <= 20;
-  };
-
   // The most a line can be marked installed: everything pulled that is not already condemned.
   const maxInstalled = (item: OpeningItem): number =>
     item.allocatedQuantity - item.deficientQuantity - item.replacementPendingQuantity;
@@ -179,7 +171,6 @@ export default function AssemblyDetailModal({
   );
 
   const dirty = opening.items.some((item) => parsedDraft(item) !== item.installedQuantity);
-  const locationValid = validateField(aisle) && validateField(row) && validateField(bay);
   const busy = saving || completing;
 
   // Mirrors the backend's completion gate exactly - every unit installed or condemned, and at least
@@ -190,8 +181,7 @@ export default function AssemblyDetailModal({
   const canComplete =
     allDraftsValid &&
     draftProgress.complete &&
-    (draftProgress.installed > 0 || opening.items.length === 0) &&
-    locationValid;
+    (draftProgress.installed > 0 || opening.items.length === 0);
 
   const progressPayload = useCallback(
     () =>
@@ -234,13 +224,10 @@ export default function AssemblyDetailModal({
       variables: {
         input: {
           openingId: opening.id,
-          aisle: aisle || null,
-          row: row || null,
-          bay: bay || null,
         },
       },
     });
-  }, [progressPayload, recordProgress, completeOpening, opening.id, aisle, row, bay]);
+  }, [progressPayload, recordProgress, completeOpening, opening.id]);
 
   // --- deficiency flagging -------------------------------------------------------------------
 
@@ -498,46 +485,11 @@ export default function AssemblyDetailModal({
             </Typography>
           )}
 
-          <Typography component="div" sx={{ ...microLabelSx, color: 'text.primary', mb: 0.5 }}>
-            Store completed Opening Item at
-          </Typography>
-          <Typography variant="caption" color="text.secondary" sx={{ mb: 1.5, display: 'block' }}>
-            Leave blank for Unlocated
-          </Typography>
-
-          <Stack direction="row" spacing={2}>
-            <TextField
-              label="Aisle"
-              size="small"
-              sx={{ width: 128 }}
-              value={aisle}
-              onChange={(e) => setAisle(e.target.value)}
-              error={!validateField(aisle)}
-              helperText={!validateField(aisle) ? '1-20 characters' : ''}
-              inputProps={{ maxLength: 20 }}
-            />
-            <TextField
-              label="Row"
-              size="small"
-              sx={{ width: 128 }}
-              value={row}
-              onChange={(e) => setRow(e.target.value)}
-              error={!validateField(row)}
-              helperText={!validateField(row) ? '1-20 characters' : ''}
-              inputProps={{ maxLength: 20 }}
-            />
-            <TextField
-              label="Bay"
-              size="small"
-              sx={{ width: 128 }}
-              value={bay}
-              onChange={(e) => setBay(e.target.value)}
-              error={!validateField(bay)}
-              helperText={!validateField(bay) ? '1-20 characters' : ''}
-              inputProps={{ maxLength: 20 }}
-            />
-          </Stack>
-
+          {/* #498: no location fields here any more. The assembler was typing free-text
+              aisle/row/bay against no warehouse choice and no validation, so the "put-away location"
+              on a finished leaf was whatever they typed and warehouse staff could not correct it.
+              The leaf lands unlocated and joins the warehouse put-away queue, same as received
+              stock. */}
           {opening.items.length > 0 && !draftProgress.complete && (
             <Typography variant="caption" color="text.secondary" sx={{ mt: 2, display: 'block' }}>
               {draftProgress.remaining} unit(s) still unaccounted for - Mark Complete stays disabled

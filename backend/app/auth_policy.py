@@ -293,6 +293,7 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "receivingHistoryPos": SIGNED_IN,
     "recentReceiveRecords": SIGNED_IN,
     "unlocatedInventory": SIGNED_IN,
+    "unlocatedOpeningItems": SIGNED_IN,
     "warehouse": SIGNED_IN,
     "warehouseDashboard": SIGNED_IN,
     "warehouses": SIGNED_IN,

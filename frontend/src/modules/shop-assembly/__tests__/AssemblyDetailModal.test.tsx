@@ -211,11 +211,10 @@ describe('AssemblyDetailModal progress editor', () => {
       request: {
         query: COMPLETE_OPENING,
         variables: {
+          // #498: completion no longer carries a location - the leaf lands unlocated and the
+          // warehouse puts it away.
           input: {
             openingId: 'o1',
-            aisle: null,
-            row: null,
-            bay: null,
           },
         },
       },

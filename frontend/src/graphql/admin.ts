@@ -246,10 +246,13 @@ export const OVERRIDE_INVENTORY_QUANTITY = gql`
   }
 `;
 
+// #498: warehouseId is part of the assignment - putting a leaf away is choosing a building and a
+// bin within it. Omitting it moves the bin inside the leaf's current warehouse, which is what the
+// admin correction path does.
 export const ASSIGN_OPENING_ITEM_LOCATION = gql`
-  mutation AssignOpeningItemLocation($openingItemId: ID!, $aisle: String!, $row: String!, $bay: String!) {
-    assignOpeningItemLocation(openingItemId: $openingItemId, aisle: $aisle, row: $row, bay: $bay) {
-      id projectId openingId openingNumber building floor location quantity assemblyCompletedAt state aisle row bay createdAt updatedAt
+  mutation AssignOpeningItemLocation($openingItemId: ID!, $aisle: String!, $row: String!, $bay: String!, $warehouseId: ID) {
+    assignOpeningItemLocation(openingItemId: $openingItemId, aisle: $aisle, row: $row, bay: $bay, warehouseId: $warehouseId) {
+      id projectId openingId openingNumber building floor location leaf quantity assemblyCompletedAt state warehouseId aisle row bay createdAt updatedAt
       installedHardware { id openingItemId productCode hardwareCategory quantity }
     }
   }

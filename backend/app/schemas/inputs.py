@@ -762,6 +762,9 @@ class CancelPullRequestInput:
 @strawberry.input
 class CompleteOpeningInput:
     opening_id: strawberry.ID
+    # #498: deprecated and ignored. Completion no longer records a location - the assembler was
+    # typing free text with no warehouse choice and no validation, and warehouse staff could not
+    # correct it. Kept in the schema until frontends stop sending them (#438 pattern).
     aisle: str | None = None
     row: str | None = None
     bay: str | None = None

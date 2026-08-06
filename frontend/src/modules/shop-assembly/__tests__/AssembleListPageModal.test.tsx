@@ -97,11 +97,9 @@ it('keeps the assembly modal open across a Save Progress from the Assemble List'
   const input = await screen.findByLabelText('Installed units: HG-100');
   fireEvent.change(input, { target: { value: '2' } });
 
-  // Local, unsaved modal state. A progress save never sends the put-away location, and the modal
-  // seeds it empty on mount - so if the dialog is torn down and rebuilt this is what is lost.
-  const aisle = screen.getByLabelText('Aisle') as HTMLInputElement;
-  fireEvent.change(aisle, { target: { value: 'A1' } });
-
+  // The typed installed count is the local, unsaved modal state: if the dialog is torn down and
+  // rebuilt it reverts to what the server last returned. #498 removed the put-away fields that
+  // used to stand in for this here, so the count carries the assertion on its own.
   fireEvent.click(screen.getByRole('button', { name: /save progress/i }));
 
   // The save resolves, the list refetches - and the modal is still on screen, still holding the
@@ -111,5 +109,4 @@ it('keeps the assembly modal open across a Save Progress from the Assemble List'
     expect(screen.getByLabelText('Installed units: HG-100')).toHaveValue(2)
   );
   expect(screen.getByText(/Shop Hardware Checklist/i)).toBeInTheDocument();
-  expect(screen.getByLabelText('Aisle')).toHaveValue('A1');
 });
