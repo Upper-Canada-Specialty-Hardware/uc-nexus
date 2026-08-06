@@ -174,6 +174,9 @@ def receive_draft_to_type(draft, po) -> ReceiveDraft:
         outbox_entry_id=(
             strawberry.ID(str(draft.approved_outbox_entry_id)) if draft.approved_outbox_entry_id else None
         ),
+        packing_slip_document_id=(
+            strawberry.ID(str(draft.packing_slip_document_id)) if draft.packing_slip_document_id else None
+        ),
         total_quantity=sum(li.quantity_received for li in draft.line_items),
         created_at=draft.created_at,
         updated_at=draft.updated_at,

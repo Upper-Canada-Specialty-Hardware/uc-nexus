@@ -524,6 +524,10 @@ class CreateReceiveDraftInput:
     po_id: strawberry.ID
     warehouse_id: strawberry.ID | None = None
     line_items: list[ReceiveLineItemInput] = strawberry.field(default_factory=list)
+    # #504: the packing slip this count was made against. Required - a count with no paper behind
+    # it cannot be checked when it is disputed. Upload it as a PACKING_SLIP PO document first and
+    # pass the id here.
+    packing_slip_document_id: strawberry.ID | None = None
     # Client-generated, one per submit action and re-sent on retry, so a network timeout that
     # actually committed cannot leave two drafts against one PO.
     idempotency_key: str = ""

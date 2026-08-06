@@ -513,6 +513,9 @@ const RECEIVE_DRAFT_FIELDS = `
   # and the author-only actions key on; the name is what the manager's queue shows.
   createdByUserId
   createdBy
+  # #504: the packing slip this count was made against. Null only on drafts raised before the
+  # requirement existed.
+  packingSlipDocumentId
   reviewedBy
   reviewedAt
   rejectionReason

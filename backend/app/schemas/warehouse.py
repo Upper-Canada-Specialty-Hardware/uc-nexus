@@ -977,6 +977,9 @@ class WarehouseMutations:
                 author_name,
                 warehouse_id=uuid.UUID(str(input.warehouse_id)) if input.warehouse_id else None,
                 idempotency_key=(input.idempotency_key or "").strip() or None,
+                packing_slip_document_id=(
+                    uuid.UUID(str(input.packing_slip_document_id)) if input.packing_slip_document_id else None
+                ),
             )
             draft_id = draft.id
             session.commit()
