@@ -62,6 +62,8 @@ export interface ProjectHardwareScheduleHardwareItemResponse {
   itemCategoryCode: string | null;
   productGroupCode: string | null;
   submittalId: string | null;
+  // Persisted SITE_HARDWARE / SHOP_HARDWARE, or null for an item never classified (#492).
+  classification: string | null;
 }
 
 export interface ProjectHardwareScheduleResponse {
@@ -133,6 +135,7 @@ function mapHardwareItem(hi: ProjectHardwareScheduleHardwareItemResponse): Parse
     item_category_code: hi.itemCategoryCode,
     product_group_code: hi.productGroupCode,
     submittal_id: hi.submittalId,
+    classification: hi.classification,
   };
 }
 

@@ -268,7 +268,11 @@ export default function ImportWizard({
       { id: 'openings', label: 'Select Openings' },
       { id: 'reconciliation', label: 'Reconciliation' },
     ];
-    if (purpose === 'po' || purpose === 'assembly') {
+    // #492: only the PO purpose asks. A shop-assembly request runs against a project whose schedule
+    // is already classified, so re-asking forced the user to re-answer a question the system knows -
+    // and answering it differently than the original import is exactly the drift. The assembly
+    // purpose seeds its classifications from the persisted items instead (see below).
+    if (purpose === 'po') {
       base.push({ id: 'classification', label: 'Classification' });
     }
     if (purpose === 'po') base.push({ id: 'purchase-orders', label: 'Purchase Orders' });
@@ -403,6 +407,27 @@ export default function ImportWizard({
       }
     });
   }, [isReimport, parsedHardwareItems, existingProjectId, fetchExcludedItems]);
+
+  // #492: a shop-assembly request has no Classification step, so the SITE/SHOP answers come from the
+  // persisted schedule - the same values a PO request wrote. Only fills keys that have no value yet,
+  // so the exclusion-table seeding above and any manual choice both win over it.
+  useEffect(() => {
+    if (purpose !== 'assembly' || !parsedHardwareItems || parsedHardwareItems.length === 0) return;
+    setClassifications((prev) => {
+      const next = new Map(prev);
+      let changed = false;
+      for (const hi of parsedHardwareItems) {
+        const cls = hi.classification;
+        if (cls !== 'SITE_HARDWARE' && cls !== 'SHOP_HARDWARE') continue;
+        const ck = `${hi.hardware_category}|${hi.product_code}|${hi.unit_cost ?? 0}`;
+        if (!next.has(ck)) {
+          next.set(ck, cls);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [purpose, parsedHardwareItems]);
 
   // ---- Derived Data ----
 
@@ -630,6 +655,22 @@ export default function ImportWizard({
     }
     return map;
   }, [availabilityData]);
+
+  // #492: with no Classification step for this purpose, an item nobody ever classified has no
+  // SITE/SHOP answer anywhere - it is silently not shop work. Counting them here lets the step say
+  // so rather than leaving the user to wonder why an opening they picked produced nothing.
+  const unclassifiedShopCandidates = useMemo(() => {
+    if (purpose !== 'assembly' || !parsed) return [];
+    const seen = new Set<string>();
+    for (const hi of parsed.hardwareItems) {
+      if (!selectedOpenings.has(hi.opening_number)) continue;
+      const ck = classificationKey(hi);
+      const cls = classifications.get(ck);
+      if (cls === 'SITE_HARDWARE' || cls === 'SHOP_HARDWARE' || cls === 'BY_OTHERS') continue;
+      seen.add(`${hi.hardware_category} ${hi.product_code}`);
+    }
+    return Array.from(seen).sort();
+  }, [purpose, parsed, selectedOpenings, classifications]);
 
   // The shop-assembly work units this wizard would submit: one per (opening, leaf) with its
   // SHOP_HARDWARE items aggregated. Derived once and used by BOTH the availability gate and
@@ -1728,6 +1769,7 @@ export default function ImportWizard({
               availabilityLoading={availabilityLoading && availabilityData === undefined}
               availabilityError={availabilityError !== undefined}
               allocationStale={allocationStale}
+              unclassifiedItems={unclassifiedShopCandidates}
               onNext={handleNext}
               onBack={handleBack}
             />

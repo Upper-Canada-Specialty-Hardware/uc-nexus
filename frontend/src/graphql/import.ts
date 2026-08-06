@@ -58,6 +58,7 @@ export const GET_PROJECT_HARDWARE_SCHEDULE = gql`
         itemCategoryCode
         productGroupCode
         submittalId
+        classification
       }
     }
   }

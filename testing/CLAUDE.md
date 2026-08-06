@@ -566,8 +566,12 @@ parser. "Choose Different Source" on the loaded panel gets you back to the two c
 | Purpose | Steps |
 | --- | --- |
 | Create Purchase Orders | Upload File -> Purpose -> Select Openings -> Reconciliation -> Classification -> Purchase Orders -> Finalize (7) |
-| Pull Request for Shop Assembly | Upload File -> Purpose -> Select Openings -> Reconciliation -> Classification -> Shop Assembly -> Finalize (7) |
+| Pull Request for Shop Assembly | Upload File -> Purpose -> Select Openings -> Reconciliation -> Shop Assembly -> Finalize (6) |
 | Pull Request for Shipping Out | Upload File -> Purpose -> Select Openings -> Reconciliation -> Shipping PRs -> Finalize (6) |
+
+Since #492 the assembly flow has no Classification step: Site/Shop is read off the persisted
+schedule (the values a PO request wrote). Items never classified are named in an info banner on the
+Shop Assembly step and left out of the request.
 
 **Reconciliation is a hard gate on the assembly flow, and it fires before the Shop Assembly step.**
 With nothing in inventory it shows a red alert - `No items have In Inventory status. There is nothing
