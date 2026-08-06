@@ -669,7 +669,7 @@ const PICK_SHEET_FIELDS = `
     leaves { openingNumber leaf quantity }
     locations {
       inventoryLocationId warehouseId warehouseCode aisle row bay
-      available receivedAt draftQuantity appliedQuantity
+      available receivedAt draftQuantity appliedQuantity orderAs poNumber
     }
   }
   fetchItems {

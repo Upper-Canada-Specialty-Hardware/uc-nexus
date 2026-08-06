@@ -27,6 +27,13 @@ export interface PickSheetLocation {
   receivedAt: string;
   draftQuantity: number;
   appliedQuantity: number;
+  /**
+   * What the vendor calls this part, and the PO it arrived on (#496). Per location, not per
+   * section: one product can sit in inventory from several POs with different Order As values, so a
+   * section-level value would be wrong for every row but one. Null on a stock-origin row.
+   */
+  orderAs: string | null;
+  poNumber: string | null;
 }
 
 export interface PickSheetSection {

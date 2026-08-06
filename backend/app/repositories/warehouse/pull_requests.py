@@ -36,6 +36,8 @@ from app.models.opening_item import OpeningItem as OpeningItemModel
 from app.models.pull_pick_line import PullPickLine as PullPickLineModel
 from app.models.pull_request import PullRequest as PullRequestModel
 from app.models.pull_request import PullRequestItem as PullRequestItemModel
+from app.models.purchase_order import POLineItem as POLineItemModel
+from app.models.purchase_order import PurchaseOrder as POModel
 from app.models.shipping_out_request import ShippingOutRequest as ShippingOutRequestModel
 from app.models.shop_assembly import ShopAssemblyOpening
 from app.models.shop_assembly import ShopAssemblyRequest as ShopAssemblyRequestModel
@@ -393,6 +395,12 @@ class PickSheetLocation:
     received_at: datetime
     draft_quantity: int
     applied_quantity: int
+    # #496: what the vendor called this part, and the PO it arrived on. Per location rather than per
+    # section: one product can sit in inventory from several POs with different Order As values, so
+    # a section-level value would be wrong for every row but one. Null on a stock-origin row, which
+    # has no PO line behind it.
+    order_as: str | None = None
+    po_number: str | None = None
 
 
 @dataclass(frozen=True)
@@ -622,8 +630,11 @@ def get_pick_sheet(session: Session, pr_id: uuid.UUID) -> PickSheet:
         if referenced_location_ids:
             visibility = or_(visibility, InventoryLocationModel.id.in_(referenced_location_ids))
         rows = session.execute(
-            select(InventoryLocationModel, WarehouseModel.code)
+            select(InventoryLocationModel, WarehouseModel.code, POLineItemModel.order_as, POModel.po_number)
             .outerjoin(WarehouseModel, WarehouseModel.id == InventoryLocationModel.warehouse_id)
+            # #496: one joined read for the whole sheet, no per-row lazy loads.
+            .outerjoin(POLineItemModel, POLineItemModel.id == InventoryLocationModel.po_line_item_id)
+            .outerjoin(POModel, POModel.id == POLineItemModel.po_id)
             .where(
                 InventoryLocationModel.project_id == pr.project_id,
                 combo_clause,
@@ -631,7 +642,7 @@ def get_pick_sheet(session: Session, pr_id: uuid.UUID) -> PickSheet:
             )
             .order_by(InventoryLocationModel.received_at.asc(), InventoryLocationModel.id.asc())
         ).all()
-        for il, warehouse_code in rows:
+        for il, warehouse_code, order_as, po_number in rows:
             combo = (il.hardware_category, il.product_code)
             counts = by_location.get((*combo, il.id), {"draft": 0, "applied": 0})
             locations_by_combo[combo].append(
@@ -646,6 +657,8 @@ def get_pick_sheet(session: Session, pr_id: uuid.UUID) -> PickSheet:
                     received_at=il.received_at,
                     draft_quantity=counts["draft"],
                     applied_quantity=counts["applied"],
+                    order_as=order_as,
+                    po_number=po_number,
                 )
             )
 
