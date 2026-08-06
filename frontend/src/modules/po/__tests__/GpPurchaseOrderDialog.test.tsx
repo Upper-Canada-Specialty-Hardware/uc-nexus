@@ -15,7 +15,6 @@ import {
   GET_BUYER_ASSIGNMENTS,
   GET_PROJECTS,
   GET_RELAY_STATUS,
-  GET_VENDORS,
 } from '../../../graphql/shared';
 
 // DataGrid-heavy dialogs render slowly under jsdom, slower still when the whole suite runs in
@@ -56,7 +55,6 @@ const stockDraft: PurchaseOrder = {
   gpVendorId: null,
   vendorNameSnapshot: 'Ace Hardware Co',
   buyerId: null,
-  vendor: null,
   vendorQuoteNumber: null,
   shippingCost: null,
   tariffAmount: null,
@@ -197,31 +195,6 @@ function baseMocks(
   ];
 }
 
-// Nexus vendors for the create-mode VendorSelect autocomplete (issue #272: a draft links a Nexus
-// vendor, not a GP one).
-function nexusVendorsMock(): MockedResponse {
-  return {
-    request: { query: GET_VENDORS },
-    result: {
-      data: {
-        vendors: [
-          {
-            id: 'v-1',
-            name: 'Ace Hardware Co',
-            contactName: null,
-            email: null,
-            phone: null,
-            notes: null,
-            createdAt: '2026-07-01T12:00:00Z',
-            updatedAt: '2026-07-01T12:00:00Z',
-            __typename: 'Vendor',
-          },
-        ],
-      },
-    },
-    maxUsageCount: INFINITE,
-  };
-}
 
 // The two codes GP has active on the job. Both are offered - there is no per-buyer narrowing.
 function costCodesMock(): MockedResponse {
@@ -256,7 +229,6 @@ function registerData() {
         costCode: '310-000-3',
         gpVendorId: 'V-ACE',
         vendorNameSnapshot: 'Ace Hardware Co',
-        vendor: null,
       },
     },
   };
@@ -278,7 +250,6 @@ function queuedRegisterData() {
         costCode: '310-000-3',
         gpVendorId: 'V-ACE',
         vendorNameSnapshot: 'Ace Hardware Co',
-        vendor: null,
       },
     },
   };
@@ -664,7 +635,6 @@ describe('GpPurchaseOrderDialog', () => {
               gpCompany: null,
               gpVendorId: null,
               vendorNameSnapshot: null,
-              vendor: null,
               notes: 'rush order',
               preferredDeliveryDate: '2026-09-15',
               createdAt: '2026-07-02T12:00:00Z',
@@ -680,7 +650,6 @@ describe('GpPurchaseOrderDialog', () => {
     // Issue #272: drafting never touches GP, so a downed relay must not block it.
     const { onSubmitted } = renderDialog({ relayConnected: false }, [
       ...baseMocks(false),
-      nexusVendorsMock(),
       createDraftMock,
     ]);
 
@@ -690,15 +659,14 @@ describe('GpPurchaseOrderDialog', () => {
     expect(screen.queryByText('GP purchase order')).toBeNull();
     expect(screen.queryByLabelText('Buyer (you)')).toBeNull();
     expect(screen.queryByLabelText('GP Vendor')).toBeNull();
+    // And no plain "Vendor" field either (#509): GP owns vendors, so a draft names none at all
+    // rather than linking a Nexus-local record that has no PM00200 counterpart.
+    expect(screen.queryByLabelText('Vendor')).toBeNull();
 
     // Any project is draftable (buyer gating applies at registration, not drafting).
     const projectListbox = await openSelect('Project (Optional)');
     fireEvent.click(await within(projectListbox).findByText('Main St Job'));
     await closeSelect();
-
-    // Optional Nexus vendor link via the vendor autocomplete.
-    fireEvent.mouseDown(screen.getByLabelText('Vendor'));
-    fireEvent.click(await screen.findByText('Ace Hardware Co'));
 
     fireEvent.change(screen.getByLabelText('Preferred delivery date'), {
       target: { value: '2026-09-15' },
@@ -719,7 +687,6 @@ describe('GpPurchaseOrderDialog', () => {
     expect(calls[0]).toEqual({
       input: {
         projectId: 'p1',
-        vendorId: 'v-1',
         notes: 'rush order',
         preferredDeliveryDate: '2026-09-15',
         shippingCost: null,
@@ -872,4 +839,47 @@ it('says the relay is down rather than leaving the GP dropdowns silently dead', 
 
   const notices = await screen.findAllByText(/GP relay not connected/i);
   expect(notices.length).toBeGreaterThan(0);
+});
+
+// --- Order As defaults to the product code (#491) -----------------------------------------------
+// The dialog required a non-empty Order As on every line, which was stricter than the system it
+// feeds: build_create_po_payload already sends (order_as or product_code) as GP's item number. A
+// draft raised without Order As values could not be registered at all without retyping the product
+// code into every row.
+
+it('seeds Order As from the product code when the draft line has none', async () => {
+  const noOrderAs: PurchaseOrder = {
+    ...stockDraft,
+    lineItems: [{ ...stockDraft.lineItems[0], orderAs: null }],
+  };
+  renderDialog({ registerPo: noOrderAs });
+  await waitForVendorPreselect();
+
+  // Twice: the Product Code field itself, and Order As now mirroring it.
+  expect(screen.getAllByDisplayValue('HG-100')).toHaveLength(2);
+});
+
+it('registers with the product code as the item number when Order As is cleared', async () => {
+  const calls: Record<string, unknown>[] = [];
+  const registerMock: MockedResponse = {
+    request: { query: REGISTER_PO_IN_GP, variables: () => true },
+    result: (vars) => {
+      calls.push(vars as Record<string, unknown>);
+      return { data: registerData() };
+    },
+  };
+  const { onSubmitted } = renderDialog({ registerPo: stockDraft }, [
+    ...baseMocks(),
+    registerMock,
+  ]);
+  await waitForVendorPreselect();
+
+  fireEvent.change(screen.getByDisplayValue('ML2010'), { target: { value: '' } });
+  await selectTaxDetail();
+  fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+
+  // No "Required" error on the cleared row - the product code covers it.
+  await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
+  const input = calls[0].input as { lineItems: { orderAs: string }[] };
+  expect(input.lineItems[0].orderAs).toBe('HG-100');
 });

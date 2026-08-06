@@ -83,7 +83,7 @@ export interface PurchaseOrderDocumentProps {
   poNumber: string;
   date: string;
   requiredBy: string;
-  proposalNumber: string | null;
+  quotationNumber: string | null;
   companyFromAddress: string;
   vendorName: string;
   vendorAddress: string | null;
@@ -127,7 +127,7 @@ function lines(block: string | null | undefined): string[] {
 
 export default function PurchaseOrderDocument(props: PurchaseOrderDocumentProps) {
   const {
-    poNumber, date, requiredBy, proposalNumber, companyFromAddress,
+    poNumber, date, requiredBy, quotationNumber, companyFromAddress,
     vendorName, vendorAddress, shipTo,
     projectNumber, shippingMethod, paymentTerms, confirmWith, buyerName,
     currency, lineItems, freight, miscellaneous, taxAmount, taxLabel, tariffAmount,
@@ -161,7 +161,7 @@ export default function PurchaseOrderDocument(props: PurchaseOrderDocumentProps)
             <MetaRow label="Purchase Order No." value={poNumber || '-'} />
             <MetaRow label="Date" value={date} />
             <MetaRow label="Required by Date" value={requiredBy || '-'} />
-            {!!proposalNumber && <MetaRow label="Proposal" value={proposalNumber} />}
+            {!!quotationNumber && <MetaRow label="Quote" value={quotationNumber} />}
           </View>
         </View>
 

@@ -82,6 +82,9 @@ export interface ParsedHardwareItem {
   item_category_code: string | null;
   product_group_code: string | null;
   submittal_id: string | null;
+  // Persisted SITE_HARDWARE / SHOP_HARDWARE from a previous PO request (#492). Null on a freshly
+  // parsed XML - the file has no such concept - and on an item nobody has classified yet.
+  classification?: string | null;
 }
 
 export interface SkippedRow {

@@ -28,7 +28,6 @@ from .shipping import ShippingQueries
 from .shop_assembly import ShopAssemblyQueries
 from .stock import StockQueries
 from .user import UserQueries
-from .vendor import VendorQueries
 from .warehouse import WarehouseQueries
 
 
@@ -49,7 +48,6 @@ class Query(
     ShopAssemblyQueries,
     StockQueries,
     UserQueries,
-    VendorQueries,
     WarehouseQueries,
 ):
     pass

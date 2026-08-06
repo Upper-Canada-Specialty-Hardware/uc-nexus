@@ -68,7 +68,6 @@ function poDetailsMock(overrides: Record<string, unknown> = {}): MockedResponse 
           gpCompany: 'UCSH',
           gpVendorId: 'GPV-1',
           vendorNameSnapshot: 'Acme Hardware',
-          vendor: { __typename: 'Vendor', id: 'v-1', name: 'Acme Hardware', contactName: null },
           notes: null,
           status: 'ORDERED',
           lineItems: [
@@ -147,7 +146,6 @@ function secondPoDetailsMock(): MockedResponse {
           gpCompany: 'UCSH',
           gpVendorId: 'GPV-1',
           vendorNameSnapshot: 'Acme Hardware',
-          vendor: { __typename: 'Vendor', id: 'v-1', name: 'Acme Hardware', contactName: null },
           notes: null,
           status: 'ORDERED',
           lineItems: [

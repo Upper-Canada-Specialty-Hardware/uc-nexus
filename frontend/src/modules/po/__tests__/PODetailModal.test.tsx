@@ -9,7 +9,7 @@ import {
   UPDATE_PO_LINE_ITEM_ORDER_AS,
   UPDATE_PO_LINE_ITEM_UNIT_COST,
 } from '../../../graphql/po';
-import { GET_PROJECTS, GET_VENDORS } from '../../../graphql/shared';
+import { GET_PROJECTS } from '../../../graphql/shared';
 
 // DataGrid-heavy dialogs render slowly under jsdom, slower still when the whole suite runs in
 // parallel - lift both the per-test budget and testing-library's 1s async-util default.
@@ -68,7 +68,6 @@ const draftPo: PurchaseOrder = {
   gpVendorId: null,
   vendorNameSnapshot: 'Ace Hardware Co',
   buyerId: null,
-  vendor: null,
   vendorQuoteNumber: 'Q-100',
   shippingCost: 12.5,
   tariffAmount: 3,
@@ -111,14 +110,6 @@ function projectsMock(): MockedResponse {
   };
 }
 
-function vendorsMock(): MockedResponse {
-  return {
-    request: { query: GET_VENDORS },
-    result: { data: { vendors: [] } },
-    maxUsageCount: INFINITE,
-  };
-}
-
 // Full UPDATE_PO selection set (+ __typename) echoing the PO back.
 function updatePoData(po: PurchaseOrder) {
   return {
@@ -130,7 +121,6 @@ function updatePoData(po: PurchaseOrder) {
       status: po.status,
       gpVendorId: po.gpVendorId,
       vendorNameSnapshot: po.vendorNameSnapshot,
-      vendor: null,
       vendorQuoteNumber: po.vendorQuoteNumber,
       shippingCost: po.shippingCost,
       tariffAmount: po.tariffAmount,
@@ -205,7 +195,6 @@ describe('PODetailModal', () => {
   it('saves draft header edits via UPDATE_PO with tri-state costs and the preferred date only', async () => {
     const calls: Record<string, unknown>[] = [];
     const mocks: MockedResponse[] = [
-      vendorsMock(),
       {
         request: { query: UPDATE_PO, variables: () => true },
         result: (vars) => {
@@ -230,7 +219,6 @@ describe('PODetailModal', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]).toEqual({
       id: 'po-1',
-      vendorId: null,
       preferredDeliveryDate: '2026-09-15',
       expectedDeliveryDate: null,
       poNumber: null,
@@ -245,7 +233,6 @@ describe('PODetailModal', () => {
   it('edits the expected date (not preferred) once the PO is GP-registered', async () => {
     const calls: Record<string, unknown>[] = [];
     const mocks: MockedResponse[] = [
-      vendorsMock(),
       {
         request: { query: UPDATE_PO, variables: () => true },
         result: (vars) => {
@@ -266,7 +253,6 @@ describe('PODetailModal', () => {
     await screen.findByText('PO updated successfully');
     expect(calls[0]).toEqual({
       id: 'po-1',
-      vendorId: null,
       preferredDeliveryDate: null,
       expectedDeliveryDate: '2026-10-01',
       poNumber: 'PO-1001',
@@ -293,7 +279,6 @@ describe('PODetailModal', () => {
       updatedAt: '2026-07-01T12:00:00Z',
     };
     const mocks: MockedResponse[] = [
-      vendorsMock(),
       {
         request: { query: UPDATE_PO_LINE_ITEM_ORDER_AS, variables: () => true },
         result: (vars) => {
@@ -336,7 +321,6 @@ describe('PODetailModal', () => {
     expect(updateCalls).toEqual([
       {
         id: 'po-1',
-        vendorId: null,
         preferredDeliveryDate: '2026-08-01',
         expectedDeliveryDate: null,
         poNumber: null,

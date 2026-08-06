@@ -28,7 +28,6 @@ import type { GridColDef } from '@mui/x-data-grid';
 import Modal from '../../components/Modal';
 import DataTable from '../../components/DataTable';
 import ConfirmDialog from '../../components/ConfirmDialog';
-import VendorSelect from '../../components/VendorSelect';
 import OrderAsAutocomplete from '../../components/OrderAsAutocomplete';
 import { useToast } from '../../components/Toast';
 import { UPDATE_PO, CANCEL_PO, UPDATE_PO_LINE_ITEM_ORDER_AS, UPDATE_PO_LINE_ITEM_UNIT_COST, UPLOAD_PO_DOCUMENT, DELETE_PO_DOCUMENT } from '../../graphql/po';
@@ -36,7 +35,6 @@ import { GET_PRIOR_ORDER_AS_VALUES } from '../../graphql/shared';
 import type { PurchaseOrder } from './index';
 import GpPurchaseOrderDialog from './GpPurchaseOrderDialog';
 import POGenerateDialog from './POGenerateDialog';
-import POOpeningsSection from './POOpeningsSection';
 import { poVendorName } from './poVendorName';
 import { formatPoStatus, poStatusChipColor } from './poStatus';
 import { monoSx, tabularSx, microLabelSx } from '../../theme';
@@ -101,7 +99,6 @@ export default function PODetailModal({
   // Edit mode state
   const [editing, setEditing] = useState(false);
   const [poNumber, setPoNumber] = useState(po.poNumber ?? '');
-  const [vendorId, setVendorId] = useState<string | null>(po.vendor?.id ?? null);
   const [vendorQuoteNumber, setVendorQuoteNumber] = useState(po.vendorQuoteNumber ?? '');
   const [expectedDeliveryDate, setExpectedDeliveryDate] = useState(po.expectedDeliveryDate ?? '');
   const [preferredDeliveryDate, setPreferredDeliveryDate] = useState(po.preferredDeliveryDate ?? '');
@@ -109,7 +106,6 @@ export default function PODetailModal({
   // Issue #156: optional order-time dollar costs, kept as strings ('' = not entered, distinct from 0).
   const [shippingCost, setShippingCost] = useState(po.shippingCost != null ? String(po.shippingCost) : '');
   const [tariffAmount, setTariffAmount] = useState(po.tariffAmount != null ? String(po.tariffAmount) : '');
-  const [vendorIdError, setVendorIdError] = useState('');
   const [poNumberError, setPoNumberError] = useState('');
   const [aliasEdits, setAliasEdits] = useState<Record<string, string>>({});
   const [unitCostEdits, setUnitCostEdits] = useState<Record<string, string>>({});
@@ -139,9 +135,7 @@ export default function PODetailModal({
         const code = error.errors?.[0]?.extensions?.code;
         if (code === 'VALIDATION_ERROR') {
           const field = error.errors?.[0]?.extensions?.field;
-          if (field === 'vendor_id') {
-            setVendorIdError('Vendor is required');
-          } else if (field === 'po_number') {
+          if (field === 'po_number') {
             setPoNumberError(error.errors?.[0]?.message ?? 'Invalid PO number');
           } else {
             showToast(error.message, 'error');
@@ -198,14 +192,12 @@ export default function PODetailModal({
 
   const handleStartEdit = () => {
     setPoNumber(po.poNumber ?? '');
-    setVendorId(po.vendor?.id ?? null);
     setVendorQuoteNumber(po.vendorQuoteNumber ?? '');
     setExpectedDeliveryDate(po.expectedDeliveryDate ?? '');
     setPreferredDeliveryDate(po.preferredDeliveryDate ?? '');
     setNotes(po.notes ?? '');
     setShippingCost(po.shippingCost != null ? String(po.shippingCost) : '');
     setTariffAmount(po.tariffAmount != null ? String(po.tariffAmount) : '');
-    setVendorIdError('');
     setPoNumberError('');
     const initialAliases: Record<string, string> = {};
     const initialUnitCosts: Record<string, string> = {};
@@ -220,12 +212,10 @@ export default function PODetailModal({
 
   const handleCancelEdit = () => {
     setEditing(false);
-    setVendorIdError('');
     setPoNumberError('');
   };
 
   const handleSave = async () => {
-    setVendorIdError('');
     setPoNumberError('');
 
     // Save line item changes (alias + unit cost)
@@ -269,7 +259,6 @@ export default function PODetailModal({
     updatePo({
       variables: {
         id: po.id,
-        vendorId: vendorId || null,
         preferredDeliveryDate: isDraft ? preferredDeliveryDate || null : null,
         expectedDeliveryDate: !isDraft ? expectedDeliveryDate || null : null,
         poNumber: poNumber || null,
@@ -399,8 +388,9 @@ export default function PODetailModal({
   const { data: priorData } = useQuery<{
     priorOrderAsValues: { productCode: string; values: string[] }[];
   }>(GET_PRIOR_ORDER_AS_VALUES, {
-    variables: { vendorId: po.vendor?.id ?? '', productCodes: distinctProductCodes },
-    skip: !canEditItems || !po.vendor?.id || distinctProductCodes.length === 0,
+    // Scoped to this PO's project (#509); null on a stock PO, which scopes to the other stock POs.
+    variables: { projectId: po.projectId ?? null, productCodes: distinctProductCodes },
+    skip: !canEditItems || distinctProductCodes.length === 0,
   });
 
   const priorMap = useMemo(() => {
@@ -607,15 +597,8 @@ export default function PODetailModal({
               fullWidth
               size="small"
             />
-            <VendorSelect
-              value={vendorId}
-              onChange={(id) => {
-                setVendorId(id);
-                if (vendorIdError) setVendorIdError('');
-              }}
-              error={!!vendorIdError}
-              helperText={vendorIdError}
-            />
+            {/* No vendor field: GP owns vendors (#509). The PO's vendor arrives with the register
+                push and is read-only here; the quote number below is our own record of it. */}
             <TextField
               label="Vendor Quote Number"
               value={vendorQuoteNumber}
@@ -692,7 +675,6 @@ export default function PODetailModal({
             >
               <InfoField label="PO Number" value={po.poNumber} placeholder="Not assigned" mono />
               <InfoField label="Vendor" value={poVendorName(po)} />
-              <InfoField label="Vendor Contact" value={po.vendor?.contactName} />
               <InfoField label="Vendor Quote #" value={po.vendorQuoteNumber} mono />
               <InfoField
                 label="Shipping Costs"
@@ -713,11 +695,6 @@ export default function PODetailModal({
               <Box sx={{ gridColumn: '1 / -1' }}>
                 <InfoField label="Notes" value={po.notes} wrap />
               </Box>
-              {vendorIdError && (
-                <Typography color="error" variant="body2" sx={{ gridColumn: '1 / -1' }}>
-                  {vendorIdError}
-                </Typography>
-              )}
             </Box>
           </FadeIn>
         )}
@@ -737,12 +714,6 @@ export default function PODetailModal({
             No line items.
           </Typography>
         )}
-
-        {/* Which doors this PO is for (#302). Below the line items, which are the product view of the
-            same hardware - this is the opening view the buyer works from on the schedule. Renders
-            nothing at all for a stock PO, which has no hardware schedule behind it (its own section
-            rule goes with it, so no orphaned heading is left behind). */}
-        <POOpeningsSection poId={po.id} />
 
         {/* Documents Section */}
         <SectionHeading

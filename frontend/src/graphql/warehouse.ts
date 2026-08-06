@@ -116,10 +116,6 @@ export const GET_OPEN_POS = gql`
       status
       gpVendorId
       vendorNameSnapshot
-      vendor {
-        id
-        name
-      }
       notes
       orderedAt
       expectedDeliveryDate
@@ -217,11 +213,6 @@ export const GET_PO_RECEIVING_DETAILS = gql`
       gpCompany
       gpVendorId
       vendorNameSnapshot
-      vendor {
-        id
-        name
-        contactName
-      }
       notes
       status
       lineItems {

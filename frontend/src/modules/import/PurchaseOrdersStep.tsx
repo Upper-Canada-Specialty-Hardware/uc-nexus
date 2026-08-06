@@ -1,7 +1,6 @@
 import { useMemo } from 'react';
 import { Box, Button, Checkbox, FormControlLabel, InputAdornment, Paper, TextField, Typography } from '@mui/material';
 import { useQuery } from '@apollo/client/react';
-import VendorSelect from '../../components/VendorSelect';
 import OrderAsAutocomplete from '../../components/OrderAsAutocomplete';
 import { GET_PRIOR_ORDER_AS_VALUES } from '../../graphql/shared';
 import type { AggregatedHardwareItem } from './types';
@@ -30,15 +29,17 @@ interface PriorOrderAsQueryData {
 // ---- Props ----
 
 interface PurchaseOrdersStepProps {
+  /** The wizard's project - order-as memory is scoped to it (#509). */
+  projectId: string;
   vendorGroups: Map<string, AggregatedHardwareItem[]>;
-  vendorPOInfo: Map<string, { vendorId: string | null; notes: string; preferredDeliveryDate: string }>;
+  vendorPOInfo: Map<string, { notes: string; preferredDeliveryDate: string }>;
   selectedVendors: Set<string>;
   unitCostOverrides: Map<string, number>;
   orderAsValues: Map<string, string>;
   onToggleVendor: (vendor: string) => void;
   onUpdateVendorPO: (
     manufacturerKey: string,
-    field: 'vendorId' | 'notes' | 'preferredDeliveryDate',
+    field: 'notes' | 'preferredDeliveryDate',
     value: string | null,
   ) => void;
   onUpdateUnitCost: (vendor: string, productCode: string, hardwareCategory: string, newCost: number) => void;
@@ -85,16 +86,17 @@ function aggregateLineItems(
 // ---- Vendor Group Card (per-manufacturer subcomponent so useQuery is hook-safe) ----
 
 interface VendorGroupCardProps {
+  projectId: string;
   vendor: string;
   items: AggregatedHardwareItem[];
-  info: { vendorId: string | null; notes: string; preferredDeliveryDate: string };
+  info: { notes: string; preferredDeliveryDate: string };
   isSelected: boolean;
   unitCostOverrides: Map<string, number>;
   orderAsValues: Map<string, string>;
   onToggleVendor: (vendor: string) => void;
   onUpdateVendorPO: (
     manufacturerKey: string,
-    field: 'vendorId' | 'notes' | 'preferredDeliveryDate',
+    field: 'notes' | 'preferredDeliveryDate',
     value: string | null,
   ) => void;
   onUpdateUnitCost: (vendor: string, productCode: string, hardwareCategory: string, newCost: number) => void;
@@ -102,6 +104,7 @@ interface VendorGroupCardProps {
 }
 
 function VendorGroupCard({
+  projectId,
   vendor,
   items,
   info,
@@ -123,9 +126,12 @@ function VendorGroupCard({
     [aggregated],
   );
 
+  // Scoped to the project (#509) - what a part is ordered as is remembered per job. It used to need
+  // a Nexus vendor picked first, so the suggestions were usually absent at the one moment they are
+  // useful; the project is known here, and it also bounds a query the wizard fires once per card.
   const { data: priorData } = useQuery<PriorOrderAsQueryData>(GET_PRIOR_ORDER_AS_VALUES, {
-    variables: { vendorId: info.vendorId ?? '', productCodes },
-    skip: !info.vendorId || productCodes.length === 0,
+    variables: { projectId, productCodes },
+    skip: productCodes.length === 0,
   });
 
   const priorMap = useMemo(() => {
@@ -161,15 +167,9 @@ function VendorGroupCard({
         </Box>
       </Box>
 
-      {/* Vendor select + Preferred delivery date + Notes fields */}
+      {/* Preferred delivery date + Notes. No vendor field: the GP vendor (PM00200) is picked when the
+          draft is registered into GP, and it is the only vendor a PO has (#509). */}
       <Box sx={{ display: 'flex', gap: 2, mb: 2 }}>
-        <Box sx={{ flex: 1 }}>
-          <VendorSelect
-            value={info.vendorId}
-            onChange={(id) => onUpdateVendorPO(vendor, 'vendorId', id)}
-            disabled={!isSelected}
-          />
-        </Box>
         <TextField
           label="Preferred delivery date"
           size="small"
@@ -224,7 +224,9 @@ function VendorGroupCard({
       >
         {/* Header row */}
         <Box className="po-head">Order As</Box>
-        <Box className="po-head">Product Code</Box>
+        {/* TITAN's scheduled part number, read-only from the schedule. "Order As" beside it is the
+            vendor-facing alias the buyer types. Data field stays productCode (#482). */}
+        <Box className="po-head">Scheduled Part Number</Box>
         <Box className="po-head">Hardware Category</Box>
         <Box className="po-head" sx={{ textAlign: 'right' }}>
           Total Qty
@@ -302,6 +304,7 @@ function VendorGroupCard({
 // ---- Component ----
 
 export default function PurchaseOrdersStep({
+  projectId,
   vendorGroups,
   vendorPOInfo,
   selectedVendors,
@@ -329,16 +332,17 @@ export default function PurchaseOrdersStep({
         Purchase Orders
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, mb: 3 }}>
-        {vendorGroups.size} manufacturer group(s). Select which to create purchase orders for, and pick a vendor (the company you buy from). PO numbers can be assigned later from Microsoft GP.
+        {vendorGroups.size} manufacturer group(s). Select which to create purchase order requests for. The GP vendor to buy from, and the PO number, are chosen later when the request is registered in Microsoft GP.
       </Typography>
 
       <StaggerList count={sortedVendors.length}>
         {sortedVendors.map(([vendor, items]) => {
-          const info = vendorPOInfo.get(vendor) ?? { vendorId: null, notes: '', preferredDeliveryDate: '' };
+          const info = vendorPOInfo.get(vendor) ?? { notes: '', preferredDeliveryDate: '' };
           const isSelected = selectedVendors.has(vendor);
           return (
             <StaggerItem key={vendor}>
               <VendorGroupCard
+                projectId={projectId}
                 vendor={vendor}
                 items={items}
                 info={info}

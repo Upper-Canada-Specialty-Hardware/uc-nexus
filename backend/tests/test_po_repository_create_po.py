@@ -8,16 +8,8 @@ from app.errors import ValidationError
 from app.models.enums import HardwareItemState
 from app.models.hardware import HardwareItem
 from app.models.project import Opening, Project
-from app.models.vendor import Vendor
 from app.repositories import po_repository
 from app.schemas import po as po_schema
-
-
-def _make_vendor(session, name: str = "Acme") -> Vendor:
-    v = Vendor(id=uuid.uuid4(), name=f"{name}-{uuid.uuid4().hex[:6]}")
-    session.add(v)
-    session.flush()
-    return v
 
 
 def _make_project(session) -> Project:
@@ -137,11 +129,9 @@ def _line_item(order_as: str | None) -> dict:
 
 
 def test_create_po_succeeds_with_order_as(db_session):
-    vendor = _make_vendor(db_session)
     po = po_repository.create_po(
         db_session,
         line_items=[_line_item("ML2010")],
-        vendor_id=vendor.id,
     )
     db_session.refresh(po)
     assert len(po.line_items) == 1
@@ -149,56 +139,46 @@ def test_create_po_succeeds_with_order_as(db_session):
 
 
 def test_create_po_strips_order_as_whitespace(db_session):
-    vendor = _make_vendor(db_session)
     po = po_repository.create_po(
         db_session,
         line_items=[_line_item("  ML2010  ")],
-        vendor_id=vendor.id,
     )
     db_session.refresh(po)
     assert po.line_items[0].order_as == "ML2010"
 
 
 def test_create_po_rejects_missing_order_as(db_session):
-    vendor = _make_vendor(db_session)
     with pytest.raises(ValidationError) as exc:
         po_repository.create_po(
             db_session,
             line_items=[_line_item(None)],
-            vendor_id=vendor.id,
         )
     assert exc.value.field == "order_as"
 
 
 def test_create_po_rejects_empty_order_as(db_session):
-    vendor = _make_vendor(db_session)
     with pytest.raises(ValidationError) as exc:
         po_repository.create_po(
             db_session,
             line_items=[_line_item("")],
-            vendor_id=vendor.id,
         )
     assert exc.value.field == "order_as"
 
 
 def test_create_po_rejects_whitespace_only_order_as(db_session):
-    vendor = _make_vendor(db_session)
     with pytest.raises(ValidationError) as exc:
         po_repository.create_po(
             db_session,
             line_items=[_line_item("   ")],
-            vendor_id=vendor.id,
         )
     assert exc.value.field == "order_as"
 
 
 def test_create_po_rejects_when_any_line_item_missing_order_as(db_session):
-    vendor = _make_vendor(db_session)
     with pytest.raises(ValidationError) as exc:
         po_repository.create_po(
             db_session,
             line_items=[_line_item("ML2010"), _line_item(None)],
-            vendor_id=vendor.id,
         )
     assert exc.value.field == "order_as"
 
@@ -212,8 +192,7 @@ def test_update_po_preferred_date_only_on_draft(db_session):
     from app.errors import InvalidStateTransitionError
     from app.models.enums import POStatus
 
-    vendor = _make_vendor(db_session)
-    po = po_repository.create_po(db_session, line_items=[_line_item("ML2010")], vendor_id=vendor.id)
+    po = po_repository.create_po(db_session, line_items=[_line_item("ML2010")])
     db_session.flush()
 
     po_repository.update_po(db_session, po.id, preferred_delivery_date=date_cls(2026, 8, 1))
@@ -238,11 +217,9 @@ def test_update_po_preferred_date_only_on_draft(db_session):
 def test_create_po_persists_shipping_cost_and_tariff(db_session):
     from decimal import Decimal
 
-    vendor = _make_vendor(db_session)
     po = po_repository.create_po(
         db_session,
         line_items=[_line_item("ML2010")],
-        vendor_id=vendor.id,
         shipping_cost=125.5,
         tariff_amount=0,
     )
@@ -253,11 +230,9 @@ def test_create_po_persists_shipping_cost_and_tariff(db_session):
 
 
 def test_create_po_defaults_shipping_cost_and_tariff_to_null(db_session):
-    vendor = _make_vendor(db_session)
     po = po_repository.create_po(
         db_session,
         line_items=[_line_item("ML2010")],
-        vendor_id=vendor.id,
     )
     db_session.refresh(po)
     assert po.shipping_cost is None
@@ -265,23 +240,19 @@ def test_create_po_defaults_shipping_cost_and_tariff_to_null(db_session):
 
 
 def test_create_po_rejects_negative_shipping_cost(db_session):
-    vendor = _make_vendor(db_session)
     with pytest.raises(ValidationError) as exc:
         po_repository.create_po(
             db_session,
             line_items=[_line_item("ML2010")],
-            vendor_id=vendor.id,
             shipping_cost=-1,
         )
     assert exc.value.field == "shipping_cost"
 
 
 def test_update_po_rejects_negative_tariff(db_session):
-    vendor = _make_vendor(db_session)
     po = po_repository.create_po(
         db_session,
         line_items=[_line_item("ML2010")],
-        vendor_id=vendor.id,
     )
     db_session.flush()
     with pytest.raises(ValidationError) as exc:
@@ -292,11 +263,9 @@ def test_update_po_rejects_negative_tariff(db_session):
 def test_update_po_sets_clears_and_leaves_shipping_cost_and_tariff(db_session):
     from decimal import Decimal
 
-    vendor = _make_vendor(db_session)
     po = po_repository.create_po(
         db_session,
         line_items=[_line_item("ML2010")],
-        vendor_id=vendor.id,
     )
     db_session.flush()
 

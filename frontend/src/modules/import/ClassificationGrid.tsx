@@ -26,6 +26,12 @@ import { monoSx, microLabelSx } from '../../theme';
 export interface ClassificationRow {
   id: string;
   openingNumber: string;
+  // #486: the opening's own attributes, carried through so the classifier can see what door each
+  // item belongs to without leaving the step. Sourced from ParsedOpening (hand / leaf_count /
+  // door_type), not from the hardware item.
+  hand: string;
+  doorQuantity: number | null;
+  doorMaterial: string;
   productCode: string;
   hardwareCategory: string;
   vendorNo: string;
@@ -40,13 +46,14 @@ export interface ClassificationRow {
 }
 
 export type GroupByField = 'hardwareCategory' | 'vendorNo' | 'productCode' | 'openingNumber'
-  | 'unitCost' | 'listPrice' | 'vendorDiscount' | 'itemQuantity';
+  | 'doorMaterial' | 'unitCost' | 'listPrice' | 'vendorDiscount' | 'itemQuantity';
 
 const GROUP_BY_OPTIONS: { value: GroupByField; label: string }[] = [
   { value: 'hardwareCategory', label: 'Hardware Category' },
   { value: 'vendorNo', label: 'Manufacturer' },
   { value: 'productCode', label: 'Product Code' },
   { value: 'openingNumber', label: 'Opening Number' },
+  { value: 'doorMaterial', label: 'Door Material' },
   { value: 'unitCost', label: 'Unit Cost' },
   { value: 'listPrice', label: 'List Price' },
   { value: 'vendorDiscount', label: 'Vendor Discount' },
@@ -118,11 +125,54 @@ function buildGroupTree(rows: ClassificationRow[], fields: GroupByField[]): Map<
   return result;
 }
 
+// #485: every text column was sized by flex alone. Each row also carries two ToggleButtonGroups
+// that hold a fixed width, so on a narrow viewport the flex columns were squeezed to ~100px - about
+// 12-15 characters - and long product codes, categories and manufacturers were clipped. minWidth
+// stops the squeeze and lets the grid scroll horizontally instead; the widths mirror the ones
+// SelectOpeningsStep already uses. wrap-cell lets the value break across lines rather than
+// ellipsize, and title= puts the full value in a hover tooltip either way.
 const ALL_COLUMNS: GridColDef[] = [
-  { field: 'openingNumber', headerName: 'Opening #', flex: 0.7, cellClassName: 'mono-cell' },
-  { field: 'productCode', headerName: 'Product Code', flex: 1, cellClassName: 'wrap-cell mono-cell' },
-  { field: 'hardwareCategory', headerName: 'Hardware Category', flex: 1, cellClassName: 'wrap-cell' },
-  { field: 'vendorNo', headerName: 'Manufacturer', flex: 0.8, cellClassName: 'mono-cell' },
+  {
+    field: 'openingNumber',
+    headerName: 'Opening #',
+    flex: 0.7,
+    minWidth: 110,
+    cellClassName: 'mono-cell',
+    renderCell: (params) => <span title={String(params.value ?? '')}>{params.value}</span>,
+  },
+  // #486: fixed small widths - these are short values and the row is already crowded by the two
+  // toggle groups, so they must not take room from the text columns (#485).
+  { field: 'hand', headerName: 'Hand', width: 70 },
+  {
+    field: 'doorQuantity',
+    headerName: 'Door Qty',
+    width: 80,
+    type: 'number',
+    valueFormatter: (value: number | null) => (value != null ? String(value) : '—'),
+  },
+  { field: 'doorMaterial', headerName: 'Door Material', width: 120, cellClassName: 'wrap-cell' },
+  {
+    field: 'productCode',
+    headerName: 'Product Code',
+    flex: 1,
+    minWidth: 140,
+    cellClassName: 'wrap-cell mono-cell',
+  },
+  {
+    field: 'hardwareCategory',
+    headerName: 'Hardware Category',
+    flex: 1,
+    minWidth: 150,
+    cellClassName: 'wrap-cell',
+  },
+  {
+    field: 'vendorNo',
+    headerName: 'Manufacturer',
+    flex: 0.8,
+    minWidth: 120,
+    cellClassName: 'wrap-cell mono-cell',
+    renderCell: (params) => <span title={String(params.value ?? '')}>{params.value}</span>,
+  },
   {
     field: 'listPrice',
     headerName: 'List Price',
@@ -283,7 +333,12 @@ function GroupAccordion({ node, columns, options, onClassify, readOnly, depth, s
     >
       <AccordionSummary expandIcon={<ChevronDown size={18} strokeWidth={1.75} />}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%', mr: 1 }}>
-          <Typography sx={{ fontWeight: 700, ...monoSx, fontSize: '0.875rem' }}>{node.label}</Typography>
+          <Typography
+            title={node.label}
+            sx={{ fontWeight: 700, ...monoSx, fontSize: '0.875rem', whiteSpace: 'normal', wordBreak: 'break-word' }}
+          >
+            {node.label}
+          </Typography>
           <Chip
             size="small"
             label={

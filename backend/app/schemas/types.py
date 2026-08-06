@@ -99,18 +99,6 @@ class HardwareItem:
 
 
 @strawberry.type
-class Vendor:
-    id: strawberry.ID
-    name: str
-    contact_name: str | None
-    email: str | None
-    phone: str | None
-    notes: str | None
-    created_at: datetime
-    updated_at: datetime
-
-
-@strawberry.type
 class RelayInstallProvision:
     """Result of provisioning a relay install. enrollment_token is shown ONCE - it never comes back."""
 
@@ -522,7 +510,7 @@ class PODocumentData:
     currency: str
     ship_to: str | None
     shipping_method: str | None
-    proposal_number: str | None
+    quotation_number: str | None
     freight: float
     miscellaneous: float
     tax_amount: float
@@ -581,27 +569,6 @@ class ProjectShipTo:
 
 
 @strawberry.type
-class POOpeningItem:
-    hardware_category: str
-    product_code: str
-    quantity: int
-
-
-@strawberry.type
-class POOpening:
-    """One (opening, leaf) this PO's hardware was bought for (#302). The PO carries only fungible
-    (category, product) lines, so this is the only place the buyer can see which doors the order is
-    for. leaf is null for a frame or a legacy item that predates #311."""
-
-    opening_number: str
-    leaf: int | None
-    building: str | None
-    floor: str | None
-    location: str | None
-    items: list[POOpeningItem]
-
-
-@strawberry.type
 class PurchaseOrder:
     id: strawberry.ID
     po_number: str | None
@@ -615,7 +582,6 @@ class PurchaseOrder:
     buyer_id: str | None
     # Clerk user id of whoever raised this PO request. Null on POs from before it was recorded.
     created_by_user_id: str | None
-    vendor: Vendor | None
     vendor_quote_number: str | None
     shipping_cost: float | None
     tariff_amount: float | None
@@ -1980,7 +1946,6 @@ class ShopAssemblyStats:
 
 @strawberry.type
 class AdminStats:
-    vendor_count: int
     user_count: int
     hardware_item_count: int
     opening_count: int

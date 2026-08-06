@@ -1,11 +1,9 @@
 """backOrderedItems names the vendor the way every other PO view does (#474).
 
 A GP-registered PO carries its vendor as `vendor_name_snapshot` - the GP vendor picked live at push
-time - and has no Nexus vendor row at all, which is the normal case now. The back-order query
-selected only `Vendor.name` off its outer join, so the Back-Ordered Items grid showed a blank vendor
-for the very PO that POs Awaiting Receipt named correctly on the same page. The read is now the same
-coalesce `po_to_type` and the receiving history use: the snapshot first, the local vendor row only
-for POs old enough to predate that column.
+time - and that is now the only vendor a PO has (#509). The back-order query used to select
+`Vendor.name` off an outer join to the local vendors table, so the Back-Ordered Items grid showed a
+blank vendor for the very PO that POs Awaiting Receipt named correctly on the same page.
 """
 
 import uuid
@@ -14,7 +12,6 @@ from decimal import Decimal
 from app.models.enums import POStatus
 from app.models.project import Project
 from app.models.purchase_order import POLineItem, PurchaseOrder
-from app.models.vendor import Vendor
 from app.repositories import warehouse as warehouse_repository
 
 
@@ -25,7 +22,7 @@ def _make_project(session) -> Project:
     return p
 
 
-def _make_back_ordered_po(session, project_id, *, vendor_id=None, vendor_name_snapshot=None):
+def _make_back_ordered_po(session, project_id, *, vendor_name_snapshot=None):
     po = PurchaseOrder(
         id=uuid.uuid4(),
         request_number=f"REQ-{uuid.uuid4().hex[:8]}",
@@ -33,7 +30,6 @@ def _make_back_ordered_po(session, project_id, *, vendor_id=None, vendor_name_sn
         status=POStatus.GP_REGISTERED,
         po_number=f"PO{uuid.uuid4().hex[:6]}",
         gp_company="TEST",
-        vendor_id=vendor_id,
         vendor_name_snapshot=vendor_name_snapshot,
     )
     session.add(po)
@@ -61,32 +57,18 @@ def _vendor_shown_for(session, po, project_id):
     return matches[0]["vendor_name"]
 
 
-def test_gp_snapshot_names_the_vendor_without_a_local_row(db_session):
-    """The regression: a GP-registered PO has no Nexus vendor row, only the snapshot, and the grid
-    showed nothing at all for it."""
+def test_gp_snapshot_names_the_vendor(db_session):
+    """The regression: the grid showed nothing at all for a PO carrying only the snapshot."""
     project = _make_project(db_session)
     po = _make_back_ordered_po(db_session, project.id, vendor_name_snapshot="GALLERY SPECIALTY HARDWARE LTD")
 
     assert _vendor_shown_for(db_session, po, project.id) == "GALLERY SPECIALTY HARDWARE LTD"
 
 
-def test_a_pre_snapshot_po_still_falls_back_to_its_local_vendor_row(db_session):
-    """POs old enough to predate the snapshot column keep being named off the joined vendor row."""
+def test_a_po_with_no_snapshot_names_no_vendor(db_session):
+    """A DRAFT that was marked ordered without ever being pushed to GP has no vendor to name, and
+    says so rather than inventing one (#509 - there is no local vendor row to fall back to)."""
     project = _make_project(db_session)
-    vendor = Vendor(id=uuid.uuid4(), name="Acme Doors")
-    db_session.add(vendor)
-    db_session.flush()
-    po = _make_back_ordered_po(db_session, project.id, vendor_id=vendor.id)
+    po = _make_back_ordered_po(db_session, project.id)
 
-    assert _vendor_shown_for(db_session, po, project.id) == "Acme Doors"
-
-
-def test_the_snapshot_wins_over_the_local_row(db_session):
-    """Same precedence as po_to_type: what was pushed to GP is what the PO is named by."""
-    project = _make_project(db_session)
-    vendor = Vendor(id=uuid.uuid4(), name="Stale Local Name")
-    db_session.add(vendor)
-    db_session.flush()
-    po = _make_back_ordered_po(db_session, project.id, vendor_id=vendor.id, vendor_name_snapshot="GP VENDOR LTD")
-
-    assert _vendor_shown_for(db_session, po, project.id) == "GP VENDOR LTD"
+    assert _vendor_shown_for(db_session, po, project.id) is None

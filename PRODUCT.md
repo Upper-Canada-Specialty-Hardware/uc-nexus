@@ -6,7 +6,7 @@ product
 
 ## Users
 
-Internal UCSH (Upper Canada Specialty Hardware) staff run UC Nexus across the full door-hardware fulfillment lifecycle. Distinct roles live in distinct modules:
+Internal UCH (UC Hardware Inc.) staff run UC Nexus across the full door-hardware fulfillment lifecycle. Distinct roles live in distinct modules:
 
 - Purchasing / buyers: import hardware schedules from TITAN, create and register POs (pushed into Great Plains via a local relay), generate supplier PO documents.
 - Warehouse staff: receive POs, put away and stock inventory, manage bin/locations, work pull requests.

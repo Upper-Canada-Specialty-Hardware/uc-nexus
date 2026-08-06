@@ -16,7 +16,6 @@ from app.models.project import Opening as OpeningModel
 from app.models.project import Project as ProjectModel
 from app.models.purchase_order import POLineItem as POLineItemModel
 from app.models.purchase_order import PurchaseOrder as POModel
-from app.models.vendor import Vendor as VendorModel
 
 from .audit import _log_audit_event
 from .locations import _normalize_and_validate_location_fields
@@ -185,30 +184,60 @@ def get_unlocated_inventory(session: Session, project_id: uuid.UUID | None = Non
 
 
 def get_inventory_by_vendor(session: Session, project_id: uuid.UUID | None = None) -> list[dict]:
-    """Group inventory by vendor name (via PO.vendor_id → Vendor), then product_code."""
+    """Group inventory by the GP vendor the hardware was bought from, then product_code.
+
+    Grouped on `gp_vendor_id` - the PM00200 VENDORID - and only *labelled* with the PO's
+    `vendor_name_snapshot`. Those are the only vendor fields a PO has since #509, and the id is the
+    stable one: two POs pushed to the same GP vendor whose snapshots differ by case, trailing
+    whitespace, or a rename in GP between the pushes are one vendor, and keying on the display text
+    would split their stock into two groups. The label is whichever snapshot the group saw first.
+
+    A PO that predates the gp_vendor_id column can carry a snapshot without an id; those fall back to
+    grouping on the snapshot text, which is the only handle they have, rather than collapsing into
+    "No Vendor" and losing the name. Stock-allocated rows have no PO behind them and a
+    never-registered draft has neither field; those are the actual "No Vendor" bucket.
+    """
     stmt = (
-        select(InventoryLocationModel, POLineItemModel.unit_cost, VendorModel.name)
+        select(
+            InventoryLocationModel,
+            POLineItemModel.unit_cost,
+            POModel.gp_vendor_id,
+            POModel.vendor_name_snapshot,
+        )
         .outerjoin(POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id)
         .outerjoin(POModel, POLineItemModel.po_id == POModel.id)
-        .outerjoin(VendorModel, POModel.vendor_id == VendorModel.id)
         # Hide rows fully emptied by destock/allocation (kept in DB for FK integrity).
         .where(InventoryLocationModel.quantity > 0)
     )
     if project_id is not None:
         stmt = stmt.where(InventoryLocationModel.project_id == project_id)
-    stmt = stmt.order_by(VendorModel.name, InventoryLocationModel.product_code)
+    # No ORDER BY: every row is re-bucketed by vendor and re-sorted below, so sorting in the database
+    # is work the Python discards.
     rows = list(session.execute(stmt).all())
 
-    vendor_map: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
-    for il, unit_cost, vendor_name in rows:
-        vname = vendor_name or "No Vendor"
+    # Keyed by ("id", gp_vendor_id) where GP gave us one, else ("name", snapshot) for a pre-column
+    # PO, else None for the "No Vendor" bucket. The tag keeps an id from ever colliding with a name.
+    vendor_labels: dict[tuple[str, str] | None, str] = {}
+    vendor_map: dict[tuple[str, str] | None, dict[str, list]] = defaultdict(lambda: defaultdict(list))
+    for il, unit_cost, gp_vendor_id, vendor_name in rows:
+        if gp_vendor_id:
+            key = ("id", gp_vendor_id)
+            label = vendor_name or gp_vendor_id
+        elif vendor_name:
+            key = ("name", vendor_name)
+            label = vendor_name
+        else:
+            key = None
+            label = "No Vendor"
+        vendor_labels.setdefault(key, label)
         # Stock-allocated rows (stock_item origin) have no PO unit_cost; coerce to 0 like the
         # category hierarchy does, otherwise the float() in the value sum below blows up.
-        vendor_map[vname][il.product_code].append((il, unit_cost or 0))
+        vendor_map[key][il.product_code].append((il, unit_cost or 0))
 
     result = []
-    for vendor in sorted(vendor_map.keys()):
-        pc_map = vendor_map[vendor]
+    for vendor_key in sorted(vendor_map.keys(), key=lambda k: vendor_labels[k]):
+        vendor = vendor_labels[vendor_key]
+        pc_map = vendor_map[vendor_key]
         pc_nodes = []
         vendor_total = 0
         vendor_value = 0.0

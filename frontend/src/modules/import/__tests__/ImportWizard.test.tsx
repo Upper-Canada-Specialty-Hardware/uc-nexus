@@ -523,14 +523,17 @@ describe('ImportWizard step transitions', () => {
     expect(stepLabels()).toEqual([...BASE_STEPS, 'Classification', 'Purchase Orders', 'Finalize']);
   });
 
-  it('assembly purpose (re-import) inserts Classification and Shop Assembly steps', async () => {
+  // #492: the assembly flow used to carry a Classification step. It asked the user to re-answer a
+  // question the persisted schedule already holds, and a different answer than the original import
+  // is the drift. Only the PO purpose classifies now.
+  it('assembly purpose (re-import) inserts only the Shop Assembly step', async () => {
     renderWizard({ project: reimportProject, mocks: reimportMocks });
     await flushApollo();
     clickNext();
 
     fireEvent.click(screen.getByRole('radio', { name: /Pull Request for Shop Assembly/i }));
 
-    expect(stepLabels()).toEqual([...BASE_STEPS, 'Classification', 'Shop Assembly', 'Finalize']);
+    expect(stepLabels()).toEqual([...BASE_STEPS, 'Shop Assembly', 'Finalize']);
   });
 
   it('shipping purpose (re-import) inserts only the Shipping PRs step', async () => {

@@ -50,6 +50,7 @@ import type {
 } from './types';
 import {
   aggregationKey,
+  backfillScopeFromSiteShop,
   buildLooseCoverageRows,
   classificationKey,
   computeAvailabilityShortfalls,
@@ -57,6 +58,7 @@ import {
   shippingPRItemKey,
   toClassificationInputs,
 } from './types';
+import type { ParsedHardwareItem } from '../../types/hardwareSchedule';
 import type { Project } from '../../types/project';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import { FadeIn, StaggerItem, StaggerList } from '../../motion';
@@ -223,7 +225,7 @@ export default function ImportWizard({
   // Action step state
   const [selectedVendors, setSelectedVendors] = useState<Set<string>>(new Set());
   const [vendorPOInfo, setVendorPOInfo] = useState<
-    Map<string, { vendorId: string | null; notes: string; preferredDeliveryDate: string }>
+    Map<string, { notes: string; preferredDeliveryDate: string }>
   >(new Map());
   const [unitCostOverrides, setUnitCostOverrides] = useState<Map<string, number>>(new Map());
   const [classifications, setClassifications] = useState<Map<string, string>>(new Map());
@@ -267,7 +269,11 @@ export default function ImportWizard({
       { id: 'openings', label: 'Select Openings' },
       { id: 'reconciliation', label: 'Reconciliation' },
     ];
-    if (purpose === 'po' || purpose === 'assembly') {
+    // #492: only the PO purpose asks. A shop-assembly request runs against a project whose schedule
+    // is already classified, so re-asking forced the user to re-answer a question the system knows -
+    // and answering it differently than the original import is exactly the drift. The assembly
+    // purpose seeds its classifications from the persisted items instead (see below).
+    if (purpose === 'po') {
       base.push({ id: 'classification', label: 'Classification' });
     }
     if (purpose === 'po') base.push({ id: 'purchase-orders', label: 'Purchase Orders' });
@@ -402,6 +408,7 @@ export default function ImportWizard({
       }
     });
   }, [isReimport, parsedHardwareItems, existingProjectId, fetchExcludedItems]);
+
 
   // ---- Derived Data ----
 
@@ -630,6 +637,30 @@ export default function ImportWizard({
     return map;
   }, [availabilityData]);
 
+  // #492: with no Classification step for this purpose, an item nobody ever classified has no
+  // SITE/SHOP answer anywhere - it is silently not shop work. Counting them here lets the step say
+  // so rather than leaving the user to wonder why an opening they picked produced nothing.
+  // #492: with no Classification step for the assembly purpose, the Site/Shop answer comes off the
+  // persisted item - the value a PO request wrote. Resolved at the read site rather than seeded into
+  // state, so the wizard's own map (the exclusion table's BY_OTHERS entries) still wins and no
+  // effect has to write state during render.
+  const resolveClassification = useCallback(
+    (hi: ParsedHardwareItem) => classifications.get(classificationKey(hi)) ?? hi.classification ?? '',
+    [classifications],
+  );
+
+  const unclassifiedShopCandidates = useMemo(() => {
+    if (purpose !== 'assembly' || !parsed) return [];
+    const seen = new Set<string>();
+    for (const hi of parsed.hardwareItems) {
+      if (!selectedOpenings.has(hi.opening_number)) continue;
+      const cls = resolveClassification(hi);
+      if (cls === 'SITE_HARDWARE' || cls === 'SHOP_HARDWARE' || cls === 'BY_OTHERS') continue;
+      seen.add(`${hi.hardware_category} ${hi.product_code}`);
+    }
+    return Array.from(seen).sort();
+  }, [purpose, parsed, selectedOpenings, resolveClassification]);
+
   // The shop-assembly work units this wizard would submit: one per (opening, leaf) with its
   // SHOP_HARDWARE items aggregated. Derived once and used by BOTH the availability gate and
   // buildFinalizeInput, so the numbers the user is held to are by construction the numbers that get
@@ -642,7 +673,7 @@ export default function ImportWizard({
       .flatMap((opening) => {
         const shopItems = selectedItems.filter((hi) => {
           if (hi.opening_number !== opening.opening_number) return false;
-          return classifications.get(classificationKey(hi)) === 'SHOP_HARDWARE';
+          return resolveClassification(hi) === 'SHOP_HARDWARE';
         });
         if (shopItems.length === 0) return [];
         // One SAR opening per door leaf (#311): group SHOP_HARDWARE by leaf, then aggregate each
@@ -689,7 +720,7 @@ export default function ImportWizard({
           items: Array.from(aggMap.values()),
         }));
       });
-  }, [purpose, parsed, selectedOpenings, classifications]);
+  }, [purpose, parsed, selectedOpenings, resolveClassification]);
 
   // The exact payload the shop-assembly finalize sends: the included, non-empty leaves with both
   // numbers per line. Derived from the same drafts the allocator step renders, so what the user was
@@ -736,11 +767,22 @@ export default function ImportWizard({
 
   // Classification rows for DataGrid (one row per aggregated hardware item)
   const classificationRows = useMemo<ClassificationRow[]>(() => {
+    // #486: the classifier needs to see the door, not just the part. Opening attributes live on
+    // ParsedOpening, so index them by opening number once rather than scanning per row.
+    const openingByNumber = new Map(
+      (parsed?.openings ?? []).map((o) => [o.opening_number, o]),
+    );
     return aggregatedHardwareItems.map((hi) => {
       const ck = classificationKey(hi);
+      const opening = openingByNumber.get(hi.opening_number);
       return {
         id: aggregationKey(hi),
         openingNumber: hi.opening_number,
+        hand: opening?.hand ?? '',
+        // leaf_count is the door quantity. hydrateSchedule already defaults a pre-#311 schedule's
+        // missing count to 1, so the only null here is an item whose opening is not in the parse.
+        doorQuantity: opening ? opening.leaf_count : null,
+        doorMaterial: opening?.door_type ?? '',
         productCode: hi.product_code,
         hardwareCategory: hi.hardware_category,
         vendorNo: hi.vendor_no ?? '(No Manufacturer)',
@@ -753,7 +795,7 @@ export default function ImportWizard({
         siteShop: siteShopClassifications.get(ck) ?? '',
       };
     });
-  }, [aggregatedHardwareItems, classifications, siteShopClassifications]);
+  }, [aggregatedHardwareItems, classifications, siteShopClassifications, parsed]);
 
   // Items grouped by vendor for auto PO segregation (excludes BY_OTHERS items)
   const vendorGroups = useMemo(() => {
@@ -957,15 +999,11 @@ export default function ImportWizard({
 
   // Manufacturer-group PO info
   const updateVendorPO = useCallback(
-    (manufacturerKey: string, field: 'vendorId' | 'notes' | 'preferredDeliveryDate', value: string | null) => {
+    (manufacturerKey: string, field: 'notes' | 'preferredDeliveryDate', value: string | null) => {
       setVendorPOInfo((prev) => {
         const next = new Map(prev);
-        const existing = next.get(manufacturerKey) ?? { vendorId: null, notes: '', preferredDeliveryDate: '' };
-        if (field === 'vendorId') {
-          next.set(manufacturerKey, { ...existing, vendorId: value });
-        } else {
-          next.set(manufacturerKey, { ...existing, [field]: value ?? '' });
-        }
+        const existing = next.get(manufacturerKey) ?? { notes: '', preferredDeliveryDate: '' };
+        next.set(manufacturerKey, { ...existing, [field]: value ?? '' });
         return next;
       });
     },
@@ -997,6 +1035,8 @@ export default function ImportWizard({
       for (const key of keys) next.set(key, value);
       return next;
     });
+    // #486: picking Site or Shop says the item is in scope, so the scope axis fills itself.
+    setClassifications((prev) => backfillScopeFromSiteShop(prev, keys));
   }, []);
 
   // Order As
@@ -1148,7 +1188,7 @@ export default function ImportWizard({
               // Filter out BY_OTHERS items from this vendor's PO draft
               const inScopeItems = items.filter((hi) => !isByOthers(hi));
               if (inScopeItems.length === 0) return null;
-              const info = vendorPOInfo.get(vendor) ?? { vendorId: null, notes: '', preferredDeliveryDate: '' };
+              const info = vendorPOInfo.get(vendor) ?? { notes: '', preferredDeliveryDate: '' };
               // Collect aliases for this manufacturer group's aggregated line items
               const seenKeys = new Set<string>();
               const lineItemAliases: Array<{ hardwareCategory: string; productCode: string; orderAs: string }> = [];
@@ -1168,7 +1208,6 @@ export default function ImportWizard({
               }
               return {
                 poNumber: null,
-                vendorId: info.vendorId,
                 notes: info.notes || null,
                 preferredDeliveryDate: info.preferredDeliveryDate || null,
                 hardwareItemRefs: inScopeItems.map((hi) => ({
@@ -1688,6 +1727,7 @@ export default function ImportWizard({
           {/* ============ Step: Purchase Orders ============ */}
           {effectiveStepId === 'purchase-orders' && (
             <PurchaseOrdersStep
+              projectId={project.id}
               vendorGroups={vendorGroups}
               vendorPOInfo={vendorPOInfo}
               selectedVendors={selectedVendors}
@@ -1718,6 +1758,7 @@ export default function ImportWizard({
               availabilityLoading={availabilityLoading && availabilityData === undefined}
               availabilityError={availabilityError !== undefined}
               allocationStale={allocationStale}
+              unclassifiedItems={unclassifiedShopCandidates}
               onNext={handleNext}
               onBack={handleBack}
             />
