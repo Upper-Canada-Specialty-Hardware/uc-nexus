@@ -840,3 +840,46 @@ it('says the relay is down rather than leaving the GP dropdowns silently dead', 
   const notices = await screen.findAllByText(/GP relay not connected/i);
   expect(notices.length).toBeGreaterThan(0);
 });
+
+// --- Order As defaults to the product code (#491) -----------------------------------------------
+// The dialog required a non-empty Order As on every line, which was stricter than the system it
+// feeds: build_create_po_payload already sends (order_as or product_code) as GP's item number. A
+// draft raised without Order As values could not be registered at all without retyping the product
+// code into every row.
+
+it('seeds Order As from the product code when the draft line has none', async () => {
+  const noOrderAs: PurchaseOrder = {
+    ...stockDraft,
+    lineItems: [{ ...stockDraft.lineItems[0], orderAs: null }],
+  };
+  renderDialog({ registerPo: noOrderAs });
+  await waitForVendorPreselect();
+
+  // Twice: the Product Code field itself, and Order As now mirroring it.
+  expect(screen.getAllByDisplayValue('HG-100')).toHaveLength(2);
+});
+
+it('registers with the product code as the item number when Order As is cleared', async () => {
+  const calls: Record<string, unknown>[] = [];
+  const registerMock: MockedResponse = {
+    request: { query: REGISTER_PO_IN_GP, variables: () => true },
+    result: (vars) => {
+      calls.push(vars as Record<string, unknown>);
+      return { data: registerData() };
+    },
+  };
+  const { onSubmitted } = renderDialog({ registerPo: stockDraft }, [
+    ...baseMocks(),
+    registerMock,
+  ]);
+  await waitForVendorPreselect();
+
+  fireEvent.change(screen.getByDisplayValue('ML2010'), { target: { value: '' } });
+  await selectTaxDetail();
+  fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+
+  // No "Required" error on the cleared row - the product code covers it.
+  await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
+  const input = calls[0].input as { lineItems: { orderAs: string }[] };
+  expect(input.lineItems[0].orderAs).toBe('HG-100');
+});

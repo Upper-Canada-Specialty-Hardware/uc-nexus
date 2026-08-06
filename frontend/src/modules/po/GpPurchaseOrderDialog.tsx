@@ -390,7 +390,10 @@ export default function GpPurchaseOrderDialog({
         orderedQuantity: String(li.orderedQuantity ?? 1),
         unitCost: li.unitCost != null ? String(li.unitCost) : '0',
         classification: li.classification ?? '',
-        orderAs: li.orderAs ?? '',
+        // #491: GP's item number is (order_as or product_code), and the backend already falls back
+        // that way. Seeding the field with the product code shows the buyer what GP will actually
+        // receive instead of an empty box the dialog then refuses to submit.
+        orderAs: li.orderAs || li.productCode || '',
         manufacturer: li.manufacturer ?? null,
       }));
       setLineItems(rows.length > 0 ? rows : [{ key: 1, ...EMPTY_LINE_ITEM }]);
@@ -525,7 +528,8 @@ export default function GpPurchaseOrderDialog({
       if (isNaN(qty) || qty < 1) errs[`li_${i}_qty`] = 'Must be >= 1';
       const cost = parseFloat(li.unitCost);
       if (isNaN(cost) || cost < 0) errs[`li_${i}_cost`] = 'Must be >= 0';
-      if (!li.orderAs.trim()) errs[`li_${i}_orderAs`] = 'Required';
+      // #491: blank is fine when the row has a product code - the payload falls back to it below.
+      if (!li.orderAs.trim() && !li.productCode.trim()) errs[`li_${i}_orderAs`] = 'Required';
     }
     // Issue #256: only register mode talks to GP - draft creation has no relay/vendor/buyer/cost-code
     // requirements at all.
@@ -584,7 +588,7 @@ export default function GpPurchaseOrderDialog({
       orderedQuantity: parseInt(li.orderedQuantity, 10),
       unitCost: parseFloat(li.unitCost),
       classification: li.classification || null,
-      orderAs: li.orderAs.trim(),
+      orderAs: li.orderAs.trim() || li.productCode.trim(),
     }));
 
     // Same key for every retry of this action so a retry is a no-op in GP (won't post a second PO).
@@ -1218,11 +1222,15 @@ export default function GpPurchaseOrderDialog({
           />
           <TextField
             size="small"
-            required
+            required={!li.productCode.trim()}
             value={li.orderAs}
             onChange={(e) => updateLineItem(li.key, 'orderAs', e.target.value)}
             error={!!errors[`li_${idx}_orderAs`]}
-            helperText={errors[`li_${idx}_orderAs`]}
+            // #491: say what GP will get when the row is left blank, rather than refusing it.
+            helperText={
+              errors[`li_${idx}_orderAs`] ??
+              (li.productCode.trim() && !li.orderAs.trim() ? 'defaults to product code' : undefined)
+            }
             placeholder="e.g. ML2010"
             sx={MONO_FIELD_SX}
           />
