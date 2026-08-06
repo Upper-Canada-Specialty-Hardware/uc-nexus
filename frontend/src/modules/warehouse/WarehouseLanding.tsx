@@ -35,6 +35,14 @@ const CELL = { xs: 12, sm: 6, md: 4, lg: 3 } as const;
 function buildDestinations(d: WarehouseDashboard | undefined, canReview: boolean): Destination[] {
   const pendingPulls = d ? d.pendingPullShop + d.pendingPullShipping : 0;
   return [
+    // #505: every receive entity, whatever stage it reached. Not manager-gated - a counter needs to
+    // find the draft that was rejected as much as a manager does.
+    {
+      label: 'Receives',
+      path: '/app/warehouse/receives',
+      icon: <ClipboardCheck size={18} strokeWidth={1.75} />,
+      caption: 'Every delivery written down, approved or not',
+    },
     // Manager-only, and first: it is the one card on this page that is somebody waiting on you.
     ...(canReview
       ? [
