@@ -882,3 +882,28 @@ export const RESOLVE_DEFICIENCY = gql`
     }
   }
 `;
+
+// #505: every receive entity in one list - drafts pending approval, drafts being approved,
+// rejected drafts and booked records. The existing views each cover a slice, and a rejected draft
+// appeared in none of them.
+export const GET_RECEIVES = gql`
+  query GetReceives($limit: Int, $offset: Int, $projectId: ID, $poSearch: String) {
+    receives(limit: $limit, offset: $offset, projectId: $projectId, poSearch: $poSearch) {
+      kind
+      id
+      occurredAt
+      status
+      poId
+      poNumber
+      projectId
+      projectName
+      lineCount
+      totalQuantity
+      countedBy
+      reviewedBy
+      rejectionReason
+      receiptNumber
+      batchNumber
+    }
+  }
+`;
