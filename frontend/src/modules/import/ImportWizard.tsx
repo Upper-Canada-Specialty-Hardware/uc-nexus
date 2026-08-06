@@ -69,6 +69,7 @@ import ReconciliationStep from './ReconciliationStep';
 import ClassificationStep from './ClassificationStep';
 import PurchaseOrdersStep from './PurchaseOrdersStep';
 import ShopAssemblyStep from './ShopAssemblyStep';
+import { buildProductReconRows } from './reconciliation';
 import {
   autoAssign,
   buildAllocatedDrafts,
@@ -1361,9 +1362,22 @@ export default function ImportWizard({
   const canProceedStep0 = parser.state === 'done';
   const canProceedStep1 = purpose !== null;
   const canProceedStep2 = selectedOpenings.size > 0;
+  // #483: the same rollup the Reconciliation step renders, so the numbers the user is blocked by are
+  // by construction the numbers they are shown.
+  const reconBlockingProducts = useMemo(() => {
+    if (purpose !== 'po' || !isReimport) return [];
+    return buildProductReconRows({
+      purpose,
+      reconciliationRows,
+      selectedHardwareItems,
+      allHardwareItems: parsed?.hardwareItems ?? [],
+      selectedReconItems,
+    }).filter((r) => r.blocksProceed);
+  }, [purpose, isReimport, reconciliationRows, selectedHardwareItems, parsed, selectedReconItems]);
+
   const canProceedStep3 = useMemo(() => {
     if (!isReimport) return true;
-    if (purpose === 'po') return selectedReconItems.size > 0;
+    if (purpose === 'po') return selectedReconItems.size > 0 && reconBlockingProducts.length === 0;
     if (purpose === 'assembly') {
       return reconciliationRows.some((r) => r.status === 'RECEIVED' && r.quantity > 0);
     }
@@ -1373,7 +1387,7 @@ export default function ImportWizard({
       );
     }
     return true;
-  }, [purpose, isReimport, selectedReconItems, reconciliationRows]);
+  }, [purpose, isReimport, selectedReconItems, reconciliationRows, reconBlockingProducts]);
 
   // ---- Render ----
 
