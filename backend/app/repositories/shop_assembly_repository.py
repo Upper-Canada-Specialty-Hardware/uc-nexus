@@ -20,6 +20,7 @@ from app.models.enums import (
     AuditAction,
     AuditEntityType,
     OpeningItemState,
+    OpeningReviewStatus,
     PullRequestItemType,
     PullRequestSource,
     PullRequestStatus,
@@ -2022,3 +2023,85 @@ def _format_location(oi: OpeningItemModel) -> str | None:
     rather than on the client so the pipeline and the warehouse views read the same."""
     parts = [p for p in (oi.aisle, oi.row, oi.bay) if p]
     return "-".join(parts) if parts else None
+
+
+def get_pending_review_openings(session: Session, project_id: uuid.UUID | None = None) -> list[dict]:
+    """Every door leaf awaiting shop-assembly review, across all projects (#495).
+
+    A pooled, project-agnostic queue. Review used to be request-level, which meant one contentious
+    leaf held up every other leaf on the same request; and the reviewer works a queue, not one
+    request at a time, so the project is a column here rather than a filter you have to pick first.
+
+    One query with the items selectinloaded - the row summary counts them, and a per-row lazy load
+    over a queue is exactly the N+1 this codebase keeps paying for.
+    """
+    from app.models.project import Project as ProjectModel
+
+    stmt = (
+        select(ShopAssemblyOpening, ShopAssemblyRequest, ProjectModel)
+        .join(ShopAssemblyRequest, ShopAssemblyRequest.id == ShopAssemblyOpening.shop_assembly_request_id)
+        .join(ProjectModel, ProjectModel.id == ShopAssemblyRequest.project_id)
+        .options(selectinload(ShopAssemblyOpening.items))
+        .where(ShopAssemblyOpening.review_status == OpeningReviewStatus.PENDING)
+    )
+    if project_id is not None:
+        stmt = stmt.where(ShopAssemblyRequest.project_id == project_id)
+    stmt = stmt.order_by(
+        ShopAssemblyRequest.created_at,
+        ShopAssemblyOpening.opening_number,
+        ShopAssemblyOpening.leaf,
+    )
+
+    rows = []
+    for opening, request, project in session.execute(stmt).unique().all():
+        items = list(opening.items or [])
+        rows.append(
+            {
+                "opening": opening,
+                "request_number": request.request_number,
+                "requested_by": request.requested_by,
+                "requested_at": request.created_at,
+                "project_id": project.id,
+                "project_number": project.project_id,
+                "project_name": project.description or project.project_id,
+                "item_count": len(items),
+                # What the allocator could not cover. Purchasing already knows; the reviewer needs
+                # it because a leaf that is short is a different decision from one that is whole.
+                "short_quantity": sum(max(0, i.quantity - (i.allocated_quantity or 0)) for i in items),
+            }
+        )
+    return rows
+
+
+def get_deferred_review_openings(session: Session, project_id: uuid.UUID | None = None) -> list[dict]:
+    """Leaves a reviewer set aside (#495). Same shape as the pending queue, different bucket."""
+    from app.models.project import Project as ProjectModel
+
+    stmt = (
+        select(ShopAssemblyOpening, ShopAssemblyRequest, ProjectModel)
+        .join(ShopAssemblyRequest, ShopAssemblyRequest.id == ShopAssemblyOpening.shop_assembly_request_id)
+        .join(ProjectModel, ProjectModel.id == ShopAssemblyRequest.project_id)
+        .options(selectinload(ShopAssemblyOpening.items))
+        .where(ShopAssemblyOpening.review_status == OpeningReviewStatus.DEFERRED)
+    )
+    if project_id is not None:
+        stmt = stmt.where(ShopAssemblyRequest.project_id == project_id)
+    stmt = stmt.order_by(ShopAssemblyOpening.reviewed_at.desc())
+
+    rows = []
+    for opening, request, project in session.execute(stmt).unique().all():
+        items = list(opening.items or [])
+        rows.append(
+            {
+                "opening": opening,
+                "request_number": request.request_number,
+                "requested_by": request.requested_by,
+                "requested_at": request.created_at,
+                "project_id": project.id,
+                "project_number": project.project_id,
+                "project_name": project.description or project.project_id,
+                "item_count": len(items),
+                "short_quantity": sum(max(0, i.quantity - (i.allocated_quantity or 0)) for i in items),
+            }
+        )
+    return rows
