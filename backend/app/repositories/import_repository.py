@@ -609,7 +609,8 @@ def finalize_import_session(
     excluded_items_input = input_data.get("excluded_items") or []
     shipping_pr_drafts = input_data.get("shipping_out_pr_drafts") or []
     include_sar = input_data.get("include_shop_assembly_request", False)
-    sar_request_number = input_data.get("shop_assembly_request_number")
+    # #493: the client's shop_assembly_request_number is deprecated and ignored. The number is
+    # minted from the project's counter below.
     sar_openings_input = input_data.get("shop_assembly_openings") or []
     replace_schedule = bool(input_data.get("replace_schedule", False))
     acknowledge_incomplete_leaves = bool(input_data.get("acknowledge_incomplete_leaves", False))
@@ -949,15 +950,7 @@ def finalize_import_session(
     # Since #342 the inventory gate lives HERE, at creation, and creating the request reserves the
     # hardware. Accept is a pure human gate and re-checks nothing.
     sar = None
-    if include_sar and sar_request_number:
-        # Validate uniqueness against the SAR number space.
-        existing_sar = session.scalars(select(SARModel).where(SARModel.request_number == sar_request_number)).first()
-        if existing_sar is not None:
-            raise ConflictError(
-                f"Shop-assembly request {sar_request_number} already exists",
-                field="shop_assembly_request_number",
-            )
-
+    if include_sar:
         from app.repositories import shipping_repository as _shipping_repository
         from app.repositories import shop_assembly_repository
 
@@ -1052,6 +1045,11 @@ def finalize_import_session(
             for item in sa_opening_input.get("items", [])
             if _allocated_quantity(item) > 0
         ]
+        # #493: the number is minted here, not taken from the client. FinalizeImportSessionInput
+        # still carries shop_assembly_request_number, deprecated and ignored (#427/#438 pattern).
+        from app.repositories.request_numbers import mint_request_number
+
+        sar_request_number = mint_request_number(session, project.id)
         _gate_on_available_inventory(
             session,
             project.id,

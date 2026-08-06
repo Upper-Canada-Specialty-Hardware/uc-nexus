@@ -14,7 +14,6 @@ import {
   TableCell,
   TableHead,
   TableRow,
-  TextField,
   Tooltip,
   Typography,
 } from '@mui/material';
@@ -40,8 +39,6 @@ import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import { StaggerItem, StaggerList } from '../../motion';
 
 interface ShopAssemblyStepProps {
-  sarRequestNumber: string;
-  onSarNumberChange: (value: string) => void;
   /** The exact work units finalize will send - the same derivation, not a parallel one. */
   openingDrafts: ShopAssemblyOpeningDraft[];
   /** Reservation-aware availability per (category|product) for this project (#342). */
@@ -78,8 +75,6 @@ interface ShopAssemblyStepProps {
 }
 
 export default function ShopAssemblyStep({
-  sarRequestNumber,
-  onSarNumberChange,
   openingDrafts,
   availabilityByCombo,
   allocation,
@@ -159,7 +154,7 @@ export default function ShopAssemblyStep({
   // at least one leaf carrying something, and availability numbers that are real rather than
   // unknown. Sending short is now a decision the user is allowed to make, not an error state.
   const canProceed =
-    sarRequestNumber.trim() !== '' && includedCount > 0 && !availabilityLoading && !availabilityError;
+    includedCount > 0 && !availabilityLoading && !availabilityError;
 
   const handleLineChange = (
     draft: ShopAssemblyOpeningDraft,
@@ -185,15 +180,9 @@ export default function ShopAssemblyStep({
         Shop Assembly
       </Typography>
 
-      <TextField
-        label="Pull Request Number"
-        size="small"
-        required
-        value={sarRequestNumber}
-        onChange={(e) => onSarNumberChange(e.target.value)}
-        sx={{ mb: 3, width: 300 }}
-        slotProps={{ input: { sx: monoSx } }}
-      />
+      {/* #493: no number field. The server mints <project>-NNN from one counter per project,
+          shared with shipping-out requests, so a hand-typed number can neither collide nor come
+          from the wrong job. */}
 
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
         Openings with items classified as Shop Hardware (in the Classification step) are listed below.
