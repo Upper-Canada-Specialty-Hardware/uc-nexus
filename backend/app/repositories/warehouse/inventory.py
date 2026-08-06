@@ -545,3 +545,67 @@ def override_inventory_quantity(
         )
 
     return il
+
+
+def get_inventory_rows(
+    session: Session, project_id: uuid.UUID | None = None, warehouse_id: uuid.UUID | None = None
+) -> list[dict]:
+    """Every stocked InventoryLocation as a flat row (#506).
+
+    The Hardware Items view was a category -> product -> location accordion, which answered
+    "what does this project hold" but not "what is on which shelf" without three clicks per line.
+    This is the same data one row per inventory line, so the warehouse can sort, filter and export
+    it like the spreadsheet it replaces; a product-level rollup is one sort away.
+
+    One query, no N+1: the vendor name and PO number come off the originating PO line by outer join,
+    and a stock-origin row (no po_line_item_id) simply carries nulls.
+    """
+    from app.models.warehouse import Warehouse as WarehouseModel
+
+    stmt = (
+        select(
+            InventoryLocationModel,
+            POLineItemModel.unit_cost,
+            POModel.po_number,
+            POModel.vendor_name_snapshot,
+            WarehouseModel.code,
+            WarehouseModel.name,
+            ProjectModel.project_id,
+            ProjectModel.description,
+        )
+        .outerjoin(POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id)
+        .outerjoin(POModel, POLineItemModel.po_id == POModel.id)
+        .join(WarehouseModel, InventoryLocationModel.warehouse_id == WarehouseModel.id)
+        .join(ProjectModel, InventoryLocationModel.project_id == ProjectModel.id)
+        # Rows emptied by destock or allocation are kept for FK integrity but hold nothing.
+        .where(InventoryLocationModel.quantity > 0)
+    )
+    if project_id is not None:
+        stmt = stmt.where(InventoryLocationModel.project_id == project_id)
+    if warehouse_id is not None:
+        stmt = stmt.where(InventoryLocationModel.warehouse_id == warehouse_id)
+    stmt = stmt.order_by(
+        InventoryLocationModel.hardware_category,
+        InventoryLocationModel.product_code,
+        InventoryLocationModel.aisle,
+        InventoryLocationModel.row,
+        InventoryLocationModel.bay,
+    )
+
+    rows = []
+    for il, unit_cost, po_number, vendor_name, wh_code, wh_name, proj_number, proj_desc in session.execute(stmt).all():
+        cost = float(unit_cost or 0)
+        rows.append(
+            {
+                "inventory_location": il,
+                "unit_cost": cost,
+                "line_value": cost * il.quantity,
+                "po_number": po_number,
+                "vendor_name": vendor_name,
+                "warehouse_code": wh_code,
+                "warehouse_name": wh_name,
+                "project_number": proj_number,
+                "project_name": proj_desc or proj_number,
+            }
+        )
+    return rows
