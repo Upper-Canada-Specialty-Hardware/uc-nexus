@@ -174,6 +174,23 @@ def _run_list_vendors(company: str, payload: dict) -> dict:
     return {"company": company, "vendors": rows}
 
 
+def _run_get_vendor_contact(company: str, payload: dict) -> dict:
+    """#500: the vendor's email and contact name, so Nexus can send them their PO. Read-only, and
+    the only reason vendor contact details are reachable at all - GP owns them (#509), Nexus keeps
+    none of its own."""
+    ops.check_company_allowed(company)
+    vendor_id = (payload.get("vendor_id") or "").strip()
+    if not vendor_id:
+        raise ops.RelayOpError("invalid_payload", "vendor_id is required")
+    with db.get_read_connection(company) as conn:
+        contact = econnect.get_vendor_contact(conn, vendor_id)
+    if contact is None:
+        raise ops.RelayOpError(
+            "vendor_not_found", f"Vendor '{vendor_id}' does not exist in {company}", vendor_id=vendor_id
+        )
+    return {"company": company, **contact}
+
+
 def _run_list_buyers(company: str, payload: dict) -> dict:
     ops.check_company_allowed(company)
     with db.get_read_connection(company) as conn:
@@ -387,6 +404,8 @@ def _run_create_receipt(company: str, payload: dict) -> dict:
 
 _OPS = {
     "list_vendors": _run_list_vendors,
+    # issue #500 - the vendor's email, read live at send time. Nexus stores no vendor contact.
+    "get_vendor_contact": _run_get_vendor_contact,
     "list_buyers": _run_list_buyers,
     "list_tax_details": _run_list_tax_details,
     "list_cost_codes": _run_list_cost_codes,

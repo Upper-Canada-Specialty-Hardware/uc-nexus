@@ -502,3 +502,16 @@ export const DECIDE_RECEIVE_DECISION = gql`
     }
   }
 `;
+
+// #500: send the generated supplier PO to the vendor it was placed with. The vendor's email is read
+// live from GP through the relay - Nexus stores no vendor contact (#509), so it cannot go stale.
+// Every refusal comes back as sent:false with a message the user can act on, not an error.
+export const EMAIL_PO_TO_VENDOR = gql`
+  mutation EmailPoToVendor($poId: ID!) {
+    emailPoToVendor(poId: $poId) {
+      sent
+      message
+      sentTo
+    }
+  }
+`;
