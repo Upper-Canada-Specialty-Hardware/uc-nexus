@@ -31,7 +31,6 @@ import {
   ChevronRight,
   ChevronsUpDown,
   ChevronsDownUp,
-  ClipboardPlus,
   Settings,
 } from 'lucide-react';
 import { motion } from 'motion/react';
@@ -42,6 +41,7 @@ import { GET_PROJECTS } from '../../graphql/shared';
 import type { Project } from '../../types/project';
 import PODetailModal from './PODetailModal';
 import GpPurchaseOrderDialog from './GpPurchaseOrderDialog';
+import CreatePOChooser from './CreatePOChooser';
 import RelayStatusChip from '../../relay/RelayStatusChip';
 import { useRelayStatus } from '../../relay/useRelayStatus';
 import { poVendorName } from './poVendorName';
@@ -761,6 +761,7 @@ function POListPage() {
   const [selectedPOId, setSelectedPOId] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  const [chooserOpen, setChooserOpen] = useState(false);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [filterState, setFilterState] = useState<FilterState>(EMPTY_FILTER_STATE);
   const [sortState, setSortState] = useState<SortState>({ field: null, direction: 'asc' });
@@ -903,27 +904,18 @@ function POListPage() {
             Document Settings
           </Button>
         )}
-        {/* #471: raising a PO off the hardware schedule used to be its own sidebar destination. It
-            is an action of this module, so it is a button here - no role gate, because whoever can
-            work this screen can raise one, and the schedule is what knows what is still owed. */}
-        <Button
-          variant="outlined"
-          size="small"
-          startIcon={<ClipboardPlus {...ICON} />}
-          onClick={() => navigate('/app/import?purpose=po')}
-        >
-          Start a Request
-        </Button>
-        {/* Issue #256: creating a PO lands as a DRAFT (no GP involved), so no relay gating here -
-            the relay is only needed later, to register the draft into GP. This is the screen's one
-            filled accent: the thing you came here to do. */}
+        {/* #480: one entry point. Schedule-driven (#471) and manual creation are two answers to
+            "how do you want to raise this", not two features, so the button asks. Issue #256:
+            either way the PO lands as a DRAFT (no GP involved), so no relay gating here - the relay
+            is only needed later, to register the draft into GP. This is the screen's one filled
+            accent: the thing you came here to do. */}
         <Button
           variant="contained"
           size="small"
           startIcon={<Plus {...ICON} />}
-          onClick={() => setCreateOpen(true)}
+          onClick={() => setChooserOpen(true)}
         >
-          Create PO
+          Create a PO
         </Button>
       </Box>
 
@@ -1143,6 +1135,19 @@ function POListPage() {
       )}
 
       {/* Create PO Dialog (creates a brand-new PO directly in GP) */}
+      <CreatePOChooser
+        open={chooserOpen}
+        onClose={() => setChooserOpen(false)}
+        onFromSchedule={() => {
+          setChooserOpen(false);
+          navigate('/app/import?purpose=po');
+        }}
+        onManual={() => {
+          setChooserOpen(false);
+          setCreateOpen(true);
+        }}
+      />
+
       <GpPurchaseOrderDialog
         open={createOpen}
         onClose={() => setCreateOpen(false)}
