@@ -1486,6 +1486,10 @@ class PickSheetLocation:
     # What the saved draft has against this row, and what has already been confirmed off it.
     draft_quantity: int
     applied_quantity: int
+    # #496: the vendor's name for the part and the PO it arrived on, per location - one product can
+    # sit in inventory from several POs with different Order As values. Null on stock-origin rows.
+    order_as: str | None
+    po_number: str | None
 
 
 @strawberry.type

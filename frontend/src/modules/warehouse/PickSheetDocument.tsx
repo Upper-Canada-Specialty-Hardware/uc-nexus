@@ -128,23 +128,30 @@ export default function PickSheetDocument({
               <Text style={styles.empty}>No inventory rows hold this product for this project.</Text>
             ) : (
               <>
+                {/* #496: PO # and Order As per location - the picker matches what is on the box,
+                    which carries the vendor's name for the part, not ours. The write-in box keeps
+                    its width; the location and received columns give up the room. */}
                 <View style={styles.tableHeaderRow}>
-                  <Text style={[styles.th, { width: '38%' }]}>Location</Text>
-                  <Text style={[styles.th, { width: '22%' }]}>Received</Text>
-                  <Text style={[styles.th, { width: '18%' }]}>Available</Text>
-                  <Text style={[styles.th, { width: '22%' }]}>Pulled</Text>
+                  <Text style={[styles.th, { width: '26%' }]}>Location</Text>
+                  <Text style={[styles.th, { width: '16%' }]}>PO #</Text>
+                  <Text style={[styles.th, { width: '18%' }]}>Order As</Text>
+                  <Text style={[styles.th, { width: '14%' }]}>Received</Text>
+                  <Text style={[styles.th, { width: '12%' }]}>Available</Text>
+                  <Text style={[styles.th, { width: '14%' }]}>Pulled</Text>
                 </View>
                 {section.locations.map((loc) => (
                   <View key={loc.inventoryLocationId} style={styles.tableRow} wrap={false}>
-                    <Text style={[styles.td, { width: '38%' }]}>
+                    <Text style={[styles.td, { width: '26%' }]}>
                       {loc.warehouseCode ? `${loc.warehouseCode} ` : ''}
                       {locationLabel(loc) ?? 'Unlocated'}
                     </Text>
-                    <Text style={[styles.td, { width: '22%' }]}>
+                    <Text style={[styles.td, { width: '16%' }]}>{loc.poNumber ?? '—'}</Text>
+                    <Text style={[styles.td, { width: '18%' }]}>{loc.orderAs ?? '—'}</Text>
+                    <Text style={[styles.td, { width: '14%' }]}>
                       {parseServerDate(loc.receivedAt).toLocaleDateString()}
                     </Text>
-                    <Text style={[styles.td, { width: '18%' }]}>{loc.available}</Text>
-                    <View style={{ width: '22%' }}>
+                    <Text style={[styles.td, { width: '12%' }]}>{loc.available}</Text>
+                    <View style={{ width: '14%' }}>
                       <View style={styles.writeIn} />
                     </View>
                   </View>
