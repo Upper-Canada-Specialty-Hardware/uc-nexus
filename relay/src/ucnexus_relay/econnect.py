@@ -156,6 +156,7 @@ def create_po_line(
     item_description: str,
     quantity: Decimal,
     unit_cost: Decimal,
+    line_ord: int,
     location_code: str = "VANCOUVER",
     uofm: str = "Each",
     manufacturer: str | None = None,
@@ -164,6 +165,17 @@ def create_po_line(
     """Create one non-inventoried PO line. For job-cost lines, follow with
     apply_wennsoft_job_cost(). Do NOT pass ProjNum/CostCatID — they fail silently
     here (PA42201 absent; Project Accounting not configured).
+
+    line_ord is REQUIRED and is bound to @I_vORD (issue #538). Left unset, eConnect resolves the
+    line by item number instead, so two lines sharing an ITEMNMBR update each other rather than both
+    landing: the second silently overwrites the first (err=0, wrong quantity and description), and a
+    third fails with 9191 "the line item cannot be manually released". That is reachable from normal
+    data because gp_po.py truncates the item number to GP's 30-char ITEMNMBR, and hardware part
+    numbers carry their handing as a suffix - three codes differing only past character 30 collapse
+    into one. GP itself is happy to hold repeated item numbers on a PO (UCSH has 33,184 such POs);
+    only the implicit-ORD path cannot produce them. Passing ORD also makes the ordinal ours rather
+    than a value we hope eConnect agrees on, which is what ops.py's WennSoft step and UC Nexus's
+    stored gp_line_ord both already assume.
 
     manufacturer (when captured) is written to USRDEFND1 on POP10110 - the free user-defined
     line field this customer uses for it (issue #233)."""
@@ -181,6 +193,7 @@ def create_po_line(
         @I_vNONINVEN       = 1,
         @I_vPOLNESTA       = 2,
         @I_vUpdateIfExists = 1,
+        @I_vORD            = ?,
         @I_vLOCNCODE       = ?,
         @I_vITEMNMBR       = ?,
         @I_vITEMDESC       = ?,
@@ -195,21 +208,25 @@ def create_po_line(
     row = conn.cursor().execute(
         sql,
         po_type, po_number, doc_date, vendor_id,
-        location_code, item_number, item_description, quantity, uofm, unit_cost, usrdefnd1,
+        line_ord, location_code, item_number, item_description, quantity, uofm, unit_cost, usrdefnd1,
     ).fetchone()
     if row.error_state != 0:
         raise EConnectError(
-            f"taPoLine failed for {item_number}: {row.err_string.strip()}",
+            f"taPoLine failed for {item_number} at ORD {line_ord}: {row.err_string.strip()}",
             proc="taPoLine", error_state=row.error_state,
         )
-    # Defensive read-back: taPoLine has a known err=0-but-no-row silent-failure mode.
+    # Defensive read-back: taPoLine has a known err=0-but-no-row silent-failure mode. Keyed on ORD,
+    # NOT on ITEMNMBR (issue #538): item numbers repeat legitimately once GP's 30-char limit truncates
+    # two part numbers to the same string, so an ITEMNMBR read-back is satisfied by the OTHER line and
+    # waves through exactly the overwrite this function now exists to prevent. ORD is unique per line.
     verify = conn.cursor().execute(
-        "SELECT COUNT(*) AS n FROM dbo.POP10110 WHERE PONUMBER = ? AND ITEMNMBR = ?",
-        po_number, item_number,
+        "SELECT COUNT(*) AS n FROM dbo.POP10110 WHERE PONUMBER = ? AND ORD = ?",
+        po_number, line_ord,
     ).fetchone()
     if verify.n == 0:
         raise EConnectError(
-            f"taPoLine returned err=0 but no row inserted for {item_number} (silent failure)",
+            f"taPoLine returned err=0 but no row inserted for {item_number} at ORD {line_ord} "
+            f"(silent failure)",
             proc="taPoLine", error_state=0,
         )
 

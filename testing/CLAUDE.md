@@ -232,8 +232,11 @@ click produces no network request at all, that is what happened. Fix it properly
 -> Add Buyer (pick the GP buyer your account is linked to, add the project), not by scripting the
 mutation.
 
-**A MULTI-LINE PO fails GP registration with eConnect 9191. A single-line one succeeds.** Isolated
-2026-08-03 on pr-463 against TUBC:
+**A PO whose lines share a GP item number used to fail with eConnect 9191. It is the item numbers,
+not the line count** (issue #538, fixed). An earlier revision of this file blamed the line count and
+told you to seed inventory one product at a time. That was wrong: TUBC holds relay-created four-line
+POs that registered cleanly (`PO0000093`, `PO0000094`), and one of them carries the very product set
+recorded here as failing.
 
 ```
 GP PROC   taPoLine
@@ -241,23 +244,16 @@ ERROR STATE 9191
 DESCRIPTION Invalid PO Status (POLNESTA), the line item cannot be manually released
 ```
 
-Four registrations, same dialog, same vendor / cost code / tax detail, relay connected throughout:
+What actually happened: `create_po_line` called `taPoLine` with no `@I_vORD`, so eConnect resolved
+each line by item number. Two lines sharing an `ITEMNMBR` updated each other instead of both landing
+- the second silently overwrote the first with `err=0`, and a third raised 9191. Because
+`gp_po.py` truncates the item number to GP's 30-character `ITEMNMBR` and hardware part numbers carry
+their handing as a suffix, three codes differing only past character 30 collapse into one. The
+registrations logged here as "3 lines, short clean codes" were sharing a truncated item number.
 
-| Lines | Product codes | Result |
-| --- | --- | --- |
-| 5 | Pemko, all with embedded `"` | 9191 |
-| 3 | SARGENT, one code 35 chars | 9191 |
-| 1 | `6042 112 US32D` | **PO0000084** |
-| 3 | `MKA` / `M62BD` / `AQD2`, all short and clean | 9191 |
-| 1 | `MKA` | **PO0000085** |
-
-So it is neither the item codes nor their length - **it is the line count**, which points at the
-relay's `taPoLine` sequencing rather than at GP data or at the schedule. Worth a bug of its own; the
-register dialog's own Remove-line-item buttons are the workaround, and receiving is unaffected.
-
-Until that is fixed, seed inventory one product at a time: register a single-line PO, receive it,
-approve it, repeat. Two of those took about ten minutes end to end and were enough to drive a
-shop-assembly request, an assembled leaf and two shipping-out requests.
+The relay now dictates `ORD = idx * 16384`, so this shape registers correctly and you can seed
+inventory with a multi-line PO. If you see 9191 again, look at what the four lines truncate to at 30
+characters before suspecting anything else.
 
 Two other things worth knowing when GP is refusing outright:
 
