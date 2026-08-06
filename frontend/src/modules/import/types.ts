@@ -292,7 +292,8 @@ export interface ClassificationOption {
 }
 
 export const SCOPE_OPTIONS: ClassificationOption[] = [
-  { value: 'BY_UCSH', label: 'By UCSH', color: 'success' },
+  // Internal value stays BY_UCSH; only the label follows the UC Hardware Inc. rename (#484).
+  { value: 'BY_UCSH', label: 'By UCH', color: 'success' },
   { value: 'BY_OTHERS', label: 'By Others', color: 'warning' },
 ];
 
