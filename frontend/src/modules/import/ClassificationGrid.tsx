@@ -118,11 +118,43 @@ function buildGroupTree(rows: ClassificationRow[], fields: GroupByField[]): Map<
   return result;
 }
 
+// #485: every text column was sized by flex alone. Each row also carries two ToggleButtonGroups
+// that hold a fixed width, so on a narrow viewport the flex columns were squeezed to ~100px - about
+// 12-15 characters - and long product codes, categories and manufacturers were clipped. minWidth
+// stops the squeeze and lets the grid scroll horizontally instead; the widths mirror the ones
+// SelectOpeningsStep already uses. wrap-cell lets the value break across lines rather than
+// ellipsize, and title= puts the full value in a hover tooltip either way.
 const ALL_COLUMNS: GridColDef[] = [
-  { field: 'openingNumber', headerName: 'Opening #', flex: 0.7, cellClassName: 'mono-cell' },
-  { field: 'productCode', headerName: 'Product Code', flex: 1, cellClassName: 'wrap-cell mono-cell' },
-  { field: 'hardwareCategory', headerName: 'Hardware Category', flex: 1, cellClassName: 'wrap-cell' },
-  { field: 'vendorNo', headerName: 'Manufacturer', flex: 0.8, cellClassName: 'mono-cell' },
+  {
+    field: 'openingNumber',
+    headerName: 'Opening #',
+    flex: 0.7,
+    minWidth: 110,
+    cellClassName: 'mono-cell',
+    renderCell: (params) => <span title={String(params.value ?? '')}>{params.value}</span>,
+  },
+  {
+    field: 'productCode',
+    headerName: 'Product Code',
+    flex: 1,
+    minWidth: 140,
+    cellClassName: 'wrap-cell mono-cell',
+  },
+  {
+    field: 'hardwareCategory',
+    headerName: 'Hardware Category',
+    flex: 1,
+    minWidth: 150,
+    cellClassName: 'wrap-cell',
+  },
+  {
+    field: 'vendorNo',
+    headerName: 'Manufacturer',
+    flex: 0.8,
+    minWidth: 120,
+    cellClassName: 'wrap-cell mono-cell',
+    renderCell: (params) => <span title={String(params.value ?? '')}>{params.value}</span>,
+  },
   {
     field: 'listPrice',
     headerName: 'List Price',
@@ -283,7 +315,12 @@ function GroupAccordion({ node, columns, options, onClassify, readOnly, depth, s
     >
       <AccordionSummary expandIcon={<ChevronDown size={18} strokeWidth={1.75} />}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%', mr: 1 }}>
-          <Typography sx={{ fontWeight: 700, ...monoSx, fontSize: '0.875rem' }}>{node.label}</Typography>
+          <Typography
+            title={node.label}
+            sx={{ fontWeight: 700, ...monoSx, fontSize: '0.875rem', whiteSpace: 'normal', wordBreak: 'break-word' }}
+          >
+            {node.label}
+          </Typography>
           <Chip
             size="small"
             label={
