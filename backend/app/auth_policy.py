@@ -124,7 +124,6 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "openPOs": SIGNED_IN,
     "poDocumentDownloadUrl": SIGNED_IN,
     "poDocumentSettings": SIGNED_IN,
-    "poOpenings": SIGNED_IN,
     "poStatistics": SIGNED_IN,
     "priorOrderAsValues": SIGNED_IN,
     "purchaseOrder": SIGNED_IN,
