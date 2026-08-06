@@ -292,10 +292,23 @@ export default function ShopAssemblyStep({
         {openingDrafts.map((draft) => {
           const key = leafKey(draft);
           const coverage = leafCoverage(allocation, draft);
-          const autoDropped = coverage === 'NONE';
-          const included = includedLeafKeys.has(key) && !autoDropped;
+          // #494: membership in includedLeafKeys is the ONLY thing that enables this card's
+          // controls. It used to also require coverage !== 'NONE', which is derived from the LIVE
+          // allocation - so stepping a leaf's only line down to 0 made it read as auto-dropped,
+          // which disabled the steppers AND the include switch, and the freed unit could never be
+          // put back. Auto-dropped now means what it says: the seeder could not cover this leaf and
+          // the user has not re-included it.
+          const included = includedLeafKeys.has(key);
+          const autoDropped = !included && coverage === 'NONE';
           const owed = draft.items.reduce((sum, item) => sum + item.quantity, 0);
           const allocated = leafAllocatedTotal(allocation, draft);
+          // An included leaf sitting at zero is a deliberate state, not a dropped one - it keeps
+          // live steppers and says so with its own chip.
+          const includedButEmpty = included && allocated === 0;
+          // A seeder-dropped leaf can be re-included once the pool has something for any of its
+          // lines, which is exactly what freeing a unit off another leaf produces.
+          const poolHasStock = draft.items.some((item) => (pool.get(comboKey(item)) ?? 0) > 0);
+          const switchDisabled = autoDropped && !poolHasStock;
 
           return (
             <StaggerItem key={key}>
@@ -320,14 +333,19 @@ export default function ShopAssemblyStep({
                     <Chip size="small" variant="outlined" label="Not covered - auto-dropped" />
                   </Tooltip>
                 )}
+                {includedButEmpty && (
+                  <Tooltip title="You have stepped every line on this leaf to zero. It stays editable, but with nothing allocated it will not be sent.">
+                    <Chip size="small" variant="outlined" label="Nothing allocated - will not be sent" />
+                  </Tooltip>
+                )}
                 <Box sx={{ flexGrow: 1 }} />
                 <Typography variant="caption" color="text.secondary" sx={tabularSx}>
                   {allocated} of {owed} allocated
                 </Typography>
                 <Tooltip
                   title={
-                    autoDropped
-                      ? 'Nothing is allocated to this leaf, so there is nothing to send.'
+                    switchDisabled
+                      ? 'Nothing in the pool matches this leaf, so there is nothing to allocate to it.'
                       : included
                         ? 'Leave this leaf out - its hardware goes back to the pool for the other leaves.'
                         : 'Include this leaf in the request.'
@@ -337,7 +355,7 @@ export default function ShopAssemblyStep({
                     <Switch
                       size="small"
                       checked={included}
-                      disabled={autoDropped}
+                      disabled={switchDisabled}
                       onChange={() => toggleLeaf(draft)}
                       // `role` is restated because slotProps.input replaces the default input
                       // props rather than merging with them, and dropping it would turn the control
