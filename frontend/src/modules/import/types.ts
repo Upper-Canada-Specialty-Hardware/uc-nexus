@@ -322,3 +322,25 @@ export function toClassificationInputs(classifications: Map<string, string>): Cl
       return { hardwareCategory, productCode, unitCost: parseFloat(unitCost), classification: cls };
     });
 }
+
+// #486: picking Site or Shop on a row says the item is in scope, so the scope axis fills itself
+// rather than asking for a second click that can only have one answer. One direction only: a scope
+// pick never sets Site/Shop, and an item already carrying a scope - By Others most of all - is left
+// exactly as it is. A By Others row renders an em-dash Site/Shop toggle anyway, so the only way to
+// reach this with one is a bulk action spanning it.
+//
+// Returns the same Map when nothing changed, so the caller can skip a re-render.
+export function backfillScopeFromSiteShop(
+  classifications: Map<string, string>,
+  keys: string[],
+): Map<string, string> {
+  const next = new Map(classifications);
+  let changed = false;
+  for (const key of keys) {
+    if (!next.get(key)) {
+      next.set(key, 'BY_UCSH');
+      changed = true;
+    }
+  }
+  return changed ? next : classifications;
+}

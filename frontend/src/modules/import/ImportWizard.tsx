@@ -50,6 +50,7 @@ import type {
 } from './types';
 import {
   aggregationKey,
+  backfillScopeFromSiteShop,
   buildLooseCoverageRows,
   classificationKey,
   computeAvailabilityShortfalls,
@@ -736,11 +737,22 @@ export default function ImportWizard({
 
   // Classification rows for DataGrid (one row per aggregated hardware item)
   const classificationRows = useMemo<ClassificationRow[]>(() => {
+    // #486: the classifier needs to see the door, not just the part. Opening attributes live on
+    // ParsedOpening, so index them by opening number once rather than scanning per row.
+    const openingByNumber = new Map(
+      (parsed?.openings ?? []).map((o) => [o.opening_number, o]),
+    );
     return aggregatedHardwareItems.map((hi) => {
       const ck = classificationKey(hi);
+      const opening = openingByNumber.get(hi.opening_number);
       return {
         id: aggregationKey(hi),
         openingNumber: hi.opening_number,
+        hand: opening?.hand ?? '',
+        // leaf_count is the door quantity. hydrateSchedule already defaults a pre-#311 schedule's
+        // missing count to 1, so the only null here is an item whose opening is not in the parse.
+        doorQuantity: opening ? opening.leaf_count : null,
+        doorMaterial: opening?.door_type ?? '',
         productCode: hi.product_code,
         hardwareCategory: hi.hardware_category,
         vendorNo: hi.vendor_no ?? '(No Manufacturer)',
@@ -753,7 +765,7 @@ export default function ImportWizard({
         siteShop: siteShopClassifications.get(ck) ?? '',
       };
     });
-  }, [aggregatedHardwareItems, classifications, siteShopClassifications]);
+  }, [aggregatedHardwareItems, classifications, siteShopClassifications, parsed]);
 
   // Items grouped by vendor for auto PO segregation (excludes BY_OTHERS items)
   const vendorGroups = useMemo(() => {
@@ -993,6 +1005,8 @@ export default function ImportWizard({
       for (const key of keys) next.set(key, value);
       return next;
     });
+    // #486: picking Site or Shop says the item is in scope, so the scope axis fills itself.
+    setClassifications((prev) => backfillScopeFromSiteShop(prev, keys));
   }, []);
 
   // Order As

@@ -69,7 +69,7 @@ export default function ClassificationStep({
         <>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
             {purpose === 'po'
-              ? 'Classify each item as By UCH (in scope) or By Others (excluded from scope), and each in-scope item as Site or Shop hardware.'
+              ? 'Classify each item as By UCH (in scope) or By Others (excluded from scope), and each in-scope item as Site or Shop hardware. Picking Site or Shop marks an unclassified item By UCH for you.'
               : 'Classify each item group as Site Hardware or Shop Hardware.'}
           </Typography>
           <Typography
