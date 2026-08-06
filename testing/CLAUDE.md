@@ -376,9 +376,12 @@ caught two failures that all three stacked PRs were reporting as clean:
 /                          -> Clerk Sign-In
 /app                       -> Module Selector (6 module cards)
 /app/import                -> Start a Request (project landing -> hardware schedule wizard). NOT in the
-                              sidebar since #471 - reached from the "Start a Request" button in the PO,
-                              Shop Assembly and Shipping headers, which append ?purpose=po|assembly|shipping
-                              (Shipping also passes ?projectId=, so its button opens the wizard directly)
+                              sidebar since #471 - reached from the "Start a Request" button in the Shop
+                              Assembly and Shipping headers, which append ?purpose=assembly|shipping
+                              (Shipping also passes ?projectId=, so its button opens the wizard directly).
+                              In the PO module since #480 there is no separate Start a Request button:
+                              "Create a PO" opens a chooser, and "From hardware schedule" navigates here
+                              with ?purpose=po
 /app/po                    -> Purchase Orders (project landing -> PO list)
 /app/warehouse             -> Warehouse landing (stat cards + Go-to cards for sub-routes)
 /app/warehouse/inventory   -> Inventory (hardware/opening items by project)
