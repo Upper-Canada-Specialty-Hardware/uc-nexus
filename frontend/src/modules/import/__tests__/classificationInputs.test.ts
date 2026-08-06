@@ -1,4 +1,4 @@
-import { toClassificationInputs } from '../types';
+import { toClassificationInputs, backfillScopeFromSiteShop } from '../types';
 
 // Regression for #321: a shop-assembly re-import pre-populates the shared classifications Map with
 // BY_OTHERS entries (from the project's exclusion table). Those must never reach the finalize
@@ -43,5 +43,33 @@ describe('toClassificationInputs', () => {
 
   it('returns an empty array for an empty Map', () => {
     expect(toClassificationInputs(new Map())).toEqual([]);
+  });
+});
+
+// #486: setting Site or Shop implies the item is in scope, so the scope axis back-fills instead of
+// demanding a second click. The direction matters - an explicit By Others must survive a bulk
+// Site/Shop action spanning it, or the wizard would silently pull an out-of-scope item into the POs.
+describe('backfillScopeFromSiteShop', () => {
+  it('marks unclassified keys By UCH', () => {
+    const before = new Map<string, string>();
+
+    const after = backfillScopeFromSiteShop(before, ['Hinges|HNG-100|10', 'Locks|LCK-200|25']);
+
+    expect(after.get('Hinges|HNG-100|10')).toBe('BY_UCSH');
+    expect(after.get('Locks|LCK-200|25')).toBe('BY_UCSH');
+  });
+
+  it('never overwrites an explicit By Others', () => {
+    const before = new Map<string, string>([['Closers|CLO-300|40', 'BY_OTHERS']]);
+
+    const after = backfillScopeFromSiteShop(before, ['Closers|CLO-300|40']);
+
+    expect(after.get('Closers|CLO-300|40')).toBe('BY_OTHERS');
+  });
+
+  it('returns the same Map when there is nothing to fill', () => {
+    const before = new Map<string, string>([['Hinges|HNG-100|10', 'BY_UCSH']]);
+
+    expect(backfillScopeFromSiteShop(before, ['Hinges|HNG-100|10'])).toBe(before);
   });
 });

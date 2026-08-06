@@ -26,6 +26,12 @@ import { monoSx, microLabelSx } from '../../theme';
 export interface ClassificationRow {
   id: string;
   openingNumber: string;
+  // #486: the opening's own attributes, carried through so the classifier can see what door each
+  // item belongs to without leaving the step. Sourced from ParsedOpening (hand / leaf_count /
+  // door_type), not from the hardware item.
+  hand: string;
+  doorQuantity: number | null;
+  doorMaterial: string;
   productCode: string;
   hardwareCategory: string;
   vendorNo: string;
@@ -40,13 +46,14 @@ export interface ClassificationRow {
 }
 
 export type GroupByField = 'hardwareCategory' | 'vendorNo' | 'productCode' | 'openingNumber'
-  | 'unitCost' | 'listPrice' | 'vendorDiscount' | 'itemQuantity';
+  | 'doorMaterial' | 'unitCost' | 'listPrice' | 'vendorDiscount' | 'itemQuantity';
 
 const GROUP_BY_OPTIONS: { value: GroupByField; label: string }[] = [
   { value: 'hardwareCategory', label: 'Hardware Category' },
   { value: 'vendorNo', label: 'Manufacturer' },
   { value: 'productCode', label: 'Product Code' },
   { value: 'openingNumber', label: 'Opening Number' },
+  { value: 'doorMaterial', label: 'Door Material' },
   { value: 'unitCost', label: 'Unit Cost' },
   { value: 'listPrice', label: 'List Price' },
   { value: 'vendorDiscount', label: 'Vendor Discount' },
@@ -133,6 +140,17 @@ const ALL_COLUMNS: GridColDef[] = [
     cellClassName: 'mono-cell',
     renderCell: (params) => <span title={String(params.value ?? '')}>{params.value}</span>,
   },
+  // #486: fixed small widths - these are short values and the row is already crowded by the two
+  // toggle groups, so they must not take room from the text columns (#485).
+  { field: 'hand', headerName: 'Hand', width: 70 },
+  {
+    field: 'doorQuantity',
+    headerName: 'Door Qty',
+    width: 80,
+    type: 'number',
+    valueFormatter: (value: number | null) => (value != null ? String(value) : '—'),
+  },
+  { field: 'doorMaterial', headerName: 'Door Material', width: 120, cellClassName: 'wrap-cell' },
   {
     field: 'productCode',
     headerName: 'Product Code',
