@@ -282,3 +282,39 @@ def test_update_po_sets_clears_and_leaves_shipping_cost_and_tariff(db_session):
     po_repository.update_po(db_session, po.id, shipping_cost=None, tariff_amount=None)
     assert po.shipping_cost is None
     assert po.tariff_amount is None
+
+
+# #481: the vendor quotation is usually typed onto the PO after the draft exists, but a buyer working
+# from a quote in hand had nowhere to record it at creation. Optional, and blank must stay NULL - the
+# VENDOR_CONFIRMED auto-transition tests "a quote exists", which an empty string would satisfy.
+def test_create_po_persists_a_vendor_quote_number(db_session):
+    po = po_repository.create_po(
+        db_session,
+        line_items=[{"hardware_category": "Hinges", "product_code": "HG-100", "ordered_quantity": 2, "unit_cost": 5}],
+        vendor_quote_number="  Q-1234  ",
+    )
+
+    assert po.vendor_quote_number == "Q-1234"
+
+
+@pytest.mark.parametrize("value", [None, "", "   "])
+def test_create_po_leaves_a_blank_vendor_quote_number_null(db_session, value):
+    po = po_repository.create_po(
+        db_session,
+        line_items=[{"hardware_category": "Hinges", "product_code": "HG-100", "ordered_quantity": 2, "unit_cost": 5}],
+        vendor_quote_number=value,
+    )
+
+    assert po.vendor_quote_number is None
+
+
+def test_create_po_with_a_quote_stays_a_draft(db_session):
+    """A quote on a draft records what the buyer was quoted. It must not advance status: the
+    VENDOR_CONFIRMED transition is GP_REGISTERED-only and additionally wants a vendor ack document."""
+    po = po_repository.create_po(
+        db_session,
+        line_items=[{"hardware_category": "Hinges", "product_code": "HG-100", "ordered_quantity": 2, "unit_cost": 5}],
+        vendor_quote_number="Q-1234",
+    )
+
+    assert po.status.value == "Draft"
