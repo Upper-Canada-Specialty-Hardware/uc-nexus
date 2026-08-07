@@ -19,7 +19,7 @@ import uuid
 from datetime import datetime
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.errors import InvalidStateTransitionError
 from app.models.enums import (
@@ -113,11 +113,16 @@ def _openings(session, sar_id):
 
 
 def _reserved_units(session, project_id) -> int:
-    return sum(
-        r.quantity
-        for r in session.scalars(
-            select(InventoryReservation).where(InventoryReservation.project_id == project_id)
-        ).all()
+    """Summed in SQL rather than by loading rows: a partial release deletes the rows it empties, and
+    the identity map would then raise ObjectDeletedError refreshing one of them."""
+    session.flush()
+    return (
+        session.scalar(
+            select(func.coalesce(func.sum(InventoryReservation.quantity), 0)).where(
+                InventoryReservation.project_id == project_id
+            )
+        )
+        or 0
     )
 
 
@@ -241,6 +246,8 @@ def test_a_leaf_can_only_be_reviewed_once(db_session):
     shop_assembly_repository.accept_shop_assembly_opening(db_session, first.id, reviewed_by="reviewer")
     db_session.flush()
 
+    # Every one of these refuses before it writes anything, so the session stays usable between
+    # attempts - which is the point: a second decision is rejected, not partially applied.
     for again in (
         shop_assembly_repository.accept_shop_assembly_opening,
         shop_assembly_repository.reject_shop_assembly_opening,
@@ -248,7 +255,6 @@ def test_a_leaf_can_only_be_reviewed_once(db_session):
     ):
         with pytest.raises(InvalidStateTransitionError):
             again(db_session, first.id, reviewed_by="reviewer")
-        db_session.rollback()
 
 
 def test_a_request_whose_every_leaf_was_turned_down_reads_as_rejected(db_session):

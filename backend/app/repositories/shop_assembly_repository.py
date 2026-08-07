@@ -1194,7 +1194,7 @@ def accept_shop_assembly_request(
     for opening in pending:
         _accept_opening_onto_pull(session, opening, accepted_by)
 
-    session.refresh(sar)
+    session.flush()
     return sar
 
 
@@ -2160,7 +2160,7 @@ def get_pending_review_openings(session: Session, project_id: uuid.UUID | None =
             {
                 "opening": opening,
                 "request_number": request.request_number,
-                "requested_by": request.requested_by,
+                "requested_by": request.created_by,
                 "requested_at": request.created_at,
                 "project_id": project.id,
                 "project_number": project.project_id,
@@ -2196,7 +2196,7 @@ def get_deferred_review_openings(session: Session, project_id: uuid.UUID | None 
             {
                 "opening": opening,
                 "request_number": request.request_number,
-                "requested_by": request.requested_by,
+                "requested_by": request.created_by,
                 "requested_at": request.created_at,
                 "project_id": project.id,
                 "project_number": project.project_id,
@@ -2340,7 +2340,7 @@ def get_review_opening(session: Session, opening_id: uuid.UUID) -> dict:
     return {
         "opening": opening,
         "request_number": request.request_number,
-        "requested_by": request.requested_by,
+        "requested_by": request.created_by,
         "requested_at": request.created_at,
         "project_id": project.id,
         "project_number": project.project_id,
