@@ -799,7 +799,7 @@ def test_complete_opening_works_while_the_pull_is_only_part_staged(db_session):
     )
     db_session.flush()
 
-    opening_item = shop_assembly_repository.complete_opening(db_session, openings[0].id, "A", "1", "1")
+    opening_item = shop_assembly_repository.complete_opening(db_session, openings[0].id)
     db_session.flush()
     assert opening_item.opening_number == "A01"
     assert openings[0].assembly_status == AssemblyStatus.COMPLETED
@@ -809,7 +809,7 @@ def test_complete_opening_works_while_the_pull_is_only_part_staged(db_session):
     openings[1].assigned_to_user_id = "user-1"
     db_session.flush()
     with pytest.raises(InvalidStateTransitionError):
-        shop_assembly_repository.complete_opening(db_session, openings[1].id, "A", "1", "1")
+        shop_assembly_repository.complete_opening(db_session, openings[1].id)
 
 
 def test_get_pull_request_openings_orders_by_opening_and_leaf(db_session):

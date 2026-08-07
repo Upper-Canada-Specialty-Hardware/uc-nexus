@@ -60,6 +60,20 @@ export const GET_INVENTORY_ROWS = gql`
   }
 `;
 
+// #498: assembled leaves that finished on the bench and have no bin yet - the other half of the
+// put-away queue, alongside unlocatedInventory.
+export const GET_UNLOCATED_OPENING_ITEMS = gql`
+  query GetUnlocatedOpeningItems($projectId: ID) {
+    unlocatedOpeningItems(projectId: $projectId) {
+      id projectId openingId openingNumber
+      building floor location leaf leafCount quantity
+      assemblyCompletedAt state warehouseId
+      aisle row bay
+      createdAt updatedAt
+    }
+  }
+`;
+
 export const GET_OPENING_ITEMS = gql`
   query GetOpeningItems($projectId: ID) {
     openingItems(projectId: $projectId) {

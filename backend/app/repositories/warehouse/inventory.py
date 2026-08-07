@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import NotFoundError, ValidationError
-from app.models.enums import AuditAction, AuditEntityType
+from app.models.enums import AuditAction, AuditEntityType, OpeningItemState
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.opening_item import OpeningItem as OpeningItemModel
 from app.models.project import Opening as OpeningModel
@@ -609,3 +609,29 @@ def get_inventory_rows(
             }
         )
     return rows
+
+
+def get_unlocated_opening_items(session: Session, project_id: uuid.UUID | None = None):
+    """Assembled leaves sitting in inventory with no bin assigned (#498).
+
+    The other half of the put-away queue. Completion no longer records a location, so a finished
+    leaf arrives here and waits for the warehouse to say which warehouse and bin it went into -
+    exactly what received stock does in get_unlocated_inventory above.
+
+    Only IN_INVENTORY leaves qualify: one already pulled for shipping has left the rack, and asking
+    someone to put it away would be asking them to find something that is not there.
+    """
+    stmt = select(OpeningItemModel).where(
+        OpeningItemModel.state == OpeningItemState.IN_INVENTORY,
+        OpeningItemModel.aisle.is_(None),
+        OpeningItemModel.row.is_(None),
+        OpeningItemModel.bay.is_(None),
+    )
+    if project_id is not None:
+        stmt = stmt.where(OpeningItemModel.project_id == project_id)
+    stmt = stmt.order_by(
+        OpeningItemModel.assembly_completed_at.desc(),
+        OpeningItemModel.opening_number,
+        OpeningItemModel.leaf,
+    )
+    return list(session.scalars(stmt).all())

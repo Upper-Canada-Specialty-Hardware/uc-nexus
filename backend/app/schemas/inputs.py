@@ -352,6 +352,10 @@ class CreateDraftPOInput:
     # #490: optional GP cost code, carried to register as the default. RegisterPOInput.cost_code
     # stays authoritative - a code that has since left the job's GP list is caught there.
     cost_code: str | None = None
+    # #481: the vendor's quotation this request is raised against. Usually arrives after the draft
+    # exists and is typed on the PO afterwards, but a buyer working from a quote in hand has nowhere
+    # to put it at creation without this.
+    vendor_quote_number: str | None = None
 
 
 @strawberry.input
@@ -766,6 +770,9 @@ class CancelPullRequestInput:
 @strawberry.input
 class CompleteOpeningInput:
     opening_id: strawberry.ID
+    # #498: deprecated and ignored. Completion no longer records a location - the assembler was
+    # typing free text with no warehouse choice and no validation, and warehouse staff could not
+    # correct it. Kept in the schema until frontends stop sending them (#438 pattern).
     aisle: str | None = None
     row: str | None = None
     bay: str | None = None
