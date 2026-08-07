@@ -186,7 +186,7 @@ def _complete(session, opening, sao_items):
     ]
     shop_assembly_repository.record_assembly_progress(session, opening.id, updates, performed_by="ada")
     session.flush()
-    return shop_assembly_repository.complete_opening(session, opening.id, "A", "1", "B", completed_by="ada")
+    return shop_assembly_repository.complete_opening(session, opening.id, completed_by="ada")
 
 
 # --- 1. arrival restores the leaf's expectation --------------------------------------------------
@@ -215,7 +215,7 @@ def test_repl_completion_restores_expectation_on_an_in_progress_leaf(db_session)
 
     # And completion is still blocked on it.
     with pytest.raises(ValidationError):
-        shop_assembly_repository.complete_opening(db_session, opening.id, None, None, None)
+        shop_assembly_repository.complete_opening(db_session, opening.id)
 
 
 def test_repl_completion_writes_an_audit_row(db_session):

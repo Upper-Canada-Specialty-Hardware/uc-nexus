@@ -165,7 +165,7 @@ def test_completion_refused_when_leaf_already_assembled(db_session):
     )
 
     with pytest.raises(ConflictError):
-        shop_assembly_repository.complete_opening(db_session, opening.id, None, None, None)
+        shop_assembly_repository.complete_opening(db_session, opening.id)
 
     # Nothing was minted and the opening stays workable.
     db_session.flush()
@@ -188,7 +188,7 @@ def test_completion_allowed_when_only_the_other_leaf_is_assembled(db_session):
         opening_id=opening_id,
     )
 
-    result = shop_assembly_repository.complete_opening(db_session, opening.id, None, None, None)
+    result = shop_assembly_repository.complete_opening(db_session, opening.id)
     db_session.flush()
     assert result.leaf == 2
     assert opening.assembly_status == AssemblyStatus.COMPLETED
@@ -208,7 +208,7 @@ def test_completion_allowed_when_prior_unit_shipped_out(db_session):
         opening_id=opening_id,
     )
 
-    result = shop_assembly_repository.complete_opening(db_session, opening.id, None, None, None)
+    result = shop_assembly_repository.complete_opening(db_session, opening.id)
     db_session.flush()
     assert result.state == OpeningItemState.IN_INVENTORY
 
@@ -227,7 +227,7 @@ def test_legacy_null_leaf_unit_only_blocks_a_null_leaf_completion(db_session):
         leaf=1,
         opening_id=opening_id,
     )
-    shop_assembly_repository.complete_opening(db_session, leafed.id, None, None, None)
+    shop_assembly_repository.complete_opening(db_session, leafed.id)
     db_session.flush()
 
     legacy, _ = _make_pulled_opening(
@@ -239,7 +239,7 @@ def test_legacy_null_leaf_unit_only_blocks_a_null_leaf_completion(db_session):
         opening_id=opening_id,
     )
     with pytest.raises(ConflictError):
-        shop_assembly_repository.complete_opening(db_session, legacy.id, None, None, None)
+        shop_assembly_repository.complete_opening(db_session, legacy.id)
 
 
 def test_duplicate_guard_is_project_scoped(db_session):
@@ -257,7 +257,7 @@ def test_duplicate_guard_is_project_scoped(db_session):
         opening_id=opening_id,
     )
 
-    result = shop_assembly_repository.complete_opening(db_session, opening.id, None, None, None)
+    result = shop_assembly_repository.complete_opening(db_session, opening.id)
     db_session.flush()
     assert result.project_id == project.id
 
@@ -306,7 +306,7 @@ def test_all_deficient_completion_is_refused(db_session):
     _flag_all_deficient(db_session, opening, sao)
 
     with pytest.raises(ValidationError):
-        shop_assembly_repository.complete_opening(db_session, opening.id, None, None, None, completed_by="assembler")
+        shop_assembly_repository.complete_opening(db_session, opening.id, completed_by="assembler")
     db_session.flush()
 
     # No assembled unit exists and the leaf stays open (IN_PROGRESS - it has recorded work on it).
@@ -345,9 +345,7 @@ def test_partially_deficient_completion_still_succeeds(db_session):
     )
     db_session.flush()
 
-    result = shop_assembly_repository.complete_opening(
-        db_session, opening.id, None, None, None, completed_by="assembler"
-    )
+    result = shop_assembly_repository.complete_opening(db_session, opening.id, completed_by="assembler")
     db_session.flush()
     assert result.state == OpeningItemState.IN_INVENTORY
     # Only the installed line is snapshotted onto the leaf.
@@ -373,9 +371,7 @@ def test_completion_excuses_units_that_were_never_pulled(db_session):
         install_all=True,
     )
 
-    result = shop_assembly_repository.complete_opening(
-        db_session, opening.id, None, None, None, completed_by="assembler"
-    )
+    result = shop_assembly_repository.complete_opening(db_session, opening.id, completed_by="assembler")
     db_session.flush()
 
     assert opening.assembly_status == AssemblyStatus.COMPLETED
@@ -404,7 +400,7 @@ def test_completion_still_refuses_a_leaf_that_was_entirely_short(db_session):
     )
 
     with pytest.raises(ValidationError) as excinfo:
-        shop_assembly_repository.complete_opening(db_session, opening.id, None, None, None)
+        shop_assembly_repository.complete_opening(db_session, opening.id)
     assert "never pulled" in str(excinfo.value)
     assert opening.completed_at is None
 
@@ -420,7 +416,7 @@ def test_opening_with_no_items_still_completes(db_session):
         leaf=1,
     )
 
-    result = shop_assembly_repository.complete_opening(db_session, opening.id, None, None, None)
+    result = shop_assembly_repository.complete_opening(db_session, opening.id)
     db_session.flush()
     assert result.state == OpeningItemState.IN_INVENTORY
     assert opening.assembly_status == AssemblyStatus.COMPLETED

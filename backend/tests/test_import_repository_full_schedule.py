@@ -858,6 +858,6 @@ def test_complete_opening_stamps_leaf(db_session):
         item.installed_quantity = item.quantity
     db_session.flush()
 
-    opening_item = shop_assembly_repository.complete_opening(db_session, sao.id, "A", "1", "1", completed_by="tester")
+    opening_item = shop_assembly_repository.complete_opening(db_session, sao.id, completed_by="tester")
     db_session.flush()
     assert opening_item.leaf == 2

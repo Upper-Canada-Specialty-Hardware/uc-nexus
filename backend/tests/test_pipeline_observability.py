@@ -312,7 +312,7 @@ def test_pipeline_walks_a_request_from_requested_to_shipped(db_session):
         performed_by="Ana",
     )
     db_session.flush()
-    leaf_one = shop_assembly_repository.complete_opening(db_session, openings[0].id, "B", "2", "3", completed_by="Ana")
+    leaf_one = shop_assembly_repository.complete_opening(db_session, openings[0].id, completed_by="Ana")
     db_session.flush()
     detail = shop_assembly_repository.get_assembly_pipeline(db_session, sar.id)
     assert detail.openings[0].stage == "COMPLETED"
@@ -521,7 +521,7 @@ def test_awaiting_replacement_and_arrived_after_ship_are_both_visible(db_session
         performed_by="Ana",
     )
     db_session.flush()
-    leaf = shop_assembly_repository.complete_opening(db_session, opening.id, "B", "2", "3", completed_by="Ana")
+    leaf = shop_assembly_repository.complete_opening(db_session, opening.id, completed_by="Ana")
     leaf.state = OpeningItemState.SHIPPED_OUT
     db_session.flush()
 
@@ -739,7 +739,7 @@ def _leaf_with_deficiency(db_session, project, *, complete=False, assign_to=("us
             performed_by=assign_to[1],
         )
         db_session.flush()
-        shop_assembly_repository.complete_opening(db_session, opening.id, "B", "2", "3", completed_by=assign_to[1])
+        shop_assembly_repository.complete_opening(db_session, opening.id, completed_by=assign_to[1])
         db_session.flush()
     repl = db_session.scalar(select(PullRequest).where(PullRequest.request_number == f"PR-REPL-{pr.request_number}"))
     return sar, pr, opening, item, repl
@@ -1024,7 +1024,7 @@ def test_assembly_status_values_are_all_reachable(db_session):
     db_session.flush()
     assert opening.assembly_status == AssemblyStatus.IN_PROGRESS
 
-    shop_assembly_repository.complete_opening(db_session, opening.id, "B", "2", "3", completed_by="Ana")
+    shop_assembly_repository.complete_opening(db_session, opening.id, completed_by="Ana")
     db_session.flush()
     assert opening.assembly_status == AssemblyStatus.COMPLETED
 
@@ -1051,7 +1051,7 @@ def _build_and_complete(db_session, sar, *, assign_to=("user_1", "Ana")):
         performed_by=assign_to[1],
     )
     db_session.flush()
-    leaf = shop_assembly_repository.complete_opening(db_session, opening.id, "B", "2", "3", completed_by=assign_to[1])
+    leaf = shop_assembly_repository.complete_opening(db_session, opening.id, completed_by=assign_to[1])
     db_session.flush()
     return pr, opening, leaf
 
