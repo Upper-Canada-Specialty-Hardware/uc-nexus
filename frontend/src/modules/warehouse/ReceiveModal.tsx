@@ -28,8 +28,6 @@ import PackingSlipPicker from './PackingSlipPicker';
 import {
   buildReceiveLineItemsInput,
   isPoGpRegistered,
-  validatePutAway,
-  type LocationDraft,
   type PODetailLineItem,
   type PODetails,
 } from './receiveLines';
@@ -92,7 +90,6 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
   const [poDetailsError, setPoDetailsError] = useState<string | null>(null);
   // Put-away is entered here rather than later: the GP receipt the approval posts needs a rack
   // location per line, and the person who unloaded the truck is the one who knows where it went.
-  const [lineLocations, setLineLocations] = useState<Record<string, LocationDraft[]>>({});
   const [submitting, setSubmitting] = useState(false);
   // #504: one packing slip per PO, because one draft is created per PO. Held as the chosen File
   // until submit - uploading on pick would leave orphan documents on every abandoned count.
@@ -165,7 +162,6 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
       setReceiveQuantities({});
       setMutationError(null);
       setSucceeded(false);
-      setLineLocations({});
       // Fresh open = fresh action set; drop any keys held from a prior batch.
       idempotencyKeysRef.current = {};
       fetchPODetails(poIds);
@@ -261,10 +257,6 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
       .filter((x) => x.drafts.length > 0);
   }, [poDetailsList, pendingDraftsByPoId]);
 
-  const putAwayValid = useMemo(
-    () => validatePutAway(lineItemsToReceive, receiveQuantities, lineLocations),
-    [lineItemsToReceive, receiveQuantities, lineLocations],
-  );
 
   // ---- Handlers ----
 
@@ -321,7 +313,7 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
           warehouseId: warehouseId || null,
           idempotencyKey,
           packingSlipDocumentId,
-          lineItems: buildReceiveLineItemsInput(poLineItems, receiveQuantities, lineLocations),
+          lineItems: buildReceiveLineItemsInput(poLineItems, receiveQuantities),
         };
 
         try {
@@ -373,7 +365,6 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
     uploadPoDocument,
     lineItemsToReceive,
     receiveQuantities,
-    lineLocations,
     createReceiveDraft,
     client,
     showToast,
@@ -388,7 +379,6 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
     setMutationError(null);
     setSucceeded(false);
     setConfirmOpen(false);
-    setLineLocations({});
     setPackingSlips({});
     onClose();
   }, [onClose]);
@@ -425,7 +415,6 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
         disabled={
           !hasAnyReceiveQuantity ||
           hasQuantityErrors ||
-          !putAwayValid ||
           !allPackingSlipsAttached ||
           blockedPos.length > 0 ||
           submitting
@@ -439,7 +428,7 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
 
   // Escape is a dismissal, not a discard: once counts or rack rows have been typed in, the key is
   // swallowed and the user has to use Cancel. Nothing here is recoverable once handleClose resets it.
-  const hasUnsavedEntry = !succeeded && (hasAnyReceiveQuantity || Object.keys(lineLocations).length > 0);
+  const hasUnsavedEntry = !succeeded && (hasAnyReceiveQuantity || false);
   const showForm = !poDetailsLoading && !poDetailsError && !succeeded;
 
   return (
@@ -535,9 +524,6 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
             poDetailsList={poDetailsList}
             receiveQuantities={receiveQuantities}
             onQuantityChange={handleQuantityChange}
-            lineLocations={lineLocations}
-            onLineLocationsChange={setLineLocations}
-            lineItemsToReceive={lineItemsToReceive}
             showPoHeaders={poIds.length > 1}
           />
         )}
