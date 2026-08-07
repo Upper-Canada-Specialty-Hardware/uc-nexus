@@ -333,6 +333,7 @@ export const CREATE_DRAFT_PO = gql`
       gpVendorId
       vendorNameSnapshot
       costCode
+      vendorQuoteNumber
       notes
       preferredDeliveryDate
       createdAt

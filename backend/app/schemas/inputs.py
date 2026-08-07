@@ -352,6 +352,10 @@ class CreateDraftPOInput:
     # #490: optional GP cost code, carried to register as the default. RegisterPOInput.cost_code
     # stays authoritative - a code that has since left the job's GP list is caught there.
     cost_code: str | None = None
+    # #481: the vendor's quotation this request is raised against. Usually arrives after the draft
+    # exists and is typed on the PO afterwards, but a buyer working from a quote in hand has nowhere
+    # to put it at creation without this.
+    vendor_quote_number: str | None = None
 
 
 @strawberry.input
