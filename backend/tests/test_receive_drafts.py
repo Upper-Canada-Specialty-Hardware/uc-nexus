@@ -496,6 +496,8 @@ def _cleanup(fixtures) -> None:
                 if new_stock:
                     session.execute(delete(StockItem).where(StockItem.id.in_(new_stock)))
             session.execute(delete(POLineItemModel).where(POLineItemModel.po_id == f.po_id))
+            # After the drafts, which reference the slip they were counted against (#504).
+            session.execute(delete(PODocument).where(PODocument.po_id == f.po_id))
             session.execute(delete(POModel).where(POModel.id == f.po_id))
             if f.project_id is not None:
                 session.execute(delete(Project).where(Project.id == f.project_id))
