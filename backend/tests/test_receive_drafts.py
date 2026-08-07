@@ -24,7 +24,7 @@ from decimal import Decimal
 
 import pytest
 
-from app.errors import AppError, RelayUnavailableError
+from app.errors import AppError, RelayUnavailableError, ValidationError
 from app.models.enums import NotificationType, POStatus, ReceiveDraftStatus
 from app.models.notification import Notification
 from app.models.project import Project
@@ -86,8 +86,36 @@ def _lines(li, quantity):
     ]
 
 
+def _packing_slip(session, po):
+    """#504: a draft is a count made against a piece of paper, so every one needs a slip on its PO."""
+    import uuid as _uuid
+
+    from app.models.enums import PODocumentType
+    from app.models.purchase_order import PODocument
+
+    doc = PODocument(
+        id=_uuid.uuid4(),
+        po_id=po.id,
+        file_name="slip.pdf",
+        content_type="application/pdf",
+        file_size=12,
+        document_type=PODocumentType.PACKING_SLIP,
+        s3_key=f"po-documents/{po.id}/slip-{_uuid.uuid4().hex[:8]}.pdf",
+    )
+    session.add(doc)
+    session.flush()
+    return doc
+
+
 def _draft(session, po, li, quantity=3, *, author_user_id=AUTHOR, author_name=AUTHOR_NAME):
-    draft = warehouse_repository.create_receive_draft(session, po.id, _lines(li, quantity), author_user_id, author_name)
+    draft = warehouse_repository.create_receive_draft(
+        session,
+        po.id,
+        _lines(li, quantity),
+        author_user_id,
+        author_name,
+        packing_slip_document_id=_packing_slip(session, po).id,
+    )
     session.flush()
     return draft
 
@@ -148,12 +176,25 @@ def test_resubmitting_the_same_key_returns_the_first_draft(db_session):
     project = _make_project(db_session)
     po, li = _make_po(db_session, project.id)
 
+    slip = _packing_slip(db_session, po)
     first = warehouse_repository.create_receive_draft(
-        db_session, po.id, _lines(li, 3), AUTHOR, AUTHOR_NAME, idempotency_key="k-1"
+        db_session,
+        po.id,
+        _lines(li, 3),
+        AUTHOR,
+        AUTHOR_NAME,
+        idempotency_key="k-1",
+        packing_slip_document_id=slip.id,
     )
     db_session.flush()
     second = warehouse_repository.create_receive_draft(
-        db_session, po.id, _lines(li, 3), AUTHOR, AUTHOR_NAME, idempotency_key="k-1"
+        db_session,
+        po.id,
+        _lines(li, 3),
+        AUTHOR,
+        AUTHOR_NAME,
+        idempotency_key="k-1",
+        packing_slip_document_id=slip.id,
     )
 
     assert first.id == second.id
@@ -426,6 +467,7 @@ def _cleanup(fixtures) -> None:
     from app.models.inventory import InventoryLocation
     from app.models.notification import Notification
     from app.models.project import Project
+    from app.models.purchase_order import PODocument
     from app.models.purchase_order import POLineItem as POLineItemModel
     from app.models.purchase_order import PurchaseOrder as POModel
     from app.models.receive_decision import ReceiveDecision
@@ -455,6 +497,8 @@ def _cleanup(fixtures) -> None:
                 if new_stock:
                     session.execute(delete(StockItem).where(StockItem.id.in_(new_stock)))
             session.execute(delete(POLineItemModel).where(POLineItemModel.po_id == f.po_id))
+            # After the drafts, which reference the slip they were counted against (#504).
+            session.execute(delete(PODocument).where(PODocument.po_id == f.po_id))
             session.execute(delete(POModel).where(POModel.id == f.po_id))
             if f.project_id is not None:
                 session.execute(delete(Project).where(Project.id == f.project_id))
@@ -631,3 +675,71 @@ def test_a_stock_po_draft_works_end_to_end_and_raises_no_decision(committed, mon
             .where(ReceiveDecision.receive_record_id == uuid.UUID(str(result.receive_record.id)))
         )
     assert count == 0
+
+
+# --- the packing slip requirement (#504) -------------------------------------------------------
+# A draft is a count made against a piece of paper that came off the truck. Nothing recorded which
+# piece of paper, so a disputed count had nothing to check against.
+
+
+def test_a_draft_without_a_packing_slip_is_refused(db_session):
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id)
+
+    with pytest.raises(ValidationError) as excinfo:
+        warehouse_repository.create_receive_draft(
+            db_session, po.id, _lines(li, 3), AUTHOR, AUTHOR_NAME, packing_slip_document_id=None
+        )
+
+    assert excinfo.value.field == "packing_slip_document_id"
+
+
+def test_a_slip_from_another_po_is_refused(db_session):
+    """Otherwise the link records somebody else's delivery."""
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id)
+    other_po, _ = _make_po(db_session, project.id)
+    foreign = _packing_slip(db_session, other_po)
+
+    with pytest.raises(ValidationError):
+        warehouse_repository.create_receive_draft(
+            db_session, po.id, _lines(li, 3), AUTHOR, AUTHOR_NAME, packing_slip_document_id=foreign.id
+        )
+
+
+def test_a_document_that_is_not_a_packing_slip_is_refused(db_session):
+    import uuid as _uuid
+
+    from app.models.enums import PODocumentType
+    from app.models.purchase_order import PODocument
+
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id)
+    wrong_type = PODocument(
+        id=_uuid.uuid4(),
+        po_id=po.id,
+        file_name="ack.pdf",
+        content_type="application/pdf",
+        file_size=12,
+        document_type=PODocumentType.VENDOR_ACKNOWLEDGEMENT,
+        s3_key=f"po-documents/{po.id}/ack.pdf",
+    )
+    db_session.add(wrong_type)
+    db_session.flush()
+
+    with pytest.raises(ValidationError):
+        warehouse_repository.create_receive_draft(
+            db_session, po.id, _lines(li, 3), AUTHOR, AUTHOR_NAME, packing_slip_document_id=wrong_type.id
+        )
+
+
+def test_the_slip_is_pinned_to_the_draft(db_session):
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id)
+    slip = _packing_slip(db_session, po)
+
+    draft = warehouse_repository.create_receive_draft(
+        db_session, po.id, _lines(li, 3), AUTHOR, AUTHOR_NAME, packing_slip_document_id=slip.id
+    )
+
+    assert draft.packing_slip_document_id == slip.id

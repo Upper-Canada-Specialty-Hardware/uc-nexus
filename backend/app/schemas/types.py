@@ -433,6 +433,9 @@ class ReceiveDraft:
     approval_idempotency_key: str | None
     receive_record_id: strawberry.ID | None
     outbox_entry_id: strawberry.ID | None
+    # #504: the packing slip this count was made against. Null only on drafts raised before the
+    # requirement existed, which render as "created before the requirement" rather than as missing.
+    packing_slip_document_id: strawberry.ID | None
     total_quantity: int
     created_at: datetime
     updated_at: datetime

@@ -127,6 +127,36 @@ def _notify_submitted(session: Session, draft: ReceiveDraftModel, po: POModel) -
     )
 
 
+def _validate_packing_slip(session: Session, po_id: uuid.UUID, document_id: uuid.UUID | None) -> None:
+    """A draft is a count made against a piece of paper (#504), so it must name which one.
+
+    Checked here rather than left to the FK: the document has to be a PACKING_SLIP AND belong to the
+    PO being received, or the link records a slip from somebody else's delivery.
+    """
+    from app.models.enums import PODocumentType
+    from app.models.purchase_order import PODocument
+
+    if document_id is None:
+        raise ValidationError(
+            "A packing slip is required to record a delivery.",
+            field="packing_slip_document_id",
+        )
+
+    doc = session.get(PODocument, document_id)
+    if doc is None:
+        raise NotFoundError(f"Document {document_id} not found")
+    if doc.po_id != po_id:
+        raise ValidationError(
+            "That packing slip belongs to a different purchase order.",
+            field="packing_slip_document_id",
+        )
+    if doc.document_type != PODocumentType.PACKING_SLIP:
+        raise ValidationError(
+            "That document is not a packing slip.",
+            field="packing_slip_document_id",
+        )
+
+
 def create_receive_draft(
     session: Session,
     po_id: uuid.UUID,
@@ -136,6 +166,7 @@ def create_receive_draft(
     warehouse_id: uuid.UUID | None = None,
     *,
     idempotency_key: str | None = None,
+    packing_slip_document_id: uuid.UUID | None = None,
 ) -> ReceiveDraftModel:
     """Record a counted delivery for a Warehouse Manager to approve.
 
@@ -144,6 +175,8 @@ def create_receive_draft(
     later to whoever opens the queue. Approval re-validates anyway - the world can move underneath a
     draft - but a draft nobody could ever approve is not worth creating.
     """
+    _validate_packing_slip(session, po_id, packing_slip_document_id)
+
     if idempotency_key:
         existing = session.scalars(
             select(ReceiveDraftModel)
@@ -169,6 +202,7 @@ def create_receive_draft(
         created_by_user_id=author_user_id,
         created_by_name=author_name,
         create_idempotency_key=idempotency_key or None,
+        packing_slip_document_id=packing_slip_document_id,
     )
     session.add(draft)
     session.flush()

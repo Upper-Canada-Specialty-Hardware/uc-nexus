@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { ToastProvider } from '../../../components/Toast';
 import ReceiveModal from '../ReceiveModal';
 import { GET_PO_RECEIVING_DETAILS, CREATE_RECEIVE_DRAFT } from '../../../graphql/warehouse';
+import { UPLOAD_PO_DOCUMENT } from '../../../graphql/po';
 import { GET_WAREHOUSES } from '../../../graphql/shared';
 
 // This dialog counts a delivery in. It used to post the GP receipt too, and everything about that
@@ -18,6 +19,7 @@ type CreateDraftVars = {
     poId: string;
     warehouseId: string | null;
     idempotencyKey: string;
+    packingSlipDocumentId: string;
     lineItems: {
       poLineItemId: string;
       quantityReceived: number;
@@ -170,6 +172,41 @@ function secondPoDetailsMock(): MockedResponse {
   };
 }
 
+// #504: every draft is created against a packing slip, so the upload runs first and its id is
+// pinned to the draft. One mock serves every PO - the tests care that a slip was attached and its
+// id reached the input, not which document it was.
+function uploadMock(): MockedResponse {
+  return {
+    request: { query: UPLOAD_PO_DOCUMENT, variables: () => true },
+    maxUsageCount: Number.POSITIVE_INFINITY,
+    result: {
+      data: {
+        uploadPoDocument: {
+          __typename: 'PODocument',
+          id: 'doc-slip-1',
+          poId: 'po-1',
+          fileName: 'slip.pdf',
+          contentType: 'application/pdf',
+          fileSize: 12,
+          documentType: 'PACKING_SLIP',
+          uploadedAt: '2026-08-06T00:00:00Z',
+          downloadUrl: 'https://example.test/slip.pdf',
+        },
+      },
+    },
+  };
+}
+
+/** Attach a slip to every PO on screen. Submit stays disabled until they all have one (#504). */
+function attachPackingSlips() {
+  const inputs = screen.getAllByLabelText(/^Packing slip for /);
+  for (const input of inputs) {
+    fireEvent.change(input, {
+      target: { files: [new File(['slip'], 'slip.pdf', { type: 'application/pdf' })] },
+    });
+  }
+}
+
 function renderModal(
   extraMocks: MockedResponse[] = [],
   poIds: string[] = ['po-1'],
@@ -177,7 +214,7 @@ function renderModal(
 ) {
   const onClose = vi.fn();
   render(
-    <MockedProvider mocks={[warehousesMock(), ...extraMocks]}>
+    <MockedProvider mocks={[warehousesMock(), uploadMock(), ...extraMocks]}>
       <MemoryRouter>
         <ToastProvider>
           <ReceiveModal
@@ -229,6 +266,8 @@ function fillLocation(idx: number, aisle: string, row: string, bay: string, qty?
 }
 
 async function submitViaConfirm() {
+  // #504: no draft without a slip, so every submit path attaches one first.
+  attachPackingSlips();
   fireEvent.click(await screen.findByRole('button', { name: 'Submit for Approval' }, SLOW));
   fireEvent.click(await screen.findByRole('button', { name: 'Submit' }, SLOW));
 }
@@ -281,6 +320,7 @@ describe('ReceiveModal', () => {
 
     fillLocation(0, 'A1', 'B2', 'C3');
     expect(screen.getByText('all placed')).toBeInTheDocument();
+    attachPackingSlips();
     expect(submitButton()).toBeEnabled();
   });
 
@@ -296,6 +336,7 @@ describe('ReceiveModal', () => {
     setReceiveQty('3');
     fireEvent.change(screen.getByLabelText('Qty'), { target: { value: '3' } });
     expect(screen.queryByText('Max: 3')).toBeNull();
+    attachPackingSlips();
     expect(submitButton()).toBeEnabled();
   });
 
@@ -310,6 +351,7 @@ describe('ReceiveModal', () => {
     fireEvent.click(screen.getByRole('button', { name: /add location/i }));
     fillLocation(1, 'A2', 'B2', 'C4', '1');
     expect(screen.getByText('all placed')).toBeInTheDocument();
+    attachPackingSlips();
     expect(submitButton()).toBeEnabled();
   });
 
@@ -338,6 +380,8 @@ describe('ReceiveModal', () => {
         poId: 'po-1',
         warehouseId: 'wh-1',
         idempotencyKey: expect.stringMatching(UUID_RE),
+        // #504: the slip is uploaded first and its id pinned to the draft.
+        packingSlipDocumentId: 'doc-slip-1',
         lineItems: [
           {
             poLineItemId: 'li-1',
@@ -419,6 +463,7 @@ describe('ReceiveModal', () => {
 
     setReceiveQty('3');
     fillLocation(0, 'A1', 'B2', 'C3');
+    attachPackingSlips();
     expect(submitButton()).toBeEnabled();
   });
 
