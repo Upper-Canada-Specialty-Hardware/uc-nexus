@@ -1410,6 +1410,7 @@ class ReceiveRow:
     batch_number: str | None
 
 
+@strawberry.type
 class InventoryRow:
     """One stocked inventory line, flat (#506).
 
