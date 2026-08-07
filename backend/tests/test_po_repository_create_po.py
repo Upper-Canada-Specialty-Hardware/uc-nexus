@@ -5,7 +5,7 @@ from datetime import datetime
 import pytest
 
 from app.errors import ValidationError
-from app.models.enums import HardwareItemState
+from app.models.enums import HardwareItemState, POStatus
 from app.models.hardware import HardwareItem
 from app.models.project import Opening, Project
 from app.repositories import po_repository
@@ -341,4 +341,4 @@ def test_create_po_with_a_quote_stays_a_draft(db_session):
         vendor_quote_number="Q-1234",
     )
 
-    assert po.status.value == "Draft"
+    assert po.status == POStatus.DRAFT
