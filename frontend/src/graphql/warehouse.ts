@@ -22,38 +22,6 @@ export const GET_PROJECT_INVENTORY_AVAILABILITY = gql`
   }
 `;
 
-export const GET_INVENTORY_HIERARCHY = gql`
-  query GetInventoryHierarchy($projectId: ID, $warehouseId: ID) {
-    inventoryHierarchy(projectId: $projectId, warehouseId: $warehouseId) {
-      hardwareCategory
-      totalQuantity
-      totalAvailableQuantity
-      totalValue
-      productCodes {
-        productCode
-        totalQuantity
-        totalAvailableQuantity
-        totalValue
-        items {
-          id
-          projectId
-          poLineItemId
-          receiveLineItemId
-          hardwareCategory
-          productCode
-          quantity
-          aisle
-          row
-          bay
-          receivedAt
-          createdAt
-          updatedAt
-        }
-      }
-    }
-  }
-`;
-
 export const GET_INVENTORY_ITEMS = gql`
   query GetInventoryItems($projectId: ID, $category: String!, $productCode: String!) {
     inventoryItems(projectId: $projectId, category: $category, productCode: $productCode) {
@@ -65,6 +33,29 @@ export const GET_INVENTORY_ITEMS = gql`
       poNumber
       classification
       unitCost
+    }
+  }
+`;
+
+// #506: the Hardware Items tab as one flat table rather than a category -> product -> location
+// accordion. Every value the warehouse sorts, filters or exports on is on the row, resolved
+// server-side in a single query.
+export const GET_INVENTORY_ROWS = gql`
+  query GetInventoryRows($projectId: ID, $warehouseId: ID) {
+    inventoryRows(projectId: $projectId, warehouseId: $warehouseId) {
+      inventoryLocation {
+        id projectId poLineItemId receiveLineItemId stockItemId
+        hardwareCategory productCode quantity deficientQuantity available
+        aisle row bay receivedAt createdAt updatedAt
+      }
+      unitCost
+      lineValue
+      poNumber
+      vendorName
+      warehouseCode
+      warehouseName
+      projectNumber
+      projectName
     }
   }
 `;
@@ -284,26 +275,6 @@ export const GET_PULL_REQUESTS = gql`
         requestedQuantity
         fetchedAt
         fetchedBy
-      }
-    }
-  }
-`;
-
-export const GET_INVENTORY_BY_VENDOR = gql`
-  query GetInventoryByVendor($projectId: ID) {
-    inventoryByVendor(projectId: $projectId) {
-      vendorName
-      totalQuantity
-      totalValue
-      productCodes {
-        productCode
-        totalQuantity
-        totalValue
-        items {
-          id projectId poLineItemId receiveLineItemId
-          hardwareCategory productCode quantity
-          aisle row bay receivedAt createdAt updatedAt
-        }
       }
     }
   }
