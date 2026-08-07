@@ -145,6 +145,21 @@ export const ASSIGN_INVENTORY_LOCATION = gql`
   }
 `;
 
+/**
+ * Break units off an unlocated row so they can go on a different shelf (#501).
+ *
+ * Put-away happens after the warehouse manager approves now, so a receive books one row per PO
+ * line. Ten hinges arriving as one row routinely go to two bins, and a row carries exactly one
+ * aisle/row/bay. Returns [original, new]; the new row is unlocated and is what gets assigned next.
+ */
+export const SPLIT_INVENTORY_LOCATION = gql`
+  mutation SplitInventoryLocation($inventoryLocationId: ID!, $quantity: Int!) {
+    splitInventoryLocation(inventoryLocationId: $inventoryLocationId, quantity: $quantity) {
+      id projectId poLineItemId receiveLineItemId hardwareCategory productCode quantity aisle row bay receivedAt createdAt updatedAt
+    }
+  }
+`;
+
 export const MOVE_OPENING_ITEM_LOCATION = gql`
   mutation MoveOpeningItemLocation($openingItemId: ID!, $aisle: String!, $row: String!, $bay: String!, $warehouseId: ID) {
     moveOpeningItemLocation(openingItemId: $openingItemId, aisle: $aisle, row: $row, bay: $bay, warehouseId: $warehouseId) {

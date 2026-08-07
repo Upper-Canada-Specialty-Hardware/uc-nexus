@@ -37,6 +37,7 @@ from .locations import (
     move_inventory_location,
     move_opening_item_location,
     normalize_location_value,
+    split_inventory_location,
 )
 from .progress import (
     PLACED_PO_STATUSES,
@@ -144,6 +145,7 @@ __all__ = [
     "_normalize_and_validate_location_fields",
     "adjust_inventory_quantity",
     "assign_inventory_location",
+    "split_inventory_location",
     "assign_opening_item_location",
     "cancel_pull_request",
     "check_inventory_sufficiency",

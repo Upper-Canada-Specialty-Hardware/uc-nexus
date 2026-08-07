@@ -153,6 +153,39 @@ def test_build_create_receipt_payload_dedupes_and_joins_rack_locations():
     assert line["rack_location"] == "A1-B1-C1, A2-B2-C2"
 
 
+def test_a_line_with_no_locations_tells_gp_the_warehouse():
+    """#501: put-away happens after approval, so a line normally reaches GP with no bin yet. The
+    warehouse is true at receipt time and is the most specific thing anybody knows - an empty
+    rack_location would throw even that away."""
+    payload = gp_po.build_create_receipt_payload(
+        po_number="PO0000001",
+        received_by="Jane Doe",
+        line_items=[{"gp_line_ord": 16384, "quantity": 5, "locations": []}],
+        warehouse_code="MAIN",
+    )
+    assert payload["lines"][0]["rack_location"] == "MAIN"
+
+
+def test_a_legacy_draft_that_still_carries_bins_keeps_composing_them():
+    """Drafts counted before #501 shipped still have rack rows; those win over the warehouse."""
+    payload = gp_po.build_create_receipt_payload(
+        po_number="PO0000001",
+        received_by="Jane Doe",
+        line_items=[{"gp_line_ord": 16384, "quantity": 5, "locations": [{"aisle": "A1", "row": "B1", "bay": "C1"}]}],
+        warehouse_code="MAIN",
+    )
+    assert payload["lines"][0]["rack_location"] == "A1-B1-C1"
+
+
+def test_no_locations_and_no_warehouse_sends_an_empty_rack_location():
+    payload = gp_po.build_create_receipt_payload(
+        po_number="PO0000001",
+        received_by="Jane Doe",
+        line_items=[{"gp_line_ord": 16384, "quantity": 5, "locations": []}],
+    )
+    assert payload["lines"][0]["rack_location"] == ""
+
+
 # --- validate_create_po_inputs: pre-relay field checks (issue #202 #1) --------------------------------
 
 

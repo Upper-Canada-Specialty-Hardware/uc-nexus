@@ -131,10 +131,18 @@ def build_create_receipt_payload(
     po_number: str,
     received_by: str,
     line_items: list[dict],
+    warehouse_code: str | None = None,
 ) -> dict:
     """line_items: each with gp_line_ord, quantity, and locations (the same aisle/row/bay dicts the
     createReceive input carries for the UC Nexus put-away) - rack_location composes the distinct
-    locations a line's units were placed in, same convention the browser used to build it."""
+    locations a line's units were placed in, same convention the browser used to build it.
+
+    Since #501 put-away happens AFTER the warehouse manager approves, so a line usually reaches this
+    point with no locations at all. `warehouse_code` is what GP gets told instead: the building the
+    units are in, which is true at receipt time and is the most specific thing anybody knows yet.
+    Sending an empty rack_location would lose even that. Lines that DO carry locations - drafts
+    counted before #501 shipped - still compose the bins.
+    """
     lines = []
     for li in line_items:
         racks: list[str] = []
@@ -144,11 +152,12 @@ def build_create_receipt_payload(
             if key not in seen:
                 seen.add(key)
                 racks.append(key)
+        rack_location = ", ".join(racks) if racks else (warehouse_code or "")
         lines.append(
             {
                 "po_line_ord": li["gp_line_ord"],
                 "quantity": li["quantity"],
-                "rack_location": ", ".join(racks)[:_MAX_RACK_LOCATION],
+                "rack_location": rack_location[:_MAX_RACK_LOCATION],
             }
         )
 
