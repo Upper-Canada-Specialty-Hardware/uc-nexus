@@ -95,9 +95,10 @@ def test_only_supplied_parameters_reach_the_exec():
         "@I_vBidDueDate",
     ):
         assert param not in sql
-    # 8 required values + the trailing OnlyValidate flag
+    # 8 required values, then the two trailing flags: UpdateIfExists (0 - this is a create, #497
+    # added the update path that sets it to 1) and OnlyValidate.
     assert params == (
-        "NEXUS-380-T1", "Test job", "VANCOUVER", "ELL100", "MAIN", "MAIN", "GST 5%", date(2025, 9, 15), 0,
+        "NEXUS-380-T1", "Test job", "VANCOUVER", "ELL100", "MAIN", "MAIN", "GST 5%", date(2025, 9, 15), 0, 0,
     )
 
 
@@ -108,7 +109,7 @@ def test_supplied_optional_parameters_are_added_in_order():
     assert "@I_vEstimatorID" in sql
     assert "@I_vBidDueDate" in sql
     assert "@I_vWSManagerID" not in sql  # still unset
-    assert params[8:] == ("EST1", date(2025, 8, 1), 0)
+    assert params[8:] == ("EST1", date(2025, 8, 1), 0, 0)
 
 
 def test_return_error_text_is_always_requested():
@@ -285,3 +286,51 @@ def test_over_length_job_number_is_rejected():
     # WS_Job_Number is char(17); SQL Server would silently truncate a longer value
     with pytest.raises(ValueError):
         _request(job_number="X" * 18)
+
+
+# --- updating an existing job (issue #497) ---
+#
+# Same proc, one parameter different. `@I_vUpdateIfExists = 1` is what makes wsiJCJobMaster an upsert
+# rather than a create - established from sys.parameters on the live proc (parameter 207), because
+# the proc body is encrypted and cannot be read.
+
+
+def test_update_sets_update_if_exists():
+    from ucnexus_relay.econnect import update_job
+
+    conn = _FakeConn()
+    update_job(conn, job_number="NEXUS-380-T1", job_name="Renamed")
+    sql, params = conn.proc_calls()[0]
+
+    assert "@I_vUpdateIfExists  = ?" in sql
+    # job number, name, then UpdateIfExists=1 and OnlyValidate=0.
+    assert params == ("NEXUS-380-T1", "Renamed", 1, 0)
+
+
+def test_update_needs_only_the_job_number():
+    """An update is a PATCH. Demanding the create-time eight would make a rename also restate the
+    customer, the division and the address codes - which is how a caller blanks a column by
+    accident."""
+    from ucnexus_relay.econnect import update_job
+
+    conn = _FakeConn()
+    update_job(conn, job_number="NEXUS-380-T1", job_address_code="SITE-23093")
+    sql, params = conn.proc_calls()[0]
+
+    assert "@I_vJobAddressCode" in sql
+    # Nothing else was sent, so nothing else can be overwritten with a default.
+    for param in ("@I_vWSJobName", "@I_vDivisions", "@I_vCustomerNumber", "@I_vTaxScheduleID"):
+        assert param not in sql
+    assert params == ("NEXUS-380-T1", "SITE-23093", 1, 0)
+
+
+def test_update_without_a_job_number_is_refused():
+    from ucnexus_relay.econnect import EConnectError, update_job
+
+    conn = _FakeConn()
+    try:
+        update_job(conn, job_name="Renamed")
+    except EConnectError as e:
+        assert "job_number" in str(e)
+    else:
+        raise AssertionError("update_job accepted a call with no job number")

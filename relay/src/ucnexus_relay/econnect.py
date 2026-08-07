@@ -1008,13 +1008,21 @@ def get_job(conn, job_number: str) -> dict | None:
     back - WS_Job_Name is char(31), and what GP stored is the honest thing to snapshot onto the Nexus
     project. Doubles as proof the row actually landed."""
     row = conn.cursor().execute(
-        "SELECT RTRIM(WS_Job_Number) AS job_number, RTRIM(WS_Job_Name) AS job_name "
+        "SELECT RTRIM(WS_Job_Number) AS job_number, RTRIM(WS_Job_Name) AS job_name, "
+        # #497 needs both: the customer is who a new address code is minted under, and the current
+        # code is what the job ships to today.
+        "RTRIM(CUSTNMBR) AS customer_number, RTRIM(ISNULL(Job_Address_Code, '')) AS job_address_code "
         "FROM dbo.JC00102 WHERE RTRIM(WS_Job_Number) = ?",
         job_number.strip(),
     ).fetchone()
     if row is None:
         return None
-    return {"job_number": row.job_number, "job_name": row.job_name or None}
+    return {
+        "job_number": row.job_number,
+        "job_name": row.job_name or None,
+        "customer_number": row.customer_number or None,
+        "job_address_code": row.job_address_code or None,
+    }
 
 
 def list_customer_addresses(conn, customer_number: str) -> list[dict]:
@@ -1104,6 +1112,25 @@ _CREATE_JOB_REQUIRED = (
 )
 
 
+def update_job(conn, *, only_validate: bool = False, **fields) -> None:
+    """Update an EXISTING GP job through wsiJCJobMaster (#497).
+
+    Same proc, same statement builder, one parameter different: `@I_vUpdateIfExists = 1`. That flag is
+    what makes the proc an upsert rather than a create - established from `sys.parameters` on the live
+    proc (parameter 207), because the proc body is encrypted and cannot be read.
+
+    Only the fields the caller sets are sent, which is what makes this a PATCH: everything absent from
+    the EXEC keeps whatever GP holds. That matters more here than on create - a Nexus project carries a
+    fraction of a JC00102 row, and sending the rest as defaults would silently blank estimator, dates,
+    contract amounts and the rest of the columns accounting maintains in GP.
+
+    The site address is NOT a parameter on this proc. `JobAddressCode` is a char(15) pointer at a
+    customer address record, so changing where a job ships means minting an address code and
+    re-pointing - see `update_job_site_address_op`.
+    """
+    return _exec_job_master(conn, only_validate=only_validate, update_if_exists=True, **fields)
+
+
 def create_job(conn, *, only_validate: bool = False, **fields) -> None:
     """Create a GP job through the WennSoft job proc wsiJCJobMaster. Same shape as
     apply_wennsoft_integration: DECLARE the two OUTPUT locals, EXEC, then SELECT them back.
@@ -1119,13 +1146,26 @@ def create_job(conn, *, only_validate: bool = False, **fields) -> None:
 
     @I_vReturnErrorText=1 makes the proc fill @oErrString; that text is carried on the raised error as
     proc_message so it survives to the user verbatim (see EConnectError)."""
+    return _exec_job_master(conn, only_validate=only_validate, update_if_exists=False, **fields)
+
+
+def _exec_job_master(conn, *, only_validate: bool, update_if_exists: bool, **fields) -> None:
+    """The one statement builder behind create_job and update_job.
+
+    Shared so a create and an update cannot drift on how the parameters are assembled - and so the dry
+    run of either exercises the exact statement its real call will make.
+    """
     unknown = set(fields) - {field for field, _ in _CREATE_JOB_PARAMS}
     if unknown:
         raise EConnectError(f"unknown create_job field(s): {sorted(unknown)}", proc="wsiJCJobMaster")
     # A required field arriving as None would otherwise be quietly dropped from the EXEC and the proc
     # would run on its own default for it - validating and then creating something other than what was
     # asked for. CreateJobRequest already rejects these, so reaching here means a caller bypassed it.
-    missing = [field for field in _CREATE_JOB_REQUIRED if fields.get(field) is None]
+    # An update is a PATCH - it names the job and whatever is changing, and everything else keeps
+    # what GP holds. Demanding the create-time eight would make a name change also restate the
+    # customer, the division and the address codes, which is how a caller blanks a column by accident.
+    required = ("job_number",) if update_if_exists else _CREATE_JOB_REQUIRED
+    missing = [field for field in required if fields.get(field) is None]
     if missing:
         raise EConnectError(f"create_job is missing required field(s): {missing}", proc="wsiJCJobMaster")
 
@@ -1139,16 +1179,20 @@ def create_job(conn, *, only_validate: bool = False, **fields) -> None:
     DECLARE @err_str varchar(255) = '';
     EXEC dbo.wsiJCJobMaster
         {assignments},
+        @I_vUpdateIfExists  = ?,
         @I_vOnlyValidate    = ?,
         @I_vReturnErrorText = 1,
         @O_iErrorState      = @err OUTPUT,
         @oErrString         = @err_str OUTPUT;
     SELECT @err AS error_state, @err_str AS err_string;
     """
-    row = conn.cursor().execute(sql, *supplied.values(), 1 if only_validate else 0).fetchone()
+    row = conn.cursor().execute(
+        sql, *supplied.values(), 1 if update_if_exists else 0, 1 if only_validate else 0
+    ).fetchone()
     if row.error_state != 0:
         message = (row.err_string or "").strip()
-        pass_label = "validation" if only_validate else "create"
+        verb = "update" if update_if_exists else "create"
+        pass_label = "validation" if only_validate else verb
         raise EConnectError(
             f"wsiJCJobMaster {pass_label} failed for job {fields.get('job_number')}: {message}",
             proc="wsiJCJobMaster",

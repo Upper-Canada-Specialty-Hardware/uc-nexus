@@ -94,10 +94,20 @@ def _persist_create_receive_from_context(context: dict, relay_result: dict, key:
     )
 
 
+def _persist_update_job_site_from_context(context: dict, relay_result: dict, key: str) -> None:
+    """#497 has no Nexus-side persist: the project row was already saved before the push was queued.
+
+    The relay call IS the whole write, so a successful drain has nothing left to do. This exists so
+    the op is a registered handler rather than an unknown one the worker would fail permanently.
+    """
+    return None
+
+
 # op -> adapter. The adapters return the resolver's Strawberry DTO; the worker discards it.
 _HANDLERS: dict[str, Callable[[dict, dict, str], None]] = {
     "register_po_in_gp": _persist_register_po_from_context,
     "create_receive": _persist_create_receive_from_context,
+    "update_job_site": _persist_update_job_site_from_context,
 }
 
 
