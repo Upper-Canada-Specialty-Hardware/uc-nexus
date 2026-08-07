@@ -81,9 +81,11 @@ from .pull_requests import (
 )
 from .receive_decisions import (
     any_untargeted_decision_pending,
+    create_decision_for_draft,
     create_decision_for_receive,
     decide_receive_decision,
     get_pending_decisions_for_user,
+    stamp_receive_record_on_draft_decision,
 )
 from .receive_drafts import (
     ApprovalContext,
@@ -155,7 +157,9 @@ __all__ = [
     "confirm_pick",
     "consume_reservations",
     "count_pending_drafts",
+    "create_decision_for_draft",
     "create_decision_for_receive",
+    "stamp_receive_record_on_draft_decision",
     "create_receive",
     "create_receive_draft",
     "create_reservations",

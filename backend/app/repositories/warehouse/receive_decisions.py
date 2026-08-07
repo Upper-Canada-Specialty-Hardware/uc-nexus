@@ -18,6 +18,7 @@ from app.errors import ConflictError, InvalidStateTransitionError, NotFoundError
 from app.models.enums import NotificationType, ReceiveDecisionChoice, ReceiveDecisionStatus
 from app.models.purchase_order import PurchaseOrder as POModel
 from app.models.receive_decision import ReceiveDecision as ReceiveDecisionModel
+from app.models.receive_draft import ReceiveDraft as ReceiveDraftModel
 from app.models.receiving import ReceiveRecord as ReceiveRecordModel
 from app.services import notification_service
 from app.services.locking import lock_rows
@@ -31,6 +32,26 @@ def _same_buyer(a: str | None, b: str | None) -> bool:
     return a.strip().upper() == b.strip().upper()
 
 
+def create_decision_for_draft(
+    session: Session,
+    po: POModel,
+    draft_id: uuid.UUID,
+    *,
+    total_quantity: int,
+) -> ReceiveDecisionModel | None:
+    """Raise the keep-or-ship question the moment a count is submitted (#499).
+
+    It used to be raised after the warehouse manager approved, which meant the hardware had already
+    been booked and put away before its owner was asked whether it should have gone straight back
+    out. Asking at the count gives them the whole approval window to answer, and lets a SHIP_OUT
+    answer skip the manager's queue entirely.
+
+    Same non-network rule as the record-stage version below: `target_user_id` comes straight off the
+    PO's column, and resolving a NULL against Clerk is the read side's job.
+    """
+    return _create_decision(session, po, draft_id=draft_id, receive_record_id=None, total_quantity=total_quantity)
+
+
 def create_decision_for_receive(
     session: Session,
     po: POModel,
@@ -38,13 +59,12 @@ def create_decision_for_receive(
     *,
     total_quantity: int,
 ) -> ReceiveDecisionModel | None:
-    """Raise the keep-or-ship question for a receive that has just been booked.
+    """Stamp the booked receive onto its decision, raising one if the draft never did.
 
-    Runs inside the persist transaction, so it must not make a network call: `target_user_id` is read
-    straight off the PO's column and left NULL when the PO predates it. Resolving that NULL against
-    the Clerk roster here would put a Clerk round trip inside the transaction of a GP receipt that has
-    already posted, and a Clerk outage would then roll back a receipt GP holds. The read side does
-    that resolution instead, for one caller at a time.
+    Since #499 the draft normally raised it already, and this just fills in the record - the same
+    delivery, now with a GP receipt behind it. It still RAISES one when there is nothing to stamp:
+    the outbox worker draining a queued receipt and any legacy path both reach here, and a booked
+    receive with no question attached would strand the decision entirely.
 
     Returns None for a stock PO: "which project's inventory" is not a question you can ask without a
     project.
@@ -58,9 +78,59 @@ def create_decision_for_receive(
     if existing is not None:
         return existing
 
+    return _create_decision(
+        session, po, draft_id=None, receive_record_id=receive_record_id, total_quantity=total_quantity
+    )
+
+
+def stamp_receive_record_on_draft_decision(
+    session: Session,
+    draft_id: uuid.UUID,
+    receive_record_id: uuid.UUID,
+) -> ReceiveDecisionModel | None:
+    """Point a draft-stage decision at the receive its approval just booked (#499).
+
+    The decision keeps whatever the creator already answered. Approval is the warehouse manager
+    confirming the count, not a re-opening of a question somebody else owns.
+    """
+    decision = session.scalars(
+        select(ReceiveDecisionModel).where(ReceiveDecisionModel.receive_draft_id == draft_id)
+    ).first()
+    if decision is None:
+        return None
+    decision.receive_record_id = receive_record_id
+    session.flush()
+    return decision
+
+
+def _create_decision(
+    session: Session,
+    po: POModel,
+    *,
+    draft_id: uuid.UUID | None,
+    receive_record_id: uuid.UUID | None,
+    total_quantity: int,
+) -> ReceiveDecisionModel | None:
+    if po.project_id is None:
+        return None
+
+    existing = session.scalars(
+        select(ReceiveDecisionModel).where(ReceiveDecisionModel.receive_record_id == receive_record_id)
+    ).first()
+    if existing is not None:
+        return existing
+
+    if draft_id is not None:
+        existing_draft = session.scalars(
+            select(ReceiveDecisionModel).where(ReceiveDecisionModel.receive_draft_id == draft_id)
+        ).first()
+        if existing_draft is not None:
+            return existing_draft
+
     decision = ReceiveDecisionModel(
         id=uuid.uuid4(),
         receive_record_id=receive_record_id,
+        receive_draft_id=draft_id,
         po_id=po.id,
         project_id=po.project_id,
         target_user_id=po.created_by_user_id,
@@ -110,8 +180,13 @@ def get_pending_decisions_for_user(
     session: Session,
     user_id: str,
     gp_buyer_id: str | None,
-) -> list[tuple[ReceiveDecisionModel, POModel, ReceiveRecordModel]]:
+) -> list[tuple[ReceiveDecisionModel, POModel, ReceiveRecordModel | None, ReceiveDraftModel | None]]:
     """The decisions this caller owes an answer to, newest first.
+
+    Both ends are outer-joined since #499: a decision raised at count time has a draft and no
+    receive record until approval books one, and a decision from before that change has the record
+    and no draft. Exactly one of the pair is always present - the check constraint says so - and the
+    caller reads the lines off whichever it is.
 
     Two arms. The first is the stamped target - every PO raised since the column existed. The second
     is the fallback for the ones before it: the PO's GP buyer, matched against the caller's OWN
@@ -120,12 +195,13 @@ def get_pending_decisions_for_user(
     that when no pre-column PO is outstanding.
     """
     stmt = (
-        select(ReceiveDecisionModel, POModel, ReceiveRecordModel)
+        select(ReceiveDecisionModel, POModel, ReceiveRecordModel, ReceiveDraftModel)
         .join(POModel, POModel.id == ReceiveDecisionModel.po_id)
-        .join(ReceiveRecordModel, ReceiveRecordModel.id == ReceiveDecisionModel.receive_record_id)
-        # The card lists every line that came in on the shipment, so the collection is loaded here
+        .outerjoin(ReceiveRecordModel, ReceiveRecordModel.id == ReceiveDecisionModel.receive_record_id)
+        .outerjoin(ReceiveDraftModel, ReceiveDraftModel.id == ReceiveDecisionModel.receive_draft_id)
+        # The card lists every line that came in on the shipment, so both collections are loaded here
         # rather than walked per row by the converter.
-        .options(selectinload(ReceiveRecordModel.line_items))
+        .options(selectinload(ReceiveRecordModel.line_items), selectinload(ReceiveDraftModel.line_items))
         .where(ReceiveDecisionModel.status == ReceiveDecisionStatus.PENDING)
         .order_by(ReceiveDecisionModel.created_at.desc())
     )
@@ -144,7 +220,7 @@ def get_pending_decisions_for_user(
         )
     else:
         stmt = stmt.where(ReceiveDecisionModel.target_user_id == user_id)
-    return [(d, po, rr) for d, po, rr in session.execute(stmt).unique().all()]
+    return [(d, po, rr, draft) for d, po, rr, draft in session.execute(stmt).unique().all()]
 
 
 def decide_receive_decision(
