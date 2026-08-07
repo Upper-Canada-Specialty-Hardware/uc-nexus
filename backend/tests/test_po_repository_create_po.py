@@ -290,7 +290,15 @@ def test_update_po_sets_clears_and_leaves_shipping_cost_and_tariff(db_session):
 def test_create_po_persists_a_vendor_quote_number(db_session):
     po = po_repository.create_po(
         db_session,
-        line_items=[{"hardware_category": "Hinges", "product_code": "HG-100", "ordered_quantity": 2, "unit_cost": 5}],
+        line_items=[
+            {
+                "hardware_category": "Hinges",
+                "product_code": "HG-100",
+                "ordered_quantity": 2,
+                "unit_cost": 5,
+                "order_as": "HG-100",
+            }
+        ],
         vendor_quote_number="  Q-1234  ",
     )
 
@@ -301,7 +309,15 @@ def test_create_po_persists_a_vendor_quote_number(db_session):
 def test_create_po_leaves_a_blank_vendor_quote_number_null(db_session, value):
     po = po_repository.create_po(
         db_session,
-        line_items=[{"hardware_category": "Hinges", "product_code": "HG-100", "ordered_quantity": 2, "unit_cost": 5}],
+        line_items=[
+            {
+                "hardware_category": "Hinges",
+                "product_code": "HG-100",
+                "ordered_quantity": 2,
+                "unit_cost": 5,
+                "order_as": "HG-100",
+            }
+        ],
         vendor_quote_number=value,
     )
 
@@ -313,7 +329,15 @@ def test_create_po_with_a_quote_stays_a_draft(db_session):
     VENDOR_CONFIRMED transition is GP_REGISTERED-only and additionally wants a vendor ack document."""
     po = po_repository.create_po(
         db_session,
-        line_items=[{"hardware_category": "Hinges", "product_code": "HG-100", "ordered_quantity": 2, "unit_cost": 5}],
+        line_items=[
+            {
+                "hardware_category": "Hinges",
+                "product_code": "HG-100",
+                "ordered_quantity": 2,
+                "unit_cost": 5,
+                "order_as": "HG-100",
+            }
+        ],
         vendor_quote_number="Q-1234",
     )
 
