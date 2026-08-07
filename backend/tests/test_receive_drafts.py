@@ -467,6 +467,7 @@ def _cleanup(fixtures) -> None:
     from app.models.inventory import InventoryLocation
     from app.models.notification import Notification
     from app.models.project import Project
+    from app.models.purchase_order import PODocument
     from app.models.purchase_order import POLineItem as POLineItemModel
     from app.models.purchase_order import PurchaseOrder as POModel
     from app.models.receive_decision import ReceiveDecision
