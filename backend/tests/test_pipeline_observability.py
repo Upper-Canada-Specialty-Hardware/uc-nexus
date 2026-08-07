@@ -316,7 +316,9 @@ def test_pipeline_walks_a_request_from_requested_to_shipped(db_session):
     db_session.flush()
     detail = shop_assembly_repository.get_assembly_pipeline(db_session, sar.id)
     assert detail.openings[0].stage == "COMPLETED"
-    assert detail.openings[0].assembled_location == "B-2-3"
+    # #498: completion no longer places the leaf, so the pipeline shows it unlocated until the
+    # warehouse assigns a warehouse and bin from the put-away queue.
+    assert detail.openings[0].assembled_location is None
     assert detail.openings[0].opening_item_id == leaf_one.id
     assert _summary(db_session, sar).completed_opening_count == 1
 
