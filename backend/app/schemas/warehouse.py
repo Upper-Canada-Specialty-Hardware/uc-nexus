@@ -60,6 +60,7 @@ from .types import (
     InventoryHierarchyNode,
     InventoryItemDetail,
     InventoryLocation,
+    InventoryRow,
     InventoryShortfall,
     LocationContents,
     LocationDistinctValues,
@@ -463,6 +464,35 @@ class WarehouseQueries:
                     offset=offset,
                     project_id=uuid.UUID(str(project_id)) if project_id else None,
                     po_search=po_search,
+                )
+            ]
+
+    @strawberry.field
+    def inventory_rows(
+        self,
+        info: strawberry.Info,
+        project_id: strawberry.ID | None = None,
+        warehouse_id: strawberry.ID | None = None,
+    ) -> list[InventoryRow]:
+        """Flat inventory, one row per stocked location (#506). Replaces the accordion the Hardware
+        Items tab used to render; one query, no per-row lazy loads."""
+        with SessionLocal() as session:
+            return [
+                InventoryRow(
+                    inventory_location=inventory_location_to_type(r["inventory_location"]),
+                    unit_cost=r["unit_cost"],
+                    line_value=r["line_value"],
+                    po_number=r["po_number"],
+                    vendor_name=r["vendor_name"],
+                    warehouse_code=r["warehouse_code"],
+                    warehouse_name=r["warehouse_name"],
+                    project_number=r["project_number"],
+                    project_name=r["project_name"],
+                )
+                for r in warehouse_repository.get_inventory_rows(
+                    session,
+                    uuid.UUID(str(project_id)) if project_id else None,
+                    uuid.UUID(str(warehouse_id)) if warehouse_id else None,
                 )
             ]
 

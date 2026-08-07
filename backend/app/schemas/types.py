@@ -1411,6 +1411,25 @@ class ReceiveRow:
 
 
 @strawberry.type
+class InventoryRow:
+    """One stocked inventory line, flat (#506).
+
+    The Hardware Items view is a table now rather than a category -> product -> location accordion,
+    so every value the warehouse sorts, filters or exports on sits on the row itself instead of
+    being spread across three levels of node."""
+
+    inventory_location: InventoryLocation
+    unit_cost: float
+    line_value: float
+    po_number: str | None
+    vendor_name: str | None
+    warehouse_code: str
+    warehouse_name: str
+    project_number: str
+    project_name: str
+
+
+@strawberry.type
 class OpeningItemDetail:
     opening_item: OpeningItem
     installed_hardware: list[OpeningItemHardware]

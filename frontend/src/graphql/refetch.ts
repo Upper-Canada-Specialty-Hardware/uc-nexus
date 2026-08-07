@@ -177,6 +177,7 @@ export const PICK_CONFIRM_REFETCH_QUERIES = ['GetPullPickSheet', 'GetPullRequest
 // #343 made sensitive to the pull moving.
 export const PICK_CONFIRM_STALE_ROOT_FIELDS = [
   'inventoryHierarchy',
+  'inventoryRows',
   'inventoryByVendor',
   'unlocatedInventory',
   'warehouseDashboard',
@@ -272,6 +273,7 @@ export const GP_OUTBOX_DRAINED_STALE_ROOT_FIELDS = [
   'openPOs',
   'warehouseDashboard',
   'inventoryHierarchy',
+  'inventoryRows',
   'inventoryByVendor',
   'projectInventoryAvailability',
   // A queued approval persists NOTHING until the drain: no receive record, no inventory, and no
