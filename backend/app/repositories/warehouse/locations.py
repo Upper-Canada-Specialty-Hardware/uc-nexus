@@ -547,14 +547,38 @@ def mark_opening_item_unlocated(session: Session, oi_id: uuid.UUID, *, performed
 
 
 def assign_opening_item_location(
-    session: Session, oi_id: uuid.UUID, aisle: str, row: str, bay: str, *, performed_by: str
+    session: Session,
+    oi_id: uuid.UUID,
+    aisle: str,
+    row: str,
+    bay: str,
+    *,
+    performed_by: str,
+    warehouse_id: uuid.UUID | None = None,
 ) -> OpeningItemModel:
-    """Assign aisle/row/bay to an OpeningItem."""
+    """Put an assembled leaf away: a warehouse plus a bin within it.
+
+    #498: the warehouse is part of the assignment now. Completion used to stamp the primary
+    warehouse and take free-text aisle/row/bay from the assembler, so a leaf could sit in a bin that
+    named no real place and warehouse staff had no way to say which building it was in.
+    warehouse_id is optional only so the admin correction path can keep moving a bin without
+    re-picking the building.
+    """
+    from app.models.warehouse import Warehouse as WarehouseModel
+
     oi = session.get(OpeningItemModel, oi_id)
     if oi is None:
         raise NotFoundError(f"Opening item {oi_id} not found")
 
     aisle, row, bay = _normalize_and_validate_location_fields(aisle, row, bay)
+
+    if warehouse_id is not None:
+        warehouse = session.get(WarehouseModel, warehouse_id)
+        if warehouse is None:
+            raise NotFoundError(f"Warehouse {warehouse_id} not found")
+        if not warehouse.is_active:
+            raise ValidationError("That warehouse is not active", field="warehouse_id")
+        oi.warehouse_id = warehouse_id
 
     oi.aisle = aisle
     oi.row = row
@@ -567,7 +591,14 @@ def assign_opening_item_location(
         entity_id=oi.id,
         action=AuditAction.PUT_AWAY,
         performed_by=performed_by,
-        detail={"toLocation": {"aisle": aisle, "row": row, "bay": bay}},
+        detail={
+            "toLocation": {
+                "warehouseId": str(oi.warehouse_id) if oi.warehouse_id else None,
+                "aisle": aisle,
+                "row": row,
+                "bay": bay,
+            }
+        },
     )
 
     return oi

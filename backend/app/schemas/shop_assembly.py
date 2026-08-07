@@ -312,16 +312,17 @@ class ShopAssemblyMutations:
         Takes no checklist (#340): completion reads the per-item counts recordAssemblyProgress has
         been persisting, and is refused while any unit is still unaccounted for. Open to any signed-in
         user - it writes inventory, so it must not be reachable anonymously. Who completed the leaf is
-        the Clerk-authenticated caller (#427)."""
+        the Clerk-authenticated caller (#427).
+
+        #498: the input's aisle/row/bay are deprecated and ignored. The leaf lands unlocated and the
+        warehouse assigns a real warehouse plus bin from the put-away queue, the same route received
+        stock takes. The fields stay in the schema until frontends stop sending them (#438)."""
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             result = shop_assembly_repository.complete_opening(
                 session,
                 uuid.UUID(str(input.opening_id)),
-                input.aisle,
-                input.row,
-                input.bay,
                 completed_by=actor,
             )
             session.commit()

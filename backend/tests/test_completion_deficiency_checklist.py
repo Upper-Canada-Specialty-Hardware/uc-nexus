@@ -195,12 +195,14 @@ def test_deficiency_returns_unit_and_mints_replacement_before_completion(db_sess
     # ...and the opening is now in progress, not pending.
     assert opening.assembly_status == AssemblyStatus.IN_PROGRESS
 
-    result = shop_assembly_repository.complete_opening(db_session, opening.id, "A", "2", "3", completed_by="assembler")
+    result = shop_assembly_repository.complete_opening(db_session, opening.id, completed_by="assembler")
     db_session.flush()
 
     # Assembled leaf returns to inventory carrying only what was installed.
     assert result.state == OpeningItemState.IN_INVENTORY
-    assert result.aisle == "A" and result.row == "2" and result.bay == "3"
+    # #498: completion no longer places the leaf. It lands unlocated and the warehouse assigns a
+    # real warehouse and bin from the put-away queue.
+    assert result.aisle is None and result.row is None and result.bay is None
     hw = _installed_hardware(db_session, result.id)
     assert {h.product_code for h in hw} == {INSTALLED[1]}
 
@@ -228,7 +230,7 @@ def test_no_deficiency_means_no_replacement_pull(db_session):
         ],
         performed_by="assembler",
     )
-    result = shop_assembly_repository.complete_opening(db_session, opening.id, None, None, None)
+    result = shop_assembly_repository.complete_opening(db_session, opening.id)
     db_session.flush()
 
     hw = _installed_hardware(db_session, result.id)
@@ -283,7 +285,7 @@ def test_deficiency_creates_inventory_row_when_deleted(db_session):
         ],
         performed_by="assembler",
     )
-    result = shop_assembly_repository.complete_opening(db_session, opening.id, "A", "2", "3", completed_by="assembler")
+    result = shop_assembly_repository.complete_opening(db_session, opening.id, completed_by="assembler")
     db_session.flush()
 
     # Installed item is still snapshotted despite the missing deficient-product row.

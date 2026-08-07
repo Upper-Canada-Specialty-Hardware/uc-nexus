@@ -410,7 +410,7 @@ def test_progress_refused_once_completed(db_session):
     shop_assembly_repository.record_assembly_progress(
         db_session, opening.id, [Update(sao[HINGE[1]].id, installed_quantity=2)]
     )
-    shop_assembly_repository.complete_opening(db_session, opening.id, None, None, None)
+    shop_assembly_repository.complete_opening(db_session, opening.id)
     db_session.flush()
 
     with pytest.raises(InvalidStateTransitionError):
@@ -435,7 +435,7 @@ def test_completion_blocked_while_units_are_unaccounted_for(db_session):
     db_session.flush()
 
     with pytest.raises(ValidationError) as excinfo:
-        shop_assembly_repository.complete_opening(db_session, opening.id, None, None, None)
+        shop_assembly_repository.complete_opening(db_session, opening.id)
     # The message names the line that is short so the assembler knows where to go back to.
     assert HINGE[1] in str(excinfo.value)
     assert opening.assembly_status == AssemblyStatus.IN_PROGRESS
@@ -447,7 +447,7 @@ def test_untouched_opening_cannot_be_completed(db_session):
     project = _make_project(db_session)
     opening, _ = _make_pulled_opening(db_session, project.id, request_number="PR-SA-P14", items=[(*HINGE, 2)])
     with pytest.raises(ValidationError):
-        shop_assembly_repository.complete_opening(db_session, opening.id, None, None, None)
+        shop_assembly_repository.complete_opening(db_session, opening.id)
 
 
 def test_opening_item_hardware_quantities_are_the_installed_counts(db_session):
@@ -472,7 +472,7 @@ def test_opening_item_hardware_quantities_are_the_installed_counts(db_session):
     )
     db_session.flush()
 
-    result = shop_assembly_repository.complete_opening(db_session, opening.id, "A", "1", "1", completed_by="ada")
+    result = shop_assembly_repository.complete_opening(db_session, opening.id, completed_by="ada")
     db_session.flush()
 
     hw = list(
@@ -578,7 +578,7 @@ def test_completed_openings_cannot_be_unassigned_or_reassigned(db_session):
     shop_assembly_repository.record_assembly_progress(
         db_session, opening.id, [Update(sao[HINGE[1]].id, installed_quantity=2)]
     )
-    shop_assembly_repository.complete_opening(db_session, opening.id, None, None, None)
+    shop_assembly_repository.complete_opening(db_session, opening.id)
     db_session.flush()
 
     with pytest.raises(InvalidStateTransitionError):

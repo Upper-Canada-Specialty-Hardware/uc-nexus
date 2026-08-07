@@ -19,6 +19,7 @@ from .inventory import (
     get_opening_leaf_counts,
     get_opening_leaf_status,
     get_unlocated_inventory,
+    get_unlocated_opening_items,
     override_inventory_quantity,
 )
 from .locations import (
@@ -194,6 +195,7 @@ __all__ = [
     "get_reserved_quantities",
     "get_reserved_total",
     "get_unlocated_inventory",
+    "get_unlocated_opening_items",
     "get_warehouse_dashboard",
     "mark_approved",
     "mark_inventory_unlocated",

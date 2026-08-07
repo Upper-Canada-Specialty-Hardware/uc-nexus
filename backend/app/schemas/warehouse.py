@@ -519,6 +519,19 @@ class WarehouseQueries:
             ]
 
     @strawberry.field
+    def unlocated_opening_items(
+        self, info: strawberry.Info, project_id: strawberry.ID | None = None
+    ) -> list[OpeningItem]:
+        """Assembled leaves waiting to be put away (#498) - the other half of the put-away queue."""
+        with SessionLocal() as session:
+            return [
+                opening_item_to_type(oi)
+                for oi in warehouse_repository.get_unlocated_opening_items(
+                    session, uuid.UUID(str(project_id)) if project_id else None
+                )
+            ]
+
+    @strawberry.field
     def unlocated_inventory(
         self, info: strawberry.Info, project_id: strawberry.ID | None = None
     ) -> list[InventoryItemDetail]:
@@ -1588,13 +1601,23 @@ class WarehouseMutations:
         aisle: str,
         row: str,
         bay: str,
+        warehouse_id: strawberry.ID | None = None,
     ) -> OpeningItem:
-        """Put an assembled leaf away, writing a PUT_AWAY audit row naming the caller (#427)."""
+        """Put an assembled leaf away, writing a PUT_AWAY audit row naming the caller (#427).
+
+        #498: warehouse_id is part of the assignment. Omitting it moves the bin within the leaf's
+        current warehouse, which is what the admin correction path wants."""
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             result = warehouse_repository.assign_opening_item_location(
-                session, uuid.UUID(str(opening_item_id)), aisle, row, bay, performed_by=actor
+                session,
+                uuid.UUID(str(opening_item_id)),
+                aisle,
+                row,
+                bay,
+                performed_by=actor,
+                warehouse_id=uuid.UUID(str(warehouse_id)) if warehouse_id else None,
             )
             session.commit()
             session.refresh(result)
