@@ -54,6 +54,12 @@ class ShopAssemblyOpening(Base):
             "ix_shop_assembly_openings_pull_request",
             "pull_request_id",
         ),
+        # The pooled review queue reads by review status across every project (#495), so this is
+        # the index that whole page is served from.
+        Index(
+            "ix_shop_assembly_openings_review_status",
+            "review_status",
+        ),
         Index(
             "ix_shop_assembly_openings_opening_pull",
             "opening_id",
