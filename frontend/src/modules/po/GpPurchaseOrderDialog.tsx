@@ -170,6 +170,11 @@ export default function GpPurchaseOrderDialog({
   // user can screenshot it. Distinct from the field-level `errors` map.
   const [gpError, setGpError] = useState<GpError | null>(null);
 
+  // #481: the vendor's quotation, captured at draft creation for a buyer working from a quote in
+  // hand. Create mode only - in register mode the PO already exists and the field lives on its
+  // detail modal, where it also drives the VENDOR_CONFIRMED transition.
+  const [vendorQuoteNumber, setVendorQuoteNumber] = useState('');
+
   const [createDraftPo, { loading: createLoading }] = useMutation<{ createDraftPo: { requestNumber: string } }>(
     CREATE_DRAFT_PO,
   );
@@ -413,6 +418,7 @@ export default function GpPurchaseOrderDialog({
       setMiscellaneous('');
       setTradeDiscount('');
       setPreferredDeliveryDate('');
+      setVendorQuoteNumber('');
       setLineItems([{ key: 1, ...EMPTY_LINE_ITEM }]);
       setNextKey(2);
     }
@@ -677,6 +683,7 @@ export default function GpPurchaseOrderDialog({
               shippingCost: shippingCostValue,
               tariffAmount: tariffAmountValue,
               costCode: costCode || null,
+              vendorQuoteNumber: vendorQuoteNumber.trim() || null,
               lineItems: lineItemsInput,
             },
           },
@@ -944,6 +951,16 @@ export default function GpPurchaseOrderDialog({
               Cost code can be set at GP registration.
             </Typography>
           )
+        )}
+        {!isRegister && (
+          <TextField
+            label="Vendor quote # (optional)"
+            value={vendorQuoteNumber}
+            onChange={(e) => setVendorQuoteNumber(e.target.value)}
+            size="small"
+            sx={{ width: 260 }}
+            helperText="The vendor quotation this request is raised against"
+          />
         )}
         <Stack direction="row" spacing={2}>
           <TextField
