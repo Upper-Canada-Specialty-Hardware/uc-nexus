@@ -20,7 +20,6 @@ from app.models.pull_request import PullRequest, PullRequestItem
 from app.models.purchase_order import POLineItem, PurchaseOrder
 from app.models.shop_assembly import (
     ShopAssemblyOpening,
-    ShopAssemblyRequest,
 )
 from app.models.stock_item import StockItem
 from app.repositories import import_repository, shop_assembly_repository, warehouse_admin_repository
@@ -372,15 +371,18 @@ def test_shop_assembly_request_created_pending(db_session):
     db_session.flush()
 
     # A PENDING shop-assembly request is created, no approval, no PullRequest.
-    sar = db_session.scalar(select(ShopAssemblyRequest).where(ShopAssemblyRequest.request_number == req_number))
+    # #493: the number is minted server-side, so the request is read off the result rather than
+    # looked up by the number the caller asked for - which is now ignored.
+    sar = result["shop_assembly_request"]
     assert sar is not None
+    assert sar.request_number.endswith("-001")
     assert sar.status == ShopAssemblyRequestStatus.PENDING
     assert sar.created_by == "Hardware Schedule Import"
     assert sar.project_id == project.id
     assert result["shop_assembly_request"].id == sar.id
 
     # No PullRequest exists yet - it is minted only at accept.
-    assert db_session.scalar(select(PullRequest).where(PullRequest.request_number == req_number)) is None
+    assert db_session.scalar(select(PullRequest).where(PullRequest.request_number == sar.request_number)) is None
 
     # The opening hangs off the SAR (not a PR) with pull_request_id NULL and snapshot identity.
     sao = db_session.scalar(select(ShopAssemblyOpening).where(ShopAssemblyOpening.shop_assembly_request_id == sar.id))
@@ -425,7 +427,9 @@ def test_sar_queries_work_after_opening_deleted(db_session):
     db_session.flush()
 
     # Complete the pull so the opening shows up in assemble_list (assigned_to needs setting for my_work)
-    pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == req_number))
+    pr = db_session.scalar(
+        select(PullRequest).where(PullRequest.request_number == result["shop_assembly_request"].request_number)
+    )
     pr.status = PullRequestStatus.COMPLETED
     sao = db_session.scalar(select(ShopAssemblyOpening).where(ShopAssemblyOpening.pull_request_id == pr.id))
     sao.pull_status = PullStatus.PULLED
@@ -484,7 +488,9 @@ def _pulled_opening(db_session, project, opening_number="A01"):
     db_session.flush()
     shop_assembly_repository.accept_shop_assembly_request(db_session, result["shop_assembly_request"].id, "acceptor")
     db_session.flush()
-    pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == req_number))
+    pr = db_session.scalar(
+        select(PullRequest).where(PullRequest.request_number == result["shop_assembly_request"].request_number)
+    )
     pr.status = PullRequestStatus.COMPLETED
     sao = db_session.scalar(select(ShopAssemblyOpening).where(ShopAssemblyOpening.pull_request_id == pr.id))
     sao.pull_status = PullStatus.PULLED
@@ -802,7 +808,9 @@ def test_accept_stamps_leaf_on_pull_items(db_session):
     shop_assembly_repository.accept_shop_assembly_request(db_session, result["shop_assembly_request"].id, "acceptor")
     db_session.flush()
 
-    pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == req_number))
+    pr = db_session.scalar(
+        select(PullRequest).where(PullRequest.request_number == result["shop_assembly_request"].request_number)
+    )
     items = db_session.scalars(select(PullRequestItem).where(PullRequestItem.pull_request_id == pr.id)).all()
     assert len(items) == 2
     assert {i.leaf for i in items} == {1, 2}
@@ -838,7 +846,9 @@ def test_complete_opening_stamps_leaf(db_session):
     db_session.flush()
 
     # Drive the opening to a completable state: PR pulled+completed, opening assigned.
-    pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == req_number))
+    pr = db_session.scalar(
+        select(PullRequest).where(PullRequest.request_number == result["shop_assembly_request"].request_number)
+    )
     pr.status = PullRequestStatus.COMPLETED
     sao = db_session.scalar(select(ShopAssemblyOpening).where(ShopAssemblyOpening.pull_request_id == pr.id))
     sao.pull_status = PullStatus.PULLED
