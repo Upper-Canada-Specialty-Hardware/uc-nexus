@@ -134,6 +134,9 @@ export interface PurchaseOrder {
   gpCompany: string | null;
   gpVendorId: string | null;
   vendorNameSnapshot: string | null;
+  // #490: the buyer's GP cost-code pick, optionally captured at request time and used as the
+  // default when the draft is registered.
+  costCode: string | null;
   buyerId: string | null;
   vendorQuoteNumber: string | null;
   shippingCost: number | null;

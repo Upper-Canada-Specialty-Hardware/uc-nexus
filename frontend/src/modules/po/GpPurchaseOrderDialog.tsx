@@ -188,7 +188,9 @@ export default function GpPurchaseOrderDialog({
   // read from the hook here rather than picked by the user. The page still passes relayConnected in as
   // the single source of truth for the connected flag; standalone, the hook's own connected value is used.
   // Issue #256: only register mode talks to GP - create mode is a plain draft and needs no relay.
-  const relay = useRelayStatus({ skip: !open || !isRegister });
+  // #490: create mode reads the relay too - not to talk to GP, but to offer the job's cost codes
+  // at request time. A draft still never touches GP.
+  const relay = useRelayStatus({ skip: !open });
   const company = relay.company ?? '';
   const relayStatus: boolean | null = relayConnectedProp !== undefined ? relayConnectedProp : relay.connected;
   const relayConnected = relayStatus === true;
@@ -340,7 +342,9 @@ export default function GpPurchaseOrderDialog({
     refetch: refetchCostCodes,
   } = useQuery<{ gpCostCodes: GpCostCode[] }>(GET_GP_COST_CODES, {
     variables: { company, job: jobNumber ?? '' },
-    skip: !open || !isRegister || !relayConnected || !company || !jobNumber,
+    // #490: no longer register-only. Whenever a project is chosen and a relay is up, the job's live
+    // list is offered so the buyer can record the code with the request.
+    skip: !open || !relayConnected || !company || !jobNumber,
     fetchPolicy: 'cache-first',
   });
   // Every code GP reports active for the job is offered. This used to be filtered to the caller's
@@ -370,7 +374,9 @@ export default function GpPurchaseOrderDialog({
     seededRef.current = true;
     // Fresh open = fresh user action, so start a new idempotency key on the next submit.
     idempotencyKeyRef.current = null;
-    setCostCode('');
+    // #490: a draft raised with a cost code arrives at register with it already chosen. Falls back
+    // to blank for a draft that carries none, and the stale-code check below still applies.
+    setCostCode(registerPo?.costCode ?? '');
     setErrors({});
     if (registerPo) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time form seed on open, guarded by seededRef
@@ -468,9 +474,18 @@ export default function GpPurchaseOrderDialog({
   // Clear the selected cost code only when the job or company changes - a code from another job must
   // not carry over. Deliberately NOT keyed on relayConnected: the page polls relayStatus every 10s,
   // and a transient blip must not wipe the user's pick mid-form.
+  const costCodeScopeRef = useRef<string | null>(null);
   useEffect(() => {
     if (!open) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- clear cost code when job/company changes
+    const scope = `${company}|${jobNumber ?? ''}`;
+    // First pass after an open must not wipe the seed above (#490) - only a genuine job/company
+    // change clears the pick, which is the case a code from another job must not survive.
+    if (costCodeScopeRef.current === null) {
+      costCodeScopeRef.current = scope;
+      return;
+    }
+    if (costCodeScopeRef.current === scope) return;
+    costCodeScopeRef.current = scope;
     setCostCode('');
   }, [open, company, jobNumber]);
 
@@ -661,6 +676,7 @@ export default function GpPurchaseOrderDialog({
               preferredDeliveryDate: preferredDeliveryDate || null,
               shippingCost: shippingCostValue,
               tariffAmount: tariffAmountValue,
+              costCode: costCode || null,
               lineItems: lineItemsInput,
             },
           },
@@ -899,6 +915,35 @@ export default function GpPurchaseOrderDialog({
               slotProps={{ inputLabel: { shrink: true } }}
             />
           </Stack>
+        )}
+        {/* #490: capture the GP cost code with the request when the job's live list is reachable.
+            No free-text entry - a wrong code caught at register is worse than an empty one - and no
+            field at all when there is nothing to pick from, with a caption saying where it goes. */}
+        {!isRegister && !!projectId && (
+          relayConnected && costCodes.length > 0 ? (
+            <TextField
+              select
+              label="Cost code (optional)"
+              value={costCode}
+              onChange={(e) => setCostCode(e.target.value)}
+              size="small"
+              sx={{ minWidth: 300, '& .MuiSelect-select': monoSx }}
+              helperText="Carried to GP registration as the default"
+            >
+              <MenuItem value="">
+                <em>None</em>
+              </MenuItem>
+              {costCodes.map((c) => (
+                <MenuItem key={`${c.costCode}-${c.costElement}`} value={`${c.costCode}-${c.costElement}`}>
+                  {c.description ? `${c.costCode} · ${c.description}` : c.costCode}
+                </MenuItem>
+              ))}
+            </TextField>
+          ) : (
+            <Typography variant="caption" color="text.secondary">
+              Cost code can be set at GP registration.
+            </Typography>
+          )
         )}
         <Stack direction="row" spacing={2}>
           <TextField

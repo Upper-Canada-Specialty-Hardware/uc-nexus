@@ -180,6 +180,10 @@ class POLineItemOrderAsInput:
 class PODraftInput:
     po_number: str | None = None
     notes: str | None = None
+    # #490: the GP cost code, picked per vendor card at request time. Optional - it is only
+    # authoritative at register, where RegisterPOInput.cost_code is still validated against the job's
+    # live GP list. Captured here so the buyer who knows the code does not have to remember it later.
+    cost_code: str | None = None
     # Issue #216: the PM's requested date, captured at PO-request creation.
     preferred_delivery_date: date | None = None
     hardware_item_refs: list[HardwareItemRef] = strawberry.field(default_factory=list)
@@ -345,6 +349,9 @@ class CreateDraftPOInput:
     # Issue #156: optional order-time dollar costs. Null means "not entered"; 0 is a valid value.
     shipping_cost: float | None = None
     tariff_amount: float | None = None
+    # #490: optional GP cost code, carried to register as the default. RegisterPOInput.cost_code
+    # stays authoritative - a code that has since left the job's GP list is caught there.
+    cost_code: str | None = None
 
 
 @strawberry.input

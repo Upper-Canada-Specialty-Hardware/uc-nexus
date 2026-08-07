@@ -683,7 +683,9 @@ describe('GpPurchaseOrderDialog', () => {
 
     await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
     expect(calls).toHaveLength(1);
-    // toEqual proves the draft input carries NO buyer / gpCompany / costCode / idempotency key.
+    // toEqual proves the draft input carries NO buyer / gpCompany / idempotency key. costCode IS
+    // part of it since #490, but null here: the relay is down in this test, so there is no live
+    // list to pick from and the field is not offered.
     expect(calls[0]).toEqual({
       input: {
         projectId: 'p1',
@@ -691,6 +693,7 @@ describe('GpPurchaseOrderDialog', () => {
         preferredDeliveryDate: '2026-09-15',
         shippingCost: null,
         tariffAmount: null,
+        costCode: null,
         lineItems: [
           {
             hardwareCategory: 'Hinges',
