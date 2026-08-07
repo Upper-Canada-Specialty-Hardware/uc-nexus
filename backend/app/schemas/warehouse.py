@@ -249,32 +249,43 @@ def _load_draft_type(draft_id: uuid.UUID) -> ReceiveDraft:
         return receive_draft_to_type(draft, po, decision)
 
 
-def _authorize_draft_approval(info, user_id: str, draft_id: uuid.UUID) -> None:
-    """Who may book this draft (#499).
+def _may_book_draft(decision, user_id: str, *, is_manager: bool) -> bool:
+    """Whether this caller may book the draft the decision belongs to (#499).
 
-    A Warehouse Manager or an admin, as before - `approveReceiveDraft` carries that requirement in
-    `ROOT_FIELD_POLICY` and the extension has already enforced it for them. This runs for everybody
-    else and admits exactly one more caller: the PO creator who answered SHIP_OUT on this very draft.
-    Their answer means the hardware is not staying, so making them wait on a queue whose purpose is
-    to decide where it goes in the warehouse is a step that no longer means anything.
+    A Warehouse Manager or an admin, as before. Plus exactly one more: the PO creator who answered
+    SHIP_OUT on this very draft. Their answer means the hardware is not staying, so making them wait
+    on a queue whose purpose is to decide where in the warehouse it goes is a step that no longer
+    means anything. KEEP does not qualify - that answer says it IS staying, which is the case the
+    manager's approval is for.
+
+    Pure so it can be pinned directly. The decision is read from the database by the caller below,
+    never from anything the client sends.
     """
+    from app.models.enums import ReceiveDecisionChoice
+
+    if is_manager:
+        return True
+    return (
+        decision is not None
+        and decision.decision == ReceiveDecisionChoice.SHIP_OUT
+        and decision.decided_by_user_id == user_id
+    )
+
+
+def _authorize_draft_approval(info, user_id: str, draft_id: uuid.UUID) -> None:
+    """Refuse a draft approval this caller is not entitled to (#499)."""
     from sqlalchemy import select
 
-    from app.models.enums import ReceiveDecisionChoice
     from app.models.receive_decision import ReceiveDecision as ReceiveDecisionModel
 
-    if set(caller_roles(info.context)) & {ADMIN_ROLE, WAREHOUSE_MANAGER_ROLE}:
+    is_manager = bool(set(caller_roles(info.context)) & {ADMIN_ROLE, WAREHOUSE_MANAGER_ROLE})
+    if is_manager:
         return
     with SessionLocal() as session:
         decision = session.scalars(
             select(ReceiveDecisionModel).where(ReceiveDecisionModel.receive_draft_id == draft_id)
         ).first()
-    owns_ship_out = (
-        decision is not None
-        and decision.decision == ReceiveDecisionChoice.SHIP_OUT
-        and decision.decided_by_user_id == user_id
-    )
-    if not owns_ship_out:
+    if not _may_book_draft(decision, user_id, is_manager=False):
         raise ForbiddenError("Only a Warehouse Manager can approve this receive.")
 
 

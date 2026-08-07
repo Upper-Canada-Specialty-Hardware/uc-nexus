@@ -459,27 +459,20 @@ def test_the_pending_read_returns_draft_stage_questions_too(db_session):
     assert sum(li.quantity_received for li in returned_draft.line_items) == 4
 
 
-def test_only_a_manager_or_the_ship_out_decider_may_book_a_draft(db_session, monkeypatch):
+def test_only_a_manager_or_the_ship_out_decider_may_book_a_draft(db_session):
     """The approve gate moved out of ROOT_FIELD_POLICY because it is no longer a property of the
     field alone (#499): a Warehouse Manager may book any draft, and the PO creator who answered
     SHIP_OUT may book that one. The check is against the decision row, never against the client."""
-    from app.auth import ForbiddenError
-    from app.schemas import warehouse as warehouse_schema
+    from app.schemas.warehouse import _may_book_draft
 
     project = _make_project(db_session)
     po, li = _make_po(db_session, project.id)
     draft = _draft(db_session, po, li)
-    db_session.commit()
+    db_session.flush()
     decision = _decision_for_draft(db_session, draft)
 
-    class _Info:
-        context = {}
-
-    monkeypatch.setattr(warehouse_schema, "caller_roles", lambda _ctx: set())
-
-    # Undecided: the creator has said nothing, so the queue is still the only way in.
-    with pytest.raises(ForbiddenError):
-        warehouse_schema._authorize_draft_approval(_Info(), CREATOR, draft.id)
+    # Undecided: the creator has said nothing, so the manager's queue is still the only way in.
+    assert not _may_book_draft(decision, CREATOR, is_manager=False)
 
     warehouse_repository.decide_receive_decision(
         db_session,
@@ -490,28 +483,26 @@ def test_only_a_manager_or_the_ship_out_decider_may_book_a_draft(db_session, mon
         lambda _uid: None,
         actor_is_admin=False,
     )
-    db_session.commit()
+    db_session.flush()
 
     # The decider may now book it, and nobody else may on their behalf.
-    warehouse_schema._authorize_draft_approval(_Info(), CREATOR, draft.id)
-    with pytest.raises(ForbiddenError):
-        warehouse_schema._authorize_draft_approval(_Info(), "u_someone_else", draft.id)
+    assert _may_book_draft(decision, CREATOR, is_manager=False)
+    assert not _may_book_draft(decision, "u_someone_else", is_manager=False)
 
-    # A manager always may, whatever the answer is.
-    monkeypatch.setattr(warehouse_schema, "caller_roles", lambda _ctx: {"Warehouse Manager"})
-    warehouse_schema._authorize_draft_approval(_Info(), "u_someone_else", draft.id)
+    # A manager always may, whatever the answer is - and even with no decision at all.
+    assert _may_book_draft(decision, "u_someone_else", is_manager=True)
+    assert _may_book_draft(None, "u_someone_else", is_manager=True)
 
 
-def test_keeping_it_does_not_let_the_decider_book_it(db_session, monkeypatch):
-    """KEEP is the answer that says this belongs in the warehouse's care, so the warehouse manager's
-    approval is exactly the step that still applies."""
-    from app.auth import ForbiddenError
-    from app.schemas import warehouse as warehouse_schema
+def test_keeping_it_does_not_let_the_decider_book_it(db_session):
+    """KEEP says this belongs in the warehouse's care, so the manager's approval is exactly the step
+    that still applies."""
+    from app.schemas.warehouse import _may_book_draft
 
     project = _make_project(db_session)
     po, li = _make_po(db_session, project.id)
     draft = _draft(db_session, po, li)
-    db_session.commit()
+    db_session.flush()
     decision = _decision_for_draft(db_session, draft)
 
     warehouse_repository.decide_receive_decision(
@@ -523,11 +514,6 @@ def test_keeping_it_does_not_let_the_decider_book_it(db_session, monkeypatch):
         lambda _uid: None,
         actor_is_admin=False,
     )
-    db_session.commit()
+    db_session.flush()
 
-    class _Info:
-        context = {}
-
-    monkeypatch.setattr(warehouse_schema, "caller_roles", lambda _ctx: set())
-    with pytest.raises(ForbiddenError):
-        warehouse_schema._authorize_draft_approval(_Info(), CREATOR, draft.id)
+    assert not _may_book_draft(decision, CREATOR, is_manager=False)
