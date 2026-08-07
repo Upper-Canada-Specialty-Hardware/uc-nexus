@@ -67,6 +67,11 @@ class CreatePoRequest(BaseModel):
     # UC Nexus supplies its own PO number (e.g. 'ucnexus...'). GP's PONUMBER is char(17),
     # so max 17 chars. If omitted, the relay reserves GP's next 'PO' number via taGetPONextNumber.
     po_number: str | None = Field(default=None, max_length=17)
+    # #488: appended to the number GP reserves, as 'PO0012345-23093'. Two purchasers registering at
+    # the same moment reserve consecutive GP numbers, which are indistinguishable at a glance and
+    # carry no clue which job they belong to; the suffix makes both visible. Only used when
+    # po_number is absent - an explicit number is taken as given.
+    po_number_suffix: str | None = Field(default=None, max_length=8, pattern=r"^[A-Za-z0-9]+$")
 
     @model_validator(mode="after")
     def normalize_po_number(self):
@@ -74,6 +79,10 @@ class CreatePoRequest(BaseModel):
             self.po_number = self.po_number.strip()
             if not self.po_number:
                 raise ValueError("po_number, if provided, must not be blank")
+        if self.po_number_suffix is not None:
+            self.po_number_suffix = self.po_number_suffix.strip()
+            if not self.po_number_suffix:
+                self.po_number_suffix = None
         return self
 
 

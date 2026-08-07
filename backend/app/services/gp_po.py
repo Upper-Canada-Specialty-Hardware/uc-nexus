@@ -68,6 +68,7 @@ def build_create_po_payload(
     cost_code: str | None,
     po_number: str | None,
     line_items: list[dict],
+    po_number_suffix: str | None = None,
     tax_detail_id: str | None = None,
     freight_amount: float | None = None,
     misc_amount: float | None = None,
@@ -119,6 +120,9 @@ def build_create_po_payload(
         },
         "lines": lines,
         "po_number": po_number,
+        # #488: the relay composes '<reserved>-<suffix>' when it reserves the number itself. Ignored
+        # when po_number is explicit, which is taken as given.
+        "po_number_suffix": po_number_suffix,
     }
 
 

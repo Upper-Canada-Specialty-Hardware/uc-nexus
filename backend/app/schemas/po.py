@@ -191,8 +191,27 @@ def _prepare_register_po(
 
         manufacturers = _resolve_line_manufacturers(session, effective_project_id, line_items_data)
 
+    # #488: job POs carry the project number as a suffix, so two purchasers registering at the same
+    # moment produce visibly distinct, traceable numbers. A stock PO has no project and gets none.
+    #
+    # GP's PONUMBER is char(17) and 'PO' + 7 digits leaves 7 for '-' + suffix, so a project number
+    # over 6 characters cannot fit. That drops the suffix rather than refusing the PO: the suffix is
+    # a traceability nicety, and blocking somebody from ordering hardware because their job number
+    # is long would be a far worse failure than a PO without it. The relay keeps a hard cap anyway,
+    # because a number that reached GP truncated could never be matched back.
+    po_number_suffix = job_number or None
+    if po_number_suffix and 9 + 1 + len(po_number_suffix) > gp_po._MAX_PO_NUMBER:
+        logger.info(
+            "Project number %s is too long for a GP PO-number suffix; registering without one",
+            po_number_suffix,
+        )
+        po_number_suffix = None
+
     gp_po.validate_create_po_inputs(
-        job_number=job_number, cost_code=cost_code, po_number=None, line_items=line_items_data
+        job_number=job_number,
+        cost_code=cost_code,
+        po_number=None,
+        line_items=line_items_data,
     )
     payload = gp_po.build_create_po_payload(
         vendor_gp_id=gp_vendor_id,
@@ -202,6 +221,7 @@ def _prepare_register_po(
         cost_code=cost_code,
         po_number=None,
         line_items=line_items_data,
+        po_number_suffix=po_number_suffix,
         # Issue #257: freight maps from the PO's shipping_cost; misc + trade discount are new inputs.
         tax_detail_id=tax_detail_id,
         freight_amount=shipping_cost,

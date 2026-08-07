@@ -25,6 +25,11 @@ class RelayOpError(Exception):
         self.context = context
 
 
+# GP's POP10100.PONUMBER is char(17). Anything longer is silently truncated by SQL Server, which
+# would produce a PO nobody can match back to the number Nexus recorded (#488).
+_MAX_PO_NUMBER = 17
+
+
 def check_company_allowed(company: str) -> None:
     allowed = get_settings().gp.allowed_companies
     if company not in allowed:
@@ -135,6 +140,27 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
             )
     else:
         po_number = econnect.get_next_po_number(conn)
+        # #488: GP still owns and reserves the number; the suffix only makes it traceable. GP's
+        # PONUMBER is char(17), so a long project number can overflow - refuse here rather than let
+        # SQL Server truncate silently into a number nobody can match back to the job.
+        if request.po_number_suffix:
+            composed = f"{po_number.strip()}-{request.po_number_suffix}"
+            if len(composed) > _MAX_PO_NUMBER:
+                raise RelayOpError(
+                    "invalid_payload",
+                    f"PO number '{composed}' is {len(composed)} characters; GP's PONUMBER holds "
+                    f"{_MAX_PO_NUMBER}. Shorten the project number suffix.",
+                    po_number=composed,
+                )
+            po_number = composed
+
+        # The composed number is a different string from the one GP reserved, so it gets the same
+        # collision check an explicit number does.
+        in_use = econnect.po_number_in_use(conn, po_number)
+        if in_use:
+            raise RelayOpError(
+                "po_number_taken", f"PO number '{po_number}' is already in use in GP as {in_use}"
+            )
 
     # 2. header (no SUBTOTAL yet)
     econnect.create_po_header(
