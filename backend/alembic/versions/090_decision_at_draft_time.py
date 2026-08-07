@@ -38,6 +38,8 @@ def upgrade() -> None:
         "receive_drafts",
         ["receive_draft_id"],
         ["id"],
+        # A draft its author deletes takes its question with it: the delivery it asked about is gone.
+        ondelete="CASCADE",
     )
     op.create_unique_constraint(
         "uq_receive_decisions_receive_draft",

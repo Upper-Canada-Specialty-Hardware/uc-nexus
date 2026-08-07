@@ -48,7 +48,11 @@ class ReceiveDecision(Base):
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     # Null until approval books the receipt: a draft-stage decision names the count, not the record.
     receive_record_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("receive_records.id"), nullable=True)
-    receive_draft_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("receive_drafts.id"), nullable=True)
+    receive_draft_id: Mapped[uuid.UUID | None] = mapped_column(
+        # A deleted draft takes its unanswered question with it - the delivery it asked about is gone.
+        ForeignKey("receive_drafts.id", ondelete="CASCADE"),
+        nullable=True,
+    )
     po_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("purchase_orders.id"), nullable=False)
     project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
     target_user_id: Mapped[str | None] = mapped_column(String, nullable=True)
