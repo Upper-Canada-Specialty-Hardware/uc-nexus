@@ -5,7 +5,7 @@ from sqlalchemy import CheckConstraint, Enum, ForeignKey, Index, Integer, SmallI
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from . import Base
-from .enums import AssemblyStatus, PullStatus, ShopAssemblyRequestStatus
+from .enums import AssemblyStatus, OpeningReviewStatus, PullStatus, ShopAssemblyRequestStatus
 
 
 class ShopAssemblyRequest(Base):
@@ -53,6 +53,12 @@ class ShopAssemblyOpening(Base):
         Index(
             "ix_shop_assembly_openings_pull_request",
             "pull_request_id",
+        ),
+        # The pooled review queue reads by review status across every project (#495), so this is
+        # the index that whole page is served from.
+        Index(
+            "ix_shop_assembly_openings_review_status",
+            "review_status",
         ),
         Index(
             "ix_shop_assembly_openings_opening_pull",
@@ -119,6 +125,19 @@ class ShopAssemblyOpening(Base):
         nullable=False,
     )
     completed_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    # #495: review is per leaf now, not per request. One contentious leaf used to hold up every
+    # other leaf on the same request, and the reviewer works a pooled queue across projects rather
+    # than a request at a time. The request's own status becomes a derived display value: PENDING
+    # while any opening is PENDING, APPROVED once none are.
+    review_status: Mapped[OpeningReviewStatus] = mapped_column(
+        Enum(OpeningReviewStatus, name="opening_review_status", create_constraint=True),
+        nullable=False,
+        default=OpeningReviewStatus.PENDING,
+    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    reviewed_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Why it was rejected or deferred. Null on an accept - there is nothing to explain.
+    review_reason: Mapped[str | None] = mapped_column(String, nullable=True)
 
     shop_assembly_request: Mapped["ShopAssemblyRequest"] = relationship(back_populates="openings")
     items: Mapped[list["ShopAssemblyOpeningItem"]] = relationship(back_populates="shop_assembly_opening")

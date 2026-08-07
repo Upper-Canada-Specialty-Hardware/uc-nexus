@@ -141,17 +141,34 @@ def _load_receive_type(receive_id: uuid.UUID) -> ReceiveRecord:
         return receive_record_to_type(rec)
 
 
-def _prepare_create_receive(*, po_id, received_by, line_items_data) -> tuple[str, dict]:
+def _prepare_create_receive(*, po_id, received_by, line_items_data, warehouse_id=None) -> tuple[str, dict]:
     """Read-only: validate the receive is eligible (before the GP receipt is posted) and build the relay
-    create_receipt payload. Returns (gp_company, payload)."""
+    create_receipt payload. Returns (gp_company, payload).
+
+    The warehouse code rides along because put-away happens after approval now (#501): a line
+    normally has no bin yet, and the warehouse is what GP gets told instead of nothing."""
     with SessionLocal() as session:
         po_number, gp_company, receipt_line_items = warehouse_repository.validate_receive_eligibility(
             session, po_id, received_by, line_items_data
         )
+        warehouse_code = _warehouse_code(session, warehouse_id)
     payload = gp_po.build_create_receipt_payload(
-        po_number=po_number, received_by=received_by, line_items=receipt_line_items
+        po_number=po_number,
+        received_by=received_by,
+        line_items=receipt_line_items,
+        warehouse_code=warehouse_code,
     )
     return gp_company, payload
+
+
+def _warehouse_code(session, warehouse_id) -> str | None:
+    """The receiving warehouse's code, falling back to the primary one the booking will use."""
+    from app.models.warehouse import Warehouse as WarehouseModel
+
+    if warehouse_id is None:
+        warehouse_id = warehouse_admin_repository.get_primary_warehouse_id(session)
+    warehouse = session.get(WarehouseModel, warehouse_id)
+    return warehouse.code if warehouse else None
 
 
 def _receive_outbox_identity(po_id: uuid.UUID) -> tuple[uuid.UUID | None, str]:
@@ -1162,6 +1179,7 @@ class WarehouseMutations:
                     po_id=ctx.po_id,
                     received_by=ctx.author_name,
                     line_items_data=ctx.line_items_data,
+                    warehouse_id=ctx.warehouse_id,
                 )
             except Exception:
                 # Nothing reached GP, so the draft belongs back in the queue with the reason surfaced
@@ -1613,6 +1631,29 @@ class WarehouseMutations:
             session.commit()
             session.refresh(result)
             return inventory_location_to_type(result)
+
+    @strawberry.mutation
+    def split_inventory_location(
+        self,
+        info: strawberry.Info,
+        inventory_location_id: strawberry.ID,
+        quantity: int,
+    ) -> list[InventoryLocation]:
+        """Break units off an inventory row so they can go on a different shelf (#501).
+
+        Put-away happens after approval now, so a receive books one row per PO line and ten hinges
+        arriving as one row routinely go to two bins. Returns [original, new] - the new row is
+        unlocated and is what the caller then assigns."""
+        auth = current_user(info)
+        actor = resolve_display_name(auth["user_id"])
+        with SessionLocal() as session:
+            original, remainder = warehouse_repository.split_inventory_location(
+                session, uuid.UUID(str(inventory_location_id)), quantity, performed_by=actor
+            )
+            session.commit()
+            session.refresh(original)
+            session.refresh(remainder)
+            return [inventory_location_to_type(original), inventory_location_to_type(remainder)]
 
     @strawberry.mutation
     def move_opening_item_location(
