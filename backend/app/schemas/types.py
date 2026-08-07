@@ -1446,6 +1446,35 @@ class EmailPoResult:
 
 
 @strawberry.type
+class ReviewQueueOpening:
+    """One door leaf in the shop-assembly review queue (#495).
+
+    Flat and project-bearing on purpose: the reviewer works a pooled queue across projects, so the
+    project is a column on the row rather than a filter you have to choose before you can see any
+    work."""
+
+    id: strawberry.ID
+    opening_number: str
+    leaf: int | None
+    building: str | None
+    floor: str | None
+    location: str | None
+    review_status: str
+    request_number: str
+    requested_by: str | None
+    requested_at: datetime
+    project_id: strawberry.ID
+    project_number: str
+    project_name: str
+    item_count: int
+    # What the allocator could not cover. A short leaf is a different decision from a whole one.
+    short_quantity: int
+    reviewed_at: datetime | None
+    reviewed_by: str | None
+    review_reason: str | None
+
+
+@strawberry.type
 class OpeningItemDetail:
     opening_item: OpeningItem
     installed_hardware: list[OpeningItemHardware]

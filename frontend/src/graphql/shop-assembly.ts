@@ -404,3 +404,72 @@ export const COMPLETE_OPENING = gql`
     }
   }
 `;
+
+/**
+ * The pooled per-leaf review queue (#495).
+ *
+ * Review moved from the request to the door leaf. A request covering eight doors where one was
+ * short used to be a single all-or-nothing decision, so the reviewer either held seven ready doors
+ * hostage to the eighth or accepted work the shop could not do. The queue is flat and carries its
+ * project on the row, because the reviewer works a queue across jobs rather than one request.
+ */
+const REVIEW_QUEUE_FIELDS = `
+  id
+  openingNumber
+  leaf
+  building
+  floor
+  location
+  reviewStatus
+  requestNumber
+  requestedBy
+  requestedAt
+  projectId
+  projectNumber
+  projectName
+  itemCount
+  shortQuantity
+  reviewedAt
+  reviewedBy
+  reviewReason
+`;
+
+export const GET_PENDING_SHOP_ASSEMBLY_OPENINGS = gql`
+  query PendingShopAssemblyOpenings($projectId: ID) {
+    pendingShopAssemblyOpenings(projectId: $projectId) {
+      ${REVIEW_QUEUE_FIELDS}
+    }
+  }
+`;
+
+export const GET_DEFERRED_SHOP_ASSEMBLY_OPENINGS = gql`
+  query DeferredShopAssemblyOpenings($projectId: ID) {
+    deferredShopAssemblyOpenings(projectId: $projectId) {
+      ${REVIEW_QUEUE_FIELDS}
+    }
+  }
+`;
+
+export const ACCEPT_SHOP_ASSEMBLY_OPENING = gql`
+  mutation AcceptShopAssemblyOpening($id: ID!) {
+    acceptShopAssemblyOpening(id: $id) {
+      ${REVIEW_QUEUE_FIELDS}
+    }
+  }
+`;
+
+export const REJECT_SHOP_ASSEMBLY_OPENING = gql`
+  mutation RejectShopAssemblyOpening($id: ID!, $reason: String) {
+    rejectShopAssemblyOpening(id: $id, reason: $reason) {
+      ${REVIEW_QUEUE_FIELDS}
+    }
+  }
+`;
+
+export const DEFER_SHOP_ASSEMBLY_OPENING = gql`
+  mutation DeferShopAssemblyOpening($id: ID!, $reason: String) {
+    deferShopAssemblyOpening(id: $id, reason: $reason) {
+      ${REVIEW_QUEUE_FIELDS}
+    }
+  }
+`;
