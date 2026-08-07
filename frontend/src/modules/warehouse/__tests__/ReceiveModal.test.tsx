@@ -242,8 +242,8 @@ async function openModal(extraMocks: MockedResponse[] = []) {
   return result;
 }
 
-// the Receive Now cell input is the only spinbutton inside the grid (the fully received
-// line renders text, and the put-away Qty/Deficient inputs live outside the grid)
+// the Receive Now cell input is the only spinbutton inside the grid (the fully received line
+// renders text). Since #501 there are no put-away inputs on this screen at all.
 function receiveNowInput() {
   return within(screen.getByRole('grid')).getByRole('spinbutton');
 }
@@ -254,15 +254,6 @@ function submitButton() {
 
 function setReceiveQty(value: string) {
   fireEvent.change(receiveNowInput(), { target: { value } });
-}
-
-function fillLocation(idx: number, aisle: string, row: string, bay: string, qty?: string) {
-  fireEvent.change(screen.getAllByLabelText('Aisle')[idx], { target: { value: aisle } });
-  fireEvent.change(screen.getAllByLabelText('Row')[idx], { target: { value: row } });
-  fireEvent.change(screen.getAllByLabelText('Bay')[idx], { target: { value: bay } });
-  if (qty !== undefined) {
-    fireEvent.change(screen.getAllByLabelText('Qty')[idx], { target: { value: qty } });
-  }
 }
 
 async function submitViaConfirm() {
@@ -304,22 +295,18 @@ describe('ReceiveModal', () => {
     expect(screen.queryByText(/queued/i)).toBeNull();
   });
 
-  it('enables submit only after a quantity is entered and every unit is placed in a row', async () => {
+  it('enables submit once a quantity and a packing slip are in, with no rack rows to fill', async () => {
+    // #501: a draft is a count. Where the units go is decided on the Put Away queue after the
+    // warehouse manager approves, so nothing here asks for an aisle, row or bay.
     await openModal([poDetailsMock()]);
 
     expect(submitButton()).toBeDisabled();
 
     setReceiveQty('3');
-    expect(screen.getByText(/placing 3/)).toBeInTheDocument();
-    // Row fields still blank, so put-away is incomplete - and the caption says so. The quantity
-    // defaults to the full count, so this used to read "all placed" while submit stayed disabled
-    // with nothing naming what was missing (#474).
-    expect(screen.getByText('needs aisle · row · bay')).toBeInTheDocument();
-    expect(screen.queryByText('all placed')).toBeNull();
-    expect(submitButton()).toBeDisabled();
+    expect(screen.queryByLabelText('Aisle')).toBeNull();
+    expect(screen.queryByLabelText('Bay')).toBeNull();
+    expect(screen.queryByText(/deficient/i)).toBeNull();
 
-    fillLocation(0, 'A1', 'B2', 'C3');
-    expect(screen.getByText('all placed')).toBeInTheDocument();
     attachPackingSlips();
     expect(submitButton()).toBeEnabled();
   });
@@ -329,28 +316,10 @@ describe('ReceiveModal', () => {
 
     setReceiveQty('5'); // pending is only 3
     expect(screen.getByText('Max: 3')).toBeInTheDocument();
-    fillLocation(0, 'A1', 'B2', 'C3'); // put-away itself is valid at 5 placed
     expect(submitButton()).toBeDisabled();
 
-    // dropping back within pending (and matching the row qty) makes it submittable
     setReceiveQty('3');
-    fireEvent.change(screen.getByLabelText('Qty'), { target: { value: '3' } });
     expect(screen.queryByText('Max: 3')).toBeNull();
-    attachPackingSlips();
-    expect(submitButton()).toBeEnabled();
-  });
-
-  it('requires the row split to sum to the received quantity', async () => {
-    await openModal([poDetailsMock()]);
-
-    setReceiveQty('3');
-    fillLocation(0, 'A1', 'B2', 'C3', '2');
-    expect(screen.getByText('1 unplaced')).toBeInTheDocument();
-    expect(submitButton()).toBeDisabled();
-
-    fireEvent.click(screen.getByRole('button', { name: /add location/i }));
-    fillLocation(1, 'A2', 'B2', 'C4', '1');
-    expect(screen.getByText('all placed')).toBeInTheDocument();
     attachPackingSlips();
     expect(submitButton()).toBeEnabled();
   });
@@ -370,8 +339,6 @@ describe('ReceiveModal', () => {
     await screen.findByText(/Main \(MAIN\)/, undefined, SLOW); // default warehouse selected
 
     setReceiveQty('2');
-    fillLocation(0, 'A1', 'B2', 'C3'); // row qty defaults to the received 2
-    fireEvent.change(screen.getByLabelText('Deficient'), { target: { value: '1' } });
     await submitViaConfirm();
 
     await screen.findByText(/Submitted for approval\. 2 items across 1 PO/, undefined, SLOW);
@@ -386,7 +353,7 @@ describe('ReceiveModal', () => {
           {
             poLineItemId: 'li-1',
             quantityReceived: 2,
-            locations: [{ aisle: 'A1', row: 'B2', bay: 'C3', quantity: 2, deficientQuantity: 1 }],
+            locations: [],
           },
         ],
       },
@@ -406,7 +373,6 @@ describe('ReceiveModal', () => {
     const { onClose } = await openModal([poDetailsMock(), draftMock]);
 
     setReceiveQty('3');
-    fillLocation(0, 'A1', 'B2', 'C3');
     await submitViaConfirm();
 
     await screen.findByText(/Submitting PO-123 failed/, undefined, SLOW);
@@ -440,7 +406,6 @@ describe('ReceiveModal', () => {
     await openModal([poDetailsMock(), failMock, successMock]);
 
     setReceiveQty('3');
-    fillLocation(0, 'A1', 'B2', 'C3');
     await submitViaConfirm();
     await screen.findByText(/Submitting PO-123 failed/, undefined, SLOW);
 
@@ -462,7 +427,6 @@ describe('ReceiveModal', () => {
     expect(screen.getByText(/already has a receive awaiting approval \(2 units\)/)).toBeInTheDocument();
 
     setReceiveQty('3');
-    fillLocation(0, 'A1', 'B2', 'C3');
     attachPackingSlips();
     expect(submitButton()).toBeEnabled();
   });
@@ -476,7 +440,6 @@ describe('ReceiveModal', () => {
 
     // even a fully valid receive stays blocked
     setReceiveQty('3');
-    fillLocation(0, 'A1', 'B2', 'C3');
     expect(submitButton()).toBeDisabled();
   });
 
@@ -497,8 +460,6 @@ describe('ReceiveModal', () => {
     const [firstQty, secondQty] = screen.getAllByRole('grid').map((g) => within(g).getByRole('spinbutton'));
     fireEvent.change(firstQty, { target: { value: '3' } });
     fireEvent.change(secondQty, { target: { value: '4' } });
-    fillLocation(0, 'A1', 'B2', 'C3');
-    fillLocation(1, 'A2', 'B3', 'C4');
     await submitViaConfirm();
 
     await screen.findByText(/Submitted for approval\. 7 items across 2 POs/, undefined, SLOW);

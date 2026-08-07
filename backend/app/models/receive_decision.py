@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Index, String, UniqueConstraint
+from sqlalchemy import CheckConstraint, DateTime, Enum, ForeignKey, Index, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from . import Base
@@ -22,20 +22,37 @@ class ReceiveDecision(Base):
     gpBuyerId), which costs one Clerk lookup for the person asking rather than a roster sweep inside
     the persist transaction of a GP receipt that has already posted.
 
-    One row per receive, enforced by the unique constraint: a receive is one delivery and gets one
+    One row per delivery, enforced by the unique constraints: a delivery is one truck and gets one
     decision, however many PO lines it covered. Stock POs get no row at all - a decision about which
     project's inventory to keep something in is meaningless without a project.
+
+    Since #499 the question is raised when the count is SUBMITTED, not when it is approved. Asking
+    after approval meant the hardware had already been booked and put away, so "send it straight back
+    out" meant undoing work. A row therefore hangs off `receive_draft_id` first and gets its
+    `receive_record_id` stamped on at approval. Rows written before that change have the record and
+    no draft, and every read checks which it has rather than assuming.
     """
 
     __tablename__ = "receive_decisions"
     __table_args__ = (
         UniqueConstraint("receive_record_id", name="uq_receive_decisions_receive_record"),
+        UniqueConstraint("receive_draft_id", name="uq_receive_decisions_receive_draft"),
+        CheckConstraint(
+            "receive_record_id IS NOT NULL OR receive_draft_id IS NOT NULL",
+            name="ck_receive_decisions_has_source",
+        ),
         Index("ix_receive_decisions_target_status", "target_user_id", "status"),
         Index("ix_receive_decisions_po_id", "po_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    receive_record_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("receive_records.id"), nullable=False)
+    # Null until approval books the receipt: a draft-stage decision names the count, not the record.
+    receive_record_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("receive_records.id"), nullable=True)
+    receive_draft_id: Mapped[uuid.UUID | None] = mapped_column(
+        # A deleted draft takes its unanswered question with it - the delivery it asked about is gone.
+        ForeignKey("receive_drafts.id", ondelete="CASCADE"),
+        nullable=True,
+    )
     po_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("purchase_orders.id"), nullable=False)
     project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
     target_user_id: Mapped[str | None] = mapped_column(String, nullable=True)

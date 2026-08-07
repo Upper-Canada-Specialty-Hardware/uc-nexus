@@ -373,6 +373,62 @@ def consume_reservations(
     return taken
 
 
+def release_partial_reservations(
+    session: Session,
+    source: ReservationSource,
+    holder_id: uuid.UUID,
+    released: Mapping[tuple[str, str], int],
+) -> int:
+    """Give part of a holder's claim back, un-spent (#495).
+
+    `release_reservations` drops a claim whole, which fits every way a whole request can die.
+    Per-opening review needs less than that: rejecting or deferring ONE door leaf must free exactly
+    that leaf's units and leave the rest of the request's claim standing.
+
+    The decrement is identical to `consume_reservations` - same rows, same per-combo arithmetic,
+    same delete-at-zero. What differs is meaning, and that is why this is a separate function rather
+    than a call to that one: a consume pairs with a real inventory deduction, and the units are gone.
+    A release pairs with nothing; the units go back to being free for whoever asks next. Recording a
+    reject as a consume would make the reservation ledger say hardware left the building when it
+    never moved.
+
+    Overshoot is ignored for the same reason it is there: a claim can legitimately be smaller than
+    what the opening was allocated (the #342 backfill left in-flight work unreserved), and refusing
+    to release over a bookkeeping row nobody can see would strand the review.
+    """
+    wanted = {combo: qty for combo, qty in released.items() if qty > 0}
+    if not wanted:
+        return 0
+
+    rows = session.scalars(
+        select(InventoryReservationModel).where(
+            InventoryReservationModel.source == source,
+            _SOURCE_COLUMN[source] == holder_id,
+            _combo_filter(
+                wanted.keys(),
+                InventoryReservationModel.hardware_category,
+                InventoryReservationModel.product_code,
+            ),
+        )
+    ).all()
+
+    freed = 0
+    for row in rows:
+        want = wanted.get((row.hardware_category, row.product_code), 0)
+        if want <= 0:
+            continue
+        give = min(row.quantity, want)
+        wanted[(row.hardware_category, row.product_code)] = want - give
+        freed += give
+        if give >= row.quantity:
+            session.delete(row)
+        else:
+            row.quantity -= give
+    if freed:
+        session.flush()
+    return freed
+
+
 def reserve_for_replacement_pull(
     session: Session,
     pull_request_id: uuid.UUID,

@@ -479,7 +479,11 @@ export const GET_MY_RECEIVE_DECISIONS = gql`
       poNumber
       projectId
       receiveRecordId
-      # Null while the approval is still queued on the GP outbox - GP has not numbered it yet.
+      # #499: set instead of receiveRecordId while the delivery is still a count. Shipping one out
+      # from here books its receipt first, because a pull can only claim inventory that exists.
+      receiveDraftId
+      # Null before the receipt is booked, and while an approval is queued on the GP outbox - either
+      # way GP has not numbered it yet.
       receiptNumber
       receivedAt
       receivedBy

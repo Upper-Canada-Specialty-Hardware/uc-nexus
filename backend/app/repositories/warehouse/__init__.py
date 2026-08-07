@@ -37,6 +37,7 @@ from .locations import (
     move_inventory_location,
     move_opening_item_location,
     normalize_location_value,
+    split_inventory_location,
 )
 from .progress import (
     PLACED_PO_STATUSES,
@@ -80,9 +81,11 @@ from .pull_requests import (
 )
 from .receive_decisions import (
     any_untargeted_decision_pending,
+    create_decision_for_draft,
     create_decision_for_receive,
     decide_receive_decision,
     get_pending_decisions_for_user,
+    stamp_receive_record_on_draft_decision,
 )
 from .receive_drafts import (
     ApprovalContext,
@@ -116,6 +119,7 @@ from .reservations import (
     get_project_availability,
     get_reserved_quantities,
     get_reserved_total,
+    release_partial_reservations,
     release_reservations,
     reserve_for_replacement_pull,
     top_up_replacement_reservations,
@@ -143,6 +147,7 @@ __all__ = [
     "_normalize_and_validate_location_fields",
     "adjust_inventory_quantity",
     "assign_inventory_location",
+    "split_inventory_location",
     "assign_opening_item_location",
     "cancel_pull_request",
     "check_inventory_sufficiency",
@@ -152,7 +157,9 @@ __all__ = [
     "confirm_pick",
     "consume_reservations",
     "count_pending_drafts",
+    "create_decision_for_draft",
     "create_decision_for_receive",
+    "stamp_receive_record_on_draft_decision",
     "create_receive",
     "create_receive_draft",
     "create_reservations",
@@ -210,6 +217,7 @@ __all__ = [
     "override_inventory_quantity",
     "reject_receive_draft",
     "release_approval_claim",
+    "release_partial_reservations",
     "release_reservations",
     "reserve_for_replacement_pull",
     "resubmit_receive_draft",

@@ -5,7 +5,14 @@ import uuid
 
 import strawberry
 
-from app.auth import ADMIN_ROLE, WAREHOUSE_MANAGER_ROLE, caller_roles, current_user, resolve_display_name
+from app.auth import (
+    ADMIN_ROLE,
+    WAREHOUSE_MANAGER_ROLE,
+    ForbiddenError,
+    caller_roles,
+    current_user,
+    resolve_display_name,
+)
 from app.database import SessionLocal
 from app.errors import RelayCallError, RelayOpUnsupportedError, RelayTimeoutError, RelayUnavailableError
 from app.repositories import user_repository, warehouse_admin_repository
@@ -134,17 +141,34 @@ def _load_receive_type(receive_id: uuid.UUID) -> ReceiveRecord:
         return receive_record_to_type(rec)
 
 
-def _prepare_create_receive(*, po_id, received_by, line_items_data) -> tuple[str, dict]:
+def _prepare_create_receive(*, po_id, received_by, line_items_data, warehouse_id=None) -> tuple[str, dict]:
     """Read-only: validate the receive is eligible (before the GP receipt is posted) and build the relay
-    create_receipt payload. Returns (gp_company, payload)."""
+    create_receipt payload. Returns (gp_company, payload).
+
+    The warehouse code rides along because put-away happens after approval now (#501): a line
+    normally has no bin yet, and the warehouse is what GP gets told instead of nothing."""
     with SessionLocal() as session:
         po_number, gp_company, receipt_line_items = warehouse_repository.validate_receive_eligibility(
             session, po_id, received_by, line_items_data
         )
+        warehouse_code = _warehouse_code(session, warehouse_id)
     payload = gp_po.build_create_receipt_payload(
-        po_number=po_number, received_by=received_by, line_items=receipt_line_items
+        po_number=po_number,
+        received_by=received_by,
+        line_items=receipt_line_items,
+        warehouse_code=warehouse_code,
     )
     return gp_company, payload
+
+
+def _warehouse_code(session, warehouse_id) -> str | None:
+    """The receiving warehouse's code, falling back to the primary one the booking will use."""
+    from app.models.warehouse import Warehouse as WarehouseModel
+
+    if warehouse_id is None:
+        warehouse_id = warehouse_admin_repository.get_primary_warehouse_id(session)
+    warehouse = session.get(WarehouseModel, warehouse_id)
+    return warehouse.code if warehouse else None
 
 
 def _receive_outbox_identity(po_id: uuid.UUID) -> tuple[uuid.UUID | None, str]:
@@ -194,6 +218,9 @@ def _persist_create_receive(
             warehouse_id=warehouse_id,
             receipt_number=gp_receipt.get("receipt_number"),
             batch_number=gp_receipt.get("batch_number"),
+            # #499: so the booking stamps its receive onto the decision the count already raised,
+            # rather than raising a second one nobody asked for.
+            receive_draft_id=receive_draft_id,
         )
         # Capture the id before commit: expire_on_commit would make receive_record.id raise
         # DetachedInstanceError once the session block closes.
@@ -235,8 +262,48 @@ def _is_warehouse_manager(info) -> bool:
 
 def _load_draft_type(draft_id: uuid.UUID) -> ReceiveDraft:
     with SessionLocal() as session:
-        draft, po = warehouse_repository.get_receive_draft(session, draft_id)
-        return receive_draft_to_type(draft, po)
+        draft, po, decision = warehouse_repository.get_receive_draft(session, draft_id)
+        return receive_draft_to_type(draft, po, decision)
+
+
+def _may_book_draft(decision, user_id: str, *, is_manager: bool) -> bool:
+    """Whether this caller may book the draft the decision belongs to (#499).
+
+    A Warehouse Manager or an admin, as before. Plus exactly one more: the PO creator who answered
+    SHIP_OUT on this very draft. Their answer means the hardware is not staying, so making them wait
+    on a queue whose purpose is to decide where in the warehouse it goes is a step that no longer
+    means anything. KEEP does not qualify - that answer says it IS staying, which is the case the
+    manager's approval is for.
+
+    Pure so it can be pinned directly. The decision is read from the database by the caller below,
+    never from anything the client sends.
+    """
+    from app.models.enums import ReceiveDecisionChoice
+
+    if is_manager:
+        return True
+    return (
+        decision is not None
+        and decision.decision == ReceiveDecisionChoice.SHIP_OUT
+        and decision.decided_by_user_id == user_id
+    )
+
+
+def _authorize_draft_approval(info, user_id: str, draft_id: uuid.UUID) -> None:
+    """Refuse a draft approval this caller is not entitled to (#499)."""
+    from sqlalchemy import select
+
+    from app.models.receive_decision import ReceiveDecision as ReceiveDecisionModel
+
+    is_manager = bool(set(caller_roles(info.context)) & {ADMIN_ROLE, WAREHOUSE_MANAGER_ROLE})
+    if is_manager:
+        return
+    with SessionLocal() as session:
+        decision = session.scalars(
+            select(ReceiveDecisionModel).where(ReceiveDecisionModel.receive_draft_id == draft_id)
+        ).first()
+    if not _may_book_draft(decision, user_id, is_manager=False):
+        raise ForbiddenError("Only a Warehouse Manager can approve this receive.")
 
 
 def _load_decision(session, decision_id: uuid.UUID):
@@ -337,13 +404,13 @@ class WarehouseQueries:
                 po_id=uuid.UUID(str(po_id)) if po_id else None,
                 created_by_user_id=user["user_id"] if mine else None,
             )
-            return [receive_draft_to_type(draft, po) for draft, po in rows]
+            return [receive_draft_to_type(draft, po, decision) for draft, po, decision in rows]
 
     @strawberry.field
     def receive_draft(self, info: strawberry.Info, id: strawberry.ID) -> ReceiveDraft:
         with SessionLocal() as session:
-            draft, po = warehouse_repository.get_receive_draft(session, uuid.UUID(str(id)))
-            return receive_draft_to_type(draft, po)
+            draft, po, decision = warehouse_repository.get_receive_draft(session, uuid.UUID(str(id)))
+            return receive_draft_to_type(draft, po, decision)
 
     @strawberry.field
     def my_receive_decisions(self, info: strawberry.Info) -> list[ReceiveDecision]:
@@ -364,7 +431,7 @@ class WarehouseQueries:
                 else None
             )
             rows = warehouse_repository.get_pending_decisions_for_user(session, user["user_id"], gp_buyer_id)
-            return [receive_decision_to_type(d, po, rr) for d, po, rr in rows]
+            return [receive_decision_to_type(d, po, rr, draft) for d, po, rr, draft in rows]
 
     @strawberry.field
     def project_inventory_availability(
@@ -1074,10 +1141,18 @@ class WarehouseMutations:
           because releasing it invites a second receipt for hardware GP may already have booked.
           A parked draft is recoverable: `approvalIdempotencyKey` is on the type, so the reviewer's
           retry resumes through the ledger rather than starting a new approval.
+
+        Since #499 a Warehouse Manager is not the only caller. A PO creator who answered SHIP_OUT is
+        saying this delivery never enters their queue - it goes straight back out - so they book it
+        themselves and carry straight on into the shipping request. That is a narrow bypass and it is
+        checked against the database, not the client: the caller must own an undecided-elsewhere
+        SHIP_OUT decision on THIS draft. Nothing else about the pipeline changes; the receipt is
+        posted GP-first through the same ledger either way.
         """
         user = current_user(info)
         key = gp_idempotency.validate_key(input.idempotency_key)
         draft_id = uuid.UUID(str(input.draft_id))
+        await asyncio.to_thread(_authorize_draft_approval, info, user["user_id"], draft_id)
 
         state = await asyncio.to_thread(gp_idempotency.load, key)
         if state is not None and state.result_id is not None:
@@ -1104,6 +1179,7 @@ class WarehouseMutations:
                     po_id=ctx.po_id,
                     received_by=ctx.author_name,
                     line_items_data=ctx.line_items_data,
+                    warehouse_id=ctx.warehouse_id,
                 )
             except Exception:
                 # Nothing reached GP, so the draft belongs back in the queue with the reason surfaced
@@ -1555,6 +1631,29 @@ class WarehouseMutations:
             session.commit()
             session.refresh(result)
             return inventory_location_to_type(result)
+
+    @strawberry.mutation
+    def split_inventory_location(
+        self,
+        info: strawberry.Info,
+        inventory_location_id: strawberry.ID,
+        quantity: int,
+    ) -> list[InventoryLocation]:
+        """Break units off an inventory row so they can go on a different shelf (#501).
+
+        Put-away happens after approval now, so a receive books one row per PO line and ten hinges
+        arriving as one row routinely go to two bins. Returns [original, new] - the new row is
+        unlocated and is what the caller then assigns."""
+        auth = current_user(info)
+        actor = resolve_display_name(auth["user_id"])
+        with SessionLocal() as session:
+            original, remainder = warehouse_repository.split_inventory_location(
+                session, uuid.UUID(str(inventory_location_id)), quantity, performed_by=actor
+            )
+            session.commit()
+            session.refresh(original)
+            session.refresh(remainder)
+            return [inventory_location_to_type(original), inventory_location_to_type(remainder)]
 
     @strawberry.mutation
     def move_opening_item_location(

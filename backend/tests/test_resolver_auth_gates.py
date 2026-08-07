@@ -164,15 +164,18 @@ def test_a_role_gated_field_refuses_someone_without_that_role(monkeypatch, signe
     assert _messages(result) == {f"{SHOP_ASSEMBLY_MANAGER_ROLE} role required"}
 
 
-@pytest.mark.parametrize("field", ["approveReceiveDraft", "rejectReceiveDraft"])
-def test_approving_a_receive_draft_takes_either_manager_role(field, monkeypatch, signed_in):
+@pytest.mark.parametrize("field", ["rejectReceiveDraft"])
+def test_rejecting_a_receive_draft_takes_either_manager_role(field, monkeypatch, signed_in):
     """The any-of requirement, in all three directions.
 
-    Approving a drafted receive is what posts the GP receipt and credits inventory, so it is the one
-    receiving action gated on a role rather than identity - and two roles satisfy it, which is the
-    reason ROOT_FIELD_POLICY entries may be a frozenset at all. There is no implicit admin bypass in
-    this codebase, so Admin/Manager has to be named in the set to hold; a warehouse account that only
-    counts trucks must not hold it either way.
+    Two roles satisfy it, which is the reason ROOT_FIELD_POLICY entries may be a frozenset at all.
+    There is no implicit admin bypass in this codebase, so Admin/Manager has to be named in the set
+    to hold; a warehouse account that only counts trucks must not hold it either way.
+
+    `approveReceiveDraft` used to be pinned here too. Since #499 its requirement is not a property of
+    the field alone - a PO creator who answered SHIP_OUT may approve that one draft - so the table
+    says SIGNED_IN and the real gate is `_authorize_draft_approval`, pinned in
+    test_receive_decisions.py against the decision row rather than against a role.
     """
     assert ROOT_FIELD_POLICY[field] == frozenset({ADMIN_ROLE, WAREHOUSE_MANAGER_ROLE})
 

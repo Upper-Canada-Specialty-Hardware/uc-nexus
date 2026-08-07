@@ -121,6 +121,25 @@ class ShopAssemblyRequestStatus(str, enum.Enum):
     REJECTED = "REJECTED"
 
 
+class OpeningReviewStatus(str, enum.Enum):
+    """Where one door leaf stands in shop-assembly review (#495).
+
+    Review moved from the request to the opening. A request used to be accepted or rejected whole,
+    which meant one contentious leaf held up every other leaf on the same request - and the reviewer
+    works a pooled queue across projects, not a request at a time.
+
+    DEFERRED is technically a rejection: it releases the same reservations. What makes it its own
+    state is what happens next - a deferred leaf is meant to come back, and when it does it goes
+    through a fresh request rather than being resurrected, so availability is re-checked exactly as
+    it would be for any new one.
+    """
+
+    PENDING = "PENDING"
+    ACCEPTED = "ACCEPTED"
+    REJECTED = "REJECTED"
+    DEFERRED = "DEFERRED"
+
+
 class ShippingOutRequestStatus(str, enum.Enum):
     PENDING = "PENDING"
     APPROVED = "APPROVED"

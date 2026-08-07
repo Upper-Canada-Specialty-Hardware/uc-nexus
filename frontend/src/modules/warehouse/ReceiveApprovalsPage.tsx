@@ -70,7 +70,14 @@ export default function ReceiveApprovalsPage() {
     [projectsData],
   );
 
-  const drafts = data?.receiveDrafts ?? [];
+  // #499: a draft its PO's creator answered SHIP_OUT is not this queue's to approve. They book it
+  // themselves on the way into the shipping request, because the hardware is not entering the
+  // warehouse's care at all - deciding where to put it is a step that no longer means anything.
+  // An UNDECIDED one stays: a creator on holiday must not be able to strand a counted truck, and
+  // approving it is the keep answer, which the row says in as many words.
+  const drafts = (data?.receiveDrafts ?? []).filter(
+    (d) => d.keepOrShipDecision !== 'SHIP_OUT' || d.status !== 'PENDING_APPROVAL',
+  );
 
   if (!canReview) {
     return (
@@ -91,7 +98,8 @@ export default function ReceiveApprovalsPage() {
       <Typography variant="h5">Receive Approvals</Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, mb: 2 }}>
         Counted deliveries waiting to be posted. Approving one posts the GP receipt and adds the hardware
-        to inventory.
+        to inventory. Deliveries the buyer has sent straight back out are not here - they are booked
+        from the shipping request instead.
       </Typography>
 
       <ToggleButtonGroup
@@ -178,6 +186,17 @@ export default function ReceiveApprovalsPage() {
                   <TableCell>
                     {draft.status === 'PENDING_APPROVAL' && (
                       <Chip size="small" color="warning" label="Awaiting approval" />
+                    )}
+                    {/* #499: the buyer has not said where this is going yet. Approving it anyway is
+                        allowed and means keeping it - which is the safe default, and why the row
+                        names the outstanding answer rather than hiding the draft until it comes. */}
+                    {draft.status === 'PENDING_APPROVAL' && draft.decisionPending && (
+                      <Chip
+                        size="small"
+                        variant="outlined"
+                        label="Decision pending"
+                        sx={{ ml: 0.5 }}
+                      />
                     )}
                     {draft.status === 'REJECTED' && (
                       <Chip size="small" color="error" label={`Rejected by ${draft.reviewedBy ?? 'a reviewer'}`} />

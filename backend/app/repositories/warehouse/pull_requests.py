@@ -22,6 +22,7 @@ from app.models.enums import (
     AuditEntityType,
     NotificationType,
     OpeningItemState,
+    OpeningReviewStatus,
     PullPickLineState,
     PullRequestItemType,
     PullRequestSource,
@@ -2206,6 +2207,11 @@ def cancel_pull_request(
         opening.assigned_to = None
         opening.assigned_to_user_id = None
         opening.pull_request_id = None
+        # Same reason as the reopen path: the pull is gone, so the leaf owes a decision again (#495).
+        if getattr(opening, "review_status", None) == OpeningReviewStatus.ACCEPTED:
+            opening.review_status = OpeningReviewStatus.PENDING
+            opening.reviewed_at = None
+            opening.reviewed_by = None
         released_ids.append(opening.id)
 
     # 3. The pull itself.

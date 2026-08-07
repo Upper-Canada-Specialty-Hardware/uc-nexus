@@ -476,6 +476,67 @@ def assign_inventory_location(
     return il
 
 
+def split_inventory_location(
+    session: Session, inv_id: uuid.UUID, quantity: int, *, performed_by: str
+) -> tuple[InventoryLocationModel, InventoryLocationModel]:
+    """Break `quantity` units off an inventory row into a second row (#501).
+
+    Put-away moved after approval, so a receive books one row per PO line and the warehouse decides
+    where it goes afterwards. Ten hinges rarely go in one bin: six in A-1-1 and four in B-2-2 is the
+    normal case, and it needs two rows because a row carries exactly one aisle/row/bay.
+
+    The new row copies the origin FKs and `received_at` verbatim. Those are what make the units
+    traceable back to the receipt that booked them and what FIFO orders picks by - a split is a
+    change of shelf, not of provenance, so inventing new values would quietly reorder the pick queue
+    and orphan the audit trail.
+
+    Deficient units stay with the original row. They are not on a shelf; they are a claim against
+    the vendor, and moving a fraction of them to a bin nobody put them in would be a lie.
+    """
+    il = session.get(InventoryLocationModel, inv_id)
+    if il is None:
+        raise NotFoundError(f"Inventory location {inv_id} not found")
+    if quantity < 1:
+        raise ValidationError("Split quantity must be at least 1", field="quantity")
+    if quantity >= il.quantity:
+        # Equal is refused too: splitting off everything is a no-op that leaves an empty row behind.
+        raise ValidationError(
+            f"Cannot split {quantity} off a row holding {il.quantity}; leave at least one unit behind",
+            field="quantity",
+        )
+
+    remainder = InventoryLocationModel(
+        project_id=il.project_id,
+        po_line_item_id=il.po_line_item_id,
+        receive_line_item_id=il.receive_line_item_id,
+        stock_item_id=il.stock_item_id,
+        shipment_return_item_id=il.shipment_return_item_id,
+        warehouse_id=il.warehouse_id,
+        hardware_category=il.hardware_category,
+        product_code=il.product_code,
+        quantity=quantity,
+        deficient_quantity=0,
+        aisle=None,
+        row=None,
+        bay=None,
+        received_at=il.received_at,
+    )
+    il.quantity -= quantity
+    session.add(remainder)
+    session.flush()
+
+    _log_audit_event(
+        session,
+        project_id=il.project_id,
+        entity_type=AuditEntityType.INVENTORY_LOCATION,
+        entity_id=remainder.id,
+        action=AuditAction.PUT_AWAY,
+        performed_by=performed_by,
+        detail={"splitFrom": str(il.id), "quantity": quantity},
+    )
+    return il, remainder
+
+
 def move_opening_item_location(
     session: Session,
     oi_id: uuid.UUID,
