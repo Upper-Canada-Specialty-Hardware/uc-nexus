@@ -205,6 +205,20 @@ def _review_row_to_type(row: dict) -> ReviewQueueOpening:
 @strawberry.type
 class ShopAssemblyMutations:
     @strawberry.mutation
+    def accept_shop_assembly_opening(self, info: strawberry.Info, id: strawberry.ID) -> ReviewQueueOpening:
+        """Accept one door leaf onto a warehouse pull (#495).
+
+        The leaf joins the request's open pull where there is one, rather than minting a sheet per
+        door. Once that pull is picking, a later acceptance starts a fresh one - the printed sheet
+        in the picker's hand cannot grow a line."""
+        auth = current_user(info)
+        actor = resolve_display_name(auth["user_id"])
+        with SessionLocal() as session:
+            shop_assembly_repository.accept_shop_assembly_opening(session, uuid.UUID(str(id)), reviewed_by=actor)
+            session.commit()
+            return _review_row_to_type(shop_assembly_repository.get_review_opening(session, uuid.UUID(str(id))))
+
+    @strawberry.mutation
     def reject_shop_assembly_opening(
         self, info: strawberry.Info, id: strawberry.ID, reason: str | None = None
     ) -> ReviewQueueOpening:

@@ -231,6 +231,7 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "shopAssemblyRequests": SIGNED_IN,
     "pendingShopAssemblyOpenings": SIGNED_IN,
     "deferredShopAssemblyOpenings": SIGNED_IN,
+    "acceptShopAssemblyOpening": SIGNED_IN,
     "rejectShopAssemblyOpening": SIGNED_IN,
     "deferShopAssemblyOpening": SIGNED_IN,
     "acceptShopAssemblyRequest": SIGNED_IN,

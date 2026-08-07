@@ -42,6 +42,7 @@ from app.models.shop_assembly import (
     ShopAssemblyOpeningItem,
     ShopAssemblyRequest,
 )
+from app.repositories.request_numbers import mint_request_number
 from app.repositories.stock.common import _log_audit_event
 from app.services.locking import lock_rows
 
@@ -1186,44 +1187,144 @@ def accept_shop_assembly_request(
     if sar.status != ShopAssemblyRequestStatus.PENDING:
         raise InvalidStateTransitionError(f"Shop-assembly request must be Pending to accept, got {sar.status.value}")
 
-    now = datetime.utcnow()
-    sar.status = ShopAssemblyRequestStatus.APPROVED
-    sar.approved_by = accepted_by
-    sar.approved_at = now
+    pending = [o for o in sar.openings if o.review_status == OpeningReviewStatus.PENDING]
+    if not pending:
+        raise InvalidStateTransitionError("Every leaf on this request has already been reviewed.")
 
-    pr = PullRequestModel(
-        id=uuid.uuid4(),
-        request_number=sar.request_number,
-        project_id=sar.project_id,
-        source=PullRequestSource.SHOP_ASSEMBLY,
-        status=PullRequestStatus.PENDING,
-        requested_by=accepted_by,
-    )
-    session.add(pr)
-    session.flush()
+    for opening in pending:
+        _accept_opening_onto_pull(session, opening, accepted_by)
 
-    for opening in sar.openings:
-        opening.pull_request_id = pr.id
-        for item in opening.items:
-            if item.allocated_quantity <= 0:
-                # Fully short line: nothing was reserved for it and nothing is coming. A zero-quantity
-                # pull line would put a pick on the sheet the warehouse cannot fill.
-                continue
-            session.add(
-                PullRequestItemModel(
-                    id=uuid.uuid4(),
-                    pull_request_id=pr.id,
-                    item_type=PullRequestItemType.LOOSE,
-                    opening_number=opening.opening_number,
-                    # Snapshot the door leaf (#311) so a leaf-1 pull reads distinct from a leaf-2 pull.
-                    leaf=opening.leaf,
-                    hardware_category=item.hardware_category,
-                    product_code=item.product_code,
-                    requested_quantity=item.allocated_quantity,
-                )
-            )
-
+    session.refresh(sar)
     return sar
+
+
+def _pull_count_for_request(session: Session, sar: ShopAssemblyRequest) -> int:
+    """How many pulls this request has already produced, in any state."""
+    return (
+        session.scalar(
+            select(func.count(func.distinct(ShopAssemblyOpening.pull_request_id))).where(
+                ShopAssemblyOpening.shop_assembly_request_id == sar.id,
+                ShopAssemblyOpening.pull_request_id.is_not(None),
+            )
+        )
+        or 0
+    )
+
+
+def _open_pull_for_request(session: Session, sar: ShopAssemblyRequest) -> PullRequestModel | None:
+    """The pull an accepted leaf can still join, or None if a fresh one is needed (#495).
+
+    Per-leaf review means acceptances arrive one at a time, and minting a pull each time would put a
+    separate pick sheet on the warehouse for every door. So a leaf joins the request's existing pull
+    where one is open.
+
+    Open means PENDING, and the boundary is exact: once a pull goes IN_PROGRESS its sheet has been
+    printed and is in a picker's hands. Appending a line to it would have them picking against a
+    document that no longer matches what the system thinks they were asked for. A leaf accepted after
+    that point starts a new pull instead - a second sheet, which is the honest representation of a
+    second decision.
+    """
+    return session.scalars(
+        select(PullRequestModel)
+        .join(ShopAssemblyOpening, ShopAssemblyOpening.pull_request_id == PullRequestModel.id)
+        .where(
+            ShopAssemblyOpening.shop_assembly_request_id == sar.id,
+            PullRequestModel.status == PullRequestStatus.PENDING,
+        )
+        .order_by(PullRequestModel.created_at.desc())
+        .limit(1)
+    ).first()
+
+
+def _accept_opening_onto_pull(
+    session: Session,
+    opening: ShopAssemblyOpening,
+    accepted_by: str,
+) -> PullRequestModel:
+    """Accept one leaf and put it on a warehouse pull (#495, #293).
+
+    Accepting is a **pure human approval gate**. The hardware was reserved when the request was
+    created, so it is already this leaf's; re-checking availability here could only ever fail for
+    stock that was never free, and it would make accept a second place a shortfall surfaces with no
+    action the acceptor could take about it. The check happens once at creation, and the claim is
+    spent at pick confirmation. Accepting touches no reservations.
+
+    The pull asks for the **allocated** quantity, and a line with nothing allocated mints no pull
+    line at all. That keeps the pull equal to the reservation. Sending the owed quantity instead
+    would ask the warehouse for stock nobody claimed, and the pull would sit unpickable.
+    """
+    sar = session.get(ShopAssemblyRequest, opening.shop_assembly_request_id)
+    if sar is None:
+        raise NotFoundError(f"Shop-assembly request {opening.shop_assembly_request_id} not found")
+
+    pr = _open_pull_for_request(session, sar)
+    if pr is None:
+        pr = PullRequestModel(
+            id=uuid.uuid4(),
+            # The first pull carries the request's own number, so the pick sheet reads as the
+            # request the shop raised. A SECOND pull cannot - request_number is unique among live
+            # pulls - so it takes the next number off the project's sequence (#493).
+            request_number=(
+                sar.request_number
+                if _pull_count_for_request(session, sar) == 0
+                else mint_request_number(session, sar.project_id)
+            ),
+            project_id=sar.project_id,
+            source=PullRequestSource.SHOP_ASSEMBLY,
+            status=PullRequestStatus.PENDING,
+            requested_by=accepted_by,
+        )
+        session.add(pr)
+        session.flush()
+
+    opening.pull_request_id = pr.id
+    for item in opening.items:
+        if item.allocated_quantity <= 0:
+            # Fully short line: nothing was reserved for it and nothing is coming. A zero-quantity
+            # pull line would put a pick on the sheet the warehouse cannot fill.
+            continue
+        session.add(
+            PullRequestItemModel(
+                id=uuid.uuid4(),
+                pull_request_id=pr.id,
+                item_type=PullRequestItemType.LOOSE,
+                opening_number=opening.opening_number,
+                # Snapshot the door leaf (#311) so a leaf-1 pull reads distinct from a leaf-2 pull.
+                leaf=opening.leaf,
+                hardware_category=item.hardware_category,
+                product_code=item.product_code,
+                requested_quantity=item.allocated_quantity,
+            )
+        )
+
+    now = datetime.utcnow()
+    opening.review_status = OpeningReviewStatus.ACCEPTED
+    opening.reviewed_at = now
+    opening.reviewed_by = accepted_by
+    # The request-level stamps track the first acceptance on it, which is what the existing views
+    # read as "when this was approved".
+    if sar.approved_at is None:
+        sar.approved_by = accepted_by
+        sar.approved_at = now
+    session.flush()
+    _sync_request_status(session, sar.id)
+    return pr
+
+
+def accept_shop_assembly_opening(session: Session, opening_id: uuid.UUID, *, reviewed_by: str) -> ShopAssemblyOpening:
+    """Accept one leaf out of the pooled queue (#495).
+
+    The unit of review is the leaf, not the request. A request covering eight doors where one is
+    short used to be a single all-or-nothing decision, so the reviewer either held seven ready doors
+    hostage to the eighth or accepted work the shop could not do.
+    """
+    opening = session.get(ShopAssemblyOpening, opening_id)
+    if opening is None:
+        raise NotFoundError(f"Shop assembly opening {opening_id} not found")
+    if opening.review_status != OpeningReviewStatus.PENDING:
+        raise InvalidStateTransitionError(f"That leaf has already been {opening.review_status.value.lower()}.")
+    _accept_opening_onto_pull(session, opening, reviewed_by)
+    return opening
 
 
 def reject_shop_assembly_request(
