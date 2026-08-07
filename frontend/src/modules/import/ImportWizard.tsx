@@ -1062,12 +1062,6 @@ export default function ImportWizard({
     setShippingPRDrafts((prev) => prev.filter((_, i) => i !== index));
   }, []);
 
-  const updateShippingPR = useCallback((index: number, requestNumber: string) => {
-    setShippingPRDrafts((prev) =>
-      prev.map((draft, i) => (i === index ? { ...draft, requestNumber } : draft)),
-    );
-  }, []);
-
   // Add or remove one already-built line on a draft (#335). The step decides what kind of line it
   // is - an assembled leaf or loose hardware - so this no longer hard-codes LOOSE.
   const toggleShippingPRItem = useCallback((prIndex: number, item: ShippingPRItem) => {
@@ -1252,7 +1246,8 @@ export default function ImportWizard({
           }))
         : null,
       includeShopAssemblyRequest: purpose === 'assembly',
-      shopAssemblyRequestNumber: purpose === 'assembly' ? sarRequestNumber : null,
+      // #493: deprecated and ignored by the server, which mints the number itself.
+      shopAssemblyRequestNumber: null,
       // True when the user uploaded a fresh XML on a project that already has a persisted
       // schedule (i.e., they did not pick "Use last uploaded schedule"). The backend wipes all
       // existing HardwareItems and openings absent from the new input.
@@ -1759,8 +1754,6 @@ export default function ImportWizard({
           {/* ============ Step: Shop Assembly ============ */}
           {effectiveStepId === 'shop-assembly' && (
             <ShopAssemblyStep
-              sarRequestNumber={sarRequestNumber}
-              onSarNumberChange={setSarRequestNumber}
               openingDrafts={shopAssemblyOpeningDrafts}
               availabilityByCombo={availabilityByCombo}
               allocation={sarAllocation}
@@ -1790,7 +1783,6 @@ export default function ImportWizard({
               coverageError={coverageError !== undefined}
               onAddPR={addShippingPR}
               onRemovePR={removeShippingPR}
-              onUpdatePR={updateShippingPR}
               onTogglePRItem={toggleShippingPRItem}
               onSetPRItemQuantity={setShippingPRItemQuantity}
               availabilityByCombo={availabilityByCombo}
@@ -1844,7 +1836,7 @@ export default function ImportWizard({
                 {purpose === 'assembly' && (
                   <Box sx={{ mb: 1 }}>
                     <Typography variant="body1">
-                      1 Shop Assembly Pull Request (#{sarRequestNumber})
+                      1 Shop Assembly Pull Request (number assigned on finalize)
                     </Typography>
                   </Box>
                 )}

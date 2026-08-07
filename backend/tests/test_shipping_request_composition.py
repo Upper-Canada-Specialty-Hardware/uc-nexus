@@ -15,7 +15,7 @@ from datetime import datetime
 import pytest
 from sqlalchemy import select
 
-from app.errors import ConflictError, InvalidStateTransitionError, InventoryShortfallError, ValidationError
+from app.errors import InvalidStateTransitionError, InventoryShortfallError, ValidationError
 from app.models.enums import OpeningItemState, PullRequestItemType, ReservationSource, ShippingOutRequestStatus
 from app.models.inventory import InventoryLocation
 from app.models.opening_item import OpeningItem
@@ -207,13 +207,23 @@ def test_an_opening_item_line_takes_its_opening_from_the_leaf(db_session):
     assert [(i.opening_number, i.leaf) for i in req.items] == [("0501-EX", 2)]
 
 
-def test_a_duplicate_request_number_is_refused(db_session):
+def test_the_server_mints_a_unique_number_whatever_the_caller_sends(db_session):
+    """#493: duplicates are no longer possible to refuse, because they are no longer possible.
+
+    The number used to be typed by hand, so two requests could collide and the create had to reject
+    the second. The server mints it from the project's counter now and ignores what the caller sent,
+    so the same string twice produces two distinct requests rather than a conflict.
+    """
     project = _project(db_session)
     _stock(db_session, project, qty=10)
-    _create(db_session, project, [_loose(qty=1)], number="SOR-DUP")
 
-    with pytest.raises(ConflictError):
-        _create(db_session, project, [_loose(qty=1)], number="SOR-DUP")
+    first = _create(db_session, project, [_loose(qty=1)], number="SOR-DUP")
+    second = _create(db_session, project, [_loose(qty=1)], number="SOR-DUP")
+
+    assert first.request_number != second.request_number
+    assert first.request_number.endswith("-001")
+    assert second.request_number.endswith("-002")
+    assert first.request_number.startswith(project.project_id)
 
 
 # --- editing a pending one --------------------------------------------------------------------

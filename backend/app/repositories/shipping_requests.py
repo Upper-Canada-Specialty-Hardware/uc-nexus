@@ -18,7 +18,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from app.errors import ConflictError, InvalidStateTransitionError, NotFoundError, ValidationError
+from app.errors import InvalidStateTransitionError, NotFoundError, ValidationError
 from app.models.enums import (
     OpeningItemState,
     PullRequestItemType,
@@ -76,22 +76,19 @@ def create_shipping_out_requests(
             project_id,
             all_needs,
             label="shipping-out request",
-            request_number=drafts[0]["request_number"],
+            # #493: the gate's label only names the request in its error text, and the number does
+            # not exist yet - it is minted per draft below.
+            request_number=None,
         )
 
     created: list[ShippingOutRequest] = []
+    from app.repositories.request_numbers import mint_request_number
+
     for index, draft in enumerate(drafts):
-        request_number = (draft["request_number"] or "").strip()
-        if not request_number:
-            raise ValidationError("A shipping-out request needs a request number.", field="request_number")
-        existing = session.scalars(
-            select(ShippingOutRequest).where(ShippingOutRequest.request_number == request_number)
-        ).first()
-        if existing is not None:
-            raise ConflictError(
-                f"Shipping-out request {request_number} already exists",
-                field="request_number",
-            )
+        # #493: minted from the project's counter, shared with shop-assembly requests so one
+        # chronological sequence covers every pull on the job. The draft's request_number is
+        # deprecated and ignored.
+        request_number = mint_request_number(session, project_id)
 
         req = ShippingOutRequest(
             id=uuid.uuid4(),

@@ -619,11 +619,8 @@ describe('ImportWizard step transitions', () => {
     const checkboxes = screen.getAllByRole('checkbox');
     fireEvent.click(checkboxes[0]);
     expect(screen.getByText('1 door leaf/leaves')).toBeInTheDocument();
-    expect(nextButton()).toBeDisabled(); // still needs a PR number
-
-    fireEvent.change(screen.getByRole('textbox', { name: /PR Number/i }), {
-      target: { value: 'SHIP-0019' },
-    });
+    // #493: a draft carrying at least one line is complete. There is no PR-number field to fill -
+    // the server mints <project>-NNN at finalize, from the counter shop-assembly requests share.
     expect(nextButton()).toBeEnabled();
   });
 

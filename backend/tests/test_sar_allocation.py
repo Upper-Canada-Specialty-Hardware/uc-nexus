@@ -299,7 +299,10 @@ def test_a_successful_short_send_tells_purchasing_about_the_gap(db_session):
         ).all()
     )
     assert len(notifs) == 1
-    assert "SA-SHORT-1" in notifs[0].message
+    # #493: the number in the message is the one the server minted, not the one the caller asked
+    # for. What purchasing needs from it is that it names a pull on this project.
+    assert notifs[0].message.startswith("Pull Request ")
+    assert "-001" in notifs[0].message
     assert "short 4" in notifs[0].message
     # Not "couldn't be fulfilled": the request exists and nothing is blocked. Purchasing is being
     # told what the project is missing, not sent hunting for a stuck request.

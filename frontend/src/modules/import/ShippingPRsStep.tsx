@@ -76,7 +76,6 @@ interface ShippingPRsStepProps {
   coverageError: boolean;
   onAddPR: () => void;
   onRemovePR: (index: number) => void;
-  onUpdatePR: (index: number, requestNumber: string) => void;
   onTogglePRItem: (prIndex: number, item: ShippingPRItem) => void;
   /** Add, re-quantify or (at 0) drop one loose line on a draft. */
   onSetPRItemQuantity: (prIndex: number, item: ShippingPRItem, quantity: number) => void;
@@ -138,7 +137,6 @@ export default function ShippingPRsStep({
   coverageError,
   onAddPR,
   onRemovePR,
-  onUpdatePR,
   onTogglePRItem,
   onSetPRItemQuantity,
   availabilityByCombo,
@@ -191,7 +189,7 @@ export default function ShippingPRsStep({
   // selection through on numbers that were never real.
   const canProceed = useMemo(
     () =>
-      shippingPRDrafts.some((d) => d.requestNumber.trim() !== '' && d.items.length > 0) &&
+      shippingPRDrafts.some((d) => d.items.length > 0) &&
       availabilityShortfalls.length === 0 &&
       !availabilityLoading &&
       !availabilityError,
@@ -343,17 +341,9 @@ export default function ShippingPRsStep({
 
             {/* No requester box: the import stamps every request it creates as "Hardware Schedule
                 Import", so the one that used to sit here was collected and thrown away (#438). */}
-            <Box sx={{ display: 'flex', gap: 2, mb: 2 }}>
-              <TextField
-                label="PR Number"
-                size="small"
-                required
-                value={draft.requestNumber}
-                onChange={(e) => onUpdatePR(prIdx, e.target.value)}
-                sx={{ flex: 1 }}
-                slotProps={{ input: { sx: monoSx } }}
-              />
-            </Box>
+            {/* #493: no number field. The server mints <project>-NNN per request, from the same
+                counter shop-assembly requests draw on, so every pull on a job shares one
+                chronological sequence. */}
 
             {/* What is on this request so far, before the offer lists below. The point of the
                 builder is that the two are read together: this is what you have, that is what the
