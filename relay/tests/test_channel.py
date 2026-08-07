@@ -482,3 +482,58 @@ def test_hello_frame_advertises_build_and_the_full_op_set():
     assert "list_tax_details" in frame["ops"]
     assert isinstance(frame["build"], str) and frame["build"]  # 'dev' in a checkout, a tag in a CI build
     assert isinstance(frame["version"], str) and frame["version"]
+
+
+# --- push a project's site details onto its GP job (issue #497) ---
+
+
+def test_update_job_site_success_returns_the_response_body(monkeypatch):
+    from ucnexus_relay.models import UpdateJobSiteResponse
+
+    def _fake(conn, *, company, request):
+        return UpdateJobSiteResponse(
+            job_number=request.job_number,
+            job_name=request.job_name or "",
+            company=company,
+            address_code="SITE-23093",
+            address_created=True,
+        )
+
+    monkeypatch.setattr(ops, "update_job_site_op", _fake)
+    reply = channel._dispatch(
+        "update_job_site",
+        "TUBC",
+        {"job_number": "23093", "job_name": "Cowichan", "address1": "123 Main St", "city": "Duncan"},
+    )
+    assert reply["ok"] is True
+    assert reply["result"] == {
+        "job_number": "23093",
+        "job_name": "Cowichan",
+        "company": "TUBC",
+        "address_code": "SITE-23093",
+        "address_created": True,
+    }
+
+
+def test_update_job_site_needs_a_job_number():
+    reply = channel._dispatch("update_job_site", "TUBC", {"job_name": "Cowichan"})
+    assert reply["ok"] is False
+    assert reply["error"]["error"] == "invalid_payload"
+
+
+def test_update_job_site_refuses_half_an_address():
+    """A street with no city is not something GP can ship to, and writing it would leave an address
+    on the job that looks filled in and is not."""
+    reply = channel._dispatch("update_job_site", "TUBC", {"job_number": "23093", "address1": "123 Main St"})
+    assert reply["ok"] is False
+    assert reply["error"]["error"] == "invalid_payload"
+
+
+def test_update_job_site_missing_job_translates_cleanly(monkeypatch):
+    def _raise(conn, *, company, request):
+        raise ops.RelayOpError("job_not_found", "Job '23093' is not in TUBC")
+
+    monkeypatch.setattr(ops, "update_job_site_op", _raise)
+    reply = channel._dispatch("update_job_site", "TUBC", {"job_number": "23093", "job_name": "Cowichan"})
+    assert reply["ok"] is False
+    assert reply["error"]["error"] == "job_not_found"

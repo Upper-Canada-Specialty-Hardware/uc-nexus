@@ -451,6 +451,95 @@ def _address_code_already_exists(company: str, request: models.CreateCustomerAdd
     )
 
 
+def update_job_site_op(
+    conn, *, company: str, request: models.UpdateJobSiteRequest
+) -> models.UpdateJobSiteResponse:
+    """Push a Nexus project's site details onto its GP job (#497). The caller commits.
+
+    GP keeps no site address on the job. `JC00102.Job_Address_Code` is a char(15) pointer at a customer
+    address record, so this is two writes:
+
+    1. If the request carries an address, mint a code for it under the job's own customer and point the
+       job at that. The code is derived from the job number, which keeps it unique to this job - so
+       correcting one job's site can never move another's, which editing the existing code WOULD do:
+       address codes are shared in practice (TUBC has one customer whose codes serve two and three
+       jobs each), and #444 already ruled that overwriting an address accounting maintains is the one
+       outcome this integration must not produce.
+
+    2. Call wsiJCJobMaster with UpdateIfExists=1, sending ONLY what changed. Absent parameters keep
+       whatever GP holds, which is what stops a Nexus project - which carries a fraction of a JC00102
+       row - from blanking the columns accounting fills in.
+
+    Re-running with the same address is idempotent: the code already exists, so the mint is skipped and
+    the job is re-pointed at what it already points at.
+    """
+    job = econnect.get_job(conn, request.job_number)
+    if job is None:
+        raise RelayOpError("job_not_found", f"Job '{request.job_number}' is not in {company}")
+
+    address_code: str | None = None
+    address_created = False
+
+    if request.address1:
+        customer_number = job.get("customer_number")
+        if not customer_number:
+            raise RelayOpError(
+                "job_has_no_customer",
+                f"Job '{request.job_number}' has no customer, so a site address cannot be created for it",
+            )
+        # char(15), and it has to be stable so a re-push finds its own code rather than making another.
+        address_code = (request.address_code or f"SITE-{request.job_number}")[:15].strip().upper()
+
+        if not econnect.customer_address_exists(conn, customer_number, address_code):
+            econnect.create_customer_address(
+                conn,
+                {
+                    "customer_number": customer_number,
+                    "address_code": address_code,
+                    "address1": request.address1,
+                    "address2": request.address2 or "",
+                    "city": request.city,
+                    "state": request.state or "",
+                    "zip_code": request.zip_code or "",
+                    "country": request.country or "",
+                },
+            )
+            address_created = True
+
+    fields: dict = {"job_number": request.job_number}
+    if request.job_name:
+        fields["job_name"] = request.job_name
+    if address_code:
+        fields["job_address_code"] = address_code
+    if len(fields) == 1:
+        # Nothing to push. Calling the proc with only the job number would be a no-op write against
+        # accounting data, which is not a thing to do for the sake of a tidy code path.
+        return models.UpdateJobSiteResponse(
+            job_number=job["job_number"],
+            job_name=job.get("job_name") or "",
+            company=company,
+        )
+
+    econnect.update_job(conn, only_validate=True, **fields)
+    econnect.update_job(conn, only_validate=False, **fields)
+
+    updated = econnect.get_job(conn, request.job_number)
+    if updated is None:
+        # The err=0-but-nothing-landed case create_po_line has a known mode for.
+        raise econnect.EConnectError(
+            f"wsiJCJobMaster reported success but job {request.job_number} is not in JC00102",
+            proc="wsiJCJobMaster",
+        )
+
+    return models.UpdateJobSiteResponse(
+        job_number=updated["job_number"],
+        job_name=updated.get("job_name") or "",
+        company=company,
+        address_code=updated.get("job_address_code") or address_code,
+        address_created=address_created,
+    )
+
+
 def create_customer_address_op(
     conn, *, company: str, request: models.CreateCustomerAddressRequest
 ) -> models.CreateCustomerAddressResponse:

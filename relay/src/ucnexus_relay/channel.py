@@ -389,6 +389,19 @@ def _run_create_customer_address(company: str, payload: dict) -> dict:
             raise
 
 
+def _run_update_job_site(company: str, payload: dict) -> dict:
+    ops.check_company_allowed(company)
+    request = models.UpdateJobSiteRequest(company=company, **payload)
+    with db.get_connection(company) as conn:
+        try:
+            response = ops.update_job_site_op(conn, company=company, request=request)
+            conn.commit()
+            return response.model_dump(mode="json")
+        except Exception:
+            conn.rollback()
+            raise
+
+
 def _run_create_receipt(company: str, payload: dict) -> dict:
     ops.check_company_allowed(company)
     request = models.ReceiptRequest(company=company, **payload)
@@ -432,6 +445,9 @@ _OPS = {
     # issue #444 - the create-job dialog can add a job site that was never entered in GP, instead of
     # dead-ending on an address picker that has no code for it.
     "create_customer_address": _run_create_customer_address,
+    # issue #497 - a project's site address and name are edited in Nexus, and GP has to hear about it.
+    # Mints a job-specific address code rather than editing a shared one; see update_job_site_op.
+    "update_job_site": _run_update_job_site,
     # issue #425 - jobs replicated from UCSH carry GL account indexes that do not exist in UBC, so a
     # PO against them registers and can never be received. This is how Nexus finds out which ones.
     "job_setup_health": _run_job_setup_health,
