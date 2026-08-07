@@ -1433,6 +1433,19 @@ class InventoryRow:
 
 
 @strawberry.type
+class EmailPoResult:
+    """The outcome of sending a PO to its vendor (#500).
+
+    A result rather than an exception, because every refusal is something the user can act on -
+    generate the document, register the PO, ask accounting to put an email on the vendor card - and
+    none of them means something broke."""
+
+    sent: bool
+    message: str
+    sent_to: str | None = None
+
+
+@strawberry.type
 class OpeningItemDetail:
     opening_item: OpeningItem
     installed_hardware: list[OpeningItemHardware]

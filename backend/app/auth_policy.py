@@ -133,6 +133,7 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "deletePoDocument": SIGNED_IN,
     # Signed-in, not admin: which projects a caller may raise a PO against is decided inside the
     # resolver from the caller's own GP buyer assignment (#216), not by role.
+    "emailPoToVendor": SIGNED_IN,
     "registerPoInGp": SIGNED_IN,
     "savePoDocumentData": SIGNED_IN,
     "updatePo": SIGNED_IN,

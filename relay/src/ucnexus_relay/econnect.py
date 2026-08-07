@@ -495,6 +495,42 @@ def read_po_receipt_context(conn, po_number: str):
     return hdr.vendor, hdr.vendname, lines
 
 
+def get_vendor_contact(conn, vendor_id: str) -> dict | None:
+    """Read-only: a vendor's email and contact name, for sending them their PO (#500).
+
+    GP keeps internet fields in SY01200, keyed by Master_Type + Master_ID; 'VEN' is the vendor
+    master. Which column actually holds the address varies by how a site entered it - EmailToAddress
+    is the modern one, INET1 the legacy free-text - so both are read and the first non-empty wins.
+    That removes the need to establish up front which one UC populates: whichever it is, this finds
+    it, and a vendor with neither comes back with email None so the caller can say so by name.
+
+    The contact name comes off PM00200.VNDCNTCT, which is the person the PO is addressed to.
+    """
+    row = (
+        conn.cursor()
+        .execute(
+            "SELECT RTRIM(ISNULL(i.EmailToAddress, '')) AS email_to, "
+            "RTRIM(ISNULL(i.INET1, '')) AS inet1, "
+            "RTRIM(ISNULL(v.VNDCNTCT, '')) AS contact_name, "
+            "RTRIM(v.VENDNAME) AS vendor_name "
+            "FROM dbo.PM00200 v "
+            "LEFT JOIN dbo.SY01200 i ON i.Master_ID = v.VENDORID AND i.Master_Type = 'VEN' "
+            "WHERE v.VENDORID = ?",
+            (vendor_id,),
+        )
+        .fetchone()
+    )
+    if row is None:
+        return None
+    email = (row.email_to or "").strip() or (row.inet1 or "").strip() or None
+    return {
+        "vendor_id": vendor_id,
+        "vendor_name": row.vendor_name,
+        "contact_name": (row.contact_name or "").strip() or None,
+        "email": email,
+    }
+
+
 def list_vendors(conn, *, active_only: bool = True) -> list[dict]:
     """Read-only: PM00200 vendor list for the vendor sync (feeds UC Nexus's Vendor.gp_vendor_id).
     Returns VENDORID / VENDNAME / VNDCLSID (class) / VENDSTTS (status) / CURNCYID (currency). VENDSTTS

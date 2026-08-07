@@ -16,6 +16,7 @@ from app.errors import (
     RelayUnavailableError,
     ValidationError,
 )
+from app.models.enums import PODocumentType as PODocumentTypeDB
 from app.repositories import (
     buyer_repository,
     po_document_settings_repository,
@@ -23,7 +24,8 @@ from app.repositories import (
     project_repository,
     user_repository,
 )
-from app.services import gp_idempotency, gp_job_sync, gp_outbox_enqueue, gp_po
+from app.services import email as email_service
+from app.services import gp_idempotency, gp_job_sync, gp_outbox_enqueue, gp_po, storage
 from app.services.relay_gateway import gateway as relay_gateway
 
 from .converters import (
@@ -35,6 +37,7 @@ from .converters import (
 from .enums import PODocumentType, POStatus
 from .inputs import CreateDraftPOInput, RegisterPOInput, SavePODocumentDataInput, UpdatePODocumentSettingsInput
 from .types import (
+    EmailPoResult,
     PODocumentInfo,
     PODocumentSettings,
     POLineItem,
@@ -392,6 +395,76 @@ class POMutations:
             )
             session.commit()
             return po_to_type(po_repository.reload_po(session, po.id))
+
+    @strawberry.mutation
+    async def email_po_to_vendor(self, info: strawberry.Info, po_id: strawberry.ID) -> EmailPoResult:
+        """Send the generated supplier PO to the vendor it was placed with (#500).
+
+        The vendor's email is read live from GP through the relay rather than stored: GP owns
+        vendors (#509) and Nexus keeps no contact records of its own, so a stale address here is a
+        class of bug that cannot happen.
+
+        Every refusal is a plain outcome rather than an exception, because all of them are things
+        the user can act on - generate the document, register the PO, ask accounting to put an email
+        on the vendor card - and none of them is an error in the sense of "something broke".
+        """
+        current_user(info)
+
+        with SessionLocal() as session:
+            po = po_repository.get_purchase_order(session, uuid.UUID(str(po_id)))
+            if po is None:
+                raise NotFoundError(f"Purchase order {po_id} not found")
+            if po.status == POStatus.DRAFT.value or po.gp_vendor_id is None or not po.gp_company:
+                return EmailPoResult(sent=False, message="Register the PO in GP before sending it to the vendor.")
+            document = next(
+                (d for d in (po.documents or []) if d.document_type == PODocumentTypeDB.GENERATED_PO),
+                None,
+            )
+            if document is None:
+                return EmailPoResult(sent=False, message="Generate the PO document before sending it to the vendor.")
+            po_number = po.po_number or po.request_number
+            company = po.gp_company
+            vendor_id = po.gp_vendor_id
+            s3_key = document.s3_key
+            file_name = document.file_name
+            content_type = document.content_type
+
+        if not email_service.is_configured():
+            return EmailPoResult(sent=False, message="Email is not configured on this deployment.")
+
+        try:
+            contact = await relay_gateway.relay_call(company, "get_vendor_contact", {"vendor_id": vendor_id})
+        except Exception as exc:  # relay unavailable / timeout / op unsupported
+            return EmailPoResult(sent=False, message=f"Could not reach GP for the vendor's email: {exc}")
+
+        address = (contact or {}).get("email")
+        if not address:
+            return EmailPoResult(
+                sent=False,
+                message=f"GP has no email on file for vendor {vendor_id}. Ask accounting to add one.",
+            )
+
+        contact_name = (contact or {}).get("contact_name") or "there"
+        body = (
+            f"Hello {contact_name},\n\n"
+            f"Please find attached our purchase order {po_number}.\n\n"
+            "Reply to this message with your acknowledgement and expected ship date.\n\n"
+            "Thank you,\n"
+            "UC Hardware Inc."
+        )
+
+        try:
+            content = storage.download_file(s3_key)
+            email_service.send_email(
+                to=address,
+                subject=f"Purchase Order {po_number}",
+                body=body,
+                attachments=[email_service.Attachment(file_name=file_name, content_type=content_type, content=content)],
+            )
+        except email_service.EmailError as exc:
+            return EmailPoResult(sent=False, message=f"Sending failed: {exc}")
+
+        return EmailPoResult(sent=True, message=f"Purchase order {po_number} sent to {address}.", sent_to=address)
 
     @strawberry.mutation
     async def register_po_in_gp(self, info: strawberry.Info, input: RegisterPOInput) -> RegisterPOResult:
