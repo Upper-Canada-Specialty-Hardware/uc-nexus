@@ -1392,6 +1392,33 @@ class InventoryItemDetail:
 
 
 @strawberry.type
+class ReceiveRow:
+    """One receive entity for the warehouse Receives page (#505).
+
+    Deliberately a flat, discriminated row rather than a union: drafts and booked records are the
+    same thing at different stages, and the page reads them in one interleaved list. `kind` says
+    which it is; `receipt_number` is only ever set on a booked record, `rejection_reason` only on a
+    rejected draft."""
+
+    kind: str
+    id: strawberry.ID
+    occurred_at: datetime
+    status: str
+    po_id: strawberry.ID
+    po_number: str | None
+    project_id: strawberry.ID | None
+    project_name: str | None
+    warehouse_id: strawberry.ID | None
+    line_count: int
+    total_quantity: int
+    counted_by: str | None
+    reviewed_by: str | None
+    rejection_reason: str | None
+    receipt_number: str | None
+    batch_number: str | None
+
+
+@strawberry.type
 class OpeningItemDetail:
     opening_item: OpeningItem
     installed_hardware: list[OpeningItemHardware]
@@ -1467,6 +1494,10 @@ class PickSheetLocation:
     # What the saved draft has against this row, and what has already been confirmed off it.
     draft_quantity: int
     applied_quantity: int
+    # #496: the vendor's name for the part and the PO it arrived on, per location - one product can
+    # sit in inventory from several POs with different Order As values. Null on stock-origin rows.
+    order_as: str | None
+    po_number: str | None
 
 
 @strawberry.type

@@ -722,3 +722,115 @@ def get_recent_receive_records(session: Session, limit: int = 10) -> list[tuple]
         .limit(limit)
     )
     return list(session.execute(stmt).unique().all())
+
+
+def get_all_receives(
+    session: Session,
+    *,
+    limit: int = 50,
+    offset: int = 0,
+    project_id: uuid.UUID | None = None,
+    po_search: str | None = None,
+) -> list[dict]:
+    """Every receive entity, drafts and booked records interleaved, newest first (#505).
+
+    Each existing view covers a slice: MyReceiveDraftsView is one user's own drafts,
+    ReceiveApprovalsPage is the manager's pending queue, ReceivingHistory is recent activity. A
+    rejected draft appeared in none of them, so a count somebody disputed simply vanished.
+
+    Drafts and records are read separately and merged in Python rather than SQL-UNIONed: they carry
+    different columns (a draft has a reviewer and a rejection reason, a record has an RCT number and
+    a batch), and a union would have to null-pad both sides into a shape neither one is.
+
+    Line counts and quantities come off the already-loaded line collections, which are selectinloaded
+    here - the #-N+1 rule: no per-row lazy loads.
+    """
+    from app.models.project import Project as ProjectModel
+    from app.models.receive_draft import ReceiveDraft as ReceiveDraftModel
+
+    def _po_filters(stmt, po_alias):
+        if project_id is not None:
+            stmt = stmt.where(po_alias.project_id == project_id)
+        if po_search:
+            stmt = stmt.where(po_alias.po_number.ilike(f"%{po_search.strip()}%"))
+        return stmt
+
+    draft_stmt = (
+        select(ReceiveDraftModel, POModel)
+        .join(POModel, ReceiveDraftModel.po_id == POModel.id)
+        .options(selectinload(ReceiveDraftModel.line_items))
+    )
+    draft_stmt = _po_filters(draft_stmt, POModel)
+
+    record_stmt = (
+        select(ReceiveRecordModel, POModel)
+        .join(POModel, ReceiveRecordModel.po_id == POModel.id)
+        .options(selectinload(ReceiveRecordModel.line_items))
+    )
+    record_stmt = _po_filters(record_stmt, POModel)
+
+    # A draft that has been approved has a receive_record_id, and the record is the row worth
+    # showing - it carries the RCT number and the booked quantities. Skipping those drafts is what
+    # keeps one physical delivery from appearing twice.
+    rows: list[dict] = []
+    for draft, po in session.execute(draft_stmt).unique().all():
+        if draft.receive_record_id is not None:
+            continue
+        rows.append(
+            {
+                "kind": "DRAFT",
+                "id": draft.id,
+                "occurred_at": draft.created_at,
+                "status": draft.status.value,
+                "po_id": po.id,
+                "po_number": po.po_number,
+                "project_id": po.project_id,
+                "warehouse_id": draft.warehouse_id,
+                "line_count": len(draft.line_items),
+                "total_quantity": sum(li.quantity_received for li in draft.line_items),
+                "counted_by": draft.created_by_name,
+                "reviewed_by": draft.reviewed_by_name,
+                "rejection_reason": draft.rejection_reason,
+                "receipt_number": None,
+                "batch_number": None,
+            }
+        )
+
+    for record, po in session.execute(record_stmt).unique().all():
+        rows.append(
+            {
+                "kind": "RECORD",
+                "id": record.id,
+                "occurred_at": record.received_at,
+                "status": "APPROVED",
+                "po_id": po.id,
+                "po_number": po.po_number,
+                "project_id": po.project_id,
+                "warehouse_id": None,
+                "line_count": len(record.line_items),
+                "total_quantity": sum(li.quantity_received for li in record.line_items),
+                "counted_by": record.received_by,
+                "reviewed_by": None,
+                "rejection_reason": None,
+                "receipt_number": record.receipt_number,
+                "batch_number": record.batch_number,
+            }
+        )
+
+    # Project names in one grouped read rather than one per row.
+    project_ids = {r["project_id"] for r in rows if r["project_id"]}
+    names: dict = {}
+    if project_ids:
+        names = {
+            pid: (desc or number)
+            for pid, number, desc in session.execute(
+                select(ProjectModel.id, ProjectModel.project_id, ProjectModel.description).where(
+                    ProjectModel.id.in_(project_ids)
+                )
+            ).all()
+        }
+    for r in rows:
+        r["project_name"] = names.get(r["project_id"])
+
+    rows.sort(key=lambda r: r["occurred_at"], reverse=True)
+    return rows[offset : offset + limit]

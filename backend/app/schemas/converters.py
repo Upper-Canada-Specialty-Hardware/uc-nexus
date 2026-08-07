@@ -896,6 +896,8 @@ def pick_sheet_to_type(sheet, staging=None, partially_picked=None) -> PickSheet:
                         received_at=loc.received_at,
                         draft_quantity=loc.draft_quantity,
                         applied_quantity=loc.applied_quantity,
+                        order_as=loc.order_as,
+                        po_number=loc.po_number,
                     )
                     for loc in section.locations
                 ],

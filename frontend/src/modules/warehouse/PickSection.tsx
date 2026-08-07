@@ -144,6 +144,10 @@ export default function PickSection({ section, entries, onChange, editable }: Pi
           <Box component="thead">
             <Box component="tr" sx={{ '& th': { ...microLabelSx, textAlign: 'left', pb: 0.5 } }}>
               <Box component="th">Location</Box>
+              {/* #496: same two columns as the printed sheet, in the same order, so screen and
+                  paper agree line for line. */}
+              <Box component="th">PO #</Box>
+              <Box component="th">Order As</Box>
               <Box component="th">Received</Box>
               <Box component="th" sx={{ textAlign: 'right !important' }}>
                 Available
@@ -188,6 +192,16 @@ export default function PickSection({ section, entries, onChange, editable }: Pi
                         {loc.appliedQuantity} already pulled from here
                       </Typography>
                     )}
+                  </Box>
+                  <Box component="td">
+                    <Typography component="span" variant="body2" sx={monoSx} color="text.secondary">
+                      {loc.poNumber ?? '—'}
+                    </Typography>
+                  </Box>
+                  <Box component="td">
+                    <Typography component="span" variant="body2" sx={monoSx} color="text.secondary">
+                      {loc.orderAs ?? '—'}
+                    </Typography>
                   </Box>
                   <Box component="td" sx={{ ...tabularSx }}>
                     <Typography component="span" variant="body2" color="text.secondary">

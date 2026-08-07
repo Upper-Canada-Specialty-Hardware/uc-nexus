@@ -674,7 +674,7 @@ const PICK_SHEET_FIELDS = `
     leaves { openingNumber leaf quantity }
     locations {
       inventoryLocationId warehouseId warehouseCode aisle row bay
-      available receivedAt draftQuantity appliedQuantity
+      available receivedAt draftQuantity appliedQuantity orderAs poNumber
     }
   }
   fetchItems {
@@ -884,6 +884,31 @@ export const RESOLVE_DEFICIENCY = gql`
     resolveDeficiency(input: $input) {
       id inventoryLocationId stockItemId resolution quantity reasonText
       rmaReference reviewedBy reviewedAt resultingStockItemId
+    }
+  }
+`;
+
+// #505: every receive entity in one list - drafts pending approval, drafts being approved,
+// rejected drafts and booked records. The existing views each cover a slice, and a rejected draft
+// appeared in none of them.
+export const GET_RECEIVES = gql`
+  query GetReceives($limit: Int, $offset: Int, $projectId: ID, $poSearch: String) {
+    receives(limit: $limit, offset: $offset, projectId: $projectId, poSearch: $poSearch) {
+      kind
+      id
+      occurredAt
+      status
+      poId
+      poNumber
+      projectId
+      projectName
+      lineCount
+      totalQuantity
+      countedBy
+      reviewedBy
+      rejectionReason
+      receiptNumber
+      batchNumber
     }
   }
 `;

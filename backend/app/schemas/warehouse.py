@@ -80,6 +80,7 @@ from .types import (
     ReceiveDecision,
     ReceiveDraft,
     ReceiveRecord,
+    ReceiveRow,
     ReceivingHistoryPO,
     RecentReceiveRecord,
     RestockedLine,
@@ -440,6 +441,48 @@ class WarehouseQueries:
                     total_value=cat_node["total_value"],
                 )
                 for cat_node in hierarchy
+            ]
+
+    @strawberry.field
+    def receives(
+        self,
+        info: strawberry.Info,
+        limit: int = 50,
+        offset: int = 0,
+        project_id: strawberry.ID | None = None,
+        po_search: str | None = None,
+    ) -> list[ReceiveRow]:
+        """Every receive entity, drafts and booked records interleaved, newest first (#505).
+
+        The existing views each cover a slice and a rejected draft appeared in none of them, so a
+        disputed count vanished from the product entirely."""
+        with SessionLocal() as session:
+            return [
+                ReceiveRow(
+                    kind=r["kind"],
+                    id=strawberry.ID(str(r["id"])),
+                    occurred_at=r["occurred_at"],
+                    status=r["status"],
+                    po_id=strawberry.ID(str(r["po_id"])),
+                    po_number=r["po_number"],
+                    project_id=strawberry.ID(str(r["project_id"])) if r["project_id"] else None,
+                    project_name=r["project_name"],
+                    warehouse_id=strawberry.ID(str(r["warehouse_id"])) if r["warehouse_id"] else None,
+                    line_count=r["line_count"],
+                    total_quantity=r["total_quantity"],
+                    counted_by=r["counted_by"],
+                    reviewed_by=r["reviewed_by"],
+                    rejection_reason=r["rejection_reason"],
+                    receipt_number=r["receipt_number"],
+                    batch_number=r["batch_number"],
+                )
+                for r in warehouse_repository.get_all_receives(
+                    session,
+                    limit=limit,
+                    offset=offset,
+                    project_id=uuid.UUID(str(project_id)) if project_id else None,
+                    po_search=po_search,
+                )
             ]
 
     @strawberry.field
