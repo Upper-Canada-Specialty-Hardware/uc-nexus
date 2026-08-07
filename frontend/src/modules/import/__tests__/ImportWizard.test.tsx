@@ -790,10 +790,13 @@ describe('ImportWizard reconciliation failure', () => {
     // Two products, each seen once despite O-1's two status rows, and both pre-selected off their
     // remaining gap.
     expect(screen.getByText('2 of 2 product(s) selected')).toBeInTheDocument();
-    expect(nextButton()).toBeEnabled();
 
-    clickNext();
-    expect(screen.getByRole('heading', { name: 'Classification' })).toBeInTheDocument();
+    // #483: HNG-100 needs 3 across the project and 1 is already ORDERED. Selecting it carries the
+    // opening's full demand of 3 into PO creation, which would put the project at 4 against a need
+    // of 3 - so Next is refused and the alert names it. LCK-200 has nothing committed and is fine.
+    expect(nextButton()).toBeDisabled();
+    expect(screen.getByText(/take the project past what its hardware schedule needs/i)).toBeInTheDocument();
+    expect(screen.getByText(/HNG-100: project needs 3/)).toBeInTheDocument();
   });
 });
 
