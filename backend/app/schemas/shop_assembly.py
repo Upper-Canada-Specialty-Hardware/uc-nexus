@@ -31,6 +31,7 @@ from .types import (
     ClerkUser,
     OpeningItem,
     ReplacementWorkItem,
+    ReviewQueueOpening,
     ShopAssemblyOpening,
     ShopAssemblyRequest,
 )
@@ -38,6 +39,36 @@ from .types import (
 
 @strawberry.type
 class ShopAssemblyQueries:
+    @strawberry.field
+    def pending_shop_assembly_openings(
+        self, info: strawberry.Info, project_id: strawberry.ID | None = None
+    ) -> list[ReviewQueueOpening]:
+        """Every door leaf awaiting review, across all projects (#495).
+
+        Pooled and project-agnostic on purpose: the reviewer works a queue, not one request at a
+        time, so the project is a column rather than a filter you must choose before seeing any
+        work. project_id narrows it when somebody does want one job."""
+        with SessionLocal() as session:
+            return [
+                _review_row_to_type(r)
+                for r in shop_assembly_repository.get_pending_review_openings(
+                    session, uuid.UUID(str(project_id)) if project_id else None
+                )
+            ]
+
+    @strawberry.field
+    def deferred_shop_assembly_openings(
+        self, info: strawberry.Info, project_id: strawberry.ID | None = None
+    ) -> list[ReviewQueueOpening]:
+        """Leaves a reviewer set aside (#495), newest decision first."""
+        with SessionLocal() as session:
+            return [
+                _review_row_to_type(r)
+                for r in shop_assembly_repository.get_deferred_review_openings(
+                    session, uuid.UUID(str(project_id)) if project_id else None
+                )
+            ]
+
     @strawberry.field
     def assemble_list(
         self, info: strawberry.Info, project_id: strawberry.ID | None = None
@@ -147,8 +178,69 @@ class ShopAssemblyQueries:
         return [clerk_user_to_type(u) for u in user_repository.shop_assembly_members(user_roster(info.context))]
 
 
+def _review_row_to_type(row: dict) -> ReviewQueueOpening:
+    opening = row["opening"]
+    return ReviewQueueOpening(
+        id=strawberry.ID(str(opening.id)),
+        opening_number=opening.opening_number,
+        leaf=opening.leaf,
+        building=opening.building,
+        floor=opening.floor,
+        location=opening.location,
+        review_status=opening.review_status.value,
+        request_number=row["request_number"],
+        requested_by=row["requested_by"],
+        requested_at=row["requested_at"],
+        project_id=strawberry.ID(str(row["project_id"])),
+        project_number=row["project_number"],
+        project_name=row["project_name"],
+        item_count=row["item_count"],
+        short_quantity=row["short_quantity"],
+        reviewed_at=opening.reviewed_at,
+        reviewed_by=opening.reviewed_by,
+        review_reason=opening.review_reason,
+    )
+
+
 @strawberry.type
 class ShopAssemblyMutations:
+    @strawberry.mutation
+    def reject_shop_assembly_opening(
+        self, info: strawberry.Info, id: strawberry.ID, reason: str | None = None
+    ) -> ReviewQueueOpening:
+        """Turn down one door leaf (#495), freeing exactly its hardware.
+
+        Review is per leaf now. Rejecting a whole request meant one contentious leaf held up every
+        other leaf on it."""
+        auth = current_user(info)
+        actor = resolve_display_name(auth["user_id"])
+        with SessionLocal() as session:
+            shop_assembly_repository.reject_shop_assembly_opening(
+                session, uuid.UUID(str(id)), reviewed_by=actor, reason=reason
+            )
+            session.commit()
+            rows = shop_assembly_repository.get_review_opening(session, uuid.UUID(str(id)))
+            return _review_row_to_type(rows)
+
+    @strawberry.mutation
+    def defer_shop_assembly_opening(
+        self, info: strawberry.Info, id: strawberry.ID, reason: str | None = None
+    ) -> ReviewQueueOpening:
+        """Set one leaf aside (#495).
+
+        Technically a rejection - it releases the same reservations - but it is meant to come back,
+        and it comes back through a fresh request rather than being resurrected here, so
+        availability is re-checked exactly as it would be for any new one."""
+        auth = current_user(info)
+        actor = resolve_display_name(auth["user_id"])
+        with SessionLocal() as session:
+            shop_assembly_repository.defer_shop_assembly_opening(
+                session, uuid.UUID(str(id)), reviewed_by=actor, reason=reason
+            )
+            session.commit()
+            rows = shop_assembly_repository.get_review_opening(session, uuid.UUID(str(id)))
+            return _review_row_to_type(rows)
+
     @strawberry.mutation
     def accept_shop_assembly_request(self, info: strawberry.Info, id: strawberry.ID) -> ShopAssemblyRequest:
         """Accept a PENDING shop-assembly request (#293). Open to any signed-in user.

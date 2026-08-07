@@ -2105,3 +2105,145 @@ def get_deferred_review_openings(session: Session, project_id: uuid.UUID | None 
             }
         )
     return rows
+
+
+def _opening_allocated_by_combo(opening: ShopAssemblyOpening) -> dict[tuple[str, str], int]:
+    """What this one leaf is holding, per (category, product).
+
+    Reservations are keyed (source, request_id) with no opening column, so a per-opening decision
+    cannot use release_reservations - that drops the whole request's claim. This is the arithmetic
+    that lets one leaf hand back exactly its own units.
+    """
+    totals: dict[tuple[str, str], int] = {}
+    for item in opening.items or []:
+        qty = item.allocated_quantity or 0
+        if qty <= 0:
+            continue
+        key = (item.hardware_category, item.product_code)
+        totals[key] = totals.get(key, 0) + qty
+    return totals
+
+
+def _set_opening_review(
+    session: Session,
+    opening_id: uuid.UUID,
+    status: OpeningReviewStatus,
+    *,
+    reviewed_by: str,
+    reason: str | None = None,
+) -> ShopAssemblyOpening:
+    """Record a review decision on one leaf, releasing its claim when it is turned down.
+
+    REJECTED and DEFERRED both free the hardware: the leaf is not going to the bench under this
+    request either way. They differ in what happens next, which is why they are separate states -
+    a deferred leaf is meant to come back, and when it does it comes back through a fresh request so
+    availability is re-checked exactly as it would be for any new one.
+    """
+    opening = session.get(ShopAssemblyOpening, opening_id)
+    if opening is None:
+        raise NotFoundError(f"Shop assembly opening {opening_id} not found")
+    if opening.review_status != OpeningReviewStatus.PENDING:
+        raise InvalidStateTransitionError(f"That leaf has already been {opening.review_status.value.lower()}.")
+
+    opening.review_status = status
+    opening.reviewed_at = datetime.utcnow()
+    opening.reviewed_by = reviewed_by
+    opening.review_reason = (reason or "").strip() or None
+
+    if status in (OpeningReviewStatus.REJECTED, OpeningReviewStatus.DEFERRED):
+        released = _opening_allocated_by_combo(opening)
+        if released and opening.shop_assembly_request_id:
+            from app.models.enums import ReservationSource
+            from app.repositories import warehouse as warehouse_repository
+
+            warehouse_repository.release_partial_reservations(
+                session,
+                ReservationSource.SHOP_ASSEMBLY_REQUEST,
+                opening.shop_assembly_request_id,
+                released,
+            )
+
+    session.flush()
+    _sync_request_status(session, opening.shop_assembly_request_id)
+    return opening
+
+
+def _sync_request_status(session: Session, request_id: uuid.UUID | None) -> None:
+    """The request's status is a rollup of its openings now (#495).
+
+    PENDING while any opening still awaits a decision, APPROVED once none do. It stays a stored
+    column because every existing list view reads it, but it is no longer the thing that decides -
+    the openings are.
+    """
+    if request_id is None:
+        return
+    request = session.get(ShopAssemblyRequest, request_id)
+    if request is None:
+        return
+    statuses = set(
+        session.scalars(
+            select(ShopAssemblyOpening.review_status).where(ShopAssemblyOpening.shop_assembly_request_id == request_id)
+        ).all()
+    )
+    if OpeningReviewStatus.PENDING in statuses:
+        request.status = ShopAssemblyRequestStatus.PENDING
+    elif statuses == {OpeningReviewStatus.REJECTED} or statuses == {OpeningReviewStatus.DEFERRED}:
+        # Nothing survived review, so the request as a whole was turned down.
+        request.status = ShopAssemblyRequestStatus.REJECTED
+    else:
+        request.status = ShopAssemblyRequestStatus.APPROVED
+    session.flush()
+
+
+def reject_shop_assembly_opening(
+    session: Session, opening_id: uuid.UUID, *, reviewed_by: str, reason: str | None = None
+) -> ShopAssemblyOpening:
+    """Turn down one leaf, freeing exactly its hardware (#495)."""
+    return _set_opening_review(
+        session, opening_id, OpeningReviewStatus.REJECTED, reviewed_by=reviewed_by, reason=reason
+    )
+
+
+def defer_shop_assembly_opening(
+    session: Session, opening_id: uuid.UUID, *, reviewed_by: str, reason: str | None = None
+) -> ShopAssemblyOpening:
+    """Set one leaf aside (#495). Technically a rejection - it releases the same reservations - but
+    it is meant to come back, and it comes back through a fresh request rather than being resurrected
+    here, so availability is re-checked the way it is for any new one."""
+    return _set_opening_review(
+        session, opening_id, OpeningReviewStatus.DEFERRED, reviewed_by=reviewed_by, reason=reason
+    )
+
+
+def get_review_opening(session: Session, opening_id: uuid.UUID) -> dict:
+    """One review-queue row by id, in the same shape the queue reads return.
+
+    The mutations echo the decided row back, and it has to carry the same project and request
+    context the queue does - a client that just rejected something should not have to refetch the
+    whole queue to render the outcome.
+    """
+    from app.models.project import Project as ProjectModel
+
+    row = session.execute(
+        select(ShopAssemblyOpening, ShopAssemblyRequest, ProjectModel)
+        .join(ShopAssemblyRequest, ShopAssemblyRequest.id == ShopAssemblyOpening.shop_assembly_request_id)
+        .join(ProjectModel, ProjectModel.id == ShopAssemblyRequest.project_id)
+        .options(selectinload(ShopAssemblyOpening.items))
+        .where(ShopAssemblyOpening.id == opening_id)
+    ).first()
+    if row is None:
+        raise NotFoundError(f"Shop assembly opening {opening_id} not found")
+
+    opening, request, project = row
+    items = list(opening.items or [])
+    return {
+        "opening": opening,
+        "request_number": request.request_number,
+        "requested_by": request.requested_by,
+        "requested_at": request.created_at,
+        "project_id": project.id,
+        "project_number": project.project_id,
+        "project_name": project.description or project.project_id,
+        "item_count": len(items),
+        "short_quantity": sum(max(0, i.quantity - (i.allocated_quantity or 0)) for i in items),
+    }
