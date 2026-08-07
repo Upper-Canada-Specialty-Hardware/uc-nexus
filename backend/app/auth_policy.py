@@ -306,6 +306,7 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     # requirement can express.
     "approveReceiveDraft": frozenset({ADMIN_ROLE, WAREHOUSE_MANAGER_ROLE}),
     "assignInventoryLocation": SIGNED_IN,
+    "splitInventoryLocation": SIGNED_IN,
     "assignOpeningItemLocation": SIGNED_IN,
     "cancelPullRequest": SIGNED_IN,
     "completePullRequest": SIGNED_IN,

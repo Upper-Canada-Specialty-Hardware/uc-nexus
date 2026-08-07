@@ -206,15 +206,16 @@ async function approveViaConfirm() {
 vi.setConfig({ testTimeout: 60_000 });
 
 describe('ReceiveDraftReviewModal', () => {
-  it('prefills the counted quantities and rack rows from the draft', async () => {
+  it('prefills the counted quantities and shows no rack rows to review', async () => {
+    // #501: the reviewer is checking a count against a packing slip, not a put-away. Even a draft
+    // that still carries rack rows from before the change renders none - they are not the
+    // manager's decision any more, and the shelf is chosen on the Put Away queue after approval.
     await openModal();
 
     expect(screen.getByText(/Counted by/)).toHaveTextContent('Wendy Warehouse');
     expect(within(screen.getByRole('grid')).getByRole('spinbutton')).toHaveValue(2);
-    expect(screen.getByLabelText('Aisle')).toHaveValue('A1');
-    expect(screen.getByLabelText('Row')).toHaveValue('B2');
-    expect(screen.getByLabelText('Bay')).toHaveValue('C3');
-    expect(screen.getByText('all placed')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Aisle')).toBeNull();
+    expect(screen.queryByLabelText('Bay')).toBeNull();
   });
 
   it('approves an unedited draft without saving it first', async () => {
@@ -255,7 +256,6 @@ describe('ReceiveDraftReviewModal', () => {
 
     // The count was two; the reviewer makes it three, which is exactly the PO's pending quantity.
     fireEvent.change(within(screen.getByRole('grid')).getByRole('spinbutton'), { target: { value: '3' } });
-    fireEvent.change(screen.getByLabelText('Qty'), { target: { value: '3' } });
     await approveViaConfirm();
 
     await screen.findByText(/Approved\. 3 items added to inventory/, undefined, SLOW);
@@ -267,7 +267,7 @@ describe('ReceiveDraftReviewModal', () => {
           {
             poLineItemId: 'li-1',
             quantityReceived: 3,
-            locations: [{ aisle: 'A1', row: 'B2', bay: 'C3', quantity: 3, deficientQuantity: 0 }],
+            locations: [],
           },
         ],
       },
@@ -410,7 +410,6 @@ describe('ReceiveDraftReviewModal', () => {
     await openModal([updateMock, ...failThenPass]);
 
     fireEvent.change(within(screen.getByRole('grid')).getByRole('spinbutton'), { target: { value: '3' } });
-    fireEvent.change(screen.getByLabelText('Qty'), { target: { value: '3' } });
     await approveViaConfirm();
     await screen.findByText(/Approving this receive failed/, undefined, SLOW);
 
@@ -427,18 +426,6 @@ describe('ReceiveDraftReviewModal', () => {
 
     fireEvent.change(within(screen.getByRole('grid')).getByRole('spinbutton'), { target: { value: '4' } });
     expect(screen.getByText('Max: 3')).toBeInTheDocument();
-    expect(approveButton()).toBeDisabled();
-  });
-
-  it('names what put-away still needs instead of claiming all placed over blank rack fields', async () => {
-    // Quantities that sum correctly used to be the whole of "all placed" - blank the Aisle and the
-    // caption kept claiming done while approval stayed disabled with nothing saying why (#474).
-    await openModal();
-
-    fireEvent.change(screen.getByLabelText('Aisle'), { target: { value: '' } });
-
-    expect(screen.getByText('needs aisle · row · bay')).toBeInTheDocument();
-    expect(screen.queryByText('all placed')).toBeNull();
     expect(approveButton()).toBeDisabled();
   });
 

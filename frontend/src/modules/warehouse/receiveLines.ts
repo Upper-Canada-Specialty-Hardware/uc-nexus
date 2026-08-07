@@ -72,35 +72,9 @@ export function draftsForLine(
 }
 
 /** A row without all three rack coordinates cannot be put away. Shared with the editor's per-line
- *  status caption, so what the caption calls done is exactly what validatePutAway will accept. */
+ *  status caption. Only drafts counted before #501 carry rack rows at all. */
 export function locationIncomplete(d: LocationDraft): boolean {
   return !d.aisle.trim() || !d.row.trim() || !d.bay.trim();
-}
-
-/**
- * Put-away is mandatory: every received unit must land in a valid row and each row's deficient count
- * must be within its quantity. Mirrors the backend contract in warehouse_repository.create_receive
- * and gives the GP receipt a non-empty rack location per line.
- */
-export function validatePutAway(
-  lineItems: PODetailLineItem[],
-  receiveQuantities: Record<string, number>,
-  lineLocations: Record<string, LocationDraft[]>,
-): boolean {
-  for (const li of lineItems) {
-    const receiveNow = receiveQuantities[li.id] ?? 0;
-    let placed = 0;
-    for (const d of draftsForLine(lineLocations, li.id, receiveNow)) {
-      const q = Number(d.quantity);
-      const def = Number(d.deficient || '0');
-      if (locationIncomplete(d)) return false;
-      if (!Number.isInteger(q) || q < 1) return false;
-      if (!Number.isInteger(def) || def < 0 || def > q) return false;
-      placed += q;
-    }
-    if (placed !== receiveNow) return false;
-  }
-  return true;
 }
 
 export interface ReceiveLineItemInput {
@@ -116,26 +90,21 @@ export interface ReceiveLineItemInput {
 }
 
 /** The `lineItems` payload every receive mutation takes - draft create, draft update, and the
- *  approval that eventually posts them to GP all speak this one shape. */
+ *  approval that eventually posts them to GP all speak this one shape.
+ *
+ *  `locations` is always empty since #501. A draft is a count, not a put-away: the warehouse
+ *  manager approves the numbers, the receipt books one unlocated row per line, and the shelf is
+ *  chosen afterwards on the Put Away queue. The field stays on the input because drafts counted
+ *  before that change still carry theirs and the backend still reads them. */
 export function buildReceiveLineItemsInput(
   lineItems: PODetailLineItem[],
   receiveQuantities: Record<string, number>,
-  lineLocations: Record<string, LocationDraft[]>,
 ): ReceiveLineItemInput[] {
-  return lineItems.map((li) => {
-    const receiveNow = receiveQuantities[li.id] ?? 0;
-    return {
-      poLineItemId: li.id,
-      quantityReceived: receiveNow,
-      locations: draftsForLine(lineLocations, li.id, receiveNow).map((d) => ({
-        aisle: d.aisle.trim(),
-        row: d.row.trim(),
-        bay: d.bay.trim(),
-        quantity: Number(d.quantity),
-        deficientQuantity: Number(d.deficient || '0'),
-      })),
-    };
-  });
+  return lineItems.map((li) => ({
+    poLineItemId: li.id,
+    quantityReceived: receiveQuantities[li.id] ?? 0,
+    locations: [],
+  }));
 }
 
 /** A persisted draft's line, as the backend returns it. */

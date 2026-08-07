@@ -504,6 +504,9 @@ class ReconciliationItemInput:
 class ReceiveLineItemInput:
     po_line_item_id: strawberry.ID
     quantity_received: int
+    # Empty since #501: a draft is a count, and where the units go is chosen on the Put Away queue
+    # after the warehouse manager approves. The field stays because drafts counted before that
+    # change still carry their rack rows and the booking still honours them.
     locations: list["LocationInput"] = strawberry.field(default_factory=list)
 
 
