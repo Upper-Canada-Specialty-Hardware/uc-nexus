@@ -143,7 +143,9 @@ export default function FetchListPanel({ items, editable }: FetchListPanelProps)
                       {bin}
                     </Typography>
                   ) : (
-                    <Chip label="Unlocated" size="small" variant="outlined" />
+                    /* #498: an assembled leaf lands unlocated and stays that way until the
+                       warehouse puts it away, so say which it is rather than just "Unlocated". */
+                    <Chip label="Not put away yet" size="small" variant="outlined" color="warning" />
                   )}
                 </Box>
                 <Box component="td">

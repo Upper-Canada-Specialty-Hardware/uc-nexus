@@ -694,6 +694,7 @@ describe('GpPurchaseOrderDialog', () => {
         shippingCost: null,
         tariffAmount: null,
         costCode: null,
+        vendorQuoteNumber: null,
         lineItems: [
           {
             hardwareCategory: 'Hinges',

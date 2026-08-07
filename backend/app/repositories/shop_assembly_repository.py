@@ -437,9 +437,6 @@ def record_assembly_progress(
 def complete_opening(
     session: Session,
     opening_id: uuid.UUID,
-    aisle: str | None,
-    row: str | None,
-    bay: str | None,
     completed_by: str | None = None,
 ) -> OpeningItemModel:
     """Mark an opening's assembly as complete. Creates OpeningItem + OpeningItemHardware records.
@@ -449,6 +446,12 @@ def complete_opening(
     what the assembler actually recorded fitting, unit by unit - not a claim made in the same call.
     Deficiencies were already returned to inventory and replaced when they were flagged, so this
     function no longer writes any of that.
+
+    Completion no longer records a location either (#498). It used to take free-text aisle/row/bay
+    from the ASSEMBLER, against no warehouse choice and no validation that the place existed - so
+    the "put-away location" on an assembled leaf was whatever the person at the bench typed, and
+    warehouse staff could not correct it. The leaf lands unlocated and joins the warehouse put-away
+    queue, which is the same route received stock takes.
     """
     # 1. Load and validate ShopAssemblyOpening (with pessimistic lock)
     sa_opening = _load_workable_opening(session, opening_id)
@@ -561,9 +564,11 @@ def complete_opening(
         quantity=1,
         assembly_completed_at=now,
         state=OpeningItemState.IN_INVENTORY,
-        aisle=aisle,
-        row=row,
-        bay=bay,
+        # #498: unlocated on purpose. The warehouse assigns a real warehouse + aisle/row/bay from
+        # the put-away queue; until then this leaf reads "not put away yet".
+        aisle=None,
+        row=None,
+        bay=None,
     )
     session.add(opening_item)
     try:
@@ -632,9 +637,8 @@ def complete_opening(
                 }
                 for item in sa_opening.items
             ],
-            "aisle": aisle,
-            "row": row,
-            "bay": bay,
+            # #498: no location here any more. Completion does not place the leaf; the PUT_AWAY
+            # audit row written when the warehouse assigns it is what records where it went.
         },
     )
 

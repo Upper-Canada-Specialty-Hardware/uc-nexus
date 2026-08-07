@@ -155,6 +155,7 @@ def create_po(
     tariff_amount: float | None = None,
     preferred_delivery_date=None,
     created_by_user_id: str | None = None,
+    vendor_quote_number: str | None = None,
 ) -> PurchaseOrder:
     """Create a manual PO with line items. No hardware items are created.
 
@@ -201,6 +202,11 @@ def create_po(
         tariff_amount=_coerce_order_cost(tariff_amount, "tariff_amount"),
         # Issue #216/#256: the PM's requested date, captured at request creation.
         preferred_delivery_date=preferred_delivery_date,
+        # #481: optional at creation. Blank stays NULL rather than an empty string, so the
+        # VENDOR_CONFIRMED auto-transition's "quote exists" test keeps meaning what it says.
+        vendor_quote_number=(
+            vendor_quote_number.strip() if vendor_quote_number and vendor_quote_number.strip() else None
+        ),
     )
     session.add(po)
     session.flush()
