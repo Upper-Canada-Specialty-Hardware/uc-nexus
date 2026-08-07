@@ -304,7 +304,11 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     # about a draft - creating, editing, resubmitting, deleting - is SIGNED_IN, because the body
     # decides it from whose draft it is (author, or a manager overriding), which no field-level
     # requirement can express.
-    "approveReceiveDraft": frozenset({ADMIN_ROLE, WAREHOUSE_MANAGER_ROLE}),
+    # SIGNED_IN because the requirement is not a property of the field alone since #499: a Warehouse
+    # Manager may approve any draft, and the PO creator who answered SHIP_OUT may approve that one
+    # draft. `_authorize_draft_approval` in schemas/warehouse.py is the gate, checked against the
+    # decision row rather than anything the client sends.
+    "approveReceiveDraft": SIGNED_IN,
     "assignInventoryLocation": SIGNED_IN,
     "assignOpeningItemLocation": SIGNED_IN,
     "cancelPullRequest": SIGNED_IN,

@@ -421,6 +421,14 @@ class ReceiveDraft:
     po_number: str | None
     project_id: strawberry.ID | None
     warehouse_id: strawberry.ID | None
+    # #499: what the PO's creator said to do with this delivery. SHIP_OUT means the approval belongs
+    # to the shipping request rather than the warehouse manager's queue. Null when nobody was asked
+    # (a stock PO) or when the draft predates the question being raised at count time.
+    keep_or_ship_decision: ReceiveDecisionChoice | None = None
+    # The question was raised and is still unanswered. A manager must still be able to approve one -
+    # a creator on holiday cannot be allowed to strand a counted truck - and approving it means
+    # keeping it, so the row says the answer is outstanding rather than hiding it.
+    decision_pending: bool = False
     created_by_user_id: str
     created_by: str
     reviewed_by: str | None
@@ -451,7 +459,12 @@ class ReceiveDecisionLine:
 
 @strawberry.type
 class ReceiveDecision:
-    """The keep-or-ship question a landed shipment raises for whoever ordered it."""
+    """The keep-or-ship question a landed shipment raises for whoever ordered it.
+
+    Raised when the count is submitted since #499, so exactly one of the two ids below is set: a
+    draft-stage question names the count, and gets its receive record stamped on when the warehouse
+    manager's approval books the receipt.
+    """
 
     id: strawberry.ID
     status: ReceiveDecisionStatus
@@ -459,9 +472,13 @@ class ReceiveDecision:
     po_id: strawberry.ID
     po_number: str | None
     project_id: strawberry.ID
-    receive_record_id: strawberry.ID
-    # Null while the approval is still queued on the GP outbox - GP has not numbered the receipt yet.
+    receive_record_id: strawberry.ID | None
+    receive_draft_id: strawberry.ID | None
+    # Null before the approval books the receipt, and null while one is queued on the GP outbox -
+    # either way GP has not numbered it yet.
     receipt_number: str | None
+    # At draft stage these are when the count was submitted and who counted it; once booked they are
+    # the receipt's. Same question, same card, whichever stage it is at.
     received_at: datetime
     received_by: str
     created_at: datetime
