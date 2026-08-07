@@ -1403,6 +1403,13 @@ def reopen_shop_assembly_request(
     # guards the PR is unworked (PENDING) and rolls the whole transaction back (nothing commits) if not.
     for opening in sar.openings:
         opening.pull_request_id = None
+        # Undo the per-leaf acceptance too (#495). Review is what mints the pull, so a reopen that
+        # left the leaves ACCEPTED would put the request back in the queue with nothing in it to
+        # decide - and the re-accept would refuse, saying every leaf had already been reviewed.
+        if opening.review_status == OpeningReviewStatus.ACCEPTED:
+            opening.review_status = OpeningReviewStatus.PENDING
+            opening.reviewed_at = None
+            opening.reviewed_by = None
     sar.status = ShopAssemblyRequestStatus.PENDING
     sar.approved_by = None
     sar.approved_at = None
