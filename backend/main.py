@@ -502,3 +502,25 @@ def seed_ship_ready_leaves(request: Request, project_id: str, count: int = 1, op
         return JSONResponse(status_code=400, content={"error": str(e), "code": e.code})
 
     return result
+
+
+@app.post("/testing/seed-project")
+def seed_project(request: Request, job_number: str, job_name: str = "Seeded test project"):
+    """Adopt a project without GP, so a relay-less environment is clickable at all (exploratory pass).
+
+    Projects normally only exist because `gp_job_sync` saw the job in GP, which means a preview
+    environment with no relay has zero projects and every module behind a project picker is a dead
+    end. Same double gate as the other `/testing/*` routes (#422)."""
+    from app.repositories import project_repository
+
+    refusal = require_testing_request(request)
+    if refusal is not None:
+        return refusal
+
+    try:
+        with SessionLocal() as session:
+            project = project_repository.adopt_gp_job(session, job_number=job_number, job_name=job_name)
+            session.commit()
+            return {"id": str(project.id), "project_id": project.project_id, "description": project.description}
+    except AppError as e:
+        return JSONResponse(status_code=400, content={"error": str(e), "code": e.code})
