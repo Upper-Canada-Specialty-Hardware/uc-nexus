@@ -5,13 +5,11 @@ from collections import defaultdict
 from datetime import datetime
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 
 from app.errors import NotFoundError, ValidationError
-from app.models.enums import AuditAction, AuditEntityType, OpeningItemState
+from app.models.enums import AuditAction, AuditEntityType
 from app.models.inventory import InventoryLocation as InventoryLocationModel
-from app.models.opening_item import OpeningItem as OpeningItemModel
-from app.models.project import Opening as OpeningModel
 from app.models.project import Project as ProjectModel
 from app.models.purchase_order import POLineItem as POLineItemModel
 from app.models.purchase_order import PurchaseOrder as POModel
@@ -265,124 +263,6 @@ def get_inventory_by_vendor(session: Session, project_id: uuid.UUID | None = Non
     return result
 
 
-def get_opening_items(session: Session, project_id: uuid.UUID | None = None) -> list[OpeningItemModel]:
-    """
-    Query all OpeningItem rows, optionally filtered by project_id.
-    Eagerly load installed_hardware relationship (OpeningItemHardware).
-    Sort by opening_number ASC.
-    """
-    stmt = (
-        select(OpeningItemModel)
-        .options(selectinload(OpeningItemModel.installed_hardware))
-        .order_by(OpeningItemModel.opening_number.asc())
-    )
-    if project_id is not None:
-        stmt = stmt.where(OpeningItemModel.project_id == project_id)
-    return list(session.scalars(stmt).unique().all())
-
-
-def get_opening_leaf_counts(session: Session, project_id: uuid.UUID | None = None) -> dict[str, int | None]:
-    """Map opening_number -> Opening.leaf_count (#311). This is the "N of M leaves shipped" denominator
-    M; a single query keeps the openingItems list resolver free of N+1s. project_id scopes to one
-    project; omit it for the global openingItems view (opening_number then keys across projects, which
-    is acceptable - the global view is not project-disambiguated)."""
-    stmt = select(OpeningModel.opening_number, OpeningModel.leaf_count)
-    if project_id is not None:
-        stmt = stmt.where(OpeningModel.project_id == project_id)
-    rows = session.execute(stmt).all()
-    return {opening_number: leaf_count for opening_number, leaf_count in rows}
-
-
-# Furthest-along ordering when a leaf has more than one OpeningItem (e.g. after a correction): the
-# most-advanced state wins. NOT_ASSEMBLED is the floor - a leaf the schedule expects but that has no
-# OpeningItem at all.
-_LEAF_STATUS_RANK = {"NOT_ASSEMBLED": 0, "IN_INVENTORY": 1, "SHIP_READY": 2, "SHIPPED_OUT": 3}
-
-
-def get_opening_leaf_status(session: Session, project_id: uuid.UUID | None = None) -> list[dict]:
-    """Per-opening door-leaf rollup (#313). One row per PAIR opening (leaf_count >= 2 - a single leaf
-    is just its own row, matching the phase-5 rollup convention); each row lists every leaf
-    1..leaf_count with its status. Status comes from OpeningItems (one grouped query, no N+1); a leaf
-    with no OpeningItem is NOT_ASSEMBLED. project_id scopes to one project (shipping); omitting it
-    spans all projects (global shop-assembly), so each row carries project identity to disambiguate
-    opening numbers that collide across projects."""
-    # Pairs only. leaf_count is the denominator M; a NULL leaf_count (legacy) fails `>= 2` and drops.
-    op_stmt = select(OpeningModel.project_id, OpeningModel.opening_number, OpeningModel.leaf_count).where(
-        OpeningModel.leaf_count >= 2
-    )
-    if project_id is not None:
-        op_stmt = op_stmt.where(OpeningModel.project_id == project_id)
-    openings = session.execute(op_stmt).all()
-    if not openings:
-        return []
-
-    # Furthest-along OpeningItem state per (project_id, opening_number, leaf). Scope to the pair
-    # openings found above so the global path (project_id=None) never scans the whole opening_items
-    # table - only rows for openings we actually roll up. `openings` is non-empty here (guarded above);
-    # the (project_id, opening_number, leaf) key lookup below filters the cross-product precisely.
-    pair_project_ids = {pid for pid, _, _ in openings}
-    pair_opening_numbers = {opening_number for _, opening_number, _ in openings}
-    oi_stmt = select(
-        OpeningItemModel.project_id,
-        OpeningItemModel.opening_number,
-        OpeningItemModel.leaf,
-        OpeningItemModel.state,
-    ).where(
-        OpeningItemModel.project_id.in_(pair_project_ids),
-        OpeningItemModel.opening_number.in_(pair_opening_numbers),
-    )
-    leaf_state: dict[tuple[uuid.UUID, str, int], str] = {}
-    for pid, opening_number, leaf, state in session.execute(oi_stmt).all():
-        if leaf is None:
-            continue
-        state_value = state.value if hasattr(state, "value") else str(state)
-        key = (pid, opening_number, leaf)
-        current = leaf_state.get(key)
-        if current is None or _LEAF_STATUS_RANK[state_value] > _LEAF_STATUS_RANK[current]:
-            leaf_state[key] = state_value
-
-    project_names = {
-        pid: (description or code)
-        for pid, description, code in session.execute(
-            select(ProjectModel.id, ProjectModel.description, ProjectModel.project_id).where(
-                ProjectModel.id.in_({pid for pid, _, _ in openings})
-            )
-        ).all()
-    }
-
-    rows = [
-        {
-            "project_id": pid,
-            "project_name": project_names.get(pid, ""),
-            "opening_number": opening_number,
-            "leaf_count": leaf_count,
-            "leaves": [
-                {"leaf": n, "status": leaf_state.get((pid, opening_number, n), "NOT_ASSEMBLED")}
-                for n in range(1, leaf_count + 1)
-            ],
-        }
-        for pid, opening_number, leaf_count in openings
-    ]
-    rows.sort(key=lambda r: (r["project_name"], r["opening_number"]))
-    return rows
-
-
-def get_opening_item_details(session: Session, oi_id: uuid.UUID) -> OpeningItemModel:
-    """
-    Single OpeningItem by id, eagerly load installed_hardware.
-    Raise NotFoundError if not found.
-    """
-    stmt = (
-        select(OpeningItemModel)
-        .options(selectinload(OpeningItemModel.installed_hardware))
-        .where(OpeningItemModel.id == oi_id)
-    )
-    oi = session.scalars(stmt).unique().first()
-    if oi is None:
-        raise NotFoundError(f"Opening item {oi_id} not found")
-    return oi
-
-
 def adjust_inventory_quantity(
     session: Session, inv_id: uuid.UUID, adjustment: int, reason: str, *, performed_by: str
 ) -> InventoryLocationModel:
@@ -609,29 +489,3 @@ def get_inventory_rows(
             }
         )
     return rows
-
-
-def get_unlocated_opening_items(session: Session, project_id: uuid.UUID | None = None):
-    """Assembled leaves sitting in inventory with no bin assigned (#498).
-
-    The other half of the put-away queue. Completion no longer records a location, so a finished
-    leaf arrives here and waits for the warehouse to say which warehouse and bin it went into -
-    exactly what received stock does in get_unlocated_inventory above.
-
-    Only IN_INVENTORY leaves qualify: one already pulled for shipping has left the rack, and asking
-    someone to put it away would be asking them to find something that is not there.
-    """
-    stmt = select(OpeningItemModel).where(
-        OpeningItemModel.state == OpeningItemState.IN_INVENTORY,
-        OpeningItemModel.aisle.is_(None),
-        OpeningItemModel.row.is_(None),
-        OpeningItemModel.bay.is_(None),
-    )
-    if project_id is not None:
-        stmt = stmt.where(OpeningItemModel.project_id == project_id)
-    stmt = stmt.order_by(
-        OpeningItemModel.assembly_completed_at.desc(),
-        OpeningItemModel.opening_number,
-        OpeningItemModel.leaf,
-    )
-    return list(session.scalars(stmt).all())

@@ -11,11 +11,6 @@ from .enums import ShipmentContainerType
 if TYPE_CHECKING:
     from .shipping import PackingSlip
 
-# A skid is loaded by hand and a stack taller than this is not safe to strap or to lift. It is a
-# physical limit on the object, not a policy, which is why it lives beside the model rather than in
-# a settings table somebody could raise without buying a bigger skid.
-MAX_LEAVES_PER_SKID = 30
-
 
 class ShipmentContainer(Base):
     """A physical thing the warehouse loads: a skid, a door cart, a box, an envelope, a bundle (#451).

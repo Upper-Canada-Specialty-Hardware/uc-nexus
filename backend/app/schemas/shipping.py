@@ -7,22 +7,21 @@ import strawberry
 from app.auth import current_user, resolve_display_name
 from app.database import SessionLocal
 from app.repositories import (
+    request_composer,
     shipment_containers,
     shipment_method_repository,
-    shipping_coverage,
     shipping_repository,
     shipping_requests,
 )
 
 from .converters import (
     container_to_type,
-    opening_item_to_type,
     packing_slip_to_type,
     shipment_return_to_type,
     shipping_out_request_to_type,
 )
-from .enums import LeafStatus, ShippingOutRequestStatus
 from .enums import ShipmentContainerType as ShipmentContainerTypeEnum
+from .enums import ShippingOutRequestStatus
 from .inputs import (
     ConfirmShipmentFromContainersInput,
     ConfirmShipmentInput,
@@ -35,16 +34,14 @@ from .inputs import (
 )
 from .types import (
     PackingSlip,
+    RequestCoverageLine,
     ReturnableLine,
     ShipmentContainer,
     ShipmentMethod,
     ShipmentReturn,
-    ShippingCoverageLeaf,
-    ShippingCoverageLine,
     ShippingOutRequest,
     ShipReadyItems,
     ShipReadyLooseItem,
-    StagedLeaf,
     StagedLooseItem,
     StagingPool,
 )
@@ -53,10 +50,7 @@ from .types import (
 def _container_items_input(items) -> list[dict]:
     return [
         {
-            "item_type": i.item_type.value,
-            "opening_item_id": str(i.opening_item_id) if i.opening_item_id else None,
             "opening_number": i.opening_number,
-            "leaf": i.leaf,
             "hardware_category": i.hardware_category,
             "product_code": i.product_code,
             "quantity": i.quantity,
@@ -92,7 +86,6 @@ class ShippingQueries:
         with SessionLocal() as session:
             data = shipping_repository.get_ship_ready_items(session, uuid.UUID(str(project_id)) if project_id else None)
             return ShipReadyItems(
-                opening_items=[opening_item_to_type(oi) for oi in data["opening_items"]],
                 loose_items=[
                     ShipReadyLooseItem(
                         opening_number=li["opening_number"],
@@ -128,43 +121,32 @@ class ShippingQueries:
             return [shipping_out_request_to_type(r) for r in reqs]
 
     @strawberry.field
-    def shipping_coverage(
+    def request_coverage(
         self,
         info: strawberry.Info,
         project_id: strawberry.ID,
         opening_numbers: list[str],
-    ) -> list[ShippingCoverageLeaf]:
-        """What the selected openings still owe the site, leaf by leaf (#451).
+    ) -> list[RequestCoverageLine]:
+        """What the selected openings still have coming: `max(owed - sent - claimed, 0)` per product.
 
-        The shipping-out builder asks this the moment openings are picked, so it can tell the user
-        what belongs with them beyond the assembled leaves themselves: the site hardware that never
-        goes near the bench, and the shop hardware assembly had to skip. See
-        `app.repositories.shipping_coverage` for how each number is derived.
+        The one answer both composers read - shop assembly and shipping out ask the same question at
+        composition time. See `app.repositories.request_composer` for how each term is derived.
         """
         with SessionLocal() as session:
-            leaves = shipping_coverage.get_shipping_coverage(session, uuid.UUID(str(project_id)), opening_numbers)
+            rows = request_composer.get_request_coverage(session, uuid.UUID(str(project_id)), opening_numbers)
             return [
-                ShippingCoverageLeaf(
-                    opening_number=leaf["opening_number"],
-                    leaf=leaf["leaf"],
-                    status=LeafStatus(leaf["status"]),
-                    opening_item_id=(strawberry.ID(str(leaf["opening_item_id"])) if leaf["opening_item_id"] else None),
-                    claimed_by_request_number=leaf["claimed_by_request_number"],
-                    lines=[
-                        ShippingCoverageLine(
-                            hardware_category=line["hardware_category"],
-                            product_code=line["product_code"],
-                            classification=line["classification"],
-                            owed_quantity=line["owed_quantity"],
-                            installed_quantity=line["installed_quantity"],
-                            spoken_for_quantity=line["spoken_for_quantity"],
-                            suggested_quantity=line["suggested_quantity"],
-                            on_order_quantity=line["on_order_quantity"],
-                        )
-                        for line in leaf["lines"]
-                    ],
+                RequestCoverageLine(
+                    opening_number=row["opening_number"],
+                    hardware_category=row["hardware_category"],
+                    product_code=row["product_code"],
+                    classification=row["classification"],
+                    owed_quantity=row["owed_quantity"],
+                    sent_quantity=row["sent_quantity"],
+                    claimed_quantity=row["claimed_quantity"],
+                    suggested_quantity=row["suggested_quantity"],
+                    on_order_quantity=row["on_order_quantity"],
                 )
-                for leaf in leaves
+                for row in rows
             ]
 
     @strawberry.field
@@ -172,8 +154,8 @@ class ShippingQueries:
         """Everything staged for shipping and where it has been put (#451).
 
         One query for both halves of the workspace - what is still loose on the floor, and what is
-        already in a container - because two would be able to disagree about whether a leaf has been
-        loaded, and that disagreement is exactly the mistake containers exist to prevent.
+        already in a container - because two would be able to disagree about whether something has
+        been loaded, and that disagreement is exactly the mistake containers exist to prevent.
         """
         pid = uuid.UUID(str(project_id))
         with SessionLocal() as session:
@@ -183,26 +165,7 @@ class ShippingQueries:
             ready = shipping_repository.get_ship_ready_items(session, pid)
             containers = shipment_containers.get_containers(session, pid, open_only=True)
             pool = shipment_containers.build_staged_pool(session, pid, ready=ready, containers=containers)
-            by_id = {oi.id: oi for oi in ready["opening_items"]}
             return StagingPool(
-                leaves=[
-                    StagedLeaf(
-                        opening_item_id=strawberry.ID(str(oi_id)),
-                        opening_number=by_id[oi_id].opening_number,
-                        leaf=by_id[oi_id].leaf,
-                        building=by_id[oi_id].building,
-                        floor=by_id[oi_id].floor,
-                        location=by_id[oi_id].location,
-                        placed_in_container_id=strawberry.ID(str(holder)) if holder else None,
-                    )
-                    for oi_id, holder in pool["leaves"].items()
-                    if oi_id in by_id
-                ],
-                # The opening comes off the pool key rather than being looked up by product. The
-                # workspace row IS the (opening, category, product) bucket the confirm checks
-                # availability on, so a product staged for two openings is two rows - one wearing
-                # an arbitrary opening number would be refused at confirm, or would book units
-                # against a door they were never pulled for.
                 loose_items=[
                     StagedLooseItem(
                         opening_number=key[0],
@@ -251,10 +214,7 @@ def _request_items(items: list[ShippingOutPRDraftItemInput]) -> list[dict]:
     """Request lines off a mutation input, keyed the way the repository builds them."""
     return [
         {
-            "item_type": item.item_type.value,
             "opening_number": item.opening_number,
-            "opening_item_id": str(item.opening_item_id) if item.opening_item_id else None,
-            "leaf": item.leaf,
             "hardware_category": item.hardware_category,
             "product_code": item.product_code,
             "requested_quantity": item.requested_quantity,
@@ -287,7 +247,6 @@ class ShippingMutations:
                 uuid.UUID(str(input.project_id)),
                 [{"request_number": input.request_number, "items": _request_items(input.items)}],
                 created_by=actor,
-                acknowledge_incomplete_leaves=input.acknowledge_incomplete_leaves,
             )
             session.commit()
             refreshed = shipping_repository.get_shipping_out_request(session, created[0].id)
@@ -311,7 +270,6 @@ class ShippingMutations:
                 session,
                 uuid.UUID(str(input.id)),
                 _request_items(input.items),
-                acknowledge_incomplete_leaves=input.acknowledge_incomplete_leaves,
             )
             session.commit()
             refreshed = shipping_repository.get_shipping_out_request(session, req.id)
@@ -363,8 +321,7 @@ class ShippingMutations:
         """Rewrite a container's contents to exactly the placements sent, in that order (#451).
 
         The order IS the stacking order, so a drag-and-drop reorder is the same call as a placement.
-        Gated on what is genuinely staged and unplaced, on one leaf living in one container, and on
-        a skid's thirty-leaf ceiling."""
+        Gated on what is genuinely staged and unplaced."""
         with SessionLocal() as session:
             updated = shipment_containers.set_container_items(
                 session,
@@ -501,24 +458,20 @@ class ShippingMutations:
         journey, not the hardware's."""
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
-        from app.models.enums import PullRequestItemType
 
         project_id = uuid.UUID(str(input.project_id))
-        items_data = []
-        for item in input.items:
-            d = {
-                "item_type": PullRequestItemType(item.item_type.value),
+        items_data = [
+            {
+                "opening_number": item.opening_number,
+                "hardware_category": item.hardware_category,
+                "product_code": item.product_code,
                 "quantity": item.quantity,
+                "building": item.building,
+                "floor": item.floor,
+                "location": item.location,
             }
-            if item.opening_item_id is not None:
-                d["opening_item_id"] = uuid.UUID(str(item.opening_item_id))
-            if item.opening_number is not None:
-                d["opening_number"] = item.opening_number
-            if item.product_code is not None:
-                d["product_code"] = item.product_code
-            if item.hardware_category is not None:
-                d["hardware_category"] = item.hardware_category
-            items_data.append(d)
+            for item in input.items
+        ]
 
         with SessionLocal() as session:
             ps = shipping_repository.confirm_shipment(

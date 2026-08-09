@@ -12,7 +12,6 @@ from .common import (
 from .deficiency import (
     get_deficiency_reviews,
     get_deficient_items,
-    report_deficiency_at_assembly,
     report_inventory_deficiency,
     report_stock_deficiency,
     resolve_deficiency,
@@ -50,7 +49,6 @@ __all__ = [
     "move_stock_location",
     "receive_into_stock",
     "reclassify_stock_item",
-    "report_deficiency_at_assembly",
     "report_inventory_deficiency",
     "report_stock_deficiency",
     "resolve_deficiency",

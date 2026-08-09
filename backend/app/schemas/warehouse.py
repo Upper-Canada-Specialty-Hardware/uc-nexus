@@ -23,22 +23,17 @@ from app.services.relay_gateway import gateway as relay_gateway
 from .converters import (
     inventory_location_to_type,
     notification_to_type,
-    opening_item_hardware_to_type,
-    opening_item_to_type,
     pick_sheet_to_type,
     po_to_type,
-    pull_request_item_to_type,
     pull_request_to_type,
     receive_decision_to_type,
     receive_draft_to_type,
     receive_record_to_type,
-    shop_assembly_opening_to_type,
     stock_item_to_type,
     warehouse_to_type,
 )
 from .enums import (
     AuditEntityType,
-    LeafStatus,
     PickOutcome,
     PullRequestSource,
     PullRequestStatus,
@@ -53,7 +48,6 @@ from .inputs import (
     OverrideInventoryQuantityInput,
     PickLineInput,
     RejectReceiveDraftInput,
-    StagePullOpeningsInput,
     UpdateReceiveDraftInput,
     UpdateWarehouseInput,
 )
@@ -75,15 +69,10 @@ from .types import (
     LocationMergeResult,
     LocationUtilizationEntry,
     LocationVariant,
-    OpeningItem,
-    OpeningItemDetail,
-    OpeningLeafState,
-    OpeningLeafStatus,
     PickSheet,
     ProductCodeNode,
     ProjectProgressByProduct,
     PullRequest,
-    PullRequestItem,
     PurchaseOrder,
     ReceiveDecision,
     ReceiveDraft,
@@ -92,8 +81,6 @@ from .types import (
     ReceivingHistoryPO,
     RecentReceiveRecord,
     RestockedLine,
-    ShopAssemblyOpening,
-    StagePullOpeningsResult,
     VendorInventoryNode,
     Warehouse,
     WarehouseDashboard,
@@ -586,19 +573,6 @@ class WarehouseQueries:
             ]
 
     @strawberry.field
-    def unlocated_opening_items(
-        self, info: strawberry.Info, project_id: strawberry.ID | None = None
-    ) -> list[OpeningItem]:
-        """Assembled leaves waiting to be put away (#498) - the other half of the put-away queue."""
-        with SessionLocal() as session:
-            return [
-                opening_item_to_type(oi)
-                for oi in warehouse_repository.get_unlocated_opening_items(
-                    session, uuid.UUID(str(project_id)) if project_id else None
-                )
-            ]
-
-    @strawberry.field
     def unlocated_inventory(
         self, info: strawberry.Info, project_id: strawberry.ID | None = None
     ) -> list[InventoryItemDetail]:
@@ -659,71 +633,6 @@ class WarehouseQueries:
             ]
 
     @strawberry.field
-    def opening_items(self, info: strawberry.Info, project_id: strawberry.ID | None = None) -> list[OpeningItem]:
-        with SessionLocal() as session:
-            pid = uuid.UUID(str(project_id)) if project_id else None
-            ois = warehouse_repository.get_opening_items(session, pid)
-            # leaf_count (#311) is the "N of M leaves shipped" denominator; one grouped query,
-            # attached per item so consumers can roll up by opening without an N+1. Computed for the
-            # global view too (pid=None) so leafCount isn't null everywhere when project_id is omitted.
-            leaf_counts = warehouse_repository.get_opening_leaf_counts(session, pid)
-            # Shipping deficiency flag (#341): one grouped scalar aggregate for the whole list, the
-            # same shape as leaf_counts above - a per-row lookup here would be an N+1 over every
-            # assembled leaf in the project.
-            from app.repositories import shop_assembly_repository
-
-            shortfalls = shop_assembly_repository.get_leaf_shortfalls(session, [oi.id for oi in ois])
-            return [
-                opening_item_to_type(
-                    oi,
-                    leaf_count=leaf_counts.get(oi.opening_number),
-                    awaiting_replacement_quantity=(
-                        shortfalls[oi.id].awaiting_replacement if oi.id in shortfalls else 0
-                    ),
-                    never_pulled_quantity=(shortfalls[oi.id].never_pulled if oi.id in shortfalls else 0),
-                )
-                for oi in ois
-            ]
-
-    @strawberry.field
-    def opening_leaf_status(
-        self, info: strawberry.Info, project_id: strawberry.ID | None = None
-    ) -> list[OpeningLeafStatus]:
-        """Per-opening door-leaf rollup (#313). project_id scopes to one project (shipping view);
-        omit it for the global shop-assembly view (rows carry project identity to group by)."""
-        with SessionLocal() as session:
-            pid = uuid.UUID(str(project_id)) if project_id else None
-            rows = warehouse_repository.get_opening_leaf_status(session, pid)
-            return [
-                OpeningLeafStatus(
-                    project_id=strawberry.ID(str(r["project_id"])),
-                    project_name=r["project_name"],
-                    opening_number=r["opening_number"],
-                    leaf_count=r["leaf_count"],
-                    leaves=[OpeningLeafState(leaf=s["leaf"], status=LeafStatus(s["status"])) for s in r["leaves"]],
-                )
-                for r in rows
-            ]
-
-    @strawberry.field
-    def opening_item_details(self, info: strawberry.Info, id: strawberry.ID) -> OpeningItemDetail:
-        with SessionLocal() as session:
-            from app.repositories import shop_assembly_repository
-
-            oi = warehouse_repository.get_opening_item_details(session, uuid.UUID(str(id)))
-            shortfalls = shop_assembly_repository.get_leaf_shortfalls(session, [oi.id])
-            shortfall = shortfalls.get(oi.id)
-            opening_item = opening_item_to_type(
-                oi,
-                awaiting_replacement_quantity=shortfall.awaiting_replacement if shortfall else 0,
-                never_pulled_quantity=shortfall.never_pulled if shortfall else 0,
-            )
-            return OpeningItemDetail(
-                opening_item=opening_item,
-                installed_hardware=[opening_item_hardware_to_type(h) for h in oi.installed_hardware],
-            )
-
-    @strawberry.field
     def pull_requests(
         self,
         info: strawberry.Info,
@@ -735,18 +644,15 @@ class WarehouseQueries:
             prs = warehouse_repository.get_pull_requests(
                 session, uuid.UUID(str(project_id)) if project_id else None, source, status
             )
-            # Two grouped aggregates for the whole page, never one query per row (#343, #367 /
-            # CLAUDE.md perf rules): the queue renders a staging chip on every shop-assembly row and
-            # a phase cell on every row. The partial-pick read is narrowed to un-picked pulls, which
+            # One grouped read for the whole page, never one query per row (#367 / CLAUDE.md perf
+            # rules): the queue draws a phase cell on every row. Narrowed to un-picked pulls, which
             # are the only ones it means anything for.
-            staging = warehouse_repository.get_pull_staging_summaries(session, [pr.id for pr in prs])
             partial = warehouse_repository.get_partially_picked_pull_ids(
                 session, [pr.id for pr in prs if pr.picked_at is None]
             )
             return [
                 pull_request_to_type(
                     pr,
-                    staging.get(pr.id),
                     partially_picked=(pr.id in partial) if pr.picked_at is None else None,
                 )
                 for pr in prs
@@ -756,13 +662,12 @@ class WarehouseQueries:
     def pull_request_details(self, info: strawberry.Info, id: strawberry.ID) -> PullRequest:
         with SessionLocal() as session:
             pr = warehouse_repository.get_pull_request_details(session, uuid.UUID(str(id)))
-            staging = warehouse_repository.get_pull_staging_summaries(session, [pr.id])
             partial = (
                 pr.id in warehouse_repository.get_partially_picked_pull_ids(session, [pr.id])
                 if pr.picked_at is None
                 else None
             )
-            return pull_request_to_type(pr, staging.get(pr.id), partially_picked=partial)
+            return pull_request_to_type(pr, partially_picked=partial)
 
     @strawberry.field
     def pull_pick_sheet(self, info: strawberry.Info, pull_request_id: strawberry.ID) -> PickSheet:
@@ -777,26 +682,12 @@ class WarehouseQueries:
         with SessionLocal() as session:
             sheet = warehouse_repository.get_pick_sheet(session, uuid.UUID(str(pull_request_id)))
             pr = sheet.pull_request
-            staging = warehouse_repository.get_pull_staging_summaries(session, [pr.id])
             partial = (
                 pr.id in warehouse_repository.get_partially_picked_pull_ids(session, [pr.id])
                 if pr.picked_at is None
                 else None
             )
-            return pick_sheet_to_type(sheet, staging.get(pr.id), partially_picked=partial)
-
-    @strawberry.field
-    def pull_request_openings(self, info: strawberry.Info, pull_request_id: strawberry.ID) -> list[ShopAssemblyOpening]:
-        """The shop-assembly openings a pull covers, with their hardware lines, for the warehouse's
-        per-opening staging checklist (#343).
-
-        Deliberately a separate query rather than a field on `PullRequest`: a resolver field would
-        run once per row of the pull-request queue, and the queue never needs it - only the detail
-        view does. Returns an empty list for a shipping-out pull, a PR-REPL replacement pull, or a
-        legacy pull, none of which have openings. Open to any signed-in user."""
-        with SessionLocal() as session:
-            openings = warehouse_repository.get_pull_request_openings(session, uuid.UUID(str(pull_request_id)))
-            return [shop_assembly_opening_to_type(o) for o in openings]
+            return pick_sheet_to_type(sheet, partially_picked=partial)
 
     @strawberry.field
     def back_ordered_items(
@@ -907,7 +798,6 @@ class WarehouseQueries:
                     )
                     for item in data["inventory_items"]
                 ],
-                opening_items=[opening_item_to_type(oi) for oi in data["opening_items"]],
                 stock_items=[stock_item_to_type(si) for si in data["stock_items"]],
             )
 
@@ -1306,8 +1196,7 @@ class WarehouseMutations:
             pr = warehouse_repository.start_pull_request_pick(session, uuid.UUID(str(id)), actor)
             session.commit()
             pr = warehouse_repository.get_pull_request_details(session, pr.id)
-            staging = warehouse_repository.get_pull_staging_summaries(session, [pr.id])
-            return pull_request_to_type(pr, staging.get(pr.id), partially_picked=False)
+            return pull_request_to_type(pr, partially_picked=False)
 
     @strawberry.mutation
     def save_pick_draft(
@@ -1339,9 +1228,8 @@ class WarehouseMutations:
             # whole sheet read over Railway's network hop would double its cost for nothing. Built
             # before the commit, because expire_on_commit would leave the ORM objects detached.
             pr_id = sheet.pull_request.id
-            staging = warehouse_repository.get_pull_staging_summaries(session, [pr_id])
             partial = pr_id in warehouse_repository.get_partially_picked_pull_ids(session, [pr_id])
-            result = pick_sheet_to_type(sheet, staging.get(pr_id), partially_picked=partial)
+            result = pick_sheet_to_type(sheet, partially_picked=partial)
             session.commit()
             return result
 
@@ -1394,42 +1282,18 @@ class WarehouseMutations:
             session.commit()
 
             pr = warehouse_repository.get_pull_request_details(session, uuid.UUID(str(pull_request_id)))
-            staging = warehouse_repository.get_pull_staging_summaries(session, [pr.id])
             partial = (
                 pr.id in warehouse_repository.get_partially_picked_pull_ids(session, [pr.id])
                 if pr.picked_at is None
                 else None
             )
             return ConfirmPickResult(
-                pull_request=pull_request_to_type(pr, staging.get(pr.id), partially_picked=partial),
+                pull_request=pull_request_to_type(pr, partially_picked=partial),
                 outcome=outcome,
                 notification=notification,
                 shortfalls=shortfalls,
                 applied_quantity=applied_quantity,
             )
-
-    @strawberry.mutation
-    def set_pull_item_fetched(
-        self,
-        info: strawberry.Info,
-        item_id: strawberry.ID,
-        fetched: bool,
-    ) -> PullRequestItem:
-        """Tick (or untick) one assembled leaf off a shipping pull's fetch list (#367).
-
-        Nothing moves in inventory - the leaf's hardware left it at assembly. The check-off is
-        persisted so it survives a reload or a shift change, and unticking is supported because a
-        picker who ticked the wrong leaf must be able to say so.
-
-        Open to any signed-in user - it attributes a user action, and since #427 it attributes it to
-        the Clerk-authenticated caller: the tick is a claim that a specific person has the leaf."""
-        auth = current_user(info)
-        actor = resolve_display_name(auth["user_id"])
-        with SessionLocal() as session:
-            item = warehouse_repository.set_pull_item_fetched(session, uuid.UUID(str(item_id)), fetched, actor)
-            session.commit()
-            session.refresh(item)
-            return pull_request_item_to_type(item)
 
     @strawberry.mutation
     def complete_pull_request(self, info: strawberry.Info, id: strawberry.ID) -> PullRequest:
@@ -1447,41 +1311,7 @@ class WarehouseMutations:
             pr = warehouse_repository.complete_pull_request(session, uuid.UUID(str(id)), completed_by=actor)
             session.commit()
             pr = warehouse_repository.get_pull_request_details(session, pr.id)
-            staging = warehouse_repository.get_pull_staging_summaries(session, [pr.id])
-            return pull_request_to_type(pr, staging.get(pr.id), _partially_picked(session, pr))
-
-    @strawberry.mutation
-    def stage_pull_openings(self, info: strawberry.Info, input: StagePullOpeningsInput) -> StagePullOpeningsResult:
-        """Confirm that the carts for these openings of an approved shop-assembly pull are built (#343).
-
-        Each confirmed opening flips to PULLED on its own and becomes assignable and workable
-        immediately, so the assignment board fills as the warehouse picks rather than all at once at
-        the end. Nothing moves in inventory: the FIFO deduction and the source request's reservation
-        were both spent at approval, and staging is progress tracking. Staging the last opening
-        completes the pull through the ordinary completion path, so its notification and any
-        replacement-arrival application still happen exactly once.
-
-        Open to any signed-in user - it makes hardware workable, so it must not be reachable
-        anonymously. Each opening is stamped with the Clerk-authenticated caller (#427)."""
-        auth = current_user(info)
-        actor = resolve_display_name(auth["user_id"])
-        with SessionLocal() as session:
-            result = warehouse_repository.stage_pull_openings(
-                session,
-                uuid.UUID(str(input.pull_request_id)),
-                [uuid.UUID(str(oid)) for oid in input.opening_ids],
-                actor,
-            )
-            session.commit()
-            pr = warehouse_repository.get_pull_request_details(session, result.pull_request.id)
-            staging = warehouse_repository.get_pull_staging_summaries(session, [pr.id])
-            openings = warehouse_repository.get_pull_request_openings(session, pr.id)
-            return StagePullOpeningsResult(
-                pull_request=pull_request_to_type(pr, staging.get(pr.id), _partially_picked(session, pr)),
-                openings=[shop_assembly_opening_to_type(o) for o in openings],
-                newly_staged_opening_ids=[strawberry.ID(str(oid)) for oid in result.newly_staged_ids],
-                completed=result.completed,
-            )
+            return pull_request_to_type(pr, _partially_picked(session, pr))
 
     @strawberry.mutation
     def cancel_pull_request(self, info: strawberry.Info, input: CancelPullRequestInput) -> CancelPullRequestResult:
@@ -1656,76 +1486,6 @@ class WarehouseMutations:
             return [inventory_location_to_type(original), inventory_location_to_type(remainder)]
 
     @strawberry.mutation
-    def move_opening_item_location(
-        self,
-        info: strawberry.Info,
-        opening_item_id: strawberry.ID,
-        aisle: str,
-        row: str,
-        bay: str,
-        warehouse_id: strawberry.ID | None = None,
-    ) -> OpeningItem:
-        """Relocate an assembled leaf, writing a MOVE audit row naming the caller (#427)."""
-        auth = current_user(info)
-        actor = resolve_display_name(auth["user_id"])
-        with SessionLocal() as session:
-            result = warehouse_repository.move_opening_item_location(
-                session,
-                uuid.UUID(str(opening_item_id)),
-                aisle,
-                row,
-                bay,
-                warehouse_id=uuid.UUID(str(warehouse_id)) if warehouse_id else None,
-                performed_by=actor,
-            )
-            session.commit()
-            session.refresh(result)
-            return opening_item_to_type(result)
-
-    @strawberry.mutation
-    def mark_opening_item_unlocated(self, info: strawberry.Info, opening_item_id: strawberry.ID) -> OpeningItem:
-        """Clear an assembled leaf's location, writing an UNLOCATE audit row naming the caller (#427)."""
-        auth = current_user(info)
-        actor = resolve_display_name(auth["user_id"])
-        with SessionLocal() as session:
-            result = warehouse_repository.mark_opening_item_unlocated(
-                session, uuid.UUID(str(opening_item_id)), performed_by=actor
-            )
-            session.commit()
-            session.refresh(result)
-            return opening_item_to_type(result)
-
-    @strawberry.mutation
-    def assign_opening_item_location(
-        self,
-        info: strawberry.Info,
-        opening_item_id: strawberry.ID,
-        aisle: str,
-        row: str,
-        bay: str,
-        warehouse_id: strawberry.ID | None = None,
-    ) -> OpeningItem:
-        """Put an assembled leaf away, writing a PUT_AWAY audit row naming the caller (#427).
-
-        #498: warehouse_id is part of the assignment. Omitting it moves the bin within the leaf's
-        current warehouse, which is what the admin correction path wants."""
-        auth = current_user(info)
-        actor = resolve_display_name(auth["user_id"])
-        with SessionLocal() as session:
-            result = warehouse_repository.assign_opening_item_location(
-                session,
-                uuid.UUID(str(opening_item_id)),
-                aisle,
-                row,
-                bay,
-                performed_by=actor,
-                warehouse_id=uuid.UUID(str(warehouse_id)) if warehouse_id else None,
-            )
-            session.commit()
-            session.refresh(result)
-            return opening_item_to_type(result)
-
-    @strawberry.mutation
     def merge_locations(
         self,
         info: strawberry.Info,
@@ -1756,7 +1516,6 @@ class WarehouseMutations:
             session.commit()
             return LocationMergeResult(
                 inventory_locations=counts["inventory_locations"],
-                opening_items=counts["opening_items"],
                 stock_items=counts["stock_items"],
             )
 

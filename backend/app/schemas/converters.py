@@ -6,13 +6,12 @@ performance rules in CLAUDE.md before adding a field that walks a new relationsh
 
 import strawberry
 
+from app.models.enums import ShopAssemblyRequestStatus as ShopAssemblyRequestStatusDB
 from app.models.project import Project as ProjectModel
 from app.repositories import project_repository, shipping_repository
 
-from .enums import GpOutboxStatus, PipelineStage
+from .enums import GpOutboxStatus, RequestStage
 from .types import (
-    AssemblyPipeline,
-    AssemblyPipelineSummary,
     BuyerAssignment,
     BuyerAssignmentProject,
     ClerkUser,
@@ -34,16 +33,12 @@ from .types import (
     InventoryLocation,
     Notification,
     Opening,
-    OpeningItem,
-    OpeningItemHardware,
     PackingSlip,
     PackingSlipItem,
     PickSheet,
-    PickSheetFetchItem,
-    PickSheetLeaf,
     PickSheetLocation,
+    PickSheetOpening,
     PickSheetSection,
-    PipelineOpening,
     PODocumentData,
     PODocumentInfo,
     PODocumentSettings,
@@ -62,16 +57,14 @@ from .types import (
     ReceiveLineItem,
     ReceiveRecord,
     RelayInstallInfo,
-    ReplacementWorkItem,
     ShipmentContainer,
     ShipmentContainerItem,
     ShipmentReturn,
     ShipmentReturnItem,
     ShippingOutRequest,
     ShippingOutRequestItem,
-    ShopAssemblyOpening,
-    ShopAssemblyOpeningItem,
     ShopAssemblyRequest,
+    ShopAssemblyRequestItem,
     StockItem,
     Warehouse,
 )
@@ -585,199 +578,25 @@ def inventory_location_to_type(il) -> InventoryLocation:
     )
 
 
-def opening_item_hardware_to_type(oih) -> OpeningItemHardware:
-    return OpeningItemHardware(
-        id=strawberry.ID(str(oih.id)),
-        opening_item_id=strawberry.ID(str(oih.opening_item_id)),
-        product_code=oih.product_code,
-        hardware_category=oih.hardware_category,
-        quantity=oih.quantity,
-    )
-
-
-def opening_item_to_type(
-    oi,
-    *,
-    leaf_count: int | None = None,
-    awaiting_replacement_quantity: int | None = None,
-    never_pulled_quantity: int | None = None,
-) -> OpeningItem:
-    return OpeningItem(
-        id=strawberry.ID(str(oi.id)),
-        project_id=strawberry.ID(str(oi.project_id)),
-        opening_id=strawberry.ID(str(oi.opening_id)),
-        warehouse_id=strawberry.ID(str(oi.warehouse_id)) if getattr(oi, "warehouse_id", None) else None,
-        opening_number=oi.opening_number,
-        building=oi.building,
-        floor=oi.floor,
-        location=oi.location,
-        leaf=oi.leaf,
-        leaf_count=leaf_count,
-        quantity=oi.quantity,
-        assembly_completed_at=oi.assembly_completed_at,
-        state=oi.state,
-        aisle=oi.aisle,
-        row=oi.row,
-        bay=oi.bay,
-        created_at=oi.created_at,
-        updated_at=oi.updated_at,
-        installed_hardware=[opening_item_hardware_to_type(h) for h in oi.installed_hardware],
-        # Computed by the caller from one grouped aggregate over the whole list (#341), never
-        # per-row here - this converter runs once per assembled leaf in a project.
-        awaiting_replacement_quantity=awaiting_replacement_quantity,
-        never_pulled_quantity=never_pulled_quantity,
-    )
-
-
-def shop_assembly_opening_item_to_type(item) -> ShopAssemblyOpeningItem:
-    return ShopAssemblyOpeningItem(
+def shop_assembly_request_item_to_type(item) -> ShopAssemblyRequestItem:
+    return ShopAssemblyRequestItem(
         id=strawberry.ID(str(item.id)),
-        shop_assembly_opening_id=strawberry.ID(str(item.shop_assembly_opening_id)),
+        shop_assembly_request_id=strawberry.ID(str(item.shop_assembly_request_id)),
+        opening_number=item.opening_number,
         hardware_category=item.hardware_category,
         product_code=item.product_code,
         quantity=item.quantity,
         allocated_quantity=item.allocated_quantity,
-        # Plain columns on the row the caller already loaded (#340) - reading them triggers no load.
-        installed_quantity=item.installed_quantity,
-        deficient_quantity=item.deficient_quantity,
-        replacement_pending_quantity=item.replacement_pending_quantity,
     )
 
 
-def replacement_work_item_to_type(row) -> ReplacementWorkItem:
-    """A repository ReplacementWorkItem dataclass -> the GraphQL type (#341). The dataclass is
-    already flat, so nothing here can trigger a load."""
-    return ReplacementWorkItem(
-        shop_assembly_opening_item_id=strawberry.ID(str(row.shop_assembly_opening_item_id)),
-        shop_assembly_opening_id=strawberry.ID(str(row.shop_assembly_opening_id)),
-        project_id=strawberry.ID(str(row.project_id)),
-        opening_number=row.opening_number,
-        leaf=row.leaf,
-        building=row.building,
-        floor=row.floor,
-        hardware_category=row.hardware_category,
-        product_code=row.product_code,
-        pending_quantity=row.pending_quantity,
-        assigned_to_user_id=row.assigned_to_user_id,
-        assigned_to=row.assigned_to,
-        opening_item_id=(strawberry.ID(str(row.opening_item_id)) if row.opening_item_id else None),
-        opening_item_state=row.opening_item_state,
-    )
+def shop_assembly_request_to_type(sar, *, stage: str | None = None) -> ShopAssemblyRequest:
+    """Model -> type. `stage` is resolved by the *caller* in one query for the whole list.
 
-
-def shop_assembly_opening_to_type(opening) -> ShopAssemblyOpening:
-    return ShopAssemblyOpening(
-        id=strawberry.ID(str(opening.id)),
-        shop_assembly_request_id=(
-            strawberry.ID(str(opening.shop_assembly_request_id)) if opening.shop_assembly_request_id else None
-        ),
-        pull_request_id=(strawberry.ID(str(opening.pull_request_id)) if opening.pull_request_id else None),
-        opening_id=strawberry.ID(str(opening.opening_id)),
-        pull_status=opening.pull_status,
-        assigned_to_user_id=opening.assigned_to_user_id,
-        assigned_to=opening.assigned_to,
-        assembly_status=opening.assembly_status,
-        completed_at=opening.completed_at,
-        items=[shop_assembly_opening_item_to_type(i) for i in opening.items],
-        leaf=opening.leaf,
-        opening_number=opening.opening_number,
-        building=opening.building,
-        floor=opening.floor,
-        staged_at=opening.staged_at,
-        staged_by=opening.staged_by,
-    )
-
-
-def assembly_pipeline_summary_to_type(row) -> AssemblyPipelineSummary:
-    """A repository AssemblyPipelineSummary dataclass -> the GraphQL type (#344).
-
-    The dataclass is flat scalars the repository computed with grouped aggregates, so there is
-    nothing here that could trigger a load - which is the whole point of the resolver handing this
-    converter finished counts rather than an ORM row to walk.
+    Passed in rather than derived here for the same reason `pull_request_to_type` takes its
+    staging counts: a converter that queries is an N+1 waiting to happen on a list page
+    (CLAUDE.md perf rules).
     """
-    return AssemblyPipelineSummary(
-        request_id=strawberry.ID(str(row.request_id)),
-        request_number=row.request_number,
-        project_id=strawberry.ID(str(row.project_id)),
-        project_code=row.project_code,
-        project_name=row.project_name,
-        request_status=row.request_status,
-        created_by=row.created_by,
-        created_at=row.created_at,
-        accepted_by=row.accepted_by,
-        accepted_at=row.accepted_at,
-        rejected_by=row.rejected_by,
-        rejected_at=row.rejected_at,
-        integrity_note=row.integrity_note,
-        pull_request_id=(strawberry.ID(str(row.pull_request_id)) if row.pull_request_id else None),
-        pull_request_status=row.pull_request_status,
-        pull_approved_at=row.pull_approved_at,
-        pull_completed_at=row.pull_completed_at,
-        staging_status=row.staging_status,
-        cancelled_pull_count=row.cancelled_pull_count,
-        last_cancelled_at=row.last_cancelled_at,
-        last_cancelled_by=row.last_cancelled_by,
-        last_cancellation_reason=row.last_cancellation_reason,
-        opening_count=row.opening_count,
-        staged_opening_count=row.staged_opening_count,
-        assigned_opening_count=row.assigned_opening_count,
-        in_progress_opening_count=row.in_progress_opening_count,
-        completed_opening_count=row.completed_opening_count,
-        shipped_opening_count=row.shipped_opening_count,
-        planned_unit_count=row.planned_unit_count,
-        allocated_unit_count=row.allocated_unit_count,
-        short_unit_count=row.short_unit_count,
-        installed_unit_count=row.installed_unit_count,
-        deficient_unit_count=row.deficient_unit_count,
-        replacement_pending_unit_count=row.replacement_pending_unit_count,
-        awaiting_replacement_opening_count=row.awaiting_replacement_opening_count,
-        replacement_after_ship_opening_count=row.replacement_after_ship_opening_count,
-        short_opening_count=row.short_opening_count,
-        stage=PipelineStage(row.stage),
-    )
-
-
-def pipeline_opening_to_type(row) -> PipelineOpening:
-    """A repository PipelineOpening dataclass -> the GraphQL type (#344). Flat scalars throughout;
-    the two derived readings are the dataclass's own properties, so the ladder and the flags are
-    defined once, in the repository."""
-    return PipelineOpening(
-        shop_assembly_opening_id=strawberry.ID(str(row.shop_assembly_opening_id)),
-        opening_number=row.opening_number,
-        leaf=row.leaf,
-        building=row.building,
-        floor=row.floor,
-        location=row.location,
-        stage=PipelineStage(row.stage),
-        pull_status=row.pull_status,
-        staged_at=row.staged_at,
-        staged_by=row.staged_by,
-        assigned_to_user_id=row.assigned_to_user_id,
-        assigned_to=row.assigned_to,
-        assembly_status=row.assembly_status,
-        completed_at=row.completed_at,
-        planned_unit_count=row.planned_unit_count,
-        allocated_unit_count=row.allocated_unit_count,
-        short_unit_count=row.short_unit_count,
-        installed_unit_count=row.installed_unit_count,
-        deficient_unit_count=row.deficient_unit_count,
-        replacement_pending_unit_count=row.replacement_pending_unit_count,
-        awaiting_replacement_unit_count=row.awaiting_replacement_unit_count,
-        replacement_arrived_after_ship=row.replacement_arrived_after_ship,
-        opening_item_id=(strawberry.ID(str(row.opening_item_id)) if row.opening_item_id else None),
-        opening_item_state=row.opening_item_state,
-        assembled_location=row.assembled_location,
-    )
-
-
-def assembly_pipeline_to_type(pipeline) -> AssemblyPipeline:
-    return AssemblyPipeline(
-        summary=assembly_pipeline_summary_to_type(pipeline.summary),
-        openings=[pipeline_opening_to_type(o) for o in pipeline.openings],
-    )
-
-
-def shop_assembly_request_to_type(sar) -> ShopAssemblyRequest:
     return ShopAssemblyRequest(
         id=strawberry.ID(str(sar.id)),
         request_number=sar.request_number,
@@ -791,18 +610,27 @@ def shop_assembly_request_to_type(sar) -> ShopAssemblyRequest:
         approved_at=sar.approved_at,
         rejected_at=sar.rejected_at,
         integrity_note=sar.integrity_note,
-        openings=[shop_assembly_opening_to_type(o) for o in sar.openings],
+        pull_request_id=strawberry.ID(str(sar.pull_request_id)) if sar.pull_request_id else None,
+        items=[shop_assembly_request_item_to_type(i) for i in sar.items],
+        stage=RequestStage(stage or _fallback_stage(sar)),
     )
+
+
+def _fallback_stage(sar) -> str:
+    """The stage a caller that did not resolve one would have got. Never guesses past ACCEPTED:
+    without the pull's status there is no evidence the pull has been started or finished."""
+    if sar.status == ShopAssemblyRequestStatusDB.REJECTED:
+        return "REJECTED"
+    if sar.status == ShopAssemblyRequestStatusDB.PENDING or sar.pull_request_id is None:
+        return "REQUESTED"
+    return "ACCEPTED"
 
 
 def shipping_out_request_item_to_type(item) -> ShippingOutRequestItem:
     return ShippingOutRequestItem(
         id=strawberry.ID(str(item.id)),
         shipping_out_request_id=strawberry.ID(str(item.shipping_out_request_id)),
-        item_type=item.item_type,
         opening_number=item.opening_number,
-        opening_item_id=strawberry.ID(str(item.opening_item_id)) if item.opening_item_id else None,
-        leaf=item.leaf,
         hardware_category=item.hardware_category,
         product_code=item.product_code,
         requested_quantity=item.requested_quantity,
@@ -832,31 +660,21 @@ def pull_request_item_to_type(item) -> PullRequestItem:
     return PullRequestItem(
         id=strawberry.ID(str(item.id)),
         pull_request_id=strawberry.ID(str(item.pull_request_id)),
-        item_type=item.item_type,
         opening_number=item.opening_number,
-        opening_item_id=strawberry.ID(str(item.opening_item_id)) if item.opening_item_id else None,
-        sa_opening_item_id=(strawberry.ID(str(item.sa_opening_item_id)) if item.sa_opening_item_id else None),
-        leaf=item.leaf,
         hardware_category=item.hardware_category,
         product_code=item.product_code,
         requested_quantity=item.requested_quantity,
-        fetched_at=item.fetched_at,
-        fetched_by=item.fetched_by,
     )
 
 
-def pull_request_to_type(pr, staging=None, partially_picked=None) -> PullRequest:
-    """Model -> type. `staging` is a `warehouse.StagingSummary` the *caller* computed (#343).
+def pull_request_to_type(pr, partially_picked=None) -> PullRequest:
+    """Model -> type.
 
-    It is passed in rather than derived here because deriving it needs a query, and a converter that
-    queries is an N+1 waiting to happen on the pull-request list (CLAUDE.md perf rules): the resolver
-    fetches the counts for the whole page in one grouped aggregate and hands each row its own. None
-    leaves the three staging fields null, which reads as "not applicable / not evaluated" - never as
-    "nothing staged".
-
-    `partially_picked` (#367) arrives the same way and for the same reason: it is one grouped read
-    over `pull_pick_lines` for the whole page, not a lookup per row. None means not evaluated, which
-    is also the honest answer for a pull that is already picked.
+    `partially_picked` (#367) is passed in rather than derived here because deriving it needs a
+    query, and a converter that queries is an N+1 waiting to happen on the pull-request list
+    (CLAUDE.md perf rules): the resolver fetches it for the whole page in one grouped read over
+    `pull_pick_lines`. None means not evaluated, which is also the honest answer for a pull that is
+    already picked.
     """
     return PullRequest(
         id=strawberry.ID(str(pr.id)),
@@ -876,14 +694,11 @@ def pull_request_to_type(pr, staging=None, partially_picked=None) -> PullRequest
         cancelled_by=pr.cancelled_by,
         cancellation_reason=pr.cancellation_reason,
         items=[pull_request_item_to_type(i) for i in pr.items],
-        staging_status=staging.status if staging is not None else None,
-        staged_opening_count=staging.staged_opening_count if staging is not None else None,
-        total_opening_count=staging.total_opening_count if staging is not None else None,
         partially_picked=partially_picked,
     )
 
 
-def pick_sheet_to_type(sheet, staging=None, partially_picked=None) -> PickSheet:
+def pick_sheet_to_type(sheet, partially_picked=None) -> PickSheet:
     """`warehouse.PickSheet` -> the GraphQL type (#367).
 
     The repository has already done every read this needs in a fixed number of queries, so this is a
@@ -891,7 +706,7 @@ def pick_sheet_to_type(sheet, staging=None, partially_picked=None) -> PickSheet:
     left to the client to subtract, because the pick screen, the PDF and the confirm gate must all
     agree on one definition of "still to pick"."""
     return PickSheet(
-        pull_request=pull_request_to_type(sheet.pull_request, staging, partially_picked),
+        pull_request=pull_request_to_type(sheet.pull_request, partially_picked),
         sections=[
             PickSheetSection(
                 hardware_category=section.hardware_category,
@@ -901,13 +716,9 @@ def pick_sheet_to_type(sheet, staging=None, partially_picked=None) -> PickSheet:
                 remaining_quantity=section.remaining_quantity,
                 claimable_quantity=section.claimable_quantity,
                 claimable_shortfall=section.claimable_shortfall,
-                leaves=[
-                    PickSheetLeaf(
-                        opening_number=leaf.opening_number,
-                        leaf=leaf.leaf,
-                        quantity=leaf.quantity,
-                    )
-                    for leaf in section.leaves
+                openings=[
+                    PickSheetOpening(opening_number=opening.opening_number, quantity=opening.quantity)
+                    for opening in section.openings
                 ],
                 locations=[
                     PickSheetLocation(
@@ -929,21 +740,6 @@ def pick_sheet_to_type(sheet, staging=None, partially_picked=None) -> PickSheet:
             )
             for section in sheet.sections
         ],
-        fetch_items=[
-            PickSheetFetchItem(
-                pull_request_item_id=strawberry.ID(str(f.pull_request_item_id)),
-                opening_item_id=strawberry.ID(str(f.opening_item_id)) if f.opening_item_id else None,
-                opening_number=f.opening_number,
-                leaf=f.leaf,
-                aisle=f.aisle,
-                row=f.row,
-                bay=f.bay,
-                state=f.state,
-                fetched_at=f.fetched_at,
-                fetched_by=f.fetched_by,
-            )
-            for f in sheet.fetch_items
-        ],
     )
 
 
@@ -963,10 +759,7 @@ def packing_slip_item_to_type(psi) -> PackingSlipItem:
     return PackingSlipItem(
         id=strawberry.ID(str(psi.id)),
         packing_slip_id=strawberry.ID(str(psi.packing_slip_id)),
-        item_type=psi.item_type,
-        opening_item_id=strawberry.ID(str(psi.opening_item_id)) if psi.opening_item_id else None,
         opening_number=psi.opening_number,
-        leaf=psi.leaf,
         building=psi.building,
         floor=psi.floor,
         location=psi.location,
@@ -997,10 +790,7 @@ def container_to_type(c) -> ShipmentContainer:
             ShipmentContainerItem(
                 id=strawberry.ID(str(i.id)),
                 shipment_container_id=strawberry.ID(str(i.shipment_container_id)),
-                item_type=i.item_type,
-                opening_item_id=strawberry.ID(str(i.opening_item_id)) if i.opening_item_id else None,
                 opening_number=i.opening_number,
-                leaf=i.leaf,
                 hardware_category=i.hardware_category,
                 product_code=i.product_code,
                 quantity=i.quantity,

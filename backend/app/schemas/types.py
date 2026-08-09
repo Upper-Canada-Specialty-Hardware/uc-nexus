@@ -3,7 +3,6 @@ from datetime import date, datetime
 import strawberry
 
 from .enums import (
-    AssemblyStatus,
     AuditAction,
     AuditEntityType,
     Classification,
@@ -11,22 +10,17 @@ from .enums import (
     DeficientItemSource,
     GpOutboxStatus,
     HardwareItemState,
-    LeafStatus,
     NotificationType,
-    OpeningItemState,
-    OpeningStage,
     PickOutcome,
-    PipelineStage,
     PODocumentType,
     POStatus,
-    PullRequestItemType,
     PullRequestSource,
     PullRequestStatus,
-    PullStatus,
     ReceiveDecisionChoice,
     ReceiveDecisionStatus,
     ReceiveDraftStatus,
     ReconciliationStatus,
+    RequestStage,
     ReturnDisposition,
     ShipmentContainerType,
     ShipmentStatus,
@@ -716,72 +710,15 @@ class InventoryLocation:
 
 
 @strawberry.type
-class OpeningItemHardware:
-    id: strawberry.ID
-    opening_item_id: strawberry.ID
-    product_code: str
-    hardware_category: str
-    quantity: int
-
-
-@strawberry.type
-class OpeningItem:
-    id: strawberry.ID
-    project_id: strawberry.ID
-    opening_id: strawberry.ID
-    warehouse_id: strawberry.ID | None
-    opening_number: str
-    building: str | None
-    floor: str | None
-    location: str | None
-    # Door leaf this assembled unit is (#311): 1 or 2, or null (legacy whole-opening unit).
-    leaf: int | None
-    # The opening's total door-leaf count (#311), the "N of M leaves shipped" denominator. Only
-    # populated by the openingItems list resolver; null elsewhere.
-    leaf_count: int | None
-    quantity: int
-    assembly_completed_at: datetime
-    state: OpeningItemState
-    aisle: str | None
-    row: str | None
-    bay: str | None
-    created_at: datetime
-    updated_at: datetime
-    installed_hardware: list[OpeningItemHardware]
-    # Units this leaf is still owed (#341): condemned-and-unreplaced plus arrived-but-not-fitted,
-    # summed from its source shop-assembly checklist lines. > 0 means the leaf is physically short of
-    # what its hardware list claims, so the shipping wizard flags it and shipping it takes an explicit
-    # acknowledgment. Only populated by the resolvers that ask for it (the openingItems list and the
-    # detail view); null everywhere else, which reads as "not evaluated", not as "nothing owed".
-    awaiting_replacement_quantity: int | None = None
-    # Units this leaf was owed by the schedule that its request never pulled - they were not
-    # available to claim when it was sent, so nothing arrived and nothing is in flight. The other
-    # half of the same shipping decision as the field above, and deliberately separate: waiting fixes
-    # an awaiting-replacement unit and does nothing at all for one of these. Same null-means-not-
-    # evaluated convention.
-    never_pulled_quantity: int | None = None
-
-
-@strawberry.type
 class PullRequestItem:
     id: strawberry.ID
     pull_request_id: strawberry.ID
-    item_type: PullRequestItemType
     # Null on a line whose request was raised straight off inventory (#451) - shelf stock carries no
     # opening. Schedule-driven lines keep theirs.
     opening_number: str | None
-    opening_item_id: strawberry.ID | None
-    # Deficient shop-assembly checklist item this line replaces (#339). Set only on PR-REPL lines.
-    sa_opening_item_id: strawberry.ID | None
-    # Door leaf this pull line is for (#311): 1 or 2, or null (legacy / leaf-agnostic).
-    leaf: int | None
-    hardware_category: str | None
-    product_code: str | None
+    hardware_category: str
+    product_code: str
     requested_quantity: int
-    # Fetch check-off on an OPENING_ITEM line (#367): the assembled leaf has been collected off the
-    # rack. Always null on a LOOSE line, which is picked by quantity instead.
-    fetched_at: datetime | None = None
-    fetched_by: str | None = None
 
 
 @strawberry.type
@@ -802,17 +739,6 @@ class PullRequest:
     # Who cancelled the pull and why (#343). Null unless status is CANCELLED.
     cancelled_by: str | None = None
     cancellation_reason: str | None = None
-    # Per-opening staging progress, DERIVED, never stored (#343). NOT_PULLED / PARTIAL / PULLED read
-    # over the pull's shop-assembly openings - PARTIAL being "some carts built, some not", which is
-    # a statement about the set and so has no place on any single opening's own pull_status.
-    #
-    # Null means staging does not apply *or* was not evaluated: a shipping-out pull, a PR-REPL
-    # replacement pull, and a legacy pull all have no openings, and the resolvers that do not compute
-    # the rollup leave it null rather than implying "nothing staged". Populated by pullRequests,
-    # pullRequestDetails, and the staging/approve/complete/cancel mutation results.
-    staging_status: PullStatus | None = None
-    staged_opening_count: int | None = None
-    total_opening_count: int | None = None
     # When the pick was confirmed and by whom (#367). This is the moment stock left inventory;
     # `approvedAt` only says the warehouse started on the pull. Staging and completion gate on this.
     picked_at: datetime | None = None
@@ -824,195 +750,19 @@ class PullRequest:
 
 
 @strawberry.type
-class ShopAssemblyOpeningItem:
+class ShopAssemblyRequestItem:
+    """One flat line on a shop-assembly request, tagged with the opening it is owed to."""
+
     id: strawberry.ID
-    shop_assembly_opening_id: strawberry.ID
+    shop_assembly_request_id: strawberry.ID
+    # Null on a line raised straight off inventory - shelf stock carries no opening.
+    opening_number: str | None
     hardware_category: str
     product_code: str
-    # Owed: what the hardware schedule says this door leaf takes.
+    # What the schedule owed, and what the composer could actually claim. Short is the difference,
+    # derived and never stored.
     quantity: int
-    # What the requester actually claimed out of available inventory when the request was sent, and
-    # therefore what physically arrives on the cart. Short is `quantity - allocatedQuantity`, derived
-    # on the client exactly as it is on the server - it is never stored, because the authority on
-    # what a leaf is still missing is the current schedule against what is on the leaf, not this
-    # request's record of what it managed to send.
-    allocated_quantity: int = 0
-    # Persisted assembly progress (#340). installed_quantity is what the assembler has recorded
-    # fitting to the leaf; deficient_quantity is what has already been condemned and replaced.
-    # Remaining is allocated - installed - deficient, derived on the client - completion is refused
-    # while any line still has remaining > 0. Short units are outside that sum: they were never
-    # pulled, so there is nothing on the bench to disposition.
-    installed_quantity: int = 0
-    deficient_quantity: int = 0
-    # Units whose replacement has arrived but is not on the leaf yet (#341). Non-zero only on a
-    # COMPLETED opening - before completion an arrived replacement just goes back to being remaining
-    # work. installed + deficient + replacement_pending never exceeds quantity.
-    replacement_pending_quantity: int = 0
-
-
-@strawberry.type
-class ReplacementWorkItem:
-    """One outstanding replacement install on an already-completed door leaf (#341).
-
-    Deliberately not a ShopAssemblyOpening: the opening is COMPLETED and stays that way, so this
-    cannot ride in myWork's normal list without either lying about the leaf's status or reopening a
-    finished work unit. It is the narrower unit "fit these N units of this product to a leaf that is
-    otherwise done", assigned to whoever last held the leaf.
-
-    opening_item_state is SHIPPED_OUT when the replacement arrived after the leaf left the building.
-    Those rows are listed on purpose - the hardware is real and must not be silently stranded - but
-    installReplacement refuses them; they belong to reallocation.
-    """
-
-    shop_assembly_opening_item_id: strawberry.ID
-    shop_assembly_opening_id: strawberry.ID
-    project_id: strawberry.ID
-    opening_number: str
-    leaf: int | None
-    building: str | None
-    floor: str | None
-    hardware_category: str
-    product_code: str
-    pending_quantity: int
-    assigned_to_user_id: str | None
-    assigned_to: str | None
-    opening_item_id: strawberry.ID | None
-    opening_item_state: OpeningItemState | None
-
-
-@strawberry.type
-class ShopAssemblyOpening:
-    id: strawberry.ID
-    # Legacy SAR parent (nullable since #222); openings now hang off pull_request_id.
-    shop_assembly_request_id: strawberry.ID | None
-    pull_request_id: strawberry.ID | None
-    opening_id: strawberry.ID
-    pull_status: PullStatus
-    # Stable Clerk user id the opening is claimed by (#324); assigned_to is the display name.
-    assigned_to_user_id: str | None
-    assigned_to: str | None
-    assembly_status: AssemblyStatus
-    completed_at: datetime | None
-    items: list[ShopAssemblyOpeningItem]
-    # Door leaf this assembly work unit is for (#311): 1 or 2, or null (legacy whole-opening).
-    leaf: int | None = None
-    # Resolved from Opening table (populated by myWork and assembleList queries)
-    opening_number: str | None = None
-    building: str | None = None
-    floor: str | None = None
-    # When this opening's cart was confirmed staged, and by whom (#343). Null while NOT_PULLED, and
-    # on openings staged before per-opening staging existed (they were staged wholesale).
-    staged_at: datetime | None = None
-    staged_by: str | None = None
-
-
-@strawberry.type
-class PipelineOpening:
-    """Where one door leaf is in shop assembly, and what it is still owed (#344).
-
-    Every field is derived from state slices 1-5 already persist; nothing here is stored. The raw
-    facts sit next to the derived `stage` on purpose - a screen that wants to phrase the journey
-    differently should not have to reverse-engineer the ladder.
-    """
-
-    shop_assembly_opening_id: strawberry.ID
-    opening_number: str
-    leaf: int | None
-    building: str | None
-    floor: str | None
-    location: str | None
-    stage: PipelineStage
-    pull_status: PullStatus
-    staged_at: datetime | None
-    staged_by: str | None
-    assigned_to_user_id: str | None
-    assigned_to: str | None
-    assembly_status: AssemblyStatus
-    completed_at: datetime | None
-    # Owed by the schedule vs what the request could claim. The progress counters below partition
-    # `allocated_unit_count`; `short_unit_count` is the rest and was never pulled.
-    planned_unit_count: int
-    allocated_unit_count: int
-    short_unit_count: int
-    installed_unit_count: int
-    deficient_unit_count: int
-    replacement_pending_unit_count: int
-    # Units still owed to this leaf: condemned-and-unreplaced plus arrived-but-not-fitted (#341).
-    awaiting_replacement_unit_count: int
-    # Replacement hardware is sitting for a leaf that has already left the building (#341).
-    # installReplacement refuses it; it belongs to reallocation.
-    replacement_arrived_after_ship: bool
-    opening_item_id: strawberry.ID | None
-    opening_item_state: OpeningItemState | None
-    # Where the assembled leaf physically is - the "completed (location)" rung.
-    assembled_location: str | None
-
-
-@strawberry.type
-class AssemblyPipelineSummary:
-    """One shop-assembly request's journey in counts (#344).
-
-    Listable at All-Projects scale: every count comes from a grouped aggregate over the whole result
-    set, so the resolver's statement count is fixed however many requests come back.
-    """
-
-    request_id: strawberry.ID
-    request_number: str
-    project_id: strawberry.ID
-    # Which project, without a second lookup, for the All-Projects view: project_code is the human
-    # job number and project_name its description.
-    project_code: str | None
-    project_name: str | None
-    request_status: ShopAssemblyRequestStatus
-    created_by: str
-    created_at: datetime
-    accepted_by: str | None
-    accepted_at: datetime | None
-    rejected_by: str | None
-    rejected_at: datetime | None
-    # The same #342 note the accept screen shows as an amber alert.
-    integrity_note: str | None
-    # The live pull, never a cancelled one (#343 made request_number unique among live pulls only).
-    pull_request_id: strawberry.ID | None
-    pull_request_status: PullRequestStatus | None
-    pull_approved_at: datetime | None
-    pull_completed_at: datetime | None
-    # Derived staging rollup - the same reading PullRequest.stagingStatus gives (#343). Null when the
-    # request has no openings, which reads as "not applicable", never "nothing staged".
-    staging_status: PullStatus | None
-    # Cancellation history (#343): a cancelled pull keeps its number and hands its openings back to a
-    # PENDING request, so without this the request would read as never having been accepted.
-    cancelled_pull_count: int
-    last_cancelled_at: datetime | None
-    last_cancelled_by: str | None
-    last_cancellation_reason: str | None
-    opening_count: int
-    staged_opening_count: int
-    assigned_opening_count: int
-    in_progress_opening_count: int
-    completed_opening_count: int
-    shipped_opening_count: int
-    planned_unit_count: int
-    # Sent short: a request can be legitimately complete and still not have delivered its full bill
-    # of hardware, and nothing else on this row would say so.
-    allocated_unit_count: int
-    short_unit_count: int
-    installed_unit_count: int
-    deficient_unit_count: int
-    replacement_pending_unit_count: int
-    awaiting_replacement_opening_count: int
-    replacement_after_ship_opening_count: int
-    short_opening_count: int
-    # The stage of the least-advanced opening: what the request is waiting on, not its best news.
-    stage: PipelineStage
-
-
-@strawberry.type
-class AssemblyPipeline:
-    """A request's summary plus a row per door leaf (#344) - the detail view."""
-
-    summary: AssemblyPipelineSummary
-    openings: list[PipelineOpening]
+    allocated_quantity: int
 
 
 @strawberry.type
@@ -1032,21 +782,22 @@ class ShopAssemblyRequest:
     # (#342): a schedule re-upload landed under it, or the reservations backfill could not cover it.
     # Null means nothing has.
     integrity_note: str | None
-    openings: list[ShopAssemblyOpening]
+    # The warehouse pull this request minted at accept. Null while it is still PENDING.
+    pull_request_id: strawberry.ID | None
+    items: list[ShopAssemblyRequestItem]
+    # Where the request sits on the ladder the requests list draws as columns. Derived from the
+    # request's status and its pull's, never stored.
+    stage: RequestStage
 
 
 @strawberry.type
 class ShippingOutRequestItem:
     id: strawberry.ID
     shipping_out_request_id: strawberry.ID
-    item_type: PullRequestItemType
     # Null on a line raised straight off inventory (#451) - shelf stock carries no opening.
     opening_number: str | None
-    opening_item_id: strawberry.ID | None
-    # Door leaf this request line is for (#335): 1 or 2 on an OPENING_ITEM line, null on LOOSE.
-    leaf: int | None
-    hardware_category: str | None
-    product_code: str | None
+    hardware_category: str
+    product_code: str
     requested_quantity: int
 
 
@@ -1073,14 +824,9 @@ class ShippingOutRequest:
 class PackingSlipItem:
     id: strawberry.ID
     packing_slip_id: strawberry.ID
-    item_type: PullRequestItemType
-    opening_item_id: strawberry.ID | None
     opening_number: str | None
-    # Door leaf this shipped line was for (#311): 1 or 2, or null (loose / legacy).
-    leaf: int | None
-    # Where the leaf was going, as the slip recorded it at confirm time (#452). The Delivery Request
-    # prints these after the opening number, so a reprint says what the driver's copy said. Null on a
-    # LOOSE line and on rows written before #452.
+    # Where the hardware was going, as the slip recorded it at confirm time (#452). The Delivery
+    # Request prints these after the opening number, so a reprint says what the driver's copy said.
     building: str | None
     floor: str | None
     location: str | None
@@ -1252,10 +998,7 @@ class ShipmentContainerItem:
 
     id: strawberry.ID
     shipment_container_id: strawberry.ID
-    item_type: PullRequestItemType
-    opening_item_id: strawberry.ID | None
     opening_number: str | None
-    leaf: int | None
     hardware_category: str
     product_code: str
     quantity: int
@@ -1297,28 +1040,14 @@ class StagedLooseItem:
 
 
 @strawberry.type
-class StagedLeaf:
-    """One assembled leaf staged for shipping, and the container holding it if any (#451)."""
-
-    opening_item_id: strawberry.ID
-    opening_number: str
-    leaf: int | None
-    building: str | None
-    floor: str | None
-    location: str | None
-    placed_in_container_id: strawberry.ID | None
-
-
-@strawberry.type
 class StagingPool:
     """Everything a project has staged for shipping, and where it has been put (#451).
 
     The left-hand side of the staging workspace reads `unplaced*`; the container cards read
-    `containers`. One query rather than two so the two halves can never disagree about whether a
-    leaf has been loaded.
+    `containers`. One query rather than two so the two halves can never disagree about whether
+    something has been loaded.
     """
 
-    leaves: list[StagedLeaf]
     loose_items: list[StagedLooseItem]
     containers: list[ShipmentContainer]
 
@@ -1341,57 +1070,43 @@ class ShipmentMethod:
 
 
 @strawberry.type
-class ShippingCoverageLine:
-    """One product a door leaf is owed, and where those units currently are (#451)."""
+class RequestCoverageLine:
+    """One product an opening is owed, and where those units have got to.
 
-    hardware_category: str
-    product_code: str
-    # SITE_HARDWARE ships loose by definition; SHOP_HARDWARE should have been fitted at the bench.
-    # Null means the schedule was never classified, which the builder shows as its own group rather
-    # than guessing on the user's behalf.
-    classification: Classification | None
-    # What the schedule says this leaf takes.
-    owed_quantity: int
-    # What is physically bolted onto the assembled leaf. Always 0 for site hardware, and for a leaf
-    # that has not been assembled yet.
-    installed_quantity: int
-    # What this opening has already been sent, or is in the middle of being sent, of this product -
-    # shipped slips, staged pulls, and lines on live requests. The schedule never shrinks when
-    # hardware goes out, so without this term a leaf shipped last month is offered again in full.
-    spoken_for_quantity: int
-    # What still has to travel loose alongside the leaf: `owed - installed - spoken for`. For shop
-    # hardware that is exactly what shop assembly skipped and nobody has sent since.
-    suggested_quantity: int
-    # Placed with a vendor and not yet received, project-wide for this product. Not an allocation to
-    # this leaf - it is the answer to "is more coming, or is this all there will ever be".
-    on_order_quantity: int
-
-
-@strawberry.type
-class ShippingCoverageLeaf:
-    """What one door leaf of a selected opening still owes the site (#451).
+    The answer both composers read: shop assembly and shipping out ask the same question at
+    composition time, so `suggested = max(owed - sent - claimed, 0)` is computed once, in
+    `app.repositories.request_composer`, and served here to both.
 
     Availability is deliberately absent: `projectInventoryAvailability` is the single answer to
-    "what may I claim" (#342) and the creation gate is applied against that number, so the builder
+    "what may I claim" (#342) and the creation gate is applied against that number, so a composer
     joins the two by (hardwareCategory, productCode) rather than reading a second figure from here
     that could disagree with the one it is held to.
     """
 
     opening_number: str
-    # Null only for a legacy opening no leaf data resolves anywhere.
-    leaf: int | None
-    status: LeafStatus
-    # The assembled unit that IS this leaf, when there is one.
-    opening_item_id: strawberry.ID | None
-    # The request number already holding this leaf, if a live shipping-out request claimed it. Such
-    # a leaf cannot go on a second request - one physical leaf ships once.
-    claimed_by_request_number: str | None
-    lines: list[ShippingCoverageLine]
+    hardware_category: str
+    product_code: str
+    # SITE_HARDWARE goes to site loose; SHOP_HARDWARE is fitted at the bench. Null means the
+    # schedule was never classified, which the composer shows as its own group rather than guessing
+    # on the user's behalf.
+    classification: Classification | None
+    # What the CURRENT schedule says this opening takes, summed across its leaves.
+    owed_quantity: int
+    # What has left the building for this opening: completed shop-assembly pulls, plus shipping-out
+    # (the completed pull and the slip cut from it folded together, never added).
+    sent_quantity: int
+    # What somebody else is already holding: lines on pending requests and on live pulls.
+    claimed_quantity: int
+    # `max(owed - sent - claimed, 0)`. Zero rather than negative when a re-upload lowers the
+    # schedule below what has already gone out - nothing is ever auto-unwound.
+    suggested_quantity: int
+    # Placed with a vendor and not yet received, project-wide for this product. Not an allocation to
+    # this opening - it answers "is more coming, or is this all there will ever be".
+    on_order_quantity: int
 
 
 @strawberry.type
 class ShipReadyItems:
-    opening_items: list[OpeningItem]
     loose_items: list[ShipReadyLooseItem]
 
 
@@ -1463,41 +1178,6 @@ class EmailPoResult:
 
 
 @strawberry.type
-class ReviewQueueOpening:
-    """One door leaf in the shop-assembly review queue (#495).
-
-    Flat and project-bearing on purpose: the reviewer works a pooled queue across projects, so the
-    project is a column on the row rather than a filter you have to choose before you can see any
-    work."""
-
-    id: strawberry.ID
-    opening_number: str
-    leaf: int | None
-    building: str | None
-    floor: str | None
-    location: str | None
-    review_status: str
-    request_number: str
-    requested_by: str | None
-    requested_at: datetime
-    project_id: strawberry.ID
-    project_number: str
-    project_name: str
-    item_count: int
-    # What the allocator could not cover. A short leaf is a different decision from a whole one.
-    short_quantity: int
-    reviewed_at: datetime | None
-    reviewed_by: str | None
-    review_reason: str | None
-
-
-@strawberry.type
-class OpeningItemDetail:
-    opening_item: OpeningItem
-    installed_hardware: list[OpeningItemHardware]
-
-
-@strawberry.type
 class InventoryShortfall:
     """One shorted (hardware_category, product_code) combo surfaced by an inventory-sufficiency
     gate (#224): requested vs available, and the gap.
@@ -1534,16 +1214,16 @@ class InventoryAvailability:
 
 
 @strawberry.type
-class PickSheetLeaf:
-    """One door leaf a pick section's units are owed to (#367).
+class PickSheetOpening:
+    """One opening a pick section's units are owed to (#367).
 
-    Every leaf is listed, never summarised into "and N more": the picker is building carts per leaf,
-    so the list of leaves *is* the work, and a truncated one sends them back to another screen."""
+    Every opening is listed, never summarised into "and N more": the picker is building carts per
+    door, so the list of openings *is* the work, and a truncated one sends them back to another
+    screen."""
 
     # Null on an unattributed line (#451): the units are owed to the project, not to a door, so
     # there is no cart to name and the picker just puts them on the shipment.
     opening_number: str | None
-    leaf: int | None
     quantity: int
 
 
@@ -1575,7 +1255,7 @@ class PickSheetLocation:
 
 @strawberry.type
 class PickSheetSection:
-    """One product code to pick, with every leaf it is owed to and everywhere it can come from."""
+    """One product code to pick, with every opening it is owed to and everywhere it can come from."""
 
     hardware_category: str
     product_code: str
@@ -1588,28 +1268,8 @@ class PickSheetSection:
     claimable_quantity: int
     # How far short of `remainingQuantity` that leaves this pull. Zero in the ordinary case.
     claimable_shortfall: int
-    leaves: list[PickSheetLeaf]
+    openings: list[PickSheetOpening]
     locations: list[PickSheetLocation]
-
-
-@strawberry.type
-class PickSheetFetchItem:
-    """One assembled leaf to collect off the rack (#367).
-
-    An OPENING_ITEM line moves a leaf whose hardware left fungible inventory at assembly, so nothing
-    is deducted for it - it is walked to and picked up. The check-off is persisted so it survives a
-    reload or a shift change."""
-
-    pull_request_item_id: strawberry.ID
-    opening_item_id: strawberry.ID | None
-    opening_number: str | None
-    leaf: int | None
-    aisle: str | None
-    row: str | None
-    bay: str | None
-    state: OpeningItemState | None
-    fetched_at: datetime | None
-    fetched_by: str | None
 
 
 @strawberry.type
@@ -1618,7 +1278,6 @@ class PickSheet:
 
     pull_request: PullRequest
     sections: list[PickSheetSection]
-    fetch_items: list[PickSheetFetchItem]
 
 
 @strawberry.type
@@ -1640,22 +1299,6 @@ class ConfirmPickResult:
 
 
 @strawberry.type
-class StagePullOpeningsResult:
-    """What one staging confirmation did (#343).
-
-    `openings` comes back so the checklist can re-render from the server's answer rather than an
-    optimistic guess, and `completed` says whether this confirmation was the one that finished the
-    pull - the client shows a different message for "3 of 8 staged" and "pull complete"."""
-
-    pull_request: PullRequest
-    openings: list[ShopAssemblyOpening]
-    # Ids staged by *this* call. An opening already staged is skipped, not refused, so this is how a
-    # caller tells a real confirmation from a replayed one.
-    newly_staged_opening_ids: list[strawberry.ID]
-    completed: bool
-
-
-@strawberry.type
 class RestockedLine:
     hardware_category: str
     product_code: str
@@ -1669,7 +1312,6 @@ class CancelPullRequestResult:
     pull_request: PullRequest
     # The inverse inventory write, per combo. Empty for a pull with no LOOSE lines.
     restocked: list[RestockedLine]
-    released_opening_ids: list[strawberry.ID]
     # The source request went back to PENDING for re-acceptance. False for a PR-REPL replacement
     # pull or a legacy pull, which have no source request at all.
     source_request_returned_to_pending: bool
@@ -1687,134 +1329,6 @@ class ReconciliationResult:
     product_code: str
     quantity: int
     status: ReconciliationStatus
-
-
-@strawberry.type
-class AdminPoLineRef:
-    """The PO line one schedule row is bound to, carried as context for the ordered bucket.
-
-    `received_quantity` is that LINE's fill, project-wide, and is NOT this opening's units having
-    arrived - inventory is fungible on receipt, so a receipt cannot be attributed back to an opening.
-    See app/repositories/opening_deep_dive.py.
-    """
-
-    po_number: str
-    status: str
-    ordered_quantity: int
-    received_quantity: int
-
-
-@strawberry.type
-class AdminOpeningLine:
-    """One product one door leaf is owed, partitioned across the lifecycle.
-
-    The eight quantities sum to `owed_quantity`: every unit lands in exactly one of them, furthest
-    along wins. A line with `owed_quantity` 0 and something installed is hardware fitted off an older
-    schedule revision - shown rather than hidden, so the leaf does not read emptier than it is.
-
-    `shipped_loose` and `pulled_for_shipping` are this leaf's share of an opening-level budget. A
-    loose line carries an opening and never a leaf, so the opening's leaves consume it in order -
-    which is what lets site hardware, that never touches a leaf, stop reading as merely "ordered"
-    once it has physically shipped.
-    """
-
-    leaf: int | None
-    hardware_category: str
-    product_code: str
-    owed_quantity: int
-    shipped_on_leaf: int
-    shipped_loose: int
-    staged: int
-    pulled_for_shipping: int
-    assembled_in_inventory: int
-    pulled_for_assembly: int
-    ordered: int
-    po_drafted: int
-    not_purchased: int
-    po_lines: list[AdminPoLineRef]
-
-
-@strawberry.type
-class AdminLooseLine:
-    """Loose units of this opening that no leaf of it could account for.
-
-    Normally empty. It fills when more of a product went out loose than the current schedule says the
-    opening takes - an over-ship, or hardware sent against a since-revised schedule.
-    """
-
-    hardware_category: str
-    product_code: str
-    pulled_for_shipping: int
-    shipped_loose: int
-
-
-@strawberry.type
-class AdminLeafClaim:
-    """A live shipping-out request holding one leaf, by request number."""
-
-    leaf: int | None
-    request_number: str
-
-
-@strawberry.type
-class AdminOpeningStatus:
-    """One opening's row in the admin project list: the lifecycle partition rolled up to totals.
-
-    These totals are the sums of the same per-line partition `adminOpeningDeepDive` returns, so the
-    row and its detail agree by construction rather than by two computations happening to match.
-    """
-
-    opening_number: str
-    building: str | None
-    floor: str | None
-    location: str | None
-    leaf_count: int | None
-    stage: OpeningStage
-    owed_units: int
-    shipped_units: int
-    staged_units: int
-    assembled_units: int
-    pulled_units: int
-    shipped_loose_units: int
-    pulled_for_shipping_units: int
-    ordered_units: int
-    po_drafted_units: int
-    not_purchased_units: int
-    leaves: list["OpeningLeafState"]
-
-
-@strawberry.type
-class AdminOpeningDeepDive:
-    opening_number: str
-    building: str | None
-    floor: str | None
-    location: str | None
-    leaf_count: int | None
-    leaves: list["OpeningLeafState"]
-    leaf_claims: list[AdminLeafClaim]
-    lines: list[AdminOpeningLine]
-    loose: list[AdminLooseLine]
-
-
-@strawberry.type
-class OpeningLeafState:
-    """One door leaf's status in the per-opening leaf-status rollup (#313)."""
-
-    leaf: int
-    status: LeafStatus
-
-
-@strawberry.type
-class OpeningLeafStatus:
-    """Per-opening door-leaf rollup (#313): every leaf 1..leaf_count and its status. project_id /
-    project_name are carried so the global (no-projectId) shop-assembly view disambiguates opening
-    numbers that collide across projects."""
-
-    project_id: strawberry.ID
-    project_name: str
-    opening_number: str
-    leaf_count: int
-    leaves: list[OpeningLeafState]
 
 
 @strawberry.type
@@ -1838,7 +1352,6 @@ class LocationUtilizationEntry:
 @strawberry.type
 class LocationContents:
     inventory_items: list[InventoryItemDetail]
-    opening_items: list[OpeningItem]
     stock_items: list["StockItem"]
 
 

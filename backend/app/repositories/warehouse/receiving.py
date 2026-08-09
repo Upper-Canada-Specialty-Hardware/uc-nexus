@@ -3,30 +3,22 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import and_, exists, func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import InvalidStateTransitionError, NotFoundError, ValidationError
 from app.models.enums import (
     AuditAction,
     AuditEntityType,
-    NotificationType,
     POStatus,
-    PullRequestSource,
-    PullRequestStatus,
-    ReservationSource,
 )
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.project import Project as ProjectModel
-from app.models.pull_request import PullRequest as PullRequestModel
-from app.models.pull_request import PullRequestItem as PullRequestItemModel
 from app.models.purchase_order import POLineItem as POLineItemModel
 from app.models.purchase_order import PurchaseOrder as POModel
 from app.models.receiving import ReceiveLineItem as ReceiveLineItemModel
 from app.models.receiving import ReceiveRecord as ReceiveRecordModel
 from app.repositories import project_repository
-from app.services import notification_service
-from app.services.locking import lock_rows
 
 from .audit import _log_audit_event
 from .locations import _normalize_and_validate_location_fields
@@ -344,22 +336,6 @@ def create_receive(
     elif any_received and po.status not in (POStatus.PARTIALLY_RECEIVED, POStatus.CLOSED):
         po.status = POStatus.PARTIALLY_RECEIVED
 
-    # The backfill retry loop for replacement pulls (#344). A receive is the *usual* way one becomes
-    # coverable and the one this module can see; other paths exist (a cancelled pull restocking, an
-    # allocation from the pool, a deficiency resolved back to available) and simply do not raise this
-    # signal today. Stock-pool POs are skipped: a replacement pull draws on *project* inventory, and
-    # allocating from the pool is a separate deliberate act.
-    if not is_stock_po:
-        session.flush()
-        notify_unblocked_replacement_pulls(
-            session,
-            po.project_id,
-            {
-                (poli_dict[li["po_line_item_id"]].hardware_category, poli_dict[li["po_line_item_id"]].product_code)
-                for li in line_items_input
-            },
-        )
-
     # Ask whoever raised the PO where this shipment goes - project inventory, or straight back out to
     # site. It lives HERE, at the end of the persist, rather than in the resolver, because there are
     # two ways into this function: the online approval and the outbox worker draining a receipt that
@@ -381,168 +357,6 @@ def create_receive(
         )
 
     return receive_record
-
-
-def find_open_replacement_pulls(
-    session: Session,
-    project_id: uuid.UUID,
-    combos: set[tuple[str, str]] | None = None,
-) -> list[PullRequestModel]:
-    """Replacement (PR-REPL) pulls in a project that are **still owed hardware**, optionally narrowed
-    to those that want at least one of `combos` (#344).
-
-    A replacement pull is identified **structurally** - a SHOP_ASSEMBLY pull at least one of whose
-    lines carries `sa_opening_item_id` (#339), i.e. a line minted against a specific deficient
-    checklist item - rather than by its `PR-REPL-` number prefix. The prefix is a display convention;
-    the FK is the thing that makes the pull a replacement, and a structural test cannot be broken by
-    renaming a request.
-
-    "Open" used to mean PENDING and nothing else, because before #367 that was the only state a pull
-    with hardware still outstanding could be in: approval either filled it completely or refused and
-    left it PENDING. A **short pick** breaks that. The pull is IN_PROGRESS, some units are off the
-    shelf and the rest are still owed, and on the old filter it vanished from both loops this feeds -
-    its claim was never topped up as stock arrived, so the units it was waiting for stayed free for
-    the next request to take, and nothing ever told the warehouse the remainder could be keyed in.
-
-    So the filter is the honest reading of the same question: PENDING, or IN_PROGRESS with no
-    `picked_at` stamp. A picked pull is finished asking for hardware; a cancelled or completed one is
-    not asking at all.
-
-    Narrowing by combo is the first half of the dedupe: a receive that landed nothing this pull wants
-    cannot have changed whether it is coverable, so there is no reason to look at it, let alone
-    announce it. Items are eager-loaded because the caller sums their needs.
-    """
-    is_replacement = (
-        select(PullRequestItemModel.id)
-        .where(
-            PullRequestItemModel.pull_request_id == PullRequestModel.id,
-            PullRequestItemModel.sa_opening_item_id.is_not(None),
-        )
-        .exists()
-    )
-    stmt = (
-        select(PullRequestModel)
-        .options(selectinload(PullRequestModel.items))
-        .where(
-            PullRequestModel.project_id == project_id,
-            PullRequestModel.deleted_at.is_(None),
-            PullRequestModel.source == PullRequestSource.SHOP_ASSEMBLY,
-            or_(
-                PullRequestModel.status == PullRequestStatus.PENDING,
-                and_(
-                    PullRequestModel.status == PullRequestStatus.IN_PROGRESS,
-                    PullRequestModel.picked_at.is_(None),
-                ),
-            ),
-            is_replacement,
-        )
-    )
-    if combos is not None:
-        if not combos:
-            return []
-        wants_a_received_combo = exists().where(
-            PullRequestItemModel.pull_request_id == PullRequestModel.id,
-            or_(
-                *[
-                    and_(
-                        PullRequestItemModel.hardware_category == cat,
-                        PullRequestItemModel.product_code == code,
-                    )
-                    for cat, code in combos
-                ]
-            ),
-        )
-        stmt = stmt.where(wants_a_received_combo)
-    return list(session.scalars(stmt).unique().all())
-
-
-def notify_unblocked_replacement_pulls(
-    session: Session,
-    project_id: uuid.UUID | None,
-    received_combos: set[tuple[str, str]],
-) -> list:
-    """Claim what just landed for the replacements waiting on it, then tell the warehouse which of
-    them can now be approved (#344).
-
-    A PR-REPL pull waits with hardware outstanding - PENDING, or IN_PROGRESS after a short pick
-    (#367) - the PO is told to backfill, and when the backfill finally lands there is no signal that
-    the pull can now be filled. Somebody has to remember to go and retry it. This is that signal.
-
-    **The top-up runs first, and the order matters.** A replacement reserves what it can at flag time
-    and is usually short - that is why it is waiting. If this only announced the receive, the units
-    would stay free until somebody got round to approving, and any request created in the meantime
-    could take them: the pull would be announced as coverable and then come up short at approval,
-    which is exactly the loop the announcement exists to end. Claiming first makes the announcement
-    true when it is read.
-
-    **Dedupe, in three parts, and each part is doing different work:**
-
-    1. *Relevance.* Only pulls that wanted one of the combos this receive actually landed are
-       considered. A receive of door closers cannot change whether a hinge replacement is coverable.
-    2. *Coverability.* The pull must now be **fully** coverable, under the same reservation-aware
-       availability the approver will apply - `on-hand - deficient - everyone's reservations`, with
-       **this pull's own claim excluded**. That exclusion is mandatory, not a refinement: the top-up
-       above has just reserved the received units *for this pull*, so counting them as competing
-       demand would make the pull read as insufficient forever and the notification would never fire
-       again. It is the same self-coverage rule `confirm_pick` applies for the same reason.
-       A receive that narrows the gap without closing it changes nothing the warehouse can act on, so
-       it says nothing. Note this is the state *after* the receive only - the prior state is not
-       re-derived, so a pull that was already coverable and gets more stock still qualifies here;
-       what actually stops it being announced twice is rule 3.
-    3. *Open signal.* One **unread** notification per pull. If the last one has not been read yet,
-       the warehouse already knows; raising a second is noise. Once it has been read the signal has
-       done its job, so a pull that goes short again and is later covered again gets a fresh one.
-
-    Rule 3 is a check followed by an insert, so it needs the pull's row lock to mean anything: two
-    receives landing the same combo concurrently would both find no unread notification and both
-    write one. The lock is taken per pull, after the pull is known to be relevant and coverable, so a
-    receive that changes nothing takes no locks at all.
-
-    Returns the notifications raised, so callers and tests can assert on them.
-    """
-    if project_id is None or not received_combos:
-        return []
-    from .pull_requests import check_inventory_sufficiency, outstanding_loose_needs
-    from .reservations import top_up_replacement_reservations
-
-    top_up_replacement_reservations(session, project_id, received_combos)
-
-    raised = []
-    for pr in find_open_replacement_pulls(session, project_id, received_combos):
-        # What is *still* owed, not what the pull originally asked for (#367). A short-picked pull
-        # already has some of it on a cart; asking whether the original requirement is coverable
-        # would keep answering no long after the gap had closed, and the signal would never fire.
-        needs = [(cat, code, qty) for (cat, code), qty in outstanding_loose_needs(session, pr).items()]
-        if not needs:
-            continue
-        if not check_inventory_sufficiency(
-            session,
-            project_id,
-            needs,
-            reservation_aware=True,
-            exclude_reservations_of=(ReservationSource.REPLACEMENT_PULL, pr.id),
-        ).sufficient:
-            continue
-        if not lock_rows(session, PullRequestModel, [pr.id]):
-            continue
-        if notification_service.has_unread_notification_for_pull(session, pr.id, NotificationType.PULL_UNBLOCKED):
-            continue
-        raised.append(
-            notification_service.create_notification(
-                session,
-                project_id=project_id,
-                recipient_role=notification_service.WAREHOUSE_RECIPIENT_ROLE,
-                notification_type=NotificationType.PULL_UNBLOCKED,
-                message=(
-                    f"Replacement Pull Request {pr.request_number} can now be fulfilled - the hardware "
-                    "it was waiting on has been received. Pick it to release the replacement."
-                ),
-                pull_request_id=pr.id,
-            )
-        )
-    if raised:
-        session.flush()
-    return raised
 
 
 def get_po_receiving_details(session: Session, po_id: uuid.UUID) -> tuple[POModel, list[ReceiveRecordModel]]:
