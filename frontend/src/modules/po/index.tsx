@@ -160,7 +160,8 @@ interface POStatistics {
   vendorConfirmed: number;
   partiallyReceived: number;
   closed: number;
-  cancelled: number;
+  // No `cancelled`. The resolver still returns it, but every read on this page filters
+  // deleted_at IS NULL and cancel_po sets it, so the figure is always 0 - not worth fetching.
 }
 
 
