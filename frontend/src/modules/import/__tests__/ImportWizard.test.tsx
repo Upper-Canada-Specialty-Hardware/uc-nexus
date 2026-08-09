@@ -423,7 +423,7 @@ describe('ImportWizard step transitions', () => {
     expect(stepLabels()).toEqual([...REIMPORT_STEPS, 'Shop Assembly', 'Finalize']);
   });
 
-  it('shipping purpose (re-import) inserts only the Shipping PRs step', async () => {
+  it('shipping purpose (re-import) inserts only the Shipping Out step', async () => {
     renderWizard({ project: reimportProject, mocks: reimportMocks });
     await flushApollo();
     clickNext();
@@ -431,6 +431,33 @@ describe('ImportWizard step transitions', () => {
     fireEvent.click(screen.getByRole('radio', { name: /Pull Request for Shipping Out/i }));
 
     expect(stepLabels()).toEqual([...REIMPORT_STEPS, 'Shipping Out', 'Finalize']);
+  });
+
+  // The composer is the whole of both request steps now, so what is worth walking is that the offer
+  // reaches the screen: an opening whose hardware has all gone out is not offered again, and the one
+  // that is still owed something is.
+  it('offers only what the selected openings still have coming', async () => {
+    renderWizard({
+      project: reimportProject,
+      mocks: [...reimportBaseMocks, shippingReconcileMock, requestCoverageMock],
+    });
+    await flushApollo();
+    clickNext();
+
+    fireEvent.click(screen.getByRole('radio', { name: /Pull Request for Shipping Out/i }));
+    clickNext();
+    fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
+    clickNext();
+    await flushApollo();
+    clickNext();
+    await flushApollo();
+
+    expect(screen.getByRole('heading', { name: 'Shipping Out' })).toBeInTheDocument();
+    // O-2's lock is still owed; O-1's hinges are shop hardware that has already gone to the bench,
+    // so neither the zero-suggestion row nor the shop classification reaches this step.
+    // Twice: once in the reserve summary, once on the line itself.
+    expect(screen.getAllByText('LCK-200')).toHaveLength(2);
+    expect(screen.queryByText('HNG-100')).not.toBeInTheDocument();
   });
 
   it('blocks Next on Select Openings until at least one opening is selected', () => {

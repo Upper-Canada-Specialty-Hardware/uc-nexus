@@ -559,6 +559,7 @@ def test_on_order_counts_placed_pos_and_nets_off_what_arrived(db_session):
     po = PurchaseOrder(
         id=uuid.uuid4(),
         po_number=f"PO-{uuid.uuid4().hex[:6]}",
+        request_number=f"REQ-{uuid.uuid4().hex[:6]}",
         project_id=project.id,
         status=POStatus.PARTIALLY_RECEIVED,
     )
@@ -588,6 +589,7 @@ def test_a_draft_po_is_not_on_order(db_session):
     po = PurchaseOrder(
         id=uuid.uuid4(),
         po_number=f"PO-{uuid.uuid4().hex[:6]}",
+        request_number=f"REQ-{uuid.uuid4().hex[:6]}",
         project_id=project.id,
         status=POStatus.DRAFT,
     )
