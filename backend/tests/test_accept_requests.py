@@ -10,6 +10,7 @@ behaviour is meant to be the same the two are asserted the same way.
 """
 
 import uuid
+from datetime import datetime
 
 import pytest
 from sqlalchemy import select
@@ -51,6 +52,7 @@ def _seed_inventory(session, project_id, *, category="HINGE", code="HG-100", qua
         product_code=code,
         quantity=0,
         deficient_quantity=0,
+        received_at=datetime.utcnow(),
     )
     session.add(stock)
     session.flush()
@@ -63,6 +65,7 @@ def _seed_inventory(session, project_id, *, category="HINGE", code="HG-100", qua
         product_code=code,
         quantity=quantity,
         deficient_quantity=0,
+        received_at=datetime.utcnow(),
     )
     session.add(il)
     session.flush()

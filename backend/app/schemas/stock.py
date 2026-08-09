@@ -111,13 +111,6 @@ class StockQueries:
             )
             return [deficiency_review_to_type(r) for r in rows]
 
-    @strawberry.field
-    def stock_matches_for_opening(self, info: strawberry.Info, opening_item_id: strawberry.ID) -> list[StockItem]:
-        with SessionLocal() as session:
-            rows = stock_repository.get_stock_matches_for_opening(session, uuid.UUID(str(opening_item_id)))
-            return [stock_item_to_type(r) for r in rows]
-
-
 @strawberry.type
 class StockMutations:
     @strawberry.mutation

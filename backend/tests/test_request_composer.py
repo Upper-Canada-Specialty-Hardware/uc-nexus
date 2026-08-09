@@ -622,6 +622,7 @@ def test_availability_is_deliberately_absent(db_session):
         product_code=CODE,
         quantity=99,
         deficient_quantity=0,
+        received_at=datetime.utcnow(),
     )
     db_session.add(si)
     db_session.flush()
@@ -635,6 +636,7 @@ def test_availability_is_deliberately_absent(db_session):
             product_code=CODE,
             quantity=99,
             deficient_quantity=0,
+            received_at=datetime.utcnow(),
         )
     )
     db_session.flush()

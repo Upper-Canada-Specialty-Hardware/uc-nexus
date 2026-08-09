@@ -277,7 +277,15 @@ def _restore_opening_items(opening_item_state: postgresql.ENUM) -> None:
         sa.Column("created_at", sa.DateTime(), nullable=False),
         sa.Column("updated_at", sa.DateTime(), nullable=False),
         sa.ForeignKeyConstraint(["project_id"], ["projects.id"]),
-        sa.ForeignKeyConstraint(["warehouse_id"], ["warehouses.id"], ondelete="RESTRICT"),
+        # Named, because 033's downgrade drops it by name on the way further down - the same trap as
+        # `fk_pull_request_items_opening_item_id` above. An anonymous constraint here leaves the way
+        # back broken with a "constraint does not exist" three migrations later.
+        sa.ForeignKeyConstraint(
+            ["warehouse_id"],
+            ["warehouses.id"],
+            ondelete="RESTRICT",
+            name="fk_opening_items_warehouse_id",
+        ),
         sa.PrimaryKeyConstraint("id"),
         sa.CheckConstraint("quantity >= 1", name="ck_opening_items_quantity_positive"),
     )
