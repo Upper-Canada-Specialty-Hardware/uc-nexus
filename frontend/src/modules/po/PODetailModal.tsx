@@ -487,7 +487,9 @@ export default function PODetailModal({
   const canRegisterInGp = po.status === 'DRAFT';
   const relayConnected = relayConnectedProp === true;
 
-  const canCancel = po.status === 'DRAFT' || po.status === 'GP_REGISTERED' || po.status === 'VENDOR_CONFIRMED';
+  // Draft only. Cancelling never told GP anything, so cancelling a registered PO left GP holding a
+  // live PO against the job that Nexus had dropped. Once GP has it, GP is where it gets unwound.
+  const canCancel = po.status === 'DRAFT';
 
   // The supplier PO document reads the buyer list + GP totals live, so it's only for a PO that
   // exists in GP (has a GP company + number) and needs the relay connected.
@@ -931,7 +933,7 @@ export default function PODetailModal({
       <ConfirmDialog
         open={confirmCancelOpen}
         title="Cancel PO"
-        message="Are you sure you want to cancel this PO? This action cannot be undone."
+        message="Cancelling removes this draft from the PO list for good, and returns its hardware to the schedule as still needing to be ordered. This cannot be undone."
         confirmLabel="Cancel PO"
         cancelLabel="Go Back"
         onConfirm={handleCancelPO}

@@ -57,8 +57,11 @@ export default function ClassificationStep({
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, mb: 1 }}>
         {isReimport
-          ? `${itemCount} items need ordering (not available or partial in inventory).`
-          : `${itemCount} hardware items across ${openingCount} openings.`}
+          ? `${itemCount} lines need ordering (not available or partial in inventory).`
+          : // "Lines", not "hardware items": these rows are aggregated by classification key, so 52
+            // of them can carry 70 pieces. Finalize counts the pieces, and calling both "hardware
+            // items" made two true numbers look like one of them was wrong.
+            `${itemCount} hardware lines across ${openingCount} openings.`}
       </Typography>
 
       {isReadOnly ? (

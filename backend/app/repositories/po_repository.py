@@ -649,10 +649,16 @@ def update_po(
 def cancel_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
     """
     - Validate exists + not soft-deleted (NotFoundError)
-    - Validate status in (Draft, GP_Registered, Vendor_Confirmed) (InvalidStateTransitionError)
+    - Validate status is DRAFT (InvalidStateTransitionError)
     - Set status=Cancelled, deleted_at=datetime.utcnow()
     - Release the PO's hardware-schedule rows back to AVAILABLE
     - Return updated PO
+
+    DRAFT only. Cancelling used to be legal at GP_REGISTERED and VENDOR_CONFIRMED too, and nothing
+    here ever told GP: the cancel is a local write with no relay call, so GP kept a live PO against
+    the job that Nexus had forgotten. That is a phantom commitment on the job cost, and the warehouse
+    can still receive against it on the GP side. A registered PO is GP's record now, so unwinding one
+    starts there and syncs back, rather than being something Nexus can decide on its own.
     """
     from app.models.hardware import HardwareItem
 
@@ -660,8 +666,11 @@ def cancel_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
     if po is None:
         raise NotFoundError(f"Purchase order {po_id} not found")
 
-    if po.status not in (POStatus.DRAFT, POStatus.GP_REGISTERED, POStatus.VENDOR_CONFIRMED):
-        raise InvalidStateTransitionError(f"Cannot cancel PO in {po.status.value} status")
+    if po.status is not POStatus.DRAFT:
+        raise InvalidStateTransitionError(
+            f"Cannot cancel PO in {po.status.value} status - only a draft can be cancelled. "
+            "Once a PO is registered in GP, cancel it there."
+        )
 
     po.status = POStatus.CANCELLED
     po.deleted_at = datetime.utcnow()

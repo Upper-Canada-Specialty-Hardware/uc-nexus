@@ -881,13 +881,10 @@ function PlaceMenu({
   disabledFor?: (c: Container) => boolean;
 }) {
   const [value, setValue] = useState('');
-  if (containers.length === 0) {
-    return (
-      <Typography variant="caption" color="text.secondary" sx={{ flexShrink: 0 }}>
-        No containers yet
-      </Typography>
-    );
-  }
+  // With no containers there is nothing to place into, and the panel on the right already says so
+  // once. Rendering the same sentence per row repeated it 34 times on a 34-leaf pool and read as
+  // noise on screen and as 34 identical announcements to a screen reader. Render nothing instead.
+  if (containers.length === 0) return null;
   return (
     <TextField
       select

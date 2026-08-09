@@ -473,7 +473,10 @@ async function flushApollo() {
   });
 }
 
-const BASE_STEPS = ['Upload File', 'Purpose', 'Select Openings', 'Reconciliation'];
+// Reconciliation only exists when there is something to reconcile against - a project with persisted
+// openings. On a first import it has nothing to compare and is left out of the stepper entirely.
+const FIRST_IMPORT_STEPS = ['Upload File', 'Purpose', 'Select Openings'];
+const REIMPORT_STEPS = [...FIRST_IMPORT_STEPS, 'Reconciliation'];
 
 beforeEach(() => {
   mockedUseParser.mockReset();
@@ -491,7 +494,7 @@ describe('ImportWizard step transitions', () => {
 
     expect(screen.getByRole('heading', { name: 'Hardware Schedule' })).toBeInTheDocument();
     expect(screen.getByText('Drag and drop an XML file here')).toBeInTheDocument();
-    expect(stepLabels()).toEqual([...BASE_STEPS, 'Finalize']);
+    expect(stepLabels()).toEqual([...FIRST_IMPORT_STEPS, 'Finalize']);
     expect(nextButton()).toBeDisabled();
   });
 
@@ -517,10 +520,10 @@ describe('ImportWizard step transitions', () => {
     renderWizard();
     clickNext();
 
-    expect(stepLabels()).toEqual([...BASE_STEPS, 'Finalize']);
+    expect(stepLabels()).toEqual([...FIRST_IMPORT_STEPS, 'Finalize']);
     fireEvent.click(screen.getByRole('radio', { name: /Create Purchase Orders/i }));
 
-    expect(stepLabels()).toEqual([...BASE_STEPS, 'Classification', 'Purchase Orders', 'Finalize']);
+    expect(stepLabels()).toEqual([...FIRST_IMPORT_STEPS, 'Classification', 'Purchase Orders', 'Finalize']);
   });
 
   // #492: the assembly flow used to carry a Classification step. It asked the user to re-answer a
@@ -533,7 +536,7 @@ describe('ImportWizard step transitions', () => {
 
     fireEvent.click(screen.getByRole('radio', { name: /Pull Request for Shop Assembly/i }));
 
-    expect(stepLabels()).toEqual([...BASE_STEPS, 'Shop Assembly', 'Finalize']);
+    expect(stepLabels()).toEqual([...REIMPORT_STEPS, 'Shop Assembly', 'Finalize']);
   });
 
   it('shipping purpose (re-import) inserts only the Shipping PRs step', async () => {
@@ -543,7 +546,7 @@ describe('ImportWizard step transitions', () => {
 
     fireEvent.click(screen.getByRole('radio', { name: /Pull Request for Shipping Out/i }));
 
-    expect(stepLabels()).toEqual([...BASE_STEPS, 'Shipping PRs', 'Finalize']);
+    expect(stepLabels()).toEqual([...REIMPORT_STEPS, 'Shipping PRs', 'Finalize']);
   });
 
   it('blocks Next on Select Openings until at least one opening is selected', () => {
@@ -682,7 +685,10 @@ describe('ImportWizard step transitions', () => {
     expect(screen.getByText('Opening O-1 - Leaf 2')).toBeInTheDocument();
   });
 
-  it('walks the po path through Reconciliation to Classification and gates on unclassified items', () => {
+  // A first import has no persisted openings, so Reconciliation has nothing to compare against and
+  // is skipped outright: Select Openings goes straight to Classification. It used to render a lone
+  // "New project" banner over an empty full-screen step and demand a click for it.
+  it('skips Reconciliation on a first import and lands on Classification', () => {
     renderWizard();
     clickNext();
     fireEvent.click(screen.getByRole('radio', { name: /Create Purchase Orders/i }));
@@ -690,15 +696,23 @@ describe('ImportWizard step transitions', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
     clickNext();
 
-    // first import: reconciliation is informational and never blocks
-    expect(screen.getByRole('heading', { name: 'Reconciliation' })).toBeInTheDocument();
-    expect(screen.getByText(/New project/)).toBeInTheDocument();
-    expect(nextButton()).toBeEnabled();
-    clickNext();
-
+    expect(screen.queryByRole('heading', { name: 'Reconciliation' })).not.toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Classification' })).toBeInTheDocument();
     expect(screen.getByText('0 of 2 items classified')).toBeInTheDocument();
     expect(nextButton()).toBeDisabled();
+  });
+
+  it('walks the po path through Reconciliation to Classification on a re-import', async () => {
+    renderWizard({ project: reimportProject, mocks: reimportMocks });
+    await flushApollo();
+    clickNext();
+    fireEvent.click(screen.getByRole('radio', { name: /Create Purchase Orders/i }));
+    clickNext();
+    fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
+    clickNext();
+    await flushApollo();
+
+    expect(screen.getByRole('heading', { name: 'Reconciliation' })).toBeInTheDocument();
   });
 });
 
