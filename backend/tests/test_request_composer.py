@@ -20,6 +20,7 @@ from sqlalchemy import select
 
 from app.models.enums import (
     Classification,
+    HardwareItemState,
     POStatus,
     PullRequestSource,
     PullRequestStatus,
@@ -69,6 +70,7 @@ def _owe(session, project, opening, quantity, *, leaf=None, code=CODE, classific
             item_quantity=quantity,
             leaf=leaf,
             classification=classification,
+            state=HardwareItemState.AVAILABLE,
         )
     )
     session.flush()

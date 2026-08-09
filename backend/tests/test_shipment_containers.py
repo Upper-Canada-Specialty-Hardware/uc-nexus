@@ -277,7 +277,7 @@ def test_a_missing_container_is_a_not_found(db_session):
 
 
 def _pool_loose(session, project):
-    return containers.build_staged_pool(session, project.id)["loose"]
+    return containers.build_staged_pool(session, project.id)
 
 
 def test_two_openings_staging_one_product_are_two_quantities(db_session):
