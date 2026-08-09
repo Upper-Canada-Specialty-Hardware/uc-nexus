@@ -30,10 +30,8 @@ import { useIdentity } from '../../hooks/useIdentity';
 import { useToast } from '../../components/Toast';
 import Modal from '../../components/Modal';
 import ConfirmDialog from '../../components/ConfirmDialog';
-import PullStagingPanel from './PullStagingPanel';
-import { isCancellable, pullPhase } from './pullStaging';
+import { isCancellable, pullPhase } from './pullPhase';
 import type { PullRequest } from './PullRequestQueue';
-import { leafIdentity } from '../../utils/leaf';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { parseServerDate } from '../../utils/serverDate';
 
@@ -151,8 +149,6 @@ export default function PullRequestDetailModal({
     setCancelBlockedMessage(null);
   }, []);
 
-  const looseItems = pr.items.filter((item) => item.itemType === 'LOOSE');
-  const openingItems = pr.items.filter((item) => item.itemType === 'OPENING_ITEM');
 
   // The availability lookup that used to live here is gone with the approve gate (#367). It answered
   // "will approving this succeed", and approving no longer moves anything - real per-location
@@ -265,7 +261,6 @@ export default function PullRequestDetailModal({
   // only once the pick is confirmed - staging is a claim that a cart is built, and before the pick
   // the hardware is still on the shelf. It stays visible after completion, read-only, so the record
   // of who staged what survives the pull being finished.
-  const showStaging = pr.source === 'SHOP_ASSEMBLY' && ((isInProgress && isPicked) || isCompleted);
   const canCancel = isCancellable(pr);
   const phase = pullPhase(pr);
 
@@ -441,18 +436,6 @@ export default function PullRequestDetailModal({
 
         <Divider sx={{ mb: 2 }} />
 
-        {/* Per-opening staging checklist (#343). Read-only once the pull is complete. */}
-        {showStaging && (
-          <PullStagingPanel
-            pullRequestId={pr.id}
-            pullRequestNumber={pr.requestNumber}
-            editable={isInProgress}
-            onStaged={(completed) => {
-              if (completed) onRefetch();
-            }}
-          />
-        )}
-
         {/* Items table */}
         <SectionHeading>Items ({pr.items.length})</SectionHeading>
 
@@ -461,77 +444,28 @@ export default function PullRequestDetailModal({
             No items in this pull request.
           </Typography>
         ) : (
-          <>
-            {/* Loose Items */}
-            {looseItems.length > 0 && (
-              <Box sx={{ mb: 2 }}>
-                <Typography variant="subtitle2" gutterBottom>
-                  Loose Items ({looseItems.length})
-                </Typography>
-                {/* The Available Qty and Status columns are gone with the approve gate (#367).
-                    They forecast whether approval would succeed, off a project-wide aggregate; the
-                    pick page shows the real numbers per location to the person at the rack. */}
-                <Table size="small" sx={{ '& td': { fontSize: '0.8125rem' } }}>
-                  <TableHead>
-                    <TableRow>
-                      <TableCell>Product Code</TableCell>
-                      <TableCell>Hardware Category</TableCell>
-                      <TableCell>Leaf</TableCell>
-                      <TableCell align="right">Requested Qty</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {looseItems.map((item) => (
-                      <TableRow key={item.id} hover>
-                        <TableCell sx={monoSx}>{item.productCode ?? '-'}</TableCell>
-                        <TableCell>{item.hardwareCategory ?? '-'}</TableCell>
-                        <TableCell sx={monoSx}>{leafIdentity(item.openingNumber, item.leaf)}</TableCell>
-                        <TableCell align="right">{item.requestedQuantity}</TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </Box>
-            )}
-
-            {/* Opening Items */}
-            {openingItems.length > 0 && (
-              <Box sx={{ mb: 2 }}>
-                <Typography variant="subtitle2" gutterBottom>
-                  Assembled Opening Items ({openingItems.length})
-                </Typography>
-                <Table size="small" sx={{ '& td': { fontSize: '0.8125rem' } }}>
-                  <TableHead>
-                    <TableRow>
-                      {/* #335: a pair ships as two lines. Without the leaf they read identically. */}
-                      <TableCell>Leaf</TableCell>
-                      <TableCell align="right">Requested Qty</TableCell>
-                      <TableCell>Collected</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {openingItems.map((item) => (
-                      <TableRow key={item.id} hover>
-                        <TableCell sx={monoSx}>{leafIdentity(item.openingNumber, item.leaf)}</TableCell>
-                        <TableCell align="right">{item.requestedQuantity}</TableCell>
-                        <TableCell>
-                          {item.fetchedAt ? (
-                            <Typography variant="caption" color="text.secondary" sx={tabularSx}>
-                              {item.fetchedBy} {formatDateTime(item.fetchedAt)}
-                            </Typography>
-                          ) : (
-                            <Typography variant="body2" color="text.secondary">
-                              Not yet
-                            </Typography>
-                          )}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </Box>
-            )}
-          </>
+          <Table size="small" sx={{ '& td': { fontSize: '0.8125rem' } }}>
+            <TableHead>
+              <TableRow>
+                <TableCell>Opening</TableCell>
+                <TableCell>Product Code</TableCell>
+                <TableCell>Hardware Category</TableCell>
+                <TableCell align="right">Requested Qty</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {pr.items.map((item) => (
+                <TableRow key={item.id} hover>
+                  {/* Null on a line raised straight off inventory (#451): shelf stock belongs to
+                      the project, not to a door, so there is no cart for it to name. */}
+                  <TableCell sx={monoSx}>{item.openingNumber ?? '-'}</TableCell>
+                  <TableCell sx={monoSx}>{item.productCode}</TableCell>
+                  <TableCell>{item.hardwareCategory}</TableCell>
+                  <TableCell align="right">{item.requestedQuantity}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
         )}
       </Modal>
 
@@ -539,11 +473,7 @@ export default function PullRequestDetailModal({
       <ConfirmDialog
         open={confirmCompleteOpen}
         title="Complete Pull Request"
-        message={
-          showStaging
-            ? `Mark Pull Request ${pr.requestNumber} as pulled? Any opening not yet confirmed will be staged as well.`
-            : `Mark Pull Request ${pr.requestNumber} as pulled? This action cannot be undone.`
-        }
+        message={`Hand Pull Request ${pr.requestNumber} over? This is where the system stops following the hardware - it cannot be undone.`}
         confirmLabel="Mark as Pulled"
         cancelLabel="Cancel"
         onConfirm={handleComplete}
@@ -551,9 +481,7 @@ export default function PullRequestDetailModal({
       />
 
       {/* Cancel: its own dialog rather than ConfirmDialog, because it takes a reason and has to be
-          able to show the server's blocker list without closing. Closing clears that blocker list:
-          it names openings as they were at the moment of the refusal, and re-opening the dialog
-          after somebody has gone and finished them would otherwise re-assert a stale accusation. */}
+          able to show the server's refusal without closing. */}
       <Modal
         open={cancelOpen}
         title={`Cancel ${pr.requestNumber}`}

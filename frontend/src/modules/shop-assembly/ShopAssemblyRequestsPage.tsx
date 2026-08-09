@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   Box,
   Chip,
@@ -20,12 +20,20 @@ import {
   REOPEN_SHOP_ASSEMBLY_REQUEST,
 } from '../../graphql/shop-assembly';
 import RequestsReviewPage from '../../components/RequestsReviewPage';
-import { leafSuffix } from '../../utils/leaf';
 import { monoSx } from '../../theme';
 import { FadeIn } from '../../motion';
+import {
+  STAGE_COLOR,
+  STAGE_LABEL,
+  STAGE_ORDER,
+  reopenBlockedReason,
+  type RequestStage,
+} from './requestStages';
 
-interface RequestOpeningItem {
+interface RequestItem {
   id: string;
+  /** Which door this quantity is owed to, as a tag. Null on a line raised straight off inventory. */
+  openingNumber: string | null;
   hardwareCategory: string;
   productCode: string;
   /** Owed by the schedule. */
@@ -34,103 +42,147 @@ interface RequestOpeningItem {
   allocatedQuantity: number;
 }
 
-interface RequestOpening {
-  id: string;
-  openingNumber: string | null;
-  building: string | null;
-  floor: string | null;
-  leaf: number | null;
-  items: RequestOpeningItem[];
-}
-
 interface ShopAssemblyRequest {
   id: string;
   requestNumber: string;
   projectId: string;
   status: string;
+  stage: RequestStage;
   createdBy: string;
   createdAt: string;
   /** Set when a schedule re-upload landed under this request, or it holds no reservation (#342). */
   integrityNote: string | null;
-  openings: RequestOpening[];
+  items: RequestItem[];
+}
+
+type View = 'PENDING' | 'APPROVED' | 'REJECTED';
+
+const VIEW_COPY: Record<View, { description: string; empty: string }> = {
+  PENDING: {
+    description:
+      'Requests waiting on you. The hardware was reserved when the request was created, so accepting is purely your approval: it creates the warehouse pull request. Rejecting releases the reservation.',
+    empty: 'No shop assembly requests are waiting.',
+  },
+  APPROVED: {
+    description:
+      'Accepted requests and where their pull has got to. Reopen undoes an accept and sends the request back to Pending, which only works while the warehouse has not started the pull.',
+    empty: 'No accepted shop assembly requests.',
+  },
+  REJECTED: {
+    description: 'Requests that were turned down. Their claim on inventory was released at rejection.',
+    empty: 'No rejected shop assembly requests.',
+  },
+};
+
+/** Lines grouped by their opening tag, in opening order with the untagged ones last. */
+function groupByOpening(items: RequestItem[]): [string | null, RequestItem[]][] {
+  const groups = new Map<string | null, RequestItem[]>();
+  for (const item of items) {
+    const key = item.openingNumber || null;
+    const bucket = groups.get(key);
+    if (bucket) bucket.push(item);
+    else groups.set(key, [item]);
+  }
+  // Untagged lines belong to the project rather than to any door, so they read as a trailing
+  // "everything else" group rather than jumping the queue ahead of opening 0101.
+  return [...groups.entries()].sort(([a], [b]) => {
+    if (a === b) return 0;
+    if (a === null) return 1;
+    if (b === null) return -1;
+    return a.localeCompare(b);
+  });
 }
 
 export default function ShopAssemblyRequestsPage() {
-  const [view, setView] = useState<'PENDING' | 'APPROVED'>('PENDING');
+  const [view, setView] = useState<View>('PENDING');
   const { data, loading, refetch } = useQuery<{ shopAssemblyRequests: ShopAssemblyRequest[] }>(
     GET_SHOP_ASSEMBLY_REQUESTS,
-    { variables: { status: view, reopenableOnly: view === 'APPROVED' }, fetchPolicy: 'cache-and-network' },
+    { variables: { status: view }, fetchPolicy: 'cache-and-network' },
   );
+
+  const requests = useMemo(() => data?.shopAssemblyRequests ?? [], [data]);
+
+  // The pipeline, folded in: one count per rung, over the accepted requests this view already holds.
+  // Not a second query - the stage is on every row, so the ladder is a reduction over the list.
+  const stageCounts = useMemo(() => {
+    const counts = new Map<RequestStage, number>();
+    for (const req of requests) counts.set(req.stage, (counts.get(req.stage) ?? 0) + 1);
+    return counts;
+  }, [requests]);
 
   return (
     <Box>
       <FadeIn>
-        <ToggleButtonGroup
-          size="small"
-          exclusive
-          value={view}
-          onChange={(_e, next) => next && setView(next)}
-          sx={{ mb: 2 }}
-        >
-          <ToggleButton value="PENDING">Pending</ToggleButton>
-          <ToggleButton value="APPROVED">Approved</ToggleButton>
-        </ToggleButtonGroup>
+        <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap" sx={{ mb: 2 }}>
+          <ToggleButtonGroup
+            size="small"
+            exclusive
+            value={view}
+            onChange={(_e, next) => next && setView(next)}
+          >
+            <ToggleButton value="PENDING">Pending</ToggleButton>
+            <ToggleButton value="APPROVED">Accepted</ToggleButton>
+            <ToggleButton value="REJECTED">Rejected</ToggleButton>
+          </ToggleButtonGroup>
+
+          {view === 'APPROVED' && (
+            <Stack direction="row" spacing={0.75} alignItems="center">
+              {STAGE_ORDER.filter((stage) => stage !== 'REQUESTED').map((stage) => (
+                <Chip
+                  key={stage}
+                  size="small"
+                  variant="outlined"
+                  color={STAGE_COLOR[stage]}
+                  label={`${STAGE_LABEL[stage]} ${stageCounts.get(stage) ?? 0}`}
+                />
+              ))}
+            </Stack>
+          )}
+        </Stack>
       </FadeIn>
 
       <RequestsReviewPage<ShopAssemblyRequest>
         title="Shop Assembly Requests"
-        description={
-          view === 'PENDING'
-            ? 'Pending requests from Start a Request. The hardware was reserved when the request was created, so accepting is purely your approval: it creates the warehouse pull request. Rejecting releases the reservation.'
-            : 'Accepted requests whose warehouse pull has not started yet. Reopen one to undo the accept and send it back to Pending.'
-        }
-        emptyMessage={
-          view === 'PENDING' ? 'No pending shop assembly requests.' : 'No shop assembly requests can be reopened.'
-        }
+        description={VIEW_COPY[view].description}
+        emptyMessage={VIEW_COPY[view].empty}
         loading={loading}
         loaded={data !== undefined}
-        requests={data?.shopAssemblyRequests ?? []}
+        requests={requests}
         acceptMutation={ACCEPT_SHOP_ASSEMBLY_REQUEST}
         rejectMutation={REJECT_SHOP_ASSEMBLY_REQUEST}
         reopenMutation={REOPEN_SHOP_ASSEMBLY_REQUEST}
-        mode={view === 'APPROVED' ? 'approved' : 'pending'}
+        mode={view === 'PENDING' ? 'pending' : 'approved'}
+        reopenDisabledReason={(req) =>
+          view === 'REJECTED' ? 'This request was rejected.' : reopenBlockedReason(req.stage)
+        }
         onChanged={refetch}
         renderSummary={(req) => {
           // The acceptor is approving a pull for the ALLOCATED quantities, so the short count has to
-          // be on the summary line, not buried in the per-leaf tables. Approving a request that is
-          // knowingly short is fine; approving one without knowing it is short is not.
-          const short = req.openings.reduce(
-            (sum, o) => sum + o.items.reduce((n, i) => n + (i.quantity - i.allocatedQuantity), 0),
-            0,
-          );
+          // be on the summary line, not buried in the per-opening tables. Approving a request that
+          // is knowingly short is fine; approving one without knowing it is short is not.
+          const short = req.items.reduce((n, i) => n + (i.quantity - i.allocatedQuantity), 0);
+          const openings = new Set(req.items.map((i) => i.openingNumber || '')).size;
           return (
             <Stack direction="row" spacing={1}>
-              <Chip label={`${req.openings.length} opening(s)`} size="small" variant="outlined" />
+              <Chip
+                size="small"
+                variant="outlined"
+                color={STAGE_COLOR[req.stage]}
+                label={STAGE_LABEL[req.stage]}
+              />
+              <Chip label={`${openings} opening(s)`} size="small" variant="outlined" />
               {short > 0 && (
-                <Chip
-                  label={`${short} unit(s) short`}
-                  size="small"
-                  variant="outlined"
-                  color="warning"
-                />
+                <Chip label={`${short} unit(s) short`} size="small" variant="outlined" color="warning" />
               )}
             </Stack>
           );
         }}
         renderDetails={(req) =>
-        req.openings.map((opening) => (
-          <Box key={opening.id}>
-            <Stack direction="row" spacing={1} alignItems="baseline" sx={{ mb: 0.5 }}>
-              <Typography variant="subtitle2" sx={{ ...monoSx, fontWeight: 600 }}>
-                {(opening.openingNumber || opening.id.slice(0, 8)) + leafSuffix(opening.leaf)}
+          groupByOpening(req.items).map(([openingNumber, items]) => (
+            <Box key={openingNumber ?? '__untagged'}>
+              <Typography variant="subtitle2" sx={{ ...monoSx, fontWeight: 600, mb: 0.5 }}>
+                {openingNumber ?? 'No opening'}
               </Typography>
-              {(opening.building || opening.floor) && (
-                <Typography variant="caption" color="text.secondary">
-                  {[opening.building, opening.floor].filter(Boolean).join(' / ')}
-                </Typography>
-              )}
-            </Stack>
-            {opening.items.length > 0 ? (
               <Table size="small">
                 <TableHead>
                   <TableRow>
@@ -141,7 +193,7 @@ export default function ShopAssemblyRequestsPage() {
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {opening.items.map((item) => (
+                  {items.map((item) => (
                     <TableRow key={item.id} hover>
                       <TableCell sx={monoSx}>{item.productCode}</TableCell>
                       <TableCell>{item.hardwareCategory}</TableCell>
@@ -162,13 +214,8 @@ export default function ShopAssemblyRequestsPage() {
                   ))}
                 </TableBody>
               </Table>
-            ) : (
-              <Typography variant="body2" color="text.secondary">
-                No hardware items.
-              </Typography>
-            )}
-          </Box>
-        ))
+            </Box>
+          ))
         }
       />
     </Box>

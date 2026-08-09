@@ -3,7 +3,7 @@ import { MockedProvider, type MockedResponse } from '@apollo/client/testing/reac
 import { ToastProvider } from '../../../components/Toast';
 import RequestBuilderDialog from '../RequestBuilderDialog';
 import { CREATE_SHIPPING_OUT_REQUEST, EDIT_SHIPPING_OUT_REQUEST } from '../../../graphql/shipping';
-import { GET_OPENING_ITEMS, GET_PROJECT_INVENTORY_AVAILABILITY } from '../../../graphql/warehouse';
+import { GET_PROJECT_INVENTORY_AVAILABILITY } from '../../../graphql/warehouse';
 
 /**
  * Composing a shipping-out request from what the project has rather than from the schedule (#451).
@@ -34,16 +34,10 @@ const availabilityMock: MockedResponse = {
   },
 };
 
-const noLeavesMock: MockedResponse = {
-  request: { query: GET_OPENING_ITEMS, variables: { projectId: PROJECT_ID } },
-  maxUsageCount: Number.POSITIVE_INFINITY,
-  result: { data: { openingItems: [] } },
-};
-
 function renderDialog(props: Partial<React.ComponentProps<typeof RequestBuilderDialog>> = {}, mocks: MockedResponse[] = []) {
   const onSaved = vi.fn();
   render(
-    <MockedProvider mocks={[availabilityMock, noLeavesMock, ...mocks]}>
+    <MockedProvider mocks={[availabilityMock, ...mocks]}>
       <ToastProvider>
         <RequestBuilderDialog
           open
@@ -75,13 +69,9 @@ it('sends a loose line with no opening at all', async () => {
         input: {
           projectId: PROJECT_ID,
           requestNumber: 'SOR-9',
-          acknowledgeIncompleteLeaves: false,
           items: [
             {
-              itemType: 'LOOSE',
               openingNumber: null,
-              openingItemId: null,
-              leaf: null,
               hardwareCategory: 'HINGE',
               productCode: 'HG-100',
               requestedQuantity: 1,
@@ -134,10 +124,7 @@ it('adds back what the request already holds when working out an edit headroom',
       requestNumber: 'SOR-1',
       items: [
         {
-          itemType: 'LOOSE',
           openingNumber: null,
-          openingItemId: null,
-          leaf: null,
           hardwareCategory: 'HINGE',
           productCode: 'HG-100',
           requestedQuantity: 3,
@@ -158,19 +145,13 @@ const SCHEDULE_RAISED = {
   requestNumber: 'SOR-1',
   items: [
     {
-      itemType: 'LOOSE',
       openingNumber: 'A01',
-      openingItemId: null,
-      leaf: null,
       hardwareCategory: 'HINGE',
       productCode: 'HG-100',
       requestedQuantity: 2,
     },
     {
-      itemType: 'LOOSE',
       openingNumber: 'A02',
-      openingItemId: null,
-      leaf: null,
       hardwareCategory: 'HINGE',
       productCode: 'HG-100',
       requestedQuantity: 3,
@@ -204,22 +185,15 @@ it('spends a reduction off the newest line, leaving the attributed ones intact',
       variables: {
         input: {
           id: 'req-1',
-          acknowledgeIncompleteLeaves: false,
           items: [
             {
-              itemType: 'LOOSE',
               openingNumber: 'A01',
-              openingItemId: null,
-              leaf: null,
               hardwareCategory: 'HINGE',
               productCode: 'HG-100',
               requestedQuantity: 2,
             },
             {
-              itemType: 'LOOSE',
               openingNumber: 'A02',
-              openingItemId: null,
-              leaf: null,
               hardwareCategory: 'HINGE',
               productCode: 'HG-100',
               requestedQuantity: 1,
@@ -254,82 +228,10 @@ it('spends a reduction off the newest line, leaving the attributed ones intact',
   await waitFor(() => expect(onSaved).toHaveBeenCalled());
 });
 
-it('asks before sending a leaf the backend says is short, then re-sends with the acknowledgment', async () => {
-  // #341 is warn-and-confirm, not a block. Sending the acknowledgment unconditionally would mean
-  // the warning could never reach anyone.
-  const refusal = 'These assembled leaves are incomplete: Opening A01 Leaf 1 (1 unit(s) never pulled).';
-  const attempt = (acknowledgeIncompleteLeaves: boolean) => ({
-    query: CREATE_SHIPPING_OUT_REQUEST,
-    variables: {
-      input: {
-        projectId: PROJECT_ID,
-        requestNumber: 'SOR-9',
-        acknowledgeIncompleteLeaves,
-        items: [
-          {
-            itemType: 'LOOSE',
-            openingNumber: null,
-            openingItemId: null,
-            leaf: null,
-            hardwareCategory: 'HINGE',
-            productCode: 'HG-100',
-            requestedQuantity: 1,
-          },
-        ],
-      },
-    },
-  });
-
-  const { onSaved } = renderDialog({}, [
-    {
-      request: attempt(false),
-      result: {
-        errors: [
-          {
-            message: refusal,
-            extensions: { code: 'VALIDATION_ERROR', field: 'acknowledge_incomplete_leaves' },
-          },
-        ],
-      },
-    } as MockedResponse,
-    {
-      request: attempt(true),
-      result: {
-        data: {
-          createShippingOutRequest: {
-            id: 'req-1',
-            requestNumber: 'SOR-9',
-            projectId: PROJECT_ID,
-            status: 'PENDING',
-            createdBy: 'Shipper',
-            createdAt: '2026-08-03T00:00:00',
-            integrityNote: null,
-            items: [],
-          },
-        },
-      },
-    },
-  ]);
-  await flush();
-
-  fireEvent.change(screen.getByRole('textbox', { name: /Request number/i }), {
-    target: { value: 'SOR-9' },
-  });
-  fireEvent.click(await screen.findByRole('button', { name: 'Add' }));
-  fireEvent.click(screen.getByRole('button', { name: /Create request/i }));
-
-  // The backend's own words, so the user can see which leaves and why.
-  expect(await screen.findByText(refusal)).toBeInTheDocument();
-  expect(onSaved).not.toHaveBeenCalled();
-
-  fireEvent.click(screen.getByRole('button', { name: /Send them short/i }));
-  await waitFor(() => expect(onSaved).toHaveBeenCalled());
-});
-
-it('leaves a refusal nobody can confirm as a plain error', async () => {
+it('shows the server refusal as a plain error', async () => {
   // A leaf already on another request does not become free because someone clicked a button, so
   // this must not offer to re-send.
-  const refusal = 'These assembled leaves are already on a live shipping-out request: Opening A01 Leaf 1 (on SOR-2).';
+  const refusal = 'HG-100: not enough available inventory to cover this request.';
   const { onSaved } = renderDialog({}, [
     {
       request: {
@@ -338,13 +240,9 @@ it('leaves a refusal nobody can confirm as a plain error', async () => {
           input: {
             projectId: PROJECT_ID,
             requestNumber: 'SOR-9',
-            acknowledgeIncompleteLeaves: false,
             items: [
               {
-                itemType: 'LOOSE',
                 openingNumber: null,
-                openingItemId: null,
-                leaf: null,
                 hardwareCategory: 'HINGE',
                 productCode: 'HG-100',
                 requestedQuantity: 1,
@@ -378,13 +276,9 @@ it('replaces the whole item list on save', async () => {
       variables: {
         input: {
           id: 'req-1',
-          acknowledgeIncompleteLeaves: false,
           items: [
             {
-              itemType: 'LOOSE',
               openingNumber: null,
-              openingItemId: null,
-              leaf: null,
               hardwareCategory: 'HINGE',
               productCode: 'HG-100',
               requestedQuantity: 5,
@@ -416,10 +310,7 @@ it('replaces the whole item list on save', async () => {
         requestNumber: 'SOR-1',
         items: [
           {
-            itemType: 'LOOSE',
             openingNumber: null,
-            openingItemId: null,
-            leaf: null,
             hardwareCategory: 'HINGE',
             productCode: 'HG-100',
             requestedQuantity: 3,
