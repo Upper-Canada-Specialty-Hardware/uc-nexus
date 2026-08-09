@@ -2,9 +2,8 @@
 
 Covers the whole lifecycle table in `warehouse/reservations.py` - reserve on create (both request
 types), the availability arithmetic including deficient units and other requests' claims, release on
-reject, hold across a reopen, consumption at pull approval with self-coverage, the PR-REPL pull that
-holds no claim but must still respect everyone else's, and the request-integrity guards
-(duplicate/degenerate/cross-type) and re-upload policy that ship with them.
+reject, hold across a reopen, consumption at the pick with self-coverage, and the degenerate-request
+guards and re-upload policy that ship with them.
 
 DB-backed like the rest of the suite: every test runs against a real Postgres in a rolled-back
 transaction.
@@ -18,23 +17,18 @@ from sqlalchemy import select
 
 from app.errors import ConflictError, InventoryShortfallError, ValidationError
 from app.models.enums import (
-    AssemblyStatus,
-    OpeningItemState,
-    PullRequestItemType,
     PullRequestSource,
     PullRequestStatus,
-    PullStatus,
     ReservationSource,
     ShippingOutRequestStatus,
     ShopAssemblyRequestStatus,
 )
 from app.models.inventory import InventoryLocation
 from app.models.inventory_reservation import InventoryReservation
-from app.models.opening_item import OpeningItem, OpeningItemHardware
-from app.models.project import Opening, Project
+from app.models.project import Project
 from app.models.pull_request import PullRequest, PullRequestItem
 from app.models.shipping_out_request import ShippingOutRequest
-from app.models.shop_assembly import ShopAssemblyOpening, ShopAssemblyOpeningItem, ShopAssemblyRequest
+from app.models.shop_assembly import ShopAssemblyRequest, ShopAssemblyRequestItem
 from app.models.stock_item import StockItem
 from app.repositories import (
     import_repository,
@@ -97,16 +91,17 @@ def _reserved_total(session, project_id, category="HINGE", code="HG-100"):
     return warehouse_repository.get_reserved_quantities(session, project_id).get((category, code), 0)
 
 
-def _finalize_sar(session, project, *, qty=2, code="HG-100", opening_number="A01", leaf=None, openings=None):
+def _finalize_sar(session, project, *, qty=2, code="HG-100", opening_number="A01", items=None):
     """Create a shop-assembly request through the real creation path (which is where the gate is)."""
-    sa_openings = openings or [
+    sa_items = items or [
         {
             "opening_number": opening_number,
-            "leaf": leaf,
-            "items": [{"hardware_category": "HINGE", "product_code": code, "quantity": qty}],
+            "hardware_category": "HINGE",
+            "product_code": code,
+            "quantity": qty,
         }
     ]
-    numbers = sorted({o["opening_number"] for o in sa_openings})
+    numbers = sorted({i["opening_number"] for i in sa_items if i.get("opening_number")})
     return import_repository.finalize_import_session(
         session,
         {
@@ -114,8 +109,7 @@ def _finalize_sar(session, project, *, qty=2, code="HG-100", opening_number="A01
             "openings": [{"opening_number": n} for n in numbers],
             "hardware_items": [],
             "include_shop_assembly_request": True,
-            "shop_assembly_request_number": f"SA-{uuid.uuid4().hex[:6]}",
-            "shop_assembly_openings": sa_openings,
+            "shop_assembly_items": sa_items,
         },
     )
 
@@ -133,9 +127,7 @@ def _finalize_shipping_loose(session, project, *, qty=2, code="HG-100", opening_
                     "requested_by": "importer",
                     "items": [
                         {
-                            "item_type": "LOOSE",
                             "opening_number": opening_number,
-                            "opening_item_id": None,
                             "hardware_category": "HINGE",
                             "product_code": code,
                             "requested_quantity": qty,
@@ -147,83 +139,18 @@ def _finalize_shipping_loose(session, project, *, qty=2, code="HG-100", opening_
     )
 
 
-def _make_assembled_leaf(session, project, opening, *, leaf, code="HG-100", category="HINGE"):
-    oi = OpeningItem(
-        id=uuid.uuid4(),
-        project_id=project.id,
-        opening_id=opening.id,
-        warehouse_id=warehouse_admin_repository.get_primary_warehouse_id(session),
-        opening_number=opening.opening_number,
-        leaf=leaf,
-        quantity=1,
-        assembly_completed_at=datetime.utcnow(),
-        state=OpeningItemState.IN_INVENTORY,
-    )
-    session.add(oi)
-    session.flush()
-    session.add(
-        OpeningItemHardware(
-            id=uuid.uuid4(),
-            opening_item_id=oi.id,
-            product_code=code,
-            hardware_category=category,
-            quantity=1,
-        )
-    )
-    session.flush()
-    return oi
-
-
-def _finalize_shipping_leaves(session, project, opening_items):
-    return import_repository.finalize_import_session(
-        session,
-        {
-            "project_id": str(project.id),
-            "openings": [],
-            "hardware_items": [],
-            "shipping_out_pr_drafts": [
-                {
-                    "request_number": f"SHIP-{uuid.uuid4().hex[:6]}",
-                    "requested_by": "importer",
-                    "items": [
-                        {
-                            "item_type": "OPENING_ITEM",
-                            "opening_number": oi.opening_number,
-                            "opening_item_id": str(oi.id),
-                            "leaf": oi.leaf,
-                            "requested_quantity": 1,
-                        }
-                        for oi in opening_items
-                    ],
-                }
-            ],
-        },
-    )
-
-
-# --- reserve on create -------------------------------------------------------------------------
-
-
 def test_shop_assembly_creation_reserves_one_row_per_combo(db_session):
-    """Reservations are aggregate: five openings naming the same hinge hold one row for the total,
-    not five rows every availability sum then has to add back up."""
+    """Reservations are aggregate: five lines naming the same hinge hold one row for the total, not
+    five rows every availability sum then has to add back up."""
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=20)
 
     result = _finalize_sar(
         db_session,
         project,
-        openings=[
-            {
-                "opening_number": "A01",
-                "leaf": 1,
-                "items": [{"hardware_category": "HINGE", "product_code": "HG-100", "quantity": 3}],
-            },
-            {
-                "opening_number": "A01",
-                "leaf": 2,
-                "items": [{"hardware_category": "HINGE", "product_code": "HG-100", "quantity": 4}],
-            },
+        items=[
+            {"opening_number": "A01", "hardware_category": "HINGE", "product_code": "HG-100", "quantity": 3},
+            {"opening_number": "A02", "hardware_category": "HINGE", "product_code": "HG-100", "quantity": 4},
         ],
     )
     db_session.flush()
@@ -234,31 +161,6 @@ def test_shop_assembly_creation_reserves_one_row_per_combo(db_session):
     assert rows[0].source == ReservationSource.SHOP_ASSEMBLY_REQUEST
     assert rows[0].shop_assembly_request_id == result["shop_assembly_request"].id
     assert rows[0].shipping_out_request_id is None
-
-
-def test_shipping_out_loose_lines_reserve_and_opening_item_lines_do_not(db_session):
-    """A LOOSE line claims fungible stock. An assembled leaf claimed its hardware at assembly and
-    ships as itself, so an OPENING_ITEM line reserves nothing at all."""
-    project = _make_project(db_session)
-    _seed_inventory(db_session, project.id, quantity=10)
-    result = _finalize_shipping_loose(db_session, project, qty=4)
-    db_session.flush()
-
-    rows = _reservations(db_session, project.id)
-    assert len(rows) == 1
-    assert rows[0].quantity == 4
-    assert rows[0].source == ReservationSource.SHIPPING_OUT_REQUEST
-    assert rows[0].shipping_out_request_id == result["shipping_out_requests"][0].id
-
-    # Now an OPENING_ITEM-only request in the same project: no new claim.
-    opening = Opening(id=uuid.uuid4(), project_id=project.id, opening_number="B02")
-    db_session.add(opening)
-    db_session.flush()
-    leaf = _make_assembled_leaf(db_session, project, opening, leaf=1)
-    _finalize_shipping_leaves(db_session, project, [leaf])
-    db_session.flush()
-
-    assert len(_reservations(db_session, project.id)) == 1
 
 
 def test_creation_is_gated_on_what_other_requests_have_already_claimed(db_session):
@@ -468,7 +370,6 @@ def test_a_pull_with_no_claim_cannot_pick_stock_somebody_else_reserved(db_sessio
         PullRequestItem(
             id=uuid.uuid4(),
             pull_request_id=repl.id,
-            item_type=PullRequestItemType.LOOSE,
             opening_number="A01",
             hardware_category="HINGE",
             product_code="HG-100",
@@ -514,152 +415,7 @@ def test_the_gate_excludes_the_pulls_own_claim(db_session):
     assert il.quantity == 0
 
 
-def test_a_replacement_pull_picks_out_of_what_is_genuinely_free(db_session):
-    """Five on the shelf, three claimed by somebody else, two wanted: exactly at the #367 ceiling,
-    which is what the gate is supposed to let through."""
-    project = _make_project(db_session)
-    il = _seed_inventory(db_session, project.id, quantity=5)
-    _finalize_sar(db_session, project, qty=3)
-    db_session.flush()
-
-    repl = PullRequest(
-        id=uuid.uuid4(),
-        request_number=f"PR-REPL-{uuid.uuid4().hex[:6]}",
-        project_id=project.id,
-        source=PullRequestSource.SHOP_ASSEMBLY,
-        status=PullRequestStatus.PENDING,
-        requested_by="assembler",
-    )
-    db_session.add(repl)
-    db_session.flush()
-    db_session.add(
-        PullRequestItem(
-            id=uuid.uuid4(),
-            pull_request_id=repl.id,
-            item_type=PullRequestItemType.LOOSE,
-            opening_number="A01",
-            hardware_category="HINGE",
-            product_code="HG-100",
-            requested_quantity=2,
-        )
-    )
-    db_session.flush()
-
-    result = pick_pull(db_session, repl.id, "warehouse")
-
-    assert result.outcome == "PICKED"
-    assert il.quantity == 3
-    assert _reserved_total(db_session, project.id) == 3  # the other request still holds its 3
-
-
-# --- request-integrity guards ------------------------------------------------------------------
-
-
-def test_a_leaf_in_a_live_shop_assembly_request_cannot_be_requested_again(db_session):
-    project = _make_project(db_session)
-    _seed_inventory(db_session, project.id, quantity=20)
-    first = _finalize_sar(db_session, project, qty=2, opening_number="A01", leaf=1)["shop_assembly_request"]
-    db_session.flush()
-
-    with pytest.raises(ValidationError) as excinfo:
-        _finalize_sar(db_session, project, qty=2, opening_number="A01", leaf=1)
-    assert excinfo.value.field == "shop_assembly_openings"
-    assert first.request_number in excinfo.value.message
-
-
-def test_the_in_flight_guard_is_per_leaf(db_session):
-    """Requesting Leaf 1 must not block Leaf 2 - the same rule the already-assembled guard uses."""
-    project = _make_project(db_session)
-    _seed_inventory(db_session, project.id, quantity=20)
-    _finalize_sar(db_session, project, qty=2, opening_number="PR1", leaf=1)
-    db_session.flush()
-
-    _finalize_sar(db_session, project, qty=2, opening_number="PR1", leaf=2)
-    db_session.flush()
-
-    assert _reserved_total(db_session, project.id) == 4
-
-
-def test_a_rejected_request_stops_blocking_its_leaf(db_session):
-    project = _make_project(db_session)
-    _seed_inventory(db_session, project.id, quantity=20)
-    sar = _finalize_sar(db_session, project, qty=2, opening_number="A01", leaf=1)["shop_assembly_request"]
-    db_session.flush()
-    shop_assembly_repository.reject_shop_assembly_request(db_session, sar.id, "rejector", None)
-    db_session.flush()
-
-    _finalize_sar(db_session, project, qty=2, opening_number="A01", leaf=1)
-    db_session.flush()
-    assert _reserved_total(db_session, project.id) == 2
-
-
-def test_a_completed_work_unit_no_longer_counts_as_in_flight(db_session):
-    """A COMPLETED opening is the already-assembled guard's business, not this one's - otherwise the
-    two guards would give the same leaf two different refusals."""
-    project = _make_project(db_session)
-    _seed_inventory(db_session, project.id, quantity=20)
-    _finalize_sar(db_session, project, qty=2, opening_number="A01", leaf=1)
-    db_session.flush()
-    sao = db_session.scalar(select(ShopAssemblyOpening).where(ShopAssemblyOpening.opening_number == "A01"))
-    sao.assembly_status = AssemblyStatus.COMPLETED
-    db_session.flush()
-
-    opening = db_session.scalar(select(Opening).where(Opening.project_id == project.id))
-    specs = [("A01", opening.id, 1)]
-    assert shop_assembly_repository.find_in_flight_assembly_leaves(db_session, specs) == []
-
-
-def test_a_leaf_on_a_live_shipping_request_cannot_be_sent_to_shop_assembly(db_session):
-    """Cross-request-type conflict: one physical leaf cannot be both on its way out the door and
-    back on the bench."""
-    project = _make_project(db_session)
-    _seed_inventory(db_session, project.id, quantity=20)
-    opening = Opening(id=uuid.uuid4(), project_id=project.id, opening_number="A01")
-    db_session.add(opening)
-    db_session.flush()
-    leaf = _make_assembled_leaf(db_session, project, opening, leaf=1)
-    ship_req = _finalize_shipping_leaves(db_session, project, [leaf])["shipping_out_requests"][0]
-    db_session.flush()
-    # Take the assembled unit out of the way so the *already-assembled* guard is not what fires.
-    leaf.state = OpeningItemState.SHIPPED_OUT
-    db_session.flush()
-
-    with pytest.raises(ValidationError) as excinfo:
-        _finalize_sar(db_session, project, qty=2, opening_number="A01", leaf=1)
-    assert "shipping-out request" in excinfo.value.message
-    assert ship_req.request_number in excinfo.value.message
-
-
-def test_a_leaf_already_on_a_live_shipping_request_cannot_be_requested_again(db_session):
-    project = _make_project(db_session)
-    opening = Opening(id=uuid.uuid4(), project_id=project.id, opening_number="A01")
-    db_session.add(opening)
-    db_session.flush()
-    leaf = _make_assembled_leaf(db_session, project, opening, leaf=1)
-    first = _finalize_shipping_leaves(db_session, project, [leaf])["shipping_out_requests"][0]
-    db_session.flush()
-
-    with pytest.raises(ValidationError) as excinfo:
-        _finalize_shipping_leaves(db_session, project, [leaf])
-    assert excinfo.value.field == "opening_item_id"
-    assert first.request_number in excinfo.value.message
-
-
-def test_a_leaf_still_in_shop_assembly_cannot_be_shipped(db_session):
-    project = _make_project(db_session)
-    _seed_inventory(db_session, project.id, quantity=20)
-    sar = _finalize_sar(db_session, project, qty=2, opening_number="A01", leaf=1)["shop_assembly_request"]
-    db_session.flush()
-    opening = db_session.scalar(select(Opening).where(Opening.project_id == project.id))
-    leaf = _make_assembled_leaf(db_session, project, opening, leaf=1)
-
-    with pytest.raises(ValidationError) as excinfo:
-        _finalize_shipping_leaves(db_session, project, [leaf])
-    assert "still in shop assembly" in excinfo.value.message
-    assert sar.request_number in excinfo.value.message
-
-
-def test_a_zero_opening_shop_assembly_request_is_refused(db_session):
+def test_a_zero_line_shop_assembly_request_is_refused(db_session):
     project = _make_project(db_session)
     with pytest.raises(ValidationError) as excinfo:
         import_repository.finalize_import_session(
@@ -669,26 +425,33 @@ def test_a_zero_opening_shop_assembly_request_is_refused(db_session):
                 "openings": [{"opening_number": "A01"}],
                 "hardware_items": [],
                 "include_shop_assembly_request": True,
-                "shop_assembly_request_number": f"SA-{uuid.uuid4().hex[:6]}",
-                "shop_assembly_openings": [],
+                "shop_assembly_items": [],
             },
         )
-    assert excinfo.value.field == "shop_assembly_openings"
-    assert "at least one opening" in excinfo.value.message
+    assert excinfo.value.field == "shop_assembly_items"
+    assert "at least one line" in excinfo.value.message
 
 
-def test_a_zero_item_opening_is_refused(db_session):
-    """A leaf with an empty checklist would reach shop assembly as something #339 refuses to
-    complete, so it never gets created."""
+def test_a_request_with_nothing_allocated_is_refused(db_session):
+    """Every line fully short is an empty cart: nothing to pull, nothing to reserve, and a pull
+    with no lines the warehouse can only close."""
     project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=0)
     with pytest.raises(ValidationError) as excinfo:
         _finalize_sar(
             db_session,
             project,
-            openings=[{"opening_number": "A01", "leaf": 2, "items": []}],
+            items=[
+                {
+                    "opening_number": "A01",
+                    "hardware_category": "HINGE",
+                    "product_code": "HG-100",
+                    "quantity": 2,
+                    "allocated_quantity": 0,
+                }
+            ],
         )
-    assert excinfo.value.field == "shop_assembly_openings"
-    assert "Opening A01 Leaf 2" in excinfo.value.message
+    assert excinfo.value.field == "allocated_quantity"
 
 
 def test_a_zero_line_shipping_request_is_refused(db_session):
@@ -730,15 +493,9 @@ def test_reupload_drops_vanished_openings_and_releases_their_claim(db_session):
     sar = _finalize_sar(
         db_session,
         project,
-        openings=[
-            {
-                "opening_number": "A01",
-                "items": [{"hardware_category": "HINGE", "product_code": "HG-100", "quantity": 3}],
-            },
-            {
-                "opening_number": "A02",
-                "items": [{"hardware_category": "HINGE", "product_code": "HG-100", "quantity": 5}],
-            },
+        items=[
+            {"opening_number": "A01", "hardware_category": "HINGE", "product_code": "HG-100", "quantity": 3},
+            {"opening_number": "A02", "hardware_category": "HINGE", "product_code": "HG-100", "quantity": 5},
         ],
     )["shop_assembly_request"]
     db_session.flush()
@@ -750,9 +507,9 @@ def test_reupload_drops_vanished_openings_and_releases_their_claim(db_session):
 
     assert _reserved_total(db_session, project.id) == 3
     remaining = db_session.scalars(
-        select(ShopAssemblyOpening).where(ShopAssemblyOpening.shop_assembly_request_id == sar.id)
+        select(ShopAssemblyRequestItem).where(ShopAssemblyRequestItem.shop_assembly_request_id == sar.id)
     ).all()
-    assert [o.opening_number for o in remaining] == ["A01"]
+    assert [i.opening_number for i in remaining] == ["A01"]
     assert sar.status == ShopAssemblyRequestStatus.PENDING
     assert sar.integrity_note is not None
     assert "no longer exist" in sar.integrity_note
@@ -810,9 +567,7 @@ def test_reupload_leaves_an_accepted_requests_pull_alone(db_session):
     assert _reserved_total(db_session, project.id) == 4
     assert (
         db_session.scalars(
-            select(ShopAssemblyOpeningItem)
-            .join(ShopAssemblyOpening, ShopAssemblyOpeningItem.shop_assembly_opening_id == ShopAssemblyOpening.id)
-            .where(ShopAssemblyOpening.shop_assembly_request_id == sar.id)
+            select(ShopAssemblyRequestItem).where(ShopAssemblyRequestItem.shop_assembly_request_id == sar.id)
         ).all()
         != []
     )
@@ -833,14 +588,12 @@ def test_reupload_rebuilds_a_shipping_requests_loose_claim(db_session):
                     "requested_by": "importer",
                     "items": [
                         {
-                            "item_type": "LOOSE",
                             "opening_number": "A01",
                             "hardware_category": "HINGE",
                             "product_code": "HG-100",
                             "requested_quantity": 2,
                         },
                         {
-                            "item_type": "LOOSE",
                             "opening_number": "A02",
                             "hardware_category": "HINGE",
                             "product_code": "HG-100",
@@ -914,29 +667,6 @@ def test_reservations_are_scoped_to_their_project(db_session):
     assert warehouse_repository.check_inventory_sufficiency(
         db_session, project_b.id, [("HINGE", "HG-100", 5)], reservation_aware=True
     ).sufficient
-
-
-def test_shop_assembly_openings_still_reach_the_bench_after_a_reserved_pull(db_session):
-    """End-to-end sanity: the whole reserve -> accept -> approve -> complete chain still lands the
-    opening in PULLED with nothing left reserved."""
-    project = _make_project(db_session)
-    _seed_inventory(db_session, project.id, quantity=4)
-    sar = _finalize_sar(db_session, project, qty=4)["shop_assembly_request"]
-    db_session.flush()
-    shop_assembly_repository.accept_shop_assembly_request(db_session, sar.id, "acceptor")
-    db_session.flush()
-    pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == sar.request_number))
-    pick_pull(db_session, pr.id, "warehouse")
-    db_session.flush()
-    warehouse_repository.complete_pull_request(db_session, pr.id)
-    db_session.flush()
-
-    sao = db_session.scalar(select(ShopAssemblyOpening).where(ShopAssemblyOpening.shop_assembly_request_id == sar.id))
-    assert sao.pull_status == PullStatus.PULLED
-    assert _reserved_total(db_session, project.id) == 0
-
-
-# --- 8. self-coverage excludes ONE request, not one whole source (#348 review) -------------------
 
 
 def test_self_coverage_excludes_only_that_request_not_the_other_source(db_session):

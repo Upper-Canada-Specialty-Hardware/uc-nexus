@@ -39,9 +39,10 @@ Two consequences worth being explicit about, because they are the point rather t
     at a slightly different instant is exactly the drift that would let the panel say 3 and the
     shortfall alert say 2. The caller joins the two by combo key.
 
-Query budget is fixed at six regardless of how many openings are selected (CLAUDE.md perf rules):
-openings, the grouped schedule read, the on-order aggregate, and the three grouped reads behind
-`sent` and `claimed`.
+Query budget is fixed at EIGHT regardless of how many openings are selected (CLAUDE.md perf rules):
+the openings, the grouped schedule read, two behind `sent` (completed pulls, packing slips), three
+behind `claimed` (live pulls, pending shop-assembly requests, pending shipping-out requests), and
+the on-order aggregate.
 """
 
 import uuid

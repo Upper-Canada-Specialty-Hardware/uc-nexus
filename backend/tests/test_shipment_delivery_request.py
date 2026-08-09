@@ -18,11 +18,10 @@ from decimal import Decimal
 import pytest
 
 from app.errors import InvalidStateTransitionError, ValidationError
-from app.models.enums import OpeningItemState, PullRequestItemType, ShipmentStatus
-from app.models.opening_item import OpeningItem
+from app.models.enums import PullRequestSource, PullRequestStatus, ShipmentStatus
 from app.models.project import Project
 from app.models.shipping import PackingSlip
-from app.repositories import shipping_repository, warehouse_admin_repository
+from app.repositories import shipping_repository
 
 # A filled-in form, one value per field, so a test that asserts on the whole header fails by name.
 FULL_DETAILS = {
@@ -72,22 +71,41 @@ def _make_slip(session, project_id, *, status=ShipmentStatus.SCHEDULED, **header
     return ps
 
 
-def _ship_ready_opening_item(session, project_id, **placement) -> OpeningItem:
-    oi = OpeningItem(
+def _stage(session, project_id, *, qty=1, opening="DR1"):
+    """Put stock in the staging pool the confirm draws from: a COMPLETED shipping-out pull."""
+    from app.models.pull_request import PullRequest, PullRequestItem
+
+    pr = PullRequest(
         id=uuid.uuid4(),
+        request_number=f"SOR-{uuid.uuid4().hex[:6]}",
         project_id=project_id,
-        opening_id=uuid.uuid4(),
-        warehouse_id=warehouse_admin_repository.get_primary_warehouse_id(session),
-        opening_number="DR1",
-        leaf=1,
-        quantity=1,
-        assembly_completed_at=datetime.utcnow(),
-        state=OpeningItemState.SHIP_READY,
-        **placement,
+        source=PullRequestSource.SHIPPING_OUT,
+        status=PullRequestStatus.COMPLETED,
+        requested_by="tester",
     )
-    session.add(oi)
+    session.add(pr)
     session.flush()
-    return oi
+    session.add(
+        PullRequestItem(
+            id=uuid.uuid4(),
+            pull_request_id=pr.id,
+            opening_number=opening,
+            hardware_category="HINGE",
+            product_code="HG-100",
+            requested_quantity=qty,
+        )
+    )
+    session.flush()
+
+
+def _shipped_line(**placement) -> dict:
+    return {
+        "opening_number": "DR1",
+        "hardware_category": "HINGE",
+        "product_code": "HG-100",
+        "quantity": 1,
+        **placement,
+    }
 
 
 def _header(ps) -> dict:
@@ -111,14 +129,14 @@ def test_confirm_shipment_starts_scheduled_carrying_its_delivery_request(db_sess
     the whole reason the header is editable at all is that there is a window between cutting the
     Delivery Request and anyone collecting it."""
     project = _make_project(db_session)
-    oi = _ship_ready_opening_item(db_session, project.id)
+    _stage(db_session, project.id)
 
     slip = shipping_repository.confirm_shipment(
         db_session,
         project_id=project.id,
         packing_slip_number=f"PS-{uuid.uuid4().hex[:8]}",
         shipped_by="shipper",
-        items=[{"item_type": PullRequestItemType.OPENING_ITEM, "opening_item_id": oi.id, "quantity": 1}],
+        items=[_shipped_line()],
         details=FULL_DETAILS,
     )
     _round_trip(db_session, slip)
@@ -136,14 +154,14 @@ def test_confirm_shipment_takes_no_delivery_request_at_all(db_session):
     The form is filled in against whatever the site has told the shipping department. Refusing to
     let hardware leave because nobody knew the gate number would be paperwork blocking a truck."""
     project = _make_project(db_session)
-    oi = _ship_ready_opening_item(db_session, project.id)
+    _stage(db_session, project.id)
 
     slip = shipping_repository.confirm_shipment(
         db_session,
         project_id=project.id,
         packing_slip_number=f"PS-{uuid.uuid4().hex[:8]}",
         shipped_by="shipper",
-        items=[{"item_type": PullRequestItemType.OPENING_ITEM, "opening_item_id": oi.id, "quantity": 1}],
+        items=[_shipped_line()],
     )
     _round_trip(db_session, slip)
 
@@ -151,36 +169,30 @@ def test_confirm_shipment_takes_no_delivery_request_at_all(db_session):
     assert set(_header(slip).values()) == {None}
 
 
-def test_confirm_shipment_snapshots_where_the_shipped_leaf_was_going(db_session):
-    """The slip records the leaf's placement, not just which leaf it was (#452).
+def test_confirm_shipment_snapshots_where_the_hardware_was_going(db_session):
+    """The slip records the placement, not just the opening number (#452).
 
     The Delivery Request cut at confirm time prints building / floor / location after the opening
     number. Without these columns the reprint rebuilt its material lines from the stored items and
     dropped that suffix, so one shipment produced two different documents - and the reprint is the
     copy pulled up in a site dispute.
 
-    Snapshotted rather than followed back to the OpeningItem for the same reason `leaf` is: the row
-    it came from can be re-placed or re-assembled years after the truck left, and the paper the site
-    signed has to keep saying where the leaf was headed on the day it went."""
+    Snapshotted rather than looked up at print time: the schedule row it came from can be rewritten
+    by a re-upload years after the truck left, and the paper the site signed has to keep saying
+    where the hardware was headed on the day it went."""
     project = _make_project(db_session)
-    oi = _ship_ready_opening_item(db_session, project.id, building="A", floor="1", location="Rm 101")
+    _stage(db_session, project.id)
 
     slip = shipping_repository.confirm_shipment(
         db_session,
         project_id=project.id,
         packing_slip_number=f"PS-{uuid.uuid4().hex[:8]}",
         shipped_by="shipper",
-        items=[{"item_type": PullRequestItemType.OPENING_ITEM, "opening_item_id": oi.id, "quantity": 1}],
+        items=[_shipped_line(building="A", floor="1", location="Rm 101")],
     )
     _round_trip(db_session, slip)
 
     (item,) = slip.items
-    assert (item.building, item.floor, item.location) == ("A", "1", "Rm 101")
-
-    # And it stays what it was when the truck left, however the leaf is re-placed afterwards.
-    oi.building, oi.floor, oi.location = "B", "2", "Rm 202"
-    db_session.flush()
-    db_session.expire(item)
     assert (item.building, item.floor, item.location) == ("A", "1", "Rm 101")
 
 
@@ -242,7 +254,7 @@ def test_confirm_shipment_refuses_a_weight_the_column_cannot_hold(db_session):
     the alternative is a raw Postgres numeric overflow at commit, which rolls back the confirm - a
     fat-fingered weight would abort the whole shipment instead of pointing at the box it came from."""
     project = _make_project(db_session)
-    oi = _ship_ready_opening_item(db_session, project.id)
+    _stage(db_session, project.id)
 
     with pytest.raises(ValidationError) as exc:
         shipping_repository.confirm_shipment(
@@ -250,7 +262,7 @@ def test_confirm_shipment_refuses_a_weight_the_column_cannot_hold(db_session):
             project_id=project.id,
             packing_slip_number=f"PS-{uuid.uuid4().hex[:8]}",
             shipped_by="shipper",
-            items=[{"item_type": PullRequestItemType.OPENING_ITEM, "opening_item_id": oi.id, "quantity": 1}],
+            items=[_shipped_line()],
             details={**FULL_DETAILS, "weight_lbs": 100000000.0},
         )
 

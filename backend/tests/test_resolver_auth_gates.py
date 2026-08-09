@@ -24,7 +24,7 @@ import uuid
 import pytest
 
 from app import auth
-from app.auth import ADMIN_ROLE, SHOP_ASSEMBLY_MANAGER_ROLE, WAREHOUSE_MANAGER_ROLE
+from app.auth import ADMIN_ROLE, WAREHOUSE_MANAGER_ROLE
 from app.auth_policy import OPEN_OPERATIONS, ROOT_FIELD_POLICY, SIGNED_IN, enforce_root_field
 from app.errors import AppError
 from app.repositories import user_repository
@@ -149,21 +149,6 @@ def test_an_admin_field_admits_an_admin(monkeypatch, signed_in):
     )
 
 
-def test_a_role_gated_field_refuses_someone_without_that_role(monkeypatch, signed_in):
-    """`shopAssemblyMembers` is Shop Assembly Manager-gated (#330), not admin - the one requirement in
-    the table that is neither SIGNED_IN nor Admin/Manager, so it is the one that proves the table can
-    express an arbitrary role."""
-    assert ROOT_FIELD_POLICY["shopAssemblyMembers"] == SHOP_ASSEMBLY_MANAGER_ROLE
-    # Roster-backed, so the roles come out of list_users rather than a per-user lookup.
-    monkeypatch.setattr(user_repository, "list_users", lambda: [{"id": "u_caller", "roles": ["Shop Assembly User"]}])
-    _explodes(monkeypatch, shop_assembly_module, "user_repository")
-
-    result = _execute("{ shopAssemblyMembers { id } }", token=signed_in)
-
-    assert _codes(result) == {"FORBIDDEN"}
-    assert _messages(result) == {f"{SHOP_ASSEMBLY_MANAGER_ROLE} role required"}
-
-
 @pytest.mark.parametrize("field", ["rejectReceiveDraft"])
 def test_rejecting_a_receive_draft_takes_either_manager_role(field, monkeypatch, signed_in):
     """The any-of requirement, in all three directions.
@@ -171,6 +156,11 @@ def test_rejecting_a_receive_draft_takes_either_manager_role(field, monkeypatch,
     Two roles satisfy it, which is the reason ROOT_FIELD_POLICY entries may be a frozenset at all.
     There is no implicit admin bypass in this codebase, so Admin/Manager has to be named in the set
     to hold; a warehouse account that only counts trucks must not hold it either way.
+
+    Since v1 dropped door management this is also the only place the table names a role that is not
+    Admin/Manager, so it carries the proof that an arbitrary Clerk role name is expressible at all.
+    `shopAssemblyMembers` used to hold that on its own; the Shop Assembly Manager role stays defined
+    in Clerk but no longer gates any field.
 
     `approveReceiveDraft` used to be pinned here too. Since #499 its requirement is not a property of
     the field alone - a PO creator who answered SHIP_OUT may approve that one draft - so the table
@@ -367,7 +357,7 @@ def test_the_jwt_is_verified_once_for_a_query_hitting_several_root_fields(monkey
     # `vendors` until #509 removed it; a fourth warehouse field would have collapsed the test to two
     # modules, all of them patched.)
     _execute(
-        "{ warehouses { id } pullRequests { id } stockItems { id } assembleList { id } }",
+        "{ warehouses { id } pullRequests { id } stockItems { id } shopAssemblyRequests { id } }",
         token=signed_in,
     )
 
