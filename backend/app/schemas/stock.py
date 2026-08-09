@@ -111,6 +111,7 @@ class StockQueries:
             )
             return [deficiency_review_to_type(r) for r in rows]
 
+
 @strawberry.type
 class StockMutations:
     @strawberry.mutation
