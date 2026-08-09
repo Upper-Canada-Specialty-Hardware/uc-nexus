@@ -15,6 +15,7 @@ transaction.
 
 import uuid
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import select
 
@@ -573,6 +574,7 @@ def test_on_order_counts_placed_pos_and_nets_off_what_arrived(db_session):
             product_code=CODE,
             ordered_quantity=10,
             received_quantity=4,
+            unit_cost=Decimal("1.00"),
         )
     )
     db_session.flush()
@@ -603,6 +605,7 @@ def test_a_draft_po_is_not_on_order(db_session):
             product_code=CODE,
             ordered_quantity=10,
             received_quantity=0,
+            unit_cost=Decimal("1.00"),
         )
     )
     db_session.flush()
