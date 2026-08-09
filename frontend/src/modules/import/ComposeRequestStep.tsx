@@ -5,10 +5,12 @@ import {
   Button,
   Checkbox,
   Chip,
+  Skeleton,
   Stack,
   Table,
   TableBody,
   TableCell,
+  TableContainer,
   TableHead,
   TableRow,
   TextField,
@@ -27,6 +29,20 @@ import {
   type CoverageRow,
 } from './composer';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
+import { plural } from '../../utils/plural';
+
+/**
+ * A column of figures is sized to its digits, not to its share of the page. `width: 1` makes the
+ * browser shrink-to-fit, which hands the slack to the two identifier columns instead of stranding
+ * three characters in the middle of 200px.
+ */
+const numCol = { ...tabularSx, width: 1, whiteSpace: 'nowrap' } as const;
+
+/** Context, not a number to act on: it is why this line asks for less than the schedule's figure. */
+const contextCol = { ...numCol, color: 'text.secondary' } as const;
+
+/** Enough placeholder rows to hold the tables' shape while the two queries answer. */
+const SKELETON_ROWS = [0, 1, 2, 3];
 
 interface ComposeRequestStepProps {
   /** Heading and body copy, which is the only thing that differs between the two purposes. */
@@ -164,10 +180,25 @@ export default function ComposeRequestStep({
     [rows, includedKeys, allocation],
   );
 
+  const loadFailed = coverageError || availabilityError;
+  const busy = (coverageLoading || availabilityLoading) && !loadFailed;
+
   // A shortfall no longer blocks. What has to be true is that there is a request to make: at least
   // one line carrying something, and availability numbers that are real rather than unknown. Sending
   // short is a decision the user is allowed to make, not an error state.
-  const canProceed = includedCount > 0 && !availabilityLoading && !availabilityError && !coverageError;
+  const canProceed = includedCount > 0 && !busy && !loadFailed;
+
+  // A disabled Next with nothing beside it reads as a broken button. Each of these is recoverable
+  // from this screen or the one behind it, so the caption says which.
+  const blockedReason = loadFailed
+    ? 'The numbers above could not be read. Go back and retry.'
+    : busy
+      ? 'Still working out what is owed and what is free.'
+      : includedCount > 0
+        ? null
+        : rows.length === 0
+          ? 'There is nothing to request for these openings.'
+          : 'Tick at least one line and give it a quantity.';
 
   const setLine = (row: CoverageRow, next: number) => {
     const key = lineKey(row);
@@ -209,12 +240,6 @@ export default function ComposeRequestStep({
         </Alert>
       )}
 
-      {!coverageError && !coverageLoading && rows.length === 0 && (
-        <Alert severity="warning" sx={{ mb: 2 }}>
-          {emptyMessage}
-        </Alert>
-      )}
-
       {availabilityError && (
         <Alert severity="error" sx={{ mb: 2 }}>
           Could not read this project's available inventory, so the counts below are unknown rather
@@ -222,9 +247,9 @@ export default function ComposeRequestStep({
         </Alert>
       )}
 
-      {(availabilityLoading || coverageLoading) && !availabilityError && !coverageError && (
-        <Alert severity="info" sx={{ mb: 2 }}>
-          Working out what is still owed and what is free...
+      {!loadFailed && !busy && rows.length === 0 && (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          {emptyMessage}
         </Alert>
       )}
 
@@ -236,131 +261,222 @@ export default function ComposeRequestStep({
         </Alert>
       )}
 
-      {summaryRows.length > 0 && (
+      {/* Kept up whenever there is an offer at all, not only when something is ticked. Collapsing the
+          summary on the last untick would take Re-run auto-assign with it - which is exactly the
+          control somebody who just cleared the request needs to get back. */}
+      {(busy || rows.length > 0) && (
         <Box sx={{ mb: 3 }}>
-          <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
-            <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+          <Stack
+            direction="row"
+            alignItems="center"
+            justifyContent="space-between"
+            spacing={2}
+            sx={{ mb: 1 }}
+          >
+            <Typography component="div" sx={microLabelSx}>
               Hardware this request would reserve
             </Typography>
             <Button
               size="small"
               variant="outlined"
+              disabled={busy || rows.length === 0}
               startIcon={<RotateCcw size={18} strokeWidth={1.75} />}
               onClick={runAutoAssign}
             >
               Re-run auto-assign
             </Button>
           </Stack>
-          <Table size="small">
-            <TableHead>
-              <TableRow>
-                <TableCell>Product Code</TableCell>
-                <TableCell>Hardware Category</TableCell>
-                <TableCell align="right">Still owed</TableCell>
-                <TableCell align="right">Available</TableCell>
-                <TableCell align="right">Allocated</TableCell>
-                <TableCell align="right">Left to assign</TableCell>
-                <TableCell align="right">Short</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {summaryRows.map((row) => (
-                <TableRow key={row.key} hover>
-                  <TableCell sx={monoSx}>{row.productCode}</TableCell>
-                  <TableCell>{row.hardwareCategory}</TableCell>
-                  <TableCell align="right">{row.suggested}</TableCell>
-                  <TableCell align="right">{availabilityError ? '?' : row.available}</TableCell>
-                  <TableCell align="right">{row.allocated}</TableCell>
-                  <TableCell align="right">{availabilityError ? '?' : row.remaining}</TableCell>
-                  <TableCell align="right">
-                    {row.short > 0 ? (
-                      <Chip size="small" variant="outlined" color="warning" label={row.short} />
-                    ) : (
-                      0
-                    )}
-                  </TableCell>
+          <TableContainer sx={{ overflowX: 'auto' }}>
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Product Code</TableCell>
+                  <TableCell>Hardware Category</TableCell>
+                  <TableCell align="right">Still owed</TableCell>
+                  <TableCell align="right">Available</TableCell>
+                  <TableCell align="right">Allocated</TableCell>
+                  <TableCell align="right">Left to assign</TableCell>
+                  <TableCell align="right">Short</TableCell>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+              </TableHead>
+              <TableBody>
+                {busy ? (
+                  SKELETON_ROWS.map((n) => (
+                    <TableRow key={n}>
+                      <TableCell colSpan={7}>
+                        <Skeleton height={18} />
+                      </TableCell>
+                    </TableRow>
+                  ))
+                ) : summaryRows.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={7}>
+                      <Typography variant="body2" color="text.secondary">
+                        No lines are ticked, so this request would reserve nothing.
+                      </Typography>
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  summaryRows.map((row) => (
+                    <TableRow key={row.key} hover>
+                      <TableCell sx={monoSx}>{row.productCode}</TableCell>
+                      <TableCell>{row.hardwareCategory}</TableCell>
+                      <TableCell align="right" sx={numCol}>
+                        {row.suggested}
+                      </TableCell>
+                      <TableCell align="right" sx={numCol}>
+                        {availabilityError ? '?' : row.available}
+                      </TableCell>
+                      <TableCell align="right" sx={numCol}>
+                        {row.allocated}
+                      </TableCell>
+                      <TableCell align="right" sx={numCol}>
+                        {availabilityError ? '?' : row.remaining}
+                      </TableCell>
+                      {/* A zero here is the good outcome, so it recedes; anything above it is the one
+                          number on this row somebody has to decide about. */}
+                      <TableCell
+                        align="right"
+                        sx={{
+                          ...numCol,
+                          color: row.short > 0 ? 'warning.main' : 'text.disabled',
+                          fontWeight: row.short > 0 ? 600 : 400,
+                        }}
+                      >
+                        {row.short}
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </TableContainer>
         </Box>
       )}
 
       {totalShort > 0 && (
         <Alert severity="warning" sx={{ mb: 2 }}>
-          This request will be sent {totalShort} unit(s) short of what these openings are still owed.
-          Available means on hand, minus units flagged deficient, minus what other open requests have
-          already reserved - so a shortfall can mean the stock is here but spoken for. The short units
-          are not pulled; purchasing is told about them when the request is sent.
+          This request will be sent {plural(totalShort, 'unit')} short of what these openings are
+          still owed. Available means on hand, minus units flagged deficient, minus what other open
+          requests have already reserved - so a shortfall can mean the stock is here but spoken for.
+          The short units are not pulled; purchasing is told about them when the request is sent.
         </Alert>
       )}
 
-      <Typography sx={{ ...microLabelSx, ...tabularSx, mb: 1 }}>
-        Lines ({includedCount} of {rows.length} being sent)
-      </Typography>
+      {(busy || rows.length > 0) && (
+        <>
+          <Typography component="div" sx={{ ...microLabelSx, ...tabularSx, mb: 1 }}>
+            Lines ({includedCount} of {rows.length} being sent)
+          </Typography>
 
-      <Table size="small">
-          <TableHead>
-            <TableRow>
-              <TableCell padding="checkbox" />
-              <TableCell>Opening</TableCell>
-              <TableCell>Product Code</TableCell>
-              <TableCell>Hardware Category</TableCell>
-              <TableCell align="right">Still owed</TableCell>
-              <TableCell align="right">Already sent</TableCell>
-              <TableCell align="right">On order</TableCell>
-              <TableCell align="right">Send</TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {rows.map((row) => {
-              const key = lineKey(row);
-              const included = includedKeys.has(key);
-              const allocated = allocation.get(key) ?? 0;
-              const coverage = lineCoverage(row, allocated);
-              return (
-                <TableRow key={key} hover>
-                  <TableCell padding="checkbox">
-                    <Checkbox size="small" checked={included} onChange={() => toggleLine(row)} />
-                  </TableCell>
-                  <TableCell sx={monoSx}>{row.openingNumber}</TableCell>
-                  <TableCell sx={monoSx}>{row.productCode}</TableCell>
-                  <TableCell>{row.hardwareCategory}</TableCell>
-                  <TableCell align="right">{row.suggestedQuantity}</TableCell>
-                  {/* Context, not a number to act on: it is why this line asks for less than the
-                      schedule's raw figure. */}
-                  <TableCell align="right" sx={{ color: 'text.secondary' }}>
-                    {row.sentQuantity}
-                  </TableCell>
-                  <TableCell align="right" sx={{ color: 'text.secondary' }}>
-                    {row.onOrderQuantity}
-                  </TableCell>
-                  <TableCell align="right">
-                    <Stack direction="row" spacing={1} alignItems="center" justifyContent="flex-end">
-                      {coverage === 'PARTIAL' && included && (
-                        <Chip size="small" variant="outlined" color="warning" label="short" />
-                      )}
-                      <TextField
-                        size="small"
-                        type="number"
-                        disabled={!included}
-                        value={allocated}
-                        onChange={(e) => setLine(row, parseInt(e.target.value, 10))}
-                        sx={{ width: 88, '& input': { textAlign: 'right' } }}
-                      />
-                    </Stack>
-                  </TableCell>
+          <TableContainer sx={{ overflowX: 'auto' }}>
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell padding="checkbox" />
+                  <TableCell>Opening</TableCell>
+                  <TableCell>Product Code</TableCell>
+                  <TableCell>Hardware Category</TableCell>
+                  <TableCell align="right">Still owed</TableCell>
+                  <TableCell align="right">Already sent</TableCell>
+                  <TableCell align="right">On order</TableCell>
+                  <TableCell align="right">Send</TableCell>
                 </TableRow>
-              );
-            })}
-        </TableBody>
-      </Table>
+              </TableHead>
+              <TableBody>
+                {busy
+                  ? SKELETON_ROWS.map((n) => (
+                      <TableRow key={n}>
+                        <TableCell colSpan={8}>
+                          <Skeleton height={18} />
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  : rows.map((row) => {
+                      const key = lineKey(row);
+                      const included = includedKeys.has(key);
+                      const allocated = allocation.get(key) ?? 0;
+                      const coverage = lineCoverage(row, allocated);
+                      const ceiling = Math.min(
+                        row.suggestedQuantity,
+                        (remainingPool.get(comboKey(row)) ?? 0) + allocated,
+                      );
+                      const name = `${row.openingNumber} ${row.productCode}`;
+                      return (
+                        // An excluded line stays legible but stops competing with the ones that are
+                        // actually going, so the request reads at a glance.
+                        <TableRow key={key} hover sx={{ opacity: included ? 1 : 0.55 }}>
+                          <TableCell padding="checkbox">
+                            <Checkbox
+                              size="small"
+                              checked={included}
+                              onChange={() => toggleLine(row)}
+                              inputProps={{ 'aria-label': `Send ${name}` }}
+                            />
+                          </TableCell>
+                          <TableCell sx={monoSx}>{row.openingNumber}</TableCell>
+                          <TableCell sx={monoSx}>{row.productCode}</TableCell>
+                          <TableCell>{row.hardwareCategory}</TableCell>
+                          <TableCell align="right" sx={numCol}>
+                            {row.suggestedQuantity}
+                          </TableCell>
+                          <TableCell align="right" sx={contextCol}>
+                            {row.sentQuantity}
+                          </TableCell>
+                          <TableCell align="right" sx={contextCol}>
+                            {row.onOrderQuantity}
+                          </TableCell>
+                          <TableCell align="right" sx={{ width: 1, whiteSpace: 'nowrap' }}>
+                            <Stack
+                              direction="row"
+                              spacing={1}
+                              alignItems="center"
+                              justifyContent="flex-end"
+                            >
+                              {/* The slot is always here. Letting the tag push the box sideways as
+                                  the number crosses the threshold moves the field out from under
+                                  the cursor mid-edit. */}
+                              <Box sx={{ width: 56, display: 'flex', justifyContent: 'flex-end' }}>
+                                {coverage === 'PARTIAL' && included && (
+                                  <Chip size="small" variant="outlined" color="warning" label="short" />
+                                )}
+                              </Box>
+                              <TextField
+                                size="small"
+                                type="number"
+                                disabled={!included}
+                                value={allocated}
+                                onChange={(e) => setLine(row, parseInt(e.target.value, 10))}
+                                slotProps={{
+                                  htmlInput: {
+                                    min: 0,
+                                    max: ceiling,
+                                    'aria-label': `Quantity to send of ${name}`,
+                                  },
+                                }}
+                                sx={{ width: 88, '& input': { textAlign: 'right' } }}
+                              />
+                            </Stack>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </>
+      )}
 
-      <Stack direction="row" spacing={1} sx={{ mt: 3 }}>
+      <Stack direction="row" spacing={1.5} alignItems="center" sx={{ mt: 3 }}>
         <Button onClick={onBack}>Back</Button>
         <Button variant="contained" disabled={!canProceed} onClick={onNext}>
           Next
         </Button>
+        {blockedReason && (
+          <Typography variant="caption" color="text.secondary">
+            {blockedReason}
+          </Typography>
+        )}
       </Stack>
     </Box>
   );

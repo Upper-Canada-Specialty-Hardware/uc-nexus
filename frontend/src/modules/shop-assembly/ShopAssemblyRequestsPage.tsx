@@ -1,8 +1,9 @@
-import { useMemo, useState } from 'react';
+import { Fragment, useMemo, useState } from 'react';
 import {
   Box,
   Chip,
   Table,
+  TableContainer,
   TableHead,
   TableBody,
   TableRow,
@@ -10,7 +11,6 @@ import {
   Stack,
   ToggleButton,
   ToggleButtonGroup,
-  Typography,
 } from '@mui/material';
 import { useQuery } from '@apollo/client/react';
 import {
@@ -20,7 +20,8 @@ import {
   REOPEN_SHOP_ASSEMBLY_REQUEST,
 } from '../../graphql/shop-assembly';
 import RequestsReviewPage from '../../components/RequestsReviewPage';
-import { monoSx } from '../../theme';
+import { monoSx, tabularSx } from '../../theme';
+import { plural } from '../../utils/plural';
 import { FadeIn } from '../../motion';
 import {
   STAGE_COLOR,
@@ -56,6 +57,9 @@ interface ShopAssemblyRequest {
 }
 
 type View = 'PENDING' | 'APPROVED' | 'REJECTED';
+
+/** Figures are sized to their digits so the two identifier columns take the slack. */
+const NUM_COL = { ...tabularSx, width: 1, whiteSpace: 'nowrap' } as const;
 
 const VIEW_COPY: Record<View, { description: string; empty: string }> = {
   PENDING: {
@@ -127,15 +131,21 @@ export default function ShopAssemblyRequestsPage() {
 
           {view === 'APPROVED' && (
             <Stack direction="row" spacing={0.75} alignItems="center">
-              {STAGE_ORDER.filter((stage) => stage !== 'REQUESTED').map((stage) => (
-                <Chip
-                  key={stage}
-                  size="small"
-                  variant="outlined"
-                  color={STAGE_COLOR[stage]}
-                  label={`${STAGE_LABEL[stage]} ${stageCounts.get(stage) ?? 0}`}
-                />
-              ))}
+              {STAGE_ORDER.filter((stage) => stage !== 'REQUESTED').map((stage) => {
+                const count = stageCounts.get(stage) ?? 0;
+                // An empty rung is still worth showing - it is the ladder, not a result - but it
+                // carries no state, so it drops its hue rather than colouring a zero.
+                return (
+                  <Chip
+                    key={stage}
+                    size="small"
+                    variant="outlined"
+                    color={count > 0 ? STAGE_COLOR[stage] : 'default'}
+                    label={`${STAGE_LABEL[stage]} ${count}`}
+                    sx={{ ...tabularSx, ...(count === 0 && { color: 'text.disabled' }) }}
+                  />
+                );
+              })}
             </Stack>
           )}
         </Stack>
@@ -170,53 +180,89 @@ export default function ShopAssemblyRequestsPage() {
                 color={STAGE_COLOR[req.stage]}
                 label={STAGE_LABEL[req.stage]}
               />
-              <Chip label={`${openings} opening(s)`} size="small" variant="outlined" />
+              <Chip label={plural(openings, 'opening')} size="small" variant="outlined" sx={tabularSx} />
               {short > 0 && (
-                <Chip label={`${short} unit(s) short`} size="small" variant="outlined" color="warning" />
+                <Chip
+                  label={`${plural(short, 'unit')} short`}
+                  size="small"
+                  variant="outlined"
+                  color="warning"
+                  sx={tabularSx}
+                />
               )}
             </Stack>
           );
         }}
-        renderDetails={(req) =>
-          groupByOpening(req.items).map(([openingNumber, items]) => (
-            <Box key={openingNumber ?? '__untagged'}>
-              <Typography variant="subtitle2" sx={{ ...monoSx, fontWeight: 600, mb: 0.5 }}>
-                {openingNumber ?? 'No opening'}
-              </Typography>
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Product Code</TableCell>
-                    <TableCell>Hardware Category</TableCell>
-                    <TableCell align="right">Owed</TableCell>
-                    <TableCell align="right">Allocated</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {items.map((item) => (
-                    <TableRow key={item.id} hover>
-                      <TableCell sx={monoSx}>{item.productCode}</TableCell>
-                      <TableCell>{item.hardwareCategory}</TableCell>
-                      <TableCell align="right">{item.quantity}</TableCell>
-                      <TableCell align="right">
-                        {item.allocatedQuantity}
-                        {item.quantity > item.allocatedQuantity && (
-                          <Chip
-                            size="small"
-                            variant="outlined"
-                            color="warning"
-                            label={`${item.quantity - item.allocatedQuantity} short`}
-                            sx={{ ml: 0.5 }}
-                          />
-                        )}
+        renderDetails={(req) => (
+          // One ledger, not one per opening. The grouping is a row inside it: repeating a four-column
+          // header above every door turned a twenty-opening request into twenty tables of chrome.
+          <TableContainer sx={{ overflowX: 'auto' }}>
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Product Code</TableCell>
+                  <TableCell>Hardware Category</TableCell>
+                  <TableCell align="right">Owed</TableCell>
+                  <TableCell align="right">Allocated</TableCell>
+                  <TableCell align="right">Short</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {groupByOpening(req.items).map(([openingNumber, items]) => (
+                  <Fragment key={openingNumber ?? '__untagged'}>
+                    <TableRow>
+                      <TableCell
+                        colSpan={5}
+                        sx={{
+                          ...monoSx,
+                          fontWeight: 600,
+                          borderBottom: 'none',
+                          pt: 2,
+                          pb: 0.5,
+                          // A line raised straight off inventory belongs to the job rather than to a
+                          // door, so it says so instead of borrowing an identifier's voice.
+                          ...(openingNumber === null && {
+                            fontFamily: 'inherit',
+                            color: 'text.secondary',
+                          }),
+                        }}
+                      >
+                        {openingNumber ?? 'No opening'}
                       </TableCell>
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </Box>
-          ))
-        }
+                    {items.map((item) => {
+                      const short = item.quantity - item.allocatedQuantity;
+                      return (
+                        <TableRow key={item.id} hover>
+                          <TableCell sx={monoSx}>{item.productCode}</TableCell>
+                          <TableCell>{item.hardwareCategory}</TableCell>
+                          <TableCell align="right" sx={NUM_COL}>
+                            {item.quantity}
+                          </TableCell>
+                          <TableCell align="right" sx={NUM_COL}>
+                            {item.allocatedQuantity}
+                          </TableCell>
+                          {/* A zero here is the good outcome, so it recedes; anything above it is
+                              what the acceptor is being asked to approve knowingly. */}
+                          <TableCell
+                            align="right"
+                            sx={{
+                              ...NUM_COL,
+                              color: short > 0 ? 'warning.main' : 'text.disabled',
+                              fontWeight: short > 0 ? 600 : 400,
+                            }}
+                          >
+                            {short}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </Fragment>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        )}
       />
     </Box>
   );

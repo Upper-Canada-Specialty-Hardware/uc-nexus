@@ -5,7 +5,7 @@ import { useQuery } from '@apollo/client/react';
 import { Card, CardActionArea } from '@mui/material';
 import { StatCard, StatCardSkeleton } from '../../components/StatCard';
 import { GET_SHOP_ASSEMBLY_STATS, GET_SHOP_ASSEMBLY_REQUESTS } from '../../graphql/shop-assembly';
-import { microLabelSx, tabularSx } from '../../theme';
+import { tabularSx } from '../../theme';
 import { FadeIn, StaggerList, StaggerItem } from '../../motion';
 import { STAGE_LABEL, STAGE_ORDER, type RequestStage } from './requestStages';
 
@@ -19,6 +19,9 @@ interface LandingRequest {
   id: string;
   stage: RequestStage;
 }
+
+/** Width the gauges and the destination card share, so the page reads as one column. */
+const COLUMN = 460;
 
 export default function ShopAssemblyLanding() {
   const navigate = useNavigate();
@@ -40,10 +43,15 @@ export default function ShopAssemblyLanding() {
   return (
     <Box>
       <FadeIn>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
-          <Typography variant="h5" sx={{ flex: 1 }}>
-            Shop Assembly
-          </Typography>
+        <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1, mb: 2 }}>
+          <Box sx={{ flex: 1, minWidth: 0 }}>
+            <Typography variant="h5" sx={{ mb: 0.5 }}>
+              Shop Assembly
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              What the bench has asked for, and what the warehouse is doing about it.
+            </Typography>
+          </Box>
           {/* #471: requesting hardware to the bench is an action of this module, not a separate
               destination. It goes off the hardware schedule, which is the only thing that knows what
               an opening is owed. */}
@@ -52,67 +60,69 @@ export default function ShopAssemblyLanding() {
             size="small"
             startIcon={<ClipboardPlus size={18} strokeWidth={1.75} />}
             onClick={() => navigate('/app/import?purpose=assembly')}
+            sx={{ flexShrink: 0 }}
           >
             Start a Request
           </Button>
         </Box>
       </FadeIn>
 
-      {/* Two gauges, each sized to its figure, rather than one card spread across the page. */}
-      <StaggerList count={2} style={{ display: 'flex', gap: 12, marginBottom: 28, flexWrap: 'wrap' }}>
-        {loading && !s ? (
-          <StaggerItem style={{ flex: '1 1 0', minWidth: 160 }}>
-            <StatCardSkeleton />
-          </StaggerItem>
-        ) : s ? (
-          <StaggerItem style={{ flex: '1 1 0', minWidth: 160 }}>
-            <StatCard
-              icon={<Truck size={18} strokeWidth={1.75} />}
-              label="Active Pull Requests"
-              value={s.activePullRequestCount}
-            />
-          </StaggerItem>
-        ) : null}
-        {waiting !== null && (
-          <StaggerItem style={{ flex: '1 1 0', minWidth: 160 }}>
-            {/* The screen's single amber edge: a request waiting on a reviewer is the only thing
-                here anybody has to act on. */}
-            <StatCard
-              icon={<ClipboardCheck size={18} strokeWidth={1.75} />}
-              label="Awaiting Review"
-              value={waiting}
-              accent={waiting > 0 ? 'amber' : undefined}
-            />
-          </StaggerItem>
-        )}
-      </StaggerList>
+      {/* The module is two gauges and one destination since v1 dropped the bench screens. Capping the
+          column keeps them sized to their figures rather than stretching a two-digit count across a
+          1400px viewport - which is the space law's failure case, not a smaller warehouse dashboard. */}
+      <Box sx={{ maxWidth: COLUMN }}>
+        <StaggerList count={2} style={{ display: 'flex', gap: 12, marginBottom: 20, flexWrap: 'wrap' }}>
+          {loading && !s ? (
+            <StaggerItem style={{ flex: '1 1 0', minWidth: 160 }}>
+              <StatCardSkeleton />
+            </StaggerItem>
+          ) : s ? (
+            <StaggerItem style={{ flex: '1 1 0', minWidth: 160 }}>
+              <StatCard
+                icon={<Truck size={18} strokeWidth={1.75} />}
+                label="Active Pull Requests"
+                value={s.activePullRequestCount}
+              />
+            </StaggerItem>
+          ) : null}
+          {waiting !== null && (
+            <StaggerItem style={{ flex: '1 1 0', minWidth: 160 }}>
+              {/* The screen's single amber edge: a request waiting on a reviewer is the only thing
+                  here anybody has to act on. */}
+              <StatCard
+                icon={<ClipboardCheck size={18} strokeWidth={1.75} />}
+                label="Awaiting Review"
+                value={waiting}
+                accent={waiting > 0 ? 'amber' : undefined}
+              />
+            </StaggerItem>
+          )}
+        </StaggerList>
 
-      <Typography component="div" sx={{ ...microLabelSx, mb: 1.25 }}>
-        Go to
-      </Typography>
-      <FadeIn>
-        <Card variant="outlined" sx={{ maxWidth: 420 }}>
-          <CardActionArea
-            onClick={() => navigate('/app/shop-assembly/requests')}
-            sx={{ p: 1.75, display: 'flex', alignItems: 'center', gap: 1.5 }}
-          >
-            <Box sx={{ color: 'text.secondary', display: 'flex', flexShrink: 0 }}>
-              <ClipboardCheck size={26} strokeWidth={1.75} />
-            </Box>
-            <Box sx={{ minWidth: 0, flexGrow: 1, textAlign: 'left' }}>
-              <Typography variant="subtitle1" sx={{ lineHeight: 1.25 }}>
-                Requests
-              </Typography>
-              <Typography variant="caption" color="text.secondary" sx={tabularSx}>
-                {STAGE_ORDER.map((stage) => STAGE_LABEL[stage]).join(' → ')}
-              </Typography>
-            </Box>
-            <Box sx={{ color: 'text.disabled', display: 'flex', flexShrink: 0 }}>
-              <ChevronRight size={18} strokeWidth={1.75} />
-            </Box>
-          </CardActionArea>
-        </Card>
-      </FadeIn>
+        <FadeIn>
+          <Card variant="outlined">
+            <CardActionArea
+              onClick={() => navigate('/app/shop-assembly/requests')}
+              sx={{ p: 1.75, display: 'flex', alignItems: 'center', gap: 1.5 }}
+            >
+              <Box sx={{ color: 'text.secondary', display: 'flex', flexShrink: 0 }}>
+                <ClipboardCheck size={26} strokeWidth={1.75} />
+              </Box>
+              <Box sx={{ minWidth: 0, flexGrow: 1, textAlign: 'left' }}>
+                <Typography variant="subtitle1" sx={{ lineHeight: 1.25 }}>
+                  Requests
+                </Typography>
+                <Typography variant="caption" color="text.secondary" sx={tabularSx}>
+                  {STAGE_ORDER.map((stage) => STAGE_LABEL[stage]).join(' → ')}
+                </Typography>
+              </Box>
+              <Box sx={{ color: 'text.disabled', display: 'flex', flexShrink: 0 }}>
+                <ChevronRight size={18} strokeWidth={1.75} />
+              </Box>
+            </CardActionArea>
+          </Card>
+        </FadeIn>
+      </Box>
     </Box>
   );
 }

@@ -10,30 +10,9 @@ import {
 import { DELIVERY_REQUEST_FIELDS } from '../../../types/deliveryRequestFields';
 
 describe('buildMaterialLines', () => {
-  it('writes an assembled leaf as one unit of a named opening', () => {
+  it('counts hardware in units, singular at one, and names the opening it was pulled for', () => {
     expect(
-      buildMaterialLines([{ openingNumber: '0019-EX', leaf: 1 }], []),
-    ).toEqual(['(1) Unit of Opening 0019-EX Leaf 1']);
-  });
-
-  it('carries the building, floor and location when the schedule knows them', () => {
-    expect(
-      buildMaterialLines(
-        [{ openingNumber: '0019-EX', leaf: 2, building: 'A', floor: '1', location: 'Rm 101' }],
-        [],
-      ),
-    ).toEqual(['(1) Unit of Opening 0019-EX Leaf 2 - A / 1 / Rm 101']);
-  });
-
-  it('leaves the leaf off a leaf-agnostic unit', () => {
-    expect(buildMaterialLines([{ openingNumber: '0019-EX', leaf: null }], [])).toEqual([
-      '(1) Unit of Opening 0019-EX',
-    ]);
-  });
-
-  it('counts loose hardware in units, singular at one, and names the opening it was pulled for', () => {
-    expect(
-      buildMaterialLines([], [
+      buildMaterialLines([
         {
           openingNumber: '0019-EX',
           productCode: 'SIL-6307-DAY',
@@ -53,10 +32,10 @@ describe('buildMaterialLines', () => {
     ]);
   });
 
-  it('leaves the opening off loose hardware that was not pulled against one', () => {
+  it('leaves the opening off hardware that was not pulled against one', () => {
     // Stock hardware added at the dock has no opening, and an empty bracket says nothing.
     expect(
-      buildMaterialLines([], [
+      buildMaterialLines([
         {
           openingNumber: '',
           productCode: 'AD8406',
@@ -67,88 +46,69 @@ describe('buildMaterialLines', () => {
     ).toEqual(['(2) Units of AD8406 - Locksets']);
   });
 
-  it('reprints the placement a shipped leaf was stored with, so the copy matches the original', () => {
+  it('carries the building, floor and location when the slip stored them', () => {
+    expect(
+      buildMaterialLines([
+        {
+          openingNumber: '0019-EX',
+          productCode: 'AD8406',
+          hardwareCategory: 'Locksets',
+          quantity: 2,
+          building: 'A',
+          floor: '1',
+          location: 'Rm 101',
+        },
+      ]),
+    ).toEqual(['(2) Units of AD8406 - Locksets (Opening 0019-EX) - A / 1 / Rm 101']);
+  });
+
+  it('reprints the placement the slip was stored with, so the copy matches the original', () => {
     // #452: the reprint is what gets pulled up in a site dispute. It used to rebuild the material
     // lines without the placement suffix, so one shipment produced two different documents.
     expect(
       slipMaterialLines([
         {
           id: '1',
-          itemType: 'OPENING_ITEM',
           openingNumber: '0019-EX',
-          leaf: 2,
           building: 'A',
           floor: '1',
           location: 'Rm 101',
-          productCode: null,
-          hardwareCategory: null,
+          productCode: 'AD8406',
+          hardwareCategory: 'Locksets',
           quantity: 1,
         },
       ]),
-    ).toEqual(['(1) Unit of Opening 0019-EX Leaf 2 - A / 1 / Rm 101']);
+    ).toEqual(['(1) Unit of AD8406 - Locksets (Opening 0019-EX) - A / 1 / Rm 101']);
   });
 
   it('prints a slip cut before the placement was stored exactly as it was issued', () => {
-    // Pre-#452 rows have no placement, and a reprint must not invent one by chasing the OpeningItem.
+    // Pre-#452 rows have no placement, and a reprint must not invent one by chasing the opening.
     expect(
       slipMaterialLines([
         {
           id: '1',
-          itemType: 'OPENING_ITEM',
           openingNumber: '0019-EX',
-          leaf: 2,
-          productCode: null,
-          hardwareCategory: null,
+          productCode: 'AD8406',
+          hardwareCategory: 'Locksets',
           quantity: 1,
         },
       ]),
-    ).toEqual(['(1) Unit of Opening 0019-EX Leaf 2']);
-  });
-
-  it('keeps assembled leaves ahead of loose hardware', () => {
-    const lines = slipMaterialLines([
-      {
-        id: '2',
-        itemType: 'LOOSE',
-        openingNumber: '0019-EX',
-        leaf: null,
-        productCode: 'AD8406',
-        hardwareCategory: 'Locksets',
-        quantity: 2,
-      },
-      {
-        id: '1',
-        itemType: 'OPENING_ITEM',
-        openingNumber: '0019-EX',
-        leaf: 1,
-        productCode: null,
-        hardwareCategory: null,
-        quantity: 1,
-      },
-    ]);
-    expect(lines).toEqual([
-      '(1) Unit of Opening 0019-EX Leaf 1',
-      '(2) Units of AD8406 - Locksets (Opening 0019-EX)',
-    ]);
+    ).toEqual(['(1) Unit of AD8406 - Locksets (Opening 0019-EX)']);
   });
 });
 
 describe('containers on the Delivery Request', () => {
-  const leaf = {
+  const hinges = {
     id: 'ci-1',
-    itemType: 'OPENING_ITEM',
     openingNumber: '0019-EX',
-    leaf: 1,
-    hardwareCategory: null,
-    productCode: null,
-    quantity: 1,
+    hardwareCategory: 'Hinges',
+    productCode: 'BB1279',
+    quantity: 3,
     position: 0,
   };
-  const loose = {
+  const locks = {
     id: 'ci-2',
-    itemType: 'LOOSE',
     openingNumber: '0019-EX',
-    leaf: null,
     hardwareCategory: 'Locksets',
     productCode: 'AD8406',
     quantity: 2,
@@ -157,25 +117,25 @@ describe('containers on the Delivery Request', () => {
 
   it('prints a skid as a numbered stacking list, first on at the bottom', () => {
     expect(
-      slipMaterialLines([], [{ id: 'c1', containerType: 'SKID', name: 'Skid 1', items: [loose, leaf] }]),
+      slipMaterialLines([], [{ id: 'c1', containerType: 'SKID', name: 'Skid 1', items: [locks, hinges] }]),
     ).toEqual([
       'SKID 1 (Skid)',
-      '  1. (1) Unit of Opening 0019-EX Leaf 1',
+      '  1. (3) Units of BB1279 - Hinges (Opening 0019-EX)',
       '  2. (2) Units of AD8406 - Locksets (Opening 0019-EX)',
     ]);
   });
 
   it('leaves an unstacked container unnumbered - a box is a set, not an order', () => {
     expect(
-      slipMaterialLines([], [{ id: 'c1', containerType: 'BOX', name: 'Box 1', items: [loose] }]),
+      slipMaterialLines([], [{ id: 'c1', containerType: 'BOX', name: 'Box 1', items: [locks] }]),
     ).toEqual(['BOX 1 (Box)', '  (2) Units of AD8406 - Locksets (Opening 0019-EX)']);
   });
 
   it('sorts by position rather than trusting the order it was handed', () => {
     const [, first] = slipMaterialLines([], [
-      { id: 'c1', containerType: 'SKID', name: 'Skid 1', items: [{ ...loose, position: 5 }, { ...leaf, position: 2 }] },
+      { id: 'c1', containerType: 'SKID', name: 'Skid 1', items: [{ ...locks, position: 5 }, { ...hinges, position: 2 }] },
     ]);
-    expect(first).toBe('  1. (1) Unit of Opening 0019-EX Leaf 1');
+    expect(first).toBe('  1. (3) Units of BB1279 - Hinges (Opening 0019-EX)');
   });
 
   it('says so when a container went out empty', () => {
@@ -190,17 +150,15 @@ describe('containers on the Delivery Request', () => {
       [
         {
           id: '1',
-          itemType: 'OPENING_ITEM',
           openingNumber: '0019-EX',
-          leaf: 1,
-          productCode: null,
-          hardwareCategory: null,
+          productCode: 'AD8406',
+          hardwareCategory: 'Locksets',
           quantity: 1,
         },
       ],
       [],
     );
-    expect(lines).toEqual(['(1) Unit of Opening 0019-EX Leaf 1']);
+    expect(lines).toEqual(['(1) Unit of AD8406 - Locksets (Opening 0019-EX)']);
   });
 });
 

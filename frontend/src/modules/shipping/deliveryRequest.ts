@@ -31,11 +31,10 @@ export function shipmentStatusDisplay(status: string): { label: string; color: C
 
 export interface PackingSlipItem {
   id: string;
-  itemType: string;
+  /** The door this quantity was owed to, as a tag. Null on a line raised straight off inventory. */
   openingNumber: string | null;
-  leaf?: number | null;
-  // Where the leaf was going, as the slip recorded it at confirm (#452). Null on a loose line and on
-  // anything shipped before #452, which is why a reprint of an old slip still prints without it.
+  // Where it was going, as the slip recorded it at confirm (#452). Null when the opening carried no
+  // placement, and on anything shipped before #452 - which is why an old reprint still prints.
   building?: string | null;
   floor?: string | null;
   location?: string | null;
@@ -47,9 +46,7 @@ export interface PackingSlipItem {
 /** One placement inside a shipped container, as the slip stored it (#451). */
 export interface SlipContainerItem {
   id: string;
-  itemType: string;
   openingNumber: string | null;
-  leaf?: number | null;
   hardwareCategory: string | null;
   productCode: string | null;
   quantity: number;
@@ -158,19 +155,14 @@ export function valuesFromSlip(slip: PackingSlipHeader): DeliveryRequestValues {
 
 // ---- Material description -------------------------------------------------
 
-export interface MaterialOpeningItem {
-  openingNumber: string;
-  leaf?: number | null;
-  building?: string | null;
-  floor?: string | null;
-  location?: string | null;
-}
-
-export interface MaterialLooseItem {
+export interface MaterialItem {
   openingNumber: string;
   productCode: string;
   hardwareCategory: string;
   quantity: number;
+  building?: string | null;
+  floor?: string | null;
+  location?: string | null;
 }
 
 function units(quantity: number): string {
@@ -179,38 +171,30 @@ function units(quantity: number): string {
 
 /**
  * The MATERIAL DESCRIPTION block, in the wording the paper form uses: a quantity in brackets, then
- * what it is. An assembled leaf is one unit of a named door leaf; loose hardware is a count of a
- * product code. The two never merge - the warehouse hands over a rack of leaves and a box of parts,
- * and the driver counts them separately.
+ * what it is.
  *
- * A loose line names its opening too. Loose hardware is pulled against one, and the site takes
- * delivery opening by opening: without it the form says four locksets arrived and not which door
- * they belong to, which is exactly the question the paper is signed to answer.
+ * A line names its opening. Hardware is pulled against one, and the site takes delivery opening by
+ * opening: without it the form says four locksets arrived and not which door they belong to, which
+ * is exactly the question the paper is signed to answer. Where the opening carried a placement, that
+ * prints too, so the crew unloading knows which floor it is walking to.
  */
-export function buildMaterialLines(
-  openingItems: MaterialOpeningItem[],
-  looseItems: MaterialLooseItem[],
-): string[] {
-  const lines = openingItems.map((item) => {
-    const leaf = item.leaf != null ? ` Leaf ${item.leaf}` : '';
-    const where = [item.building, item.floor, item.location].filter(Boolean).join(' / ');
-    return `(1) Unit of Opening ${item.openingNumber}${leaf}${where ? ` - ${where}` : ''}`;
-  });
-  for (const item of looseItems) {
+export function buildMaterialLines(items: MaterialItem[]): string[] {
+  return items.map((item) => {
     const opening = item.openingNumber?.trim() ? ` (Opening ${item.openingNumber})` : '';
-    lines.push(
-      `(${item.quantity}) ${units(item.quantity)} of ${item.productCode} - ${item.hardwareCategory}${opening}`,
+    const where = [item.building, item.floor, item.location].filter(Boolean).join(' / ');
+    return (
+      `(${item.quantity}) ${units(item.quantity)} of ${item.productCode} - ${item.hardwareCategory}` +
+      `${opening}${where ? ` - ${where}` : ''}`
     );
-  }
-  return lines;
+  });
 }
 
 /**
  * The same block built from a stored shipment's items, for a Delivery Request reprinted later.
  *
- * The placement comes off the slip's own snapshot rather than the OpeningItem it was taken from
- * (#452). A reprint is the copy pulled up in a site dispute, so it has to print what the driver was
- * handed - and this used to drop the suffix entirely, which made one shipment produce two different
+ * The placement comes off the slip's own snapshot rather than the opening it was read from (#452). A
+ * reprint is the copy pulled up in a site dispute, so it has to print what the driver was handed -
+ * and this used to drop the suffix entirely, which made one shipment produce two different
  * documents. Slips written before #452 have no placement stored and still print without it.
  */
 export function slipMaterialLines(items: PackingSlipItem[], containers?: SlipContainer[]): string[] {
@@ -219,32 +203,25 @@ export function slipMaterialLines(items: PackingSlipItem[], containers?: SlipCon
   // covers everything cut before containers existed.
   if (containers && containers.length > 0) return containerMaterialLines(containers);
 
-  const openingItems = items
-    .filter((i) => i.itemType === 'OPENING_ITEM')
-    .map((i) => ({
-      openingNumber: i.openingNumber ?? '',
-      leaf: i.leaf ?? null,
-      building: i.building ?? null,
-      floor: i.floor ?? null,
-      location: i.location ?? null,
-    }));
-  const looseItems = items
-    .filter((i) => i.itemType === 'LOOSE')
-    .map((i) => ({
+  return buildMaterialLines(
+    items.map((i) => ({
       openingNumber: i.openingNumber ?? '',
       productCode: i.productCode ?? '',
       hardwareCategory: i.hardwareCategory ?? '',
       quantity: i.quantity,
-    }));
-  return buildMaterialLines(openingItems, looseItems);
+      building: i.building ?? null,
+      floor: i.floor ?? null,
+      location: i.location ?? null,
+    })),
+  );
 }
 
-/** One line of a container's contents, in the same wording the flat material block uses. */
+/**
+ * One line of a container's contents, in the same wording the flat material block uses. The
+ * placement is not repeated here: a container is one drop, and its heading already carries where it
+ * is going.
+ */
 function containerItemLine(item: SlipContainerItem): string {
-  if (item.itemType === 'OPENING_ITEM') {
-    const leaf = item.leaf != null ? ` Leaf ${item.leaf}` : '';
-    return `(1) Unit of Opening ${item.openingNumber ?? ''}${leaf}`;
-  }
   const opening = item.openingNumber?.trim() ? ` (Opening ${item.openingNumber})` : '';
   return `(${item.quantity}) ${units(item.quantity)} of ${item.productCode ?? ''} - ${item.hardwareCategory ?? ''}${opening}`;
 }
