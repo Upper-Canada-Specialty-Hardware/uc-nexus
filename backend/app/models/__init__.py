@@ -22,7 +22,6 @@ from .inventory_item_type import (  # noqa: E402, F401
 from .inventory_reservation import InventoryReservation  # noqa: E402, F401
 from .manufacturer_vendor_map import ManufacturerVendorMap  # noqa: E402, F401
 from .notification import Notification  # noqa: E402, F401
-from .opening_item import OpeningItem, OpeningItemHardware  # noqa: E402, F401
 from .po_document_settings import PODocumentSettings  # noqa: E402, F401
 from .project import Opening, Project  # noqa: E402, F401
 from .project_excluded_item import ProjectExcludedItem  # noqa: E402, F401
@@ -50,9 +49,8 @@ from .shipping_out_request import (  # noqa: E402, F401
     ShippingOutRequestItem,
 )
 from .shop_assembly import (  # noqa: E402, F401
-    ShopAssemblyOpening,
-    ShopAssemblyOpeningItem,
     ShopAssemblyRequest,
+    ShopAssemblyRequestItem,
 )
 from .stock_item import StockItem  # noqa: E402, F401
 from .warehouse import Warehouse  # noqa: E402, F401

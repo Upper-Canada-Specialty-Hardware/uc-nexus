@@ -2,11 +2,11 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import CheckConstraint, Enum, ForeignKey, Index, Integer, SmallInteger, String
+from sqlalchemy import CheckConstraint, Enum, ForeignKey, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from . import Base
-from .enums import PullRequestItemType, ShipmentContainerType
+from .enums import ShipmentContainerType
 
 if TYPE_CHECKING:
     from .shipping import PackingSlip
@@ -84,7 +84,6 @@ class ShipmentContainerItem(Base):
     __tablename__ = "shipment_container_items"
     __table_args__ = (
         Index("ix_shipment_container_items_container", "shipment_container_id"),
-        Index("ix_shipment_container_items_opening_item", "opening_item_id"),
         CheckConstraint("quantity >= 1", name="ck_shipment_container_items_quantity_positive"),
     )
 
@@ -92,14 +91,8 @@ class ShipmentContainerItem(Base):
     shipment_container_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("shipment_containers.id", ondelete="CASCADE"), nullable=False
     )
-    item_type: Mapped[PullRequestItemType] = mapped_column(
-        Enum(PullRequestItemType, name="pull_request_item_type", create_constraint=True),
-        nullable=False,
-    )
-    opening_item_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("opening_items.id"), nullable=True)
     # Null on loose stock with no opening attribution (#451), same as everywhere else in the chain.
     opening_number: Mapped[str | None] = mapped_column(String, nullable=True)
-    leaf: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     hardware_category: Mapped[str] = mapped_column(String, nullable=False)
     product_code: Mapped[str] = mapped_column(String, nullable=False)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
