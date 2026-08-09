@@ -270,8 +270,17 @@ export default function ImportWizard({
       { id: 'upload', label: 'Upload File' },
       { id: 'purpose', label: 'Purpose' },
       { id: 'openings', label: 'Select Openings' },
-      { id: 'reconciliation', label: 'Reconciliation' },
     ];
+    // Reconciliation compares the incoming schedule against what the project has already committed,
+    // so on a project with no persisted openings it has nothing to compare and rendered a single
+    // "New project - all items will be ordered fresh" banner over an otherwise empty full-screen
+    // step. That is a mandatory click carrying no decision, on the most-walked flow in the app.
+    // `isReimport` is `openingCount > 0`, which is exactly the condition for having something to
+    // reconcile against - and a first import can only be the PO purpose anyway, since the other two
+    // require a project with received inventory.
+    if (isReimport) {
+      base.push({ id: 'reconciliation', label: 'Reconciliation' });
+    }
     // #492: only the PO purpose asks. A shop-assembly request runs against a project whose schedule
     // is already classified, so re-asking forced the user to re-answer a question the system knows -
     // and answering it differently than the original import is exactly the drift. The assembly
@@ -290,8 +299,11 @@ export default function ImportWizard({
   // Derived via useMemo instead of a useEffect+setState to avoid cascading renders.
   const effectiveStepId = useMemo<StepId>(
     () =>
+      // Falls back to 'openings' rather than 'reconciliation': reconciliation is now conditional, so
+      // naming it here could orphan the orphan-guard itself on a first import. 'openings' is in every
+      // variant of the stepper.
       activeStepId !== 'upload' && !steps.find((s) => s.id === activeStepId)
-        ? 'reconciliation'
+        ? 'openings'
         : activeStepId,
     [steps, activeStepId],
   );
@@ -1811,7 +1823,10 @@ export default function ImportWizard({
                 <Typography sx={{ ...microLabelSx, mb: 1.5 }}>Import Summary</Typography>
 
                 <Typography sx={microLabelSx}>Project</Typography>
-                <Typography variant="body1" sx={{ mb: 1, ...monoSx, fontSize: '1rem' }}>
+                {/* `title` step off the DESIGN.md ramp, not MUI's body1 default of 1rem - the ramp
+                    has no 1rem step. component="p" because this is the card's headline value, not a
+                    heading in the document outline. */}
+                <Typography variant="h6" component="p" sx={{ mb: 1, ...monoSx }}>
                   {existingProjectName}
                 </Typography>
                 <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, mb: 2 }}>
