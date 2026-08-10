@@ -38,8 +38,9 @@ def get_audit_log(
     entity_type: str | None = None,
     project_id: uuid.UUID | None = None,
     limit: int = 50,
+    offset: int = 0,
 ) -> list[InventoryAuditLog]:
-    """Query audit log entries, optionally filtered by entity, type, or project."""
+    """Query audit log entries, optionally filtered by entity, type, or project. `offset` pages."""
     stmt = select(InventoryAuditLog).order_by(InventoryAuditLog.created_at.desc())
     if entity_id is not None:
         stmt = stmt.where(InventoryAuditLog.entity_id == entity_id)
@@ -47,5 +48,5 @@ def get_audit_log(
         stmt = stmt.where(InventoryAuditLog.entity_type == entity_type)
     if project_id is not None:
         stmt = stmt.where(InventoryAuditLog.project_id == project_id)
-    stmt = stmt.limit(limit)
+    stmt = stmt.limit(limit).offset(offset)
     return list(session.scalars(stmt).all())

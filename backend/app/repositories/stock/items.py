@@ -251,6 +251,7 @@ def reclassify_stock_item(
     si.quantity -= quantity
     new_row = _find_or_create_stock_row(
         session,
+        warehouse_id=si.warehouse_id,
         hardware_category=new_hardware_category,
         product_code=new_product_code,
         aisle=si.aisle,

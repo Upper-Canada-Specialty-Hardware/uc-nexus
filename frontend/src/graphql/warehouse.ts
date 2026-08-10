@@ -416,6 +416,8 @@ export const ADJUST_INVENTORY_QUANTITY = gql`
       hardwareCategory
       productCode
       quantity
+      deficientQuantity
+      available
       aisle
       row
       bay

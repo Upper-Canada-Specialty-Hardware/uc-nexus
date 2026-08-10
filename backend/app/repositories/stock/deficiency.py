@@ -165,6 +165,7 @@ def resolve_deficiency(
             il.deficient_quantity -= quantity
             stock_row = _find_or_create_stock_row(
                 session,
+                warehouse_id=il.warehouse_id,
                 hardware_category=il.hardware_category,
                 product_code=il.product_code,
                 aisle=il.aisle,

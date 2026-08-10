@@ -15,7 +15,7 @@ from app.models.purchase_order import POLineItem as POLineItemModel
 from app.models.purchase_order import PurchaseOrder as POModel
 
 from .audit import _log_audit_event
-from .locations import _normalize_and_validate_location_fields
+from .locations import _normalize_and_validate_location_fields, clone_origin_fields
 
 
 def get_inventory_hierarchy(
@@ -283,6 +283,13 @@ def adjust_inventory_quantity(
     new_quantity = il.quantity + adjustment
     if new_quantity < 0:
         raise ValidationError("Adjustment would result in negative quantity", field="adjustment")
+    if new_quantity < il.deficient_quantity:
+        # The deficient claim stays on the row; dropping below it would trip the
+        # deficient<=quantity CHECK with a raw 500. override_inventory_quantity guards the same way.
+        raise ValidationError(
+            "Cannot set quantity below this row's deficient quantity",
+            field="adjustment",
+        )
 
     old_quantity = il.quantity
     il.quantity = new_quantity
@@ -374,9 +381,7 @@ def override_inventory_quantity(
             else:
                 new_il = InventoryLocationModel(
                     project_id=il.project_id,
-                    po_line_item_id=il.po_line_item_id,
-                    receive_line_item_id=il.receive_line_item_id,
-                    stock_item_id=il.stock_item_id,
+                    **clone_origin_fields(il),
                     warehouse_id=il.warehouse_id,
                     hardware_category=il.hardware_category,
                     product_code=il.product_code,

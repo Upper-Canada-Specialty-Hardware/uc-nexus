@@ -63,11 +63,17 @@ export default function DestockInventoryModal({ inventoryLocation, onClose, onSu
   });
 
   const q = Number(quantity);
+  const deficient = inventoryLocation.deficientQuantity ?? 0;
+  // A DEFICIENT_SWAP pulls the flagged units out, so it caps at the deficient count. Every other
+  // reason moves good stock, and the server now floors the row at its deficient count - so the most
+  // that can leave is quantity - deficient.
+  const maxQty =
+    source === 'DEFICIENT_SWAP' ? deficient : inventoryLocation.quantity - deficient;
+  // The server rejects a partial target override, so all three of aisle/row/bay are required
+  // together once the override is on.
+  const overrideComplete = !!aisle.trim() && !!row.trim() && !!bay.trim();
   const valid =
-    Number.isInteger(q) &&
-    q >= 1 &&
-    q <= inventoryLocation.quantity &&
-    (source !== 'DEFICIENT_SWAP' || q <= (inventoryLocation.deficientQuantity ?? 0));
+    Number.isInteger(q) && q >= 1 && q <= maxQty && (!overrideLoc || overrideComplete);
 
   const handleSubmit = () => {
     if (!valid) return;
@@ -78,9 +84,9 @@ export default function DestockInventoryModal({ inventoryLocation, onClose, onSu
           quantity: q,
           source,
           reasonText: reason.trim() || null,
-          targetAisle: overrideLoc ? aisle.trim() || null : null,
-          targetRow: overrideLoc ? row.trim() || null : null,
-          targetBay: overrideLoc ? bay.trim() || null : null,
+          targetAisle: overrideLoc ? aisle.trim() : null,
+          targetRow: overrideLoc ? row.trim() : null,
+          targetBay: overrideLoc ? bay.trim() : null,
         },
       },
     });
@@ -114,12 +120,19 @@ export default function DestockInventoryModal({ inventoryLocation, onClose, onSu
           </Typography>
         </Box>
         <TextField
-          label={`Quantity (max ${inventoryLocation.quantity})`}
+          label={`Quantity (max ${maxQty})`}
           type="number"
           value={quantity}
           onChange={(e) => setQuantity(e.target.value)}
           required
-          inputProps={{ min: 1, max: inventoryLocation.quantity }}
+          inputProps={{ min: 1, max: maxQty }}
+          helperText={
+            maxQty === 0
+              ? source === 'DEFICIENT_SWAP'
+                ? 'No deficient units on this row to swap'
+                : 'All units on this row are deficient - use Deficient swap'
+              : undefined
+          }
         />
         <FormControl size="small" required>
           <InputLabel>Source</InputLabel>
@@ -142,10 +155,17 @@ export default function DestockInventoryModal({ inventoryLocation, onClose, onSu
           {overrideLoc ? 'Use source location' : 'Override target location'}
         </Button>
         {overrideLoc && (
-          <Stack direction="row" spacing={2}>
-            <TextField label="Aisle" value={aisle} onChange={(e) => setAisle(e.target.value)} />
-            <TextField label="Row" value={row} onChange={(e) => setRow(e.target.value)} />
-            <TextField label="Bay" value={bay} onChange={(e) => setBay(e.target.value)} />
+          <Stack spacing={1}>
+            <Stack direction="row" spacing={2}>
+              <TextField label="Aisle" value={aisle} onChange={(e) => setAisle(e.target.value)} required />
+              <TextField label="Row" value={row} onChange={(e) => setRow(e.target.value)} required />
+              <TextField label="Bay" value={bay} onChange={(e) => setBay(e.target.value)} required />
+            </Stack>
+            {!overrideComplete && (
+              <Typography variant="caption" color="text.secondary">
+                Enter all three of aisle, row and bay to override the target location.
+              </Typography>
+            )}
           </Stack>
         )}
       </Stack>

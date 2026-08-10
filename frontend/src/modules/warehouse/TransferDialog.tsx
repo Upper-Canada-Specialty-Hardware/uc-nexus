@@ -65,7 +65,17 @@ export default function TransferDialog({ source, onClose, onSuccess }: TransferD
   const [quantity, setQuantity] = useState<string>(String(source.available));
 
   const [transfer, { loading, error }] = useMutation(TRANSFER_INVENTORY, {
-    refetchQueries: WAREHOUSE_REFETCH_QUERIES,
+    // A transfer moves quantity between locations, so the Locations panel reads (utilization,
+    // contents, per-location audit strip) and the flat inventory table go stale alongside the
+    // warehouse summaries. Awaited so the panel is fresh by the time onSuccess/onClose fire.
+    refetchQueries: [
+      ...WAREHOUSE_REFETCH_QUERIES,
+      'GetLocationUtilization',
+      'GetLocationContents',
+      'GetLocationAuditHistory',
+      'GetInventoryRows',
+    ],
+    awaitRefetchQueries: true,
     onCompleted: () => {
       showToast(`Transferred ${quantity} ${source.productCode}`, 'success');
       onSuccess?.();

@@ -1,7 +1,8 @@
-import { useMemo } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import {
   Drawer,
   Box,
+  Button,
   Typography,
   IconButton,
   CircularProgress,
@@ -146,6 +147,8 @@ function AuditEntry({ entry }: { entry: AuditLogEntry }) {
   );
 }
 
+const PAGE_SIZE = 50;
+
 export default function AuditHistoryDrawer({
   open,
   onClose,
@@ -153,13 +156,39 @@ export default function AuditHistoryDrawer({
   entityType,
   label,
 }: AuditHistoryDrawerProps) {
-  const { data, loading, error } = useQuery<{ auditLog: AuditLogEntry[] }>(GET_AUDIT_LOG, {
-    variables: { entityId, entityType, limit: 50 },
+  const { data, loading, error, fetchMore } = useQuery<{ auditLog: AuditLogEntry[] }>(GET_AUDIT_LOG, {
+    variables: { entityId, entityType, limit: PAGE_SIZE, offset: 0 },
     skip: !open,
     fetchPolicy: 'network-only',
   });
 
   const entries = useMemo(() => data?.auditLog ?? [], [data]);
+
+  // The base query refetches page 0 (network-only) whenever the drawer reopens or the entity
+  // changes, so the "no more rows" flag has to reset alongside it.
+  const [reachedEnd, setReachedEnd] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset pagination when the entity or open state changes
+    setReachedEnd(false);
+  }, [entityId, entityType, open]);
+
+  const hasMore = !reachedEnd && entries.length >= PAGE_SIZE;
+
+  const handleLoadMore = async () => {
+    setLoadingMore(true);
+    try {
+      const res = await fetchMore({
+        variables: { offset: entries.length },
+        updateQuery: (prev, { fetchMoreResult }) => ({
+          auditLog: [...(prev.auditLog ?? []), ...(fetchMoreResult?.auditLog ?? [])],
+        }),
+      });
+      if ((res.data?.auditLog?.length ?? 0) < PAGE_SIZE) setReachedEnd(true);
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   return (
     <Drawer anchor="right" open={open} onClose={onClose} PaperProps={{ sx: { width: 400, maxWidth: '90vw' } }}>
@@ -203,6 +232,13 @@ export default function AuditHistoryDrawer({
                 {i < entries.length - 1 && <Divider />}
               </Box>
             ))}
+            {hasMore && (
+              <Box sx={{ display: 'flex', justifyContent: 'center', pt: 1.5 }}>
+                <Button size="small" onClick={handleLoadMore} disabled={loadingMore}>
+                  {loadingMore ? 'Loading…' : 'Load more'}
+                </Button>
+              </Box>
+            )}
           </Box>
         )}
       </Box>
