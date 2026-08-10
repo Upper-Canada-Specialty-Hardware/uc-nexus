@@ -160,24 +160,6 @@ export const SPLIT_INVENTORY_LOCATION = gql`
   }
 `;
 
-export const MOVE_OPENING_ITEM_LOCATION = gql`
-  mutation MoveOpeningItemLocation($openingItemId: ID!, $aisle: String!, $row: String!, $bay: String!, $warehouseId: ID) {
-    moveOpeningItemLocation(openingItemId: $openingItemId, aisle: $aisle, row: $row, bay: $bay, warehouseId: $warehouseId) {
-      id projectId openingId warehouseId openingNumber building floor location quantity assemblyCompletedAt state aisle row bay createdAt updatedAt
-      installedHardware { id openingItemId productCode hardwareCategory quantity }
-    }
-  }
-`;
-
-export const MARK_OPENING_ITEM_UNLOCATED = gql`
-  mutation MarkOpeningItemUnlocated($openingItemId: ID!) {
-    markOpeningItemUnlocated(openingItemId: $openingItemId) {
-      id projectId openingId openingNumber building floor location quantity assemblyCompletedAt state aisle row bay createdAt updatedAt
-      installedHardware { id openingItemId productCode hardwareCategory quantity }
-    }
-  }
-`;
-
 export const MARK_NOTIFICATION_AS_READ = gql`
   mutation MarkNotificationAsRead($id: ID!) {
     markNotificationAsRead(id: $id) {

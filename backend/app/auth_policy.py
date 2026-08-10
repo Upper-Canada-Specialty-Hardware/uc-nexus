@@ -29,7 +29,6 @@ import logging
 
 from app.auth import (
     ADMIN_ROLE,
-    SHOP_ASSEMBLY_MANAGER_ROLE,
     WAREHOUSE_MANAGER_ROLE,
     ForbiddenError,
     authenticated_user_id,
@@ -53,7 +52,7 @@ SIGNED_IN = "@signed-in"
 # This is a performance hint, NOT an authorization input. The decision of what a field requires is
 # ROOT_FIELD_POLICY and only ROOT_FIELD_POLICY; this only picks which Clerk call answers it. Adding a
 # field here that does not enumerate users makes it slower, never more permissive.
-ROSTER_BACKED = frozenset({"adminStats", "shopAssemblyMembers", "users"})
+ROSTER_BACKED = frozenset({"adminStats", "users"})
 
 # Operations reachable without a Clerk session, each with the reason it is safe. This is the whole
 # allowlist: everything else is gated, and anything in neither table is refused outright.
@@ -78,8 +77,6 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     # --- admin.py -------------------------------------------------------------------------
     # Both walk a whole project's openings and put purchasing next to fulfilment, which is the
     # admin Opening Status page and nothing else.
-    "adminOpeningStatuses": ADMIN_ROLE,
-    "adminOpeningDeepDive": ADMIN_ROLE,
     # --- buyer.py -------------------------------------------------------------------------
     # `buyerAssignments` is the PO dialog's read of the CALLER's own row, so any signed-in user;
     # `allBuyerAssignments` is the whole table (which buyer owns which project) and is admin (#428).
@@ -199,7 +196,7 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "shipReadyItems": SIGNED_IN,
     # Read-only coverage for the shipping-out builder (#451). SIGNED_IN because its caller is the
     # Start-a-Request wizard, which every module's users reach.
-    "shippingCoverage": SIGNED_IN,
+    "requestCoverage": SIGNED_IN,
     "shippingOutRequests": SIGNED_IN,
     "acceptShippingOutRequest": SIGNED_IN,
     "confirmShipment": SIGNED_IN,
@@ -222,32 +219,15 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     # self-assign from the "Assign to me" board; assigning to somebody else is Shop Assembly
     # Manager-only, and that branch cannot be expressed as a field-level requirement, so the body
     # keeps its own `require_role` call for it (#330).
-    "assembleList": SIGNED_IN,
-    "assemblyPipeline": SIGNED_IN,
-    "assemblyPipelineSummaries": SIGNED_IN,
-    "myWork": SIGNED_IN,
-    "replacementWork": SIGNED_IN,
-    "shopAssemblyMembers": SHOP_ASSEMBLY_MANAGER_ROLE,
     "shopAssemblyRequests": SIGNED_IN,
-    "pendingShopAssemblyOpenings": SIGNED_IN,
-    "deferredShopAssemblyOpenings": SIGNED_IN,
-    "acceptShopAssemblyOpening": SIGNED_IN,
-    "rejectShopAssemblyOpening": SIGNED_IN,
-    "deferShopAssemblyOpening": SIGNED_IN,
     "acceptShopAssemblyRequest": SIGNED_IN,
-    "assignOpenings": SIGNED_IN,
-    "completeOpening": SIGNED_IN,
-    "installReplacement": SIGNED_IN,
-    "recordAssemblyProgress": SIGNED_IN,
     "rejectShopAssemblyRequest": SIGNED_IN,
-    "removeOpeningFromUser": SIGNED_IN,
     "reopenShopAssemblyRequest": SIGNED_IN,
     # --- stock.py -------------------------------------------------------------------------
     "deficiencyReviews": SIGNED_IN,
     "deficientItems": SIGNED_IN,
     "stockItem": SIGNED_IN,
     "stockItems": SIGNED_IN,
-    "stockMatchesForOpening": SIGNED_IN,
     "adjustStockQuantity": SIGNED_IN,
     "allocateStockToProject": SIGNED_IN,
     "assignStockItemLocation": SIGNED_IN,
@@ -283,23 +263,18 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "locationDistinctValues": SIGNED_IN,
     "locationDuplicates": ADMIN_ROLE,
     "locationUtilization": SIGNED_IN,
-    "openingItemDetails": SIGNED_IN,
-    "openingItems": SIGNED_IN,
-    "openingLeafStatus": SIGNED_IN,
     "myReceiveDecisions": SIGNED_IN,
     "poReceivingDetails": SIGNED_IN,
     "projectInventoryAvailability": SIGNED_IN,
     "projectProgressByProduct": SIGNED_IN,
     "pullPickSheet": SIGNED_IN,
     "pullRequestDetails": SIGNED_IN,
-    "pullRequestOpenings": SIGNED_IN,
     "pullRequests": SIGNED_IN,
     "receiveDraft": SIGNED_IN,
     "receiveDrafts": SIGNED_IN,
     "receivingHistoryPos": SIGNED_IN,
     "recentReceiveRecords": SIGNED_IN,
     "unlocatedInventory": SIGNED_IN,
-    "unlocatedOpeningItems": SIGNED_IN,
     "warehouse": SIGNED_IN,
     "warehouseDashboard": SIGNED_IN,
     "warehouses": SIGNED_IN,
@@ -316,7 +291,6 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "approveReceiveDraft": SIGNED_IN,
     "assignInventoryLocation": SIGNED_IN,
     "splitInventoryLocation": SIGNED_IN,
-    "assignOpeningItemLocation": SIGNED_IN,
     "cancelPullRequest": SIGNED_IN,
     "completePullRequest": SIGNED_IN,
     "confirmPick": SIGNED_IN,
@@ -326,16 +300,12 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "deleteReceiveDraft": SIGNED_IN,
     "deleteWarehouse": ADMIN_ROLE,
     "markInventoryUnlocated": SIGNED_IN,
-    "markOpeningItemUnlocated": SIGNED_IN,
     "mergeLocations": ADMIN_ROLE,
     "moveInventoryLocation": SIGNED_IN,
-    "moveOpeningItemLocation": SIGNED_IN,
     "overrideInventoryQuantity": SIGNED_IN,
     "rejectReceiveDraft": frozenset({ADMIN_ROLE, WAREHOUSE_MANAGER_ROLE}),
     "resubmitReceiveDraft": SIGNED_IN,
     "savePickDraft": SIGNED_IN,
-    "setPullItemFetched": SIGNED_IN,
-    "stagePullOpenings": SIGNED_IN,
     "startPullRequestPick": SIGNED_IN,
     "updateReceiveDraft": SIGNED_IN,
     "updateWarehouse": ADMIN_ROLE,

@@ -34,31 +34,23 @@ import { useHardwareScheduleParser } from '../../hooks/useHardwareScheduleParser
 import { useNavigate } from 'react-router-dom';
 import { GET_PROJECT_EXCLUDED_ITEMS, GET_PROJECT_HARDWARE_SCHEDULE, RECONCILE_SCHEDULE, FINALIZE_IMPORT_SESSION } from '../../graphql/import';
 import { GET_PROJECTS } from '../../graphql/shared';
-import { GET_OPENING_ITEMS, GET_PROJECT_INVENTORY_AVAILABILITY, GET_PULL_REQUESTS } from '../../graphql/warehouse';
-import { GET_SHIPPING_COVERAGE, GET_SHIPPING_OUT_REQUESTS } from '../../graphql/shipping';
+import { GET_PROJECT_INVENTORY_AVAILABILITY } from '../../graphql/warehouse';
+import { GET_REQUEST_COVERAGE } from '../../graphql/shipping';
 import { RESERVATION_STALE_ROOT_FIELDS } from '../../graphql/refetch';
 import type { ClassificationRow } from './ClassificationGrid';
 import type {
   AggregatedHardwareItem,
-  AssembledLeafCandidate,
   ImportPurpose,
   InventoryAvailabilityRow,
   ReconciliationRow,
-  ShippingCoverageLeaf,
-  ShippingPRDraft,
-  ShippingPRItem,
 } from './types';
 import {
   aggregationKey,
   backfillScopeFromSiteShop,
-  buildLooseCoverageRows,
   classificationKey,
-  computeAvailabilityShortfalls,
   itemGroupKey,
-  shippingPRItemKey,
   toClassificationInputs,
 } from './types';
-import type { ParsedHardwareItem } from '../../types/hardwareSchedule';
 import type { Project } from '../../types/project';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import { FadeIn, StaggerItem, StaggerList } from '../../motion';
@@ -68,17 +60,17 @@ import SelectOpeningsStep from './SelectOpeningsStep';
 import ReconciliationStep from './ReconciliationStep';
 import ClassificationStep from './ClassificationStep';
 import PurchaseOrdersStep from './PurchaseOrdersStep';
-import ShopAssemblyStep from './ShopAssemblyStep';
+import ComposeRequestStep from './ComposeRequestStep';
 import { buildProductReconRows } from './reconciliation';
 import {
-  autoAssign,
-  buildAllocatedDrafts,
-  draftsSignature,
-  leafCoverage,
-  leafKey,
+  autoAllocate,
+  buildRequestLines,
+  composableRows,
+  lineKey,
+  offerSignature,
   type Allocation,
-} from './allocation';
-import ShippingPRsStep from './ShippingPRsStep';
+  type CoverageRow,
+} from './composer';
 
 // ---- Local Types ----
 
@@ -139,34 +131,6 @@ function isInventoryShortfall(err: unknown): boolean {
   return (
     CombinedGraphQLErrors.is(err) && err.errors?.[0]?.extensions?.code === 'INVENTORY_SHORTFALL'
   );
-}
-
-/** The slice of GET_OPENING_ITEMS the shipping purpose reads (#335). */
-interface OpeningItemResponse {
-  id: string;
-  openingNumber: string;
-  leaf: number | null;
-  state: string;
-  installedHardware: Array<{ productCode: string; quantity: number }>;
-  /** Units still awaiting a replacement (#341); null on a server that predates the field. */
-  awaitingReplacementQuantity: number | null;
-  /** Units the schedule owed that the request never pulled; null on a server predating the field. */
-  neverPulledQuantity: number | null;
-}
-
-/** The slices used to find leaves already claimed by an open request or pull (#335). */
-interface ShippingLineSummary {
-  itemType: string;
-  openingItemId: string | null;
-}
-
-interface PullRequestSummary {
-  status: string;
-  items: ShippingLineSummary[];
-}
-
-interface ShippingRequestSummary {
-  items: ShippingLineSummary[];
 }
 
 // ---- Helpers ----
@@ -237,23 +201,19 @@ export default function ImportWizard({
   const [siteShopClassifications, setSiteShopClassifications] = useState<Map<string, string>>(new Map());
   const [orderAsValues, setOrderAsValues] = useState<Map<string, string>>(new Map());
   const [sarRequestNumber, setSarRequestNumber] = useState('');
-  // Shop-assembly allocation: how much of each leaf's owed hardware this request actually claims,
-  // and which leaves are being sent. Held here rather than inside the step so stepping back and
-  // forward does not silently re-run auto-assign over the user's manual moves.
-  const [sarAllocation, setSarAllocation] = useState<Allocation>(new Map());
-  const [includedLeafKeys, setIncludedLeafKeys] = useState<Set<string>>(new Set());
-  // The draft signature the allocation above was seeded from. Held here, not in the step, because
+  // How much of each offered line this request actually claims, and which lines are being sent.
+  // One pair for both purposes: only one of them is ever the active step. Held here rather than
+  // inside the step so stepping back and forward does not silently re-run auto-assign over the
+  // user's manual moves.
+  const [allocation, setAllocation] = useState<Allocation>(new Map());
+  const [includedKeys, setIncludedKeys] = useState<Set<string>>(new Set());
+  // The offer signature the allocation above was seeded from. Held here, not in the step, because
   // the step unmounts whenever the user is on another step - a flag inside it would reset on the way
   // back and auto-assign would overwrite whatever they had moved by hand.
   const [seededSignature, setSeededSignature] = useState<string | null>(null);
   // The server refused the finalize because availability moved under the allocation (#342 race).
   // The step says so and shows the rebuilt numbers rather than letting the user resend the stale set.
   const [allocationStale, setAllocationStale] = useState(false);
-  const [shippingPRDrafts, setShippingPRDrafts] = useState<ShippingPRDraft[]>([]);
-  // The user has been shown the "incomplete - awaiting replacement" warning on a leaf and chose to
-  // ship it anyway (#341). The backend refuses a flagged leaf without this, so the flag is the
-  // record that a decision was actually made rather than a default that got carried along.
-  const [acknowledgedIncompleteLeaves, setAcknowledgedIncompleteLeaves] = useState(false);
   const [selectedReconItems, setSelectedReconItems] = useState<Set<string>>(new Set());
 
   // Finalize state
@@ -290,7 +250,7 @@ export default function ImportWizard({
     }
     if (purpose === 'po') base.push({ id: 'purchase-orders', label: 'Purchase Orders' });
     if (purpose === 'assembly') base.push({ id: 'shop-assembly', label: 'Shop Assembly' });
-    if (purpose === 'shipping') base.push({ id: 'shipping-prs', label: 'Shipping PRs' });
+    if (purpose === 'shipping') base.push({ id: 'shipping-prs', label: 'Shipping Out' });
     base.push({ id: 'finalize', label: 'Finalize' });
     return base;
   }, [purpose]);
@@ -335,38 +295,6 @@ export default function ImportWizard({
   const [fetchProjectSchedule, { data: scheduleData, loading: scheduleLoading }] = useLazyQuery<{
     projectHardwareSchedule: ProjectHardwareScheduleResponse | null;
   }>(GET_PROJECT_HARDWARE_SCHEDULE, { fetchPolicy: 'network-only' });
-
-  // Assembled units for the shipping purpose (#335). A door leaf only exists once shop assembly has
-  // built one, and it lives as an OpeningItem - the hardware schedule cannot supply it. Shipping an
-  // assembled leaf means naming that row, so read it from the warehouse's own list.
-  const shippingStepActive = open && purpose === 'shipping';
-  const {
-    data: openingItemsData,
-    loading: openingItemsLoading,
-    error: openingItemsError,
-  } = useQuery<{ openingItems: OpeningItemResponse[] }>(GET_OPENING_ITEMS, {
-    variables: { projectId: existingProjectId },
-    skip: !shippingStepActive,
-    fetchPolicy: 'cache-and-network',
-  });
-
-  // Leaves already spoken for. A leaf stays IN_INVENTORY for the whole life of an open shipping
-  // pull - its state only flips at complete - so state alone would re-offer a leaf that someone has
-  // already requested, and one physical leaf would be pulled twice. Loose lines need no equivalent:
-  // reconcile_schedule already moves quantity on an open SHIPPING_OUT pull out of the RECEIVED
-  // bucket, so it never reaches the loose list.
-  const { data: shippingPullsData } = useQuery<{ pullRequests: PullRequestSummary[] }>(GET_PULL_REQUESTS, {
-    variables: { projectId: existingProjectId, source: 'SHIPPING_OUT' },
-    skip: !shippingStepActive,
-    fetchPolicy: 'cache-and-network',
-  });
-  const { data: pendingShippingRequestsData } = useQuery<{
-    shippingOutRequests: ShippingRequestSummary[];
-  }>(GET_SHIPPING_OUT_REQUESTS, {
-    variables: { projectId: existingProjectId, status: 'PENDING', reopenableOnly: false },
-    skip: !shippingStepActive,
-    fetchPolicy: 'cache-and-network',
-  });
 
   // Eagerly fetch the persisted schedule on wizard open for re-import projects so the
   // upload step can show the "use last uploaded" picker (gated on hardware-item presence).
@@ -516,113 +444,35 @@ export default function ImportWizard({
     return Array.from(map.values());
   }, [reconFilteredHardwareItems]);
 
-  // ---- Shipping selection candidates (#335) ----
+  // ---- What the selected openings still have coming ----
 
-  // OpeningItems already named by a pending shipping request or an unfinished shipping pull. One
-  // physical leaf can only be pulled once, so these drop out of the offer list.
-  const claimedOpeningItemIds = useMemo(() => {
-    const claimed = new Set<string>();
-    const collect = (lines: ShippingLineSummary[]) => {
-      for (const line of lines) {
-        if (line.itemType === 'OPENING_ITEM' && line.openingItemId) claimed.add(line.openingItemId);
-      }
-    };
-    for (const pr of shippingPullsData?.pullRequests ?? []) {
-      if (pr.status === 'PENDING' || pr.status === 'IN_PROGRESS') collect(pr.items);
-    }
-    for (const req of pendingShippingRequestsData?.shippingOutRequests ?? []) collect(req.items);
-    return claimed;
-  }, [shippingPullsData, pendingShippingRequestsData]);
-
-  // Assembled door leaves the user can ship: one per OpeningItem still sitting IN_INVENTORY on a
-  // selected opening and not already claimed. SHIP_READY units are deliberately absent - they have
-  // already been pulled and are waiting on the Ship tab.
-  const assembledLeafCandidates = useMemo<AssembledLeafCandidate[]>(() => {
-    if (purpose !== 'shipping') return [];
-    return (openingItemsData?.openingItems ?? [])
-      .filter(
-        (oi) =>
-          oi.state === 'IN_INVENTORY' &&
-          selectedOpenings.has(oi.openingNumber) &&
-          !claimedOpeningItemIds.has(oi.id),
-      )
-      .map((oi) => ({
-        id: oi.id,
-        openingNumber: oi.openingNumber,
-        leaf: oi.leaf,
-        installedHardware: oi.installedHardware ?? [],
-        awaitingReplacementQuantity: oi.awaitingReplacementQuantity ?? 0,
-        neverPulledQuantity: oi.neverPulledQuantity ?? 0,
-      }))
-      .sort((a, b) => a.openingNumber.localeCompare(b.openingNumber) || (a.leaf ?? 0) - (b.leaf ?? 0));
-  }, [purpose, openingItemsData, selectedOpenings, claimedOpeningItemIds]);
-
-  // What the selected openings still owe the site (#451). The schedule is the only thing that knows
-  // a leaf takes a closer and three hinges; the assembled leaf only knows what was bolted onto it,
-  // and neither knows what is still at the vendor. The server joins the three and answers per leaf.
-  const shippingCoverageActive = open && purpose === 'shipping' && !!existingProjectId && selectedOpenings.size > 0;
+  // `max(owed - sent - claimed, 0)` per (opening, category, product). The one question both
+  // composers ask, answered server-side so the two cannot drift - see
+  // `app/repositories/request_composer.py`.
+  const requestPurpose = purpose === 'assembly' || purpose === 'shipping';
+  const coverageActive = open && requestPurpose && !!existingProjectId && selectedOpenings.size > 0;
   const {
     data: coverageData,
     loading: coverageLoading,
     error: coverageError,
-  } = useQuery<{ shippingCoverage: ShippingCoverageLeaf[] }>(GET_SHIPPING_COVERAGE, {
+  } = useQuery<{ requestCoverage: CoverageRow[] }>(GET_REQUEST_COVERAGE, {
     variables: { projectId: existingProjectId, openingNumbers: Array.from(selectedOpenings) },
-    skip: !shippingCoverageActive,
+    skip: !coverageActive,
     fetchPolicy: 'cache-and-network',
   });
 
-  // The loose lines the shipping step offers: one per (opening, category, product), summed over the
-  // opening's leaves because a LOOSE line carries no leaf - loose stock is fungible until a pull
-  // tags it onto one (docs/HARDWARE_IDENTITY_LIFECYCLE.md).
-  const looseCoverageRows = useMemo(
-    () => (purpose === 'shipping' ? buildLooseCoverageRows(coverageData?.shippingCoverage ?? []) : []),
-    [purpose, coverageData],
-  );
-
-  // Every line the shipping step can currently offer, keyed the same way draft lines are.
-  const shippingCandidateKeys = useMemo(() => {
-    const keys = new Set<string>();
-    for (const leaf of assembledLeafCandidates) {
-      keys.add(
-        shippingPRItemKey({
-          itemType: 'OPENING_ITEM',
-          openingNumber: leaf.openingNumber,
-          openingItemId: leaf.id,
-          requestedQuantity: 1,
-        }),
-      );
+  // Shop assembly composes the SHOP hardware; shipping out composes everything else - site hardware
+  // and the lines the schedule never classified, which go to site loose by default rather than being
+  // silently dropped. Unclassified is deliberately NOT offered to shop assembly: putting hardware on
+  // a bench because nobody said otherwise is the guess this split exists to avoid.
+  const composerRows = useMemo(() => {
+    const rows = coverageData?.requestCoverage ?? [];
+    if (purpose === 'assembly') return composableRows(rows, 'SHOP');
+    if (purpose === 'shipping') {
+      return composableRows(rows).filter((row) => row.classification !== 'SHOP_HARDWARE');
     }
-    for (const row of looseCoverageRows) {
-      keys.add(
-        shippingPRItemKey({
-          itemType: 'LOOSE',
-          openingNumber: row.openingNumber,
-          hardwareCategory: row.hardwareCategory,
-          productCode: row.productCode,
-          requestedQuantity: row.suggestedQuantity,
-        }),
-      );
-    }
-    return keys;
-  }, [assembledLeafCandidates, looseCoverageRows]);
-
-  // What the shipping step shows and what finalize submits: draft lines whose candidate is still on
-  // offer. A line can stop being offered because the user stepped back and de-selected its opening,
-  // or because someone else claimed the leaf; it then has no checkbox left to untick, so without
-  // this it would sit invisible on the draft and still be submitted. Derived rather than pruned in
-  // an effect, so re-selecting the opening brings the user's tick back.
-  //
-  // Held off until BOTH offer lookups have answered. Either one still in flight means an empty
-  // candidate set, and pruning against that would silently drop every line the user had already
-  // picked - a refetch (stepping back and forward) would empty their request.
-  const shippingOffersResolved = openingItemsData !== undefined && (!shippingCoverageActive || coverageData !== undefined);
-  const effectiveShippingPRDrafts = useMemo(() => {
-    if (purpose !== 'shipping' || !shippingOffersResolved) return shippingPRDrafts;
-    return shippingPRDrafts.map((draft) => {
-      const kept = draft.items.filter((item) => shippingCandidateKeys.has(shippingPRItemKey(item)));
-      return kept.length === draft.items.length ? draft : { ...draft, items: kept };
-    });
-  }, [purpose, shippingPRDrafts, shippingCandidateKeys, shippingOffersResolved]);
+    return [];
+  }, [purpose, coverageData]);
 
   // ---- Reservation-aware availability (#342) ----
 
@@ -659,125 +509,11 @@ export default function ImportWizard({
   // persisted item - the value a PO request wrote. Resolved at the read site rather than seeded into
   // state, so the wizard's own map (the exclusion table's BY_OTHERS entries) still wins and no
   // effect has to write state during render.
-  const resolveClassification = useCallback(
-    (hi: ParsedHardwareItem) => classifications.get(classificationKey(hi)) ?? hi.classification ?? '',
-    [classifications],
-  );
-
-  const unclassifiedShopCandidates = useMemo(() => {
-    if (purpose !== 'assembly' || !parsed) return [];
-    const seen = new Set<string>();
-    for (const hi of parsed.hardwareItems) {
-      if (!selectedOpenings.has(hi.opening_number)) continue;
-      const cls = resolveClassification(hi);
-      if (cls === 'SITE_HARDWARE' || cls === 'SHOP_HARDWARE' || cls === 'BY_OTHERS') continue;
-      seen.add(`${hi.hardware_category} ${hi.product_code}`);
-    }
-    return Array.from(seen).sort();
-  }, [purpose, parsed, selectedOpenings, resolveClassification]);
-
-  // The shop-assembly work units this wizard would submit: one per (opening, leaf) with its
-  // SHOP_HARDWARE items aggregated. Derived once and used by BOTH the availability gate and
-  // buildFinalizeInput, so the numbers the user is held to are by construction the numbers that get
-  // sent - a second, parallel calculation here would be a bug waiting to diverge.
-  const shopAssemblyOpeningDrafts = useMemo(() => {
-    if (purpose !== 'assembly' || !parsed) return [];
-    const selectedItems = parsed.hardwareItems.filter((hi) => selectedOpenings.has(hi.opening_number));
-    return parsed.openings
-      .filter((o) => selectedOpenings.has(o.opening_number))
-      .flatMap((opening) => {
-        const shopItems = selectedItems.filter((hi) => {
-          if (hi.opening_number !== opening.opening_number) return false;
-          return resolveClassification(hi) === 'SHOP_HARDWARE';
-        });
-        if (shopItems.length === 0) return [];
-        // One SAR opening per door leaf (#311): group SHOP_HARDWARE by leaf, then aggregate each
-        // leaf's items by (product_code, hardware_category). A pair yields two work units.
-        const byLeaf = new Map<
-          number | null,
-          Map<string, { hardwareCategory: string; productCode: string; quantity: number }>
-        >();
-        for (const hi of shopItems) {
-          let aggMap = byLeaf.get(hi.leaf);
-          if (!aggMap) {
-            aggMap = new Map();
-            byLeaf.set(hi.leaf, aggMap);
-          }
-          const key = `${hi.product_code}|${hi.hardware_category}`;
-          const existing = aggMap.get(key);
-          if (existing) {
-            existing.quantity += hi.item_quantity;
-          } else {
-            aggMap.set(key, {
-              hardwareCategory: hi.hardware_category,
-              productCode: hi.product_code,
-              quantity: hi.item_quantity,
-            });
-          }
-        }
-        // #311: a null-leaf bucket is legitimate for a single door (every item is leaf-null -> one
-        // work unit). On a pair (resolved leaves present) a null-leaf item would otherwise spawn a
-        // spurious third work unit; fold it into the lowest resolved leaf instead.
-        const resolvedLeaves = [...byLeaf.keys()].filter((k): k is number => k !== null);
-        const nullBucket = byLeaf.get(null);
-        if (nullBucket && resolvedLeaves.length > 0) {
-          const targetMap = byLeaf.get(Math.min(...resolvedLeaves))!;
-          for (const [key, agg] of nullBucket) {
-            const existing = targetMap.get(key);
-            if (existing) existing.quantity += agg.quantity;
-            else targetMap.set(key, agg);
-          }
-          byLeaf.delete(null);
-        }
-        return Array.from(byLeaf.entries()).map(([leaf, aggMap]) => ({
-          openingNumber: opening.opening_number,
-          leaf,
-          items: Array.from(aggMap.values()),
-        }));
-      });
-  }, [purpose, parsed, selectedOpenings, resolveClassification]);
-
-  // The exact payload the shop-assembly finalize sends: the included, non-empty leaves with both
-  // numbers per line. Derived from the same drafts the allocator step renders, so what the user was
-  // held to is by construction what gets submitted.
-  const allocatedShopAssemblyDrafts = useMemo(
-    () =>
-      purpose === 'assembly'
-        ? buildAllocatedDrafts(shopAssemblyOpeningDrafts, sarAllocation, includedLeafKeys)
-        : [],
-    [purpose, shopAssemblyOpeningDrafts, sarAllocation, includedLeafKeys],
-  );
-
-  // What the SHIPPING purpose is about to claim, per combo - only its LOOSE lines, because an
-  // assembled leaf left fungible inventory when it was built and ships as itself
-  // (docs/HARDWARE_IDENTITY_LIFECYCLE.md), so it reserves nothing.
-  //
-  // Shop assembly is deliberately not here any more. Its step derives its own per-combo totals from
-  // the allocation (`comboSummary`), and it has to: the numbers on screen have to be the ones being
-  // submitted, and a second derivation living up here would be exactly the drift the allocated-drafts
-  // comment above warns about. Nothing downstream of this map reads it for the assembly purpose.
-  const requestedByCombo = useMemo(() => {
-    const map = new Map<string, number>();
-    if (purpose !== 'shipping') return map;
-    for (const draft of effectiveShippingPRDrafts) {
-      for (const item of draft.items) {
-        if (item.itemType !== 'LOOSE' || !item.hardwareCategory || !item.productCode) continue;
-        const key = itemGroupKey({ hardware_category: item.hardwareCategory, product_code: item.productCode });
-        map.set(key, (map.get(key) ?? 0) + item.requestedQuantity);
-      }
-    }
-    return map;
-  }, [purpose, effectiveShippingPRDrafts]);
-
-  const availabilityShortfalls = useMemo(
-    // While the lookup is still in flight an empty map would read as "nothing available" and block
-    // everything, so hold off until it has answered. A failed lookup is handled in the steps: they
-    // say so rather than silently letting an over-selection through as if it were fine.
-    () =>
-      availabilityData === undefined
-        ? []
-        : computeAvailabilityShortfalls(requestedByCombo, availabilityByCombo),
-    [availabilityData, requestedByCombo, availabilityByCombo],
+  // The exact lines this request would send, from the same allocation the step renders - so what
+  // the user was held to is by construction what gets submitted.
+  const requestLines = useMemo(
+    () => (requestPurpose ? buildRequestLines(composerRows, allocation, includedKeys) : []),
+    [requestPurpose, composerRows, allocation, includedKeys],
   );
 
   // Classification rows for DataGrid (one row per aggregated hardware item)
@@ -929,11 +665,10 @@ export default function ImportWizard({
     setClassifications(new Map());
     setSiteShopClassifications(new Map());
     setSarRequestNumber('');
-    setSarAllocation(new Map());
-    setIncludedLeafKeys(new Set());
+    setAllocation(new Map());
+    setIncludedKeys(new Set());
     setSeededSignature(null);
     setAllocationStale(false);
-    setShippingPRDrafts([]);
     setSelectedReconItems(new Set());
     setMutationError(null);
     setFinalizeResult(null);
@@ -1067,60 +802,6 @@ export default function ImportWizard({
     });
   }, []);
 
-  // Shipping PR management
-  const addShippingPR = useCallback(() => {
-    setShippingPRDrafts((prev) => [...prev, { requestNumber: '', items: [] }]);
-  }, []);
-
-  const removeShippingPR = useCallback((index: number) => {
-    setShippingPRDrafts((prev) => prev.filter((_, i) => i !== index));
-  }, []);
-
-  // Add or remove one already-built line on a draft (#335). The step decides what kind of line it
-  // is - an assembled leaf or loose hardware - so this no longer hard-codes LOOSE.
-  const toggleShippingPRItem = useCallback((prIndex: number, item: ShippingPRItem) => {
-    const key = shippingPRItemKey(item);
-    setShippingPRDrafts((prev) =>
-      prev.map((draft, i) => {
-        if (i !== prIndex) return draft;
-        const existingIdx = draft.items.findIndex((existing) => shippingPRItemKey(existing) === key);
-        if (existingIdx >= 0) {
-          return { ...draft, items: draft.items.filter((_, idx) => idx !== existingIdx) };
-        }
-        return { ...draft, items: [...draft.items, item] };
-      }),
-    );
-  }, []);
-
-  // Set how much of one loose line a draft asks for (#451). Zero removes it, which is what makes
-  // the quantity box and the remove button the same operation - clearing the field and pressing the
-  // bin have to mean the same thing, or the user has two ways to reach two different states.
-  const setShippingPRItemQuantity = useCallback(
-    (prIndex: number, item: ShippingPRItem, quantity: number) => {
-      const key = shippingPRItemKey(item);
-      setShippingPRDrafts((prev) =>
-        prev.map((draft, i) => {
-          if (i !== prIndex) return draft;
-          const existingIdx = draft.items.findIndex((existing) => shippingPRItemKey(existing) === key);
-          if (quantity <= 0) {
-            return existingIdx >= 0
-              ? { ...draft, items: draft.items.filter((_, idx) => idx !== existingIdx) }
-              : draft;
-          }
-          const next = { ...item, requestedQuantity: quantity };
-          if (existingIdx >= 0) {
-            return {
-              ...draft,
-              items: draft.items.map((existing, idx) => (idx === existingIdx ? next : existing)),
-            };
-          }
-          return { ...draft, items: [...draft.items, next] };
-        }),
-      );
-    },
-    [],
-  );
-
   // ---- Finalize ----
 
   interface FinalizeResultData {
@@ -1247,18 +928,19 @@ export default function ImportWizard({
               })
           : null,
       shippingOutPrDrafts: purpose === 'shipping'
-        ? effectiveShippingPRDrafts.map((pr) => ({
-            requestNumber: pr.requestNumber,
-            items: pr.items.map((item) => ({
-              itemType: item.itemType,
-              openingNumber: item.openingNumber,
-              openingItemId: item.openingItemId || null,
-              leaf: item.leaf ?? null,
-              hardwareCategory: item.hardwareCategory || null,
-              productCode: item.productCode || null,
-              requestedQuantity: item.requestedQuantity,
-            })),
-          }))
+        ? [
+            {
+              // #493: deprecated and ignored - the server mints the number from the project's
+              // counter. Sent because the input still carries the field.
+              requestNumber: '',
+              items: requestLines.map((line) => ({
+                openingNumber: line.openingNumber,
+                hardwareCategory: line.hardwareCategory,
+                productCode: line.productCode,
+                requestedQuantity: line.allocatedQuantity,
+              })),
+            },
+          ]
         : null,
       includeShopAssemblyRequest: purpose === 'assembly',
       // #493: deprecated and ignored by the server, which mints the number itself.
@@ -1267,14 +949,11 @@ export default function ImportWizard({
       // schedule (i.e., they did not pick "Use last uploaded schedule"). The backend wipes all
       // existing HardwareItems and openings absent from the new input.
       replaceSchedule: canStartFromLatest && !hydratedFromPersisted,
-      // Only ever true after the user confirmed the warning dialog on a flagged leaf (#341).
-      acknowledgeIncompleteLeaves: acknowledgedIncompleteLeaves,
-      // The exact work units the wizard gated on (#342), not a second derivation of them - now
-      // carrying the allocated quantity per line, and already minus the excluded and auto-dropped
-      // leaves.
-      shopAssemblyOpenings: purpose === 'assembly' ? allocatedShopAssemblyDrafts : null,
+      // The exact lines the wizard gated on (#342), not a second derivation of them - carrying both
+      // numbers per line, and already minus the excluded and unallocated ones.
+      shopAssemblyItems: purpose === 'assembly' ? requestLines : null,
     };
-  }, [parsed, project.id, purpose, vendorGroups, vendorPOInfo, selectedVendors, unitCostOverrides, orderAsValues, classifications, siteShopClassifications, effectiveShippingPRDrafts, allocatedShopAssemblyDrafts, sarRequestNumber, canStartFromLatest, hydratedFromPersisted, acknowledgedIncompleteLeaves]);
+  }, [parsed, project.id, purpose, vendorGroups, vendorPOInfo, selectedVendors, unitCostOverrides, orderAsValues, classifications, siteShopClassifications, requestLines, sarRequestNumber, canStartFromLatest, hydratedFromPersisted]);
 
   const handleFinalize = useCallback(async () => {
     setConfirmOpen(false);
@@ -1301,9 +980,9 @@ export default function ImportWizard({
       // between building the allocation and sending it, because the allocation itself never asks for
       // more than was free when it was built. Refetch, rebuild from the current numbers and send the
       // user back to review - resending the stale allocation would just bounce again.
-      if (purpose === 'assembly' && isInventoryShortfall(err)) {
+      if (requestPurpose && isInventoryShortfall(err)) {
         setAllocationStale(true);
-        setActiveStepId('shop-assembly');
+        setActiveStepId(purpose === 'assembly' ? 'shop-assembly' : 'shipping-prs');
         const refreshed = await refetchAvailability().catch(() => null);
         const rows = refreshed?.data?.projectInventoryAvailability;
         // A failed refetch means the numbers are unknown, not zero. Rebuilding from an empty map
@@ -1318,26 +997,22 @@ export default function ImportWizard({
             row.availableQuantity,
           );
         }
-        const next = autoAssign(shopAssemblyOpeningDrafts, fresh);
-        setSarAllocation(next);
-        // Re-seeding must not silently put back a leaf the user chose to leave out. Only leaves that
+        const next = autoAllocate(composerRows, fresh);
+        setAllocation(next);
+        // Re-seeding must not silently put back a line the user chose to leave out. Only lines that
         // were in the request keep their place; the rest of the rebuild is the allocator's.
-        setIncludedLeafKeys((previous) => {
+        setIncludedKeys((previous) => {
           const seeded = previous.size === 0;
           return new Set(
-            shopAssemblyOpeningDrafts
-              .filter(
-                (draft) =>
-                  leafCoverage(next, draft) !== 'NONE' &&
-                  (seeded || previous.has(leafKey(draft))),
-              )
-              .map((draft) => leafKey(draft)),
+            composerRows
+              .filter((row) => (next.get(lineKey(row)) ?? 0) > 0 && (seeded || previous.has(lineKey(row))))
+              .map(lineKey),
           );
         });
-        setSeededSignature(draftsSignature(shopAssemblyOpeningDrafts));
+        setSeededSignature(offerSignature(composerRows));
       }
     }
-  }, [buildFinalizeInput, finalizeImport, showToast, purpose, refetchAvailability, shopAssemblyOpeningDrafts]);
+  }, [buildFinalizeInput, finalizeImport, showToast, purpose, requestPurpose, refetchAvailability, composerRows]);
 
   const handlePostAction = useCallback(
     (action: 'po' | 'inventory' | 'home') => {
@@ -1769,19 +1444,23 @@ export default function ImportWizard({
 
           {/* ============ Step: Shop Assembly ============ */}
           {effectiveStepId === 'shop-assembly' && (
-            <ShopAssemblyStep
-              openingDrafts={shopAssemblyOpeningDrafts}
+            <ComposeRequestStep
+              title="Shop Assembly"
+              description="What the selected openings still have coming of their Shop Hardware: what the schedule owes, minus what has already gone out, minus what another live request is holding. Creating the request reserves what you assign here, so a line can only claim hardware that is genuinely free. Lines that come up short still go - assign what you can and send them, or leave them out."
+              emptyMessage="None of the selected openings has Shop Hardware still owed. Either it has all been sent, another live request is holding it, or nothing on them was ever classified as Shop."
+              rows={composerRows}
               availabilityByCombo={availabilityByCombo}
-              allocation={sarAllocation}
-              onAllocationChange={setSarAllocation}
-              includedLeafKeys={includedLeafKeys}
-              onIncludedLeafKeysChange={setIncludedLeafKeys}
+              allocation={allocation}
+              onAllocationChange={setAllocation}
+              includedKeys={includedKeys}
+              onIncludedKeysChange={setIncludedKeys}
               seededSignature={seededSignature}
               onSeeded={setSeededSignature}
+              coverageLoading={coverageLoading && coverageData === undefined}
+              coverageError={coverageError !== undefined}
               availabilityLoading={availabilityLoading && availabilityData === undefined}
               availabilityError={availabilityError !== undefined}
               allocationStale={allocationStale}
-              unclassifiedItems={unclassifiedShopCandidates}
               onNext={handleNext}
               onBack={handleBack}
             />
@@ -1789,24 +1468,23 @@ export default function ImportWizard({
 
           {/* ============ Step: Shipping PRs ============ */}
           {effectiveStepId === 'shipping-prs' && (
-            <ShippingPRsStep
-              shippingPRDrafts={effectiveShippingPRDrafts}
-              assembledLeaves={assembledLeafCandidates}
-              looseRows={looseCoverageRows}
-              leavesLoading={openingItemsLoading}
-              leavesError={openingItemsError !== undefined}
+            <ComposeRequestStep
+              title="Shipping Out"
+              description="What the selected openings still have coming to site: what the schedule owes, minus what has already shipped, minus what another live request is holding. Shop Hardware is left out - it goes to the bench, not on a truck. Creating the request reserves what you assign here."
+              emptyMessage="None of the selected openings has hardware still owed to site. Either it has all shipped, another live request is holding it, or all of it is Shop Hardware."
+              rows={composerRows}
+              availabilityByCombo={availabilityByCombo}
+              allocation={allocation}
+              onAllocationChange={setAllocation}
+              includedKeys={includedKeys}
+              onIncludedKeysChange={setIncludedKeys}
+              seededSignature={seededSignature}
+              onSeeded={setSeededSignature}
               coverageLoading={coverageLoading && coverageData === undefined}
               coverageError={coverageError !== undefined}
-              onAddPR={addShippingPR}
-              onRemovePR={removeShippingPR}
-              onTogglePRItem={toggleShippingPRItem}
-              onSetPRItemQuantity={setShippingPRItemQuantity}
-              availabilityByCombo={availabilityByCombo}
-              requestedByCombo={requestedByCombo}
-              availabilityShortfalls={availabilityShortfalls}
               availabilityLoading={availabilityLoading && availabilityData === undefined}
               availabilityError={availabilityError !== undefined}
-              onAcknowledgeIncompleteLeaf={() => setAcknowledgedIncompleteLeaves(true)}
+              allocationStale={allocationStale}
               onNext={handleNext}
               onBack={handleBack}
             />
@@ -1846,8 +1524,8 @@ export default function ImportWizard({
                 {purpose === 'shipping' && (
                   <Box sx={{ mb: 1 }}>
                     <Typography variant="body1">
-                      {effectiveShippingPRDrafts.filter((d) => d.requestNumber.trim() !== '').length} Shipping
-                      Out Pull Request(s)
+                      1 Shipping Out Request across {requestLines.length} line(s) (number assigned on
+                      finalize)
                     </Typography>
                   </Box>
                 )}
@@ -1855,7 +1533,8 @@ export default function ImportWizard({
                 {purpose === 'assembly' && (
                   <Box sx={{ mb: 1 }}>
                     <Typography variant="body1">
-                      1 Shop Assembly Pull Request (number assigned on finalize)
+                      1 Shop Assembly Request across {requestLines.length} line(s) (number assigned on
+                      finalize)
                     </Typography>
                   </Box>
                 )}

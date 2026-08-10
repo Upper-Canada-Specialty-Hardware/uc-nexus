@@ -13,7 +13,6 @@ fails on it either way.
 
 import strawberry
 
-from .admin import AdminQueries
 from .buyer import BuyerQueries
 from .custom_items import CustomItemQueries
 from .dashboard import DashboardQueries
@@ -32,7 +31,6 @@ from .warehouse import WarehouseQueries
 
 @strawberry.type
 class Query(
-    AdminQueries,
     BuyerQueries,
     CustomItemQueries,
     DashboardQueries,

@@ -11,28 +11,24 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.errors import ConflictError, NotFoundError, ValidationError
 from app.models.enums import (
-    AssemblyStatus,
     Classification,
     HardwareItemState,
-    OpeningItemState,
     POStatus,
-    PullRequestItemType,
     PullRequestSource,
     PullRequestStatus,
-    PullStatus,
     ReservationSource,
     ShippingOutRequestStatus,
     ShopAssemblyRequestStatus,
 )
 from app.models.hardware import HardwareItem as HardwareItemModel
-from app.models.opening_item import OpeningItem as OpeningItemModel
-from app.models.opening_item import OpeningItemHardware as OpeningItemHardwareModel
 from app.models.project import Opening as OpeningModel
 from app.models.project import Project as ProjectModel
 from app.models.pull_request import PullRequest as PullRequestModel
 from app.models.pull_request import PullRequestItem as PullRequestItemModel
 from app.models.purchase_order import POLineItem as POLineItemModel
 from app.models.purchase_order import PurchaseOrder as POModel
+from app.models.shipping import PackingSlip as PackingSlipModel
+from app.models.shipping import PackingSlipItem as PackingSlipItemModel
 from app.models.shipping_out_request import (
     ShippingOutRequest as ShippingOutRequestModel,
 )
@@ -40,13 +36,10 @@ from app.models.shipping_out_request import (
     ShippingOutRequestItem as ShippingOutRequestItemModel,
 )
 from app.models.shop_assembly import (
-    ShopAssemblyOpening as SAOModel,
-)
-from app.models.shop_assembly import (
-    ShopAssemblyOpeningItem as SAOItemModel,
-)
-from app.models.shop_assembly import (
     ShopAssemblyRequest as SARModel,
+)
+from app.models.shop_assembly import (
+    ShopAssemblyRequestItem as SARItemModel,
 )
 from app.repositories import project_repository
 from app.repositories import shipping_requests as _shipping_requests
@@ -195,37 +188,26 @@ def reconcile_schedule(
             continue
         pr_by_pair[pair].append(row)
 
-    # ---- Bulk Query 3: OpeningItemHardware shipped + assembled sums ----
-    oi_stmt = (
+    # ---- Bulk Query 3: what has physically shipped, off the packing slips ----
+    # The slip is the record of departure now that no assembled unit carries one. Nothing here counts
+    # assembly: a completed SHOP_ASSEMBLY pull is the only evidence the bench ever got the hardware,
+    # and Step 3 has already bucketed it.
+    slip_stmt = (
         select(
-            OpeningItemModel.opening_number,
-            OpeningItemHardwareModel.product_code,
-            OpeningItemModel.state,
-            func.sum(OpeningItemHardwareModel.quantity).label("qty"),
+            PackingSlipItemModel.opening_number,
+            PackingSlipItemModel.product_code,
+            func.sum(PackingSlipItemModel.quantity).label("qty"),
         )
-        .join(OpeningItemModel, OpeningItemHardwareModel.opening_item_id == OpeningItemModel.id)
-        .where(
-            OpeningItemModel.project_id == project_id,
-            OpeningItemModel.state.in_(
-                [OpeningItemState.SHIPPED_OUT, OpeningItemState.IN_INVENTORY, OpeningItemState.SHIP_READY]
-            ),
-        )
-        .group_by(
-            OpeningItemModel.opening_number,
-            OpeningItemHardwareModel.product_code,
-            OpeningItemModel.state,
-        )
+        .join(PackingSlipModel, PackingSlipItemModel.packing_slip_id == PackingSlipModel.id)
+        .where(PackingSlipModel.project_id == project_id)
+        .group_by(PackingSlipItemModel.opening_number, PackingSlipItemModel.product_code)
     )
     shipped_by_pair: dict[tuple[str, str], int] = defaultdict(int)
-    assembled_by_pair: dict[tuple[str, str], int] = defaultdict(int)
-    for row in session.execute(oi_stmt).all():
+    for row in session.execute(slip_stmt).all():
         key = (row.opening_number, row.product_code)
         if key not in pair_set:
             continue
-        if row.state == OpeningItemState.SHIPPED_OUT:
-            shipped_by_pair[key] += row.qty or 0
-        else:
-            assembled_by_pair[key] += row.qty or 0
+        shipped_by_pair[key] += row.qty or 0
 
     # ---- Process each item using pre-loaded data ----
     for item in lifecycle_items:
@@ -285,23 +267,14 @@ def reconcile_schedule(
 
             buckets["RECEIVED"] = max(0, received_qty)
 
-        # Step 4: Shipped cross-check
-        oi_shipped = shipped_by_pair.get(pair_key, 0)
+        # Step 4: Shipped cross-check against the slips
+        slip_shipped = shipped_by_pair.get(pair_key, 0)
         existing_shipped = buckets.get("SHIPPED_OUT", 0)
-        if oi_shipped > existing_shipped:
-            extra = oi_shipped - existing_shipped
+        if slip_shipped > existing_shipped:
+            extra = slip_shipped - existing_shipped
             from_received = min(extra, buckets.get("RECEIVED", 0))
             buckets["RECEIVED"] = max(0, buckets.get("RECEIVED", 0) - from_received)
             buckets["SHIPPED_OUT"] = existing_shipped + from_received
-
-        # Step 4b: Assembled cross-check
-        oi_assembled = assembled_by_pair.get(pair_key, 0)
-        existing_assembled = buckets.get("ASSEMBLED", 0)
-        if oi_assembled > existing_assembled:
-            extra = oi_assembled - existing_assembled
-            from_received = min(extra, buckets.get("RECEIVED", 0))
-            buckets["RECEIVED"] = max(0, buckets.get("RECEIVED", 0) - from_received)
-            buckets["ASSEMBLED"] = existing_assembled + from_received
 
         # Step 5: Calculate NOT_COVERED gap
         total_committed = sum(buckets.values())
@@ -323,11 +296,6 @@ def reconcile_schedule(
                 )
 
     return results
-
-
-def _opening_leaf_label(opening_number: str, leaf: int | None) -> str:
-    """Same label, built from the raw pair rather than from a materialized OpeningItem."""
-    return f"Opening {opening_number} Leaf {leaf}" if leaf is not None else f"Opening {opening_number}"
 
 
 # The note stamped on a live in-flight request when a full-schedule re-upload lands underneath it.
@@ -363,41 +331,15 @@ def _gate_on_available_inventory(
 
 
 def _allocated_quantity(item_input: dict) -> int:
-    """What a checklist line actually claims out of inventory.
+    """What a request line actually claims out of inventory.
 
-    A missing / null `allocated_quantity` means **fully allocated**. That default is what keeps every
-    caller that predates the allocator - tests, scripts, a browser tab loaded before the deploy - on
-    the old all-or-nothing behaviour: it asks for the whole line, and the availability gate bounces
-    the finalize if the whole line does not fit. The allocator step always sends the number.
+    A missing / null `allocated_quantity` means **fully allocated**. That default keeps every caller
+    that predates the composer - tests, scripts, a browser tab loaded before the deploy - on the old
+    all-or-nothing behaviour: it asks for the whole line, and the availability gate bounces the
+    finalize if the whole line does not fit. The composer always sends the number.
     """
     allocated = item_input.get("allocated_quantity")
     return item_input["quantity"] if allocated is None else allocated
-
-
-def _validate_leaf_allocation(opening_number: str, sa_opening_input: dict) -> None:
-    """Per-line bounds, and the one leaf-level rule the allocator enforces client-side.
-
-    A leaf with nothing allocated on any line is an empty cart: nothing to pull, nothing to stage,
-    nothing to assemble, and `complete_opening` would refuse it at the far end for having zero
-    installed units. The wizard drops such leaves before submitting, so reaching here means a race
-    (availability collapsed between load and send) or a non-UI caller - both of which are better
-    refused than turned into a work unit that can never be finished.
-    """
-    items = sa_opening_input.get("items", [])
-    for item in items:
-        allocated = _allocated_quantity(item)
-        if allocated < 0 or allocated > item["quantity"]:
-            raise ValidationError(
-                f"{_opening_leaf_label(opening_number, sa_opening_input.get('leaf'))} {item['product_code']}: "
-                f"allocated quantity {allocated} must be between 0 and the {item['quantity']} unit(s) owed.",
-                field="allocated_quantity",
-            )
-    if items and all(_allocated_quantity(item) == 0 for item in items):
-        raise ValidationError(
-            f"{_opening_leaf_label(opening_number, sa_opening_input.get('leaf'))} has no hardware allocated to it, "
-            "so there is nothing to pull for it. Drop it from the request, or wait for stock.",
-            field="allocated_quantity",
-        )
 
 
 def _live_shop_assembly_requests(session: Session, project_id: uuid.UUID) -> list[SARModel]:
@@ -407,8 +349,8 @@ def _live_shop_assembly_requests(session: Session, project_id: uuid.UUID) -> lis
     return list(
         session.scalars(
             select(SARModel)
-            .options(selectinload(SARModel.openings).selectinload(SAOModel.items))
-            .outerjoin(PullRequestModel, SARModel.request_number == PullRequestModel.request_number)
+            .options(selectinload(SARModel.items))
+            .outerjoin(PullRequestModel, SARModel.pull_request_id == PullRequestModel.id)
             .where(
                 SARModel.project_id == project_id,
                 or_(
@@ -485,31 +427,28 @@ def _handle_schedule_replacement(
     """
     from app.repositories import warehouse as warehouse_repository
 
-    vanished_ids = {o.id for o in project.openings if o.opening_number not in new_opening_numbers}
     vanished_numbers = {o.opening_number for o in project.openings if o.opening_number not in new_opening_numbers}
 
     for sar in _live_shop_assembly_requests(session, project.id):
         pending = sar.status == ShopAssemblyRequestStatus.PENDING
-        lost = [o for o in sar.openings if o.opening_id in vanished_ids] if pending else []
+        lost = [i for i in sar.items if i.opening_number in vanished_numbers] if pending else []
         if lost:
-            lost_ids = [o.id for o in lost]
-            session.execute(delete(SAOItemModel).where(SAOItemModel.shop_assembly_opening_id.in_(lost_ids)))
-            session.execute(delete(SAOModel).where(SAOModel.id.in_(lost_ids)))
+            session.execute(delete(SARItemModel).where(SARItemModel.id.in_([i.id for i in lost])))
             session.flush()
-            session.refresh(sar, attribute_names=["openings"])
+            session.refresh(sar, attribute_names=["items"])
 
-        if pending and not sar.openings:
+        if pending and not sar.items:
             # Nothing left to assemble: reject it (which releases every remaining reservation) rather
             # than leave an empty request on the accept board.
             sar.status = ShopAssemblyRequestStatus.REJECTED
             sar.rejected_by = "Hardware Schedule Import"
-            sar.rejection_reason = "All of this request's openings were removed by a hardware schedule re-upload."
+            sar.rejection_reason = "All of this request's lines were removed by a hardware schedule re-upload."
             sar.rejected_at = datetime.utcnow()
             warehouse_repository.release_reservations(session, ReservationSource.SHOP_ASSEMBLY_REQUEST, sar.id)
             continue
 
         if lost:
-            # Rebuild from what survived. Replace-in-place rather than a per-opening decrement: the
+            # Rebuild from what survived. Replace-in-place rather than a per-line decrement: the
             # reservation rows are aggregates over the whole request, so "what it should hold now" is
             # the only number that is unambiguous.
             warehouse_repository.release_reservations(session, ReservationSource.SHOP_ASSEMBLY_REQUEST, sar.id)
@@ -520,11 +459,7 @@ def _handle_schedule_replacement(
                 sar.id,
                 # Allocated, not owed: the claim it held was minted from the allocation, and rebuilding
                 # from `quantity` would inflate it into a claim on hardware this request never had.
-                [
-                    (item.hardware_category, item.product_code, item.allocated_quantity)
-                    for o in sar.openings
-                    for item in o.items
-                ],
+                [(i.hardware_category, i.product_code, i.allocated_quantity) for i in sar.items],
             )
         sar.integrity_note = SCHEDULE_CHANGED_DROPPED_NOTE if lost else SCHEDULE_CHANGED_NOTE
 
@@ -553,11 +488,7 @@ def _handle_schedule_replacement(
                 req.project_id,
                 ReservationSource.SHIPPING_OUT_REQUEST,
                 req.id,
-                [
-                    (i.hardware_category, i.product_code, i.requested_quantity)
-                    for i in req.items
-                    if i.item_type == PullRequestItemType.LOOSE and i.hardware_category and i.product_code
-                ],
+                [(i.hardware_category, i.product_code, i.requested_quantity) for i in req.items],
             )
         req.integrity_note = SCHEDULE_CHANGED_DROPPED_NOTE if lost else SCHEDULE_CHANGED_NOTE
 
@@ -597,10 +528,6 @@ def finalize_import_session(
     `InventoryShortfallError` and nothing at all is created - the creator refines the selection,
     which is the only place in the flow where that is still a cheap thing to do.
     """
-    # Local import: warehouse re-exports the reservation helpers, and importing it at module level
-    # would close a cycle (warehouse -> shop_assembly_repository -> ... -> import_repository).
-    from app.repositories import warehouse as warehouse_repository
-
     project_id = uuid.UUID(input_data["project_id"])
     openings_input = input_data.get("openings", [])
     hardware_items_input = input_data.get("hardware_items") or []
@@ -611,9 +538,8 @@ def finalize_import_session(
     include_sar = input_data.get("include_shop_assembly_request", False)
     # #493: the client's shop_assembly_request_number is deprecated and ignored. The number is
     # minted from the project's counter below.
-    sar_openings_input = input_data.get("shop_assembly_openings") or []
+    sar_items_input = input_data.get("shop_assembly_items") or []
     replace_schedule = bool(input_data.get("replace_schedule", False))
-    acknowledge_incomplete_leaves = bool(input_data.get("acknowledge_incomplete_leaves", False))
 
     # 1. Project lookup (must already exist)
     project_stmt = (
@@ -936,230 +862,53 @@ def finalize_import_session(
     #
     # Every guard and the reservation gate live in shipping_requests (#451), because the Shipping
     # module raises requests straight off inventory now and both paths have to be held to the same
-    # rules - a leaf that cannot ship twice does not become shippable twice by being asked from a
-    # different screen.
+    # rules by the same code, whichever screen composed them.
     created_shipping_requests = _shipping_requests.create_shipping_out_requests(
         session,
         project.id,
         shipping_pr_drafts or [],
         created_by="Hardware Schedule Import",
-        acknowledge_incomplete_leaves=acknowledge_incomplete_leaves,
     )
 
-    # 7. Shop-assembly request + openings (#293)
-    # Start a Request mints a PENDING ShopAssemblyRequest (NO PullRequest). The ShopAssemblyOpening/Item
-    # rows hang off the SAR via shop_assembly_request_id; their pull_request_id stays NULL until a
-    # signed-in user accepts the request (accept mints the PR and backfills pull_request_id).
-    # Since #342 the inventory gate lives HERE, at creation, and creating the request reserves the
-    # hardware. Accept is a pure human gate and re-checks nothing.
+    # 7. Shop-assembly request (#293)
+    # Start a Request mints a PENDING ShopAssemblyRequest and no PullRequest; a reviewer accepting it
+    # is what mints the pull. Since #342 the inventory gate lives at creation and creating the request
+    # reserves the hardware, so accept is a pure human gate that re-checks nothing.
+    #
+    # There is no duplicate-opening guard any more. Two requests naming the same opening are both
+    # legitimate - the opening genuinely may be owed hardware twice - and the composer is what stops
+    # anyone raising the second one by accident: an opening's live requests count against it as
+    # `claimed`, so it suggests zero rather than offering the same units again.
     sar = None
     if include_sar:
-        from app.repositories import shipping_repository as _shipping_repository
         from app.repositories import shop_assembly_repository
 
-        # Degenerate request validation (#342). A request with no work units, or a work unit with no
-        # hardware on it, is unacceptable and unpullable - and a zero-item opening would reach shop
-        # assembly as a leaf with an empty checklist, which #339 already refuses to complete.
-        if not sar_openings_input:
+        if not sar_items_input:
             raise ValidationError(
-                "A shop-assembly request must include at least one opening.",
-                field="shop_assembly_openings",
+                "A shop-assembly request must include at least one line.",
+                field="shop_assembly_items",
             )
 
-        opening_id_by_number: dict[str, uuid.UUID] = {}
-        # Guard per (opening, leaf) (#311): assembling Leaf 1 must not block sending Leaf 2.
-        opening_leaf_specs: list[tuple[str, uuid.UUID, int | None]] = []
-        for sa_opening_input in sar_openings_input:
-            opening_number = sa_opening_input["opening_number"]
-            opening_id = opening_map.get(opening_number)
-            if opening_id is None:
+        for item_input in sar_items_input:
+            opening_number = item_input.get("opening_number")
+            if opening_number and opening_number not in opening_map:
                 raise NotFoundError(f"Opening {opening_number} not found in project")
-            if not sa_opening_input.get("items"):
-                raise ValidationError(
-                    f"{_opening_leaf_label(opening_number, sa_opening_input.get('leaf'))} has no hardware on it, "
-                    "so it cannot be sent to shop assembly.",
-                    field="shop_assembly_openings",
-                )
-            _validate_leaf_allocation(opening_number, sa_opening_input)
-            opening_id_by_number[opening_number] = opening_id
-            opening_leaf_specs.append((opening_number, opening_id, sa_opening_input.get("leaf")))
 
-        already_assembled = shop_assembly_repository.find_already_assembled_openings(
-            session, project.id, opening_leaf_specs
-        )
-        if already_assembled:
-            labels = ", ".join(f"{num} Leaf {leaf}" if leaf is not None else num for num, leaf in already_assembled)
-            raise ValidationError(
-                f"Opening {labels} is already assembled and cannot be sent to shop assembly.",
-                field="shop_assembly_openings",
-            )
-
-        # Duplicate in-flight guard (#342): the already-assembled guard above catches a leaf that has
-        # been *built*; this catches one that is still on its way - requested, pulled, or half-built.
-        # Two live requests for one leaf both reserve and both pull, and the second lot of hardware
-        # has nowhere to go.
-        in_flight = shop_assembly_repository.find_in_flight_assembly_leaves(session, opening_leaf_specs)
-        if in_flight:
-            labels = ", ".join(
-                sorted(
-                    _opening_leaf_label(num, leaf) + (f" (on {request_number})" if request_number else "")
-                    for num, leaf, request_number in in_flight
-                )
-            )
-            raise ValidationError(
-                f"These leaves are already in a live shop-assembly request: {labels}. "
-                "Reject that request first, or pick different openings.",
-                field="shop_assembly_openings",
-            )
-
-        # Cross-request-type conflict: a leaf a live shipping-out request has claimed is on its way
-        # out of the building and cannot also be sent back to the bench.
-        shipping_claims = _shipping_repository.find_live_shipping_claims(
+        sar = shop_assembly_repository.create_shop_assembly_request(
             session,
             project.id,
-            opening_leaf_specs=[(num, leaf) for num, _, leaf in opening_leaf_specs],
-        )["by_opening_leaf"]
-        if shipping_claims:
-            labels = ", ".join(
-                sorted(
-                    f"{_opening_leaf_label(num, leaf)} (on shipping-out request {request_number})"
-                    for (num, leaf), request_number in shipping_claims.items()
-                )
-            )
-            raise ValidationError(
-                f"These leaves are claimed by a live shipping-out request: {labels}. "
-                "Resolve that request before sending them to shop assembly.",
-                field="shop_assembly_openings",
-            )
-
-        # Reservation gate, now over the ALLOCATION rather than the demand. The request no longer has
-        # to fit the schedule's full bill of hardware - the requester already decided what to claim
-        # and what to send short - so what is gated is exactly what will be reserved and pulled.
-        #
-        # `_gate_on_available_inventory` itself is unchanged and still refuses the whole finalize.
-        # It is not the shortfall gate any more; it is the **race** gate. The allocator built its
-        # numbers from a snapshot of availability, and if that snapshot went stale between load and
-        # send (another request took the stock, an admin wrote it off), reserving anyway would write
-        # a claim on hardware that is not there. The wizard catches the refusal, refetches
-        # availability, re-runs auto-assign and asks the user to look again.
-        sar_needs = [
-            (item["hardware_category"], item["product_code"], _allocated_quantity(item))
-            for sa_opening_input in sar_openings_input
-            for item in sa_opening_input.get("items", [])
-            if _allocated_quantity(item) > 0
-        ]
-        # #493: the number is minted here, not taken from the client. FinalizeImportSessionInput
-        # still carries shop_assembly_request_number, deprecated and ignored (#427/#438 pattern).
-        from app.repositories.request_numbers import mint_request_number
-
-        sar_request_number = mint_request_number(session, project.id)
-        _gate_on_available_inventory(
-            session,
-            project.id,
-            sar_needs,
-            label="shop-assembly request",
-            request_number=sar_request_number,
-        )
-        # Everything the schedule owed but the allocation could not cover. Short combos are out of
-        # available stock by construction - the allocator only leaves a line short once the pool for
-        # that combo is exhausted - so this is always a genuine purchasing signal, not a claim
-        # somebody else is holding. It fires *after* the request is created, unlike the refusal path
-        # in app/schemas/imports.py, which stays for the race above.
-        #
-        # Totals are accumulated over EVERY line of a combo, not only the short ones. Purchasing acts
-        # on the combo, so the number it needs is what this request wanted of that product against
-        # what it got; counting only the short lines would report a request that took 4 hinges on one
-        # leaf and missed 3 on another as "need 4, 1 available", which is true of neither.
-        sar_totals_by_combo: dict[tuple[str, str], list[int]] = {}
-        for sa_opening_input in sar_openings_input:
-            for item in sa_opening_input.get("items", []):
-                key = (item["hardware_category"], item["product_code"])
-                totals = sar_totals_by_combo.setdefault(key, [0, 0])
-                totals[0] += item["quantity"]
-                totals[1] += _allocated_quantity(item)
-        sar_short_by_combo = {
-            key: (owed, allocated) for key, (owed, allocated) in sar_totals_by_combo.items() if owed > allocated
-        }
-
-        sar = SARModel(
-            id=uuid.uuid4(),
-            request_number=sar_request_number,
-            project_id=project.id,
-            status=ShopAssemblyRequestStatus.PENDING,
+            [
+                {
+                    "opening_number": item_input.get("opening_number"),
+                    "hardware_category": item_input["hardware_category"],
+                    "product_code": item_input["product_code"],
+                    "quantity": item_input["quantity"],
+                    "allocated_quantity": _allocated_quantity(item_input),
+                }
+                for item_input in sar_items_input
+            ],
             created_by="Hardware Schedule Import",
         )
-        session.add(sar)
-        session.flush()
-
-        for sa_opening_input in sar_openings_input:
-            opening_number = sa_opening_input["opening_number"]
-            opening_id = opening_id_by_number[opening_number]
-
-            opening_row = existing_openings_by_number.get(opening_number)
-            sa_opening = SAOModel(
-                id=uuid.uuid4(),
-                shop_assembly_request_id=sar.id,
-                pull_request_id=None,
-                opening_id=opening_id,
-                opening_number=opening_number,
-                leaf=sa_opening_input.get("leaf"),
-                building=opening_row.building if opening_row else None,
-                floor=opening_row.floor if opening_row else None,
-                location=opening_row.location if opening_row else None,
-                pull_status=PullStatus.NOT_PULLED,
-                assembly_status=AssemblyStatus.PENDING,
-            )
-            session.add(sa_opening)
-            session.flush()
-
-            for item_input in sa_opening_input.get("items", []):
-                session.add(
-                    SAOItemModel(
-                        id=uuid.uuid4(),
-                        shop_assembly_opening_id=sa_opening.id,
-                        hardware_category=item_input["hardware_category"],
-                        product_code=item_input["product_code"],
-                        # Owed stays the schedule's number even when nothing could be claimed for it.
-                        # The checklist is what the leaf takes; the allocation is what turned up.
-                        quantity=item_input["quantity"],
-                        allocated_quantity=_allocated_quantity(item_input),
-                    )
-                )
-
-        # The request holds its claim from here until the warehouse approves the pull that spends it
-        # (#342). One row per combo across the whole request, not per opening - and over the
-        # allocated quantities, so the pull the accept mints asks for exactly what is reserved and
-        # `approve_pull_request` keeps its all-or-nothing property with no warehouse-side change.
-        warehouse_repository.create_reservations(
-            session,
-            project.id,
-            ReservationSource.SHOP_ASSEMBLY_REQUEST,
-            sar.id,
-            sar_needs,
-        )
-
-        if sar_short_by_combo:
-            from app.services import notification_service
-
-            notification_service.notify_po_shortfall(
-                session,
-                project_id=project.id,
-                request_number=sar_request_number,
-                shortfalls=[
-                    warehouse_repository.Shortfall(
-                        hardware_category=cat,
-                        product_code=code,
-                        requested=owed,
-                        available=allocated,
-                        short=owed - allocated,
-                        reserved=0,
-                    )
-                    for (cat, code), (owed, allocated) in sorted(sar_short_by_combo.items())
-                ],
-                # The request exists and nothing is blocked - this is "here is what the project is
-                # missing", not "a request failed".
-                sent_short=True,
-            )
 
     session.flush()
 

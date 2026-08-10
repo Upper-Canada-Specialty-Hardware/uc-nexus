@@ -322,7 +322,6 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
         <InventoryCorrectionModal
           open
           onClose={() => setCorrectionItem(null)}
-          itemType="inventory"
           item={correctionItem}
           onSuccess={() => {
             setCorrectionItem(null);

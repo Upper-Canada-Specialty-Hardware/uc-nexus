@@ -7,7 +7,7 @@ import { GET_PULL_REQUESTS } from '../../graphql/warehouse';
 import DataTable from '../../components/DataTable';
 import Tabs from '../../components/Tabs';
 import PullRequestDetailModal from './PullRequestDetailModal';
-import { pullPhase } from './pullStaging';
+import { pullPhase } from './pullPhase';
 import { monoSx, tabularSx } from '../../theme';
 import { parseServerDate } from '../../utils/serverDate';
 
@@ -16,18 +16,11 @@ import { parseServerDate } from '../../utils/serverDate';
 export interface PullRequestItem {
   id: string;
   pullRequestId: string;
-  itemType: string;
   /** Null on a line whose request was raised straight off inventory (#451). */
   openingNumber: string | null;
-  openingItemId: string | null;
-  /** Door leaf this pull line is for (#311): 1 or 2, or null for legacy / leaf-agnostic lines. */
-  leaf: number | null;
-  hardwareCategory: string | null;
-  productCode: string | null;
+  hardwareCategory: string;
+  productCode: string;
   requestedQuantity: number;
-  /** Fetch check-off on an OPENING_ITEM line (#367). Always null on a LOOSE line. */
-  fetchedAt?: string | null;
-  fetchedBy?: string | null;
 }
 
 export interface PullRequest {

@@ -32,7 +32,6 @@ import {
   SPLIT_INVENTORY_LOCATION,
 } from '../../graphql/shared';
 import { GET_UNLOCATED_INVENTORY, GET_LOCATION_DISTINCT_VALUES } from '../../graphql/warehouse';
-import AssembledLeafPutAway from './AssembledLeafPutAway';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { StaggerItem, StaggerList } from '../../motion';
 import { parseServerDate } from '../../utils/serverDate';
@@ -413,10 +412,6 @@ export default function PutAwayTab() {
           );
         })}
       </StaggerList>
-
-      {/* #498: the other half of the queue. Assembled leaves arrive here unlocated because
-          completion no longer asks the assembler to invent a location. */}
-      <AssembledLeafPutAway projectFilter={projectFilter} />
     </Box>
   );
 }

@@ -44,21 +44,16 @@ import ConfirmDialog from '../../components/ConfirmDialog';
 import { useToast } from '../../components/Toast';
 import ContainerShipmentForm from './ContainerShipmentForm';
 import {
-  canTakeAnotherLeaf,
   CONTAINER_TYPE_LABEL,
   isStacked,
-  leafCount,
-  MAX_LEAVES_PER_SKID,
-  sameLooseStock,
+  sameStagedStock,
   toItemsInput,
   type Container,
   type ContainerItem,
   type ContainerType,
-  type StagedLeaf,
   type StagedLooseItem,
   type StagingPool,
 } from './staging';
-import { leafSuffix } from '../../utils/leaf';
 import { isGpSetupBroken, type GpSetupStatus } from '../../types/project';
 import GpSetupQuarantineBanner from '../../components/GpSetupQuarantineBanner';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
@@ -67,7 +62,6 @@ const CONTAINER_TYPES: ContainerType[] = ['SKID', 'DOOR_CART', 'BOX', 'ENVELOPE'
 
 // Drag ids are prefixed so one handler can tell what was picked up without a lookup table. The loose
 // id carries the opening because that is part of which stock the row is (see `sameLooseStock`).
-const poolLeafId = (id: string) => `leaf:${id}`;
 const poolLooseId = (row: StagedLooseItem) =>
   `loose:${row.openingNumber ?? ''}|${row.hardwareCategory}|${row.productCode}`;
 const containerDropId = (id: string) => `container:${id}`;
@@ -113,23 +107,9 @@ export default function StagingWorkspace({ projectId, project = null }: Props) {
   const pool = data?.stagingPool;
   const containers = useMemo(() => pool?.containers ?? [], [pool]);
   const term = search.trim().toLowerCase();
-  const allUnplacedLeaves = useMemo(
-    () => (pool?.leaves ?? []).filter((l) => !l.placedInContainerId),
-    [pool],
-  );
   const allUnplacedLoose = useMemo(
     () => (pool?.looseItems ?? []).filter((l) => l.unplacedQuantity > 0),
     [pool],
-  );
-  const unplacedLeaves = useMemo(
-    () =>
-      allUnplacedLeaves.filter(
-        (l) =>
-          !term ||
-          l.openingNumber.toLowerCase().includes(term) ||
-          [l.building, l.floor, l.location].filter(Boolean).join(' ').toLowerCase().includes(term),
-      ),
-    [allUnplacedLeaves, term],
   );
   const unplacedLoose = useMemo(
     () =>
@@ -142,8 +122,7 @@ export default function StagingWorkspace({ projectId, project = null }: Props) {
       ),
     [allUnplacedLoose, term],
   );
-  const hidden =
-    allUnplacedLeaves.length - unplacedLeaves.length + (allUnplacedLoose.length - unplacedLoose.length);
+  const hidden = allUnplacedLoose.length - unplacedLoose.length;
 
   const onError = useCallback((e: { message: string }) => showToast(e.message, 'error'), [showToast]);
   const afterChange = useCallback(() => refetch(), [refetch]);
@@ -186,38 +165,11 @@ export default function StagingWorkspace({ projectId, project = null }: Props) {
     [placeQuantities],
   );
 
-  const placeLeaf = useCallback(
-    (container: Container, leaf: StagedLeaf) => {
-      if (!canTakeAnotherLeaf(container)) {
-        showToast(
-          `${container.name} already holds ${MAX_LEAVES_PER_SKID} leaves - start another skid.`,
-          'warning',
-        );
-        return;
-      }
-      save(container, [
-        ...container.items,
-        {
-          id: 'new',
-          itemType: 'OPENING_ITEM',
-          openingItemId: leaf.openingItemId,
-          openingNumber: leaf.openingNumber,
-          leaf: leaf.leaf,
-          hardwareCategory: '',
-          productCode: '',
-          quantity: 1,
-          position: container.items.length,
-        },
-      ]);
-    },
-    [save, showToast],
-  );
-
   const placeLoose = useCallback(
     (container: Container, item: StagedLooseItem, quantity: number) => {
       const take = Math.max(0, Math.min(quantity, item.unplacedQuantity));
       if (take === 0) return;
-      const existing = container.items.find((i) => sameLooseStock(i, item));
+      const existing = container.items.find((i) => sameStagedStock(i, item));
       // Placing the same stock twice tops up the line rather than adding a second one: a box with
       // "HG-100 x2" and "HG-100 x1" in it is two ways of saying three hinges.
       const next = existing
@@ -226,10 +178,7 @@ export default function StagingWorkspace({ projectId, project = null }: Props) {
             ...container.items,
             {
               id: 'new',
-              itemType: 'LOOSE' as const,
-              openingItemId: null,
               openingNumber: item.openingNumber,
-              leaf: null,
               hardwareCategory: item.hardwareCategory,
               productCode: item.productCode,
               quantity: take,
@@ -296,17 +245,12 @@ export default function StagingWorkspace({ projectId, project = null }: Props) {
           return;
         }
         // A different container: the move this screen mostly exists for. Two saves, and the order
-        // matters - adding first would be refused for a leaf that is still recorded in the skid it
-        // is leaving, so the source is emptied and awaited before the target is written.
+        // matters - adding first would be refused for stock that is still recorded in the container
+        // it is leaving, so the source is emptied and awaited before the target is written.
         const moving = owner.items.find((i) => i.id === activeId);
         if (!moving) return;
-        if (moving.itemType === 'OPENING_ITEM' && !canTakeAnotherLeaf(target)) {
-          showToast(`${target.name} already holds ${MAX_LEAVES_PER_SKID} leaves - start another skid.`, 'warning');
-          return;
-        }
         await save(owner, owner.items.filter((i) => i.id !== activeId));
-        const existing =
-          moving.itemType === 'LOOSE' ? target.items.find((i) => sameLooseStock(i, moving)) : undefined;
+        const existing = target.items.find((i) => sameStagedStock(i, moving));
         await save(
           target,
           existing
@@ -318,15 +262,10 @@ export default function StagingWorkspace({ projectId, project = null }: Props) {
 
       // Otherwise it came from the pool.
       if (!target) return;
-      if (activeId.startsWith('leaf:')) {
-        const leaf = unplacedLeaves.find((l) => poolLeafId(l.openingItemId) === activeId);
-        if (leaf) placeLeaf(target, leaf);
-        return;
-      }
       const loose = unplacedLoose.find((l) => poolLooseId(l) === activeId);
       if (loose) placeLoose(target, loose, quantityFor(loose));
     },
-    [containers, unplacedLeaves, unplacedLoose, placeLeaf, placeLoose, quantityFor, save, showToast],
+    [containers, unplacedLoose, placeLoose, quantityFor, save, showToast],
   );
 
   const toggleSelected = (id: string) =>
@@ -376,7 +315,7 @@ export default function StagingWorkspace({ projectId, project = null }: Props) {
               Staged, not yet in a container
             </Typography>
 
-            {(allUnplacedLeaves.length > 0 || allUnplacedLoose.length > 0 || term !== '') && (
+            {(allUnplacedLoose.length > 0 || term !== '') && (
               <TextField
                 size="small"
                 fullWidth
@@ -402,7 +341,7 @@ export default function StagingWorkspace({ projectId, project = null }: Props) {
               </Typography>
             )}
 
-            {pool && allUnplacedLeaves.length === 0 && allUnplacedLoose.length === 0 && (
+            {pool && allUnplacedLoose.length === 0 && (
               <Alert severity="info">
                 Nothing is waiting to be loaded. Hardware arrives here once its shipping pull has
                 been picked and marked as pulled.
@@ -411,34 +350,11 @@ export default function StagingWorkspace({ projectId, project = null }: Props) {
 
             {/* Filtered to nothing is a different state from an empty floor, and saying so is what
                 stops someone concluding the pull never arrived. */}
-            {pool && hidden > 0 && unplacedLeaves.length === 0 && unplacedLoose.length === 0 && (
+            {pool && hidden > 0 && unplacedLoose.length === 0 && (
               <Alert severity="info">
                 Nothing staged matches &ldquo;{search.trim()}&rdquo;. {hidden} item(s) are hidden by
                 the search.
               </Alert>
-            )}
-
-            {unplacedLeaves.length > 0 && (
-              <Box sx={{ mb: 2 }}>
-                <Typography sx={{ ...microLabelSx, display: 'block', mb: 0.5 }}>Door leaves</Typography>
-                <Stack spacing={0.5}>
-                  {unplacedLeaves.map((l) => (
-                    <PoolRow
-                      key={l.openingItemId}
-                      dragId={poolLeafId(l.openingItemId)}
-                      primary={`${l.openingNumber}${leafSuffix(l.leaf)}`}
-                      itemLabel={`${l.openingNumber}${leafSuffix(l.leaf)}`}
-                      secondary={
-                        [l.building, l.floor, l.location].filter(Boolean).join(' / ') ||
-                        'No placement recorded'
-                      }
-                      containers={containers}
-                      onPick={(c) => placeLeaf(c, l)}
-                      disabledFor={(c) => !canTakeAnotherLeaf(c)}
-                    />
-                  ))}
-                </Stack>
-              </Box>
             )}
 
             {unplacedLoose.length > 0 && (
@@ -686,7 +602,6 @@ function ContainerCard({
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: containerDropId(container.id) });
   const stacked = isStacked(container.containerType);
-  const full = !canTakeAnotherLeaf(container);
 
   return (
     <Paper
@@ -714,14 +629,6 @@ function ContainerCard({
           <Chip size="small" variant="outlined" label={CONTAINER_TYPE_LABEL[container.containerType]} />
           {container.items.length > 0 && (
             <Chip size="small" variant="outlined" label={`${container.items.length} item(s)`} />
-          )}
-          {container.containerType === 'SKID' && (
-            <Chip
-              size="small"
-              variant="outlined"
-              color={full ? 'warning' : 'default'}
-              label={`${leafCount(container)}/${MAX_LEAVES_PER_SKID} leaves`}
-            />
           )}
         </Box>
         <IconButton size="small" color="error" aria-label={`Break down ${container.name}`} onClick={onDelete}>
@@ -787,7 +694,7 @@ function ContainerRow({
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: item.id,
   });
-  const label = item.itemType === 'OPENING_ITEM' ? `${item.openingNumber}${leafSuffix(item.leaf)}` : item.productCode;
+  const label = item.openingNumber ? `${item.openingNumber} · ${item.productCode}` : item.productCode;
 
   return (
     <Box
@@ -821,19 +728,17 @@ function ContainerRow({
       <Stack direction="row" spacing={0.5} alignItems="center">
         {/* Correctable in place. Splitting a product across two containers means getting the split
             wrong sometimes, and pulling the line out and starting over is a poor answer to that. */}
-        {item.itemType === 'LOOSE' && (
-          <TextField
-            size="small"
-            type="number"
-            value={item.quantity}
-            onChange={(e) => {
-              const next = Number.parseInt(e.target.value, 10);
-              onSetQuantity(Number.isNaN(next) ? 0 : Math.max(0, next));
-            }}
-            inputProps={{ min: 0, 'aria-label': `Quantity of ${label} in ${containerName}` }}
-            sx={{ width: 80 }}
-          />
-        )}
+        <TextField
+          size="small"
+          type="number"
+          value={item.quantity}
+          onChange={(e) => {
+            const next = Number.parseInt(e.target.value, 10);
+            onSetQuantity(Number.isNaN(next) ? 0 : Math.max(0, next));
+          }}
+          inputProps={{ min: 0, 'aria-label': `Quantity of ${label} in ${containerName}` }}
+          sx={{ width: 80 }}
+        />
         {stacked && count > 1 && (
           <>
             <IconButton

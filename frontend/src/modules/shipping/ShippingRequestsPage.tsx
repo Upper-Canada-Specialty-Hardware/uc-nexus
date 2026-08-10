@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import {
   Alert,
   Box,
@@ -25,18 +25,14 @@ import {
 } from '../../graphql/shipping';
 import RequestsReviewPage from '../../components/RequestsReviewPage';
 import RequestBuilderDialog from './RequestBuilderDialog';
-import { leafLabel } from '../../utils/leaf';
 import { monoSx } from '../../theme';
 
 interface ShippingRequestItem {
   id: string;
-  itemType: string;
+  /** Null on a line raised straight off inventory (#451) - shelf stock carries no opening. */
   openingNumber: string | null;
-  openingItemId: string | null;
-  /** Door leaf (#335): set on assembled-leaf lines, null on loose hardware. */
-  leaf: number | null;
-  hardwareCategory: string | null;
-  productCode: string | null;
+  hardwareCategory: string;
+  productCode: string;
   requestedQuantity: number;
 }
 
@@ -68,19 +64,6 @@ export default function ShippingRequestsPage({ projectId }: Props) {
       fetchPolicy: 'cache-and-network',
     },
   );
-
-  // Leaves the pending queue already holds, so the builder does not offer one twice and let the
-  // server refuse it. Not exhaustive - a leaf on an accepted request whose pull is still open is
-  // claimed too, and that one the server catches.
-  const claimedOpeningItemIds = useMemo(() => {
-    const claimed = new Set<string>();
-    for (const req of data?.shippingOutRequests ?? []) {
-      for (const item of req.items) {
-        if (item.itemType === 'OPENING_ITEM' && item.openingItemId) claimed.add(item.openingItemId);
-      }
-    }
-    return claimed;
-  }, [data]);
 
   return (
     <Box>
@@ -157,9 +140,6 @@ export default function ShippingRequestsPage({ projectId }: Props) {
               <TableHead>
                 <TableRow>
                   <TableCell>Opening</TableCell>
-                  {/* #335: an assembled-leaf line names no product, so the leaf is the only thing
-                      that tells a pair's two lines apart before the request is accepted. */}
-                  <TableCell>Leaf</TableCell>
                   <TableCell>Product Code</TableCell>
                   <TableCell>Hardware Category</TableCell>
                   <TableCell align="right">Quantity</TableCell>
@@ -169,11 +149,8 @@ export default function ShippingRequestsPage({ projectId }: Props) {
                 {req.items.map((item) => (
                   <TableRow key={item.id} hover>
                     <TableCell sx={monoSx}>{item.openingNumber || '-'}</TableCell>
-                    <TableCell>{leafLabel(item.leaf) ?? '-'}</TableCell>
-                    <TableCell sx={item.itemType === 'OPENING_ITEM' ? undefined : monoSx}>
-                      {item.itemType === 'OPENING_ITEM' ? 'Assembled door leaf' : item.productCode || '-'}
-                    </TableCell>
-                    <TableCell>{item.hardwareCategory || '-'}</TableCell>
+                    <TableCell sx={monoSx}>{item.productCode}</TableCell>
+                    <TableCell>{item.hardwareCategory}</TableCell>
                     <TableCell align="right">{item.requestedQuantity}</TableCell>
                   </TableRow>
                 ))}
@@ -197,7 +174,6 @@ export default function ShippingRequestsPage({ projectId }: Props) {
           onClose={() => setBuilder(undefined)}
           projectId={projectId}
           request={builder ?? undefined}
-          claimedOpeningItemIds={claimedOpeningItemIds}
           onSaved={refetch}
         />
       )}

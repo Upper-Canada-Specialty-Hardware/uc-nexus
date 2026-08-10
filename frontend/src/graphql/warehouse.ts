@@ -60,57 +60,6 @@ export const GET_INVENTORY_ROWS = gql`
   }
 `;
 
-// #498: assembled leaves that finished on the bench and have no bin yet - the other half of the
-// put-away queue, alongside unlocatedInventory.
-export const GET_UNLOCATED_OPENING_ITEMS = gql`
-  query GetUnlocatedOpeningItems($projectId: ID) {
-    unlocatedOpeningItems(projectId: $projectId) {
-      id projectId openingId openingNumber
-      building floor location leaf leafCount quantity
-      assemblyCompletedAt state warehouseId
-      aisle row bay
-      createdAt updatedAt
-    }
-  }
-`;
-
-export const GET_OPENING_ITEMS = gql`
-  query GetOpeningItems($projectId: ID) {
-    openingItems(projectId: $projectId) {
-      id projectId openingId openingNumber
-      building floor location leaf leafCount quantity
-      assemblyCompletedAt state
-      aisle row bay
-      createdAt updatedAt
-      awaitingReplacementQuantity
-      neverPulledQuantity
-      installedHardware {
-        id openingItemId productCode hardwareCategory quantity
-      }
-    }
-  }
-`;
-
-export const GET_OPENING_ITEM_DETAILS = gql`
-  query GetOpeningItemDetails($id: ID!) {
-    openingItemDetails(id: $id) {
-      openingItem {
-        id projectId openingId openingNumber
-        building floor location leaf quantity
-        assemblyCompletedAt state
-        aisle row bay
-        createdAt updatedAt
-        installedHardware {
-          id openingItemId productCode hardwareCategory quantity
-        }
-      }
-      installedHardware {
-        id openingItemId productCode hardwareCategory quantity
-      }
-    }
-  }
-`;
-
 export const GET_OPEN_POS = gql`
   query GetOpenPOs($projectId: ID) {
     openPOs(projectId: $projectId) {
@@ -268,10 +217,6 @@ export const GET_PULL_REQUESTS = gql`
       cancelledAt
       cancelledBy
       cancellationReason
-      # Derived per-opening staging rollup (#343). Null on pulls that have no openings.
-      stagingStatus
-      stagedOpeningCount
-      totalOpeningCount
       # The pick (#367). pickedAt is the moment stock left; partiallyPicked is "a short confirm is
       # outstanding" and is only computed for un-picked pulls.
       pickedAt
@@ -280,15 +225,10 @@ export const GET_PULL_REQUESTS = gql`
       items {
         id
         pullRequestId
-        itemType
         openingNumber
-        openingItemId
-        leaf
         hardwareCategory
         productCode
         requestedQuantity
-        fetchedAt
-        fetchedBy
       }
     }
   }
@@ -318,13 +258,6 @@ export const GET_LOCATION_CONTENTS = gql`
         }
         poNumber
         unitCost
-      }
-      openingItems {
-        id projectId openingId warehouseId openingNumber
-        building floor location leaf quantity
-        assemblyCompletedAt state aisle row bay
-        createdAt updatedAt
-        installedHardware { id openingItemId productCode hardwareCategory quantity }
       }
       stockItems {
         id warehouseId hardwareCategory productCode quantity deficientQuantity available
@@ -469,22 +402,6 @@ export const GET_DEFICIENCY_REVIEWS = gql`
       reviewedBy
       reviewedAt
       resultingStockItemId
-    }
-  }
-`;
-
-export const GET_STOCK_MATCHES_FOR_OPENING = gql`
-  query GetStockMatchesForOpening($openingItemId: ID!) {
-    stockMatchesForOpening(openingItemId: $openingItemId) {
-      id
-      hardwareCategory
-      productCode
-      quantity
-      deficientQuantity
-      available
-      aisle
-      row
-      bay
     }
   }
 `;
@@ -643,11 +560,9 @@ export const APPROVE_RECEIVE_DRAFT = gql`
 const PULL_REQUEST_FIELDS = `
   id requestNumber projectId source status requestedBy assignedTo
   createdAt updatedAt approvedAt completedAt cancelledAt cancelledBy cancellationReason
-  stagingStatus stagedOpeningCount totalOpeningCount
   pickedAt pickedBy partiallyPicked
   items {
-    id pullRequestId itemType openingNumber openingItemId leaf hardwareCategory productCode requestedQuantity
-    fetchedAt fetchedBy
+    id pullRequestId openingNumber hardwareCategory productCode requestedQuantity
   }
 `;
 
@@ -658,22 +573,12 @@ const PICK_SHEET_FIELDS = `
   sections {
     hardwareCategory productCode requiredQuantity appliedQuantity remainingQuantity
     claimableQuantity claimableShortfall
-    leaves { openingNumber leaf quantity }
+    openings { openingNumber quantity }
     locations {
       inventoryLocationId warehouseId warehouseCode aisle row bay
       available receivedAt draftQuantity appliedQuantity orderAs poNumber
     }
   }
-  fetchItems {
-    pullRequestItemId openingItemId openingNumber leaf aisle row bay state fetchedAt fetchedBy
-  }
-`;
-
-// One opening of a shop-assembly pull, with the hardware lines that make up its cart (#343).
-const PULL_STAGING_OPENING_FIELDS = `
-  id pullRequestId openingId openingNumber leaf building floor
-  pullStatus assemblyStatus assignedToUserId assignedTo stagedAt stagedBy
-  items { id shopAssemblyOpeningId hardwareCategory productCode quantity allocatedQuantity }
 `;
 
 // #427: who did it is taken from the Clerk token server-side, so these mutations no longer send an
@@ -715,35 +620,9 @@ export const CONFIRM_PICK = gql`
   }
 `;
 
-export const SET_PULL_ITEM_FETCHED = gql`
-  mutation SetPullItemFetched($itemId: ID!, $fetched: Boolean!) {
-    setPullItemFetched(itemId: $itemId, fetched: $fetched) {
-      id pullRequestId itemType openingNumber openingItemId leaf
-      hardwareCategory productCode requestedQuantity fetchedAt fetchedBy
-    }
-  }
-`;
-
 export const COMPLETE_PULL_REQUEST = gql`
   mutation CompletePullRequest($id: ID!) {
     completePullRequest(id: $id) { ${PULL_REQUEST_FIELDS} }
-  }
-`;
-
-export const GET_PULL_REQUEST_OPENINGS = gql`
-  query GetPullRequestOpenings($pullRequestId: ID!) {
-    pullRequestOpenings(pullRequestId: $pullRequestId) { ${PULL_STAGING_OPENING_FIELDS} }
-  }
-`;
-
-export const STAGE_PULL_OPENINGS = gql`
-  mutation StagePullOpenings($input: StagePullOpeningsInput!) {
-    stagePullOpenings(input: $input) {
-      pullRequest { ${PULL_REQUEST_FIELDS} }
-      openings { ${PULL_STAGING_OPENING_FIELDS} }
-      newlyStagedOpeningIds
-      completed
-    }
   }
 `;
 
@@ -752,7 +631,6 @@ export const CANCEL_PULL_REQUEST = gql`
     cancelPullRequest(input: $input) {
       pullRequest { ${PULL_REQUEST_FIELDS} }
       restocked { hardwareCategory productCode quantity }
-      releasedOpeningIds
       sourceRequestReturnedToPending
       reservationsRecreated
       integrityNote
@@ -851,17 +729,6 @@ export const REPORT_STOCK_DEFICIENCY = gql`
   mutation ReportStockDeficiency($input: ReportStockDeficiencyInput!) {
     reportStockDeficiency(input: $input) {
       id quantity deficientQuantity available
-    }
-  }
-`;
-
-export const REPORT_DEFICIENCY_AT_ASSEMBLY = gql`
-  mutation ReportDeficiencyAtAssembly($input: ReportDeficiencyAtAssemblyInput!) {
-    reportDeficiencyAtAssembly(input: $input) {
-      inventoryLocation { id quantity deficientQuantity available }
-      replacementPullRequestItem {
-        id pullRequestId itemType openingNumber hardwareCategory productCode requestedQuantity
-      }
     }
   }
 `;

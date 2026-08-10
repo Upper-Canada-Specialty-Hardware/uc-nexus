@@ -4,11 +4,6 @@ import { DELIVERY_REQUEST_FIELDS } from '../types/deliveryRequestFields';
 export const GET_SHIP_READY_ITEMS = gql`
   query GetShipReadyItems($projectId: ID) {
     shipReadyItems(projectId: $projectId) {
-      openingItems {
-        id projectId openingId openingNumber building floor location leaf quantity
-        assemblyCompletedAt state aisle row bay createdAt updatedAt
-        installedHardware { id openingItemId productCode hardwareCategory quantity }
-      }
       looseItems {
         openingNumber hardwareCategory productCode availableQuantity
       }
@@ -17,19 +12,17 @@ export const GET_SHIP_READY_ITEMS = gql`
 `;
 
 // The staging workspace (#451): what is staged, and which container it has been put in. One query
-// for both halves so they can never disagree about whether a leaf has been loaded.
+// for both halves so they can never disagree about whether something has been loaded.
 const CONTAINER_FIELDS = `
   id projectId containerType name packingSlipId createdBy createdAt updatedAt
   items {
-    id shipmentContainerId itemType openingItemId openingNumber leaf
-    hardwareCategory productCode quantity position
+    id shipmentContainerId openingNumber hardwareCategory productCode quantity position
   }
 `;
 
 export const GET_STAGING_POOL = gql`
   query GetStagingPool($projectId: ID!) {
     stagingPool(projectId: $projectId) {
-      leaves { openingItemId openingNumber leaf building floor location placedInContainerId }
       looseItems { openingNumber hardwareCategory productCode stagedQuantity placedQuantity unplacedQuantity }
       containers { ${CONTAINER_FIELDS} }
     }
@@ -103,7 +96,7 @@ const SHIPPING_OUT_REQUEST_FIELDS = `
   createdBy
   createdAt
   integrityNote
-  items { id itemType openingNumber openingItemId leaf hardwareCategory productCode requestedQuantity }
+  items { id openingNumber hardwareCategory productCode requestedQuantity }
 `;
 
 export const CREATE_SHIPPING_OUT_REQUEST = gql`
@@ -123,28 +116,22 @@ export const EDIT_SHIPPING_OUT_REQUEST = gql`
   }
 `;
 
-// What the openings picked in Start a Request still owe the site, leaf by leaf (#451). Joins three
-// things the builder cannot see on its own: the schedule (owed), the assembled leaf (installed) and
-// the open purchase orders (on order). Availability is deliberately NOT here - it comes from
-// projectInventoryAvailability, the single number the creation gate is applied against (#342).
-export const GET_SHIPPING_COVERAGE = gql`
-  query GetShippingCoverage($projectId: ID!, $openingNumbers: [String!]!) {
-    shippingCoverage(projectId: $projectId, openingNumbers: $openingNumbers) {
+// What the selected openings still have coming: `max(owed - sent - claimed, 0)` per product. The
+// one answer both composers read - shop assembly and shipping out ask the same question. Availability
+// is deliberately NOT here; it comes from projectInventoryAvailability, the single number the
+// creation gate is applied against (#342).
+export const GET_REQUEST_COVERAGE = gql`
+  query GetRequestCoverage($projectId: ID!, $openingNumbers: [String!]!) {
+    requestCoverage(projectId: $projectId, openingNumbers: $openingNumbers) {
       openingNumber
-      leaf
-      status
-      openingItemId
-      claimedByRequestNumber
-      lines {
-        hardwareCategory
-        productCode
-        classification
-        owedQuantity
-        installedQuantity
-        spokenForQuantity
-        suggestedQuantity
-        onOrderQuantity
-      }
+      hardwareCategory
+      productCode
+      classification
+      owedQuantity
+      sentQuantity
+      claimedQuantity
+      suggestedQuantity
+      onOrderQuantity
     }
   }
 `;
@@ -179,9 +166,7 @@ const SLIP_CONTAINER_FIELDS = `
     name
     items {
       id
-      itemType
       openingNumber
-      leaf
       hardwareCategory
       productCode
       quantity
@@ -199,9 +184,7 @@ export const GET_PACKING_SLIPS = gql`
       ${PACKING_SLIP_FIELDS}
       items {
         id
-        itemType
         openingNumber
-        leaf
         building
         floor
         location
@@ -234,10 +217,7 @@ export const CONFIRM_SHIPMENT = gql`
       items {
         id
         packingSlipId
-        itemType
-        openingItemId
         openingNumber
-        leaf
         building
         floor
         location
@@ -258,10 +238,7 @@ export const CONFIRM_SHIPMENT_FROM_CONTAINERS = gql`
       items {
         id
         packingSlipId
-        itemType
-        openingItemId
         openingNumber
-        leaf
         building
         floor
         location
@@ -312,10 +289,7 @@ export const GET_SHIPPING_OUT_REQUESTS = gql`
       integrityNote
       items {
         id
-        itemType
         openingNumber
-        openingItemId
-        leaf
         hardwareCategory
         productCode
         requestedQuantity
