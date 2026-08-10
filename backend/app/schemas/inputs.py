@@ -784,13 +784,6 @@ class ReportStockDeficiencyInput:
 
 
 @strawberry.input
-class ReportDeficiencyAtAssemblyInput:
-    shop_assembly_opening_item_id: strawberry.ID
-    quantity: int
-    reason_text: str | None = None
-
-
-@strawberry.input
 class ResolveDeficiencyInput:
     # exactly one of inventory_location_id / stock_item_id must be set
     inventory_location_id: strawberry.ID | None = None

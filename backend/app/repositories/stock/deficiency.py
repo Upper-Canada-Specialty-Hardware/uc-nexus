@@ -20,15 +20,6 @@ from app.models.stock_item import StockItem
 from .common import _find_or_create_stock_row, _log_audit_event
 from .items import get_stock_item
 
-# `pull_requests.request_number` is varchar(50), and it is unique among live (non-cancelled) pulls.
-# Every replacement number this module mints has to fit inside that, suffix included.
-_MAX_REQUEST_NUMBER_LENGTH = 50
-_REPLACEMENT_NUMBER_PREFIX = "PR-REPL-"
-# The widest disambiguating suffix we will mint ("-999"). Reserved when searching for the family so
-# one prefix query finds every member, whatever its stem was truncated to.
-_MAX_REPLACEMENT_SUFFIX_LENGTH = 4
-_MAX_REPLACEMENT_ATTEMPTS = 999
-
 
 def report_inventory_deficiency(
     session: Session,

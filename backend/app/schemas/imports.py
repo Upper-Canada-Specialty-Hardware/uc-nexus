@@ -285,7 +285,7 @@ class ImportMutations:
 
             sar_type = None
             if result["shop_assembly_request"] is not None:
-                refreshed_sar = shop_assembly_repository.get_request_with_openings(
+                refreshed_sar = shop_assembly_repository.get_shop_assembly_request(
                     session, result["shop_assembly_request"].id
                 )
                 sar_type = shop_assembly_request_to_type(refreshed_sar)

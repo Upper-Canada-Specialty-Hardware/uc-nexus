@@ -63,16 +63,16 @@ def has_unread_notification_for_pull(
     pull_request_id: uuid.UUID,
     notification_type: NotificationType,
 ) -> bool:
-    """Whether this pull already has an *open* (unread) notification of this type (#344).
+    """Whether this pull already has an *open* (unread) notification of this type.
 
-    This is the dedupe primitive behind `PULL_UNBLOCKED`. A replacement pull can sit PENDING across
-    many receives, and re-announcing it on each one would turn a useful signal into wallpaper -
-    which is the failure mode that makes people stop reading the bell entirely. Keying on
-    `pull_request_id` rather than on text inside `message` is what makes it exact.
+    The dedupe primitive behind the pick-time PO backfill signal (`INVENTORY_SHORTFALL`, #367): a
+    short pick is resumable, so a picker keying a big sheet in three sittings would otherwise raise
+    three identical backfill notifications for the same gap. Keying on `pull_request_id` rather than
+    on text inside `message` is what makes it exact.
 
     Unread rather than "ever" is the deliberate choice: once somebody has read it, the signal has
-    done its job, and if the pull goes short again (stock written off under it) and is later covered
-    again, that is genuinely new information and deserves to be raised again.
+    done its job, and if the pull goes short again (stock written off under it) that is genuinely new
+    information and deserves to be raised again.
 
     One EXISTS against the partial index; no rows are loaded.
     """
