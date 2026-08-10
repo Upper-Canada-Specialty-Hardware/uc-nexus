@@ -69,12 +69,21 @@ scoped to a single environment, so it could neither authenticate the call nor se
 whole feature is about. Railway has no read-only scope on any of them; nothing in this path ever
 issues a mutation, but the token is write-capable and belongs on production alone.
 
-Verify it before setting it, because a bad token fails silently into an empty list:
+Verify it before setting it, because a bad token fails silently into an empty list. PowerShell, since
+that is the shell on the machines this gets run from - **not** the curl one-liner you may reach for
+first. Single-quoted JSON does not survive PowerShell's native-command argument parsing, and Railway
+answers `invalid JSON, only supports object and array`, which reads like a bad token rather than a
+mangled body:
 
-```bash
-curl -s -X POST https://backboard.railway.com/graphql/v2 \
-  -H "Authorization: Bearer <TOKEN>" -H "Content-Type: application/json" \
-  -d '{"query":"query($id:String!){ environments(projectId:$id){ edges{ node{ name } } } }","variables":{"id":"<PROJECT_ID>"}}'
+```powershell
+$body = @{
+  query     = 'query($id:String!){ environments(projectId:$id){ edges{ node{ name } } } }'
+  variables = @{ id = '<PROJECT_ID>' }
+} | ConvertTo-Json -Depth 5
+
+Invoke-RestMethod -Uri 'https://backboard.railway.com/graphql/v2' -Method Post `
+  -ContentType 'application/json' -Headers @{ Authorization = 'Bearer <TOKEN>' } `
+  -Body $body | ConvertTo-Json -Depth 8
 ```
 
 It should list `production` alongside every `uc-nexus-pr-<N>`. An `errors` array instead means the
