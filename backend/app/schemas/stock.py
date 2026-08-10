@@ -20,7 +20,6 @@ from .converters import (
     deficiency_review_to_type,
     deficient_item_row_to_type,
     inventory_location_to_type,
-    pull_request_item_to_type,
     stock_item_to_type,
 )
 from .enums import DeficientItemSource
@@ -30,7 +29,6 @@ from .inputs import (
     DestockInventoryInput,
     MoveStockLocationInput,
     ReclassifyStockItemInput,
-    ReportDeficiencyAtAssemblyInput,
     ReportInventoryDeficiencyInput,
     ReportStockDeficiencyInput,
     ResolveDeficiencyInput,
@@ -41,7 +39,6 @@ from .types import (
     DeficientItemRow,
     InventoryLocation,
     ReclassifyStockResult,
-    SAReplacementResult,
     StockItem,
     TransferResult,
 )
@@ -311,30 +308,6 @@ class StockMutations:
             session.commit()
             session.refresh(si)
             return stock_item_to_type(si)
-
-    @strawberry.mutation
-    def report_deficiency_at_assembly(
-        self, info: strawberry.Info, input: ReportDeficiencyAtAssemblyInput
-    ) -> SAReplacementResult:
-        """Flag a unit deficient at the bench. Open to any signed-in user - it writes project
-        inventory and mints a replacement pull request, so it must not be reachable anonymously."""
-        auth = current_user(info)
-        actor = resolve_display_name(auth["user_id"])
-        with SessionLocal() as session:
-            il, pri = stock_repository.report_deficiency_at_assembly(
-                session,
-                sa_opening_item_id=uuid.UUID(str(input.shop_assembly_opening_item_id)),
-                quantity=input.quantity,
-                reason_text=input.reason_text,
-                performed_by=actor,
-            )
-            session.commit()
-            session.refresh(il)
-            session.refresh(pri)
-            return SAReplacementResult(
-                inventory_location=inventory_location_to_type(il),
-                replacement_pull_request_item=pull_request_item_to_type(pri),
-            )
 
     @strawberry.mutation
     def resolve_deficiency(self, info: strawberry.Info, input: ResolveDeficiencyInput) -> DeficiencyReview:

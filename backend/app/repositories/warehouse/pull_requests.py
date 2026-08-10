@@ -1282,8 +1282,8 @@ def _return_units_to_project_inventory(
     hinge sits on carries no identity (docs/HARDWARE_IDENTITY_LIFECYCLE.md - inventory is fungible),
     so reconstructing the original split from the audit log would be fragile bookkeeping in service
     of a distinction the domain does not make. The units land on the project's most recently received
-    row for the combo, exactly the way `report_deficiency_at_assembly` returns a condemned unit, and
-    a row is re-materialized if a schedule re-upload deleted the last one. Landing on the *newest*
+    row for the combo, and a row is re-materialized if a schedule re-upload deleted the last one.
+    Landing on the *newest*
     row is also the conservative choice for future FIFO: older stock still goes out first.
     """
     from app.repositories import warehouse_admin_repository

@@ -1493,12 +1493,6 @@ class ReclassifyStockResult:
 
 
 @strawberry.type
-class SAReplacementResult:
-    inventory_location: "InventoryLocation"
-    replacement_pull_request_item: "PullRequestItem"
-
-
-@strawberry.type
 class ClerkUser:
     id: str
     first_name: str

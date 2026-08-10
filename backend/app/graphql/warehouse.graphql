@@ -405,8 +405,8 @@ type Notification {
   id: ID!
   project_id: ID!
   # An audience tag, not access control: the bell queries with no recipient filter, so everyone sees
-  # everything and this says who a signal is *for*. Named audiences (PO, SHIPPING,
-  # SHOP_ASSEMBLY_MANAGER, WAREHOUSE) plus, for REPLACEMENT_ARRIVED, one assembler's Clerk user id.
+  # everything and this says who a signal is *for*. Named audiences (PO, SHIPPING, WAREHOUSE,
+  # WAREHOUSE_MANAGER) plus, for the person-targeted receive signals, one user's Clerk id.
   recipient_role: String!
   type: NotificationType!
   message: String!
@@ -414,24 +414,13 @@ type Notification {
   created_at: DateTime!
 }
 
-# Written by every signal in the system. The three added in #344 close gaps slices 1-5 left:
+# Written by every signal in the system.
 enum NotificationType {
   PULL_REQUEST_CANCELLED
   PULL_REQUEST_COMPLETED
   SHIPMENT_COMPLETED
   # PO backfill signal from the inventory-sufficiency gates (#224).
   INVENTORY_SHORTFALL
-  # A PR-REPL pull completed for a leaf that had already shipped (#341) -> SHIPPING.
-  REPLACEMENT_AFTER_SHIPMENT
-  # Openings became workable: the warehouse staged carts, or completed a pull that still had
-  # un-staged openings (#344) -> SHOP_ASSEMBLY_MANAGER. One per staging confirmation, never per
-  # opening, and silent when nothing actually became workable.
-  ASSEMBLY_WORK_AVAILABLE
-  # A replacement arrived for a leaf that has NOT shipped (#344) -> the assembler holding it.
-  REPLACEMENT_ARRIVED
-  # A blocked PR-REPL pull became coverable because a receive landed the stock it wanted (#344) ->
-  # WAREHOUSE. Deduped to one *unread* notification per pull; see notification_service.
-  PULL_UNBLOCKED
   # A queued GP write died for good (#353 PR E) -> PO or WAREHOUSE, whoever would have seen it fail.
   GP_WRITE_FAILED
   # A counted receive is waiting on approval -> WAREHOUSE_MANAGER.
