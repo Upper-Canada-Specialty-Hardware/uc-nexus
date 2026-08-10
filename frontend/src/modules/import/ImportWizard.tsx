@@ -361,14 +361,6 @@ export default function ImportWizard({
   const openings = parsed?.openings ?? [];
   const hardwareItems = parsed?.hardwareItems ?? [];
 
-  const hardwareCountByOpening = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const hi of hardwareItems) {
-      counts.set(hi.opening_number, (counts.get(hi.opening_number) ?? 0) + 1);
-    }
-    return counts;
-  }, [hardwareItems]);
-
   const selectedHardwareItems = useMemo(
     () => hardwareItems.filter((hi) => selectedOpenings.has(hi.opening_number)),
     [hardwareItems, selectedOpenings],
@@ -1469,7 +1461,6 @@ export default function ImportWizard({
               openings={openings}
               selectedOpenings={selectedOpenings}
               preReconAggregatedItems={preReconAggregatedItems}
-              hardwareCountByOpening={hardwareCountByOpening}
               onOpeningSelectionChange={handleOpeningSelectionChange}
             />
           )}

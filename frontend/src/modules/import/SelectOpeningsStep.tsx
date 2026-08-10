@@ -21,12 +21,13 @@ import type { ParsedOpening } from '../../types/hardwareSchedule';
 import type { AggregatedHardwareItem } from './types';
 import { aggregationKey, itemGroupKey } from './types';
 import { monoSx, tabularSx } from '../../theme';
+import OpeningFacetBar from './OpeningFacetBar';
+import { type FacetField, type FacetSelections, hasActiveFacets, matchesFacets } from './openingFacets';
 
 // ---- Row type ----
 
 interface OpeningRow extends ParsedOpening {
   id: string;
-  hardwareCount: number;
 }
 
 // ---- Props ----
@@ -35,7 +36,6 @@ interface SelectOpeningsStepProps {
   openings: ParsedOpening[];
   selectedOpenings: Set<string>;
   preReconAggregatedItems: AggregatedHardwareItem[];
-  hardwareCountByOpening: Map<string, number>;
   onOpeningSelectionChange: (selected: Set<string>) => void;
 }
 
@@ -45,7 +45,6 @@ export default function SelectOpeningsStep({
   openings,
   selectedOpenings,
   preReconAggregatedItems,
-  hardwareCountByOpening,
   onOpeningSelectionChange,
 }: SelectOpeningsStepProps) {
   // ---- Left Panel: Openings Filter & DataGrid ----
@@ -53,20 +52,22 @@ export default function SelectOpeningsStep({
   const [filterText, setFilterText] = useState('');
   const [activeFilter, setActiveFilter] = useState<string[] | null>(null);
   const [unmatchedNumbers, setUnmatchedNumbers] = useState<string[]>([]);
+  // Faceted filters (#564), composed on top of the paste-numbers filter as a further intersection.
+  const [facetSelections, setFacetSelections] = useState<FacetSelections>(() => new Map());
 
   const rows = useMemo<OpeningRow[]>(() => {
-    return openings.map((o) => ({
-      ...o,
-      id: o.opening_number,
-      hardwareCount: hardwareCountByOpening.get(o.opening_number) ?? 0,
-    }));
-  }, [openings, hardwareCountByOpening]);
+    return openings.map((o) => ({ ...o, id: o.opening_number }));
+  }, [openings]);
 
+  const facetsActive = useMemo(() => hasActiveFacets(facetSelections), [facetSelections]);
+
+  // AND across facets ∩ the paste-numbers filter. Both narrow the same set; either alone is fine.
   const filteredRows = useMemo(() => {
-    if (activeFilter === null) return rows;
-    const filterSet = new Set(activeFilter);
-    return rows.filter((r) => filterSet.has(r.opening_number));
-  }, [rows, activeFilter]);
+    const pasteSet = activeFilter === null ? null : new Set(activeFilter);
+    return rows.filter(
+      (r) => (pasteSet === null || pasteSet.has(r.opening_number)) && matchesFacets(r, facetSelections),
+    );
+  }, [rows, activeFilter, facetSelections]);
 
   const handleApplyFilter = useCallback(() => {
     const lines = filterText
@@ -107,6 +108,17 @@ export default function SelectOpeningsStep({
     onOpeningSelectionChange(new Set());
   }, [onOpeningSelectionChange]);
 
+  const handleFacetChange = useCallback((field: FacetField, values: string[]) => {
+    setFacetSelections((prev) => {
+      const next = new Map(prev);
+      if (values.length === 0) next.delete(field);
+      else next.set(field, new Set(values));
+      return next;
+    });
+  }, []);
+
+  const handleClearFacets = useCallback(() => setFacetSelections(new Map()), []);
+
   const columns = useMemo<GridColDef<OpeningRow>[]>(() => {
     const base: GridColDef<OpeningRow>[] = [
       // Building and Location carry real names ("Building B - East Wing"), so they get room to grow
@@ -129,7 +141,6 @@ export default function SelectOpeningsStep({
       { field: 'keying', headerName: 'Keying', width: 100 },
       { field: 'heading_no', headerName: 'Heading #', width: 100 },
       { field: 'assignment_multiplier', headerName: 'Multiplier', width: 90 },
-      { field: 'hardwareCount', headerName: 'Hardware Items', width: 120, type: 'number' },
     ];
 
     return base;
@@ -147,13 +158,11 @@ export default function SelectOpeningsStep({
     [onOpeningSelectionChange],
   );
 
+  // Select every currently-visible row - the intersection of the paste filter and the facets, not
+  // just the paste filter. What you see is what Select All takes.
   const handleSelectAllOpenings = useCallback(() => {
-    if (activeFilter !== null) {
-      onOpeningSelectionChange(new Set(activeFilter));
-    } else {
-      onOpeningSelectionChange(new Set(openings.map((o) => o.opening_number)));
-    }
-  }, [openings, activeFilter, onOpeningSelectionChange]);
+    onOpeningSelectionChange(new Set(filteredRows.map((r) => r.id)));
+  }, [filteredRows, onOpeningSelectionChange]);
 
   const handleDeselectAllOpenings = useCallback(() => {
     onOpeningSelectionChange(new Set());
@@ -232,6 +241,13 @@ export default function SelectOpeningsStep({
             </Alert>
           )}
 
+          <OpeningFacetBar
+            openings={openings}
+            selections={facetSelections}
+            onChange={handleFacetChange}
+            onClearAll={handleClearFacets}
+          />
+
           <Box sx={{ display: 'flex', gap: 1, mb: 1, alignItems: 'center', flexWrap: 'wrap' }}>
             <Button size="small" variant="outlined" onClick={handleSelectAllOpenings}>
               Select All
@@ -244,7 +260,7 @@ export default function SelectOpeningsStep({
               color={selectedOpenings.size > 0 ? 'info' : 'default'}
               label={`${selectedOpenings.size} of ${filteredRows.length} selected`}
             />
-            {activeFilter !== null && (
+            {(activeFilter !== null || facetsActive) && (
               <Typography variant="caption" color="text.secondary" sx={tabularSx}>
                 filtered from {openings.length} total
               </Typography>
@@ -259,6 +275,9 @@ export default function SelectOpeningsStep({
               rowSelectionModel={rowSelectionModel}
               onRowSelectionModelChange={handleGridSelectionChange}
               keepNonExistentRowsSelected
+              // #564: the facet bar is the filter UI now. The grid's built-in column filter could
+              // hold only one clause, so a second column filter silently replaced the first.
+              disableColumnFilter
               density="compact"
               pageSizeOptions={[25, 50, 100]}
               initialState={{
