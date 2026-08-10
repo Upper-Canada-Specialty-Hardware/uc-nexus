@@ -112,8 +112,12 @@ with `relayInstalls { label enrolled enrolledAt lastSeenAt }` and the Railway ba
   A 403 cadence with the same null `lastSeenAt` would instead mean it is dialling and presenting the
   wrong secret. Observed on pr-554, 2026-08-09: row `seed:uc-nexus-pr-554` (TUBC, enrolled,
   `lastSeenAt: null`), zero `/relay-link` lines across the deployment, `relayStatus.connected: false`,
-  `projects: []`. That is the not-dialling signature, and it is a request to whoever runs the relay
-  workstation - not something to fix from here.
+  `projects: []`. That was the not-dialling signature, and at the time it meant a human had not added
+  the URL on the workstation. **Since channel discovery it should not happen at all**: production
+  serves the live preview list at `/relay-channels` and the relay picks a new environment up within a
+  minute or two. So the same signature now means discovery is off or failing, and the first thing to
+  check is whether `RAILWAY_API_TOKEN` is set on the PRODUCTION backend - without it the route
+  correctly answers an empty list and every preview environment stays dark.
 - **Prove the log records a refusal before you trust its silence.** "No `/relay-link` lines" only
   means "nobody dialled" if a dial would have left a line, and an empty log is equally consistent
   with logging being broken or the edge never routing the upgrade. Settle it in one shot by dialling

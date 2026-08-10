@@ -21,8 +21,8 @@ them rather than restating them.
 
 **The relay does not run on the machine your session runs on, and you must never install, start, or
 configure one there.** It is a packaged Windows service on a separate GP-credentialed workstation, it
-is already enrolled, and it is already pointed at the PR environments used for testing. Connecting it
-is not part of an agent's test loop.
+is already enrolled, and it finds new PR environments by itself (see the discovery section below).
+Connecting it is not part of an agent's test loop.
 
 Your entire relay responsibility is to **confirm the channel is up and then test through it**:
 
@@ -50,18 +50,44 @@ What that rules out, because each of these has burned a session:
 machine, so running it anywhere else fails at its channel step by design. The rest of this file is
 what it does and how to diagnose it when it does not.
 
+## The relay discovers PR environments on its own
+
+Production answers `GET /relay-channels` with the preview environments that exist right now, read from
+the Railway API; the relay asks about once a minute and unions the answer with its config file. So a
+new PR environment gets a GP channel without anybody touching the workstation, and a closed one is
+retired the same way.
+
+Setup, once, ever: `RAILWAY_API_TOKEN` on the **production** backend service, scoped read-only to this
+project. Nowhere else - a preview environment must not be able to advertise other preview
+environments, so a backend without the token answers an empty list, which is the correct answer
+everywhere but production.
+
+What keeps this safe, given a network answer now decides what a GP-credentialed process dials:
+
+- The relay accepts only `wss://backend-uc-nexus-pr-<N>.up.railway.app/relay-link`, anchored and
+  literal apart from the number. No answer can name an arbitrary host.
+- A discovered channel is never the primary one. `is_primary_backend_url` decides that by identity
+  against the relay's own baked-in production URL, so everything discovered inherits the TUBC sandbox
+  pin. The worst a bad entry can do is offer a channel that may only touch the sandbox company.
+- Discovery only ADDS. It cannot remove or reorder what `config.toml` names, and it cannot switch
+  itself on where the token is absent.
+- A backend that cannot be reached leaves the last known list in place, so a blip does not tear down
+  live channels. `discover_preview_backends = false` under `[channel]` turns it off entirely.
+
+`extra_backend_urls` is still there and still the right tool for a backend discovery cannot know about
+- a local dev backend, or anything outside this Railway project.
+
 ## A PR environment is relay-disconnected by default, and that is useful
 
 By default a PR environment always reports `relayStatus.connected: false`, and no amount of waiting
 changes it. Two independent reasons, both addressed by #414 but neither automatic:
 
-1. The relay dials whatever `[channel] backend_url` in its `config.toml` names. Since #414 that takes
-   a LIST, so a PR backend can be added *alongside* production rather than replacing it - but somebody
-   at the relay workstation has to add it, and that somebody is not an agent session. **No restart**
-   since #456: `channel.run_forever` re-reads `config.toml` every `CHANNEL_RECONCILE_SECONDS` (see
-   `relay/src/ucnexus_relay/channel.py` for the live value), adding a channel for a URL that appears
-   and cancelling one for a URL that disappears. Editing that file on that machine is the whole
-   procedure - see the runbook below.
+1. The relay has to be dialling this backend. Since #414 it can hold a LIST, so a PR backend is added
+   *alongside* production rather than replacing it; since #456 the list is re-read every
+   `CHANNEL_RECONCILE_SECONDS` (see `relay/src/ucnexus_relay/channel.py`) so a change needs no
+   restart; and since discovery it does not need a human either - see the section above. This reason
+   is therefore mostly historical now, and a preview environment that stays disconnected for more than
+   a couple of minutes means discovery is off or failing rather than "nobody has added it yet".
 2. Relay installs live in Postgres and a PR environment boots a fresh empty one, so the handshake is
    refused (4403) even if the relay does dial. Since #414 the backend seeds a trusted install on
    startup from `RELAY_SEED_SECRET_HASH` - the SHA-256 already in production's row, copyable from
@@ -114,11 +140,22 @@ step here has failed silently at least once.
    refused 4403. Usually inherited at environment creation; set it by hand if the environment predates
    the variable.
    - Signal: same `railway variables` read shows it set.
-4. **Add the PR backend to the relay's channel list - performed ON THE RELAY WORKSTATION, not on the
-   machine you are reading this from.** Usually already done for the environment under test, so check
-   step 5's signal before assuming otherwise; if it genuinely is missing, that is a request to
-   whoever owns that workstation. In that machine's `%LOCALAPPDATA%\UCNexusRelay\config.toml`, under
-   `[channel]`:
+4. **Nothing. The relay finds the environment by itself.** It asks production which preview
+   environments exist and dials them, re-checking about once a minute, so an environment created after
+   the last time anybody touched that workstation is picked up without a visit. This step used to be
+   the whole reason a PR environment needed a human, and it is the step that kept getting forgotten.
+   - Signal: `relay.log` on the workstation logs `backend channels changed` with your URL under
+     `added`, then `channel connected`, within a minute or two of the environment existing. From this
+     side, just read `relayStatus`.
+   - Requires `RAILWAY_API_TOKEN` on the PRODUCTION backend. That is the one piece of setup, done
+     once, ever - see the discovery section below. Without it discovery answers an empty list and
+     everything falls back to the manual path below.
+   - Discovery only ever ADDS. `extra_backend_urls` still works and still wins nothing away from you,
+     so the manual route stays available for a backend discovery cannot know about (a local dev
+     backend, an environment outside this Railway project).
+
+   The manual route, performed ON THE RELAY WORKSTATION and not on the machine you are reading this
+   from. In that machine's `%LOCALAPPDATA%\UCNexusRelay\config.toml`, under `[channel]`:
    ```toml
    extra_backend_urls = ["wss://backend-uc-nexus-pr-<N>.up.railway.app/relay-link"]
    ```

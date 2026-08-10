@@ -34,3 +34,18 @@ RAILWAY_ENVIRONMENT_NAME = os.getenv("RAILWAY_ENVIRONMENT_NAME", "")
 # manual provision + enroll per PR (#414). A hash is a verifier, not a credential: it cannot be replayed
 # to authenticate. relay_seed refuses to act on it in production regardless.
 RELAY_SEED_SECRET_HASH = os.getenv("RELAY_SEED_SECRET_HASH", "")
+
+# Railway injects the project this service belongs to. Empty off Railway.
+RAILWAY_PROJECT_ID = os.getenv("RAILWAY_PROJECT_ID", "")
+
+# Read-only Railway API token, set ONLY on production. It lets /relay-channels tell the workstation
+# relay which preview environments exist right now, so adding a PR environment stops being a hand edit
+# on that machine (app/services/relay_channels.py). Blank disables discovery and the route answers an
+# empty list, which is the correct answer everywhere except production - a preview environment must not
+# be able to advertise other preview environments. Unlike the two digests above this IS a credential,
+# so scope it to read-only on this project.
+RAILWAY_API_TOKEN = os.getenv("RAILWAY_API_TOKEN", "")
+
+# Overridable because Railway has served its public API from more than one host; a change there should
+# be a variable edit, not a redeploy of pinned code.
+RAILWAY_API_URL = os.getenv("RAILWAY_API_URL", "https://backboard.railway.com/graphql/v2")

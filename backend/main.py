@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import strawberry
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from graphql import GraphQLError, GraphQLResolveInfo
@@ -22,6 +22,7 @@ from app.repositories import relay_repository
 from app.schemas.mutations import Mutation
 from app.schemas.queries import Query
 from app.services import gp_job_sync, gp_outbox_worker, relay_adopt, relay_seed
+from app.services import relay_channels as relay_channels_service
 from app.services.relay_gateway import HEARTBEAT_INTERVAL_SECONDS
 from app.services.relay_gateway import gateway as relay_gateway
 
@@ -254,6 +255,34 @@ async def _serve_relay_link(websocket: WebSocket, require_hello: bool = False) -
             continue
         if exc is not None:
             raise exc
+
+
+@app.get("/relay-channels")
+def relay_channels(request: Request):
+    """Which preview backends the calling relay should ALSO be dialling.
+
+    Authenticated by the same enrolled Bearer secret the relay presents on /relay-link, so this adds
+    no credential and no new trust relationship: a caller that could read this could already open the
+    channel. Answers `{"urls": [...]}`, empty wherever discovery is off - which is everywhere except
+    production, and production only when RAILWAY_API_TOKEN is set.
+
+    The relay unions this with its own config file rather than replacing it, and re-validates every URL
+    against the preview hostname pattern before dialling. So the worst a wrong answer here can do is
+    offer a channel the relay declines, and a discovered channel can never become the primary one.
+    """
+    auth_header = request.headers.get("authorization") or ""
+    scheme, _, secret = auth_header.partition(" ")
+    if scheme.lower() != "bearer" or not secret.strip():
+        raise HTTPException(status_code=401, detail="relay credential required")
+
+    with SessionLocal() as session:
+        install = relay_repository.authenticate_secret(session, secret.strip())
+        authenticated = install is not None
+        session.commit()
+    if not authenticated:
+        raise HTTPException(status_code=401, detail="relay credential required")
+
+    return {"urls": relay_channels_service.discover_preview_channels()}
 
 
 @app.websocket("/relay-link")
