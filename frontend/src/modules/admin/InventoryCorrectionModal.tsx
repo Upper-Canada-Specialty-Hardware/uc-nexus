@@ -18,6 +18,7 @@ import { FONT_MONO, microLabelSx, monoSx, tabularSx } from '../../theme';
 import { OVERRIDE_INVENTORY_QUANTITY } from '../../graphql/admin';
 import { MOVE_INVENTORY_LOCATION, MARK_INVENTORY_UNLOCATED, ASSIGN_INVENTORY_LOCATION } from '../../graphql/shared';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
+import { ReservationNotice, useComboReservation } from '../warehouse/reservationNotice';
 
 // --- Item types ---
 
@@ -153,6 +154,17 @@ export default function InventoryCorrectionModal({
   const newQtyNum = parseInt(newQty, 10);
   const delta = Number.isNaN(newQtyNum) ? 0 : newQtyNum - item.quantity;
   const itemDeficient = item.deficientQuantity ?? 0;
+
+  // An override that lowers this row shrinks the combo's sound on-hand; surface what active requests
+  // have reserved and warn when the new quantity would leave fewer than that. Scoped to the quantity
+  // override - relocations do not change how much is on hand.
+  const reservation = useComboReservation({
+    projectId: item.projectId,
+    hardwareCategory: item.hardwareCategory,
+    productCode: item.productCode,
+    skip: correctionType !== 'overrideQuantity',
+  });
+  const resultingSound = reservation == null ? null : reservation.soundOnHand + delta;
 
   // Destination rows for the added units, defaulting to one location = this row's current location with
   // the whole delta. The default tracks delta until the user edits, then their edits stick.
@@ -463,6 +475,9 @@ export default function InventoryCorrectionModal({
                   </Button>
                 </Stack>
               </Box>
+            )}
+            {reservation != null && resultingSound != null && (
+              <ReservationNotice reserved={reservation.reserved} resulting={resultingSound} />
             )}
           </Stack>
         );

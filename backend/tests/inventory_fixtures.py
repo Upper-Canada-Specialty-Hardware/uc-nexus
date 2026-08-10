@@ -12,11 +12,18 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 
-from app.models.enums import ReturnDisposition, ShipmentStatus
+from app.models.enums import (
+    ReservationSource,
+    ReturnDisposition,
+    ShipmentStatus,
+    ShopAssemblyRequestStatus,
+)
 from app.models.inventory import InventoryLocation
 from app.models.project import Project
 from app.models.shipping import PackingSlip, PackingSlipItem, ShipmentReturn, ShipmentReturnItem
+from app.models.shop_assembly import ShopAssemblyRequest
 from app.models.stock_item import StockItem
+from app.repositories import warehouse as warehouse_repository
 from app.repositories import warehouse_admin_repository
 
 
@@ -157,3 +164,36 @@ def make_return_item(
     session.add(item)
     session.flush()
     return item
+
+
+def make_reservation(
+    session: Session,
+    project: Project,
+    *,
+    quantity: int,
+    category: str = "HINGE",
+    code: str = "HG-100",
+) -> ShopAssemblyRequest:
+    """An active shop-assembly reservation claiming `quantity` of one combo in a project.
+
+    Mints a real PENDING ShopAssemblyRequest to hang the claim off - the reservation CHECK constraint
+    requires a request FK - and writes the claim through the same repository call request creation
+    uses. Returns the request so a caller can release it if it wants to.
+    """
+    sar = ShopAssemblyRequest(
+        id=uuid.uuid4(),
+        request_number=f"SA-{uuid.uuid4().hex[:8]}",
+        project_id=project.id,
+        status=ShopAssemblyRequestStatus.PENDING,
+        created_by="tester",
+    )
+    session.add(sar)
+    session.flush()
+    warehouse_repository.create_reservations(
+        session,
+        project.id,
+        ReservationSource.SHOP_ASSEMBLY_REQUEST,
+        sar.id,
+        [(category, code, quantity)],
+    )
+    return sar

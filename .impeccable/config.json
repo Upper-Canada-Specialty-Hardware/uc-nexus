@@ -1,0 +1,16 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "side-tab",
+        "value": "*",
+        "files": [
+          "frontend/src/modules/warehouse/LocationsTab.tsx"
+        ],
+        "createdAt": "2026-08-10T19:18:49.512Z"
+      }
+    ]
+  }
+}

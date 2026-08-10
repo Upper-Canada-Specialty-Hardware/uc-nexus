@@ -306,6 +306,8 @@ function ContentsPanel({
       map.set(i.inventoryLocation.id, {
         id: i.inventoryLocation.id,
         kind: 'inventory',
+        projectId: i.inventoryLocation.projectId,
+        hardwareCategory: i.inventoryLocation.hardwareCategory,
         productCode: i.inventoryLocation.productCode,
         quantity: i.inventoryLocation.quantity,
         warehouseId: i.inventoryLocation.warehouseId,

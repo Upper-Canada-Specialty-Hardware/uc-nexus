@@ -10,7 +10,11 @@ from app.errors import NotFoundError, ValidationError
 from app.models.enums import AuditAction, AuditEntityType, DestockSource
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.stock_item import StockItem
-from app.repositories.warehouse import clone_origin_fields
+from app.repositories.warehouse import (
+    clone_origin_fields,
+    get_available_quantities,
+    get_reserved_quantities,
+)
 
 from .common import (
     _find_or_create_stock_row,
@@ -60,6 +64,24 @@ def destock_inventory(
             "Destock quantity exceeds available (non-deficient) quantity on source row",
             field="quantity",
         )
+
+    # A destock of sound units shrinks what this project has on hand, and a post-creation write must
+    # not take it below what active requests have already reserved (#342) - that silently strands a
+    # picker's claim, which reservations exist to prevent. DEFICIENT_SWAP is exempt: it removes
+    # deficient units, which are already netted out of availability (on-hand - deficient), so it can
+    # never reduce what is claimable. The lock=True read takes FOR UPDATE on the combo's inventory
+    # rows, so this check serialises with any concurrent reservation mint - which reads the same
+    # number under the same lock before writing its claim.
+    if not is_deficient_swap:
+        combo = (il.hardware_category, il.product_code)
+        available = get_available_quantities(session, il.project_id, [combo], lock=True).get(combo, 0)
+        if quantity > available:
+            reserved = get_reserved_quantities(session, il.project_id, [combo]).get(combo, 0)
+            raise ValidationError(
+                f"Destocking {quantity} would strand active reservations: {reserved} unit(s) of "
+                f"{il.product_code} are reserved and only {available} are free to destock",
+                field="quantity",
+            )
 
     # Target override is all-or-nothing: overriding only some of aisle/row/bay would keep the source
     # row's other fields and land the stock at a location nobody chose. Provide all three, or none.
