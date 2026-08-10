@@ -422,6 +422,14 @@ caught two failures that all three stacked PRs were reporting as clean:
    For the local fallback, use `http://localhost:8000` / `http://localhost:5173`. Do not substitute the production hosts here - see the Environment section.
    - Clerk auto-authenticates — no email, password, or verification code needed.
    - You land on `/app` (Module Selector) fully signed in.
+   - **Don't know the inherited secret's preimage?** It lives only in the scratch of the session that
+     minted it, so a later session usually cannot recover it. Do not reset production's
+     `PREVIEW_TESTING_SIGN_IN_SECRET_HASH` for this - an existing environment copied the old digest
+     at creation and a production reset would not reach it anyway. Instead set a per-environment
+     override, which always wins: generate a pair (one-liner in `backend/.env.example`), then
+     `railway variables --set "TESTING_SIGN_IN_SECRET_HASH=<sha256>" --environment uc-nexus-pr-<N>
+     --service backend`. The set prints nothing on success - verify with a `--json` read - and it
+     redeploys the backend (~2 min). Verified on pr-575, 2026-08-10.
 2. **Reset data** (if needed): Click the "DevAction: drop and rebuild schema" button in the app bar.
    - Since #442 the button mints the Clerk session token off the auth bridge and sends it as an
      `Authorization: Bearer` header - `/admin/reset-data` sits behind `require_admin_request` (#422),
@@ -441,6 +449,19 @@ caught two failures that all three stacked PRs were reporting as clean:
   defaulted to `2` filled with `1` ends up `21`, over max, submit disabled). Seen on every default-
   quantity dialog 2026-08-10. Set such fields via `evaluate_script` with the native value setter +
   an `input` event instead, then re-read the value before submitting.
+- **`div[role="dialog"]` selectors hit the WRONG dialog inside the Import wizard.** The fullscreen
+  wizard is itself a `role="dialog"`, so when it opens an inner modal (Split line, Finalize confirm,
+  over-order warning) `document.querySelector('div[role="dialog"] input...')` matches the wizard's
+  FIRST matching input, not the modal's. On 2026-08-10 that silently wrote a split quantity into the
+  first draft card's unit-cost spinbutton (persisted to the PO; caught only by re-reading the line
+  later). Always scope to the LAST dialog in document order
+  (`[...document.querySelectorAll('[role="dialog"]')].pop()`) and re-read the value you set before
+  submitting.
+- **The native-setter + `input` event trick can fail to reach React state** (the DOM shows the value,
+  React re-renders it away - the split dialog's qty field did this while the button label still read
+  "Move 1"). When it does, drive the field with real keystrokes instead: `click` it, `press_key
+  Control+A`, then `press_key` the digits, and confirm on a state-derived readout (a button label,
+  a total) rather than the input's DOM value.
 - Use `take_screenshot` when you need to verify visual rendering (layout, colors, spacing).
 
 ### MUI Select Dropdowns
