@@ -103,6 +103,17 @@ with `relayInstalls { label enrolled enrolledAt lastSeenAt }` and the Railway ba
 
 - A relay that is **running but not trusted** logs `"WebSocket /relay-link" 403` every ~30s forever.
   The workstation is dialling out fine; the backend is refusing the handshake.
+- **Not dialling at all reads differently from being refused, and the pair of signals settles it in
+  one minute.** A seeded environment always has its install row, so the row existing proves nothing;
+  read `lastSeenAt` next to the deploy log. `lastSeenAt: null` on a `seed:uc-nexus-pr-<N>` row means
+  no handshake has EVER succeeded there, and if the deploy log also carries **zero** `/relay-link`
+  lines - not 403s, none at all - then nothing is dialling this backend and the cause is upstream of
+  auth: the URL is not in the relay workstation's `extra_backend_urls`, or the relay is stopped.
+  A 403 cadence with the same null `lastSeenAt` would instead mean it is dialling and presenting the
+  wrong secret. Observed on pr-554, 2026-08-09: row `seed:uc-nexus-pr-554` (TUBC, enrolled,
+  `lastSeenAt: null`), zero `/relay-link` lines across the deployment, `relayStatus.connected: false`,
+  `projects: []`. That is the not-dialling signature, and it is a request to whoever runs the relay
+  workstation - not something to fix from here.
 - **`lastSeenAt == enrolledAt` is suggestive, NOT proof.** `last_seen_at` is written in two places:
   `enroll_install` (`relay_repository.py:70-71`) and `authenticate_secret` on a successful match
   (`:95`, committed by `main.py:170`). But `authenticate_secret` runs *only on the connect handshake* -
