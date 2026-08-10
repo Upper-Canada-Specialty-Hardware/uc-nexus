@@ -60,12 +60,18 @@ file = "relay.log"
 # relay just runs its existing inbound HTTP server, as today). auths on connect with [auth].shared_secret.
 backend_url = "wss://backend-production-xxxx.up.railway.app/relay-link"
 
-# ADD a test backend here, naming ONLY the new one - one channel per URL, so a Railway PR environment
-# can be tested without dropping production (#414). the same enrolled secret authenticates on all of
-# them. the production channel is unrestricted; every other URL is pinned to TUBC and refuses any other
+# Railway PR environments are found automatically: the relay asks production which ones exist and dials
+# them, so testing a PR needs nothing here and a closed one is dropped on its own. Requires
+# RAILWAY_API_TOKEN on the production backend. Set false to dial only what this file names.
+#discover_preview_backends = true
+
+# ADD a test backend here, naming ONLY the new one - one channel per URL, so a backend can be tested
+# without dropping production (#414). Now mostly for what discovery cannot know about: a local dev
+# backend, or anything outside the Railway project. The same enrolled secret authenticates on all of
+# them. The production channel is unrestricted; every other URL is pinned to TUBC and refuses any other
 # company, reads and writes alike - so TUBC must also be in [gp] allowed_companies above, or this
-# workstation refuses those jobs itself. read once at serve start: restart the relay after editing, and
-# remove the URL when its PR closes.
+# workstation refuses those jobs itself. Re-read on a timer since #456, so no restart after editing;
+# remove the URL when you are done with it.
 #
 # prefer this over overriding backend_url: whether a channel is production is decided by matching the
 # baked production URL, so retyping it with one character wrong silently pins PRODUCTION to TUBC and
