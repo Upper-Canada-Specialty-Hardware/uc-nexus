@@ -114,6 +114,24 @@ with `relayInstalls { label enrolled enrolledAt lastSeenAt }` and the Railway ba
   `lastSeenAt: null`), zero `/relay-link` lines across the deployment, `relayStatus.connected: false`,
   `projects: []`. That is the not-dialling signature, and it is a request to whoever runs the relay
   workstation - not something to fix from here.
+- **Prove the log records a refusal before you trust its silence.** "No `/relay-link` lines" only
+  means "nobody dialled" if a dial would have left a line, and an empty log is equally consistent
+  with logging being broken or the edge never routing the upgrade. Settle it in one shot by dialling
+  it yourself from the signed-in page - a bogus handshake can only be rejected, so this is read-only:
+
+  ```js
+  new WebSocket('wss://backend-uc-nexus-pr-<N>.up.railway.app/relay-link');
+  ```
+
+  Then re-read the log. Exactly one new `"WebSocket /relay-link" 403` proves the endpoint is live,
+  the edge passes the upgrade through, and refusals are recorded - so the zero lines before it are
+  real evidence rather than an artefact. On pr-554 this turned "probably not dialling" into proof.
+- **Check the seed hash matches production's before blaming the channel list.** The relay presents the
+  secret it enrolled with against production, so a PR environment whose `RELAY_SEED_SECRET_HASH`
+  drifted would dial and 403 forever. `railway variables --environment uc-nexus-pr-<N> --service
+  backend --json` against the same read on `production`, compared, rules that out in seconds. On
+  pr-554 they were byte-identical, which is what makes "not in `extra_backend_urls`" the remaining
+  explanation rather than one of two.
 - **`lastSeenAt == enrolledAt` is suggestive, NOT proof.** `last_seen_at` is written in two places:
   `enroll_install` (`relay_repository.py:70-71`) and `authenticate_secret` on a successful match
   (`:95`, committed by `main.py:170`). But `authenticate_secret` runs *only on the connect handshake* -
