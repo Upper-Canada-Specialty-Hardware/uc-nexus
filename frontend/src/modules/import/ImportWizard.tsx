@@ -62,7 +62,8 @@ import ClassificationStep from './ClassificationStep';
 import PurchaseOrdersStep from './PurchaseOrdersStep';
 import ComposeRequestStep from './ComposeRequestStep';
 import WizardNav from './WizardNav';
-import { buildProductReconRows } from './reconciliation';
+import OverOrderWarningModal from './OverOrderWarningModal';
+import { buildProductReconRows, type ProductReconRow } from './reconciliation';
 import {
   autoAllocate,
   buildRequestLines,
@@ -217,6 +218,9 @@ export default function ImportWizard({
   // The step says so and shows the rebuilt numbers rather than letting the user resend the stale set.
   const [allocationStale, setAllocationStale] = useState(false);
   const [selectedReconItems, setSelectedReconItems] = useState<Set<string>>(new Set());
+  // #567: over-ordering past the project need no longer blocks Next; it opens a confirm modal when
+  // the user leaves the reconciliation step with a selection that pushes a product past its total.
+  const [overOrderModalOpen, setOverOrderModalOpen] = useState(false);
 
   // Finalize state
   const [finalizeLoading, setFinalizeLoading] = useState(false);
@@ -703,10 +707,38 @@ export default function ImportWizard({
     });
   }, [isReimport, existingProjectId, selectedHardwareItems, reconcileSchedule]);
 
+  // #483/#567: the same rollup the Reconciliation step renders, filtered to the products this
+  // selection would push past the project total. Over-ordering is a warning, not a block, so this
+  // no longer gates Next - it decides whether leaving the reconciliation step opens the confirm
+  // modal. Defined above handleNext because that callback depends on it.
+  const reconOverOrderProducts = useMemo<ProductReconRow[]>(() => {
+    if (purpose !== 'po' || !isReimport) return [];
+    return buildProductReconRows({
+      purpose,
+      reconciliationRows,
+      selectedHardwareItems,
+      allHardwareItems: parsed?.hardwareItems ?? [],
+      selectedReconItems,
+    }).filter((r) => r.overOrdersProject);
+  }, [purpose, isReimport, reconciliationRows, selectedHardwareItems, parsed, selectedReconItems]);
+
+  const advanceToNextStep = useCallback(() => {
+    const currentIndex = steps.findIndex((s) => s.id === effectiveStepId);
+    const nextStep = steps[currentIndex + 1];
+    if (nextStep) setActiveStepId(nextStep.id);
+  }, [steps, effectiveStepId]);
+
   const handleNext = useCallback(async () => {
     const currentIndex = steps.findIndex((s) => s.id === effectiveStepId);
     const nextStep = steps[currentIndex + 1];
     if (!nextStep) return;
+
+    // #567: leaving reconciliation with a selection that over-orders the project opens the confirm
+    // modal instead of advancing. Proceed anyway (handleOverOrderProceed) does the advance.
+    if (effectiveStepId === 'reconciliation' && reconOverOrderProducts.length > 0) {
+      setOverOrderModalOpen(true);
+      return;
+    }
 
     if (effectiveStepId === 'openings') {
       setSelectedReconItems(new Set());
@@ -714,7 +746,12 @@ export default function ImportWizard({
     }
 
     setActiveStepId(nextStep.id);
-  }, [effectiveStepId, steps, runReconcile]);
+  }, [effectiveStepId, steps, runReconcile, reconOverOrderProducts]);
+
+  const handleOverOrderProceed = useCallback(() => {
+    setOverOrderModalOpen(false);
+    advanceToNextStep();
+  }, [advanceToNextStep]);
 
   const handleBack = useCallback(() => {
     const currentIndex = steps.findIndex((s) => s.id === effectiveStepId);
@@ -1030,6 +1067,7 @@ export default function ImportWizard({
     resetDownstreamWizardState();
     setFinalizeLoading(false);
     setConfirmOpen(false);
+    setOverOrderModalOpen(false);
     setPostSuccessOpen(false);
     setHydratedFromPersisted(false);
     parser.reset();
@@ -1041,22 +1079,11 @@ export default function ImportWizard({
   const canProceedStep0 = parser.state === 'done';
   const canProceedStep1 = purpose !== null;
   const canProceedStep2 = selectedOpenings.size > 0;
-  // #483: the same rollup the Reconciliation step renders, so the numbers the user is blocked by are
-  // by construction the numbers they are shown.
-  const reconBlockingProducts = useMemo(() => {
-    if (purpose !== 'po' || !isReimport) return [];
-    return buildProductReconRows({
-      purpose,
-      reconciliationRows,
-      selectedHardwareItems,
-      allHardwareItems: parsed?.hardwareItems ?? [],
-      selectedReconItems,
-    }).filter((r) => r.blocksProceed);
-  }, [purpose, isReimport, reconciliationRows, selectedHardwareItems, parsed, selectedReconItems]);
-
+  // #567: over-ordering no longer gates Next - it warns at the modal (see reconOverOrderProducts and
+  // handleNext). The PO purpose only requires a non-empty selection here.
   const canProceedStep3 = useMemo(() => {
     if (!isReimport) return true;
-    if (purpose === 'po') return selectedReconItems.size > 0 && reconBlockingProducts.length === 0;
+    if (purpose === 'po') return selectedReconItems.size > 0;
     if (purpose === 'assembly') {
       return reconciliationRows.some((r) => r.status === 'RECEIVED' && r.quantity > 0);
     }
@@ -1066,7 +1093,7 @@ export default function ImportWizard({
       );
     }
     return true;
-  }, [purpose, isReimport, selectedReconItems, reconciliationRows, reconBlockingProducts]);
+  }, [purpose, isReimport, selectedReconItems, reconciliationRows]);
 
   // #566: classification Next gate, lifted out of ClassificationStep. `classificationRows` is built
   // here, so the same rows the grid renders decide whether Next is live. Only the PO purpose reaches
@@ -1638,6 +1665,15 @@ export default function ImportWizard({
           </FadeIn>
         </Box>
       </Dialog>
+
+      {/* #567: over-order confirm. Opened from handleNext when leaving reconciliation with a
+          selection that pushes a product past its project total. */}
+      <OverOrderWarningModal
+        open={overOrderModalOpen}
+        products={reconOverOrderProducts}
+        onGoBack={() => setOverOrderModalOpen(false)}
+        onProceed={handleOverOrderProceed}
+      />
 
       {/* Confirm Dialog */}
       <ConfirmDialog

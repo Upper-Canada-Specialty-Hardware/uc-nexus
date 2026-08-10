@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, act } from '@testing-library/react';
+import { render, screen, fireEvent, act, waitFor } from '@testing-library/react';
 import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
 import { MemoryRouter } from 'react-router-dom';
 import { WizardProvider } from '../../../contexts/WizardContext';
@@ -605,12 +605,91 @@ describe('ImportWizard reconciliation failure', () => {
     // remaining gap.
     expect(screen.getByText('2 of 2 product(s) selected')).toBeInTheDocument();
 
-    // #483: HNG-100 needs 3 across the project and 1 is already ORDERED. Selecting it carries the
-    // opening's full demand of 3 into PO creation, which would put the project at 4 against a need
-    // of 3 - so Next is refused and the alert names it. LCK-200 has nothing committed and is fine.
-    expect(nextButton()).toBeDisabled();
-    expect(screen.getByText(/take the project past what its hardware schedule needs/i)).toBeInTheDocument();
-    expect(screen.getByText(/HNG-100: project needs 3/)).toBeInTheDocument();
+    // #567: HNG-100 would over-order (needs 3, 1 already ORDERED, selecting carries the opening's
+    // full demand of 3). That no longer blocks - Next stays live and the step warns inline; the
+    // per-product detail moves to the confirm modal shown at Next.
+    expect(nextButton()).toBeEnabled();
+    expect(screen.getByText(/would exceed the project need/i)).toBeInTheDocument();
+  });
+});
+
+// #567: over-ordering past the project's hardware-schedule need is a warning now, not a hard block.
+// Leaving reconciliation with a selection that over-orders opens a confirm modal - Go back stays on
+// the step, Proceed anyway advances. Finalize itself does not enforce the limit.
+describe('ImportWizard over-order warning', () => {
+  const RECONCILE_VARIABLES = {
+    projectId: 'proj-1',
+    items: [
+      { openingNumber: 'O-1', hardwareCategory: 'Hinges', productCode: 'HNG-100', quantityNeeded: 3 },
+      { openingNumber: 'O-2', hardwareCategory: 'Locks', productCode: 'LCK-200', quantityNeeded: 1 },
+    ],
+  };
+
+  // HNG-100 needs 3 across the project and 1 is already ORDERED. Selecting it carries the opening's
+  // full demand of 3, which would put the project at 4 against a need of 3 - an over-order. LCK-200
+  // has nothing committed and is fine.
+  const overOrderReconcileMock: MockedResponse = {
+    request: { query: RECONCILE_SCHEDULE, variables: RECONCILE_VARIABLES },
+    result: {
+      data: {
+        reconcileSchedule: [
+          { __typename: 'ReconciliationResult', openingNumber: 'O-1', hardwareCategory: 'Hinges', productCode: 'HNG-100', quantity: 2, status: 'NOT_COVERED' },
+          { __typename: 'ReconciliationResult', openingNumber: 'O-1', hardwareCategory: 'Hinges', productCode: 'HNG-100', quantity: 1, status: 'ORDERED' },
+          { __typename: 'ReconciliationResult', openingNumber: 'O-2', hardwareCategory: 'Locks', productCode: 'LCK-200', quantity: 1, status: 'NOT_COVERED' },
+        ],
+      },
+    },
+  };
+
+  async function walkToReconciliation() {
+    renderWizard({ project: reimportProject, mocks: [...reimportBaseMocks, overOrderReconcileMock] });
+    await flushApollo();
+    clickNext();
+    fireEvent.click(screen.getByRole('radio', { name: /Create Purchase Orders/i }));
+    clickNext();
+    fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
+    clickNext();
+    await flushApollo();
+  }
+
+  it('warns inline rather than blocking Next, and opens the confirm modal on Next', async () => {
+    await walkToReconciliation();
+
+    expect(screen.getByRole('heading', { name: 'Reconciliation' })).toBeInTheDocument();
+    // Over-ordering no longer disables Next; the step warns inline.
+    expect(nextButton()).toBeEnabled();
+    expect(screen.getByText(/would exceed the project need/i)).toBeInTheDocument();
+
+    // Next opens the modal instead of advancing. The modal aria-hides the step behind it, so we
+    // assert we did NOT reach Classification rather than re-querying the (now hidden) recon heading.
+    clickNext();
+    expect(screen.getByRole('button', { name: /Proceed anyway/i })).toBeInTheDocument();
+    expect(screen.getByText(/needs 3, this would make it 4 \(\+1 over\)/)).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Classification' })).not.toBeInTheDocument();
+  });
+
+  it('Go back keeps the user on reconciliation', async () => {
+    await walkToReconciliation();
+    clickNext();
+
+    fireEvent.click(screen.getByRole('button', { name: /Go back/i }));
+
+    // The dialog closes with an exit transition, so poll until it is gone before reading the step
+    // (which the open dialog had aria-hidden).
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: /Proceed anyway/i })).not.toBeInTheDocument(),
+    );
+    expect(screen.getByRole('heading', { name: 'Reconciliation' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Classification' })).not.toBeInTheDocument();
+  });
+
+  it('Proceed anyway advances to Classification', async () => {
+    await walkToReconciliation();
+    clickNext();
+
+    fireEvent.click(screen.getByRole('button', { name: /Proceed anyway/i }));
+
+    expect(await screen.findByRole('heading', { name: 'Classification' })).toBeInTheDocument();
   });
 });
 

@@ -33,10 +33,12 @@ export interface ProductReconRow {
   // buy, and the hardware lands in fungible project inventory rather than against the openings that
   // were ticked. So there is no such thing as over-committing an opening, only the project.
   overCommitAmount: number;
-  // The one refusal: ordering this selection would take the project past what its hardware schedule
-  // says it needs. A product whose EXISTING commitments already exceed the total is flagged but
-  // never blocks - nothing on this screen fixes history, and refusing would strand the user.
-  blocksProceed: boolean;
+  // #567: ordering this selection would take the project past what its hardware schedule says it
+  // needs. A warning now, not a refusal - the buyer is asked to confirm at Next and may proceed
+  // anyway. True only when the CURRENT selection is what pushes past the total: a product whose
+  // EXISTING commitments already exceed it (with nothing newly selected here) is not flagged, since
+  // nothing on this screen changes history.
+  overOrdersProject: boolean;
 }
 
 export const STATUS_PRIORITY: Record<string, number> = {
@@ -135,7 +137,7 @@ export function buildProductReconRows(args: {
         projectTotalOrdered: 0,
         projectTotalReceived: 0,
         overCommitAmount: 0,
-        blocksProceed: false,
+        overOrdersProject: false,
       };
       map.set(productKey, entry);
       openingKeysByProduct.set(productKey, new Set());
@@ -160,9 +162,9 @@ export function buildProductReconRows(args: {
     const futureCommitted = row.existingCommitted + row.selectedNewPOQty;
     row.overCommitAmount = Math.max(0, futureCommitted - row.quantityRequiredByProject);
     // A re-uploaded schedule with reduced scope can push existing commitments past the new project
-    // total on their own. Those rows show the badge but must not block: nothing selectable here
-    // fixes them, and refusing to advance would strand the user.
-    row.blocksProceed = row.selectedNewPOQty > 0 && futureCommitted > row.quantityRequiredByProject;
+    // total on their own. Those rows show the badge but do not warn: nothing selectable here fixes
+    // them, so gating the Next confirm on them would strand the user.
+    row.overOrdersProject = row.selectedNewPOQty > 0 && futureCommitted > row.quantityRequiredByProject;
   }
   rows.sort((a, b) => {
     const bestA = Math.min(...Array.from(a.statusBreakdown.keys()).map((s) => STATUS_PRIORITY[s] ?? 99));
