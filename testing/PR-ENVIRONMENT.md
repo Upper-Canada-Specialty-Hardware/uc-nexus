@@ -13,6 +13,14 @@ should cite the code it came from so a reader can check rather than trust.
 empty database, at `https://frontend-uc-nexus-pr-<N>.up.railway.app` and
 `https://backend-uc-nexus-pr-<N>.up.railway.app`. Draft PRs do not get one.
 
+**A fresh environment now configures itself, and the runbook below is mostly history.** Verified end
+to end on pr-558 (2026-08-10) with nothing set on that environment by hand: `relayStatus` came up
+`connected: true` company TUBC, 22 GP projects synced, and `/testing/clerk-sign-in` minted a token.
+Open a PR, wait a couple of minutes, sign in, test. The two pieces that make that true are the relay
+discovering preview environments (below) and the sign-in digest being inherited (runbook step 2);
+both are one-time setup on production and both are already done. Read the rest for what to do when
+one of them is not working, rather than as a checklist to run per PR.
+
 For signing in (`/testing/clerk-sign-in`, `TESTING_ENABLED`, the `X-Testing-Secret` header) see
 the Environment and Getting Started sections of [CLAUDE.md](CLAUDE.md) - the runbook below refers to
 them rather than restating them.
