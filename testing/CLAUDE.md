@@ -34,14 +34,17 @@ This is a tester's knowledge journal for UC Nexus. It documents how the app work
   - Backend endpoint `GET /testing/clerk-sign-in` generates the token (requires `TESTING_ENABLED=true`).
   - Since #422 the endpoint also requires a credential: an Admin/Manager `Authorization` bearer, or
     the shared testing secret in an `X-Testing-Secret` header. The secret is the bootstrap path on a
-    fresh PR environment (no session exists there yet): its SHA-256 hex must sit in the backend's
-    `TESTING_SIGN_IN_SECRET_HASH` variable. `TESTING_ENABLED` was re-enabled on production
-    2026-07-30 (humans test there until the staging/production split), so new Preview Environments
-    inherit it on again; `TESTING_SIGN_IN_SECRET_HASH` stays unset on production on purpose (its
-    secret path must not be mintable there), so for each Preview Environment you test on, set a
-    `TESTING_SIGN_IN_SECRET_HASH` you know the preimage of on that environment's backend service
-    (see `backend/.env.example` for the generator one-liner). An environment created while
-    production still had `TESTING_ENABLED=false` needs that set by hand too.
+    fresh PR environment, where by definition no session exists yet.
+  - **A Preview Environment resolves that secret on its own, with nothing set on it.** Production
+    holds `PREVIEW_TESTING_SIGN_IN_SECRET_HASH`, every preview inherits it at creation, and the
+    resolver reads it anywhere that is not production. `TESTING_SIGN_IN_SECRET_HASH` still stays
+    unset on production on purpose - its secret path must not be mintable there - and production
+    resolves to no digest however many of these variables it holds, which is what makes storing the
+    inherited one there safe. Setting `TESTING_SIGN_IN_SECRET_HASH` directly on one environment
+    still overrides, for an environment that predates the inherited variable or wants its own secret
+    (see `backend/.env.example` for the generator one-liner). `TESTING_ENABLED` was re-enabled on
+    production 2026-07-30 (humans test there until the staging/production split), so new Preview
+    Environments inherit it on again; one created while it was still false needs it set by hand.
   - Navigate to the frontend URL with `?__clerk_ticket=TOKEN` to auto-authenticate.
   - Tokens are one-time use; fetch a fresh one each session. Works on any runtime with the same Clerk dev instance.
   - **Every environment inherits production Clerk keys**, so the accounts in a PR environment are real

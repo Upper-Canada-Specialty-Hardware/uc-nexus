@@ -158,11 +158,15 @@ step here has failed silently at least once.
    Services inside it are `backend` and `frontend`; the public hostnames are
    `backend-uc-nexus-pr-<N>.up.railway.app`.
    - Signal: `railway environment list --json` lists it, with `meta.prNumber` matching.
-2. **`TESTING_SIGN_IN_SECRET_HASH` on that environment's backend**, so you can mint a session. See the
-   Auth bullet in [CLAUDE.md](CLAUDE.md)'s Environment section for what it is and why production must
-   not have one.
-   - Signal: `railway variables --environment uc-nexus-pr-<N> --service backend --json` shows it set,
-     and `GET /testing/clerk-sign-in` with the matching `X-Testing-Secret` answers 200 rather than 401.
+2. **Nothing, if `PREVIEW_TESTING_SIGN_IN_SECRET_HASH` is set on production.** A preview inherits that
+   digest at creation and resolves it automatically, so the sign-in secret works on a brand new
+   environment with nothing set on it. Production itself always resolves to no digest however many of
+   these variables it holds, which is what makes storing it there safe - see the Auth bullet in
+   [CLAUDE.md](CLAUDE.md)'s Environment section for why that matters.
+   - Signal: `GET /testing/clerk-sign-in` with the matching `X-Testing-Secret` answers 200, not 401.
+   - Per-environment override, still supported and still wins: set `TESTING_SIGN_IN_SECRET_HASH` on
+     that backend. Needed only for an environment that predates the inherited variable, or one you
+     deliberately want on its own secret.
 3. **`RELAY_SEED_SECRET_HASH` on that same backend**, so the relay's handshake is accepted rather than
    refused 4403. Usually inherited at environment creation; set it by hand if the environment predates
    the variable.
