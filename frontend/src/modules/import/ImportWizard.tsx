@@ -61,11 +61,13 @@ import ReconciliationStep from './ReconciliationStep';
 import ClassificationStep from './ClassificationStep';
 import PurchaseOrdersStep from './PurchaseOrdersStep';
 import ComposeRequestStep from './ComposeRequestStep';
+import WizardNav from './WizardNav';
 import { buildProductReconRows } from './reconciliation';
 import {
   autoAllocate,
   buildRequestLines,
   composableRows,
+  composeRequestGate,
   lineKey,
   offerSignature,
   type Allocation,
@@ -1074,21 +1076,120 @@ export default function ImportWizard({
     return true;
   }, [purpose, isReimport, selectedReconItems, reconciliationRows, reconBlockingProducts]);
 
+  // #566: classification Next gate, lifted out of ClassificationStep. `classificationRows` is built
+  // here, so the same rows the grid renders decide whether Next is live. Only the PO purpose reaches
+  // the step, where every in-scope (non-By-Others) line needs both a scope and a Site/Shop pick.
+  const canProceedClassification = useMemo(() => {
+    const allClassified = classificationRows.every((r) => r.classification !== '');
+    const allSiteShopClassified = classificationRows
+      .filter((r) => r.classification !== 'BY_OTHERS')
+      .every((r) => (r.siteShop ?? '') !== '');
+    return allClassified && allSiteShopClassified;
+  }, [classificationRows]);
+
+  // #566: purchase-orders Next gate. The wizard owns the vendor selection, so it owns the gate.
+  const canProceedPurchaseOrders = selectedVendors.size > 0;
+
+  // #566: the compose step's loading/error flags, computed once so the AppBar Next and the step body
+  // read the identical numbers. These exact expressions are what the step is handed as props below.
+  const composeCoverageLoading = coverageLoading && coverageData === undefined;
+  const composeCoverageError = coverageError !== undefined;
+  const composeAvailabilityLoading = availabilityLoading && availabilityData === undefined;
+  const composeAvailabilityError = availabilityError !== undefined;
+
+  const composeGate = useMemo(
+    () =>
+      composeRequestGate({
+        rows: composerRows,
+        allocation,
+        includedKeys,
+        coverageLoading: composeCoverageLoading,
+        coverageError: composeCoverageError,
+        availabilityLoading: composeAvailabilityLoading,
+        availabilityError: composeAvailabilityError,
+      }),
+    [
+      composerRows,
+      allocation,
+      includedKeys,
+      composeCoverageLoading,
+      composeCoverageError,
+      composeAvailabilityLoading,
+      composeAvailabilityError,
+    ],
+  );
+
+  // ---- AppBar nav (#566) ----
+  // One fixed forward/back cluster in the AppBar toolbar, never moving with content height. Every
+  // step's gate is resolved here, so the button and the step content cannot disagree about whether
+  // the user may proceed. Finalize drives itself forward from an in-content CTA, so Next is hidden
+  // there and only Back shows.
+  const isFinalizeStep = effectiveStepId === 'finalize';
+  let canProceedCurrentStep = false;
+  let navHint: string | null = null;
+  switch (effectiveStepId) {
+    case 'upload':
+      canProceedCurrentStep = canProceedStep0;
+      break;
+    case 'purpose':
+      canProceedCurrentStep = canProceedStep1;
+      break;
+    case 'openings':
+      canProceedCurrentStep = canProceedStep2;
+      break;
+    case 'reconciliation':
+      canProceedCurrentStep = canProceedStep3;
+      break;
+    case 'classification':
+      canProceedCurrentStep = canProceedClassification;
+      break;
+    case 'purchase-orders':
+      canProceedCurrentStep = canProceedPurchaseOrders;
+      break;
+    case 'shop-assembly':
+    case 'shipping-prs':
+      canProceedCurrentStep = composeGate.canProceed;
+      navHint = composeGate.blockedReason;
+      break;
+    case 'finalize':
+      break;
+  }
+  const navBackDisabled = activeStepIndex === 0 || (isFinalizeStep && finalizeLoading);
+
   // ---- Render ----
 
   return (
     <>
       <Dialog fullScreen open={open} onClose={handleClose}>
         <AppBar sx={{ position: 'relative' }}>
-          <Toolbar>
+          <Toolbar sx={{ gap: 2 }}>
             <IconButton edge="start" color="inherit" onClick={handleClose} aria-label="close">
               <X size={20} strokeWidth={1.75} />
             </IconButton>
-            <Typography sx={{ ml: 2, flex: 1 }} variant="h6" component="div">
+            <Typography noWrap sx={{ flex: 1, minWidth: 0 }} variant="h6" component="div">
               Import Hardware Schedule
             </Typography>
+            <WizardNav
+              currentStep={activeStepIndex + 1}
+              totalSteps={steps.length}
+              onBack={handleBack}
+              onNext={handleNext}
+              backDisabled={navBackDisabled}
+              nextDisabled={!canProceedCurrentStep}
+              showNext={!isFinalizeStep}
+            />
           </Toolbar>
         </AppBar>
+
+        {/* #566: the one place a disabled Next explains itself, sat directly under the button it is
+            about rather than beside a bottom nav that has moved. */}
+        {navHint && (
+          <Box sx={{ px: 3, pt: 1, display: 'flex', justifyContent: 'flex-end' }}>
+            <Typography variant="caption" color="text.secondary" sx={{ textAlign: 'right' }}>
+              {navHint}
+            </Typography>
+          </Box>
+        )}
 
         <Box sx={{ p: 3 }}>
           {/* #425: shown from the first step, not at the finalize button. Everything this wizard does
@@ -1283,12 +1384,6 @@ export default function ImportWizard({
                   <ValidationSummaryDisplay summary={parsed.validationSummary} />
                 </Box>
               )}
-
-              <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 3 }}>
-                <Button variant="contained" disabled={!canProceedStep0} onClick={handleNext}>
-                  Next
-                </Button>
-              </Box>
             </Box>
           )}
 
@@ -1365,13 +1460,6 @@ export default function ImportWizard({
                   This is a re-import. Reconciliation will show existing PO and processing status for selected items.
                 </Alert>
               )}
-
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 3 }}>
-                <Button onClick={handleBack}>Back</Button>
-                <Button variant="contained" disabled={!canProceedStep1} onClick={handleNext}>
-                  Next
-                </Button>
-              </Box>
             </Box>
           )}
 
@@ -1383,9 +1471,6 @@ export default function ImportWizard({
               preReconAggregatedItems={preReconAggregatedItems}
               hardwareCountByOpening={hardwareCountByOpening}
               onOpeningSelectionChange={handleOpeningSelectionChange}
-              canProceed={canProceedStep2}
-              onNext={handleNext}
-              onBack={handleBack}
             />
           )}
 
@@ -1402,9 +1487,6 @@ export default function ImportWizard({
               allHardwareItems={hardwareItems}
               selectedReconItems={selectedReconItems}
               onSelectionChange={setSelectedReconItems}
-              canProceed={canProceedStep3}
-              onNext={handleNext}
-              onBack={handleBack}
             />
           )}
 
@@ -1418,8 +1500,6 @@ export default function ImportWizard({
               itemCount={aggregatedHardwareItems.length}
               openingCount={selectedOpenings.size}
               isReimport={isReimport}
-              onNext={handleNext}
-              onBack={handleBack}
             />
           )}
 
@@ -1437,8 +1517,6 @@ export default function ImportWizard({
               onUpdateVendorPO={updateVendorPO}
               onUpdateUnitCost={updateUnitCost}
               onUpdateOrderAs={updateOrderAs}
-              onNext={handleNext}
-              onBack={handleBack}
             />
           )}
 
@@ -1456,13 +1534,11 @@ export default function ImportWizard({
               onIncludedKeysChange={setIncludedKeys}
               seededSignature={seededSignature}
               onSeeded={setSeededSignature}
-              coverageLoading={coverageLoading && coverageData === undefined}
-              coverageError={coverageError !== undefined}
-              availabilityLoading={availabilityLoading && availabilityData === undefined}
-              availabilityError={availabilityError !== undefined}
+              coverageLoading={composeCoverageLoading}
+              coverageError={composeCoverageError}
+              availabilityLoading={composeAvailabilityLoading}
+              availabilityError={composeAvailabilityError}
               allocationStale={allocationStale}
-              onNext={handleNext}
-              onBack={handleBack}
             />
           )}
 
@@ -1480,13 +1556,11 @@ export default function ImportWizard({
               onIncludedKeysChange={setIncludedKeys}
               seededSignature={seededSignature}
               onSeeded={setSeededSignature}
-              coverageLoading={coverageLoading && coverageData === undefined}
-              coverageError={coverageError !== undefined}
-              availabilityLoading={availabilityLoading && availabilityData === undefined}
-              availabilityError={availabilityError !== undefined}
+              coverageLoading={composeCoverageLoading}
+              coverageError={composeCoverageError}
+              availabilityLoading={composeAvailabilityLoading}
+              availabilityError={composeAvailabilityError}
               allocationStale={allocationStale}
-              onNext={handleNext}
-              onBack={handleBack}
             />
           )}
 
@@ -1553,10 +1627,8 @@ export default function ImportWizard({
                 </Box>
               )}
 
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 3 }}>
-                <Button onClick={handleBack} disabled={finalizeLoading}>
-                  Back
-                </Button>
+              {/* #566: Back lives in the AppBar; this step keeps only its own forward CTA. */}
+              <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 3 }}>
                 {/* #425: the server refuses this outright (finalize_import_session ->
                     require_gp_setup_ok), so leaving the button live would only buy the user a red
                     toast after a full wizard run. The banner above says why. */}

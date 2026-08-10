@@ -37,9 +37,6 @@ interface SelectOpeningsStepProps {
   preReconAggregatedItems: AggregatedHardwareItem[];
   hardwareCountByOpening: Map<string, number>;
   onOpeningSelectionChange: (selected: Set<string>) => void;
-  canProceed: boolean;
-  onNext: () => void;
-  onBack: () => void;
 }
 
 // ---- Main Component ----
@@ -50,9 +47,6 @@ export default function SelectOpeningsStep({
   preReconAggregatedItems,
   hardwareCountByOpening,
   onOpeningSelectionChange,
-  canProceed,
-  onNext,
-  onBack,
 }: SelectOpeningsStepProps) {
   // ---- Left Panel: Openings Filter & DataGrid ----
 
@@ -419,14 +413,6 @@ export default function SelectOpeningsStep({
             )}
           </Box>
         </Box>
-      </Box>
-
-      {/* Bottom Navigation */}
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 2 }}>
-        <Button onClick={onBack}>Back</Button>
-        <Button variant="contained" disabled={!canProceed} onClick={onNext}>
-          Next
-        </Button>
       </Box>
     </Box>
   );

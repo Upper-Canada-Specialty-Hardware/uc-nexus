@@ -22,6 +22,7 @@ import {
   autoAllocate,
   comboKey,
   comboSummary,
+  composeRequestGate,
   lineCoverage,
   lineKey,
   offerSignature,
@@ -80,8 +81,6 @@ interface ComposeRequestStepProps {
    * finalize and the allocation has been re-derived from fresh numbers (#342 race).
    */
   allocationStale: boolean;
-  onNext: () => void;
-  onBack: () => void;
 }
 
 /**
@@ -109,8 +108,6 @@ export default function ComposeRequestStep({
   availabilityLoading,
   availabilityError,
   allocationStale,
-  onNext,
-  onBack,
 }: ComposeRequestStepProps) {
   const availableByCombo = useMemo(() => {
     const map = new Map<string, number>();
@@ -175,30 +172,22 @@ export default function ComposeRequestStep({
   }, [rows, allocation, includedKeys, availableByCombo, remainingPool]);
 
   const totalShort = useMemo(() => summaryRows.reduce((sum, row) => sum + row.short, 0), [summaryRows]);
-  const includedCount = useMemo(
-    () => rows.filter((row) => includedKeys.has(lineKey(row)) && (allocation.get(lineKey(row)) ?? 0) > 0).length,
-    [rows, includedKeys, allocation],
+
+  // The same gate the wizard's AppBar Next is computed from (#566), so the step's own rendering and
+  // the button that leaves it read the identical numbers. Next itself lives in the AppBar now.
+  const { includedCount, busy, loadFailed } = useMemo(
+    () =>
+      composeRequestGate({
+        rows,
+        allocation,
+        includedKeys,
+        coverageLoading,
+        coverageError,
+        availabilityLoading,
+        availabilityError,
+      }),
+    [rows, allocation, includedKeys, coverageLoading, coverageError, availabilityLoading, availabilityError],
   );
-
-  const loadFailed = coverageError || availabilityError;
-  const busy = (coverageLoading || availabilityLoading) && !loadFailed;
-
-  // A shortfall no longer blocks. What has to be true is that there is a request to make: at least
-  // one line carrying something, and availability numbers that are real rather than unknown. Sending
-  // short is a decision the user is allowed to make, not an error state.
-  const canProceed = includedCount > 0 && !busy && !loadFailed;
-
-  // A disabled Next with nothing beside it reads as a broken button. Each of these is recoverable
-  // from this screen or the one behind it, so the caption says which.
-  const blockedReason = loadFailed
-    ? 'The numbers above could not be read. Go back and retry.'
-    : busy
-      ? 'Still working out what is owed and what is free.'
-      : includedCount > 0
-        ? null
-        : rows.length === 0
-          ? 'There is nothing to request for these openings.'
-          : 'Tick at least one line and give it a quantity.';
 
   const setLine = (row: CoverageRow, next: number) => {
     const key = lineKey(row);
@@ -467,17 +456,6 @@ export default function ComposeRequestStep({
         </>
       )}
 
-      <Stack direction="row" spacing={1.5} alignItems="center" sx={{ mt: 3 }}>
-        <Button onClick={onBack}>Back</Button>
-        <Button variant="contained" disabled={!canProceed} onClick={onNext}>
-          Next
-        </Button>
-        {blockedReason && (
-          <Typography variant="caption" color="text.secondary">
-            {blockedReason}
-          </Typography>
-        )}
-      </Stack>
     </Box>
   );
 }

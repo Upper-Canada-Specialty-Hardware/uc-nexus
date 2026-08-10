@@ -614,6 +614,90 @@ describe('ImportWizard reconciliation failure', () => {
   });
 });
 
+// #566: forward/back and the step position live in one fixed spot in the AppBar now, not in a
+// bottom row that moved with content height. The gate for each step is computed in the wizard, so
+// these walk the same buttons the earlier tests do - they just now sit in the toolbar.
+describe('ImportWizard AppBar nav', () => {
+  it('shows the step position and disables Back on the first step', () => {
+    renderWizard();
+
+    // First import with no purpose chosen: upload / purpose / openings / finalize.
+    expect(screen.getByText('Step 1 of 4')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Back' })).toBeDisabled();
+    expect(nextButton()).toBeEnabled();
+  });
+
+  it('advances the step counter and enables Back once past the first step', () => {
+    renderWizard();
+    expect(screen.getByText('Step 1 of 4')).toBeInTheDocument();
+
+    clickNext();
+
+    expect(screen.getByRole('heading', { name: 'Select Import Purpose' })).toBeInTheDocument();
+    expect(screen.getByText('Step 2 of 4')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Back' })).toBeEnabled();
+  });
+
+  it('reflects the disabled-Next reason under the AppBar on a compose step with no offer', async () => {
+    // An empty coverage answer: nothing is owed, so Next stays disabled and the AppBar says why
+    // instead of the reason sitting beside a bottom button that no longer exists.
+    const emptyCoverage: MockedResponse = {
+      request: {
+        query: GET_REQUEST_COVERAGE,
+        variables: { projectId: 'proj-1', openingNumbers: ['O-1', 'O-2'] },
+      },
+      maxUsageCount: Number.POSITIVE_INFINITY,
+      result: { data: { requestCoverage: [] } },
+    };
+    renderWizard({
+      project: reimportProject,
+      mocks: [...reimportBaseMocks, shippingReconcileMock, emptyCoverage],
+    });
+    await flushApollo();
+    clickNext();
+    fireEvent.click(screen.getByRole('radio', { name: /Pull Request for Shipping Out/i }));
+    clickNext();
+    fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
+    clickNext();
+    await flushApollo();
+    clickNext();
+    await flushApollo();
+
+    expect(screen.getByRole('heading', { name: 'Shipping Out' })).toBeInTheDocument();
+    expect(nextButton()).toBeDisabled();
+    expect(screen.getByText('There is nothing to request for these openings.')).toBeInTheDocument();
+  });
+
+  it('drops Next and keeps only Back on the finalize step, alongside the in-content CTA', async () => {
+    renderWizard({
+      project: reimportProject,
+      mocks: [...reimportBaseMocks, shippingReconcileMock, requestCoverageMock],
+    });
+    await flushApollo();
+    clickNext();
+    fireEvent.click(screen.getByRole('radio', { name: /Pull Request for Shipping Out/i }));
+    clickNext();
+    fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
+    clickNext();
+    await flushApollo();
+    clickNext();
+    await flushApollo();
+
+    // The compose step auto-assigns the one owed line, so Next is live and carries us to finalize.
+    expect(screen.getByRole('heading', { name: 'Shipping Out' })).toBeInTheDocument();
+    expect(nextButton()).toBeEnabled();
+    clickNext();
+    await flushApollo();
+
+    expect(screen.getByRole('heading', { name: 'Review & Finalize' })).toBeInTheDocument();
+    // upload / purpose / openings / reconciliation / shipping-prs / finalize
+    expect(screen.getByText('Step 6 of 6')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Back' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Next' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Finish Import Session/i })).toBeInTheDocument();
+  });
+});
+
 // The keep-or-ship decision's "Ship out now" lands here: the project is chosen, the purpose is
 // shipping, and the schedule the hardware was bought against is already imported - so the two steps
 // in front of the openings are answers the user has already given somewhere else.

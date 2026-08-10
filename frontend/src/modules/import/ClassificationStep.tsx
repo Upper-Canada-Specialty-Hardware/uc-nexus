@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { Alert, Box, Button, Typography } from '@mui/material';
+import { Alert, Box, Typography } from '@mui/material';
 import { tabularSx } from '../../theme';
 import ClassificationGrid, { type ClassificationRow } from './ClassificationGrid';
 import { SCOPE_OPTIONS, ASSEMBLY_OPTIONS } from './types';
@@ -14,8 +14,6 @@ interface ClassificationStepProps {
   itemCount: number;
   openingCount: number;
   isReimport: boolean;
-  onNext: () => void;
-  onBack: () => void;
 }
 
 export default function ClassificationStep({
@@ -26,8 +24,6 @@ export default function ClassificationStep({
   itemCount,
   openingCount,
   isReimport,
-  onNext,
-  onBack,
 }: ClassificationStepProps) {
   const classifiedCount = classificationRows.filter((r) => r.classification !== '').length;
   const allClassified = classifiedCount === classificationRows.length;
@@ -37,18 +33,14 @@ export default function ClassificationStep({
   const options = purpose === 'po' ? SCOPE_OPTIONS : ASSEMBLY_OPTIONS;
 
   // Issue #216: for PO purpose, every in-scope (non-By-Others) item also needs a Site/Shop pick.
+  // The Next gate this drives is lifted into ImportWizard (#566), which owns classificationRows and
+  // computes it there; here these counts only feed the progress readouts below.
   const inScopeRows = useMemo(
     () => (purpose === 'po' ? classificationRows.filter((r) => r.classification !== 'BY_OTHERS') : []),
     [purpose, classificationRows],
   );
   const siteShopCount = inScopeRows.filter((r) => (r.siteShop ?? '') !== '').length;
   const allSiteShopClassified = siteShopCount === inScopeRows.length;
-
-  const canProceed = useMemo(() => {
-    if (isReadOnly) return true;
-    if (purpose === 'po') return allClassified && allSiteShopClassified;
-    return allClassified;
-  }, [isReadOnly, purpose, allClassified, allSiteShopClassified]);
 
   return (
     <Box>
@@ -103,13 +95,6 @@ export default function ClassificationStep({
         onClassifySiteShop={purpose === 'po' ? onClassifySiteShop : undefined}
         siteShopExemptValue={purpose === 'po' ? 'BY_OTHERS' : undefined}
       />
-
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 3 }}>
-        <Button onClick={onBack}>Back</Button>
-        <Button variant="contained" disabled={!canProceed} onClick={onNext}>
-          Next
-        </Button>
-      </Box>
     </Box>
   );
 }

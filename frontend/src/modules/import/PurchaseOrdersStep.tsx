@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { Box, Button, Checkbox, FormControlLabel, InputAdornment, MenuItem, Paper, TextField, Typography } from '@mui/material';
+import { Box, Checkbox, FormControlLabel, InputAdornment, MenuItem, Paper, TextField, Typography } from '@mui/material';
 import { useQuery } from '@apollo/client/react';
 import OrderAsAutocomplete from '../../components/OrderAsAutocomplete';
 import { GET_PRIOR_ORDER_AS_VALUES } from '../../graphql/shared';
@@ -56,8 +56,6 @@ interface PurchaseOrdersStepProps {
   ) => void;
   onUpdateUnitCost: (vendor: string, productCode: string, hardwareCategory: string, newCost: number) => void;
   onUpdateOrderAs: (key: string, value: string) => void;
-  onNext: () => void;
-  onBack: () => void;
 }
 
 // ---- Helpers ----
@@ -350,13 +348,7 @@ export default function PurchaseOrdersStep({
   onUpdateVendorPO,
   onUpdateUnitCost,
   onUpdateOrderAs,
-  onNext,
-  onBack,
 }: PurchaseOrdersStepProps) {
-  const canProceed = useMemo(() => {
-    return selectedVendors.size > 0;
-  }, [selectedVendors]);
-
   // #490: one job, so one cost-code read for the whole step rather than one per manufacturer card.
   // Relay down or job absent -> empty list -> the cards render no cost-code field at all, and the
   // code is picked at GP registration as before.
@@ -407,14 +399,6 @@ export default function PurchaseOrdersStep({
           );
         })}
       </StaggerList>
-
-      {/* Bottom navigation */}
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 3 }}>
-        <Button onClick={onBack}>Back</Button>
-        <Button variant="contained" disabled={!canProceed} onClick={onNext}>
-          Next
-        </Button>
-      </Box>
     </Box>
   );
 }

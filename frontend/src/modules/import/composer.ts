@@ -194,3 +194,67 @@ export function buildRequestLines(
   }
   return lines;
 }
+
+// ---- Compose-step Next gate (#566) ----
+
+/** What deciding whether a compose request can be sent needs. */
+export interface ComposeGateInput {
+  /** The lines on offer for this purpose. */
+  rows: CoverageRow[];
+  /** Allocated quantity per line. */
+  allocation: Allocation;
+  /** Lines the user has kept in the request. */
+  includedKeys: Set<string>;
+  coverageLoading: boolean;
+  coverageError: boolean;
+  availabilityLoading: boolean;
+  availabilityError: boolean;
+}
+
+export interface ComposeGate {
+  /** Lines both ticked and carrying a quantity - what the request would actually reserve. */
+  includedCount: number;
+  /** A read the counts depend on is still in flight. */
+  busy: boolean;
+  /** A read the counts depend on failed; the numbers are unknown rather than zero. */
+  loadFailed: boolean;
+  /** May the request be sent from here. */
+  canProceed: boolean;
+  /** Why Next is refused, or null when it is allowed. */
+  blockedReason: string | null;
+}
+
+/**
+ * The Next gate for a compose step, as one pure function so the wizard's AppBar Next and the step it
+ * sits above cannot diverge (#566). A shortfall does not block: sending short is a decision the user
+ * is allowed to make. What has to be true is that there is a request to make - at least one line
+ * carrying something - and that the availability numbers are real rather than unknown.
+ */
+export function composeRequestGate({
+  rows,
+  allocation,
+  includedKeys,
+  coverageLoading,
+  coverageError,
+  availabilityLoading,
+  availabilityError,
+}: ComposeGateInput): ComposeGate {
+  const includedCount = rows.filter(
+    (row) => includedKeys.has(lineKey(row)) && (allocation.get(lineKey(row)) ?? 0) > 0,
+  ).length;
+  const loadFailed = coverageError || availabilityError;
+  const busy = (coverageLoading || availabilityLoading) && !loadFailed;
+  const canProceed = includedCount > 0 && !busy && !loadFailed;
+  // A disabled Next with nothing beside it reads as a broken button. Each of these is recoverable
+  // from this screen or the one behind it, so the reason says which.
+  const blockedReason = loadFailed
+    ? 'The numbers above could not be read. Go back and retry.'
+    : busy
+      ? 'Still working out what is owed and what is free.'
+      : includedCount > 0
+        ? null
+        : rows.length === 0
+          ? 'There is nothing to request for these openings.'
+          : 'Tick at least one line and give it a quantity.';
+  return { includedCount, busy, loadFailed, canProceed, blockedReason };
+}

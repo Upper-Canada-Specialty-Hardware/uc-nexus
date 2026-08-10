@@ -23,9 +23,6 @@ interface ReconciliationStepProps {
   allHardwareItems: ParsedHardwareItem[];
   selectedReconItems: Set<string>;
   onSelectionChange: (selected: Set<string>) => void;
-  canProceed: boolean;
-  onNext: () => void;
-  onBack: () => void;
 }
 
 // ---- Aggregated row type (per-product across project) ----
@@ -78,9 +75,6 @@ export default function ReconciliationStep({
   allHardwareItems,
   selectedReconItems,
   onSelectionChange,
-  canProceed,
-  onNext,
-  onBack,
 }: ReconciliationStepProps) {
   const hasAutoSelected = useRef(false);
 
@@ -430,13 +424,6 @@ export default function ReconciliationStep({
       {isReimport && !reconcileLoading && !reconcileError && reconciliationRows.length === 0 && (
         <Alert severity="info">No existing records found for selected items.</Alert>
       )}
-
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 3 }}>
-        <Button onClick={onBack}>Back</Button>
-        <Button variant="contained" disabled={!canProceed} onClick={onNext}>
-          Next
-        </Button>
-      </Box>
     </Box>
   );
 }
