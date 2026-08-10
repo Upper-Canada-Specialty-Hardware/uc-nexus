@@ -35,7 +35,7 @@ railway redeploy --project <id> --environment uc-nexus-pr-<N> --service Postgres
 railway redeploy --project <id> --environment uc-nexus-pr-<N> --service backend  --from-source -y
 ```
 
-`--from-source` matters - a plain `redeploy` re-runs the last deployment, and on a service that never deployed there is nothing to re-run. Database first, or the backend boots against a host that does not resolve yet and fails again. Hit on a relay-only PR, 2026-08-10.
+`--from-source` matters - a plain `redeploy` re-runs the last deployment, and on a service that never deployed there is nothing to re-run. Database first, and then **wait for Postgres to be accepting connections, not merely deployed**: firing the backend 28 seconds behind it got `connection to server at "postgres.railway.internal" ... Connection timed out`, a different failure from the DNS one and equally misleading, because by then the name resolves fine. Give it a minute, or just redeploy the backend again. Hit on a relay-only PR, 2026-08-10.
 
 Environments auto-delete when the PR closes, **so never merge the PR whose environment you are testing in** - it disappears mid-session and every fetch starts failing for a reason that looks like a network fault.
 - **Local (manual fallback)**: frontend `http://localhost:5173`, backend `http://localhost:8000`. Run the backend with `poetry run uvicorn main:app --reload` (from `backend/`) and the frontend with `npm run dev` (from `frontend/`). Needs a local Postgres (not provided; the worktree-localdev adoption was dropped).
