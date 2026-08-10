@@ -14,6 +14,13 @@ from . import buyers, econnect, models
 from .config import get_settings
 
 
+# GP spaces PO line ordinals by 16384 so lines can be inserted between existing ones. The relay
+# dictates the ordinal rather than letting eConnect derive it (issue #538), and UC Nexus mirrors the
+# same arithmetic when it stores gp_line_ord - a receipt targets a line by that number, so the two
+# sides have to agree. PAIRED EDIT: backend/app/repositories/po_repository.py's gp_line_ord.
+GP_LINE_ORD_STEP = 16384
+
+
 class RelayOpError(Exception):
     """A pre-check / validation failure, distinct from an eConnect error. The transport layer maps
     this to its own error shape (HTTPException for main.py, {ok: false, error: ...} for channel.py)."""
@@ -178,8 +185,8 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
         null_tax_schedule=is_foreign,
     )
 
-    # 3. lines
-    for line in request.lines:
+    # 3. lines. ORD is dictated here rather than left to eConnect (issue #538) - see create_po_line.
+    for idx, line in enumerate(request.lines, start=1):
         econnect.create_po_line(
             conn,
             po_number=po_number,
@@ -189,18 +196,19 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
             item_description=line.item_description,
             quantity=line.quantity,
             unit_cost=line.unit_cost,
+            line_ord=idx * GP_LINE_ORD_STEP,
             location_code=line.location_code,
             uofm=line.uofm,
             manufacturer=line.manufacturer,
         )
 
     # 4. WennSoft integration for EVERY line - this is what sets Product_Indicator (1 non-inv / 2
-    #    job cost); taPoLine can't.
+    #    job cost); taPoLine can't. Same ORD step 3 wrote, so the two can no longer disagree.
     for idx, line in enumerate(request.lines, start=1):
         econnect.apply_wennsoft_integration(
             conn,
             po_number=po_number,
-            line_ord=idx * 16384,
+            line_ord=idx * GP_LINE_ORD_STEP,
             product_indicator=line.product_indicator,
             job_number=line.job_number,
             cost_code=line.cost_code,
