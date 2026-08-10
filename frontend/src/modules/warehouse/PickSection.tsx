@@ -1,6 +1,5 @@
 import { Box, Chip, Stack, TextField, Typography } from '@mui/material';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
-import { leafIdentity } from '../../utils/leaf';
 import { parseServerDate } from '../../utils/serverDate';
 import {
   entryKey,
@@ -48,10 +47,10 @@ interface PickSectionProps {
 }
 
 /**
- * One product code to pick: everywhere it can come from, and every door leaf it is owed to (#367).
+ * One product code to pick: everywhere it can come from, and every opening it is owed to (#367).
  *
- * The leaf list is complete and never truncated. "+6 more" is banned here on purpose - the picker
- * is building carts leaf by leaf, so the list of leaves *is* the work, and sending them to another
+ * The opening list is complete and never truncated. "+6 more" is banned here on purpose - the picker
+ * is building carts door by door, so the list of openings *is* the work, and sending them to another
  * screen to see the rest of it is how a paper sheet beats the software.
  *
  * There is no suggested column and no autofill control. The system knows which row is oldest and
@@ -96,20 +95,20 @@ export default function PickSection({ section, entries, onChange, editable }: Pi
         </Stack>
       </Stack>
 
-      {/* Every leaf, in full. */}
+      {/* Every opening, in full. */}
       <Box sx={{ mb: 1.5 }}>
         <Typography component="div" sx={{ ...microLabelSx, mb: 0.5 }}>
-          {`Owed to ${section.leaves.length} ${section.leaves.length === 1 ? 'leaf' : 'leaves'}`}
+          {`Owed to ${section.openings.length} ${section.openings.length === 1 ? 'opening' : 'openings'}`}
         </Typography>
         <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
-          {section.leaves.map((leaf, i) => (
+          {section.openings.map((opening, i) => (
             <Chip
-              key={`${leaf.openingNumber}-${leaf.leaf ?? 'x'}-${i}`}
+              key={`${opening.openingNumber ?? 'none'}-${i}`}
               size="small"
               variant="outlined"
               label={
                 <Box component="span" sx={{ ...monoSx, ...tabularSx }}>
-                  {leafIdentity(leaf.openingNumber, leaf.leaf)} × {leaf.quantity}
+                  {opening.openingNumber ?? 'No opening'} × {opening.quantity}
                 </Box>
               }
             />
@@ -144,6 +143,10 @@ export default function PickSection({ section, entries, onChange, editable }: Pi
           <Box component="thead">
             <Box component="tr" sx={{ '& th': { ...microLabelSx, textAlign: 'left', pb: 0.5 } }}>
               <Box component="th">Location</Box>
+              {/* #496: same two columns as the printed sheet, in the same order, so screen and
+                  paper agree line for line. */}
+              <Box component="th">PO #</Box>
+              <Box component="th">Order As</Box>
               <Box component="th">Received</Box>
               <Box component="th" sx={{ textAlign: 'right !important' }}>
                 Available
@@ -188,6 +191,16 @@ export default function PickSection({ section, entries, onChange, editable }: Pi
                         {loc.appliedQuantity} already pulled from here
                       </Typography>
                     )}
+                  </Box>
+                  <Box component="td">
+                    <Typography component="span" variant="body2" sx={monoSx} color="text.secondary">
+                      {loc.poNumber ?? '—'}
+                    </Typography>
+                  </Box>
+                  <Box component="td">
+                    <Typography component="span" variant="body2" sx={monoSx} color="text.secondary">
+                      {loc.orderAs ?? '—'}
+                    </Typography>
                   </Box>
                   <Box component="td" sx={{ ...tabularSx }}>
                     <Typography component="span" variant="body2" color="text.secondary">

@@ -77,7 +77,20 @@ if (-not $vars) {
 
 # --- 4. the channel list --------------------------------------------------------------------------
 Step 3 "$(if ($Disconnect) { 'removing' } else { 'adding' }) the channel in config.toml"
-if (-not (Test-Path $ConfigPath)) { Fail "no relay config at $ConfigPath - is the relay installed?"; exit 1 }
+if (-not (Test-Path $ConfigPath)) {
+    # Almost always means this is simply not the relay workstation, which is the normal case for an
+    # agent session - the relay is a service on a separate GP-credentialed machine. The old wording
+    # here ("is the relay installed?") read as an invitation to install one, and did send a session
+    # off doing exactly that. Say what to do instead.
+    Fail "no relay config at $ConfigPath"
+    Write-Host "         This machine is not the relay workstation, which is the expected state" -ForegroundColor DarkGray
+    Write-Host "         nearly everywhere. Do NOT install a relay here - one without GP" -ForegroundColor DarkGray
+    Write-Host "         credentials connects and then fails every op." -ForegroundColor DarkGray
+    Write-Host "         The enrolled relay is already pointed at the PR environments; confirm with" -ForegroundColor DarkGray
+    Write-Host "         { relayStatus { connected company build } } and ask a human if it is false." -ForegroundColor DarkGray
+    Write-Host "         See 'The relay is on another machine' in testing/PR-ENVIRONMENT.md." -ForegroundColor DarkGray
+    exit 1
+}
 
 $toml = [System.IO.File]::ReadAllText($ConfigPath)
 

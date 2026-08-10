@@ -40,6 +40,10 @@ class ReceiveDraft(Base):
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     po_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("purchase_orders.id"), nullable=False)
     warehouse_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("warehouses.id"), nullable=True)
+    # #504: the packing slip this count was made against. Required at creation, but nullable in the
+    # database so drafts raised before the requirement existed still load - those render as
+    # "created before the requirement" rather than pretending a slip is missing.
+    packing_slip_document_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("po_documents.id"), nullable=True)
     status: Mapped[ReceiveDraftStatus] = mapped_column(
         Enum(ReceiveDraftStatus, name="receive_draft_status", create_constraint=True),
         nullable=False,

@@ -10,11 +10,9 @@ import {
   RECONCILE_SCHEDULE,
 } from '../../../graphql/import';
 import {
-  GET_OPENING_ITEMS,
   GET_PROJECT_INVENTORY_AVAILABILITY,
-  GET_PULL_REQUESTS,
 } from '../../../graphql/warehouse';
-import { GET_SHIPPING_COVERAGE, GET_SHIPPING_OUT_REQUESTS } from '../../../graphql/shipping';
+import { GET_REQUEST_COVERAGE } from '../../../graphql/shipping';
 import {
   useHardwareScheduleParser,
   type UseHardwareScheduleParserReturn,
@@ -218,45 +216,7 @@ const reimportBaseMocks: MockedResponse[] = [
   },
 ];
 
-// The shipping purpose reads the project's assembled units (#335). Empty by default so the
-// step-shape tests don't need to care; the shipping walk below swaps in real ones. MockedProvider
-// takes the first matching mock, so this must not be in the list when a populated one is wanted.
-const emptyOpeningItemsMock: MockedResponse = {
-  request: {
-    query: GET_OPENING_ITEMS,
-    variables: { projectId: 'proj-1' },
-  },
-  maxUsageCount: Number.POSITIVE_INFINITY,
-  result: { data: { openingItems: [] } },
-};
-
-// The shipping purpose also asks which leaves are already claimed by an open pull or a pending
-// request. Nothing claimed by default.
-function claimMocks(
-  pullRequests: object[] = [],
-  shippingOutRequests: object[] = [],
-): MockedResponse[] {
-  return [
-    {
-      request: {
-        query: GET_PULL_REQUESTS,
-        variables: { projectId: 'proj-1', source: 'SHIPPING_OUT' },
-      },
-      maxUsageCount: Number.POSITIVE_INFINITY,
-      result: { data: { pullRequests } },
-    },
-    {
-      request: {
-        query: GET_SHIPPING_OUT_REQUESTS,
-        variables: { projectId: 'proj-1', status: 'PENDING', reopenableOnly: false },
-      },
-      maxUsageCount: Number.POSITIVE_INFINITY,
-      result: { data: { shippingOutRequests } },
-    },
-  ];
-}
-
-const reimportMocks: MockedResponse[] = [...reimportBaseMocks, emptyOpeningItemsMock, ...claimMocks()];
+const reimportMocks: MockedResponse[] = [...reimportBaseMocks];
 
 // --- Shipping-path fixtures (#335) ---
 
@@ -296,119 +256,43 @@ const shippingReconcileMock: MockedResponse = {
   },
 };
 
-function makeOpeningItem(id: string, leaf: number | null, state = 'IN_INVENTORY') {
-  return {
-    __typename: 'OpeningItem',
-    id,
-    projectId: 'proj-1',
-    openingId: 'opening-1',
-    openingNumber: 'O-1',
-    building: null,
-    floor: null,
-    location: null,
-    leaf,
-    leafCount: 2,
-    quantity: 1,
-    assemblyCompletedAt: '2026-07-01T00:00:00',
-    state,
-    aisle: null,
-    row: null,
-    bay: null,
-    createdAt: '2026-07-01T00:00:00',
-    updatedAt: '2026-07-01T00:00:00',
-    installedHardware: [
-      {
-        __typename: 'OpeningItemHardware',
-        id: `${id}-hw`,
-        openingItemId: id,
-        productCode: 'HNG-100',
-        hardwareCategory: 'Hinges',
-        quantity: 3,
-      },
-    ],
-  };
-}
-
-const shippingOpeningItemsMock: MockedResponse = {
-  request: {
-    query: GET_OPENING_ITEMS,
-    variables: { projectId: 'proj-1' },
-  },
-  maxUsageCount: Number.POSITIVE_INFINITY,
-  result: {
-    data: {
-      openingItems: [
-        makeOpeningItem('oi-leaf-1', 1),
-        makeOpeningItem('oi-leaf-2', 2),
-        // Already pulled: it waits on the Ship tab, so the wizard must not offer it again.
-        makeOpeningItem('oi-leaf-shipready', 1, 'SHIP_READY'),
-      ],
-    },
-  },
-};
-
+/** One row of the composer's answer. */
 function coverageLine(overrides: Record<string, unknown> = {}) {
   return {
-    __typename: 'ShippingCoverageLine',
+    __typename: 'RequestCoverageLine',
+    openingNumber: 'O-1',
     hardwareCategory: 'Hinges',
     productCode: 'HNG-100',
     classification: 'SHOP_HARDWARE',
-    owedQuantity: 3,
-    installedQuantity: 3,
-    spokenForQuantity: 0,
-    suggestedQuantity: 0,
+    owedQuantity: 6,
+    sentQuantity: 0,
+    claimedQuantity: 0,
+    suggestedQuantity: 6,
     onOrderQuantity: 0,
     ...overrides,
   };
 }
 
-// What the two selected openings still owe (#451), matching the fixtures above: O-1's hinges went
-// onto its two leaves and are owed nothing further, O-2's lock is site hardware still to send.
-const shippingCoverageMock: MockedResponse = {
+// What the two selected openings still have coming: O-1's hinges have all gone to the bench and
+// are owed nothing further, O-2's lock is site hardware still to send.
+const requestCoverageMock: MockedResponse = {
   request: {
-    query: GET_SHIPPING_COVERAGE,
+    query: GET_REQUEST_COVERAGE,
     variables: { projectId: 'proj-1', openingNumbers: ['O-1', 'O-2'] },
   },
   maxUsageCount: Number.POSITIVE_INFINITY,
   result: {
     data: {
-      shippingCoverage: [
-        {
-          __typename: 'ShippingCoverageLeaf',
-          openingNumber: 'O-1',
-          leaf: 1,
-          status: 'IN_INVENTORY',
-          openingItemId: 'oi-leaf-1',
-          claimedByRequestNumber: null,
-          lines: [coverageLine()],
-        },
-        {
-          __typename: 'ShippingCoverageLeaf',
-          openingNumber: 'O-1',
-          leaf: 2,
-          status: 'IN_INVENTORY',
-          openingItemId: 'oi-leaf-2',
-          claimedByRequestNumber: null,
-          lines: [coverageLine()],
-        },
-        {
-          __typename: 'ShippingCoverageLeaf',
+      requestCoverage: [
+        coverageLine({ openingNumber: 'O-1', suggestedQuantity: 0, sentQuantity: 6 }),
+        coverageLine({
           openingNumber: 'O-2',
-          leaf: null,
-          status: 'NOT_ASSEMBLED',
-          openingItemId: null,
-          claimedByRequestNumber: null,
-          lines: [
-            coverageLine({
-              hardwareCategory: 'Locks',
-              productCode: 'LCK-200',
-              classification: 'SITE_HARDWARE',
-              owedQuantity: 1,
-              installedQuantity: 0,
-              suggestedQuantity: 1,
-            }),
-          ],
-        },
+          hardwareCategory: 'Locks',
+          productCode: 'LCK-200',
+          classification: 'SITE_HARDWARE',
+          owedQuantity: 1,
+          suggestedQuantity: 1,
+        }),
       ],
     },
   },
@@ -473,7 +357,10 @@ async function flushApollo() {
   });
 }
 
-const BASE_STEPS = ['Upload File', 'Purpose', 'Select Openings', 'Reconciliation'];
+// Reconciliation only exists when there is something to reconcile against - a project with persisted
+// openings. On a first import it has nothing to compare and is left out of the stepper entirely.
+const FIRST_IMPORT_STEPS = ['Upload File', 'Purpose', 'Select Openings'];
+const REIMPORT_STEPS = [...FIRST_IMPORT_STEPS, 'Reconciliation'];
 
 beforeEach(() => {
   mockedUseParser.mockReset();
@@ -491,7 +378,7 @@ describe('ImportWizard step transitions', () => {
 
     expect(screen.getByRole('heading', { name: 'Hardware Schedule' })).toBeInTheDocument();
     expect(screen.getByText('Drag and drop an XML file here')).toBeInTheDocument();
-    expect(stepLabels()).toEqual([...BASE_STEPS, 'Finalize']);
+    expect(stepLabels()).toEqual([...FIRST_IMPORT_STEPS, 'Finalize']);
     expect(nextButton()).toBeDisabled();
   });
 
@@ -517,10 +404,10 @@ describe('ImportWizard step transitions', () => {
     renderWizard();
     clickNext();
 
-    expect(stepLabels()).toEqual([...BASE_STEPS, 'Finalize']);
+    expect(stepLabels()).toEqual([...FIRST_IMPORT_STEPS, 'Finalize']);
     fireEvent.click(screen.getByRole('radio', { name: /Create Purchase Orders/i }));
 
-    expect(stepLabels()).toEqual([...BASE_STEPS, 'Classification', 'Purchase Orders', 'Finalize']);
+    expect(stepLabels()).toEqual([...FIRST_IMPORT_STEPS, 'Classification', 'Purchase Orders', 'Finalize']);
   });
 
   // #492: the assembly flow used to carry a Classification step. It asked the user to re-answer a
@@ -533,17 +420,44 @@ describe('ImportWizard step transitions', () => {
 
     fireEvent.click(screen.getByRole('radio', { name: /Pull Request for Shop Assembly/i }));
 
-    expect(stepLabels()).toEqual([...BASE_STEPS, 'Shop Assembly', 'Finalize']);
+    expect(stepLabels()).toEqual([...REIMPORT_STEPS, 'Shop Assembly', 'Finalize']);
   });
 
-  it('shipping purpose (re-import) inserts only the Shipping PRs step', async () => {
+  it('shipping purpose (re-import) inserts only the Shipping Out step', async () => {
     renderWizard({ project: reimportProject, mocks: reimportMocks });
     await flushApollo();
     clickNext();
 
     fireEvent.click(screen.getByRole('radio', { name: /Pull Request for Shipping Out/i }));
 
-    expect(stepLabels()).toEqual([...BASE_STEPS, 'Shipping PRs', 'Finalize']);
+    expect(stepLabels()).toEqual([...REIMPORT_STEPS, 'Shipping Out', 'Finalize']);
+  });
+
+  // The composer is the whole of both request steps now, so what is worth walking is that the offer
+  // reaches the screen: an opening whose hardware has all gone out is not offered again, and the one
+  // that is still owed something is.
+  it('offers only what the selected openings still have coming', async () => {
+    renderWizard({
+      project: reimportProject,
+      mocks: [...reimportBaseMocks, shippingReconcileMock, requestCoverageMock],
+    });
+    await flushApollo();
+    clickNext();
+
+    fireEvent.click(screen.getByRole('radio', { name: /Pull Request for Shipping Out/i }));
+    clickNext();
+    fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
+    clickNext();
+    await flushApollo();
+    clickNext();
+    await flushApollo();
+
+    expect(screen.getByRole('heading', { name: 'Shipping Out' })).toBeInTheDocument();
+    // O-2's lock is still owed; O-1's hinges are shop hardware that has already gone to the bench,
+    // so neither the zero-suggestion row nor the shop classification reaches this step.
+    // Twice: once in the reserve summary, once on the line itself.
+    expect(screen.getAllByText('LCK-200')).toHaveLength(2);
+    expect(screen.queryByText('HNG-100')).not.toBeInTheDocument();
   });
 
   it('blocks Next on Select Openings until at least one opening is selected', () => {
@@ -577,115 +491,7 @@ describe('ImportWizard step transitions', () => {
   });
 
   // #335: an assembled leaf ships as itself, not as a request for the loose hardware bolted onto it.
-  it('offers assembled door leaves per leaf and drops their hardware from the loose list', async () => {
-    renderWizard({
-      project: reimportProject,
-      mocks: [
-        ...reimportBaseMocks,
-        shippingReconcileMock,
-        shippingOpeningItemsMock,
-        shippingCoverageMock,
-        ...claimMocks(),
-      ],
-    });
-    await flushApollo();
-    clickNext();
-
-    fireEvent.click(screen.getByRole('radio', { name: /Pull Request for Shipping Out/i }));
-    clickNext();
-    fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
-    clickNext();
-    await flushApollo();
-
-    expect(screen.getByRole('heading', { name: 'Reconciliation' })).toBeInTheDocument();
-    clickNext();
-    await flushApollo();
-
-    expect(screen.getByRole('heading', { name: 'Shipping Pull Requests' })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /Add Shipping PR/i }));
-    await flushApollo();
-
-    // One row per assembled leaf, and the SHIP_READY unit is not offered.
-    expect(screen.getByText('Opening O-1 - Leaf 1')).toBeInTheDocument();
-    expect(screen.getByText('Opening O-1 - Leaf 2')).toBeInTheDocument();
-    expect(screen.getAllByText(/Opening O-1 - Leaf/)).toHaveLength(2);
-
-    // The hinges live on those leaves now, so the coverage owes nothing loose for them; the lock is
-    // site hardware that never went near the bench, so it is still owed and still offered.
-    expect(screen.getByText('O-2 | LCK-200 | Locks')).toBeInTheDocument();
-    expect(screen.queryByText(/^O-1 \| HNG-100/)).not.toBeInTheDocument();
-
-    // Ticking a leaf records a selection on the draft.
-    const checkboxes = screen.getAllByRole('checkbox');
-    fireEvent.click(checkboxes[0]);
-    expect(screen.getByText('1 door leaf/leaves')).toBeInTheDocument();
-    expect(nextButton()).toBeDisabled(); // still needs a PR number
-
-    fireEvent.change(screen.getByRole('textbox', { name: /PR Number/i }), {
-      target: { value: 'SHIP-0019' },
-    });
-    expect(nextButton()).toBeEnabled();
-  });
-
-  // A leaf stays IN_INVENTORY until its pull completes, so state alone would re-offer it and one
-  // physical leaf would be pulled twice.
-  it('hides an assembled leaf that is already on an open shipping pull', async () => {
-    renderWizard({
-      project: reimportProject,
-      mocks: [
-        ...reimportBaseMocks,
-        shippingReconcileMock,
-        shippingOpeningItemsMock,
-        ...claimMocks([
-          {
-            __typename: 'PullRequest',
-            id: 'pr-1',
-            requestNumber: 'SHIP-EXISTING',
-            projectId: 'proj-1',
-            source: 'SHIPPING_OUT',
-            status: 'IN_PROGRESS',
-            requestedBy: 'someone',
-            assignedTo: 'someone',
-            createdAt: '2026-07-02T00:00:00',
-            updatedAt: '2026-07-02T00:00:00',
-            approvedAt: null,
-            completedAt: null,
-            cancelledAt: null,
-            items: [
-              {
-                __typename: 'PullRequestItem',
-                id: 'pri-1',
-                pullRequestId: 'pr-1',
-                itemType: 'OPENING_ITEM',
-                openingNumber: 'O-1',
-                openingItemId: 'oi-leaf-1',
-                leaf: 1,
-                hardwareCategory: null,
-                productCode: null,
-                requestedQuantity: 1,
-              },
-            ],
-          },
-        ]),
-      ],
-    });
-    await flushApollo();
-    clickNext();
-
-    fireEvent.click(screen.getByRole('radio', { name: /Pull Request for Shipping Out/i }));
-    clickNext();
-    fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
-    clickNext();
-    await flushApollo();
-    clickNext();
-
-    fireEvent.click(screen.getByRole('button', { name: /Add Shipping PR/i }));
-
-    expect(screen.queryByText('Opening O-1 - Leaf 1')).not.toBeInTheDocument();
-    expect(screen.getByText('Opening O-1 - Leaf 2')).toBeInTheDocument();
-  });
-
-  it('walks the po path through Reconciliation to Classification and gates on unclassified items', () => {
+  it('skips Reconciliation on a first import and lands on Classification', () => {
     renderWizard();
     clickNext();
     fireEvent.click(screen.getByRole('radio', { name: /Create Purchase Orders/i }));
@@ -693,15 +499,23 @@ describe('ImportWizard step transitions', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
     clickNext();
 
-    // first import: reconciliation is informational and never blocks
-    expect(screen.getByRole('heading', { name: 'Reconciliation' })).toBeInTheDocument();
-    expect(screen.getByText(/New project/)).toBeInTheDocument();
-    expect(nextButton()).toBeEnabled();
-    clickNext();
-
+    expect(screen.queryByRole('heading', { name: 'Reconciliation' })).not.toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Classification' })).toBeInTheDocument();
     expect(screen.getByText('0 of 2 items classified')).toBeInTheDocument();
     expect(nextButton()).toBeDisabled();
+  });
+
+  it('walks the po path through Reconciliation to Classification on a re-import', async () => {
+    renderWizard({ project: reimportProject, mocks: reimportMocks });
+    await flushApollo();
+    clickNext();
+    fireEvent.click(screen.getByRole('radio', { name: /Create Purchase Orders/i }));
+    clickNext();
+    fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
+    clickNext();
+    await flushApollo();
+
+    expect(screen.getByRole('heading', { name: 'Reconciliation' })).toBeInTheDocument();
   });
 });
 
@@ -790,10 +604,13 @@ describe('ImportWizard reconciliation failure', () => {
     // Two products, each seen once despite O-1's two status rows, and both pre-selected off their
     // remaining gap.
     expect(screen.getByText('2 of 2 product(s) selected')).toBeInTheDocument();
-    expect(nextButton()).toBeEnabled();
 
-    clickNext();
-    expect(screen.getByRole('heading', { name: 'Classification' })).toBeInTheDocument();
+    // #483: HNG-100 needs 3 across the project and 1 is already ORDERED. Selecting it carries the
+    // opening's full demand of 3 into PO creation, which would put the project at 4 against a need
+    // of 3 - so Next is refused and the alert names it. LCK-200 has nothing committed and is fine.
+    expect(nextButton()).toBeDisabled();
+    expect(screen.getByText(/take the project past what its hardware schedule needs/i)).toBeInTheDocument();
+    expect(screen.getByText(/HNG-100: project needs 3/)).toBeInTheDocument();
   });
 });
 

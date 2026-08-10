@@ -163,7 +163,7 @@ def test_the_pending_read_finds_both_the_stamped_target_and_the_buyer_fallback(d
     # trimmed and case-insensitive - rather than on an exact byte match.
     rows = warehouse_repository.get_pending_decisions_for_user(db_session, CREATOR, "PAULA")
 
-    assert {po.id for _d, po, _rr in rows} == {stamped_po.id, legacy_po.id}
+    assert {po.id for _d, po, _rr, _draft in rows} == {stamped_po.id, legacy_po.id}
 
 
 def test_without_a_gp_buyer_identity_only_the_stamped_decisions_are_owed(db_session):
@@ -175,7 +175,7 @@ def test_without_a_gp_buyer_identity_only_the_stamped_decisions_are_owed(db_sess
 
     rows = warehouse_repository.get_pending_decisions_for_user(db_session, CREATOR, None)
 
-    assert {po.id for _d, po, _rr in rows} == {stamped_po.id}
+    assert {po.id for _d, po, _rr, _draft in rows} == {stamped_po.id}
 
 
 @pytest.mark.parametrize("choice", [ReceiveDecisionChoice.KEEP_IN_INVENTORY, ReceiveDecisionChoice.SHIP_OUT])
@@ -283,3 +283,237 @@ def test_an_answered_decision_leaves_the_pending_queue(db_session):
     db_session.flush()
 
     assert warehouse_repository.get_pending_decisions_for_user(db_session, CREATOR, None) == []
+
+
+# --- the question moves to draft time (#499) ---------------------------------------------------
+#
+# It used to be raised only once the warehouse manager had approved, which meant the hardware was
+# already booked and put away before its owner was asked whether it should have gone straight back
+# out. Raising it at the count gives them the whole approval window, and lets a SHIP_OUT answer take
+# the delivery out of the manager's queue entirely.
+
+
+def _packing_slip(session, po):
+    """#504: a draft is a count made against a piece of paper, so every one needs a slip on its PO."""
+    from app.models.enums import PODocumentType
+    from app.models.purchase_order import PODocument
+
+    doc = PODocument(
+        id=uuid.uuid4(),
+        po_id=po.id,
+        file_name="slip.pdf",
+        content_type="application/pdf",
+        file_size=12,
+        document_type=PODocumentType.PACKING_SLIP,
+        s3_key=f"po-documents/{po.id}/slip-{uuid.uuid4().hex[:8]}.pdf",
+    )
+    session.add(doc)
+    session.flush()
+    return doc
+
+
+def _draft(session, po, li, quantity=3):
+    return warehouse_repository.create_receive_draft(
+        session,
+        po.id,
+        [{"po_line_item_id": li.id, "quantity_received": quantity, "locations": []}],
+        "u_counter",
+        "Wendy Warehouse",
+        packing_slip_document_id=_packing_slip(session, po).id,
+    )
+
+
+def _decision_for_draft(session, draft):
+    return session.scalars(select(ReceiveDecision).where(ReceiveDecision.receive_draft_id == draft.id)).first()
+
+
+def test_submitting_a_count_raises_the_question_before_anyone_approves(db_session):
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id)
+
+    draft = _draft(db_session, po, li)
+    db_session.flush()
+
+    decision = _decision_for_draft(db_session, draft)
+    assert decision is not None
+    assert decision.status == ReceiveDecisionStatus.PENDING
+    assert decision.target_user_id == CREATOR
+    # Nothing has reached GP, so there is no receive record to point at yet.
+    assert decision.receive_record_id is None
+
+
+def test_a_stock_po_draft_asks_nothing(db_session):
+    """ "Which project's inventory" is not a question you can ask without a project."""
+    po, li = _make_po(db_session, None)
+
+    draft = _draft(db_session, po, li)
+    db_session.flush()
+
+    assert _decision_for_draft(db_session, draft) is None
+
+
+def test_the_draft_question_is_raised_once_however_many_lines_it_covered(db_session):
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id)
+
+    draft = _draft(db_session, po, li)
+    db_session.flush()
+    # Re-running the create is what an idempotent retry does; it must not raise a second question.
+    from app.repositories.warehouse.receive_decisions import create_decision_for_draft
+
+    again = create_decision_for_draft(db_session, po, draft.id, total_quantity=3)
+    db_session.flush()
+
+    assert again.id == _decision_for_draft(db_session, draft).id
+    rows = db_session.scalars(select(ReceiveDecision).where(ReceiveDecision.receive_draft_id == draft.id)).all()
+    assert len(list(rows)) == 1
+
+
+def test_approval_stamps_the_receive_onto_the_question_the_count_already_raised(db_session):
+    """One delivery, one question. The booking fills in the record rather than asking again."""
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id)
+    draft = _draft(db_session, po, li)
+    db_session.flush()
+    raised = _decision_for_draft(db_session, draft)
+
+    record = warehouse_repository.create_receive(
+        db_session,
+        po.id,
+        "Wendy Warehouse",
+        [{"po_line_item_id": li.id, "quantity_received": 3, "locations": []}],
+        receipt_number="RCT000999",
+        receive_draft_id=draft.id,
+    )
+    db_session.flush()
+
+    all_rows = list(db_session.scalars(select(ReceiveDecision).where(ReceiveDecision.po_id == po.id)).all())
+    assert len(all_rows) == 1
+    assert all_rows[0].id == raised.id
+    assert all_rows[0].receive_record_id == record.id
+    assert all_rows[0].receive_draft_id == draft.id
+
+
+def test_an_answer_given_before_approval_survives_it(db_session):
+    """Approval is the manager confirming the count, not a re-opening of somebody else's question."""
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id)
+    draft = _draft(db_session, po, li)
+    db_session.flush()
+    decision = _decision_for_draft(db_session, draft)
+
+    warehouse_repository.decide_receive_decision(
+        db_session,
+        decision.id,
+        ReceiveDecisionChoice.SHIP_OUT,
+        CREATOR,
+        "Paula Purchasing",
+        lambda _uid: None,
+        actor_is_admin=False,
+    )
+    db_session.flush()
+
+    warehouse_repository.create_receive(
+        db_session,
+        po.id,
+        "Wendy Warehouse",
+        [{"po_line_item_id": li.id, "quantity_received": 3, "locations": []}],
+        receipt_number="RCT000999",
+        receive_draft_id=draft.id,
+    )
+    db_session.flush()
+    db_session.refresh(decision)
+
+    assert decision.status == ReceiveDecisionStatus.DECIDED
+    assert decision.decision == ReceiveDecisionChoice.SHIP_OUT
+    assert decision.decided_by_name == "Paula Purchasing"
+
+
+def test_a_receive_booked_with_no_draft_still_raises_its_own_question(db_session):
+    """The outbox worker draining a queued receipt reaches the booking with no draft to stamp. A
+    booked receive with no question attached would strand the decision entirely."""
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id)
+
+    record = _receive(db_session, po, li)
+    db_session.flush()
+
+    decision = _decision_for(db_session, record)
+    assert decision is not None
+    assert decision.receive_draft_id is None
+
+
+def test_the_pending_read_returns_draft_stage_questions_too(db_session):
+    """The card is the same at both stages; only the GP receipt number is missing before approval."""
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id)
+    draft = _draft(db_session, po, li, quantity=4)
+    db_session.flush()
+
+    rows = warehouse_repository.get_pending_decisions_for_user(db_session, CREATOR, None)
+    matching = [r for r in rows if r[0].receive_draft_id == draft.id]
+    assert len(matching) == 1
+    _decision, _po, receive_record, returned_draft = matching[0]
+    assert receive_record is None
+    assert returned_draft.id == draft.id
+    assert sum(li.quantity_received for li in returned_draft.line_items) == 4
+
+
+def test_only_a_manager_or_the_ship_out_decider_may_book_a_draft(db_session):
+    """The approve gate moved out of ROOT_FIELD_POLICY because it is no longer a property of the
+    field alone (#499): a Warehouse Manager may book any draft, and the PO creator who answered
+    SHIP_OUT may book that one. The check is against the decision row, never against the client."""
+    from app.schemas.warehouse import _may_book_draft
+
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id)
+    draft = _draft(db_session, po, li)
+    db_session.flush()
+    decision = _decision_for_draft(db_session, draft)
+
+    # Undecided: the creator has said nothing, so the manager's queue is still the only way in.
+    assert not _may_book_draft(decision, CREATOR, is_manager=False)
+
+    warehouse_repository.decide_receive_decision(
+        db_session,
+        decision.id,
+        ReceiveDecisionChoice.SHIP_OUT,
+        CREATOR,
+        "Paula Purchasing",
+        lambda _uid: None,
+        actor_is_admin=False,
+    )
+    db_session.flush()
+
+    # The decider may now book it, and nobody else may on their behalf.
+    assert _may_book_draft(decision, CREATOR, is_manager=False)
+    assert not _may_book_draft(decision, "u_someone_else", is_manager=False)
+
+    # A manager always may, whatever the answer is - and even with no decision at all.
+    assert _may_book_draft(decision, "u_someone_else", is_manager=True)
+    assert _may_book_draft(None, "u_someone_else", is_manager=True)
+
+
+def test_keeping_it_does_not_let_the_decider_book_it(db_session):
+    """KEEP says this belongs in the warehouse's care, so the manager's approval is exactly the step
+    that still applies."""
+    from app.schemas.warehouse import _may_book_draft
+
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id)
+    draft = _draft(db_session, po, li)
+    db_session.flush()
+    decision = _decision_for_draft(db_session, draft)
+
+    warehouse_repository.decide_receive_decision(
+        db_session,
+        decision.id,
+        ReceiveDecisionChoice.KEEP_IN_INVENTORY,
+        CREATOR,
+        "Paula Purchasing",
+        lambda _uid: None,
+        actor_is_admin=False,
+    )
+    db_session.flush()
+
+    assert not _may_book_draft(decision, CREATOR, is_manager=False)

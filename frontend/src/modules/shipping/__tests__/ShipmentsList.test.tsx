@@ -67,24 +67,20 @@ function slip(overrides: Record<string, unknown> = {}) {
       {
         __typename: 'PackingSlipItem',
         id: 'psi-1',
-        itemType: 'OPENING_ITEM',
         openingNumber: '0019-EX',
-        leaf: 1,
         // Snapshotted at confirm (#452), so a reprinted Delivery Request names the same placement
         // the driver's copy did.
         building: 'A',
         floor: '1',
         location: 'Rm 101',
-        productCode: null,
-        hardwareCategory: null,
+        productCode: 'DOOR-1',
+        hardwareCategory: 'Door',
         quantity: 1,
       },
       {
         __typename: 'PackingSlipItem',
         id: 'psi-2',
-        itemType: 'LOOSE',
         openingNumber: '0019-EX',
-        leaf: null,
         building: null,
         floor: null,
         location: null,
@@ -202,9 +198,9 @@ describe('ShipmentsList', () => {
     await expandRow('PS-0019');
 
     expect(await screen.findByText('SIL-40002-228')).toBeInTheDocument();
-    // One line per item: the assembled leaf and the loose hardware, both owed to the same opening.
+    // One line per item, both owed to the same opening.
     expect(screen.getAllByText('0019-EX')).toHaveLength(2);
-    expect(screen.getByText('Leaf 1')).toBeInTheDocument();
+    expect(screen.getByText('DOOR-1')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Delivery Request' })).toBeInTheDocument();
   });
 

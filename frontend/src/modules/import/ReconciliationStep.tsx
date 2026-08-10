@@ -3,7 +3,8 @@ import { Alert, Box, Button, Chip, CircularProgress, Tooltip, Typography } from 
 import { AlertTriangle, Info } from 'lucide-react';
 import { DataGrid, type GridColDef, type GridRowSelectionModel } from '@mui/x-data-grid';
 import type { ImportPurpose, ReconciliationRow } from './types';
-import { aggregationKey, itemGroupKey } from './types';
+import { buildProductReconRows, STATUS_PRIORITY } from './reconciliation';
+import type { ProductReconRow } from './reconciliation';
 import type { ParsedHardwareItem } from '../../types/hardwareSchedule';
 import { monoSx, tabularSx } from '../../theme';
 
@@ -29,33 +30,7 @@ interface ReconciliationStepProps {
 
 // ---- Aggregated row type (per-product across project) ----
 
-interface ProductReconRow {
-  id: string; // itemGroupKey: `${hardwareCategory}|${productCode}`
-  hardwareCategory: string;
-  productCode: string;
-  quantityNeeded: number; // sum of HS qty across selected openings
-  quantityRequiredByProject: number; // sum of HS qty across ALL openings in schedule
-  qtyAvailable: number; // for assembly/shipping eligibility
-  statusBreakdown: Map<string, number>; // bucket totals across openings
-  underlyingOpeningKeys: string[]; // (opening, product, category) keys
-  existingCommitted: number; // sum of all non-NOT_COVERED, non-BY_OTHERS bucket qty
-  selectedNewPOQty: number; // HS qty for selected (opening, product, category) keys
-  overCommitAmount: number; // (existingCommitted + selectedNewPOQty) - quantityNeeded, clamped to 0
-}
-
 // ---- Helpers ----
-
-const STATUS_PRIORITY: Record<string, number> = {
-  RECEIVED: 0,
-  ASSEMBLED: 1,
-  SHIPPED_OUT: 2,
-  SHIPPING_OUT: 3,
-  ASSEMBLING: 4,
-  ORDERED: 5,
-  PO_DRAFTED: 6,
-  NOT_COVERED: 7,
-  BY_OTHERS: 8,
-};
 
 const STATUS_COLOR_MAP: Record<string, 'success' | 'warning' | 'error' | 'info' | 'default'> = {
   PO_DRAFTED: 'info',
@@ -82,16 +57,6 @@ const STATUS_LABEL_MAP: Record<string, string> = {
 };
 
 // Buckets that count as "already committed" toward the project need
-const COMMITTED_STATUSES = [
-  'PO_DRAFTED',
-  'ORDERED',
-  'RECEIVED',
-  'ASSEMBLING',
-  'ASSEMBLED',
-  'SHIPPING_OUT',
-  'SHIPPED_OUT',
-] as const;
-
 const HEADER_TOOLTIPS: Record<ImportPurpose, string> = {
   po: 'Reconciliation compares the hardware schedule against existing purchase orders. Items already drafted, ordered, or received are shown so you can decide which remaining items to create new POs for.',
   assembly:
@@ -99,16 +64,6 @@ const HEADER_TOOLTIPS: Record<ImportPurpose, string> = {
   shipping:
     'Reconciliation shows the lifecycle state of each item. Only items that are received or assembled can be included in shipping pull requests. Items still on order or being assembled are not eligible.',
 };
-
-function computeAvailableQty(purpose: ImportPurpose, breakdown: Map<string, number>): number {
-  if (purpose === 'assembly') {
-    return breakdown.get('RECEIVED') ?? 0;
-  }
-  if (purpose === 'shipping') {
-    return (breakdown.get('RECEIVED') ?? 0) + (breakdown.get('ASSEMBLED') ?? 0);
-  }
-  return 0;
-}
 
 // ---- Component ----
 
@@ -129,92 +84,24 @@ export default function ReconciliationStep({
 }: ReconciliationStepProps) {
   const hasAutoSelected = useRef(false);
 
-  // qtyNeededByProduct: qty needed per (category, product) across selected openings
-  const qtyNeededByProduct = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const hi of selectedHardwareItems) {
-      const key = itemGroupKey(hi);
-      map.set(key, (map.get(key) ?? 0) + hi.item_quantity);
-    }
-    return map;
-  }, [selectedHardwareItems]);
+  const aggregatedProductRows = useMemo<ProductReconRow[]>(
+    () =>
+      buildProductReconRows({
+        purpose,
+        reconciliationRows,
+        selectedHardwareItems,
+        allHardwareItems,
+        selectedReconItems,
+      }),
+    [purpose, reconciliationRows, selectedHardwareItems, allHardwareItems, selectedReconItems],
+  );
 
-  // qtyRequiredByProjectByProduct: qty needed per (category, product) across ALL openings in schedule
-  const qtyRequiredByProjectByProduct = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const hi of allHardwareItems) {
-      const key = itemGroupKey(hi);
-      map.set(key, (map.get(key) ?? 0) + hi.item_quantity);
-    }
-    return map;
-  }, [allHardwareItems]);
-
-  // hsQtyByOpeningKey: HS demand per (opening, product, category)
-  const hsQtyByOpeningKey = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const hi of selectedHardwareItems) {
-      const key = aggregationKey(hi);
-      map.set(key, (map.get(key) ?? 0) + hi.item_quantity);
-    }
-    return map;
-  }, [selectedHardwareItems]);
-
-  // Aggregate reconciliation rows per (category, product) across the project
-  const aggregatedProductRows = useMemo<ProductReconRow[]>(() => {
-    const map = new Map<string, ProductReconRow>();
-    // Deduped alongside the rows rather than with `underlyingOpeningKeys.includes`, which is a scan
-    // of every key already collected for that product on every row. A schedule-wide selection puts
-    // thousands of openings behind one product, and the scan turns quadratic there - enough to hang
-    // the tab for the whole aggregation.
-    const openingKeysByProduct = new Map<string, Set<string>>();
-    for (const row of reconciliationRows) {
-      const productKey = `${row.hardwareCategory}|${row.productCode}`;
-      const openingKey = `${row.openingNumber}|${row.productCode}|${row.hardwareCategory}`;
-      let entry = map.get(productKey);
-      if (!entry) {
-        entry = {
-          id: productKey,
-          hardwareCategory: row.hardwareCategory,
-          productCode: row.productCode,
-          quantityNeeded: qtyNeededByProduct.get(productKey) ?? 0,
-          quantityRequiredByProject: qtyRequiredByProjectByProduct.get(productKey) ?? 0,
-          qtyAvailable: 0,
-          statusBreakdown: new Map(),
-          underlyingOpeningKeys: [],
-          existingCommitted: 0,
-          selectedNewPOQty: 0,
-          overCommitAmount: 0,
-        };
-        map.set(productKey, entry);
-        openingKeysByProduct.set(productKey, new Set());
-      }
-      openingKeysByProduct.get(productKey)!.add(openingKey);
-      entry.statusBreakdown.set(
-        row.status,
-        (entry.statusBreakdown.get(row.status) ?? 0) + row.quantity,
-      );
-    }
-    const rows = Array.from(map.values());
-    for (const row of rows) {
-      row.underlyingOpeningKeys = Array.from(openingKeysByProduct.get(row.id) ?? []);
-      row.qtyAvailable = computeAvailableQty(purpose, row.statusBreakdown);
-      row.existingCommitted = COMMITTED_STATUSES.reduce(
-        (sum, s) => sum + (row.statusBreakdown.get(s) ?? 0),
-        0,
-      );
-      row.selectedNewPOQty = row.underlyingOpeningKeys
-        .filter((k) => selectedReconItems.has(k))
-        .reduce((sum, k) => sum + (hsQtyByOpeningKey.get(k) ?? 0), 0);
-      const futureCommitted = row.existingCommitted + row.selectedNewPOQty;
-      row.overCommitAmount = Math.max(0, futureCommitted - row.quantityNeeded);
-    }
-    rows.sort((a, b) => {
-      const bestA = Math.min(...Array.from(a.statusBreakdown.keys()).map((s) => STATUS_PRIORITY[s] ?? 99));
-      const bestB = Math.min(...Array.from(b.statusBreakdown.keys()).map((s) => STATUS_PRIORITY[s] ?? 99));
-      return bestA - bestB;
-    });
-    return rows;
-  }, [reconciliationRows, qtyNeededByProduct, qtyRequiredByProjectByProduct, hsQtyByOpeningKey, selectedReconItems, purpose]);
+  // #483: the products this selection pushes past the project total. Named in the error alert and
+  // the reason Next is refused.
+  const blockingRows = useMemo(
+    () => aggregatedProductRows.filter((r) => r.blocksProceed),
+    [aggregatedProductRows],
+  );
 
   // Determine which products have eligible quantity for SAR/SOR
   const eligibleRowIds = useMemo<Set<string>>(() => {
@@ -317,6 +204,25 @@ export default function ReconciliationStep({
         type: 'number',
         cellClassName: 'figure-cell',
       });
+      // #483: the two numbers the buyer is actually reasoning about. Both are project totals, not
+      // per-opening: the hardware lands in fungible project inventory, so what the selected openings
+      // happen to be is irrelevant to whether the project has bought enough.
+      cols.push({
+        field: 'projectTotalOrdered',
+        headerName: 'Project Ordered',
+        description: 'Quantity the project has placed on a GP PO, including everything received since.',
+        flex: 0.8,
+        type: 'number',
+        cellClassName: 'figure-cell',
+      });
+      cols.push({
+        field: 'projectTotalReceived',
+        headerName: 'Project Received',
+        description: 'Quantity that reached the warehouse and beyond. Never more than Project Ordered.',
+        flex: 0.8,
+        type: 'number',
+        cellClassName: 'figure-cell',
+      });
     }
 
     if (showQtyAvailable) {
@@ -364,13 +270,17 @@ export default function ReconciliationStep({
             {row.overCommitAmount > 0 && (
               <Tooltip
                 arrow
-                title={`Total committed (${row.existingCommitted + row.selectedNewPOQty}) exceeds project need (${row.quantityNeeded}) by ${row.overCommitAmount}. Reconciliation is advisory — you may proceed.`}
+                title={
+                  row.blocksProceed
+                    ? `Ordering this would put the project at ${row.existingCommitted + row.selectedNewPOQty} against a schedule need of ${row.quantityRequiredByProject}. Deselect this product to continue.`
+                    : `The project has already committed ${row.existingCommitted} against a schedule need of ${row.quantityRequiredByProject}. Nothing on this screen changes that, so it does not block you.`
+                }
               >
                 <Chip
                   size="small"
                   icon={<AlertTriangle size={14} strokeWidth={1.75} />}
                   label={`Over-committed by ${row.overCommitAmount}`}
-                  color="warning"
+                  color={row.blocksProceed ? 'error' : 'warning'}
                   variant="outlined"
                 />
               </Tooltip>
@@ -447,11 +357,27 @@ export default function ReconciliationStep({
           )}
 
           {/* Purpose-specific alerts */}
+          {purpose === 'po' && blockingRows.length > 0 && (
+            <Alert severity="error" sx={{ mb: 2 }}>
+              Ordering these would take the project past what its hardware schedule needs. Deselect
+              them to continue:
+              <Box component="ul" sx={{ m: 0, mt: 1, pl: 3 }}>
+                {blockingRows.map((row) => (
+                  <li key={row.id}>
+                    {row.productCode}: project needs {row.quantityRequiredByProject}, ordered{' '}
+                    {row.projectTotalOrdered}, received {row.projectTotalReceived}, already committed{' '}
+                    {row.existingCommitted} (including drafts), selection adds {row.selectedNewPOQty}
+                  </li>
+                ))}
+              </Box>
+            </Alert>
+          )}
+
           {purpose === 'po' && (
             <Alert severity="warning" sx={{ mb: 2 }}>
               Select the products you want to carry forward to Purchase Order creation.
               Products with a remaining gap are pre-selected. Only checked products will be included.
-              Reconciliation is advisory — over-committed products are flagged but never block you from proceeding.
+              Ordering a product past the project's total quantity is refused.
             </Alert>
           )}
 

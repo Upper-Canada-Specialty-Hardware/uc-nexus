@@ -7,10 +7,9 @@
 
 import type { PullRequest } from './PullRequestQueue';
 
-export interface PickSheetLeaf {
+export interface PickSheetOpening {
   /** Null on an unattributed line (#451): the units are owed to the project, not to a door. */
   openingNumber: string | null;
-  leaf: number | null;
   quantity: number;
 }
 
@@ -27,6 +26,13 @@ export interface PickSheetLocation {
   receivedAt: string;
   draftQuantity: number;
   appliedQuantity: number;
+  /**
+   * What the vendor calls this part, and the PO it arrived on (#496). Per location, not per
+   * section: one product can sit in inventory from several POs with different Order As values, so a
+   * section-level value would be wrong for every row but one. Null on a stock-origin row.
+   */
+  orderAs: string | null;
+  poNumber: string | null;
 }
 
 export interface PickSheetSection {
@@ -40,27 +46,13 @@ export interface PickSheetSection {
   claimableQuantity: number;
   /** How far short of remainingQuantity that leaves this pull. Zero in the ordinary case. */
   claimableShortfall: number;
-  leaves: PickSheetLeaf[];
+  openings: PickSheetOpening[];
   locations: PickSheetLocation[];
-}
-
-export interface PickSheetFetchItem {
-  pullRequestItemId: string;
-  openingItemId: string | null;
-  openingNumber: string | null;
-  leaf: number | null;
-  aisle: string | null;
-  row: string | null;
-  bay: string | null;
-  state: string | null;
-  fetchedAt: string | null;
-  fetchedBy: string | null;
 }
 
 export interface PickSheet {
   pullRequest: PullRequest;
   sections: PickSheetSection[];
-  fetchItems: PickSheetFetchItem[];
 }
 
 /** One line as `confirmPick` / `savePickDraft` take it. */

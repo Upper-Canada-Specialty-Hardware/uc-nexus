@@ -155,6 +155,7 @@ def create_po(
     tariff_amount: float | None = None,
     preferred_delivery_date=None,
     created_by_user_id: str | None = None,
+    vendor_quote_number: str | None = None,
 ) -> PurchaseOrder:
     """Create a manual PO with line items. No hardware items are created.
 
@@ -201,6 +202,11 @@ def create_po(
         tariff_amount=_coerce_order_cost(tariff_amount, "tariff_amount"),
         # Issue #216/#256: the PM's requested date, captured at request creation.
         preferred_delivery_date=preferred_delivery_date,
+        # #481: optional at creation. Blank stays NULL rather than an empty string, so the
+        # VENDOR_CONFIRMED auto-transition's "quote exists" test keeps meaning what it says.
+        vendor_quote_number=(
+            vendor_quote_number.strip() if vendor_quote_number and vendor_quote_number.strip() else None
+        ),
     )
     session.add(po)
     session.flush()
@@ -643,10 +649,16 @@ def update_po(
 def cancel_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
     """
     - Validate exists + not soft-deleted (NotFoundError)
-    - Validate status in (Draft, GP_Registered, Vendor_Confirmed) (InvalidStateTransitionError)
+    - Validate status is DRAFT (InvalidStateTransitionError)
     - Set status=Cancelled, deleted_at=datetime.utcnow()
     - Release the PO's hardware-schedule rows back to AVAILABLE
     - Return updated PO
+
+    DRAFT only. Cancelling used to be legal at GP_REGISTERED and VENDOR_CONFIRMED too, and nothing
+    here ever told GP: the cancel is a local write with no relay call, so GP kept a live PO against
+    the job that Nexus had forgotten. That is a phantom commitment on the job cost, and the warehouse
+    can still receive against it on the GP side. A registered PO is GP's record now, so unwinding one
+    starts there and syncs back, rather than being something Nexus can decide on its own.
     """
     from app.models.hardware import HardwareItem
 
@@ -654,8 +666,11 @@ def cancel_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
     if po is None:
         raise NotFoundError(f"Purchase order {po_id} not found")
 
-    if po.status not in (POStatus.DRAFT, POStatus.GP_REGISTERED, POStatus.VENDOR_CONFIRMED):
-        raise InvalidStateTransitionError(f"Cannot cancel PO in {po.status.value} status")
+    if po.status is not POStatus.DRAFT:
+        raise InvalidStateTransitionError(
+            f"Cannot cancel PO in {po.status.value} status - only a draft can be cancelled. "
+            "Once a PO is registered in GP, cancel it there."
+        )
 
     po.status = POStatus.CANCELLED
     po.deleted_at = datetime.utcnow()

@@ -86,155 +86,158 @@ class ImportQueries:
             ]
 
 
+def finalize_payload(input: FinalizeImportSessionInput, *, created_by_user_id: str) -> dict:
+    """The Strawberry input flattened into the dict `import_repository.finalize_import_session` takes.
+
+    A module-level function rather than inline in the resolver so it is reachable without a database.
+    Every test of finalize called the repository directly, so this translation layer - which is only
+    attribute reads - was the one part nothing exercised, and it shipped referring to three input
+    fields that #554 had deleted. Every finalize then died on
+    `'FinalizeImportSessionInput' object has no attribute 'shop_assembly_openings'`, for every
+    purpose, and CI was green throughout. See test_finalize_payload.
+    """
+    return {
+        "project_id": str(input.project_id),
+        "openings": [
+            {
+                "opening_number": o.opening_number,
+                "building": o.building,
+                "floor": o.floor,
+                "location": o.location,
+                "location_to": o.location_to,
+                "location_from": o.location_from,
+                "hand": o.hand,
+                "width": o.width,
+                "length": o.length,
+                "door_thickness": o.door_thickness,
+                "jamb_thickness": o.jamb_thickness,
+                "door_type": o.door_type,
+                "frame_type": o.frame_type,
+                "interior_exterior": o.interior_exterior,
+                "keying": o.keying,
+                "heading_no": o.heading_no,
+                "single_pair": o.single_pair,
+                "assignment_multiplier": o.assignment_multiplier,
+                "leaf_count": o.leaf_count,
+            }
+            for o in input.openings
+        ],
+        "hardware_items": [
+            {
+                "opening_number": hi.opening_number,
+                "product_code": hi.product_code,
+                "hardware_category": hi.hardware_category,
+                "leaf": hi.leaf,
+                "item_quantity": hi.item_quantity,
+                "unit_cost": hi.unit_cost,
+                "unit_price": hi.unit_price,
+                "list_price": hi.list_price,
+                "vendor_discount": hi.vendor_discount,
+                "markup_pct": hi.markup_pct,
+                "vendor_no": hi.vendor_no,
+                "manufacturer": hi.manufacturer,
+                "phase_code": hi.phase_code,
+                "item_category_code": hi.item_category_code,
+                "product_group_code": hi.product_group_code,
+                "submittal_id": hi.submittal_id,
+            }
+            for hi in (input.hardware_items or [])
+        ]
+        if input.hardware_items
+        else None,
+        "po_drafts": [
+            {
+                "po_number": po.po_number,
+                "notes": po.notes,
+                "preferred_delivery_date": po.preferred_delivery_date,
+                "cost_code": po.cost_code,
+                "hardware_item_refs": [
+                    {
+                        "opening_number": ref.opening_number,
+                        "product_code": ref.product_code,
+                        "hardware_category": ref.hardware_category,
+                    }
+                    for ref in po.hardware_item_refs
+                ],
+                "line_item_aliases": [
+                    {
+                        "hardware_category": alias.hardware_category,
+                        "product_code": alias.product_code,
+                        "order_as": alias.order_as,
+                    }
+                    for alias in po.line_item_aliases
+                ],
+            }
+            for po in (input.po_drafts or [])
+        ]
+        if input.po_drafts
+        else None,
+        "classifications": [
+            {
+                "hardware_category": c.hardware_category,
+                "product_code": c.product_code,
+                "unit_cost": c.unit_cost,
+                "classification": c.classification.value,
+            }
+            for c in (input.classifications or [])
+        ]
+        if input.classifications
+        else None,
+        "excluded_items": [
+            {
+                "hardware_category": ei.hardware_category,
+                "product_code": ei.product_code,
+            }
+            for ei in (input.excluded_items or [])
+        ]
+        if input.excluded_items
+        else None,
+        "shipping_out_pr_drafts": [
+            {
+                "request_number": pr.request_number,
+                "items": [
+                    {
+                        "opening_number": item.opening_number,
+                        "hardware_category": item.hardware_category,
+                        "product_code": item.product_code,
+                        "requested_quantity": item.requested_quantity,
+                    }
+                    for item in pr.items
+                ],
+            }
+            for pr in (input.shipping_out_pr_drafts or [])
+        ]
+        if input.shipping_out_pr_drafts
+        else None,
+        "include_shop_assembly_request": input.include_shop_assembly_request,
+        "shop_assembly_request_number": input.shop_assembly_request_number,
+        "shop_assembly_items": [
+            {
+                "opening_number": item.opening_number,
+                "hardware_category": item.hardware_category,
+                "product_code": item.product_code,
+                "quantity": item.quantity,
+                # None is forwarded as-is; the repository resolves it to `quantity` (fully
+                # allocated), which is what keeps every non-composer caller on the old behaviour.
+                "allocated_quantity": item.allocated_quantity,
+            }
+            for item in (input.shop_assembly_items or [])
+        ]
+        if input.shop_assembly_items
+        else None,
+        "replace_schedule": input.replace_schedule,
+        # Whoever finalized the wizard owns the PO requests it mints, from the Clerk token rather
+        # than an argument (#427). A receive against one of those POs later asks them whether the
+        # shipment stays in the project's inventory or ships straight out.
+        "created_by_user_id": created_by_user_id,
+    }
+
+
 @strawberry.type
 class ImportMutations:
     @strawberry.mutation
     def finalize_import_session(self, info: strawberry.Info, input: FinalizeImportSessionInput) -> FinalizeImportResult:
-        # Convert Strawberry input to dict
-        input_data = {
-            "project_id": str(input.project_id),
-            "openings": [
-                {
-                    "opening_number": o.opening_number,
-                    "building": o.building,
-                    "floor": o.floor,
-                    "location": o.location,
-                    "location_to": o.location_to,
-                    "location_from": o.location_from,
-                    "hand": o.hand,
-                    "width": o.width,
-                    "length": o.length,
-                    "door_thickness": o.door_thickness,
-                    "jamb_thickness": o.jamb_thickness,
-                    "door_type": o.door_type,
-                    "frame_type": o.frame_type,
-                    "interior_exterior": o.interior_exterior,
-                    "keying": o.keying,
-                    "heading_no": o.heading_no,
-                    "single_pair": o.single_pair,
-                    "assignment_multiplier": o.assignment_multiplier,
-                    "leaf_count": o.leaf_count,
-                }
-                for o in input.openings
-            ],
-            "hardware_items": [
-                {
-                    "opening_number": hi.opening_number,
-                    "product_code": hi.product_code,
-                    "hardware_category": hi.hardware_category,
-                    "leaf": hi.leaf,
-                    "item_quantity": hi.item_quantity,
-                    "unit_cost": hi.unit_cost,
-                    "unit_price": hi.unit_price,
-                    "list_price": hi.list_price,
-                    "vendor_discount": hi.vendor_discount,
-                    "markup_pct": hi.markup_pct,
-                    "vendor_no": hi.vendor_no,
-                    "manufacturer": hi.manufacturer,
-                    "phase_code": hi.phase_code,
-                    "item_category_code": hi.item_category_code,
-                    "product_group_code": hi.product_group_code,
-                    "submittal_id": hi.submittal_id,
-                }
-                for hi in (input.hardware_items or [])
-            ]
-            if input.hardware_items
-            else None,
-            "po_drafts": [
-                {
-                    "po_number": po.po_number,
-                    "notes": po.notes,
-                    "preferred_delivery_date": po.preferred_delivery_date,
-                    "hardware_item_refs": [
-                        {
-                            "opening_number": ref.opening_number,
-                            "product_code": ref.product_code,
-                            "hardware_category": ref.hardware_category,
-                        }
-                        for ref in po.hardware_item_refs
-                    ],
-                    "line_item_aliases": [
-                        {
-                            "hardware_category": alias.hardware_category,
-                            "product_code": alias.product_code,
-                            "order_as": alias.order_as,
-                        }
-                        for alias in po.line_item_aliases
-                    ],
-                }
-                for po in (input.po_drafts or [])
-            ]
-            if input.po_drafts
-            else None,
-            "classifications": [
-                {
-                    "hardware_category": c.hardware_category,
-                    "product_code": c.product_code,
-                    "unit_cost": c.unit_cost,
-                    "classification": c.classification.value,
-                }
-                for c in (input.classifications or [])
-            ]
-            if input.classifications
-            else None,
-            "excluded_items": [
-                {
-                    "hardware_category": ei.hardware_category,
-                    "product_code": ei.product_code,
-                }
-                for ei in (input.excluded_items or [])
-            ]
-            if input.excluded_items
-            else None,
-            "shipping_out_pr_drafts": [
-                {
-                    "request_number": pr.request_number,
-                    "items": [
-                        {
-                            "item_type": item.item_type.value,
-                            "opening_number": item.opening_number,
-                            "opening_item_id": str(item.opening_item_id) if item.opening_item_id else None,
-                            "leaf": item.leaf,
-                            "hardware_category": item.hardware_category,
-                            "product_code": item.product_code,
-                            "requested_quantity": item.requested_quantity,
-                        }
-                        for item in pr.items
-                    ],
-                }
-                for pr in (input.shipping_out_pr_drafts or [])
-            ]
-            if input.shipping_out_pr_drafts
-            else None,
-            "include_shop_assembly_request": input.include_shop_assembly_request,
-            "shop_assembly_request_number": input.shop_assembly_request_number,
-            "shop_assembly_openings": [
-                {
-                    "opening_number": sa.opening_number,
-                    "leaf": sa.leaf,
-                    "items": [
-                        {
-                            "hardware_category": item.hardware_category,
-                            "product_code": item.product_code,
-                            "quantity": item.quantity,
-                            # None is forwarded as-is; the repository resolves it to `quantity`
-                            # (fully allocated), which is the pre-allocator behaviour.
-                            "allocated_quantity": item.allocated_quantity,
-                        }
-                        for item in sa.items
-                    ],
-                }
-                for sa in (input.shop_assembly_openings or [])
-            ]
-            if input.shop_assembly_openings
-            else None,
-            "replace_schedule": input.replace_schedule,
-            "acknowledge_incomplete_leaves": input.acknowledge_incomplete_leaves,
-            # Whoever finalized the wizard owns the PO requests it mints, from the Clerk token rather
-            # than an argument (#427). A receive against one of those POs later asks them whether the
-            # shipment stays in the project's inventory or ships straight out.
-            "created_by_user_id": current_user(info)["user_id"],
-        }
+        input_data = finalize_payload(input, created_by_user_id=current_user(info)["user_id"])
 
         with SessionLocal() as session:
             # #342: creating a shop-assembly or shipping-out request gates on available inventory

@@ -6,22 +6,18 @@ import {
   Button,
   Stack,
   Alert,
-  FormControl,
-  InputLabel,
-  Select,
-  MenuItem,
 } from '@mui/material';
-import { useMutation, useQuery } from '@apollo/client/react';
+import { useMutation } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import LocationAutocomplete from '../../components/LocationAutocomplete';
 import { useToast } from '../../components/Toast';
-import { GET_WAREHOUSES, MOVE_INVENTORY_LOCATION, MARK_INVENTORY_UNLOCATED, MOVE_OPENING_ITEM_LOCATION, MARK_OPENING_ITEM_UNLOCATED } from '../../graphql/shared';
+import { MOVE_INVENTORY_LOCATION, MARK_INVENTORY_UNLOCATED } from '../../graphql/shared';
 import { ADJUST_INVENTORY_QUANTITY, MOVE_STOCK_LOCATION, MARK_STOCK_ITEM_UNLOCATED, ADJUST_STOCK_QUANTITY } from '../../graphql/warehouse';
 import { microLabelSx, monoSx } from '../../theme';
 
 export type LocationActionTarget = {
   id: string;
-  kind: 'inventory' | 'opening' | 'stock';
+  kind: 'inventory' | 'stock';
   productCode: string;
   quantity: number;
   warehouseId?: string | null;
@@ -29,12 +25,6 @@ export type LocationActionTarget = {
   row: string | null;
   bay: string | null;
 };
-
-interface WarehouseOption {
-  id: string;
-  name: string;
-  code: string;
-}
 
 export type LocationActionMode = 'move' | 'adjust' | 'unlocate';
 
@@ -73,16 +63,6 @@ export default function LocationActionDialog({
   const [aisle, setAisle] = useState('');
   const [row, setRow] = useState('');
   const [bay, setBay] = useState('');
-  const [warehouseId, setWarehouseId] = useState('');
-
-  // Opening-item kits can't be partial-transferred, so their move may also change warehouse.
-  // (inventory + stock change warehouse via the Transfer dialog instead.)
-  const allOpening = targets.length > 0 && targets.every((t) => t.kind === 'opening');
-  const { data: warehousesData } = useQuery<{ warehouses: WarehouseOption[] }>(GET_WAREHOUSES, {
-    variables: { includeInactive: false },
-    skip: !allOpening,
-  });
-  const warehouses = warehousesData?.warehouses ?? [];
 
   // Adjust state
   const [adjustment, setAdjustment] = useState('');
@@ -98,12 +78,10 @@ export default function LocationActionDialog({
       setAisle(single?.aisle ?? '');
       setRow(single?.row ?? '');
       setBay(single?.bay ?? '');
-      setWarehouseId(single?.warehouseId ?? '');
     } else {
       setAisle('');
       setRow('');
       setBay('');
-      setWarehouseId('');
     }
   }, [open, mode, single]);
 
@@ -115,10 +93,8 @@ export default function LocationActionDialog({
     awaitRefetchQueries: true,
   };
   const [moveInv] = useMutation(MOVE_INVENTORY_LOCATION, syncQueries);
-  const [moveOpen] = useMutation(MOVE_OPENING_ITEM_LOCATION, syncQueries);
   const [moveStock] = useMutation(MOVE_STOCK_LOCATION, syncQueries);
   const [unlocateInv] = useMutation(MARK_INVENTORY_UNLOCATED, syncQueries);
-  const [unlocateOpen] = useMutation(MARK_OPENING_ITEM_UNLOCATED, syncQueries);
   const [unlocateStock] = useMutation(MARK_STOCK_ITEM_UNLOCATED, syncQueries);
   const [adjustInv] = useMutation(ADJUST_INVENTORY_QUANTITY, syncQueries);
   const [adjustStock] = useMutation(ADJUST_STOCK_QUANTITY, syncQueries);
@@ -163,16 +139,6 @@ export default function LocationActionDialog({
                 newBay: bay.trim(),
               },
             });
-          } else if (t.kind === 'opening') {
-            await moveOpen({
-              variables: {
-                openingItemId: t.id,
-                aisle: aisle.trim(),
-                row: row.trim(),
-                bay: bay.trim(),
-                warehouseId: warehouseId || null,
-              },
-            });
           } else {
             await moveStock({
               variables: {
@@ -188,8 +154,6 @@ export default function LocationActionDialog({
         } else if (mode === 'unlocate') {
           if (t.kind === 'inventory') {
             await unlocateInv({ variables: { inventoryLocationId: t.id } });
-          } else if (t.kind === 'opening') {
-            await unlocateOpen({ variables: { openingItemId: t.id } });
           } else {
             await unlocateStock({ variables: { stockItemId: t.id } });
           }
@@ -273,23 +237,6 @@ export default function LocationActionDialog({
 
       {mode === 'move' && (
         <Stack spacing={2}>
-          {allOpening && (
-            <FormControl size="small" fullWidth>
-              <InputLabel id="move-warehouse">Warehouse</InputLabel>
-              <Select
-                labelId="move-warehouse"
-                label="Warehouse"
-                value={warehouseId}
-                onChange={(e) => setWarehouseId(e.target.value)}
-              >
-                {warehouses.map((w) => (
-                  <MenuItem key={w.id} value={w.id}>
-                    {w.name} ({w.code})
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-          )}
           <LocationAutocomplete
             label="Aisle"
             value={aisle}

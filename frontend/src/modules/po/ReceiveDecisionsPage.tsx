@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef } from 'react';
 import {
   Alert,
   Box,
@@ -19,6 +19,7 @@ import { useMutation, useQuery } from '@apollo/client/react';
 import { useToast } from '../../components/Toast';
 import { GET_MY_RECEIVE_DECISIONS, DECIDE_RECEIVE_DECISION } from '../../graphql/po';
 import { GET_PROJECTS } from '../../graphql/shared';
+import { APPROVE_RECEIVE_DRAFT } from '../../graphql/warehouse';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { parseServerDate } from '../../utils/serverDate';
 
@@ -30,7 +31,9 @@ export interface ReceiveDecision {
   poId: string;
   poNumber: string | null;
   projectId: string;
-  receiveRecordId: string;
+  receiveRecordId: string | null;
+  /** Set instead of receiveRecordId while the delivery is still an unapproved count (#499). */
+  receiveDraftId: string | null;
   receiptNumber: string | null;
   receivedAt: string;
   receivedBy: string;
@@ -51,9 +54,19 @@ function formatDateTime(value: string | null): string {
  * the safe default - this asks the person who ordered it whether that is where it should stay, or
  * whether the site is waiting on it and it should go straight back out.
  *
- * "Ship out now" records the choice and then hands over to Start a Request. It deliberately does not
- * build the shipping request itself: inventory is fungible by the time it is received, and only the
- * hardware schedule knows which opening and leaf a quantity is owed to
+ * Since #499 the question is asked when the count is submitted rather than after the warehouse
+ * manager has approved it - by which point the hardware had already been booked and put away, so
+ * "send it straight back out" meant undoing work. A card whose delivery is still a draft therefore
+ * has no GP receipt number yet: GP has not been told about it.
+ *
+ * "Ship out now" on such a card books the receipt itself before handing over. A shipping pull can
+ * only claim inventory that exists (#367), so the hardware has to be in the project's inventory
+ * before the wizard can attach it to an opening - and going through the warehouse manager's queue
+ * to decide where in the warehouse to put something that is leaving the warehouse is a step that no
+ * longer means anything.
+ *
+ * It deliberately does not build the shipping request itself: inventory is fungible by the time it
+ * is received, and only the hardware schedule knows which opening and leaf a quantity is owed to
  * (docs/HARDWARE_IDENTITY_LIFECYCLE.md). Re-attaching that identity is what the wizard is for.
  *
  * No role gate. Who owes an answer is decided server-side from the PO's own originator, and that
@@ -72,6 +85,10 @@ export default function ReceiveDecisionsPage() {
     GET_PROJECTS,
   );
   const [decide] = useMutation(DECIDE_RECEIVE_DECISION);
+  const [approveDraft] = useMutation(APPROVE_RECEIVE_DRAFT);
+  // Per draft, so a retry after a failed booking resumes through the idempotency ledger rather than
+  // starting a second approval for a receipt GP may already hold.
+  const approvalKeys = useRef<Record<string, string>>({});
 
   const projectMap = useMemo(
     () => new Map((projectsData?.projects ?? []).map((p) => [p.id, p.description || p.projectId])),
@@ -88,6 +105,27 @@ export default function ReceiveDecisionsPage() {
         showToast('Recorded - the shipment stays in the project inventory.', 'success');
         await refetch();
         return;
+      }
+      // A draft-stage decision still owes GP its receipt. Book it here, because the wizard's pull
+      // can only claim inventory that already exists.
+      if (decision.receiveDraftId) {
+        const idempotencyKey = (approvalKeys.current[decision.receiveDraftId] ??= crypto.randomUUID());
+        const res = await approveDraft({
+          variables: { input: { draftId: decision.receiveDraftId, idempotencyKey } },
+        });
+        const queued = (res.data as { approveReceiveDraft?: { queued: boolean } } | null | undefined)
+          ?.approveReceiveDraft?.queued;
+        if (queued) {
+          // The relay was down, so the receipt is on the outbox and the hardware is not in
+          // inventory yet. Sending them into the wizard now would build a request against stock
+          // that does not exist.
+          showToast(
+            'Recorded, but GP could not be reached. The receipt is queued - start the shipping request once it posts.',
+            'warning',
+          );
+          await refetch();
+          return;
+        }
       }
       // Only on success. Navigating away from a failed record would leave the user building a
       // shipment against a question that is still open.

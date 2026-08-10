@@ -61,7 +61,6 @@ import {
   type WarehouseAddress,
 } from './deliveryRequest';
 import { CONTAINER_TYPE_LABEL, isStacked } from './staging';
-import { leafLabel, leafSuffix } from '../../utils/leaf';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import { FadeIn } from '../../motion';
 import { parseServerDate, parseServerDay } from '../../utils/serverDate';
@@ -83,10 +82,9 @@ const PAGE = 25;
 
 const LONG_DATE: Intl.DateTimeFormatOptions = { year: 'numeric', month: 'long', day: 'numeric' };
 
-function looseUnits(slip: PackingSlip): number {
-  return slip.items
-    .filter((i) => i.itemType === 'LOOSE')
-    .reduce((sum, i) => sum + i.quantity, 0);
+/** Everything the slip carried, which is everything a return can bring back. */
+function shippedUnits(slip: PackingSlip): number {
+  return slip.items.reduce((sum, i) => sum + i.quantity, 0);
 }
 
 /** A calendar date the way the Delivery Request carries it, or a dash when it was left blank. */
@@ -330,7 +328,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
               {visible.map((slip) => {
                 const isOpen = expanded.has(slip.id);
                 const status = shipmentStatusDisplay(slip.status);
-                const returnable = looseUnits(slip);
+                const returnable = shippedUnits(slip);
                 return (
                   <Fragment key={slip.id}>
                     <TableRow
@@ -385,9 +383,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
                             <Table size="small" sx={{ mb: 2 }}>
                               <TableHead>
                                 <TableRow>
-                                  <TableCell>Type</TableCell>
                                   <TableCell>Opening</TableCell>
-                                  <TableCell>Leaf</TableCell>
                                   <TableCell>Product code</TableCell>
                                   <TableCell>Hardware category</TableCell>
                                   <TableCell align="right">Qty</TableCell>
@@ -396,11 +392,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
                               <TableBody>
                                 {slip.items.map((item) => (
                                   <TableRow key={item.id}>
-                                    <TableCell>
-                                      {item.itemType === 'OPENING_ITEM' ? 'Opening item' : 'Loose'}
-                                    </TableCell>
                                     <TableCell sx={monoSx}>{item.openingNumber || '-'}</TableCell>
-                                    <TableCell>{leafLabel(item.leaf) ?? '-'}</TableCell>
                                     <TableCell sx={monoSx}>{item.productCode || '-'}</TableCell>
                                     <TableCell>{item.hardwareCategory || '-'}</TableCell>
                                     <TableCell align="right" sx={tabularSx}>
@@ -461,9 +453,8 @@ export default function ShipmentsList({ projectId, heading }: Props) {
                                               sx={{ ...monoSx, ...tabularSx }}
                                             >
                                               {stacked && `${index + 1}. `}
-                                              {item.itemType === 'OPENING_ITEM'
-                                                ? `${item.openingNumber ?? ''}${leafSuffix(item.leaf ?? null)}`
-                                                : `${item.productCode} × ${item.quantity}`}
+                                              {`${item.productCode} × ${item.quantity}`}
+                                              {item.openingNumber ? ` · ${item.openingNumber}` : ''}
                                             </Typography>
                                           ))}
                                         </Stack>

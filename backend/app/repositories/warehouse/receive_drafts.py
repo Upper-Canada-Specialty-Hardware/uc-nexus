@@ -127,6 +127,36 @@ def _notify_submitted(session: Session, draft: ReceiveDraftModel, po: POModel) -
     )
 
 
+def _validate_packing_slip(session: Session, po_id: uuid.UUID, document_id: uuid.UUID | None) -> None:
+    """A draft is a count made against a piece of paper (#504), so it must name which one.
+
+    Checked here rather than left to the FK: the document has to be a PACKING_SLIP AND belong to the
+    PO being received, or the link records a slip from somebody else's delivery.
+    """
+    from app.models.enums import PODocumentType
+    from app.models.purchase_order import PODocument
+
+    if document_id is None:
+        raise ValidationError(
+            "A packing slip is required to record a delivery.",
+            field="packing_slip_document_id",
+        )
+
+    doc = session.get(PODocument, document_id)
+    if doc is None:
+        raise NotFoundError(f"Document {document_id} not found")
+    if doc.po_id != po_id:
+        raise ValidationError(
+            "That packing slip belongs to a different purchase order.",
+            field="packing_slip_document_id",
+        )
+    if doc.document_type != PODocumentType.PACKING_SLIP:
+        raise ValidationError(
+            "That document is not a packing slip.",
+            field="packing_slip_document_id",
+        )
+
+
 def create_receive_draft(
     session: Session,
     po_id: uuid.UUID,
@@ -136,6 +166,7 @@ def create_receive_draft(
     warehouse_id: uuid.UUID | None = None,
     *,
     idempotency_key: str | None = None,
+    packing_slip_document_id: uuid.UUID | None = None,
 ) -> ReceiveDraftModel:
     """Record a counted delivery for a Warehouse Manager to approve.
 
@@ -144,6 +175,8 @@ def create_receive_draft(
     later to whoever opens the queue. Approval re-validates anyway - the world can move underneath a
     draft - but a draft nobody could ever approve is not worth creating.
     """
+    _validate_packing_slip(session, po_id, packing_slip_document_id)
+
     if idempotency_key:
         existing = session.scalars(
             select(ReceiveDraftModel)
@@ -169,12 +202,26 @@ def create_receive_draft(
         created_by_user_id=author_user_id,
         created_by_name=author_name,
         create_idempotency_key=idempotency_key or None,
+        packing_slip_document_id=packing_slip_document_id,
     )
     session.add(draft)
     session.flush()
 
     _write_lines(session, draft, po, line_items_input)
     session.refresh(draft)
+
+    # #499: the keep-or-ship question belongs to whoever raised the PO, and they get the whole
+    # approval window to answer it now instead of being asked after the hardware was already booked
+    # and put away. No-ops for a stock PO - there is no project whose inventory to keep it in.
+    from .receive_decisions import create_decision_for_draft
+
+    create_decision_for_draft(
+        session,
+        po,
+        draft.id,
+        total_quantity=sum(li["quantity_received"] for li in line_items_input),
+    )
+
     _notify_submitted(session, draft, po)
     return draft
 
@@ -184,16 +231,24 @@ def get_receive_drafts(
     status: ReceiveDraftStatus | None = None,
     po_id: uuid.UUID | None = None,
     created_by_user_id: str | None = None,
-) -> list[tuple[ReceiveDraftModel, POModel]]:
-    """Drafts with the PO they are against, newest first.
+) -> list[tuple]:
+    """Drafts with the PO they are against and the keep-or-ship decision they raised, newest first.
+
+    The decision rides along since #499 because the approvals queue is filtered by it: a draft its
+    creator answered SHIP_OUT is not the warehouse manager's to approve - the shipping request does
+    that booking - and an unanswered one still is, with the fact that it is unanswered on the row.
 
     Returns pairs rather than drafts alone because every consumer renders the PO number and project
     beside the draft, and letting the converter walk a lazy `draft.purchase_order` would be one
     SELECT per row - the N+1 this codebase keeps paying for elsewhere.
     """
+    from app.models.receive_decision import ReceiveDecision as ReceiveDecisionModel
+
     stmt = (
-        select(ReceiveDraftModel, POModel)
+        select(ReceiveDraftModel, POModel, ReceiveDecisionModel)
         .join(POModel, POModel.id == ReceiveDraftModel.po_id)
+        # Outer: a stock PO raises no decision at all, and drafts predating #499 have none either.
+        .outerjoin(ReceiveDecisionModel, ReceiveDecisionModel.receive_draft_id == ReceiveDraftModel.id)
         .options(selectinload(ReceiveDraftModel.line_items))
         .order_by(ReceiveDraftModel.created_at.desc())
     )
@@ -203,13 +258,19 @@ def get_receive_drafts(
         stmt = stmt.where(ReceiveDraftModel.po_id == po_id)
     if created_by_user_id is not None:
         stmt = stmt.where(ReceiveDraftModel.created_by_user_id == created_by_user_id)
-    return [(draft, po) for draft, po in session.execute(stmt).unique().all()]
+    return [(draft, po, decision) for draft, po, decision in session.execute(stmt).unique().all()]
 
 
-def get_receive_draft(session: Session, draft_id: uuid.UUID) -> tuple[ReceiveDraftModel, POModel]:
+def get_receive_draft(session: Session, draft_id: uuid.UUID):
+    """One draft, with its PO and the keep-or-ship decision it raised (#499)."""
+    from app.models.receive_decision import ReceiveDecision as ReceiveDecisionModel
+
     draft = _get_draft(session, draft_id)
     po = session.get(POModel, draft.po_id)
-    return draft, po
+    decision = session.scalars(
+        select(ReceiveDecisionModel).where(ReceiveDecisionModel.receive_draft_id == draft.id)
+    ).first()
+    return draft, po, decision
 
 
 def count_pending_drafts(session: Session) -> int:

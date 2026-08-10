@@ -4,13 +4,12 @@ import uuid
 from collections import defaultdict
 
 from sqlalchemy import or_, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 
 from app.errors import NotFoundError, ValidationError
 from app.models.audit_log import InventoryAuditLog
 from app.models.enums import AuditAction, AuditEntityType
 from app.models.inventory import InventoryLocation as InventoryLocationModel
-from app.models.opening_item import OpeningItem as OpeningItemModel
 from app.models.purchase_order import POLineItem as POLineItemModel
 from app.models.purchase_order import PurchaseOrder as POModel
 from app.models.stock_item import StockItem as StockItemModel
@@ -48,7 +47,7 @@ def get_location_contents(
     bay: str | None = None,
     warehouse_id: uuid.UUID | None = None,
 ) -> dict:
-    """Get all inventory, opening, and stock items at a given location, optionally scoped to one warehouse."""
+    """Get all inventory and stock items at a given location, optionally scoped to one warehouse."""
     # Inventory locations (project-bound)
     inv_stmt = (
         select(InventoryLocationModel, POLineItemModel.unit_cost, POModel.po_number)
@@ -63,20 +62,6 @@ def get_location_contents(
     if warehouse_id is not None:
         inv_stmt = inv_stmt.where(InventoryLocationModel.warehouse_id == warehouse_id)
     inv_rows = session.execute(inv_stmt).all()
-
-    # Opening items (project-bound, post-assembly)
-    oi_stmt = (
-        select(OpeningItemModel)
-        .options(selectinload(OpeningItemModel.installed_hardware))
-        .where(OpeningItemModel.aisle == aisle)
-    )
-    if row_name is not None:
-        oi_stmt = oi_stmt.where(OpeningItemModel.row == row_name)
-    if bay is not None:
-        oi_stmt = oi_stmt.where(OpeningItemModel.bay == bay)
-    if warehouse_id is not None:
-        oi_stmt = oi_stmt.where(OpeningItemModel.warehouse_id == warehouse_id)
-    opening_items = list(session.scalars(oi_stmt).unique().all())
 
     # Stock items (company-owned pool, not project-bound)
     si_stmt = select(StockItemModel).where(
@@ -100,13 +85,12 @@ def get_location_contents(
             }
             for row in inv_rows
         ],
-        "opening_items": opening_items,
         "stock_items": stock_items,
     }
 
 
 def get_location_utilization(session: Session, warehouse_id: uuid.UUID | None = None) -> list[dict]:
-    """Distinct (warehouse, aisle, row, bay) combos with item counts and total quantities across all three sources.
+    """Distinct (warehouse, aisle, row, bay) combos with item counts and total quantities from both sources.
 
     A location string is one physical place only within a warehouse, so rows are grouped by warehouse too.
     """
@@ -142,18 +126,6 @@ def get_location_utilization(session: Session, warehouse_id: uuid.UUID | None = 
             InventoryLocationModel.bay,
         )
     )
-    oi_stmt = (
-        select(
-            OpeningItemModel.warehouse_id,
-            OpeningItemModel.aisle,
-            OpeningItemModel.row,
-            OpeningItemModel.bay,
-            func.count().label("item_count"),
-            func.sum(OpeningItemModel.quantity).label("total_quantity"),
-        )
-        .where(OpeningItemModel.aisle.is_not(None))
-        .group_by(OpeningItemModel.warehouse_id, OpeningItemModel.aisle, OpeningItemModel.row, OpeningItemModel.bay)
-    )
     si_stmt = (
         select(
             StockItemModel.warehouse_id,
@@ -171,10 +143,9 @@ def get_location_utilization(session: Session, warehouse_id: uuid.UUID | None = 
     )
     if warehouse_id is not None:
         inv_stmt = inv_stmt.where(InventoryLocationModel.warehouse_id == warehouse_id)
-        oi_stmt = oi_stmt.where(OpeningItemModel.warehouse_id == warehouse_id)
         si_stmt = si_stmt.where(StockItemModel.warehouse_id == warehouse_id)
 
-    for stmt in (inv_stmt, oi_stmt, si_stmt):
+    for stmt in (inv_stmt, si_stmt):
         for r in session.execute(stmt).all():
             _bump(r[0], r[1], r[2], r[3], r[4], r[5])
 
@@ -223,7 +194,7 @@ def get_distinct_location_values(session: Session) -> dict[str, list[str]]:
     row_values: set[str] = set()
     bays: set[str] = set()
 
-    for model in (InventoryLocationModel, OpeningItemModel, StockItemModel):
+    for model in (InventoryLocationModel, StockItemModel):
         records = session.execute(
             select(model.aisle, model.row, model.bay).where(model.aisle.is_not(None)).distinct()
         ).all()
@@ -249,7 +220,7 @@ def get_location_duplicates(session: Session) -> list[dict]:
     Only groups with 2+ variants are returned.
     """
     triples: set[tuple[str, str | None, str | None]] = set()
-    for model in (InventoryLocationModel, OpeningItemModel, StockItemModel):
+    for model in (InventoryLocationModel, StockItemModel):
         records = session.execute(
             select(model.aisle, model.row, model.bay).where(model.aisle.is_not(None)).distinct()
         ).all()
@@ -298,7 +269,7 @@ def merge_locations(
 ) -> dict:
     """Rewrite every row at (from_aisle, from_row, from_bay) to (to_aisle, to_row, to_bay).
 
-    Touches inventory_locations, opening_items, and stock_items. Writes a MOVE audit per row
+    Touches inventory_locations and stock_items. Writes a MOVE audit per row
     so the merge is reconstructable. Returns counts per source table.
     """
     if not performed_by:
@@ -307,7 +278,7 @@ def merge_locations(
     to_aisle, to_row, to_bay = _normalize_and_validate_location_fields(to_aisle, to_row, to_bay)
     # from_* may already be in canonical form; either way only compare equality, no validation needed.
 
-    counts = {"inventory_locations": 0, "opening_items": 0, "stock_items": 0}
+    counts = {"inventory_locations": 0, "stock_items": 0}
 
     inv_rows = list(
         session.scalars(
@@ -334,32 +305,6 @@ def merge_locations(
             },
         )
     counts["inventory_locations"] = len(inv_rows)
-
-    oi_rows = list(
-        session.scalars(
-            select(OpeningItemModel).where(
-                OpeningItemModel.aisle == from_aisle,
-                OpeningItemModel.row == from_row,
-                OpeningItemModel.bay == from_bay,
-            )
-        ).all()
-    )
-    for oi in oi_rows:
-        oi.aisle, oi.row, oi.bay = to_aisle, to_row, to_bay
-        _log_audit_event(
-            session,
-            project_id=oi.project_id,
-            entity_type=AuditEntityType.OPENING_ITEM,
-            entity_id=oi.id,
-            action=AuditAction.MOVE,
-            performed_by=performed_by,
-            detail={
-                "fromLocation": {"aisle": from_aisle, "row": from_row, "bay": from_bay},
-                "toLocation": {"aisle": to_aisle, "row": to_row, "bay": to_bay},
-                "reason": "location_merge",
-            },
-        )
-    counts["opening_items"] = len(oi_rows)
 
     si_rows = list(
         session.scalars(
@@ -476,98 +421,62 @@ def assign_inventory_location(
     return il
 
 
-def move_opening_item_location(
-    session: Session,
-    oi_id: uuid.UUID,
-    aisle: str,
-    row: str,
-    bay: str,
-    warehouse_id: uuid.UUID | None = None,
-    *,
-    performed_by: str,
-) -> OpeningItemModel:
-    """Move an OpeningItem (whole kit) to a new aisle/row/bay, optionally a different warehouse."""
-    oi = session.get(OpeningItemModel, oi_id)
-    if oi is None:
-        raise NotFoundError(f"Opening item {oi_id} not found")
+def split_inventory_location(
+    session: Session, inv_id: uuid.UUID, quantity: int, *, performed_by: str
+) -> tuple[InventoryLocationModel, InventoryLocationModel]:
+    """Break `quantity` units off an inventory row into a second row (#501).
 
-    aisle, row, bay = _normalize_and_validate_location_fields(aisle, row, bay)
+    Put-away moved after approval, so a receive books one row per PO line and the warehouse decides
+    where it goes afterwards. Ten hinges rarely go in one bin: six in A-1-1 and four in B-2-2 is the
+    normal case, and it needs two rows because a row carries exactly one aisle/row/bay.
 
-    old_aisle, old_row, old_bay, old_wh = oi.aisle, oi.row, oi.bay, oi.warehouse_id
-    oi.aisle = aisle
-    oi.row = row
-    oi.bay = bay
-    if warehouse_id is not None:
-        from app.models.warehouse import Warehouse
+    The new row copies the origin FKs and `received_at` verbatim. Those are what make the units
+    traceable back to the receipt that booked them and what FIFO orders picks by - a split is a
+    change of shelf, not of provenance, so inventing new values would quietly reorder the pick queue
+    and orphan the audit trail.
 
-        if session.get(Warehouse, warehouse_id) is None:
-            raise NotFoundError(f"Warehouse {warehouse_id} not found")
-        oi.warehouse_id = warehouse_id
+    Deficient units stay with the original row. They are not on a shelf; they are a claim against
+    the vendor, and moving a fraction of them to a bin nobody put them in would be a lie.
+    """
+    il = session.get(InventoryLocationModel, inv_id)
+    if il is None:
+        raise NotFoundError(f"Inventory location {inv_id} not found")
+    if quantity < 1:
+        raise ValidationError("Split quantity must be at least 1", field="quantity")
+    if quantity >= il.quantity:
+        # Equal is refused too: splitting off everything is a no-op that leaves an empty row behind.
+        raise ValidationError(
+            f"Cannot split {quantity} off a row holding {il.quantity}; leave at least one unit behind",
+            field="quantity",
+        )
 
-    _log_audit_event(
-        session,
-        project_id=oi.project_id,
-        entity_type=AuditEntityType.OPENING_ITEM,
-        entity_id=oi.id,
-        action=AuditAction.MOVE,
-        performed_by=performed_by,
-        detail={
-            "fromWarehouseId": str(old_wh),
-            "fromLocation": {"aisle": old_aisle, "row": old_row, "bay": old_bay},
-            "toWarehouseId": str(oi.warehouse_id),
-            "toLocation": {"aisle": aisle, "row": row, "bay": bay},
-        },
+    remainder = InventoryLocationModel(
+        project_id=il.project_id,
+        po_line_item_id=il.po_line_item_id,
+        receive_line_item_id=il.receive_line_item_id,
+        stock_item_id=il.stock_item_id,
+        shipment_return_item_id=il.shipment_return_item_id,
+        warehouse_id=il.warehouse_id,
+        hardware_category=il.hardware_category,
+        product_code=il.product_code,
+        quantity=quantity,
+        deficient_quantity=0,
+        aisle=None,
+        row=None,
+        bay=None,
+        received_at=il.received_at,
     )
-
-    return oi
-
-
-def mark_opening_item_unlocated(session: Session, oi_id: uuid.UUID, *, performed_by: str) -> OpeningItemModel:
-    """Clear the aisle/row/bay on an OpeningItem."""
-    oi = session.get(OpeningItemModel, oi_id)
-    if oi is None:
-        raise NotFoundError(f"Opening item {oi_id} not found")
-
-    old_aisle, old_row, old_bay = oi.aisle, oi.row, oi.bay
-    oi.aisle = None
-    oi.row = None
-    oi.bay = None
+    il.quantity -= quantity
+    session.add(remainder)
+    session.flush()
 
     _log_audit_event(
         session,
-        project_id=oi.project_id,
-        entity_type=AuditEntityType.OPENING_ITEM,
-        entity_id=oi.id,
-        action=AuditAction.UNLOCATE,
-        performed_by=performed_by,
-        detail={"fromLocation": {"aisle": old_aisle, "row": old_row, "bay": old_bay}},
-    )
-
-    return oi
-
-
-def assign_opening_item_location(
-    session: Session, oi_id: uuid.UUID, aisle: str, row: str, bay: str, *, performed_by: str
-) -> OpeningItemModel:
-    """Assign aisle/row/bay to an OpeningItem."""
-    oi = session.get(OpeningItemModel, oi_id)
-    if oi is None:
-        raise NotFoundError(f"Opening item {oi_id} not found")
-
-    aisle, row, bay = _normalize_and_validate_location_fields(aisle, row, bay)
-
-    oi.aisle = aisle
-    oi.row = row
-    oi.bay = bay
-
-    _log_audit_event(
-        session,
-        project_id=oi.project_id,
-        entity_type=AuditEntityType.OPENING_ITEM,
-        entity_id=oi.id,
+        project_id=il.project_id,
+        entity_type=AuditEntityType.INVENTORY_LOCATION,
+        entity_id=remainder.id,
         action=AuditAction.PUT_AWAY,
         performed_by=performed_by,
-        detail={"toLocation": {"aisle": aisle, "row": row, "bay": bay}},
+        detail={"splitFrom": str(il.id), "quantity": quantity},
     )
-
-    return oi
+    return il, remainder

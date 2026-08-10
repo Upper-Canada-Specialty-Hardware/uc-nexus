@@ -19,12 +19,18 @@ import {
   TableHead,
   TableRow,
   Paper,
+  TextField,
+  Tooltip,
 } from '@mui/material';
 import { ChevronDown } from 'lucide-react';
 import { useQuery, useMutation } from '@apollo/client/react';
 import { useToast } from '../../components/Toast';
 import LocationAutocomplete from '../../components/LocationAutocomplete';
-import { GET_PROJECTS, ASSIGN_INVENTORY_LOCATION } from '../../graphql/shared';
+import {
+  GET_PROJECTS,
+  ASSIGN_INVENTORY_LOCATION,
+  SPLIT_INVENTORY_LOCATION,
+} from '../../graphql/shared';
 import { GET_UNLOCATED_INVENTORY, GET_LOCATION_DISTINCT_VALUES } from '../../graphql/warehouse';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { StaggerItem, StaggerList } from '../../motion';
@@ -94,6 +100,8 @@ export default function PutAwayTab() {
   const [projectFilter, setProjectFilter] = useState<string>('');
   const [locationInputs, setLocationInputs] = useState<Record<string, LocationInput>>({});
   const [assigningId, setAssigningId] = useState<string | null>(null);
+  // Per-row "put N of these somewhere else" entry. Empty means the whole row goes to one bin.
+  const [splitQty, setSplitQty] = useState<Record<string, string>>({});
 
   // Queries
   const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
@@ -116,6 +124,7 @@ export default function PutAwayTab() {
 
   // Mutation
   const [assignLocation] = useMutation(ASSIGN_INVENTORY_LOCATION);
+  const [splitLocation] = useMutation(SPLIT_INVENTORY_LOCATION);
 
   // Derived
   const projects = projectsData?.projects ?? [];
@@ -153,20 +162,54 @@ export default function PutAwayTab() {
     [getLocationInput],
   );
 
+  const splitIsValid = useCallback(
+    (id: string, rowQuantity: number): boolean => {
+      const raw = (splitQty[id] ?? '').trim();
+      if (raw === '') return true;
+      const n = Number(raw);
+      return Number.isInteger(n) && n >= 1 && n <= rowQuantity;
+    },
+    [splitQty],
+  );
+
   const handleAssign = useCallback(
-    async (id: string, productCode: string) => {
+    async (id: string, productCode: string, rowQuantity: number) => {
       const loc = getLocationInput(id);
+      const wanted = Number(splitQty[id] ?? '');
+      // A partial put-away splits first, then assigns the piece that was broken off - so the bin
+      // gets exactly the units the user said and the rest stays in the queue for its own shelf.
+      const partial = Number.isFinite(wanted) && wanted > 0 && wanted < rowQuantity;
       setAssigningId(id);
       try {
+        let targetId = id;
+        if (partial) {
+          const res = await splitLocation({
+            variables: { inventoryLocationId: id, quantity: wanted },
+          });
+          const rows = (res.data as { splitInventoryLocation?: { id: string }[] } | null | undefined)
+            ?.splitInventoryLocation;
+          if (!rows || rows.length < 2) throw new Error('Split did not return the new row');
+          targetId = rows[1].id;
+        }
         await assignLocation({
           variables: {
-            inventoryLocationId: id,
+            inventoryLocationId: targetId,
             aisle: loc.aisle.trim(),
             row: loc.row.trim(),
             bay: loc.bay.trim(),
           },
         });
-        showToast(`Location assigned for ${productCode}`, 'success');
+        showToast(
+          partial
+            ? `${wanted} of ${productCode} put away; the rest stays in the queue`
+            : `Location assigned for ${productCode}`,
+          'success',
+        );
+        setSplitQty((prev) => {
+          const next = { ...prev };
+          delete next[id];
+          return next;
+        });
         setLocationInputs((prev) => {
           const next = { ...prev };
           delete next[id];
@@ -180,7 +223,7 @@ export default function PutAwayTab() {
         setAssigningId(null);
       }
     },
-    [getLocationInput, assignLocation, showToast, refetch],
+    [getLocationInput, assignLocation, splitLocation, splitQty, showToast, refetch],
   );
 
   // ---- Render ----
@@ -272,6 +315,9 @@ export default function PutAwayTab() {
                               now carry their own Aisle/Row/Bay labels rather than relying on a
                               header three rows up. */}
                           <TableCell sx={{ minWidth: 300 }}>Destination</TableCell>
+                          <TableCell align="right" sx={{ minWidth: 110 }}>
+                            Qty to put away
+                          </TableCell>
                           <TableCell />
                         </TableRow>
                       </TableHead>
@@ -316,13 +362,39 @@ export default function PutAwayTab() {
                                   />
                                 </Box>
                               </TableCell>
+                              <TableCell align="right">
+                                {/* Blank means the whole row. A number under the row quantity
+                                    splits it: that many go to this bin, the remainder comes back
+                                    to the queue for a shelf of its own. */}
+                                <Tooltip title="Leave blank to put the whole row away here.">
+                                  <TextField
+                                    size="small"
+                                    type="number"
+                                    placeholder={String(item.inventoryLocation.quantity)}
+                                    value={splitQty[id] ?? ''}
+                                    onChange={(e) =>
+                                      setSplitQty((prev) => ({ ...prev, [id]: e.target.value }))
+                                    }
+                                    inputProps={{
+                                      min: 1,
+                                      max: item.inventoryLocation.quantity,
+                                      'aria-label': `Quantity of ${item.inventoryLocation.productCode} to put away`,
+                                    }}
+                                    sx={{ width: 96 }}
+                                  />
+                                </Tooltip>
+                              </TableCell>
                               <TableCell>
                                 <Button
                                   variant="contained"
                                   size="small"
-                                  disabled={!valid || isAssigning}
+                                  disabled={!valid || isAssigning || !splitIsValid(id, item.inventoryLocation.quantity)}
                                   onClick={() =>
-                                    handleAssign(id, item.inventoryLocation.productCode)
+                                    handleAssign(
+                                      id,
+                                      item.inventoryLocation.productCode,
+                                      item.inventoryLocation.quantity,
+                                    )
                                   }
                                 >
                                   {isAssigning ? <CircularProgress size={20} /> : 'Assign'}

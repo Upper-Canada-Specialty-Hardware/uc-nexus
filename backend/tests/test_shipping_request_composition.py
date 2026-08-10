@@ -2,8 +2,8 @@
 
 The Shipping module can now compose a request itself. The rules it is held to are the ones the
 request entity carries, not the ones the import wizard happened to apply, so these tests are mostly
-about the two paths being the same path: the same reservation of loose stock (#342), the same
-one-leaf-one-request guard, the same refusal to over-claim.
+about the two paths being the same path: the same reservation of stock (#342), the same refusal to
+over-claim.
 
 The edit is the other half. A request that cannot be corrected has to be rejected and retyped, and
 these pin what an edit is allowed to do to a claim it already holds.
@@ -15,10 +15,9 @@ from datetime import datetime
 import pytest
 from sqlalchemy import select
 
-from app.errors import ConflictError, InvalidStateTransitionError, InventoryShortfallError, ValidationError
-from app.models.enums import OpeningItemState, PullRequestItemType, ReservationSource, ShippingOutRequestStatus
+from app.errors import InvalidStateTransitionError, InventoryShortfallError, ValidationError
+from app.models.enums import ReservationSource, ShippingOutRequestStatus
 from app.models.inventory import InventoryLocation
-from app.models.opening_item import OpeningItem
 from app.models.project import Project
 from app.models.pull_request import PullRequestItem
 from app.models.stock_item import StockItem
@@ -64,26 +63,8 @@ def _stock(session, project, *, qty=10, code="HG-100", cat="HINGE"):
     return il
 
 
-def _leaf(session, project, *, opening="101", leaf=1, state=OpeningItemState.IN_INVENTORY):
-    oi = OpeningItem(
-        id=uuid.uuid4(),
-        project_id=project.id,
-        opening_id=uuid.uuid4(),
-        warehouse_id=warehouse_admin_repository.get_primary_warehouse_id(session),
-        opening_number=opening,
-        leaf=leaf,
-        quantity=1,
-        assembly_completed_at=datetime.utcnow(),
-        state=state,
-    )
-    session.add(oi)
-    session.flush()
-    return oi
-
-
 def _loose(qty=2, code="HG-100", cat="HINGE", opening=None):
     return {
-        "item_type": "LOOSE",
         "opening_number": opening,
         "hardware_category": cat,
         "product_code": code,
@@ -157,63 +138,29 @@ def test_an_empty_request_is_refused(db_session):
         _create(db_session, project, [])
 
 
-def test_a_loose_line_must_name_a_product(db_session):
+def test_a_line_must_name_a_product(db_session):
     project = _project(db_session)
     with pytest.raises(ValidationError):
-        _create(db_session, project, [{"item_type": "LOOSE", "opening_number": None, "requested_quantity": 1}])
+        _create(db_session, project, [{"opening_number": None, "requested_quantity": 1}])
 
 
-def test_a_leaf_already_on_a_live_request_cannot_go_on_another(db_session):
-    project = _project(db_session)
-    oi = _leaf(db_session, project)
-    line = {"item_type": "OPENING_ITEM", "opening_number": oi.opening_number, "opening_item_id": str(oi.id)}
-    _create(db_session, project, [dict(line, requested_quantity=1)])
+def test_the_server_mints_a_unique_number_whatever_the_caller_sends(db_session):
+    """#493: duplicates are no longer possible to refuse, because they are no longer possible.
 
-    with pytest.raises(ValidationError, match="already on a live shipping-out request"):
-        _create(db_session, project, [dict(line, requested_quantity=1)])
-
-
-def test_a_leaf_that_has_already_shipped_cannot_be_requested(db_session):
-    project = _project(db_session)
-    oi = _leaf(db_session, project, state=OpeningItemState.SHIPPED_OUT)
-
-    with pytest.raises(ValidationError, match="not in inventory"):
-        _create(
-            db_session,
-            project,
-            [
-                {
-                    "item_type": "OPENING_ITEM",
-                    "opening_number": oi.opening_number,
-                    "opening_item_id": str(oi.id),
-                    "requested_quantity": 1,
-                }
-            ],
-        )
-
-
-def test_an_opening_item_line_takes_its_opening_from_the_leaf(db_session):
-    # The leaf IS an opening. Trusting a client-supplied number here would let a line say it is for
-    # a door it is not.
-    project = _project(db_session)
-    oi = _leaf(db_session, project, opening="0501-EX", leaf=2)
-
-    req = _create(
-        db_session,
-        project,
-        [{"item_type": "OPENING_ITEM", "opening_item_id": str(oi.id), "requested_quantity": 1}],
-    )
-
-    assert [(i.opening_number, i.leaf) for i in req.items] == [("0501-EX", 2)]
-
-
-def test_a_duplicate_request_number_is_refused(db_session):
+    The number used to be typed by hand, so two requests could collide and the create had to reject
+    the second. The server mints it from the project's counter now and ignores what the caller sent,
+    so the same string twice produces two distinct requests rather than a conflict.
+    """
     project = _project(db_session)
     _stock(db_session, project, qty=10)
-    _create(db_session, project, [_loose(qty=1)], number="SOR-DUP")
 
-    with pytest.raises(ConflictError):
-        _create(db_session, project, [_loose(qty=1)], number="SOR-DUP")
+    first = _create(db_session, project, [_loose(qty=1)], number="SOR-DUP")
+    second = _create(db_session, project, [_loose(qty=1)], number="SOR-DUP")
+
+    assert first.request_number != second.request_number
+    assert first.request_number.endswith("-001")
+    assert second.request_number.endswith("-002")
+    assert first.request_number.startswith(project.project_id)
 
 
 # --- editing a pending one --------------------------------------------------------------------
@@ -265,24 +212,6 @@ def test_an_edit_that_over_claims_is_refused_and_leaves_the_original_claim(db_se
     assert _reserved(db_session, req) == 2
 
 
-def test_keeping_a_leaf_across_an_edit_is_not_a_conflict_with_itself(db_session):
-    project = _project(db_session)
-    _stock(db_session, project, qty=10)
-    oi = _leaf(db_session, project)
-    leaf_line = {
-        "item_type": "OPENING_ITEM",
-        "opening_number": oi.opening_number,
-        "opening_item_id": str(oi.id),
-        "requested_quantity": 1,
-    }
-    req = _create(db_session, project, [leaf_line])
-
-    shipping_requests.replace_shipping_out_request_items(db_session, req.id, [leaf_line, _loose(qty=2)])
-
-    refreshed = shipping_repository.get_shipping_out_request(db_session, req.id)
-    assert {i.item_type for i in refreshed.items} == {PullRequestItemType.OPENING_ITEM, PullRequestItemType.LOOSE}
-
-
 def test_emptying_a_request_is_refused(db_session):
     project = _project(db_session)
     _stock(db_session, project, qty=10)
@@ -316,65 +245,3 @@ def test_an_edited_request_carries_its_new_lines_onto_the_pull(db_session):
         select(PullRequestItem).where(PullRequestItem.pull_request_id == accepted.pull_request_id)
     ).all()
     assert [(line.opening_number, line.requested_quantity) for line in lines] == [(None, 5)]
-
-
-# --- one physical leaf, named once --------------------------------------------------------------
-# The already-on-a-live-request guard only sees claims that were committed before this call, so a
-# leaf named twice inside a single call slips past it entirely.
-
-
-def _leaf_line(oi):
-    return {
-        "item_type": "OPENING_ITEM",
-        "opening_number": oi.opening_number,
-        "opening_item_id": str(oi.id),
-        "requested_quantity": 1,
-    }
-
-
-def test_one_request_cannot_name_the_same_leaf_twice(db_session):
-    project = _project(db_session)
-    leaf = _leaf(db_session, project)
-
-    with pytest.raises(ValidationError, match="named more than once"):
-        _create(db_session, project, [_leaf_line(leaf), _leaf_line(leaf)])
-
-
-def test_two_drafts_in_one_call_cannot_split_a_leaf_between_them(db_session):
-    # Both would be minted live, and each would hold the same physical leaf - exactly the state the
-    # already-claimed guard exists to prevent, reached by a route it cannot see.
-    project = _project(db_session)
-    leaf = _leaf(db_session, project)
-
-    with pytest.raises(ValidationError, match="named more than once"):
-        shipping_requests.create_shipping_out_requests(
-            db_session,
-            project.id,
-            [
-                {"request_number": "SOR-D1", "items": [_leaf_line(leaf)]},
-                {"request_number": "SOR-D2", "items": [_leaf_line(leaf)]},
-            ],
-            created_by="Shipper",
-        )
-
-    assert db_session.scalars(select(OpeningItem).where(OpeningItem.id == leaf.id)).first() is not None
-
-
-def test_an_edit_cannot_name_the_same_leaf_twice_either(db_session):
-    project = _project(db_session)
-    _stock(db_session, project, qty=10)
-    leaf = _leaf(db_session, project)
-    req = _create(db_session, project, [_loose(qty=2)])
-
-    with pytest.raises(ValidationError, match="named more than once"):
-        shipping_requests.replace_shipping_out_request_items(db_session, req.id, [_leaf_line(leaf), _leaf_line(leaf)])
-
-
-def test_two_different_leaves_on_one_request_are_fine(db_session):
-    project = _project(db_session)
-    first = _leaf(db_session, project, opening="101", leaf=1)
-    second = _leaf(db_session, project, opening="101", leaf=2)
-
-    req = _create(db_session, project, [_leaf_line(first), _leaf_line(second)])
-
-    assert sorted(i.leaf for i in req.items) == [1, 2]

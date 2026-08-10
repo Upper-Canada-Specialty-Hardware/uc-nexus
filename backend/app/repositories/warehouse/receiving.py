@@ -3,30 +3,22 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import and_, exists, func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import InvalidStateTransitionError, NotFoundError, ValidationError
 from app.models.enums import (
     AuditAction,
     AuditEntityType,
-    NotificationType,
     POStatus,
-    PullRequestSource,
-    PullRequestStatus,
-    ReservationSource,
 )
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.project import Project as ProjectModel
-from app.models.pull_request import PullRequest as PullRequestModel
-from app.models.pull_request import PullRequestItem as PullRequestItemModel
 from app.models.purchase_order import POLineItem as POLineItemModel
 from app.models.purchase_order import PurchaseOrder as POModel
 from app.models.receiving import ReceiveLineItem as ReceiveLineItemModel
 from app.models.receiving import ReceiveRecord as ReceiveRecordModel
 from app.repositories import project_repository
-from app.services import notification_service
-from app.services.locking import lock_rows
 
 from .audit import _log_audit_event
 from .locations import _normalize_and_validate_location_fields
@@ -124,6 +116,7 @@ def create_receive(
     *,
     receipt_number: str | None = None,
     batch_number: str | None = None,
+    receive_draft_id: uuid.UUID | None = None,
 ) -> ReceiveRecordModel:
     """
     Create a ReceiveRecord with ReceiveLineItems and InventoryLocations.
@@ -343,199 +336,27 @@ def create_receive(
     elif any_received and po.status not in (POStatus.PARTIALLY_RECEIVED, POStatus.CLOSED):
         po.status = POStatus.PARTIALLY_RECEIVED
 
-    # The backfill retry loop for replacement pulls (#344). A receive is the *usual* way one becomes
-    # coverable and the one this module can see; other paths exist (a cancelled pull restocking, an
-    # allocation from the pool, a deficiency resolved back to available) and simply do not raise this
-    # signal today. Stock-pool POs are skipped: a replacement pull draws on *project* inventory, and
-    # allocating from the pool is a separate deliberate act.
-    if not is_stock_po:
-        session.flush()
-        notify_unblocked_replacement_pulls(
-            session,
-            po.project_id,
-            {
-                (poli_dict[li["po_line_item_id"]].hardware_category, poli_dict[li["po_line_item_id"]].product_code)
-                for li in line_items_input
-            },
-        )
-
     # Ask whoever raised the PO where this shipment goes - project inventory, or straight back out to
     # site. It lives HERE, at the end of the persist, rather than in the resolver, because there are
     # two ways into this function: the online approval and the outbox worker draining a receipt that
     # was queued while the relay was down. A decision raised in the resolver would exist only for the
     # first. No-ops for a stock PO.
-    from .receive_decisions import create_decision_for_receive
+    from .receive_decisions import create_decision_for_receive, stamp_receive_record_on_draft_decision
 
-    create_decision_for_receive(
-        session,
-        po,
-        receive_record.id,
-        total_quantity=sum(li["quantity_received"] for li in line_items_input),
+    stamped = (
+        stamp_receive_record_on_draft_decision(session, receive_draft_id, receive_record.id)
+        if receive_draft_id is not None
+        else None
     )
+    if stamped is None:
+        create_decision_for_receive(
+            session,
+            po,
+            receive_record.id,
+            total_quantity=sum(li["quantity_received"] for li in line_items_input),
+        )
 
     return receive_record
-
-
-def find_open_replacement_pulls(
-    session: Session,
-    project_id: uuid.UUID,
-    combos: set[tuple[str, str]] | None = None,
-) -> list[PullRequestModel]:
-    """Replacement (PR-REPL) pulls in a project that are **still owed hardware**, optionally narrowed
-    to those that want at least one of `combos` (#344).
-
-    A replacement pull is identified **structurally** - a SHOP_ASSEMBLY pull at least one of whose
-    lines carries `sa_opening_item_id` (#339), i.e. a line minted against a specific deficient
-    checklist item - rather than by its `PR-REPL-` number prefix. The prefix is a display convention;
-    the FK is the thing that makes the pull a replacement, and a structural test cannot be broken by
-    renaming a request.
-
-    "Open" used to mean PENDING and nothing else, because before #367 that was the only state a pull
-    with hardware still outstanding could be in: approval either filled it completely or refused and
-    left it PENDING. A **short pick** breaks that. The pull is IN_PROGRESS, some units are off the
-    shelf and the rest are still owed, and on the old filter it vanished from both loops this feeds -
-    its claim was never topped up as stock arrived, so the units it was waiting for stayed free for
-    the next request to take, and nothing ever told the warehouse the remainder could be keyed in.
-
-    So the filter is the honest reading of the same question: PENDING, or IN_PROGRESS with no
-    `picked_at` stamp. A picked pull is finished asking for hardware; a cancelled or completed one is
-    not asking at all.
-
-    Narrowing by combo is the first half of the dedupe: a receive that landed nothing this pull wants
-    cannot have changed whether it is coverable, so there is no reason to look at it, let alone
-    announce it. Items are eager-loaded because the caller sums their needs.
-    """
-    is_replacement = (
-        select(PullRequestItemModel.id)
-        .where(
-            PullRequestItemModel.pull_request_id == PullRequestModel.id,
-            PullRequestItemModel.sa_opening_item_id.is_not(None),
-        )
-        .exists()
-    )
-    stmt = (
-        select(PullRequestModel)
-        .options(selectinload(PullRequestModel.items))
-        .where(
-            PullRequestModel.project_id == project_id,
-            PullRequestModel.deleted_at.is_(None),
-            PullRequestModel.source == PullRequestSource.SHOP_ASSEMBLY,
-            or_(
-                PullRequestModel.status == PullRequestStatus.PENDING,
-                and_(
-                    PullRequestModel.status == PullRequestStatus.IN_PROGRESS,
-                    PullRequestModel.picked_at.is_(None),
-                ),
-            ),
-            is_replacement,
-        )
-    )
-    if combos is not None:
-        if not combos:
-            return []
-        wants_a_received_combo = exists().where(
-            PullRequestItemModel.pull_request_id == PullRequestModel.id,
-            or_(
-                *[
-                    and_(
-                        PullRequestItemModel.hardware_category == cat,
-                        PullRequestItemModel.product_code == code,
-                    )
-                    for cat, code in combos
-                ]
-            ),
-        )
-        stmt = stmt.where(wants_a_received_combo)
-    return list(session.scalars(stmt).unique().all())
-
-
-def notify_unblocked_replacement_pulls(
-    session: Session,
-    project_id: uuid.UUID | None,
-    received_combos: set[tuple[str, str]],
-) -> list:
-    """Claim what just landed for the replacements waiting on it, then tell the warehouse which of
-    them can now be approved (#344).
-
-    A PR-REPL pull waits with hardware outstanding - PENDING, or IN_PROGRESS after a short pick
-    (#367) - the PO is told to backfill, and when the backfill finally lands there is no signal that
-    the pull can now be filled. Somebody has to remember to go and retry it. This is that signal.
-
-    **The top-up runs first, and the order matters.** A replacement reserves what it can at flag time
-    and is usually short - that is why it is waiting. If this only announced the receive, the units
-    would stay free until somebody got round to approving, and any request created in the meantime
-    could take them: the pull would be announced as coverable and then come up short at approval,
-    which is exactly the loop the announcement exists to end. Claiming first makes the announcement
-    true when it is read.
-
-    **Dedupe, in three parts, and each part is doing different work:**
-
-    1. *Relevance.* Only pulls that wanted one of the combos this receive actually landed are
-       considered. A receive of door closers cannot change whether a hinge replacement is coverable.
-    2. *Coverability.* The pull must now be **fully** coverable, under the same reservation-aware
-       availability the approver will apply - `on-hand - deficient - everyone's reservations`, with
-       **this pull's own claim excluded**. That exclusion is mandatory, not a refinement: the top-up
-       above has just reserved the received units *for this pull*, so counting them as competing
-       demand would make the pull read as insufficient forever and the notification would never fire
-       again. It is the same self-coverage rule `confirm_pick` applies for the same reason.
-       A receive that narrows the gap without closing it changes nothing the warehouse can act on, so
-       it says nothing. Note this is the state *after* the receive only - the prior state is not
-       re-derived, so a pull that was already coverable and gets more stock still qualifies here;
-       what actually stops it being announced twice is rule 3.
-    3. *Open signal.* One **unread** notification per pull. If the last one has not been read yet,
-       the warehouse already knows; raising a second is noise. Once it has been read the signal has
-       done its job, so a pull that goes short again and is later covered again gets a fresh one.
-
-    Rule 3 is a check followed by an insert, so it needs the pull's row lock to mean anything: two
-    receives landing the same combo concurrently would both find no unread notification and both
-    write one. The lock is taken per pull, after the pull is known to be relevant and coverable, so a
-    receive that changes nothing takes no locks at all.
-
-    Returns the notifications raised, so callers and tests can assert on them.
-    """
-    if project_id is None or not received_combos:
-        return []
-    from .pull_requests import check_inventory_sufficiency, outstanding_loose_needs
-    from .reservations import top_up_replacement_reservations
-
-    top_up_replacement_reservations(session, project_id, received_combos)
-
-    raised = []
-    for pr in find_open_replacement_pulls(session, project_id, received_combos):
-        # What is *still* owed, not what the pull originally asked for (#367). A short-picked pull
-        # already has some of it on a cart; asking whether the original requirement is coverable
-        # would keep answering no long after the gap had closed, and the signal would never fire.
-        needs = [(cat, code, qty) for (cat, code), qty in outstanding_loose_needs(session, pr).items()]
-        if not needs:
-            continue
-        if not check_inventory_sufficiency(
-            session,
-            project_id,
-            needs,
-            reservation_aware=True,
-            exclude_reservations_of=(ReservationSource.REPLACEMENT_PULL, pr.id),
-        ).sufficient:
-            continue
-        if not lock_rows(session, PullRequestModel, [pr.id]):
-            continue
-        if notification_service.has_unread_notification_for_pull(session, pr.id, NotificationType.PULL_UNBLOCKED):
-            continue
-        raised.append(
-            notification_service.create_notification(
-                session,
-                project_id=project_id,
-                recipient_role=notification_service.WAREHOUSE_RECIPIENT_ROLE,
-                notification_type=NotificationType.PULL_UNBLOCKED,
-                message=(
-                    f"Replacement Pull Request {pr.request_number} can now be fulfilled - the hardware "
-                    "it was waiting on has been received. Pick it to release the replacement."
-                ),
-                pull_request_id=pr.id,
-            )
-        )
-    if raised:
-        session.flush()
-    return raised
 
 
 def get_po_receiving_details(session: Session, po_id: uuid.UUID) -> tuple[POModel, list[ReceiveRecordModel]]:
@@ -722,3 +543,115 @@ def get_recent_receive_records(session: Session, limit: int = 10) -> list[tuple]
         .limit(limit)
     )
     return list(session.execute(stmt).unique().all())
+
+
+def get_all_receives(
+    session: Session,
+    *,
+    limit: int = 50,
+    offset: int = 0,
+    project_id: uuid.UUID | None = None,
+    po_search: str | None = None,
+) -> list[dict]:
+    """Every receive entity, drafts and booked records interleaved, newest first (#505).
+
+    Each existing view covers a slice: MyReceiveDraftsView is one user's own drafts,
+    ReceiveApprovalsPage is the manager's pending queue, ReceivingHistory is recent activity. A
+    rejected draft appeared in none of them, so a count somebody disputed simply vanished.
+
+    Drafts and records are read separately and merged in Python rather than SQL-UNIONed: they carry
+    different columns (a draft has a reviewer and a rejection reason, a record has an RCT number and
+    a batch), and a union would have to null-pad both sides into a shape neither one is.
+
+    Line counts and quantities come off the already-loaded line collections, which are selectinloaded
+    here - the #-N+1 rule: no per-row lazy loads.
+    """
+    from app.models.project import Project as ProjectModel
+    from app.models.receive_draft import ReceiveDraft as ReceiveDraftModel
+
+    def _po_filters(stmt, po_alias):
+        if project_id is not None:
+            stmt = stmt.where(po_alias.project_id == project_id)
+        if po_search:
+            stmt = stmt.where(po_alias.po_number.ilike(f"%{po_search.strip()}%"))
+        return stmt
+
+    draft_stmt = (
+        select(ReceiveDraftModel, POModel)
+        .join(POModel, ReceiveDraftModel.po_id == POModel.id)
+        .options(selectinload(ReceiveDraftModel.line_items))
+    )
+    draft_stmt = _po_filters(draft_stmt, POModel)
+
+    record_stmt = (
+        select(ReceiveRecordModel, POModel)
+        .join(POModel, ReceiveRecordModel.po_id == POModel.id)
+        .options(selectinload(ReceiveRecordModel.line_items))
+    )
+    record_stmt = _po_filters(record_stmt, POModel)
+
+    # A draft that has been approved has a receive_record_id, and the record is the row worth
+    # showing - it carries the RCT number and the booked quantities. Skipping those drafts is what
+    # keeps one physical delivery from appearing twice.
+    rows: list[dict] = []
+    for draft, po in session.execute(draft_stmt).unique().all():
+        if draft.receive_record_id is not None:
+            continue
+        rows.append(
+            {
+                "kind": "DRAFT",
+                "id": draft.id,
+                "occurred_at": draft.created_at,
+                "status": draft.status.value,
+                "po_id": po.id,
+                "po_number": po.po_number,
+                "project_id": po.project_id,
+                "warehouse_id": draft.warehouse_id,
+                "line_count": len(draft.line_items),
+                "total_quantity": sum(li.quantity_received for li in draft.line_items),
+                "counted_by": draft.created_by_name,
+                "reviewed_by": draft.reviewed_by_name,
+                "rejection_reason": draft.rejection_reason,
+                "receipt_number": None,
+                "batch_number": None,
+            }
+        )
+
+    for record, po in session.execute(record_stmt).unique().all():
+        rows.append(
+            {
+                "kind": "RECORD",
+                "id": record.id,
+                "occurred_at": record.received_at,
+                "status": "APPROVED",
+                "po_id": po.id,
+                "po_number": po.po_number,
+                "project_id": po.project_id,
+                "warehouse_id": None,
+                "line_count": len(record.line_items),
+                "total_quantity": sum(li.quantity_received for li in record.line_items),
+                "counted_by": record.received_by,
+                "reviewed_by": None,
+                "rejection_reason": None,
+                "receipt_number": record.receipt_number,
+                "batch_number": record.batch_number,
+            }
+        )
+
+    # Project names in one grouped read rather than one per row.
+    project_ids = {r["project_id"] for r in rows if r["project_id"]}
+    names: dict = {}
+    if project_ids:
+        names = {
+            pid: (desc or number)
+            for pid, number, desc in session.execute(
+                select(ProjectModel.id, ProjectModel.project_id, ProjectModel.description).where(
+                    ProjectModel.id.in_(project_ids)
+                )
+            ).all()
+        }
+    for r in rows:
+        r["project_name"] = names.get(r["project_id"])
+
+    rows.sort(key=lambda r: r["occurred_at"], reverse=True)
+    return rows[offset : offset + limit]

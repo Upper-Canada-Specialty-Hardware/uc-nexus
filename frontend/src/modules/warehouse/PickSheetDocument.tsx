@@ -1,6 +1,5 @@
 import { Document, Page, Text, View, StyleSheet } from '@react-pdf/renderer';
-import { leafIdentity } from '../../utils/leaf';
-import { locationLabel, type PickSheetFetchItem, type PickSheetSection } from './pick';
+import { locationLabel, type PickSheetSection } from './pick';
 import { parseServerDate } from '../../utils/serverDate';
 
 const styles = StyleSheet.create({
@@ -19,7 +18,7 @@ const styles = StyleSheet.create({
   },
   sectionCode: { fontSize: 13, fontFamily: 'Helvetica-Bold' },
   sectionCounts: { fontSize: 10, color: '#555' },
-  leaves: { fontSize: 9, color: '#555', marginBottom: 6 },
+  openings: { fontSize: 9, color: '#555', marginBottom: 6 },
   claimed: { fontSize: 9, color: '#333', marginBottom: 6, fontFamily: 'Helvetica-Bold' },
   tableHeaderRow: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: '#999', paddingBottom: 3 },
   tableRow: {
@@ -50,7 +49,6 @@ export interface PickSheetDocumentProps {
   printedBy: string;
   printedAt: string;
   sections: PickSheetSection[];
-  fetchItems: PickSheetFetchItem[];
 }
 
 /**
@@ -61,8 +59,8 @@ export interface PickSheetDocumentProps {
  * agree line for line, and why the write-in column is **blank**. Printing a suggested split would
  * make the paper an approval form rather than a record of what was taken.
  *
- * Every leaf is listed under its product code, for the same reason it is on screen: the picker is
- * building carts leaf by leaf.
+ * Every opening is listed under its product code, for the same reason it is on screen: the picker
+ * is building carts door by door.
  */
 export default function PickSheetDocument({
   requestNumber,
@@ -72,7 +70,6 @@ export default function PickSheetDocument({
   printedBy,
   printedAt,
   sections,
-  fetchItems,
 }: PickSheetDocumentProps) {
   return (
     <Document>
@@ -90,14 +87,12 @@ export default function PickSheetDocument({
           </Text>
         </View>
 
-        {sections.length === 0 && fetchItems.length === 0 && (
-          <Text style={styles.empty}>This pull has nothing to pick.</Text>
-        )}
+        {sections.length === 0 && <Text style={styles.empty}>This pull has nothing to pick.</Text>}
 
         {sections.map((section) => (
           // No `wrap={false}` here: react-pdf cannot split an unwrappable element, so a section
           // taller than a page would silently lose the tail of its location table - write-in boxes
-          // and all - which is the exact failure the "every leaf, never truncated" rule exists to
+          // and all - which is the exact failure the "every opening, never truncated" rule exists to
           // stop. Rows wrap individually instead, and `minPresenceAhead` keeps a header from
           // orphaning at the foot of a page.
           <View key={`${section.hardwareCategory}|${section.productCode}`} minPresenceAhead={60}>
@@ -112,8 +107,9 @@ export default function PickSheetDocument({
               </Text>
             </View>
 
-            <Text style={styles.leaves}>
-              Leaves: {section.leaves.map((l) => `${leafIdentity(l.openingNumber, l.leaf)} x${l.quantity}`).join(', ')}
+            <Text style={styles.openings}>
+              Openings:{' '}
+              {section.openings.map((o) => `${o.openingNumber ?? 'no opening'} x${o.quantity}`).join(', ')}
             </Text>
 
             {section.claimableShortfall > 0 && (
@@ -128,23 +124,30 @@ export default function PickSheetDocument({
               <Text style={styles.empty}>No inventory rows hold this product for this project.</Text>
             ) : (
               <>
+                {/* #496: PO # and Order As per location - the picker matches what is on the box,
+                    which carries the vendor's name for the part, not ours. The write-in box keeps
+                    its width; the location and received columns give up the room. */}
                 <View style={styles.tableHeaderRow}>
-                  <Text style={[styles.th, { width: '38%' }]}>Location</Text>
-                  <Text style={[styles.th, { width: '22%' }]}>Received</Text>
-                  <Text style={[styles.th, { width: '18%' }]}>Available</Text>
-                  <Text style={[styles.th, { width: '22%' }]}>Pulled</Text>
+                  <Text style={[styles.th, { width: '26%' }]}>Location</Text>
+                  <Text style={[styles.th, { width: '16%' }]}>PO #</Text>
+                  <Text style={[styles.th, { width: '18%' }]}>Order As</Text>
+                  <Text style={[styles.th, { width: '14%' }]}>Received</Text>
+                  <Text style={[styles.th, { width: '12%' }]}>Available</Text>
+                  <Text style={[styles.th, { width: '14%' }]}>Pulled</Text>
                 </View>
                 {section.locations.map((loc) => (
                   <View key={loc.inventoryLocationId} style={styles.tableRow} wrap={false}>
-                    <Text style={[styles.td, { width: '38%' }]}>
+                    <Text style={[styles.td, { width: '26%' }]}>
                       {loc.warehouseCode ? `${loc.warehouseCode} ` : ''}
                       {locationLabel(loc) ?? 'Unlocated'}
                     </Text>
-                    <Text style={[styles.td, { width: '22%' }]}>
+                    <Text style={[styles.td, { width: '16%' }]}>{loc.poNumber ?? '—'}</Text>
+                    <Text style={[styles.td, { width: '18%' }]}>{loc.orderAs ?? '—'}</Text>
+                    <Text style={[styles.td, { width: '14%' }]}>
                       {parseServerDate(loc.receivedAt).toLocaleDateString()}
                     </Text>
-                    <Text style={[styles.td, { width: '18%' }]}>{loc.available}</Text>
-                    <View style={{ width: '22%' }}>
+                    <Text style={[styles.td, { width: '12%' }]}>{loc.available}</Text>
+                    <View style={{ width: '14%' }}>
                       <View style={styles.writeIn} />
                     </View>
                   </View>
@@ -153,35 +156,6 @@ export default function PickSheetDocument({
             )}
           </View>
         ))}
-
-        {fetchItems.length > 0 && (
-          <View minPresenceAhead={60}>
-            <View style={styles.sectionHeader}>
-              <Text style={styles.sectionCode}>Assembled leaves to fetch</Text>
-              <Text style={styles.sectionCounts}>
-                {fetchItems.length} {fetchItems.length === 1 ? 'leaf' : 'leaves'}
-              </Text>
-            </View>
-            <View style={styles.tableHeaderRow}>
-              <Text style={[styles.th, { width: '10%' }]}>Got it</Text>
-              <Text style={[styles.th, { width: '40%' }]}>Leaf</Text>
-              <Text style={[styles.th, { width: '30%' }]}>Location</Text>
-              <Text style={[styles.th, { width: '20%' }]}>State</Text>
-            </View>
-            {fetchItems.map((item) => (
-              <View key={item.pullRequestItemId} style={styles.tableRow} wrap={false}>
-                <View style={{ width: '10%' }}>
-                  <View style={styles.checkBox} />
-                </View>
-                <Text style={[styles.td, { width: '40%' }]}>
-                  {leafIdentity(item.openingNumber, item.leaf)}
-                </Text>
-                <Text style={[styles.td, { width: '30%' }]}>{locationLabel(item) ?? 'Unlocated'}</Text>
-                <Text style={[styles.td, { width: '20%' }]}>{item.state ?? '-'}</Text>
-              </View>
-            ))}
-          </View>
-        )}
 
         <View style={styles.footer}>
           <View style={styles.signature}>

@@ -224,7 +224,19 @@ class ProjectMutations:
         return GpJobSyncResult(total=total, adopted=adopted)
 
     @strawberry.mutation
-    def update_project(self, info: strawberry.Info, id: strawberry.ID, input: UpdateProjectInput) -> Project:
+    async def update_project(self, info: strawberry.Info, id: strawberry.ID, input: UpdateProjectInput) -> Project:
+        """Edit a project, and tell GP about the parts GP holds too (#497).
+
+        The job name and the site address live in both systems. Correcting them in Nexus alone left
+        GP with the old ones, and GP is what purchasing, accounting and the printed PO read - so the
+        wrong address reached the vendor long after somebody had fixed it here.
+
+        Nexus commits first and pushes second, deliberately. The edit is the user's and must not be
+        lost to a GP outage; the push is a replication of it. When the relay is unreachable the push
+        goes on the outbox and drains later, which is the same shape every other GP write in this
+        codebase uses. A GP refusal is surfaced - the edit is already saved, so there is nothing to
+        roll back and nothing the user can do about the GP half except be told.
+        """
         with SessionLocal() as session:
             project = project_repository.update_project(
                 session,
@@ -246,4 +258,79 @@ class ProjectMutations:
             )
             session.commit()
             session.refresh(project)
-            return project_to_type(project)
+            pushed = _gp_site_payload(project)
+            project_type = project_to_type(project)
+            quarantined = project.gp_setup_ok is False
+
+        if pushed is not None and not quarantined:
+            await _push_site_to_gp(uuid.UUID(str(id)), pushed)
+        return project_type
+
+
+def _gp_site_payload(project) -> dict | None:
+    """What of this project GP holds, or None when there is nothing to push.
+
+    Only the job name and the site address: they are the fields that exist on both sides. Everything
+    else on the project - the GC contact, the estimator, the storage agreement - is Nexus's alone, and
+    sending it would mean inventing a place to put it in GP.
+
+    An address is a street and a city or it is nothing GP can ship to, so a half-filled one is not
+    pushed rather than written as a partial record.
+    """
+    name = (project.description or "").strip()
+    address1 = (project.address or "").strip()
+    city = (project.city or "").strip()
+    has_address = bool(address1 and city)
+    if not name and not has_address:
+        return None
+
+    payload: dict = {"job_number": project.project_id}
+    if name:
+        payload["job_name"] = name
+    if has_address:
+        payload["address1"] = address1
+        payload["city"] = city
+        payload["state"] = (project.state or "").strip()
+        payload["zip_code"] = (project.zip or "").strip()
+    return payload
+
+
+async def _push_site_to_gp(project_id: uuid.UUID, payload: dict) -> None:
+    """Replicate the edit onto the GP job, queueing it if the relay never took it.
+
+    Only an UNDISPATCHED relay failure queues (`should_enqueue`): the write never left the backend, so
+    GP cannot be holding it. Anything ambiguous - a dispatched disconnect, a timeout - is NOT queued,
+    because a second push of the same values would mint nothing new but would still be a write against
+    accounting data on a guess.
+    """
+    from app.services import gp_outbox_enqueue
+
+    company = relay_gateway.company
+    if not company:
+        logger.info("update_project: no GP company configured, skipping the site push")
+        return
+
+    try:
+        await relay_gateway.relay_call(company, "update_job_site", payload)
+    except RelayUnavailableError as e:
+        if not gp_outbox_enqueue.should_enqueue(e):
+            logger.warning("update_project: site push for %s failed ambiguously: %s", payload["job_number"], e)
+            return
+        gp_outbox_enqueue.enqueue(
+            # Keyed on the values, so re-saving the same edit while it is queued is one entry, and a
+            # genuinely different correction queues as its own.
+            idempotency_key=f"update_job_site:{payload['job_number']}:{hash(tuple(sorted(payload.items())))}",
+            op="update_job_site",
+            relay_op="update_job_site",
+            company=company,
+            payload=payload,
+            persist_context={},
+            entity_key=f"project:{project_id}",
+            label=f"Site details for job {payload['job_number']}",
+            project_id=project_id,
+        )
+    except RelayCallError as e:
+        # GP refused - an address code collision, a job it does not have. The edit is already saved
+        # in Nexus, so this is reported rather than raised: failing the mutation would tell the user
+        # their correction did not happen when it did.
+        logger.warning("update_project: GP refused the site push for %s: %s", payload["job_number"], e)

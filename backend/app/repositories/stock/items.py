@@ -57,41 +57,6 @@ def get_stock_item(session: Session, stock_item_id: uuid.UUID) -> StockItem:
     return si
 
 
-def get_stock_matches_for_opening(
-    session: Session,
-    opening_item_id: uuid.UUID,
-) -> list[StockItem]:
-    """Return stock_items whose hardware_category matches the opening item's category.
-
-    Match is intentionally loose: same hardware_category, ranking exact product_code match first.
-    """
-    from app.models.opening_item import OpeningItem, OpeningItemHardware
-
-    oi = session.get(OpeningItem, opening_item_id)
-    if oi is None:
-        raise NotFoundError(f"Opening item {opening_item_id} not found")
-
-    # Pull installed hardware to know what categories/codes we are looking for
-    ih_stmt = select(OpeningItemHardware).where(OpeningItemHardware.opening_item_id == opening_item_id)
-    installed = list(session.scalars(ih_stmt).all())
-    if not installed:
-        return []
-
-    categories = {h.hardware_category for h in installed}
-    codes = {h.product_code for h in installed}
-
-    stmt = (
-        select(StockItem)
-        .where(StockItem.hardware_category.in_(categories))
-        .where(StockItem.quantity > 0)
-        .order_by(StockItem.product_code.asc(), StockItem.received_at.asc())
-    )
-    rows = list(session.scalars(stmt).all())
-    # Promote exact product_code matches to the front
-    rows.sort(key=lambda r: (r.product_code not in codes, r.hardware_category, r.product_code))
-    return rows
-
-
 def adjust_stock_quantity(
     session: Session,
     *,

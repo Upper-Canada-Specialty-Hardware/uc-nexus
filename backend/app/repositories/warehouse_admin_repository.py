@@ -7,7 +7,6 @@ from sqlalchemy.orm import Session
 
 from app.errors import ConflictError, NotFoundError, ValidationError
 from app.models.inventory import InventoryLocation as InventoryLocationModel
-from app.models.opening_item import OpeningItem as OpeningItemModel
 from app.models.stock_item import StockItem as StockItemModel
 from app.models.warehouse import Warehouse
 
@@ -167,7 +166,6 @@ def delete_warehouse(session: Session, warehouse_id: uuid.UUID) -> None:
     for model, label in (
         (InventoryLocationModel, "inventory location"),
         (StockItemModel, "stock"),
-        (OpeningItemModel, "opening item"),
     ):
         count = session.scalar(select(func.count()).select_from(model).where(model.warehouse_id == warehouse_id))
         if count and count > 0:

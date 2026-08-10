@@ -7,23 +7,16 @@ from sqlalchemy import select
 
 from app.models.enums import (
     HardwareItemState,
-    OpeningItemState,
-    PullRequestStatus,
-    PullStatus,
     ShopAssemblyRequestStatus,
 )
 from app.models.hardware import HardwareItem
 from app.models.inventory import InventoryLocation
-from app.models.opening_item import OpeningItem
 from app.models.project import Opening, Project
-from app.models.pull_request import PullRequest, PullRequestItem
+from app.models.pull_request import PullRequest
 from app.models.purchase_order import POLineItem, PurchaseOrder
-from app.models.shop_assembly import (
-    ShopAssemblyOpening,
-    ShopAssemblyRequest,
-)
+from app.models.shop_assembly import ShopAssemblyRequestItem
 from app.models.stock_item import StockItem
-from app.repositories import import_repository, shop_assembly_repository, warehouse_admin_repository
+from app.repositories import import_repository, warehouse_admin_repository
 
 
 def _seed_inventory(session, project_id, *, hardware_category="HINGE", product_code="HG-100", quantity=10):
@@ -280,77 +273,14 @@ def test_replace_schedule_wipes_all_hardware_items(db_session):
     assert opening_numbers == {"A03"}
 
 
-def test_replace_schedule_preserves_inventory(db_session):
-    """An OpeningItem in inventory survives a replace_schedule that removes its source opening."""
-    project = _make_project(db_session)
-    db_session.commit()
-
-    import_repository.finalize_import_session(
-        db_session,
-        {
-            "project_id": str(project.id),
-            "openings": [_opening_input("A01", building="B1", floor="F2", location="Lobby")],
-            "hardware_items": [],
-        },
-    )
-    db_session.flush()
-    a01 = db_session.scalar(select(Opening).where(Opening.project_id == project.id, Opening.opening_number == "A01"))
-
-    # Simulate an OpeningItem in inventory for A01
-    oi = OpeningItem(
-        id=uuid.uuid4(),
-        project_id=project.id,
-        opening_id=a01.id,
-        warehouse_id=warehouse_admin_repository.get_primary_warehouse_id(db_session),
-        opening_number="A01",
-        building="B1",
-        floor="F2",
-        location="Lobby",
-        quantity=1,
-        assembly_completed_at=datetime.utcnow(),
-        state=OpeningItemState.IN_INVENTORY,
-        aisle="A1",
-        row="01",
-        bay="B1",
-    )
-    db_session.add(oi)
-    db_session.flush()
-
-    # Re-upload a schedule without A01
-    import_repository.finalize_import_session(
-        db_session,
-        {
-            "project_id": str(project.id),
-            "openings": [_opening_input("A02")],
-            "hardware_items": [],
-            "replace_schedule": True,
-        },
-    )
-    db_session.flush()
-
-    # Opening row is gone
-    assert db_session.scalar(select(Opening).where(Opening.id == a01.id)) is None
-
-    # OpeningItem still exists, with full snapshot
-    refreshed_oi = db_session.scalar(select(OpeningItem).where(OpeningItem.id == oi.id))
-    assert refreshed_oi is not None
-    assert refreshed_oi.opening_number == "A01"
-    assert refreshed_oi.building == "B1"
-    assert refreshed_oi.floor == "F2"
-    assert refreshed_oi.location == "Lobby"
-    assert refreshed_oi.aisle == "A1"
-    assert refreshed_oi.quantity == 1
-
-
 def test_shop_assembly_request_created_pending(db_session):
-    """finalize mints a PENDING ShopAssemblyRequest (#293): NO PullRequest yet, openings hang off the
-    SAR via shop_assembly_request_id with pull_request_id NULL, items + snapshot identity captured.
+    """finalize mints a PENDING ShopAssemblyRequest (#293): NO PullRequest yet, flat lines hanging
+    off the request with their opening tag captured.
     Creation gates on available inventory and reserves it (#342), so the stock has to be there."""
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=10)
     db_session.commit()
 
-    req_number = f"SA-{uuid.uuid4().hex[:6]}"
     result = import_repository.finalize_import_session(
         db_session,
         {
@@ -358,13 +288,12 @@ def test_shop_assembly_request_created_pending(db_session):
             "openings": [_opening_input("A01", building="B1", floor="F2", location="Lobby")],
             "hardware_items": [],
             "include_shop_assembly_request": True,
-            "shop_assembly_request_number": req_number,
-            "shop_assembly_openings": [
+            "shop_assembly_items": [
                 {
                     "opening_number": "A01",
-                    "items": [
-                        {"hardware_category": "HINGE", "product_code": "HG-100", "quantity": 2},
-                    ],
+                    "hardware_category": "HINGE",
+                    "product_code": "HG-100",
+                    "quantity": 2,
                 },
             ],
         },
@@ -372,155 +301,29 @@ def test_shop_assembly_request_created_pending(db_session):
     db_session.flush()
 
     # A PENDING shop-assembly request is created, no approval, no PullRequest.
-    sar = db_session.scalar(select(ShopAssemblyRequest).where(ShopAssemblyRequest.request_number == req_number))
+    # #493: the number is minted server-side, so the request is read off the result rather than
+    # looked up by the number the caller asked for - which is now ignored.
+    sar = result["shop_assembly_request"]
     assert sar is not None
+    assert sar.request_number.endswith("-001")
     assert sar.status == ShopAssemblyRequestStatus.PENDING
     assert sar.created_by == "Hardware Schedule Import"
     assert sar.project_id == project.id
     assert result["shop_assembly_request"].id == sar.id
 
     # No PullRequest exists yet - it is minted only at accept.
-    assert db_session.scalar(select(PullRequest).where(PullRequest.request_number == req_number)) is None
+    assert db_session.scalar(select(PullRequest).where(PullRequest.request_number == sar.request_number)) is None
 
-    # The opening hangs off the SAR (not a PR) with pull_request_id NULL and snapshot identity.
-    sao = db_session.scalar(select(ShopAssemblyOpening).where(ShopAssemblyOpening.shop_assembly_request_id == sar.id))
-    assert sao is not None
-    assert sao.pull_request_id is None
-    assert sao.opening_number == "A01"
-    assert sao.building == "B1"
-    assert sao.floor == "F2"
-    assert sao.location == "Lobby"
-    assert len(sao.items) == 1
-    assert sao.items[0].product_code == "HG-100"
-    assert sao.items[0].quantity == 2
-
-
-def test_sar_queries_work_after_opening_deleted(db_session):
-    """get_assemble_list / get_my_work must work even when the source Opening row was deleted."""
-    project = _make_project(db_session)
-    _seed_inventory(db_session, project.id, product_code="HG-100", quantity=1)  # #224 gate 1
-    db_session.commit()
-
-    req_number = f"SA-{uuid.uuid4().hex[:6]}"
-    result = import_repository.finalize_import_session(
-        db_session,
-        {
-            "project_id": str(project.id),
-            "openings": [_opening_input("A01")],
-            "hardware_items": [],
-            "include_shop_assembly_request": True,
-            "shop_assembly_request_number": req_number,
-            "shop_assembly_openings": [
-                {
-                    "opening_number": "A01",
-                    "items": [{"hardware_category": "HINGE", "product_code": "HG-100", "quantity": 1}],
-                },
-            ],
-        },
-    )
-    db_session.flush()
-
-    # Accept the request (#293) so it mints the shop-assembly PR and repoints the opening at it.
-    shop_assembly_repository.accept_shop_assembly_request(db_session, result["shop_assembly_request"].id, "acceptor")
-    db_session.flush()
-
-    # Complete the pull so the opening shows up in assemble_list (assigned_to needs setting for my_work)
-    pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == req_number))
-    pr.status = PullRequestStatus.COMPLETED
-    sao = db_session.scalar(select(ShopAssemblyOpening).where(ShopAssemblyOpening.pull_request_id == pr.id))
-    sao.pull_status = PullStatus.PULLED
-    # my_work keys on the stable user id (#324); assigned_to is the display name.
-    sao.assigned_to_user_id = "tester"
-    sao.assigned_to = "Tester Name"
-    db_session.flush()
-
-    # Re-upload removing A01
-    import_repository.finalize_import_session(
-        db_session,
-        {
-            "project_id": str(project.id),
-            "openings": [_opening_input("A02")],
-            "hardware_items": [],
-            "replace_schedule": True,
-        },
-    )
-    db_session.flush()
-
-    # Opening A01 is deleted
-    assert (
-        db_session.scalar(select(Opening).where(Opening.project_id == project.id, Opening.opening_number == "A01"))
-        is None
-    )
-
-    # Both repository functions should still return the SAR opening with snapshot data
-    assemble_rows = shop_assembly_repository.get_assemble_list(db_session, project.id)
-    assert len(assemble_rows) == 1
-    assert assemble_rows[0].opening_number == "A01"
-
-    my_work_rows = shop_assembly_repository.get_my_work(db_session, "tester")
-    assert len(my_work_rows) == 1
-    assert my_work_rows[0].opening_number == "A01"
-
-
-def _pulled_opening(db_session, project, opening_number="A01"):
-    """Drive one shop-assembly opening to a PULLED, unassigned, PENDING state and return its row."""
-    req_number = f"SA-{uuid.uuid4().hex[:6]}"
-    result = import_repository.finalize_import_session(
-        db_session,
-        {
-            "project_id": str(project.id),
-            "openings": [_opening_input(opening_number)],
-            "hardware_items": [],
-            "include_shop_assembly_request": True,
-            "shop_assembly_request_number": req_number,
-            "shop_assembly_openings": [
-                {
-                    "opening_number": opening_number,
-                    "items": [{"hardware_category": "HINGE", "product_code": "HG-100", "quantity": 1}],
-                },
-            ],
-        },
-    )
-    db_session.flush()
-    shop_assembly_repository.accept_shop_assembly_request(db_session, result["shop_assembly_request"].id, "acceptor")
-    db_session.flush()
-    pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == req_number))
-    pr.status = PullRequestStatus.COMPLETED
-    sao = db_session.scalar(select(ShopAssemblyOpening).where(ShopAssemblyOpening.pull_request_id == pr.id))
-    sao.pull_status = PullStatus.PULLED
-    db_session.flush()
-    return sao
-
-
-def test_assign_and_my_work_key_on_stable_user_id(db_session):
-    """#324: assignment stores the stable user id + display name; my_work filters on the user id,
-    NOT the display name - the exact mismatch that broke the e2e when assigning by raw id."""
-    project = _make_project(db_session)
-    _seed_inventory(db_session, project.id, product_code="HG-100", quantity=1)
-    db_session.commit()
-
-    sao = _pulled_opening(db_session, project)
-
-    shop_assembly_repository.assign_openings(
-        db_session, [sao.id], assigned_to_user_id="user_clerk_123", assigned_to_name="Jane Doe"
-    )
-    db_session.flush()
-    db_session.refresh(sao)
-    assert sao.assigned_to_user_id == "user_clerk_123"
-    assert sao.assigned_to == "Jane Doe"
-
-    # my_work resolves by the stable id...
-    assert len(shop_assembly_repository.get_my_work(db_session, "user_clerk_123")) == 1
-    # ...and NOT by the display name (the pre-#324 key).
-    assert shop_assembly_repository.get_my_work(db_session, "Jane Doe") == []
-
-    # Returning it to the pool clears both fields, so it drops off my_work.
-    shop_assembly_repository.remove_opening_from_user(db_session, sao.id)
-    db_session.flush()
-    db_session.refresh(sao)
-    assert sao.assigned_to_user_id is None
-    assert sao.assigned_to is None
-    assert shop_assembly_repository.get_my_work(db_session, "user_clerk_123") == []
+    # The request holds flat lines, each tagged with its opening, and no pull yet.
+    assert sar.pull_request_id is None
+    lines = db_session.scalars(
+        select(ShopAssemblyRequestItem).where(ShopAssemblyRequestItem.shop_assembly_request_id == sar.id)
+    ).all()
+    assert len(lines) == 1
+    assert lines[0].opening_number == "A01"
+    assert lines[0].product_code == "HG-100"
+    assert lines[0].quantity == 2
+    assert lines[0].allocated_quantity == 2
 
 
 def test_existing_openings_updated_on_replace(db_session):
@@ -702,152 +505,3 @@ def test_leaf_po_ref_attaches_both_leaf_rows_to_one_line(db_session):
     assert len(line_item_ids) == 1  # both leaves roll into one PO line
     poli = db_session.scalar(select(POLineItem).where(POLineItem.id == next(iter(line_item_ids))))
     assert poli.ordered_quantity == 5  # 2 (leaf 1) + 3 (leaf 2)
-
-
-def test_sar_created_per_leaf(db_session):
-    """A pair produces one ShopAssemblyOpening per door leaf, each stamped with its leaf."""
-    project = _make_project(db_session)
-    _seed_inventory(db_session, project.id, quantity=10)
-    db_session.commit()
-
-    req_number = f"SA-{uuid.uuid4().hex[:6]}"
-    import_repository.finalize_import_session(
-        db_session,
-        {
-            "project_id": str(project.id),
-            "openings": [_opening_input("PR1", leaf_count=2)],
-            "hardware_items": [],
-            "include_shop_assembly_request": True,
-            "shop_assembly_request_number": req_number,
-            "shop_assembly_openings": [
-                {
-                    "opening_number": "PR1",
-                    "leaf": 1,
-                    "items": [{"hardware_category": "HINGE", "product_code": "HG-100", "quantity": 1}],
-                },
-                {
-                    "opening_number": "PR1",
-                    "leaf": 2,
-                    "items": [{"hardware_category": "HINGE", "product_code": "HG-100", "quantity": 1}],
-                },
-            ],
-        },
-    )
-    db_session.flush()
-
-    saos = db_session.scalars(select(ShopAssemblyOpening).where(ShopAssemblyOpening.opening_number == "PR1")).all()
-    assert len(saos) == 2
-    assert {sao.leaf for sao in saos} == {1, 2}
-
-
-def test_find_already_assembled_openings_is_per_leaf(db_session):
-    """Assembling Leaf 1 must not block sending Leaf 2: the guard keys on (opening_id, leaf)."""
-    project = _make_project(db_session)
-    opening = Opening(id=uuid.uuid4(), project_id=project.id, opening_number="PR1")
-    db_session.add(opening)
-    db_session.flush()
-
-    warehouse_id = warehouse_admin_repository.get_primary_warehouse_id(db_session)
-    db_session.add(
-        OpeningItem(
-            id=uuid.uuid4(),
-            project_id=project.id,
-            opening_id=opening.id,
-            warehouse_id=warehouse_id,
-            opening_number="PR1",
-            leaf=1,
-            quantity=1,
-            assembly_completed_at=datetime.utcnow(),
-            state=OpeningItemState.IN_INVENTORY,
-        )
-    )
-    db_session.flush()
-
-    specs = [("PR1", opening.id, 1), ("PR1", opening.id, 2)]
-    result = shop_assembly_repository.find_already_assembled_openings(db_session, project.id, specs)
-    assert result == [("PR1", 1)]  # leaf 1 blocked, leaf 2 free
-
-
-def test_accept_stamps_leaf_on_pull_items(db_session):
-    """accept mints one LOOSE PullRequestItem per leaf, each stamped from ShopAssemblyOpening.leaf."""
-    project = _make_project(db_session)
-    _seed_inventory(db_session, project.id, product_code="HG-100", quantity=2)
-    db_session.commit()
-
-    req_number = f"SA-{uuid.uuid4().hex[:6]}"
-    result = import_repository.finalize_import_session(
-        db_session,
-        {
-            "project_id": str(project.id),
-            "openings": [_opening_input("PR1", leaf_count=2)],
-            "hardware_items": [],
-            "include_shop_assembly_request": True,
-            "shop_assembly_request_number": req_number,
-            "shop_assembly_openings": [
-                {
-                    "opening_number": "PR1",
-                    "leaf": 1,
-                    "items": [{"hardware_category": "HINGE", "product_code": "HG-100", "quantity": 1}],
-                },
-                {
-                    "opening_number": "PR1",
-                    "leaf": 2,
-                    "items": [{"hardware_category": "HINGE", "product_code": "HG-100", "quantity": 1}],
-                },
-            ],
-        },
-    )
-    db_session.flush()
-
-    shop_assembly_repository.accept_shop_assembly_request(db_session, result["shop_assembly_request"].id, "acceptor")
-    db_session.flush()
-
-    pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == req_number))
-    items = db_session.scalars(select(PullRequestItem).where(PullRequestItem.pull_request_id == pr.id)).all()
-    assert len(items) == 2
-    assert {i.leaf for i in items} == {1, 2}
-
-
-def test_complete_opening_stamps_leaf(db_session):
-    """complete_opening stamps the assembled OpeningItem's leaf from the ShopAssemblyOpening (#311)."""
-    project = _make_project(db_session)
-    _seed_inventory(db_session, project.id, product_code="HG-100", quantity=1)
-    db_session.commit()
-
-    req_number = f"SA-{uuid.uuid4().hex[:6]}"
-    result = import_repository.finalize_import_session(
-        db_session,
-        {
-            "project_id": str(project.id),
-            "openings": [_opening_input("PR1", leaf_count=2)],
-            "hardware_items": [],
-            "include_shop_assembly_request": True,
-            "shop_assembly_request_number": req_number,
-            "shop_assembly_openings": [
-                {
-                    "opening_number": "PR1",
-                    "leaf": 2,
-                    "items": [{"hardware_category": "HINGE", "product_code": "HG-100", "quantity": 1}],
-                },
-            ],
-        },
-    )
-    db_session.flush()
-
-    shop_assembly_repository.accept_shop_assembly_request(db_session, result["shop_assembly_request"].id, "acceptor")
-    db_session.flush()
-
-    # Drive the opening to a completable state: PR pulled+completed, opening assigned.
-    pr = db_session.scalar(select(PullRequest).where(PullRequest.request_number == req_number))
-    pr.status = PullRequestStatus.COMPLETED
-    sao = db_session.scalar(select(ShopAssemblyOpening).where(ShopAssemblyOpening.pull_request_id == pr.id))
-    sao.pull_status = PullStatus.PULLED
-    sao.assigned_to = "tester"
-    # Every unit has to be dispositioned before completion is allowed (#340).
-    for item in sao.items:
-        item.installed_quantity = item.quantity
-    db_session.flush()
-
-    opening_item = shop_assembly_repository.complete_opening(db_session, sao.id, "A", "1", "1", completed_by="tester")
-    db_session.flush()
-    assert opening_item.leaf == 2

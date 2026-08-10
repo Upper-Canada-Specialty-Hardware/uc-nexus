@@ -100,3 +100,27 @@ def test_cancel_po_refused_after_receiving_started(db_session):
         po_repository.cancel_po(db_session, po.id)
     db_session.refresh(hi)
     assert hi.state == HardwareItemState.IN_PO
+
+
+@pytest.mark.parametrize("status", [POStatus.GP_REGISTERED, POStatus.VENDOR_CONFIRMED])
+def test_cancel_po_refused_once_gp_holds_it(db_session, status):
+    """Cancelling is DRAFT-only, because cancelling never told GP anything.
+
+    `cancel_po` makes no relay call, so cancelling a registered PO left GP holding a live PO against
+    the job while Nexus dropped it from every list - a phantom commitment on the job cost that the
+    warehouse could still receive against on the GP side. The schedule rows must stay IN_PO too: the
+    PO they were stamped against is still real in GP, so releasing them would invite a second order
+    for hardware already on one.
+    """
+    project = _make_project(db_session)
+    po, _line, hi = _po_with_schedule_item(db_session, project, status=status)
+
+    with pytest.raises(InvalidStateTransitionError):
+        po_repository.cancel_po(db_session, po.id)
+
+    db_session.refresh(po)
+    db_session.refresh(hi)
+    assert po.status is status
+    assert po.deleted_at is None
+    assert hi.state == HardwareItemState.IN_PO
+    assert hi.po_line_item_id is not None

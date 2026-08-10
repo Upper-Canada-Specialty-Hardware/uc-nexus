@@ -362,7 +362,7 @@ describe('PODetailModal', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Cancel PO' }));
     const message = await screen.findByText(
-      'Are you sure you want to cancel this PO? This action cannot be undone.',
+      'Cancelling removes this draft from the PO list for good, and returns its hardware to the schedule as still needing to be ordered. This cannot be undone.',
     );
     expect(cancelCalls).toHaveLength(0); // nothing fired before confirmation
 
@@ -372,5 +372,13 @@ describe('PODetailModal', () => {
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(onRefetch).toHaveBeenCalled();
     expect(cancelCalls).toEqual([{ id: 'po-1' }]);
+  });
+
+  // Cancelling makes no relay call, so cancelling a registered PO left GP holding a live PO against
+  // the job while Nexus dropped it from every list. Once GP has the PO, GP is where it gets unwound.
+  it('offers no Cancel PO button once the PO is registered in GP', () => {
+    renderModal(registeredPo, []);
+
+    expect(screen.queryByRole('button', { name: 'Cancel PO' })).not.toBeInTheDocument();
   });
 });

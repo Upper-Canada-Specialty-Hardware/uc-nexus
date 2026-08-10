@@ -21,7 +21,6 @@ import { StatCard } from '../../components/StatCard';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { PageTransition } from '../../motion';
 import PickSection from './PickSection';
-import FetchListPanel from './FetchListPanel';
 import PickSheetDocument from './PickSheetDocument';
 import { entriesFromDraft, pickTotals, toPickLines, type PickEntries, type PickSheet } from './pick';
 import { parseServerDate } from '../../utils/serverDate';
@@ -76,7 +75,6 @@ export default function PickPage() {
   const sheet = data?.pullPickSheet;
   const pr = sheet?.pullRequest;
   const sections = useMemo(() => sheet?.sections ?? [], [sheet]);
-  const fetchItems = useMemo(() => sheet?.fetchItems ?? [], [sheet]);
 
   const projectName = useMemo(() => {
     const project = projectData?.projects?.find((p) => p.id === pr?.projectId);
@@ -100,11 +98,6 @@ export default function PickPage() {
 
   const isPicked = Boolean(pr?.pickedAt);
   const isOpen = pr?.status === 'IN_PROGRESS' && !isPicked;
-  // Fetching outlives picking. An assembled leaf is collected off the rack, not deducted, so
-  // `setPullItemFetched` stays open for the whole In Progress life of the pull - and it has to,
-  // because a pure fetch pull is confirmable the moment it opens (no loose lines to balance), which
-  // would otherwise strand every check-off behind a Confirm the picker had not meant to finish with.
-  const canFetch = pr?.status === 'IN_PROGRESS';
 
   const [saveDraft, { loading: saving }] = useMutation(SAVE_PICK_DRAFT, {
     onCompleted: () => showToast('Draft saved. Your entries will be here when you come back.', 'success'),
@@ -173,7 +166,6 @@ export default function PickPage() {
           printedBy={displayName}
           printedAt={new Date().toLocaleString()}
           sections={sections}
-          fetchItems={fetchItems}
         />,
       ).toBlob();
       window.open(URL.createObjectURL(blob), '_blank');
@@ -182,7 +174,7 @@ export default function PickPage() {
     } finally {
       setPrinting(false);
     }
-  }, [pr, projectName, displayName, sections, fetchItems, showToast]);
+  }, [pr, projectName, displayName, sections, showToast]);
 
   if (loading && !data) {
     return (
@@ -325,9 +317,7 @@ export default function PickPage() {
         </Alert>
       )}
 
-      {sections.length === 0 && fetchItems.length === 0 && (
-        <Alert severity="info">This pull has nothing to pick.</Alert>
-      )}
+      {sections.length === 0 && <Alert severity="info">This pull has nothing to pick.</Alert>}
 
       {sections.map((section) => (
         <PickSection
@@ -339,7 +329,6 @@ export default function PickPage() {
         />
       ))}
 
-      <FetchListPanel items={fetchItems} editable={canFetch} />
 
       <ConfirmDialog
         open={confirmOpen}

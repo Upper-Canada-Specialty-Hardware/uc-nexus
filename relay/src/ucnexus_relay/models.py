@@ -67,6 +67,11 @@ class CreatePoRequest(BaseModel):
     # UC Nexus supplies its own PO number (e.g. 'ucnexus...'). GP's PONUMBER is char(17),
     # so max 17 chars. If omitted, the relay reserves GP's next 'PO' number via taGetPONextNumber.
     po_number: str | None = Field(default=None, max_length=17)
+    # #488: appended to the number GP reserves, as 'PO0012345-23093'. Two purchasers registering at
+    # the same moment reserve consecutive GP numbers, which are indistinguishable at a glance and
+    # carry no clue which job they belong to; the suffix makes both visible. Only used when
+    # po_number is absent - an explicit number is taken as given.
+    po_number_suffix: str | None = Field(default=None, max_length=8, pattern=r"^[A-Za-z0-9]+$")
 
     @model_validator(mode="after")
     def normalize_po_number(self):
@@ -74,6 +79,10 @@ class CreatePoRequest(BaseModel):
             self.po_number = self.po_number.strip()
             if not self.po_number:
                 raise ValueError("po_number, if provided, must not be blank")
+        if self.po_number_suffix is not None:
+            self.po_number_suffix = self.po_number_suffix.strip()
+            if not self.po_number_suffix:
+                self.po_number_suffix = None
         return self
 
 
@@ -442,6 +451,68 @@ _ADDRESS_MAX_LENGTHS = {
     "zip_code": 10,
     "country": 60,
 }
+
+
+class UpdateJobSiteRequest(BaseModel):
+    """Push a Nexus project's site details onto its GP job (#497).
+
+    Two writes behind one request, because GP does not keep a site address on the job. `JC00102` holds
+    `Job_Address_Code`, a char(15) pointer at a customer address record in `RM00102` - so "change where
+    this job ships to" means having an address record that says the new thing, and pointing the job at
+    it.
+
+    This mints a NEW address code rather than editing the one the job currently points at. Address
+    codes ARE shared between jobs - TUBC has one customer whose codes serve two and three jobs each -
+    so editing in place would silently change the site address of unrelated jobs. It is also the stance
+    #444 already took when it pinned `UpdateIfExists=0` on `taCreateCustomerAddress`: an address
+    accounting maintains is not Nexus's to overwrite.
+
+    The code is derived from the job number, which keeps it unique per job and self-describing in GP's
+    address picker. `job_name` rides along because renaming a project in Nexus should reach GP too, and
+    it is the same proc call.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    company: str
+    job_number: str
+
+    # Absent means "leave GP's". Sending the whole record every time is how a Nexus field that is
+    # simply blank blanks a GP column accounting filled in.
+    job_name: str | None = None
+    address_code: str | None = None
+    address1: str | None = None
+    address2: str | None = None
+    city: str | None = None
+    state: str | None = None
+    zip_code: str | None = None
+    country: str | None = None
+
+    @model_validator(mode="after")
+    def normalize(self):
+        self.job_number = (self.job_number or "").strip()
+        if not self.job_number:
+            raise ValueError("job_number is required")
+        for name in ("job_name", "address_code", "address1", "address2", "city", "state", "zip_code", "country"):
+            value = getattr(self, name)
+            if value is not None:
+                setattr(self, name, value.strip())
+        if self.address_code:
+            self.address_code = self.address_code.upper()
+        # An address is a street and a city or it is not one anybody can ship to. Asking for half of
+        # one is a mistake worth naming rather than writing a partial record into GP.
+        if (self.address1 or self.city) and not (self.address1 and self.city):
+            raise ValueError("address1 and city must be given together")
+        return self
+
+
+class UpdateJobSiteResponse(BaseModel):
+    job_number: str
+    job_name: str
+    company: str
+    # The code the job now points at. Null when the request carried no address change.
+    address_code: str | None = None
+    address_created: bool = False
 
 
 class CreateCustomerAddressRequest(BaseModel):

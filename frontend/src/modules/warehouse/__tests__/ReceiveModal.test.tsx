@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { ToastProvider } from '../../../components/Toast';
 import ReceiveModal from '../ReceiveModal';
 import { GET_PO_RECEIVING_DETAILS, CREATE_RECEIVE_DRAFT } from '../../../graphql/warehouse';
+import { UPLOAD_PO_DOCUMENT } from '../../../graphql/po';
 import { GET_WAREHOUSES } from '../../../graphql/shared';
 
 // This dialog counts a delivery in. It used to post the GP receipt too, and everything about that
@@ -18,6 +19,7 @@ type CreateDraftVars = {
     poId: string;
     warehouseId: string | null;
     idempotencyKey: string;
+    packingSlipDocumentId: string;
     lineItems: {
       poLineItemId: string;
       quantityReceived: number;
@@ -170,6 +172,41 @@ function secondPoDetailsMock(): MockedResponse {
   };
 }
 
+// #504: every draft is created against a packing slip, so the upload runs first and its id is
+// pinned to the draft. One mock serves every PO - the tests care that a slip was attached and its
+// id reached the input, not which document it was.
+function uploadMock(): MockedResponse {
+  return {
+    request: { query: UPLOAD_PO_DOCUMENT, variables: () => true },
+    maxUsageCount: Number.POSITIVE_INFINITY,
+    result: {
+      data: {
+        uploadPoDocument: {
+          __typename: 'PODocument',
+          id: 'doc-slip-1',
+          poId: 'po-1',
+          fileName: 'slip.pdf',
+          contentType: 'application/pdf',
+          fileSize: 12,
+          documentType: 'PACKING_SLIP',
+          uploadedAt: '2026-08-06T00:00:00Z',
+          downloadUrl: 'https://example.test/slip.pdf',
+        },
+      },
+    },
+  };
+}
+
+/** Attach a slip to every PO on screen. Submit stays disabled until they all have one (#504). */
+function attachPackingSlips() {
+  const inputs = screen.getAllByLabelText(/^Packing slip for /);
+  for (const input of inputs) {
+    fireEvent.change(input, {
+      target: { files: [new File(['slip'], 'slip.pdf', { type: 'application/pdf' })] },
+    });
+  }
+}
+
 function renderModal(
   extraMocks: MockedResponse[] = [],
   poIds: string[] = ['po-1'],
@@ -177,7 +214,7 @@ function renderModal(
 ) {
   const onClose = vi.fn();
   render(
-    <MockedProvider mocks={[warehousesMock(), ...extraMocks]}>
+    <MockedProvider mocks={[warehousesMock(), uploadMock(), ...extraMocks]}>
       <MemoryRouter>
         <ToastProvider>
           <ReceiveModal
@@ -205,8 +242,8 @@ async function openModal(extraMocks: MockedResponse[] = []) {
   return result;
 }
 
-// the Receive Now cell input is the only spinbutton inside the grid (the fully received
-// line renders text, and the put-away Qty/Deficient inputs live outside the grid)
+// the Receive Now cell input is the only spinbutton inside the grid (the fully received line
+// renders text). Since #501 there are no put-away inputs on this screen at all.
 function receiveNowInput() {
   return within(screen.getByRole('grid')).getByRole('spinbutton');
 }
@@ -219,16 +256,9 @@ function setReceiveQty(value: string) {
   fireEvent.change(receiveNowInput(), { target: { value } });
 }
 
-function fillLocation(idx: number, aisle: string, row: string, bay: string, qty?: string) {
-  fireEvent.change(screen.getAllByLabelText('Aisle')[idx], { target: { value: aisle } });
-  fireEvent.change(screen.getAllByLabelText('Row')[idx], { target: { value: row } });
-  fireEvent.change(screen.getAllByLabelText('Bay')[idx], { target: { value: bay } });
-  if (qty !== undefined) {
-    fireEvent.change(screen.getAllByLabelText('Qty')[idx], { target: { value: qty } });
-  }
-}
-
 async function submitViaConfirm() {
+  // #504: no draft without a slip, so every submit path attaches one first.
+  attachPackingSlips();
   fireEvent.click(await screen.findByRole('button', { name: 'Submit for Approval' }, SLOW));
   fireEvent.click(await screen.findByRole('button', { name: 'Submit' }, SLOW));
 }
@@ -265,22 +295,19 @@ describe('ReceiveModal', () => {
     expect(screen.queryByText(/queued/i)).toBeNull();
   });
 
-  it('enables submit only after a quantity is entered and every unit is placed in a row', async () => {
+  it('enables submit once a quantity and a packing slip are in, with no rack rows to fill', async () => {
+    // #501: a draft is a count. Where the units go is decided on the Put Away queue after the
+    // warehouse manager approves, so nothing here asks for an aisle, row or bay.
     await openModal([poDetailsMock()]);
 
     expect(submitButton()).toBeDisabled();
 
     setReceiveQty('3');
-    expect(screen.getByText(/placing 3/)).toBeInTheDocument();
-    // Row fields still blank, so put-away is incomplete - and the caption says so. The quantity
-    // defaults to the full count, so this used to read "all placed" while submit stayed disabled
-    // with nothing naming what was missing (#474).
-    expect(screen.getByText('needs aisle · row · bay')).toBeInTheDocument();
-    expect(screen.queryByText('all placed')).toBeNull();
-    expect(submitButton()).toBeDisabled();
+    expect(screen.queryByLabelText('Aisle')).toBeNull();
+    expect(screen.queryByLabelText('Bay')).toBeNull();
+    expect(screen.queryByText(/deficient/i)).toBeNull();
 
-    fillLocation(0, 'A1', 'B2', 'C3');
-    expect(screen.getByText('all placed')).toBeInTheDocument();
+    attachPackingSlips();
     expect(submitButton()).toBeEnabled();
   });
 
@@ -289,27 +316,11 @@ describe('ReceiveModal', () => {
 
     setReceiveQty('5'); // pending is only 3
     expect(screen.getByText('Max: 3')).toBeInTheDocument();
-    fillLocation(0, 'A1', 'B2', 'C3'); // put-away itself is valid at 5 placed
     expect(submitButton()).toBeDisabled();
 
-    // dropping back within pending (and matching the row qty) makes it submittable
     setReceiveQty('3');
-    fireEvent.change(screen.getByLabelText('Qty'), { target: { value: '3' } });
     expect(screen.queryByText('Max: 3')).toBeNull();
-    expect(submitButton()).toBeEnabled();
-  });
-
-  it('requires the row split to sum to the received quantity', async () => {
-    await openModal([poDetailsMock()]);
-
-    setReceiveQty('3');
-    fillLocation(0, 'A1', 'B2', 'C3', '2');
-    expect(screen.getByText('1 unplaced')).toBeInTheDocument();
-    expect(submitButton()).toBeDisabled();
-
-    fireEvent.click(screen.getByRole('button', { name: /add location/i }));
-    fillLocation(1, 'A2', 'B2', 'C4', '1');
-    expect(screen.getByText('all placed')).toBeInTheDocument();
+    attachPackingSlips();
     expect(submitButton()).toBeEnabled();
   });
 
@@ -328,8 +339,6 @@ describe('ReceiveModal', () => {
     await screen.findByText(/Main \(MAIN\)/, undefined, SLOW); // default warehouse selected
 
     setReceiveQty('2');
-    fillLocation(0, 'A1', 'B2', 'C3'); // row qty defaults to the received 2
-    fireEvent.change(screen.getByLabelText('Deficient'), { target: { value: '1' } });
     await submitViaConfirm();
 
     await screen.findByText(/Submitted for approval\. 2 items across 1 PO/, undefined, SLOW);
@@ -338,11 +347,13 @@ describe('ReceiveModal', () => {
         poId: 'po-1',
         warehouseId: 'wh-1',
         idempotencyKey: expect.stringMatching(UUID_RE),
+        // #504: the slip is uploaded first and its id pinned to the draft.
+        packingSlipDocumentId: 'doc-slip-1',
         lineItems: [
           {
             poLineItemId: 'li-1',
             quantityReceived: 2,
-            locations: [{ aisle: 'A1', row: 'B2', bay: 'C3', quantity: 2, deficientQuantity: 1 }],
+            locations: [],
           },
         ],
       },
@@ -362,7 +373,6 @@ describe('ReceiveModal', () => {
     const { onClose } = await openModal([poDetailsMock(), draftMock]);
 
     setReceiveQty('3');
-    fillLocation(0, 'A1', 'B2', 'C3');
     await submitViaConfirm();
 
     await screen.findByText(/Submitting PO-123 failed/, undefined, SLOW);
@@ -396,7 +406,6 @@ describe('ReceiveModal', () => {
     await openModal([poDetailsMock(), failMock, successMock]);
 
     setReceiveQty('3');
-    fillLocation(0, 'A1', 'B2', 'C3');
     await submitViaConfirm();
     await screen.findByText(/Submitting PO-123 failed/, undefined, SLOW);
 
@@ -418,7 +427,7 @@ describe('ReceiveModal', () => {
     expect(screen.getByText(/already has a receive awaiting approval \(2 units\)/)).toBeInTheDocument();
 
     setReceiveQty('3');
-    fillLocation(0, 'A1', 'B2', 'C3');
+    attachPackingSlips();
     expect(submitButton()).toBeEnabled();
   });
 
@@ -431,7 +440,6 @@ describe('ReceiveModal', () => {
 
     // even a fully valid receive stays blocked
     setReceiveQty('3');
-    fillLocation(0, 'A1', 'B2', 'C3');
     expect(submitButton()).toBeDisabled();
   });
 
@@ -452,8 +460,6 @@ describe('ReceiveModal', () => {
     const [firstQty, secondQty] = screen.getAllByRole('grid').map((g) => within(g).getByRole('spinbutton'));
     fireEvent.change(firstQty, { target: { value: '3' } });
     fireEvent.change(secondQty, { target: { value: '4' } });
-    fillLocation(0, 'A1', 'B2', 'C3');
-    fillLocation(1, 'A2', 'B3', 'C4');
     await submitViaConfirm();
 
     await screen.findByText(/Submitted for approval\. 7 items across 2 POs/, undefined, SLOW);
