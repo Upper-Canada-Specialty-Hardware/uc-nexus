@@ -28,16 +28,18 @@ vi.mock('../ImportWizard', () => ({
     open,
     project,
     initialPurpose,
+    initialSelectionMode,
     autoStartFromLatest,
   }: {
     open: boolean;
     project: { id: string };
     initialPurpose?: string;
+    initialSelectionMode?: string;
     autoStartFromLatest?: boolean;
   }) =>
     open ? (
       <div data-testid="wizard">
-        {`project=${project.id} purpose=${initialPurpose ?? 'none'} latest=${String(!!autoStartFromLatest)}`}
+        {`project=${project.id} purpose=${initialPurpose ?? 'none'} latest=${String(!!autoStartFromLatest)} mode=${initialSelectionMode ?? 'openings'}`}
       </div>
     ) : null,
 }));
@@ -120,6 +122,31 @@ describe('ImportModule deep links', () => {
       'project=proj-2 purpose=shipping latest=true',
     );
     await expectParamsCleared();
+  });
+
+  // #565: the "by hardware" chooser card links `?purpose=po&mode=hardware` with no project. The mode
+  // has to survive the pick-a-project fall-through so the wizard opens in the hardware pathway.
+  it('carries the by-hardware selection mode through the project picker', async () => {
+    renderModule('/app/import?purpose=po&mode=hardware');
+
+    await screen.findByText('Riverside Tower', undefined, SLOW);
+    expect(screen.queryByTestId('wizard')).not.toBeInTheDocument();
+    await expectParamsCleared();
+
+    fireEvent.click(screen.getByRole('button', { name: /Riverside Tower/ }));
+
+    expect(await screen.findByTestId('wizard', undefined, SLOW)).toHaveTextContent(
+      'project=proj-1 purpose=po latest=false mode=hardware',
+    );
+  });
+
+  // A link with no mode is the by-opening pathway - the default the wizard has always run.
+  it('defaults to the by-opening mode when the link names none', async () => {
+    renderModule('/app/import?projectId=proj-2&purpose=po');
+
+    expect(await screen.findByTestId('wizard', undefined, SLOW)).toHaveTextContent(
+      'project=proj-2 purpose=po latest=false mode=openings',
+    );
   });
 
   it('lands on the picker when the link names a project that no longer exists', async () => {

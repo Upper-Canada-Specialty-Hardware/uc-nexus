@@ -5,11 +5,12 @@ from datetime import datetime
 import pytest
 
 from app.errors import ValidationError
-from app.models.enums import HardwareItemState
+from app.models.enums import HardwareItemState, POStatus
 from app.models.hardware import HardwareItem
 from app.models.project import Opening, Project
 from app.repositories import po_repository
 from app.schemas import po as po_schema
+from app.services.gp_po import build_create_po_payload
 
 
 def _make_project(session) -> Project:
@@ -147,40 +148,73 @@ def test_create_po_strips_order_as_whitespace(db_session):
     assert po.line_items[0].order_as == "ML2010"
 
 
-def test_create_po_rejects_missing_order_as(db_session):
+# #563: order_as is optional when the line has a product_code - GP's item number falls back to it
+# (services/gp_po.py). A blank order_as persists as NULL rather than being rejected.
+
+
+def test_create_po_allows_missing_order_as(db_session):
+    po = po_repository.create_po(
+        db_session,
+        line_items=[_line_item(None)],
+    )
+    db_session.refresh(po)
+    assert po.line_items[0].order_as is None
+
+
+def test_create_po_allows_empty_order_as(db_session):
+    po = po_repository.create_po(
+        db_session,
+        line_items=[_line_item("")],
+    )
+    db_session.refresh(po)
+    assert po.line_items[0].order_as is None
+
+
+def test_create_po_allows_whitespace_only_order_as(db_session):
+    po = po_repository.create_po(
+        db_session,
+        line_items=[_line_item("   ")],
+    )
+    db_session.refresh(po)
+    assert po.line_items[0].order_as is None
+
+
+def test_create_po_allows_line_item_missing_order_as(db_session):
+    po = po_repository.create_po(
+        db_session,
+        line_items=[_line_item("ML2010"), _line_item(None)],
+    )
+    db_session.refresh(po)
+    assert {li.order_as for li in po.line_items} == {"ML2010", None}
+
+
+def test_create_po_still_rejects_when_order_as_and_product_code_both_missing(db_session):
+    # #563 relaxed the requirement to order_as OR product_code, not neither.
+    line = {
+        "hardware_category": "HINGE",
+        "product_code": "  ",
+        "ordered_quantity": 1,
+        "unit_cost": 12.50,
+        "classification": None,
+        "order_as": None,
+    }
     with pytest.raises(ValidationError) as exc:
-        po_repository.create_po(
-            db_session,
-            line_items=[_line_item(None)],
-        )
+        po_repository.create_po(db_session, line_items=[line])
     assert exc.value.field == "order_as"
 
 
-def test_create_po_rejects_empty_order_as(db_session):
-    with pytest.raises(ValidationError) as exc:
-        po_repository.create_po(
-            db_session,
-            line_items=[_line_item("")],
-        )
-    assert exc.value.field == "order_as"
-
-
-def test_create_po_rejects_whitespace_only_order_as(db_session):
-    with pytest.raises(ValidationError) as exc:
-        po_repository.create_po(
-            db_session,
-            line_items=[_line_item("   ")],
-        )
-    assert exc.value.field == "order_as"
-
-
-def test_create_po_rejects_when_any_line_item_missing_order_as(db_session):
-    with pytest.raises(ValidationError) as exc:
-        po_repository.create_po(
-            db_session,
-            line_items=[_line_item("ML2010"), _line_item(None)],
-        )
-    assert exc.value.field == "order_as"
+def test_create_po_blank_order_as_payload_falls_back_to_product_code(db_session):
+    # The GP payload uses product_code as the item number when order_as is blank.
+    payload = build_create_po_payload(
+        vendor_gp_id="GPV1",
+        vendor_contact_name=None,
+        buyer_id="BUYER1",
+        job_number=None,
+        cost_code=None,
+        po_number=None,
+        line_items=[_line_item(None)],
+    )
+    assert payload["lines"][0]["item_number"] == "AB123"
 
 
 # --- issue #216: status-gated delivery dates ------------------------------------------------------
@@ -282,3 +316,63 @@ def test_update_po_sets_clears_and_leaves_shipping_cost_and_tariff(db_session):
     po_repository.update_po(db_session, po.id, shipping_cost=None, tariff_amount=None)
     assert po.shipping_cost is None
     assert po.tariff_amount is None
+
+
+# #481: the vendor quotation is usually typed onto the PO after the draft exists, but a buyer working
+# from a quote in hand had nowhere to record it at creation. Optional, and blank must stay NULL - the
+# VENDOR_CONFIRMED auto-transition tests "a quote exists", which an empty string would satisfy.
+def test_create_po_persists_a_vendor_quote_number(db_session):
+    po = po_repository.create_po(
+        db_session,
+        line_items=[
+            {
+                "hardware_category": "Hinges",
+                "product_code": "HG-100",
+                "ordered_quantity": 2,
+                "unit_cost": 5,
+                "order_as": "HG-100",
+            }
+        ],
+        vendor_quote_number="  Q-1234  ",
+    )
+
+    assert po.vendor_quote_number == "Q-1234"
+
+
+@pytest.mark.parametrize("value", [None, "", "   "])
+def test_create_po_leaves_a_blank_vendor_quote_number_null(db_session, value):
+    po = po_repository.create_po(
+        db_session,
+        line_items=[
+            {
+                "hardware_category": "Hinges",
+                "product_code": "HG-100",
+                "ordered_quantity": 2,
+                "unit_cost": 5,
+                "order_as": "HG-100",
+            }
+        ],
+        vendor_quote_number=value,
+    )
+
+    assert po.vendor_quote_number is None
+
+
+def test_create_po_with_a_quote_stays_a_draft(db_session):
+    """A quote on a draft records what the buyer was quoted. It must not advance status: the
+    VENDOR_CONFIRMED transition is GP_REGISTERED-only and additionally wants a vendor ack document."""
+    po = po_repository.create_po(
+        db_session,
+        line_items=[
+            {
+                "hardware_category": "Hinges",
+                "product_code": "HG-100",
+                "ordered_quantity": 2,
+                "unit_cost": 5,
+                "order_as": "HG-100",
+            }
+        ],
+        vendor_quote_number="Q-1234",
+    )
+
+    assert po.status == POStatus.DRAFT

@@ -24,14 +24,19 @@ import { motion } from 'motion/react';
 import { DataGrid, type GridColDef, type GridRowParams } from '@mui/x-data-grid';
 import { useQuery } from '@apollo/client/react';
 import { GET_WAREHOUSES } from '../../graphql/shared';
-import { GET_LOCATION_UTILIZATION, GET_LOCATION_CONTENTS, GET_LOCATION_DISTINCT_VALUES } from '../../graphql/warehouse';
+import {
+  GET_LOCATION_UTILIZATION,
+  GET_LOCATION_CONTENTS,
+  GET_LOCATION_DISTINCT_VALUES,
+  GET_INVENTORY_ROWS,
+  GET_STOCK_ITEMS,
+} from '../../graphql/warehouse';
 import LocationActionDialog, {
   type LocationActionMode,
   type LocationActionTarget,
 } from './LocationActionDialog';
 import LocationAuditStrip from './LocationAuditStrip';
 import TransferDialog, { type TransferSource } from './TransferDialog';
-import { leafSuffix } from '../../utils/leaf';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { springs } from '../../motion';
 
@@ -69,20 +74,6 @@ interface ContentsInventoryItem {
   unitCost: number | null;
 }
 
-interface ContentsOpeningItem {
-  id: string;
-  warehouseId: string | null;
-  openingNumber: string;
-  building: string | null;
-  floor: string | null;
-  leaf: number | null;
-  state: string;
-  quantity: number;
-  aisle: string | null;
-  row: string | null;
-  bay: string | null;
-}
-
 interface ContentsStockItem {
   id: string;
   warehouseId: string | null;
@@ -99,7 +90,6 @@ interface ContentsStockItem {
 interface LocationContentsData {
   locationContents: {
     inventoryItems: ContentsInventoryItem[];
-    openingItems: ContentsOpeningItem[];
     stockItems: ContentsStockItem[];
   };
 }
@@ -110,6 +100,25 @@ interface DistinctValuesData {
     rows: string[];
     bays: string[];
   };
+}
+
+/** The product + location fields the search join reads off inventoryRows and stockItems. */
+interface ProductLocation {
+  productCode: string;
+  warehouseId: string | null;
+  aisle: string | null;
+  row: string | null;
+  bay: string | null;
+}
+
+/** A stable key for one rack position, shared between the utilization list and the product rows. */
+function locationKey(
+  warehouseId: string | null,
+  aisle: string | null,
+  row: string | null,
+  bay: string | null,
+): string {
+  return `${warehouseId ?? 'none'}|${aisle ?? ''}|${row ?? ''}|${bay ?? ''}`;
 }
 
 function formatLocation(aisle: string, row: string | null, bay: string | null): string {
@@ -292,7 +301,6 @@ function ContentsPanel({
   });
 
   const invItems = data?.locationContents?.inventoryItems ?? [];
-  const oiItems = data?.locationContents?.openingItems ?? [];
   const stockItems = data?.locationContents?.stockItems ?? [];
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -323,24 +331,14 @@ function ContentsPanel({
       map.set(i.inventoryLocation.id, {
         id: i.inventoryLocation.id,
         kind: 'inventory',
+        projectId: i.inventoryLocation.projectId,
+        hardwareCategory: i.inventoryLocation.hardwareCategory,
         productCode: i.inventoryLocation.productCode,
         quantity: i.inventoryLocation.quantity,
         warehouseId: i.inventoryLocation.warehouseId,
         aisle: i.inventoryLocation.aisle,
         row: i.inventoryLocation.row,
         bay: i.inventoryLocation.bay,
-      }),
-    );
-    oiItems.forEach((o) =>
-      map.set(o.id, {
-        id: o.id,
-        kind: 'opening',
-        productCode: o.openingNumber,
-        quantity: o.quantity,
-        warehouseId: o.warehouseId,
-        aisle: o.aisle,
-        row: o.row,
-        bay: o.bay,
       }),
     );
     stockItems.forEach((s) =>
@@ -356,7 +354,7 @@ function ContentsPanel({
       }),
     );
     return map;
-  }, [invItems, oiItems, stockItems]);
+  }, [invItems, stockItems]);
 
   const bulkTargets = useMemo(
     () => Array.from(selectedIds).map((id) => allTargetsById.get(id)).filter(Boolean) as LocationActionTarget[],
@@ -372,7 +370,7 @@ function ContentsPanel({
     setDialog({ mode, targets: bulkTargets });
   };
 
-  const totalCount = invItems.length + oiItems.length + stockItems.length;
+  const totalCount = invItems.length + stockItems.length;
 
   return (
     <Paper variant="outlined" sx={{ p: 2, position: 'sticky', top: 16, minWidth: 0 }}>
@@ -500,52 +498,6 @@ function ContentsPanel({
         </>
       )}
 
-      {oiItems.length > 0 && (
-        <>
-          <Typography component="div" sx={{ ...microLabelSx, mb: 1 }}>
-            Opening Items ({oiItems.length})
-          </Typography>
-          <Stack spacing={0.5}>
-            {oiItems.map((oi) => {
-              const target: LocationActionTarget = allTargetsById.get(oi.id)!;
-              return (
-                <Box
-                  key={oi.id}
-                  sx={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 1,
-                    p: 0.5,
-                    borderRadius: 1,
-                    '&:hover': { bgcolor: 'action.hover' },
-                  }}
-                >
-                  <Checkbox
-                    size="small"
-                    checked={selectedIds.has(oi.id)}
-                    onChange={() => toggleSelect(oi.id)}
-                  />
-                  <Box sx={{ flex: 1, minWidth: 0 }}>
-                    <Typography noWrap sx={monoSx}>{oi.openingNumber}{leafSuffix(oi.leaf)}</Typography>
-                    <Typography variant="caption" color="text.secondary" sx={tabularSx}>
-                      Qty {oi.quantity} · {oi.building ?? ''} {oi.floor ?? ''}
-                    </Typography>
-                  </Box>
-                  <Chip label={oi.state.replace('_', ' ')} size="small" variant="outlined" />
-                  <RowActionMenu
-                    showAdjust={false}
-                    onMove={() => openSingle(target, 'move')}
-                    onAdjust={() => {}}
-                    onUnlocate={() => openSingle(target, 'unlocate')}
-                  />
-                </Box>
-              );
-            })}
-          </Stack>
-          <Divider sx={{ my: 1.5 }} />
-        </>
-      )}
-
       {stockItems.length > 0 && (
         <>
           <Typography component="div" sx={{ ...microLabelSx, mb: 1 }}>
@@ -608,7 +560,12 @@ function ContentsPanel({
         </>
       )}
 
-      <LocationAuditStrip aisle={selected.aisle} row={selected.row} bay={selected.bay} />
+      <LocationAuditStrip
+        aisle={selected.aisle}
+        row={selected.row}
+        bay={selected.bay}
+        warehouseId={selected.warehouseId}
+      />
 
       {dialog && (
         <LocationActionDialog
@@ -661,10 +618,46 @@ export default function LocationsTab() {
     fetchPolicy: 'cache-and-network',
   });
 
-  // For product-code search, we also need to look INSIDE rows. Apollo cache may already have
-  // some location_contents from prior interactions; for an authoritative search we'd ideally have
-  // a backend "find product" query. For now, we filter location-string substrings AND let users
-  // know that product-level search drills in lazily. The empty-state and search hint reflect this.
+  // Product-code search looks INSIDE locations: inventoryRows and stockItems already carry both a
+  // product code and a location, so a client-side join maps each matching product to the rack
+  // positions holding it. Fired only while the box has text (a heavy read otherwise), and scoped to
+  // the same warehouse filter as the utilization list.
+  const searchActive = search.trim().length > 0;
+  const { data: invRowsData, loading: invRowsLoading } = useQuery<{
+    inventoryRows: { inventoryLocation: ProductLocation }[];
+  }>(GET_INVENTORY_ROWS, {
+    variables: { warehouseId: warehouseFilter || null },
+    skip: !searchActive,
+    fetchPolicy: 'cache-first',
+  });
+  const { data: stockItemsData, loading: stockItemsLoading } = useQuery<{
+    stockItems: ProductLocation[];
+  }>(GET_STOCK_ITEMS, {
+    variables: { warehouseId: warehouseFilter || null },
+    skip: !searchActive,
+    fetchPolicy: 'cache-first',
+  });
+  const productSearchLoading = searchActive && (invRowsLoading || stockItemsLoading);
+
+  // Location keys whose contents include a product matching the search. Only located rows (aisle set)
+  // can map to a utilization entry, so unlocated product rows are skipped.
+  const productLocationKeys = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const keys = new Set<string>();
+    if (!q) return keys;
+    for (const r of invRowsData?.inventoryRows ?? []) {
+      const il = r.inventoryLocation;
+      if (il.aisle && il.productCode.toLowerCase().includes(q)) {
+        keys.add(locationKey(il.warehouseId, il.aisle, il.row, il.bay));
+      }
+    }
+    for (const si of stockItemsData?.stockItems ?? []) {
+      if (si.aisle && si.productCode.toLowerCase().includes(q)) {
+        keys.add(locationKey(si.warehouseId, si.aisle, si.row, si.bay));
+      }
+    }
+    return keys;
+  }, [search, invRowsData, stockItemsData]);
 
   const aisles = distinctData?.locationDistinctValues.aisles ?? [];
   const rowValues = distinctData?.locationDistinctValues.rows ?? [];
@@ -677,18 +670,22 @@ export default function LocationsTab() {
       ? all
       : all.filter((loc) => {
           const formatted = formatLocation(loc.aisle, loc.row, loc.bay).toLowerCase();
-          return (
+          if (
             formatted.includes(q) ||
             loc.aisle.toLowerCase().includes(q) ||
             (loc.row ?? '').toLowerCase().includes(q) ||
             (loc.bay ?? '').toLowerCase().includes(q)
-          );
+          ) {
+            return true;
+          }
+          // Or the location holds a product whose code matches (the client-side product join).
+          return productLocationKeys.has(locationKey(loc.warehouseId, loc.aisle, loc.row, loc.bay));
         });
     return filtered.map((loc, i) => ({
       ...loc,
       id: `${loc.warehouseId ?? 'none'}-${loc.aisle}-${loc.row}-${loc.bay}-${i}`,
     }));
-  }, [utilData, search]);
+  }, [utilData, search, productLocationKeys]);
 
   const handleRowClick = useCallback((params: GridRowParams<LocationEntry & { id: string }>) => {
     setSelected(params.row);
@@ -734,7 +731,7 @@ export default function LocationsTab() {
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 2, flexWrap: 'wrap' }}>
         <TextField
           label="Search locations"
-          placeholder="Aisle, row, bay, or formatted label (e.g. A-22-L)"
+          placeholder="Aisle, row, bay, label, or product code"
           size="small"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
@@ -767,10 +764,16 @@ export default function LocationsTab() {
       {allEmpty ? (
         <Alert severity="info">No items are currently located in the warehouse.</Alert>
       ) : rows.length === 0 ? (
-        <Alert severity="info">
-          No locations match {`"${search}"`}. Search currently matches aisle/row/bay labels — drill into a
-          specific location to see its product codes.
-        </Alert>
+        productSearchLoading ? (
+          // The product-code join is still in flight - don't claim "no match" before it lands.
+          <Alert severity="info" icon={<CircularProgress size={18} />}>
+            Searching product codes…
+          </Alert>
+        ) : (
+          <Alert severity="info">
+            No locations match {`"${search}"`} by label or product code.
+          </Alert>
+        )
       ) : (
         <Box sx={{ display: 'flex', gap: 2, alignItems: 'flex-start', flexWrap: 'wrap' }}>
           {/* Master-detail: picking a location collapses the full table into a narrow rail and hands

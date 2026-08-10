@@ -21,7 +21,7 @@ import {
   CircularProgress,
   Tooltip,
 } from '@mui/material';
-import { Trash2, Download, Upload, FileText } from 'lucide-react';
+import { Trash2, Download, Upload, FileText, Mail } from 'lucide-react';
 import { useMutation, useQuery } from '@apollo/client/react';
 import { CombinedGraphQLErrors } from '@apollo/client/errors';
 import type { GridColDef } from '@mui/x-data-grid';
@@ -30,7 +30,7 @@ import DataTable from '../../components/DataTable';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import OrderAsAutocomplete from '../../components/OrderAsAutocomplete';
 import { useToast } from '../../components/Toast';
-import { UPDATE_PO, CANCEL_PO, UPDATE_PO_LINE_ITEM_ORDER_AS, UPDATE_PO_LINE_ITEM_UNIT_COST, UPLOAD_PO_DOCUMENT, DELETE_PO_DOCUMENT } from '../../graphql/po';
+import { UPDATE_PO, CANCEL_PO, UPDATE_PO_LINE_ITEM_ORDER_AS, UPDATE_PO_LINE_ITEM_UNIT_COST, UPLOAD_PO_DOCUMENT, DELETE_PO_DOCUMENT, EMAIL_PO_TO_VENDOR } from '../../graphql/po';
 import { GET_PRIOR_ORDER_AS_VALUES } from '../../graphql/shared';
 import type { PurchaseOrder } from './index';
 import GpPurchaseOrderDialog from './GpPurchaseOrderDialog';
@@ -116,6 +116,7 @@ export default function PODetailModal({
 
   // Upload dialog state
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
+  const [emailing, setEmailing] = useState(false);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [uploadDocType, setUploadDocType] = useState<string>('PO_DOCUMENT');
 
@@ -177,6 +178,10 @@ export default function PODetailModal({
       showToast(error.message, 'error');
     },
   });
+
+  const [emailPoToVendor] = useMutation<{
+    emailPoToVendor: { sent: boolean; message: string; sentTo: string | null };
+  }>(EMAIL_PO_TO_VENDOR);
 
   const [deleteDocument] = useMutation(DELETE_PO_DOCUMENT, {
     onCompleted: () => {
@@ -293,6 +298,22 @@ export default function PODetailModal({
     };
     reader.readAsDataURL(uploadFile);
   }, [uploadFile, uploadDocType, po.id, uploadDocument]);
+
+  // #500: the result is an outcome, not an exception - "no email on the vendor card" and "generate
+  // the document first" are things the user fixes, so they surface as an informational toast rather
+  // than an error the way a genuine failure does.
+  const handleEmailVendor = useCallback(async () => {
+    setEmailing(true);
+    try {
+      const res = await emailPoToVendor({ variables: { poId: po.id } });
+      const result = res.data?.emailPoToVendor;
+      showToast(result?.message ?? 'Sent', result?.sent ? 'success' : 'info');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Could not send the purchase order', 'error');
+    } finally {
+      setEmailing(false);
+    }
+  }, [emailPoToVendor, po.id, showToast]);
 
   const handleDeleteDocument = (documentId: string) => {
     deleteDocument({ variables: { documentId } });
@@ -455,13 +476,20 @@ export default function PODetailModal({
     (po.status === 'VENDOR_CONFIRMED' && po.receiveRecords.length === 0);
 
   const canUploadDocs = po.status !== 'CANCELLED' && po.status !== 'CLOSED';
+  // #500: the PO can be sent once it exists in GP and there is a generated document to attach.
+  // Both refusals are also enforced server-side; this only keeps the button from being offered when
+  // pressing it could only produce a message saying no.
+  const hasGeneratedPo = po.documents.some((d) => d.documentType === 'GENERATED_PO');
+  const canEmailVendor = po.status !== 'DRAFT' && !!po.gpVendorId && hasGeneratedPo;
 
   // A Draft is accepted into GP via the Register in GP flow (GP-first push, then map vendor + cost code
   // and advance to GP-Registered). The relay must be up to push.
   const canRegisterInGp = po.status === 'DRAFT';
   const relayConnected = relayConnectedProp === true;
 
-  const canCancel = po.status === 'DRAFT' || po.status === 'GP_REGISTERED' || po.status === 'VENDOR_CONFIRMED';
+  // Draft only. Cancelling never told GP anything, so cancelling a registered PO left GP holding a
+  // live PO against the job that Nexus had dropped. Once GP has it, GP is where it gets unwound.
+  const canCancel = po.status === 'DRAFT';
 
   // The supplier PO document reads the buyer list + GP totals live, so it's only for a PO that
   // exists in GP (has a GP company + number) and needs the relay connected.
@@ -718,16 +746,31 @@ export default function PODetailModal({
         {/* Documents Section */}
         <SectionHeading
           action={
-            canUploadDocs ? (
-              <Button
-                size="small"
-                variant="outlined"
-                startIcon={<Upload {...ICON} />}
-                onClick={() => setUploadDialogOpen(true)}
-              >
-                Upload Document
-              </Button>
-            ) : undefined
+            <Stack direction="row" spacing={1}>
+              {/* #500: sending is a deliberate act on a PO that already exists in GP, so it sits
+                  beside the document it attaches rather than firing off a save. */}
+              {canEmailVendor && (
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<Mail {...ICON} />}
+                  disabled={emailing}
+                  onClick={handleEmailVendor}
+                >
+                  {emailing ? 'Sending…' : 'Email to vendor'}
+                </Button>
+              )}
+              {canUploadDocs && (
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<Upload {...ICON} />}
+                  onClick={() => setUploadDialogOpen(true)}
+                >
+                  Upload Document
+                </Button>
+              )}
+            </Stack>
           }
         >
           Documents
@@ -890,7 +933,7 @@ export default function PODetailModal({
       <ConfirmDialog
         open={confirmCancelOpen}
         title="Cancel PO"
-        message="Are you sure you want to cancel this PO? This action cannot be undone."
+        message="Cancelling removes this draft from the PO list for good, and returns its hardware to the schedule as still needing to be ordered. This cannot be undone."
         confirmLabel="Cancel PO"
         cancelLabel="Go Back"
         onConfirm={handleCancelPO}

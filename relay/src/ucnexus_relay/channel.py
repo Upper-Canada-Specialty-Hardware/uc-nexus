@@ -36,7 +36,10 @@ within ~a minute (issue #277) - the websockets client auto-answers protocol ping
 import asyncio
 import json
 import logging
+import re
 import time
+import urllib.error
+import urllib.request
 
 import pyodbc
 import websockets
@@ -172,6 +175,23 @@ def _run_list_vendors(company: str, payload: dict) -> dict:
     with db.get_read_connection(company) as conn:
         rows = econnect.list_vendors(conn, active_only=payload.get("active_only", True))
     return {"company": company, "vendors": rows}
+
+
+def _run_get_vendor_contact(company: str, payload: dict) -> dict:
+    """#500: the vendor's email and contact name, so Nexus can send them their PO. Read-only, and
+    the only reason vendor contact details are reachable at all - GP owns them (#509), Nexus keeps
+    none of its own."""
+    ops.check_company_allowed(company)
+    vendor_id = (payload.get("vendor_id") or "").strip()
+    if not vendor_id:
+        raise ops.RelayOpError("invalid_payload", "vendor_id is required")
+    with db.get_read_connection(company) as conn:
+        contact = econnect.get_vendor_contact(conn, vendor_id)
+    if contact is None:
+        raise ops.RelayOpError(
+            "vendor_not_found", f"Vendor '{vendor_id}' does not exist in {company}", vendor_id=vendor_id
+        )
+    return {"company": company, **contact}
 
 
 def _run_list_buyers(company: str, payload: dict) -> dict:
@@ -372,6 +392,19 @@ def _run_create_customer_address(company: str, payload: dict) -> dict:
             raise
 
 
+def _run_update_job_site(company: str, payload: dict) -> dict:
+    ops.check_company_allowed(company)
+    request = models.UpdateJobSiteRequest(company=company, **payload)
+    with db.get_connection(company) as conn:
+        try:
+            response = ops.update_job_site_op(conn, company=company, request=request)
+            conn.commit()
+            return response.model_dump(mode="json")
+        except Exception:
+            conn.rollback()
+            raise
+
+
 def _run_create_receipt(company: str, payload: dict) -> dict:
     ops.check_company_allowed(company)
     request = models.ReceiptRequest(company=company, **payload)
@@ -387,6 +420,8 @@ def _run_create_receipt(company: str, payload: dict) -> dict:
 
 _OPS = {
     "list_vendors": _run_list_vendors,
+    # issue #500 - the vendor's email, read live at send time. Nexus stores no vendor contact.
+    "get_vendor_contact": _run_get_vendor_contact,
     "list_buyers": _run_list_buyers,
     "list_tax_details": _run_list_tax_details,
     "list_cost_codes": _run_list_cost_codes,
@@ -413,6 +448,9 @@ _OPS = {
     # issue #444 - the create-job dialog can add a job site that was never entered in GP, instead of
     # dead-ending on an address picker that has no code for it.
     "create_customer_address": _run_create_customer_address,
+    # issue #497 - a project's site address and name are edited in Nexus, and GP has to hear about it.
+    # Mints a job-specific address code rather than editing a shared one; see update_job_site_op.
+    "update_job_site": _run_update_job_site,
     # issue #425 - jobs replicated from UCSH carry GL account indexes that do not exist in UBC, so a
     # PO against them registers and can never be received. This is how Nexus finds out which ones.
     "job_setup_health": _run_job_setup_health,
@@ -692,6 +730,137 @@ def _configured_urls() -> list[str] | None:
         return None
 
 
+# How often to ask the production backend which preview environments exist. Deliberately slower than
+# the reconcile tick: the answer changes when somebody opens or closes a PR, not every ten seconds, and
+# a channel list that is one minute stale costs nothing while a request per tick is just noise.
+DISCOVERY_INTERVAL_SECONDS = 60.0
+DISCOVERY_TIMEOUT_SECONDS = 10.0
+
+# The ONLY shape a discovered channel may take. This is the load-bearing check on this side: the relay
+# holds GP credentials, so "the backend told me to" is not sufficient reason to dial a host. Anchored
+# and fully literal apart from the PR number, so no answer from the network can name an arbitrary
+# destination - the worst a compromised or buggy response can produce is a Railway preview address that
+# does not exist, which fails to connect and retries harmlessly.
+_DISCOVERABLE_URL_RE = re.compile(r"^wss://backend-uc-nexus-pr-\d+\.up\.railway\.app/relay-link$")
+
+# Last good answer, so a backend blip does not tear down working preview channels. None means "never
+# successfully asked", which is different from "asked and there are none" - the latter is an empty list
+# and legitimately retires every discovered channel.
+_discovered: list[str] | None = None
+_discovered_at: float = 0.0
+
+
+def _discovery_endpoint(primary: str) -> str:
+    """The https URL of the primary backend's channel list, derived from its wss channel URL."""
+    return primary.replace("wss://", "https://", 1).replace("/relay-link", "/relay-channels", 1)
+
+
+def _fetch_discovered_urls(primary: str, secret: str) -> list[str] | None:
+    """Ask the production backend which preview channels to add. None on any failure.
+
+    Blocking on purpose - it runs in a thread. urllib rather than a real HTTP client because this is one
+    small GET and the relay ships as a PyInstaller exe, where every added dependency is weight in the
+    bundle for the operator to install.
+    """
+    request = urllib.request.Request(  # noqa: S310 - scheme is fixed by _discovery_endpoint
+        _discovery_endpoint(primary),
+        headers={"Authorization": f"Bearer {secret}", "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=DISCOVERY_TIMEOUT_SECONDS) as response:  # noqa: S310
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            # WARNING, not debug, and worded for the one cause that actually produces it. The channel
+            # can be UP while this fails - a WebSocket authenticates once at connect and then holds,
+            # so a socket opened with a good secret stays open long after the config it came from
+            # stopped matching. This call re-authenticates every time, so it is the first thing to
+            # notice the drift, and reading it as "discovery is broken" sends you to the wrong side.
+            # Usual cause: a second relay process running from a different install dir and config.
+            logger.warning(
+                "the backend rejected this relay's secret on the channel list, while the channel "
+                "itself may still be connected - the socket authenticated once and holds. check for "
+                "a second relay process running from another install dir, or re-enroll this one",
+                extra={"category": "discovery_unauthorized", "url": _discovery_endpoint(primary)},
+            )
+        else:
+            logger.debug(
+                "backend refused the channel list; keeping the channels already known",
+                extra={"category": "discovery_unavailable", "status": e.code},
+            )
+        return None
+    except (urllib.error.URLError, TimeoutError, ValueError, OSError) as e:
+        logger.debug(
+            "could not read discovered channels from the backend; keeping the ones already known",
+            extra={"category": "discovery_unavailable", "error": str(e)},
+        )
+        return None
+
+    urls = payload.get("urls") if isinstance(payload, dict) else None
+    if not isinstance(urls, list):
+        return None
+
+    accepted, rejected = [], []
+    for candidate in urls:
+        url = candidate.strip() if isinstance(candidate, str) else ""
+        # is_primary_backend_url as well as the pattern: belt and braces, so a discovered URL can never
+        # take production's identity and shed the sandbox company pin that makes this safe at all.
+        if _DISCOVERABLE_URL_RE.match(url) and not is_primary_backend_url(url):
+            accepted.append(url)
+        elif url:
+            rejected.append(url)
+    if rejected:
+        logger.warning(
+            "ignored discovered channel URLs that do not match the preview backend pattern",
+            extra={"category": "discovery_rejected", "rejected": rejected},
+        )
+    return accepted
+
+
+def _discovered_urls() -> list[str]:
+    """Whatever discovery last learned. Empty until the first success, so this can only ever ADD to
+    what config.toml names - a relay that never reaches the backend behaves exactly as it did before
+    discovery existed."""
+    return list(_discovered or [])
+
+
+async def _refresh_discovery(primary: str, secret: str) -> None:
+    global _discovered, _discovered_at
+    fetched = await asyncio.to_thread(_fetch_discovered_urls, primary, secret)
+    if fetched is not None:
+        # Only a successful read moves the clock. A failed one leaves the interval expired so the next
+        # tick tries again, rather than backing off for a minute over a single dropped request.
+        _discovered, _discovered_at = fetched, time.monotonic()
+
+
+def _maybe_refresh_discovery(configured: list[str]) -> asyncio.Task | None:
+    """Kick a background refresh if one is due, and return the task so the supervisor can cancel it.
+
+    Deliberately NOT awaited on the reconcile path. Discovery is an HTTP call with a ten second
+    timeout, and blocking the tick on it would hold up the thing that matters most: on a fresh start
+    the first tick is what brings PRODUCTION's channel up, and no test backend is worth delaying that.
+    So the loop reconciles what it already knows and picks the new list up on a later tick.
+    """
+    try:
+        settings = get_settings()
+        if not settings.channel.discover_preview_backends:
+            return None
+        secret = settings.auth.shared_secret
+    except Exception:
+        return None
+
+    primary = next((url for url in configured if is_primary_backend_url(url)), "")
+    if not primary or not secret:
+        # Nobody to ask, or nothing to authenticate with. A dev checkout pointed only at localhost
+        # lands here and should simply not discover.
+        return None
+
+    if _discovered is not None and time.monotonic() - _discovered_at < DISCOVERY_INTERVAL_SECONDS:
+        return None
+
+    return asyncio.create_task(_refresh_discovery(primary, secret), name="channel-discovery")
+
+
 def _warn_if_no_primary(urls: list[str]) -> None:
     """Loud, because the likeliest cause is a typo in a hand-added backend_url list rather than a
     deliberate choice: production is then just another restricted channel and every real UBC/UCSH job
@@ -728,6 +897,10 @@ async def run_forever(stop_event: asyncio.Event | None = None) -> None:
     set, not against liveness. `_run_channel` catches per attempt and is not supposed to exit, so one
     that does is a bug worth seeing in the log rather than papering over with a respawn loop."""
     tasks: dict[str, asyncio.Task] = {}
+    # In-flight discovery reads. Held so shutdown can cancel one mid-request rather than leaving it
+    # attached to a loop that is closing, and so a slow read cannot outlive the supervisor that
+    # started it.
+    discovery_tasks: set[asyncio.Task] = set()
     known: set[str] | None = None
 
     async def _supervised(url: str) -> None:
@@ -762,7 +935,19 @@ async def run_forever(stop_event: asyncio.Event | None = None) -> None:
 
     try:
         while True:
-            urls = _configured_urls()
+            configured = _configured_urls()
+            urls = None
+            if configured is not None:
+                discovery = _maybe_refresh_discovery(configured)
+                if discovery is not None:
+                    discovery_tasks.add(discovery)
+                    discovery.add_done_callback(discovery_tasks.discard)
+                # Union, config first, so a hand-added URL keeps its position and a discovered one can
+                # only ever be additive. Dedup is backend_urls' job for the config half; this repeats it
+                # across the join because the same PR environment may legitimately be in both while an
+                # operator is mid-migration off the manual step.
+                seen = {url.strip().rstrip("/").lower() for url in configured}
+                urls = configured + [u for u in _discovered_urls() if u.strip().rstrip("/").lower() not in seen]
             if urls is not None:
                 if known != set(urls):
                     # Only on a change, so a steady relay logs this once at startup rather than every
@@ -798,6 +983,9 @@ async def run_forever(stop_event: asyncio.Event | None = None) -> None:
         # Reap them rather than just cancelling: cli.py cancels THIS task on shutdown, and a bare
         # cancel() would leave the children pending as the loop closes ("Task was destroyed but it is
         # pending"). CancelledError is a BaseException, so a cancelled child is not logged above.
-        for task in tasks.values():
+        # Discovery reads are reaped the same way and for the same reason - one can be sitting in a
+        # ten second HTTP timeout when shutdown arrives.
+        children = list(tasks.values()) + list(discovery_tasks)
+        for task in children:
             task.cancel()
-        await asyncio.gather(*tasks.values(), return_exceptions=True)
+        await asyncio.gather(*children, return_exceptions=True)

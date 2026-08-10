@@ -37,8 +37,6 @@ import { PostedReceiptLines, type PostedReceipt } from './ReceiveOutcomePanels';
 import {
   buildReceiveLineItemsInput,
   draftToEditorState,
-  validatePutAway,
-  type LocationDraft,
   type PODetailLineItem,
   type PODetails,
 } from './receiveLines';
@@ -79,7 +77,6 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
   const client = useApolloClient();
 
   const [receiveQuantities, setReceiveQuantities] = useState<Record<string, number>>({});
-  const [lineLocations, setLineLocations] = useState<Record<string, LocationDraft[]>>({});
   const [warehouseId, setWarehouseId] = useState<string>('');
   const [initialSignature, setInitialSignature] = useState<string>('');
 
@@ -138,9 +135,8 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
     const state = draftToEditorState(draft.lineItems);
     // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrate the editor from the draft
     setReceiveQuantities(state.receiveQuantities);
-    setLineLocations(state.lineLocations);
     setWarehouseId(draft.warehouseId ?? '');
-    setInitialSignature(JSON.stringify([state.receiveQuantities, state.lineLocations, draft.warehouseId ?? '']));
+    setInitialSignature(JSON.stringify([state.receiveQuantities, draft.warehouseId ?? '']));
     setMutationError(null);
     setGpError(null);
     setPosted(null);
@@ -188,14 +184,10 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
     );
   }, [poDetails, receiveQuantities]);
 
-  const putAwayValid = useMemo(
-    () => validatePutAway(lineItemsToReceive, receiveQuantities, lineLocations),
-    [lineItemsToReceive, receiveQuantities, lineLocations],
-  );
 
   const isDirty = useMemo(
-    () => JSON.stringify([receiveQuantities, lineLocations, warehouseId]) !== initialSignature,
-    [receiveQuantities, lineLocations, warehouseId, initialSignature],
+    () => JSON.stringify([receiveQuantities, warehouseId]) !== initialSignature,
+    [receiveQuantities, warehouseId, initialSignature],
   );
 
   // ---- Actions ----
@@ -222,11 +214,11 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
             input: {
               draftId: draft.id,
               warehouseId: warehouseId || null,
-              lineItems: buildReceiveLineItemsInput(lineItemsToReceive, receiveQuantities, lineLocations),
+              lineItems: buildReceiveLineItemsInput(lineItemsToReceive, receiveQuantities),
             },
           },
         });
-        setInitialSignature(JSON.stringify([receiveQuantities, lineLocations, warehouseId]));
+        setInitialSignature(JSON.stringify([receiveQuantities, warehouseId]));
       }
 
       const idempotencyKey = (idempotencyKeyRef.current[draft.id] ??= crypto.randomUUID());
@@ -278,7 +270,6 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
     warehouseId,
     lineItemsToReceive,
     receiveQuantities,
-    lineLocations,
     approveDraft,
     totalUnits,
     showToast,
@@ -323,7 +314,7 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
           drain into the same eConnect rejection. */}
       <Button
         variant="contained"
-        disabled={totalUnits === 0 || hasQuantityErrors || !putAwayValid || quarantined || submitting}
+        disabled={totalUnits === 0 || hasQuantityErrors || quarantined || submitting}
         onClick={() => setConfirmOpen(true)}
       >
         {submitting ? <CircularProgress size={24} /> : 'Approve & Post to GP'}
@@ -428,9 +419,6 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
                 poDetailsList={[poDetails]}
                 receiveQuantities={receiveQuantities}
                 onQuantityChange={handleQuantityChange}
-                lineLocations={lineLocations}
-                onLineLocationsChange={setLineLocations}
-                lineItemsToReceive={lineItemsToReceive}
                 showPoHeaders={false}
               />
             )}

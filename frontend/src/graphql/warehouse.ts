@@ -22,87 +22,26 @@ export const GET_PROJECT_INVENTORY_AVAILABILITY = gql`
   }
 `;
 
-export const GET_INVENTORY_HIERARCHY = gql`
-  query GetInventoryHierarchy($projectId: ID, $warehouseId: ID) {
-    inventoryHierarchy(projectId: $projectId, warehouseId: $warehouseId) {
-      hardwareCategory
-      totalQuantity
-      totalAvailableQuantity
-      totalValue
-      productCodes {
-        productCode
-        totalQuantity
-        totalAvailableQuantity
-        totalValue
-        matchesSchedule
-        items {
-          id
-          projectId
-          poLineItemId
-          receiveLineItemId
-          hardwareCategory
-          productCode
-          quantity
-          aisle
-          row
-          bay
-          receivedAt
-          createdAt
-          updatedAt
-        }
-      }
-    }
-  }
-`;
-
-export const GET_INVENTORY_ITEMS = gql`
-  query GetInventoryItems($projectId: ID, $category: String!, $productCode: String!) {
-    inventoryItems(projectId: $projectId, category: $category, productCode: $productCode) {
+// #506: the Hardware Items tab as one flat table rather than a category -> product -> location
+// accordion. Every value the warehouse sorts, filters or exports on is on the row, resolved
+// server-side in a single query.
+export const GET_INVENTORY_ROWS = gql`
+  query GetInventoryRows($projectId: ID, $warehouseId: ID) {
+    inventoryRows(projectId: $projectId, warehouseId: $warehouseId) {
       inventoryLocation {
-        id projectId poLineItemId receiveLineItemId stockItemId
+        id projectId poLineItemId receiveLineItemId stockItemId warehouseId
         hardwareCategory productCode quantity deficientQuantity available
         aisle row bay receivedAt createdAt updatedAt
       }
-      poNumber
-      classification
       unitCost
-    }
-  }
-`;
-
-export const GET_OPENING_ITEMS = gql`
-  query GetOpeningItems($projectId: ID) {
-    openingItems(projectId: $projectId) {
-      id projectId openingId openingNumber
-      building floor location leaf leafCount quantity
-      assemblyCompletedAt state
-      aisle row bay
-      createdAt updatedAt
-      awaitingReplacementQuantity
-      neverPulledQuantity
-      installedHardware {
-        id openingItemId productCode hardwareCategory quantity
-      }
-    }
-  }
-`;
-
-export const GET_OPENING_ITEM_DETAILS = gql`
-  query GetOpeningItemDetails($id: ID!) {
-    openingItemDetails(id: $id) {
-      openingItem {
-        id projectId openingId openingNumber
-        building floor location leaf quantity
-        assemblyCompletedAt state
-        aisle row bay
-        createdAt updatedAt
-        installedHardware {
-          id openingItemId productCode hardwareCategory quantity
-        }
-      }
-      installedHardware {
-        id openingItemId productCode hardwareCategory quantity
-      }
+      lineValue
+      poNumber
+      vendorName
+      warehouseCode
+      warehouseName
+      projectNumber
+      projectName
+      matchesSchedule
     }
   }
 `;
@@ -132,10 +71,10 @@ export const GET_OPEN_POS = gql`
 `;
 
 export const GET_UNLOCATED_INVENTORY = gql`
-  query GetUnlocatedInventory($projectId: ID) {
-    unlocatedInventory(projectId: $projectId) {
+  query GetUnlocatedInventory($projectId: ID, $warehouseId: ID) {
+    unlocatedInventory(projectId: $projectId, warehouseId: $warehouseId) {
       inventoryLocation {
-        id projectId poLineItemId receiveLineItemId
+        id projectId poLineItemId receiveLineItemId warehouseId
         hardwareCategory productCode quantity
         aisle row bay receivedAt createdAt updatedAt
       }
@@ -264,10 +203,6 @@ export const GET_PULL_REQUESTS = gql`
       cancelledAt
       cancelledBy
       cancellationReason
-      # Derived per-opening staging rollup (#343). Null on pulls that have no openings.
-      stagingStatus
-      stagedOpeningCount
-      totalOpeningCount
       # The pick (#367). pickedAt is the moment stock left; partiallyPicked is "a short confirm is
       # outstanding" and is only computed for un-picked pulls.
       pickedAt
@@ -276,39 +211,10 @@ export const GET_PULL_REQUESTS = gql`
       items {
         id
         pullRequestId
-        itemType
         openingNumber
-        openingItemId
-        leaf
         hardwareCategory
         productCode
         requestedQuantity
-        fetchedAt
-        fetchedBy
-      }
-    }
-  }
-`;
-
-export const GET_INVENTORY_BY_VENDOR = gql`
-  query GetInventoryByVendor($projectId: ID) {
-    inventoryByVendor(projectId: $projectId) {
-      vendorName
-      totalQuantity
-      totalValue
-      productCodes {
-        productCode
-        totalQuantity
-        totalValue
-        # Always true here - this hierarchy is not project-scoped, so there is no single schedule to
-        # compare against. Selected anyway so the field is never undefined on the client, where a
-        # negated check would then flag every row in the by-vendor view.
-        matchesSchedule
-        items {
-          id projectId poLineItemId receiveLineItemId
-          hardwareCategory productCode quantity
-          aisle row bay receivedAt createdAt updatedAt
-        }
       }
     }
   }
@@ -339,13 +245,6 @@ export const GET_LOCATION_CONTENTS = gql`
         poNumber
         unitCost
       }
-      openingItems {
-        id projectId openingId warehouseId openingNumber
-        building floor location leaf quantity
-        assemblyCompletedAt state aisle row bay
-        createdAt updatedAt
-        installedHardware { id openingItemId productCode hardwareCategory quantity }
-      }
       stockItems {
         id warehouseId hardwareCategory productCode quantity deficientQuantity available
         aisle row bay receivedAt createdAt updatedAt
@@ -355,8 +254,8 @@ export const GET_LOCATION_CONTENTS = gql`
 `;
 
 export const GET_LOCATION_AUDIT_HISTORY = gql`
-  query GetLocationAuditHistory($aisle: String!, $row: String, $bay: String, $limit: Int) {
-    locationAuditHistory(aisle: $aisle, row: $row, bay: $bay, limit: $limit) {
+  query GetLocationAuditHistory($aisle: String!, $row: String, $bay: String, $limit: Int, $warehouseId: ID) {
+    locationAuditHistory(aisle: $aisle, row: $row, bay: $bay, limit: $limit, warehouseId: $warehouseId) {
       id projectId entityType entityId action detail performedBy createdAt
     }
   }
@@ -395,6 +294,8 @@ export const GET_WAREHOUSE_DASHBOARD = gql`
       totalItemCount
       totalValue
       unlocatedCount
+      stockItemCount
+      stockUnlocatedCount
       pendingPullShop
       pendingPullShipping
       backOrderedCount
@@ -411,6 +312,7 @@ export const GET_STOCK_ITEMS = gql`
     $aisle: String
     $onlyDeficient: Boolean
     $warehouseId: ID
+    $onlyUnlocated: Boolean
   ) {
     stockItems(
       productCodeContains: $productCodeContains
@@ -418,6 +320,7 @@ export const GET_STOCK_ITEMS = gql`
       aisle: $aisle
       onlyDeficient: $onlyDeficient
       warehouseId: $warehouseId
+      onlyUnlocated: $onlyUnlocated
     ) {
       id
       warehouseId
@@ -493,25 +396,19 @@ export const GET_DEFICIENCY_REVIEWS = gql`
   }
 `;
 
-export const GET_STOCK_MATCHES_FOR_OPENING = gql`
-  query GetStockMatchesForOpening($openingItemId: ID!) {
-    stockMatchesForOpening(openingItemId: $openingItemId) {
-      id
-      hardwareCategory
-      productCode
-      quantity
-      deficientQuantity
-      available
-      aisle
-      row
-      bay
-    }
-  }
-`;
-
 export const ADJUST_INVENTORY_QUANTITY = gql`
-  mutation AdjustInventoryQuantity($inventoryLocationId: ID!, $adjustment: Int!, $reason: String!) {
-    adjustInventoryQuantity(inventoryLocationId: $inventoryLocationId, adjustment: $adjustment, reason: $reason) {
+  mutation AdjustInventoryQuantity(
+    $inventoryLocationId: ID!
+    $adjustment: Int!
+    $reason: String!
+    $spotCheck: Boolean
+  ) {
+    adjustInventoryQuantity(
+      inventoryLocationId: $inventoryLocationId
+      adjustment: $adjustment
+      reason: $reason
+      spotCheck: $spotCheck
+    ) {
       id
       projectId
       poLineItemId
@@ -519,6 +416,8 @@ export const ADJUST_INVENTORY_QUANTITY = gql`
       hardwareCategory
       productCode
       quantity
+      deficientQuantity
+      available
       aisle
       row
       bay
@@ -547,6 +446,13 @@ const RECEIVE_DRAFT_FIELDS = `
   # and the author-only actions key on; the name is what the manager's queue shows.
   createdByUserId
   createdBy
+  # #504: the packing slip this count was made against. Null only on drafts raised before the
+  # requirement existed.
+  packingSlipDocumentId
+  # #499: what the PO's creator said to do with this delivery. SHIP_OUT means it leaves the
+  # manager's queue - the creator books it themselves on the way into the shipping request.
+  keepOrShipDecision
+  decisionPending
   reviewedBy
   reviewedAt
   rejectionReason
@@ -656,11 +562,9 @@ export const APPROVE_RECEIVE_DRAFT = gql`
 const PULL_REQUEST_FIELDS = `
   id requestNumber projectId source status requestedBy assignedTo
   createdAt updatedAt approvedAt completedAt cancelledAt cancelledBy cancellationReason
-  stagingStatus stagedOpeningCount totalOpeningCount
   pickedAt pickedBy partiallyPicked
   items {
-    id pullRequestId itemType openingNumber openingItemId leaf hardwareCategory productCode requestedQuantity
-    fetchedAt fetchedBy
+    id pullRequestId openingNumber hardwareCategory productCode requestedQuantity
   }
 `;
 
@@ -671,22 +575,12 @@ const PICK_SHEET_FIELDS = `
   sections {
     hardwareCategory productCode requiredQuantity appliedQuantity remainingQuantity
     claimableQuantity claimableShortfall
-    leaves { openingNumber leaf quantity }
+    openings { openingNumber quantity }
     locations {
       inventoryLocationId warehouseId warehouseCode aisle row bay
       available receivedAt draftQuantity appliedQuantity orderAs poNumber
     }
   }
-  fetchItems {
-    pullRequestItemId openingItemId openingNumber leaf aisle row bay state fetchedAt fetchedBy
-  }
-`;
-
-// One opening of a shop-assembly pull, with the hardware lines that make up its cart (#343).
-const PULL_STAGING_OPENING_FIELDS = `
-  id pullRequestId openingId openingNumber leaf building floor
-  pullStatus assemblyStatus assignedToUserId assignedTo stagedAt stagedBy
-  items { id shopAssemblyOpeningId hardwareCategory productCode quantity allocatedQuantity }
 `;
 
 // #427: who did it is taken from the Clerk token server-side, so these mutations no longer send an
@@ -728,35 +622,9 @@ export const CONFIRM_PICK = gql`
   }
 `;
 
-export const SET_PULL_ITEM_FETCHED = gql`
-  mutation SetPullItemFetched($itemId: ID!, $fetched: Boolean!) {
-    setPullItemFetched(itemId: $itemId, fetched: $fetched) {
-      id pullRequestId itemType openingNumber openingItemId leaf
-      hardwareCategory productCode requestedQuantity fetchedAt fetchedBy
-    }
-  }
-`;
-
 export const COMPLETE_PULL_REQUEST = gql`
   mutation CompletePullRequest($id: ID!) {
     completePullRequest(id: $id) { ${PULL_REQUEST_FIELDS} }
-  }
-`;
-
-export const GET_PULL_REQUEST_OPENINGS = gql`
-  query GetPullRequestOpenings($pullRequestId: ID!) {
-    pullRequestOpenings(pullRequestId: $pullRequestId) { ${PULL_STAGING_OPENING_FIELDS} }
-  }
-`;
-
-export const STAGE_PULL_OPENINGS = gql`
-  mutation StagePullOpenings($input: StagePullOpeningsInput!) {
-    stagePullOpenings(input: $input) {
-      pullRequest { ${PULL_REQUEST_FIELDS} }
-      openings { ${PULL_STAGING_OPENING_FIELDS} }
-      newlyStagedOpeningIds
-      completed
-    }
   }
 `;
 
@@ -765,7 +633,6 @@ export const CANCEL_PULL_REQUEST = gql`
     cancelPullRequest(input: $input) {
       pullRequest { ${PULL_REQUEST_FIELDS} }
       restocked { hardwareCategory productCode quantity }
-      releasedOpeningIds
       sourceRequestReturnedToPending
       reservationsRecreated
       integrityNote
@@ -864,17 +731,6 @@ export const REPORT_STOCK_DEFICIENCY = gql`
   mutation ReportStockDeficiency($input: ReportStockDeficiencyInput!) {
     reportStockDeficiency(input: $input) {
       id quantity deficientQuantity available
-    }
-  }
-`;
-
-export const REPORT_DEFICIENCY_AT_ASSEMBLY = gql`
-  mutation ReportDeficiencyAtAssembly($input: ReportDeficiencyAtAssemblyInput!) {
-    reportDeficiencyAtAssembly(input: $input) {
-      inventoryLocation { id quantity deficientQuantity available }
-      replacementPullRequestItem {
-        id pullRequestId itemType openingNumber hardwareCategory productCode requestedQuantity
-      }
     }
   }
 `;

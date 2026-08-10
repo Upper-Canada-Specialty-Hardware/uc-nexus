@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.errors import NotFoundError, ValidationError
 from app.models.enums import AuditAction, AuditEntityType
 from app.models.stock_item import StockItem
-from app.repositories.warehouse import normalize_location_value
+from app.repositories.warehouse import location_detail, normalize_location_value
 
 from .common import _find_or_create_stock_row, _log_audit_event, _validate_location_fields
 
@@ -21,8 +21,10 @@ def get_stock_items(
     aisle: str | None = None,
     only_deficient: bool = False,
     warehouse_id: uuid.UUID | None = None,
+    only_unlocated: bool = False,
 ) -> list[StockItem]:
-    """List stock_items optionally filtered by product code, category, aisle, or deficient-only.
+    """List stock_items optionally filtered by product code, category, aisle, deficient-only, or
+    unlocated-only (no aisle - the rows the Put Away stock section works through).
 
     Hides fully-emptied rows (quantity = 0 AND deficient_quantity = 0). These rows are kept in the
     DB so they can remain the origin of any inventory_locations row that was allocated out of them
@@ -47,6 +49,8 @@ def get_stock_items(
         stmt = stmt.where(StockItem.deficient_quantity > 0)
     if warehouse_id is not None:
         stmt = stmt.where(StockItem.warehouse_id == warehouse_id)
+    if only_unlocated:
+        stmt = stmt.where(StockItem.aisle.is_(None))
     return list(session.scalars(stmt).all())
 
 
@@ -55,41 +59,6 @@ def get_stock_item(session: Session, stock_item_id: uuid.UUID) -> StockItem:
     if si is None:
         raise NotFoundError(f"Stock item {stock_item_id} not found")
     return si
-
-
-def get_stock_matches_for_opening(
-    session: Session,
-    opening_item_id: uuid.UUID,
-) -> list[StockItem]:
-    """Return stock_items whose hardware_category matches the opening item's category.
-
-    Match is intentionally loose: same hardware_category, ranking exact product_code match first.
-    """
-    from app.models.opening_item import OpeningItem, OpeningItemHardware
-
-    oi = session.get(OpeningItem, opening_item_id)
-    if oi is None:
-        raise NotFoundError(f"Opening item {opening_item_id} not found")
-
-    # Pull installed hardware to know what categories/codes we are looking for
-    ih_stmt = select(OpeningItemHardware).where(OpeningItemHardware.opening_item_id == opening_item_id)
-    installed = list(session.scalars(ih_stmt).all())
-    if not installed:
-        return []
-
-    categories = {h.hardware_category for h in installed}
-    codes = {h.product_code for h in installed}
-
-    stmt = (
-        select(StockItem)
-        .where(StockItem.hardware_category.in_(categories))
-        .where(StockItem.quantity > 0)
-        .order_by(StockItem.product_code.asc(), StockItem.received_at.asc())
-    )
-    rows = list(session.scalars(stmt).all())
-    # Promote exact product_code matches to the front
-    rows.sort(key=lambda r: (r.product_code not in codes, r.hardware_category, r.product_code))
-    return rows
 
 
 def adjust_stock_quantity(
@@ -152,7 +121,7 @@ def move_stock_location(
     _validate_location_fields(new_aisle, new_row, new_bay)
 
     si = get_stock_item(session, stock_item_id)
-    old = {"aisle": si.aisle, "row": si.row, "bay": si.bay}
+    old = location_detail(si.aisle, si.row, si.bay, si.warehouse_id)
     si.aisle = new_aisle
     si.row = new_row
     si.bay = new_bay
@@ -164,7 +133,7 @@ def move_stock_location(
         entity_id=si.id,
         action=AuditAction.MOVE,
         performed_by=performed_by,
-        detail={"fromLocation": old, "toLocation": {"aisle": new_aisle, "row": new_row, "bay": new_bay}},
+        detail={"fromLocation": old, "toLocation": location_detail(new_aisle, new_row, new_bay, si.warehouse_id)},
     )
     return si
 
@@ -174,7 +143,7 @@ def mark_stock_item_unlocated(session: Session, *, stock_item_id: uuid.UUID, per
     if not performed_by:
         raise ValidationError("performed_by is required", field="performed_by")
     si = get_stock_item(session, stock_item_id)
-    old = {"aisle": si.aisle, "row": si.row, "bay": si.bay}
+    old = location_detail(si.aisle, si.row, si.bay, si.warehouse_id)
     si.aisle = None
     si.row = None
     si.bay = None
@@ -217,7 +186,7 @@ def assign_stock_item_location(
         entity_id=si.id,
         action=AuditAction.PUT_AWAY,
         performed_by=performed_by,
-        detail={"toLocation": {"aisle": aisle, "row": row, "bay": bay}},
+        detail={"toLocation": location_detail(aisle, row, bay, si.warehouse_id)},
     )
     return si
 
@@ -286,6 +255,7 @@ def reclassify_stock_item(
     si.quantity -= quantity
     new_row = _find_or_create_stock_row(
         session,
+        warehouse_id=si.warehouse_id,
         hardware_category=new_hardware_category,
         product_code=new_product_code,
         aisle=si.aisle,

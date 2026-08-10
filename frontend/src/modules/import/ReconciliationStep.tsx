@@ -23,9 +23,6 @@ interface ReconciliationStepProps {
   allHardwareItems: ParsedHardwareItem[];
   selectedReconItems: Set<string>;
   onSelectionChange: (selected: Set<string>) => void;
-  canProceed: boolean;
-  onNext: () => void;
-  onBack: () => void;
 }
 
 // ---- Aggregated row type (per-product across project) ----
@@ -78,9 +75,6 @@ export default function ReconciliationStep({
   allHardwareItems,
   selectedReconItems,
   onSelectionChange,
-  canProceed,
-  onNext,
-  onBack,
 }: ReconciliationStepProps) {
   const hasAutoSelected = useRef(false);
 
@@ -96,10 +90,10 @@ export default function ReconciliationStep({
     [purpose, reconciliationRows, selectedHardwareItems, allHardwareItems, selectedReconItems],
   );
 
-  // #483: the products this selection pushes past the project total. Named in the error alert and
-  // the reason Next is refused.
-  const blockingRows = useMemo(
-    () => aggregatedProductRows.filter((r) => r.blocksProceed),
+  // #483/#567: the products this selection pushes past the project total. Named in the inline
+  // warning; the buyer is asked to confirm at Next rather than blocked.
+  const overOrderRows = useMemo(
+    () => aggregatedProductRows.filter((r) => r.overOrdersProject),
     [aggregatedProductRows],
   );
 
@@ -271,16 +265,16 @@ export default function ReconciliationStep({
               <Tooltip
                 arrow
                 title={
-                  row.blocksProceed
-                    ? `Ordering this would put the project at ${row.existingCommitted + row.selectedNewPOQty} against a schedule need of ${row.quantityRequiredByProject}. Deselect this product to continue.`
-                    : `The project has already committed ${row.existingCommitted} against a schedule need of ${row.quantityRequiredByProject}. Nothing on this screen changes that, so it does not block you.`
+                  row.overOrdersProject
+                    ? `Ordering this would put the project at ${row.existingCommitted + row.selectedNewPOQty} against a schedule need of ${row.quantityRequiredByProject}. You'll be asked to confirm at Next.`
+                    : `The project has already committed ${row.existingCommitted} against a schedule need of ${row.quantityRequiredByProject}. Nothing on this screen changes that.`
                 }
               >
                 <Chip
                   size="small"
                   icon={<AlertTriangle size={14} strokeWidth={1.75} />}
                   label={`Over-committed by ${row.overCommitAmount}`}
-                  color={row.blocksProceed ? 'error' : 'warning'}
+                  color="warning"
                   variant="outlined"
                 />
               </Tooltip>
@@ -357,27 +351,22 @@ export default function ReconciliationStep({
           )}
 
           {/* Purpose-specific alerts */}
-          {purpose === 'po' && blockingRows.length > 0 && (
-            <Alert severity="error" sx={{ mb: 2 }}>
-              Ordering these would take the project past what its hardware schedule needs. Deselect
-              them to continue:
-              <Box component="ul" sx={{ m: 0, mt: 1, pl: 3 }}>
-                {blockingRows.map((row) => (
-                  <li key={row.id}>
-                    {row.productCode}: project needs {row.quantityRequiredByProject}, ordered{' '}
-                    {row.projectTotalOrdered}, received {row.projectTotalReceived}, already committed{' '}
-                    {row.existingCommitted} (including drafts), selection adds {row.selectedNewPOQty}
-                  </li>
-                ))}
-              </Box>
+          {/* #567: over-ordering is a warning, not a block. The per-product detail moves to the
+              confirm modal shown at Next; here it is a single line. */}
+          {purpose === 'po' && overOrderRows.length > 0 && (
+            <Alert severity="warning" sx={{ mb: 2 }}>
+              {overOrderRows.length === 1
+                ? '1 product would exceed the project need'
+                : `${overOrderRows.length} products would exceed the project need`}{' '}
+              - you&apos;ll be asked to confirm at Next.
             </Alert>
           )}
 
           {purpose === 'po' && (
-            <Alert severity="warning" sx={{ mb: 2 }}>
+            <Alert severity="info" sx={{ mb: 2 }}>
               Select the products you want to carry forward to Purchase Order creation.
               Products with a remaining gap are pre-selected. Only checked products will be included.
-              Ordering a product past the project's total quantity is refused.
+              Ordering a product past the project's total quantity is warned.
             </Alert>
           )}
 
@@ -430,13 +419,6 @@ export default function ReconciliationStep({
       {isReimport && !reconcileLoading && !reconcileError && reconciliationRows.length === 0 && (
         <Alert severity="info">No existing records found for selected items.</Alert>
       )}
-
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 3 }}>
-        <Button onClick={onBack}>Back</Button>
-        <Button variant="contained" disabled={!canProceed} onClick={onNext}>
-          Next
-        </Button>
-      </Box>
     </Box>
   );
 }

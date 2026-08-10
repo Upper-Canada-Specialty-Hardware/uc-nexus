@@ -1,6 +1,5 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
 import ProjectPurchasingProgressPage from './ProjectPurchasingProgressPage';
-import OpeningStatusTab from './OpeningStatusTab';
 import UserManagementPage from './UserManagementPage';
 import BuyersPage from './BuyersPage';
 import WarehousesPage from './WarehousesPage';
@@ -17,7 +16,6 @@ export default function AdminModule() {
     <Routes>
       <Route index element={<AdminLanding />} />
       <Route path="project-purchasing-progress" element={<ProjectPurchasingProgressPage />} />
-      <Route path="opening-status" element={<OpeningStatusTab />} />
       <Route path="warehouses" element={<WarehousesPage />} />
       <Route path="projects" element={<ProjectsPage />} />
       <Route path="users" element={<UserManagementPage />} />

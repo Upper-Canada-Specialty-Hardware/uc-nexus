@@ -32,7 +32,7 @@ export default function ReclassifyStockModal({ item, onClose, onSuccess }: Props
   });
 
   const q = Number(quantity);
-  const isSplit = q > 0 && q < item.available;
+  const isSplit = q > 0 && q < item.quantity;
   const valid =
     Number.isInteger(q) &&
     q >= 1 &&
@@ -105,7 +105,7 @@ export default function ReclassifyStockModal({ item, onClose, onSuccess }: Props
           inputProps={{ min: 1, max: item.available }}
           helperText={
             isSplit
-              ? `Will leave ${item.available - q} of the original (category, code) on this row`
+              ? `Will leave ${item.quantity - q} of the original (category, code) on this row`
               : 'Reclassifies the entire row in place'
           }
         />

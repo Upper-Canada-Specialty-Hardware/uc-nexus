@@ -11,14 +11,13 @@ from sqlalchemy import (
     Index,
     Integer,
     Numeric,
-    SmallInteger,
     String,
     Text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from . import Base
-from .enums import PullRequestItemType, ReturnDisposition, ShipmentStatus
+from .enums import ReturnDisposition, ShipmentStatus
 
 if TYPE_CHECKING:
     from .shipment_container import ShipmentContainer
@@ -124,24 +123,11 @@ class PackingSlipItem(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     packing_slip_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("packing_slips.id"), nullable=False)
-    item_type: Mapped[PullRequestItemType] = mapped_column(
-        Enum(
-            PullRequestItemType,
-            name="pull_request_item_type",
-            create_constraint=True,
-        ),
-        nullable=False,
-    )
-    opening_item_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("opening_items.id"), nullable=True)
     opening_number: Mapped[str | None] = mapped_column(String, nullable=True)
-    # Door leaf this shipped line is for (#311): OPENING_ITEM rows stamp from the OpeningItem.leaf.
-    # Immutable record on the slip. Null = legacy / loose.
-    leaf: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
-    # Where the leaf was going, snapshotted off the OpeningItem at confirm time (#452). The Delivery
+    # Where the hardware was going, snapshotted off the opening at confirm time (#452). The Delivery
     # Request prints these after the opening number, and a reprint years later has to say what the
-    # driver's copy said - so they are copied onto the slip rather than followed back to the
-    # OpeningItem, which can be re-placed or re-assembled long afterwards. Null on a LOOSE line
-    # (fungible hardware has no placement) and on rows written before #452.
+    # driver's copy said - so they are copied onto the slip rather than followed back to a schedule
+    # row a re-upload is free to change. Null on a line with no opening to place.
     building: Mapped[str | None] = mapped_column(String, nullable=True)
     floor: Mapped[str | None] = mapped_column(String, nullable=True)
     location: Mapped[str | None] = mapped_column(String, nullable=True)

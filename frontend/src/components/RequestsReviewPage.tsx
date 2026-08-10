@@ -67,6 +67,15 @@ interface RequestsReviewPageProps<TRequest extends ReviewableRequest> {
   renderExtraActions?: (req: TRequest) => ReactNode;
   /** Rendered above the list, right of the heading (e.g. shipping's "New request"). */
   headerAction?: ReactNode;
+  /**
+   * Why Reopen is unavailable on this row, or null when it is. Approved mode only.
+   *
+   * The button is disabled with the reason beside it rather than hidden: a list that shows every
+   * accepted request has rows the warehouse has already started, and silently dropping the action
+   * on those reads as a missing feature. Saying "the warehouse has started this pull" is the answer
+   * the server would give anyway.
+   */
+  reopenDisabledReason?: (req: TRequest) => string | null;
 }
 
 /**
@@ -93,6 +102,7 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
   note,
   renderExtraActions,
   headerAction,
+  reopenDisabledReason,
 }: RequestsReviewPageProps<TRequest>) {
   const { showToast } = useToast();
   // Which request is mid-flight, and which action - drives per-button spinners while every button on
@@ -216,7 +226,7 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
                       {renderDetails(req)}
 
                       {mode === 'approved' ? (
-                        <Stack direction="row" spacing={1}>
+                        <Stack direction="row" spacing={1.5} alignItems="center">
                           <Button
                             variant="outlined"
                             color="warning"
@@ -227,11 +237,16 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
                                 <Undo2 size={18} strokeWidth={1.75} />
                               )
                             }
-                            disabled={pending?.id === req.id}
+                            disabled={pending?.id === req.id || Boolean(reopenDisabledReason?.(req))}
                             onClick={() => setConfirmReopenId(req.id)}
                           >
                             Reopen
                           </Button>
+                          {reopenDisabledReason?.(req) && (
+                            <Typography variant="body2" color="text.secondary">
+                              {reopenDisabledReason(req)}
+                            </Typography>
+                          )}
                         </Stack>
                       ) : (
                         <Stack direction="row" spacing={1}>

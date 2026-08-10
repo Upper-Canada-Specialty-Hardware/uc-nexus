@@ -61,6 +61,10 @@ input HardwareItemRef {
   opening_number: String!
   product_code: String!
   hardware_category: String!
+  # #570: units of this combo the draft claims. Null claims the whole combo (today's behaviour); a
+  # smaller number takes a slice and the finalize splits the boundary leaf. Sums across drafts must
+  # not exceed the combo total.
+  quantity: Int
 }
 
 input PODraftInput {

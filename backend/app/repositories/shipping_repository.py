@@ -4,7 +4,7 @@ import uuid
 from collections import defaultdict
 from datetime import datetime
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import ConflictError, InvalidStateTransitionError, NotFoundError, ValidationError
@@ -12,8 +12,6 @@ from app.models.enums import (
     AuditAction,
     AuditEntityType,
     NotificationType,
-    OpeningItemState,
-    PullRequestItemType,
     PullRequestSource,
     PullRequestStatus,
     ReservationSource,
@@ -22,7 +20,6 @@ from app.models.enums import (
     ShippingOutRequestStatus,
 )
 from app.models.inventory import InventoryLocation as InventoryLocationModel
-from app.models.opening_item import OpeningItem as OpeningItemModel
 from app.models.pull_request import (
     PullRequest as PullRequestModel,
 )
@@ -38,7 +35,6 @@ from app.models.shipping import (
 )
 from app.models.shipping_out_request import (
     ShippingOutRequest,
-    ShippingOutRequestItem,
 )
 from app.models.warehouse import Warehouse
 from app.repositories import project_repository
@@ -51,19 +47,12 @@ def get_ship_ready_items(
     session: Session,
     project_id: uuid.UUID | None = None,
 ) -> dict:
-    """Query ship-ready opening items and compute available loose hardware."""
-    # 1. Opening items with state = Ship_Ready
-    oi_stmt = (
-        select(OpeningItemModel)
-        .options(selectinload(OpeningItemModel.installed_hardware))
-        .where(OpeningItemModel.state == OpeningItemState.SHIP_READY)
-        .order_by(OpeningItemModel.opening_number.asc())
-    )
-    if project_id is not None:
-        oi_stmt = oi_stmt.where(OpeningItemModel.project_id == project_id)
-    opening_items = list(session.scalars(oi_stmt).unique().all())
+    """What a completed shipping-out pull has fulfilled but no slip has consumed yet.
 
-    # 2. Loose items: sum requested_quantity from completed Shipping_Out PRs
+    The staging pool: hardware that is off the shelf, on a cart, and waiting for a truck. Fulfilled
+    minus shipped, per (opening, category, product).
+    """
+    # 1. Sum requested_quantity from completed Shipping_Out pulls
     fulfilled_stmt = (
         select(
             PullRequestItemModel.opening_number,
@@ -75,7 +64,6 @@ def get_ship_ready_items(
         .where(
             PullRequestModel.source == PullRequestSource.SHIPPING_OUT,
             PullRequestModel.status == PullRequestStatus.COMPLETED,
-            PullRequestItemModel.item_type == PullRequestItemType.LOOSE,
         )
         .group_by(
             PullRequestItemModel.opening_number,
@@ -91,7 +79,7 @@ def get_ship_ready_items(
         key = (row.opening_number, row.hardware_category, row.product_code)
         fulfilled_map[key] = row.total_requested
 
-    # 3. Subtract already-shipped loose items from PackingSlipItems
+    # 2. Subtract what packing slips have already carried out
     shipped_stmt = (
         select(
             PackingSlipItem.opening_number,
@@ -100,7 +88,6 @@ def get_ship_ready_items(
             func.sum(PackingSlipItem.quantity).label("total_shipped"),
         )
         .join(PackingSlip, PackingSlipItem.packing_slip_id == PackingSlip.id)
-        .where(PackingSlipItem.item_type == PullRequestItemType.LOOSE)
         .group_by(
             PackingSlipItem.opening_number,
             PackingSlipItem.hardware_category,
@@ -115,7 +102,7 @@ def get_ship_ready_items(
         key = (row.opening_number, row.hardware_category, row.product_code)
         shipped_map[key] = row.total_shipped
 
-    # 4. Compute available loose items
+    # 3. What is left staged and shippable
     loose_items = []
     for key, total_fulfilled in fulfilled_map.items():
         already_shipped = shipped_map.get(key, 0)
@@ -135,10 +122,7 @@ def get_ship_ready_items(
     # queue ahead of opening 0101. `or ""` alone would sort them first, which is the wrong end.
     loose_items.sort(key=lambda x: (x["opening_number"] is None, x["opening_number"] or ""))
 
-    return {
-        "opening_items": opening_items,
-        "loose_items": loose_items,
-    }
+    return {"loose_items": loose_items}
 
 
 # Every column of the Delivery Request header (#447), in the order the paper form asks for them.
@@ -213,26 +197,19 @@ def confirm_shipment(
     items: list[dict],
     details: dict | None = None,
 ) -> PackingSlip:
-    """
-    Confirm a shipment: create PackingSlip + PackingSlipItems, transition
-    OpeningItem states to Shipped_Out.
+    """Cut a packing slip against what a completed shipping-out pull staged.
 
     The slip is born SCHEDULED (#447) and carries the Delivery Request header the shipping
     department filled in. The status is documentation of the truck's journey and nothing else - this
-    call is still the moment the hardware is claimed, so what it does to inventory is unchanged.
+    call is still the moment the hardware is claimed.
 
     Args:
         session: SQLAlchemy session
         project_id: UUID of the project
         packing_slip_number: Unique slip number (1-50 chars)
         shipped_by: Name of shipper
-        items: list of dicts with keys:
-            - item_type: PullRequestItemType ('Opening_Item' or 'Loose')
-            - opening_item_id: UUID (for Opening_Item type)
-            - opening_number: str (for Loose type)
-            - product_code: str (for Loose type)
-            - hardware_category: str (for Loose type)
-            - quantity: int
+        items: list of dicts with keys opening_number, hardware_category, product_code, quantity,
+            and optional building / floor / location placement.
         details: the Delivery Request header (DELIVERY_REQUEST_FIELDS). Every field is optional -
             the form is filled in against whatever the site has said, and a blank is a real answer.
     """
@@ -260,52 +237,28 @@ def confirm_shipment(
             field="packing_slip_number",
         )
 
-    # 2. Separate Opening_Item and Loose items
-    opening_item_cart = []
-    loose_cart = []
+    # 2. Validate availability against the staged pool
+    ship_ready = get_ship_ready_items(session, project_id)
+    available_loose: dict[tuple, int] = {}
+    for li in ship_ready["loose_items"]:
+        key = (li["opening_number"], li["hardware_category"], li["product_code"])
+        available_loose[key] = li["available_quantity"]
+
+    cart_agg: dict[tuple, int] = defaultdict(int)
     for item in items:
-        if item["item_type"] == PullRequestItemType.OPENING_ITEM:
-            opening_item_cart.append(item)
-        elif item["item_type"] == PullRequestItemType.LOOSE:
-            loose_cart.append(item)
+        key = (item["opening_number"], item["hardware_category"], item["product_code"])
+        cart_agg[key] += item["quantity"]
 
-    # 3. Lock and validate Opening_Item rows
-    oi_ids = [item["opening_item_id"] for item in opening_item_cart]
-    if oi_ids:
-        locked_ois = lock_rows(session, OpeningItemModel, oi_ids)
-        if len(locked_ois) != len(oi_ids):
-            found_ids = {o.id for o in locked_ois}
-            missing = [str(oid) for oid in oi_ids if oid not in found_ids]
-            raise NotFoundError(f"Opening items not found: {missing}")
-        for oi in locked_ois:
-            if oi.state != OpeningItemState.SHIP_READY:
-                raise InvalidStateTransitionError(f"Opening item {oi.id} is not Ship_Ready (current: {oi.state.value})")
+    for key, requested in cart_agg.items():
+        available = available_loose.get(key, 0)
+        if requested > available:
+            raise ValidationError(
+                f"Insufficient staged hardware: {key[2]} ({key[1]}) for opening {key[0]} - "
+                f"requested {requested}, available {available}",
+                field="items",
+            )
 
-    # 4. Validate loose items availability
-    if loose_cart:
-        # Get current ship-ready data for loose items to verify availability
-        ship_ready = get_ship_ready_items(session, project_id)
-        available_loose: dict[tuple, int] = {}
-        for li in ship_ready["loose_items"]:
-            key = (li["opening_number"], li["hardware_category"], li["product_code"])
-            available_loose[key] = li["available_quantity"]
-
-        # Aggregate cart loose items by key
-        cart_loose_agg: dict[tuple, int] = defaultdict(int)
-        for item in loose_cart:
-            key = (item["opening_number"], item["hardware_category"], item["product_code"])
-            cart_loose_agg[key] += item["quantity"]
-
-        for key, requested in cart_loose_agg.items():
-            available = available_loose.get(key, 0)
-            if requested > available:
-                raise ValidationError(
-                    f"Insufficient loose hardware: {key[2]} ({key[1]}) for opening {key[0]} - "
-                    f"requested {requested}, available {available}",
-                    field="items",
-                )
-
-    # 5. Create PackingSlip
+    # 3. Create PackingSlip
     now = datetime.utcnow()
     packing_slip = PackingSlip(
         id=uuid.uuid4(),
@@ -319,49 +272,26 @@ def confirm_shipment(
     session.add(packing_slip)
     session.flush()
 
-    # 6. Create PackingSlipItems
-    for item in opening_item_cart:
-        oi = session.get(OpeningItemModel, item["opening_item_id"])
-        psi = PackingSlipItem(
-            id=uuid.uuid4(),
-            packing_slip_id=packing_slip.id,
-            item_type=PullRequestItemType.OPENING_ITEM,
-            opening_item_id=item["opening_item_id"],
-            opening_number=oi.opening_number if oi else None,
-            # Snapshot the door leaf (#311): the slip is an immutable record of which leaf shipped.
-            leaf=oi.leaf if oi else None,
-            # And where it was going (#452), for the same reason. The Delivery Request printed at
-            # confirm names each leaf's placement off the cart; without these columns the reprint
-            # rebuilt its material lines from the stored items and dropped that suffix, so one
-            # shipment produced two different documents.
-            building=oi.building if oi else None,
-            floor=oi.floor if oi else None,
-            location=oi.location if oi else None,
-            product_code=oi.installed_hardware[0].product_code if oi and oi.installed_hardware else "",
-            hardware_category=oi.installed_hardware[0].hardware_category if oi and oi.installed_hardware else "",
-            quantity=1,
+    # 4. Create PackingSlipItems
+    for item in items:
+        session.add(
+            PackingSlipItem(
+                id=uuid.uuid4(),
+                packing_slip_id=packing_slip.id,
+                opening_number=item["opening_number"],
+                # Where it was going, as the cart named it (#452). The Delivery Request prints these
+                # after the opening number, so a reprint says what the driver's copy said.
+                building=item.get("building"),
+                floor=item.get("floor"),
+                location=item.get("location"),
+                product_code=item["product_code"],
+                hardware_category=item["hardware_category"],
+                quantity=item["quantity"],
+            )
         )
-        session.add(psi)
 
-    for item in loose_cart:
-        psi = PackingSlipItem(
-            id=uuid.uuid4(),
-            packing_slip_id=packing_slip.id,
-            item_type=PullRequestItemType.LOOSE,
-            opening_number=item["opening_number"],
-            product_code=item["product_code"],
-            hardware_category=item["hardware_category"],
-            quantity=item["quantity"],
-        )
-        session.add(psi)
-
-    # 7. Update OpeningItem states to Shipped_Out
-    if oi_ids:
-        for oi in locked_ois:
-            oi.state = OpeningItemState.SHIPPED_OUT
-
-    # 8. Create notification
-    item_count = len(opening_item_cart) + sum(i["quantity"] for i in loose_cart)
+    # 5. Create notification
+    item_count = sum(i["quantity"] for i in items)
     notification_service.create_notification(
         session,
         project_id=project_id,
@@ -510,7 +440,7 @@ def _returned_quantities(session: Session, packing_slip_id: uuid.UUID) -> dict[u
 
 
 def get_returnable_lines(session: Session, packing_slip_id: uuid.UUID) -> list[dict]:
-    """For a slip, list each LOOSE line with shipped / already-returned / still-returnable quantity."""
+    """For a slip, list each line with shipped / already-returned / still-returnable quantity."""
     ps = session.scalars(
         select(PackingSlip).options(selectinload(PackingSlip.items)).where(PackingSlip.id == packing_slip_id)
     ).first()
@@ -520,8 +450,6 @@ def get_returnable_lines(session: Session, packing_slip_id: uuid.UUID) -> list[d
     already = _returned_quantities(session, packing_slip_id)
     lines = []
     for psi in ps.items:
-        if psi.item_type != PullRequestItemType.LOOSE:
-            continue
         returned = already.get(psi.id, 0)
         lines.append(
             {
@@ -588,8 +516,6 @@ def create_shipment_return(
         psi = psi_by_id.get(item["packing_slip_item_id"])
         if psi is None:
             raise ValidationError("Line is not part of this packing slip", field="packing_slip_item_id")
-        if psi.item_type != PullRequestItemType.LOOSE:
-            raise ValidationError("Only loose-hardware lines can be returned", field="packing_slip_item_id")
         rma_ref = item.get("rma_reference")
         if rma_ref is not None and len(rma_ref) > 100:
             raise ValidationError("rma_reference must be 100 characters or fewer", field="rma_reference")
@@ -782,67 +708,6 @@ def get_shipping_out_requests(
     return list(session.scalars(stmt).unique().all())
 
 
-def find_live_shipping_claims(
-    session: Session,
-    project_id: uuid.UUID,
-    *,
-    opening_item_ids: list[uuid.UUID] | None = None,
-    opening_leaf_specs: list[tuple[str, int | None]] | None = None,
-) -> dict:
-    """Assembled leaves a still-live shipping-out request has already claimed (#342).
-
-    Returns `{"by_opening_item": {opening_item_id: request_number},
-              "by_opening_leaf": {(opening_number, leaf): request_number}}` - the first for the
-    "this leaf is already on a shipping request" duplicate guard, the second for the cross-type
-    conflict a shop-assembly creation has to see (the same physical leaf cannot be both on its way
-    out the door and back on the assembly bench).
-
-    Live is defined by the *pull*, not by the request status, because a shipping-out request stays
-    APPROVED forever once accepted: PENDING, or APPROVED while its minted PullRequest is still
-    PENDING/IN_PROGRESS. A request whose pull has completed has shipped its leaves, which is a
-    different state that the OpeningItem's own `state` already refuses. One query, outer-joined to
-    the pull so an APPROVED request whose PR was discarded by a reopen still reads as live (it is
-    back to PENDING and still holding).
-    """
-    result: dict = {"by_opening_item": {}, "by_opening_leaf": {}}
-    if not opening_item_ids and not opening_leaf_specs:
-        return result
-
-    live_request = or_(
-        ShippingOutRequest.status == ShippingOutRequestStatus.PENDING,
-        and_(
-            ShippingOutRequest.status == ShippingOutRequestStatus.APPROVED,
-            or_(
-                PullRequestModel.id.is_(None),
-                PullRequestModel.status.in_([PullRequestStatus.PENDING, PullRequestStatus.IN_PROGRESS]),
-            ),
-        ),
-    )
-    stmt = (
-        select(
-            ShippingOutRequestItem.opening_item_id,
-            ShippingOutRequestItem.opening_number,
-            ShippingOutRequestItem.leaf,
-            ShippingOutRequest.request_number,
-        )
-        .join(ShippingOutRequest, ShippingOutRequestItem.shipping_out_request_id == ShippingOutRequest.id)
-        .outerjoin(PullRequestModel, ShippingOutRequest.pull_request_id == PullRequestModel.id)
-        .where(
-            ShippingOutRequest.project_id == project_id,
-            ShippingOutRequestItem.item_type == PullRequestItemType.OPENING_ITEM,
-            live_request,
-        )
-    )
-    wanted_items = set(opening_item_ids or [])
-    wanted_leaves = set(opening_leaf_specs or [])
-    for opening_item_id, opening_number, leaf, request_number in session.execute(stmt).all():
-        if opening_item_id is not None and opening_item_id in wanted_items:
-            result["by_opening_item"][opening_item_id] = request_number
-        if (opening_number, leaf) in wanted_leaves:
-            result["by_opening_leaf"][(opening_number, leaf)] = request_number
-    return result
-
-
 def accept_shipping_out_request(
     session: Session,
     request_id: uuid.UUID,
@@ -852,10 +717,9 @@ def accept_shipping_out_request(
     PENDING) copying this request's items into PullRequestItems, flip the request to APPROVED, and
     stamp pull_request_id.
 
-    A pure human approval gate (#342), like its shop-assembly twin: the request's LOOSE lines
-    reserved their hardware when the request was created and still hold that claim, so there is
-    nothing to re-check here and nothing to release. The claim is spent when the warehouse approves
-    the pull."""
+    A pure human approval gate (#342), like its shop-assembly twin: the request reserved its
+    hardware when it was created and still holds that claim, so there is nothing to re-check here
+    and nothing to release. The claim is spent when the pick is confirmed."""
     stmt = (
         select(ShippingOutRequest)
         .options(selectinload(ShippingOutRequest.items))
@@ -879,28 +743,12 @@ def accept_shipping_out_request(
     session.add(pr)
     session.flush()
 
-    # Leaf fallback (#335): requests written before shipping_out_request_items.leaf existed carry a
-    # null leaf, so read it off the OpeningItem they point at. One grouped query, not one per line.
-    unleafed_oi_ids = {i.opening_item_id for i in req.items if i.opening_item_id is not None and i.leaf is None}
-    leaf_by_opening_item: dict[uuid.UUID, int | None] = {}
-    if unleafed_oi_ids:
-        leaf_by_opening_item = dict(
-            session.execute(
-                select(OpeningItemModel.id, OpeningItemModel.leaf).where(OpeningItemModel.id.in_(unleafed_oi_ids))
-            ).all()
-        )
-
     for item in req.items:
         session.add(
             PullRequestItemModel(
                 id=uuid.uuid4(),
                 pull_request_id=pr.id,
-                item_type=item.item_type,
                 opening_number=item.opening_number,
-                opening_item_id=item.opening_item_id,
-                # Snapshot the door leaf (#311/#335) so a leaf-1 pull reads distinct from a leaf-2 pull,
-                # mirroring what the shop-assembly accept does with ShopAssemblyOpening.leaf.
-                leaf=item.leaf if item.leaf is not None else leaf_by_opening_item.get(item.opening_item_id),
                 hardware_category=item.hardware_category,
                 product_code=item.product_code,
                 requested_quantity=item.requested_quantity,
@@ -921,9 +769,8 @@ def reject_shipping_out_request(
     reason: str | None,
 ) -> ShippingOutRequest:
     """Reject a PENDING shipping-out request (#293). Mints no PullRequest, and **releases the
-    request's inventory reservations** (#342): its LOOSE lines have been holding a claim on loose
-    stock since creation, and a dead request must not keep it. OPENING_ITEM lines never reserved
-    anything (an assembled leaf left fungible inventory at assembly), so there is nothing of theirs
+    request's inventory reservations** (#342): it has been holding a claim on stock since creation,
+    and a dead request must not keep it. There is nothing of an accepted request's
     to release. Also the recovery path after a reopen - a reopened request is PENDING and still
     holding, and this is what finally lets go."""
     from app.repositories import warehouse as warehouse_repository

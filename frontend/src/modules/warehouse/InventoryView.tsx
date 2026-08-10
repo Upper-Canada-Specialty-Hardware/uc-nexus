@@ -1,8 +1,7 @@
 import { useState } from 'react';
-import { Box, Tab, Tabs as MUITabs, Button, Typography } from '@mui/material';
+import { Box, Button, Typography } from '@mui/material';
 import { LayoutGrid } from 'lucide-react';
 import HardwareItemsTab from './HardwareItemsTab';
-import OpeningItemsTab from './OpeningItemsTab';
 import ProjectLandingPage from '../../components/ProjectLandingPage';
 import { microLabelSx } from '../../theme';
 import { FadeIn } from '../../motion';
@@ -10,7 +9,6 @@ import type { Project } from '../../types/project';
 
 export default function InventoryView() {
   const [selectedProject, setSelectedProject] = useState<Project | 'all' | null>('all');
-  const [activeTab, setActiveTab] = useState(0);
 
   if (selectedProject === null) {
     return (
@@ -57,14 +55,9 @@ export default function InventoryView() {
         </Button>
       </Box>
 
-      <MUITabs value={activeTab} onChange={(_, v) => setActiveTab(v)}>
-        <Tab label="Hardware Items" />
-        <Tab label="Opening Items" />
-      </MUITabs>
-      <FadeIn key={activeTab} y={8}>
+      <FadeIn y={8}>
         <Box sx={{ mt: 2 }}>
-          {activeTab === 0 && <HardwareItemsTab projectId={projectId} />}
-          {activeTab === 1 && <OpeningItemsTab projectId={projectId} />}
+          <HardwareItemsTab projectId={projectId} />
         </Box>
       </FadeIn>
     </Box>

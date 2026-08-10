@@ -20,7 +20,6 @@ from .converters import (
     deficiency_review_to_type,
     deficient_item_row_to_type,
     inventory_location_to_type,
-    pull_request_item_to_type,
     stock_item_to_type,
 )
 from .enums import DeficientItemSource
@@ -30,7 +29,6 @@ from .inputs import (
     DestockInventoryInput,
     MoveStockLocationInput,
     ReclassifyStockItemInput,
-    ReportDeficiencyAtAssemblyInput,
     ReportInventoryDeficiencyInput,
     ReportStockDeficiencyInput,
     ResolveDeficiencyInput,
@@ -41,7 +39,6 @@ from .types import (
     DeficientItemRow,
     InventoryLocation,
     ReclassifyStockResult,
-    SAReplacementResult,
     StockItem,
     TransferResult,
 )
@@ -58,6 +55,7 @@ class StockQueries:
         aisle: str | None = None,
         only_deficient: bool = False,
         warehouse_id: strawberry.ID | None = None,
+        only_unlocated: bool = False,
     ) -> list[StockItem]:
         with SessionLocal() as session:
             rows = stock_repository.get_stock_items(
@@ -67,6 +65,7 @@ class StockQueries:
                 aisle=aisle,
                 only_deficient=only_deficient,
                 warehouse_id=uuid.UUID(str(warehouse_id)) if warehouse_id else None,
+                only_unlocated=only_unlocated,
             )
             return [stock_item_to_type(r) for r in rows]
 
@@ -110,12 +109,6 @@ class StockQueries:
                 project_id=uuid.UUID(str(project_id)) if project_id else None,
             )
             return [deficiency_review_to_type(r) for r in rows]
-
-    @strawberry.field
-    def stock_matches_for_opening(self, info: strawberry.Info, opening_item_id: strawberry.ID) -> list[StockItem]:
-        with SessionLocal() as session:
-            rows = stock_repository.get_stock_matches_for_opening(session, uuid.UUID(str(opening_item_id)))
-            return [stock_item_to_type(r) for r in rows]
 
 
 @strawberry.type
@@ -315,30 +308,6 @@ class StockMutations:
             session.commit()
             session.refresh(si)
             return stock_item_to_type(si)
-
-    @strawberry.mutation
-    def report_deficiency_at_assembly(
-        self, info: strawberry.Info, input: ReportDeficiencyAtAssemblyInput
-    ) -> SAReplacementResult:
-        """Flag a unit deficient at the bench. Open to any signed-in user - it writes project
-        inventory and mints a replacement pull request, so it must not be reachable anonymously."""
-        auth = current_user(info)
-        actor = resolve_display_name(auth["user_id"])
-        with SessionLocal() as session:
-            il, pri = stock_repository.report_deficiency_at_assembly(
-                session,
-                sa_opening_item_id=uuid.UUID(str(input.shop_assembly_opening_item_id)),
-                quantity=input.quantity,
-                reason_text=input.reason_text,
-                performed_by=actor,
-            )
-            session.commit()
-            session.refresh(il)
-            session.refresh(pri)
-            return SAReplacementResult(
-                inventory_location=inventory_location_to_type(il),
-                replacement_pull_request_item=pull_request_item_to_type(pri),
-            )
 
     @strawberry.mutation
     def resolve_deficiency(self, info: strawberry.Info, input: ResolveDeficiencyInput) -> DeficiencyReview:

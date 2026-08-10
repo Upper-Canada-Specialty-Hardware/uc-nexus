@@ -12,14 +12,9 @@ import * as refetch from '../refetch';
 
 /** Operation name -> the root field it writes, for the pairs the lists below actually use. */
 const ROOT_FIELD_OF_QUERY: Record<string, string> = {
-  GetAssembleList: 'assembleList',
-  GetMyWork: 'myWork',
-  GetReplacementWork: 'replacementWork',
   GetPullRequests: 'pullRequests',
-  GetOpeningLeafStatus: 'openingLeafStatus',
+  GetShopAssemblyRequests: 'shopAssemblyRequests',
   GetPackingSlips: 'packingSlips',
-  GetInventoryHierarchy: 'inventoryHierarchy',
-  GetInventoryByVendor: 'inventoryByVendor',
   GetUnlocatedInventory: 'unlocatedInventory',
   GetStockItems: 'stockItems',
   GetDeficientItems: 'deficientItems',
@@ -32,13 +27,7 @@ const ROOT_FIELD_OF_QUERY: Record<string, string> = {
 
 const PAIRS: [string, string[], string[]][] = [
   ['shipment confirm', refetch.SHIPPING_REFETCH_QUERIES, refetch.SHIPPING_STALE_ROOT_FIELDS],
-  ['assembly progress save', refetch.ASSEMBLY_PROGRESS_REFETCH_QUERIES, refetch.PIPELINE_STALE_ROOT_FIELDS],
-  [
-    'replacement install',
-    refetch.REPLACEMENT_INSTALL_REFETCH_QUERIES,
-    refetch.REPLACEMENT_INSTALL_STALE_ROOT_FIELDS,
-  ],
-  ['pull staging', refetch.PULL_STAGING_REFETCH_QUERIES, refetch.PULL_STAGING_STALE_ROOT_FIELDS],
+  ['pick confirm', refetch.PICK_CONFIRM_REFETCH_QUERIES, refetch.PICK_CONFIRM_STALE_ROOT_FIELDS],
   ['pull cancel', refetch.PULL_CANCEL_REFETCH_QUERIES, refetch.PULL_CANCEL_STALE_ROOT_FIELDS],
 ];
 
@@ -79,13 +68,33 @@ describe('refetch/evict lists stay disjoint', () => {
   });
 });
 
-it('refetches the Assemble List after a progress save rather than evicting it', () => {
-  // The modal is rendered from a row of `assembleList`, and the manager board reads the same query,
-  // so evicting the field empties it for every mounted watcher and unmounts the modal mid-save.
-  expect(refetch.ASSEMBLY_PROGRESS_REFETCH_QUERIES).toContain('GetAssembleList');
-  expect(refetch.PIPELINE_STALE_ROOT_FIELDS).not.toContain('assembleList');
-  // The constant that used to carry that eviction is gone for good.
-  expect('ASSEMBLY_PROGRESS_STALE_ROOT_FIELDS' in refetch).toBe(false);
+it('invalidates the composer whenever a claim moves', () => {
+  // `requestCoverage` answers `owed - sent - claimed`, so every moment that moves one of those terms
+  // has to evict it. The reader is the Start-a-Request wizard, which is by definition not mounted
+  // when a request is accepted, a pull is picked, or a shipment is confirmed - exactly the case
+  // refetchQueries cannot reach.
+  expect(refetch.RESERVATION_STALE_ROOT_FIELDS).toContain('requestCoverage');
+  expect(refetch.PULL_LIFECYCLE_STALE_ROOT_FIELDS).toContain('requestCoverage');
+  expect(refetch.PULL_CANCEL_STALE_ROOT_FIELDS).toContain('requestCoverage');
+  expect(refetch.SHIPPING_STALE_ROOT_FIELDS).toContain('requestCoverage');
+});
+
+it('has no bench-era lists left', () => {
+  // Every one of these named a screen the door pipeline owned. Leaving a constant behind would let a
+  // call site keep evicting a root field the schema no longer has, which fails silently.
+  for (const dead of [
+    'PIPELINE_STALE_ROOT_FIELDS',
+    'ASSEMBLY_PROGRESS_REFETCH_QUERIES',
+    'ASSEMBLY_PROGRESS_STALE_ROOT_FIELDS',
+    'ASSEMBLY_COMPLETE_STALE_ROOT_FIELDS',
+    'ASSIGNMENT_STALE_ROOT_FIELDS',
+    'REPLACEMENT_INSTALL_REFETCH_QUERIES',
+    'REPLACEMENT_INSTALL_STALE_ROOT_FIELDS',
+    'PULL_STAGING_REFETCH_QUERIES',
+    'PULL_STAGING_STALE_ROOT_FIELDS',
+  ]) {
+    expect(dead in refetch).toBe(false);
+  }
 });
 
 it('refetches the shipments list after a confirm rather than evicting it', () => {

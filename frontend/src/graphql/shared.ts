@@ -107,8 +107,8 @@ export const GET_WAREHOUSES = gql`
 `;
 
 export const GET_AUDIT_LOG = gql`
-  query GetAuditLog($entityId: ID, $entityType: AuditEntityType, $projectId: ID, $limit: Int) {
-    auditLog(entityId: $entityId, entityType: $entityType, projectId: $projectId, limit: $limit) {
+  query GetAuditLog($entityId: ID, $entityType: AuditEntityType, $projectId: ID, $limit: Int, $offset: Int) {
+    auditLog(entityId: $entityId, entityType: $entityType, projectId: $projectId, limit: $limit, offset: $offset) {
       id
       projectId
       entityType
@@ -145,20 +145,17 @@ export const ASSIGN_INVENTORY_LOCATION = gql`
   }
 `;
 
-export const MOVE_OPENING_ITEM_LOCATION = gql`
-  mutation MoveOpeningItemLocation($openingItemId: ID!, $aisle: String!, $row: String!, $bay: String!, $warehouseId: ID) {
-    moveOpeningItemLocation(openingItemId: $openingItemId, aisle: $aisle, row: $row, bay: $bay, warehouseId: $warehouseId) {
-      id projectId openingId warehouseId openingNumber building floor location quantity assemblyCompletedAt state aisle row bay createdAt updatedAt
-      installedHardware { id openingItemId productCode hardwareCategory quantity }
-    }
-  }
-`;
-
-export const MARK_OPENING_ITEM_UNLOCATED = gql`
-  mutation MarkOpeningItemUnlocated($openingItemId: ID!) {
-    markOpeningItemUnlocated(openingItemId: $openingItemId) {
-      id projectId openingId openingNumber building floor location quantity assemblyCompletedAt state aisle row bay createdAt updatedAt
-      installedHardware { id openingItemId productCode hardwareCategory quantity }
+/**
+ * Break units off an unlocated row so they can go on a different shelf (#501).
+ *
+ * Put-away happens after the warehouse manager approves now, so a receive books one row per PO
+ * line. Ten hinges arriving as one row routinely go to two bins, and a row carries exactly one
+ * aisle/row/bay. Returns [original, new]; the new row is unlocated and is what gets assigned next.
+ */
+export const SPLIT_INVENTORY_LOCATION = gql`
+  mutation SplitInventoryLocation($inventoryLocationId: ID!, $quantity: Int!) {
+    splitInventoryLocation(inventoryLocationId: $inventoryLocationId, quantity: $quantity) {
+      id projectId poLineItemId receiveLineItemId hardwareCategory productCode quantity aisle row bay receivedAt createdAt updatedAt
     }
   }
 `;

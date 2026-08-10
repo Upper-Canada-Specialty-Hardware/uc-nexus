@@ -14,6 +14,7 @@ from app.models.project import Opening, Project
 from app.models.purchase_order import POLineItem, PurchaseOrder
 from app.repositories import buyer_repository, import_repository, po_repository
 from app.schemas import po as po_schema
+from app.services.gp_po import build_create_po_payload
 
 
 def _assign_buyer(session, buyer_id, project):
@@ -340,30 +341,48 @@ def test_register_rejects_duplicate_po_number_in_project(db_session):
         )
 
 
-def test_register_requires_order_as(db_session):
+def test_register_allows_blank_order_as_and_falls_back_to_product_code(db_session):
+    # #563: order_as is optional - GP's item number falls back to product_code. A blank order_as on a
+    # line that carries a product_code registers fine, persists as NULL, and the GP payload uses the
+    # product_code as the item number.
     project = _make_project(db_session)
     po = _import_draft_po(db_session, project)
     lines = list(po.line_items)
-    with pytest.raises(ValidationError):
-        po_repository.register_po_in_gp(
-            db_session,
-            po.id,
-            gp_vendor_id="GPV1",
-            vendor_name_snapshot="GP Vendor",
-            po_number="PO0000102",
-            gp_company="TUBC",
-            line_items=[
-                {
-                    "id": str(lines[0].id),
-                    "hardware_category": "HINGE",
-                    "product_code": "HG-100",
-                    "ordered_quantity": 1,
-                    "unit_cost": 10.0,
-                    "classification": None,
-                    "order_as": "  ",  # blank -> rejected
-                }
-            ],
-        )
+    line_input = {
+        "id": str(lines[0].id),
+        "hardware_category": "HINGE",
+        "product_code": "HG-100",
+        "ordered_quantity": 1,
+        "unit_cost": 10.0,
+        "classification": None,
+        "order_as": "  ",  # blank -> allowed, persists as None
+    }
+    po_repository.register_po_in_gp(
+        db_session,
+        po.id,
+        gp_vendor_id="GPV1",
+        vendor_name_snapshot="GP Vendor",
+        po_number="PO0000102",
+        gp_company="TUBC",
+        line_items=[line_input],
+    )
+    db_session.flush()
+
+    registered = db_session.scalars(
+        select(POLineItem).where(POLineItem.po_id == po.id, POLineItem.product_code == "HG-100")
+    ).first()
+    assert registered.order_as is None
+
+    payload = build_create_po_payload(
+        vendor_gp_id="GPV1",
+        vendor_contact_name=None,
+        buyer_id="BUYER1",
+        job_number=None,
+        cost_code=None,
+        po_number="PO0000102",
+        line_items=[line_input],
+    )
+    assert payload["lines"][0]["item_number"] == "HG-100"
 
 
 # --- issue #233: _prepare_register_po resolves each line's manufacturer from matching HardwareItems ----

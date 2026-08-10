@@ -155,6 +155,7 @@ def create_po(
     tariff_amount: float | None = None,
     preferred_delivery_date=None,
     created_by_user_id: str | None = None,
+    vendor_quote_number: str | None = None,
 ) -> PurchaseOrder:
     """Create a manual PO with line items. No hardware items are created.
 
@@ -201,6 +202,11 @@ def create_po(
         tariff_amount=_coerce_order_cost(tariff_amount, "tariff_amount"),
         # Issue #216/#256: the PM's requested date, captured at request creation.
         preferred_delivery_date=preferred_delivery_date,
+        # #481: optional at creation. Blank stays NULL rather than an empty string, so the
+        # VENDOR_CONFIRMED auto-transition's "quote exists" test keeps meaning what it says.
+        vendor_quote_number=(
+            vendor_quote_number.strip() if vendor_quote_number and vendor_quote_number.strip() else None
+        ),
     )
     session.add(po)
     session.flush()
@@ -211,8 +217,11 @@ def create_po(
             classification_val = Classification(classification_val)
 
         order_as_raw = li_data.get("order_as")
-        if not order_as_raw or not order_as_raw.strip():
-            raise ValidationError("Order as is required for every line item", field="order_as")
+        cleaned_order_as = order_as_raw.strip() if order_as_raw and order_as_raw.strip() else None
+        # #563: GP's item number falls back to product_code when order_as is blank (services/gp_po.py),
+        # so a line needs order_as OR product_code - not order_as specifically. Persist stripped or None.
+        if cleaned_order_as is None and not (li_data.get("product_code") or "").strip():
+            raise ValidationError("Order as or product code is required for every line item", field="order_as")
 
         poli = POLineItem(
             id=uuid.uuid4(),
@@ -223,7 +232,7 @@ def create_po(
             received_quantity=0,
             unit_cost=Decimal(str(li_data["unit_cost"])) if li_data.get("unit_cost") else Decimal("0"),
             classification=classification_val,
-            order_as=order_as_raw.strip(),
+            order_as=cleaned_order_as,
             # GP assigns ORD = line index * 16384 (1-based) in this same order when the PO is pushed
             # via the relay, so record the mapping now - it's what a relay /receipt targets per line.
             gp_line_ord=idx * 16384,
@@ -335,8 +344,11 @@ def register_po_in_gp(
     # (== this payload order), which is what a relay /receipt targets per line.
     for idx, li_data in enumerate(line_items, start=1):
         order_as_raw = li_data.get("order_as")
-        if not order_as_raw or not order_as_raw.strip():
-            raise ValidationError("Order as is required for every line item", field="order_as")
+        cleaned_order_as = order_as_raw.strip() if order_as_raw and order_as_raw.strip() else None
+        # #563: GP's item number falls back to product_code when order_as is blank (services/gp_po.py),
+        # so a line needs order_as OR product_code - not order_as specifically. Persist stripped or None.
+        if cleaned_order_as is None and not (li_data.get("product_code") or "").strip():
+            raise ValidationError("Order as or product code is required for every line item", field="order_as")
         qty = li_data.get("ordered_quantity")
         if qty is None or qty < 1:
             raise ValidationError("Ordered quantity must be at least 1", field="ordered_quantity")
@@ -360,7 +372,7 @@ def register_po_in_gp(
             poli.ordered_quantity = qty
             poli.unit_cost = Decimal(str(unit_cost))
             poli.classification = classification_val
-            poli.order_as = order_as_raw.strip()
+            poli.order_as = cleaned_order_as
             poli.gp_line_ord = idx * 16384
         else:
             session.add(
@@ -373,7 +385,7 @@ def register_po_in_gp(
                     received_quantity=0,
                     unit_cost=Decimal(str(unit_cost)),
                     classification=classification_val,
-                    order_as=order_as_raw.strip(),
+                    order_as=cleaned_order_as,
                     gp_line_ord=idx * 16384,
                 )
             )
@@ -643,10 +655,16 @@ def update_po(
 def cancel_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
     """
     - Validate exists + not soft-deleted (NotFoundError)
-    - Validate status in (Draft, GP_Registered, Vendor_Confirmed) (InvalidStateTransitionError)
+    - Validate status is DRAFT (InvalidStateTransitionError)
     - Set status=Cancelled, deleted_at=datetime.utcnow()
     - Release the PO's hardware-schedule rows back to AVAILABLE
     - Return updated PO
+
+    DRAFT only. Cancelling used to be legal at GP_REGISTERED and VENDOR_CONFIRMED too, and nothing
+    here ever told GP: the cancel is a local write with no relay call, so GP kept a live PO against
+    the job that Nexus had forgotten. That is a phantom commitment on the job cost, and the warehouse
+    can still receive against it on the GP side. A registered PO is GP's record now, so unwinding one
+    starts there and syncs back, rather than being something Nexus can decide on its own.
     """
     from app.models.hardware import HardwareItem
 
@@ -654,8 +672,11 @@ def cancel_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
     if po is None:
         raise NotFoundError(f"Purchase order {po_id} not found")
 
-    if po.status not in (POStatus.DRAFT, POStatus.GP_REGISTERED, POStatus.VENDOR_CONFIRMED):
-        raise InvalidStateTransitionError(f"Cannot cancel PO in {po.status.value} status")
+    if po.status is not POStatus.DRAFT:
+        raise InvalidStateTransitionError(
+            f"Cannot cancel PO in {po.status.value} status - only a draft can be cancelled. "
+            "Once a PO is registered in GP, cancel it there."
+        )
 
     po.status = POStatus.CANCELLED
     po.deleted_at = datetime.utcnow()

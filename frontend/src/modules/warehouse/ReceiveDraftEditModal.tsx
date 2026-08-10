@@ -14,8 +14,6 @@ import ReceiveLinesEditor from './ReceiveLinesEditor';
 import {
   buildReceiveLineItemsInput,
   draftToEditorState,
-  validatePutAway,
-  type LocationDraft,
   type PODetailLineItem,
   type PODetails,
 } from './receiveLines';
@@ -39,7 +37,6 @@ export default function ReceiveDraftEditModal({ open, draft, onClose }: ReceiveD
   const client = useApolloClient();
 
   const [receiveQuantities, setReceiveQuantities] = useState<Record<string, number>>({});
-  const [lineLocations, setLineLocations] = useState<Record<string, LocationDraft[]>>({});
   const [submitting, setSubmitting] = useState(false);
   const [mutationError, setMutationError] = useState<string | null>(null);
 
@@ -62,7 +59,6 @@ export default function ReceiveDraftEditModal({ open, draft, onClose }: ReceiveD
     const state = draftToEditorState(draft.lineItems);
     // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrate the editor from the draft
     setReceiveQuantities(state.receiveQuantities);
-    setLineLocations(state.lineLocations);
     setMutationError(null);
   }, [open, draft]);
 
@@ -87,10 +83,6 @@ export default function ReceiveDraftEditModal({ open, draft, onClose }: ReceiveD
     );
   }, [poDetails, receiveQuantities]);
 
-  const putAwayValid = useMemo(
-    () => validatePutAway(lineItemsToReceive, receiveQuantities, lineLocations),
-    [lineItemsToReceive, receiveQuantities, lineLocations],
-  );
 
   const isRejected = draft?.status === 'REJECTED';
 
@@ -104,7 +96,7 @@ export default function ReceiveDraftEditModal({ open, draft, onClose }: ReceiveD
           input: {
             draftId: draft.id,
             warehouseId: draft.warehouseId,
-            lineItems: buildReceiveLineItemsInput(lineItemsToReceive, receiveQuantities, lineLocations),
+            lineItems: buildReceiveLineItemsInput(lineItemsToReceive, receiveQuantities),
           },
         },
       });
@@ -127,7 +119,6 @@ export default function ReceiveDraftEditModal({ open, draft, onClose }: ReceiveD
     updateDraft,
     lineItemsToReceive,
     receiveQuantities,
-    lineLocations,
     isRejected,
     resubmitDraft,
     showToast,
@@ -148,7 +139,7 @@ export default function ReceiveDraftEditModal({ open, draft, onClose }: ReceiveD
           <Button onClick={onClose}>Cancel</Button>
           <Button
             variant="contained"
-            disabled={totalUnits === 0 || hasQuantityErrors || !putAwayValid || submitting}
+            disabled={totalUnits === 0 || hasQuantityErrors || submitting}
             onClick={handleSave}
           >
             {submitting ? (
@@ -189,9 +180,6 @@ export default function ReceiveDraftEditModal({ open, draft, onClose }: ReceiveD
           poDetailsList={[poDetails]}
           receiveQuantities={receiveQuantities}
           onQuantityChange={handleQuantityChange}
-          lineLocations={lineLocations}
-          onLineLocationsChange={setLineLocations}
-          lineItemsToReceive={lineItemsToReceive}
           showPoHeaders={false}
         />
       )}

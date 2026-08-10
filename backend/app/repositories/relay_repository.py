@@ -206,22 +206,25 @@ def authenticate_secret(session: Session, secret: str) -> RelayInstall | None:
     # at all (wiped DB), legacy rows with the key gone or rotated (a config problem), or a genuine
     # mismatch (the relay holds a secret from before it was re-enrolled - it needs a restart, or an
     # admin-armed adopt window, not another enrolment).
+    cause = (
+        "no enrolled installs"
+        if not hash_rows and not legacy
+        else "legacy rows present but RELAY_SECRET_ENC_KEY is unset"
+        if legacy and not key_present
+        else "encryption key mismatch"
+        if legacy and undecryptable == len(legacy)
+        else "secret mismatch - relay is presenting a stale secret"
+    )
+    # In the message, not in `extra`. This line is read in Railway's deploy log, and the stdlib's
+    # default formatter renders only the message - so every field below used to be dropped and the
+    # line arrived saying "relay handshake rejected" and nothing else. That is the entire diagnostic
+    # for a relay that cannot authenticate, and it named none of the four causes it had computed.
     logger.warning(
-        "relay handshake rejected",
-        extra={
-            "hash_rows": hash_rows,
-            "legacy_rows": len(legacy),
-            "encryption_key_present": key_present,
-            "undecryptable": undecryptable,
-            "cause": (
-                "no enrolled installs"
-                if not hash_rows and not legacy
-                else "legacy rows present but RELAY_SECRET_ENC_KEY is unset"
-                if legacy and not key_present
-                else "encryption key mismatch"
-                if legacy and undecryptable == len(legacy)
-                else "secret mismatch - relay is presenting a stale secret"
-            ),
-        },
+        "relay handshake rejected: %s (hash_rows=%s legacy_rows=%s encryption_key_present=%s undecryptable=%s)",
+        cause,
+        hash_rows,
+        len(legacy),
+        key_present,
+        undecryptable,
     )
     return None

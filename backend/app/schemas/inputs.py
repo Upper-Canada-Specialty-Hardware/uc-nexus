@@ -7,7 +7,6 @@ from .enums import (
     DeficiencyResolution,
     DestockSource,
     MigrationDestination,
-    PullRequestItemType,
     ReceiveDecisionChoice,
     ReturnDisposition,
     TransferSourceType,
@@ -168,6 +167,11 @@ class HardwareItemRef:
     opening_number: str
     product_code: str
     hardware_category: str
+    # #570: how many units of this (opening, product, category) combo this PO draft claims. None keeps
+    # today's behaviour - claim the whole combo. A number below the combo total means the draft takes
+    # only that slice; the finalize splits the boundary leaf and the remainder goes to the next
+    # claiming draft or falls through to AVAILABLE. Sums across drafts must not exceed the combo total.
+    quantity: int | None = None
 
 
 @strawberry.input
@@ -181,6 +185,10 @@ class POLineItemOrderAsInput:
 class PODraftInput:
     po_number: str | None = None
     notes: str | None = None
+    # #490: the GP cost code, picked per vendor card at request time. Optional - it is only
+    # authoritative at register, where RegisterPOInput.cost_code is still validated against the job's
+    # live GP list. Captured here so the buyer who knows the code does not have to remember it later.
+    cost_code: str | None = None
     # Issue #216: the PM's requested date, captured at PO-request creation.
     preferred_delivery_date: date | None = None
     hardware_item_refs: list[HardwareItemRef] = strawberry.field(default_factory=list)
@@ -197,15 +205,11 @@ class ClassificationInput:
 
 @strawberry.input
 class ShippingOutPRDraftItemInput:
-    item_type: PullRequestItemType
-    # Optional since #451: a LOOSE line raised straight off project inventory has no opening to
-    # name - shelf stock belongs to the project, not to a door. Schedule-driven lines still send it.
+    # Optional since #451: a line raised straight off project inventory has no opening to name -
+    # shelf stock belongs to the project, not to a door. Schedule-driven lines still send it.
     opening_number: str | None = None
-    opening_item_id: strawberry.ID | None = None
-    # Door leaf (#335): set on OPENING_ITEM lines from the assembled OpeningItem. Null on LOOSE.
-    leaf: int | None = None
-    hardware_category: str | None = None
-    product_code: str | None = None
+    hardware_category: str = ""
+    product_code: str = ""
     requested_quantity: int = 1
 
 
@@ -219,10 +223,7 @@ class ShippingOutPRDraftInput:
 class ContainerItemInput:
     """One placement in a container (#451). Order in the list IS the stacking order."""
 
-    item_type: PullRequestItemType
-    opening_item_id: strawberry.ID | None = None
     opening_number: str | None = None
-    leaf: int | None = None
     hardware_category: str = ""
     product_code: str = ""
     quantity: int = 1
@@ -254,8 +255,6 @@ class CreateShippingOutRequestInput:
     project_id: strawberry.ID
     request_number: str
     items: list[ShippingOutPRDraftItemInput] = strawberry.field(default_factory=list)
-    # The caller has seen the "this leaf is short" warning and still wants it on the request (#341).
-    acknowledge_incomplete_leaves: bool = False
 
 
 @strawberry.input
@@ -269,28 +268,23 @@ class EditShippingOutRequestInput:
 
     id: strawberry.ID
     items: list[ShippingOutPRDraftItemInput] = strawberry.field(default_factory=list)
-    acknowledge_incomplete_leaves: bool = False
 
 
 @strawberry.input
-class SAROpeningItemInput:
-    hardware_category: str
-    product_code: str
-    # What the schedule says this leaf is owed. Never reduced by scarcity.
-    quantity: int
-    # What the requester could actually claim out of available inventory, 0..quantity. The allocator
-    # step always sends it explicitly. **None means "fully allocated" (= quantity)**, which is what
-    # keeps every non-wizard caller - tests, scripts, a stale tab - on the pre-allocation behaviour:
-    # ask for the whole line, and fail the availability gate if it does not fit.
+class SARItemInput:
+    """One flat line of a shop-assembly request, tagged with the opening it is owed to."""
+
+    # Null on a line raised straight off inventory - shelf stock carries no opening.
+    opening_number: str | None = None
+    hardware_category: str = ""
+    product_code: str = ""
+    # What the schedule says this opening is owed. Never reduced by scarcity.
+    quantity: int = 1
+    # What the composer could actually claim out of available inventory, 0..quantity. The composer
+    # always sends it explicitly. **None means "fully allocated" (= quantity)**, which is what keeps
+    # every non-wizard caller - tests, scripts, a stale tab - on the pre-composer behaviour: ask for
+    # the whole line, and fail the availability gate if it does not fit.
     allocated_quantity: int | None = None
-
-
-@strawberry.input
-class SAROpeningInput:
-    opening_number: str
-    # Door leaf this assembly work unit is for (#311): 1 or 2, or null (frame / legacy).
-    leaf: int | None = None
-    items: list[SAROpeningItemInput] = strawberry.field(default_factory=list)
 
 
 @strawberry.input
@@ -310,16 +304,11 @@ class FinalizeImportSessionInput:
     shipping_out_pr_drafts: list[ShippingOutPRDraftInput] | None = None
     include_shop_assembly_request: bool = False
     shop_assembly_request_number: str | None = None
-    shop_assembly_openings: list[SAROpeningInput] | None = None
+    shop_assembly_items: list[SARItemInput] | None = None
     # When true, this finalize overrides the existing schedule: existing HardwareItem
     # rows are wiped (including IN_PO ones) and openings absent from the new input
     # are deleted. Downstream POs/receiving/SAR/inventory aggregates are preserved.
     replace_schedule: bool = False
-    # The caller has seen the "incomplete - awaiting replacement" flag on the assembled leaves it is
-    # shipping and wants them on the request anyway (#341). Without it, a flagged leaf is refused
-    # with a VALIDATION_ERROR naming every flagged leaf. Warn + confirm, never silent, never a hard
-    # block - deliberate short-shipping is a real workflow, it just has to be a decision.
-    acknowledge_incomplete_leaves: bool = False
 
 
 @strawberry.input
@@ -346,6 +335,13 @@ class CreateDraftPOInput:
     # Issue #156: optional order-time dollar costs. Null means "not entered"; 0 is a valid value.
     shipping_cost: float | None = None
     tariff_amount: float | None = None
+    # #490: optional GP cost code, carried to register as the default. RegisterPOInput.cost_code
+    # stays authoritative - a code that has since left the job's GP list is caught there.
+    cost_code: str | None = None
+    # #481: the vendor's quotation this request is raised against. Usually arrives after the draft
+    # exists and is typed on the PO afterwards, but a buyer working from a quote in hand has nowhere
+    # to put it at creation without this.
+    vendor_quote_number: str | None = None
 
 
 @strawberry.input
@@ -494,6 +490,9 @@ class ReconciliationItemInput:
 class ReceiveLineItemInput:
     po_line_item_id: strawberry.ID
     quantity_received: int
+    # Empty since #501: a draft is a count, and where the units go is chosen on the Put Away queue
+    # after the warehouse manager approves. The field stays because drafts counted before that
+    # change still carry their rack rows and the booking still honours them.
     locations: list["LocationInput"] = strawberry.field(default_factory=list)
 
 
@@ -518,6 +517,10 @@ class CreateReceiveDraftInput:
     po_id: strawberry.ID
     warehouse_id: strawberry.ID | None = None
     line_items: list[ReceiveLineItemInput] = strawberry.field(default_factory=list)
+    # #504: the packing slip this count was made against. Required - a count with no paper behind
+    # it cannot be checked when it is disputed. Upload it as a PACKING_SLIP PO document first and
+    # pass the id here.
+    packing_slip_document_id: strawberry.ID | None = None
     # Client-generated, one per submit action and re-sent on retry, so a network timeout that
     # actually committed cannot leave two drafts against one PO.
     idempotency_key: str = ""
@@ -561,12 +564,14 @@ class DecideReceiveDecisionInput:
 
 @strawberry.input
 class ShipmentItemInput:
-    item_type: PullRequestItemType
-    opening_item_id: strawberry.ID | None = None
     opening_number: str | None = None
-    product_code: str | None = None
-    hardware_category: str | None = None
+    product_code: str = ""
+    hardware_category: str = ""
     quantity: int = 1
+    # Where it was going, snapshotted onto the slip so a reprint says what the driver's copy said.
+    building: str | None = None
+    floor: str | None = None
+    location: str | None = None
 
 
 @strawberry.input
@@ -675,49 +680,6 @@ class CreateShipmentReturnInput:
 
 
 @strawberry.input
-class AssignOpeningsInput:
-    opening_ids: list[strawberry.ID] = strawberry.field(default_factory=list)
-    # Stable Clerk user id the openings are claimed by (#324) - the key myWork filters on.
-    assigned_to_user_id: str = ""
-    # Human-readable display name stored alongside for the UI.
-    assigned_to: str = ""
-
-
-@strawberry.input
-class AssemblyProgressItemInput:
-    """One line of a progress save (#340).
-
-    installed_quantity is the ABSOLUTE running total of units fitted to the leaf, so re-sending it is
-    a no-op and a miscount can be corrected in either direction until the opening is completed. Omit
-    it to leave the line's installed count alone.
-
-    flag_deficient_quantity is INCREMENTAL - units being condemned now, on top of any already flagged.
-    Each one is immediately returned to inventory flagged deficient and given a PR-REPL replacement
-    pull line, which is why it is one-way and why a reason is required with it.
-    """
-
-    shop_assembly_opening_item_id: strawberry.ID
-    installed_quantity: int | None = None
-    flag_deficient_quantity: int | None = None
-    deficient_reason: str | None = None
-
-
-@strawberry.input
-class RecordAssemblyProgressInput:
-    opening_id: strawberry.ID
-    items: list[AssemblyProgressItemInput] = strawberry.field(default_factory=list)
-
-
-@strawberry.input
-class InstallReplacementInput:
-    """Fit arrived replacement hardware to an already-completed leaf (#341). The quantity can only
-    come out of what the replacement pull actually delivered, so this cannot inflate a leaf."""
-
-    shop_assembly_opening_item_id: strawberry.ID
-    quantity: int
-
-
-@strawberry.input
 class PickLineInput:
     """One line the warehouse user dictated: this many units of this product off this location (#367).
 
@@ -732,38 +694,14 @@ class PickLineInput:
 
 
 @strawberry.input
-class StagePullOpeningsInput:
-    """Confirm that the cart(s) for these openings of an approved shop-assembly pull are built (#343).
-
-    Openings already staged are skipped, not refused, so a double-click or a stale checklist is a
-    no-op. Staging the last one completes the pull."""
-
-    pull_request_id: strawberry.ID
-    opening_ids: list[strawberry.ID]
-
-
-@strawberry.input
 class CancelPullRequestInput:
-    """Cancel an approved pull and return its hardware to inventory (#343).
+    """Cancel a started pull and return its hardware to inventory (#343).
 
-    All-or-nothing: an opening whose assembly has started or finished blocks the whole cancellation,
-    and the refusal names them. `reason` is optional but shown to whoever raised the pull."""
+    Only while it is being picked - a completed pull has handed its hardware over and there is
+    nothing left to reverse. `reason` is optional but shown to whoever raised the pull."""
 
     id: strawberry.ID
     reason: str | None = None
-
-
-@strawberry.input
-class CompleteOpeningInput:
-    opening_id: strawberry.ID
-    aisle: str | None = None
-    row: str | None = None
-    bay: str | None = None
-
-
-# ---------------------------------------------------------------------------
-# Stock pool + deficiency inputs
-# ---------------------------------------------------------------------------
 
 
 @strawberry.input
@@ -842,13 +780,6 @@ class OverrideInventoryQuantityInput:
 @strawberry.input
 class ReportStockDeficiencyInput:
     stock_item_id: strawberry.ID
-    quantity: int
-    reason_text: str | None = None
-
-
-@strawberry.input
-class ReportDeficiencyAtAssemblyInput:
-    shop_assembly_opening_item_id: strawberry.ID
     quantity: int
     reason_text: str | None = None
 

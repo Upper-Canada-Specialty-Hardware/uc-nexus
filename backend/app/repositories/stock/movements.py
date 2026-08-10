@@ -10,6 +10,12 @@ from app.errors import NotFoundError, ValidationError
 from app.models.enums import AuditAction, AuditEntityType, DestockSource
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.stock_item import StockItem
+from app.repositories.warehouse import (
+    clone_origin_fields,
+    get_available_quantities,
+    get_reserved_quantities,
+    location_detail,
+)
 
 from .common import (
     _find_or_create_stock_row,
@@ -42,10 +48,11 @@ def destock_inventory(
     il = session.get(InventoryLocationModel, inventory_location_id)
     if il is None:
         raise NotFoundError(f"Inventory location {inventory_location_id} not found")
-    if quantity > il.quantity:
-        raise ValidationError("Destock quantity exceeds available quantity", field="quantity")
 
-    # If DEFICIENT_SWAP, the units being destocked are the deficient ones: tighten that flag too
+    # DEFICIENT_SWAP destocks the deficient units themselves and tightens that flag; every other
+    # source moves sound units only. Either way the deficient claim must stay on the row, so the row
+    # can never drop below its own deficient_quantity - the deficient<=quantity CHECK would otherwise
+    # reject the write with a raw 500 (e.g. destock 8 as OVERAGE off qty 10 / deficient 4).
     is_deficient_swap = source == DestockSource.DEFICIENT_SWAP
     if is_deficient_swap:
         if quantity > (il.deficient_quantity or 0):
@@ -53,11 +60,42 @@ def destock_inventory(
                 "DEFICIENT_SWAP destock quantity exceeds deficient_quantity on source row",
                 field="quantity",
             )
+    elif quantity > il.quantity - (il.deficient_quantity or 0):
+        raise ValidationError(
+            "Destock quantity exceeds available (non-deficient) quantity on source row",
+            field="quantity",
+        )
 
-    # Pick target location: explicit override or fall back to source location
-    final_aisle = target_aisle if target_aisle is not None else il.aisle
-    final_row = target_row if target_row is not None else il.row
-    final_bay = target_bay if target_bay is not None else il.bay
+    # A destock of sound units shrinks what this project has on hand, and a post-creation write must
+    # not take it below what active requests have already reserved (#342) - that silently strands a
+    # picker's claim, which reservations exist to prevent. DEFICIENT_SWAP is exempt: it removes
+    # deficient units, which are already netted out of availability (on-hand - deficient), so it can
+    # never reduce what is claimable. The lock=True read takes FOR UPDATE on the combo's inventory
+    # rows, so this check serialises with any concurrent reservation mint - which reads the same
+    # number under the same lock before writing its claim.
+    if not is_deficient_swap:
+        combo = (il.hardware_category, il.product_code)
+        available = get_available_quantities(session, il.project_id, [combo], lock=True).get(combo, 0)
+        if quantity > available:
+            reserved = get_reserved_quantities(session, il.project_id, [combo]).get(combo, 0)
+            raise ValidationError(
+                f"Destocking {quantity} would strand active reservations: {reserved} unit(s) of "
+                f"{il.product_code} are reserved and only {available} are free to destock",
+                field="quantity",
+            )
+
+    # Target override is all-or-nothing: overriding only some of aisle/row/bay would keep the source
+    # row's other fields and land the stock at a location nobody chose. Provide all three, or none.
+    override = [v for v in (target_aisle, target_row, target_bay) if v is not None]
+    if override and len(override) != 3:
+        raise ValidationError(
+            "target aisle, row, and bay must all be provided together",
+            field="target_location",
+        )
+    if override:
+        final_aisle, final_row, final_bay = target_aisle, target_row, target_bay
+    else:
+        final_aisle, final_row, final_bay = il.aisle, il.row, il.bay
 
     now = datetime.utcnow()
     stock_row = _find_or_create_stock_row(
@@ -87,7 +125,7 @@ def destock_inventory(
         "quantity": quantity,
         "source": source.value,
         "reasonText": reason_text,
-        "targetLocation": {"aisle": final_aisle, "row": final_row, "bay": final_bay},
+        "targetLocation": location_detail(final_aisle, final_row, final_bay, stock_row.warehouse_id),
         "stockItemId": str(stock_row.id),
     }
     _log_audit_event(
@@ -177,7 +215,7 @@ def allocate_stock_to_project(
         "targetHardwareCategory": target_hardware_category,
         "targetProductCode": target_product_code,
         "quantity": quantity,
-        "targetLocation": {"aisle": target_aisle, "row": target_row, "bay": target_bay},
+        "targetLocation": location_detail(target_aisle, target_row, target_bay, new_il.warehouse_id),
         "newInventoryLocationId": str(new_il.id),
     }
     _log_audit_event(
@@ -262,7 +300,7 @@ def receive_into_stock(
             "hardwareCategory": hardware_category,
             "productCode": product_code,
             "poNumber": po_number,
-            "location": {"aisle": aisle, "row": row, "bay": bay},
+            "location": location_detail(aisle, row, bay, warehouse_id),
         },
     )
     return stock_row
@@ -291,6 +329,7 @@ def _find_matching_inventory_location(
         (InventoryLocationModel.po_line_item_id, src.po_line_item_id),
         (InventoryLocationModel.receive_line_item_id, src.receive_line_item_id),
         (InventoryLocationModel.stock_item_id, src.stock_item_id),
+        (InventoryLocationModel.shipment_return_item_id, src.shipment_return_item_id),
     ):
         stmt = stmt.where(col.is_(None)) if val is None else stmt.where(col == val)
     return session.scalars(stmt).first()
@@ -345,7 +384,8 @@ def transfer_inventory(
         if il.warehouse_id == dest_warehouse_id and (il.aisle, il.row, il.bay) == (dest_aisle, dest_row, dest_bay):
             raise ValidationError("Destination is the same as the source location", field="destination")
 
-        from_wh, from_loc = il.warehouse_id, {"aisle": il.aisle, "row": il.row, "bay": il.bay}
+        from_wh = il.warehouse_id
+        from_loc = location_detail(il.aisle, il.row, il.bay, from_wh)
         il.quantity -= quantity
         target = _find_matching_inventory_location(session, il, dest_warehouse_id, dest_aisle, dest_row, dest_bay)
         if target is not None:
@@ -353,9 +393,7 @@ def transfer_inventory(
         else:
             target = InventoryLocationModel(
                 project_id=il.project_id,
-                po_line_item_id=il.po_line_item_id,
-                receive_line_item_id=il.receive_line_item_id,
-                stock_item_id=il.stock_item_id,
+                **clone_origin_fields(il),
                 warehouse_id=dest_warehouse_id,
                 hardware_category=il.hardware_category,
                 product_code=il.product_code,
@@ -379,7 +417,7 @@ def transfer_inventory(
                 "fromWarehouseId": str(from_wh),
                 "fromLocation": from_loc,
                 "toWarehouseId": str(dest_warehouse_id),
-                "toLocation": {"aisle": dest_aisle, "row": dest_row, "bay": dest_bay},
+                "toLocation": location_detail(dest_aisle, dest_row, dest_bay, dest_warehouse_id),
                 "quantity": quantity,
                 "targetInventoryLocationId": str(target.id),
             },
@@ -396,7 +434,8 @@ def transfer_inventory(
         if si.warehouse_id == dest_warehouse_id and (si.aisle, si.row, si.bay) == (dest_aisle, dest_row, dest_bay):
             raise ValidationError("Destination is the same as the source location", field="destination")
 
-        from_wh, from_loc = si.warehouse_id, {"aisle": si.aisle, "row": si.row, "bay": si.bay}
+        from_wh = si.warehouse_id
+        from_loc = location_detail(si.aisle, si.row, si.bay, from_wh)
         si.quantity -= quantity
         target = _find_or_create_stock_row(
             session,
@@ -421,7 +460,7 @@ def transfer_inventory(
                 "fromWarehouseId": str(from_wh),
                 "fromLocation": from_loc,
                 "toWarehouseId": str(dest_warehouse_id),
-                "toLocation": {"aisle": dest_aisle, "row": dest_row, "bay": dest_bay},
+                "toLocation": location_detail(dest_aisle, dest_row, dest_bay, dest_warehouse_id),
                 "quantity": quantity,
                 "targetStockItemId": str(target.id),
             },

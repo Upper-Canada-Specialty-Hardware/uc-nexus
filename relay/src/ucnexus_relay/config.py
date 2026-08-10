@@ -139,6 +139,12 @@ class ChannelCfg(BaseModel):
     # inherits the sandbox pin and every real UBC/UCSH job is refused. Listing only the extra URL here
     # cannot express that mistake, because production's URL comes from the baked default untouched.
     extra_backend_urls: list[str] = []
+    # Ask the production backend which Railway preview environments exist and dial those too, so a PR
+    # environment stops needing a hand edit on this machine. Only ADDS to the two keys above, only
+    # accepts the fixed preview hostname shape, and a discovered channel can never be the primary one -
+    # so it inherits the sandbox company pin like any other non-primary channel. Off means this relay
+    # dials exactly what is written here, which is what it did before #456's successor.
+    discover_preview_backends: bool = True
     # the `websockets` client's own ping_interval/ping_timeout default to 20s/20s, which already
     # satisfies the ~20s keepalive the channel needs to hold a corporate-proxy idle timeout open -
     # these just make that tunable without a code change.

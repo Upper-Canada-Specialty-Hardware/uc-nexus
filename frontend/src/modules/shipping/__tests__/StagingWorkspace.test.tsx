@@ -2,7 +2,7 @@ import { render, screen, fireEvent, waitFor, within, configure } from '@testing-
 import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
 import { ToastProvider } from '../../../components/Toast';
 import StagingWorkspace from '../StagingWorkspace';
-import { sameLooseStock } from '../staging';
+import { sameStagedStock } from '../staging';
 import { GET_STAGING_POOL, SET_CONTAINER_ITEMS } from '../../../graphql/shipping';
 
 /**
@@ -52,7 +52,7 @@ function poolMock(pool: Record<string, unknown>): MockedResponse {
     maxUsageCount: INFINITE,
     result: {
       data: {
-        stagingPool: { __typename: 'StagingPool', leaves: [], looseItems: [], containers: [], ...pool },
+        stagingPool: { __typename: 'StagingPool', looseItems: [], containers: [], ...pool },
       },
     },
   };
@@ -71,10 +71,7 @@ function setItemsMock(containerId: string, items: Record<string, unknown>[], onF
 
 function looseInput(quantity: number, overrides: Record<string, unknown> = {}) {
   return {
-    itemType: 'LOOSE',
-    openingItemId: null,
     openingNumber: '101',
-    leaf: null,
     hardwareCategory: 'HINGE',
     productCode: 'HG-100',
     quantity,
@@ -143,10 +140,8 @@ describe('splitting loose hardware', () => {
     const held = {
       __typename: 'ShipmentContainerItem',
       id: 'ci-1',
-      itemType: 'LOOSE',
       openingItemId: null,
       openingNumber: '101',
-      leaf: null,
       hardwareCategory: 'HINGE',
       productCode: 'HG-100',
       quantity: 4,
@@ -157,7 +152,7 @@ describe('splitting loose hardware', () => {
       setItemsMock('c-1', [looseInput(3)], fired),
     ]);
 
-    const qty = await screen.findByRole('spinbutton', { name: /Quantity of HG-100 in Box 1/i });
+    const qty = await screen.findByRole('spinbutton', { name: /Quantity of 101 · HG-100 in Box 1/i });
     fireEvent.change(qty, { target: { value: '3' } });
 
     await waitFor(() => expect(fired).toHaveBeenCalled());
@@ -168,10 +163,8 @@ describe('splitting loose hardware', () => {
     const held = {
       __typename: 'ShipmentContainerItem',
       id: 'ci-1',
-      itemType: 'LOOSE',
       openingItemId: null,
       openingNumber: '101',
-      leaf: null,
       hardwareCategory: 'HINGE',
       productCode: 'HG-100',
       quantity: 4,
@@ -182,7 +175,7 @@ describe('splitting loose hardware', () => {
       setItemsMock('c-1', [], fired),
     ]);
 
-    const qty = await screen.findByRole('spinbutton', { name: /Quantity of HG-100 in Box 1/i });
+    const qty = await screen.findByRole('spinbutton', { name: /Quantity of 101 · HG-100 in Box 1/i });
     fireEvent.change(qty, { target: { value: '0' } });
 
     await waitFor(() => expect(fired).toHaveBeenCalled());
@@ -223,31 +216,26 @@ describe('two openings staging one product', () => {
   });
 });
 
-describe('sameLooseStock', () => {
+describe('sameStagedStock', () => {
   const row = { openingNumber: '101', hardwareCategory: 'HINGE', productCode: 'HG-100' };
   const base = {
     id: 'ci-1',
-    itemType: 'LOOSE' as const,
     openingItemId: null,
-    leaf: null,
     quantity: 1,
     position: 0,
     ...row,
   };
 
   it('matches the same product owed to the same opening', () => {
-    expect(sameLooseStock(base, row)).toBe(true);
+    expect(sameStagedStock(base, row)).toBe(true);
   });
 
   it('does not merge one openings units into another', () => {
-    expect(sameLooseStock({ ...base, openingNumber: '102' }, row)).toBe(false);
+    expect(sameStagedStock({ ...base, openingNumber: '102' }, row)).toBe(false);
   });
 
   it('keeps unattributed stock separate from an attributed line', () => {
-    expect(sameLooseStock({ ...base, openingNumber: null }, row)).toBe(false);
+    expect(sameStagedStock({ ...base, openingNumber: null }, row)).toBe(false);
   });
 
-  it('never matches an assembled leaf', () => {
-    expect(sameLooseStock({ ...base, itemType: 'OPENING_ITEM' }, row)).toBe(false);
-  });
 });

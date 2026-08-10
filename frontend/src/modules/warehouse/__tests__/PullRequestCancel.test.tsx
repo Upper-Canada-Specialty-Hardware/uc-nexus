@@ -5,7 +5,7 @@ import { GraphQLError } from 'graphql';
 import { ToastProvider } from '../../../components/Toast';
 import PullRequestDetailModal from '../PullRequestDetailModal';
 import type { PullRequest } from '../PullRequestQueue';
-import { CANCEL_PULL_REQUEST, GET_PULL_REQUEST_OPENINGS } from '../../../graphql/warehouse';
+import { CANCEL_PULL_REQUEST } from '../../../graphql/warehouse';
 
 /**
  * Cancelling an approved pull (#343). It returns real hardware to the shelf and sends the source
@@ -44,11 +44,8 @@ function pullRequest(overrides: Partial<PullRequest> = {}): PullRequest {
     cancelledAt: null,
     cancelledBy: null,
     cancellationReason: null,
-    stagingStatus: 'PARTIAL',
-    stagedOpeningCount: 1,
-    totalOpeningCount: 2,
-    // #367: an In Progress pull is only cancellable-with-restock once its pick is confirmed, and the
-    // staging panel only appears from that point. The default fixture is a picked pull.
+    // #367: an In Progress pull is only cancellable-with-restock once its pick is confirmed, so the
+    // default fixture is a picked pull.
     pickedAt: '2026-07-01T01:00:00Z',
     pickedBy: 'Picker',
     partiallyPicked: null,
@@ -56,12 +53,6 @@ function pullRequest(overrides: Partial<PullRequest> = {}): PullRequest {
     ...overrides,
   };
 }
-
-const openingsMock: MockedResponse = {
-  request: { query: GET_PULL_REQUEST_OPENINGS, variables: { pullRequestId: 'pr-1' } },
-  result: { data: { pullRequestOpenings: [] } },
-  maxUsageCount: 5,
-};
 
 function cancelVariables(reason: string | null) {
   return { input: { id: 'pr-1', reason } };
@@ -75,7 +66,6 @@ function cancelSuccessMock(integrityNote: string | null = null): MockedResponse 
         cancelPullRequest: {
           pullRequest: { ...pullRequest({ status: 'CANCELLED' }), __typename: undefined } as never,
           restocked: [{ hardwareCategory: 'HINGE', productCode: 'HG-100', quantity: 4 }],
-          releasedOpeningIds: ['sao-1', 'sao-2'],
           sourceRequestReturnedToPending: true,
           reservationsRecreated: integrityNote === null,
           integrityNote,
@@ -105,7 +95,7 @@ function renderModal(mocks: MockedResponse[], pr: PullRequest = pullRequest()) {
   const view = render(
     // The modal routes to the pick page (#367), so it needs a router in the tree.
     <MemoryRouter>
-      <MockedProvider mocks={[openingsMock, ...mocks]}>
+      <MockedProvider mocks={mocks}>
         <ToastProvider>
           <PullRequestDetailModal open pr={pr} onClose={() => {}} onRefetch={onRefetch} />
         </ToastProvider>
@@ -114,11 +104,6 @@ function renderModal(mocks: MockedResponse[], pr: PullRequest = pullRequest()) {
   );
   return { ...view, onRefetch };
 }
-
-it('shows the derived staging progress on a picked pull', async () => {
-  renderModal([]);
-  expect(await screen.findByText('1 of 2 staged')).toBeInTheDocument();
-});
 
 it('offers Cancel Pull on a started pull but not on a pending one', async () => {
   const { unmount } = renderModal([]);
@@ -129,8 +114,6 @@ it('offers Cancel Pull on a started pull but not on a pending one', async () => 
     [],
     pullRequest({
       status: 'PENDING',
-      stagingStatus: 'NOT_PULLED',
-      stagedOpeningCount: 0,
       pickedAt: null,
       pickedBy: null,
     }),
@@ -203,9 +186,6 @@ it('explains a cancelled pull after the fact', async () => {
       cancelledAt: '2026-07-03T10:00:00Z',
       cancelledBy: 'Picker',
       cancellationReason: 'raised against the wrong project',
-      stagingStatus: null,
-      stagedOpeningCount: null,
-      totalOpeningCount: null,
     }),
   );
 

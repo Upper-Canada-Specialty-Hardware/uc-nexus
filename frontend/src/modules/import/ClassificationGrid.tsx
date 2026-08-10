@@ -6,8 +6,10 @@ import {
   Box,
   Button,
   Chip,
+  FormControlLabel,
   IconButton,
   MenuItem,
+  Switch,
   TextField,
   Typography,
   ToggleButton,
@@ -20,8 +22,19 @@ import {
   type GridRowSelectionModel,
   type GridRenderCellParams,
 } from '@mui/x-data-grid';
-import type { ClassificationOption } from './types';
+import { type ClassificationOption, isRowClassified } from './types';
+import {
+  GROUP_BY_OPTIONS,
+  formatGroupKey,
+  formatVendorDiscount,
+  distinctProductCodes,
+  type GroupByField,
+} from './classificationGrouping';
 import { monoSx, microLabelSx } from '../../theme';
+
+// Re-exported so existing importers (ClassificationStep, tests) keep their `./ClassificationGrid`
+// import path for the grouping type.
+export type { GroupByField };
 
 export interface ClassificationRow {
   id: string;
@@ -45,21 +58,6 @@ export interface ClassificationRow {
   siteShop?: string;
 }
 
-export type GroupByField = 'hardwareCategory' | 'vendorNo' | 'productCode' | 'openingNumber'
-  | 'doorMaterial' | 'unitCost' | 'listPrice' | 'vendorDiscount' | 'itemQuantity';
-
-const GROUP_BY_OPTIONS: { value: GroupByField; label: string }[] = [
-  { value: 'hardwareCategory', label: 'Hardware Category' },
-  { value: 'vendorNo', label: 'Manufacturer' },
-  { value: 'productCode', label: 'Product Code' },
-  { value: 'openingNumber', label: 'Opening Number' },
-  { value: 'doorMaterial', label: 'Door Material' },
-  { value: 'unitCost', label: 'Unit Cost' },
-  { value: 'listPrice', label: 'List Price' },
-  { value: 'vendorDiscount', label: 'Vendor Discount' },
-  { value: 'itemQuantity', label: 'Item Quantity' },
-];
-
 interface ClassificationGridProps {
   rows: ClassificationRow[];
   options: ClassificationOption[];
@@ -70,6 +68,8 @@ interface ClassificationGridProps {
   siteShopOptions?: ClassificationOption[];
   onClassifySiteShop?: (classificationKeys: string[], value: string) => void;
   siteShopExemptValue?: string;
+  // #568: seed the group-by levels so the review grid opens on the same grouping the guided flow used.
+  initialGroupByFields?: GroupByField[];
 }
 
 interface GroupNode {
@@ -87,13 +87,6 @@ interface SiteShopAxis {
 
 function siteShopEligibleKeys(rows: ClassificationRow[], exemptValue?: string): string[] {
   return uniqueClassificationKeys(rows.filter((r) => !exemptValue || r.classification !== exemptValue));
-}
-
-function formatGroupKey(field: GroupByField, value: unknown): string {
-  if (value == null || value === '') return '(None)';
-  if (field === 'unitCost' || field === 'listPrice') return `$${Number(value).toFixed(2)}`;
-  if (field === 'vendorDiscount') return `${Number(value)}%`;
-  return String(value);
 }
 
 function uniqueClassificationKeys(rows: ClassificationRow[]): string[] {
@@ -185,7 +178,13 @@ const ALL_COLUMNS: GridColDef[] = [
     headerName: 'Discount',
     flex: 0.5,
     type: 'number',
-    valueFormatter: (value: number | null) => value != null ? `${value}%` : '—',
+    valueFormatter: (value: number | null) => formatVendorDiscount(value),
+    renderCell: (params) => {
+      const raw = params.value as number | null;
+      const shown = formatVendorDiscount(raw);
+      const suppressed = raw != null && shown === '—';
+      return <span title={suppressed ? `TITAN reported ${raw}% against a placeholder list price` : undefined}>{shown}</span>;
+    },
   },
   {
     field: 'unitCost',
@@ -297,14 +296,27 @@ interface GroupAccordionProps {
   readOnly?: boolean;
   depth: number;
   siteShop?: SiteShopAxis;
+  // #568: product code isn't the grouping field, so name the distinct codes in the header - otherwise
+  // a "Manufacturer" group hides what's in it until expanded.
+  showProductCodes?: boolean;
 }
 
-function GroupAccordion({ node, columns, options, onClassify, readOnly, depth, siteShop }: GroupAccordionProps) {
+function GroupAccordion({ node, columns, options, onClassify, readOnly, depth, siteShop, showProductCodes }: GroupAccordionProps) {
   const { labelMap, colorMap } = useMemo(() => buildOptionLookups(options), [options]);
 
   const classifiedCount = node.rows.filter((r) => r.classification !== '').length;
   const uniqueClassifications = new Set(node.rows.filter((r) => r.classification !== '').map((r) => r.classification));
   const allSameClassification = classifiedCount === node.rows.length && uniqueClassifications.size === 1;
+
+  // #568: the second axis's progress, so "why can't I proceed" reads off the header. Only the rows
+  // that need Site/Shop count - a By-Others row is exempt. A group with no eligible rows (all By
+  // Others) shows no chip rather than a 0/0.
+  const siteShopEligible = siteShop
+    ? node.rows.filter((r) => !siteShop.exemptValue || r.classification !== siteShop.exemptValue)
+    : [];
+  const siteShopDone = siteShopEligible.filter((r) => (r.siteShop ?? '') !== '').length;
+
+  const productCodes = showProductCodes ? distinctProductCodes(node.rows) : [];
 
   const handleGroupAll = useCallback(
     (value: string, e: React.MouseEvent) => {
@@ -332,54 +344,74 @@ function GroupAccordion({ node, columns, options, onClassify, readOnly, depth, s
       sx={{ pl: depth * 2 }}
     >
       <AccordionSummary expandIcon={<ChevronDown size={18} strokeWidth={1.75} />}>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%', mr: 1 }}>
-          <Typography
-            title={node.label}
-            sx={{ fontWeight: 700, ...monoSx, fontSize: '0.875rem', whiteSpace: 'normal', wordBreak: 'break-word' }}
-          >
-            {node.label}
-          </Typography>
-          <Chip
-            size="small"
-            label={
-              allSameClassification
-                ? `All ${labelMap[singleValue!] ?? singleValue}`
-                : `${classifiedCount}/${node.rows.length} classified`
-            }
-            color={
-              allSameClassification
-                ? (colorMap[singleValue!] ?? 'default')
-                : classifiedCount === node.rows.length ? 'success' : 'default'
-            }
-          />
-          <Typography variant="body2" color="text.secondary">
-            ({node.rows.length} {node.rows.length === 1 ? 'item' : 'items'})
-          </Typography>
-          {!readOnly && (
-            <Box sx={{ ml: 'auto', display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
-              {options.map((opt) => (
-                <Button
-                  key={opt.value}
-                  size="small"
-                  variant="outlined"
-                  color={opt.color}
-                  onClick={(e) => handleGroupAll(opt.value, e)}
-                >
-                  {opt.label} All
-                </Button>
-              ))}
-              {siteShop?.options.map((opt) => (
-                <Button
-                  key={opt.value}
-                  size="small"
-                  variant="outlined"
-                  color={opt.color}
-                  onClick={(e) => handleGroupAllSiteShop(opt.value, e)}
-                >
-                  {opt.label} All
-                </Button>
-              ))}
-            </Box>
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, width: '100%', minWidth: 0, mr: 1 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%', minWidth: 0 }}>
+            <Typography
+              title={node.label}
+              sx={{ fontWeight: 700, ...monoSx, fontSize: '0.875rem', whiteSpace: 'normal', wordBreak: 'break-word', minWidth: 0 }}
+            >
+              {node.label}
+            </Typography>
+            <Chip
+              size="small"
+              label={
+                allSameClassification
+                  ? `All ${labelMap[singleValue!] ?? singleValue}`
+                  : `${classifiedCount}/${node.rows.length} classified`
+              }
+              color={
+                allSameClassification
+                  ? (colorMap[singleValue!] ?? 'default')
+                  : classifiedCount === node.rows.length ? 'success' : 'default'
+              }
+            />
+            {siteShop && siteShopEligible.length > 0 && (
+              <Chip
+                size="small"
+                variant="outlined"
+                label={`${siteShopDone}/${siteShopEligible.length} site-shop`}
+                color={siteShopDone === siteShopEligible.length ? 'success' : 'default'}
+              />
+            )}
+            <Typography variant="body2" color="text.secondary" sx={{ flexShrink: 0 }}>
+              ({node.rows.length} {node.rows.length === 1 ? 'item' : 'items'})
+            </Typography>
+            {!readOnly && (
+              <Box sx={{ ml: 'auto', display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
+                {options.map((opt) => (
+                  <Button
+                    key={opt.value}
+                    size="small"
+                    variant="outlined"
+                    color={opt.color}
+                    onClick={(e) => handleGroupAll(opt.value, e)}
+                  >
+                    {opt.label} All
+                  </Button>
+                ))}
+                {siteShop?.options.map((opt) => (
+                  <Button
+                    key={opt.value}
+                    size="small"
+                    variant="outlined"
+                    color={opt.color}
+                    onClick={(e) => handleGroupAllSiteShop(opt.value, e)}
+                  >
+                    {opt.label} All
+                  </Button>
+                ))}
+              </Box>
+            )}
+          </Box>
+          {productCodes.length > 0 && (
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              title={productCodes.join(', ')}
+              sx={{ ...monoSx, fontSize: '0.6875rem', whiteSpace: 'normal', wordBreak: 'break-word' }}
+            >
+              {productCodes.join(', ')}
+            </Typography>
           )}
         </Box>
       </AccordionSummary>
@@ -395,6 +427,7 @@ function GroupAccordion({ node, columns, options, onClassify, readOnly, depth, s
               readOnly={readOnly}
               depth={depth + 1}
               siteShop={siteShop}
+              showProductCodes={showProductCodes}
             />
           ))
         ) : (
@@ -420,6 +453,7 @@ export default function ClassificationGrid({
   siteShopOptions,
   onClassifySiteShop,
   siteShopExemptValue,
+  initialGroupByFields,
 }: ClassificationGridProps) {
   const { labelMap, colorMap } = useMemo(() => buildOptionLookups(options), [options]);
 
@@ -431,7 +465,20 @@ export default function ClassificationGrid({
     [siteShopOptions, onClassifySiteShop, siteShopExemptValue],
   );
 
-  const [groupByFields, setGroupByFields] = useState<GroupByField[]>([]);
+  const [groupByFields, setGroupByFields] = useState<GroupByField[]>(() => initialGroupByFields ?? []);
+
+  // #568: filter the grid to rows still missing an axis, so "what's left" is one toggle away rather
+  // than a manual hunt through the groups.
+  const [unclassifiedOnly, setUnclassifiedOnly] = useState(false);
+  const visibleRows = useMemo(
+    () =>
+      unclassifiedOnly
+        ? rows.filter((r) => !isRowClassified(r, { hasSiteShop: !!siteShop, siteShopExemptValue: siteShop?.exemptValue }))
+        : rows,
+    [unclassifiedOnly, rows, siteShop],
+  );
+
+  const showProductCodes = !groupByFields.includes('productCode');
 
   const usedFields = useMemo(() => new Set(groupByFields), [groupByFields]);
 
@@ -451,8 +498,8 @@ export default function ClassificationGrid({
   }, []);
 
   const groupTree = useMemo(
-    () => buildGroupTree(rows, groupByFields),
-    [rows, groupByFields],
+    () => buildGroupTree(visibleRows, groupByFields),
+    [visibleRows, groupByFields],
   );
 
   const columns: GridColDef[] = useMemo(() => {
@@ -572,19 +619,39 @@ export default function ClassificationGrid({
             </IconButton>
           </Box>
         ))}
-        {groupByFields.length < GROUP_BY_OPTIONS.length && (
-          <Button
-            size="small"
-            startIcon={<Plus size={18} strokeWidth={1.75} />}
-            onClick={handleAddLevel}
-            sx={{ alignSelf: 'flex-start' }}
-          >
-            Add group level
-          </Button>
-        )}
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+          {groupByFields.length < GROUP_BY_OPTIONS.length && (
+            <Button
+              size="small"
+              startIcon={<Plus size={18} strokeWidth={1.75} />}
+              onClick={handleAddLevel}
+            >
+              Add group level
+            </Button>
+          )}
+          {!readOnly && (
+            <FormControlLabel
+              sx={{ ml: 'auto', mr: 0 }}
+              slotProps={{ typography: { variant: 'body2' } }}
+              control={
+                <Switch
+                  size="small"
+                  checked={unclassifiedOnly}
+                  onChange={(e) => setUnclassifiedOnly(e.target.checked)}
+                  inputProps={{ 'aria-label': 'Unclassified only' }}
+                />
+              }
+              label="Unclassified only"
+            />
+          )}
+        </Box>
       </Box>
 
-      {groupTree ? (
+      {unclassifiedOnly && visibleRows.length === 0 ? (
+        <Typography variant="body2" color="success.main" sx={{ fontWeight: 600 }}>
+          Everything is classified.
+        </Typography>
+      ) : groupTree ? (
         Array.from(groupTree.values()).map((node) => (
           <GroupAccordion
             key={node.label}
@@ -595,11 +662,12 @@ export default function ClassificationGrid({
             readOnly={readOnly}
             depth={0}
             siteShop={siteShop}
+            showProductCodes={showProductCodes}
           />
         ))
       ) : (
         <LeafGrid
-          rows={rows}
+          rows={visibleRows}
           columns={columns}
           options={options}
           onClassify={onClassify}

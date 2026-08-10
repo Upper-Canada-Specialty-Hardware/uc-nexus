@@ -29,7 +29,6 @@ import logging
 
 from app.auth import (
     ADMIN_ROLE,
-    SHOP_ASSEMBLY_MANAGER_ROLE,
     WAREHOUSE_MANAGER_ROLE,
     ForbiddenError,
     authenticated_user_id,
@@ -53,7 +52,7 @@ SIGNED_IN = "@signed-in"
 # This is a performance hint, NOT an authorization input. The decision of what a field requires is
 # ROOT_FIELD_POLICY and only ROOT_FIELD_POLICY; this only picks which Clerk call answers it. Adding a
 # field here that does not enumerate users makes it slower, never more permissive.
-ROSTER_BACKED = frozenset({"adminStats", "shopAssemblyMembers", "users"})
+ROSTER_BACKED = frozenset({"adminStats", "users"})
 
 # Operations reachable without a Clerk session, each with the reason it is safe. This is the whole
 # allowlist: everything else is gated, and anything in neither table is refused outright.
@@ -78,8 +77,6 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     # --- admin.py -------------------------------------------------------------------------
     # Both walk a whole project's openings and put purchasing next to fulfilment, which is the
     # admin Opening Status page and nothing else.
-    "adminOpeningStatuses": ADMIN_ROLE,
-    "adminOpeningDeepDive": ADMIN_ROLE,
     # --- buyer.py -------------------------------------------------------------------------
     # `buyerAssignments` is the PO dialog's read of the CALLER's own row, so any signed-in user;
     # `allBuyerAssignments` is the whole table (which buyer owns which project) and is admin (#428).
@@ -133,6 +130,7 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "deletePoDocument": SIGNED_IN,
     # Signed-in, not admin: which projects a caller may raise a PO against is decided inside the
     # resolver from the caller's own GP buyer assignment (#216), not by role.
+    "emailPoToVendor": SIGNED_IN,
     "registerPoInGp": SIGNED_IN,
     "savePoDocumentData": SIGNED_IN,
     "updatePo": SIGNED_IN,
@@ -203,7 +201,7 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "shipReadyItems": SIGNED_IN,
     # Read-only coverage for the shipping-out builder (#451). SIGNED_IN because its caller is the
     # Start-a-Request wizard, which every module's users reach.
-    "shippingCoverage": SIGNED_IN,
+    "requestCoverage": SIGNED_IN,
     "shippingOutRequests": SIGNED_IN,
     "acceptShippingOutRequest": SIGNED_IN,
     "confirmShipment": SIGNED_IN,
@@ -226,27 +224,15 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     # self-assign from the "Assign to me" board; assigning to somebody else is Shop Assembly
     # Manager-only, and that branch cannot be expressed as a field-level requirement, so the body
     # keeps its own `require_role` call for it (#330).
-    "assembleList": SIGNED_IN,
-    "assemblyPipeline": SIGNED_IN,
-    "assemblyPipelineSummaries": SIGNED_IN,
-    "myWork": SIGNED_IN,
-    "replacementWork": SIGNED_IN,
-    "shopAssemblyMembers": SHOP_ASSEMBLY_MANAGER_ROLE,
     "shopAssemblyRequests": SIGNED_IN,
     "acceptShopAssemblyRequest": SIGNED_IN,
-    "assignOpenings": SIGNED_IN,
-    "completeOpening": SIGNED_IN,
-    "installReplacement": SIGNED_IN,
-    "recordAssemblyProgress": SIGNED_IN,
     "rejectShopAssemblyRequest": SIGNED_IN,
-    "removeOpeningFromUser": SIGNED_IN,
     "reopenShopAssemblyRequest": SIGNED_IN,
     # --- stock.py -------------------------------------------------------------------------
     "deficiencyReviews": SIGNED_IN,
     "deficientItems": SIGNED_IN,
     "stockItem": SIGNED_IN,
     "stockItems": SIGNED_IN,
-    "stockMatchesForOpening": SIGNED_IN,
     "adjustStockQuantity": SIGNED_IN,
     "allocateStockToProject": SIGNED_IN,
     "assignStockItemLocation": SIGNED_IN,
@@ -254,7 +240,6 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "markStockItemUnlocated": SIGNED_IN,
     "moveStockLocation": SIGNED_IN,
     "reclassifyStockItem": SIGNED_IN,
-    "reportDeficiencyAtAssembly": SIGNED_IN,
     "reportInventoryDeficiency": SIGNED_IN,
     "reportStockDeficiency": SIGNED_IN,
     "resolveDeficiency": SIGNED_IN,
@@ -272,25 +257,19 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     # the warehouse's own count correction, not an admin tool.
     "auditLog": SIGNED_IN,
     "backOrderedItems": SIGNED_IN,
-    "inventoryByVendor": SIGNED_IN,
-    "inventoryHierarchy": SIGNED_IN,
     "receives": SIGNED_IN,
-    "inventoryItems": SIGNED_IN,
+    "inventoryRows": SIGNED_IN,
     "locationAuditHistory": SIGNED_IN,
     "locationContents": SIGNED_IN,
     "locationDistinctValues": SIGNED_IN,
     "locationDuplicates": ADMIN_ROLE,
     "locationUtilization": SIGNED_IN,
-    "openingItemDetails": SIGNED_IN,
-    "openingItems": SIGNED_IN,
-    "openingLeafStatus": SIGNED_IN,
     "myReceiveDecisions": SIGNED_IN,
     "poReceivingDetails": SIGNED_IN,
     "projectInventoryAvailability": SIGNED_IN,
     "projectProgressByProduct": SIGNED_IN,
     "pullPickSheet": SIGNED_IN,
     "pullRequestDetails": SIGNED_IN,
-    "pullRequestOpenings": SIGNED_IN,
     "pullRequests": SIGNED_IN,
     "receiveDraft": SIGNED_IN,
     "receiveDrafts": SIGNED_IN,
@@ -306,9 +285,13 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     # about a draft - creating, editing, resubmitting, deleting - is SIGNED_IN, because the body
     # decides it from whose draft it is (author, or a manager overriding), which no field-level
     # requirement can express.
-    "approveReceiveDraft": frozenset({ADMIN_ROLE, WAREHOUSE_MANAGER_ROLE}),
+    # SIGNED_IN because the requirement is not a property of the field alone since #499: a Warehouse
+    # Manager may approve any draft, and the PO creator who answered SHIP_OUT may approve that one
+    # draft. `_authorize_draft_approval` in schemas/warehouse.py is the gate, checked against the
+    # decision row rather than anything the client sends.
+    "approveReceiveDraft": SIGNED_IN,
     "assignInventoryLocation": SIGNED_IN,
-    "assignOpeningItemLocation": SIGNED_IN,
+    "splitInventoryLocation": SIGNED_IN,
     "cancelPullRequest": SIGNED_IN,
     "completePullRequest": SIGNED_IN,
     "confirmPick": SIGNED_IN,
@@ -318,16 +301,12 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "deleteReceiveDraft": SIGNED_IN,
     "deleteWarehouse": ADMIN_ROLE,
     "markInventoryUnlocated": SIGNED_IN,
-    "markOpeningItemUnlocated": SIGNED_IN,
     "mergeLocations": ADMIN_ROLE,
     "moveInventoryLocation": SIGNED_IN,
-    "moveOpeningItemLocation": SIGNED_IN,
     "overrideInventoryQuantity": SIGNED_IN,
     "rejectReceiveDraft": frozenset({ADMIN_ROLE, WAREHOUSE_MANAGER_ROLE}),
     "resubmitReceiveDraft": SIGNED_IN,
     "savePickDraft": SIGNED_IN,
-    "setPullItemFetched": SIGNED_IN,
-    "stagePullOpenings": SIGNED_IN,
     "startPullRequestPick": SIGNED_IN,
     "updateReceiveDraft": SIGNED_IN,
     "updateWarehouse": ADMIN_ROLE,

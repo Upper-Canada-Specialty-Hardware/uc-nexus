@@ -34,55 +34,58 @@ import { useHardwareScheduleParser } from '../../hooks/useHardwareScheduleParser
 import { useNavigate } from 'react-router-dom';
 import { GET_PROJECT_EXCLUDED_ITEMS, GET_PROJECT_HARDWARE_SCHEDULE, RECONCILE_SCHEDULE, FINALIZE_IMPORT_SESSION } from '../../graphql/import';
 import { GET_PROJECTS } from '../../graphql/shared';
-import { GET_OPENING_ITEMS, GET_PROJECT_INVENTORY_AVAILABILITY, GET_PULL_REQUESTS } from '../../graphql/warehouse';
-import { GET_SHIPPING_COVERAGE, GET_SHIPPING_OUT_REQUESTS } from '../../graphql/shipping';
+import { GET_PROJECT_INVENTORY_AVAILABILITY } from '../../graphql/warehouse';
+import { GET_REQUEST_COVERAGE } from '../../graphql/shipping';
 import { RESERVATION_STALE_ROOT_FIELDS } from '../../graphql/refetch';
 import type { ClassificationRow } from './ClassificationGrid';
 import type {
   AggregatedHardwareItem,
-  AssembledLeafCandidate,
   ImportPurpose,
   InventoryAvailabilityRow,
   ReconciliationRow,
-  ShippingCoverageLeaf,
-  ShippingPRDraft,
-  ShippingPRItem,
+  SelectionMode,
 } from './types';
 import {
   aggregationKey,
   backfillScopeFromSiteShop,
-  buildLooseCoverageRows,
   classificationKey,
-  computeAvailabilityShortfalls,
+  draftSeedSignature,
   itemGroupKey,
-  shippingPRItemKey,
+  productKey,
+  seedDraftGroups,
   toClassificationInputs,
+  type DraftGroup,
 } from './types';
-import type { ParsedHardwareItem } from '../../types/hardwareSchedule';
+import { buildPoDrafts } from './poDrafts';
+import * as draftOps from './draftOps';
 import type { Project } from '../../types/project';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import { FadeIn, StaggerItem, StaggerList } from '../../motion';
 import type { ProjectHardwareScheduleResponse } from './hydrateSchedule';
 import { mapScheduleResponseToParseResult } from './hydrateSchedule';
 import SelectOpeningsStep from './SelectOpeningsStep';
+import SelectHardwareStep from './SelectHardwareStep';
 import ReconciliationStep from './ReconciliationStep';
 import ClassificationStep from './ClassificationStep';
 import PurchaseOrdersStep from './PurchaseOrdersStep';
-import ShopAssemblyStep from './ShopAssemblyStep';
-import { buildProductReconRows } from './reconciliation';
+import ComposeRequestStep from './ComposeRequestStep';
+import WizardNav from './WizardNav';
+import OverOrderWarningModal from './OverOrderWarningModal';
+import { buildProductReconRows, type ProductReconRow } from './reconciliation';
 import {
-  autoAssign,
-  buildAllocatedDrafts,
-  draftsSignature,
-  leafCoverage,
-  leafKey,
+  autoAllocate,
+  buildRequestLines,
+  composableRows,
+  composeRequestGate,
+  lineKey,
+  offerSignature,
   type Allocation,
-} from './allocation';
-import ShippingPRsStep from './ShippingPRsStep';
+  type CoverageRow,
+} from './composer';
 
 // ---- Local Types ----
 
-type StepId = 'upload' | 'purpose' | 'openings' | 'reconciliation'
+type StepId = 'upload' | 'purpose' | 'openings' | 'hardware' | 'reconciliation'
   | 'classification' | 'purchase-orders' | 'shop-assembly'
   | 'shipping-prs' | 'finalize';
 
@@ -141,34 +144,6 @@ function isInventoryShortfall(err: unknown): boolean {
   );
 }
 
-/** The slice of GET_OPENING_ITEMS the shipping purpose reads (#335). */
-interface OpeningItemResponse {
-  id: string;
-  openingNumber: string;
-  leaf: number | null;
-  state: string;
-  installedHardware: Array<{ productCode: string; quantity: number }>;
-  /** Units still awaiting a replacement (#341); null on a server that predates the field. */
-  awaitingReplacementQuantity: number | null;
-  /** Units the schedule owed that the request never pulled; null on a server predating the field. */
-  neverPulledQuantity: number | null;
-}
-
-/** The slices used to find leaves already claimed by an open request or pull (#335). */
-interface ShippingLineSummary {
-  itemType: string;
-  openingItemId: string | null;
-}
-
-interface PullRequestSummary {
-  status: string;
-  items: ShippingLineSummary[];
-}
-
-interface ShippingRequestSummary {
-  items: ShippingLineSummary[];
-}
-
 // ---- Helpers ----
 
 /** Convert a snake_case-keyed object to camelCase keys (one level deep). */
@@ -190,6 +165,10 @@ interface ImportWizardProps {
   /** Preselect the purpose when the wizard was opened from somewhere that already knows it - the
    *  keep-or-ship decision's "Ship out now" being the only such caller today. */
   initialPurpose?: ImportPurpose;
+  /** #565: which PO pathway to run. 'hardware' hides the Purpose step (purpose is locked to po) and
+   *  swaps Select Openings for Select Hardware - the buyer picks products, not doors. Defaults to the
+   *  by-opening pathway. */
+  initialSelectionMode?: SelectionMode;
   /** Skip the upload step by loading the project's last persisted schedule, when there is one. Same
    *  caller: they came from a decision about hardware on an existing project, so the schedule that
    *  hardware was bought against is by definition already imported. */
@@ -201,6 +180,7 @@ export default function ImportWizard({
   project,
   onClose,
   initialPurpose,
+  initialSelectionMode,
   autoStartFromLatest,
 }: ImportWizardProps) {
   const { showToast } = useToast();
@@ -211,48 +191,62 @@ export default function ImportWizard({
   // Step tracking
   const [activeStepId, setActiveStepId] = useState<StepId>('upload');
 
+  // #565: the pathway is fixed for the life of this open - the module remounts the wizard per entry,
+  // so a derived constant is enough and there is no in-wizard control to switch it. 'hardware' hides
+  // the Purpose step and swaps Select Openings for Select Hardware.
+  const selectionMode: SelectionMode = initialSelectionMode ?? 'openings';
+  const isHardwareMode = selectionMode === 'hardware';
+
   // Selected project context (from prop)
   const existingProjectId = project.id;
   const existingProjectName = project.description || project.projectId;
   const isReimport = project.openingCount > 0;
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Step 2 state
-  const [purpose, setPurpose] = useState<ImportPurpose | null>(null);
+  // Step 2 state. #565: hardware mode locks the purpose to po (its step is hidden), so it seeds po
+  // rather than null - every downstream `purpose === 'po'` branch then holds without a Purpose step.
+  const [purpose, setPurpose] = useState<ImportPurpose | null>(isHardwareMode ? 'po' : null);
 
-  // Step 3 state
+  // Step 3 state. Openings mode selects by door; hardware mode (#565) selects by product, keyed by
+  // itemGroupKey (`hardware_category|product_code`). Only one is live per pathway.
   const [selectedOpenings, setSelectedOpenings] = useState<Set<string>>(new Set());
+  const [selectedProductKeys, setSelectedProductKeys] = useState<Set<string>>(new Set());
 
   // Action step state
-  const [selectedVendors, setSelectedVendors] = useState<Set<string>>(new Set());
-  const [vendorPOInfo, setVendorPOInfo] = useState<
-    Map<string, { notes: string; preferredDeliveryDate: string }>
-  >(new Map());
+  // #570: the PO drafts the buyer is composing. Seeded one-per-manufacturer from the aggregated
+  // selection, then freely sliced - lines move between drafts, drafts merge/split/rename. `included`,
+  // the notes/date/cost-code, and the ledger all live on the draft now, not on a manufacturer key.
+  const [draftGroups, setDraftGroups] = useState<DraftGroup[]>([]);
+  // The selection signature the drafts above were seeded from; a change re-seeds (see the effect).
+  const [seededDraftSignature, setSeededDraftSignature] = useState<string | null>(null);
+  // #570: keyed by productKey (`product|category`) now, not `vendor|product|category` - cost is a
+  // property of the product, shared across whichever drafts it lands in.
   const [unitCostOverrides, setUnitCostOverrides] = useState<Map<string, number>>(new Map());
+  // Monotonic id source for buyer-created drafts, so a new draft never collides with a seeded id.
+  const newDraftSeq = useRef(0);
   const [classifications, setClassifications] = useState<Map<string, string>>(new Map());
   // Issue #216: PO-purpose second axis (SITE_HARDWARE/SHOP_HARDWARE), set by the PM at request
   // creation. Same classificationKey keying as `classifications` (which holds scope for PO purpose).
   const [siteShopClassifications, setSiteShopClassifications] = useState<Map<string, string>>(new Map());
   const [orderAsValues, setOrderAsValues] = useState<Map<string, string>>(new Map());
   const [sarRequestNumber, setSarRequestNumber] = useState('');
-  // Shop-assembly allocation: how much of each leaf's owed hardware this request actually claims,
-  // and which leaves are being sent. Held here rather than inside the step so stepping back and
-  // forward does not silently re-run auto-assign over the user's manual moves.
-  const [sarAllocation, setSarAllocation] = useState<Allocation>(new Map());
-  const [includedLeafKeys, setIncludedLeafKeys] = useState<Set<string>>(new Set());
-  // The draft signature the allocation above was seeded from. Held here, not in the step, because
+  // How much of each offered line this request actually claims, and which lines are being sent.
+  // One pair for both purposes: only one of them is ever the active step. Held here rather than
+  // inside the step so stepping back and forward does not silently re-run auto-assign over the
+  // user's manual moves.
+  const [allocation, setAllocation] = useState<Allocation>(new Map());
+  const [includedKeys, setIncludedKeys] = useState<Set<string>>(new Set());
+  // The offer signature the allocation above was seeded from. Held here, not in the step, because
   // the step unmounts whenever the user is on another step - a flag inside it would reset on the way
   // back and auto-assign would overwrite whatever they had moved by hand.
   const [seededSignature, setSeededSignature] = useState<string | null>(null);
   // The server refused the finalize because availability moved under the allocation (#342 race).
   // The step says so and shows the rebuilt numbers rather than letting the user resend the stale set.
   const [allocationStale, setAllocationStale] = useState(false);
-  const [shippingPRDrafts, setShippingPRDrafts] = useState<ShippingPRDraft[]>([]);
-  // The user has been shown the "incomplete - awaiting replacement" warning on a leaf and chose to
-  // ship it anyway (#341). The backend refuses a flagged leaf without this, so the flag is the
-  // record that a decision was actually made rather than a default that got carried along.
-  const [acknowledgedIncompleteLeaves, setAcknowledgedIncompleteLeaves] = useState(false);
   const [selectedReconItems, setSelectedReconItems] = useState<Set<string>>(new Set());
+  // #567: over-ordering past the project need no longer blocks Next; it opens a confirm modal when
+  // the user leaves the reconciliation step with a selection that pushes a product past its total.
+  const [overOrderModalOpen, setOverOrderModalOpen] = useState(false);
 
   // Finalize state
   const [finalizeLoading, setFinalizeLoading] = useState(false);
@@ -264,12 +258,25 @@ export default function ImportWizard({
   // ---- Dynamic Steps ----
 
   const steps = useMemo<StepDescriptor[]>(() => {
-    const base: StepDescriptor[] = [
-      { id: 'upload', label: 'Upload File' },
-      { id: 'purpose', label: 'Purpose' },
-      { id: 'openings', label: 'Select Openings' },
-      { id: 'reconciliation', label: 'Reconciliation' },
-    ];
+    const base: StepDescriptor[] = [{ id: 'upload', label: 'Upload File' }];
+    // #565: hardware mode has no Purpose step (purpose is locked to po) and picks products instead of
+    // openings. The by-opening pathway keeps its Purpose then Select Openings pair.
+    if (isHardwareMode) {
+      base.push({ id: 'hardware', label: 'Select Hardware' });
+    } else {
+      base.push({ id: 'purpose', label: 'Purpose' });
+      base.push({ id: 'openings', label: 'Select Openings' });
+    }
+    // Reconciliation compares the incoming schedule against what the project has already committed,
+    // so on a project with no persisted openings it has nothing to compare and rendered a single
+    // "New project - all items will be ordered fresh" banner over an otherwise empty full-screen
+    // step. That is a mandatory click carrying no decision, on the most-walked flow in the app.
+    // `isReimport` is `openingCount > 0`, which is exactly the condition for having something to
+    // reconcile against - and a first import can only be the PO purpose anyway, since the other two
+    // require a project with received inventory.
+    if (isReimport) {
+      base.push({ id: 'reconciliation', label: 'Reconciliation' });
+    }
     // #492: only the PO purpose asks. A shop-assembly request runs against a project whose schedule
     // is already classified, so re-asking forced the user to re-answer a question the system knows -
     // and answering it differently than the original import is exactly the drift. The assembly
@@ -279,19 +286,24 @@ export default function ImportWizard({
     }
     if (purpose === 'po') base.push({ id: 'purchase-orders', label: 'Purchase Orders' });
     if (purpose === 'assembly') base.push({ id: 'shop-assembly', label: 'Shop Assembly' });
-    if (purpose === 'shipping') base.push({ id: 'shipping-prs', label: 'Shipping PRs' });
+    if (purpose === 'shipping') base.push({ id: 'shipping-prs', label: 'Shipping Out' });
     base.push({ id: 'finalize', label: 'Finalize' });
     return base;
-  }, [purpose]);
+  }, [purpose, isReimport, isHardwareMode]);
 
   // Guard against orphaned step (e.g. user unchecks a purpose while on that step).
   // Derived via useMemo instead of a useEffect+setState to avoid cascading renders.
   const effectiveStepId = useMemo<StepId>(
-    () =>
-      activeStepId !== 'upload' && !steps.find((s) => s.id === activeStepId)
-        ? 'reconciliation'
-        : activeStepId,
-    [steps, activeStepId],
+    () => {
+      // Falls back to the pathway's step-2 rather than 'reconciliation': reconciliation is
+      // conditional, so naming it here could orphan the orphan-guard itself on a first import.
+      // #565: in hardware mode 'openings' is not in the stepper at all, so the fallback is 'hardware'.
+      const fallback: StepId = isHardwareMode ? 'hardware' : 'openings';
+      return activeStepId !== 'upload' && !steps.find((s) => s.id === activeStepId)
+        ? fallback
+        : activeStepId;
+    },
+    [steps, activeStepId, isHardwareMode],
   );
 
   const activeStepIndex = useMemo(
@@ -321,38 +333,6 @@ export default function ImportWizard({
   const [fetchProjectSchedule, { data: scheduleData, loading: scheduleLoading }] = useLazyQuery<{
     projectHardwareSchedule: ProjectHardwareScheduleResponse | null;
   }>(GET_PROJECT_HARDWARE_SCHEDULE, { fetchPolicy: 'network-only' });
-
-  // Assembled units for the shipping purpose (#335). A door leaf only exists once shop assembly has
-  // built one, and it lives as an OpeningItem - the hardware schedule cannot supply it. Shipping an
-  // assembled leaf means naming that row, so read it from the warehouse's own list.
-  const shippingStepActive = open && purpose === 'shipping';
-  const {
-    data: openingItemsData,
-    loading: openingItemsLoading,
-    error: openingItemsError,
-  } = useQuery<{ openingItems: OpeningItemResponse[] }>(GET_OPENING_ITEMS, {
-    variables: { projectId: existingProjectId },
-    skip: !shippingStepActive,
-    fetchPolicy: 'cache-and-network',
-  });
-
-  // Leaves already spoken for. A leaf stays IN_INVENTORY for the whole life of an open shipping
-  // pull - its state only flips at complete - so state alone would re-offer a leaf that someone has
-  // already requested, and one physical leaf would be pulled twice. Loose lines need no equivalent:
-  // reconcile_schedule already moves quantity on an open SHIPPING_OUT pull out of the RECEIVED
-  // bucket, so it never reaches the loose list.
-  const { data: shippingPullsData } = useQuery<{ pullRequests: PullRequestSummary[] }>(GET_PULL_REQUESTS, {
-    variables: { projectId: existingProjectId, source: 'SHIPPING_OUT' },
-    skip: !shippingStepActive,
-    fetchPolicy: 'cache-and-network',
-  });
-  const { data: pendingShippingRequestsData } = useQuery<{
-    shippingOutRequests: ShippingRequestSummary[];
-  }>(GET_SHIPPING_OUT_REQUESTS, {
-    variables: { projectId: existingProjectId, status: 'PENDING', reopenableOnly: false },
-    skip: !shippingStepActive,
-    fetchPolicy: 'cache-and-network',
-  });
 
   // Eagerly fetch the persisted schedule on wizard open for re-import projects so the
   // upload step can show the "use last uploaded" picker (gated on hardware-item presence).
@@ -417,17 +397,16 @@ export default function ImportWizard({
   const openings = parsed?.openings ?? [];
   const hardwareItems = parsed?.hardwareItems ?? [];
 
-  const hardwareCountByOpening = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const hi of hardwareItems) {
-      counts.set(hi.opening_number, (counts.get(hi.opening_number) ?? 0) + 1);
-    }
-    return counts;
-  }, [hardwareItems]);
-
+  // #565: the one fork the two pathways share. Openings mode keeps the items whose opening was
+  // picked; hardware mode keeps the items whose product was picked. Everything downstream
+  // (runReconcile, the recon rollup, classification rows, vendorGroups/draftGroups, finalize refs)
+  // derives from this, so filtering by product instead of by opening is the whole of the difference.
   const selectedHardwareItems = useMemo(
-    () => hardwareItems.filter((hi) => selectedOpenings.has(hi.opening_number)),
-    [hardwareItems, selectedOpenings],
+    () =>
+      isHardwareMode
+        ? hardwareItems.filter((hi) => selectedProductKeys.has(itemGroupKey(hi)))
+        : hardwareItems.filter((hi) => selectedOpenings.has(hi.opening_number)),
+    [hardwareItems, selectedOpenings, selectedProductKeys, isHardwareMode],
   );
 
   // Pre-reconciliation aggregated items (for display in combined openings/hardware step)
@@ -502,113 +481,35 @@ export default function ImportWizard({
     return Array.from(map.values());
   }, [reconFilteredHardwareItems]);
 
-  // ---- Shipping selection candidates (#335) ----
+  // ---- What the selected openings still have coming ----
 
-  // OpeningItems already named by a pending shipping request or an unfinished shipping pull. One
-  // physical leaf can only be pulled once, so these drop out of the offer list.
-  const claimedOpeningItemIds = useMemo(() => {
-    const claimed = new Set<string>();
-    const collect = (lines: ShippingLineSummary[]) => {
-      for (const line of lines) {
-        if (line.itemType === 'OPENING_ITEM' && line.openingItemId) claimed.add(line.openingItemId);
-      }
-    };
-    for (const pr of shippingPullsData?.pullRequests ?? []) {
-      if (pr.status === 'PENDING' || pr.status === 'IN_PROGRESS') collect(pr.items);
-    }
-    for (const req of pendingShippingRequestsData?.shippingOutRequests ?? []) collect(req.items);
-    return claimed;
-  }, [shippingPullsData, pendingShippingRequestsData]);
-
-  // Assembled door leaves the user can ship: one per OpeningItem still sitting IN_INVENTORY on a
-  // selected opening and not already claimed. SHIP_READY units are deliberately absent - they have
-  // already been pulled and are waiting on the Ship tab.
-  const assembledLeafCandidates = useMemo<AssembledLeafCandidate[]>(() => {
-    if (purpose !== 'shipping') return [];
-    return (openingItemsData?.openingItems ?? [])
-      .filter(
-        (oi) =>
-          oi.state === 'IN_INVENTORY' &&
-          selectedOpenings.has(oi.openingNumber) &&
-          !claimedOpeningItemIds.has(oi.id),
-      )
-      .map((oi) => ({
-        id: oi.id,
-        openingNumber: oi.openingNumber,
-        leaf: oi.leaf,
-        installedHardware: oi.installedHardware ?? [],
-        awaitingReplacementQuantity: oi.awaitingReplacementQuantity ?? 0,
-        neverPulledQuantity: oi.neverPulledQuantity ?? 0,
-      }))
-      .sort((a, b) => a.openingNumber.localeCompare(b.openingNumber) || (a.leaf ?? 0) - (b.leaf ?? 0));
-  }, [purpose, openingItemsData, selectedOpenings, claimedOpeningItemIds]);
-
-  // What the selected openings still owe the site (#451). The schedule is the only thing that knows
-  // a leaf takes a closer and three hinges; the assembled leaf only knows what was bolted onto it,
-  // and neither knows what is still at the vendor. The server joins the three and answers per leaf.
-  const shippingCoverageActive = open && purpose === 'shipping' && !!existingProjectId && selectedOpenings.size > 0;
+  // `max(owed - sent - claimed, 0)` per (opening, category, product). The one question both
+  // composers ask, answered server-side so the two cannot drift - see
+  // `app/repositories/request_composer.py`.
+  const requestPurpose = purpose === 'assembly' || purpose === 'shipping';
+  const coverageActive = open && requestPurpose && !!existingProjectId && selectedOpenings.size > 0;
   const {
     data: coverageData,
     loading: coverageLoading,
     error: coverageError,
-  } = useQuery<{ shippingCoverage: ShippingCoverageLeaf[] }>(GET_SHIPPING_COVERAGE, {
+  } = useQuery<{ requestCoverage: CoverageRow[] }>(GET_REQUEST_COVERAGE, {
     variables: { projectId: existingProjectId, openingNumbers: Array.from(selectedOpenings) },
-    skip: !shippingCoverageActive,
+    skip: !coverageActive,
     fetchPolicy: 'cache-and-network',
   });
 
-  // The loose lines the shipping step offers: one per (opening, category, product), summed over the
-  // opening's leaves because a LOOSE line carries no leaf - loose stock is fungible until a pull
-  // tags it onto one (docs/HARDWARE_IDENTITY_LIFECYCLE.md).
-  const looseCoverageRows = useMemo(
-    () => (purpose === 'shipping' ? buildLooseCoverageRows(coverageData?.shippingCoverage ?? []) : []),
-    [purpose, coverageData],
-  );
-
-  // Every line the shipping step can currently offer, keyed the same way draft lines are.
-  const shippingCandidateKeys = useMemo(() => {
-    const keys = new Set<string>();
-    for (const leaf of assembledLeafCandidates) {
-      keys.add(
-        shippingPRItemKey({
-          itemType: 'OPENING_ITEM',
-          openingNumber: leaf.openingNumber,
-          openingItemId: leaf.id,
-          requestedQuantity: 1,
-        }),
-      );
+  // Shop assembly composes the SHOP hardware; shipping out composes everything else - site hardware
+  // and the lines the schedule never classified, which go to site loose by default rather than being
+  // silently dropped. Unclassified is deliberately NOT offered to shop assembly: putting hardware on
+  // a bench because nobody said otherwise is the guess this split exists to avoid.
+  const composerRows = useMemo(() => {
+    const rows = coverageData?.requestCoverage ?? [];
+    if (purpose === 'assembly') return composableRows(rows, 'SHOP');
+    if (purpose === 'shipping') {
+      return composableRows(rows).filter((row) => row.classification !== 'SHOP_HARDWARE');
     }
-    for (const row of looseCoverageRows) {
-      keys.add(
-        shippingPRItemKey({
-          itemType: 'LOOSE',
-          openingNumber: row.openingNumber,
-          hardwareCategory: row.hardwareCategory,
-          productCode: row.productCode,
-          requestedQuantity: row.suggestedQuantity,
-        }),
-      );
-    }
-    return keys;
-  }, [assembledLeafCandidates, looseCoverageRows]);
-
-  // What the shipping step shows and what finalize submits: draft lines whose candidate is still on
-  // offer. A line can stop being offered because the user stepped back and de-selected its opening,
-  // or because someone else claimed the leaf; it then has no checkbox left to untick, so without
-  // this it would sit invisible on the draft and still be submitted. Derived rather than pruned in
-  // an effect, so re-selecting the opening brings the user's tick back.
-  //
-  // Held off until BOTH offer lookups have answered. Either one still in flight means an empty
-  // candidate set, and pruning against that would silently drop every line the user had already
-  // picked - a refetch (stepping back and forward) would empty their request.
-  const shippingOffersResolved = openingItemsData !== undefined && (!shippingCoverageActive || coverageData !== undefined);
-  const effectiveShippingPRDrafts = useMemo(() => {
-    if (purpose !== 'shipping' || !shippingOffersResolved) return shippingPRDrafts;
-    return shippingPRDrafts.map((draft) => {
-      const kept = draft.items.filter((item) => shippingCandidateKeys.has(shippingPRItemKey(item)));
-      return kept.length === draft.items.length ? draft : { ...draft, items: kept };
-    });
-  }, [purpose, shippingPRDrafts, shippingCandidateKeys, shippingOffersResolved]);
+    return [];
+  }, [purpose, coverageData]);
 
   // ---- Reservation-aware availability (#342) ----
 
@@ -645,125 +546,11 @@ export default function ImportWizard({
   // persisted item - the value a PO request wrote. Resolved at the read site rather than seeded into
   // state, so the wizard's own map (the exclusion table's BY_OTHERS entries) still wins and no
   // effect has to write state during render.
-  const resolveClassification = useCallback(
-    (hi: ParsedHardwareItem) => classifications.get(classificationKey(hi)) ?? hi.classification ?? '',
-    [classifications],
-  );
-
-  const unclassifiedShopCandidates = useMemo(() => {
-    if (purpose !== 'assembly' || !parsed) return [];
-    const seen = new Set<string>();
-    for (const hi of parsed.hardwareItems) {
-      if (!selectedOpenings.has(hi.opening_number)) continue;
-      const cls = resolveClassification(hi);
-      if (cls === 'SITE_HARDWARE' || cls === 'SHOP_HARDWARE' || cls === 'BY_OTHERS') continue;
-      seen.add(`${hi.hardware_category} ${hi.product_code}`);
-    }
-    return Array.from(seen).sort();
-  }, [purpose, parsed, selectedOpenings, resolveClassification]);
-
-  // The shop-assembly work units this wizard would submit: one per (opening, leaf) with its
-  // SHOP_HARDWARE items aggregated. Derived once and used by BOTH the availability gate and
-  // buildFinalizeInput, so the numbers the user is held to are by construction the numbers that get
-  // sent - a second, parallel calculation here would be a bug waiting to diverge.
-  const shopAssemblyOpeningDrafts = useMemo(() => {
-    if (purpose !== 'assembly' || !parsed) return [];
-    const selectedItems = parsed.hardwareItems.filter((hi) => selectedOpenings.has(hi.opening_number));
-    return parsed.openings
-      .filter((o) => selectedOpenings.has(o.opening_number))
-      .flatMap((opening) => {
-        const shopItems = selectedItems.filter((hi) => {
-          if (hi.opening_number !== opening.opening_number) return false;
-          return resolveClassification(hi) === 'SHOP_HARDWARE';
-        });
-        if (shopItems.length === 0) return [];
-        // One SAR opening per door leaf (#311): group SHOP_HARDWARE by leaf, then aggregate each
-        // leaf's items by (product_code, hardware_category). A pair yields two work units.
-        const byLeaf = new Map<
-          number | null,
-          Map<string, { hardwareCategory: string; productCode: string; quantity: number }>
-        >();
-        for (const hi of shopItems) {
-          let aggMap = byLeaf.get(hi.leaf);
-          if (!aggMap) {
-            aggMap = new Map();
-            byLeaf.set(hi.leaf, aggMap);
-          }
-          const key = `${hi.product_code}|${hi.hardware_category}`;
-          const existing = aggMap.get(key);
-          if (existing) {
-            existing.quantity += hi.item_quantity;
-          } else {
-            aggMap.set(key, {
-              hardwareCategory: hi.hardware_category,
-              productCode: hi.product_code,
-              quantity: hi.item_quantity,
-            });
-          }
-        }
-        // #311: a null-leaf bucket is legitimate for a single door (every item is leaf-null -> one
-        // work unit). On a pair (resolved leaves present) a null-leaf item would otherwise spawn a
-        // spurious third work unit; fold it into the lowest resolved leaf instead.
-        const resolvedLeaves = [...byLeaf.keys()].filter((k): k is number => k !== null);
-        const nullBucket = byLeaf.get(null);
-        if (nullBucket && resolvedLeaves.length > 0) {
-          const targetMap = byLeaf.get(Math.min(...resolvedLeaves))!;
-          for (const [key, agg] of nullBucket) {
-            const existing = targetMap.get(key);
-            if (existing) existing.quantity += agg.quantity;
-            else targetMap.set(key, agg);
-          }
-          byLeaf.delete(null);
-        }
-        return Array.from(byLeaf.entries()).map(([leaf, aggMap]) => ({
-          openingNumber: opening.opening_number,
-          leaf,
-          items: Array.from(aggMap.values()),
-        }));
-      });
-  }, [purpose, parsed, selectedOpenings, resolveClassification]);
-
-  // The exact payload the shop-assembly finalize sends: the included, non-empty leaves with both
-  // numbers per line. Derived from the same drafts the allocator step renders, so what the user was
-  // held to is by construction what gets submitted.
-  const allocatedShopAssemblyDrafts = useMemo(
-    () =>
-      purpose === 'assembly'
-        ? buildAllocatedDrafts(shopAssemblyOpeningDrafts, sarAllocation, includedLeafKeys)
-        : [],
-    [purpose, shopAssemblyOpeningDrafts, sarAllocation, includedLeafKeys],
-  );
-
-  // What the SHIPPING purpose is about to claim, per combo - only its LOOSE lines, because an
-  // assembled leaf left fungible inventory when it was built and ships as itself
-  // (docs/HARDWARE_IDENTITY_LIFECYCLE.md), so it reserves nothing.
-  //
-  // Shop assembly is deliberately not here any more. Its step derives its own per-combo totals from
-  // the allocation (`comboSummary`), and it has to: the numbers on screen have to be the ones being
-  // submitted, and a second derivation living up here would be exactly the drift the allocated-drafts
-  // comment above warns about. Nothing downstream of this map reads it for the assembly purpose.
-  const requestedByCombo = useMemo(() => {
-    const map = new Map<string, number>();
-    if (purpose !== 'shipping') return map;
-    for (const draft of effectiveShippingPRDrafts) {
-      for (const item of draft.items) {
-        if (item.itemType !== 'LOOSE' || !item.hardwareCategory || !item.productCode) continue;
-        const key = itemGroupKey({ hardware_category: item.hardwareCategory, product_code: item.productCode });
-        map.set(key, (map.get(key) ?? 0) + item.requestedQuantity);
-      }
-    }
-    return map;
-  }, [purpose, effectiveShippingPRDrafts]);
-
-  const availabilityShortfalls = useMemo(
-    // While the lookup is still in flight an empty map would read as "nothing available" and block
-    // everything, so hold off until it has answered. A failed lookup is handled in the steps: they
-    // say so rather than silently letting an over-selection through as if it were fine.
-    () =>
-      availabilityData === undefined
-        ? []
-        : computeAvailabilityShortfalls(requestedByCombo, availabilityByCombo),
-    [availabilityData, requestedByCombo, availabilityByCombo],
+  // The exact lines this request would send, from the same allocation the step renders - so what
+  // the user was held to is by construction what gets submitted.
+  const requestLines = useMemo(
+    () => (requestPurpose ? buildRequestLines(composerRows, allocation, includedKeys) : []),
+    [requestPurpose, composerRows, allocation, includedKeys],
   );
 
   // Classification rows for DataGrid (one row per aggregated hardware item)
@@ -813,6 +600,38 @@ export default function ImportWizard({
     }
     return new Map(Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b)));
   }, [aggregatedHardwareItems, purpose, classifications]);
+
+  // #570: the product metadata the PO step's draft ledgers render - the base unit cost, product code
+  // and category per productKey. Drafts carry only productKey -> qty, so the display detail is looked
+  // up from here (the first opening-level item wins; cost is a product property).
+  const poProductCatalog = useMemo(() => {
+    const map = new Map<string, { productCode: string; hardwareCategory: string; unitCost: number }>();
+    for (const items of vendorGroups.values()) {
+      for (const hi of items) {
+        const pk = productKey(hi);
+        if (!map.has(pk)) {
+          map.set(pk, {
+            productCode: hi.product_code,
+            hardwareCategory: hi.hardware_category,
+            unitCost: hi.unit_cost ?? 0,
+          });
+        }
+      }
+    }
+    return map;
+  }, [vendorGroups]);
+
+  // #570: re-seed the PO drafts when, and only when, the aggregated selection changes. Held against a
+  // signature so Back-and-forward through the wizard preserves the buyer's slicing; a real change to
+  // the selection (different openings, a reclassification) re-seeds from the new manufacturer groups.
+  const draftSeedSig = useMemo(() => draftSeedSignature(vendorGroups), [vendorGroups]);
+  useEffect(() => {
+    if (purpose !== 'po') return;
+    if (seededDraftSignature === draftSeedSig) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot re-seed keyed off the selection signature, same pattern as the composer
+    setDraftGroups(seedDraftGroups(vendorGroups));
+    setSeededDraftSignature(draftSeedSig);
+  }, [purpose, draftSeedSig, vendorGroups, seededDraftSignature]);
 
   // ---- Step Navigation ----
 
@@ -906,24 +725,26 @@ export default function ImportWizard({
   }, [open, autoStartFromLatest, hydratedFromPersisted, purpose, activeStepId]);
 
   const resetDownstreamWizardState = useCallback(() => {
-    setPurpose(null);
+    // #565: hardware mode has no Purpose step to re-answer, so a reset holds the locked po rather
+    // than dropping to null and stranding every `purpose === 'po'` branch downstream.
+    setPurpose(isHardwareMode ? 'po' : null);
     setSelectedOpenings(new Set());
-    setSelectedVendors(new Set());
-    setVendorPOInfo(new Map());
+    setSelectedProductKeys(new Set());
+    setDraftGroups([]);
+    setSeededDraftSignature(null);
     setUnitCostOverrides(new Map());
     setOrderAsValues(new Map());
     setClassifications(new Map());
     setSiteShopClassifications(new Map());
     setSarRequestNumber('');
-    setSarAllocation(new Map());
-    setIncludedLeafKeys(new Set());
+    setAllocation(new Map());
+    setIncludedKeys(new Set());
     setSeededSignature(null);
     setAllocationStale(false);
-    setShippingPRDrafts([]);
     setSelectedReconItems(new Set());
     setMutationError(null);
     setFinalizeResult(null);
-  }, []);
+  }, [isHardwareMode]);
 
   const handleResetSource = useCallback(() => {
     parser.reset();
@@ -960,18 +781,52 @@ export default function ImportWizard({
     });
   }, [isReimport, existingProjectId, selectedHardwareItems, reconcileSchedule]);
 
+  // #483/#567: the same rollup the Reconciliation step renders, filtered to the products this
+  // selection would push past the project total. Over-ordering is a warning, not a block, so this
+  // no longer gates Next - it decides whether leaving the reconciliation step opens the confirm
+  // modal. Defined above handleNext because that callback depends on it.
+  const reconOverOrderProducts = useMemo<ProductReconRow[]>(() => {
+    if (purpose !== 'po' || !isReimport) return [];
+    return buildProductReconRows({
+      purpose,
+      reconciliationRows,
+      selectedHardwareItems,
+      allHardwareItems: parsed?.hardwareItems ?? [],
+      selectedReconItems,
+    }).filter((r) => r.overOrdersProject);
+  }, [purpose, isReimport, reconciliationRows, selectedHardwareItems, parsed, selectedReconItems]);
+
+  const advanceToNextStep = useCallback(() => {
+    const currentIndex = steps.findIndex((s) => s.id === effectiveStepId);
+    const nextStep = steps[currentIndex + 1];
+    if (nextStep) setActiveStepId(nextStep.id);
+  }, [steps, effectiveStepId]);
+
   const handleNext = useCallback(async () => {
     const currentIndex = steps.findIndex((s) => s.id === effectiveStepId);
     const nextStep = steps[currentIndex + 1];
     if (!nextStep) return;
 
-    if (effectiveStepId === 'openings') {
+    // #567: leaving reconciliation with a selection that over-orders the project opens the confirm
+    // modal instead of advancing. Proceed anyway (handleOverOrderProceed) does the advance.
+    if (effectiveStepId === 'reconciliation' && reconOverOrderProducts.length > 0) {
+      setOverOrderModalOpen(true);
+      return;
+    }
+
+    // #565: leaving the pathway's step-2 (openings, or hardware) is what kicks off reconciliation.
+    if (effectiveStepId === 'openings' || effectiveStepId === 'hardware') {
       setSelectedReconItems(new Set());
       runReconcile();
     }
 
     setActiveStepId(nextStep.id);
-  }, [effectiveStepId, steps, runReconcile]);
+  }, [effectiveStepId, steps, runReconcile, reconOverOrderProducts]);
+
+  const handleOverOrderProceed = useCallback(() => {
+    setOverOrderModalOpen(false);
+    advanceToNextStep();
+  }, [advanceToNextStep]);
 
   const handleBack = useCallback(() => {
     const currentIndex = steps.findIndex((s) => s.id === effectiveStepId);
@@ -985,37 +840,47 @@ export default function ImportWizard({
     setSelectedOpenings(newSelected);
   }, []);
 
-  // Vendor selection
-  const toggleVendor = useCallback((vendor: string) => {
-    setSelectedVendors((prev) => {
-      const next = new Set(prev);
-      if (next.has(vendor)) {
-        next.delete(vendor);
-      } else {
-        next.add(vendor);
-      }
-      return next;
-    });
+  // #570: draft organizing, delegating to the pure reducers in draftOps so the conservation invariant
+  // is unit-tested there. Each handler is just a setDraftGroups wrapper.
+  const toggleDraftIncluded = useCallback((draftId: string) => {
+    setDraftGroups((prev) => draftOps.toggleIncluded(prev, draftId));
   }, []);
 
-  // Manufacturer-group PO info
-  const updateVendorPO = useCallback(
-    (manufacturerKey: string, field: 'notes' | 'preferredDeliveryDate', value: string | null) => {
-      setVendorPOInfo((prev) => {
-        const next = new Map(prev);
-        const existing = next.get(manufacturerKey) ?? { notes: '', preferredDeliveryDate: '' };
-        next.set(manufacturerKey, { ...existing, [field]: value ?? '' });
-        return next;
-      });
+  const renameDraft = useCallback((draftId: string, label: string) => {
+    setDraftGroups((prev) => draftOps.renameDraft(prev, draftId, label));
+  }, []);
+
+  const updateDraftInfo = useCallback(
+    (draftId: string, field: 'notes' | 'preferredDeliveryDate' | 'costCode', value: string) => {
+      setDraftGroups((prev) => draftOps.updateInfo(prev, draftId, field, value));
     },
     [],
   );
 
-  // Unit cost overrides
-  const updateUnitCost = useCallback((vendor: string, productCode: string, hardwareCategory: string, value: number) => {
+  // Move `qty` units of a line to another draft: the whole-line menu passes the line's full quantity,
+  // the split dialog a partial. A source line emptied to zero is dropped.
+  const moveLine = useCallback((fromId: string, pk: string, qty: number, toId: string) => {
+    setDraftGroups((prev) => draftOps.moveLine(prev, fromId, pk, qty, toId));
+  }, []);
+
+  const createDraft = useCallback(() => {
+    const id = `new:${newDraftSeq.current++}`;
+    setDraftGroups((prev) => draftOps.createDraft(prev, id));
+  }, []);
+
+  const mergeDraft = useCallback((fromId: string, intoId: string) => {
+    setDraftGroups((prev) => draftOps.mergeDraft(prev, fromId, intoId));
+  }, []);
+
+  const removeDraft = useCallback((draftId: string) => {
+    setDraftGroups((prev) => draftOps.removeDraft(prev, draftId));
+  }, []);
+
+  // Unit cost overrides, keyed by productKey (#570).
+  const updateUnitCost = useCallback((pk: string, value: number) => {
     setUnitCostOverrides((prev) => {
       const next = new Map(prev);
-      next.set(`${vendor}|${productCode}|${hardwareCategory}`, value);
+      next.set(pk, value);
       return next;
     });
   }, []);
@@ -1053,66 +918,6 @@ export default function ImportWizard({
     });
   }, []);
 
-  // Shipping PR management
-  const addShippingPR = useCallback(() => {
-    setShippingPRDrafts((prev) => [...prev, { requestNumber: '', items: [] }]);
-  }, []);
-
-  const removeShippingPR = useCallback((index: number) => {
-    setShippingPRDrafts((prev) => prev.filter((_, i) => i !== index));
-  }, []);
-
-  const updateShippingPR = useCallback((index: number, requestNumber: string) => {
-    setShippingPRDrafts((prev) =>
-      prev.map((draft, i) => (i === index ? { ...draft, requestNumber } : draft)),
-    );
-  }, []);
-
-  // Add or remove one already-built line on a draft (#335). The step decides what kind of line it
-  // is - an assembled leaf or loose hardware - so this no longer hard-codes LOOSE.
-  const toggleShippingPRItem = useCallback((prIndex: number, item: ShippingPRItem) => {
-    const key = shippingPRItemKey(item);
-    setShippingPRDrafts((prev) =>
-      prev.map((draft, i) => {
-        if (i !== prIndex) return draft;
-        const existingIdx = draft.items.findIndex((existing) => shippingPRItemKey(existing) === key);
-        if (existingIdx >= 0) {
-          return { ...draft, items: draft.items.filter((_, idx) => idx !== existingIdx) };
-        }
-        return { ...draft, items: [...draft.items, item] };
-      }),
-    );
-  }, []);
-
-  // Set how much of one loose line a draft asks for (#451). Zero removes it, which is what makes
-  // the quantity box and the remove button the same operation - clearing the field and pressing the
-  // bin have to mean the same thing, or the user has two ways to reach two different states.
-  const setShippingPRItemQuantity = useCallback(
-    (prIndex: number, item: ShippingPRItem, quantity: number) => {
-      const key = shippingPRItemKey(item);
-      setShippingPRDrafts((prev) =>
-        prev.map((draft, i) => {
-          if (i !== prIndex) return draft;
-          const existingIdx = draft.items.findIndex((existing) => shippingPRItemKey(existing) === key);
-          if (quantity <= 0) {
-            return existingIdx >= 0
-              ? { ...draft, items: draft.items.filter((_, idx) => idx !== existingIdx) }
-              : draft;
-          }
-          const next = { ...item, requestedQuantity: quantity };
-          if (existingIdx >= 0) {
-            return {
-              ...draft,
-              items: draft.items.map((existing, idx) => (idx === existingIdx ? next : existing)),
-            };
-          }
-          return { ...draft, items: [...draft.items, next] };
-        }),
-      );
-    },
-    [],
-  );
-
   // ---- Finalize ----
 
   interface FinalizeResultData {
@@ -1132,10 +937,6 @@ export default function ImportWizard({
         if (cls === 'BY_OTHERS') byOthersKeys.add(key);
       }
     }
-
-    // Helper: is this item classified as BY_OTHERS (for PO scope filtering)?
-    const isByOthers = (hi: AggregatedHardwareItem) =>
-      byOthersKeys.has(classificationKey(hi));
 
     // Compute excluded items for persistence
     const excludedItems = purpose === 'po'
@@ -1167,11 +968,10 @@ export default function ImportWizard({
       }
     }
     const fullScheduleHardwareItems = Array.from(fullScheduleAggMap.values()).map((hi) => {
-      // Apply any unit-cost overrides from the PO step so the persisted row matches what
-      // the user reviewed at finalize time.
-      const vendor = hi.vendor_no ?? '(No Manufacturer)';
-      const overrideKey = `${vendor}|${hi.product_code}|${hi.hardware_category}`;
-      const overriddenCost = unitCostOverrides.get(overrideKey);
+      // Apply any unit-cost overrides from the PO step so the persisted row matches what the user
+      // reviewed at finalize time. #570: keyed by productKey (`product|category`) - cost is a product
+      // property, the same wherever the product lands.
+      const overriddenCost = unitCostOverrides.get(productKey(hi));
       const item = overriddenCost !== undefined
         ? { ...hi, unit_cost: overriddenCost }
         : hi;
@@ -1182,45 +982,10 @@ export default function ImportWizard({
       projectId: project.id,
       openings: parsed.openings.map((o) => snakeToCamel(o as unknown as Record<string, unknown>)),
       hardwareItems: fullScheduleHardwareItems,
-      poDrafts: purpose === 'po'
-        ? Array.from(vendorGroups.entries())
-            .filter(([vendor]) => selectedVendors.has(vendor))
-            .map(([vendor, items]) => {
-              // Filter out BY_OTHERS items from this vendor's PO draft
-              const inScopeItems = items.filter((hi) => !isByOthers(hi));
-              if (inScopeItems.length === 0) return null;
-              const info = vendorPOInfo.get(vendor) ?? { notes: '', preferredDeliveryDate: '' };
-              // Collect aliases for this manufacturer group's aggregated line items
-              const seenKeys = new Set<string>();
-              const lineItemAliases: Array<{ hardwareCategory: string; productCode: string; orderAs: string }> = [];
-              for (const hi of inScopeItems) {
-                const key = `${hi.product_code}|${hi.hardware_category}`;
-                if (!seenKeys.has(key)) {
-                  seenKeys.add(key);
-                  const alias = orderAsValues.get(key);
-                  if (alias) {
-                    lineItemAliases.push({
-                      hardwareCategory: hi.hardware_category,
-                      productCode: hi.product_code,
-                      orderAs: alias,
-                    });
-                  }
-                }
-              }
-              return {
-                poNumber: null,
-                notes: info.notes || null,
-                preferredDeliveryDate: info.preferredDeliveryDate || null,
-                hardwareItemRefs: inScopeItems.map((hi) => ({
-                  openingNumber: hi.opening_number,
-                  productCode: hi.product_code,
-                  hardwareCategory: hi.hardware_category,
-                })),
-                lineItemAliases,
-              };
-            })
-            .filter(Boolean)
-        : null,
+      // #570: build the drafts from the buyer's sliced draftGroups. buildPoDrafts apportions each
+      // draft line's quantity across the selection's opening-level items and emits quantity-aware
+      // refs (partial on a boundary opening shared between drafts).
+      poDrafts: purpose === 'po' ? buildPoDrafts(draftGroups, vendorGroups, orderAsValues) : null,
       excludedItems,
       classifications: purpose === 'assembly'
         // #321: only Site/Shop belong here. Re-imports pre-populate the classifications Map with
@@ -1238,33 +1003,32 @@ export default function ImportWizard({
               })
           : null,
       shippingOutPrDrafts: purpose === 'shipping'
-        ? effectiveShippingPRDrafts.map((pr) => ({
-            requestNumber: pr.requestNumber,
-            items: pr.items.map((item) => ({
-              itemType: item.itemType,
-              openingNumber: item.openingNumber,
-              openingItemId: item.openingItemId || null,
-              leaf: item.leaf ?? null,
-              hardwareCategory: item.hardwareCategory || null,
-              productCode: item.productCode || null,
-              requestedQuantity: item.requestedQuantity,
-            })),
-          }))
+        ? [
+            {
+              // #493: deprecated and ignored - the server mints the number from the project's
+              // counter. Sent because the input still carries the field.
+              requestNumber: '',
+              items: requestLines.map((line) => ({
+                openingNumber: line.openingNumber,
+                hardwareCategory: line.hardwareCategory,
+                productCode: line.productCode,
+                requestedQuantity: line.allocatedQuantity,
+              })),
+            },
+          ]
         : null,
       includeShopAssemblyRequest: purpose === 'assembly',
-      shopAssemblyRequestNumber: purpose === 'assembly' ? sarRequestNumber : null,
+      // #493: deprecated and ignored by the server, which mints the number itself.
+      shopAssemblyRequestNumber: null,
       // True when the user uploaded a fresh XML on a project that already has a persisted
       // schedule (i.e., they did not pick "Use last uploaded schedule"). The backend wipes all
       // existing HardwareItems and openings absent from the new input.
       replaceSchedule: canStartFromLatest && !hydratedFromPersisted,
-      // Only ever true after the user confirmed the warning dialog on a flagged leaf (#341).
-      acknowledgeIncompleteLeaves: acknowledgedIncompleteLeaves,
-      // The exact work units the wizard gated on (#342), not a second derivation of them - now
-      // carrying the allocated quantity per line, and already minus the excluded and auto-dropped
-      // leaves.
-      shopAssemblyOpenings: purpose === 'assembly' ? allocatedShopAssemblyDrafts : null,
+      // The exact lines the wizard gated on (#342), not a second derivation of them - carrying both
+      // numbers per line, and already minus the excluded and unallocated ones.
+      shopAssemblyItems: purpose === 'assembly' ? requestLines : null,
     };
-  }, [parsed, project.id, purpose, vendorGroups, vendorPOInfo, selectedVendors, unitCostOverrides, orderAsValues, classifications, siteShopClassifications, effectiveShippingPRDrafts, allocatedShopAssemblyDrafts, sarRequestNumber, canStartFromLatest, hydratedFromPersisted, acknowledgedIncompleteLeaves]);
+  }, [parsed, project.id, purpose, vendorGroups, draftGroups, unitCostOverrides, orderAsValues, classifications, siteShopClassifications, requestLines, sarRequestNumber, canStartFromLatest, hydratedFromPersisted]);
 
   const handleFinalize = useCallback(async () => {
     setConfirmOpen(false);
@@ -1291,9 +1055,9 @@ export default function ImportWizard({
       // between building the allocation and sending it, because the allocation itself never asks for
       // more than was free when it was built. Refetch, rebuild from the current numbers and send the
       // user back to review - resending the stale allocation would just bounce again.
-      if (purpose === 'assembly' && isInventoryShortfall(err)) {
+      if (requestPurpose && isInventoryShortfall(err)) {
         setAllocationStale(true);
-        setActiveStepId('shop-assembly');
+        setActiveStepId(purpose === 'assembly' ? 'shop-assembly' : 'shipping-prs');
         const refreshed = await refetchAvailability().catch(() => null);
         const rows = refreshed?.data?.projectInventoryAvailability;
         // A failed refetch means the numbers are unknown, not zero. Rebuilding from an empty map
@@ -1308,26 +1072,22 @@ export default function ImportWizard({
             row.availableQuantity,
           );
         }
-        const next = autoAssign(shopAssemblyOpeningDrafts, fresh);
-        setSarAllocation(next);
-        // Re-seeding must not silently put back a leaf the user chose to leave out. Only leaves that
+        const next = autoAllocate(composerRows, fresh);
+        setAllocation(next);
+        // Re-seeding must not silently put back a line the user chose to leave out. Only lines that
         // were in the request keep their place; the rest of the rebuild is the allocator's.
-        setIncludedLeafKeys((previous) => {
+        setIncludedKeys((previous) => {
           const seeded = previous.size === 0;
           return new Set(
-            shopAssemblyOpeningDrafts
-              .filter(
-                (draft) =>
-                  leafCoverage(next, draft) !== 'NONE' &&
-                  (seeded || previous.has(leafKey(draft))),
-              )
-              .map((draft) => leafKey(draft)),
+            composerRows
+              .filter((row) => (next.get(lineKey(row)) ?? 0) > 0 && (seeded || previous.has(lineKey(row))))
+              .map(lineKey),
           );
         });
-        setSeededSignature(draftsSignature(shopAssemblyOpeningDrafts));
+        setSeededSignature(offerSignature(composerRows));
       }
     }
-  }, [buildFinalizeInput, finalizeImport, showToast, purpose, refetchAvailability, shopAssemblyOpeningDrafts]);
+  }, [buildFinalizeInput, finalizeImport, showToast, purpose, requestPurpose, refetchAvailability, composerRows]);
 
   const handlePostAction = useCallback(
     (action: 'po' | 'inventory' | 'home') => {
@@ -1351,6 +1111,7 @@ export default function ImportWizard({
     resetDownstreamWizardState();
     setFinalizeLoading(false);
     setConfirmOpen(false);
+    setOverOrderModalOpen(false);
     setPostSuccessOpen(false);
     setHydratedFromPersisted(false);
     parser.reset();
@@ -1362,22 +1123,13 @@ export default function ImportWizard({
   const canProceedStep0 = parser.state === 'done';
   const canProceedStep1 = purpose !== null;
   const canProceedStep2 = selectedOpenings.size > 0;
-  // #483: the same rollup the Reconciliation step renders, so the numbers the user is blocked by are
-  // by construction the numbers they are shown.
-  const reconBlockingProducts = useMemo(() => {
-    if (purpose !== 'po' || !isReimport) return [];
-    return buildProductReconRows({
-      purpose,
-      reconciliationRows,
-      selectedHardwareItems,
-      allHardwareItems: parsed?.hardwareItems ?? [],
-      selectedReconItems,
-    }).filter((r) => r.blocksProceed);
-  }, [purpose, isReimport, reconciliationRows, selectedHardwareItems, parsed, selectedReconItems]);
-
+  // #565: hardware mode's step-2 gate - at least one product picked.
+  const canProceedHardware = selectedProductKeys.size > 0;
+  // #567: over-ordering no longer gates Next - it warns at the modal (see reconOverOrderProducts and
+  // handleNext). The PO purpose only requires a non-empty selection here.
   const canProceedStep3 = useMemo(() => {
     if (!isReimport) return true;
-    if (purpose === 'po') return selectedReconItems.size > 0 && reconBlockingProducts.length === 0;
+    if (purpose === 'po') return selectedReconItems.size > 0;
     if (purpose === 'assembly') {
       return reconciliationRows.some((r) => r.status === 'RECEIVED' && r.quantity > 0);
     }
@@ -1387,7 +1139,95 @@ export default function ImportWizard({
       );
     }
     return true;
-  }, [purpose, isReimport, selectedReconItems, reconciliationRows, reconBlockingProducts]);
+  }, [purpose, isReimport, selectedReconItems, reconciliationRows]);
+
+  // #566: classification Next gate, lifted out of ClassificationStep. `classificationRows` is built
+  // here, so the same rows the grid renders decide whether Next is live. Only the PO purpose reaches
+  // the step, where every in-scope (non-By-Others) line needs both a scope and a Site/Shop pick.
+  const canProceedClassification = useMemo(() => {
+    const allClassified = classificationRows.every((r) => r.classification !== '');
+    const allSiteShopClassified = classificationRows
+      .filter((r) => r.classification !== 'BY_OTHERS')
+      .every((r) => (r.siteShop ?? '') !== '');
+    return allClassified && allSiteShopClassified;
+  }, [classificationRows]);
+
+  // #566/#570: purchase-orders Next gate. At least one included draft that actually holds lines - an
+  // included-but-empty draft mints no PO, so it does not satisfy the gate.
+  const includedDraftCount = useMemo(
+    () => draftGroups.filter((g) => g.included && g.lines.size > 0).length,
+    [draftGroups],
+  );
+  const canProceedPurchaseOrders = includedDraftCount > 0;
+
+  // #566: the compose step's loading/error flags, computed once so the AppBar Next and the step body
+  // read the identical numbers. These exact expressions are what the step is handed as props below.
+  const composeCoverageLoading = coverageLoading && coverageData === undefined;
+  const composeCoverageError = coverageError !== undefined;
+  const composeAvailabilityLoading = availabilityLoading && availabilityData === undefined;
+  const composeAvailabilityError = availabilityError !== undefined;
+
+  const composeGate = useMemo(
+    () =>
+      composeRequestGate({
+        rows: composerRows,
+        allocation,
+        includedKeys,
+        coverageLoading: composeCoverageLoading,
+        coverageError: composeCoverageError,
+        availabilityLoading: composeAvailabilityLoading,
+        availabilityError: composeAvailabilityError,
+      }),
+    [
+      composerRows,
+      allocation,
+      includedKeys,
+      composeCoverageLoading,
+      composeCoverageError,
+      composeAvailabilityLoading,
+      composeAvailabilityError,
+    ],
+  );
+
+  // ---- AppBar nav (#566) ----
+  // One fixed forward/back cluster in the AppBar toolbar, never moving with content height. Every
+  // step's gate is resolved here, so the button and the step content cannot disagree about whether
+  // the user may proceed. Finalize drives itself forward from an in-content CTA, so Next is hidden
+  // there and only Back shows.
+  const isFinalizeStep = effectiveStepId === 'finalize';
+  let canProceedCurrentStep = false;
+  let navHint: string | null = null;
+  switch (effectiveStepId) {
+    case 'upload':
+      canProceedCurrentStep = canProceedStep0;
+      break;
+    case 'purpose':
+      canProceedCurrentStep = canProceedStep1;
+      break;
+    case 'openings':
+      canProceedCurrentStep = canProceedStep2;
+      break;
+    case 'hardware':
+      canProceedCurrentStep = canProceedHardware;
+      break;
+    case 'reconciliation':
+      canProceedCurrentStep = canProceedStep3;
+      break;
+    case 'classification':
+      canProceedCurrentStep = canProceedClassification;
+      break;
+    case 'purchase-orders':
+      canProceedCurrentStep = canProceedPurchaseOrders;
+      break;
+    case 'shop-assembly':
+    case 'shipping-prs':
+      canProceedCurrentStep = composeGate.canProceed;
+      navHint = composeGate.blockedReason;
+      break;
+    case 'finalize':
+      break;
+  }
+  const navBackDisabled = activeStepIndex === 0 || (isFinalizeStep && finalizeLoading);
 
   // ---- Render ----
 
@@ -1395,15 +1235,34 @@ export default function ImportWizard({
     <>
       <Dialog fullScreen open={open} onClose={handleClose}>
         <AppBar sx={{ position: 'relative' }}>
-          <Toolbar>
+          <Toolbar sx={{ gap: 2 }}>
             <IconButton edge="start" color="inherit" onClick={handleClose} aria-label="close">
               <X size={20} strokeWidth={1.75} />
             </IconButton>
-            <Typography sx={{ ml: 2, flex: 1 }} variant="h6" component="div">
+            <Typography noWrap sx={{ flex: 1, minWidth: 0 }} variant="h6" component="div">
               Import Hardware Schedule
             </Typography>
+            <WizardNav
+              currentStep={activeStepIndex + 1}
+              totalSteps={steps.length}
+              onBack={handleBack}
+              onNext={handleNext}
+              backDisabled={navBackDisabled}
+              nextDisabled={!canProceedCurrentStep}
+              showNext={!isFinalizeStep}
+            />
           </Toolbar>
         </AppBar>
+
+        {/* #566: the one place a disabled Next explains itself, sat directly under the button it is
+            about rather than beside a bottom nav that has moved. */}
+        {navHint && (
+          <Box sx={{ px: 3, pt: 1, display: 'flex', justifyContent: 'flex-end' }}>
+            <Typography variant="caption" color="text.secondary" sx={{ textAlign: 'right' }}>
+              {navHint}
+            </Typography>
+          </Box>
+        )}
 
         <Box sx={{ p: 3 }}>
           {/* #425: shown from the first step, not at the finalize button. Everything this wizard does
@@ -1598,12 +1457,6 @@ export default function ImportWizard({
                   <ValidationSummaryDisplay summary={parsed.validationSummary} />
                 </Box>
               )}
-
-              <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 3 }}>
-                <Button variant="contained" disabled={!canProceedStep0} onClick={handleNext}>
-                  Next
-                </Button>
-              </Box>
             </Box>
           )}
 
@@ -1680,13 +1533,6 @@ export default function ImportWizard({
                   This is a re-import. Reconciliation will show existing PO and processing status for selected items.
                 </Alert>
               )}
-
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 3 }}>
-                <Button onClick={handleBack}>Back</Button>
-                <Button variant="contained" disabled={!canProceedStep1} onClick={handleNext}>
-                  Next
-                </Button>
-              </Box>
             </Box>
           )}
 
@@ -1696,11 +1542,16 @@ export default function ImportWizard({
               openings={openings}
               selectedOpenings={selectedOpenings}
               preReconAggregatedItems={preReconAggregatedItems}
-              hardwareCountByOpening={hardwareCountByOpening}
               onOpeningSelectionChange={handleOpeningSelectionChange}
-              canProceed={canProceedStep2}
-              onNext={handleNext}
-              onBack={handleBack}
+            />
+          )}
+
+          {/* ============ Step: Select Hardware (#565) ============ */}
+          {effectiveStepId === 'hardware' && (
+            <SelectHardwareStep
+              hardwareItems={hardwareItems}
+              selectedProductKeys={selectedProductKeys}
+              onSelectionChange={setSelectedProductKeys}
             />
           )}
 
@@ -1717,9 +1568,6 @@ export default function ImportWizard({
               allHardwareItems={hardwareItems}
               selectedReconItems={selectedReconItems}
               onSelectionChange={setSelectedReconItems}
-              canProceed={canProceedStep3}
-              onNext={handleNext}
-              onBack={handleBack}
             />
           )}
 
@@ -1733,8 +1581,6 @@ export default function ImportWizard({
               itemCount={aggregatedHardwareItems.length}
               openingCount={selectedOpenings.size}
               isReimport={isReimport}
-              onNext={handleNext}
-              onBack={handleBack}
             />
           )}
 
@@ -1742,65 +1588,64 @@ export default function ImportWizard({
           {effectiveStepId === 'purchase-orders' && (
             <PurchaseOrdersStep
               projectId={project.id}
-              vendorGroups={vendorGroups}
-              vendorPOInfo={vendorPOInfo}
-              selectedVendors={selectedVendors}
+              jobNumber={project.projectId ?? null}
+              draftGroups={draftGroups}
+              productCatalog={poProductCatalog}
               unitCostOverrides={unitCostOverrides}
               orderAsValues={orderAsValues}
-              onToggleVendor={toggleVendor}
-              onUpdateVendorPO={updateVendorPO}
+              onToggleIncluded={toggleDraftIncluded}
+              onRenameDraft={renameDraft}
+              onUpdateDraftInfo={updateDraftInfo}
               onUpdateUnitCost={updateUnitCost}
               onUpdateOrderAs={updateOrderAs}
-              onNext={handleNext}
-              onBack={handleBack}
+              onMoveLine={moveLine}
+              onCreateDraft={createDraft}
+              onMergeDraft={mergeDraft}
+              onRemoveDraft={removeDraft}
             />
           )}
 
           {/* ============ Step: Shop Assembly ============ */}
           {effectiveStepId === 'shop-assembly' && (
-            <ShopAssemblyStep
-              sarRequestNumber={sarRequestNumber}
-              onSarNumberChange={setSarRequestNumber}
-              openingDrafts={shopAssemblyOpeningDrafts}
+            <ComposeRequestStep
+              title="Shop Assembly"
+              description="What the selected openings still have coming of their Shop Hardware: what the schedule owes, minus what has already gone out, minus what another live request is holding. Creating the request reserves what you assign here, so a line can only claim hardware that is genuinely free. Lines that come up short still go - assign what you can and send them, or leave them out."
+              emptyMessage="None of the selected openings has Shop Hardware still owed. Either it has all been sent, another live request is holding it, or nothing on them was ever classified as Shop."
+              rows={composerRows}
               availabilityByCombo={availabilityByCombo}
-              allocation={sarAllocation}
-              onAllocationChange={setSarAllocation}
-              includedLeafKeys={includedLeafKeys}
-              onIncludedLeafKeysChange={setIncludedLeafKeys}
+              allocation={allocation}
+              onAllocationChange={setAllocation}
+              includedKeys={includedKeys}
+              onIncludedKeysChange={setIncludedKeys}
               seededSignature={seededSignature}
               onSeeded={setSeededSignature}
-              availabilityLoading={availabilityLoading && availabilityData === undefined}
-              availabilityError={availabilityError !== undefined}
+              coverageLoading={composeCoverageLoading}
+              coverageError={composeCoverageError}
+              availabilityLoading={composeAvailabilityLoading}
+              availabilityError={composeAvailabilityError}
               allocationStale={allocationStale}
-              unclassifiedItems={unclassifiedShopCandidates}
-              onNext={handleNext}
-              onBack={handleBack}
             />
           )}
 
           {/* ============ Step: Shipping PRs ============ */}
           {effectiveStepId === 'shipping-prs' && (
-            <ShippingPRsStep
-              shippingPRDrafts={effectiveShippingPRDrafts}
-              assembledLeaves={assembledLeafCandidates}
-              looseRows={looseCoverageRows}
-              leavesLoading={openingItemsLoading}
-              leavesError={openingItemsError !== undefined}
-              coverageLoading={coverageLoading && coverageData === undefined}
-              coverageError={coverageError !== undefined}
-              onAddPR={addShippingPR}
-              onRemovePR={removeShippingPR}
-              onUpdatePR={updateShippingPR}
-              onTogglePRItem={toggleShippingPRItem}
-              onSetPRItemQuantity={setShippingPRItemQuantity}
+            <ComposeRequestStep
+              title="Shipping Out"
+              description="What the selected openings still have coming to site: what the schedule owes, minus what has already shipped, minus what another live request is holding. Shop Hardware is left out - it goes to the bench, not on a truck. Creating the request reserves what you assign here."
+              emptyMessage="None of the selected openings has hardware still owed to site. Either it has all shipped, another live request is holding it, or all of it is Shop Hardware."
+              rows={composerRows}
               availabilityByCombo={availabilityByCombo}
-              requestedByCombo={requestedByCombo}
-              availabilityShortfalls={availabilityShortfalls}
-              availabilityLoading={availabilityLoading && availabilityData === undefined}
-              availabilityError={availabilityError !== undefined}
-              onAcknowledgeIncompleteLeaf={() => setAcknowledgedIncompleteLeaves(true)}
-              onNext={handleNext}
-              onBack={handleBack}
+              allocation={allocation}
+              onAllocationChange={setAllocation}
+              includedKeys={includedKeys}
+              onIncludedKeysChange={setIncludedKeys}
+              seededSignature={seededSignature}
+              onSeeded={setSeededSignature}
+              coverageLoading={composeCoverageLoading}
+              coverageError={composeCoverageError}
+              availabilityLoading={composeAvailabilityLoading}
+              availabilityError={composeAvailabilityError}
+              allocationStale={allocationStale}
             />
           )}
 
@@ -1815,36 +1660,42 @@ export default function ImportWizard({
                 <Typography sx={{ ...microLabelSx, mb: 1.5 }}>Import Summary</Typography>
 
                 <Typography sx={microLabelSx}>Project</Typography>
-                <Typography variant="body1" sx={{ mb: 1, ...monoSx, fontSize: '1rem' }}>
+                {/* `title` step off the DESIGN.md ramp, not MUI's body1 default of 1rem - the ramp
+                    has no 1rem step. component="p" because this is the card's headline value, not a
+                    heading in the document outline. */}
+                <Typography variant="h6" component="p" sx={{ mb: 1, ...monoSx }}>
                   {existingProjectName}
                 </Typography>
                 <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, mb: 2 }}>
-                  {selectedOpenings.size} openings | {selectedHardwareItems.length} hardware items
+                  {isHardwareMode
+                    ? `${selectedProductKeys.size} products | ${selectedHardwareItems.length} hardware items`
+                    : `${selectedOpenings.size} openings | ${selectedHardwareItems.length} hardware items`}
                 </Typography>
 
                 <Divider sx={{ my: 2 }} />
 
                 {purpose === 'po' && (
                   <Box sx={{ mb: 1 }}>
-                    <Typography variant="body1">
-                      {selectedVendors.size} Purchase Order(s) across {selectedVendors.size} manufacturer group(s)
+                    <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                      {includedDraftCount} Purchase Order draft(s)
                     </Typography>
                   </Box>
                 )}
 
                 {purpose === 'shipping' && (
                   <Box sx={{ mb: 1 }}>
-                    <Typography variant="body1">
-                      {effectiveShippingPRDrafts.filter((d) => d.requestNumber.trim() !== '').length} Shipping
-                      Out Pull Request(s)
+                    <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                      1 Shipping Out Request across {requestLines.length} line(s) (number assigned on
+                      finalize)
                     </Typography>
                   </Box>
                 )}
 
                 {purpose === 'assembly' && (
                   <Box sx={{ mb: 1 }}>
-                    <Typography variant="body1">
-                      1 Shop Assembly Pull Request (#{sarRequestNumber})
+                    <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                      1 Shop Assembly Request across {requestLines.length} line(s) (number assigned on
+                      finalize)
                     </Typography>
                   </Box>
                 )}
@@ -1863,10 +1714,8 @@ export default function ImportWizard({
                 </Box>
               )}
 
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 3 }}>
-                <Button onClick={handleBack} disabled={finalizeLoading}>
-                  Back
-                </Button>
+              {/* #566: Back lives in the AppBar; this step keeps only its own forward CTA. */}
+              <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 3 }}>
                 {/* #425: the server refuses this outright (finalize_import_session ->
                     require_gp_setup_ok), so leaving the button live would only buy the user a red
                     toast after a full wizard run. The banner above says why. */}
@@ -1885,6 +1734,15 @@ export default function ImportWizard({
           </FadeIn>
         </Box>
       </Dialog>
+
+      {/* #567: over-order confirm. Opened from handleNext when leaving reconciliation with a
+          selection that pushes a product past its project total. */}
+      <OverOrderWarningModal
+        open={overOrderModalOpen}
+        products={reconOverOrderProducts}
+        onGoBack={() => setOverOrderModalOpen(false)}
+        onProceed={handleOverOrderProceed}
+      />
 
       {/* Confirm Dialog */}
       <ConfirmDialog

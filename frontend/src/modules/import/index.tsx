@@ -9,11 +9,14 @@ import ImportWizard from './ImportWizard';
 import { useIdentity } from '../../hooks/useIdentity';
 import { GET_PROJECTS } from '../../graphql/shared';
 import type { Project } from '../../types/project';
-import type { ImportPurpose } from './types';
+import type { ImportPurpose, SelectionMode } from './types';
 
 /** How the wizard was opened, when something else chose for the user. */
 interface DeepLinkIntent {
   purpose?: ImportPurpose;
+  // #565: which pathway the PO import runs - by opening (default) or by product. Carried through the
+  // pick-a-project fall-through so the chooser's "by hardware" card survives when no project was named.
+  selectionMode: SelectionMode;
   fromLatest: boolean;
 }
 
@@ -28,6 +31,8 @@ export default function ImportModule() {
   // A purpose that arrived without a project (#471). Held rather than acted on: the module buttons
   // know what the user came to raise but not which job, so it waits for them to pick one.
   const [pendingPurpose, setPendingPurpose] = useState<ImportPurpose | null>(null);
+  // #565: the selection mode that rode in with a projectless purpose link, held alongside it.
+  const [pendingMode, setPendingMode] = useState<SelectionMode>('openings');
 
   // `?projectId=&purpose=shipping&source=latest` - what "Ship out now" on a keep-or-ship decision
   // navigates to. `?purpose=` on its own is a module's "Start a Request" button (#471). The params
@@ -39,10 +44,14 @@ export default function ImportModule() {
   const projectIdParam = searchParams.get('projectId');
   const purposeParam = searchParams.get('purpose');
   const sourceParam = searchParams.get('source');
+  const modeParam = searchParams.get('mode');
   const projects = projectsData?.projects;
   const linkedPurpose = PURPOSES.includes(purposeParam as ImportPurpose)
     ? (purposeParam as ImportPurpose)
     : null;
+  // #565: the PO chooser's "by hardware" card links `?purpose=po&mode=hardware`. Anything else is the
+  // by-opening pathway, so an unknown or absent mode falls to 'openings'.
+  const linkedMode: SelectionMode = modeParam === 'hardware' ? 'hardware' : 'openings';
 
   useEffect(() => {
     if (consumedRef.current) return;
@@ -55,23 +64,25 @@ export default function ImportModule() {
     if (project) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot open from the URL
       setSelectedProject(project);
-      setIntent({ purpose: linkedPurpose ?? undefined, fromLatest: sourceParam === 'latest' });
+      setIntent({ purpose: linkedPurpose ?? undefined, selectionMode: linkedMode, fromLatest: sourceParam === 'latest' });
       setWizardOpen(true);
     } else {
       // No project to open on: either none was named, or the id is stale and matches nothing. Both
       // land on the picker rather than on a wizard for the wrong job, keeping whatever purpose came
       // with the link so the choice the user already made is not asked for twice.
       setPendingPurpose(linkedPurpose);
+      setPendingMode(linkedMode);
     }
     setSearchParams({}, { replace: true });
-  }, [projectIdParam, linkedPurpose, sourceParam, projects, setSearchParams]);
+  }, [projectIdParam, linkedPurpose, linkedMode, sourceParam, projects, setSearchParams]);
 
   const handleSelect = (project: Project | null) => {
     if (!project) return;
     setSelectedProject(project);
     // Seeds the Purpose step when the user arrived from a module's "Start a Request" button. Still a
-    // seed, not a lock: the step lets them change it.
-    setIntent(pendingPurpose ? { purpose: pendingPurpose, fromLatest: false } : null);
+    // seed, not a lock: the step lets them change it. The selection mode, on the other hand, does
+    // lock the pathway - a "by hardware" link stays by-hardware once a project is chosen.
+    setIntent(pendingPurpose ? { purpose: pendingPurpose, selectionMode: pendingMode, fromLatest: false } : null);
     setWizardOpen(true);
   };
 
@@ -112,6 +123,7 @@ export default function ImportModule() {
           project={selectedProject}
           onClose={handleWizardClose}
           initialPurpose={intent?.purpose}
+          initialSelectionMode={intent?.selectionMode}
           autoStartFromLatest={intent?.fromLatest}
         />
       )}

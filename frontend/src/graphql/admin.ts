@@ -36,82 +36,6 @@ export const GET_ADMIN_PROJECTS = gql`
   }
 `;
 
-// One row per opening of ONE project. Deliberately counts only - the per-hardware detail travels
-// through GET_ADMIN_OPENING_DEEP_DIVE when a row is expanded, so opening a project with a large
-// schedule does not ship the whole schedule to the browser.
-export const GET_ADMIN_OPENING_STATUSES = gql`
-  query GetAdminOpeningStatuses($projectId: ID!) {
-    adminOpeningStatuses(projectId: $projectId) {
-      openingNumber
-      building
-      floor
-      location
-      leafCount
-      stage
-      owedUnits
-      shippedUnits
-      stagedUnits
-      assembledUnits
-      pulledUnits
-      shippedLooseUnits
-      pulledForShippingUnits
-      orderedUnits
-      poDraftedUnits
-      notPurchasedUnits
-      leaves {
-        leaf
-        status
-      }
-    }
-  }
-`;
-
-// Every unit of one opening's hardware, partitioned across the lifecycle. The seven per-line
-// quantities sum to owedQuantity - one unit is only ever in one of them.
-export const GET_ADMIN_OPENING_DEEP_DIVE = gql`
-  query GetAdminOpeningDeepDive($projectId: ID!, $openingNumber: String!) {
-    adminOpeningDeepDive(projectId: $projectId, openingNumber: $openingNumber) {
-      openingNumber
-      leafCount
-      leaves {
-        leaf
-        status
-      }
-      leafClaims {
-        leaf
-        requestNumber
-      }
-      lines {
-        leaf
-        hardwareCategory
-        productCode
-        owedQuantity
-        shippedOnLeaf
-        shippedLoose
-        staged
-        pulledForShipping
-        assembledInInventory
-        pulledForAssembly
-        ordered
-        poDrafted
-        notPurchased
-        poLines {
-          poNumber
-          status
-          orderedQuantity
-          receivedQuantity
-        }
-      }
-      loose {
-        hardwareCategory
-        productCode
-        pulledForShipping
-        shippedLoose
-      }
-    }
-  }
-`;
-
 export const GET_USERS = gql`
   query GetUsers {
     users {
@@ -186,6 +110,8 @@ export const DELETE_RELAY_INSTALL = gql`
 export const GET_LOCATION_DUPLICATES = gql`
   query GetLocationDuplicates {
     locationDuplicates {
+      warehouseId
+      warehouseLabel
       canonicalAisle
       canonicalRow
       canonicalBay
@@ -242,15 +168,6 @@ export const OVERRIDE_INVENTORY_QUANTITY = gql`
       receivedAt
       createdAt
       updatedAt
-    }
-  }
-`;
-
-export const ASSIGN_OPENING_ITEM_LOCATION = gql`
-  mutation AssignOpeningItemLocation($openingItemId: ID!, $aisle: String!, $row: String!, $bay: String!) {
-    assignOpeningItemLocation(openingItemId: $openingItemId, aisle: $aisle, row: $row, bay: $bay) {
-      id projectId openingId openingNumber building floor location quantity assemblyCompletedAt state aisle row bay createdAt updatedAt
-      installedHardware { id openingItemId productCode hardwareCategory quantity }
     }
   }
 `;
@@ -343,15 +260,16 @@ export const DELETE_WAREHOUSE = gql`
 
 export const MERGE_LOCATIONS = gql`
   mutation MergeLocations(
+    $warehouseId: ID!,
     $fromAisle: String!, $fromRow: String!, $fromBay: String!,
     $toAisle: String!, $toRow: String!, $toBay: String!
   ) {
     mergeLocations(
+      warehouseId: $warehouseId,
       fromAisle: $fromAisle, fromRow: $fromRow, fromBay: $fromBay,
       toAisle: $toAisle, toRow: $toRow, toBay: $toBay
     ) {
       inventoryLocations
-      openingItems
       stockItems
     }
   }

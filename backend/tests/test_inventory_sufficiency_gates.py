@@ -21,7 +21,6 @@ from sqlalchemy import select
 from app.errors import InventoryShortfallError
 from app.models.enums import (
     NotificationType,
-    PullRequestItemType,
     PullRequestSource,
     PullRequestStatus,
     ReservationSource,
@@ -95,7 +94,6 @@ def _make_pending_pr(session, project_id, *, needs, request_number=None, source=
             PullRequestItem(
                 id=uuid.uuid4(),
                 pull_request_id=pr.id,
-                item_type=PullRequestItemType.LOOSE,
                 opening_number="A01",
                 hardware_category=category,
                 product_code=code,
@@ -190,11 +188,8 @@ def _finalize_shop_assembly(session, project, *, code, qty):
             "hardware_items": [],
             "include_shop_assembly_request": True,
             "shop_assembly_request_number": f"SA-{uuid.uuid4().hex[:6]}",
-            "shop_assembly_openings": [
-                {
-                    "opening_number": "A01",
-                    "items": [{"hardware_category": "HINGE", "product_code": code, "quantity": qty}],
-                },
+            "shop_assembly_items": [
+                {"opening_number": "A01", "hardware_category": "HINGE", "product_code": code, "quantity": qty},
             ],
         },
     )

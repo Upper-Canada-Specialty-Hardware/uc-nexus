@@ -459,11 +459,13 @@ def test_a_frame_travels_the_hardware_pipeline_untouched(db_session):
     )
     db_session.flush()
 
-    # Visible as stock: the inventory screens group on hardware category, so the type is a group.
-    hierarchy = {
-        n["hardware_category"]: n for n in warehouse_repository.get_inventory_hierarchy(db_session, project.id)
-    }
-    assert hierarchy["FRAME"]["total_quantity"] == 4
+    # Visible as stock: the flat inventory rows carry the type as an ordinary hardware category.
+    frame_quantity = sum(
+        r["inventory_location"].quantity
+        for r in warehouse_repository.get_inventory_rows(db_session, project.id)
+        if r["inventory_location"].hardware_category == "FRAME"
+    )
+    assert frame_quantity == 4
 
     # Claimed: a shipping-out request holds it as a LOOSE line and reserves it (#342), exactly as
     # it would hold a hinge.

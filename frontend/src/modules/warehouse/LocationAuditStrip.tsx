@@ -11,6 +11,8 @@ interface AuditDetail {
   oldQuantity?: number;
   newQuantity?: number;
   adjustment?: number;
+  systemQuantity?: number;
+  physicalQuantity?: number;
   reason?: string;
   reasonText?: string;
   reason_text?: string;
@@ -51,6 +53,11 @@ function summarize(entry: AuditEntry): string {
       return `Unlocated from ${formatLoc(d.fromLocation)}`;
     case 'ADJUSTMENT':
       return `Adjusted qty ${d.oldQuantity} → ${d.newQuantity}${reason ? ` — ${reason}` : ''}`;
+    case 'SPOT_CHECK': {
+      const system = d.systemQuantity ?? d.oldQuantity;
+      const physical = d.physicalQuantity ?? d.newQuantity;
+      return `Spot check: system ${system} → physical ${physical}`;
+    }
     case 'RECEIVE':
       return `Received at ${formatLoc(d.targetLocation)}`;
     case 'DESTOCK':
@@ -66,11 +73,14 @@ interface Props {
   aisle: string;
   row: string | null;
   bay: string | null;
+  // The warehouse the selected location lives in, so history scopes to this building's moves and does
+  // not surface an unrelated warehouse that reuses the same aisle/row/bay string.
+  warehouseId: string | null;
 }
 
-export default function LocationAuditStrip({ aisle, row, bay }: Props) {
+export default function LocationAuditStrip({ aisle, row, bay, warehouseId }: Props) {
   const { data, loading, error } = useQuery<LocationAuditHistoryData>(GET_LOCATION_AUDIT_HISTORY, {
-    variables: { aisle, row, bay, limit: 10 },
+    variables: { aisle, row, bay, limit: 10, warehouseId },
     fetchPolicy: 'cache-and-network',
   });
 

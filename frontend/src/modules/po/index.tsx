@@ -134,6 +134,9 @@ export interface PurchaseOrder {
   gpCompany: string | null;
   gpVendorId: string | null;
   vendorNameSnapshot: string | null;
+  // #490: the buyer's GP cost-code pick, optionally captured at request time and used as the
+  // default when the draft is registered.
+  costCode: string | null;
   buyerId: string | null;
   vendorQuoteNumber: string | null;
   shippingCost: number | null;
@@ -157,7 +160,8 @@ interface POStatistics {
   vendorConfirmed: number;
   partiallyReceived: number;
   closed: number;
-  cancelled: number;
+  // No `cancelled`. The resolver still returns it, but every read on this page filters
+  // deleted_at IS NULL and cancel_po sets it, so the figure is always 0 - not worth fetching.
 }
 
 
@@ -177,8 +181,11 @@ const STAT_CARDS: { label: string; key: keyof POStatistics; status: string | nul
   { label: 'Vendor Confirmed', key: 'vendorConfirmed', status: 'VENDOR_CONFIRMED' },
   { label: 'Partially Received', key: 'partiallyReceived', status: 'PARTIALLY_RECEIVED' },
   { label: 'Closed', key: 'closed', status: 'CLOSED' },
-  { label: 'Cancelled', key: 'cancelled', status: 'CANCELLED' },
 ];
+// No Cancelled segment. `cancel_po` writes status=CANCELLED and deleted_at in the same statement, and
+// every read here filters deleted_at IS NULL - so the count was structurally always 0 and the segment
+// filtered to an always-empty table. A cancelled draft is gone from this list by design; a readout
+// that can only ever say "0" is worse than no readout.
 
 // --- Sort + filter state ---
 
@@ -975,7 +982,9 @@ function POListPage() {
                       component="span"
                       sx={{
                         ...tabularSx,
-                        fontSize: '1.125rem',
+                        // `title` step off the DESIGN.md ramp; the strip stays compact through its
+                        // padding and 1.0 line-height, not through an off-ramp font size.
+                        fontSize: '1.25rem',
                         fontWeight: 700,
                         lineHeight: 1,
                         color: zero ? 'text.secondary' : 'text.primary',
@@ -1141,6 +1150,10 @@ function POListPage() {
         onFromSchedule={() => {
           setChooserOpen(false);
           navigate('/app/import?purpose=po');
+        }}
+        onFromHardware={() => {
+          setChooserOpen(false);
+          navigate('/app/import?purpose=po&mode=hardware');
         }}
         onManual={() => {
           setChooserOpen(false);

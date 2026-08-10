@@ -1,156 +1,30 @@
 """Project inventory + opening item reads and admin quantity corrections."""
 
 import uuid
-from collections import defaultdict
 from datetime import datetime
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 
 from app.errors import NotFoundError, ValidationError
 from app.models.enums import AuditAction, AuditEntityType
 from app.models.hardware import HardwareItem as HardwareItemModel
 from app.models.inventory import InventoryLocation as InventoryLocationModel
-from app.models.opening_item import OpeningItem as OpeningItemModel
-from app.models.project import Opening as OpeningModel
 from app.models.project import Project as ProjectModel
 from app.models.purchase_order import POLineItem as POLineItemModel
 from app.models.purchase_order import PurchaseOrder as POModel
 
 from .audit import _log_audit_event
-from .locations import _normalize_and_validate_location_fields
+from .locations import _normalize_and_validate_location_fields, clone_origin_fields, location_detail
 
 
-def get_inventory_hierarchy(
+def get_unlocated_inventory(
     session: Session, project_id: uuid.UUID | None = None, warehouse_id: uuid.UUID | None = None
 ) -> list[dict]:
     """
-    Query all InventoryLocation rows joined with POLineItem for unit_cost,
-    optionally filtered by project_id.
-    Group by hardware_category, then product_code.
-    At each level, sum quantities and compute total_value (unit_cost * quantity).
-    Sort categories and product codes alphabetically.
-
-    Return structure: list of dicts, each with:
-    {
-        "hardware_category": str,
-        "product_codes": [
-            {
-                "product_code": str,
-                "items": [InventoryLocationModel, ...],
-                "total_quantity": int,
-                "total_value": float
-            },
-            ...
-        ],
-        "total_quantity": int,
-        "total_value": float
-    }
-    """
-    stmt = select(InventoryLocationModel, POLineItemModel.unit_cost).outerjoin(
-        POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id
-    )
-    # Hide rows fully emptied by destock/allocation (quantity = 0). They are kept in the DB
-    # for FK integrity (origin of stock allocations) but should not clutter the inventory view.
-    stmt = stmt.where(InventoryLocationModel.quantity > 0)
-    if project_id is not None:
-        stmt = stmt.where(InventoryLocationModel.project_id == project_id)
-    if warehouse_id is not None:
-        stmt = stmt.where(InventoryLocationModel.warehouse_id == warehouse_id)
-    stmt = stmt.order_by(
-        InventoryLocationModel.hardware_category,
-        InventoryLocationModel.product_code,
-    )
-    rows = list(session.execute(stmt).all())
-
-    # Group by hardware_category -> product_code, storing (il, unit_cost) pairs
-    cat_map: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
-    for il, unit_cost in rows:
-        cat_map[il.hardware_category][il.product_code].append((il, unit_cost or 0))
-
-    result = []
-    for category in sorted(cat_map.keys()):
-        product_codes_map = cat_map[category]
-        product_code_nodes = []
-        category_total = 0
-        category_total_value = 0.0
-
-        category_available = 0
-        for pc in sorted(product_codes_map.keys()):
-            items_with_cost = product_codes_map[pc]
-            pc_total = sum(il.quantity for il, _ in items_with_cost)
-            # Issue #229: net available = quantity - deficient_quantity, the same basis the
-            # approve gate (check_inventory_sufficiency) uses - so pre-checks can agree with it.
-            pc_available = sum(il.quantity - il.deficient_quantity for il, _ in items_with_cost)
-            pc_total_value = sum(float(uc) * il.quantity for il, uc in items_with_cost)
-            category_total += pc_total
-            category_available += pc_available
-            category_total_value += pc_total_value
-            product_code_nodes.append(
-                {
-                    "product_code": pc,
-                    "items": [il for il, _ in items_with_cost],
-                    "total_quantity": pc_total,
-                    "total_available_quantity": pc_available,
-                    "total_value": pc_total_value,
-                }
-            )
-
-        result.append(
-            {
-                "hardware_category": category,
-                "product_codes": product_code_nodes,
-                "total_quantity": category_total,
-                "total_available_quantity": category_available,
-                "total_value": category_total_value,
-            }
-        )
-
-    return result
-
-
-def get_inventory_items(
-    session: Session,
-    project_id: uuid.UUID | None,
-    category: str,
-    product_code: str,
-) -> list[dict]:
-    """
-    Query InventoryLocation rows matching (optional project_id, category, product_code).
-    JOIN to POLineItem (via po_line_item_id) then PurchaseOrder (via po_id) to get po_number and classification.
-
-    Return list of dicts with keys: inventory_location, po_number, classification
-    """
-    stmt = (
-        select(InventoryLocationModel, POLineItemModel.classification, POModel.po_number, POLineItemModel.unit_cost)
-        .outerjoin(POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id)
-        .outerjoin(POModel, POLineItemModel.po_id == POModel.id)
-        .where(
-            InventoryLocationModel.hardware_category == category,
-            InventoryLocationModel.product_code == product_code,
-            # Hide rows fully emptied by destock/allocation (kept in DB for FK integrity).
-            InventoryLocationModel.quantity > 0,
-        )
-    )
-    if project_id is not None:
-        stmt = stmt.where(InventoryLocationModel.project_id == project_id)
-    rows = session.execute(stmt).all()
-
-    return [
-        {
-            "inventory_location": row[0],
-            "classification": row[1],
-            "po_number": row[2],
-            "unit_cost": float(row[3]) if row[3] is not None else 0.0,
-        }
-        for row in rows
-    ]
-
-
-def get_unlocated_inventory(session: Session, project_id: uuid.UUID | None = None) -> list[dict]:
-    """
     Query InventoryLocation rows where aisle, row, and bay are all NULL and quantity > 0.
     Joins to POLineItem for unit_cost/classification and PurchaseOrder for po_number.
+    Optionally scoped to one warehouse so put-away can work one building at a time.
     """
     stmt = (
         select(InventoryLocationModel, POLineItemModel.classification, POModel.po_number, POLineItemModel.unit_cost)
@@ -165,6 +39,8 @@ def get_unlocated_inventory(session: Session, project_id: uuid.UUID | None = Non
     )
     if project_id is not None:
         stmt = stmt.where(InventoryLocationModel.project_id == project_id)
+    if warehouse_id is not None:
+        stmt = stmt.where(InventoryLocationModel.warehouse_id == warehouse_id)
     stmt = stmt.order_by(
         InventoryLocationModel.hardware_category,
         InventoryLocationModel.product_code,
@@ -183,209 +59,8 @@ def get_unlocated_inventory(session: Session, project_id: uuid.UUID | None = Non
     ]
 
 
-def get_inventory_by_vendor(session: Session, project_id: uuid.UUID | None = None) -> list[dict]:
-    """Group inventory by the GP vendor the hardware was bought from, then product_code.
-
-    Grouped on `gp_vendor_id` - the PM00200 VENDORID - and only *labelled* with the PO's
-    `vendor_name_snapshot`. Those are the only vendor fields a PO has since #509, and the id is the
-    stable one: two POs pushed to the same GP vendor whose snapshots differ by case, trailing
-    whitespace, or a rename in GP between the pushes are one vendor, and keying on the display text
-    would split their stock into two groups. The label is whichever snapshot the group saw first.
-
-    A PO that predates the gp_vendor_id column can carry a snapshot without an id; those fall back to
-    grouping on the snapshot text, which is the only handle they have, rather than collapsing into
-    "No Vendor" and losing the name. Stock-allocated rows have no PO behind them and a
-    never-registered draft has neither field; those are the actual "No Vendor" bucket.
-    """
-    stmt = (
-        select(
-            InventoryLocationModel,
-            POLineItemModel.unit_cost,
-            POModel.gp_vendor_id,
-            POModel.vendor_name_snapshot,
-        )
-        .outerjoin(POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id)
-        .outerjoin(POModel, POLineItemModel.po_id == POModel.id)
-        # Hide rows fully emptied by destock/allocation (kept in DB for FK integrity).
-        .where(InventoryLocationModel.quantity > 0)
-    )
-    if project_id is not None:
-        stmt = stmt.where(InventoryLocationModel.project_id == project_id)
-    # No ORDER BY: every row is re-bucketed by vendor and re-sorted below, so sorting in the database
-    # is work the Python discards.
-    rows = list(session.execute(stmt).all())
-
-    # Keyed by ("id", gp_vendor_id) where GP gave us one, else ("name", snapshot) for a pre-column
-    # PO, else None for the "No Vendor" bucket. The tag keeps an id from ever colliding with a name.
-    vendor_labels: dict[tuple[str, str] | None, str] = {}
-    vendor_map: dict[tuple[str, str] | None, dict[str, list]] = defaultdict(lambda: defaultdict(list))
-    for il, unit_cost, gp_vendor_id, vendor_name in rows:
-        if gp_vendor_id:
-            key = ("id", gp_vendor_id)
-            label = vendor_name or gp_vendor_id
-        elif vendor_name:
-            key = ("name", vendor_name)
-            label = vendor_name
-        else:
-            key = None
-            label = "No Vendor"
-        vendor_labels.setdefault(key, label)
-        # Stock-allocated rows (stock_item origin) have no PO unit_cost; coerce to 0 like the
-        # category hierarchy does, otherwise the float() in the value sum below blows up.
-        vendor_map[key][il.product_code].append((il, unit_cost or 0))
-
-    result = []
-    for vendor_key in sorted(vendor_map.keys(), key=lambda k: vendor_labels[k]):
-        vendor = vendor_labels[vendor_key]
-        pc_map = vendor_map[vendor_key]
-        pc_nodes = []
-        vendor_total = 0
-        vendor_value = 0.0
-        for pc in sorted(pc_map.keys()):
-            items_with_cost = pc_map[pc]
-            pc_total = sum(il.quantity for il, _ in items_with_cost)
-            pc_value = sum(float(uc) * il.quantity for il, uc in items_with_cost)
-            vendor_total += pc_total
-            vendor_value += pc_value
-            pc_nodes.append(
-                {
-                    "product_code": pc,
-                    "items": [il for il, _ in items_with_cost],
-                    "total_quantity": pc_total,
-                    "total_value": pc_value,
-                }
-            )
-        result.append(
-            {
-                "vendor_name": vendor,
-                "product_codes": pc_nodes,
-                "total_quantity": vendor_total,
-                "total_value": vendor_value,
-            }
-        )
-    return result
-
-
-def get_opening_items(session: Session, project_id: uuid.UUID | None = None) -> list[OpeningItemModel]:
-    """
-    Query all OpeningItem rows, optionally filtered by project_id.
-    Eagerly load installed_hardware relationship (OpeningItemHardware).
-    Sort by opening_number ASC.
-    """
-    stmt = (
-        select(OpeningItemModel)
-        .options(selectinload(OpeningItemModel.installed_hardware))
-        .order_by(OpeningItemModel.opening_number.asc())
-    )
-    if project_id is not None:
-        stmt = stmt.where(OpeningItemModel.project_id == project_id)
-    return list(session.scalars(stmt).unique().all())
-
-
-def get_opening_leaf_counts(session: Session, project_id: uuid.UUID | None = None) -> dict[str, int | None]:
-    """Map opening_number -> Opening.leaf_count (#311). This is the "N of M leaves shipped" denominator
-    M; a single query keeps the openingItems list resolver free of N+1s. project_id scopes to one
-    project; omit it for the global openingItems view (opening_number then keys across projects, which
-    is acceptable - the global view is not project-disambiguated)."""
-    stmt = select(OpeningModel.opening_number, OpeningModel.leaf_count)
-    if project_id is not None:
-        stmt = stmt.where(OpeningModel.project_id == project_id)
-    rows = session.execute(stmt).all()
-    return {opening_number: leaf_count for opening_number, leaf_count in rows}
-
-
-# Furthest-along ordering when a leaf has more than one OpeningItem (e.g. after a correction): the
-# most-advanced state wins. NOT_ASSEMBLED is the floor - a leaf the schedule expects but that has no
-# OpeningItem at all.
-_LEAF_STATUS_RANK = {"NOT_ASSEMBLED": 0, "IN_INVENTORY": 1, "SHIP_READY": 2, "SHIPPED_OUT": 3}
-
-
-def get_opening_leaf_status(session: Session, project_id: uuid.UUID | None = None) -> list[dict]:
-    """Per-opening door-leaf rollup (#313). One row per PAIR opening (leaf_count >= 2 - a single leaf
-    is just its own row, matching the phase-5 rollup convention); each row lists every leaf
-    1..leaf_count with its status. Status comes from OpeningItems (one grouped query, no N+1); a leaf
-    with no OpeningItem is NOT_ASSEMBLED. project_id scopes to one project (shipping); omitting it
-    spans all projects (global shop-assembly), so each row carries project identity to disambiguate
-    opening numbers that collide across projects."""
-    # Pairs only. leaf_count is the denominator M; a NULL leaf_count (legacy) fails `>= 2` and drops.
-    op_stmt = select(OpeningModel.project_id, OpeningModel.opening_number, OpeningModel.leaf_count).where(
-        OpeningModel.leaf_count >= 2
-    )
-    if project_id is not None:
-        op_stmt = op_stmt.where(OpeningModel.project_id == project_id)
-    openings = session.execute(op_stmt).all()
-    if not openings:
-        return []
-
-    # Furthest-along OpeningItem state per (project_id, opening_number, leaf). Scope to the pair
-    # openings found above so the global path (project_id=None) never scans the whole opening_items
-    # table - only rows for openings we actually roll up. `openings` is non-empty here (guarded above);
-    # the (project_id, opening_number, leaf) key lookup below filters the cross-product precisely.
-    pair_project_ids = {pid for pid, _, _ in openings}
-    pair_opening_numbers = {opening_number for _, opening_number, _ in openings}
-    oi_stmt = select(
-        OpeningItemModel.project_id,
-        OpeningItemModel.opening_number,
-        OpeningItemModel.leaf,
-        OpeningItemModel.state,
-    ).where(
-        OpeningItemModel.project_id.in_(pair_project_ids),
-        OpeningItemModel.opening_number.in_(pair_opening_numbers),
-    )
-    leaf_state: dict[tuple[uuid.UUID, str, int], str] = {}
-    for pid, opening_number, leaf, state in session.execute(oi_stmt).all():
-        if leaf is None:
-            continue
-        state_value = state.value if hasattr(state, "value") else str(state)
-        key = (pid, opening_number, leaf)
-        current = leaf_state.get(key)
-        if current is None or _LEAF_STATUS_RANK[state_value] > _LEAF_STATUS_RANK[current]:
-            leaf_state[key] = state_value
-
-    project_names = {
-        pid: (description or code)
-        for pid, description, code in session.execute(
-            select(ProjectModel.id, ProjectModel.description, ProjectModel.project_id).where(
-                ProjectModel.id.in_({pid for pid, _, _ in openings})
-            )
-        ).all()
-    }
-
-    rows = [
-        {
-            "project_id": pid,
-            "project_name": project_names.get(pid, ""),
-            "opening_number": opening_number,
-            "leaf_count": leaf_count,
-            "leaves": [
-                {"leaf": n, "status": leaf_state.get((pid, opening_number, n), "NOT_ASSEMBLED")}
-                for n in range(1, leaf_count + 1)
-            ],
-        }
-        for pid, opening_number, leaf_count in openings
-    ]
-    rows.sort(key=lambda r: (r["project_name"], r["opening_number"]))
-    return rows
-
-
-def get_opening_item_details(session: Session, oi_id: uuid.UUID) -> OpeningItemModel:
-    """
-    Single OpeningItem by id, eagerly load installed_hardware.
-    Raise NotFoundError if not found.
-    """
-    stmt = (
-        select(OpeningItemModel)
-        .options(selectinload(OpeningItemModel.installed_hardware))
-        .where(OpeningItemModel.id == oi_id)
-    )
-    oi = session.scalars(stmt).unique().first()
-    if oi is None:
-        raise NotFoundError(f"Opening item {oi_id} not found")
-    return oi
-
-
 def adjust_inventory_quantity(
-    session: Session, inv_id: uuid.UUID, adjustment: int, reason: str, *, performed_by: str
+    session: Session, inv_id: uuid.UUID, adjustment: int, reason: str, *, performed_by: str, spot_check: bool = False
 ) -> InventoryLocationModel:
     """Adjust the quantity of an InventoryLocation by a positive or negative amount.
 
@@ -393,7 +68,12 @@ def adjust_inventory_quantity(
     and hardcode "Admin/Manager" on its audit row, so every quantity adjustment in the system was
     filed under an admin no matter who made it - and, worse, the resolver had no way to pass the
     truth through even once somebody noticed. Requiring it means a new caller has to answer the
-    question rather than inherit a wrong answer."""
+    question rather than inherit a wrong answer.
+
+    `spot_check` marks a physical-count reconciliation: the audit row's action is SPOT_CHECK rather
+    than ADJUSTMENT and its detail carries systemQuantity/physicalQuantity, so the history render can
+    show what was counted against what the system held. The SPOT_CHECK enum value existed unused
+    until this - the spot-check UI wrote a plain ADJUSTMENT before."""
     il = session.get(InventoryLocationModel, inv_id)
     if il is None:
         raise NotFoundError(f"Inventory location {inv_id} not found")
@@ -404,23 +84,36 @@ def adjust_inventory_quantity(
     new_quantity = il.quantity + adjustment
     if new_quantity < 0:
         raise ValidationError("Adjustment would result in negative quantity", field="adjustment")
+    if new_quantity < il.deficient_quantity:
+        # The deficient claim stays on the row; dropping below it would trip the
+        # deficient<=quantity CHECK with a raw 500. override_inventory_quantity guards the same way.
+        raise ValidationError(
+            "Cannot set quantity below this row's deficient quantity",
+            field="adjustment",
+        )
 
     old_quantity = il.quantity
     il.quantity = new_quantity
+
+    detail = {
+        "oldQuantity": old_quantity,
+        "newQuantity": new_quantity,
+        "adjustment": adjustment,
+        "reason": reason,
+    }
+    if spot_check:
+        # The counted-vs-system pair the SPOT_CHECK history render reads.
+        detail["systemQuantity"] = old_quantity
+        detail["physicalQuantity"] = new_quantity
 
     _log_audit_event(
         session,
         project_id=il.project_id,
         entity_type=AuditEntityType.INVENTORY_LOCATION,
         entity_id=il.id,
-        action=AuditAction.ADJUSTMENT,
+        action=AuditAction.SPOT_CHECK if spot_check else AuditAction.ADJUSTMENT,
         performed_by=performed_by,
-        detail={
-            "oldQuantity": old_quantity,
-            "newQuantity": new_quantity,
-            "adjustment": adjustment,
-            "reason": reason,
-        },
+        detail=detail,
     )
 
     return il
@@ -495,9 +188,7 @@ def override_inventory_quantity(
             else:
                 new_il = InventoryLocationModel(
                     project_id=il.project_id,
-                    po_line_item_id=il.po_line_item_id,
-                    receive_line_item_id=il.receive_line_item_id,
-                    stock_item_id=il.stock_item_id,
+                    **clone_origin_fields(il),
                     warehouse_id=il.warehouse_id,
                     hardware_category=il.hardware_category,
                     product_code=il.product_code,
@@ -540,7 +231,7 @@ def override_inventory_quantity(
             detail={
                 "createdByOverrideOf": str(il.id),
                 "quantity": new_il.quantity,
-                "location": {"aisle": new_il.aisle, "row": new_il.row, "bay": new_il.bay},
+                "location": location_detail(new_il.aisle, new_il.row, new_il.bay, new_il.warehouse_id),
                 "reason": reason,
             },
         )
@@ -551,9 +242,9 @@ def override_inventory_quantity(
 def get_scheduled_pairs(session: Session, project_id: uuid.UUID) -> set[tuple[str, str]]:
     """Every (hardware_category, product_code) the project's imported schedule knows about.
 
-    One grouped query, no relationship walking - this is called once per hierarchy request and its
-    result is checked in Python against nodes already in memory, so it never becomes an N+1 (see the
-    GraphQL/SQLAlchemy performance rules in CLAUDE.md).
+    One grouped query, no relationship walking - this is called once per flat-inventory request and
+    its result is checked in Python against rows already in memory, so it never becomes an N+1 (see
+    the GraphQL/SQLAlchemy performance rules in CLAUDE.md).
     """
     rows = session.execute(
         select(HardwareItemModel.hardware_category, HardwareItemModel.product_code)
@@ -561,3 +252,67 @@ def get_scheduled_pairs(session: Session, project_id: uuid.UUID) -> set[tuple[st
         .distinct()
     ).all()
     return {(cat, code) for cat, code in rows}
+
+
+def get_inventory_rows(
+    session: Session, project_id: uuid.UUID | None = None, warehouse_id: uuid.UUID | None = None
+) -> list[dict]:
+    """Every stocked InventoryLocation as a flat row (#506).
+
+    The Hardware Items view was a category -> product -> location accordion, which answered
+    "what does this project hold" but not "what is on which shelf" without three clicks per line.
+    This is the same data one row per inventory line, so the warehouse can sort, filter and export
+    it like the spreadsheet it replaces; a product-level rollup is one sort away.
+
+    One query, no N+1: the vendor name and PO number come off the originating PO line by outer join,
+    and a stock-origin row (no po_line_item_id) simply carries nulls.
+    """
+    from app.models.warehouse import Warehouse as WarehouseModel
+
+    stmt = (
+        select(
+            InventoryLocationModel,
+            POLineItemModel.unit_cost,
+            POModel.po_number,
+            POModel.vendor_name_snapshot,
+            WarehouseModel.code,
+            WarehouseModel.name,
+            ProjectModel.project_id,
+            ProjectModel.description,
+        )
+        .outerjoin(POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id)
+        .outerjoin(POModel, POLineItemModel.po_id == POModel.id)
+        .join(WarehouseModel, InventoryLocationModel.warehouse_id == WarehouseModel.id)
+        .join(ProjectModel, InventoryLocationModel.project_id == ProjectModel.id)
+        # Rows emptied by destock or allocation are kept for FK integrity but hold nothing.
+        .where(InventoryLocationModel.quantity > 0)
+    )
+    if project_id is not None:
+        stmt = stmt.where(InventoryLocationModel.project_id == project_id)
+    if warehouse_id is not None:
+        stmt = stmt.where(InventoryLocationModel.warehouse_id == warehouse_id)
+    stmt = stmt.order_by(
+        InventoryLocationModel.hardware_category,
+        InventoryLocationModel.product_code,
+        InventoryLocationModel.aisle,
+        InventoryLocationModel.row,
+        InventoryLocationModel.bay,
+    )
+
+    rows = []
+    for il, unit_cost, po_number, vendor_name, wh_code, wh_name, proj_number, proj_desc in session.execute(stmt).all():
+        cost = float(unit_cost or 0)
+        rows.append(
+            {
+                "inventory_location": il,
+                "unit_cost": cost,
+                "line_value": cost * il.quantity,
+                "po_number": po_number,
+                "vendor_name": vendor_name,
+                "warehouse_code": wh_code,
+                "warehouse_name": wh_name,
+                "project_number": proj_number,
+                "project_name": proj_desc or proj_number,
+            }
+        )
+    return rows

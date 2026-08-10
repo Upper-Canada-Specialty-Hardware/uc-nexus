@@ -26,12 +26,10 @@ from app.models.enums import ReservationSource
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.inventory_reservation import InventoryReservation as InventoryReservationModel
 
-# The FK column each source discriminator writes to / filters on. A REPLACEMENT_PULL claim is held
-# by the PR-REPL pull itself, because a deficiency has no request behind it (#342 follow-up).
+# The FK column each source discriminator writes to / filters on.
 _SOURCE_COLUMN = {
     ReservationSource.SHOP_ASSEMBLY_REQUEST: InventoryReservationModel.shop_assembly_request_id,
     ReservationSource.SHIPPING_OUT_REQUEST: InventoryReservationModel.shipping_out_request_id,
-    ReservationSource.REPLACEMENT_PULL: InventoryReservationModel.pull_request_id,
 }
 
 
@@ -273,7 +271,6 @@ def _new_reservation(
         source=source,
         shop_assembly_request_id=(holder_id if source is ReservationSource.SHOP_ASSEMBLY_REQUEST else None),
         shipping_out_request_id=(holder_id if source is ReservationSource.SHIPPING_OUT_REQUEST else None),
-        pull_request_id=(holder_id if source is ReservationSource.REPLACEMENT_PULL else None),
     )
 
 
@@ -333,12 +330,11 @@ def consume_reservations(
     So this decrements per combo and deletes only rows that reach zero. Returns the total units
     actually taken off the book.
 
-    **Overshoot is ignored, not an error.** A claim can legitimately be smaller than the pick: a
-    replacement pull reserves `min(free stock, condemned)` at flag time, the #342 backfill left the
-    pre-existing in-flight population unreserved, and a cancel that could not re-reserve leaves a
-    live request holding nothing. In all of those the units are genuinely being taken and the claim
-    simply does not cover them; refusing the pick over a bookkeeping row the picker cannot see would
-    be the wrong end of the problem.
+    **Overshoot is ignored, not an error.** A claim can legitimately be smaller than the pick: the
+    #342 backfill left the pre-existing in-flight population unreserved, and a cancel that could not
+    re-reserve leaves a live request holding nothing. In both the units are genuinely being taken and
+    the claim simply does not cover them; refusing the pick over a bookkeeping row the picker cannot
+    see would be the wrong end of the problem.
     """
     wanted = {combo: qty for combo, qty in consumed.items() if qty and qty > 0}
     if not wanted:
@@ -373,138 +369,57 @@ def consume_reservations(
     return taken
 
 
-def reserve_for_replacement_pull(
+def release_partial_reservations(
     session: Session,
-    pull_request_id: uuid.UUID,
-    project_id: uuid.UUID,
-    hardware_category: str,
-    product_code: str,
-    wanted: int,
+    source: ReservationSource,
+    holder_id: uuid.UUID,
+    released: Mapping[tuple[str, str], int],
 ) -> int:
-    """Claim up to `wanted` more units of one combo for a PR-REPL pull. Returns what it claimed.
+    """Give part of a holder's claim back, un-spent (#495).
 
-    Called the moment a unit is flagged deficient at the bench. Before this existed, the replacement
-    pull was the only pull holding nothing: any request created *after* the defect was found could
-    take the very stock the replacement was waiting on, so the pull sat blocked while the hardware
-    walked. Reserving at the flag puts the replacement into the queue at the moment its demand
-    becomes real, which is the only defensible position for it.
+    `release_reservations` drops a claim whole, which fits every way a whole request can die.
+    Per-opening review needs less than that: rejecting or deferring ONE door leaf must free exactly
+    that leaf's units and leave the rest of the request's claim standing.
 
-    **Claiming less than was condemned is the normal case, not a failure.** The whole reason a
-    replacement is needed is often that there is no spare on the shelf; the pull holds whatever it
-    could get and `top_up_replacement_reservations` closes the gap as stock arrives or is repaired.
+    The decrement is identical to `consume_reservations` - same rows, same per-combo arithmetic,
+    same delete-at-zero. What differs is meaning, and that is why this is a separate function rather
+    than a call to that one: a consume pairs with a real inventory deduction, and the units are gone.
+    A release pairs with nothing; the units go back to being free for whoever asks next. Recording a
+    reject as a consume would make the reservation ledger say hardware left the building when it
+    never moved.
 
-    It only ever claims *free* stock - `get_available_quantities` is already net of everyone else's
-    claims - so a replacement can never take hardware another request has reserved. And because every
-    term in the chain is keyed by `project_id`, a claim on another project's stock is not expressible.
+    Overshoot is ignored for the same reason it is there: a claim can legitimately be smaller than
+    what the opening was allocated (the #342 backfill left in-flight work unreserved), and refusing
+    to release over a bookkeeping row nobody can see would strand the review.
     """
-    if wanted <= 0:
-        return 0
-    combo = (hardware_category, product_code)
-    available = get_available_quantities(session, project_id, [combo], lock=True).get(combo, 0)
-    claim = min(available, wanted)
-    if claim <= 0:
-        return 0
-
-    existing = session.scalars(
-        select(InventoryReservationModel).where(
-            InventoryReservationModel.source == ReservationSource.REPLACEMENT_PULL,
-            InventoryReservationModel.pull_request_id == pull_request_id,
-            InventoryReservationModel.hardware_category == hardware_category,
-            InventoryReservationModel.product_code == product_code,
-        )
-    ).first()
-    if existing is not None:
-        # One row per combo per holder, same as `create_reservations` - every availability sum is an
-        # aggregate, and a stack of one-unit rows would only make it add them back up.
-        existing.quantity += claim
-    else:
-        session.add(
-            _new_reservation(
-                project_id,
-                ReservationSource.REPLACEMENT_PULL,
-                pull_request_id,
-                hardware_category,
-                product_code,
-                claim,
-            )
-        )
-    session.flush()
-    return claim
-
-
-def top_up_replacement_reservations(
-    session: Session,
-    project_id: uuid.UUID,
-    combos: Iterable[tuple[str, str]],
-) -> dict[uuid.UUID, int]:
-    """Raise every PENDING replacement pull's claim towards what it actually needs, oldest first.
-
-    A replacement reserves what it can at flag time, which is often less than it was owed. This is
-    the other half: whenever availability *rises* - stock is received, a condemned unit is repaired
-    back into service - the replacements already waiting get first refusal on it, in the order the
-    defects were found. Without it a receive intended to unblock a replacement could be claimed by
-    a request created in between, and the replacement would go round the blocked/backfill loop again.
-
-    Oldest pull first is the queue the warehouse already works, and it is what makes the outcome
-    deterministic when two replacements want the same scarce combo.
-
-    **Fixed query count, whatever the fan-out.** This runs inside the PO receive transaction, which
-    already holds inventory row locks, so it must not turn one receive into a round trip per (pull,
-    combo) against Railway's managed Postgres (CLAUDE.md perf rules). Availability for every wanted
-    combo is read once under lock, every candidate pull's existing claims are read in one query, the
-    allocation is decided in memory oldest-first, and only the rows that actually change are written.
-
-    Returns {pull_request_id: units claimed}, for callers and tests to assert on.
-    """
-    from .pull_requests import outstanding_loose_needs
-    from .receiving import find_open_replacement_pulls
-
-    wanted = set(combos)
+    wanted = {combo: qty for combo, qty in released.items() if qty > 0}
     if not wanted:
-        return {}
+        return 0
 
-    pulls = sorted(find_open_replacement_pulls(session, project_id, wanted), key=lambda p: p.created_at)
-    if not pulls:
-        return {}
-
-    # One locked availability read for every combo in play, and one pass over the existing claims of
-    # every candidate pull.
-    pool = get_available_quantities(session, project_id, sorted(wanted), lock=True)
-    held_rows = session.scalars(
+    rows = session.scalars(
         select(InventoryReservationModel).where(
-            InventoryReservationModel.source == ReservationSource.REPLACEMENT_PULL,
-            InventoryReservationModel.pull_request_id.in_([p.id for p in pulls]),
+            InventoryReservationModel.source == source,
+            _SOURCE_COLUMN[source] == holder_id,
+            _combo_filter(
+                wanted.keys(),
+                InventoryReservationModel.hardware_category,
+                InventoryReservationModel.product_code,
+            ),
         )
     ).all()
-    held: dict[tuple[uuid.UUID, str, str], InventoryReservationModel] = {
-        (row.pull_request_id, row.hardware_category, row.product_code): row for row in held_rows
-    }
 
-    claimed: dict[uuid.UUID, int] = {}
-    for pr in pulls:
-        # What this pull still has to pick of the combos that just became available, net of what it
-        # already holds. Outstanding rather than originally-requested (#367): a short-picked pull has
-        # part of its hardware on a cart already, and topping its claim back up to the original
-        # number would re-claim units it is no longer waiting for.
-        needs = {combo: qty for combo, qty in outstanding_loose_needs(session, pr).items() if combo in wanted}
-
-        for combo, need in sorted(needs.items()):
-            existing = held.get((pr.id, *combo))
-            gap = need - (existing.quantity if existing is not None else 0)
-            take = min(gap, pool.get(combo, 0))
-            if take <= 0:
-                continue
-            pool[combo] -= take
-            if existing is not None:
-                # One row per combo per holder, same as `create_reservations` - every availability sum
-                # is an aggregate, and a stack of one-unit rows would only make it add them back up.
-                existing.quantity += take
-            else:
-                row = _new_reservation(project_id, ReservationSource.REPLACEMENT_PULL, pr.id, combo[0], combo[1], take)
-                session.add(row)
-                held[(pr.id, *combo)] = row
-            claimed[pr.id] = claimed.get(pr.id, 0) + take
-
-    if claimed:
+    freed = 0
+    for row in rows:
+        want = wanted.get((row.hardware_category, row.product_code), 0)
+        if want <= 0:
+            continue
+        give = min(row.quantity, want)
+        wanted[(row.hardware_category, row.product_code)] = want - give
+        freed += give
+        if give >= row.quantity:
+            session.delete(row)
+        else:
+            row.quantity -= give
+    if freed:
         session.flush()
-    return claimed
+    return freed

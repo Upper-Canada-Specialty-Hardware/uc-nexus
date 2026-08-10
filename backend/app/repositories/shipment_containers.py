@@ -20,9 +20,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import ConflictError, InvalidStateTransitionError, NotFoundError, ValidationError
-from app.models.enums import PullRequestItemType, ShipmentContainerType
+from app.models.enums import ShipmentContainerType
 from app.models.shipment_container import (
-    MAX_LEAVES_PER_SKID,
     ShipmentContainer,
     ShipmentContainerItem,
 )
@@ -129,48 +128,23 @@ def set_container_items(
     container = _open_container(session, container_id)
     staged_pool = build_staged_pool(session, container.project_id)
 
-    leaf_ids: set[uuid.UUID] = set()
-    loose_wanted: dict[tuple[str | None, str, str], int] = {}
+    wanted: dict[tuple[str | None, str, str], int] = {}
     for item in items:
-        item_type = PullRequestItemType(item["item_type"])
-        if item_type == PullRequestItemType.OPENING_ITEM:
-            oi_id = item.get("opening_item_id")
-            if not oi_id:
-                raise ValidationError(
-                    "An assembled-leaf placement must name its opening item.", field="opening_item_id"
-                )
-            oi_id = uuid.UUID(str(oi_id))
-            if oi_id in leaf_ids:
-                raise ValidationError("The same door leaf cannot be placed twice in one container.", field="items")
-            leaf_ids.add(oi_id)
-        else:
-            key = loose_key(item.get("opening_number"), item["hardware_category"], item["product_code"])
-            loose_wanted[key] = loose_wanted.get(key, 0) + int(item.get("quantity", 1))
+        key = loose_key(item.get("opening_number"), item["hardware_category"], item["product_code"])
+        wanted[key] = wanted.get(key, 0) + int(item.get("quantity", 1))
 
-    if container.container_type is ShipmentContainerType.SKID and len(leaf_ids) > MAX_LEAVES_PER_SKID:
-        raise ValidationError(
-            f"A skid holds at most {MAX_LEAVES_PER_SKID} door leaves; this one would carry {len(leaf_ids)}. "
-            "Start another skid.",
-            field="items",
-        )
-
-    _check_leaves_available(session, container, leaf_ids, staged_pool)
-    _check_loose_available(session, container, loose_wanted, staged_pool)
+    _check_available(session, container, wanted, staged_pool)
 
     for existing in list(container.items):
         session.delete(existing)
     session.flush()
 
     for index, item in enumerate(items):
-        item_type = PullRequestItemType(item["item_type"])
         session.add(
             ShipmentContainerItem(
                 id=uuid.uuid4(),
                 shipment_container_id=container.id,
-                item_type=item_type,
-                opening_item_id=(uuid.UUID(str(item["opening_item_id"])) if item.get("opening_item_id") else None),
                 opening_number=item.get("opening_number"),
-                leaf=item.get("leaf"),
                 hardware_category=item["hardware_category"],
                 product_code=item["product_code"],
                 quantity=int(item.get("quantity", 1)),
@@ -198,9 +172,9 @@ def confirm_shipment_from_containers(
     """Ship the named containers as one shipment (#451).
 
     Deliberately a thin wrapper over `confirm_shipment` rather than a second confirm path: that
-    function owns the quarantine gate, the slip-number uniqueness check, the SHIP_READY transition
-    and the loose-availability arithmetic, and a container flow that re-implemented any of them
-    would be a second set of rules to keep in step.
+    function owns the quarantine gate, the slip-number uniqueness check and the availability
+    arithmetic, and a container flow that re-implemented any of them would be a second set of rules
+    to keep in step.
 
     All this adds is where the items come from and, afterwards, stamping the slip onto the
     containers so they read as shipped instead of staying open and re-shippable.
@@ -225,8 +199,6 @@ def confirm_shipment_from_containers(
 
     items = [
         {
-            "item_type": item.item_type,
-            "opening_item_id": item.opening_item_id,
             "opening_number": item.opening_number,
             "product_code": item.product_code,
             "hardware_category": item.hardware_category,
@@ -259,8 +231,7 @@ def build_staged_pool(
 ) -> dict:
     """What this project has staged, and how much of it is already in an open container.
 
-    `{"leaves": {opening_item_id: placed_in_container_id | None},
-      "loose": {(opening, category, product): {"staged": n, "placed": n}}}`
+    `{(opening, category, product): {"staged": n, "placed": n}}`
 
     The staged side comes from `get_ship_ready_items`, which is the existing definition of what is
     out of inventory and not yet shipped; this only adds where it has been put since.
@@ -276,74 +247,41 @@ def build_staged_pool(
     if containers is None:
         containers = get_containers(session, project_id, open_only=True)
 
-    pool: dict = {"leaves": {oi.id: None for oi in ready["opening_items"]}, "loose": {}}
+    pool: dict = {}
     for li in ready["loose_items"]:
         # Summed, not assigned. Two openings staging the same product are two rows here, and the last
         # one winning would publish one opening's quantity as if it were the whole floor.
         key = loose_key(li["opening_number"], li["hardware_category"], li["product_code"])
-        bucket = pool["loose"].setdefault(key, {"staged": 0, "placed": 0})
+        bucket = pool.setdefault(key, {"staged": 0, "placed": 0})
         bucket["staged"] += li["available_quantity"]
 
     for container in containers:
         for item in container.items:
-            if item.item_type == PullRequestItemType.OPENING_ITEM and item.opening_item_id is not None:
-                # Only stamp a leaf the pool already knows about. A container can outlive its
-                # contents' staged state - the cart on the Ship tab can still ship a leaf out from
-                # under a skid while both paths exist - and inventing a key here would make that
-                # phantom look like a legitimately placed leaf and let it be placed again.
-                if item.opening_item_id in pool["leaves"]:
-                    pool["leaves"][item.opening_item_id] = container.id
-            elif item.item_type == PullRequestItemType.LOOSE:
-                key = loose_key(item.opening_number, item.hardware_category, item.product_code)
-                bucket = pool["loose"].setdefault(key, {"staged": 0, "placed": 0})
-                bucket["placed"] += item.quantity
+            key = loose_key(item.opening_number, item.hardware_category, item.product_code)
+            bucket = pool.setdefault(key, {"staged": 0, "placed": 0})
+            bucket["placed"] += item.quantity
     return pool
 
 
-def _check_leaves_available(
-    session: Session,
-    container: ShipmentContainer,
-    leaf_ids: set[uuid.UUID],
-    staged_pool: dict,
-) -> None:
-    """Every leaf named must be staged, and must not already sit in a different open container."""
-    leaves = staged_pool["leaves"]
-    for oi_id in sorted(leaf_ids, key=str):
-        if oi_id not in leaves:
-            raise ValidationError(
-                "That door leaf is not staged for shipping - only leaves whose pull has completed can be loaded.",
-                field="opening_item_id",
-            )
-        holder = leaves[oi_id]
-        if holder is not None and holder != container.id:
-            other = session.get(ShipmentContainer, holder)
-            raise ConflictError(
-                f"That door leaf is already in {other.name if other else 'another container'}. "
-                "Take it out of there first - there is only one of it.",
-                field="opening_item_id",
-            )
-
-
-def _check_loose_available(
+def _check_available(
     session: Session,
     container: ShipmentContainer,
     wanted: dict[tuple[str | None, str, str], int],
     staged_pool: dict,
 ) -> None:
-    """Loose placements cannot exceed what is staged, counting what OTHER open containers hold.
+    """Placements cannot exceed what is staged, counting what OTHER open containers hold.
 
     This container's own current contents are added back before comparing, so re-saving a container
     unchanged - or trimming it - is never refused for the units it is already holding.
     """
     held_here: dict[tuple[str | None, str, str], int] = {}
     for item in container.items:
-        if item.item_type == PullRequestItemType.LOOSE:
-            key = loose_key(item.opening_number, item.hardware_category, item.product_code)
-            held_here[key] = held_here.get(key, 0) + item.quantity
+        key = loose_key(item.opening_number, item.hardware_category, item.product_code)
+        held_here[key] = held_here.get(key, 0) + item.quantity
 
     for key, quantity in sorted(wanted.items(), key=lambda pair: tuple(str(part) for part in pair[0])):
         opening_number, category, product = key
-        bucket = staged_pool["loose"].get(key, {"staged": 0, "placed": 0})
+        bucket = staged_pool.get(key, {"staged": 0, "placed": 0})
         free = bucket["staged"] - bucket["placed"] + held_here.get(key, 0)
         if quantity > free:
             owed_to = f" for opening {opening_number}" if opening_number else ""

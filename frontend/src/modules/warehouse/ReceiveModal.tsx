@@ -18,16 +18,16 @@ import ConfirmDialog from '../../components/ConfirmDialog';
 import { useNavigate } from 'react-router-dom';
 import { GET_WAREHOUSES } from '../../graphql/shared';
 import { GET_PO_RECEIVING_DETAILS, CREATE_RECEIVE_DRAFT } from '../../graphql/warehouse';
+import { UPLOAD_PO_DOCUMENT } from '../../graphql/po';
 import { RECEIVE_DRAFT_REFETCH_QUERIES } from '../../graphql/refetch';
 import { GET_PROJECTS } from '../../graphql/shared';
 import GpSetupQuarantineBanner from '../../components/GpSetupQuarantineBanner';
 import { isGpSetupBroken, type Project } from '../../types/project';
 import ReceiveLinesEditor from './ReceiveLinesEditor';
+import PackingSlipPicker from './PackingSlipPicker';
 import {
   buildReceiveLineItemsInput,
   isPoGpRegistered,
-  validatePutAway,
-  type LocationDraft,
   type PODetailLineItem,
   type PODetails,
 } from './receiveLines';
@@ -61,6 +61,16 @@ interface WarehouseOption {
  * What did not change is the data entry, which is the same act it always was and now lives in
  * ReceiveLinesEditor, shared with the two screens that edit a draft afterwards.
  */
+/** The mutation takes the raw base64 payload, so strip the data: URL prefix the reader adds. */
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(',')[1] ?? '');
+    reader.onerror = () => reject(new Error(`Could not read ${file.name}`));
+    reader.readAsDataURL(file);
+  });
+}
+
 export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId }: ReceiveModalProps) {
   const { showToast } = useToast();
   const navigate = useNavigate();
@@ -80,10 +90,13 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
   const [poDetailsError, setPoDetailsError] = useState<string | null>(null);
   // Put-away is entered here rather than later: the GP receipt the approval posts needs a rack
   // location per line, and the person who unloaded the truck is the one who knows where it went.
-  const [lineLocations, setLineLocations] = useState<Record<string, LocationDraft[]>>({});
   const [submitting, setSubmitting] = useState(false);
+  // #504: one packing slip per PO, because one draft is created per PO. Held as the chosen File
+  // until submit - uploading on pick would leave orphan documents on every abandoned count.
+  const [packingSlips, setPackingSlips] = useState<Record<string, File>>({});
 
   const [createReceiveDraft] = useMutation<{ createReceiveDraft: { id: string } }>(CREATE_RECEIVE_DRAFT);
+  const [uploadPoDocument] = useMutation<{ uploadPoDocument: { id: string } }>(UPLOAD_PO_DOCUMENT);
 
   // One idempotency key per PO, reused across retries so a network failure that actually committed
   // cannot leave two counts of one delivery in the queue. Cleared per-PO on success.
@@ -149,7 +162,6 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
       setReceiveQuantities({});
       setMutationError(null);
       setSucceeded(false);
-      setLineLocations({});
       // Fresh open = fresh action set; drop any keys held from a prior batch.
       idempotencyKeysRef.current = {};
       fetchPODetails(poIds);
@@ -198,6 +210,16 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
     return false;
   }, [poDetailsList, receiveQuantities]);
 
+  // #504: a slip per PO being drafted. Only POs actually carrying a counted line need one - the
+  // submit loop skips the rest, so demanding a slip for them would block on paper nobody needs.
+  const allPackingSlipsAttached = useMemo(
+    () =>
+      poIds
+        .filter((poId) => lineItemsToReceive.some((li) => li.poId === poId))
+        .every((poId) => !!packingSlips[poId]),
+    [poIds, lineItemsToReceive, packingSlips],
+  );
+
   const hasAnyReceiveQuantity = useMemo(
     () => Object.values(receiveQuantities).some((v) => v > 0),
     [receiveQuantities],
@@ -235,10 +257,6 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
       .filter((x) => x.drafts.length > 0);
   }, [poDetailsList, pendingDraftsByPoId]);
 
-  const putAwayValid = useMemo(
-    () => validatePutAway(lineItemsToReceive, receiveQuantities, lineLocations),
-    [lineItemsToReceive, receiveQuantities, lineLocations],
-  );
 
   // ---- Handlers ----
 
@@ -270,11 +288,32 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
         // a second draft of the same delivery.
         const idempotencyKey = (idempotencyKeysRef.current[poId] ??= crypto.randomUUID());
 
+        // #504: upload the slip first, then pin it to the draft. If the draft create fails the
+        // document is left on the PO - an orphan is cheap, a count with no paper behind it is not.
+        let packingSlipDocumentId: string;
+        try {
+          const file = packingSlips[poId];
+          const uploaded = await uploadPoDocument({
+            variables: {
+              poId,
+              fileName: file.name,
+              contentType: file.type || 'application/octet-stream',
+              documentType: 'PACKING_SLIP',
+              fileDataBase64: await fileToBase64(file),
+            },
+          });
+          packingSlipDocumentId = uploaded.data!.uploadPoDocument.id;
+        } catch (err: unknown) {
+          failureMessage = `Uploading the packing slip for ${poLabel} failed: ${err instanceof Error ? err.message : 'An unknown error occurred'}`;
+          break;
+        }
+
         const input = {
           poId,
           warehouseId: warehouseId || null,
           idempotencyKey,
-          lineItems: buildReceiveLineItemsInput(poLineItems, receiveQuantities, lineLocations),
+          packingSlipDocumentId,
+          lineItems: buildReceiveLineItemsInput(poLineItems, receiveQuantities),
         };
 
         try {
@@ -322,9 +361,10 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
   }, [
     poIds,
     warehouseId,
+    packingSlips,
+    uploadPoDocument,
     lineItemsToReceive,
     receiveQuantities,
-    lineLocations,
     createReceiveDraft,
     client,
     showToast,
@@ -339,7 +379,7 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
     setMutationError(null);
     setSucceeded(false);
     setConfirmOpen(false);
-    setLineLocations({});
+    setPackingSlips({});
     onClose();
   }, [onClose]);
 
@@ -375,7 +415,7 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
         disabled={
           !hasAnyReceiveQuantity ||
           hasQuantityErrors ||
-          !putAwayValid ||
+          !allPackingSlipsAttached ||
           blockedPos.length > 0 ||
           submitting
         }
@@ -388,7 +428,7 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
 
   // Escape is a dismissal, not a discard: once counts or rack rows have been typed in, the key is
   // swallowed and the user has to use Cancel. Nothing here is recoverable once handleClose resets it.
-  const hasUnsavedEntry = !succeeded && (hasAnyReceiveQuantity || Object.keys(lineLocations).length > 0);
+  const hasUnsavedEntry = !succeeded && (hasAnyReceiveQuantity || false);
   const showForm = !poDetailsLoading && !poDetailsError && !succeeded;
 
   return (
@@ -472,13 +512,18 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
           </FormControl>
         )}
         {showForm && (
+          <PackingSlipPicker
+            poDetailsList={poDetailsList}
+            files={packingSlips}
+            onChange={setPackingSlips}
+            showPoHeaders={poIds.length > 1}
+          />
+        )}
+        {showForm && (
           <ReceiveLinesEditor
             poDetailsList={poDetailsList}
             receiveQuantities={receiveQuantities}
             onQuantityChange={handleQuantityChange}
-            lineLocations={lineLocations}
-            onLineLocationsChange={setLineLocations}
-            lineItemsToReceive={lineItemsToReceive}
             showPoHeaders={poIds.length > 1}
           />
         )}

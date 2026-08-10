@@ -15,9 +15,10 @@ import Modal from '../../components/Modal';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import { useToast } from '../../components/Toast';
 import { FONT_MONO, microLabelSx, monoSx, tabularSx } from '../../theme';
-import { OVERRIDE_INVENTORY_QUANTITY, ASSIGN_OPENING_ITEM_LOCATION } from '../../graphql/admin';
-import { MOVE_INVENTORY_LOCATION, MARK_INVENTORY_UNLOCATED, ASSIGN_INVENTORY_LOCATION, MOVE_OPENING_ITEM_LOCATION, MARK_OPENING_ITEM_UNLOCATED } from '../../graphql/shared';
+import { OVERRIDE_INVENTORY_QUANTITY } from '../../graphql/admin';
+import { MOVE_INVENTORY_LOCATION, MARK_INVENTORY_UNLOCATED, ASSIGN_INVENTORY_LOCATION } from '../../graphql/shared';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
+import { ReservationNotice, useComboReservation } from '../warehouse/reservationNotice';
 
 // --- Item types ---
 
@@ -40,33 +41,6 @@ interface InventoryItem {
   updatedAt: string;
 }
 
-interface InstalledHardware {
-  id: string;
-  openingItemId: string;
-  productCode: string;
-  hardwareCategory: string;
-  quantity: number;
-}
-
-interface OpeningItem {
-  id: string;
-  projectId: string;
-  openingId: string;
-  openingNumber: string;
-  building: string | null;
-  floor: string | null;
-  location: string | null;
-  quantity: number;
-  assemblyCompletedAt: string | null;
-  state: string;
-  aisle: string | null;
-  row: string | null;
-  bay: string | null;
-  createdAt: string;
-  updatedAt: string;
-  installedHardware: InstalledHardware[];
-}
-
 type CorrectionType = 'overrideQuantity' | 'moveLocation' | 'markUnlocated' | 'assignLocation';
 
 // A destination row for the units ADDED by a quantity increase. Strings bind to text inputs.
@@ -80,12 +54,11 @@ interface DestinationDraft {
 interface InventoryCorrectionModalProps {
   open: boolean;
   onClose: () => void;
-  itemType: 'inventory' | 'opening';
-  item: InventoryItem | OpeningItem;
+  item: InventoryItem;
   onSuccess: () => void;
 }
 
-function hasLocation(item: InventoryItem | OpeningItem): boolean {
+function hasLocation(item: InventoryItem): boolean {
   return !!(item.aisle && item.row && item.bay);
 }
 
@@ -130,7 +103,6 @@ function DetailField({ label, value, mono }: { label: string; value: string; mon
 export default function InventoryCorrectionModal({
   open,
   onClose,
-  itemType,
   item,
   onSuccess,
 }: InventoryCorrectionModalProps) {
@@ -153,17 +125,12 @@ export default function InventoryCorrectionModal({
   const [row, setRow] = useState(item.row ?? '');
   const [bay, setBay] = useState(item.bay ?? '');
 
-  // Available correction types for this item type
-  const correctionOptions = useMemo(() => {
-    const options: { key: CorrectionType; label: string }[] = [];
-    if (itemType === 'inventory') {
-      options.push({ key: 'overrideQuantity', label: 'Override Quantity' });
-    }
-    options.push({ key: 'moveLocation', label: 'Move Location' });
-    options.push({ key: 'markUnlocated', label: 'Mark Unlocated' });
-    options.push({ key: 'assignLocation', label: 'Assign Location' });
-    return options;
-  }, [itemType]);
+  const correctionOptions: { key: CorrectionType; label: string }[] = [
+    { key: 'overrideQuantity', label: 'Override Quantity' },
+    { key: 'moveLocation', label: 'Move Location' },
+    { key: 'markUnlocated', label: 'Mark Unlocated' },
+    { key: 'assignLocation', label: 'Assign Location' },
+  ];
 
   // Reset fields when correction type changes
   const handleCorrectionTypeChange = (type: CorrectionType) => {
@@ -186,7 +153,18 @@ export default function InventoryCorrectionModal({
 
   const newQtyNum = parseInt(newQty, 10);
   const delta = Number.isNaN(newQtyNum) ? 0 : newQtyNum - item.quantity;
-  const itemDeficient = (item as InventoryItem).deficientQuantity ?? 0;
+  const itemDeficient = item.deficientQuantity ?? 0;
+
+  // An override that lowers this row shrinks the combo's sound on-hand; surface what active requests
+  // have reserved and warn when the new quantity would leave fewer than that. Scoped to the quantity
+  // override - relocations do not change how much is on hand.
+  const reservation = useComboReservation({
+    projectId: item.projectId,
+    hardwareCategory: item.hardwareCategory,
+    productCode: item.productCode,
+    skip: correctionType !== 'overrideQuantity',
+  });
+  const resultingSound = reservation == null ? null : reservation.soundOnHand + delta;
 
   // Destination rows for the added units, defaulting to one location = this row's current location with
   // the whole delta. The default tracks delta until the user edits, then their edits stick.
@@ -322,169 +300,72 @@ export default function InventoryCorrectionModal({
     },
   });
 
-  const [moveOpeningItemLocation, { loading: moveOpenLoading }] = useMutation(MOVE_OPENING_ITEM_LOCATION, {
-    refetchQueries: WAREHOUSE_REFETCH_QUERIES,
-    awaitRefetchQueries: true,
-    onCompleted: () => {
-      showToast('Correction applied successfully', 'success');
-      onSuccess();
-      onClose();
-    },
-    onError: (error) => {
-      showToast(error.message, 'error');
-    },
-  });
-
-  const [markOpeningItemUnlocated, { loading: unlocateOpenLoading }] = useMutation(MARK_OPENING_ITEM_UNLOCATED, {
-    refetchQueries: WAREHOUSE_REFETCH_QUERIES,
-    awaitRefetchQueries: true,
-    onCompleted: () => {
-      showToast('Correction applied successfully', 'success');
-      onSuccess();
-      onClose();
-    },
-    onError: (error) => {
-      showToast(error.message, 'error');
-    },
-  });
-
-  const [assignOpeningItemLocation, { loading: assignOpenLoading }] = useMutation(ASSIGN_OPENING_ITEM_LOCATION, {
-    refetchQueries: WAREHOUSE_REFETCH_QUERIES,
-    awaitRefetchQueries: true,
-    onCompleted: () => {
-      showToast('Correction applied successfully', 'success');
-      onSuccess();
-      onClose();
-    },
-    onError: (error) => {
-      showToast(error.message, 'error');
-    },
-  });
-
-  const mutationLoading =
-    overrideLoading ||
-    moveInvLoading ||
-    unlocateInvLoading ||
-    assignInvLoading ||
-    moveOpenLoading ||
-    unlocateOpenLoading ||
-    assignOpenLoading;
+  const mutationLoading = overrideLoading || moveInvLoading || unlocateInvLoading || assignInvLoading;
 
   // --- Execute correction ---
 
   const handleConfirm = () => {
     setConfirmOpen(false);
 
-    if (itemType === 'inventory') {
-      switch (correctionType) {
-        case 'overrideQuantity':
-          overrideInventoryQuantity({
-            variables: {
-              input: {
-                inventoryLocationId: item.id,
-                newQuantity: newQtyNum,
-                reasonText: reason.trim(),
-                destinations:
-                  delta > 0
-                    ? destRows.map((d) => ({
-                        aisle: d.aisle.trim(),
-                        row: d.row.trim(),
-                        bay: d.bay.trim(),
-                        quantity: Number(d.quantity),
-                      }))
-                    : [],
-              },
-            },
-          });
-          break;
-        case 'moveLocation':
-          moveInventoryLocation({
-            variables: {
+    switch (correctionType) {
+      case 'overrideQuantity':
+        overrideInventoryQuantity({
+          variables: {
+            input: {
               inventoryLocationId: item.id,
-              newAisle: aisle.trim(),
-              newRow: row.trim(),
-              newBay: bay.trim(),
+              newQuantity: newQtyNum,
+              reasonText: reason.trim(),
+              destinations:
+                delta > 0
+                  ? destRows.map((d) => ({
+                      aisle: d.aisle.trim(),
+                      row: d.row.trim(),
+                      bay: d.bay.trim(),
+                      quantity: Number(d.quantity),
+                    }))
+                  : [],
             },
-          });
-          break;
-        case 'markUnlocated':
-          markInventoryUnlocated({
-            variables: { inventoryLocationId: item.id },
-          });
-          break;
-        case 'assignLocation':
-          assignInventoryLocation({
-            variables: {
-              inventoryLocationId: item.id,
-              aisle: aisle.trim(),
-              row: row.trim(),
-              bay: bay.trim(),
-            },
-          });
-          break;
-      }
-    } else {
-      switch (correctionType) {
-        case 'moveLocation':
-          moveOpeningItemLocation({
-            variables: {
-              openingItemId: item.id,
-              aisle: aisle.trim(),
-              row: row.trim(),
-              bay: bay.trim(),
-            },
-          });
-          break;
-        case 'markUnlocated':
-          markOpeningItemUnlocated({
-            variables: { openingItemId: item.id },
-          });
-          break;
-        case 'assignLocation':
-          assignOpeningItemLocation({
-            variables: {
-              openingItemId: item.id,
-              aisle: aisle.trim(),
-              row: row.trim(),
-              bay: bay.trim(),
-            },
-          });
-          break;
-      }
+          },
+        });
+        break;
+      case 'moveLocation':
+        moveInventoryLocation({
+          variables: {
+            inventoryLocationId: item.id,
+            newAisle: aisle.trim(),
+            newRow: row.trim(),
+            newBay: bay.trim(),
+          },
+        });
+        break;
+      case 'markUnlocated':
+        markInventoryUnlocated({
+          variables: { inventoryLocationId: item.id },
+        });
+        break;
+      case 'assignLocation':
+        assignInventoryLocation({
+          variables: {
+            inventoryLocationId: item.id,
+            aisle: aisle.trim(),
+            row: row.trim(),
+            bay: bay.trim(),
+          },
+        });
+        break;
     }
   };
 
   // --- Render item details ---
 
-  const renderItemDetails = () => {
-    if (itemType === 'inventory') {
-      const inv = item as InventoryItem;
-      return (
-        <Box sx={DETAIL_SLAB_SX}>
-          <DetailField label="Product Code" value={inv.productCode} mono />
-          <DetailField label="Hardware Category" value={inv.hardwareCategory} />
-          <DetailField label="Quantity" value={String(inv.quantity)} mono />
-          <DetailField label="Location" value={formatLocation(inv.aisle, inv.row, inv.bay)} mono />
-        </Box>
-      );
-    } else {
-      const op = item as OpeningItem;
-      return (
-        <Box sx={DETAIL_SLAB_SX}>
-          <DetailField label="Opening Number" value={op.openingNumber} mono />
-          <DetailField label="State" value={op.state} />
-          <DetailField label="Building" value={op.building ?? '--'} />
-          <DetailField label="Floor" value={op.floor ?? '--'} />
-          <DetailField label="Location" value={op.location ?? '--'} />
-          <DetailField
-            label="Warehouse Location"
-            value={formatLocation(op.aisle, op.row, op.bay)}
-            mono
-          />
-        </Box>
-      );
-    }
-  };
+  const renderItemDetails = () => (
+    <Box sx={DETAIL_SLAB_SX}>
+      <DetailField label="Product Code" value={item.productCode} mono />
+      <DetailField label="Hardware Category" value={item.hardwareCategory} />
+      <DetailField label="Quantity" value={String(item.quantity)} mono />
+      <DetailField label="Location" value={formatLocation(item.aisle, item.row, item.bay)} mono />
+    </Box>
+  );
 
   // --- Render form for selected correction type ---
 
@@ -594,6 +475,9 @@ export default function InventoryCorrectionModal({
                   </Button>
                 </Stack>
               </Box>
+            )}
+            {reservation != null && resultingSound != null && (
+              <ReservationNotice reserved={reservation.reserved} resulting={resultingSound} />
             )}
           </Stack>
         );

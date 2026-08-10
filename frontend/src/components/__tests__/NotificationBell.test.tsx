@@ -108,12 +108,12 @@ describe('NotificationBell', () => {
     // screen a click should take them to.
     const seen: string[] = [];
     renderBell(
-      [notification({ id: 'n-3', type: 'PULL_UNBLOCKED', message: 'Pull PR-9 can be picked.' })],
+      [notification({ id: 'n-3', type: 'PULL_REQUEST_COMPLETED', message: 'Pull Request PR-9 has been fulfilled.' })],
       seen,
     );
 
     fireEvent.click(screen.getByRole('button', { name: /Notifications/ }));
-    fireEvent.click(await screen.findByText('Pull PR-9 can be picked.', undefined, SLOW));
+    fireEvent.click(await screen.findByText('Pull Request PR-9 has been fulfilled.', undefined, SLOW));
 
     await vi.waitFor(() => expect(seen).toEqual(['n-3']), SLOW);
     expect(screen.getByTestId('location')).toHaveTextContent('/app');

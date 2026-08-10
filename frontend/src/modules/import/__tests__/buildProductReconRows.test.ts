@@ -2,8 +2,9 @@ import { buildProductReconRows } from '../reconciliation';
 import type { ReconciliationRow } from '../types';
 import type { ParsedHardwareItem } from '../../../types/hardwareSchedule';
 
-// #483: over-commit used to be measured against the demand of the SELECTED openings, and it only
-// advised. It is measured against the project total now, and a selection that pushes past it blocks.
+// #483: over-commit used to be measured against the demand of the SELECTED openings. It is measured
+// against the project total now. #567: a selection that pushes past it flags `overOrdersProject`,
+// which the wizard surfaces as a confirm at Next rather than a hard block.
 
 function hi(overrides: Partial<ParsedHardwareItem> & { opening_number: string; item_quantity: number }) {
   return {
@@ -71,10 +72,10 @@ it('measures over-commit against the project total, not the selection', () => {
   expect(row.existingCommitted).toBe(20);
   expect(row.selectedNewPOQty).toBe(20);
   expect(row.overCommitAmount).toBe(0);
-  expect(row.blocksProceed).toBe(false);
+  expect(row.overOrdersProject).toBe(false);
 });
 
-it('blocks a selection that pushes the product past the project total', () => {
+it('flags a selection that pushes the product past the project total', () => {
   // The project needs 40 and all 40 are already ordered. Selecting anything more over-orders.
   const all = [hi({ opening_number: '101', item_quantity: 40 })];
   const selected = [hi({ opening_number: '101', item_quantity: 10 })];
@@ -87,10 +88,10 @@ it('blocks a selection that pushes the product past the project total', () => {
   });
 
   expect(row.overCommitAmount).toBe(10);
-  expect(row.blocksProceed).toBe(true);
+  expect(row.overOrdersProject).toBe(true);
 });
 
-it('does not block when nothing is selected, however over-committed history is', () => {
+it('does not flag when nothing is selected, however over-committed history is', () => {
   // A re-uploaded schedule with reduced scope: 60 ordered against a project that now needs 40.
   // Nothing on the reconciliation screen fixes that, so it is flagged but must not strand the user.
   const all = [hi({ opening_number: '101', item_quantity: 40 })];
@@ -103,19 +104,19 @@ it('does not block when nothing is selected, however over-committed history is',
   });
 
   expect(row.overCommitAmount).toBe(20);
-  expect(row.blocksProceed).toBe(false);
+  expect(row.overOrdersProject).toBe(false);
 });
 
-it('clears the block when the product is deselected', () => {
+it('clears the flag when the product is deselected', () => {
   const all = [hi({ opening_number: '101', item_quantity: 40 })];
   const selected = [hi({ opening_number: '101', item_quantity: 10 })];
   const rows = [recon('101', 'ORDERED', 40)];
 
   const blocked = build({ all, selected, rows, selectedKeys: [openingKey('101')] });
-  expect(blocked[0].blocksProceed).toBe(true);
+  expect(blocked[0].overOrdersProject).toBe(true);
 
   const cleared = build({ all, selected, rows, selectedKeys: [] });
-  expect(cleared[0].blocksProceed).toBe(false);
+  expect(cleared[0].overOrdersProject).toBe(false);
 });
 
 // The two project-total columns (#483). Ordered counts everything placed on a GP PO; received

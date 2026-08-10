@@ -12,8 +12,7 @@ import {
   type PickEntries,
   type PickSheetSection,
 } from '../pick';
-import { pullPhase } from '../pullStaging';
-import { leafIdentity } from '../../../utils/leaf';
+import { pullPhase } from '../pullPhase';
 
 /**
  * The pick sheet's entry arithmetic and the section that renders it (#367).
@@ -34,9 +33,9 @@ function section(overrides: Partial<PickSheetSection> = {}): PickSheetSection {
     // claimable and the contention warning stays out of the way.
     claimableQuantity: 7,
     claimableShortfall: 0,
-    leaves: [
-      { openingNumber: '101A', leaf: 1, quantity: 2 },
-      { openingNumber: '101A', leaf: 2, quantity: 2 },
+    openings: [
+      { openingNumber: '101A', quantity: 2 },
+      { openingNumber: '102A', quantity: 2 },
     ],
     locations: [
       {
@@ -142,15 +141,15 @@ function Harness({ initial = {} as PickEntries, s = section() }: { initial?: Pic
   );
 }
 
-it('lists every leaf in full and never truncates', () => {
+it('lists every opening in full and never truncates', () => {
   const s = section({
-    leaves: Array.from({ length: 8 }, (_, i) => ({ openingNumber: `10${i}A`, leaf: 1, quantity: 1 })),
+    openings: Array.from({ length: 8 }, (_, i) => ({ openingNumber: `10${i}A`, quantity: 1 })),
   });
   render(<Harness s={s} />);
 
-  expect(screen.getByText(/Owed to 8 leaves/)).toBeInTheDocument();
+  expect(screen.getByText(/Owed to 8 openings/)).toBeInTheDocument();
   for (let i = 0; i < 8; i++) {
-    expect(screen.getByText(new RegExp(`10${i}A . L1`))).toBeInTheDocument();
+    expect(screen.getByText(new RegExp(`10${i}A`))).toBeInTheDocument();
   }
   expect(screen.queryByText(/more/)).not.toBeInTheDocument();
 });
@@ -226,24 +225,14 @@ it('stays quiet when nothing else has claimed the product', () => {
 
 // --- identity + phase --------------------------------------------------------------------------
 
-it('renders leaf-of-opening identity compactly', () => {
-  expect(leafIdentity('101A', 1)).toBe('101A · L1');
-  expect(leafIdentity('101A', null)).toBe('101A');
-});
-
 it('separates the three things In Progress can mean', () => {
   const base = { status: 'IN_PROGRESS' };
   expect(pullPhase({ ...base, pickedAt: null, partiallyPicked: false }).label).toBe('Picking');
   expect(pullPhase({ ...base, pickedAt: null, partiallyPicked: true }).label).toBe('Short');
-  expect(
-    pullPhase({
-      ...base,
-      pickedAt: '2026-07-28T00:00:00Z',
-      stagingStatus: 'PARTIAL',
-      stagedOpeningCount: 1,
-      totalOpeningCount: 3,
-    }),
-  ).toMatchObject({ label: 'Staging', detail: '1 of 3 staged' });
+  expect(pullPhase({ ...base, pickedAt: '2026-07-28T00:00:00Z' })).toMatchObject({
+    label: 'Picked',
+    detail: 'Ready to hand over',
+  });
   expect(pullPhase({ status: 'PENDING' }).label).toBe('Pending');
   expect(pullPhase({ status: 'COMPLETED' }).label).toBe('Completed');
   expect(pullPhase({ status: 'CANCELLED' }).label).toBe('Cancelled');
