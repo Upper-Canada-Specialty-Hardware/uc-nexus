@@ -330,12 +330,11 @@ def consume_reservations(
     So this decrements per combo and deletes only rows that reach zero. Returns the total units
     actually taken off the book.
 
-    **Overshoot is ignored, not an error.** A claim can legitimately be smaller than the pick: a
-    replacement pull reserves `min(free stock, condemned)` at flag time, the #342 backfill left the
-    pre-existing in-flight population unreserved, and a cancel that could not re-reserve leaves a
-    live request holding nothing. In all of those the units are genuinely being taken and the claim
-    simply does not cover them; refusing the pick over a bookkeeping row the picker cannot see would
-    be the wrong end of the problem.
+    **Overshoot is ignored, not an error.** A claim can legitimately be smaller than the pick: the
+    #342 backfill left the pre-existing in-flight population unreserved, and a cancel that could not
+    re-reserve leaves a live request holding nothing. In both the units are genuinely being taken and
+    the claim simply does not cover them; refusing the pick over a bookkeeping row the picker cannot
+    see would be the wrong end of the problem.
     """
     wanted = {combo: qty for combo, qty in consumed.items() if qty and qty > 0}
     if not wanted:
