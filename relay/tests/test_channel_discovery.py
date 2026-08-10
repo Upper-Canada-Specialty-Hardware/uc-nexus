@@ -18,6 +18,7 @@ matter here are the ones that keep that answer from meaning too much:
 
 import asyncio
 import json
+import urllib.error
 
 import pytest
 
@@ -107,6 +108,34 @@ def test_only_the_preview_hostname_shape_is_accepted(monkeypatch, hostile):
         _canned_response({"urls": [hostile, PR_URL]}),
     )
     assert channel._fetch_discovered_urls(PRODUCTION_BACKEND_URL, "secret") == [PR_URL]
+
+
+def test_a_rejected_secret_is_a_warning_naming_the_likely_cause(monkeypatch, caplog):
+    # This is the one failure that looks like something else. A WebSocket authenticates once and then
+    # holds, so the channel can read as connected long after the config it was opened from stopped
+    # matching; this call re-authenticates every minute and notices first. Logged quietly it reads as
+    # "discovery is broken" and sends you to the backend, which is the wrong side entirely.
+    def _unauthorized(request, timeout=None):
+        raise urllib.error.HTTPError(request.full_url, 401, "Unauthorized", {}, None)
+
+    monkeypatch.setattr(channel.urllib.request, "urlopen", _unauthorized)
+    with caplog.at_level("WARNING"):
+        assert channel._fetch_discovered_urls(PRODUCTION_BACKEND_URL, "stale-secret") is None
+    rendered = " ".join(r.getMessage() for r in caplog.records)
+    assert "rejected this relay's secret" in rendered
+    assert "second relay process" in rendered
+
+
+def test_other_http_failures_stay_quiet(monkeypatch, caplog):
+    # A 503 mid-deploy is ordinary and self-healing; warning on it would train people to ignore the
+    # line that matters.
+    def _unavailable(request, timeout=None):
+        raise urllib.error.HTTPError(request.full_url, 503, "Service Unavailable", {}, None)
+
+    monkeypatch.setattr(channel.urllib.request, "urlopen", _unavailable)
+    with caplog.at_level("WARNING"):
+        assert channel._fetch_discovered_urls(PRODUCTION_BACKEND_URL, "secret") is None
+    assert caplog.records == []
 
 
 def test_a_malformed_body_discovers_nothing_rather_than_raising(monkeypatch):
