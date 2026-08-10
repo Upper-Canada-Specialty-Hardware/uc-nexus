@@ -167,6 +167,27 @@ def test_an_unreachable_api_names_the_reason_too(monkeypatch, configured, caplog
     assert "getaddrinfo failed" in caplog.records[-1].getMessage()
 
 
+def test_a_failing_api_is_not_called_on_every_relay_tick(monkeypatch, configured):
+    # Only a SUCCESS refreshes the cache, so without a separate floor on attempts the relay's ten
+    # second reconcile turns into a Railway call every ten seconds. Watched a relay with a stale
+    # secret produce 42 rejected calls in minutes; the rate limit is hourly and shared.
+    calls: list[str] = []
+
+    def _fail(url, **kwargs):
+        calls.append(url)
+        raise RuntimeError("connection reset")
+
+    monkeypatch.setattr(relay_channels.httpx, "post", _fail)
+    for _ in range(6):
+        assert relay_channels.discover_preview_channels() == []
+    assert len(calls) == 1
+
+
+def test_the_floor_does_not_outlast_a_recovery(monkeypatch, configured):
+    # It has to be well under the success cache life, or a recovered API stays unnoticed for a minute.
+    assert relay_channels._FAILURE_RETRY_SECONDS < relay_channels._CACHE_SECONDS
+
+
 def test_the_answer_is_cached_between_relay_ticks(monkeypatch, configured):
     calls: list[str] = []
     _serve(monkeypatch, _envs("uc-nexus-pr-554"), calls=calls)
