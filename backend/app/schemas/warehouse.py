@@ -58,7 +58,6 @@ from .types import (
     CancelPullRequestResult,
     ConfirmPickResult,
     InventoryAvailability,
-    InventoryHierarchyNode,
     InventoryItemDetail,
     InventoryLocation,
     InventoryRow,
@@ -70,7 +69,6 @@ from .types import (
     LocationUtilizationEntry,
     LocationVariant,
     PickSheet,
-    ProductCodeNode,
     ProjectProgressByProduct,
     PullRequest,
     PurchaseOrder,
@@ -81,7 +79,6 @@ from .types import (
     ReceivingHistoryPO,
     RecentReceiveRecord,
     RestockedLine,
-    VendorInventoryNode,
     Warehouse,
     WarehouseDashboard,
 )
@@ -447,39 +444,6 @@ class WarehouseQueries:
             ]
 
     @strawberry.field
-    def inventory_hierarchy(
-        self,
-        info: strawberry.Info,
-        project_id: strawberry.ID | None = None,
-        warehouse_id: strawberry.ID | None = None,
-    ) -> list[InventoryHierarchyNode]:
-        with SessionLocal() as session:
-            hierarchy = warehouse_repository.get_inventory_hierarchy(
-                session,
-                uuid.UUID(str(project_id)) if project_id else None,
-                uuid.UUID(str(warehouse_id)) if warehouse_id else None,
-            )
-            return [
-                InventoryHierarchyNode(
-                    hardware_category=cat_node["hardware_category"],
-                    product_codes=[
-                        ProductCodeNode(
-                            product_code=pc_node["product_code"],
-                            items=[inventory_location_to_type(il) for il in pc_node["items"]],
-                            total_quantity=pc_node["total_quantity"],
-                            total_available_quantity=pc_node["total_available_quantity"],
-                            total_value=pc_node["total_value"],
-                        )
-                        for pc_node in cat_node["product_codes"]
-                    ],
-                    total_quantity=cat_node["total_quantity"],
-                    total_available_quantity=cat_node["total_available_quantity"],
-                    total_value=cat_node["total_value"],
-                )
-                for cat_node in hierarchy
-            ]
-
-    @strawberry.field
     def receives(
         self,
         info: strawberry.Info,
@@ -551,34 +515,17 @@ class WarehouseQueries:
             ]
 
     @strawberry.field
-    def inventory_items(
+    def unlocated_inventory(
         self,
         info: strawberry.Info,
         project_id: strawberry.ID | None = None,
-        category: str = "",
-        product_code: str = "",
-    ) -> list[InventoryItemDetail]:
-        with SessionLocal() as session:
-            items = warehouse_repository.get_inventory_items(
-                session, uuid.UUID(str(project_id)) if project_id else None, category, product_code
-            )
-            return [
-                InventoryItemDetail(
-                    inventory_location=inventory_location_to_type(item["inventory_location"]),
-                    po_number=item["po_number"],
-                    classification=item["classification"],
-                    unit_cost=item["unit_cost"],
-                )
-                for item in items
-            ]
-
-    @strawberry.field
-    def unlocated_inventory(
-        self, info: strawberry.Info, project_id: strawberry.ID | None = None
+        warehouse_id: strawberry.ID | None = None,
     ) -> list[InventoryItemDetail]:
         with SessionLocal() as session:
             items = warehouse_repository.get_unlocated_inventory(
-                session, uuid.UUID(str(project_id)) if project_id else None
+                session,
+                uuid.UUID(str(project_id)) if project_id else None,
+                uuid.UUID(str(warehouse_id)) if warehouse_id else None,
             )
             return [
                 InventoryItemDetail(
@@ -721,6 +668,8 @@ class WarehouseQueries:
                 total_item_count=d["total_item_count"],
                 total_value=d["total_value"],
                 unlocated_count=d["unlocated_count"],
+                stock_item_count=d["stock_item_count"],
+                stock_unlocated_count=d["stock_unlocated_count"],
                 pending_pull_shop=d["pending_pull_shop"],
                 pending_pull_shipping=d["pending_pull_shipping"],
                 received_last_7_days=d["received_last_7_days"],
@@ -747,32 +696,6 @@ class WarehouseQueries:
                     shipped_out=row["shipped_out"],
                 )
                 for row in rows
-            ]
-
-    @strawberry.field
-    def inventory_by_vendor(
-        self, info: strawberry.Info, project_id: strawberry.ID | None = None
-    ) -> list[VendorInventoryNode]:
-        with SessionLocal() as session:
-            nodes = warehouse_repository.get_inventory_by_vendor(
-                session, uuid.UUID(str(project_id)) if project_id else None
-            )
-            return [
-                VendorInventoryNode(
-                    vendor_name=node["vendor_name"],
-                    product_codes=[
-                        ProductCodeNode(
-                            product_code=pc["product_code"],
-                            items=[inventory_location_to_type(il) for il in pc["items"]],
-                            total_quantity=pc["total_quantity"],
-                            total_value=pc["total_value"],
-                        )
-                        for pc in node["product_codes"]
-                    ],
-                    total_quantity=node["total_quantity"],
-                    total_value=node["total_value"],
-                )
-                for node in nodes
             ]
 
     @strawberry.field
@@ -809,9 +732,17 @@ class WarehouseQueries:
         row: str | None = None,
         bay: str | None = None,
         limit: int = 10,
+        warehouse_id: strawberry.ID | None = None,
     ) -> list[AuditLogEntry]:
         with SessionLocal() as session:
-            entries = warehouse_repository.get_location_audit_history(session, aisle, row, bay, limit=limit)
+            entries = warehouse_repository.get_location_audit_history(
+                session,
+                aisle,
+                row,
+                bay,
+                limit=limit,
+                warehouse_id=uuid.UUID(str(warehouse_id)) if warehouse_id else None,
+            )
             return [
                 AuditLogEntry(
                     id=strawberry.ID(str(e.id)),
@@ -844,6 +775,8 @@ class WarehouseQueries:
             groups = warehouse_repository.get_location_duplicates(session)
             return [
                 LocationDuplicateGroup(
+                    warehouse_id=strawberry.ID(str(g["warehouse_id"])) if g["warehouse_id"] else None,
+                    warehouse_label=g["warehouse_label"],
                     canonical_aisle=g["canonical_aisle"],
                     canonical_row=g["canonical_row"],
                     canonical_bay=g["canonical_bay"],
@@ -1360,10 +1293,16 @@ class WarehouseMutations:
     # Admin Corrections
     @strawberry.mutation
     def adjust_inventory_quantity(
-        self, info: strawberry.Info, inventory_location_id: strawberry.ID, adjustment: int, reason: str
+        self,
+        info: strawberry.Info,
+        inventory_location_id: strawberry.ID,
+        adjustment: int,
+        reason: str,
+        spot_check: bool = False,
     ) -> InventoryLocation:
         """Move a project inventory row's count by a delta, with a reason, writing an ADJUSTMENT
-        audit row.
+        audit row - or a SPOT_CHECK one when `spot_check` is set (the physical-count reconciliation
+        path, whose audit detail also carries systemQuantity/physicalQuantity).
 
         Every one of those rows said "Admin/Manager" until #427, whoever actually made the change:
         the repository hardcoded it and there was no parameter to pass the truth through. `auditLog`,
@@ -1373,7 +1312,12 @@ class WarehouseMutations:
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             result = warehouse_repository.adjust_inventory_quantity(
-                session, uuid.UUID(str(inventory_location_id)), adjustment, reason, performed_by=actor
+                session,
+                uuid.UUID(str(inventory_location_id)),
+                adjustment,
+                reason,
+                performed_by=actor,
+                spot_check=spot_check,
             )
             session.commit()
             session.refresh(result)
@@ -1491,6 +1435,7 @@ class WarehouseMutations:
     def merge_locations(
         self,
         info: strawberry.Info,
+        warehouse_id: strawberry.ID,
         from_aisle: str,
         from_row: str,
         from_bay: str,
@@ -1499,14 +1444,17 @@ class WarehouseMutations:
         to_bay: str,
     ) -> LocationMergeResult:
         """Admin-gated (#415): rewrites the location of every inventory row and stock item at the
-        source location. Its audit rows name the admin who ran it (#427) rather than the literal
-        "Admin/Manager" - the gate already proves the role, so the row may as well say which admin,
-        given a merge can touch hundreds of rows at once."""
+        source location, within one warehouse. warehouse_id is required - a location string is one
+        physical place only within a warehouse, so an unscoped merge would rewrite rows that share the
+        string in a warehouse the admin never looked at. Its audit rows name the admin who ran it
+        (#427) rather than the literal "Admin/Manager" - the gate already proves the role, so the row
+        may as well say which admin, given a merge can touch hundreds of rows at once."""
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             counts = warehouse_repository.merge_locations(
                 session,
+                warehouse_id=uuid.UUID(str(warehouse_id)),
                 from_aisle=from_aisle,
                 from_row=from_row,
                 from_bay=from_bay,

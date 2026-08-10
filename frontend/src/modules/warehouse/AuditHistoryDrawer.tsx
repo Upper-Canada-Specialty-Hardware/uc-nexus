@@ -31,7 +31,7 @@ interface AuditHistoryDrawerProps {
   open: boolean;
   onClose: () => void;
   entityId: string;
-  entityType: 'INVENTORY_LOCATION' | 'OPENING_ITEM';
+  entityType: 'INVENTORY_LOCATION' | 'OPENING_ITEM' | 'STOCK_ITEM';
   label?: string;
 }
 
@@ -89,6 +89,26 @@ function AuditEntry({ entry }: { entry: AuditLogEntry }) {
             {detail.reason && <DetailLine label="Reason" value={detail.reason as string} />}
           </>
         );
+      case 'SPOT_CHECK': {
+        // A spot check carries the counted-vs-system pair; fall back to the adjustment quantities on
+        // an older row that predates those keys.
+        const system = detail.systemQuantity ?? detail.oldQuantity;
+        const physical = detail.physicalQuantity ?? detail.newQuantity;
+        const delta = (physical as number) - (system as number);
+        // The modal writes a machine reason that restates this same pair ("Spot check: system=X,
+        // physical=Y") - suppress it rather than print the Count line twice. A human note survives.
+        const reason = detail.reason as string | undefined;
+        const humanReason = reason && !reason.startsWith('Spot check: system=') ? reason : null;
+        return (
+          <>
+            <DetailLine
+              label="Count"
+              value={`system ${system} → physical ${physical} (${delta > 0 ? '+' : ''}${delta})`}
+            />
+            {humanReason && <DetailLine label="Reason" value={humanReason} />}
+          </>
+        );
+      }
       case 'MOVE':
         return (
           <DetailLine

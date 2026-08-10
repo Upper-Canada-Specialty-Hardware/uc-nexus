@@ -1,7 +1,6 @@
 """Project inventory + opening item reads and admin quantity corrections."""
 
 import uuid
-from collections import defaultdict
 from datetime import datetime
 
 from sqlalchemy import select
@@ -15,139 +14,16 @@ from app.models.purchase_order import POLineItem as POLineItemModel
 from app.models.purchase_order import PurchaseOrder as POModel
 
 from .audit import _log_audit_event
-from .locations import _normalize_and_validate_location_fields, clone_origin_fields
+from .locations import _normalize_and_validate_location_fields, clone_origin_fields, location_detail
 
 
-def get_inventory_hierarchy(
+def get_unlocated_inventory(
     session: Session, project_id: uuid.UUID | None = None, warehouse_id: uuid.UUID | None = None
 ) -> list[dict]:
     """
-    Query all InventoryLocation rows joined with POLineItem for unit_cost,
-    optionally filtered by project_id.
-    Group by hardware_category, then product_code.
-    At each level, sum quantities and compute total_value (unit_cost * quantity).
-    Sort categories and product codes alphabetically.
-
-    Return structure: list of dicts, each with:
-    {
-        "hardware_category": str,
-        "product_codes": [
-            {
-                "product_code": str,
-                "items": [InventoryLocationModel, ...],
-                "total_quantity": int,
-                "total_value": float
-            },
-            ...
-        ],
-        "total_quantity": int,
-        "total_value": float
-    }
-    """
-    stmt = select(InventoryLocationModel, POLineItemModel.unit_cost).outerjoin(
-        POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id
-    )
-    # Hide rows fully emptied by destock/allocation (quantity = 0). They are kept in the DB
-    # for FK integrity (origin of stock allocations) but should not clutter the inventory view.
-    stmt = stmt.where(InventoryLocationModel.quantity > 0)
-    if project_id is not None:
-        stmt = stmt.where(InventoryLocationModel.project_id == project_id)
-    if warehouse_id is not None:
-        stmt = stmt.where(InventoryLocationModel.warehouse_id == warehouse_id)
-    stmt = stmt.order_by(
-        InventoryLocationModel.hardware_category,
-        InventoryLocationModel.product_code,
-    )
-    rows = list(session.execute(stmt).all())
-
-    # Group by hardware_category -> product_code, storing (il, unit_cost) pairs
-    cat_map: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
-    for il, unit_cost in rows:
-        cat_map[il.hardware_category][il.product_code].append((il, unit_cost or 0))
-
-    result = []
-    for category in sorted(cat_map.keys()):
-        product_codes_map = cat_map[category]
-        product_code_nodes = []
-        category_total = 0
-        category_total_value = 0.0
-
-        category_available = 0
-        for pc in sorted(product_codes_map.keys()):
-            items_with_cost = product_codes_map[pc]
-            pc_total = sum(il.quantity for il, _ in items_with_cost)
-            # Issue #229: net available = quantity - deficient_quantity, the same basis the
-            # approve gate (check_inventory_sufficiency) uses - so pre-checks can agree with it.
-            pc_available = sum(il.quantity - il.deficient_quantity for il, _ in items_with_cost)
-            pc_total_value = sum(float(uc) * il.quantity for il, uc in items_with_cost)
-            category_total += pc_total
-            category_available += pc_available
-            category_total_value += pc_total_value
-            product_code_nodes.append(
-                {
-                    "product_code": pc,
-                    "items": [il for il, _ in items_with_cost],
-                    "total_quantity": pc_total,
-                    "total_available_quantity": pc_available,
-                    "total_value": pc_total_value,
-                }
-            )
-
-        result.append(
-            {
-                "hardware_category": category,
-                "product_codes": product_code_nodes,
-                "total_quantity": category_total,
-                "total_available_quantity": category_available,
-                "total_value": category_total_value,
-            }
-        )
-
-    return result
-
-
-def get_inventory_items(
-    session: Session,
-    project_id: uuid.UUID | None,
-    category: str,
-    product_code: str,
-) -> list[dict]:
-    """
-    Query InventoryLocation rows matching (optional project_id, category, product_code).
-    JOIN to POLineItem (via po_line_item_id) then PurchaseOrder (via po_id) to get po_number and classification.
-
-    Return list of dicts with keys: inventory_location, po_number, classification
-    """
-    stmt = (
-        select(InventoryLocationModel, POLineItemModel.classification, POModel.po_number, POLineItemModel.unit_cost)
-        .outerjoin(POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id)
-        .outerjoin(POModel, POLineItemModel.po_id == POModel.id)
-        .where(
-            InventoryLocationModel.hardware_category == category,
-            InventoryLocationModel.product_code == product_code,
-            # Hide rows fully emptied by destock/allocation (kept in DB for FK integrity).
-            InventoryLocationModel.quantity > 0,
-        )
-    )
-    if project_id is not None:
-        stmt = stmt.where(InventoryLocationModel.project_id == project_id)
-    rows = session.execute(stmt).all()
-
-    return [
-        {
-            "inventory_location": row[0],
-            "classification": row[1],
-            "po_number": row[2],
-            "unit_cost": float(row[3]) if row[3] is not None else 0.0,
-        }
-        for row in rows
-    ]
-
-
-def get_unlocated_inventory(session: Session, project_id: uuid.UUID | None = None) -> list[dict]:
-    """
     Query InventoryLocation rows where aisle, row, and bay are all NULL and quantity > 0.
     Joins to POLineItem for unit_cost/classification and PurchaseOrder for po_number.
+    Optionally scoped to one warehouse so put-away can work one building at a time.
     """
     stmt = (
         select(InventoryLocationModel, POLineItemModel.classification, POModel.po_number, POLineItemModel.unit_cost)
@@ -162,6 +38,8 @@ def get_unlocated_inventory(session: Session, project_id: uuid.UUID | None = Non
     )
     if project_id is not None:
         stmt = stmt.where(InventoryLocationModel.project_id == project_id)
+    if warehouse_id is not None:
+        stmt = stmt.where(InventoryLocationModel.warehouse_id == warehouse_id)
     stmt = stmt.order_by(
         InventoryLocationModel.hardware_category,
         InventoryLocationModel.product_code,
@@ -180,91 +58,8 @@ def get_unlocated_inventory(session: Session, project_id: uuid.UUID | None = Non
     ]
 
 
-def get_inventory_by_vendor(session: Session, project_id: uuid.UUID | None = None) -> list[dict]:
-    """Group inventory by the GP vendor the hardware was bought from, then product_code.
-
-    Grouped on `gp_vendor_id` - the PM00200 VENDORID - and only *labelled* with the PO's
-    `vendor_name_snapshot`. Those are the only vendor fields a PO has since #509, and the id is the
-    stable one: two POs pushed to the same GP vendor whose snapshots differ by case, trailing
-    whitespace, or a rename in GP between the pushes are one vendor, and keying on the display text
-    would split their stock into two groups. The label is whichever snapshot the group saw first.
-
-    A PO that predates the gp_vendor_id column can carry a snapshot without an id; those fall back to
-    grouping on the snapshot text, which is the only handle they have, rather than collapsing into
-    "No Vendor" and losing the name. Stock-allocated rows have no PO behind them and a
-    never-registered draft has neither field; those are the actual "No Vendor" bucket.
-    """
-    stmt = (
-        select(
-            InventoryLocationModel,
-            POLineItemModel.unit_cost,
-            POModel.gp_vendor_id,
-            POModel.vendor_name_snapshot,
-        )
-        .outerjoin(POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id)
-        .outerjoin(POModel, POLineItemModel.po_id == POModel.id)
-        # Hide rows fully emptied by destock/allocation (kept in DB for FK integrity).
-        .where(InventoryLocationModel.quantity > 0)
-    )
-    if project_id is not None:
-        stmt = stmt.where(InventoryLocationModel.project_id == project_id)
-    # No ORDER BY: every row is re-bucketed by vendor and re-sorted below, so sorting in the database
-    # is work the Python discards.
-    rows = list(session.execute(stmt).all())
-
-    # Keyed by ("id", gp_vendor_id) where GP gave us one, else ("name", snapshot) for a pre-column
-    # PO, else None for the "No Vendor" bucket. The tag keeps an id from ever colliding with a name.
-    vendor_labels: dict[tuple[str, str] | None, str] = {}
-    vendor_map: dict[tuple[str, str] | None, dict[str, list]] = defaultdict(lambda: defaultdict(list))
-    for il, unit_cost, gp_vendor_id, vendor_name in rows:
-        if gp_vendor_id:
-            key = ("id", gp_vendor_id)
-            label = vendor_name or gp_vendor_id
-        elif vendor_name:
-            key = ("name", vendor_name)
-            label = vendor_name
-        else:
-            key = None
-            label = "No Vendor"
-        vendor_labels.setdefault(key, label)
-        # Stock-allocated rows (stock_item origin) have no PO unit_cost; coerce to 0 like the
-        # category hierarchy does, otherwise the float() in the value sum below blows up.
-        vendor_map[key][il.product_code].append((il, unit_cost or 0))
-
-    result = []
-    for vendor_key in sorted(vendor_map.keys(), key=lambda k: vendor_labels[k]):
-        vendor = vendor_labels[vendor_key]
-        pc_map = vendor_map[vendor_key]
-        pc_nodes = []
-        vendor_total = 0
-        vendor_value = 0.0
-        for pc in sorted(pc_map.keys()):
-            items_with_cost = pc_map[pc]
-            pc_total = sum(il.quantity for il, _ in items_with_cost)
-            pc_value = sum(float(uc) * il.quantity for il, uc in items_with_cost)
-            vendor_total += pc_total
-            vendor_value += pc_value
-            pc_nodes.append(
-                {
-                    "product_code": pc,
-                    "items": [il for il, _ in items_with_cost],
-                    "total_quantity": pc_total,
-                    "total_value": pc_value,
-                }
-            )
-        result.append(
-            {
-                "vendor_name": vendor,
-                "product_codes": pc_nodes,
-                "total_quantity": vendor_total,
-                "total_value": vendor_value,
-            }
-        )
-    return result
-
-
 def adjust_inventory_quantity(
-    session: Session, inv_id: uuid.UUID, adjustment: int, reason: str, *, performed_by: str
+    session: Session, inv_id: uuid.UUID, adjustment: int, reason: str, *, performed_by: str, spot_check: bool = False
 ) -> InventoryLocationModel:
     """Adjust the quantity of an InventoryLocation by a positive or negative amount.
 
@@ -272,7 +67,12 @@ def adjust_inventory_quantity(
     and hardcode "Admin/Manager" on its audit row, so every quantity adjustment in the system was
     filed under an admin no matter who made it - and, worse, the resolver had no way to pass the
     truth through even once somebody noticed. Requiring it means a new caller has to answer the
-    question rather than inherit a wrong answer."""
+    question rather than inherit a wrong answer.
+
+    `spot_check` marks a physical-count reconciliation: the audit row's action is SPOT_CHECK rather
+    than ADJUSTMENT and its detail carries systemQuantity/physicalQuantity, so the history render can
+    show what was counted against what the system held. The SPOT_CHECK enum value existed unused
+    until this - the spot-check UI wrote a plain ADJUSTMENT before."""
     il = session.get(InventoryLocationModel, inv_id)
     if il is None:
         raise NotFoundError(f"Inventory location {inv_id} not found")
@@ -294,19 +94,25 @@ def adjust_inventory_quantity(
     old_quantity = il.quantity
     il.quantity = new_quantity
 
+    detail = {
+        "oldQuantity": old_quantity,
+        "newQuantity": new_quantity,
+        "adjustment": adjustment,
+        "reason": reason,
+    }
+    if spot_check:
+        # The counted-vs-system pair the SPOT_CHECK history render reads.
+        detail["systemQuantity"] = old_quantity
+        detail["physicalQuantity"] = new_quantity
+
     _log_audit_event(
         session,
         project_id=il.project_id,
         entity_type=AuditEntityType.INVENTORY_LOCATION,
         entity_id=il.id,
-        action=AuditAction.ADJUSTMENT,
+        action=AuditAction.SPOT_CHECK if spot_check else AuditAction.ADJUSTMENT,
         performed_by=performed_by,
-        detail={
-            "oldQuantity": old_quantity,
-            "newQuantity": new_quantity,
-            "adjustment": adjustment,
-            "reason": reason,
-        },
+        detail=detail,
     )
 
     return il
@@ -424,7 +230,7 @@ def override_inventory_quantity(
             detail={
                 "createdByOverrideOf": str(il.id),
                 "quantity": new_il.quantity,
-                "location": {"aisle": new_il.aisle, "row": new_il.row, "bay": new_il.bay},
+                "location": location_detail(new_il.aisle, new_il.row, new_il.bay, new_il.warehouse_id),
                 "reason": reason,
             },
         )

@@ -1,14 +1,14 @@
 import { useState, useMemo, useCallback } from 'react';
 import { Box, Alert, Button, Chip, CircularProgress, Typography } from '@mui/material';
 import { DataGrid, type GridColDef, GridToolbar } from '@mui/x-data-grid';
-import { useQuery, useMutation } from '@apollo/client/react';
-import { GET_INVENTORY_ROWS, REPORT_INVENTORY_DEFICIENCY } from '../../graphql/warehouse';
-import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
-import { useToast } from '../../components/Toast';
+import { useQuery } from '@apollo/client/react';
+import { GET_INVENTORY_ROWS } from '../../graphql/warehouse';
 import InventoryCorrectionModal from '../admin/InventoryCorrectionModal';
 import AuditHistoryDrawer from './AuditHistoryDrawer';
 import SpotCheckModal from './SpotCheckModal';
 import DestockInventoryModal from './stock/DestockInventoryModal';
+import FlagDeficientModal from './FlagDeficientModal';
+import TransferDialog, { type TransferSource } from './TransferDialog';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { parseServerDate } from '../../utils/serverDate';
 
@@ -19,6 +19,7 @@ interface InventoryItem {
   poLineItemId: string | null;
   receiveLineItemId: string | null;
   stockItemId: string | null;
+  warehouseId: string | null;
   hardwareCategory: string;
   productCode: string;
   quantity: number;
@@ -41,8 +42,8 @@ interface InventoryItem {
  * products. One row per inventory line answers both: a product-level rollup is one sort away, and
  * the whole thing exports to CSV.
  *
- * Every row action the accordion carried is kept - history, spot check, destock, flag deficient,
- * correction - because they were the only place those operations were reachable.
+ * Every row action the accordion carried is kept - history, spot check, destock, transfer, flag
+ * deficient, correction - because they were the only place those operations were reachable.
  */
 
 interface InventoryRow {
@@ -84,8 +85,6 @@ interface HardwareItemsFlatTableProps {
 }
 
 export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatTableProps) {
-  const { showToast } = useToast();
-
   const { data, loading, error, refetch } = useQuery<{ inventoryRows: InventoryRow[] }>(
     GET_INVENTORY_ROWS,
     { variables: { projectId } },
@@ -95,16 +94,8 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
   const [auditItem, setAuditItem] = useState<InventoryItem | null>(null);
   const [spotCheckItem, setSpotCheckItem] = useState<InventoryItem | null>(null);
   const [destockItem, setDestockItem] = useState<InventoryItem | null>(null);
-
-  const [reportDeficient] = useMutation(REPORT_INVENTORY_DEFICIENCY, {
-    refetchQueries: WAREHOUSE_REFETCH_QUERIES,
-    awaitRefetchQueries: true,
-    onCompleted: () => {
-      showToast('Deficient quantity flagged on row', 'success');
-      void refetch();
-    },
-    onError: (err) => showToast(err.message, 'error'),
-  });
+  const [flagItem, setFlagItem] = useState<InventoryItem | null>(null);
+  const [transferSource, setTransferSource] = useState<TransferSource | null>(null);
 
   const onChanged = useCallback(() => {
     void refetch();
@@ -219,7 +210,7 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
     cols.push({
       field: 'actions',
       headerName: 'Actions',
-      width: 380,
+      width: 470,
       sortable: false,
       filterable: false,
       // Excluded from CSV: these are buttons, not data.
@@ -240,28 +231,27 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
             </Button>
             <Button
               size="small"
+              onClick={() =>
+                setTransferSource({
+                  type: 'INVENTORY_LOCATION',
+                  id: il.id,
+                  productCode: il.productCode,
+                  available,
+                  warehouseId: il.warehouseId,
+                  aisle: il.aisle,
+                  row: il.row,
+                  bay: il.bay,
+                })
+              }
+              disabled={available <= 0}
+            >
+              Transfer
+            </Button>
+            <Button
+              size="small"
               color="warning"
               disabled={available <= 0}
-              onClick={() => {
-                if (available <= 0) {
-                  showToast('Nothing left to flag - all units already deficient', 'info');
-                  return;
-                }
-                const input = window.prompt(
-                  `Flag how many of ${il.productCode} as deficient? (max ${available})`,
-                  '1',
-                );
-                if (!input) return;
-                const q = Number(input);
-                if (!Number.isInteger(q) || q < 1 || q > available) {
-                  showToast('Invalid quantity', 'error');
-                  return;
-                }
-                const reason = window.prompt('Reason (optional)', '') || null;
-                reportDeficient({
-                  variables: { input: { inventoryLocationId: il.id, quantity: q, reasonText: reason } },
-                });
-              }}
+              onClick={() => setFlagItem(il)}
             >
               Flag Deficient
             </Button>
@@ -274,7 +264,7 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
     });
 
     return cols;
-  }, [projectId, reportDeficient, showToast]);
+  }, [projectId]);
 
   if (loading) {
     return (
@@ -358,6 +348,28 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
           onClose={() => setDestockItem(null)}
           onSuccess={() => {
             setDestockItem(null);
+            onChanged();
+          }}
+        />
+      )}
+
+      {flagItem && (
+        <FlagDeficientModal
+          item={flagItem}
+          onClose={() => setFlagItem(null)}
+          onSuccess={() => {
+            setFlagItem(null);
+            onChanged();
+          }}
+        />
+      )}
+
+      {transferSource && (
+        <TransferDialog
+          source={transferSource}
+          onClose={() => setTransferSource(null)}
+          onSuccess={() => {
+            setTransferSource(null);
             onChanged();
           }}
         />

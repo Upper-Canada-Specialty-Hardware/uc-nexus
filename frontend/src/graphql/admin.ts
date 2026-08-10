@@ -110,6 +110,8 @@ export const DELETE_RELAY_INSTALL = gql`
 export const GET_LOCATION_DUPLICATES = gql`
   query GetLocationDuplicates {
     locationDuplicates {
+      warehouseId
+      warehouseLabel
       canonicalAisle
       canonicalRow
       canonicalBay
@@ -258,15 +260,16 @@ export const DELETE_WAREHOUSE = gql`
 
 export const MERGE_LOCATIONS = gql`
   mutation MergeLocations(
+    $warehouseId: ID!,
     $fromAisle: String!, $fromRow: String!, $fromBay: String!,
     $toAisle: String!, $toRow: String!, $toBay: String!
   ) {
     mergeLocations(
+      warehouseId: $warehouseId,
       fromAisle: $fromAisle, fromRow: $fromRow, fromBay: $fromBay,
       toAisle: $toAisle, toRow: $toRow, toBay: $toBay
     ) {
       inventoryLocations
-      openingItems
       stockItems
     }
   }

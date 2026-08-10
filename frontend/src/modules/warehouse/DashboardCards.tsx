@@ -1,5 +1,5 @@
 import { Box, Card, Skeleton, Typography } from '@mui/material';
-import { Boxes, DollarSign } from 'lucide-react';
+import { Boxes, DollarSign, MapPinOff, Warehouse } from 'lucide-react';
 import { microLabelSx, tabularSx } from '../../theme';
 import { AnimatedNumber, StaggerItem, StaggerList } from '../../motion';
 
@@ -9,9 +9,14 @@ import { AnimatedNumber, StaggerItem, StaggerList } from '../../motion';
  * resolver twice.
  */
 export interface WarehouseDashboard {
+  /** Units and value of PROJECT inventory only (InventoryLocation rows). Stock has its own tiles. */
   totalItemCount: number;
   totalValue: number;
   unlocatedCount: number;
+  /** Stock-pool units on hand. No matching value tile - StockItem carries no unit cost by decision. */
+  stockItemCount: number;
+  /** Stock-pool rows with no rack location yet. */
+  stockUnlocatedCount: number;
   pendingPullShop: number;
   pendingPullShipping: number;
   backOrderedCount: number;
@@ -46,7 +51,16 @@ function Gauge({ label, icon, value, format }: GaugeProps) {
       </Box>
       <Typography
         component="div"
-        sx={{ ...tabularSx, fontSize: '1.5rem', fontWeight: 700, lineHeight: 1.2, mt: 0.5 }}
+        sx={{
+          ...tabularSx,
+          fontSize: '1.5rem',
+          fontWeight: 700,
+          lineHeight: 1.2,
+          mt: 0.5,
+          // Zero is a resting state, not news: zero-value gauges render dimmed (design rule). With
+          // the stock tiles this matters - Stock Unlocated at 0 is the normal, good state.
+          color: value === 0 ? 'text.secondary' : 'text.primary',
+        }}
       >
         <AnimatedNumber value={value} format={format} />
       </Typography>
@@ -69,14 +83,18 @@ interface DashboardCardsProps {
 }
 
 /**
- * The two portfolio-wide figures that have no destination card of their own. Every other dashboard
- * number now lives on the card for the screen that acts on it (see WarehouseLanding), so this row
- * stays deliberately short rather than repeating the whole rollup as tiles.
+ * The portfolio-wide figures that have no destination card of their own: project inventory (units +
+ * value) and the stock pool (units + unlocated). Every other dashboard number lives on the card for
+ * the screen that acts on it (see WarehouseLanding). The project figures are labelled as project
+ * inventory rather than "total" - they count InventoryLocation rows only, and reading them as the
+ * whole building's holding was the lie the stock tiles beside them now correct.
  */
 export default function DashboardCards({ dashboard, loading }: DashboardCardsProps) {
   if (loading && !dashboard) {
     return (
       <Box sx={{ display: 'flex', gap: 1.5, mb: 3, flexWrap: 'wrap' }}>
+        <GaugeSkeleton />
+        <GaugeSkeleton />
         <GaugeSkeleton />
         <GaugeSkeleton />
       </Box>
@@ -86,11 +104,11 @@ export default function DashboardCards({ dashboard, loading }: DashboardCardsPro
   if (!dashboard) return null;
 
   return (
-    <StaggerList count={2}>
+    <StaggerList count={4}>
       <Box sx={{ display: 'flex', gap: 1.5, mb: 3, flexWrap: 'wrap' }}>
         <StaggerItem>
           <Gauge
-            label="Total Items"
+            label="Project Items"
             icon={<Boxes size={18} strokeWidth={1.75} />}
             value={dashboard.totalItemCount}
             format={(n) => n.toLocaleString()}
@@ -98,10 +116,26 @@ export default function DashboardCards({ dashboard, loading }: DashboardCardsPro
         </StaggerItem>
         <StaggerItem>
           <Gauge
-            label="Total Value"
+            label="Project Value"
             icon={<DollarSign size={18} strokeWidth={1.75} />}
             value={dashboard.totalValue}
             format={formatCurrency}
+          />
+        </StaggerItem>
+        <StaggerItem>
+          <Gauge
+            label="Stock Items"
+            icon={<Warehouse size={18} strokeWidth={1.75} />}
+            value={dashboard.stockItemCount}
+            format={(n) => n.toLocaleString()}
+          />
+        </StaggerItem>
+        <StaggerItem>
+          <Gauge
+            label="Stock Unlocated"
+            icon={<MapPinOff size={18} strokeWidth={1.75} />}
+            value={dashboard.stockUnlocatedCount}
+            format={(n) => n.toLocaleString()}
           />
         </StaggerItem>
       </Box>

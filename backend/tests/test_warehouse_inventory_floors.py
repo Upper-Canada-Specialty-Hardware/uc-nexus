@@ -10,6 +10,8 @@ import pytest
 from sqlalchemy import select
 
 from app.errors import ValidationError
+from app.models.audit_log import InventoryAuditLog
+from app.models.enums import AuditAction
 from app.models.inventory import InventoryLocation
 from app.repositories import warehouse as warehouse_repository
 
@@ -60,6 +62,45 @@ def test_adjust_requires_a_reason(db_session):
 
     with pytest.raises(ValidationError):
         warehouse_repository.adjust_inventory_quantity(db_session, il.id, 1, "", performed_by="warehouse")
+
+
+# --- spot check audit action --------------------------------------------------------------------
+
+
+def _audit_rows(session, entity_id):
+    return list(session.scalars(select(InventoryAuditLog).where(InventoryAuditLog.entity_id == entity_id)).all())
+
+
+def test_spot_check_writes_a_spot_check_action_with_the_counted_pair(db_session):
+    """spot_check=True files the audit row under SPOT_CHECK (the enum value existed unused) and its
+    detail carries systemQuantity/physicalQuantity so the history render can show counted-vs-system."""
+    project = make_project(db_session)
+    il = make_il(db_session, project, quantity=10)
+
+    warehouse_repository.adjust_inventory_quantity(
+        db_session, il.id, -3, "spot check", performed_by="counter", spot_check=True
+    )
+
+    assert il.quantity == 7
+    rows = _audit_rows(db_session, il.id)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.action == AuditAction.SPOT_CHECK
+    assert row.detail["systemQuantity"] == 10
+    assert row.detail["physicalQuantity"] == 7
+    assert row.detail["adjustment"] == -3
+
+
+def test_adjust_without_spot_check_stays_an_adjustment(db_session):
+    project = make_project(db_session)
+    il = make_il(db_session, project, quantity=10)
+
+    warehouse_repository.adjust_inventory_quantity(db_session, il.id, -3, "recount", performed_by="counter")
+
+    rows = _audit_rows(db_session, il.id)
+    assert len(rows) == 1
+    assert rows[0].action == AuditAction.ADJUSTMENT
+    assert "systemQuantity" not in (rows[0].detail or {})
 
 
 # --- override-increase on a return-origin row ---------------------------------------------------

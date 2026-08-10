@@ -964,25 +964,6 @@ class POStatistics:
 
 
 @strawberry.type
-class ProductCodeNode:
-    product_code: str
-    items: list[InventoryLocation]
-    total_quantity: int
-    # Issue #229: net of deficient units (quantity - deficient_quantity) - the approve gate's basis.
-    total_available_quantity: int
-    total_value: float
-
-
-@strawberry.type
-class InventoryHierarchyNode:
-    hardware_category: str
-    product_codes: list[ProductCodeNode]
-    total_quantity: int
-    total_available_quantity: int
-    total_value: float
-
-
-@strawberry.type
 class ShipReadyLooseItem:
     # Null on stock pulled by a request raised straight off inventory (#451) - it is owed to the
     # project, not to a door.
@@ -1332,14 +1313,6 @@ class ReconciliationResult:
 
 
 @strawberry.type
-class VendorInventoryNode:
-    vendor_name: str
-    product_codes: list[ProductCodeNode]
-    total_quantity: int
-    total_value: float
-
-
-@strawberry.type
 class LocationUtilizationEntry:
     warehouse_id: strawberry.ID | None
     aisle: str
@@ -1364,6 +1337,10 @@ class LocationVariant:
 
 @strawberry.type
 class LocationDuplicateGroup:
+    # A collision is only meaningful within one warehouse - the same triple in two warehouses is two
+    # groups, so a group names its warehouse and the merge it offers acts on that warehouse alone.
+    warehouse_id: strawberry.ID | None
+    warehouse_label: str | None
     canonical_aisle: str | None
     canonical_row: str | None
     canonical_bay: str | None
@@ -1380,7 +1357,6 @@ class LocationDistinctValues:
 @strawberry.type
 class LocationMergeResult:
     inventory_locations: int
-    opening_items: int
     stock_items: int
 
 
@@ -1407,6 +1383,9 @@ class WarehouseDashboard:
     total_item_count: int
     total_value: float
     unlocated_count: int
+    # Stock pool: units on hand and rows with no aisle. No value - StockItem has no unit cost.
+    stock_item_count: int
+    stock_unlocated_count: int
     pending_pull_shop: int
     pending_pull_shipping: int
     received_last_7_days: int

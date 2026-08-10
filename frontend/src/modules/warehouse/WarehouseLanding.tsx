@@ -89,7 +89,14 @@ function buildDestinations(d: WarehouseDashboard | undefined, canReview: boolean
       path: '/app/warehouse/put-away',
       icon: <Inbox size={18} strokeWidth={1.75} />,
       caption: 'Assign a rack location to received stock',
-      metric: d ? { value: d.unlocatedCount, noun: 'unlocated', attention: d.unlocatedCount > 0 } : undefined,
+      // Both queues the page holds: unlocated project rows plus unlocated stock rows.
+      metric: d
+        ? {
+            value: d.unlocatedCount + d.stockUnlocatedCount,
+            noun: 'unlocated',
+            attention: d.unlocatedCount + d.stockUnlocatedCount > 0,
+          }
+        : undefined,
     },
     {
       label: 'Pull Requests',

@@ -52,23 +52,6 @@ type InventoryLocation {
   updated_at: DateTime!
 }
 
-type InventoryHierarchyNode {
-  hardware_category: String!
-  product_codes: [ProductCodeNode!]!
-  total_quantity: Int!
-  total_available_quantity: Int!
-  total_value: Float!
-}
-
-type ProductCodeNode {
-  product_code: String!
-  items: [InventoryLocation!]!
-  total_quantity: Int!
-  # Computed on both hierarchies since #344 reconciliation; the by-vendor one supplies 0.
-  total_available_quantity: Int!
-  total_value: Float!
-}
-
 type InventoryItemDetail {
   inventory_location: InventoryLocation!
   # Both null for a row with no originating PO line (see InventoryLocation.po_line_item_id).
@@ -675,9 +658,7 @@ type Query {
   openPOs(projectId: ID): [PurchaseOrder!]!
   poReceivingDetails(poId: ID!): PurchaseOrder!
   projectInventoryAvailability(projectId: ID!): [InventoryAvailability!]!
-  inventoryHierarchy(projectId: ID, warehouseId: ID): [InventoryHierarchyNode!]!
-  inventoryItems(projectId: ID, category: String!, productCode: String!): [InventoryItemDetail!]!
-  unlocatedInventory(projectId: ID): [InventoryItemDetail!]!
+  unlocatedInventory(projectId: ID, warehouseId: ID): [InventoryItemDetail!]!
   recentReceiveRecords(limit: Int! = 10): [RecentReceiveRecord!]!
   # Every GP-registered PO with what has landed against it, including the complete ones openPOs and
   # backOrderedItems drop (#447). The reconciliation view, not the what-is-owed view.

@@ -22,21 +22,6 @@ export const GET_PROJECT_INVENTORY_AVAILABILITY = gql`
   }
 `;
 
-export const GET_INVENTORY_ITEMS = gql`
-  query GetInventoryItems($projectId: ID, $category: String!, $productCode: String!) {
-    inventoryItems(projectId: $projectId, category: $category, productCode: $productCode) {
-      inventoryLocation {
-        id projectId poLineItemId receiveLineItemId stockItemId
-        hardwareCategory productCode quantity deficientQuantity available
-        aisle row bay receivedAt createdAt updatedAt
-      }
-      poNumber
-      classification
-      unitCost
-    }
-  }
-`;
-
 // #506: the Hardware Items tab as one flat table rather than a category -> product -> location
 // accordion. Every value the warehouse sorts, filters or exports on is on the row, resolved
 // server-side in a single query.
@@ -44,7 +29,7 @@ export const GET_INVENTORY_ROWS = gql`
   query GetInventoryRows($projectId: ID, $warehouseId: ID) {
     inventoryRows(projectId: $projectId, warehouseId: $warehouseId) {
       inventoryLocation {
-        id projectId poLineItemId receiveLineItemId stockItemId
+        id projectId poLineItemId receiveLineItemId stockItemId warehouseId
         hardwareCategory productCode quantity deficientQuantity available
         aisle row bay receivedAt createdAt updatedAt
       }
@@ -85,10 +70,10 @@ export const GET_OPEN_POS = gql`
 `;
 
 export const GET_UNLOCATED_INVENTORY = gql`
-  query GetUnlocatedInventory($projectId: ID) {
-    unlocatedInventory(projectId: $projectId) {
+  query GetUnlocatedInventory($projectId: ID, $warehouseId: ID) {
+    unlocatedInventory(projectId: $projectId, warehouseId: $warehouseId) {
       inventoryLocation {
-        id projectId poLineItemId receiveLineItemId
+        id projectId poLineItemId receiveLineItemId warehouseId
         hardwareCategory productCode quantity
         aisle row bay receivedAt createdAt updatedAt
       }
@@ -268,8 +253,8 @@ export const GET_LOCATION_CONTENTS = gql`
 `;
 
 export const GET_LOCATION_AUDIT_HISTORY = gql`
-  query GetLocationAuditHistory($aisle: String!, $row: String, $bay: String, $limit: Int) {
-    locationAuditHistory(aisle: $aisle, row: $row, bay: $bay, limit: $limit) {
+  query GetLocationAuditHistory($aisle: String!, $row: String, $bay: String, $limit: Int, $warehouseId: ID) {
+    locationAuditHistory(aisle: $aisle, row: $row, bay: $bay, limit: $limit, warehouseId: $warehouseId) {
       id projectId entityType entityId action detail performedBy createdAt
     }
   }
@@ -308,6 +293,8 @@ export const GET_WAREHOUSE_DASHBOARD = gql`
       totalItemCount
       totalValue
       unlocatedCount
+      stockItemCount
+      stockUnlocatedCount
       pendingPullShop
       pendingPullShipping
       backOrderedCount
@@ -324,6 +311,7 @@ export const GET_STOCK_ITEMS = gql`
     $aisle: String
     $onlyDeficient: Boolean
     $warehouseId: ID
+    $onlyUnlocated: Boolean
   ) {
     stockItems(
       productCodeContains: $productCodeContains
@@ -331,6 +319,7 @@ export const GET_STOCK_ITEMS = gql`
       aisle: $aisle
       onlyDeficient: $onlyDeficient
       warehouseId: $warehouseId
+      onlyUnlocated: $onlyUnlocated
     ) {
       id
       warehouseId
@@ -407,8 +396,18 @@ export const GET_DEFICIENCY_REVIEWS = gql`
 `;
 
 export const ADJUST_INVENTORY_QUANTITY = gql`
-  mutation AdjustInventoryQuantity($inventoryLocationId: ID!, $adjustment: Int!, $reason: String!) {
-    adjustInventoryQuantity(inventoryLocationId: $inventoryLocationId, adjustment: $adjustment, reason: $reason) {
+  mutation AdjustInventoryQuantity(
+    $inventoryLocationId: ID!
+    $adjustment: Int!
+    $reason: String!
+    $spotCheck: Boolean
+  ) {
+    adjustInventoryQuantity(
+      inventoryLocationId: $inventoryLocationId
+      adjustment: $adjustment
+      reason: $reason
+      spotCheck: $spotCheck
+    ) {
       id
       projectId
       poLineItemId

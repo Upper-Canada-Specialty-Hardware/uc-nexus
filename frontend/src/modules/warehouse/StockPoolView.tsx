@@ -20,6 +20,7 @@ import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useQuery } from '@apollo/client/react';
 import {
   ArrowLeftRight,
+  History,
   Maximize2,
   MapPin,
   Pencil,
@@ -27,6 +28,7 @@ import {
   TriangleAlert,
 } from 'lucide-react';
 import TransferDialog from './TransferDialog';
+import AuditHistoryDrawer from './AuditHistoryDrawer';
 import { GET_WAREHOUSES } from '../../graphql/shared';
 import { GET_STOCK_ITEMS } from '../../graphql/warehouse';
 import AdjustStockModal from './stock/AdjustStockModal';
@@ -66,7 +68,7 @@ export default function StockPoolView() {
   const [warehouseFilter, setWarehouseFilter] = useState('');
   const [selected, setSelected] = useState<StockItem | null>(null);
   const [modal, setModal] = useState<
-    'adjust' | 'move' | 'reclassify' | 'allocate' | 'report-deficient' | 'transfer' | null
+    'adjust' | 'move' | 'reclassify' | 'allocate' | 'report-deficient' | 'transfer' | 'history' | null
   >(null);
 
   const { data, loading, error, refetch } = useQuery<{ stockItems: StockItem[] }>(
@@ -190,11 +192,22 @@ export default function StockPoolView() {
     {
       field: 'actions',
       headerName: 'Actions',
-      width: 280,
+      width: 320,
       sortable: false,
       filterable: false,
       renderCell: ({ row }) => (
         <Stack direction="row" spacing={0.5}>
+          <Tooltip title="History">
+            <IconButton
+              size="small"
+              onClick={() => {
+                setSelected(row);
+                setModal('history');
+              }}
+            >
+              <History size={18} strokeWidth={1.75} />
+            </IconButton>
+          </Tooltip>
           <Tooltip title="Allocate to project">
             <IconButton
               size="small"
@@ -394,6 +407,15 @@ export default function StockPoolView() {
           }}
           onClose={closeModal}
           onSuccess={onSuccess}
+        />
+      )}
+      {selected && modal === 'history' && (
+        <AuditHistoryDrawer
+          open
+          onClose={closeModal}
+          entityId={selected.id}
+          entityType="STOCK_ITEM"
+          label={`${selected.productCode} (${selected.hardwareCategory})`}
         />
       )}
     </Box>
