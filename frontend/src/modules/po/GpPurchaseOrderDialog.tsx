@@ -401,10 +401,10 @@ export default function GpPurchaseOrderDialog({
         orderedQuantity: String(li.orderedQuantity ?? 1),
         unitCost: li.unitCost != null ? String(li.unitCost) : '0',
         classification: li.classification ?? '',
-        // #491: GP's item number is (order_as or product_code), and the backend already falls back
-        // that way. Seeding the field with the product code shows the buyer what GP will actually
-        // receive instead of an empty box the dialog then refuses to submit.
-        orderAs: li.orderAs || li.productCode || '',
+        // #563: seed only the stored order_as. A blank one leaves the box empty (its helper reads
+        // "defaults to product code"), so the buyer sees what is actually stored and can clear it.
+        // GP's item number falls back to product_code server-side (services/gp_po.py).
+        orderAs: li.orderAs || '',
         manufacturer: li.manufacturer ?? null,
       }));
       setLineItems(rows.length > 0 ? rows : [{ key: 1, ...EMPTY_LINE_ITEM }]);
