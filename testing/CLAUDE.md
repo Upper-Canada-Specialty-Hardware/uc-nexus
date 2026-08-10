@@ -99,7 +99,7 @@ session instead. Establish this in the first minute:
 
 ```
 { relayStatus { connected company build } }
-{ inventoryHierarchy { hardwareCategory totalQuantity } }
+{ inventoryRows { inventoryLocation { hardwareCategory quantity } } }
 ```
 
 **The relay runs on a separate GP-credentialed workstation, already enrolled and already pointed at
@@ -110,7 +110,8 @@ it and ask. Setting one up locally cannot work anyway, because this box is not d
 cannot authenticate to GP SQL. Full rule in
 [PR-ENVIRONMENT.md](PR-ENVIRONMENT.md#the-relay-is-on-another-machine-never-stand-one-up-locally).
 
-`connected: false` plus `inventoryHierarchy: []` is the signature. Confirm it from the backend side
+`connected: false` plus `inventoryRows: []` is the signature (the old `inventoryHierarchy` probe was
+deleted with the accordion queries). Confirm it from the backend side
 with `relayInstalls { label enrolled enrolledAt lastSeenAt }` and the Railway backend deploy log:
 
 - A relay that is **running but not trusted** logs `"WebSocket /relay-link" 403` every ~30s forever.
@@ -1086,7 +1087,7 @@ Inventory quantity corrections are NOT here — they live in the Warehouse modul
 - PO list rows: clicking the row's StaticText via a snapshot uid may NOT open the detail modal (the a11y click can miss the row handler). Reliable alternative: `evaluate_script` finding the leaf element by text and clicking its `closest('td')`.
 - Locations page bin panel "Item actions" menu (stock rows): Move / Transfer / Adjust Qty / Unlocate. "Adjust Qty" opens the shared LocationActionDialog - Confirm stays disabled until a non-zero adjustment AND a reason are entered; the helper text under the adjustment shows the computed "New qty: N" and flags negatives. Verified live: adjustment writes an ADJUSTMENT audit row (`auditLog(limit: N)`) with performedBy "Admin/Manager".
 - Draft PO create (issue #256 dialog) works with the relay down end to end: the created draft's `preferredDeliveryDate` round-trips exactly (entered 2026-08-15 -> stored 2026-08-15 -> detail modal renders 8/15/2026, no UTC day shift). Cancelling a draft removes it from the `purchaseOrders` list entirely.
-- `inventoryHierarchy` returns `totalAvailableQuantity` at both category and product-code levels (issue #229): available = quantity - deficient, so a 10-qty row with 7 deficient shows total 10 / available 3. Cross-check against `deficientItems`.
+- Availability semantics (issue #229): available = quantity - deficient, so a 10-qty row with 7 deficient shows available 3. Read it per row via `inventoryRows` (`inventoryLocation.available`) or per combo via `projectInventoryAvailability`; cross-check against `deficientItems`. (The old `inventoryHierarchy` roll-up query that documented this is deleted.)
 - `Notification` has no `kind` field - it is `type` (`{ notifications { id type message isRead createdAt recipientRole projectId } }`). Querying `kind` fails the whole document, so a mistyped notification field takes the relay/pull/request fields in the same query down with it.
 - The bell panel is a plain MUI Popover with a "Notifications" heading and one bold row per unread item; the app-bar badge count matches `notifications` where `isRead: false`. It renders every audience regardless of your role, so 4 in the badge means 4 rows in the panel.
 - `shopAssemblyRequests` takes a `status` and defaults to **PENDING**, so `[]` means the accept queue is empty, not that no requests exist. Ask for `status: APPROVED` (or `REJECTED`) to see the rest; every row carries a derived `stage` telling you how far its pull has got.

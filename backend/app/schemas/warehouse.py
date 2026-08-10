@@ -58,7 +58,6 @@ from .types import (
     CancelPullRequestResult,
     ConfirmPickResult,
     InventoryAvailability,
-    InventoryHierarchyNode,
     InventoryItemDetail,
     InventoryLocation,
     InventoryRow,
@@ -70,7 +69,6 @@ from .types import (
     LocationUtilizationEntry,
     LocationVariant,
     PickSheet,
-    ProductCodeNode,
     ProjectProgressByProduct,
     PullRequest,
     PurchaseOrder,
@@ -81,7 +79,6 @@ from .types import (
     ReceivingHistoryPO,
     RecentReceiveRecord,
     RestockedLine,
-    VendorInventoryNode,
     Warehouse,
     WarehouseDashboard,
 )
@@ -447,39 +444,6 @@ class WarehouseQueries:
             ]
 
     @strawberry.field
-    def inventory_hierarchy(
-        self,
-        info: strawberry.Info,
-        project_id: strawberry.ID | None = None,
-        warehouse_id: strawberry.ID | None = None,
-    ) -> list[InventoryHierarchyNode]:
-        with SessionLocal() as session:
-            hierarchy = warehouse_repository.get_inventory_hierarchy(
-                session,
-                uuid.UUID(str(project_id)) if project_id else None,
-                uuid.UUID(str(warehouse_id)) if warehouse_id else None,
-            )
-            return [
-                InventoryHierarchyNode(
-                    hardware_category=cat_node["hardware_category"],
-                    product_codes=[
-                        ProductCodeNode(
-                            product_code=pc_node["product_code"],
-                            items=[inventory_location_to_type(il) for il in pc_node["items"]],
-                            total_quantity=pc_node["total_quantity"],
-                            total_available_quantity=pc_node["total_available_quantity"],
-                            total_value=pc_node["total_value"],
-                        )
-                        for pc_node in cat_node["product_codes"]
-                    ],
-                    total_quantity=cat_node["total_quantity"],
-                    total_available_quantity=cat_node["total_available_quantity"],
-                    total_value=cat_node["total_value"],
-                )
-                for cat_node in hierarchy
-            ]
-
-    @strawberry.field
     def receives(
         self,
         info: strawberry.Info,
@@ -548,28 +512,6 @@ class WarehouseQueries:
                     uuid.UUID(str(project_id)) if project_id else None,
                     uuid.UUID(str(warehouse_id)) if warehouse_id else None,
                 )
-            ]
-
-    @strawberry.field
-    def inventory_items(
-        self,
-        info: strawberry.Info,
-        project_id: strawberry.ID | None = None,
-        category: str = "",
-        product_code: str = "",
-    ) -> list[InventoryItemDetail]:
-        with SessionLocal() as session:
-            items = warehouse_repository.get_inventory_items(
-                session, uuid.UUID(str(project_id)) if project_id else None, category, product_code
-            )
-            return [
-                InventoryItemDetail(
-                    inventory_location=inventory_location_to_type(item["inventory_location"]),
-                    po_number=item["po_number"],
-                    classification=item["classification"],
-                    unit_cost=item["unit_cost"],
-                )
-                for item in items
             ]
 
     @strawberry.field
@@ -752,32 +694,6 @@ class WarehouseQueries:
                     shipped_out=row["shipped_out"],
                 )
                 for row in rows
-            ]
-
-    @strawberry.field
-    def inventory_by_vendor(
-        self, info: strawberry.Info, project_id: strawberry.ID | None = None
-    ) -> list[VendorInventoryNode]:
-        with SessionLocal() as session:
-            nodes = warehouse_repository.get_inventory_by_vendor(
-                session, uuid.UUID(str(project_id)) if project_id else None
-            )
-            return [
-                VendorInventoryNode(
-                    vendor_name=node["vendor_name"],
-                    product_codes=[
-                        ProductCodeNode(
-                            product_code=pc["product_code"],
-                            items=[inventory_location_to_type(il) for il in pc["items"]],
-                            total_quantity=pc["total_quantity"],
-                            total_value=pc["total_value"],
-                        )
-                        for pc in node["product_codes"]
-                    ],
-                    total_quantity=node["total_quantity"],
-                    total_value=node["total_value"],
-                )
-                for node in nodes
             ]
 
     @strawberry.field

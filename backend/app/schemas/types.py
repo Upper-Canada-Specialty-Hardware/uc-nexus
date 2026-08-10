@@ -964,25 +964,6 @@ class POStatistics:
 
 
 @strawberry.type
-class ProductCodeNode:
-    product_code: str
-    items: list[InventoryLocation]
-    total_quantity: int
-    # Issue #229: net of deficient units (quantity - deficient_quantity) - the approve gate's basis.
-    total_available_quantity: int
-    total_value: float
-
-
-@strawberry.type
-class InventoryHierarchyNode:
-    hardware_category: str
-    product_codes: list[ProductCodeNode]
-    total_quantity: int
-    total_available_quantity: int
-    total_value: float
-
-
-@strawberry.type
 class ShipReadyLooseItem:
     # Null on stock pulled by a request raised straight off inventory (#451) - it is owed to the
     # project, not to a door.
@@ -1329,14 +1310,6 @@ class ReconciliationResult:
     product_code: str
     quantity: int
     status: ReconciliationStatus
-
-
-@strawberry.type
-class VendorInventoryNode:
-    vendor_name: str
-    product_codes: list[ProductCodeNode]
-    total_quantity: int
-    total_value: float
 
 
 @strawberry.type
