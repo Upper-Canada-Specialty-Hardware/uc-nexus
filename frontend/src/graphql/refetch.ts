@@ -2,13 +2,7 @@
 // stock mutation (destock, allocate, flag/resolve deficient, adjust/move/reclassify, correction).
 // Passed to useMutation's `refetchQueries` by operation name: Apollo refetches only the query
 // instances currently mounted, so applying this superset uniformly is safe and self-scoping.
-//
-// GetInventoryItems (the lazy per-product-code detail grid) is intentionally NOT here - each
-// caller already refetches that grid in its own onCompleted/onSuccess callback, so listing it
-// would double-fetch. This list is what fixes the stale summary header and accordion counts.
 export const WAREHOUSE_REFETCH_QUERIES = [
-  'GetInventoryHierarchy',
-  'GetInventoryByVendor',
   'GetUnlocatedInventory',
   'GetStockItems',
   'GetDeficientItems',
@@ -97,9 +91,7 @@ export const PICK_CONFIRM_REFETCH_QUERIES = ['GetPullPickSheet', 'GetPullRequest
 // and the deduction both change what may be claimed), and the assembly floor's work lists, which
 // #343 made sensitive to the pull moving.
 export const PICK_CONFIRM_STALE_ROOT_FIELDS = [
-  'inventoryHierarchy',
   'inventoryRows',
-  'inventoryByVendor',
   'unlocatedInventory',
   'warehouseDashboard',
   'projectProgressByProduct',
@@ -173,9 +165,7 @@ export const GP_OUTBOX_DRAINED_STALE_ROOT_FIELDS = [
   'backOrderedItems',
   'openPOs',
   'warehouseDashboard',
-  'inventoryHierarchy',
   'inventoryRows',
-  'inventoryByVendor',
   'projectInventoryAvailability',
   // A queued approval persists NOTHING until the drain: no receive record, no inventory, and no
   // keep-or-ship decision for the person who raised the PO. The drain is when all three appear, and

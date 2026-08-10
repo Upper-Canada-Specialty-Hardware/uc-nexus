@@ -10,9 +10,6 @@ from .audit import (
 )
 from .inventory import (
     adjust_inventory_quantity,
-    get_inventory_by_vendor,
-    get_inventory_hierarchy,
-    get_inventory_items,
     get_inventory_rows,
     get_unlocated_inventory,
     override_inventory_quantity,
@@ -148,10 +145,7 @@ __all__ = [
     "get_available_quantities",
     "get_back_ordered_items",
     "get_distinct_location_values",
-    "get_inventory_by_vendor",
-    "get_inventory_hierarchy",
     "get_inventory_rows",
-    "get_inventory_items",
     "get_location_audit_history",
     "get_location_contents",
     "get_location_duplicates",

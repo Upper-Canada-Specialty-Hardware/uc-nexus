@@ -15,8 +15,6 @@ const ROOT_FIELD_OF_QUERY: Record<string, string> = {
   GetPullRequests: 'pullRequests',
   GetShopAssemblyRequests: 'shopAssemblyRequests',
   GetPackingSlips: 'packingSlips',
-  GetInventoryHierarchy: 'inventoryHierarchy',
-  GetInventoryByVendor: 'inventoryByVendor',
   GetUnlocatedInventory: 'unlocatedInventory',
   GetStockItems: 'stockItems',
   GetDeficientItems: 'deficientItems',

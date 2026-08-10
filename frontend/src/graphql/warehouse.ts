@@ -22,21 +22,6 @@ export const GET_PROJECT_INVENTORY_AVAILABILITY = gql`
   }
 `;
 
-export const GET_INVENTORY_ITEMS = gql`
-  query GetInventoryItems($projectId: ID, $category: String!, $productCode: String!) {
-    inventoryItems(projectId: $projectId, category: $category, productCode: $productCode) {
-      inventoryLocation {
-        id projectId poLineItemId receiveLineItemId stockItemId
-        hardwareCategory productCode quantity deficientQuantity available
-        aisle row bay receivedAt createdAt updatedAt
-      }
-      poNumber
-      classification
-      unitCost
-    }
-  }
-`;
-
 // #506: the Hardware Items tab as one flat table rather than a category -> product -> location
 // accordion. Every value the warehouse sorts, filters or exports on is on the row, resolved
 // server-side in a single query.
