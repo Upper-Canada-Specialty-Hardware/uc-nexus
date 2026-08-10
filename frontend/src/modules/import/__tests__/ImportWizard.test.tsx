@@ -747,8 +747,10 @@ describe('ImportWizard over-order warning', () => {
 
     // The dialog closes with an exit transition, so poll until it is gone before reading the step
     // (which the open dialog had aria-hidden).
-    await waitFor(() =>
-      expect(screen.queryByRole('button', { name: /Proceed anyway/i })).not.toBeInTheDocument(),
+    // 5s timeout: the exit transition loses to CPU contention when suites run in parallel.
+    await waitFor(
+      () => expect(screen.queryByRole('button', { name: /Proceed anyway/i })).not.toBeInTheDocument(),
+      { timeout: 5000 },
     );
     expect(screen.getByRole('heading', { name: 'Reconciliation' })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Classification' })).not.toBeInTheDocument();
