@@ -38,12 +38,20 @@ RELAY_SEED_SECRET_HASH = os.getenv("RELAY_SEED_SECRET_HASH", "")
 # Railway injects the project this service belongs to. Empty off Railway.
 RAILWAY_PROJECT_ID = os.getenv("RAILWAY_PROJECT_ID", "")
 
-# Read-only Railway API token, set ONLY on production. It lets /relay-channels tell the workstation
-# relay which preview environments exist right now, so adding a PR environment stops being a hand edit
-# on that machine (app/services/relay_channels.py). Blank disables discovery and the route answers an
-# empty list, which is the correct answer everywhere except production - a preview environment must not
-# be able to advertise other preview environments. Unlike the two digests above this IS a credential,
-# so scope it to read-only on this project.
+# Railway API token, set ONLY on production. It lets /relay-channels tell the workstation relay which
+# preview environments exist right now, so adding a PR environment stops being a hand edit on that
+# machine (app/services/relay_channels.py). Blank disables discovery and the route answers an empty
+# list, which is the correct answer everywhere except production - a preview environment must not be
+# able to advertise other preview environments.
+#
+# Use a WORKSPACE token. Railway offers three kinds and only two of them are viable here: an account
+# token carries everything the account can reach, and a PROJECT token authenticates with a
+# `Project-Access-Token` header rather than `Authorization: Bearer` AND is scoped to a single
+# environment, so it could neither authenticate this call nor see its siblings. A workspace token is
+# the narrowest one that can list a project's environments over Bearer auth.
+#
+# Railway has no read-only scope on any of them, so this is a write-capable credential however
+# narrowly it is scoped. Nothing here ever issues a mutation, and it lives on production alone.
 RAILWAY_API_TOKEN = os.getenv("RAILWAY_API_TOKEN", "")
 
 # Overridable because Railway has served its public API from more than one host; a change there should

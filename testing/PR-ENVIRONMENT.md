@@ -57,10 +57,28 @@ the Railway API; the relay asks about once a minute and unions the answer with i
 new PR environment gets a GP channel without anybody touching the workstation, and a closed one is
 retired the same way.
 
-Setup, once, ever: `RAILWAY_API_TOKEN` on the **production** backend service, scoped read-only to this
-project. Nowhere else - a preview environment must not be able to advertise other preview
-environments, so a backend without the token answers an empty list, which is the correct answer
-everywhere but production.
+Setup, once, ever: `RAILWAY_API_TOKEN` on the **production** backend service, nowhere else - a preview
+environment must not be able to advertise other preview environments, so a backend without the token
+answers an empty list, which is the correct answer everywhere but production.
+
+Make it a **workspace** token, at [railway.com/account/tokens](https://railway.com/account/tokens)
+with the workspace picked in the dropdown. Railway has three kinds and the other two do not fit: an
+account token reaches everything the account can, and a **project token cannot be used here at all** -
+it authenticates with a `Project-Access-Token` header rather than `Authorization: Bearer`, and it is
+scoped to a single environment, so it could neither authenticate the call nor see the siblings this
+whole feature is about. Railway has no read-only scope on any of them; nothing in this path ever
+issues a mutation, but the token is write-capable and belongs on production alone.
+
+Verify it before setting it, because a bad token fails silently into an empty list:
+
+```bash
+curl -s -X POST https://backboard.railway.com/graphql/v2 \
+  -H "Authorization: Bearer <TOKEN>" -H "Content-Type: application/json" \
+  -d '{"query":"query($id:String!){ environments(projectId:$id){ edges{ node{ name } } } }","variables":{"id":"<PROJECT_ID>"}}'
+```
+
+It should list `production` alongside every `uc-nexus-pr-<N>`. An `errors` array instead means the
+token type is wrong or the project id is.
 
 What keeps this safe, given a network answer now decides what a GP-credentialed process dials:
 
