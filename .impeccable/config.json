@@ -10,6 +10,14 @@
           "frontend/src/modules/warehouse/LocationsTab.tsx"
         ],
         "createdAt": "2026-08-10T19:18:49.512Z"
+      },
+      {
+        "rule": "design-system-font-size",
+        "value": "1rem",
+        "files": [
+          "frontend/src/modules/warehouse/LocationsTab.tsx"
+        ],
+        "createdAt": "2026-08-10T19:29:40.003Z"
       }
     ]
   }
