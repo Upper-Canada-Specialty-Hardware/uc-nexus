@@ -14,6 +14,7 @@ from app.repositories.warehouse import (
     clone_origin_fields,
     get_available_quantities,
     get_reserved_quantities,
+    location_detail,
 )
 
 from .common import (
@@ -124,7 +125,7 @@ def destock_inventory(
         "quantity": quantity,
         "source": source.value,
         "reasonText": reason_text,
-        "targetLocation": {"aisle": final_aisle, "row": final_row, "bay": final_bay},
+        "targetLocation": location_detail(final_aisle, final_row, final_bay, stock_row.warehouse_id),
         "stockItemId": str(stock_row.id),
     }
     _log_audit_event(
@@ -214,7 +215,7 @@ def allocate_stock_to_project(
         "targetHardwareCategory": target_hardware_category,
         "targetProductCode": target_product_code,
         "quantity": quantity,
-        "targetLocation": {"aisle": target_aisle, "row": target_row, "bay": target_bay},
+        "targetLocation": location_detail(target_aisle, target_row, target_bay, new_il.warehouse_id),
         "newInventoryLocationId": str(new_il.id),
     }
     _log_audit_event(
@@ -299,7 +300,7 @@ def receive_into_stock(
             "hardwareCategory": hardware_category,
             "productCode": product_code,
             "poNumber": po_number,
-            "location": {"aisle": aisle, "row": row, "bay": bay},
+            "location": location_detail(aisle, row, bay, warehouse_id),
         },
     )
     return stock_row
@@ -383,7 +384,8 @@ def transfer_inventory(
         if il.warehouse_id == dest_warehouse_id and (il.aisle, il.row, il.bay) == (dest_aisle, dest_row, dest_bay):
             raise ValidationError("Destination is the same as the source location", field="destination")
 
-        from_wh, from_loc = il.warehouse_id, {"aisle": il.aisle, "row": il.row, "bay": il.bay}
+        from_wh = il.warehouse_id
+        from_loc = location_detail(il.aisle, il.row, il.bay, from_wh)
         il.quantity -= quantity
         target = _find_matching_inventory_location(session, il, dest_warehouse_id, dest_aisle, dest_row, dest_bay)
         if target is not None:
@@ -415,7 +417,7 @@ def transfer_inventory(
                 "fromWarehouseId": str(from_wh),
                 "fromLocation": from_loc,
                 "toWarehouseId": str(dest_warehouse_id),
-                "toLocation": {"aisle": dest_aisle, "row": dest_row, "bay": dest_bay},
+                "toLocation": location_detail(dest_aisle, dest_row, dest_bay, dest_warehouse_id),
                 "quantity": quantity,
                 "targetInventoryLocationId": str(target.id),
             },
@@ -432,7 +434,8 @@ def transfer_inventory(
         if si.warehouse_id == dest_warehouse_id and (si.aisle, si.row, si.bay) == (dest_aisle, dest_row, dest_bay):
             raise ValidationError("Destination is the same as the source location", field="destination")
 
-        from_wh, from_loc = si.warehouse_id, {"aisle": si.aisle, "row": si.row, "bay": si.bay}
+        from_wh = si.warehouse_id
+        from_loc = location_detail(si.aisle, si.row, si.bay, from_wh)
         si.quantity -= quantity
         target = _find_or_create_stock_row(
             session,
@@ -457,7 +460,7 @@ def transfer_inventory(
                 "fromWarehouseId": str(from_wh),
                 "fromLocation": from_loc,
                 "toWarehouseId": str(dest_warehouse_id),
-                "toLocation": {"aisle": dest_aisle, "row": dest_row, "bay": dest_bay},
+                "toLocation": location_detail(dest_aisle, dest_row, dest_bay, dest_warehouse_id),
                 "quantity": quantity,
                 "targetStockItemId": str(target.id),
             },

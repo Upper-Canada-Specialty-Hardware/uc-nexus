@@ -85,10 +85,10 @@ export const GET_OPEN_POS = gql`
 `;
 
 export const GET_UNLOCATED_INVENTORY = gql`
-  query GetUnlocatedInventory($projectId: ID) {
-    unlocatedInventory(projectId: $projectId) {
+  query GetUnlocatedInventory($projectId: ID, $warehouseId: ID) {
+    unlocatedInventory(projectId: $projectId, warehouseId: $warehouseId) {
       inventoryLocation {
-        id projectId poLineItemId receiveLineItemId
+        id projectId poLineItemId receiveLineItemId warehouseId
         hardwareCategory productCode quantity
         aisle row bay receivedAt createdAt updatedAt
       }
@@ -268,8 +268,8 @@ export const GET_LOCATION_CONTENTS = gql`
 `;
 
 export const GET_LOCATION_AUDIT_HISTORY = gql`
-  query GetLocationAuditHistory($aisle: String!, $row: String, $bay: String, $limit: Int) {
-    locationAuditHistory(aisle: $aisle, row: $row, bay: $bay, limit: $limit) {
+  query GetLocationAuditHistory($aisle: String!, $row: String, $bay: String, $limit: Int, $warehouseId: ID) {
+    locationAuditHistory(aisle: $aisle, row: $row, bay: $bay, limit: $limit, warehouseId: $warehouseId) {
       id projectId entityType entityId action detail performedBy createdAt
     }
   }

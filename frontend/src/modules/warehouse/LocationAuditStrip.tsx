@@ -66,11 +66,14 @@ interface Props {
   aisle: string;
   row: string | null;
   bay: string | null;
+  // The warehouse the selected location lives in, so history scopes to this building's moves and does
+  // not surface an unrelated warehouse that reuses the same aisle/row/bay string.
+  warehouseId: string | null;
 }
 
-export default function LocationAuditStrip({ aisle, row, bay }: Props) {
+export default function LocationAuditStrip({ aisle, row, bay, warehouseId }: Props) {
   const { data, loading, error } = useQuery<LocationAuditHistoryData>(GET_LOCATION_AUDIT_HISTORY, {
-    variables: { aisle, row, bay, limit: 10 },
+    variables: { aisle, row, bay, limit: 10, warehouseId },
     fetchPolicy: 'cache-and-network',
   });
 

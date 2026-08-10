@@ -1364,6 +1364,10 @@ class LocationVariant:
 
 @strawberry.type
 class LocationDuplicateGroup:
+    # A collision is only meaningful within one warehouse - the same triple in two warehouses is two
+    # groups, so a group names its warehouse and the merge it offers acts on that warehouse alone.
+    warehouse_id: strawberry.ID | None
+    warehouse_label: str | None
     canonical_aisle: str | None
     canonical_row: str | None
     canonical_bay: str | None
@@ -1380,7 +1384,6 @@ class LocationDistinctValues:
 @strawberry.type
 class LocationMergeResult:
     inventory_locations: int
-    opening_items: int
     stock_items: int
 
 

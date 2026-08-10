@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.errors import NotFoundError, ValidationError
 from app.models.enums import AuditAction, AuditEntityType
 from app.models.stock_item import StockItem
-from app.repositories.warehouse import normalize_location_value
+from app.repositories.warehouse import location_detail, normalize_location_value
 
 from .common import _find_or_create_stock_row, _log_audit_event, _validate_location_fields
 
@@ -117,7 +117,7 @@ def move_stock_location(
     _validate_location_fields(new_aisle, new_row, new_bay)
 
     si = get_stock_item(session, stock_item_id)
-    old = {"aisle": si.aisle, "row": si.row, "bay": si.bay}
+    old = location_detail(si.aisle, si.row, si.bay, si.warehouse_id)
     si.aisle = new_aisle
     si.row = new_row
     si.bay = new_bay
@@ -129,7 +129,7 @@ def move_stock_location(
         entity_id=si.id,
         action=AuditAction.MOVE,
         performed_by=performed_by,
-        detail={"fromLocation": old, "toLocation": {"aisle": new_aisle, "row": new_row, "bay": new_bay}},
+        detail={"fromLocation": old, "toLocation": location_detail(new_aisle, new_row, new_bay, si.warehouse_id)},
     )
     return si
 
@@ -139,7 +139,7 @@ def mark_stock_item_unlocated(session: Session, *, stock_item_id: uuid.UUID, per
     if not performed_by:
         raise ValidationError("performed_by is required", field="performed_by")
     si = get_stock_item(session, stock_item_id)
-    old = {"aisle": si.aisle, "row": si.row, "bay": si.bay}
+    old = location_detail(si.aisle, si.row, si.bay, si.warehouse_id)
     si.aisle = None
     si.row = None
     si.bay = None
@@ -182,7 +182,7 @@ def assign_stock_item_location(
         entity_id=si.id,
         action=AuditAction.PUT_AWAY,
         performed_by=performed_by,
-        detail={"toLocation": {"aisle": aisle, "row": row, "bay": bay}},
+        detail={"toLocation": location_detail(aisle, row, bay, si.warehouse_id)},
     )
     return si
 

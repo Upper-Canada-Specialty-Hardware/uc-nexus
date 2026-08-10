@@ -21,7 +21,7 @@ from app.models.receiving import ReceiveRecord as ReceiveRecordModel
 from app.repositories import project_repository
 
 from .audit import _log_audit_event
-from .locations import _normalize_and_validate_location_fields
+from .locations import _normalize_and_validate_location_fields, location_detail
 
 
 def validate_receive_eligibility(
@@ -316,7 +316,7 @@ def create_receive(
                     "hardwareCategory": inv_loc.hardware_category,
                     "productCode": inv_loc.product_code,
                     "poNumber": po.po_number,
-                    "location": {"aisle": inv_loc.aisle, "row": inv_loc.row, "bay": inv_loc.bay},
+                    "location": location_detail(inv_loc.aisle, inv_loc.row, inv_loc.bay, inv_loc.warehouse_id),
                 },
             )
 

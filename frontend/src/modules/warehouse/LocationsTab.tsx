@@ -535,7 +535,12 @@ function ContentsPanel({
         </>
       )}
 
-      <LocationAuditStrip aisle={selected.aisle} row={selected.row} bay={selected.bay} />
+      <LocationAuditStrip
+        aisle={selected.aisle}
+        row={selected.row}
+        bay={selected.bay}
+        warehouseId={selected.warehouseId}
+      />
 
       {dialog && (
         <LocationActionDialog
