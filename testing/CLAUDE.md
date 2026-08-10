@@ -90,6 +90,14 @@ session instead. Establish this in the first minute:
 { inventoryHierarchy { hardwareCategory totalQuantity } }
 ```
 
+**The relay runs on a separate GP-credentialed workstation, already enrolled and already pointed at
+the PR environments. Never install, start, or configure one on the machine your session runs on** -
+`%LOCALAPPDATA%\UCNexusRelay` being absent and `127.0.0.1:7321` being closed are the expected state
+here, not a dependency to satisfy. `connected: false` is a state on somebody else's machine: report
+it and ask. Setting one up locally cannot work anyway, because this box is not domain-joined and
+cannot authenticate to GP SQL. Full rule in
+[PR-ENVIRONMENT.md](PR-ENVIRONMENT.md#the-relay-is-on-another-machine-never-stand-one-up-locally).
+
 `connected: false` plus `inventoryHierarchy: []` is the signature. Confirm it from the backend side
 with `relayInstalls { label enrolled enrolledAt lastSeenAt }` and the Railway backend deploy log:
 

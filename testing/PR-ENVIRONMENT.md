@@ -17,8 +17,38 @@ For signing in (`/testing/clerk-sign-in`, `TESTING_ENABLED`, the `X-Testing-Secr
 the Environment and Getting Started sections of [CLAUDE.md](CLAUDE.md) - the runbook below refers to
 them rather than restating them.
 
-**In a hurry:** `testing/scripts/connect-pr-env.ps1 <PR#>` does the whole hookup and tells you
-whether it worked. The rest of this file is what it does and how to diagnose it when it does not.
+## The relay is on another machine. Never stand one up locally
+
+**The relay does not run on the machine your session runs on, and you must never install, start, or
+configure one there.** It is a packaged Windows service on a separate GP-credentialed workstation, it
+is already enrolled, and it is already pointed at the PR environments used for testing. Connecting it
+is not part of an agent's test loop.
+
+Your entire relay responsibility is to **confirm the channel is up and then test through it**:
+
+```
+{ relayStatus { connected company build } }
+```
+
+`connected: true` with company TUBC means you are done thinking about the relay. `connected: false`
+means you report it and ask - it is a state on somebody else's machine, not a task in front of you.
+
+What that rules out, because each of these has burned a session:
+
+- Do not look for `%LOCALAPPDATA%\UCNexusRelay` here. Its absence is the expected state, not a
+  missing dependency.
+- Do not read "nothing listening on `127.0.0.1:7321`" as a fault. That port is only ever open on the
+  relay workstation; the relay binds to localhost *there*, which is the whole reason the WebSocket
+  channel to Railway exists.
+- Do not install a relay to "unblock testing". One without GP credentials connects and then fails
+  every op, which is strictly worse than being honestly disconnected. This dev box is not
+  domain-joined and cannot authenticate to GP SQL at all.
+- Do not edit a `config.toml` you had to create.
+
+**In a hurry, and only when sitting at the relay workstation:** `testing/scripts/connect-pr-env.ps1
+<PR#>` does the hookup and reports whether it worked. It edits a file that exists on that one
+machine, so running it anywhere else fails at its channel step by design. The rest of this file is
+what it does and how to diagnose it when it does not.
 
 ## A PR environment is relay-disconnected by default, and that is useful
 
@@ -27,10 +57,11 @@ changes it. Two independent reasons, both addressed by #414 but neither automati
 
 1. The relay dials whatever `[channel] backend_url` in its `config.toml` names. Since #414 that takes
    a LIST, so a PR backend can be added *alongside* production rather than replacing it - but somebody
-   has to add it. **No restart** since #456: `channel.run_forever` re-reads `config.toml` every
-   `CHANNEL_RECONCILE_SECONDS` (see `relay/src/ucnexus_relay/channel.py` for the live value), adding a
-   channel for a URL that appears and cancelling one for a URL that disappears. Editing the file is
-   the whole procedure - see the runbook below.
+   at the relay workstation has to add it, and that somebody is not an agent session. **No restart**
+   since #456: `channel.run_forever` re-reads `config.toml` every `CHANNEL_RECONCILE_SECONDS` (see
+   `relay/src/ucnexus_relay/channel.py` for the live value), adding a channel for a URL that appears
+   and cancelling one for a URL that disappears. Editing that file on that machine is the whole
+   procedure - see the runbook below.
 2. Relay installs live in Postgres and a PR environment boots a fresh empty one, so the handshake is
    refused (4403) even if the relay does dial. Since #414 the backend seeds a trusted install on
    startup from `RELAY_SEED_SECRET_HASH` - the SHA-256 already in production's row, copyable from
@@ -83,8 +114,11 @@ step here has failed silently at least once.
    refused 4403. Usually inherited at environment creation; set it by hand if the environment predates
    the variable.
    - Signal: same `railway variables` read shows it set.
-4. **Add the PR backend to the relay's channel list.** In
-   `%LOCALAPPDATA%\UCNexusRelay\config.toml`, under `[channel]`:
+4. **Add the PR backend to the relay's channel list - performed ON THE RELAY WORKSTATION, not on the
+   machine you are reading this from.** Usually already done for the environment under test, so check
+   step 5's signal before assuming otherwise; if it genuinely is missing, that is a request to
+   whoever owns that workstation. In that machine's `%LOCALAPPDATA%\UCNexusRelay\config.toml`, under
+   `[channel]`:
    ```toml
    extra_backend_urls = ["wss://backend-uc-nexus-pr-<N>.up.railway.app/relay-link"]
    ```
